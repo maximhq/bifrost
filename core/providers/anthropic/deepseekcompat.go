@@ -9,33 +9,41 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// deepSeekV4FlashModel is the exact model identity supported by these
+// deepSeekV4FlashModel is the exact Flash identity supported by the DeepSeek V4
 // Anthropic-compatibility adaptations.
 const deepSeekV4FlashModel = "deepseek-v4-flash"
 
-// isDeepSeekV4FlashRequest is deliberately narrower than Anthropic's
-// family/capability predicates. DeepSeek's Anthropic-compatible endpoint uses
-// output_config.effort for this exact wire identity; dated, generic, future,
-// case-variant, and differently routed models retain stock behavior.
+// deepSeekV4ProModel is the exact Pro identity supported by the DeepSeek V4
+// Anthropic-compatibility adaptations.
+const deepSeekV4ProModel = "deepseek-v4-pro"
+
+// isDeepSeekV4Request is deliberately narrower than Anthropic's family and
+// capability predicates. DeepSeek's Anthropic-compatible endpoint uses
+// output_config.effort for these exact wire identities; dated, generic,
+// future, case-variant, and differently routed models retain stock behavior.
 // Source: https://api-docs.deepseek.com/guides/anthropic_api/
-func isDeepSeekV4FlashRequest(provider schemas.ModelProvider, model string) bool {
-	return provider == schemas.DeepSeek && model == deepSeekV4FlashModel
+func isDeepSeekV4Request(provider schemas.ModelProvider, model string) bool {
+	return provider == schemas.DeepSeek && (model == deepSeekV4FlashModel || model == deepSeekV4ProModel)
 }
 
-// shouldValidateDeepSeekV4FlashUsage resolves aliases before deciding whether
-// the response requires the V4 Flash usage-fidelity checks.
-func shouldValidateDeepSeekV4FlashUsage(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string) bool {
-	return isDeepSeekV4FlashRequest(provider, schemas.ResolveCanonicalModel(ctx, model))
+// expectedDeepSeekV4UsageModel resolves aliases and returns the exact model a
+// response must report when the request uses a reviewed DeepSeek V4 identity.
+func expectedDeepSeekV4UsageModel(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string) (string, bool) {
+	canonical := schemas.ResolveCanonicalModel(ctx, model)
+	if !isDeepSeekV4Request(provider, canonical) {
+		return "", false
+	}
+	return canonical, true
 }
 
-// shouldValidateDeepSeekV4FlashUsageFromBody extracts the requested model from
-// a serialized request and applies the same exact, alias-aware validation gate.
-func shouldValidateDeepSeekV4FlashUsageFromBody(ctx *schemas.BifrostContext, provider schemas.ModelProvider, body []byte) bool {
+// expectedDeepSeekV4UsageModelFromBody extracts the requested model from a
+// serialized request and applies the same exact, alias-aware validation gate.
+func expectedDeepSeekV4UsageModelFromBody(ctx *schemas.BifrostContext, provider schemas.ModelProvider, body []byte) (string, bool) {
 	if provider != schemas.DeepSeek || len(body) == 0 {
-		return false
+		return "", false
 	}
 	model := providerUtils.GetJSONField(body, "model").String()
-	return isDeepSeekV4FlashRequest(provider, schemas.ResolveCanonicalModel(ctx, model))
+	return expectedDeepSeekV4UsageModel(ctx, provider, model)
 }
 
 // resetAnthropicStreamAttemptState clears transport state local to the prior
@@ -87,22 +95,22 @@ type deepSeekStreamUsageState struct {
 	sawMessageStop  bool
 }
 
-// validateDeepSeekV4FlashResponseMetadata verifies the exact served model and
+// validateDeepSeekV4ResponseMetadata verifies the exact served model and
 // complete, internally consistent usage metadata on a unary response.
-func validateDeepSeekV4FlashResponseMetadata(data []byte) error {
+func validateDeepSeekV4ResponseMetadata(data []byte, expectedModel string) error {
 	var metadata deepSeekResponseMetadata
 	if err := sonic.Unmarshal(data, &metadata); err != nil {
 		return fmt.Errorf("usage metadata decode failed")
 	}
-	if metadata.Model != deepSeekV4FlashModel {
-		return fmt.Errorf("response model %q does not match %q", metadata.Model, deepSeekV4FlashModel)
+	if metadata.Model != expectedModel {
+		return fmt.Errorf("response model %q does not match %q", metadata.Model, expectedModel)
 	}
 	return validateDeepSeekPromptUsage(metadata.Usage, true)
 }
 
-// validateDeepSeekV4FlashStreamMetadata validates one event and advances the
+// validateDeepSeekV4StreamMetadata validates one event and advances the
 // usage lifecycle state when the event is ordered and complete.
-func validateDeepSeekV4FlashStreamMetadata(eventType string, data []byte, state *deepSeekStreamUsageState) error {
+func validateDeepSeekV4StreamMetadata(eventType string, data []byte, expectedModel string, state *deepSeekStreamUsageState) error {
 	var metadata deepSeekStreamMetadata
 	if err := sonic.Unmarshal(data, &metadata); err != nil {
 		return fmt.Errorf("stream usage metadata decode failed")
@@ -122,8 +130,8 @@ func validateDeepSeekV4FlashStreamMetadata(eventType string, data []byte, state 
 		if metadata.Message == nil {
 			return fmt.Errorf("message_start is missing message metadata")
 		}
-		if metadata.Message.Model != deepSeekV4FlashModel {
-			return fmt.Errorf("response model %q does not match %q", metadata.Message.Model, deepSeekV4FlashModel)
+		if metadata.Message.Model != expectedModel {
+			return fmt.Errorf("response model %q does not match %q", metadata.Message.Model, expectedModel)
 		}
 		if err := validateDeepSeekPromptUsage(metadata.Message.Usage, true); err != nil {
 			return err
@@ -150,9 +158,9 @@ func validateDeepSeekV4FlashStreamMetadata(eventType string, data []byte, state 
 	return nil
 }
 
-// validateDeepSeekV4FlashStreamComplete rejects streams that end before every
+// validateDeepSeekV4StreamComplete rejects streams that end before every
 // required usage-bearing lifecycle event has arrived.
-func validateDeepSeekV4FlashStreamComplete(state *deepSeekStreamUsageState) error {
+func validateDeepSeekV4StreamComplete(state *deepSeekStreamUsageState) error {
 	if state == nil || !state.sawMessageStart {
 		return fmt.Errorf("stream ended without message_start usage metadata")
 	}
@@ -235,7 +243,7 @@ func newDeepSeekUsageFidelityError(err error) *schemas.BifrostError {
 		Error: &schemas.ErrorField{
 			Type:    &errorType,
 			Code:    schemas.Ptr("deepseek_usage_fidelity"),
-			Message: fmt.Sprintf("deepseek-v4-flash response usage failed fidelity validation: %v", err),
+			Message: fmt.Sprintf("DeepSeek V4 response usage failed fidelity validation: %v", err),
 		},
 	}
 }

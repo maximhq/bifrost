@@ -8,9 +8,51 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// TestDeepSeekV4FlashUsesOutputConfigEffort verifies that chat and Responses
+// TestDeepSeekV4UsesOutputConfigEffort verifies that chat and Responses
 // requests, including forced-tool variants, use effort without legacy thinking.
-func TestDeepSeekV4FlashUsesOutputConfigEffort(t *testing.T) {
+func TestDeepSeekV4UsesOutputConfigEffort(t *testing.T) {
+	t.Run("chat Pro xhigh", func(t *testing.T) {
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		defer cancel()
+
+		effort := "xhigh"
+		maxTokens := 4096
+		req, err := ToAnthropicChatRequest(ctx, &schemas.BifrostChatRequest{
+			Provider: schemas.DeepSeek,
+			Model:    "deepseek-v4-pro",
+			Input: []schemas.ChatMessage{{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+			}},
+			Params: &schemas.ChatParameters{
+				Reasoning: &schemas.ChatReasoning{Effort: &effort, MaxTokens: &maxTokens},
+			},
+		})
+		if err != nil {
+			t.Fatalf("ToAnthropicChatRequest: %v", err)
+		}
+		assertDeepSeekEffortOnly(t, req, effort)
+	})
+
+	t.Run("responses Pro xhigh", func(t *testing.T) {
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		defer cancel()
+
+		effort := "xhigh"
+		maxTokens := 4096
+		req, err := ToAnthropicResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+			Provider: schemas.DeepSeek,
+			Model:    "deepseek-v4-pro",
+			Params: &schemas.ResponsesParameters{
+				Reasoning: &schemas.ResponsesParametersReasoning{Effort: &effort, MaxTokens: &maxTokens},
+			},
+		})
+		if err != nil {
+			t.Fatalf("ToAnthropicResponsesRequest: %v", err)
+		}
+		assertDeepSeekEffortOnly(t, req, effort)
+	})
+
 	t.Run("chat", func(t *testing.T) {
 		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 		defer cancel()
@@ -208,17 +250,19 @@ func TestDeepSeekV4FlashUsesOutputConfigEffort(t *testing.T) {
 	})
 }
 
-// TestDeepSeekV4FlashEffortGateIsExact verifies that near-miss models and
+// TestDeepSeekV4EffortGateIsExact verifies that near-miss models and
 // providers retain the stock effort behavior.
-func TestDeepSeekV4FlashEffortGateIsExact(t *testing.T) {
+func TestDeepSeekV4EffortGateIsExact(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		provider schemas.ModelProvider
 		model    string
 	}{
 		{name: "dated model", provider: schemas.DeepSeek, model: "deepseek-v4-flash-0731"},
-		{name: "case variant", provider: schemas.DeepSeek, model: "DeepSeek-V4-Flash"},
-		{name: "other provider", provider: schemas.Anthropic, model: "deepseek-v4-flash"},
+		{name: "dated Pro model", provider: schemas.DeepSeek, model: "deepseek-v4-pro-0813"},
+		{name: "generic model", provider: schemas.DeepSeek, model: "deepseek-v4"},
+		{name: "case variant", provider: schemas.DeepSeek, model: "DeepSeek-V4-Pro"},
+		{name: "other provider", provider: schemas.Anthropic, model: "deepseek-v4-pro"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
@@ -242,16 +286,16 @@ func TestDeepSeekV4FlashEffortGateIsExact(t *testing.T) {
 	}
 }
 
-// TestBuildDeepSeekV4FlashRequestBodyPreservesEffort verifies the final wire
+// TestBuildDeepSeekV4RequestBodyPreservesEffort verifies the final wire
 // body retains active effort and explicit thinking-disable controls.
-func TestBuildDeepSeekV4FlashRequestBodyPreservesEffort(t *testing.T) {
+func TestBuildDeepSeekV4RequestBodyPreservesEffort(t *testing.T) {
 	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
 
-	effort := "medium"
+	effort := "xhigh"
 	body, bifrostErr := BuildAnthropicResponsesRequestBody(ctx, &schemas.BifrostResponsesRequest{
 		Provider: schemas.DeepSeek,
-		Model:    "deepseek-v4-flash",
+		Model:    "deepseek-v4-pro",
 		Params: &schemas.ResponsesParameters{
 			Reasoning: &schemas.ResponsesParametersReasoning{Effort: &effort},
 		},

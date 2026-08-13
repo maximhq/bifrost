@@ -3693,8 +3693,8 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 			}
 		}
 		if bifrostReq.Params.Reasoning != nil {
-			if isDeepSeekV4FlashRequest(bifrostReq.Provider, capModel) {
-				// DeepSeek V4 Flash uses output_config.effort for active reasoning
+			if isDeepSeekV4Request(bifrostReq.Provider, capModel) {
+				// Reviewed DeepSeek V4 models use output_config.effort for active reasoning
 				// and thinking.type=disabled for an explicit "none". A neutral
 				// max_tokens value alone does not enable legacy Anthropic thinking.
 				if bifrostReq.Params.Reasoning.Effort != nil {
@@ -3965,10 +3965,9 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 			}
 		}
 
-		// DeepSeek models other than V4 Flash reject a forced tool_choice while
-		// thinking is on. Force thinking off when a specific tool is pinned; V4
-		// Flash omits thinking entirely above.
-		if bifrostReq.Provider == schemas.DeepSeek && !isDeepSeekV4FlashRequest(bifrostReq.Provider, capModel) && anthropicReq.ToolChoice != nil &&
+		// DeepSeek models outside the reviewed V4 set reject a forced tool_choice
+		// while thinking is on. The reviewed V4 models support tools in thinking mode.
+		if bifrostReq.Provider == schemas.DeepSeek && !isDeepSeekV4Request(bifrostReq.Provider, capModel) && anthropicReq.ToolChoice != nil &&
 			anthropicReq.ToolChoice.Type == "tool" {
 			anthropicReq.Thinking = &AnthropicThinking{Type: "disabled"}
 		}

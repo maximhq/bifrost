@@ -19,6 +19,10 @@ import (
 // shared by the DeepSeek provider fidelity tests.
 const validV4FlashResponse = `{"id":"msg_1","type":"message","role":"assistant","model":"deepseek-v4-flash","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":101,"cache_creation_input_tokens":13,"cache_read_input_tokens":7,"output_tokens":23,"prompt_tokens":121}}`
 
+// validV4ProResponse is the canonical complete V4 Pro fixture used to verify
+// exact served-model and usage fidelity through the provider transport.
+const validV4ProResponse = `{"id":"msg_1","type":"message","role":"assistant","model":"deepseek-v4-pro","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":101,"cache_creation_input_tokens":13,"cache_read_input_tokens":7,"output_tokens":23,"prompt_tokens":121}}`
+
 // TestChatCompletionAnthropicV4FlashSendsEffortOnly verifies the provider sends
 // output_config.effort without legacy thinking metadata.
 func TestChatCompletionAnthropicV4FlashSendsEffortOnly(t *testing.T) {
@@ -48,6 +52,54 @@ func TestChatCompletionAnthropicV4FlashSendsEffortOnly(t *testing.T) {
 	effort := "medium"
 	maxTokens := 4096
 	req := v4FlashChatRequest()
+	req.Params = &schemas.ChatParameters{
+		Reasoning: &schemas.ChatReasoning{Effort: &effort, MaxTokens: &maxTokens},
+	}
+	if _, bifrostErr := provider.ChatCompletion(
+		schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		anthropicTestKey(),
+		req,
+	); bifrostErr != nil {
+		t.Fatalf("ChatCompletion: %v", bifrostErr.Error.Message)
+	}
+	outputConfig, ok := captured["output_config"].(map[string]any)
+	if !ok || outputConfig["effort"] != effort {
+		t.Fatalf("output_config.effort = %#v, want %q; body=%#v", outputConfig, effort, captured)
+	}
+	if thinking, exists := captured["thinking"]; exists {
+		t.Fatalf("wire body gained unsupported thinking: %#v", thinking)
+	}
+}
+
+// TestChatCompletionAnthropicV4ProSendsEffortOnly verifies V4 Pro preserves
+// xhigh on the final Anthropic-compatible wire body without legacy thinking.
+func TestChatCompletionAnthropicV4ProSendsEffortOnly(t *testing.T) {
+	t.Parallel()
+	var captured map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+			http.Error(w, "read body", http.StatusInternalServerError)
+			return
+		}
+		if err := json.Unmarshal(body, &captured); err != nil {
+			t.Errorf("decode body: %v", err)
+			http.Error(w, "decode body", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, validV4ProResponse)
+	}))
+	defer server.Close()
+
+	provider, err := newTestDeepSeekProvider(server.URL)
+	if err != nil {
+		t.Fatalf("NewDeepSeekProvider: %v", err)
+	}
+	effort := "xhigh"
+	maxTokens := 4096
+	req := v4ProChatRequest()
 	req.Params = &schemas.ChatParameters{
 		Reasoning: &schemas.ChatReasoning{Effort: &effort, MaxTokens: &maxTokens},
 	}
@@ -168,9 +220,9 @@ func TestAnthropicV4FlashLargeResponseSkipsTruncatedPreviewValidation(t *testing
 	}
 }
 
-// TestResponsesAnthropicUsageGateIsExact verifies nearby DeepSeek models retain
-// stock Responses decoding rather than entering the V4 Flash validator.
-func TestResponsesAnthropicUsageGateIsExact(t *testing.T) {
+// TestResponsesAnthropicV4ProRejectsCollapsedUsage verifies Pro enters the same
+// fail-closed usage-fidelity path as Flash.
+func TestResponsesAnthropicV4ProRejectsCollapsedUsage(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -182,8 +234,62 @@ func TestResponsesAnthropicUsageGateIsExact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewDeepSeekProvider: %v", err)
 	}
-	req := v4FlashResponsesRequest()
-	req.Model = "deepseek-v4-pro"
+	req := v4ProResponsesRequest()
+	resp, bifrostErr := provider.Responses(
+		schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		anthropicTestKey(),
+		req,
+	)
+	if resp != nil {
+		t.Fatalf("collapsed Pro usage produced a success response: %#v", resp)
+	}
+	assertUsageFidelityError(t, bifrostErr)
+}
+
+// TestResponsesAnthropicV4ProRejectsWrongServedModel verifies an unsupported
+// upstream remap to Flash cannot masquerade as a successful Pro attempt.
+func TestResponsesAnthropicV4ProRejectsWrongServedModel(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, validV4FlashResponse)
+	}))
+	defer server.Close()
+
+	provider, err := newTestDeepSeekProvider(server.URL)
+	if err != nil {
+		t.Fatalf("NewDeepSeekProvider: %v", err)
+	}
+	resp, bifrostErr := provider.Responses(
+		schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		anthropicTestKey(),
+		v4ProResponsesRequest(),
+	)
+	if resp != nil {
+		t.Fatalf("wrong served model produced a success response: %#v", resp)
+	}
+	assertUsageFidelityError(t, bifrostErr)
+	if bifrostErr.Error == nil || !strings.Contains(bifrostErr.Error.Message, "does not match") {
+		t.Fatalf("wrong served model emitted the wrong detail: %#v", bifrostErr)
+	}
+}
+
+// TestResponsesAnthropicUsageGateIsExact verifies a dated Pro identity remains
+// on stock decoding instead of entering the exact reviewed V4 validator.
+func TestResponsesAnthropicUsageGateIsExact(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"msg_1","type":"message","role":"assistant","model":"deepseek-v4-pro-0813","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":2,"output_tokens":1}}`)
+	}))
+	defer server.Close()
+
+	provider, err := newTestDeepSeekProvider(server.URL)
+	if err != nil {
+		t.Fatalf("NewDeepSeekProvider: %v", err)
+	}
+	req := v4ProResponsesRequest()
+	req.Model = "deepseek-v4-pro-0813"
 	resp, bifrostErr := provider.Responses(
 		schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
 		anthropicTestKey(),
@@ -339,6 +445,56 @@ func TestResponsesStreamAnthropicV4FlashAcceptsCompleteUsage(t *testing.T) {
 	}
 }
 
+// TestResponsesStreamAnthropicV4ProAcceptsCompleteUsage verifies the provider
+// carries the Pro identity into streaming model and usage validation.
+func TestResponsesStreamAnthropicV4ProAcceptsCompleteUsage(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "event: message_start\n"+
+			`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"deepseek-v4-pro","content":[],"usage":{"input_tokens":101,"cache_creation_input_tokens":13,"cache_read_input_tokens":7,"output_tokens":0,"prompt_tokens":121}}}`+"\n\n"+
+			"event: content_block_start\n"+
+			`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`+"\n\n"+
+			"event: content_block_delta\n"+
+			`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}`+"\n\n"+
+			"event: content_block_stop\n"+
+			`data: {"type":"content_block_stop","index":0}`+"\n\n"+
+			"event: message_delta\n"+
+			`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":23}}`+"\n\n"+
+			"event: message_stop\n"+
+			`data: {"type":"message_stop"}`+"\n\n")
+	}))
+	defer server.Close()
+
+	provider, err := newTestDeepSeekProvider(server.URL)
+	if err != nil {
+		t.Fatalf("NewDeepSeekProvider: %v", err)
+	}
+	stream, bifrostErr := provider.ResponsesStream(
+		schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		passthroughPostHook,
+		nil,
+		anthropicTestKey(),
+		v4ProResponsesRequest(),
+	)
+	if bifrostErr != nil {
+		t.Fatalf("stream setup: %v", bifrostErr.Error.Message)
+	}
+	chunks := 0
+	for chunk := range stream {
+		chunks++
+		if chunk == nil {
+			t.Fatal("valid Pro stream emitted nil chunk")
+		}
+		if chunk.BifrostError != nil {
+			t.Fatalf("valid Pro stream emitted error: %#v", chunk.BifrostError)
+		}
+	}
+	if chunks == 0 {
+		t.Fatal("valid Pro stream emitted no chunks")
+	}
+}
+
 // TestResponsesStreamAnthropicV4FlashRejectsTruncatedUsage verifies a stream
 // ending after message_start emits the typed fidelity error.
 func TestResponsesStreamAnthropicV4FlashRejectsTruncatedUsage(t *testing.T) {
@@ -460,6 +616,22 @@ func v4FlashChatRequest() *schemas.BifrostChatRequest {
 			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
 		}},
 	}
+}
+
+// v4ProResponsesRequest returns a minimal Responses request for the exact V4
+// Pro model gate.
+func v4ProResponsesRequest() *schemas.BifrostResponsesRequest {
+	req := v4FlashResponsesRequest()
+	req.Model = "deepseek-v4-pro"
+	return req
+}
+
+// v4ProChatRequest returns a minimal Chat request for the exact V4 Pro model
+// gate.
+func v4ProChatRequest() *schemas.BifrostChatRequest {
+	req := v4FlashChatRequest()
+	req.Model = "deepseek-v4-pro"
+	return req
 }
 
 // passthroughPostHook preserves stream responses and errors unchanged so the

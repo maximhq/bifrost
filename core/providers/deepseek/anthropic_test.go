@@ -142,7 +142,7 @@ func TestResponses_UsesAnthropicEndpointAndKeepsWebSearch(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, newAnthropicResponse())
+		fmt.Fprint(w, validV4ProResponse)
 	}))
 	defer server.Close()
 
@@ -246,7 +246,9 @@ func TestChatCompletion_V4FlashOmitsThinkingForForcedToolChoice(t *testing.T) {
 	}
 }
 
-func TestResponses_DisablesThinkingForForcedToolChoice(t *testing.T) {
+// TestResponses_V4ProKeepsForcedToolWithoutThinking verifies the reviewed Pro
+// route preserves an exact forced tool without synthesizing legacy thinking.
+func TestResponses_V4ProKeepsForcedToolWithoutThinking(t *testing.T) {
 	t.Parallel()
 
 	var captured map[string]any
@@ -264,7 +266,7 @@ func TestResponses_DisablesThinkingForForcedToolChoice(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, newAnthropicResponse())
+		fmt.Fprint(w, validV4ProResponse)
 	}))
 	defer server.Close()
 
@@ -303,12 +305,8 @@ func TestResponses_DisablesThinkingForForcedToolChoice(t *testing.T) {
 		t.Fatalf("Responses: %v", bifrostErr.Error.Message)
 	}
 
-	thinking, ok := captured["thinking"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected thinking block in outbound body, got %#v", captured)
-	}
-	if got := thinking["type"]; got != "disabled" {
-		t.Fatalf("thinking.type = %v, want disabled", got)
+	if thinking, exists := captured["thinking"]; exists {
+		t.Fatalf("V4 Pro wire body gained legacy thinking: %#v", thinking)
 	}
 }
 

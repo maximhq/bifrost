@@ -531,8 +531,8 @@ func HandleAnthropicChatCompletionRequest(
 	isLargeResp, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool)
 	// Large-response mode exposes only a prefix preview here; usage is normally
 	// trailing metadata, so validating the preview would reject valid payloads.
-	if shouldValidateDeepSeekV4FlashUsage(ctx, config.Provider, request.Model) && !isLargeResp {
-		if err := validateDeepSeekV4FlashResponseMetadata(responseBody); err != nil {
+	if expectedModel, validateUsage := expectedDeepSeekV4UsageModel(ctx, config.Provider, request.Model); validateUsage && !isLargeResp {
+		if err := validateDeepSeekV4ResponseMetadata(responseBody, expectedModel); err != nil {
 			return nil, providerUtils.EnrichError(ctx, newDeepSeekUsageFidelityError(err), jsonBody, nil, config.ShouldSendBackRawRequest, false, latency)
 		}
 	}
@@ -774,7 +774,7 @@ func HandleAnthropicChatCompletionStreaming(
 	postHookSpanFinalizer func(context.Context),
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	resetAnthropicStreamAttemptState(ctx)
-	validateDeepSeekUsage := shouldValidateDeepSeekV4FlashUsageFromBody(ctx, providerName, jsonBody)
+	expectedDeepSeekModel, validateDeepSeekUsage := expectedDeepSeekV4UsageModelFromBody(ctx, providerName, jsonBody)
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, streamIdleTimeoutInSeconds)
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -1001,7 +1001,7 @@ func HandleAnthropicChatCompletionStreaming(
 				continue
 			}
 			if validateDeepSeekUsage {
-				if err := validateDeepSeekV4FlashStreamMetadata(eventType, eventDataBytes, deepSeekUsageState); err != nil {
+				if err := validateDeepSeekV4StreamMetadata(eventType, eventDataBytes, expectedDeepSeekModel, deepSeekUsageState); err != nil {
 					normalizeUsage()
 					sendDeepSeekUsageFidelityStreamError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody, sendBackRawRequest, err)
 					return
@@ -1220,7 +1220,7 @@ func HandleAnthropicChatCompletionStreaming(
 		// event the synthesized final chunk below would present a truncated stream
 		// to the client as a clean stop.
 		if validateDeepSeekUsage {
-			if err := validateDeepSeekV4FlashStreamComplete(deepSeekUsageState); err != nil {
+			if err := validateDeepSeekV4StreamComplete(deepSeekUsageState); err != nil {
 				normalizeUsage()
 				sendDeepSeekUsageFidelityStreamError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody, sendBackRawRequest, err)
 				return
@@ -1324,8 +1324,8 @@ func HandleAnthropicResponsesRequest(
 	isLargeResp, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool)
 	// Large-response mode exposes only a prefix preview here; usage is normally
 	// trailing metadata, so validating the preview would reject valid payloads.
-	if shouldValidateDeepSeekV4FlashUsage(ctx, config.Provider, request.Model) && !isLargeResp {
-		if err := validateDeepSeekV4FlashResponseMetadata(responseBody); err != nil {
+	if expectedModel, validateUsage := expectedDeepSeekV4UsageModel(ctx, config.Provider, request.Model); validateUsage && !isLargeResp {
+		if err := validateDeepSeekV4ResponseMetadata(responseBody, expectedModel); err != nil {
 			return nil, providerUtils.EnrichError(ctx, newDeepSeekUsageFidelityError(err), jsonBody, nil, config.ShouldSendBackRawRequest, false, latency)
 		}
 	}
@@ -1441,7 +1441,7 @@ func HandleAnthropicResponsesStream(
 	postHookSpanFinalizer func(context.Context),
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	resetAnthropicStreamAttemptState(ctx)
-	validateDeepSeekUsage := shouldValidateDeepSeekV4FlashUsageFromBody(ctx, providerName, jsonBody)
+	expectedDeepSeekModel, validateDeepSeekUsage := expectedDeepSeekV4UsageModelFromBody(ctx, providerName, jsonBody)
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, streamIdleTimeoutInSeconds)
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -1659,7 +1659,7 @@ func HandleAnthropicResponsesStream(
 				continue
 			}
 			if validateDeepSeekUsage {
-				if err := validateDeepSeekV4FlashStreamMetadata(eventType, eventDataBytes, deepSeekUsageState); err != nil {
+				if err := validateDeepSeekV4StreamMetadata(eventType, eventDataBytes, expectedDeepSeekModel, deepSeekUsageState); err != nil {
 					normalizeBilledUsage()
 					sendDeepSeekUsageFidelityStreamError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody, sendBackRawRequest, err)
 					return
@@ -1797,7 +1797,7 @@ func HandleAnthropicResponsesStream(
 		}
 
 		if validateDeepSeekUsage {
-			if err := validateDeepSeekV4FlashStreamComplete(deepSeekUsageState); err != nil {
+			if err := validateDeepSeekV4StreamComplete(deepSeekUsageState); err != nil {
 				normalizeBilledUsage()
 				sendDeepSeekUsageFidelityStreamError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody, sendBackRawRequest, err)
 				return

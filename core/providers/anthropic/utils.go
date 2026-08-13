@@ -301,7 +301,7 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 	// https://platform.claude.com/docs/en/build-with-claude/effort. Models
 	// outside the supported set return: "This model does not support the
 	// effort parameter."
-	if req.OutputConfig != nil && req.OutputConfig.Effort != nil && !SupportsEffortParameter(model) && !isDeepSeekV4FlashRequest(provider, model) {
+	if req.OutputConfig != nil && req.OutputConfig.Effort != nil && !SupportsEffortParameter(model) && !isDeepSeekV4Request(provider, model) {
 		req.OutputConfig.Effort = nil
 		if req.OutputConfig.Format == nil && req.OutputConfig.TaskBudget == nil {
 			req.OutputConfig = nil

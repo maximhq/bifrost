@@ -1,4 +1,4 @@
-- fix: preserve DeepSeek V4 Flash Anthropic effort and usage fidelity [@valentinyanakiev](https://github.com/valentinyanakiev)
+- fix: preserve DeepSeek V4 Flash and Pro Anthropic effort, model, and usage fidelity [@valentinyanakiev](https://github.com/valentinyanakiev)
 - fix: stop dropping replayed reasoning when a message carries a non-nil but empty `ContentBlocks` list - the Anthropic, Bedrock and Cohere converters now fall through to `ResponsesReasoning` instead of letting an `else if` shadow it (#5982)
 - fix: never send Bedrock a reasoning block with an absent `text` key - it is `omitempty`, so a nil pointer dropped the field entirely and Converse rejected the turn with "Member must not be null", on both the Responses and chat conversion paths (#5982)
 - fix: attach the replayed signature to the first Bedrock reasoning summary block instead of discarding it, routed through `reasoningSignatureForBedrock` so the empty-string guard matches every other signature site (#5982)
