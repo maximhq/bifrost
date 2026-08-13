@@ -1173,7 +1173,7 @@ func TestToAnthropicChatRequest_NonOpus47_ReasoningMaxTokens_EnabledWithBudget(t
 // The wire model id is opaque (mirroring the incident); capModel is resolved
 // from the alias ModelName.
 func TestToAnthropicChatRequest_ForceFixedBudgetThinkingOverride(t *testing.T) {
-	const wireModelID = "v9xyf4o111s5" // opaque resource id, like the incident alias's model_id
+	const wireModelID = "a1b2c3d4e5f6" // opaque resource id, like the incident alias's model_id
 
 	tests := []struct {
 		name         string
