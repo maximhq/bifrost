@@ -87,6 +87,47 @@ func TestSemanticClassifierNamesMatchedExemplarFromReusedGeneration(t *testing.T
 	assert.EqualValues(t, 0, exemplarEmbeddings.Load(), "adopting a warmed generation must not re-embed exemplars")
 }
 
+// TestSemanticClassifierAppliesMinSimilarity covers the floor that stops the
+// nearest exemplar from winning by default however unrelated it is. A rejected
+// match must still report its tier and score so the near miss is diagnosable.
+func TestSemanticClassifierAppliesMinSimilarity(t *testing.T) {
+	tests := []struct {
+		name          string
+		minSimilarity float64
+		wantAccepted  bool
+	}{
+		{name: "no floor accepts a weak match", minSimilarity: 0, wantAccepted: true},
+		{name: "floor below the score accepts", minSimilarity: 0.5, wantAccepted: true},
+		{name: "floor at the score accepts", minSimilarity: 0.7071068, wantAccepted: true},
+		{name: "floor above the score rejects", minSimilarity: 0.9, wantAccepted: false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			classifier := NewSemanticClassifier(context.Background(), bifrost.NewDefaultLogger(schemas.LogLevelError))
+			t.Cleanup(func() {
+				require.NoError(t, classifier.Close())
+			})
+			classifier.SetEmbeddingFunc(testSemanticEmbedding)
+			config := testSemanticClassifierConfig(configstore.ComplexitySemanticVectorStoreEmbedded)
+			config.Semantic.MinSimilarity = test.minSimilarity
+			classifier.Configure(&config)
+
+			require.Eventually(t, func() bool {
+				return classifier.Status().State == SemanticStatusReady
+			}, time.Second, 10*time.Millisecond, "semantic classifier did not finish warmup")
+
+			result, err := classifier.Classify(context.Background(), "borderline request")
+			require.NoError(t, err)
+			require.NotNil(t, result, "a rejected match must still be reported so callers can log the near miss")
+			assert.Equal(t, test.wantAccepted, result.Accepted)
+			assert.Equal(t, test.minSimilarity, result.MinSimilarity)
+			assert.InDelta(t, 0.7071068, result.Score, 0.001)
+			assert.True(t, isComplexityTier(result.Tier))
+		})
+	}
+}
+
 // TestSemanticClassifierRejectsUnavailableExternalStore keeps the external
 // mode fail-closed rather than silently replacing an operator-selected backend.
 func TestSemanticClassifierRejectsUnavailableExternalStore(t *testing.T) {
@@ -645,6 +686,10 @@ func testSemanticEmbedding(_ context.Context, _ *SemanticConfig, text string) ([
 		return []float32{0, 1}, nil
 	case "complex exemplar", "complex request":
 		return []float32{-1, 0}, nil
+	case "borderline request":
+		// Equidistant from the simple and medium exemplars: cosine ~0.707 to
+		// both, which is a real match but a weak one.
+		return []float32{0.7071068, 0.7071068}, nil
 	default:
 		return nil, fmt.Errorf("unexpected semantic test text %q", text)
 	}
