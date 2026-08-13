@@ -856,7 +856,7 @@ export const governanceApi = baseApi.injectEndpoints({
 		// Complexity Analyzer Config
 		getComplexityAnalyzerConfig: builder.query<AnalyzerConfig, void>({
 			query: () => ({
-				url: "/governance/complexity-analyzer-config",
+				url: "/routing/complexity-analyzer-config",
 				method: "GET",
 			}),
 			providesTags: ["ComplexityAnalyzerConfig"],
@@ -864,7 +864,7 @@ export const governanceApi = baseApi.injectEndpoints({
 
 		updateComplexityAnalyzerConfig: builder.mutation<AnalyzerConfig, AnalyzerConfig>({
 			query: (data) => ({
-				url: "/governance/complexity-analyzer-config",
+				url: "/routing/complexity-analyzer-config",
 				method: "PUT",
 				body: data,
 			}),
@@ -873,7 +873,7 @@ export const governanceApi = baseApi.injectEndpoints({
 
 		resetComplexityAnalyzerConfig: builder.mutation<AnalyzerConfig, void>({
 			query: () => ({
-				url: "/governance/complexity-analyzer-config/reset",
+				url: "/routing/complexity-analyzer-config/reset",
 				method: "POST",
 			}),
 			invalidatesTags: ["ComplexityAnalyzerConfig"],
