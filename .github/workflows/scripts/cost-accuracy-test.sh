@@ -118,7 +118,13 @@ start_postgres() {
   container="$(docker_compose -p "${COMPOSE_PROJECT}" -f "${COMPOSE_FILE}" ps -q postgres)"
   local pg_ready=0
   for _ in $(seq 1 60); do
-    if docker exec "${container}" pg_isready -U "${POSTGRES_USER}" -d bifrost >/dev/null 2>&1; then
+    # -h forces a TCP check instead of the default Unix socket: on a fresh
+    # volume, Postgres runs a temporary init server that only listens on the
+    # socket (listen_addresses=''), so a socket-based check can report ready
+    # against that server right as it shuts down, killing the next
+    # connection with "terminating connection due to administrator command".
+    # TCP only comes up once the real server starts.
+    if docker exec "${container}" pg_isready -h 127.0.0.1 -U "${POSTGRES_USER}" -d bifrost >/dev/null 2>&1; then
       log "Postgres is ready"
       pg_ready=1
       break
