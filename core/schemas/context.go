@@ -25,6 +25,7 @@ var reservedKeys = []any{
 	BifrostContextKeySkipKeySelection,
 	BifrostContextKeyPassthroughHeaders,
 	BifrostContextKeySkipBudgetAndRateLimits,
+	BifrostContextKeySkipProviderCheck,
 	BifrostContextKeyURLPath,
 	BifrostContextKeyDeferTraceCompletion,
 	BifrostContextKeyAttemptTrail,
