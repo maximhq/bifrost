@@ -217,6 +217,13 @@ bifrost:
   logStyle: json
   # envLabel: staging  # Short label (max 10 chars) shown in the UI sidebar to identify the environment
 
+  # Operator-provisioned bootstrap secret required to create the very first admin account
+  # when none exists yet. Identical across every node so any node can authorize first-admin
+  # creation. Never persisted or logged. Also read from the BIFROST_SETUP_TOKEN env var.
+  # Whitespace-only values are rejected. Use env.<ENV_VAR_NAME> or vault.<path> for indirection.
+  # Renders into config.json `setup_token`.
+  # setupToken: "env.BIFROST_SETUP_TOKEN"
+
   # Schema location written to config.json $schema and exported as BIFROST_SCHEMA_URL.
   # Leave empty to use the default (https://www.getbifrost.ai/schema); set it only for
   # isolated deployments that mirror the schema internally. When empty, the env var is
@@ -341,6 +348,13 @@ bifrost:
   # Server configuration
   server:
     readBufferSize: 65536 # Read buffer size in bytes for reading HTTP headers (default: 64 KiB)
+    # Hostnames, IPs, or CIDR ranges that custom plugin (.so) downloads may reach even when they
+    # resolve to a private/loopback/link-local/CGNAT address (blocked by default to prevent SSRF).
+    # Deploy-time only — read at startup, never settable via the plugin admin API.
+    # Renders into config.json `server.plugin_download_private_allowlist`.
+    # pluginDownloadPrivateAllowlist:
+    #   - "artifacts.internal.corp"
+    #   - "10.0.0.0/8"
 
   # Framework configuration
   framework:
@@ -391,6 +405,7 @@ bifrost:
     #     keep_alive_timeout_in_seconds: 30             # Idle keep-alive for pooled connections; set below the upstream's keep-alive (default: 30)
     #     max_conns_per_host: 5000                      # Max TCP connections per host (default: 5000)
     #     enforce_http2: false                           # Force HTTP/2 on provider connections (e.g. Bedrock)
+    #     http2_ping_interval_in_seconds: 0              # Idle seconds before a client-initiated HTTP/2 keepalive PING (0 = disabled; only when enforce_http2). Max 3600.
     #     insecure_skip_verify: false                   # Disable TLS certificate verification (last resort)
     #     ca_cert_pem: ""                               # PEM-encoded CA cert for self-signed/private CA
     #     allow_private_network: false                  # Allow connections to RFC 1918 private IPs (k8s pod network, LAN, VPC)
@@ -452,6 +467,14 @@ bifrost:
   #         secret_key: "env.AWS_SECRET_ACCESS_KEY"
   #         # batch_role_arn: ""  # Optional: service role Bedrock assumes for batch S3 access; takes priority over role_arn sent in the request (can use env. prefix)
   #         project_id: ""  # Optional: Bedrock project ID scoping inference and model listing (can use env. prefix)
+  #         # Optional: route through interface VPC endpoints (AWS PrivateLink) instead of the public regional hosts.
+  #         # Use each endpoint's DNS name from the VPC console, not its ID. Region above still sets the SigV4 scope.
+  #         # endpoints:
+  #         #   runtime: "vpce-0abc123-x1y2z3.bedrock-runtime.us-east-1.vpce.amazonaws.com"        # All inference
+  #         #   control_plane: "vpce-0abc123-x1y2z3.bedrock.us-east-1.vpce.amazonaws.com"          # Model listing, batch jobs
+  #         #   mantle: "vpce-0abc123-x1y2z3.bedrock-mantle.us-east-1.vpce.amazonaws.com"          # Mantle-routed models
+  #         #   agent_runtime: "vpce-0abc123-x1y2z3.bedrock-agent-runtime.us-east-1.vpce.amazonaws.com"  # Rerank
+  #         #   s3: "bucket.vpce-0abc123-x1y2z3.s3.us-east-1.vpce.amazonaws.com"                   # Batch file I/O; needs the bucket. prefix
   #
   # # AWS Bedrock Mantle example (requires bedrock_mantle_key_config)
   # bedrock_mantle:
@@ -468,6 +491,9 @@ bifrost:
   #         # role_arn: ""                          # For AssumeRole
   #         # external_id: ""
   #         # session_name: ""
+  #         # Optional: route through an interface VPC endpoint (AWS PrivateLink) instead of the public regional host.
+  #         # endpoints:
+  #         #   mantle: "vpce-0abc123-x1y2z3.bedrock-mantle.us-east-1.vpce.amazonaws.com"
 
   # Provider secrets - use existing Kubernetes secrets for provider API keys
   # These will be injected as environment variables that can be referenced in providers config
@@ -515,14 +541,44 @@ bifrost:
       # - name: "example-oauth-mcp"
       #   connectionType: "http"
       #   connectionString: "https://my-mcp.corp/mcp"
-      #   # authType "oauth": shared OAuth token; provide oauthConfigId referencing an existing oauth_config.
-      #   # authType "per_user_oauth": each user authenticates individually via OAuth flow;
-      #   #   oauth_config is registered via the API (POST /api/mcp/clients), not configured here.
+      #   # authType "oauth": shared inline OAuth. authType "per_user_oauth": each user authenticates
+      #   # individually. In both cases the client boots into `pending_verification`; an admin runs the
+      #   # verification flow once from the MCP Gateway UI. (oauth_config_id is minted by that flow and
+      #   # is Bifrost-managed — it cannot be set here and is ignored if supplied via config.json.)
       #   authType: "oauth"
-      #   oauthConfigId: "my-oauth-config-id"   # ID of the OAuth config created in Bifrost
+      #   # Inline OAuth provider config. All fields optional — omitted URLs are discovered from the
+      #   # connection_string (RFC 8414) and a missing clientId triggers dynamic client registration
+      #   # (RFC 7591) at admin-click time. Omit the whole block to rely entirely on discovery.
+      #   # Omit any field to have it discovered/registered during admin verification.
+      #   # Leaving every field blank is the same as omitting oauthConfig entirely (full discovery);
+      #   # blank/empty values are dropped, not written as an empty oauth_config block.
+      #   oauthConfig:
+      #     clientId: "env.MY_MCP_OAUTH_CLIENT_ID"       # optional (can use env./vault. prefix)
+      #     clientSecret: "env.MY_MCP_OAUTH_CLIENT_SECRET"  # optional (omit for PKCE/DCR public clients)
+      #     # authorizeUrl: "https://idp.corp/oauth2/authorize"   # optional — discovered when omitted
+      #     # tokenUrl: "https://idp.corp/oauth2/token"           # optional — discovered when omitted
+      #     # registrationUrl: "https://idp.corp/oauth2/register" # optional — discovered when omitted
+      #     # scopes: ["read", "write"]                           # optional — OAuth scopes to request
+      #   # Only meaningful for connectionType "http": true keeps one persistent connection reused
+      #   # across every caller; false (default for new clients) connects fresh per call.
+      #   needsSessionStickiness: false
       #   # When true, this MCP server is accessible to all virtual keys without explicit per-key assignment.
       #   # If a virtual key has an explicit MCP config for this server, that config takes precedence.
       #   allowOnAllVirtualKeys: false
+      #
+      # - name: "example-token-exchange-mcp"
+      #   connectionType: "http"
+      #   connectionString: "https://my-mcp.corp/mcp"
+      #   # authType "token_exchange" (Enterprise builds only): each caller's IdP token is exchanged at
+      #   # runtime for a short-lived token scoped to this server's audience. Requires user-identity auth.
+      #   authType: "token_exchange"
+      #   tokenExchange:
+      #     audience: "api://jira-mcp"                   # required — resource the exchanged token is scoped to
+      #     useIdpCredentials: false                     # true = exchange as the SSO login app (ignores clientId/secret)
+      #     clientId: "env.MY_EXCHANGE_CLIENT_ID"        # required unless useIdpCredentials is true (env./vault. prefix)
+      #     clientSecret: "env.MY_EXCHANGE_CLIENT_SECRET"  # omit for public clients
+      #     authorizationServerUrl: ""                   # optional — override exchange endpoint (e.g. Okta custom AS)
+      #     scopes: []                                   # optional; include 'offline_access' for refresh tokens
     # toolSyncInterval: "10m"   # Global tool sync interval (Go duration string, e.g. "10m", "1h", "0s")
     # Assign groups of MCP tools to virtual keys / access profiles.
     # toolGroups:
@@ -612,6 +668,7 @@ bifrost:
         # Multi-profile shape (use profiles OR the flat single-profile fields below, not both):
         # profiles:
         #   - service_name: "bifrost"
+        #     traces_enabled: true    # Set false for a metrics-only profile (collector_url not required)
         #     collector_url: ""       # e.g., http://otel-collector:4318 (HTTP) or otel-collector:4317 (gRPC)
         #     trace_type: "genai_extension" # genai_extension | vercel | open_inference
         #     protocol: "grpc"        # http | grpc
@@ -619,7 +676,9 @@ bifrost:
         #     metrics_enabled: false
         #     metrics_endpoint: ""    # e.g., http://otel-collector:4318/v1/metrics (HTTP) or otel-collector:4317 (gRPC)
         #     metrics_push_interval: 15 # Push interval in seconds (1-300)
-        #     headers: {}
+        #     headers: {}             # Sent to both endpoints (supports env.VAR_NAME prefix)
+        #     trace_headers: {}       # Sent only to the trace endpoint, on top of headers (same key overrides)
+        #     metrics_headers: {}     # Sent only to the metrics endpoint, on top of headers (e.g. a Databricks table name)
         #     tls_ca_cert: ""         # Path to TLS CA certificate file
         #     insecure: true          # Skip TLS verification (ignored if tls_ca_cert is set)
         #     disable_content_logging: false
@@ -629,6 +688,8 @@ bifrost:
         #
         # Single-profile shape:
         service_name: "bifrost"
+        # Set false for a metrics-only profile (collector_url not required)
+        # traces_enabled: true
         collector_url: "" # e.g., http://otel-collector:4318 (HTTP) or otel-collector:4317 (gRPC)
         trace_type: "genai_extension" # genai_extension | vercel | open_inference
         protocol: "grpc" # http | grpc
@@ -640,8 +701,12 @@ bifrost:
         metrics_enabled: false
         metrics_endpoint: "" # e.g., http://otel-collector:4318/v1/metrics (HTTP) or otel-collector:4317 (gRPC)
         metrics_push_interval: 15 # Push interval in seconds (1-300)
-        # Custom headers for the collector (supports env.VAR_NAME prefix)
+        # Custom headers sent to both the trace and metrics endpoints (supports env.VAR_NAME prefix)
         headers: {}
+        # Extra headers sent only to the trace endpoint, on top of headers (same key overrides)
+        # trace_headers: {}
+        # Extra headers sent only to the metrics endpoint, on top of headers (e.g. a Databricks table name)
+        # metrics_headers: {}
         # TLS configuration
         tls_ca_cert: "" # Path to TLS CA certificate file
         # insecure: false # Skip TLS verification (ignored if tls_ca_cert is set)
@@ -658,7 +723,7 @@ bifrost:
       enabled: false
       version: 1
       config:
-        service_name: "bifrost"
+        service_name: "bifrost"  # Service name reported to Datadog (supports env.VAR_NAME)
         # Datadog Agent address. Supports env.VAR_NAME references — e.g. set
         # agent_addr: "env.DD_AGENT_ADDR" and inject DD_AGENT_ADDR via the
         # top-level `env:` (e.g. from status.hostIP for a node-local agent DaemonSet).
@@ -672,11 +737,11 @@ bifrost:
         # agent_port: "8126"
         # dogstatsd_host: "env.DD_AGENT_HOST"
         # dogstatsd_port: "8125"
-        env: ""
-        version: ""
+        env: ""                     # Environment tag, e.g. production (supports env.VAR_NAME)
+        version: ""                 # Service version tag (supports env.VAR_NAME)
         custom_tags: {}
         enable_traces: true
-        # ml_app: ""                  # ML app name for LLM Observability (defaults to service_name)
+        # ml_app: ""                  # ML app name for LLM Observability (defaults to service_name, supports env.VAR_NAME)
         # enable_metrics: true
         # enable_llm_obs: true
         # group_traces_by_session: false  # Group requests sharing x-bf-session-id into one APM trace (agent mode only)
@@ -760,8 +825,11 @@ bifrost:
     budgets: []
       # - id: "budget-1"
       #   max_limit: 100
-      #   reset_duration: "1M"     # Supports: 30s, 5m, 1h, 1d, 1w, 1M, 1Y
+      #   reset_duration: "1M"     # Supports: 30s, 5m, 1h, 1d, 1w, 1M, 1Q, 1Y
       #   calendar_aligned: false  # Snap reset to calendar boundaries (e.g. 1M resets on the 1st)
+      #   # reset_config only applies to quarterly ("1Q") budgets:
+      #   reset_config:
+      #     quarter_start_month: 4  # First month of Q1 as 1-12 (e.g. 4 = fiscal year starting April). 0/omitted = January.
     rateLimits: []
       # - id: "rate-limit-1"
       #   token_max_limit: 100000
@@ -1112,7 +1180,8 @@ bifrost:
       #   name: "Block PII"
       #   description: "Block requests containing PII"
       #   enabled: true
-      #   cel_expression: "!contains(request.body, 'SSN')"
+      #   target: "llm"     # "llm" (default) | "mcp"
+      #   cel_expression: "true"
       #   apply_to: "input"
       #   sampling_rate: 100
       #   timeout: 60        # Timeout in seconds for rule execution (default: 60)

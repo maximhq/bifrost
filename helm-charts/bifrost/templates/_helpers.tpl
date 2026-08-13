@@ -211,6 +211,9 @@ false
 {{- if .Values.bifrost.envLabel }}
 {{- $_ := set $config "env_label" .Values.bifrost.envLabel }}
 {{- end }}
+{{- if .Values.bifrost.setupToken }}
+{{- $_ := set $config "setup_token" .Values.bifrost.setupToken }}
+{{- end }}
 {{- if .Values.bifrost.client }}
 {{- $client := dict }}
 {{- if hasKey .Values.bifrost.client "dropExcessRequests" }}
@@ -360,6 +363,9 @@ false
 {{- if .Values.bifrost.server.readBufferSize }}
 {{- $_ := set $server "read_buffer_size" .Values.bifrost.server.readBufferSize }}
 {{- end }}
+{{- if .Values.bifrost.server.pluginDownloadPrivateAllowlist }}
+{{- $_ := set $server "plugin_download_private_allowlist" .Values.bifrost.server.pluginDownloadPrivateAllowlist }}
+{{- end }}
 {{- if $server }}
 {{- $_ := set $config "server" $server }}
 {{- end }}
@@ -443,6 +449,9 @@ false
 {{- end }}
 {{- if hasKey $providerConfig.network_config "enforce_http2" }}
 {{- $_ := set $networkConfig "enforce_http2" $providerConfig.network_config.enforce_http2 }}
+{{- end }}
+{{- if hasKey $providerConfig.network_config "http2_ping_interval_in_seconds" }}
+{{- $_ := set $networkConfig "http2_ping_interval_in_seconds" $providerConfig.network_config.http2_ping_interval_in_seconds }}
 {{- end }}
 {{- if $providerConfig.network_config.beta_header_overrides }}
 {{- $_ := set $networkConfig "beta_header_overrides" $providerConfig.network_config.beta_header_overrides }}
@@ -734,6 +743,7 @@ false
 {{- range .Values.bifrost.guardrails.rules }}
 {{- $rule := dict "id" .id "name" .name "enabled" .enabled "cel_expression" .cel_expression "apply_to" .apply_to }}
 {{- if .description }}{{- $_ := set $rule "description" .description }}{{- end }}
+{{- if hasKey . "target" }}{{- $_ := set $rule "target" .target }}{{- end }}
 {{- if hasKey . "query" }}{{- $_ := set $rule "query" .query }}{{- end }}
 {{- if .sampling_rate }}{{- $_ := set $rule "sampling_rate" .sampling_rate }}{{- end }}
 {{- if .timeout }}{{- $_ := set $rule "timeout" .timeout }}{{- end }}
@@ -1171,13 +1181,36 @@ false
 {{- else if hasKey $client "authType" }}
 {{- $_ := set $cc "auth_type" $client.authType }}
 {{- end }}
-{{- if hasKey $client "oauth_config_id" }}
-{{- $_ := set $cc "oauth_config_id" $client.oauth_config_id }}
-{{- else if hasKey $client "oauthConfigId" }}
-{{- $_ := set $cc "oauth_config_id" $client.oauthConfigId }}
+{{- /* Inline OAuth provider config for auth_type "oauth"/"per_user_oauth". oauth_config_id is Bifrost-managed (minted by the admin verification flow) and is ignored when supplied via config.json, so it is not rendered here. */ -}}
+{{- if $client.oauthConfig }}
+{{- $oauthCfg := dict }}
+{{- with $client.oauthConfig.clientId }}{{- $_ := set $oauthCfg "client_id" . }}{{- end }}
+{{- with $client.oauthConfig.clientSecret }}{{- $_ := set $oauthCfg "client_secret" . }}{{- end }}
+{{- with $client.oauthConfig.authorizeUrl }}{{- $_ := set $oauthCfg "authorize_url" . }}{{- end }}
+{{- with $client.oauthConfig.tokenUrl }}{{- $_ := set $oauthCfg "token_url" . }}{{- end }}
+{{- with $client.oauthConfig.registrationUrl }}{{- $_ := set $oauthCfg "registration_url" . }}{{- end }}
+{{- with $client.oauthConfig.scopes }}{{- $_ := set $oauthCfg "scopes" . }}{{- end }}
+{{- /* Only emit oauth_config when at least one field resolved; an all-empty block would render "oauth_config": {} instead of relying on discovery. */ -}}
+{{- if $oauthCfg }}
+{{- $_ := set $cc "oauth_config" $oauthCfg }}
+{{- end }}
+{{- end }}
+{{- /* Delegated token-exchange config for auth_type "token_exchange" (Enterprise builds only). */ -}}
+{{- if $client.tokenExchange }}
+{{- $te := dict }}
+{{- with $client.tokenExchange.audience }}{{- $_ := set $te "audience" . }}{{- end }}
+{{- if hasKey $client.tokenExchange "useIdpCredentials" }}{{- $_ := set $te "use_idp_credentials" $client.tokenExchange.useIdpCredentials }}{{- end }}
+{{- with $client.tokenExchange.clientId }}{{- $_ := set $te "client_id" . }}{{- end }}
+{{- with $client.tokenExchange.clientSecret }}{{- $_ := set $te "client_secret" . }}{{- end }}
+{{- with $client.tokenExchange.authorizationServerUrl }}{{- $_ := set $te "authorization_server_url" . }}{{- end }}
+{{- with $client.tokenExchange.scopes }}{{- $_ := set $te "scopes" . }}{{- end }}
+{{- $_ := set $cc "token_exchange" $te }}
 {{- end }}
 {{- if hasKey $client "isPingAvailable" }}
 {{- $_ := set $cc "is_ping_available" $client.isPingAvailable }}
+{{- end }}
+{{- if hasKey $client "needsSessionStickiness" }}
+{{- $_ := set $cc "needs_session_stickiness" $client.needsSessionStickiness }}
 {{- end }}
 {{- if $client.clientId }}
 {{- $_ := set $cc "client_id" $client.clientId }}
@@ -1371,6 +1404,9 @@ false
 {{- if $inputConfig.service_name }}
 {{- $_ := set $otelConfig "service_name" $inputConfig.service_name }}
 {{- end }}
+{{- if hasKey $inputConfig "traces_enabled" }}
+{{- $_ := set $otelConfig "traces_enabled" $inputConfig.traces_enabled }}
+{{- end }}
 {{- if $inputConfig.collector_url }}
 {{- $_ := set $otelConfig "collector_url" $inputConfig.collector_url }}
 {{- end }}
@@ -1394,6 +1430,12 @@ false
 {{- end }}
 {{- if $inputConfig.headers }}
 {{- $_ := set $otelConfig "headers" $inputConfig.headers }}
+{{- end }}
+{{- if $inputConfig.trace_headers }}
+{{- $_ := set $otelConfig "trace_headers" $inputConfig.trace_headers }}
+{{- end }}
+{{- if $inputConfig.metrics_headers }}
+{{- $_ := set $otelConfig "metrics_headers" $inputConfig.metrics_headers }}
 {{- end }}
 {{- if $inputConfig.tls_ca_cert }}
 {{- $_ := set $otelConfig "tls_ca_cert" $inputConfig.tls_ca_cert }}
@@ -1891,13 +1933,19 @@ Call this template at the beginning of deployment/stateful templates
 {{- $profileEnabled = $profile.enabled }}
 {{- end }}
 {{- if $profileEnabled }}
+{{- $tracesEnabled := true }}
+{{- if hasKey $profile "traces_enabled" }}
+{{- $tracesEnabled = $profile.traces_enabled }}
+{{- end }}
+{{- if $tracesEnabled }}
 {{- if not $profile.collector_url }}
-{{- fail (printf "ERROR: bifrost.plugins.otel.config.profiles[%d].collector_url is required for enabled OTEL profiles." $idx) }}
+{{- fail (printf "ERROR: bifrost.plugins.otel.config.profiles[%d].collector_url is required when traces_enabled is true." $idx) }}
 {{- end }}
 {{- if not $profile.trace_type }}
-{{- fail (printf "ERROR: bifrost.plugins.otel.config.profiles[%d].trace_type is required. Supported values: genai_extension, vercel, open_inference" $idx) }}
+{{- fail (printf "ERROR: bifrost.plugins.otel.config.profiles[%d].trace_type is required when traces_enabled is true. Supported values: genai_extension, vercel, open_inference" $idx) }}
 {{- end }}
-{{- if not $profile.protocol }}
+{{- end }}
+{{- if and (or $tracesEnabled $profile.metrics_enabled) (not $profile.protocol) }}
 {{- fail (printf "ERROR: bifrost.plugins.otel.config.profiles[%d].protocol is required. Supported values: http, grpc" $idx) }}
 {{- end }}
 {{- if and $profile.metrics_enabled (not $profile.metrics_endpoint) }}
@@ -1906,14 +1954,20 @@ Call this template at the beginning of deployment/stateful templates
 {{- end }}
 {{- end }}
 {{- else }}
+{{- $tracesEnabled := true }}
+{{- if hasKey $otelInputConfig "traces_enabled" }}
+{{- $tracesEnabled = $otelInputConfig.traces_enabled }}
+{{- end }}
+{{- if $tracesEnabled }}
 {{- if not $otelInputConfig.collector_url }}
-{{- fail "ERROR: bifrost.plugins.otel.config.collector_url is required when OTEL plugin is enabled. Provide the URL of your OpenTelemetry collector." }}
+{{- fail "ERROR: bifrost.plugins.otel.config.collector_url is required when traces_enabled is true. Provide the URL of your OpenTelemetry collector." }}
 {{- end }}
 {{- if not $otelInputConfig.trace_type }}
-{{- fail "ERROR: bifrost.plugins.otel.config.trace_type is required when OTEL plugin is enabled. Supported values: genai_extension, vercel, open_inference" }}
+{{- fail "ERROR: bifrost.plugins.otel.config.trace_type is required when traces_enabled is true. Supported values: genai_extension, vercel, open_inference" }}
 {{- end }}
-{{- if not $otelInputConfig.protocol }}
-{{- fail "ERROR: bifrost.plugins.otel.config.protocol is required when OTEL plugin is enabled. Supported values: http, grpc" }}
+{{- end }}
+{{- if and (or $tracesEnabled $otelInputConfig.metrics_enabled) (not $otelInputConfig.protocol) }}
+{{- fail "ERROR: bifrost.plugins.otel.config.protocol is required. Supported values: http, grpc" }}
 {{- end }}
 {{- if and $otelInputConfig.metrics_enabled (not $otelInputConfig.metrics_endpoint) }}
 {{- fail "ERROR: bifrost.plugins.otel.config.metrics_endpoint is required when metrics_enabled is true." }}

@@ -303,6 +303,10 @@
           "description": "Short label (max 10 characters) displayed in the management UI sidebar to identify the environment (e.g. \"staging\", \"prod\"). Written into config.json as env_label.",
           "maxLength": 10
         },
+        "setupToken": {
+          "type": "string",
+          "description": "Operator-provisioned bootstrap secret required to create the very first admin account when none exists yet. Identical across every node so any node can authorize first-admin creation. Never persisted or logged; also read from the BIFROST_SETUP_TOKEN env var. Supports env.<ENV_VAR_NAME> and vault.<path> references. Renders into config.json setup_token."
+        },
         "schemaUrl": {
           "type": "string",
           "default": "",
@@ -618,6 +622,14 @@
               "type": "integer",
               "description": "Read buffer size in bytes. This controls the size of the buffer used for reading HTTP headers.",
               "default": 65536
+            },
+            "pluginDownloadPrivateAllowlist": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "description": "Hostnames, IP addresses, or CIDR ranges that custom plugin (.so) downloads are allowed to reach even when they resolve to a private/loopback/link-local/CGNAT address (blocked by default to prevent SSRF). Deploy-time only. Renders into server.plugin_download_private_allowlist."
             }
           },
           "additionalProperties": false
@@ -1059,11 +1071,12 @@
                   "type": "object",
                   "properties": {
                     "service_name": {
-                      "type": "string"
+                      "type": "string",
+                      "description": "Name of the service to report to Datadog. Supports env.VAR_NAME prefix for environment variable substitution (e.g. env.BIFROST_DD_SERVICE)"
                     },
                     "ml_app": {
                       "type": "string",
-                      "description": "ML application name for Datadog LLM Observability grouping (defaults to service_name)"
+                      "description": "ML application name for Datadog LLM Observability grouping (defaults to service_name). Supports env.VAR_NAME prefix for environment variable substitution (e.g. env.BIFROST_DD_ML_APP)"
                     },
                     "agent_addr": {
                       "type": "string",
@@ -1090,10 +1103,12 @@
                       "description": "DogStatsD server port for metrics, used with dogstatsd_host (agent mode only). Supports env.VAR_NAME prefix. Defaults to 8125; has no effect when dogstatsd_host is unset"
                     },
                     "env": {
-                      "type": "string"
+                      "type": "string",
+                      "description": "Environment tag (e.g. production, staging). Supports env.VAR_NAME prefix for environment variable substitution (e.g. env.BIFROST_DD_ENV)"
                     },
                     "version": {
-                      "type": "string"
+                      "type": "string",
+                      "description": "Service version tag. Supports env.VAR_NAME prefix for environment variable substitution (e.g. env.BIFROST_DD_VERSION)"
                     },
                     "custom_tags": {
                       "type": "object",
@@ -1498,6 +1513,19 @@
                     "type": "boolean",
                     "description": "Snap budget reset windows to calendar boundaries",
                     "default": false
+                  },
+                  "reset_config": {
+                    "type": "object",
+                    "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (\"1Q\").",
+                    "properties": {
+                      "quarter_start_month": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 12,
+                        "description": "First month of Q1 as 1-12 (e.g. 4 = fiscal year starting April). Omitted or 0 means January."
+                      }
+                    },
+                    "additionalProperties": false
                   },
                   "current_usage": {
                     "type": "number"
@@ -2899,6 +2927,12 @@
                   "enabled": {
                     "type": "boolean",
                     "description": "Whether this rule is enabled"
+                  },
+                  "target": {
+                    "type": "string",
+                    "enum": ["llm", "mcp"],
+                    "default": "llm",
+                    "description": "Execution target for the rule. Omitted values default to LLM guardrails."
                   },
                   "cel_expression": {
                     "type": "string",
@@ -4898,6 +4932,11 @@
           "description": "Whether this profile exports traces and metrics",
           "default": true
         },
+        "traces_enabled": {
+          "type": "boolean",
+          "description": "Enable trace export for this profile. When false, no traces are sent and collector_url is not required, giving a metrics-only profile (pair with metrics_enabled).",
+          "default": true
+        },
         "service_name": {
           "type": "string",
           "description": "Service name to be used for tracing",
@@ -4945,7 +4984,21 @@
           "additionalProperties": {
             "type": "string"
           },
-          "description": "Custom headers for the collector (supports env.VAR_NAME prefix)"
+          "description": "Custom headers sent to both the trace and metrics endpoints (supports env.VAR_NAME prefix)"
+        },
+        "trace_headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Extra headers sent only to the trace endpoint, overlaid on headers (same key wins). Supports env.VAR_NAME prefix."
+        },
+        "metrics_headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Extra headers sent only to the metrics endpoint, overlaid on headers (same key wins). Useful when a collector requires a per-signal header, e.g. a Databricks table name. Supports env.VAR_NAME prefix."
         },
         "tls_ca_cert": {
           "type": "string",
@@ -4985,14 +5038,28 @@
       "allOf": [
         {
           "if": {
-            "not": {
-              "properties": {
-                "enabled": {
-                  "const": false
+            "allOf": [
+              {
+                "not": {
+                  "properties": {
+                    "enabled": {
+                      "const": false
+                    }
+                  },
+                  "required": ["enabled"]
                 }
               },
-              "required": ["enabled"]
-            }
+              {
+                "not": {
+                  "properties": {
+                    "traces_enabled": {
+                      "const": false
+                    }
+                  },
+                  "required": ["traces_enabled"]
+                }
+              }
+            ]
           },
           "then": {
             "required": ["collector_url", "trace_type", "protocol"]
@@ -5000,15 +5067,29 @@
         },
         {
           "if": {
-            "properties": {
-              "metrics_enabled": {
-                "const": true
+            "allOf": [
+              {
+                "not": {
+                  "properties": {
+                    "enabled": {
+                      "const": false
+                    }
+                  },
+                  "required": ["enabled"]
+                }
+              },
+              {
+                "properties": {
+                  "metrics_enabled": {
+                    "const": true
+                  }
+                },
+                "required": ["metrics_enabled"]
               }
-            },
-            "required": ["metrics_enabled"]
+            ]
           },
           "then": {
-            "required": ["metrics_endpoint"]
+            "required": ["metrics_endpoint", "protocol"]
           }
         }
       ],
@@ -5417,6 +5498,38 @@
                 }
               },
               "additionalProperties": false
+            },
+            "endpoints": {
+              "type": "object",
+              "description": "Interface VPC endpoint (AWS PrivateLink) hosts to dial instead of the public regional endpoints. Use the endpoint's DNS name from the VPC console, not the endpoint ID — AWS appends a random string that cannot be derived. Region is still required: it sets the SigV4 credential scope.",
+              "properties": {
+                "runtime": {
+                  "type": "string",
+                  "pattern": "\\.",
+                  "description": "Host for the bedrock-runtime service, which serves all inference (can use env. prefix)"
+                },
+                "control_plane": {
+                  "type": "string",
+                  "pattern": "\\.",
+                  "description": "Host for the bedrock service, which serves model listing and batch jobs (can use env. prefix)"
+                },
+                "mantle": {
+                  "type": "string",
+                  "pattern": "\\.",
+                  "description": "Host for the bedrock-mantle service, which serves mantle-routed models (can use env. prefix)"
+                },
+                "agent_runtime": {
+                  "type": "string",
+                  "pattern": "\\.",
+                  "description": "Host for the bedrock-agent-runtime service, which serves rerank (can use env. prefix)"
+                },
+                "s3": {
+                  "type": "string",
+                  "pattern": "\\.",
+                  "description": "Host for the s3 service, which serves batch file I/O. Must carry the literal \"bucket.\" prefix, since Bifrost prepends the bucket name to build the virtual-hosted URL. A Gateway endpoint needs no value here (can use env. prefix)"
+                }
+              },
+              "additionalProperties": false
             }
           },
           "required": ["region"],
@@ -5456,6 +5569,18 @@
             "project_id": {
               "type": "string",
               "description": "Bedrock project ID scoping the Mantle sub-surface (OpenAI-compatible gpt-*/Gemma routing) via the OpenAI-Project header. When empty, AWS routes to the account's default project. No effect on the Converse/bedrock-runtime paths (can use env. prefix)"
+            },
+            "endpoints": {
+              "type": "object",
+              "description": "Interface VPC endpoint (AWS PrivateLink) hosts to dial instead of the public regional endpoints. Use the endpoint's DNS name from the VPC console, not the endpoint ID — AWS appends a random string that cannot be derived. Region is still required: it sets the SigV4 credential scope.",
+              "properties": {
+                "mantle": {
+                  "type": "string",
+                  "pattern": "\\.",
+                  "description": "Host for the bedrock-mantle service (can use env. prefix)"
+                }
+              },
+              "additionalProperties": false
             }
           },
           "required": ["region"],
@@ -5853,12 +5978,82 @@
         },
         "authType": {
           "type": "string",
-          "enum": ["none", "headers", "oauth", "per_user_oauth", "per_user_headers"],
-          "description": "Authentication type for MCP connection"
+          "enum": ["none", "headers", "oauth", "per_user_oauth", "per_user_headers", "token_exchange"],
+          "description": "Authentication type for MCP connection. 'token_exchange' is only honored on Enterprise builds."
+        },
+        "oauthConfig": {
+          "type": "object",
+          "description": "Inline OAuth provider configuration for authType 'oauth' or 'per_user_oauth'. All fields are optional — omitted URLs are resolved via RFC 8414 discovery from the connection string and a missing clientId triggers RFC 7591 dynamic client registration at admin-verification time. Renders into oauth_config.",
+          "properties": {
+            "clientId": {
+              "type": "string",
+              "description": "OAuth client ID (optional — Dynamic Client Registration is used when omitted; can use env./vault. prefix). Renders into client_id."
+            },
+            "clientSecret": {
+              "type": "string",
+              "description": "OAuth client secret (optional — omit for PKCE public clients or DCR; can use env./vault. prefix). Renders into client_secret."
+            },
+            "authorizeUrl": {
+              "type": "string",
+              "description": "Provider authorize endpoint (optional — discovered when omitted). Renders into authorize_url."
+            },
+            "tokenUrl": {
+              "type": "string",
+              "description": "Provider token endpoint (optional — discovered when omitted). Renders into token_url."
+            },
+            "registrationUrl": {
+              "type": "string",
+              "description": "Dynamic Client Registration endpoint (optional — discovered when omitted). Renders into registration_url."
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "OAuth scopes to request."
+            }
+          },
+          "additionalProperties": false
+        },
+        "tokenExchange": {
+          "type": "object",
+          "description": "Delegated token-exchange configuration for authType 'token_exchange' (Enterprise builds only). Each caller's identity-provider token is exchanged at runtime for a short-lived token scoped to this server's audience. Renders into token_exchange.",
+          "properties": {
+            "audience": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Resource identifier the exchanged token is scoped to at the identity provider (e.g. 'api://jira-mcp'). Required."
+            },
+            "useIdpCredentials": {
+              "type": "boolean",
+              "description": "When true, performs the exchange as the SSO login application itself instead of clientId/clientSecret (which are then ignored). Renders into use_idp_credentials."
+            },
+            "clientId": {
+              "type": "string",
+              "description": "Identity-provider application authorized to perform exchanges for this audience. Required unless useIdpCredentials is true. Can use env./vault. prefix. Renders into client_id."
+            },
+            "clientSecret": {
+              "type": "string",
+              "description": "Secret for the exchange application; omit for public clients. Ignored when useIdpCredentials is true. Can use env./vault. prefix. Renders into client_secret."
+            },
+            "authorizationServerUrl": {
+              "type": "string",
+              "description": "Overrides where the exchange request is sent, for providers that bind an audience to a specific authorization server (e.g. Okta Custom Authorization Servers). Renders into authorization_server_url."
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Optional scopes to request on the exchanged token. Include 'offline_access' where supported so exchanges issue refresh tokens."
+            }
+          },
+          "required": ["audience"],
+          "additionalProperties": false
         },
         "oauthConfigId": {
           "type": "string",
-          "description": "OAuth config ID reference"
+          "description": "OAuth config ID reference. Bifrost-managed (minted by the admin verification flow); ignored when supplied via config.json. Prefer oauthConfig for inline OAuth setup."
         },
         "headers": {
           "type": "object",
@@ -5933,6 +6128,10 @@
         "isPingAvailable": {
           "type": "boolean",
           "description": "Whether the MCP server supports ping"
+        },
+        "needsSessionStickiness": {
+          "type": "boolean",
+          "description": "Only meaningful for connectionType 'http': true keeps one persistent connection reused across every caller; false (the default for new clients) connects fresh per call. SSE and STDIO always behave as sticky regardless. Renders into needs_session_stickiness."
         },
         "toolPricing": {
           "type": "object",
@@ -6356,6 +6555,38 @@
                         }
                       }
                     }
+                  },
+                  "endpoints": {
+                    "type": "object",
+                    "description": "Interface VPC endpoint (AWS PrivateLink) hosts to dial instead of the public regional endpoints. Use the endpoint's DNS name from the VPC console, not the endpoint ID — AWS appends a random string that cannot be derived. Region is still required: it sets the SigV4 credential scope.",
+                    "properties": {
+                      "runtime": {
+                        "type": "string",
+                        "pattern": "\\.",
+                        "description": "Host for the bedrock-runtime service, which serves all inference (can use env. prefix)"
+                      },
+                      "control_plane": {
+                        "type": "string",
+                        "pattern": "\\.",
+                        "description": "Host for the bedrock service, which serves model listing and batch jobs (can use env. prefix)"
+                      },
+                      "mantle": {
+                        "type": "string",
+                        "pattern": "\\.",
+                        "description": "Host for the bedrock-mantle service, which serves mantle-routed models (can use env. prefix)"
+                      },
+                      "agent_runtime": {
+                        "type": "string",
+                        "pattern": "\\.",
+                        "description": "Host for the bedrock-agent-runtime service, which serves rerank (can use env. prefix)"
+                      },
+                      "s3": {
+                        "type": "string",
+                        "pattern": "\\.",
+                        "description": "Host for the s3 service, which serves batch file I/O. Must carry the literal \"bucket.\" prefix, since Bifrost prepends the bucket name to build the virtual-hosted URL. A Gateway endpoint needs no value here (can use env. prefix)"
+                      }
+                    },
+                    "additionalProperties": false
                   }
                 },
                 "additionalProperties": false
