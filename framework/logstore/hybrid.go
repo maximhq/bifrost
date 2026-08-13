@@ -162,8 +162,8 @@ func (h *HybridLogStore) processUpload(work *uploadWork) {
 // for initial "processing" rows that have no input/output data yet. Skipping
 // uploads for empty payloads avoids wasted S3 PUTs.
 func isPayloadEmpty(payload map[string]string) bool {
-	for _, f := range payloadFields {
-		if payload[f] != "" {
+	for _, v := range payload {
+		if v != "" {
 			return false
 		}
 	}
