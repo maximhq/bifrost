@@ -283,15 +283,8 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_add_content_hidden_column"}, run: migrationAddContentHiddenColumn},
 	{IDs: []string{"logs_add_server_side_fallback_model_column"}, run: migrationAddServerSideFallbackModelColumn},
 	{IDs: []string{"logs_add_billing_fidelity_columns"}, run: migrationAddBillingFidelityColumns},
-	{IDs: []string{"logs_recreate_matviews_with_user_agent_column"}, run: migrationRecreateMatViewsWithUserAgentColumn},
 	{IDs: []string{"logs_add_user_agent_column"}, run: migrationAddUserAgentColumn},
 	{IDs: []string{"mcp_tool_logs_add_user_agent_column"}, run: migrationAddUserAgentColumnToMCPToolLogs},
-	// Both this step and the "logs_recreate_matviews_with_user_agent_column" step above
-	// intentionally run the same migrationRecreateMatViewsWithUserAgentColumn function: the
-	// function was renamed from migrationRecreateMatViewsWithAppColumn (see git history), and
-	// this second step ID reconciles local DBs that recorded one of the two step IDs before the
-	// rename. The function's own logic (CreateTable-if-not-exists) is idempotent, so running it
-	// twice on a fresh DB is harmless.
 	{IDs: []string{"logs_recreate_matviews_with_app_column"}, run: migrationRecreateMatViewsWithUserAgentColumn},
 	{IDs: []string{"mcp_tool_logs_add_endpoint_columns"}, run: migrationAddEndpointColumnsToMCPToolLogs},
 	{IDs: []string{"mcp_tool_logs_add_plugin_logs_column"}, run: migrationAddMCPPluginLogsColumn},
