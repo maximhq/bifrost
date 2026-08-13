@@ -17,6 +17,7 @@
 - **Video Request Info in Logs UI** - Video requests surface their details in the logs UI (#5946)
 - **Shell Rewriter Hook** - The UI handler exposes a `ShellRewriter` hook for pre-hydration HTML rewriting (#5807)
 - **Auth Skip Path** - Adds a context path letting trusted internal callers bypass auth resolution
+- - **Runware passthrough** - Adds `runware_passthrough` path for handling passthrough mode for Runware provider
 
 ## 🐞 Fixed
 
