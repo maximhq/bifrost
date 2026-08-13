@@ -847,7 +847,9 @@ func TestSchemaMCPClientConfigFields(t *testing.T) {
 		"is_code_mode_client",
 		"connection_string",
 		"auth_type",
-		"oauth_config_id",
+		// config.json declares OAuth inline via `oauth_config`; the
+		// `oauth_config_id` FK is assigned server-side and is not settable here.
+		"oauth_config",
 		"headers",
 		"tools_to_execute",
 		"tools_to_auto_execute",

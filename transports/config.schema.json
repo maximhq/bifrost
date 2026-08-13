@@ -5025,6 +5025,10 @@
                 "type": "string"
               },
               "description": "OAuth scopes to request"
+            },
+            "resource": {
+              "type": "string",
+              "description": "OAuth resource indicator, RFC 8707 (optional: discovered from the MCP server's protected resource metadata when omitted)"
             }
           },
           "additionalProperties": false
