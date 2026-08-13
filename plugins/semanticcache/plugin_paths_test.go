@@ -385,7 +385,6 @@ func TestPreLLMHook_EmitsPluginLogOnEmbeddingFailure(t *testing.T) {
 	if _, _, err := plugin.PreLLMHook(ctx, req); err != nil {
 		t.Fatalf("PreLLMHook failed: %v", err)
 	}
-
 	logs := ctx.GetPluginLogs()
 	if len(logs) == 0 {
 		t.Fatal("expected at least one plugin log entry on embedding failure, got none")
@@ -440,7 +439,6 @@ func TestPreLLMHook_NoDebugLogsOnFlow(t *testing.T) {
 	if _, _, err := plugin.PreLLMHook(ctx, req); err != nil {
 		t.Fatalf("PreLLMHook failed: %v", err)
 	}
-
 	logs := ctx.GetPluginLogs()
 	for _, l := range logs {
 		if l.PluginName != PluginName {
@@ -449,6 +447,41 @@ func TestPreLLMHook_NoDebugLogsOnFlow(t *testing.T) {
 		if l.Level == schemas.LogLevelDebug {
 			t.Fatalf("expected no Debug plugin logs on normal flow, got %+v", l)
 		}
+	}
+}
+
+// TestPreLLMHookStoresEmbeddingDebug verifies a successful semantic lookup remains billable if the main request later fails.
+func TestPreLLMHookStoresEmbeddingDebug(t *testing.T) {
+	plugin := newTestPlugin(t, newObservableStore())
+	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		return &schemas.BifrostEmbeddingResponse{
+			Data: []schemas.EmbeddingData{{
+				Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{0.1, 0.2, 0.3}},
+			}},
+			Usage: &schemas.BifrostLLMUsage{TotalTokens: 12},
+		}, nil
+	})
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: CreateBasicChatRequest("first request", 0.7, 50),
+	}
+	ctx := scopedTestContext(t, "")
+
+	if _, _, err := plugin.PreLLMHook(ctx, req); err != nil {
+		t.Fatalf("PreLLMHook failed: %v", err)
+	}
+	cacheDebug, ok := schemas.CacheDebugFromContext(ctx)
+	if !ok {
+		t.Fatal("expected semantic embedding debug on request context")
+	}
+	if cacheDebug.ProviderUsed == nil || *cacheDebug.ProviderUsed != string(plugin.config.Provider) {
+		t.Fatalf("cache debug provider = %v, want %q", cacheDebug.ProviderUsed, plugin.config.Provider)
+	}
+	if cacheDebug.ModelUsed == nil || *cacheDebug.ModelUsed != plugin.config.EmbeddingModel {
+		t.Fatalf("cache debug model = %v, want %q", cacheDebug.ModelUsed, plugin.config.EmbeddingModel)
+	}
+	if cacheDebug.InputTokens == nil || *cacheDebug.InputTokens != 12 {
+		t.Fatalf("cache debug input tokens = %v, want 12", cacheDebug.InputTokens)
 	}
 }
 

@@ -1712,6 +1712,148 @@ func TestCalculateCost_SemanticCacheHitNoEmbeddingInfo(t *testing.T) {
 	assert.Equal(t, 0.0, cost)
 }
 
+// TestCalculateCostAddsGuardrailJudgeCost verifies judge cost is additive to the main request.
+func TestCalculateCostAddsGuardrailJudgeCost(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o", "openai", "chat"): {
+			Model: "gpt-4o", Provider: "openai", Mode: "chat",
+			InputCostPerToken: bifrost.Ptr(0.000001), OutputCostPerToken: bifrost.Ptr(0.000002),
+		},
+		makeKey("claude-judge", "anthropic", "chat"): {
+			Model: "claude-judge", Provider: "anthropic", Mode: "chat",
+			InputCostPerToken: bifrost.Ptr(0.000003), OutputCostPerToken: bifrost.Ptr(0.000004),
+		},
+	})
+	resp := makeChatResponse(schemas.OpenAI, "gpt-4o", &schemas.BifrostLLMUsage{
+		PromptTokens:     100,
+		CompletionTokens: 50,
+		TotalTokens:      150,
+	})
+	resp.GetExtraFields().GuardrailDebug = &schemas.BifrostGuardrailDebug{
+		JudgeCalls: []schemas.BifrostGuardrailJudgeCall{{
+			JudgeProvider:    schemas.Anthropic,
+			JudgeModel:       "claude-judge",
+			PromptTokens:     20,
+			CompletionTokens: 5,
+			TotalTokens:      25,
+		}},
+	}
+
+	// Main: 100*0.000001 + 50*0.000002 = 0.0002.
+	// Judge: 20*0.000003 + 5*0.000004 = 0.00008.
+	assert.InDelta(t, 0.00028, s.CalculateCost(resp, nil), 1e-12)
+}
+
+// TestCalculateGuardrailCostPreservesUsageDetails verifies cache-aware judge pricing uses detailed usage.
+func TestCalculateGuardrailCostPreservesUsageDetails(t *testing.T) {
+	pricing := chatPricing(0.00001, 0)
+	pricing.Model = "gpt-judge"
+	pricing.Provider = "openai"
+	pricing.Mode = "chat"
+	pricing.CacheReadInputTokenCost = bifrost.Ptr(0.000001)
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-judge", "openai", "chat"): pricing,
+	})
+
+	cost := s.CalculateGuardrailCost(&schemas.BifrostGuardrailDebug{
+		JudgeCalls: []schemas.BifrostGuardrailJudgeCall{{
+			JudgeProvider: schemas.OpenAI,
+			JudgeModel:    "gpt-judge",
+			PromptTokens:  10,
+			PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+				CachedReadTokens: 8,
+			},
+			TotalTokens: 10,
+		}},
+	}, nil)
+
+	// Two uncached tokens at $10/M plus eight cached reads at $1/M.
+	assert.InDelta(t, 0.000028, cost, 1e-12)
+}
+
+// TestCalculateCostDirectCacheHitStillBillsGuardrail verifies cache hits do not hide judge spend.
+func TestCalculateCostDirectCacheHitStillBillsGuardrail(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o-mini", "openai", "chat"): {
+			Model: "gpt-4o-mini", Provider: "openai", Mode: "chat",
+			InputCostPerToken: bifrost.Ptr(0.000001), OutputCostPerToken: bifrost.Ptr(0.000002),
+		},
+	})
+	hitType := "direct"
+	resp := makeChatResponse(schemas.OpenAI, "cached-model", nil)
+	resp.GetExtraFields().CacheDebug = &schemas.BifrostCacheDebug{CacheHit: true, HitType: &hitType}
+	resp.GetExtraFields().GuardrailDebug = &schemas.BifrostGuardrailDebug{
+		JudgeCalls: []schemas.BifrostGuardrailJudgeCall{{
+			JudgeProvider:    schemas.OpenAI,
+			JudgeModel:       "gpt-4o-mini",
+			PromptTokens:     10,
+			CompletionTokens: 5,
+			TotalTokens:      15,
+		}},
+	}
+
+	assert.InDelta(t, 0.00002, s.CalculateCost(resp, nil), 1e-12)
+}
+
+// TestCalculateGuardrailCostUsesJudgeProviderWithoutCallerSelectedKey verifies
+// judge pricing retains virtual-key attribution while excluding the caller's
+// selected provider key from scoped override matching.
+func TestCalculateGuardrailCostUsesJudgeProviderWithoutCallerSelectedKey(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("claude-judge", "anthropic", "chat"): {
+			Model:              "claude-judge",
+			Provider:           "anthropic",
+			Mode:               "chat",
+			InputCostPerToken:  bifrost.Ptr(1.0),
+			OutputCostPerToken: bifrost.Ptr(0.0),
+		},
+	})
+
+	virtualKeyID := "vk-caller"
+	callerSelectedKeyID := "openai-key"
+	judgeProviderID := "anthropic"
+	require.NoError(t, s.SetOverrides([]configstoreTables.TablePricingOverride{
+		{
+			ID:               "judge-vk-provider",
+			ScopeKind:        string(ScopeKindVirtualKeyProvider),
+			VirtualKeyID:     &virtualKeyID,
+			ProviderID:       &judgeProviderID,
+			MatchType:        string(MatchTypeExact),
+			Pattern:          "claude-judge",
+			RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
+			PricingPatchJSON: `{"input_cost_per_token":3}`,
+		},
+		{
+			ID:               "caller-vk-provider-key",
+			ScopeKind:        string(ScopeKindVirtualKeyProviderKey),
+			VirtualKeyID:     &virtualKeyID,
+			ProviderID:       &judgeProviderID,
+			ProviderKeyID:    &callerSelectedKeyID,
+			MatchType:        string(MatchTypeExact),
+			Pattern:          "claude-judge",
+			RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
+			PricingPatchJSON: `{"input_cost_per_token":99}`,
+		},
+	}))
+
+	cost := s.CalculateGuardrailCost(&schemas.BifrostGuardrailDebug{
+		JudgeCalls: []schemas.BifrostGuardrailJudgeCall{{
+			JudgeProvider: schemas.Anthropic,
+			JudgeModel:    "claude-judge",
+			PromptTokens:  10,
+			TotalTokens:   10,
+		}},
+	}, &LookupScopes{
+		VirtualKeyID:  virtualKeyID,
+		SelectedKeyID: callerSelectedKeyID,
+		Provider:      "openai",
+	})
+
+	// The virtual-key + Anthropic override applies (10 * 3). Reusing the
+	// caller's selected key would instead select the 99/token override.
+	assert.InDelta(t, 30.0, cost, 1e-12)
+}
+
 // =========================================================================
 // 11. CalculateCost integration — end-to-end
 // =========================================================================
@@ -1737,6 +1879,100 @@ func TestCalculateCost_ProviderComputedCostPassthrough(t *testing.T) {
 
 	cost := s.CalculateCost(resp, nil)
 	assert.Equal(t, 0.99, cost)
+}
+
+// Image usage hangs off imageUsage, never input.usage, so it needs its own
+// provider-cost short circuit. xAI reports cost_in_usd_ticks, normalized into
+// Cost by the provider before billing sees it.
+func TestCalculateCost_ImageProviderComputedCostPassthrough(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("grok-imagine-image-quality", "xai", "image_generation"): {
+			Model: "grok-imagine-image-quality", Provider: "xai", Mode: "image_generation",
+			OutputCostPerImage: bifrost.Ptr(0.5), // deliberately unlike the reported cost
+		},
+	})
+
+	usage := &schemas.ImageUsage{CostInUsdTicks: bifrost.Ptr(int64(200000000))}
+	usage.NormalizeProviderCost()
+
+	resp := makeImageResponse(schemas.XAI, "grok-imagine-image-quality", usage)
+	resp.ImageGenerationResponse.Data = []schemas.ImageData{{URL: "https://imgen.x.ai/x.jpeg"}}
+
+	assert.Equal(t, 0.02, s.CalculateCost(resp, nil))
+}
+
+// Video/3D provider-reported cost hangs off VideoGenerationResponse.Usage.Cost. Runware reports an
+// exact per-task price (and 3D has no datasheet rate), so the reported cost must win verbatim.
+func TestCalculateCost_VideoProviderComputedCostPassthrough(t *testing.T) {
+	s := testStoreWithPricing(nil) // no datasheet entry on purpose — 3D has no rate
+
+	resp := &schemas.BifrostResponse{
+		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+			Usage: &schemas.VideoUsage{Cost: &schemas.BifrostCost{TotalCost: 0.5}},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.VideoGenerationRequest,
+				RoutingInfo: routingInfoFor(schemas.Runware, "tripo:v3.1@0"),
+			},
+		},
+	}
+
+	assert.Equal(t, 0.5, s.CalculateCost(resp, nil))
+}
+
+// Passthrough responses can carry a provider-reported cost (e.g. Runware's per-task cost read from
+// the raw body). It must win verbatim, with no datasheet entry required.
+func TestCalculateCost_PassthroughProviderComputedCost(t *testing.T) {
+	s := testStoreWithPricing(nil) // no datasheet entry — raw passthrough has no rate
+
+	resp := &schemas.BifrostResponse{
+		PassthroughResponse: &schemas.BifrostPassthroughResponse{
+			PassthroughUsage: &schemas.BifrostPassthroughUsage{Cost: &schemas.BifrostCost{TotalCost: 0.5}},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:     schemas.PassthroughRequest,
+				PassthroughPath: "/v1",
+				RoutingInfo:     routingInfoFor(schemas.Runware, "tripo:v3.1@0"),
+			},
+		},
+	}
+
+	assert.Equal(t, 0.5, s.CalculateCost(resp, nil))
+}
+
+// passthroughUsageToCostInput must not mutate the caller's usage when attaching a provider-reported
+// cost — the cost path is read-only (mirrors the DeepCopy invariant in extractCostInput). Without
+// the defensive copy, assigning Cost would write back onto the shared response's LLMUsage.
+func TestPassthroughUsageToCostInput_DoesNotMutateSourceUsage(t *testing.T) {
+	su := &schemas.BifrostPassthroughUsage{
+		LLMUsage: &schemas.BifrostLLMUsage{PromptTokens: 100},
+		Cost:     &schemas.BifrostCost{TotalCost: 0.5},
+	}
+
+	input := passthroughUsageToCostInput(su)
+
+	// The returned input carries the provider-reported cost...
+	require.NotNil(t, input.usage)
+	require.NotNil(t, input.usage.Cost)
+	assert.Equal(t, 0.5, input.usage.Cost.TotalCost)
+	// ...but the caller's source usage must be left untouched.
+	assert.Nil(t, su.LLMUsage.Cost, "passthroughUsageToCostInput must not mutate su.LLMUsage")
+}
+
+// Without a reported cost the datasheet still prices the request.
+func TestCalculateCost_ImageFallsBackToDatasheetWithoutReportedCost(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("grok-imagine-image-quality", "xai", "image_generation"): {
+			Model: "grok-imagine-image-quality", Provider: "xai", Mode: "image_generation",
+			OutputCostPerImage: bifrost.Ptr(0.5),
+		},
+	})
+
+	usage := &schemas.ImageUsage{}
+	usage.NormalizeProviderCost()
+
+	resp := makeImageResponse(schemas.XAI, "grok-imagine-image-quality", usage)
+	resp.ImageGenerationResponse.Data = []schemas.ImageData{{URL: "https://imgen.x.ai/x.jpeg"}}
+
+	assert.Equal(t, 0.5, s.CalculateCost(resp, nil))
 }
 
 func TestCalculateCost_NoUsageData(t *testing.T) {
@@ -1769,6 +2005,29 @@ func TestCalculateCost_ChatCompletion_GPT4o(t *testing.T) {
 	cost := s.CalculateCost(resp, nil)
 	// 10000*0.000005 + 2000*0.000015 = 0.05 + 0.03 = 0.08
 	assert.InDelta(t, 0.08, cost, 1e-12)
+}
+
+// TestCalculateCost_ChatCompletion_CostPerRequest verifies the flat per-request
+// fee is billed once, additive on top of the usual token-based cost.
+func TestCalculateCost_ChatCompletion_CostPerRequest(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o", "openai", "chat"): {
+			Model: "gpt-4o", Provider: "openai", Mode: "chat",
+			InputCostPerToken:  bifrost.Ptr(0.000005),
+			OutputCostPerToken: bifrost.Ptr(0.000015),
+			CostPerRequest:     bifrost.Ptr(0.01),
+		},
+	})
+
+	resp := makeChatResponse(schemas.OpenAI, "gpt-4o", &schemas.BifrostLLMUsage{
+		PromptTokens:     10000,
+		CompletionTokens: 2000,
+		TotalTokens:      12000,
+	})
+
+	cost := s.CalculateCost(resp, nil)
+	// 10000*0.000005 + 2000*0.000015 + 0.01 (flat) = 0.08 + 0.01 = 0.09
+	assert.InDelta(t, 0.09, cost, 1e-12)
 }
 
 func TestCalculateCost_ChatCompletion_Claude35Sonnet_WithCache(t *testing.T) {

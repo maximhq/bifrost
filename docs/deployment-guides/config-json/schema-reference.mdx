@@ -32,7 +32,7 @@ This page is a concise reference for every top-level key in `config.json`. Click
 | `vector_store` | object | Vector database for semantic cache - Weaviate, Redis, Qdrant, Pinecone, Valkey | [Storage](/deployment-guides/config-json/storage#vector_store) |
 | `plugins` | array | Opt-in plugins: `semantic_cache`, `otel`, `maxim`, `datadog`, custom | [Plugins](/deployment-guides/config-json/plugins) |
 | `framework` | object | Model pricing catalog URL and sync interval | [Framework](#framework) |
-| `mcp` | object | MCP server and tool configuration | - |
+| `mcp` | object | MCP server and tool configuration | [MCP](#mcp) |
 | `websocket` | object | WebSocket / Realtime API connection pool tuning | [WebSocket](#websocket) |
 | `auth_config` | object | **Deprecated** - use `governance.auth_config` | [Client](/deployment-guides/config-json/client#authentication) |
 
@@ -254,6 +254,68 @@ from calling every upstream at the same instant.
 Set it to `0` to turn the timer off entirely. Model discovery then happens only
 at startup and on key edits, and you can trigger it on demand from the
 **Providers** page.
+
+---
+
+## `mcp`
+
+Declares the catalog of MCP servers Bifrost connects to. Each entry in `client_configs` is one MCP server.
+
+```json
+{
+  "mcp": {
+    "client_configs": [
+      {
+        "name": "weather",
+        "connection_type": "http",
+        "connection_string": "https://mcp.example.com/weather",
+        "auth_type": "none",
+        "tools_to_execute": ["*"]
+      }
+    ]
+  }
+}
+```
+
+Common fields on each `client_configs` entry:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Unique display name |
+| `client_id` | string | Optional stable client identifier (defaults to a generated UUID) |
+| `connection_type` | string | `"http"`, `"sse"`, or `"stdio"` |
+| `connection_string` | object/string | HTTP/SSE URL or stdio command spec |
+| `auth_type` | string | `"none"`, `"headers"`, `"oauth"`, `"per_user_oauth"`, `"per_user_headers"`, or `"token_exchange"` (enterprise only — see below) |
+| `tools_to_execute` | array | Allow-list of tool names; `["*"]` for all |
+| `tools_to_auto_execute` | array | Subset of `tools_to_execute` that runs without user confirmation |
+| `headers` | object | Static admin headers (used by `headers` and as additions on `per_user_headers`) |
+| `is_code_mode_client` | boolean | Wrap tools as Python code-mode helpers instead of raw tool calls |
+| `needs_session_stickiness` | boolean | HTTP-only, and only meaningful for `oauth`/`headers`/`none` (per-user auth types are always per-call). `true` holds one persistent upstream connection reused for every tool call; `false`/omitted (default) dials fresh per tool call. Cannot be `false` for `connection_type` `"sse"`/`"stdio"` — both are always sticky. See [Session Stickiness](/mcp/connecting-to-servers#session-stickiness-http-only). |
+| `is_ping_available` | boolean | Default `true`. Whether the MCP server supports a lightweight ping for health checks; `false` falls back to a full `listTools` call instead. |
+| `tool_sync_interval` | integer | Per-client tool-list sync interval in minutes. `0`/omitted falls back to the global `client.mcp_tool_sync_interval`; negative disables periodic sync for this client. |
+| `tool_execution_timeout` | integer | Per-client tool execution timeout in seconds. `0`/omitted falls back to the global `client.mcp_tool_execution_timeout`. |
+| `allow_on_all_virtual_keys` | boolean | When `true`, every virtual key can use this client without an explicit allowlist entry. |
+| `tls_config` | object | `{ "insecure_skip_verify": bool, "ca_cert_pem": string }` — skip TLS verification (development only) and/or trust a custom CA certificate for this client's connection. `ca_cert_pem` supports `env.VAR_NAME`. |
+
+Auth-type-specific fields:
+
+| Field | Auth type | Description |
+|-------|-----------|-------------|
+| `oauth_config` | `oauth`, `per_user_oauth` | Optional inline OAuth provider block. The whole block can be omitted, and any inner field (`client_id`, `client_secret`, `authorize_url`, `token_url`, `registration_url`, `scopes`) can be omitted individually — RFC 8414 metadata discovery + RFC 7591 dynamic client registration fill the gaps off `connection_string` at admin-click time. `client_id` / `client_secret` support `env.VAR_NAME` and `vault.path` references (resolved at runtime, reference stored); the other fields take literal values (encrypted at rest, redacted in API responses). |
+| `per_user_header_keys` | `per_user_headers` | Required, non-empty. Array of header names each end-user must supply. |
+| `token_exchange` | `token_exchange` | Required. `{ "audience": string, "use_idp_credentials": boolean (optional, default false), "client_id": SecretVar (required unless use_idp_credentials is true), "client_secret": SecretVar (optional, public clients; ignored when use_idp_credentials is true), "scopes": string[] (optional), "authorization_server_url": string (optional) }`. `client_id`/`client_secret` support `env.VAR_NAME`/`vault.path` references. `use_idp_credentials` performs the exchange as the SSO login application instead of a dedicated one — required for Microsoft Entra ID, see [Token Exchange auth](../../mcp/auth/token-exchange#prerequisites). Include `"offline_access"` in `scopes` where the identity provider supports it to keep the retained admin discovery credential self-renewing instead of expiring into `needs_reauth`. |
+
+The schema enforces these pairings: `oauth_config` is rejected on non-OAuth auth types, `per_user_header_keys` is rejected on any auth type other than `per_user_headers`, and `token_exchange` is rejected on any auth type other than `token_exchange` — a misplaced block fails `$schema` validation instead of being silently ignored.
+
+<Warning>
+**Enterprise only:** `auth_type: "token_exchange"` in `config.json` is rejected on OSS — the client is skipped entirely at boot with an error logged naming it. Declare `token_exchange` clients via the API/Web UI on an enterprise deployment instead if you need them in a non-enterprise `config.json` environment during a migration.
+</Warning>
+
+<Warning>
+**Migration note:** `oauth_config_id` is no longer a valid field on MCP client entries in `config.json`. Older guidance for shared OAuth suggested checking it in after completing an OAuth flow — remove it from existing config files (declare an `oauth_config` block instead, or leave the client to the dashboard). Bifrost now **ignores** the field if present (with a warning at boot): the OAuth link is managed server-side and survives restarts and config re-syncs on its own, and `$schema`-based editor/CI validation rejects the field.
+</Warning>
+
+Clients declared with `auth_type` in `{oauth, per_user_oauth, per_user_headers, token_exchange}` boot into a **`pending_verification`** state. The MCP Gateway UI surfaces an **Authorize** / **Verify** CTA on each pending row; one admin click runs the same verification flow the Web UI Create form uses, after which the client transitions to `healthy`. The same steps are scriptable via `POST /api/mcp/client/{id}/initiate-verification` (OAuth types), `POST /api/mcp/client/{id}/verify-headers` (per-user headers), or `POST /api/mcp/client/{id}/verify-exchange` (token exchange). Verified state is server-side and survives restarts and config re-syncs. Immutable fields (`auth_type`, `connection_type`, `connection_string`, `stdio_config`, `oauth_config`) cannot be changed after creation — file edits to them are ignored with a boot warning naming the fields, matching the update API; delete and re-declare the client to change them. See [MCP Auth](/mcp/auth/overview) and [Connections, States & Lifecycles](/mcp/connections).
 
 ---
 

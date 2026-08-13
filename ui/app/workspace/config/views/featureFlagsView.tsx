@@ -51,9 +51,7 @@ export default function FeatureFlagsView() {
 							{flags.length === 0 ? (
 								<TableRow data-testid="feature-flags-table-empty-state">
 									<TableCell colSpan={2} className="h-24 text-center">
-										<span className="text-muted-foreground text-sm">
-											No feature flags found. Flags are declared in code via <code className="text-xs">featureflags.Register(...)</code>.
-										</span>
+										<span className="text-muted-foreground text-sm">No feature flags found.</span>
 									</TableCell>
 								</TableRow>
 							) : (

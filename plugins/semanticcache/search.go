@@ -66,6 +66,13 @@ func (plugin *Plugin) performSemanticSearch(ctx *schemas.BifrostContext, state *
 
 	state.Embeddings = embedding
 	state.EmbeddingsInputTokens = inputTokens
+	if !schemas.SetCacheDebugOnContext(ctx, &schemas.BifrostCacheDebug{
+		ProviderUsed: bifrost.Ptr(string(plugin.config.Provider)),
+		ModelUsed:    bifrost.Ptr(plugin.config.EmbeddingModel),
+		InputTokens:  bifrost.Ptr(inputTokens),
+	}) {
+		plugin.logger.Warn("Failed to store semantic cache debug data on request context")
+	}
 
 	cacheThreshold := plugin.config.Threshold
 	if v := ctx.Value(CacheThresholdKey); v != nil {

@@ -27,16 +27,27 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { ProviderIconType, RenderProviderIcon, RoutingEngineUsedIcons } from "@/lib/constants/icons";
-import { RequestTypeColors, RequestTypeLabels, RoutingEngineUsedColors, RoutingEngineUsedLabels, Status } from "@/lib/constants/logs";
+import {
+	logAppDisplayName,
+	mapAppToClientApp,
+	mapUserAgentToApp,
+	RequestTypeColors,
+	RequestTypeLabels,
+	RoutingEngineUsedColors,
+	RoutingEngineUsedLabels,
+	Status,
+} from "@/lib/constants/logs";
 import { ContentBlock, LogEntry, ResponsesMessage } from "@/lib/types/logs";
+import { useGetUserAgentMappingsQuery } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { downloadAsJson } from "@/lib/utils/browser-download";
 import { formatCompactNumber } from "@/lib/utils/numbers";
+import { applyRedactionMapping, hasRedactionMappingEntries } from "@/lib/utils/redaction";
 import { isJson } from "@/lib/utils/validation";
 import { Link } from "@tanstack/react-router";
 import { addMilliseconds, format } from "date-fns";
 import { AlertCircle, ChevronDown, Clipboard, Copy, Download, Loader2, MoreVertical, Trash2, Wrench } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useMemo, useEffect, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import BlockHeader from "../views/blockHeader";
 import CollapsibleBox from "../views/collapsibleBox";
@@ -70,18 +81,6 @@ const getRealtimeTransportBadgeClass = (value: unknown): string => {
 		default:
 			return "border-slate-300 bg-slate-50 text-slate-700 dark:border-slate-600 dark:bg-slate-950 dark:text-slate-300";
 	}
-};
-
-const hasRedactionMappingEntries = (mapping?: LogEntry["redaction_mapping"]): boolean =>
-	Boolean(mapping && (Object.keys(mapping.input ?? {}).length > 0 || Object.keys(mapping.output ?? {}).length > 0));
-
-const applyRedactionMapping = (text: string | undefined, mapping?: Record<string, string>): string => {
-	if (!text || !mapping) return text || "";
-	let result = text;
-	for (const [key, value] of Object.entries(mapping)) {
-		result = result.replaceAll(`[${key}]`, value);
-	}
-	return result;
 };
 
 const formatRealtimeSource = (value: unknown): string => {
@@ -641,7 +640,21 @@ export function LogDetailView({
 
 	const selectedPromptDisplayName = resolvedSelectedPromptName ?? log.selected_prompt_name ?? "";
 
+	const { data: userAgentMappingsData } = useGetUserAgentMappingsQuery();
+	const customAppIcons = useMemo(() => {
+		const icons: Record<string, string> = {};
+		for (const mapping of userAgentMappingsData?.mappings ?? []) {
+			if (mapping.app && mapping.logo && mapping.logo_mime) {
+				icons[mapping.app] = `data:${mapping.logo_mime};base64,${mapping.logo}`;
+			}
+		}
+		return icons;
+	}, [userAgentMappingsData?.mappings]);
+
 	const isContainer = isContainerOperation(log.object);
+	const detectedApp = log.app ? mapAppToClientApp(log.app) : log.user_agent ? mapUserAgentToApp(log.user_agent) : null;
+	const detectedAppIcon = log.app && detectedApp ? customAppIcons[log.app] || detectedApp.icon : detectedApp?.icon;
+	const detectedAppLabel = detectedApp ? logAppDisplayName(detectedApp, log.user_agent) : "";
 	const showTabs = !isContainer;
 	const isPassthrough = isPassthroughOperation(log.object);
 	const isRealtimeTurn = log.object === "realtime.turn";
@@ -674,7 +687,7 @@ export function LogDetailView({
 	const rawResponse = applyRedactionMapping(log.raw_response, activeOutputRevealMapping);
 	const passthroughRequestBody = applyRedactionMapping(log.passthrough_request_body, activeInputRevealMapping);
 	const passthroughResponseBody = applyRedactionMapping(log.passthrough_response_body, activeOutputRevealMapping);
-	const videoOutput = log.video_generation_output || log.video_retrieve_output || log.video_download_output;
+	const videoOutput = log.video_generation_output || log.video_retrieve_output || log.video_download_output || log.video_delete_output;
 	const videoListOutput = log.video_list_output;
 	const pluginLogCount = (() => {
 		if (!log.plugin_logs) return 0;
@@ -702,8 +715,11 @@ export function LogDetailView({
 				<div className="flex items-center gap-3">
 					{revealAvailable && (
 						<div className="flex items-center gap-2">
-							<span className="text-muted-foreground text-[11px] font-medium">Show original values</span>
+							<label htmlFor="logdetails-reveal-toggle" className="text-muted-foreground text-[11px] font-medium">
+								Show original values
+							</label>
 							<Switch
+								id="logdetails-reveal-toggle"
 								checked={revealEnabled}
 								onCheckedChange={handleToggleReveal}
 								data-testid="logdetails-reveal-toggle"
@@ -1007,6 +1023,28 @@ export function LogDetailView({
 							)}
 							{!isContainer && log.server_side_fallback_model && (
 								<LogEntryDetailsView className="w-full" label="Served By (fallback)" value={log.server_side_fallback_model} />
+							)}
+							{detectedApp && (
+								<LogEntryDetailsView
+									className="w-full"
+									label="App"
+									value={
+										<div className="flex min-w-0 items-center gap-2" title={log.user_agent || undefined}>
+											{detectedAppIcon ? (
+												<img
+													className="rounded-sm"
+													src={detectedAppIcon}
+													alt={detectedAppLabel}
+													width={20}
+													height={20}
+													loading="lazy"
+													decoding="async"
+												/>
+											) : null}
+											<span className="truncate">{detectedAppLabel}</span>
+										</div>
+									}
+								/>
 							)}
 							<LogEntryDetailsView
 								className="w-full"
@@ -1588,6 +1626,66 @@ export function LogDetailView({
 									</div>
 								</>
 							)}
+						</>
+					)}
+					{!isContainer && !isPassthrough && log.guardrail_debug?.judge_calls && log.guardrail_debug.judge_calls.length > 0 && (
+						<>
+							<DottedSeparator />
+							<div className="space-y-4">
+								<BlockHeader title="Guardrail Details" />
+								<div className="space-y-4">
+									{log.guardrail_debug.judge_calls.map((call, index) => (
+										<div
+											key={`${call.rule_id ?? call.rule_name ?? "guardrail"}-${call.guardrail_name ?? "judge"}-${index}`}
+											className={cn("grid w-full grid-cols-1 gap-4 md:grid-cols-3", index > 0 && "border-border border-t pt-4")}
+										>
+											{call.rule_name && <LogEntryDetailsView className="w-full" label="Rule" value={call.rule_name} />}
+											{call.phase && (
+												<LogEntryDetailsView
+													className="w-full"
+													label="Phase"
+													value={
+														<Badge variant="secondary" className="uppercase">
+															{call.phase}
+														</Badge>
+													}
+												/>
+											)}
+											{call.action && (
+												<LogEntryDetailsView
+													className="w-full"
+													label="Action"
+													value={
+														<Badge variant={call.action === "GUARDRAIL_INTERVENED" ? "destructive" : "success"}>
+															{call.action === "GUARDRAIL_INTERVENED" ? "Blocked" : "Allowed"}
+														</Badge>
+													}
+												/>
+											)}
+											{call.guardrail_name && <LogEntryDetailsView className="w-full" label="Guardrail" value={call.guardrail_name} />}
+											{call.guardrail_provider && (
+												<LogEntryDetailsView className="w-full" label="Guardrail Provider" value={call.guardrail_provider} />
+											)}
+											{call.judge_provider && (
+												<LogEntryDetailsView
+													className="w-full"
+													label="Judge Provider"
+													value={
+														<Badge variant="secondary" className="uppercase">
+															{call.judge_provider}
+														</Badge>
+													}
+												/>
+											)}
+											{call.judge_model && <LogEntryDetailsView className="w-full" label="Judge Model" value={call.judge_model} />}
+											<LogEntryDetailsView className="w-full" label="Prompt Tokens" value={call.prompt_tokens ?? 0} />
+											<LogEntryDetailsView className="w-full" label="Completion Tokens" value={call.completion_tokens ?? 0} />
+											<LogEntryDetailsView className="w-full" label="Total Tokens" value={call.total_tokens ?? 0} />
+											{call.reason && <LogEntryDetailsView className="w-full md:col-span-3" label="Reason" value={call.reason} />}
+										</div>
+									))}
+								</div>
+							</div>
 						</>
 					)}
 					{!isContainer &&

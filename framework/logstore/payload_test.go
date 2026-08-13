@@ -39,6 +39,7 @@ func TestExtractPayload_RoundTrip(t *testing.T) {
 		VideoListOutput:         `{"videos":[]}`,
 		VideoDeleteOutput:       `{"deleted":true}`,
 		CacheDebug:              `{"hit":true}`,
+		GuardrailDebug:          `{"judge_calls":[{"total_tokens":18}]}`,
 		TokenUsage:              `{"total_tokens":100}`,
 		ErrorDetails:            `{"error":"bad"}`,
 		RawRequest:              `{"method":"POST"}`,
@@ -53,6 +54,7 @@ func TestExtractPayload_RoundTrip(t *testing.T) {
 	assert.Equal(t, len(payloadFields)+1, len(payload), "payload map should have all payload fields plus metadata")
 	assert.Equal(t, `[{"role":"user","content":"hello"}]`, payload["input_history"])
 	assert.Equal(t, `{"role":"assistant","content":"world"}`, payload["output_message"])
+	assert.Equal(t, `{"judge_calls":[{"total_tokens":18}]}`, payload["guardrail_debug"])
 	assert.Equal(t, `routing log`, payload["routing_engine_logs"])
 	assert.Equal(t, metadata, payload["metadata"], "metadata must be written to the snapshot for object consumers")
 
@@ -61,6 +63,7 @@ func TestExtractPayload_RoundTrip(t *testing.T) {
 	assert.Empty(t, log.InputHistory)
 	assert.Empty(t, log.OutputMessage)
 	assert.Empty(t, log.RawRequest)
+	assert.Empty(t, log.GuardrailDebug)
 	assert.Empty(t, log.RoutingEngineLogs)
 	require.NotNil(t, log.Metadata)
 	assert.Equal(t, metadata, *log.Metadata)
@@ -80,6 +83,7 @@ func TestExtractPayload_RoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, `[{"role":"user","content":"hello"}]`, log.InputHistory)
 	assert.Equal(t, `{"role":"assistant","content":"world"}`, log.OutputMessage)
+	assert.Equal(t, `{"judge_calls":[{"total_tokens":18}]}`, log.GuardrailDebug)
 	assert.Equal(t, `routing log`, log.RoutingEngineLogs)
 	require.NotNil(t, log.Metadata)
 	assert.Equal(t, dbMetadata, *log.Metadata, "merge must not override DB-authoritative metadata with the snapshot")
@@ -206,12 +210,18 @@ func TestMCPToolLogPayload_RoundTripFullLog(t *testing.T) {
 		MetadataParsed: map[string]interface{}{
 			"trace": "abc",
 		},
+		PluginLogs: `{"guardrails":[{"plugin_name":"guardrails","level":"info","message":"arguments redacted","timestamp":1}]}`,
+		RedactionData: &schemas.RedactionData{
+			ReversibleMappings: schemas.RedactionMapsByPhase{Input: map[string]string{"EMAIL-1": "private@example.com"}},
+		},
+		RedactionMapping: `plain:{"input":{"EMAIL-1":"private@example.com"}}`,
 	}
 
 	data, err := MarshalMCPToolLogPayload(entry)
 	require.NoError(t, err)
+	assert.NotContains(t, string(data), "private@example.com")
 
-	dbEntry := &MCPToolLog{HasObject: true}
+	dbEntry := &MCPToolLog{HasObject: true, RedactionMapping: entry.RedactionMapping}
 	err = MergeMCPToolLogPayloadFromJSON(dbEntry, data)
 	require.NoError(t, err)
 
@@ -225,6 +235,24 @@ func TestMCPToolLogPayload_RoundTripFullLog(t *testing.T) {
 	assert.Equal(t, true, dbEntry.ResultParsed.(map[string]interface{})["ok"])
 	assert.Equal(t, "stored for round trip", dbEntry.ErrorDetailsParsed.Error.Message)
 	assert.Equal(t, "abc", dbEntry.MetadataParsed["trace"])
+	assert.Equal(t, entry.PluginLogs, dbEntry.PluginLogs)
+	assert.Equal(t, entry.RedactionMapping, dbEntry.RedactionMapping)
+	assert.Nil(t, dbEntry.RedactionData)
+}
+
+// TestMCPToolLogRedactionMappingJSONVisibility verifies only the authorized virtual mapping is API-visible.
+func TestMCPToolLogRedactionMappingJSONVisibility(t *testing.T) {
+	entry := &MCPToolLog{
+		RedactionMapping: `plain:{"input":{"EMAIL-1":"private@example.com"}}`,
+		RevealRedactionMapping: &schemas.RedactionMapsByPhase{
+			Input: map[string]string{"EMAIL-1": "revealed@example.com"},
+		},
+	}
+
+	data, err := sonic.Marshal(entry)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "private@example.com")
+	assert.Contains(t, string(data), `"redaction_mapping":{"input":{"EMAIL-1":"revealed@example.com"}}`)
 }
 
 func TestPrepareMCPToolDBEntry_KeepsOnlyInputPreview(t *testing.T) {
@@ -254,6 +282,7 @@ func TestPrepareMCPToolDBEntry_KeepsOnlyInputPreview(t *testing.T) {
 		MetadataParsed: map[string]interface{}{
 			"trace": "abc",
 		},
+		PluginLogs: `{"guardrails":[{"message":"arguments redacted"}]}`,
 	}
 
 	PrepareMCPToolDBEntry(entry)
@@ -268,6 +297,7 @@ func TestPrepareMCPToolDBEntry_KeepsOnlyInputPreview(t *testing.T) {
 	assert.Nil(t, entry.ErrorDetailsParsed)
 	assert.NotEmpty(t, entry.Arguments)
 	assert.NotEmpty(t, entry.Metadata)
+	assert.Equal(t, `{"guardrails":[{"message":"arguments redacted"}]}`, entry.PluginLogs)
 
 	var preview string
 	require.NoError(t, sonic.Unmarshal([]byte(entry.Arguments), &preview))

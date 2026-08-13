@@ -71,3 +71,39 @@ func runwareOutputFormat(outputFormat *string) *string {
 	}
 	return &out
 }
+
+// contentTypeForAssetURL infers a MIME type from an artifact URL's file extension. Runware's
+// output URLs (outputs.files[].url) carry the real extension (e.g. ".glb"), so the extension is
+// the most reliable signal — the request-side outputFormat parameter varies per model and is not
+// always present. Falls back to application/octet-stream for unknown or extensionless URLs.
+func contentTypeForAssetURL(url string) string {
+	// Strip any query string / fragment before reading the extension.
+	trimmed := url
+	if i := strings.IndexAny(trimmed, "?#"); i >= 0 {
+		trimmed = trimmed[:i]
+	}
+	dot := strings.LastIndex(trimmed, ".")
+	if dot < 0 || dot < strings.LastIndex(trimmed, "/") {
+		return "application/octet-stream"
+	}
+	switch strings.ToLower(trimmed[dot+1:]) {
+	case "glb":
+		return "model/gltf-binary"
+	case "gltf":
+		return "model/gltf+json"
+	case "usdz":
+		return "model/vnd.usdz+zip"
+	case "obj":
+		return "model/obj"
+	case "stl":
+		return "model/stl"
+	case "fbx":
+		return "application/octet-stream" // no registered MIME type for FBX
+	case "mp4":
+		return "video/mp4"
+	case "webm":
+		return "video/webm"
+	default:
+		return "application/octet-stream"
+	}
+}

@@ -171,6 +171,24 @@ type GovernanceHandler struct {
 	externalQuotaBudgetResolver ExternalQuotaBudgetResolver
 }
 
+// GovernanceRouteRegistrar registers one replaceable governance route family.
+type GovernanceRouteRegistrar func(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware)
+
+// GovernanceTeamRouteOverrides replaces selected Team handlers and registers edition-specific extensions.
+type GovernanceTeamRouteOverrides struct {
+	List       fasthttp.RequestHandler
+	Get        fasthttp.RequestHandler
+	Create     fasthttp.RequestHandler
+	Update     fasthttp.RequestHandler
+	Delete     fasthttp.RequestHandler
+	Extensions GovernanceRouteRegistrar
+}
+
+// GovernanceRouteOverrides allows downstream editions to own selected governance route families.
+type GovernanceRouteOverrides struct {
+	Teams *GovernanceTeamRouteOverrides
+}
+
 // NewGovernanceHandler creates a new governance handler instance.
 // logManager is optional (may be nil); when supplied it powers the quota
 // endpoint's per-budget actual per-model usage breakdown.
@@ -1352,8 +1370,13 @@ type UpdateProviderGovernanceRequest struct {
 	ResetBudgetUsage *bool `json:"reset_budget_usage,omitempty"`
 }
 
-// RegisterRoutes registers all governance-related routes for the new hierarchical system
+// RegisterRoutes registers all governance routes with the default OSS family handlers.
 func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
+	h.RegisterRoutesWithOverrides(r, GovernanceRouteOverrides{}, middlewares...)
+}
+
+// RegisterRoutesWithOverrides registers governance routes while allowing downstream editions to replace route families.
+func (h *GovernanceHandler) RegisterRoutesWithOverrides(r *router.Router, overrides GovernanceRouteOverrides, middlewares ...schemas.BifrostHTTPMiddleware) {
 	r.GET("/api/governance/complexity-analyzer-config", lib.ChainMiddlewares(h.getComplexityAnalyzerConfig, middlewares...))
 	r.PUT("/api/governance/complexity-analyzer-config", lib.ChainMiddlewares(h.updateComplexityAnalyzerConfig, middlewares...))
 	r.POST("/api/governance/complexity-analyzer-config/reset", lib.ChainMiddlewares(h.resetComplexityAnalyzerConfig, middlewares...))
@@ -1369,12 +1392,9 @@ func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.DELETE("/api/governance/virtual-keys/{vk_id}/budgets/{budget_id}/override", lib.ChainMiddlewares(h.deleteVirtualKeyBudgetOverride, middlewares...))
 	r.DELETE("/api/governance/virtual-keys/{vk_id}", lib.ChainMiddlewares(h.deleteVirtualKey, middlewares...))
 
-	// Team CRUD operations
-	r.GET("/api/governance/teams", lib.ChainMiddlewares(h.getTeams, middlewares...))
-	r.POST("/api/governance/teams", lib.ChainMiddlewares(h.createTeam, middlewares...))
-	r.GET("/api/governance/teams/{team_id}", lib.ChainMiddlewares(h.getTeam, middlewares...))
-	r.PUT("/api/governance/teams/{team_id}", lib.ChainMiddlewares(h.updateTeam, middlewares...))
-	r.DELETE("/api/governance/teams/{team_id}", lib.ChainMiddlewares(h.deleteTeam, middlewares...))
+	// Team CRUD operations. Enterprise replaces this family with a superset
+	// registrar so the router sees exactly one handler per method/path.
+	h.registerTeamRoutes(r, overrides.Teams, middlewares...)
 
 	// Customer CRUD operations
 	r.GET("/api/governance/customers", lib.ChainMiddlewares(h.getCustomers, middlewares...))
@@ -1415,6 +1435,41 @@ func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	// Self-service endpoint — no admin auth, VK in header is the credential.
 	// Registered without admin middlewares; only common middlewares (telemetry) are applied.
 	r.GET("/api/governance/virtual-keys/quota", h.getVirtualKeyQuota)
+}
+
+// registerTeamRoutes registers Team CRUD with optional edition-specific handlers.
+func (h *GovernanceHandler) registerTeamRoutes(r *router.Router, overrides *GovernanceTeamRouteOverrides, middlewares ...schemas.BifrostHTTPMiddleware) {
+	listHandler := h.getTeams
+	getHandler := h.getTeam
+	createHandler := h.createTeam
+	updateHandler := h.updateTeam
+	deleteHandler := h.deleteTeam
+	if overrides != nil {
+		if overrides.List != nil {
+			listHandler = overrides.List
+		}
+		if overrides.Get != nil {
+			getHandler = overrides.Get
+		}
+		if overrides.Create != nil {
+			createHandler = overrides.Create
+		}
+		if overrides.Update != nil {
+			updateHandler = overrides.Update
+		}
+		if overrides.Delete != nil {
+			deleteHandler = overrides.Delete
+		}
+	}
+
+	r.GET("/api/governance/teams", lib.ChainMiddlewares(listHandler, middlewares...))
+	r.POST("/api/governance/teams", lib.ChainMiddlewares(createHandler, middlewares...))
+	r.GET("/api/governance/teams/{team_id}", lib.ChainMiddlewares(getHandler, middlewares...))
+	r.PUT("/api/governance/teams/{team_id}", lib.ChainMiddlewares(updateHandler, middlewares...))
+	r.DELETE("/api/governance/teams/{team_id}", lib.ChainMiddlewares(deleteHandler, middlewares...))
+	if overrides != nil && overrides.Extensions != nil {
+		overrides.Extensions(r, middlewares...)
+	}
 }
 
 func (h *GovernanceHandler) getComplexityAnalyzerConfig(ctx *fasthttp.RequestCtx) {
@@ -2435,6 +2490,7 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 	}
 	// Reverse-map governance from VK-scoped model configs for display.
 	h.hydrateVKGovernance(ctx, preloadedVk)
+
 	if _, err := h.governanceManager.ReloadVirtualKey(ctx, vk.ID); err != nil {
 		// Should never happen but just in case
 		logger.Error("failed to reload virtual key after update: %v", err)
@@ -2488,6 +2544,10 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 	// reactivates credentials keyed to this VK (vk-keyed creds) and to the
 	// VK's owner (user-keyed creds) against the new effective allowlist
 	// (explicit rows ∪ MCPs with AllowOnAllVirtualKeys=true). OSS no-ops.
+	// Must run before ReloadVirtualKey: the reload also evicts this VK's
+	// cached OAuth tokens and header credentials, and an eviction that lands
+	// before these writes could be refilled from the pre-reconcile rows and
+	// then never dropped.
 	if req.MCPConfigs != nil && h.configStore != nil {
 		if err := h.configStore.ReconcileOauthAfterVKChange(ctx, vk.ID); err != nil {
 			logger.Error("reconcile OAuth credentials after VK %s update failed: %v", vk.ID, err)
@@ -2495,6 +2555,13 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		if err := h.configStore.ReconcileMCPHeadersAfterVKChange(ctx, vk.ID); err != nil {
 			logger.Error("reconcile per-user-headers credentials after VK %s update failed: %v", vk.ID, err)
 		}
+	}
+
+	if _, err := h.governanceManager.ReloadVirtualKey(ctx, vk.ID); err != nil {
+		// Should never happen but just in case
+		logger.Error("failed to reload virtual key after update: %v", err)
+		SendError(ctx, 500, "Virtual key updated in database but failed to reload in-memory state")
+		return
 	}
 
 	SendJSON(ctx, map[string]interface{}{
@@ -2624,7 +2691,9 @@ func (h *GovernanceHandler) deleteVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "Failed to delete virtual key")
 		return
 	}
-	// Removing key from in-memory store
+	// Removing key from in-memory store. RemoveVirtualKey also evicts the
+	// VK's cached OAuth access tokens and header credentials internally,
+	// covering the rows the database delete above cascaded over.
 	err = h.governanceManager.RemoveVirtualKey(ctx, vk.ID)
 	if err != nil {
 		// But we ignore this error because its not

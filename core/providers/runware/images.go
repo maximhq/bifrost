@@ -122,6 +122,7 @@ func ToBifrostImageGenerationResponse(resp *RunwareResponse) (*schemas.BifrostIm
 	}
 
 	var seeds []int
+	var totalCost float64
 	for i, img := range resp.Data {
 		data := schemas.ImageData{Index: i}
 		switch {
@@ -136,10 +137,17 @@ func ToBifrostImageGenerationResponse(resp *RunwareResponse) (*schemas.BifrostIm
 		if img.Seed != nil {
 			seeds = append(seeds, *img.Seed)
 		}
+		totalCost += img.Cost
 	}
 
 	if len(seeds) > 0 {
 		bifrostResp.ImageGenerationResponseParameters = &schemas.ImageGenerationResponseParameters{Seeds: seeds}
+	}
+
+	// Runware reports the exact task cost (only when the request sets includeCost). Surface it as
+	// the provider-reported cost so pricing uses it verbatim instead of the datasheet estimate.
+	if totalCost > 0 {
+		bifrostResp.Usage = &schemas.ImageUsage{Cost: &schemas.BifrostCost{TotalCost: totalCost}}
 	}
 
 	return bifrostResp, nil

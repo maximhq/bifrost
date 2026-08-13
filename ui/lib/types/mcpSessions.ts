@@ -97,6 +97,11 @@ export interface MCPSessionsQueryParams {
 	status?: MCPSessionStatus[];
 	auth_mode?: AuthMode[];
 	mcp_client_id?: string[];
+	virtual_key_id?: string[];
+	// Multi-select user filter (enterprise only — see the Users sidebar
+	// section). Distinct from `identity` above: this is a facet, not a
+	// single deep-link pin.
+	user_id?: string[];
 	limit?: number;
 	offset?: number;
 }

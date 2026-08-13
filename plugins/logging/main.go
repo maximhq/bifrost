@@ -6,6 +6,7 @@ package logging
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -107,14 +108,35 @@ func applyLargePayloadPreviewsToEntry(ctx *schemas.BifrostContext, entry *logsto
 	}
 }
 
-// attachLogRedactionData copies guardrail redaction data into the log entry for async writers.
-func attachLogRedactionData(ctx *schemas.BifrostContext, entry *logstore.Log, contentLoggingEnabled bool) {
-	if ctx == nil || entry == nil || !contentLoggingEnabled {
-		return
+// redactionDataForLogging returns an owned request snapshot for asynchronous log writers.
+func redactionDataForLogging(ctx *schemas.BifrostContext, contentLoggingEnabled bool) *schemas.RedactionData {
+	if ctx == nil || !contentLoggingEnabled {
+		return nil
 	}
 	if data, ok := schemas.RedactionDataFromContext(ctx); ok {
 		snapshot := data.Clone()
-		entry.RedactionData = &snapshot
+		return &snapshot
+	}
+	return nil
+}
+
+// attachLogRedactionData copies guardrail redaction data into an LLM log entry.
+func attachLogRedactionData(ctx *schemas.BifrostContext, entry *logstore.Log, contentLoggingEnabled bool) {
+	if entry == nil {
+		return
+	}
+	if snapshot := redactionDataForLogging(ctx, contentLoggingEnabled); snapshot != nil {
+		entry.RedactionData = snapshot
+	}
+}
+
+// attachMCPLogRedactionData copies guardrail redaction data into an MCP tool log entry.
+func attachMCPLogRedactionData(ctx *schemas.BifrostContext, entry *logstore.MCPToolLog, contentLoggingEnabled bool) {
+	if entry == nil {
+		return
+	}
+	if snapshot := redactionDataForLogging(ctx, contentLoggingEnabled); snapshot != nil {
+		entry.RedactionData = snapshot
 	}
 }
 
@@ -240,6 +262,40 @@ func (p *LoggerPlugin) applyErrorBillingFromBilledUsage(ctx *schemas.BifrostCont
 			entry.Cost = &cost
 		}
 	}
+}
+
+// guardrailDebugForLog returns the request's guardrail debug snapshot.
+func guardrailDebugForLog(ctx *schemas.BifrostContext, result *schemas.BifrostResponse) *schemas.BifrostGuardrailDebug {
+	if debug, ok := schemas.GuardrailDebugFromContext(ctx); ok {
+		return debug
+	}
+	if result == nil {
+		return nil
+	}
+	return result.GetExtraFields().GuardrailDebug.Clone()
+}
+
+// applyInternalCallCosts adds sidecar costs when no response exists to carry them.
+func (p *LoggerPlugin) applyInternalCallCosts(ctx *schemas.BifrostContext, entry *logstore.Log, guardrailDebug *schemas.BifrostGuardrailDebug) {
+	if entry == nil || p.pricingManager == nil {
+		return
+	}
+	pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
+	var cost float64
+	if cacheDebug, ok := schemas.CacheDebugFromContext(ctx); ok {
+		cost += p.pricingManager.CalculateCacheEmbeddingCost(cacheDebug, pricingScopes)
+	}
+	if guardrailDebug != nil {
+		cost += p.pricingManager.CalculateGuardrailCost(guardrailDebug, pricingScopes)
+	}
+	if cost <= 0 {
+		return
+	}
+	if entry.Cost == nil {
+		entry.Cost = &cost
+		return
+	}
+	*entry.Cost += cost
 }
 
 const (
@@ -439,6 +495,8 @@ type InitialLogData struct {
 	RoutingEngineUsed      []string
 	Metadata               map[string]any
 	PassthroughRequestBody string // Raw body for passthrough requests (UTF-8)
+	UserAgent              string // Raw HTTP User-Agent of the calling client; mapped to a client app in the UI
+	App                    string // Backend-detected client app derived from UserAgent
 }
 
 // LogCallback is a function that gets called when a new log entry is created
@@ -447,6 +505,7 @@ type LogCallback func(ctx context.Context, logEntry *logstore.Log)
 // MCPToolLogCallback is a function that gets called when a new MCP tool log entry is created or updated
 type MCPToolLogCallback func(*logstore.MCPToolLog)
 
+// Config controls logging plugin behavior.
 type Config struct {
 	DisableContentLogging        *bool                  `json:"disable_content_logging"`
 	RetainContentInObjectStorage *bool                  `json:"retain_content_in_object_storage"` // Pointer to live config value; when true, content-disabled requests are offloaded to object storage as hidden instead of dropped
@@ -479,6 +538,13 @@ func validateWriterConfig(config logstore.WriterConfig) error {
 		return fmt.Errorf("writer deferred_usage_concurrency must be greater than 0")
 	}
 	return nil
+}
+
+type compiledUserAgentMapping struct {
+	Pattern   string
+	MatchType schemas.UserAgentMappingMatchType
+	App       string
+	Regex     *regexp.Regexp
 }
 
 // LoggerPlugin implements the schemas.LLMPlugin and schemas.MCPPlugin interfaces
@@ -517,6 +583,8 @@ type LoggerPlugin struct {
 	batchCancel                  context.CancelFunc    // Cancels batchCtx
 	batchWriterDone              chan struct{}         // Closed by batchWriter on exit; receiving from it transfers writeQueue ownership to Cleanup
 	recoveredBatch               []*writeQueueEntry    // batchWriter parks its in-memory batch here before exiting; safe to read after batchWriterDone closes (happens-before)
+	userAgentMappings            atomic.Value          // []compiledUserAgentMapping, read from request hot paths
+	userAgentMappingMu           sync.Mutex            // serializes user-agent mapping write+reload sequences to keep the cache consistent
 }
 
 // Init creates new logger plugin with given log store
@@ -583,6 +651,11 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore 
 		plugin.updateDataPool.Put(&UpdateLogData{})
 	}
 
+	if err := plugin.ReloadUserAgentMappings(ctx); err != nil {
+		logger.Warn("failed to load user agent mappings: %v", err)
+		plugin.userAgentMappings.Store([]compiledUserAgentMapping{})
+	}
+
 	// Start cleanup ticker (runs every 1 minute)
 	plugin.cleanupTicker = time.NewTicker(1 * time.Minute)
 	plugin.wg.Add(1)
@@ -593,6 +666,57 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore 
 	go plugin.batchWriter()
 
 	return plugin, nil
+}
+
+// ReloadUserAgentMappings refreshes the in-memory custom User-Agent mapping cache.
+func (p *LoggerPlugin) ReloadUserAgentMappings(ctx context.Context) error {
+	mappings, err := p.store.ListUserAgentMappings(ctx, true)
+	if err != nil {
+		return err
+	}
+	compiled := make([]compiledUserAgentMapping, 0, len(mappings))
+	for _, mapping := range mappings {
+		matchType := schemas.UserAgentMappingMatchType(mapping.MatchType)
+		entry := compiledUserAgentMapping{
+			Pattern:   mapping.Pattern,
+			MatchType: matchType,
+			App:       mapping.App,
+		}
+		if matchType == schemas.UserAgentMappingMatchTypeRegex {
+			re, err := regexp.Compile(mapping.Pattern)
+			if err != nil {
+				p.logger.Warn("skipping invalid user agent mapping regex %q: %v", mapping.Pattern, err)
+				continue
+			}
+			entry.Regex = re
+		}
+		compiled = append(compiled, entry)
+	}
+	p.userAgentMappings.Store(compiled)
+	return nil
+}
+
+func (p *LoggerPlugin) detectAppFromUserAgent(userAgent string) string {
+	if strings.TrimSpace(userAgent) == "" {
+		return ""
+	}
+	if mappings, ok := p.userAgentMappings.Load().([]compiledUserAgentMapping); ok {
+		for _, mapping := range mappings {
+			if mapping.App == "" || mapping.Pattern == "" {
+				continue
+			}
+			if mapping.Regex != nil {
+				if mapping.Regex.MatchString(userAgent) {
+					return mapping.App
+				}
+				continue
+			}
+			if schemas.MatchUserAgent(userAgent, mapping.Pattern, mapping.MatchType) {
+				return mapping.App
+			}
+		}
+	}
+	return schemas.DetectAppFromUserAgent(userAgent)
 }
 
 // SetClusterNodeID sets the cluster node ID that will be attached to all log entries.
@@ -661,6 +785,26 @@ func (p *LoggerPlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *s
 // HTTPTransportStreamChunkHook passes through streaming chunks unchanged
 func (p *LoggerPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
 	return chunk, nil
+}
+
+// userAgentFromContext returns the raw HTTP User-Agent of the calling client from
+// the request header map, or "" when absent. Keys in the map are lowercased, so
+// the lookup is case-insensitive. The value is stored verbatim on the log entry;
+// mapping it to a client app happens in the UI.
+func userAgentFromContext(ctx *schemas.BifrostContext) string {
+	allHeaders, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
+	if allHeaders != nil {
+		if ua := allHeaders["user-agent"]; ua != "" {
+			return ua
+		}
+		for key, value := range allHeaders {
+			if strings.EqualFold(key, "user-agent") && value != "" {
+				return value
+			}
+		}
+	}
+	ua, _ := ctx.Value(schemas.BifrostContextKeyUserAgent).(string)
+	return ua
 }
 
 // captureLoggingHeaders extracts configured logging headers and x-bf-lh-* prefixed headers
@@ -764,6 +908,14 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	}
 	if req.RequestType == schemas.RealtimeRequest {
 		initialData.Object = "realtime.turn"
+	}
+
+	// Capture the raw User-Agent of the calling client (stored verbatim; the UI
+	// maps it to a client app such as Claude Code, Codex, or Cursor).
+	initialData.UserAgent = userAgentFromContext(ctx)
+	initialData.App = p.detectAppFromUserAgent(initialData.UserAgent)
+	if appKey := schemas.AppKeyFromName(initialData.App); appKey != "" {
+		ctx.SetValue(schemas.BifrostContextKeyApp, appKey)
 	}
 
 	if p.contentLoggingEnabled(ctx) {
@@ -925,9 +1077,14 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	fallbackRequestID, ok := ctx.Value(schemas.BifrostContextKeyFallbackRequestID).(string)
 	if ok && fallbackRequestID != "" {
 		effectiveRequestID = fallbackRequestID
-		if parentRequestID == "" {
-			parentRequestID = requestID
-		}
+		// A fallback attempt always nests under the primary request, even when the
+		// client supplied a session id via baggage. Leaving the session id here
+		// would point the attempt at a string that is not a log row, so the
+		// grouped log view could not collapse the chain — and if that string
+		// happened to collide with a real request id, the attempt would nest under
+		// an unrelated request. The session id stays on the primary row, which is
+		// what the session view lists.
+		parentRequestID = requestID
 	}
 
 	fallbackIndex := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyFallbackIndex)
@@ -1017,6 +1174,10 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	resolvedKeyAlias := bifrost.GetResponseRoutingInfo(result, bifrostErr).ResolvedKeyAlias
 	shouldStoreRaw, _ := ctx.Value(schemas.BifrostContextKeyShouldStoreRawInLogs).(bool)
 	contentLoggingEnabled := p.contentLoggingEnabled(ctx)
+	guardrailDebug := guardrailDebugForLog(ctx, result)
+	if result != nil && guardrailDebug != nil {
+		result.GetExtraFields().GuardrailDebug = guardrailDebug.Clone()
+	}
 
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
 
@@ -1048,6 +1209,12 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				Timestamp: time.Now().UTC(),
 				CreatedAt: time.Now().UTC(),
 			}
+			if ua := userAgentFromContext(ctx); ua != "" {
+				entry.UserAgent = &ua
+				if app := p.detectAppFromUserAgent(ua); app != "" {
+					entry.App = &app
+				}
+			}
 			entry.MetadataParsed = mergeRealtimeMetadata(p.captureLoggingHeaders(ctx), ctx)
 			if isAsync, ok := ctx.Value(schemas.BifrostIsAsyncRequest).(bool); ok && isAsync {
 				if entry.MetadataParsed == nil {
@@ -1058,6 +1225,8 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			applyModelAlias(entry, originalModelRequested, resolvedModelUsed)
 			applyResolvedAliasInfo(entry, resolvedKeyAlias)
 			entry.ErrorDetailsParsed = sanitizeErrorForLogging(bifrostErr, contentLoggingEnabled, shouldStoreRaw)
+			entry.GuardrailDebugParsed = guardrailDebug
+			p.applyInternalCallCosts(ctx, entry, guardrailDebug)
 			if nodeID, _ := p.clusterNodeID.Load().(string); nodeID != "" {
 				entry.ClusterNodeID = &nodeID
 			}
@@ -1121,6 +1290,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 
 	// Build the complete log entry with input (from PreLLMHook) + output (from PostLLMHook)
 	entry := buildCompleteLogEntryFromPending(pending)
+	entry.GuardrailDebugParsed = guardrailDebug
 	// Apply common output fields. For cache hits, prefer the cache-serve
 	// latency stamped by the semantic cache plugin over the original provider
 	// latency preserved in the cached response.
@@ -1225,6 +1395,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		// logs DB reflects what we were actually billed, mirroring the governance
 		// budget.
 		p.applyErrorBillingFromBilledUsage(ctx, entry, bifrostErr.ExtraFields.BilledUsage, requestType)
+		p.applyInternalCallCosts(ctx, entry, guardrailDebug)
 		applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)
 		p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
 		p.scheduleDeferredUsageUpdate(ctx, requestID, entry.TokenUsageParsed != nil)
@@ -1278,11 +1449,18 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 					}
 				}
 			}
+			// A stream error can arrive with a response chunk, bypassing Path A.
+			// Preserve provider-billed usage and the sidecar calls in that case.
+			p.applyErrorBillingFromBilledUsage(ctx, entry, bifrostErr.ExtraFields.BilledUsage, requestType)
+			p.applyInternalCallCosts(ctx, entry, guardrailDebug)
 		} else if streamResponse == nil {
 			// tracer or traceID not available, or accumulator returned nil - still write what we have
 			entry.Status = logStatusSuccess
 			entry.Stream = true
 			applyModelAlias(entry, originalModelRequested, resolvedModelUsed)
+			// Without an accumulated response, CalculateCost cannot see cache or
+			// guardrail debug. Normal accumulated streams already include both.
+			p.applyInternalCallCosts(ctx, entry, guardrailDebug)
 		} else if isFinalChunk {
 			// Apply streaming output fields to the entry
 			entry.Stream = true
@@ -1513,13 +1691,7 @@ func (p *LoggerPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
 		return nil
 	}
 	// Serialize plugin logs once for all entries
-	var pluginLogsJSON string
-	if len(trace.PluginLogs) > 0 {
-		grouped := schemas.GroupPluginLogsByName(trace.PluginLogs)
-		if data, err := sonic.Marshal(grouped); err == nil {
-			pluginLogsJSON = string(data)
-		}
-	}
+	pluginLogsJSON := serializePluginLogs(trace.PluginLogs)
 	p.logger.Debug("Inject: enqueuing %d log entries", len(pending.entries))
 	// Enqueue each log entry (supports multiple attempts per trace)
 	for _, entry := range pending.entries {
@@ -1528,6 +1700,18 @@ func (p *LoggerPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
 		p.enqueueLogEntry(entry, p.makePostWriteCallback(nil))
 	}
 	return nil
+}
+
+// serializePluginLogs groups plugin logs by plugin name for persistence and UI rendering.
+func serializePluginLogs(logs []schemas.PluginLogEntry) string {
+	if len(logs) == 0 {
+		return ""
+	}
+	data, err := sonic.Marshal(schemas.GroupPluginLogsByName(logs))
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 // MCP Plugin Interface Implementation
@@ -1634,9 +1818,17 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	}
 	applyMCPGovernanceFieldsToEntry(ctx, entry)
 
-	// Set arguments if content logging is enabled. MCP tool logs have no
-	// hidden-content mode, so content is only stored when it is also visible.
-	if p.resolveContentPolicy(ctx).visible() {
+	// Capture the raw User-Agent of the calling client (stored verbatim; the UI
+	// maps it to a client app such as Claude Code, Codex, or Cursor).
+	if ua := userAgentFromContext(ctx); ua != "" {
+		entry.UserAgent = &ua
+		if app := p.detectAppFromUserAgent(ua); app != "" {
+			entry.App = &app
+		}
+	}
+
+	// Set arguments if content logging is enabled
+	if p.contentLoggingEnabled(ctx) {
 		entry.ArgumentsParsed = arguments
 	}
 
@@ -1785,6 +1977,8 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 	p.mu.Lock()
 	callback := p.mcpToolLogCallback
 	p.mu.Unlock()
+	attachMCPLogRedactionData(ctx, entry, p.contentLoggingEnabled(ctx))
+	entry.PluginLogs = serializePluginLogs(ctx.GetPluginLogs())
 	p.enqueueMCPToolLogEntry(entry, callback)
 
 	return resp, bifrostErr, nil

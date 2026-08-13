@@ -358,6 +358,45 @@ func validateConfig(t *testing.T, schema *jsonschema.Schema, configJSON string) 
 	return schema.Validate(v)
 }
 
+// TestSchemaGuardrailRuleTarget verifies explicit MCP targets without breaking legacy LLM rules.
+func TestSchemaGuardrailRuleTarget(t *testing.T) {
+	compiled := compileSchema(t)
+
+	tests := []struct {
+		name      string
+		target    string
+		wantError bool
+	}{
+		{name: "explicit MCP target is valid", target: `,"target":"mcp"`},
+		{name: "omitted target remains valid", target: ""},
+		{name: "unknown target is rejected", target: `,"target":"agent"`, wantError: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := fmt.Sprintf(`{
+				"guardrails_config": {
+					"guardrail_rules": [{
+						"id": 1,
+						"name": "MCP rule",
+						"enabled": true,
+						"cel_expression": "true",
+						"apply_to": "input"%s
+					}]
+				}
+			}`, tt.target)
+
+			err := validateConfig(t, compiled, config)
+			if tt.wantError && err == nil {
+				t.Fatal("config should be invalid")
+			}
+			if !tt.wantError && err != nil {
+				t.Fatalf("config should be valid, got: %v", err)
+			}
+		})
+	}
+}
+
 func TestSchemaSCIMConfigValidation(t *testing.T) {
 	compiled := compileSchema(t)
 

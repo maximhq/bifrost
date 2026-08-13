@@ -122,11 +122,26 @@ export const DefaultPerformanceConfig = {
 } satisfies ConcurrencyAndBufferSize;
 
 export const MCP_STATUS_COLORS: Record<string, string> = {
-	connected: "bg-green-100 text-green-800",
+	healthy: "bg-green-100 text-green-800",
 	error: "bg-red-100 text-red-800",
-	disconnected: "bg-gray-100 text-gray-800",
-	pending_tools: "bg-yellow-100 text-yellow-800",
+	// Amber, not red/gray: Bifrost's own connection check most recently
+	// failed, but this is purely informational — nothing is gated on it, and
+	// it self-heals on the next successful check. Same mild treatment as
+	// pending_verification, deliberately distinct from needs_reauth's red
+	// ("action required").
+	unstable: "bg-yellow-100 text-yellow-800",
+	pending_verification: "bg-yellow-100 text-yellow-800",
 	disabled: "bg-orange-100 text-orange-800",
+	// Same red as `error`: the client's credential has died and it can't be
+	// used until a human reauthorizes it, mirroring the "destructive" treatment
+	// this status already gets on the MCP sessions table.
+	needs_reauth: "bg-red-100 text-red-800",
+	// Distinct blue/purple, not amber/red: unlike unstable, this isn't "one
+	// instance's check currently failing" — it's "instances disagree with
+	// each other about the state," which needs its own visual signal to
+	// prompt a look at the per-instance breakdown rather than being read as
+	// just another flavor of unhealthy.
+	degraded: "bg-blue-100 text-blue-800",
 };
 
 // Mapping of what IS supported by each base provider

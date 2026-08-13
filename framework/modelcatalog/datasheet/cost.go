@@ -11,7 +11,7 @@ import (
 )
 
 // CalculateCost calculates the cost of a Bifrost response.
-// It handles all request types, cache debug billing, and tiered pricing.
+// It handles all request types, cache and guardrail billing, and tiered pricing.
 // If scopes is nil, an empty LookupScopes is used; global and provider-scoped
 // overrides may still apply since the provider is derived from the response.
 func (s *Store) CalculateCost(result *schemas.BifrostResponse, scopes *LookupScopes) float64 {
@@ -24,13 +24,22 @@ func (s *Store) CalculateCost(result *schemas.BifrostResponse, scopes *LookupSco
 		lookupScopes = *scopes
 	}
 
+	extraFields := result.GetExtraFields()
+
 	// Handle semantic cache billing
-	cacheDebug := result.GetExtraFields().CacheDebug
+	cacheDebug := extraFields.CacheDebug
+	var requestCost float64
 	if cacheDebug != nil {
-		return s.calculateCostWithCache(result, cacheDebug, lookupScopes)
+		requestCost = s.calculateCostWithCache(result, cacheDebug, lookupScopes)
+	} else {
+		requestCost = s.calculateBaseCost(result, lookupScopes)
 	}
 
-	return s.calculateBaseCost(result, lookupScopes)
+	// Handle guardrail judge-call billing
+	if extraFields.GuardrailDebug == nil {
+		return requestCost
+	}
+	return requestCost + s.CalculateGuardrailCost(extraFields.GuardrailDebug, &lookupScopes)
 }
 
 // CalculateCostForUsage computes the dollar cost from a bare usage object plus
@@ -69,6 +78,57 @@ func (s *Store) CalculateCostForUsage(usage *schemas.BifrostLLMUsage, provider s
 		},
 		normalizeStreamRequestType(requestType),
 		lookupScopes,
+	)
+}
+
+// CalculateGuardrailCost computes judge cost when no parent response is available.
+//
+// CalculateCost uses this for normal responses. Logging also calls it directly
+// for input guardrail blocks, where the main provider call never produced a
+// BifrostResponse.
+func (s *Store) CalculateGuardrailCost(debug *schemas.BifrostGuardrailDebug, scopes *LookupScopes) float64 {
+	if debug == nil || len(debug.JudgeCalls) == 0 {
+		return 0
+	}
+
+	var total float64
+	for _, call := range debug.JudgeCalls {
+		total += s.computeGuardrailJudgeCost(call, scopes)
+	}
+	return total
+}
+
+// computeGuardrailJudgeCost computes one internal judge chat-completion cost.
+func (s *Store) computeGuardrailJudgeCost(call schemas.BifrostGuardrailJudgeCall, scopes *LookupScopes) float64 {
+	if call.JudgeProvider == "" || call.JudgeModel == "" {
+		return 0
+	}
+
+	// Price the judge call using its own provider/model. Keep virtual-key
+	// attribution for the caller, but do not reuse the main request's selected
+	// provider key: the judge may use a different configured key.
+	judgeScopes := LookupScopes{Provider: string(call.JudgeProvider)}
+	if scopes != nil {
+		judgeScopes.VirtualKeyID = scopes.VirtualKeyID
+	}
+
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:            call.PromptTokens,
+		PromptTokensDetails:     call.PromptTokensDetails,
+		CompletionTokens:        call.CompletionTokens,
+		CompletionTokensDetails: call.CompletionTokensDetails,
+		TotalTokens:             call.TotalTokens,
+	}
+	requestType := call.JudgeRequestType
+	if requestType == "" {
+		requestType = schemas.ChatCompletionRequest
+	}
+	return s.CalculateCostForUsage(
+		usage,
+		call.JudgeProvider,
+		call.JudgeModel,
+		requestType,
+		&judgeScopes,
 	)
 }
 
@@ -113,6 +173,15 @@ func (s *Store) computeCacheEmbeddingCost(cacheDebug *schemas.BifrostCacheDebug,
 	return float64(*cacheDebug.InputTokens) * tieredInputRate(pricing, *cacheDebug.InputTokens, serviceTier{})
 }
 
+// CalculateCacheEmbeddingCost computes the semantic-cache embedding lookup cost.
+func (s *Store) CalculateCacheEmbeddingCost(cacheDebug *schemas.BifrostCacheDebug, scopes *LookupScopes) float64 {
+	var lookupScopes LookupScopes
+	if scopes != nil {
+		lookupScopes = *scopes
+	}
+	return s.computeCacheEmbeddingCost(cacheDebug, lookupScopes)
+}
+
 // computeContainerCreationCost returns the cost for creating a container from an already-resolved pricing entry.
 func computeContainerCreationCost(pricing *configstoreTables.TableModelPricing) float64 {
 	if pricing == nil || pricing.CodeInterpreterCostPerSession == nil {
@@ -152,6 +221,10 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 	// If provider already computed cost, use it
 	if input.usage != nil && input.usage.Cost != nil && input.usage.Cost.TotalCost > 0 {
 		return input.usage.Cost.TotalCost
+	}
+	// Image responses carry usage on imageUsage, never on input.usage.
+	if input.imageUsage != nil && input.imageUsage.Cost != nil && input.imageUsage.Cost.TotalCost > 0 {
+		return input.imageUsage.Cost.TotalCost
 	}
 
 	// If no usage data at all, nothing to price
@@ -245,28 +318,36 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 	}
 
 	// Route to the appropriate compute function
+	var cost float64
 	switch requestType {
 	case schemas.ChatCompletionRequest, schemas.TextCompletionRequest, schemas.ResponsesRequest, schemas.RealtimeRequest, schemas.CompactionRequest:
-		return computeTextCost(pricing, input.usage, input.tier)
+		cost = computeTextCost(pricing, input.usage, input.tier)
 	case schemas.EmbeddingRequest:
-		return computeEmbeddingCost(pricing, input.usage, input.tier)
+		cost = computeEmbeddingCost(pricing, input.usage, input.tier)
 	case schemas.RerankRequest:
-		return computeRerankCost(pricing, input.usage, input.tier)
+		cost = computeRerankCost(pricing, input.usage, input.tier)
 	case schemas.SpeechRequest:
-		return computeSpeechCost(pricing, input.usage, input.audioSeconds, input.audioTextInputChars, input.tier)
+		cost = computeSpeechCost(pricing, input.usage, input.audioSeconds, input.audioTextInputChars, input.tier)
 	case schemas.TranscriptionRequest:
-		return computeTranscriptionCost(pricing, input.usage, input.audioSeconds, input.audioTokenDetails, input.tier)
+		cost = computeTranscriptionCost(pricing, input.usage, input.audioSeconds, input.audioTokenDetails, input.tier)
 	case schemas.ImageGenerationRequest, schemas.ImageEditRequest, schemas.ImageVariationRequest:
-		return computeImageCost(pricing, input.imageUsage, input.imageSize, input.imageQuality, input.tier)
+		cost = computeImageCost(pricing, input.imageUsage, input.imageSize, input.imageQuality, input.tier)
 	case schemas.VideoGenerationRequest, schemas.VideoRemixRequest:
-		return computeVideoCost(pricing, input.usage, input.videoSeconds, input.tier)
+		cost = computeVideoCost(pricing, input.usage, input.videoSeconds, input.tier)
 	case schemas.OCRRequest:
-		return computeOCRCost(pricing, input.ocrProcessedPages, input.ocrIsAnnotated)
+		cost = computeOCRCost(pricing, input.ocrProcessedPages, input.ocrIsAnnotated)
 	case schemas.ContainerCreateRequest:
-		return computeContainerCreationCost(pricing)
+		cost = computeContainerCreationCost(pricing)
 	default:
 		return 0
 	}
+
+	// Flat per-request surcharge, billed once on top of usage-based cost
+	// whenever the resolved pricing row carries one.
+	if pricing.CostPerRequest != nil {
+		cost += *pricing.CostPerRequest
+	}
+	return cost
 }
 
 // ---------------------------------------------------------------------------
@@ -346,6 +427,12 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 		}
 		input.imageSize = result.ImageGenerationStreamResponse.Size
 		input.imageQuality = result.ImageGenerationStreamResponse.Quality
+
+	case result.VideoGenerationResponse != nil && result.VideoGenerationResponse.Usage != nil && result.VideoGenerationResponse.Usage.Cost != nil:
+		// Provider-reported cost (e.g. Runware's per-task cost). Routed through input.usage.Cost so
+		// the provider-cost short-circuit in computeCost uses it verbatim; covers task types (3D,
+		// etc.) that have no datasheet rate.
+		input.usage = &schemas.BifrostLLMUsage{Cost: result.VideoGenerationResponse.Usage.Cost}
 
 	case result.VideoGenerationResponse != nil && result.VideoGenerationResponse.Seconds != nil:
 		seconds, err := strconv.Atoi(*result.VideoGenerationResponse.Seconds)
@@ -1561,6 +1648,19 @@ func passthroughUsageToCostInput(su *schemas.BifrostPassthroughUsage) costInput 
 	}
 	if su.ContainerIdentifier != "" {
 		input.containerIdentifierString = su.ContainerIdentifier
+	}
+	// Provider-reported exact cost wins over datasheet estimation; attach it to usage.Cost so the
+	// provider-cost short-circuit in computeCost returns it verbatim. input.usage may alias the
+	// caller's su.LLMUsage, so copy before assigning Cost to preserve the pure-read invariant (see
+	// the DeepCopy in the ImageGenerationResponse branch above).
+	if su.Cost != nil {
+		if input.usage == nil {
+			input.usage = &schemas.BifrostLLMUsage{Cost: su.Cost}
+		} else {
+			usageCopy := *input.usage
+			usageCopy.Cost = su.Cost
+			input.usage = &usageCopy
+		}
 	}
 	return input
 }

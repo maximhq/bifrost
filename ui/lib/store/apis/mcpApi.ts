@@ -14,7 +14,16 @@ import {
 import { baseApi } from "./baseApi";
 
 type CreateMCPClientResponse = { status: "success"; message: string } | OAuthFlowResponse;
-type UpdateMCPClientResponse = { status: "success"; message: string } | OAuthFlowResponse;
+type UpdateMCPClientResponse = { status: "success"; message: string };
+
+// Response of POST /mcp/client/{id}/initiate-verification — same flow fields as
+// OAuthFlowResponse but without a required message, plus polling/completion hints.
+type InitiateMCPClientVerificationResponse = Omit<OAuthFlowResponse, "message"> & {
+	message?: string;
+	status_url?: string;
+	complete_url?: string;
+	next_steps?: string[];
+};
 
 export const mcpApi = baseApi.injectEndpoints({
 	endpoints: (builder) => ({
@@ -150,11 +159,7 @@ export const mcpApi = baseApi.injectEndpoints({
 			}),
 			async onQueryStarted({ id, data }, { dispatch, getState, queryFulfilled }) {
 				try {
-					const { data: response } = await queryFulfilled;
-					if (response.status === "pending_oauth") {
-						dispatch(mcpApi.util.invalidateTags(["MCPClients"]));
-						return;
-					}
+					await queryFulfilled;
 					const queries = (getState() as any).api.queries;
 					for (const entry of Object.values(queries) as any[]) {
 						if (entry?.endpointName !== "getMCPClients" || entry?.status !== "fulfilled") continue;
@@ -172,6 +177,8 @@ export const mcpApi = baseApi.injectEndpoints({
 									if (data.tools_to_auto_execute !== undefined)
 										draft.clients[index].config.tools_to_auto_execute = data.tools_to_auto_execute;
 									if (data.is_ping_available !== undefined) draft.clients[index].config.is_ping_available = data.is_ping_available;
+									if (data.needs_session_stickiness !== undefined)
+										draft.clients[index].config.needs_session_stickiness = data.needs_session_stickiness;
 									if (data.tool_pricing !== undefined) draft.clients[index].config.tool_pricing = data.tool_pricing;
 									// The request carries minutes, but the cached config mirrors the GET
 									// response, which carries nanoseconds. Convert so the cache stays in
@@ -243,6 +250,54 @@ export const mcpApi = baseApi.injectEndpoints({
 			}),
 			invalidatesTags: ["MCPClients"],
 		}),
+
+		// Initiate verification for a pending_verification MCP client (config.json bootstrap).
+		// Returns authorize_url + oauth_config_id; the caller drives the same
+		// OAuth2Authorizer dialog the UI Create flow uses.
+		initiateMCPClientVerification: builder.mutation<InitiateMCPClientVerificationResponse, string>({
+			query: (mcpClientId) => ({
+				url: `/mcp/client/${mcpClientId}/initiate-verification`,
+				method: "POST",
+			}),
+		}),
+
+		// Redo the OAuth consent dance for an already-authorized shared
+		// (auth_type 'oauth') MCP client sitting in needs_reauth — without
+		// delete-and-recreate. Same response shape as initiateMCPClientVerification;
+		// the caller drives the same OAuth2Authorizer dialog.
+		reauthorizeMCPClient: builder.mutation<InitiateMCPClientVerificationResponse, string>({
+			query: (mcpClientId) => ({
+				url: `/mcp/client/${mcpClientId}/reauthorize`,
+				method: "POST",
+			}),
+		}),
+
+		// Verify a pending_verification per_user_headers MCP client by submitting
+		// admin sample header values. Backend runs verify + discover synchronously,
+		// persists DiscoveredTools, and reconnects.
+		verifyMCPClientHeaders: builder.mutation<
+			{ status: string; message: string; tools_count: number },
+			{ id: string; userHeaders: Record<string, string> }
+		>({
+			query: ({ id, userHeaders }) => ({
+				url: `/mcp/client/${id}/verify-headers`,
+				method: "POST",
+				body: { user_headers: userHeaders },
+			}),
+			invalidatesTags: ["MCPClients"],
+		}),
+
+		// Verify a token_exchange MCP client (pending_verification bootstrap, or
+		// needs_reauth repair). No body: the backend exchanges the signed-in
+		// admin's own identity-provider token, verifies upstream, discovers
+		// tools, and retains the admin discovery credential.
+		verifyMCPClientExchange: builder.mutation<{ status: string; message: string; tools_count: number }, string>({
+			query: (mcpClientId) => ({
+				url: `/mcp/client/${mcpClientId}/verify-exchange`,
+				method: "POST",
+			}),
+			invalidatesTags: ["MCPClients"],
+		}),
 	}),
 });
 
@@ -260,4 +315,8 @@ export const {
 	useLazyGetMCPClientsQuery,
 	useLazyGetOAuthConfigStatusQuery,
 	useCompleteOAuthFlowMutation,
+	useInitiateMCPClientVerificationMutation,
+	useReauthorizeMCPClientMutation,
+	useVerifyMCPClientHeadersMutation,
+	useVerifyMCPClientExchangeMutation,
 } = mcpApi;

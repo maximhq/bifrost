@@ -48,6 +48,21 @@ describe("budget overrides", () => {
 			getBudgetOverrideValidUntil({ max_limit: 100, last_reset: "2026-01-01T00:00:00.000Z", reset_duration: "1M" }, 2, true)?.toISOString(),
 		).toBe("2026-03-01T00:00:00.000Z");
 	});
+
+	it("anchors calendar-aligned validity to the current period boundary", () => {
+		expect(
+			getBudgetOverrideValidUntil({ max_limit: 100, last_reset: "2026-08-03T08:59:52.077Z", reset_duration: "1M" }, 1, true)?.toISOString(),
+		).toBe("2026-09-01T00:00:00.000Z");
+		expect(
+			getBudgetOverrideValidUntil({ max_limit: 100, last_reset: "2026-08-05T08:59:52.077Z", reset_duration: "1w" }, 1, true)?.toISOString(),
+		).toBe("2026-08-10T00:00:00.000Z");
+		expect(
+			getBudgetOverrideValidUntil({ max_limit: 100, last_reset: "2026-08-03T08:59:52.077Z", reset_duration: "1d" }, 1, true)?.toISOString(),
+		).toBe("2026-08-04T00:00:00.000Z");
+		expect(
+			getBudgetOverrideValidUntil({ max_limit: 100, last_reset: "2026-08-03T08:59:52.077Z", reset_duration: "1Y" }, 1, true)?.toISOString(),
+		).toBe("2027-01-01T00:00:00.000Z");
+	});
 });
 describe("quarterly budgets", () => {
 	it("offers Quarterly on budgets but not on rate limits", () => {

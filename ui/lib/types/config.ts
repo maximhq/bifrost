@@ -120,6 +120,16 @@ export interface BatchS3Config {
 	buckets?: S3BucketConfig[];
 }
 
+// BedrockEndpoints matching Go's schemas.BedrockEndpoints. Each value is an interface VPC
+// endpoint's DNS name, dialled instead of the public regional host for that AWS service.
+export interface BedrockEndpoints {
+	runtime?: SecretVar;
+	control_plane?: SecretVar;
+	mantle?: SecretVar;
+	agent_runtime?: SecretVar;
+	s3?: SecretVar;
+}
+
 // BedrockKeyConfig matching Go's schemas.BedrockKeyConfig
 export interface BedrockKeyConfig {
 	access_key?: SecretVar;
@@ -129,6 +139,7 @@ export interface BedrockKeyConfig {
 	arn?: SecretVar;
 	project_id?: SecretVar;
 	batch_s3_config?: BatchS3Config;
+	endpoints?: BedrockEndpoints;
 }
 
 // Default BedrockKeyConfig
@@ -140,6 +151,7 @@ export const DefaultBedrockKeyConfig: BedrockKeyConfig = {
 	arn: { value: "", ref: "" },
 	project_id: { value: "", ref: "" },
 	batch_s3_config: undefined as unknown as BatchS3Config,
+	endpoints: undefined as unknown as BedrockEndpoints,
 } as const satisfies Required<BedrockKeyConfig>;
 
 // BedrockMantleKeyConfig matching Go's schemas.BedrockMantleKeyConfig
@@ -152,6 +164,7 @@ export interface BedrockMantleKeyConfig {
 	external_id?: SecretVar;
 	session_name?: SecretVar;
 	project_id?: SecretVar;
+	endpoints?: BedrockEndpoints;
 }
 
 // Default BedrockMantleKeyConfig
@@ -164,6 +177,7 @@ export const DefaultBedrockMantleKeyConfig: BedrockMantleKeyConfig = {
 	external_id: undefined as unknown as SecretVar,
 	session_name: undefined as unknown as SecretVar,
 	project_id: undefined as unknown as SecretVar,
+	endpoints: undefined as unknown as BedrockEndpoints,
 } as const satisfies Required<BedrockMantleKeyConfig>;
 
 // VLLMKeyConfig matching Go's schemas.VLLMKeyConfig
@@ -495,6 +509,10 @@ export interface AuthConfig {
 	admin_username: SecretVar;
 	admin_password: SecretVar;
 	is_enabled: boolean;
+	/** Write-only: required only when this PUT request creates the very first admin account
+	 *  (no admin account exists yet). Provided by the operator via setup_token in config.json
+	 *  or the BIFROST_SETUP_TOKEN env var. Never persisted or returned by GET /api/config. */
+	setup_token?: string;
 }
 
 // Global proxy type (for global proxy configuration, not per-provider)

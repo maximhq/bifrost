@@ -152,963 +152,1082 @@ tags:
 paths:
   # ==================== Unified Inference API ====================
   /v1/models:
-    $ref: './paths/inference/models.yaml#/models'
+    $ref: "./paths/inference/models.yaml#/models"
   /v1/chat/completions:
-    $ref: './paths/inference/chat-completions.yaml#/chat-completions'
+    $ref: "./paths/inference/chat-completions.yaml#/chat-completions"
   /v1/completions:
-    $ref: './paths/inference/text-completions.yaml#/text-completions'
+    $ref: "./paths/inference/text-completions.yaml#/text-completions"
   /v1/responses:
-    $ref: './paths/inference/responses.yaml#/responses'
+    $ref: "./paths/inference/responses.yaml#/responses"
   /v1/ocr:
-    $ref: './paths/inference/ocr.yaml#/ocr'
+    $ref: "./paths/inference/ocr.yaml#/ocr"
   /v1/rerank:
-    $ref: './paths/inference/rerank.yaml#/rerank'
+    $ref: "./paths/inference/rerank.yaml#/rerank"
   /v1/embeddings:
-    $ref: './paths/inference/embeddings.yaml#/embeddings'
+    $ref: "./paths/inference/embeddings.yaml#/embeddings"
   /v1/audio/speech:
-    $ref: './paths/inference/audio.yaml#/speech'
+    $ref: "./paths/inference/audio.yaml#/speech"
   /v1/audio/transcriptions:
-    $ref: './paths/inference/audio.yaml#/transcriptions'
+    $ref: "./paths/inference/audio.yaml#/transcriptions"
   /v1/images/generations:
-    $ref: './paths/inference/images.yaml#/image-generation'
+    $ref: "./paths/inference/images.yaml#/image-generation"
   /v1/images/edits:
-    $ref: './paths/inference/images.yaml#/image-edit'
+    $ref: "./paths/inference/images.yaml#/image-edit"
   /v1/images/variations:
-    $ref: './paths/inference/images.yaml#/image-variation'
+    $ref: "./paths/inference/images.yaml#/image-variation"
   /v1/videos:
-    $ref: './paths/inference/videos.yaml#/video-generation'
+    $ref: "./paths/inference/videos.yaml#/video-generation"
   /v1/videos/{video_id}:
-    $ref: './paths/inference/videos.yaml#/video-by-id'
+    $ref: "./paths/inference/videos.yaml#/video-by-id"
   /v1/videos/{video_id}/content:
-    $ref: './paths/inference/videos.yaml#/video-download'
+    $ref: "./paths/inference/videos.yaml#/video-download"
   /v1/videos/{video_id}/remix:
-    $ref: './paths/inference/videos.yaml#/video-remix'
+    $ref: "./paths/inference/videos.yaml#/video-remix"
   /v1/responses/input_tokens:
-    $ref: './paths/inference/count-tokens.yaml#/count-tokens'
+    $ref: "./paths/inference/count-tokens.yaml#/count-tokens"
   /v1/responses/compact:
-    $ref: './paths/inference/compaction.yaml#/compact'
+    $ref: "./paths/inference/compaction.yaml#/compact"
   /v1/responses/{response_id}:
-    $ref: './paths/inference/responses.yaml#/responses-by-id'
+    $ref: "./paths/inference/responses.yaml#/responses-by-id"
   /v1/responses/{response_id}/cancel:
-    $ref: './paths/inference/responses.yaml#/responses-cancel'
+    $ref: "./paths/inference/responses.yaml#/responses-cancel"
   /v1/responses/{response_id}/input_items:
-    $ref: './paths/inference/responses.yaml#/responses-input-items'
+    $ref: "./paths/inference/responses.yaml#/responses-input-items"
   /v1/batches:
-    $ref: './paths/inference/batches.yaml#/batches'
+    $ref: "./paths/inference/batches.yaml#/batches"
   /v1/batches/{batch_id}:
-    $ref: './paths/inference/batches.yaml#/batches-by-id'
+    $ref: "./paths/inference/batches.yaml#/batches-by-id"
   /v1/batches/{batch_id}/cancel:
-    $ref: './paths/inference/batches.yaml#/batches-cancel'
+    $ref: "./paths/inference/batches.yaml#/batches-cancel"
   /v1/batches/{batch_id}/results:
-    $ref: './paths/inference/batches.yaml#/batches-results'
+    $ref: "./paths/inference/batches.yaml#/batches-results"
   /v1/files:
-    $ref: './paths/inference/files.yaml#/files'
+    $ref: "./paths/inference/files.yaml#/files"
   /v1/files/{file_id}:
-    $ref: './paths/inference/files.yaml#/files-by-id'
+    $ref: "./paths/inference/files.yaml#/files-by-id"
   /v1/files/{file_id}/content:
-    $ref: './paths/inference/files.yaml#/files-content'
+    $ref: "./paths/inference/files.yaml#/files-content"
   /v1/containers:
-    $ref: './paths/inference/containers.yaml#/containers'
+    $ref: "./paths/inference/containers.yaml#/containers"
   /v1/containers/{container_id}:
-    $ref: './paths/inference/containers.yaml#/containers-by-id'
+    $ref: "./paths/inference/containers.yaml#/containers-by-id"
   /v1/containers/{container_id}/files:
-    $ref: './paths/inference/containers.yaml#/container-files'
+    $ref: "./paths/inference/containers.yaml#/container-files"
   /v1/containers/{container_id}/files/{file_id}:
-    $ref: './paths/inference/containers.yaml#/container-files-by-id'
+    $ref: "./paths/inference/containers.yaml#/container-files-by-id"
   /v1/containers/{container_id}/files/{file_id}/content:
-    $ref: './paths/inference/containers.yaml#/container-files-content'
+    $ref: "./paths/inference/containers.yaml#/container-files-content"
 
   # ==================== Async Inference API ====================
   /v1/async/chat/completions:
-    $ref: './paths/inference/async.yaml#/async-chat-completions'
+    $ref: "./paths/inference/async.yaml#/async-chat-completions"
   /v1/async/completions:
-    $ref: './paths/inference/async.yaml#/async-text-completions'
+    $ref: "./paths/inference/async.yaml#/async-text-completions"
   /v1/async/responses:
-    $ref: './paths/inference/async.yaml#/async-responses'
+    $ref: "./paths/inference/async.yaml#/async-responses"
   /v1/async/embeddings:
-    $ref: './paths/inference/async.yaml#/async-embeddings'
+    $ref: "./paths/inference/async.yaml#/async-embeddings"
   /v1/async/audio/speech:
-    $ref: './paths/inference/async.yaml#/async-speech'
+    $ref: "./paths/inference/async.yaml#/async-speech"
   /v1/async/audio/transcriptions:
-    $ref: './paths/inference/async.yaml#/async-transcriptions'
+    $ref: "./paths/inference/async.yaml#/async-transcriptions"
   /v1/async/images/generations:
-    $ref: './paths/inference/async.yaml#/async-image-generation'
+    $ref: "./paths/inference/async.yaml#/async-image-generation"
   /v1/async/images/edits:
-    $ref: './paths/inference/async.yaml#/async-image-edit'
+    $ref: "./paths/inference/async.yaml#/async-image-edit"
   /v1/async/images/variations:
-    $ref: './paths/inference/async.yaml#/async-image-variation'
+    $ref: "./paths/inference/async.yaml#/async-image-variation"
   /v1/async/chat/completions/{job_id}:
-    $ref: './paths/inference/async.yaml#/async-chat-completions-job'
+    $ref: "./paths/inference/async.yaml#/async-chat-completions-job"
   /v1/async/completions/{job_id}:
-    $ref: './paths/inference/async.yaml#/async-text-completions-job'
+    $ref: "./paths/inference/async.yaml#/async-text-completions-job"
   /v1/async/responses/{job_id}:
-    $ref: './paths/inference/async.yaml#/async-responses-job'
+    $ref: "./paths/inference/async.yaml#/async-responses-job"
   /v1/async/embeddings/{job_id}:
-    $ref: './paths/inference/async.yaml#/async-embeddings-job'
+    $ref: "./paths/inference/async.yaml#/async-embeddings-job"
   /v1/async/audio/speech/{job_id}:
-    $ref: './paths/inference/async.yaml#/async-speech-job'
+    $ref: "./paths/inference/async.yaml#/async-speech-job"
   /v1/async/audio/transcriptions/{job_id}:
-    $ref: './paths/inference/async.yaml#/async-transcriptions-job'
+    $ref: "./paths/inference/async.yaml#/async-transcriptions-job"
   /v1/async/images/generations/{job_id}:
-    $ref: './paths/inference/async.yaml#/async-image-generation-job'
+    $ref: "./paths/inference/async.yaml#/async-image-generation-job"
   /v1/async/images/edits/{job_id}:
-    $ref: './paths/inference/async.yaml#/async-image-edit-job'
+    $ref: "./paths/inference/async.yaml#/async-image-edit-job"
   /v1/async/images/variations/{job_id}:
-    $ref: './paths/inference/async.yaml#/async-image-variation-job'
+    $ref: "./paths/inference/async.yaml#/async-image-variation-job"
   /v1/async/rerank:
-    $ref: './paths/inference/async.yaml#/async-rerank'
+    $ref: "./paths/inference/async.yaml#/async-rerank"
   /v1/async/rerank/{job_id}:
-    $ref: './paths/inference/async.yaml#/async-rerank-job'
+    $ref: "./paths/inference/async.yaml#/async-rerank-job"
   /v1/async/ocr:
-    $ref: './paths/inference/ocr.yaml#/async-ocr'
+    $ref: "./paths/inference/ocr.yaml#/async-ocr"
   /v1/async/ocr/{job_id}:
-    $ref: './paths/inference/ocr.yaml#/async-ocr-job'
+    $ref: "./paths/inference/ocr.yaml#/async-ocr-job"
 
   # ==================== Realtime API ====================
   /v1/realtime:
-    $ref: './paths/inference/realtime.yaml#/realtime'
+    $ref: "./paths/inference/realtime.yaml#/realtime"
   /v1/realtime/calls:
-    $ref: './paths/inference/realtime.yaml#/realtime-calls'
+    $ref: "./paths/inference/realtime.yaml#/realtime-calls"
   /v1/realtime/client_secrets:
-    $ref: './paths/inference/realtime.yaml#/realtime-client-secrets'
+    $ref: "./paths/inference/realtime.yaml#/realtime-client-secrets"
   /v1/realtime/sessions:
-    $ref: './paths/inference/realtime.yaml#/realtime-sessions'
+    $ref: "./paths/inference/realtime.yaml#/realtime-sessions"
 
   # ==================== OpenAI Integration ====================
   # Chat Completions
   /openai/v1/chat/completions:
-    $ref: './paths/integrations/openai/chat.yaml#/chat-completions'
+    $ref: "./paths/integrations/openai/chat.yaml#/chat-completions"
   /openai/openai/deployments/{deployment-id}/chat/completions:
-    $ref: './paths/integrations/openai/chat.yaml#/azure-chat-completions'
+    $ref: "./paths/integrations/openai/chat.yaml#/azure-chat-completions"
 
   # Text Completions (Legacy)
   /openai/v1/completions:
-    $ref: './paths/integrations/openai/text.yaml#/text-completions'
+    $ref: "./paths/integrations/openai/text.yaml#/text-completions"
   /openai/openai/deployments/{deployment-id}/completions:
-    $ref: './paths/integrations/openai/text.yaml#/azure-text-completions'
+    $ref: "./paths/integrations/openai/text.yaml#/azure-text-completions"
 
   # Responses API
   /openai/v1/responses:
-    $ref: './paths/integrations/openai/responses.yaml#/responses'
+    $ref: "./paths/integrations/openai/responses.yaml#/responses"
   /openai/openai/deployments/{deployment-id}/responses:
-    $ref: './paths/integrations/openai/responses.yaml#/azure-responses'
+    $ref: "./paths/integrations/openai/responses.yaml#/azure-responses"
   /openai/v1/responses/input_tokens:
-    $ref: './paths/integrations/openai/responses.yaml#/responses-input-tokens'
+    $ref: "./paths/integrations/openai/responses.yaml#/responses-input-tokens"
   /openai/v1/responses/{response_id}:
-    $ref: './paths/integrations/openai/responses.yaml#/responses-by-id'
+    $ref: "./paths/integrations/openai/responses.yaml#/responses-by-id"
   /openai/v1/responses/{response_id}/cancel:
-    $ref: './paths/integrations/openai/responses.yaml#/responses-cancel'
+    $ref: "./paths/integrations/openai/responses.yaml#/responses-cancel"
   /openai/v1/responses/{response_id}/input_items:
-    $ref: './paths/integrations/openai/responses.yaml#/responses-input-items'
+    $ref: "./paths/integrations/openai/responses.yaml#/responses-input-items"
 
   # Context Compaction
   /openai/v1/responses/compact:
-    $ref: './paths/integrations/openai/compaction.yaml#/compact'
+    $ref: "./paths/integrations/openai/compaction.yaml#/compact"
 
   # Embeddings
   /openai/v1/embeddings:
-    $ref: './paths/integrations/openai/embeddings.yaml#/embeddings'
+    $ref: "./paths/integrations/openai/embeddings.yaml#/embeddings"
   /openai/openai/deployments/{deployment-id}/embeddings:
-    $ref: './paths/integrations/openai/embeddings.yaml#/azure-embeddings'
+    $ref: "./paths/integrations/openai/embeddings.yaml#/azure-embeddings"
 
   # Audio (Speech & Transcription)
   /openai/v1/audio/speech:
-    $ref: './paths/integrations/openai/audio.yaml#/speech'
+    $ref: "./paths/integrations/openai/audio.yaml#/speech"
   /openai/openai/deployments/{deployment-id}/audio/speech:
-    $ref: './paths/integrations/openai/audio.yaml#/azure-speech'
+    $ref: "./paths/integrations/openai/audio.yaml#/azure-speech"
   /openai/v1/audio/transcriptions:
-    $ref: './paths/integrations/openai/audio.yaml#/transcriptions'
+    $ref: "./paths/integrations/openai/audio.yaml#/transcriptions"
   /openai/openai/deployments/{deployment-id}/audio/transcriptions:
-    $ref: './paths/integrations/openai/audio.yaml#/azure-transcriptions'
+    $ref: "./paths/integrations/openai/audio.yaml#/azure-transcriptions"
 
   # Models
   /openai/v1/models:
-    $ref: './paths/integrations/openai/models.yaml#/models'
+    $ref: "./paths/integrations/openai/models.yaml#/models"
   /openai/openai/deployments/{deployment-id}/models:
-    $ref: './paths/integrations/openai/models.yaml#/azure-models'
+    $ref: "./paths/integrations/openai/models.yaml#/azure-models"
 
   # Batch API
   /openai/v1/batches:
-    $ref: './paths/integrations/openai/batch.yaml#/batches'
+    $ref: "./paths/integrations/openai/batch.yaml#/batches"
   /openai/v1/batches/{batch_id}:
-    $ref: './paths/integrations/openai/batch.yaml#/batches-by-id'
+    $ref: "./paths/integrations/openai/batch.yaml#/batches-by-id"
   /openai/v1/batches/{batch_id}/cancel:
-    $ref: './paths/integrations/openai/batch.yaml#/batches-cancel'
+    $ref: "./paths/integrations/openai/batch.yaml#/batches-cancel"
 
   # Image Generation
   /openai/v1/images/generations:
-    $ref: './paths/integrations/openai/images.yaml#/image-generation'
+    $ref: "./paths/integrations/openai/images.yaml#/image-generation"
   /openai/openai/deployments/{deployment-id}/images/generations:
-    $ref: './paths/integrations/openai/images.yaml#/azure-image-generation'
+    $ref: "./paths/integrations/openai/images.yaml#/azure-image-generation"
 
   # Files API
   /openai/v1/files:
-    $ref: './paths/integrations/openai/files.yaml#/files'
+    $ref: "./paths/integrations/openai/files.yaml#/files"
   /openai/v1/files/{file_id}:
-    $ref: './paths/integrations/openai/files.yaml#/files-by-id'
+    $ref: "./paths/integrations/openai/files.yaml#/files-by-id"
   /openai/v1/files/{file_id}/content:
-    $ref: './paths/integrations/openai/files.yaml#/files-content'
+    $ref: "./paths/integrations/openai/files.yaml#/files-content"
 
   # Containers API
   /openai/v1/containers:
-    $ref: './paths/integrations/openai/containers.yaml#/containers'
+    $ref: "./paths/integrations/openai/containers.yaml#/containers"
   /openai/v1/containers/{container_id}:
-    $ref: './paths/integrations/openai/containers.yaml#/containers-by-id'
+    $ref: "./paths/integrations/openai/containers.yaml#/containers-by-id"
   /openai/v1/containers/{container_id}/files:
-    $ref: './paths/integrations/openai/containers.yaml#/container-files'
+    $ref: "./paths/integrations/openai/containers.yaml#/container-files"
   /openai/v1/containers/{container_id}/files/{file_id}:
-    $ref: './paths/integrations/openai/containers.yaml#/container-files-by-id'
+    $ref: "./paths/integrations/openai/containers.yaml#/container-files-by-id"
   /openai/v1/containers/{container_id}/files/{file_id}/content:
-    $ref: './paths/integrations/openai/containers.yaml#/container-files-content'
+    $ref: "./paths/integrations/openai/containers.yaml#/container-files-content"
 
   # Videos API
   /openai/v1/videos:
-    $ref: './paths/integrations/openai/videos.yaml#/videos'
+    $ref: "./paths/integrations/openai/videos.yaml#/videos"
   /openai/v1/videos/{video_id}:
-    $ref: './paths/integrations/openai/videos.yaml#/videos-by-id'
+    $ref: "./paths/integrations/openai/videos.yaml#/videos-by-id"
   /openai/v1/videos/{video_id}/content:
-    $ref: './paths/integrations/openai/videos.yaml#/videos-content'
+    $ref: "./paths/integrations/openai/videos.yaml#/videos-content"
   /openai/v1/videos/{video_id}/remix:
-    $ref: './paths/integrations/openai/videos.yaml#/videos-remix'
+    $ref: "./paths/integrations/openai/videos.yaml#/videos-remix"
 
   # Realtime / WebSocket / WebRTC (OpenAI-prefixed aliases)
   /openai/v1/realtime:
-    $ref: './paths/integrations/openai/realtime.yaml#/realtime'
+    $ref: "./paths/integrations/openai/realtime.yaml#/realtime"
   /openai/v1/realtime/calls:
-    $ref: './paths/integrations/openai/realtime.yaml#/realtime-calls'
+    $ref: "./paths/integrations/openai/realtime.yaml#/realtime-calls"
   /openai/v1/realtime/client_secrets:
-    $ref: './paths/integrations/openai/realtime.yaml#/realtime-client-secrets'
+    $ref: "./paths/integrations/openai/realtime.yaml#/realtime-client-secrets"
   /openai/v1/realtime/sessions:
-    $ref: './paths/integrations/openai/realtime.yaml#/realtime-sessions'
+    $ref: "./paths/integrations/openai/realtime.yaml#/realtime-sessions"
 
   # ==================== Anthropic Integration ====================
   # Messages API
   /anthropic/v1/messages:
-    $ref: './paths/integrations/anthropic/messages.yaml#/messages'
+    $ref: "./paths/integrations/anthropic/messages.yaml#/messages"
   /anthropic/v1/messages/{path}:
-    $ref: './paths/integrations/anthropic/messages.yaml#/messages-wildcard'
+    $ref: "./paths/integrations/anthropic/messages.yaml#/messages-wildcard"
 
   # Legacy Complete API
   /anthropic/v1/complete:
-    $ref: './paths/integrations/anthropic/text.yaml#/complete'
+    $ref: "./paths/integrations/anthropic/text.yaml#/complete"
 
   # Models
   /anthropic/v1/models:
-    $ref: './paths/integrations/anthropic/models.yaml#/models'
+    $ref: "./paths/integrations/anthropic/models.yaml#/models"
 
   # Count Tokens
   /anthropic/v1/messages/count_tokens:
-    $ref: './paths/integrations/anthropic/count-tokens.yaml#/count-tokens'
+    $ref: "./paths/integrations/anthropic/count-tokens.yaml#/count-tokens"
 
   # Batch API
   /anthropic/v1/messages/batches:
-    $ref: './paths/integrations/anthropic/batch.yaml#/batches'
+    $ref: "./paths/integrations/anthropic/batch.yaml#/batches"
   /anthropic/v1/messages/batches/{batch_id}:
-    $ref: './paths/integrations/anthropic/batch.yaml#/batches-by-id'
+    $ref: "./paths/integrations/anthropic/batch.yaml#/batches-by-id"
   /anthropic/v1/messages/batches/{batch_id}/cancel:
-    $ref: './paths/integrations/anthropic/batch.yaml#/batches-cancel'
+    $ref: "./paths/integrations/anthropic/batch.yaml#/batches-cancel"
   /anthropic/v1/messages/batches/{batch_id}/results:
-    $ref: './paths/integrations/anthropic/batch.yaml#/batches-results'
+    $ref: "./paths/integrations/anthropic/batch.yaml#/batches-results"
 
   # Files API
   /anthropic/v1/files:
-    $ref: './paths/integrations/anthropic/files.yaml#/files'
+    $ref: "./paths/integrations/anthropic/files.yaml#/files"
   /anthropic/v1/files/{file_id}/content:
-    $ref: './paths/integrations/anthropic/files.yaml#/files-content'
+    $ref: "./paths/integrations/anthropic/files.yaml#/files-content"
   /anthropic/v1/files/{file_id}:
-    $ref: './paths/integrations/anthropic/files.yaml#/files-by-id'
+    $ref: "./paths/integrations/anthropic/files.yaml#/files-by-id"
 
   # ==================== GenAI (Gemini) Integration ====================
   # Generation
   /genai/v1beta/models/{model}:generateContent:
-    $ref: './paths/integrations/genai/generation.yaml#/generate-content'
+    $ref: "./paths/integrations/genai/generation.yaml#/generate-content"
   /genai/v1beta/models/{model}:streamGenerateContent:
-    $ref: './paths/integrations/genai/generation.yaml#/stream-generate-content'
+    $ref: "./paths/integrations/genai/generation.yaml#/stream-generate-content"
   /genai/v1beta/models/{model}:embedContent:
-    $ref: './paths/integrations/genai/generation.yaml#/embed-content'
+    $ref: "./paths/integrations/genai/generation.yaml#/embed-content"
   /genai/v1beta/models/{model}:countTokens:
-    $ref: './paths/integrations/genai/generation.yaml#/count-tokens'
+    $ref: "./paths/integrations/genai/generation.yaml#/count-tokens"
   /genai/v1beta/models/{model}:predict:
-    $ref: './paths/integrations/genai/generation.yaml#/image-generation'
+    $ref: "./paths/integrations/genai/generation.yaml#/image-generation"
 
   # Models
   /genai/v1beta/models:
-    $ref: './paths/integrations/genai/models.yaml#/models'
+    $ref: "./paths/integrations/genai/models.yaml#/models"
 
   # Files
   /genai/upload/v1beta/files:
-    $ref: './paths/integrations/genai/files.yaml#/files-upload'
+    $ref: "./paths/integrations/genai/files.yaml#/files-upload"
   /genai/v1beta/files:
-    $ref: './paths/integrations/genai/files.yaml#/files'
+    $ref: "./paths/integrations/genai/files.yaml#/files"
   /genai/v1beta/files/{file_id}:
-    $ref: './paths/integrations/genai/files.yaml#/files-by-id'
+    $ref: "./paths/integrations/genai/files.yaml#/files-by-id"
 
   # Batches
   /genai/v1beta/batches:
-    $ref: './paths/integrations/genai/batches.yaml#/batches'
+    $ref: "./paths/integrations/genai/batches.yaml#/batches"
   /genai/v1beta/batches/{batch_id}:
-    $ref: './paths/integrations/genai/batches.yaml#/batches-by-id'
+    $ref: "./paths/integrations/genai/batches.yaml#/batches-by-id"
 
   # Cached Contents
   /genai/v1beta/cachedContents:
-    $ref: './paths/integrations/genai/cached-contents.yaml#/cached-contents'
+    $ref: "./paths/integrations/genai/cached-contents.yaml#/cached-contents"
   /genai/v1beta/cachedContents/{cached_id}:
-    $ref: './paths/integrations/genai/cached-contents.yaml#/cached-contents-by-id'
+    $ref: "./paths/integrations/genai/cached-contents.yaml#/cached-contents-by-id"
 
   # Rank (Vertex AI)
   /genai/v1/rank:
-    $ref: './paths/integrations/genai/rank.yaml#/rank'
+    $ref: "./paths/integrations/genai/rank.yaml#/rank"
 
   # Long-running video operation polling
   /genai/v1beta/models/{model}/operations/{operation_id}:
-    $ref: './paths/integrations/genai/video-operations.yaml#/video-operations'
+    $ref: "./paths/integrations/genai/video-operations.yaml#/video-operations"
 
   # ==================== Bedrock Integration ====================
   # Converse API
   /bedrock/model/{modelId}/converse:
-    $ref: './paths/integrations/bedrock/converse.yaml#/converse'
+    $ref: "./paths/integrations/bedrock/converse.yaml#/converse"
   /bedrock/model/{modelId}/converse-stream:
-    $ref: './paths/integrations/bedrock/converse.yaml#/converse-stream'
+    $ref: "./paths/integrations/bedrock/converse.yaml#/converse-stream"
 
   # Invoke API (Legacy/Raw)
   /bedrock/model/{modelId}/invoke:
-    $ref: './paths/integrations/bedrock/invoke.yaml#/invoke'
+    $ref: "./paths/integrations/bedrock/invoke.yaml#/invoke"
   /bedrock/model/{modelId}/invoke-with-response-stream:
-    $ref: './paths/integrations/bedrock/invoke.yaml#/invoke-stream'
+    $ref: "./paths/integrations/bedrock/invoke.yaml#/invoke-stream"
 
   # Count Tokens API
   /bedrock/model/{modelId}/count-tokens:
-    $ref: './paths/integrations/bedrock/count-tokens.yaml#/count-tokens'
+    $ref: "./paths/integrations/bedrock/count-tokens.yaml#/count-tokens"
 
   # Batch API
   /bedrock/model-invocation-job:
-    $ref: './paths/integrations/bedrock/batch.yaml#/batch-job-create'
+    $ref: "./paths/integrations/bedrock/batch.yaml#/batch-job-create"
   /bedrock/model-invocation-jobs:
-    $ref: './paths/integrations/bedrock/batch.yaml#/batch-jobs-list'
+    $ref: "./paths/integrations/bedrock/batch.yaml#/batch-jobs-list"
   /bedrock/model-invocation-job/{job_arn}:
-    $ref: './paths/integrations/bedrock/batch.yaml#/batch-job-by-id'
+    $ref: "./paths/integrations/bedrock/batch.yaml#/batch-job-by-id"
   /bedrock/model-invocation-job/{job_arn}/stop:
-    $ref: './paths/integrations/bedrock/batch.yaml#/batch-job-cancel'
+    $ref: "./paths/integrations/bedrock/batch.yaml#/batch-job-cancel"
 
   # S3-compatible file storage (boto3 client compatible)
   /bedrock/files/{bucket}:
-    $ref: './paths/integrations/bedrock/s3.yaml#/s3-bucket'
+    $ref: "./paths/integrations/bedrock/s3.yaml#/s3-bucket"
   /bedrock/files/{bucket}/{key}:
-    $ref: './paths/integrations/bedrock/s3.yaml#/s3-object'
+    $ref: "./paths/integrations/bedrock/s3.yaml#/s3-object"
 
   # ==================== Cohere Integration ====================
   # Chat (v2)
   /cohere/v2/chat:
-    $ref: './paths/integrations/cohere/chat.yaml#/chat'
+    $ref: "./paths/integrations/cohere/chat.yaml#/chat"
 
   # Embed (v2)
   /cohere/v2/embed:
-    $ref: './paths/integrations/cohere/embed.yaml#/embed'
+    $ref: "./paths/integrations/cohere/embed.yaml#/embed"
 
   # Rerank (v2)
   /cohere/v2/rerank:
-    $ref: './paths/integrations/cohere/rerank.yaml#/rerank'
+    $ref: "./paths/integrations/cohere/rerank.yaml#/rerank"
 
   # Tokenize (v1)
   /cohere/v1/tokenize:
-    $ref: './paths/integrations/cohere/tokenize.yaml#/tokenize'
+    $ref: "./paths/integrations/cohere/tokenize.yaml#/tokenize"
 
   # ==================== Cursor IDE Integration ====================
   # Hybrid chat completions (parses Responses payload, returns chat-completions shape)
   /cursor/v1/chat/completions:
-    $ref: './paths/integrations/cursor/cursor.yaml#/chat-completions'
+    $ref: "./paths/integrations/cursor/cursor.yaml#/chat-completions"
 
   # Models (OpenAI shape)
   /cursor/v1/models:
-    $ref: './paths/integrations/cursor/cursor.yaml#/models'
+    $ref: "./paths/integrations/cursor/cursor.yaml#/models"
 
   # Anthropic-compatible mounts
   /cursor/v1/complete:
-    $ref: './paths/integrations/cursor/cursor.yaml#/anthropic-complete'
+    $ref: "./paths/integrations/cursor/cursor.yaml#/anthropic-complete"
   /cursor/v1/messages:
-    $ref: './paths/integrations/cursor/cursor.yaml#/anthropic-messages'
+    $ref: "./paths/integrations/cursor/cursor.yaml#/anthropic-messages"
   /cursor/v1/messages/{path}:
-    $ref: './paths/integrations/cursor/cursor.yaml#/anthropic-messages-wildcard'
+    $ref: "./paths/integrations/cursor/cursor.yaml#/anthropic-messages-wildcard"
   /cursor/v1/messages/count_tokens:
-    $ref: './paths/integrations/cursor/cursor.yaml#/anthropic-count-tokens'
+    $ref: "./paths/integrations/cursor/cursor.yaml#/anthropic-count-tokens"
 
   # Gemini-compatible mounts
   /cursor/v1beta/models:
-    $ref: './paths/integrations/cursor/cursor.yaml#/genai-models'
+    $ref: "./paths/integrations/cursor/cursor.yaml#/genai-models"
   /cursor/v1beta/models/{model}:
-    $ref: './paths/integrations/cursor/cursor.yaml#/genai-model-action'
+    $ref: "./paths/integrations/cursor/cursor.yaml#/genai-model-action"
   /cursor/v1beta/models/{model}/operations/{operation_id}:
-    $ref: './paths/integrations/cursor/cursor.yaml#/genai-video-operation'
+    $ref: "./paths/integrations/cursor/cursor.yaml#/genai-video-operation"
 
   # Gemini Rank (Vertex)
   /cursor/v1/rank:
-    $ref: './paths/integrations/cursor/cursor.yaml#/genai-rank'
+    $ref: "./paths/integrations/cursor/cursor.yaml#/genai-rank"
 
   # Bedrock-compatible mounts
   /cursor/model/{modelId}/converse:
-    $ref: './paths/integrations/cursor/cursor.yaml#/bedrock-converse'
+    $ref: "./paths/integrations/cursor/cursor.yaml#/bedrock-converse"
   /cursor/model/{modelId}/converse-stream:
-    $ref: './paths/integrations/cursor/cursor.yaml#/bedrock-converse-stream'
+    $ref: "./paths/integrations/cursor/cursor.yaml#/bedrock-converse-stream"
   /cursor/model/{modelId}/invoke:
-    $ref: './paths/integrations/cursor/cursor.yaml#/bedrock-invoke'
+    $ref: "./paths/integrations/cursor/cursor.yaml#/bedrock-invoke"
   /cursor/model/{modelId}/invoke-with-response-stream:
-    $ref: './paths/integrations/cursor/cursor.yaml#/bedrock-invoke-stream'
+    $ref: "./paths/integrations/cursor/cursor.yaml#/bedrock-invoke-stream"
   /cursor/rerank:
-    $ref: './paths/integrations/cursor/cursor.yaml#/bedrock-rerank'
+    $ref: "./paths/integrations/cursor/cursor.yaml#/bedrock-rerank"
   /cursor/model/{modelId}/count-tokens:
-    $ref: './paths/integrations/cursor/cursor.yaml#/bedrock-count-tokens'
+    $ref: "./paths/integrations/cursor/cursor.yaml#/bedrock-count-tokens"
 
   # Cohere-compatible mounts
   /cursor/v2/chat:
-    $ref: './paths/integrations/cursor/cursor.yaml#/cohere-chat'
+    $ref: "./paths/integrations/cursor/cursor.yaml#/cohere-chat"
   /cursor/v2/embed:
-    $ref: './paths/integrations/cursor/cursor.yaml#/cohere-embed'
+    $ref: "./paths/integrations/cursor/cursor.yaml#/cohere-embed"
   /cursor/v2/rerank:
-    $ref: './paths/integrations/cursor/cursor.yaml#/cohere-rerank'
+    $ref: "./paths/integrations/cursor/cursor.yaml#/cohere-rerank"
   /cursor/v1/tokenize:
-    $ref: './paths/integrations/cursor/cursor.yaml#/cohere-tokenize'
+    $ref: "./paths/integrations/cursor/cursor.yaml#/cohere-tokenize"
 
   # ==================== LiteLLM Integration ====================
   # OpenAI-compatible
   /litellm/v1/completions:
-    $ref: './paths/integrations/litellm/openai.yaml#/text-completions'
+    $ref: "./paths/integrations/litellm/openai.yaml#/text-completions"
   /litellm/v1/chat/completions:
-    $ref: './paths/integrations/litellm/openai.yaml#/chat-completions'
+    $ref: "./paths/integrations/litellm/openai.yaml#/chat-completions"
   /litellm/v1/embeddings:
-    $ref: './paths/integrations/litellm/openai.yaml#/embeddings'
+    $ref: "./paths/integrations/litellm/openai.yaml#/embeddings"
   /litellm/v1/models:
-    $ref: './paths/integrations/litellm/openai.yaml#/models'
+    $ref: "./paths/integrations/litellm/openai.yaml#/models"
   /litellm/v1/responses:
-    $ref: './paths/integrations/litellm/openai.yaml#/responses'
+    $ref: "./paths/integrations/litellm/openai.yaml#/responses"
   /litellm/v1/responses/input_tokens:
-    $ref: './paths/integrations/litellm/openai.yaml#/responses-input-tokens'
+    $ref: "./paths/integrations/litellm/openai.yaml#/responses-input-tokens"
   /litellm/v1/audio/speech:
-    $ref: './paths/integrations/litellm/openai.yaml#/speech'
+    $ref: "./paths/integrations/litellm/openai.yaml#/speech"
   /litellm/v1/audio/transcriptions:
-    $ref: './paths/integrations/litellm/openai.yaml#/transcriptions'
+    $ref: "./paths/integrations/litellm/openai.yaml#/transcriptions"
 
   # Anthropic-compatible
   /litellm/anthropic/v1/messages:
-    $ref: './paths/integrations/litellm/anthropic.yaml#/messages'
+    $ref: "./paths/integrations/litellm/anthropic.yaml#/messages"
 
   # GenAI-compatible
   /litellm/genai/v1beta/models:
-    $ref: './paths/integrations/litellm/genai.yaml#/models'
+    $ref: "./paths/integrations/litellm/genai.yaml#/models"
   /litellm/genai/v1beta/models/{model}:generateContent:
-    $ref: './paths/integrations/litellm/genai.yaml#/generate-content'
+    $ref: "./paths/integrations/litellm/genai.yaml#/generate-content"
   /litellm/genai/v1beta/models/{model}:streamGenerateContent:
-    $ref: './paths/integrations/litellm/genai.yaml#/stream-generate-content'
+    $ref: "./paths/integrations/litellm/genai.yaml#/stream-generate-content"
 
   # Bedrock-compatible
   /litellm/bedrock/model/{modelId}/converse:
-    $ref: './paths/integrations/litellm/bedrock.yaml#/converse'
+    $ref: "./paths/integrations/litellm/bedrock.yaml#/converse"
   /litellm/bedrock/model/{modelId}/converse-stream:
-    $ref: './paths/integrations/litellm/bedrock.yaml#/converse-stream'
+    $ref: "./paths/integrations/litellm/bedrock.yaml#/converse-stream"
 
   # Cohere-compatible
   /litellm/cohere/v2/chat:
-    $ref: './paths/integrations/litellm/cohere.yaml#/chat'
+    $ref: "./paths/integrations/litellm/cohere.yaml#/chat"
   /litellm/cohere/v2/embed:
-    $ref: './paths/integrations/litellm/cohere.yaml#/embed'
+    $ref: "./paths/integrations/litellm/cohere.yaml#/embed"
   /litellm/cohere/v1/tokenize:
-    $ref: './paths/integrations/litellm/cohere.yaml#/tokenize'
+    $ref: "./paths/integrations/litellm/cohere.yaml#/tokenize"
 
   # ==================== LangChain Integration ====================
   # OpenAI-compatible
   /langchain/v1/completions:
-    $ref: './paths/integrations/langchain/openai.yaml#/text-completions'
+    $ref: "./paths/integrations/langchain/openai.yaml#/text-completions"
   /langchain/v1/chat/completions:
-    $ref: './paths/integrations/langchain/openai.yaml#/chat-completions'
+    $ref: "./paths/integrations/langchain/openai.yaml#/chat-completions"
   /langchain/v1/embeddings:
-    $ref: './paths/integrations/langchain/openai.yaml#/embeddings'
+    $ref: "./paths/integrations/langchain/openai.yaml#/embeddings"
   /langchain/v1/models:
-    $ref: './paths/integrations/langchain/openai.yaml#/models'
+    $ref: "./paths/integrations/langchain/openai.yaml#/models"
   /langchain/v1/responses:
-    $ref: './paths/integrations/langchain/openai.yaml#/responses'
+    $ref: "./paths/integrations/langchain/openai.yaml#/responses"
   /langchain/v1/responses/input_tokens:
-    $ref: './paths/integrations/langchain/openai.yaml#/responses-input-tokens'
+    $ref: "./paths/integrations/langchain/openai.yaml#/responses-input-tokens"
   /langchain/v1/audio/speech:
-    $ref: './paths/integrations/langchain/openai.yaml#/speech'
+    $ref: "./paths/integrations/langchain/openai.yaml#/speech"
   /langchain/v1/audio/transcriptions:
-    $ref: './paths/integrations/langchain/openai.yaml#/transcriptions'
+    $ref: "./paths/integrations/langchain/openai.yaml#/transcriptions"
 
   # Anthropic-compatible
   /langchain/anthropic/v1/messages:
-    $ref: './paths/integrations/langchain/anthropic.yaml#/messages'
+    $ref: "./paths/integrations/langchain/anthropic.yaml#/messages"
   /langchain/anthropic/v1/messages/count_tokens:
-    $ref: './paths/integrations/langchain/anthropic.yaml#/count-tokens'
+    $ref: "./paths/integrations/langchain/anthropic.yaml#/count-tokens"
 
   # GenAI-compatible
   /langchain/genai/v1beta/models:
-    $ref: './paths/integrations/langchain/genai.yaml#/models'
+    $ref: "./paths/integrations/langchain/genai.yaml#/models"
   /langchain/genai/v1beta/models/{model}:generateContent:
-    $ref: './paths/integrations/langchain/genai.yaml#/generate-content'
+    $ref: "./paths/integrations/langchain/genai.yaml#/generate-content"
   /langchain/genai/v1beta/models/{model}:streamGenerateContent:
-    $ref: './paths/integrations/langchain/genai.yaml#/stream-generate-content'
+    $ref: "./paths/integrations/langchain/genai.yaml#/stream-generate-content"
 
   # Bedrock-compatible
   /langchain/bedrock/model/{modelId}/converse:
-    $ref: './paths/integrations/langchain/bedrock.yaml#/converse'
+    $ref: "./paths/integrations/langchain/bedrock.yaml#/converse"
   /langchain/bedrock/model/{modelId}/converse-stream:
-    $ref: './paths/integrations/langchain/bedrock.yaml#/converse-stream'
+    $ref: "./paths/integrations/langchain/bedrock.yaml#/converse-stream"
 
   # Cohere-compatible
   /langchain/cohere/v2/chat:
-    $ref: './paths/integrations/langchain/cohere.yaml#/chat'
+    $ref: "./paths/integrations/langchain/cohere.yaml#/chat"
   /langchain/cohere/v2/embed:
-    $ref: './paths/integrations/langchain/cohere.yaml#/embed'
+    $ref: "./paths/integrations/langchain/cohere.yaml#/embed"
   /langchain/cohere/v1/tokenize:
-    $ref: './paths/integrations/langchain/cohere.yaml#/tokenize'
+    $ref: "./paths/integrations/langchain/cohere.yaml#/tokenize"
 
   # ==================== PydanticAI Integration ====================
   # OpenAI-compatible
   /pydanticai/v1/completions:
-    $ref: './paths/integrations/pydanticai/openai.yaml#/text-completions'
+    $ref: "./paths/integrations/pydanticai/openai.yaml#/text-completions"
   /pydanticai/v1/chat/completions:
-    $ref: './paths/integrations/pydanticai/openai.yaml#/chat-completions'
+    $ref: "./paths/integrations/pydanticai/openai.yaml#/chat-completions"
   /pydanticai/v1/embeddings:
-    $ref: './paths/integrations/pydanticai/openai.yaml#/embeddings'
+    $ref: "./paths/integrations/pydanticai/openai.yaml#/embeddings"
   /pydanticai/v1/models:
-    $ref: './paths/integrations/pydanticai/openai.yaml#/models'
+    $ref: "./paths/integrations/pydanticai/openai.yaml#/models"
   /pydanticai/v1/responses:
-    $ref: './paths/integrations/pydanticai/openai.yaml#/responses'
+    $ref: "./paths/integrations/pydanticai/openai.yaml#/responses"
   /pydanticai/v1/responses/input_tokens:
-    $ref: './paths/integrations/pydanticai/openai.yaml#/responses-input-tokens'
+    $ref: "./paths/integrations/pydanticai/openai.yaml#/responses-input-tokens"
   /pydanticai/v1/audio/speech:
-    $ref: './paths/integrations/pydanticai/openai.yaml#/speech'
+    $ref: "./paths/integrations/pydanticai/openai.yaml#/speech"
   /pydanticai/v1/audio/transcriptions:
-    $ref: './paths/integrations/pydanticai/openai.yaml#/transcriptions'
+    $ref: "./paths/integrations/pydanticai/openai.yaml#/transcriptions"
 
   # Anthropic-compatible
   /pydanticai/anthropic/v1/messages:
-    $ref: './paths/integrations/pydanticai/anthropic.yaml#/messages'
+    $ref: "./paths/integrations/pydanticai/anthropic.yaml#/messages"
 
   # GenAI-compatible
   /pydanticai/genai/v1beta/models:
-    $ref: './paths/integrations/pydanticai/genai.yaml#/models'
+    $ref: "./paths/integrations/pydanticai/genai.yaml#/models"
   /pydanticai/genai/v1beta/models/{model}:generateContent:
-    $ref: './paths/integrations/pydanticai/genai.yaml#/generate-content'
+    $ref: "./paths/integrations/pydanticai/genai.yaml#/generate-content"
   /pydanticai/genai/v1beta/models/{model}:streamGenerateContent:
-    $ref: './paths/integrations/pydanticai/genai.yaml#/stream-generate-content'
+    $ref: "./paths/integrations/pydanticai/genai.yaml#/stream-generate-content"
 
   # Bedrock-compatible
   /pydanticai/bedrock/model/{modelId}/converse:
-    $ref: './paths/integrations/pydanticai/bedrock.yaml#/converse'
+    $ref: "./paths/integrations/pydanticai/bedrock.yaml#/converse"
   /pydanticai/bedrock/model/{modelId}/converse-stream:
-    $ref: './paths/integrations/pydanticai/bedrock.yaml#/converse-stream'
+    $ref: "./paths/integrations/pydanticai/bedrock.yaml#/converse-stream"
 
   # Cohere-compatible
   /pydanticai/cohere/v2/chat:
-    $ref: './paths/integrations/pydanticai/cohere.yaml#/chat'
+    $ref: "./paths/integrations/pydanticai/cohere.yaml#/chat"
   /pydanticai/cohere/v2/embed:
-    $ref: './paths/integrations/pydanticai/cohere.yaml#/embed'
+    $ref: "./paths/integrations/pydanticai/cohere.yaml#/embed"
   /pydanticai/cohere/v1/tokenize:
-    $ref: './paths/integrations/pydanticai/cohere.yaml#/tokenize'
+    $ref: "./paths/integrations/pydanticai/cohere.yaml#/tokenize"
 
   # ==================== Management APIs ====================
   # Health
   /health:
-    $ref: './paths/management/health.yaml#/health'
+    $ref: "./paths/management/health.yaml#/health"
 
   # Configuration
   /api/config:
-    $ref: './paths/management/config.yaml#/config'
+    $ref: "./paths/management/config.yaml#/config"
   /api/version:
-    $ref: './paths/management/config.yaml#/version'
+    $ref: "./paths/management/config.yaml#/version"
   /api/proxy-config:
-    $ref: './paths/management/config.yaml#/proxy-config'
+    $ref: "./paths/management/config.yaml#/proxy-config"
   /api/pricing/force-sync:
-    $ref: './paths/management/config.yaml#/force-sync-pricing'
+    $ref: "./paths/management/config.yaml#/force-sync-pricing"
 
-  # Users
-  /api/users:
-    $ref: './paths/management/users.yaml#/users'
-  /api/users/{id}:
-    $ref: './paths/management/users.yaml#/users-by-id'
-  /api/users/me/permissions:
-    $ref: './paths/management/users.yaml#/users-me-permissions'
-  /api/users/{id}/role:
-    $ref: './paths/management/users.yaml#/users-role'
-  /api/users/{id}/teams:
-    $ref: './paths/management/users.yaml#/users-teams'
-  /api/users/email/{email}/virtual-keys:
-    $ref: './paths/management/users.yaml#/users-email-virtual-keys'
+  # Governance - Users (Enterprise)
+  /api/governance/users:
+    $ref: "./paths/management/users.yaml#/users"
+  /api/governance/users/{user_id}:
+    $ref: "./paths/management/users.yaml#/users-by-id"
+  /api/governance/users/me/permissions:
+    $ref: "./paths/management/users.yaml#/users-me-permissions"
+  /api/governance/users/{user_id}/role:
+    $ref: "./paths/management/users.yaml#/users-role"
+  /api/governance/users/{user_id}/teams:
+    $ref: "./paths/management/users.yaml#/users-teams"
+  /api/governance/users/{user_id}/governance:
+    $ref: "./paths/management/users.yaml#/users-governance"
+  /api/governance/users/{user_id}/virtual-keys:
+    $ref: "./paths/management/governanceextensions.yaml#/user-virtual-keys"
+  /api/governance/users/email/{email}/virtual-keys:
+    $ref: "./paths/management/users.yaml#/users-email-virtual-keys"
+  /api/governance/users/email/{email}:
+    $ref: "./paths/management/users.yaml#/users-by-email"
 
-  # Teams
-  /api/teams:
-    $ref: './paths/management/users.yaml#/teams'
-  /api/teams/{id}:
-    $ref: './paths/management/users.yaml#/teams-by-id'
-  /api/teams/{id}/members:
-    $ref: './paths/management/users.yaml#/team-members'
-  /api/teams/{id}/members/{userId}:
-    $ref: './paths/management/users.yaml#/team-member-by-id'
+  # Governance - Enterprise Team relationships
+  /api/governance/teams/{team_id}/members:
+    $ref: "./paths/management/users.yaml#/team-members"
+  /api/governance/teams/{team_id}/members/{user_id}:
+    $ref: "./paths/management/users.yaml#/team-member-by-id"
 
   # Session
   /api/session/login:
-    $ref: './paths/management/session.yaml#/login'
+    $ref: "./paths/management/session.yaml#/login"
   /api/session/logout:
-    $ref: './paths/management/session.yaml#/logout'
+    $ref: "./paths/management/session.yaml#/logout"
   /api/session/is-auth-enabled:
-    $ref: './paths/management/session.yaml#/is-auth-enabled'
+    $ref: "./paths/management/session.yaml#/is-auth-enabled"
   /api/session/ws-ticket:
-    $ref: './paths/management/session.yaml#/ws-ticket'
+    $ref: "./paths/management/session.yaml#/ws-ticket"
 
   # Providers
   /api/providers:
-    $ref: './paths/management/providers.yaml#/providers'
+    $ref: "./paths/management/providers.yaml#/providers"
   /api/providers/{provider}:
-    $ref: './paths/management/providers.yaml#/providers-by-name'
+    $ref: "./paths/management/providers.yaml#/providers-by-name"
   /api/providers/{provider}/keys:
-    $ref: './paths/management/providers.yaml#/provider-keys'
+    $ref: "./paths/management/providers.yaml#/provider-keys"
   /api/providers/{provider}/keys/{key_id}:
-    $ref: './paths/management/providers.yaml#/provider-key-by-id'
+    $ref: "./paths/management/providers.yaml#/provider-key-by-id"
   /api/keys:
-    $ref: './paths/management/providers.yaml#/keys'
+    $ref: "./paths/management/providers.yaml#/keys"
   /api/models:
-    $ref: './paths/management/providers.yaml#/models'
+    $ref: "./paths/management/providers.yaml#/models"
   /api/models/details:
-    $ref: './paths/management/providers.yaml#/models-details'
+    $ref: "./paths/management/providers.yaml#/models-details"
   /api/models/parameters:
-    $ref: './paths/management/providers.yaml#/models-parameters'
+    $ref: "./paths/management/providers.yaml#/models-parameters"
   /api/models/base:
-    $ref: './paths/management/providers.yaml#/models-base'
+    $ref: "./paths/management/providers.yaml#/models-base"
 
   # Plugins
   /api/plugins:
-    $ref: './paths/management/plugins.yaml#/plugins'
+    $ref: "./paths/management/plugins.yaml#/plugins"
   /api/plugins/builtins:
-    $ref: './paths/management/plugins.yaml#/plugins-builtins'
+    $ref: "./paths/management/plugins.yaml#/plugins-builtins"
   /api/plugins/{name}:
-    $ref: './paths/management/plugins.yaml#/~1plugins~1{name}'
+    $ref: "./paths/management/plugins.yaml#/~1plugins~1{name}"
 
   # MCP — client management
   /v1/mcp/tool/execute:
-    $ref: './paths/management/mcp.yaml#/execute-tool'
+    $ref: "./paths/management/mcp.yaml#/execute-tool"
   /api/mcp/clients:
-    $ref: './paths/management/mcp.yaml#/clients'
+    $ref: "./paths/management/mcp.yaml#/clients"
   /api/mcp/client:
-    $ref: './paths/management/mcp.yaml#/client'
+    $ref: "./paths/management/mcp.yaml#/client"
   /api/mcp/client/{id}:
-    $ref: './paths/management/mcp.yaml#/client-by-id'
+    $ref: "./paths/management/mcp.yaml#/client-by-id"
   /api/mcp/client/{id}/reconnect:
-    $ref: './paths/management/mcp.yaml#/client-reconnect'
+    $ref: "./paths/management/mcp.yaml#/client-reconnect"
   /api/mcp/client/{id}/complete-oauth:
-    $ref: './paths/management/mcp.yaml#/client-complete-oauth'
+    $ref: "./paths/management/mcp.yaml#/client-complete-oauth"
+  /api/mcp/client/{id}/initiate-verification:
+    $ref: "./paths/management/mcp.yaml#/client-initiate-verification"
+  /api/mcp/client/{id}/reauthorize:
+    $ref: "./paths/management/mcp.yaml#/client-reauthorize"
+  /api/mcp/client/{id}/verify-headers:
+    $ref: "./paths/management/mcp.yaml#/client-verify-headers"
+  /api/mcp/client/{id}/verify-exchange:
+    $ref: "./paths/management/mcp.yaml#/client-verify-exchange"
 
   # MCP — per-user sessions (OAuth tokens + headers credentials + pending flows)
   /api/mcp/sessions:
-    $ref: './paths/management/mcp.yaml#/sessions'
+    $ref: "./paths/management/mcp.yaml#/sessions"
   /api/mcp/sessions/{id}:
-    $ref: './paths/management/mcp.yaml#/session-by-id'
+    $ref: "./paths/management/mcp.yaml#/session-by-id"
   /api/mcp/sessions/{id}/reauth:
-    $ref: './paths/management/mcp.yaml#/session-reauth'
+    $ref: "./paths/management/mcp.yaml#/session-reauth"
 
   # MCP — per-user-headers submission flow
   /api/mcp/per-user-headers/flows/{id}:
-    $ref: './paths/management/mcp.yaml#/per-user-headers-flow'
+    $ref: "./paths/management/mcp.yaml#/per-user-headers-flow"
   /api/mcp/per-user-headers/credential/{id}:
-    $ref: './paths/management/mcp.yaml#/per-user-headers-credential'
+    $ref: "./paths/management/mcp.yaml#/per-user-headers-credential"
 
   # MCP — per-user OAuth flow
   /api/oauth/per-user/flows/{id}:
-    $ref: './paths/management/oauth.yaml#/per-user-oauth-flow-detail'
+    $ref: "./paths/management/oauth.yaml#/per-user-oauth-flow-detail"
   /api/oauth/per-user/flows/{id}/start:
-    $ref: './paths/management/oauth.yaml#/per-user-oauth-flow-start'
+    $ref: "./paths/management/oauth.yaml#/per-user-oauth-flow-start"
 
   # MCP — server-level OAuth admin endpoints
   /api/oauth/callback:
-    $ref: './paths/management/oauth.yaml#/oauth-callback'
+    $ref: "./paths/management/oauth.yaml#/oauth-callback"
   /api/oauth/config/{id}/status:
-    $ref: './paths/management/oauth.yaml#/oauth-config-status'
+    $ref: "./paths/management/oauth.yaml#/oauth-config-status"
   /api/oauth/config/{id}:
-    $ref: './paths/management/oauth.yaml#/oauth-config-by-id'
+    $ref: "./paths/management/oauth.yaml#/oauth-config-by-id"
 
   # Governance - Virtual Keys
   /api/governance/virtual-keys:
-    $ref: './paths/management/governance.yaml#/virtual-keys'
+    $ref: "./paths/management/governance.yaml#/virtual-keys"
   /api/governance/virtual-keys/quota:
-    $ref: './paths/management/governance.yaml#/virtual-keys-quota'
+    $ref: "./paths/management/governance.yaml#/virtual-keys-quota"
   /api/governance/virtual-keys/{vk_id}:
-    $ref: './paths/management/governance.yaml#/virtual-keys-by-id'
+    $ref: "./paths/management/governance.yaml#/virtual-keys-by-id"
   /api/governance/virtual-keys/{vk_id}/budgets/{budget_id}/override:
-    $ref: './paths/management/governance.yaml#/virtual-keys-budget-override'
+    $ref: "./paths/management/governance.yaml#/virtual-keys-budget-override"
+  /api/governance/virtual-keys/{vk_id}/users:
+    $ref: "./paths/management/governanceextensions.yaml#/virtual-key-users"
+  /api/governance/virtual-keys/{vk_id}/users/{user_id}:
+    $ref: "./paths/management/governanceextensions.yaml#/virtual-key-user"
 
   # Governance - Teams
   /api/governance/teams:
-    $ref: './paths/management/governance.yaml#/teams'
+    $ref: "./paths/management/governance.yaml#/teams"
   /api/governance/teams/{team_id}:
-    $ref: './paths/management/governance.yaml#/teams-by-id'
+    $ref: "./paths/management/governance.yaml#/teams-by-id"
+  /api/governance/teams/{team_id}/customers:
+    $ref: "./paths/management/governanceextensions.yaml#/team-customers"
+  /api/governance/teams/{team_id}/customers/{customer_id}:
+    $ref: "./paths/management/governanceextensions.yaml#/team-customer"
 
   # Governance - Customers
   /api/governance/customers:
-    $ref: './paths/management/governance.yaml#/customers'
+    $ref: "./paths/management/governance.yaml#/customers"
   /api/governance/customers/{customer_id}:
-    $ref: './paths/management/governance.yaml#/customers-by-id'
+    $ref: "./paths/management/governance.yaml#/customers-by-id"
+  /api/governance/customers/{customer_id}/teams:
+    $ref: "./paths/management/governanceextensions.yaml#/customer-teams"
+  /api/governance/customers/{customer_id}/business-units:
+    $ref: "./paths/management/governanceextensions.yaml#/customer-business-units"
 
   # Governance - Business Units (Enterprise)
   /api/governance/business-units:
-    $ref: './paths/management/businessunits.yaml#/business-units'
-  /api/governance/business-units/{id}:
-    $ref: './paths/management/businessunits.yaml#/business-units-by-id'
-  /api/governance/business-units/{id}/teams:
-    $ref: './paths/management/businessunits.yaml#/business-units-teams'
-  /api/governance/business-units/{id}/teams/{team_id}:
-    $ref: './paths/management/businessunits.yaml#/business-units-team-by-id'
-  /api/governance/business-units/{id}/governance:
-    $ref: './paths/management/businessunits.yaml#/business-units-governance'
+    $ref: "./paths/management/businessunits.yaml#/business-units"
+  /api/governance/business-units/{business_unit_id}:
+    $ref: "./paths/management/businessunits.yaml#/business-units-by-id"
+  /api/governance/business-units/{business_unit_id}/teams:
+    $ref: "./paths/management/businessunits.yaml#/business-units-teams"
+  /api/governance/business-units/{business_unit_id}/teams/{team_id}:
+    $ref: "./paths/management/businessunits.yaml#/business-units-team-by-id"
+  /api/governance/business-units/{business_unit_id}/governance:
+    $ref: "./paths/management/businessunits.yaml#/business-units-governance"
+  /api/governance/business-units/{business_unit_id}/customers:
+    $ref: "./paths/management/governanceextensions.yaml#/business-unit-customers"
+  /api/governance/business-units/{business_unit_id}/customers/{customer_id}:
+    $ref: "./paths/management/governanceextensions.yaml#/business-unit-customer"
 
   # Governance - Budgets and Rate Limits
   /api/governance/budgets:
-    $ref: './paths/management/governance.yaml#/budgets'
+    $ref: "./paths/management/governance.yaml#/budgets"
   /api/governance/rate-limits:
-    $ref: './paths/management/governance.yaml#/rate-limits'
+    $ref: "./paths/management/governance.yaml#/rate-limits"
   /api/governance/routing-rules:
-    $ref: './paths/management/governance.yaml#/routing-rules'
+    $ref: "./paths/management/governance.yaml#/routing-rules"
   /api/governance/routing-rules/{rule_id}:
-    $ref: './paths/management/governance.yaml#/routing-rules-by-id'
+    $ref: "./paths/management/governance.yaml#/routing-rules-by-id"
 
   # Governance - Model Configs
   /api/governance/model-configs:
-    $ref: './paths/management/governance.yaml#/model-configs'
+    $ref: "./paths/management/governance.yaml#/model-configs"
   /api/governance/model-configs/{mc_id}:
-    $ref: './paths/management/governance.yaml#/model-configs-by-id'
+    $ref: "./paths/management/governance.yaml#/model-configs-by-id"
 
   # Governance - Provider Governance
   /api/governance/providers:
-    $ref: './paths/management/governance.yaml#/provider-governance'
+    $ref: "./paths/management/governance.yaml#/provider-governance"
   /api/governance/providers/{provider_name}:
-    $ref: './paths/management/governance.yaml#/provider-governance-by-name'
+    $ref: "./paths/management/governance.yaml#/provider-governance-by-name"
 
   # Governance - Pricing Overrides
   /api/governance/pricing-overrides:
-    $ref: './paths/management/governance.yaml#/pricing-overrides'
+    $ref: "./paths/management/governance.yaml#/pricing-overrides"
   /api/governance/pricing-overrides/{id}:
-    $ref: './paths/management/governance.yaml#/pricing-overrides-by-id'
+    $ref: "./paths/management/governance.yaml#/pricing-overrides-by-id"
 
-  # RBAC (roles, permissions, resources, operations)
+  # Governance - RBAC (Enterprise)
+  /api/governance/rbac/roles:
+    $ref: "./paths/management/rbac.yaml#/roles"
+  /api/governance/rbac/roles/{role_id}:
+    $ref: "./paths/management/rbac.yaml#/roles-by-id"
+  /api/governance/rbac/roles/{role_id}/permissions:
+    $ref: "./paths/management/rbac.yaml#/roles-permissions"
+  /api/governance/rbac/resources:
+    $ref: "./paths/management/rbac.yaml#/resources"
+  /api/governance/rbac/operations:
+    $ref: "./paths/management/rbac.yaml#/operations"
+  /api/governance/rbac/permissions:
+    $ref: "./paths/management/rbac.yaml#/permissions"
+
+  # Governance - Access Profiles (Enterprise)
+  /api/governance/access-profiles:
+    $ref: "./paths/management/accessprofiles.yaml#/access-profiles"
+  /api/governance/access-profiles/{profile_id}:
+    $ref: "./paths/management/accessprofiles.yaml#/access-profiles-by-id"
+  /api/governance/access-profiles/{profile_id}/activate:
+    $ref: "./paths/management/accessprofiles.yaml#/access-profiles-activate"
+  /api/governance/access-profiles/{profile_id}/deactivate:
+    $ref: "./paths/management/accessprofiles.yaml#/access-profiles-deactivate"
+  /api/governance/access-profiles/{profile_id}/clone:
+    $ref: "./paths/management/accessprofiles.yaml#/access-profiles-clone"
+  /api/governance/access-profiles/{profile_id}/propagate:
+    $ref: "./paths/management/accessprofiles.yaml#/access-profiles-propagate"
+  /api/governance/access-profiles/{profile_id}/roles:
+    $ref: "./paths/management/accessprofiles.yaml#/access-profiles-roles"
+  /api/governance/access-profiles/{profile_id}/roles/{role_id}:
+    $ref: "./paths/management/accessprofiles.yaml#/access-profiles-role-by-id"
+  /api/governance/access-profiles/{profile_id}/versions:
+    $ref: "./paths/management/accessprofiles.yaml#/access-profiles-versions"
+  /api/governance/access-profiles/{profile_id}/versions/{version}:
+    $ref: "./paths/management/accessprofiles.yaml#/access-profiles-version-by-number"
+  /api/governance/access-profiles/{profile_id}/audit-logs:
+    $ref: "./paths/management/accessprofiles.yaml#/access-profiles-audit-logs-by-id"
+  /api/governance/access-profiles/audit-logs:
+    $ref: "./paths/management/accessprofiles.yaml#/access-profiles-audit-logs-all"
+  /api/governance/users/{user_id}/access-profiles:
+    $ref: "./paths/management/accessprofiles.yaml#/users-access-profiles"
+  /api/governance/users/{user_id}/access-profiles/{profile_id}:
+    $ref: "./paths/management/accessprofiles.yaml#/users-access-profile-by-id"
+  /api/governance/users/{user_id}/access-profiles/{profile_id}/budgets/{budget_id}/override:
+    $ref: "./paths/management/accessprofiles.yaml#/users-access-profile-budget-override"
+  /api/governance/users/{user_id}/access-profiles/{profile_id}/virtual-keys:
+    $ref: "./paths/management/accessprofiles.yaml#/users-access-profile-virtual-keys"
+  /api/governance/users/{user_id}/access-profiles/virtual-keys/{vk_id}:
+    $ref: "./paths/management/accessprofiles.yaml#/users-access-profile-virtual-key-by-id"
+
+  # Deprecated Governance aliases (Enterprise compatibility; remove in the following major release)
+  /api/virtual-keys/{vk_id}/users:
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-virtual-key-users"
+  /api/virtual-keys/{vk_id}/users/{user_id}:
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-virtual-key-user"
+  /api/teams/{team_id}/customers:
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-team-customers"
+  /api/teams/{team_id}/customers/{customer_id}:
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-team-customer"
+  /api/customers/{customer_id}/teams:
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-customer-teams"
   /api/roles:
-    $ref: './paths/management/rbac.yaml#/roles'
-  /api/roles/{id}:
-    $ref: './paths/management/rbac.yaml#/roles-by-id'
-  /api/roles/{id}/permissions:
-    $ref: './paths/management/rbac.yaml#/roles-permissions'
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-roles"
+  /api/roles/{role_id}:
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-roles-by-id"
+  /api/roles/{role_id}/permissions:
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-role-permissions"
   /api/resources:
-    $ref: './paths/management/rbac.yaml#/resources'
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-resources"
   /api/operations:
-    $ref: './paths/management/rbac.yaml#/operations'
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-operations"
   /api/permissions:
-    $ref: './paths/management/rbac.yaml#/permissions'
-
-  # Access Profiles
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-permissions"
+  /api/users:
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-users"
+  /api/users/{user_id}:
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-users-by-id"
+  /api/users/me/permissions:
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-users-me-permissions"
+  /api/users/{user_id}/role:
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-users-role"
+  /api/users/{user_id}/teams:
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-users-teams"
+  /api/users/email/{email}/virtual-keys:
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-users-email-virtual-keys"
+  /api/users/email/{email}:
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-users-by-email"
+  /api/teams:
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-teams"
+  /api/teams/{team_id}:
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-teams-by-id"
+  /api/teams/{team_id}/members:
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-team-members"
+  /api/teams/{team_id}/members/{user_id}:
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-team-member-by-id"
   /api/access-profiles:
-    $ref: './paths/management/accessprofiles.yaml#/access-profiles'
-  /api/access-profiles/{id}:
-    $ref: './paths/management/accessprofiles.yaml#/access-profiles-by-id'
-  /api/access-profiles/{id}/activate:
-    $ref: './paths/management/accessprofiles.yaml#/access-profiles-activate'
-  /api/access-profiles/{id}/deactivate:
-    $ref: './paths/management/accessprofiles.yaml#/access-profiles-deactivate'
-  /api/access-profiles/{id}/clone:
-    $ref: './paths/management/accessprofiles.yaml#/access-profiles-clone'
-  /api/access-profiles/{id}/propagate:
-    $ref: './paths/management/accessprofiles.yaml#/access-profiles-propagate'
-  /api/access-profiles/{id}/roles:
-    $ref: './paths/management/accessprofiles.yaml#/access-profiles-roles'
-  /api/access-profiles/{id}/roles/{role_id}:
-    $ref: './paths/management/accessprofiles.yaml#/access-profiles-role-by-id'
-  /api/access-profiles/{id}/versions:
-    $ref: './paths/management/accessprofiles.yaml#/access-profiles-versions'
-  /api/access-profiles/{id}/versions/{version}:
-    $ref: './paths/management/accessprofiles.yaml#/access-profiles-version-by-number'
-  /api/access-profiles/{id}/audit-logs:
-    $ref: './paths/management/accessprofiles.yaml#/access-profiles-audit-logs-by-id'
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-access-profiles"
+  /api/access-profiles/{profile_id}:
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-access-profiles-by-id"
+  /api/access-profiles/{profile_id}/activate:
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-access-profiles-activate"
+  /api/access-profiles/{profile_id}/deactivate:
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-access-profiles-deactivate"
+  /api/access-profiles/{profile_id}/clone:
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-access-profiles-clone"
+  /api/access-profiles/{profile_id}/propagate:
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-access-profiles-propagate"
+  /api/access-profiles/{profile_id}/roles:
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-access-profiles-roles"
+  /api/access-profiles/{profile_id}/roles/{role_id}:
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-access-profiles-role-by-id"
+  /api/access-profiles/{profile_id}/versions:
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-access-profiles-versions"
+  /api/access-profiles/{profile_id}/versions/{version}:
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-access-profiles-version-by-number"
+  /api/access-profiles/{profile_id}/audit-logs:
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-access-profiles-audit-logs-by-id"
   /api/access-profiles/audit-logs:
-    $ref: './paths/management/accessprofiles.yaml#/access-profiles-audit-logs-all'
-  /api/users/{target_user_id}/access-profiles:
-    $ref: './paths/management/accessprofiles.yaml#/users-access-profiles'
-  /api/users/{target_user_id}/access-profiles/{profile_id}:
-    $ref: './paths/management/accessprofiles.yaml#/users-access-profile-by-id'
-  /api/users/{target_user_id}/access-profiles/{profile_id}/budgets/{budget_id}/override:
-    $ref: './paths/management/accessprofiles.yaml#/users-access-profile-budget-override'
-  /api/users/{target_user_id}/access-profiles/{profile_id}/virtual-keys:
-    $ref: './paths/management/accessprofiles.yaml#/users-access-profile-virtual-keys'
-  /api/users/{target_user_id}/access-profiles/virtual-keys/{vk_id}:
-    $ref: './paths/management/accessprofiles.yaml#/users-access-profile-virtual-key-by-id'
-
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-access-profiles-audit-logs-all"
+  /api/users/{user_id}/access-profiles:
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-users-access-profiles"
+  /api/users/{user_id}/virtual-keys:
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-user-virtual-keys"
+  /api/users/{user_id}/access-profiles/{profile_id}/budgets/{budget_id}/override:
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-user-access-profile-budget-override"
+  /api/users/{user_id}/access-profiles/{profile_id}:
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-users-access-profile-by-id"
+  /api/users/{user_id}/access-profiles/{profile_id}/virtual-keys:
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-users-access-profile-virtual-keys"
+  /api/users/{user_id}/access-profiles/virtual-keys/{vk_id}:
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-users-access-profile-virtual-key-by-id"
   # Audit Logs
+  /api/governance/audit-logs:
+    $ref: "./paths/management/auditlogs.yaml#/audit-logs"
+  /api/governance/audit-logs/filterdata:
+    $ref: "./paths/management/auditlogs.yaml#/audit-logs-filterdata"
+  /api/governance/audit-logs/export:
+    $ref: "./paths/management/auditlogs.yaml#/audit-logs-export"
+  /api/governance/audit-logs/{id}:
+    $ref: "./paths/management/auditlogs.yaml#/audit-logs-by-id"
+  /api/governance/audit-logs/{id}/verify:
+    $ref: "./paths/management/auditlogs.yaml#/audit-logs-verify"
+
+  # Audit Logs (legacy aliases)
   /api/audit-logs:
-    $ref: './paths/management/auditlogs.yaml#/audit-logs'
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-audit-logs"
   /api/audit-logs/filterdata:
-    $ref: './paths/management/auditlogs.yaml#/audit-logs-filterdata'
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-audit-logs-filterdata"
   /api/audit-logs/export:
-    $ref: './paths/management/auditlogs.yaml#/audit-logs-export'
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-audit-logs-export"
   /api/audit-logs/{id}:
-    $ref: './paths/management/auditlogs.yaml#/audit-logs-by-id'
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-audit-logs-by-id"
   /api/audit-logs/{id}/verify:
-    $ref: './paths/management/auditlogs.yaml#/audit-logs-verify'
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-audit-logs-verify"
 
   # MCP Tool Groups
   /api/mcp/tool-groups:
-    $ref: './paths/management/mcptoolgroups.yaml#/mcp-tool-groups'
+    $ref: "./paths/management/mcptoolgroups.yaml#/mcp-tool-groups"
   /api/mcp/tool-groups/{id}:
-    $ref: './paths/management/mcptoolgroups.yaml#/mcp-tool-groups-by-id'
+    $ref: "./paths/management/mcptoolgroups.yaml#/mcp-tool-groups-by-id"
 
   # Circuit Breaker
   /api/circuit-breaker/policies:
-    $ref: './paths/management/circuitbreaker.yaml#/circuit-breaker-policies'
+    $ref: "./paths/management/circuitbreaker.yaml#/circuit-breaker-policies"
   /api/circuit-breaker/policies/{name}:
-    $ref: './paths/management/circuitbreaker.yaml#/circuit-breaker-policy-by-name'
+    $ref: "./paths/management/circuitbreaker.yaml#/circuit-breaker-policy-by-name"
   /api/circuit-breaker/state:
-    $ref: './paths/management/circuitbreaker.yaml#/circuit-breaker-state'
+    $ref: "./paths/management/circuitbreaker.yaml#/circuit-breaker-state"
 
   # Governance - Complexity Analyzer Config
   /api/governance/complexity-analyzer-config:
-    $ref: './paths/management/governance.yaml#/complexity'
+    $ref: "./paths/management/governance.yaml#/complexity"
   /api/governance/complexity-analyzer-config/reset:
-    $ref: './paths/management/governance.yaml#/complexity-reset'
+    $ref: "./paths/management/governance.yaml#/complexity-reset"
 
   # Logging
   /api/logs:
-    $ref: './paths/management/logging.yaml#/logs'
+    $ref: "./paths/management/logging.yaml#/logs"
   /api/logs/{id}:
-    $ref: './paths/management/logging.yaml#/logs-by-id'
+    $ref: "./paths/management/logging.yaml#/logs-by-id"
   /api/logs/sessions/{session_id}:
-    $ref: './paths/management/logging.yaml#/logs-sessions-by-id'
+    $ref: "./paths/management/logging.yaml#/logs-sessions-by-id"
   /api/logs/sessions/{session_id}/summary:
-    $ref: './paths/management/logging.yaml#/logs-sessions-summary-by-id'
+    $ref: "./paths/management/logging.yaml#/logs-sessions-summary-by-id"
   /api/logs/stats:
-    $ref: './paths/management/logging.yaml#/logs-stats'
+    $ref: "./paths/management/logging.yaml#/logs-stats"
   /api/logs/histogram:
-    $ref: './paths/management/logging.yaml#/logs-histogram'
+    $ref: "./paths/management/logging.yaml#/logs-histogram"
   /api/logs/histogram/tokens:
-    $ref: './paths/management/logging.yaml#/logs-histogram-tokens'
+    $ref: "./paths/management/logging.yaml#/logs-histogram-tokens"
   /api/logs/histogram/cost:
-    $ref: './paths/management/logging.yaml#/logs-histogram-cost'
+    $ref: "./paths/management/logging.yaml#/logs-histogram-cost"
   /api/logs/histogram/models:
-    $ref: './paths/management/logging.yaml#/logs-histogram-models'
+    $ref: "./paths/management/logging.yaml#/logs-histogram-models"
   /api/logs/histogram/latency:
-    $ref: './paths/management/logging.yaml#/logs-histogram-latency'
+    $ref: "./paths/management/logging.yaml#/logs-histogram-latency"
   /api/logs/histogram/cost/by-provider:
-    $ref: './paths/management/logging.yaml#/logs-histogram-cost-by-provider'
+    $ref: "./paths/management/logging.yaml#/logs-histogram-cost-by-provider"
   /api/logs/histogram/tokens/by-provider:
-    $ref: './paths/management/logging.yaml#/logs-histogram-tokens-by-provider'
+    $ref: "./paths/management/logging.yaml#/logs-histogram-tokens-by-provider"
   /api/logs/histogram/latency/by-provider:
-    $ref: './paths/management/logging.yaml#/logs-histogram-latency-by-provider'
+    $ref: "./paths/management/logging.yaml#/logs-histogram-latency-by-provider"
   /api/logs/histogram/cost/by-dimension:
-    $ref: './paths/management/logging.yaml#/logs-histogram-cost-by-dimension'
+    $ref: "./paths/management/logging.yaml#/logs-histogram-cost-by-dimension"
   /api/logs/histogram/tokens/by-dimension:
-    $ref: './paths/management/logging.yaml#/logs-histogram-tokens-by-dimension'
+    $ref: "./paths/management/logging.yaml#/logs-histogram-tokens-by-dimension"
   /api/logs/histogram/latency/by-dimension:
-    $ref: './paths/management/logging.yaml#/logs-histogram-latency-by-dimension'
+    $ref: "./paths/management/logging.yaml#/logs-histogram-latency-by-dimension"
   /api/logs/dropped:
-    $ref: './paths/management/logging.yaml#/logs-dropped'
+    $ref: "./paths/management/logging.yaml#/logs-dropped"
   /api/logs/filterdata:
-    $ref: './paths/management/logging.yaml#/logs-filterdata'
+    $ref: "./paths/management/logging.yaml#/logs-filterdata"
   /api/logs/rankings:
-    $ref: './paths/management/logging.yaml#/logs-rankings'
+    $ref: "./paths/management/logging.yaml#/logs-rankings"
   /api/logs/dashboard:
-    $ref: './paths/management/logging.yaml#/logs-dashboard'
+    $ref: "./paths/management/logging.yaml#/logs-dashboard"
   /api/logs/recalculate-cost:
-    $ref: './paths/management/logging.yaml#/logs-recalculate-cost'
+    $ref: "./paths/management/logging.yaml#/logs-recalculate-cost"
   /api/logs/recalculate-cost/status:
-    $ref: './paths/management/logging.yaml#/logs-recalculate-cost-status'
+    $ref: "./paths/management/logging.yaml#/logs-recalculate-cost-status"
 
   # MCP Logs
   /api/mcp-logs:
-    $ref: './paths/management/logging.yaml#/mcp-logs'
+    $ref: "./paths/management/logging.yaml#/mcp-logs"
   /api/mcp-logs/{id}:
-    $ref: './paths/management/logging.yaml#/mcp-logs-by-id'
+    $ref: "./paths/management/logging.yaml#/mcp-logs-by-id"
   /api/mcp-logs/stats:
-    $ref: './paths/management/logging.yaml#/mcp-logs-stats'
+    $ref: "./paths/management/logging.yaml#/mcp-logs-stats"
   /api/mcp-logs/filterdata:
-    $ref: './paths/management/logging.yaml#/mcp-logs-filterdata'
+    $ref: "./paths/management/logging.yaml#/mcp-logs-filterdata"
   /api/mcp-logs/histogram:
-    $ref: './paths/management/logging.yaml#/mcp-logs-histogram'
+    $ref: "./paths/management/logging.yaml#/mcp-logs-histogram"
   /api/mcp-logs/histogram/cost:
-    $ref: './paths/management/logging.yaml#/mcp-logs-histogram-cost'
+    $ref: "./paths/management/logging.yaml#/mcp-logs-histogram-cost"
   /api/mcp-logs/histogram/top-tools:
-    $ref: './paths/management/logging.yaml#/mcp-logs-histogram-top-tools'
+    $ref: "./paths/management/logging.yaml#/mcp-logs-histogram-top-tools"
 
   # Prompt Repository
   /api/prompt-repo/folders:
-    $ref: './paths/management/prompts.yaml#/folders'
+    $ref: "./paths/management/prompts.yaml#/folders"
   /api/prompt-repo/folders/{id}:
-    $ref: './paths/management/prompts.yaml#/folders-by-id'
+    $ref: "./paths/management/prompts.yaml#/folders-by-id"
   /api/prompt-repo/prompts:
-    $ref: './paths/management/prompts.yaml#/prompts'
+    $ref: "./paths/management/prompts.yaml#/prompts"
   /api/prompt-repo/prompts/{id}:
-    $ref: './paths/management/prompts.yaml#/prompts-by-id'
+    $ref: "./paths/management/prompts.yaml#/prompts-by-id"
   /api/prompt-repo/prompts/{id}/versions:
-    $ref: './paths/management/prompts.yaml#/prompt-versions'
+    $ref: "./paths/management/prompts.yaml#/prompt-versions"
   /api/prompt-repo/versions/{id}:
-    $ref: './paths/management/prompts.yaml#/versions-by-id'
+    $ref: "./paths/management/prompts.yaml#/versions-by-id"
   /api/prompt-repo/prompts/{id}/sessions:
-    $ref: './paths/management/prompts.yaml#/prompt-sessions'
+    $ref: "./paths/management/prompts.yaml#/prompt-sessions"
   /api/prompt-repo/sessions/{id}:
-    $ref: './paths/management/prompts.yaml#/sessions-by-id'
+    $ref: "./paths/management/prompts.yaml#/sessions-by-id"
   /api/prompt-repo/sessions/{id}/rename:
-    $ref: './paths/management/prompts.yaml#/sessions-rename'
+    $ref: "./paths/management/prompts.yaml#/sessions-rename"
   /api/prompt-repo/sessions/{id}/commit:
-    $ref: './paths/management/prompts.yaml#/sessions-commit'
+    $ref: "./paths/management/prompts.yaml#/sessions-commit"
 
   # Skills Repository
   /api/skills/files/upload:
-    $ref: './paths/management/skills.yaml#/skill-file-upload'
+    $ref: "./paths/management/skills.yaml#/skill-file-upload"
   /api/skills/files/orphans:
-    $ref: './paths/management/skills.yaml#/skill-orphan-files'
+    $ref: "./paths/management/skills.yaml#/skill-orphan-files"
   /api/skills/all/version:
-    $ref: './paths/management/skills.yaml#/all-skills-version'
+    $ref: "./paths/management/skills.yaml#/all-skills-version"
   /api/skills:
-    $ref: './paths/management/skills.yaml#/skills'
+    $ref: "./paths/management/skills.yaml#/skills"
   /api/skills/{id}:
-    $ref: './paths/management/skills.yaml#/skills-by-id'
+    $ref: "./paths/management/skills.yaml#/skills-by-id"
   /api/skills/{id}/versions:
-    $ref: './paths/management/skills.yaml#/skill-versions'
+    $ref: "./paths/management/skills.yaml#/skill-versions"
   /api/skills/{id}/shift-version:
-    $ref: './paths/management/skills.yaml#/shift-skill-version'
+    $ref: "./paths/management/skills.yaml#/shift-skill-version"
   /api/skills/serve/claude-code/.claude-plugin/marketplace.json:
-    $ref: './paths/management/skills.yaml#/claude-code-skills-marketplace'
+    $ref: "./paths/management/skills.yaml#/claude-code-skills-marketplace"
   /api/skills/serve/codex/.agents/plugins/marketplace.json:
-    $ref: './paths/management/skills.yaml#/codex-skills-marketplace'
+    $ref: "./paths/management/skills.yaml#/codex-skills-marketplace"
   /api/skills/serve/all/download.zip:
-    $ref: './paths/management/skills.yaml#/all-skills-download'
+    $ref: "./paths/management/skills.yaml#/all-skills-download"
   /api/skills/serve/{skill-name}/download.zip:
-    $ref: './paths/management/skills.yaml#/skill-download'
+    $ref: "./paths/management/skills.yaml#/skill-download"
   /api/skills/serve/{skill-name}/files/{filepath}:
-    $ref: './paths/management/skills.yaml#/skill-file-download'
+    $ref: "./paths/management/skills.yaml#/skill-file-download"
 
   # Cache
   /api/cache/clear/{cacheId}:
-    $ref: './paths/management/cache.yaml#/clear-by-cache-id'
+    $ref: "./paths/management/cache.yaml#/clear-by-cache-id"
   /api/cache/clear-by-key/{cacheKey}:
-    $ref: './paths/management/cache.yaml#/clear-by-cache-key'
+    $ref: "./paths/management/cache.yaml#/clear-by-cache-key"
 
   # Vault
   /api/vault/flush-cache:
-    $ref: './paths/management/vault.yaml#/flush-cache'
+    $ref: "./paths/management/vault.yaml#/flush-cache"
 
   # Infrastructure
   /ws:
-    $ref: './paths/management/infrastructure.yaml#/websocket'
+    $ref: "./paths/management/infrastructure.yaml#/websocket"
   /mcp:
-    $ref: './paths/management/infrastructure.yaml#/mcp-server'
+    $ref: "./paths/management/infrastructure.yaml#/mcp-server"
   /metrics:
-    $ref: './paths/management/infrastructure.yaml#/metrics'
+    $ref: "./paths/management/infrastructure.yaml#/metrics"
 
   # Webhooks
   /api/webhooks:
-    $ref: './paths/management/webhooks.yaml#/webhooks'
+    $ref: "./paths/management/webhooks.yaml#/webhooks"
   /api/webhooks/{id}:
-    $ref: './paths/management/webhooks.yaml#/webhooks-by-id'
+    $ref: "./paths/management/webhooks.yaml#/webhooks-by-id"
   /api/webhooks/{id}/rotate-secret:
-    $ref: './paths/management/webhooks.yaml#/webhooks-rotate-secret'
+    $ref: "./paths/management/webhooks.yaml#/webhooks-rotate-secret"
   /api/webhooks/{id}/test:
-    $ref: './paths/management/webhooks.yaml#/webhooks-test'
+    $ref: "./paths/management/webhooks.yaml#/webhooks-test"
   /api/webhooks/{id}/deliveries:
-    $ref: './paths/management/webhooks.yaml#/webhooks-deliveries'
+    $ref: "./paths/management/webhooks.yaml#/webhooks-deliveries"
   /api/webhooks/deliveries/{id}/redeliver:
-    $ref: './paths/management/webhooks.yaml#/webhooks-deliveries-redeliver'
+    $ref: "./paths/management/webhooks.yaml#/webhooks-deliveries-redeliver"
 
 components:
   securitySchemes:
@@ -1155,13 +1274,13 @@ components:
 
   parameters:
     AsyncJobId:
-      $ref: './paths/inference/async.yaml#/components/parameters/AsyncJobId'
+      $ref: "./paths/inference/async.yaml#/components/parameters/AsyncJobId"
     AsyncResultTTL:
-      $ref: './paths/inference/async.yaml#/components/parameters/AsyncResultTTL'
+      $ref: "./paths/inference/async.yaml#/components/parameters/AsyncResultTTL"
     AsyncWebhookEndpoint:
-      $ref: './paths/inference/async.yaml#/components/parameters/AsyncWebhookEndpoint'
+      $ref: "./paths/inference/async.yaml#/components/parameters/AsyncWebhookEndpoint"
     WebhookEndpointId:
-      $ref: './paths/management/webhooks.yaml#/components/parameters/WebhookEndpointId'
+      $ref: "./paths/management/webhooks.yaml#/components/parameters/WebhookEndpointId"
 
   responses:
     BadRequest:
@@ -1169,582 +1288,588 @@ components:
       content:
         application/json:
           schema:
-            $ref: './schemas/inference/common.yaml#/BifrostError'
+            $ref: "./schemas/inference/common.yaml#/BifrostError"
     Unauthorized:
       description: Unauthorized — missing or invalid credentials
       content:
         application/json:
           schema:
-            $ref: './schemas/inference/common.yaml#/BifrostError'
+            $ref: "./schemas/inference/common.yaml#/BifrostError"
     NotFound:
       description: Resource not found
       content:
         application/json:
           schema:
-            $ref: './schemas/inference/common.yaml#/BifrostError'
+            $ref: "./schemas/inference/common.yaml#/BifrostError"
+    Conflict:
+      description: Conflict with the current state of the resource
+      content:
+        application/json:
+          schema:
+            $ref: "./schemas/inference/common.yaml#/BifrostError"
     InternalError:
       description: Internal server error
       content:
         application/json:
           schema:
-            $ref: './schemas/inference/common.yaml#/BifrostError'
+            $ref: "./schemas/inference/common.yaml#/BifrostError"
     ConfigStoreUnavailable:
       description: Config store not available
       content:
         application/json:
           schema:
-            $ref: './schemas/inference/common.yaml#/BifrostError'
+            $ref: "./schemas/inference/common.yaml#/BifrostError"
 
   schemas:
     # ==================== Common ====================
     ModelProvider:
-      $ref: './schemas/inference/common.yaml#/ModelProvider'
+      $ref: "./schemas/inference/common.yaml#/ModelProvider"
     Fallback:
-      $ref: './schemas/inference/common.yaml#/Fallback'
+      $ref: "./schemas/inference/common.yaml#/Fallback"
     BifrostError:
-      $ref: './schemas/inference/common.yaml#/BifrostError'
+      $ref: "./schemas/inference/common.yaml#/BifrostError"
     ErrorField:
-      $ref: './schemas/inference/common.yaml#/ErrorField'
+      $ref: "./schemas/inference/common.yaml#/ErrorField"
     BifrostErrorExtraFields:
-      $ref: './schemas/inference/common.yaml#/BifrostErrorExtraFields'
+      $ref: "./schemas/inference/common.yaml#/BifrostErrorExtraFields"
     BifrostResponseExtraFields:
-      $ref: './schemas/inference/common.yaml#/BifrostResponseExtraFields'
+      $ref: "./schemas/inference/common.yaml#/BifrostResponseExtraFields"
     BifrostCacheDebug:
-      $ref: './schemas/inference/common.yaml#/BifrostCacheDebug'
+      $ref: "./schemas/inference/common.yaml#/BifrostCacheDebug"
     CacheControl:
-      $ref: './schemas/inference/common.yaml#/CacheControl'
+      $ref: "./schemas/inference/common.yaml#/CacheControl"
 
     # ==================== Async Jobs ====================
     AsyncJobStatus:
-      $ref: './schemas/inference/async.yaml#/AsyncJobStatus'
+      $ref: "./schemas/inference/async.yaml#/AsyncJobStatus"
     AsyncJobResponse:
-      $ref: './schemas/inference/async.yaml#/AsyncJobResponse'
+      $ref: "./schemas/inference/async.yaml#/AsyncJobResponse"
 
     # ==================== Usage ====================
     BifrostLLMUsage:
-      $ref: './schemas/inference/usage.yaml#/BifrostLLMUsage'
+      $ref: "./schemas/inference/usage.yaml#/BifrostLLMUsage"
     ChatPromptTokensDetails:
-      $ref: './schemas/inference/usage.yaml#/ChatPromptTokensDetails'
+      $ref: "./schemas/inference/usage.yaml#/ChatPromptTokensDetails"
     ChatCompletionTokensDetails:
-      $ref: './schemas/inference/usage.yaml#/ChatCompletionTokensDetails'
+      $ref: "./schemas/inference/usage.yaml#/ChatCompletionTokensDetails"
     BifrostCost:
-      $ref: './schemas/inference/usage.yaml#/BifrostCost'
+      $ref: "./schemas/inference/usage.yaml#/BifrostCost"
 
     # ==================== Models ====================
     ListModelsResponse:
-      $ref: './schemas/inference/models.yaml#/ListModelsResponse'
+      $ref: "./schemas/inference/models.yaml#/ListModelsResponse"
     Model:
-      $ref: './schemas/inference/models.yaml#/Model'
+      $ref: "./schemas/inference/models.yaml#/Model"
 
     # ==================== Chat Completions ====================
     ChatCompletionRequest:
-      $ref: './schemas/inference/chat.yaml#/ChatCompletionRequest'
+      $ref: "./schemas/inference/chat.yaml#/ChatCompletionRequest"
     ChatCompletionResponse:
-      $ref: './schemas/inference/chat.yaml#/ChatCompletionResponse'
+      $ref: "./schemas/inference/chat.yaml#/ChatCompletionResponse"
     ChatMessage:
-      $ref: './schemas/inference/chat.yaml#/ChatMessage'
+      $ref: "./schemas/inference/chat.yaml#/ChatMessage"
     PerplexitySearchResult:
-      $ref: './schemas/inference/chat.yaml#/PerplexitySearchResult'
+      $ref: "./schemas/inference/chat.yaml#/PerplexitySearchResult"
     PerplexityVideoResult:
-      $ref: './schemas/inference/chat.yaml#/VideoResult'
+      $ref: "./schemas/inference/chat.yaml#/VideoResult"
 
     # ==================== Text Completions ====================
     TextCompletionRequest:
-      $ref: './schemas/inference/text.yaml#/TextCompletionRequest'
+      $ref: "./schemas/inference/text.yaml#/TextCompletionRequest"
     TextCompletionResponse:
-      $ref: './schemas/inference/text.yaml#/TextCompletionResponse'
+      $ref: "./schemas/inference/text.yaml#/TextCompletionResponse"
 
     # ==================== Responses API ====================
     ContextManagement:
-      $ref: './schemas/inference/responses.yaml#/ContextManagement'
+      $ref: "./schemas/inference/responses.yaml#/ContextManagement"
     ResponsesRequest:
-      $ref: './schemas/inference/responses.yaml#/ResponsesRequest'
+      $ref: "./schemas/inference/responses.yaml#/ResponsesRequest"
     ResponsesResponse:
-      $ref: './schemas/inference/responses.yaml#/ResponsesResponse'
+      $ref: "./schemas/inference/responses.yaml#/ResponsesResponse"
     BifrostResponsesDeleteResponse:
-      $ref: './schemas/inference/responses.yaml#/BifrostResponsesDeleteResponse'
+      $ref: "./schemas/inference/responses.yaml#/BifrostResponsesDeleteResponse"
     BifrostResponsesInputItemsResponse:
-      $ref: './schemas/inference/responses.yaml#/BifrostResponsesInputItemsResponse'
+      $ref: "./schemas/inference/responses.yaml#/BifrostResponsesInputItemsResponse"
 
     # ==================== Rerank ====================
     RerankRequest:
-      $ref: './schemas/inference/rerank.yaml#/RerankRequest'
+      $ref: "./schemas/inference/rerank.yaml#/RerankRequest"
     RerankResponse:
-      $ref: './schemas/inference/rerank.yaml#/RerankResponse'
+      $ref: "./schemas/inference/rerank.yaml#/RerankResponse"
     RerankDocument:
-      $ref: './schemas/inference/rerank.yaml#/RerankDocument'
+      $ref: "./schemas/inference/rerank.yaml#/RerankDocument"
     RerankResult:
-      $ref: './schemas/inference/rerank.yaml#/RerankResult'
+      $ref: "./schemas/inference/rerank.yaml#/RerankResult"
 
     # ==================== Embeddings ====================
     EmbeddingRequest:
-      $ref: './schemas/inference/embeddings.yaml#/EmbeddingRequest'
+      $ref: "./schemas/inference/embeddings.yaml#/EmbeddingRequest"
     EmbeddingResponse:
-      $ref: './schemas/inference/embeddings.yaml#/EmbeddingResponse'
+      $ref: "./schemas/inference/embeddings.yaml#/EmbeddingResponse"
 
     # ==================== Speech ====================
     SpeechRequest:
-      $ref: './schemas/inference/speech.yaml#/SpeechRequest'
+      $ref: "./schemas/inference/speech.yaml#/SpeechRequest"
     SpeechResponse:
-      $ref: './schemas/inference/speech.yaml#/SpeechResponse'
+      $ref: "./schemas/inference/speech.yaml#/SpeechResponse"
 
     # ==================== Transcription ====================
     TranscriptionRequest:
-      $ref: './schemas/inference/transcription.yaml#/TranscriptionRequest'
+      $ref: "./schemas/inference/transcription.yaml#/TranscriptionRequest"
     TranscriptionResponse:
-      $ref: './schemas/inference/transcription.yaml#/TranscriptionResponse'
+      $ref: "./schemas/inference/transcription.yaml#/TranscriptionResponse"
 
     # ==================== Count Tokens ====================
     CountTokensRequest:
-      $ref: './schemas/inference/count-tokens.yaml#/CountTokensRequest'
+      $ref: "./schemas/inference/count-tokens.yaml#/CountTokensRequest"
     CountTokensResponse:
-      $ref: './schemas/inference/count-tokens.yaml#/CountTokensResponse'
+      $ref: "./schemas/inference/count-tokens.yaml#/CountTokensResponse"
 
     # ==================== Batch ====================
     BatchCreateRequest:
-      $ref: './schemas/inference/batch.yaml#/BatchCreateRequest'
+      $ref: "./schemas/inference/batch.yaml#/BatchCreateRequest"
     BatchCreateResponse:
-      $ref: './schemas/inference/batch.yaml#/BatchCreateResponse'
+      $ref: "./schemas/inference/batch.yaml#/BatchCreateResponse"
     BatchListResponse:
-      $ref: './schemas/inference/batch.yaml#/BatchListResponse'
+      $ref: "./schemas/inference/batch.yaml#/BatchListResponse"
     BatchRetrieveResponse:
-      $ref: './schemas/inference/batch.yaml#/BatchRetrieveResponse'
+      $ref: "./schemas/inference/batch.yaml#/BatchRetrieveResponse"
 
     # ==================== Files ====================
     FileUploadRequest:
-      $ref: './schemas/inference/files.yaml#/FileUploadRequest'
+      $ref: "./schemas/inference/files.yaml#/FileUploadRequest"
     FileUploadResponse:
-      $ref: './schemas/inference/files.yaml#/FileUploadResponse'
+      $ref: "./schemas/inference/files.yaml#/FileUploadResponse"
     FileListResponse:
-      $ref: './schemas/inference/files.yaml#/FileListResponse'
+      $ref: "./schemas/inference/files.yaml#/FileListResponse"
 
     # ==================== OCR ====================
     OCRRequest:
-      $ref: './schemas/inference/ocr.yaml#/OCRRequest'
+      $ref: "./schemas/inference/ocr.yaml#/OCRRequest"
     OCRDocument:
-      $ref: './schemas/inference/ocr.yaml#/OCRDocument'
+      $ref: "./schemas/inference/ocr.yaml#/OCRDocument"
     OCRResponse:
-      $ref: './schemas/inference/ocr.yaml#/OCRResponse'
+      $ref: "./schemas/inference/ocr.yaml#/OCRResponse"
     OCRPage:
-      $ref: './schemas/inference/ocr.yaml#/OCRPage'
+      $ref: "./schemas/inference/ocr.yaml#/OCRPage"
     OCRPageImage:
-      $ref: './schemas/inference/ocr.yaml#/OCRPageImage'
+      $ref: "./schemas/inference/ocr.yaml#/OCRPageImage"
     OCRPageDimensions:
-      $ref: './schemas/inference/ocr.yaml#/OCRPageDimensions'
+      $ref: "./schemas/inference/ocr.yaml#/OCRPageDimensions"
     OCRUsageInfo:
-      $ref: './schemas/inference/ocr.yaml#/OCRUsageInfo'
+      $ref: "./schemas/inference/ocr.yaml#/OCRUsageInfo"
 
     # ==================== OpenAI Integration ====================
     OpenAIChatRequest:
-      $ref: './schemas/integrations/openai/chat.yaml#/OpenAIChatRequest'
+      $ref: "./schemas/integrations/openai/chat.yaml#/OpenAIChatRequest"
     OpenAIMessage:
-      $ref: './schemas/integrations/openai/chat.yaml#/OpenAIMessage'
+      $ref: "./schemas/integrations/openai/chat.yaml#/OpenAIMessage"
     OpenAITextCompletionRequest:
-      $ref: './schemas/integrations/openai/text.yaml#/OpenAITextCompletionRequest'
+      $ref: "./schemas/integrations/openai/text.yaml#/OpenAITextCompletionRequest"
     OpenAIResponsesRequest:
-      $ref: './schemas/integrations/openai/responses.yaml#/OpenAIResponsesRequest'
+      $ref: "./schemas/integrations/openai/responses.yaml#/OpenAIResponsesRequest"
     OpenAIEmbeddingRequest:
-      $ref: './schemas/integrations/openai/embeddings.yaml#/OpenAIEmbeddingRequest'
+      $ref: "./schemas/integrations/openai/embeddings.yaml#/OpenAIEmbeddingRequest"
     OpenAISpeechRequest:
-      $ref: './schemas/integrations/openai/audio.yaml#/OpenAISpeechRequest'
+      $ref: "./schemas/integrations/openai/audio.yaml#/OpenAISpeechRequest"
     OpenAITranscriptionRequest:
-      $ref: './schemas/integrations/openai/audio.yaml#/OpenAITranscriptionRequest'
+      $ref: "./schemas/integrations/openai/audio.yaml#/OpenAITranscriptionRequest"
     OpenAIListModelsResponse:
-      $ref: './schemas/integrations/openai/common.yaml#/OpenAIListModelsResponse'
+      $ref: "./schemas/integrations/openai/common.yaml#/OpenAIListModelsResponse"
 
     # ==================== Anthropic Integration ====================
     AnthropicMessageRequest:
-      $ref: './schemas/integrations/anthropic/messages.yaml#/AnthropicMessageRequest'
+      $ref: "./schemas/integrations/anthropic/messages.yaml#/AnthropicMessageRequest"
     AnthropicMessage:
-      $ref: './schemas/integrations/anthropic/messages.yaml#/AnthropicMessage'
+      $ref: "./schemas/integrations/anthropic/messages.yaml#/AnthropicMessage"
     AnthropicContentBlock:
-      $ref: './schemas/integrations/anthropic/messages.yaml#/AnthropicContentBlock'
+      $ref: "./schemas/integrations/anthropic/messages.yaml#/AnthropicContentBlock"
     AnthropicMessageResponse:
-      $ref: './schemas/integrations/anthropic/messages.yaml#/AnthropicMessageResponse'
+      $ref: "./schemas/integrations/anthropic/messages.yaml#/AnthropicMessageResponse"
     AnthropicTextRequest:
-      $ref: './schemas/integrations/anthropic/text.yaml#/AnthropicTextRequest'
+      $ref: "./schemas/integrations/anthropic/text.yaml#/AnthropicTextRequest"
     AnthropicListModelsResponse:
-      $ref: './schemas/integrations/anthropic/common.yaml#/AnthropicListModelsResponse'
+      $ref: "./schemas/integrations/anthropic/common.yaml#/AnthropicListModelsResponse"
 
     # ==================== GenAI (Gemini) Integration ====================
     GeminiSchema:
-      $ref: './schemas/integrations/genai/generation.yaml#/GeminiSchema'
+      $ref: "./schemas/integrations/genai/generation.yaml#/GeminiSchema"
     GeminiGenerationRequest:
-      $ref: './schemas/integrations/genai/generation.yaml#/GeminiGenerationRequest'
+      $ref: "./schemas/integrations/genai/generation.yaml#/GeminiGenerationRequest"
     GeminiGenerationResponse:
-      $ref: './schemas/integrations/genai/generation.yaml#/GeminiGenerationResponse'
+      $ref: "./schemas/integrations/genai/generation.yaml#/GeminiGenerationResponse"
     GeminiContent:
-      $ref: './schemas/integrations/genai/generation.yaml#/GeminiContent'
+      $ref: "./schemas/integrations/genai/generation.yaml#/GeminiContent"
     GeminiPart:
-      $ref: './schemas/integrations/genai/generation.yaml#/GeminiPart'
+      $ref: "./schemas/integrations/genai/generation.yaml#/GeminiPart"
     GeminiEmbeddingRequest:
-      $ref: './schemas/integrations/genai/generation.yaml#/GeminiEmbeddingRequest'
+      $ref: "./schemas/integrations/genai/generation.yaml#/GeminiEmbeddingRequest"
     GeminiEmbeddingResponse:
-      $ref: './schemas/integrations/genai/generation.yaml#/GeminiEmbeddingResponse'
+      $ref: "./schemas/integrations/genai/generation.yaml#/GeminiEmbeddingResponse"
     GeminiListModelsResponse:
-      $ref: './schemas/integrations/genai/common.yaml#/GeminiListModelsResponse'
+      $ref: "./schemas/integrations/genai/common.yaml#/GeminiListModelsResponse"
     GeminiError:
-      $ref: './schemas/integrations/genai/common.yaml#/GeminiError'
+      $ref: "./schemas/integrations/genai/common.yaml#/GeminiError"
 
     # ==================== Bedrock Integration ====================
     BedrockConverseRequest:
-      $ref: './schemas/integrations/bedrock/converse.yaml#/BedrockConverseRequest'
+      $ref: "./schemas/integrations/bedrock/converse.yaml#/BedrockConverseRequest"
     BedrockConverseResponse:
-      $ref: './schemas/integrations/bedrock/converse.yaml#/BedrockConverseResponse'
+      $ref: "./schemas/integrations/bedrock/converse.yaml#/BedrockConverseResponse"
     BedrockMessage:
-      $ref: './schemas/integrations/bedrock/converse.yaml#/BedrockMessage'
+      $ref: "./schemas/integrations/bedrock/converse.yaml#/BedrockMessage"
     BedrockContentBlock:
-      $ref: './schemas/integrations/bedrock/converse.yaml#/BedrockContentBlock'
+      $ref: "./schemas/integrations/bedrock/converse.yaml#/BedrockContentBlock"
     BedrockInvokeRequest:
-      $ref: './schemas/integrations/bedrock/invoke.yaml#/BedrockInvokeRequest'
+      $ref: "./schemas/integrations/bedrock/invoke.yaml#/BedrockInvokeRequest"
     BedrockInvokeResponse:
-      $ref: './schemas/integrations/bedrock/invoke.yaml#/BedrockInvokeResponse'
+      $ref: "./schemas/integrations/bedrock/invoke.yaml#/BedrockInvokeResponse"
     BedrockBatchJobRequest:
-      $ref: './schemas/integrations/bedrock/batch.yaml#/BedrockBatchJobRequest'
+      $ref: "./schemas/integrations/bedrock/batch.yaml#/BedrockBatchJobRequest"
     BedrockBatchJobResponse:
-      $ref: './schemas/integrations/bedrock/batch.yaml#/BedrockBatchJobResponse'
+      $ref: "./schemas/integrations/bedrock/batch.yaml#/BedrockBatchJobResponse"
     BedrockError:
-      $ref: './schemas/integrations/bedrock/common.yaml#/BedrockError'
+      $ref: "./schemas/integrations/bedrock/common.yaml#/BedrockError"
 
     # ==================== Cohere Integration ====================
     CohereChatRequest:
-      $ref: './schemas/integrations/cohere/chat.yaml#/CohereChatRequest'
+      $ref: "./schemas/integrations/cohere/chat.yaml#/CohereChatRequest"
     CohereChatResponse:
-      $ref: './schemas/integrations/cohere/chat.yaml#/CohereChatResponse'
+      $ref: "./schemas/integrations/cohere/chat.yaml#/CohereChatResponse"
     CohereMessage:
-      $ref: './schemas/integrations/cohere/chat.yaml#/CohereMessage'
+      $ref: "./schemas/integrations/cohere/chat.yaml#/CohereMessage"
     CohereEmbeddingRequest:
-      $ref: './schemas/integrations/cohere/embed.yaml#/CohereEmbeddingRequest'
+      $ref: "./schemas/integrations/cohere/embed.yaml#/CohereEmbeddingRequest"
     CohereEmbeddingResponse:
-      $ref: './schemas/integrations/cohere/embed.yaml#/CohereEmbeddingResponse'
+      $ref: "./schemas/integrations/cohere/embed.yaml#/CohereEmbeddingResponse"
     CohereCountTokensRequest:
-      $ref: './schemas/integrations/cohere/tokenize.yaml#/CohereCountTokensRequest'
+      $ref: "./schemas/integrations/cohere/tokenize.yaml#/CohereCountTokensRequest"
     CohereCountTokensResponse:
-      $ref: './schemas/integrations/cohere/tokenize.yaml#/CohereCountTokensResponse'
+      $ref: "./schemas/integrations/cohere/tokenize.yaml#/CohereCountTokensResponse"
     CohereError:
-      $ref: './schemas/integrations/cohere/common.yaml#/CohereError'
+      $ref: "./schemas/integrations/cohere/common.yaml#/CohereError"
 
     # ==================== Management ====================
     # Common
     SuccessResponse:
-      $ref: './schemas/management/common.yaml#/SuccessResponse'
+      $ref: "./schemas/management/common.yaml#/SuccessResponse"
     ManagementErrorResponse:
-      $ref: './schemas/management/common.yaml#/ErrorResponse'
+      $ref: "./schemas/management/common.yaml#/ErrorResponse"
     MessageResponse:
-      $ref: './schemas/management/common.yaml#/MessageResponse'
+      $ref: "./schemas/management/common.yaml#/MessageResponse"
 
     # Health
     HealthResponse:
-      $ref: './schemas/management/health.yaml#/HealthResponse'
+      $ref: "./schemas/management/health.yaml#/HealthResponse"
 
     # Configuration
     GetConfigResponse:
-      $ref: './schemas/management/config.yaml#/GetConfigResponse'
+      $ref: "./schemas/management/config.yaml#/GetConfigResponse"
     UpdateConfigRequest:
-      $ref: './schemas/management/config.yaml#/UpdateConfigRequest'
+      $ref: "./schemas/management/config.yaml#/UpdateConfigRequest"
     Version:
-      $ref: './schemas/management/config.yaml#/Version'
+      $ref: "./schemas/management/config.yaml#/Version"
 
     # Session
     LoginRequest:
-      $ref: './schemas/management/session.yaml#/LoginRequest'
+      $ref: "./schemas/management/session.yaml#/LoginRequest"
     LoginResponse:
-      $ref: './schemas/management/session.yaml#/LoginResponse'
+      $ref: "./schemas/management/session.yaml#/LoginResponse"
     IsAuthEnabledResponse:
-      $ref: './schemas/management/session.yaml#/IsAuthEnabledResponse'
+      $ref: "./schemas/management/session.yaml#/IsAuthEnabledResponse"
 
     # Providers
     ProviderResponse:
-      $ref: './schemas/management/providers.yaml#/ProviderResponse'
+      $ref: "./schemas/management/providers.yaml#/ProviderResponse"
     ListProvidersResponse:
-      $ref: './schemas/management/providers.yaml#/ListProvidersResponse'
+      $ref: "./schemas/management/providers.yaml#/ListProvidersResponse"
     AddProviderRequest:
-      $ref: './schemas/management/providers.yaml#/AddProviderRequest'
+      $ref: "./schemas/management/providers.yaml#/AddProviderRequest"
     UpdateProviderRequest:
-      $ref: './schemas/management/providers.yaml#/UpdateProviderRequest'
+      $ref: "./schemas/management/providers.yaml#/UpdateProviderRequest"
     Key:
-      $ref: './schemas/management/providers.yaml#/Key'
+      $ref: "./schemas/management/providers.yaml#/Key"
     ListProviderKeysResponse:
-      $ref: './schemas/management/providers.yaml#/ListProviderKeysResponse'
+      $ref: "./schemas/management/providers.yaml#/ListProviderKeysResponse"
     NetworkConfig:
-      $ref: './schemas/management/providers.yaml#/NetworkConfig'
+      $ref: "./schemas/management/providers.yaml#/NetworkConfig"
     ConcurrencyAndBufferSize:
-      $ref: './schemas/management/providers.yaml#/ConcurrencyAndBufferSize'
+      $ref: "./schemas/management/providers.yaml#/ConcurrencyAndBufferSize"
 
     # Plugins
     Plugin:
-      $ref: './schemas/management/plugins.yaml#/Plugin'
+      $ref: "./schemas/management/plugins.yaml#/Plugin"
     ListPluginsResponse:
-      $ref: './schemas/management/plugins.yaml#/ListPluginsResponse'
+      $ref: "./schemas/management/plugins.yaml#/ListPluginsResponse"
     CreatePluginRequest:
-      $ref: './schemas/management/plugins.yaml#/CreatePluginRequest'
+      $ref: "./schemas/management/plugins.yaml#/CreatePluginRequest"
     UpdatePluginRequest:
-      $ref: './schemas/management/plugins.yaml#/UpdatePluginRequest'
+      $ref: "./schemas/management/plugins.yaml#/UpdatePluginRequest"
 
     # MCP
     MCPClient:
-      $ref: './schemas/management/mcp.yaml#/MCPClient'
+      $ref: "./schemas/management/mcp.yaml#/MCPClient"
     MCPClientConfig:
-      $ref: './schemas/management/mcp.yaml#/MCPClientConfig'
+      $ref: "./schemas/management/mcp.yaml#/MCPClientConfig"
     ExecuteToolRequest:
-      $ref: './schemas/management/mcp.yaml#/ExecuteToolRequest'
+      $ref: "./schemas/management/mcp.yaml#/ExecuteToolRequest"
     MCPAuthType:
-      $ref: './schemas/management/oauth.yaml#/MCPAuthType'
+      $ref: "./schemas/management/oauth.yaml#/MCPAuthType"
     OAuthConfigRequest:
-      $ref: './schemas/management/oauth.yaml#/OAuthConfigRequest'
+      $ref: "./schemas/management/oauth.yaml#/OAuthConfigRequest"
     OAuthFlowInitiation:
-      $ref: './schemas/management/oauth.yaml#/OAuthFlowInitiation'
+      $ref: "./schemas/management/oauth.yaml#/OAuthFlowInitiation"
     OAuthConfigStatus:
-      $ref: './schemas/management/oauth.yaml#/OAuthConfigStatus'
+      $ref: "./schemas/management/oauth.yaml#/OAuthConfigStatus"
     OAuthToken:
-      $ref: './schemas/management/oauth.yaml#/OAuthToken'
+      $ref: "./schemas/management/oauth.yaml#/OAuthToken"
     MCPOauthFlowDetail:
-      $ref: './schemas/management/oauth.yaml#/MCPOauthFlowDetail'
+      $ref: "./schemas/management/oauth.yaml#/MCPOauthFlowDetail"
 
     # MCP Sessions + per-user-headers
     MCPClientSummary:
-      $ref: './schemas/management/mcp.yaml#/MCPClientSummary'
+      $ref: "./schemas/management/mcp.yaml#/MCPClientSummary"
     MCPVirtualKeySummary:
-      $ref: './schemas/management/mcp.yaml#/MCPVirtualKeySummary'
+      $ref: "./schemas/management/mcp.yaml#/MCPVirtualKeySummary"
     MCPUserSummary:
-      $ref: './schemas/management/mcp.yaml#/MCPUserSummary'
+      $ref: "./schemas/management/mcp.yaml#/MCPUserSummary"
     MCPSessionRow:
-      $ref: './schemas/management/mcp.yaml#/MCPSessionRow'
+      $ref: "./schemas/management/mcp.yaml#/MCPSessionRow"
     MCPSessionsListResponse:
-      $ref: './schemas/management/mcp.yaml#/MCPSessionsListResponse'
+      $ref: "./schemas/management/mcp.yaml#/MCPSessionsListResponse"
     MCPSessionReauthResponse:
-      $ref: './schemas/management/mcp.yaml#/MCPSessionReauthResponse'
+      $ref: "./schemas/management/mcp.yaml#/MCPSessionReauthResponse"
     MCPHeadersFlowDetail:
-      $ref: './schemas/management/mcp.yaml#/MCPHeadersFlowDetail'
+      $ref: "./schemas/management/mcp.yaml#/MCPHeadersFlowDetail"
     MCPHeadersSubmitRequest:
-      $ref: './schemas/management/mcp.yaml#/MCPHeadersSubmitRequest'
+      $ref: "./schemas/management/mcp.yaml#/MCPHeadersSubmitRequest"
     MCPHeadersSubmitResponse:
-      $ref: './schemas/management/mcp.yaml#/MCPHeadersSubmitResponse'
+      $ref: "./schemas/management/mcp.yaml#/MCPHeadersSubmitResponse"
 
     # Governance - Virtual Keys
     VirtualKey:
-      $ref: './schemas/management/governance.yaml#/VirtualKey'
+      $ref: "./schemas/management/governance.yaml#/VirtualKey"
     VirtualKeyResponse:
-      $ref: './schemas/management/governance.yaml#/VirtualKeyResponse'
+      $ref: "./schemas/management/governance.yaml#/VirtualKeyResponse"
     VirtualKeyProviderConfig:
-      $ref: './schemas/management/governance.yaml#/VirtualKeyProviderConfig'
+      $ref: "./schemas/management/governance.yaml#/VirtualKeyProviderConfig"
     VirtualKeyMCPConfig:
-      $ref: './schemas/management/governance.yaml#/VirtualKeyMCPConfig'
+      $ref: "./schemas/management/governance.yaml#/VirtualKeyMCPConfig"
     ListVirtualKeysResponse:
-      $ref: './schemas/management/governance.yaml#/ListVirtualKeysResponse'
+      $ref: "./schemas/management/governance.yaml#/ListVirtualKeysResponse"
     VirtualKeyQuotaResponse:
-      $ref: './schemas/management/governance.yaml#/VirtualKeyQuotaResponse'
+      $ref: "./schemas/management/governance.yaml#/VirtualKeyQuotaResponse"
     CreateVirtualKeyRequest:
-      $ref: './schemas/management/governance.yaml#/CreateVirtualKeyRequest'
+      $ref: "./schemas/management/governance.yaml#/CreateVirtualKeyRequest"
     UpdateVirtualKeyRequest:
-      $ref: './schemas/management/governance.yaml#/UpdateVirtualKeyRequest'
+      $ref: "./schemas/management/governance.yaml#/UpdateVirtualKeyRequest"
 
     # Governance - Teams
     Team:
-      $ref: './schemas/management/governance.yaml#/Team'
+      $ref: "./schemas/management/governance.yaml#/Team"
     TeamResponse:
-      $ref: './schemas/management/governance.yaml#/TeamResponse'
+      $ref: "./schemas/management/governance.yaml#/TeamResponse"
     ListTeamsResponse:
-      $ref: './schemas/management/governance.yaml#/ListTeamsResponse'
+      $ref: "./schemas/management/governance.yaml#/ListTeamsResponse"
     CreateTeamRequest:
-      $ref: './schemas/management/governance.yaml#/CreateTeamRequest'
+      $ref: "./schemas/management/governance.yaml#/CreateTeamRequest"
     UpdateTeamRequest:
-      $ref: './schemas/management/governance.yaml#/UpdateTeamRequest'
+      $ref: "./schemas/management/governance.yaml#/UpdateTeamRequest"
 
     # Governance - Customers
     Customer:
-      $ref: './schemas/management/governance.yaml#/Customer'
+      $ref: "./schemas/management/governance.yaml#/Customer"
     CustomerResponse:
-      $ref: './schemas/management/governance.yaml#/CustomerResponse'
+      $ref: "./schemas/management/governance.yaml#/CustomerResponse"
     ListCustomersResponse:
-      $ref: './schemas/management/governance.yaml#/ListCustomersResponse'
+      $ref: "./schemas/management/governance.yaml#/ListCustomersResponse"
     CreateCustomerRequest:
-      $ref: './schemas/management/governance.yaml#/CreateCustomerRequest'
+      $ref: "./schemas/management/governance.yaml#/CreateCustomerRequest"
     UpdateCustomerRequest:
-      $ref: './schemas/management/governance.yaml#/UpdateCustomerRequest'
+      $ref: "./schemas/management/governance.yaml#/UpdateCustomerRequest"
 
     # Governance - Budgets and Rate Limits
     Budget:
-      $ref: './schemas/management/governance.yaml#/Budget'
+      $ref: "./schemas/management/governance.yaml#/Budget"
     RateLimit:
-      $ref: './schemas/management/governance.yaml#/RateLimit'
+      $ref: "./schemas/management/governance.yaml#/RateLimit"
     ListBudgetsResponse:
-      $ref: './schemas/management/governance.yaml#/ListBudgetsResponse'
+      $ref: "./schemas/management/governance.yaml#/ListBudgetsResponse"
     ListRateLimitsResponse:
-      $ref: './schemas/management/governance.yaml#/ListRateLimitsResponse'
+      $ref: "./schemas/management/governance.yaml#/ListRateLimitsResponse"
     CreateBudgetRequest:
-      $ref: './schemas/management/governance.yaml#/CreateBudgetRequest'
+      $ref: "./schemas/management/governance.yaml#/CreateBudgetRequest"
     UpdateBudgetRequest:
-      $ref: './schemas/management/governance.yaml#/UpdateBudgetRequest'
+      $ref: "./schemas/management/governance.yaml#/UpdateBudgetRequest"
     BudgetOverrideRequest:
-      $ref: './schemas/management/governance.yaml#/BudgetOverrideRequest'
+      $ref: "./schemas/management/governance.yaml#/BudgetOverrideRequest"
     BudgetOverrideResponse:
-      $ref: './schemas/management/governance.yaml#/BudgetOverrideResponse'
+      $ref: "./schemas/management/governance.yaml#/BudgetOverrideResponse"
     CreateRateLimitRequest:
-      $ref: './schemas/management/governance.yaml#/CreateRateLimitRequest'
+      $ref: "./schemas/management/governance.yaml#/CreateRateLimitRequest"
     UpdateRateLimitRequest:
-      $ref: './schemas/management/governance.yaml#/UpdateRateLimitRequest'
+      $ref: "./schemas/management/governance.yaml#/UpdateRateLimitRequest"
 
     # Governance - Routing Rules
     RoutingRule:
-      $ref: './schemas/management/governance.yaml#/RoutingRule'
+      $ref: "./schemas/management/governance.yaml#/RoutingRule"
     RoutingRuleResponse:
-      $ref: './schemas/management/governance.yaml#/RoutingRuleResponse'
+      $ref: "./schemas/management/governance.yaml#/RoutingRuleResponse"
     ListRoutingRulesResponse:
-      $ref: './schemas/management/governance.yaml#/ListRoutingRulesResponse'
+      $ref: "./schemas/management/governance.yaml#/ListRoutingRulesResponse"
     CreateRoutingRuleRequest:
-      $ref: './schemas/management/governance.yaml#/CreateRoutingRuleRequest'
+      $ref: "./schemas/management/governance.yaml#/CreateRoutingRuleRequest"
     UpdateRoutingRuleRequest:
-      $ref: './schemas/management/governance.yaml#/UpdateRoutingRuleRequest'
+      $ref: "./schemas/management/governance.yaml#/UpdateRoutingRuleRequest"
     TableKey:
-      $ref: './schemas/management/governance.yaml#/TableKey'
+      $ref: "./schemas/management/governance.yaml#/TableKey"
 
     # Governance - Model Configs
     ModelConfig:
-      $ref: './schemas/management/governance.yaml#/ModelConfig'
+      $ref: "./schemas/management/governance.yaml#/ModelConfig"
     ModelConfigResponse:
-      $ref: './schemas/management/governance.yaml#/ModelConfigResponse'
+      $ref: "./schemas/management/governance.yaml#/ModelConfigResponse"
     ListModelConfigsResponse:
-      $ref: './schemas/management/governance.yaml#/ListModelConfigsResponse'
+      $ref: "./schemas/management/governance.yaml#/ListModelConfigsResponse"
     CreateModelConfigRequest:
-      $ref: './schemas/management/governance.yaml#/CreateModelConfigRequest'
+      $ref: "./schemas/management/governance.yaml#/CreateModelConfigRequest"
     UpdateModelConfigRequest:
-      $ref: './schemas/management/governance.yaml#/UpdateModelConfigRequest'
+      $ref: "./schemas/management/governance.yaml#/UpdateModelConfigRequest"
 
     # Governance - Provider Governance
     ProviderGovernance:
-      $ref: './schemas/management/governance.yaml#/ProviderGovernance'
+      $ref: "./schemas/management/governance.yaml#/ProviderGovernance"
     ProviderGovernanceResponse:
-      $ref: './schemas/management/governance.yaml#/ProviderGovernanceResponse'
+      $ref: "./schemas/management/governance.yaml#/ProviderGovernanceResponse"
     ListProviderGovernanceResponse:
-      $ref: './schemas/management/governance.yaml#/ListProviderGovernanceResponse'
+      $ref: "./schemas/management/governance.yaml#/ListProviderGovernanceResponse"
     UpdateProviderGovernanceRequest:
-      $ref: './schemas/management/governance.yaml#/UpdateProviderGovernanceRequest'
+      $ref: "./schemas/management/governance.yaml#/UpdateProviderGovernanceRequest"
 
     # Governance - Pricing Overrides
     PricingOverrideScopeKind:
-      $ref: './schemas/management/governance.yaml#/PricingOverrideScopeKind'
+      $ref: "./schemas/management/governance.yaml#/PricingOverrideScopeKind"
     PricingOverrideRequestType:
-      $ref: './schemas/management/governance.yaml#/PricingOverrideRequestType'
+      $ref: "./schemas/management/governance.yaml#/PricingOverrideRequestType"
     PricingPatch:
-      $ref: './schemas/management/governance.yaml#/PricingPatch'
+      $ref: "./schemas/management/governance.yaml#/PricingPatch"
     PricingOverride:
-      $ref: './schemas/management/governance.yaml#/PricingOverride'
+      $ref: "./schemas/management/governance.yaml#/PricingOverride"
     CreatePricingOverrideRequest:
-      $ref: './schemas/management/governance.yaml#/CreatePricingOverrideRequest'
+      $ref: "./schemas/management/governance.yaml#/CreatePricingOverrideRequest"
     UpdatePricingOverrideRequest:
-      $ref: './schemas/management/governance.yaml#/UpdatePricingOverrideRequest'
+      $ref: "./schemas/management/governance.yaml#/UpdatePricingOverrideRequest"
     PricingOverrideResponse:
-      $ref: './schemas/management/governance.yaml#/PricingOverrideResponse'
+      $ref: "./schemas/management/governance.yaml#/PricingOverrideResponse"
     ListPricingOverridesResponse:
-      $ref: './schemas/management/governance.yaml#/ListPricingOverridesResponse'
+      $ref: "./schemas/management/governance.yaml#/ListPricingOverridesResponse"
 
     # Skills Repository
     SkillSourceType:
-      $ref: './schemas/management/skills.yaml#/SkillSourceType'
+      $ref: "./schemas/management/skills.yaml#/SkillSourceType"
     SkillFileEntry:
-      $ref: './schemas/management/skills.yaml#/SkillFileEntry'
+      $ref: "./schemas/management/skills.yaml#/SkillFileEntry"
     SkillFile:
-      $ref: './schemas/management/skills.yaml#/SkillFile'
+      $ref: "./schemas/management/skills.yaml#/SkillFile"
     SkillVersion:
-      $ref: './schemas/management/skills.yaml#/SkillVersion'
+      $ref: "./schemas/management/skills.yaml#/SkillVersion"
     Skill:
-      $ref: './schemas/management/skills.yaml#/Skill'
+      $ref: "./schemas/management/skills.yaml#/Skill"
     CreateSkillRequest:
-      $ref: './schemas/management/skills.yaml#/CreateSkillRequest'
+      $ref: "./schemas/management/skills.yaml#/CreateSkillRequest"
     UpdateSkillRequest:
-      $ref: './schemas/management/skills.yaml#/UpdateSkillRequest'
+      $ref: "./schemas/management/skills.yaml#/UpdateSkillRequest"
     SkillResponse:
-      $ref: './schemas/management/skills.yaml#/SkillResponse'
+      $ref: "./schemas/management/skills.yaml#/SkillResponse"
     ListSkillsResponse:
-      $ref: './schemas/management/skills.yaml#/ListSkillsResponse'
+      $ref: "./schemas/management/skills.yaml#/ListSkillsResponse"
     ListSkillVersionsResponse:
-      $ref: './schemas/management/skills.yaml#/ListSkillVersionsResponse'
+      $ref: "./schemas/management/skills.yaml#/ListSkillVersionsResponse"
     UploadSkillFileRequest:
-      $ref: './schemas/management/skills.yaml#/UploadSkillFileRequest'
+      $ref: "./schemas/management/skills.yaml#/UploadSkillFileRequest"
     UploadSkillFileResponse:
-      $ref: './schemas/management/skills.yaml#/UploadSkillFileResponse'
+      $ref: "./schemas/management/skills.yaml#/UploadSkillFileResponse"
     SkillOrphanCleanupResponse:
-      $ref: './schemas/management/skills.yaml#/SkillOrphanCleanupResponse'
+      $ref: "./schemas/management/skills.yaml#/SkillOrphanCleanupResponse"
     AllSkillsVersionResponse:
-      $ref: './schemas/management/skills.yaml#/AllSkillsVersionResponse'
+      $ref: "./schemas/management/skills.yaml#/AllSkillsVersionResponse"
     BumpAllSkillsVersionRequest:
-      $ref: './schemas/management/skills.yaml#/BumpAllSkillsVersionRequest'
+      $ref: "./schemas/management/skills.yaml#/BumpAllSkillsVersionRequest"
     ShiftSkillVersionRequest:
-      $ref: './schemas/management/skills.yaml#/ShiftSkillVersionRequest'
+      $ref: "./schemas/management/skills.yaml#/ShiftSkillVersionRequest"
     ClaudeCodeSkillMarketplace:
-      $ref: './schemas/management/skills.yaml#/ClaudeCodeSkillMarketplace'
+      $ref: "./schemas/management/skills.yaml#/ClaudeCodeSkillMarketplace"
     CodexSkillMarketplace:
-      $ref: './schemas/management/skills.yaml#/CodexSkillMarketplace'
+      $ref: "./schemas/management/skills.yaml#/CodexSkillMarketplace"
 
     # Logging
     LogEntry:
-      $ref: './schemas/management/logging.yaml#/LogEntry'
+      $ref: "./schemas/management/logging.yaml#/LogEntry"
     SearchLogsResponse:
-      $ref: './schemas/management/logging.yaml#/SearchLogsResponse'
+      $ref: "./schemas/management/logging.yaml#/SearchLogsResponse"
     LogStats:
-      $ref: './schemas/management/logging.yaml#/LogStats'
+      $ref: "./schemas/management/logging.yaml#/LogStats"
     DeleteLogsRequest:
-      $ref: './schemas/management/logging.yaml#/DeleteLogsRequest'
+      $ref: "./schemas/management/logging.yaml#/DeleteLogsRequest"
     RecalculateCostRequest:
-      $ref: './schemas/management/logging.yaml#/RecalculateCostRequest'
+      $ref: "./schemas/management/logging.yaml#/RecalculateCostRequest"
     RecalculateCostResponse:
-      $ref: './schemas/management/logging.yaml#/RecalculateCostResponse'
+      $ref: "./schemas/management/logging.yaml#/RecalculateCostResponse"
 
     # Cache
     ClearCacheResponse:
-      $ref: './schemas/management/cache.yaml#/ClearCacheResponse'
+      $ref: "./schemas/management/cache.yaml#/ClearCacheResponse"
 
     # Audit Logs
     AuditEventType:
-      $ref: './schemas/management/auditlogs.yaml#/AuditEventType'
+      $ref: "./schemas/management/auditlogs.yaml#/AuditEventType"
     AuditAction:
-      $ref: './schemas/management/auditlogs.yaml#/AuditAction'
+      $ref: "./schemas/management/auditlogs.yaml#/AuditAction"
     AuditOutcome:
-      $ref: './schemas/management/auditlogs.yaml#/AuditOutcome'
+      $ref: "./schemas/management/auditlogs.yaml#/AuditOutcome"
     AuditResourceType:
-      $ref: './schemas/management/auditlogs.yaml#/AuditResourceType'
+      $ref: "./schemas/management/auditlogs.yaml#/AuditResourceType"
     AuditResource:
-      $ref: './schemas/management/auditlogs.yaml#/AuditResource'
+      $ref: "./schemas/management/auditlogs.yaml#/AuditResource"
     AuditReason:
-      $ref: './schemas/management/auditlogs.yaml#/AuditReason'
+      $ref: "./schemas/management/auditlogs.yaml#/AuditReason"
     AuditAttachment:
-      $ref: './schemas/management/auditlogs.yaml#/AuditAttachment'
+      $ref: "./schemas/management/auditlogs.yaml#/AuditAttachment"
     AuditEvent:
-      $ref: './schemas/management/auditlogs.yaml#/AuditEvent'
+      $ref: "./schemas/management/auditlogs.yaml#/AuditEvent"
     AuditLogsResult:
-      $ref: './schemas/management/auditlogs.yaml#/AuditLogsResult'
+      $ref: "./schemas/management/auditlogs.yaml#/AuditLogsResult"
     AuditLogResponse:
-      $ref: './schemas/management/auditlogs.yaml#/AuditLogResponse'
+      $ref: "./schemas/management/auditlogs.yaml#/AuditLogResponse"
     AuditFilterKeyPair:
-      $ref: './schemas/management/auditlogs.yaml#/AuditFilterKeyPair'
+      $ref: "./schemas/management/auditlogs.yaml#/AuditFilterKeyPair"
     AuditFilterDataResponse:
-      $ref: './schemas/management/auditlogs.yaml#/AuditFilterDataResponse'
+      $ref: "./schemas/management/auditlogs.yaml#/AuditFilterDataResponse"
     AuditVerifyResult:
-      $ref: './schemas/management/auditlogs.yaml#/AuditVerifyResult'
+      $ref: "./schemas/management/auditlogs.yaml#/AuditVerifyResult"
 
     # Webhooks
     WebhookEvent:
-      $ref: './schemas/management/webhooks.yaml#/WebhookEvent'
+      $ref: "./schemas/management/webhooks.yaml#/WebhookEvent"
     WebhookEndpointRequest:
-      $ref: './schemas/management/webhooks.yaml#/WebhookEndpointRequest'
+      $ref: "./schemas/management/webhooks.yaml#/WebhookEndpointRequest"
     WebhookEndpoint:
-      $ref: './schemas/management/webhooks.yaml#/WebhookEndpoint'
+      $ref: "./schemas/management/webhooks.yaml#/WebhookEndpoint"
     WebhookEndpointList:
-      $ref: './schemas/management/webhooks.yaml#/WebhookEndpointList'
+      $ref: "./schemas/management/webhooks.yaml#/WebhookEndpointList"
     WebhookEndpointWithSecret:
-      $ref: './schemas/management/webhooks.yaml#/WebhookEndpointWithSecret'
+      $ref: "./schemas/management/webhooks.yaml#/WebhookEndpointWithSecret"
     TestWebhookRequest:
-      $ref: './schemas/management/webhooks.yaml#/TestWebhookRequest'
+      $ref: "./schemas/management/webhooks.yaml#/TestWebhookRequest"
     TestWebhookResponse:
-      $ref: './schemas/management/webhooks.yaml#/TestWebhookResponse'
+      $ref: "./schemas/management/webhooks.yaml#/TestWebhookResponse"
     WebhookDeliveryOutcome:
-      $ref: './schemas/management/webhooks.yaml#/WebhookDeliveryOutcome'
+      $ref: "./schemas/management/webhooks.yaml#/WebhookDeliveryOutcome"
     WebhookDelivery:
-      $ref: './schemas/management/webhooks.yaml#/WebhookDelivery'
+      $ref: "./schemas/management/webhooks.yaml#/WebhookDelivery"
     WebhookDeliveryList:
-      $ref: './schemas/management/webhooks.yaml#/WebhookDeliveryList'
+      $ref: "./schemas/management/webhooks.yaml#/WebhookDeliveryList"
     RedeliverWebhookResponse:
-      $ref: './schemas/management/webhooks.yaml#/RedeliverWebhookResponse'
+      $ref: "./schemas/management/webhooks.yaml#/RedeliverWebhookResponse"
     WebhookStatusResponse:
-      $ref: './schemas/management/webhooks.yaml#/WebhookStatusResponse'
+      $ref: "./schemas/management/webhooks.yaml#/WebhookStatusResponse"

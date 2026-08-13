@@ -3993,6 +3993,41 @@ func (bifrost *Bifrost) RegisterMCPTool(name, description string, handler func(a
 // These operations involve network I/O and connection management that require mutex locks
 // which can block briefly during execution.
 
+// MCPClientRequiresPerCallConnection reports whether config resolves to a
+// per-call connection (true) or a persistent shared one (false), taking auth
+// type, connection type, and needs_session_stickiness into account together.
+// Returns false (the persistent-connection default) if MCP is not configured.
+func (bifrost *Bifrost) MCPClientRequiresPerCallConnection(config *schemas.MCPClientConfig) bool {
+	if bifrost.MCPManager == nil {
+		return false
+	}
+	return bifrost.MCPManager.RequiresPerCallConnection(config)
+}
+
+// SetMCPStateChangeCallback registers cb to be invoked on every reactive
+// (non-admin-driven) MCP client connection-state transition — periodic
+// checker transitions and reactive connect-failure classification into
+// NeedsReauth. Pass nil to clear a previously registered callback. A no-op
+// if MCP is not configured.
+func (bifrost *Bifrost) SetMCPStateChangeCallback(cb func(clientID, name string, oldState, newState schemas.MCPConnectionState)) {
+	if bifrost.MCPManager == nil {
+		return
+	}
+	bifrost.MCPManager.SetStateChangeCallback(cb)
+}
+
+// SetMCPToolsChangeCallback registers cb to be invoked whenever an MCP
+// client's tool map is freshly (re)discovered — connect/reconnect, per-call
+// discovery, and the periodic checker's own refresh. core/mcp has no DB
+// access; this is the seam the transport layer persists through. Pass nil to
+// clear a previously registered callback. A no-op if MCP is not configured.
+func (bifrost *Bifrost) SetMCPToolsChangeCallback(cb func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string)) {
+	if bifrost.MCPManager == nil {
+		return
+	}
+	bifrost.MCPManager.SetToolsChangeCallback(cb)
+}
+
 // GetMCPClients returns all MCP clients managed by the Bifrost instance.
 //
 // Returns:
@@ -4181,12 +4216,12 @@ func (bifrost *Bifrost) UpdateMCPClient(id string, updatedConfig *schemas.MCPCli
 	return bifrost.MCPManager.UpdateClient(id, updatedConfig)
 }
 
-// UpdateMCPClientConnection reconnects an existing MCP client using updated headers
-func (bifrost *Bifrost) UpdateMCPClientConnection(id string, newConfig *schemas.MCPClientConfig) error {
+// UpdateMCPClientCredentials reconnects an existing MCP client using updated headers
+func (bifrost *Bifrost) UpdateMCPClientCredentials(id string, newConfig *schemas.MCPClientConfig) error {
 	if bifrost.MCPManager == nil {
 		return fmt.Errorf("mcp is not configured in this bifrost instance")
 	}
-	return bifrost.MCPManager.UpdateClientConnection(id, newConfig)
+	return bifrost.MCPManager.UpdateClientCredentials(id, newConfig)
 }
 
 // ReconnectMCPClient attempts to reconnect an MCP client if it is disconnected.
@@ -4202,6 +4237,22 @@ func (bifrost *Bifrost) ReconnectMCPClient(id string) error {
 	}
 
 	return bifrost.MCPManager.ReconnectClient(id)
+}
+
+// CloseAndMarkNeedsReauth closes a shared MCP client's live upstream
+// connection and flips it to needs_reauth, without attempting a new dial.
+// Used after OAuth credential rotation.
+//
+// Parameters:
+//   - id: ID of the client to close and flip to needs_reauth
+//
+// Returns:
+//   - error: if the client does not exist or has no persistent connection
+func (bifrost *Bifrost) CloseAndMarkNeedsReauth(id string) error {
+	if bifrost.MCPManager == nil {
+		return fmt.Errorf("mcp is not configured in this bifrost instance")
+	}
+	return bifrost.MCPManager.CloseAndMarkNeedsReauth(id)
 }
 
 // DisableMCPClient shuts down an MCP client's connection, health monitor, and tool
@@ -4615,6 +4666,8 @@ func (bifrost *Bifrost) RunStreamPreHooks(ctx *schemas.BifrostContext, req *sche
 		traceID := tracer.CreateTrace("")
 		if traceID != "" {
 			ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+			// No traceparent on this path, so the exported W3C trace ID equals the store handle.
+			ctx.SetValue(schemas.BifrostContextKeyExportTraceID, traceID)
 		}
 	}
 
@@ -4749,6 +4802,8 @@ func (bifrost *Bifrost) RunRealtimeTurnPreHooks(ctx *schemas.BifrostContext, req
 		traceID := tracer.CreateTrace("")
 		if traceID != "" {
 			ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+			// No traceparent on this path, so the exported W3C trace ID equals the store handle.
+			ctx.SetValue(schemas.BifrostContextKeyExportTraceID, traceID)
 		}
 	}
 
@@ -5579,6 +5634,8 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		traceID := tracer.CreateTrace("")
 		if traceID != "" {
 			ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+			// No traceparent on this path, so the exported W3C trace ID equals the store handle.
+			ctx.SetValue(schemas.BifrostContextKeyExportTraceID, traceID)
 		}
 	}
 

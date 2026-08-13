@@ -1030,6 +1030,34 @@ func (h *HybridLogStore) GetDistinctStopReasons(ctx context.Context, limit int, 
 	return h.inner.GetDistinctStopReasons(ctx, limit, query)
 }
 
+// GetDistinctUserAgents delegates to the inner store and returns distinct
+// raw User-Agent strings for the logs "App" filter, capped at limit.
+func (h *HybridLogStore) GetDistinctUserAgents(ctx context.Context, limit int, query string) ([]string, error) {
+	return h.inner.GetDistinctUserAgents(ctx, limit, query)
+}
+
+// GetDistinctApps delegates to the inner store and returns distinct backend-
+// detected app labels from recent logs.
+func (h *HybridLogStore) GetDistinctApps(ctx context.Context, limit int, query string) ([]string, error) {
+	return h.inner.GetDistinctApps(ctx, limit, query)
+}
+
+func (h *HybridLogStore) CreateUserAgentMapping(ctx context.Context, mapping *UserAgentMapping) error {
+	return h.inner.CreateUserAgentMapping(ctx, mapping)
+}
+
+func (h *HybridLogStore) UpdateUserAgentMapping(ctx context.Context, id string, mapping *UserAgentMapping) error {
+	return h.inner.UpdateUserAgentMapping(ctx, id, mapping)
+}
+
+func (h *HybridLogStore) DeleteUserAgentMapping(ctx context.Context, id string) error {
+	return h.inner.DeleteUserAgentMapping(ctx, id)
+}
+
+func (h *HybridLogStore) ListUserAgentMappings(ctx context.Context, activeOnly bool) ([]UserAgentMapping, error) {
+	return h.inner.ListUserAgentMappings(ctx, activeOnly)
+}
+
 // GetDistinctMetadataKeys delegates to the inner store and returns distinct
 // metadata keys (and their distinct values) matching query, capped at limit.
 func (h *HybridLogStore) GetDistinctMetadataKeys(ctx context.Context, limit int, query string) (map[string][]string, error) {
@@ -1128,6 +1156,10 @@ func applyMCPToolLogUpdateMap(target *MCPToolLog, updates map[string]interface{}
 				target.Metadata = v
 				target.MetadataParsed = nil
 			}
+		case "redaction_mapping":
+			if v, ok := value.(string); ok {
+				target.RedactionMapping = v
+			}
 		case "latency":
 			if v, ok := numericToFloat64(value); ok {
 				target.Latency = &v
@@ -1192,6 +1224,9 @@ func applyMCPToolLogUpdateStruct(target *MCPToolLog, update *MCPToolLog) error {
 	if update.Metadata != "" {
 		target.Metadata = update.Metadata
 		target.MetadataParsed = nil
+	}
+	if update.RedactionMapping != "" {
+		target.RedactionMapping = update.RedactionMapping
 	}
 	if !update.CreatedAt.IsZero() {
 		target.CreatedAt = update.CreatedAt
@@ -1273,6 +1308,9 @@ func prepareMCPToolLogDBUpdatesFromStruct(update MCPToolLog) (map[string]any, er
 	}
 	if update.Metadata != "" {
 		out["metadata"] = update.Metadata
+	}
+	if update.RedactionMapping != "" {
+		out["redaction_mapping"] = update.RedactionMapping
 	}
 	if !update.CreatedAt.IsZero() {
 		out["created_at"] = update.CreatedAt
@@ -1461,6 +1499,17 @@ func (h *HybridLogStore) FlushMCPToolLogs(ctx context.Context, since time.Time) 
 // GetAvailableToolNames returns a list of tool names that match the given query.
 func (h *HybridLogStore) GetAvailableToolNames(ctx context.Context, limit int, query string) ([]string, error) {
 	return h.inner.GetAvailableToolNames(ctx, limit, query)
+}
+
+// GetAvailableMCPUserAgents returns distinct raw User-Agent strings from MCP tool logs.
+func (h *HybridLogStore) GetAvailableMCPUserAgents(ctx context.Context, limit int, query string) ([]string, error) {
+	return h.inner.GetAvailableMCPUserAgents(ctx, limit, query)
+}
+
+// GetAvailableMCPApps delegates to the inner store and returns distinct backend-
+// detected app labels from MCP tool logs.
+func (h *HybridLogStore) GetAvailableMCPApps(ctx context.Context, limit int, query string) ([]string, error) {
+	return h.inner.GetAvailableMCPApps(ctx, limit, query)
 }
 
 // GetAvailableServerLabels returns a list of server labels that match the given query.

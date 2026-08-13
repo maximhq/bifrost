@@ -70,6 +70,9 @@ type RDBLogStore struct {
 	db            *gorm.DB
 	logger        schemas.Logger
 	matViewsReady atomic.Bool
+	// matViewMaintenanceDisabled records that matview_refresh_interval resolved
+	// to disabled, so the self-heal path must not recreate the views either.
+	matViewMaintenanceDisabled bool
 	// Self-heal state for the matview read path (see matviewheal.go).
 	matViewHealInFlight    atomic.Bool
 	matViewHealLastAttempt atomic.Int64 // unix nanos of the last repair attempt
@@ -300,7 +303,12 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		baseQuery = baseQuery.Where("object_type IN ?", filters.Objects)
 	}
 	if filters.ParentRequestID != "" {
-		baseQuery = baseQuery.Where("parent_request_id = ?", filters.ParentRequestID)
+		// A row is never its own child: parent_request_id is client-settable, and
+		// a self-referencing row already lists as a root (see applyRootsOnlyFilter),
+		// so without this it would also appear inside its own expansion.
+		baseQuery = baseQuery.Where("parent_request_id = ? AND id <> parent_request_id", filters.ParentRequestID)
+	} else if filters.RootsOnly {
+		baseQuery = s.applyRootsOnlyFilter(baseQuery, filters)
 	}
 	if len(filters.SelectedKeyIDs) > 0 {
 		baseQuery = baseQuery.Where("selected_key_id IN ?", filters.SelectedKeyIDs)
@@ -337,6 +345,12 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		} else {
 			baseQuery = baseQuery.Where("business_unit_id IN ?", filters.BusinessUnitIDs)
 		}
+	}
+	if len(filters.UserAgents) > 0 {
+		baseQuery = baseQuery.Where("user_agent IN ?", filters.UserAgents)
+	}
+	if len(filters.Apps) > 0 {
+		baseQuery = baseQuery.Where("app IN ?", filters.Apps)
 	}
 	if len(filters.RoutingEngineUsed) > 0 {
 		// Query routing engines (comma-separated values) - find logs containing ANY of the specified engines
@@ -494,6 +508,51 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		}
 	}
 	return baseQuery
+}
+
+// applyRootsOnlyFilter hides rows that nest under another row already present in
+// this same result set, so each fallback chain lists as its root request.
+//
+// The parent set is the *filtered, scoped* population, not the whole table: a
+// row is only hidden when the row it points at would itself be listed. This is
+// what keeps a chain from vanishing when a filter matches only part of it —
+// with `status=success` over a chain whose root errored and whose retry
+// succeeded, the root fails the filter, so the retry is not hidden and lists as
+// its own root instead of disappearing. It also means the subquery inherits the
+// caller's QueryScope and time window: a child whose parent is invisible to
+// this caller, or falls outside the range, is promoted rather than dropped.
+//
+// Rows whose parent_request_id is a client/provider session string (baggage,
+// realtime `sess_…`) match no log id and stay top-level, as do self-referencing
+// rows — parent_request_id is client-settable, and a row that points at itself
+// would otherwise be unreachable from any view.
+func (s *RDBLogStore) applyRootsOnlyFilter(baseQuery *gorm.DB, filters SearchFilters) *gorm.DB {
+	ctx := baseQuery.Statement.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	// Same filters, minus the two that describe *this* query's shape rather than
+	// which rows are listable. Clearing RootsOnly also stops the recursion.
+	parentFilters := filters
+	parentFilters.RootsOnly = false
+	parentFilters.ParentRequestID = ""
+
+	if s.db.Dialector.Name() == "clickhouse" {
+		// ClickHouse has no correlated subqueries, so the parent id set is built
+		// once per query. The inherited filters (crucially the time window) bound
+		// it — an unfiltered `SELECT id FROM logs` would materialize every id in
+		// the table on every page load.
+		parents := s.applyFilters(s.ScopedDB(ctx).Model(&Log{}).Select("id"), parentFilters)
+		return baseQuery.Where("(parent_request_id IS NULL OR parent_request_id = id OR parent_request_id NOT IN (?))", parents)
+	}
+
+	// Correlated form elsewhere: the PK lookup on parent.id keeps this an index
+	// probe per candidate row rather than a materialized anti-join. Unqualified
+	// columns in the filter predicates bind to the inner `parent` scope.
+	parents := s.applyFilters(s.ScopedDB(ctx).Table("logs AS parent").Select("1"), parentFilters).
+		Where("parent.id = logs.parent_request_id")
+	return baseQuery.Where("(parent_request_id IS NULL OR parent_request_id = id OR NOT EXISTS (?))", parents)
 }
 
 // Create inserts a new log entry into the database.
@@ -919,6 +978,12 @@ func (s *RDBLogStore) searchLogs(ctx context.Context, filters SearchFilters, pag
 		return nil, err
 	}
 
+	if filters.RootsOnly {
+		if err := s.attachChildAggregates(ctx, logs, filters); err != nil {
+			return nil, err
+		}
+	}
+
 	hasLogs := len(logs) > 0
 	if !hasLogs {
 		var err error
@@ -937,6 +1002,65 @@ func (s *RDBLogStore) searchLogs(ctx context.Context, filters SearchFilters, pag
 		},
 		HasLogs: hasLogs,
 	}, nil
+}
+
+// attachChildAggregates populates ChildCount/ChildrenCost/ChildrenTokens on the
+// given page of logs with one grouped query over the page's IDs. The index on
+// parent_request_id keeps this cheap (bounded by the page size), and the
+// rolled-up cost/tokens let the UI summarize a collapsed fallback chain.
+//
+// The same filters that produced the page are applied to the children, so a
+// collapsed chain summarizes exactly the rows that expanding it lists (the
+// expand call re-queries with these filters plus parent_request_id). A root
+// whose children all fail the filters reports ChildCount 0 and offers nothing
+// to expand.
+func (s *RDBLogStore) attachChildAggregates(ctx context.Context, logs []Log, filters SearchFilters) error {
+	if len(logs) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(logs))
+	for _, log := range logs {
+		ids = append(ids, log.ID)
+	}
+
+	var aggs []struct {
+		ParentRequestID string  `gorm:"column:parent_request_id"`
+		ChildCount      int64   `gorm:"column:child_count"`
+		ChildrenCost    float64 `gorm:"column:children_cost"`
+		ChildrenTokens  int64   `gorm:"column:children_tokens"`
+	}
+	// Clear the two filters that describe the shape of the roots query rather
+	// than which rows are listable; the rest carry over verbatim. Clearing
+	// RootsOnly also keeps the parent-existence subquery out of this query — a
+	// child is counted against its own parent, not re-tested for one.
+	childFilters := filters
+	childFilters.RootsOnly = false
+	childFilters.ParentRequestID = ""
+
+	err := s.applyFilters(s.ScopedDB(ctx).Model(&Log{}), childFilters).
+		Select("parent_request_id, COUNT(*) AS child_count, COALESCE(SUM(cost), 0) AS children_cost, COALESCE(SUM(total_tokens), 0) AS children_tokens").
+		Where("parent_request_id IN ? AND id <> parent_request_id", ids).
+		Group("parent_request_id").
+		Scan(&aggs).Error
+	if err != nil {
+		return fmt.Errorf("failed to aggregate child logs: %w", err)
+	}
+	if len(aggs) == 0 {
+		return nil
+	}
+
+	byParent := make(map[string]int, len(aggs))
+	for i, agg := range aggs {
+		byParent[agg.ParentRequestID] = i
+	}
+	for i := range logs {
+		if aggIdx, ok := byParent[logs[i].ID]; ok {
+			logs[i].ChildCount = aggs[aggIdx].ChildCount
+			logs[i].ChildrenCost = aggs[aggIdx].ChildrenCost
+			logs[i].ChildrenTokens = aggs[aggIdx].ChildrenTokens
+		}
+	}
+	return nil
 }
 
 // GetSessionLogs returns paginated logs for a single parent_request_id session.
@@ -1110,6 +1234,7 @@ func (s *RDBLogStore) listSelectColumns() string {
 		"user_id", "user_name", "team_id", "team_name", "customer_id", "customer_name",
 		"business_unit_id", "business_unit_name",
 		"team_ids", "team_names", "customer_ids", "customer_names", "business_unit_ids", "business_unit_names",
+		"user_agent", "app",
 		"speech_input", "transcription_input", "image_generation_input", "video_generation_input",
 		// error_details is intentionally excluded from the list select: for status=error
 		// rows it can carry the provider's full (unbounded) error payload, and 25+ such
@@ -3990,6 +4115,98 @@ func (s *RDBLogStore) GetDistinctStopReasons(ctx context.Context, limit int, que
 	return stopReasons, nil
 }
 
+// GetDistinctUserAgents returns all unique non-empty user_agent values using SELECT DISTINCT.
+// The UI maps each raw User-Agent to a client app. Matview path is DAC-aware
+// (see GetDistinctModels); falls back to a recency-scoped raw-table scan.
+func (s *RDBLogStore) GetDistinctUserAgents(ctx context.Context, limit int, query string) ([]string, error) {
+	if s.db.Dialector.Name() == "postgres" && s.matViewsReady.Load() {
+		return s.getDistinctUserAgentsFromMatView(ctx, limit, query)
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
+	var userAgents []string
+	q := s.ScopedDB(ctx).Model(&Log{}).
+		Where("user_agent IS NOT NULL AND user_agent != '' AND timestamp >= ?", cutoff).
+		Distinct("user_agent")
+	if query != "" {
+		q = s.applyLikeFilter(q, "user_agent", query)
+	}
+	if err := q.Order("user_agent ASC").Limit(limit).Pluck("user_agent", &userAgents).Error; err != nil {
+		return nil, fmt.Errorf("failed to get distinct user agents: %w", err)
+	}
+	return userAgents, nil
+}
+
+// GetDistinctApps returns all unique non-empty backend-detected app labels.
+func (s *RDBLogStore) GetDistinctApps(ctx context.Context, limit int, query string) ([]string, error) {
+	if s.db.Dialector.Name() == "postgres" && s.matViewsReady.Load() {
+		return s.getDistinctAppsFromMatView(ctx, limit, query)
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
+	var apps []string
+	q := s.ScopedDB(ctx).Model(&Log{}).
+		Where("app IS NOT NULL AND app != '' AND timestamp >= ?", cutoff).
+		Distinct("app")
+	if query != "" {
+		q = s.applyLikeFilter(q, "app", query)
+	}
+	if err := q.Order("app ASC").Limit(limit).Pluck("app", &apps).Error; err != nil {
+		return nil, fmt.Errorf("failed to get distinct apps: %w", err)
+	}
+	return apps, nil
+}
+
+// CreateUserAgentMapping persists a custom User-Agent to app mapping.
+func (s *RDBLogStore) CreateUserAgentMapping(ctx context.Context, mapping *UserAgentMapping) error {
+	if err := s.db.WithContext(ctx).Create(mapping).Error; err != nil {
+		return fmt.Errorf("failed to create user agent mapping: %w", err)
+	}
+	return nil
+}
+
+// UpdateUserAgentMapping updates an existing custom User-Agent mapping by ID.
+func (s *RDBLogStore) UpdateUserAgentMapping(ctx context.Context, id string, mapping *UserAgentMapping) error {
+	result := s.db.WithContext(ctx).Model(&UserAgentMapping{}).Where("id = ?", id).Updates(map[string]interface{}{
+		"pattern":    mapping.Pattern,
+		"match_type": mapping.MatchType,
+		"app":        mapping.App,
+		"logo":       mapping.Logo,
+		"logo_mime":  mapping.LogoMime,
+		"is_active":  mapping.IsActive,
+	})
+	if result.Error != nil {
+		return fmt.Errorf("failed to update user agent mapping: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
+// DeleteUserAgentMapping removes a custom User-Agent mapping by ID.
+func (s *RDBLogStore) DeleteUserAgentMapping(ctx context.Context, id string) error {
+	result := s.db.WithContext(ctx).Delete(&UserAgentMapping{}, "id = ?", id)
+	if result.Error != nil {
+		return fmt.Errorf("failed to delete user agent mapping: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
+// ListUserAgentMappings returns custom User-Agent mappings ordered by creation time.
+func (s *RDBLogStore) ListUserAgentMappings(ctx context.Context, activeOnly bool) ([]UserAgentMapping, error) {
+	var mappings []UserAgentMapping
+	q := s.db.WithContext(ctx).Model(&UserAgentMapping{})
+	if activeOnly {
+		q = q.Where("is_active = ?", true)
+	}
+	if err := q.Order("created_at ASC").Find(&mappings).Error; err != nil {
+		return nil, fmt.Errorf("failed to list user agent mappings: %w", err)
+	}
+	return mappings, nil
+}
+
 // metadataSystemKeys are metadata keys added by the system that should be excluded from filter data.
 var metadataSystemKeys = map[string]struct{}{
 	"isAsyncRequest": {},
@@ -4231,6 +4448,12 @@ func (s *RDBLogStore) applyMCPFilters(baseQuery *gorm.DB, filters MCPToolLogSear
 	}
 	if len(filters.LLMRequestIDs) > 0 {
 		baseQuery = baseQuery.Where("llm_request_id IN ?", filters.LLMRequestIDs)
+	}
+	if len(filters.UserAgents) > 0 {
+		baseQuery = baseQuery.Where("user_agent IN ?", filters.UserAgents)
+	}
+	if len(filters.Apps) > 0 {
+		baseQuery = baseQuery.Where("app IN ?", filters.Apps)
 	}
 	if filters.StartTime != nil {
 		baseQuery = baseQuery.Where("timestamp >= ?", *filters.StartTime)
@@ -4528,6 +4751,39 @@ func (s *RDBLogStore) GetAvailableServerLabels(ctx context.Context, limit int, q
 		return nil, fmt.Errorf("failed to get available server labels: %w", result.Error)
 	}
 	return serverLabels, nil
+}
+
+// GetAvailableMCPUserAgents returns unique non-empty user_agent values from MCP tool logs.
+// The UI maps each raw User-Agent to a client app for the MCP logs "App" filter.
+func (s *RDBLogStore) GetAvailableMCPUserAgents(ctx context.Context, limit int, query string) ([]string, error) {
+	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
+	var userAgents []string
+	q := s.ScopedDB(ctx).Model(&MCPToolLog{}).
+		Where("user_agent IS NOT NULL AND user_agent != '' AND timestamp >= ?", cutoff)
+	if query != "" {
+		q = s.applyLikeFilter(q, "user_agent", query)
+	}
+	result := q.Distinct("user_agent").Order("user_agent ASC").Limit(limit).Pluck("user_agent", &userAgents)
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to get available MCP user agents: %w", result.Error)
+	}
+	return userAgents, nil
+}
+
+// GetAvailableMCPApps returns unique non-empty backend-detected app labels from MCP tool logs.
+func (s *RDBLogStore) GetAvailableMCPApps(ctx context.Context, limit int, query string) ([]string, error) {
+	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
+	var apps []string
+	q := s.ScopedDB(ctx).Model(&MCPToolLog{}).
+		Where("app IS NOT NULL AND app != '' AND timestamp >= ?", cutoff)
+	if query != "" {
+		q = s.applyLikeFilter(q, "app", query)
+	}
+	result := q.Distinct("app").Order("app ASC").Limit(limit).Pluck("app", &apps)
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to get available MCP apps: %w", result.Error)
+	}
+	return apps, nil
 }
 
 func (s *RDBLogStore) GetAvailableMCPVirtualKeys(ctx context.Context, limit int, query string) ([]MCPToolLog, error) {
