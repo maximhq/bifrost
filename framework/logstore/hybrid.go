@@ -155,12 +155,15 @@ func (h *HybridLogStore) processUpload(work *uploadWork) {
 	h.droppedUploads.Add(1)
 }
 
-// isPayloadEmpty returns true when every value in the payload map is empty.
-// Skipping uploads for empty payloads avoids wasted S3 PUTs (e.g. initial
-// "processing" entries that carry no input/output data yet).
+// isPayloadEmpty returns true when the payload carries no offloadable content.
+// Only the large TEXT payload fields count: metadata like provider, model,
+// status and timestamp is populated on every entry (see ExtractPayload), so
+// checking the whole map would never report empty and would defeat the skip
+// for initial "processing" rows that have no input/output data yet. Skipping
+// uploads for empty payloads avoids wasted S3 PUTs.
 func isPayloadEmpty(payload map[string]string) bool {
-	for _, v := range payload {
-		if v != "" {
+	for _, f := range payloadFields {
+		if payload[f] != "" {
 			return false
 		}
 	}

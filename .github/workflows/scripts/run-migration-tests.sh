@@ -5192,6 +5192,15 @@ compare_postgres_snapshots() {
     if [ "$table" = "oauth_user_tokens" ]; then
       dropped_columns="$dropped_columns session_token session_token_hash"
     fi
+    # state, code_verifier, code_challenge, expires_at (dropped from oauth_configs by
+    # migrationDropOauthConfigPKCEColumns) and token_id (dropped by
+    # migrationDropOauthConfigTokenIDColumn). The CSRF-state / PKCE handshake and its
+    # token reference moved onto mcp_oauth_flows; nothing populates these on
+    # oauth_configs anymore, so they are dropped outright rather than left as dead
+    # NOT NULL columns that would break every future INSERT.
+    if [ "$table" = "oauth_configs" ]; then
+      dropped_columns="$dropped_columns state code_verifier code_challenge expires_at token_id"
+    fi
     # enable_litellm_fallbacks (dropped from config_client in latest cut - behavior moved elsewhere)
     # allow_direct_keys (dropped from config_client in v1.5.0 - direct-keys-only mode removed; HTTP header
     # pass-through is no longer accepted)
