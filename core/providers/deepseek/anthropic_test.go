@@ -81,7 +81,7 @@ func TestChatCompletion_UsesAnthropicEndpoint(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, newAnthropicResponse())
+		_, _ = fmt.Fprint(w, newAnthropicResponse())
 	}))
 	defer server.Close()
 
@@ -142,7 +142,7 @@ func TestResponses_UsesAnthropicEndpointAndKeepsWebSearch(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, validV4ProResponse)
+		_, _ = fmt.Fprint(w, validV4ProResponse)
 	}))
 	defer server.Close()
 
@@ -202,7 +202,7 @@ func TestChatCompletion_V4FlashOmitsThinkingForForcedToolChoice(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, newAnthropicResponse())
+		_, _ = fmt.Fprint(w, newAnthropicResponse())
 	}))
 	defer server.Close()
 
@@ -266,7 +266,7 @@ func TestResponses_V4ProKeepsForcedToolWithoutThinking(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, validV4ProResponse)
+		_, _ = fmt.Fprint(w, validV4ProResponse)
 	}))
 	defer server.Close()
 
@@ -322,7 +322,7 @@ func TestChatCompletion_DefaultsToOpenAIEndpoint(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"id":"chatcmpl_1","object":"chat.completion","model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+		_, _ = fmt.Fprint(w, `{"id":"chatcmpl_1","object":"chat.completion","model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
 	}))
 	defer server.Close()
 
@@ -369,7 +369,7 @@ func TestChatCompletion_OpenAIEndpointDisablesThinkingForRequiredToolChoice(t *t
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"id":"chatcmpl_1","object":"chat.completion","model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+		_, _ = fmt.Fprint(w, `{"id":"chatcmpl_1","object":"chat.completion","model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
 	}))
 	defer server.Close()
 

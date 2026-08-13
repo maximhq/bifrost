@@ -41,7 +41,7 @@ func TestChatCompletionAnthropicV4FlashSendsEffortOnly(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, validV4FlashResponse)
+		_, _ = fmt.Fprint(w, validV4FlashResponse)
 	}))
 	defer server.Close()
 
@@ -89,7 +89,7 @@ func TestChatCompletionAnthropicV4ProSendsEffortOnly(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, validV4ProResponse)
+		_, _ = fmt.Fprint(w, validV4ProResponse)
 	}))
 	defer server.Close()
 
@@ -125,7 +125,7 @@ func TestChatCompletionAnthropicV4FlashRejectsCollapsedUsage(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"id":"msg_1","type":"message","role":"assistant","model":"deepseek-v4-flash","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":121,"output_tokens":23}}`)
+		_, _ = fmt.Fprint(w, `{"id":"msg_1","type":"message","role":"assistant","model":"deepseek-v4-flash","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":121,"output_tokens":23}}`)
 	}))
 	defer server.Close()
 
@@ -150,7 +150,7 @@ func TestResponsesAnthropicV4FlashRejectsCollapsedUsage(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"id":"msg_1","type":"message","role":"assistant","model":"deepseek-v4-flash","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":121,"output_tokens":23}}`)
+		_, _ = fmt.Fprint(w, `{"id":"msg_1","type":"message","role":"assistant","model":"deepseek-v4-flash","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":121,"output_tokens":23}}`)
 	}))
 	defer server.Close()
 
@@ -178,25 +178,27 @@ func TestAnthropicV4FlashLargeResponseSkipsTruncatedPreviewValidation(t *testing
 
 	for _, tc := range []struct {
 		name string
-		call func(*schemas.BifrostContext, *deepseek.DeepSeekProvider) (any, *schemas.BifrostError)
+		call func(*schemas.BifrostContext, *deepseek.DeepSeekProvider) (bool, *schemas.BifrostError)
 	}{
 		{
 			name: "chat",
-			call: func(ctx *schemas.BifrostContext, provider *deepseek.DeepSeekProvider) (any, *schemas.BifrostError) {
-				return provider.ChatCompletion(ctx, anthropicTestKey(), v4FlashChatRequest())
+			call: func(ctx *schemas.BifrostContext, provider *deepseek.DeepSeekProvider) (bool, *schemas.BifrostError) {
+				resp, err := provider.ChatCompletion(ctx, anthropicTestKey(), v4FlashChatRequest())
+				return resp != nil, err
 			},
 		},
 		{
 			name: "responses",
-			call: func(ctx *schemas.BifrostContext, provider *deepseek.DeepSeekProvider) (any, *schemas.BifrostError) {
-				return provider.Responses(ctx, anthropicTestKey(), v4FlashResponsesRequest())
+			call: func(ctx *schemas.BifrostContext, provider *deepseek.DeepSeekProvider) (bool, *schemas.BifrostError) {
+				resp, err := provider.Responses(ctx, anthropicTestKey(), v4FlashResponsesRequest())
+				return resp != nil, err
 			},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
-				fmt.Fprint(w, largeResponse)
+				_, _ = fmt.Fprint(w, largeResponse)
 			}))
 			defer server.Close()
 
@@ -206,14 +208,14 @@ func TestAnthropicV4FlashLargeResponseSkipsTruncatedPreviewValidation(t *testing
 			}
 			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 			ctx.SetValue(schemas.BifrostContextKeyLargeResponseThreshold, int64(1))
-			resp, bifrostErr := tc.call(ctx, provider)
+			gotResponse, bifrostErr := tc.call(ctx, provider)
 			if reader, ok := ctx.Value(schemas.BifrostContextKeyLargeResponseReader).(io.ReadCloser); ok {
 				t.Cleanup(func() { _ = reader.Close() })
 			}
 			if bifrostErr != nil {
 				t.Fatalf("large response returned fidelity error: %#v", bifrostErr)
 			}
-			if resp == nil {
+			if !gotResponse {
 				t.Fatal("large response returned nil success response")
 			}
 		})
@@ -226,7 +228,7 @@ func TestResponsesAnthropicV4ProRejectsCollapsedUsage(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"id":"msg_1","type":"message","role":"assistant","model":"deepseek-v4-pro","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":2,"output_tokens":1}}`)
+		_, _ = fmt.Fprint(w, `{"id":"msg_1","type":"message","role":"assistant","model":"deepseek-v4-pro","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":2,"output_tokens":1}}`)
 	}))
 	defer server.Close()
 
@@ -252,7 +254,7 @@ func TestResponsesAnthropicV4ProRejectsWrongServedModel(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, validV4FlashResponse)
+		_, _ = fmt.Fprint(w, validV4FlashResponse)
 	}))
 	defer server.Close()
 
@@ -280,7 +282,7 @@ func TestResponsesAnthropicUsageGateIsExact(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"id":"msg_1","type":"message","role":"assistant","model":"deepseek-v4-pro-0813","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":2,"output_tokens":1}}`)
+		_, _ = fmt.Fprint(w, `{"id":"msg_1","type":"message","role":"assistant","model":"deepseek-v4-pro-0813","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":2,"output_tokens":1}}`)
 	}))
 	defer server.Close()
 
@@ -309,7 +311,7 @@ func TestResponsesStreamAnthropicV4FlashRejectsCollapsedUsageFirst(t *testing.T)
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, "event: message_start\n"+
+		_, _ = fmt.Fprint(w, "event: message_start\n"+
 			`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"deepseek-v4-flash","content":[],"usage":{"input_tokens":121,"output_tokens":0}}}`+"\n\n"+
 			"event: message_delta\n"+
 			`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":23}}`+"\n\n"+
@@ -354,7 +356,7 @@ func TestResponsesStreamAnthropicV4FlashNormalizesUsageBeforeFidelityError(t *te
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, "event: message_start\n"+
+		_, _ = fmt.Fprint(w, "event: message_start\n"+
 			`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"deepseek-v4-flash","content":[],"usage":{"input_tokens":101,"cache_creation_input_tokens":13,"cache_read_input_tokens":7,"output_tokens":0,"prompt_tokens":121}}}`+"\n\n"+
 			"event: message_delta\n"+
 			`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":-1}}`+"\n\n")
@@ -401,7 +403,7 @@ func TestResponsesStreamAnthropicV4FlashAcceptsCompleteUsage(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, "event: message_start\n"+
+		_, _ = fmt.Fprint(w, "event: message_start\n"+
 			`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"deepseek-v4-flash","content":[],"usage":{"input_tokens":101,"cache_creation_input_tokens":13,"cache_read_input_tokens":7,"output_tokens":0,"prompt_tokens":121}}}`+"\n\n"+
 			"event: content_block_start\n"+
 			`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`+"\n\n"+
@@ -451,7 +453,7 @@ func TestResponsesStreamAnthropicV4ProAcceptsCompleteUsage(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, "event: message_start\n"+
+		_, _ = fmt.Fprint(w, "event: message_start\n"+
 			`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"deepseek-v4-pro","content":[],"usage":{"input_tokens":101,"cache_creation_input_tokens":13,"cache_read_input_tokens":7,"output_tokens":0,"prompt_tokens":121}}}`+"\n\n"+
 			"event: content_block_start\n"+
 			`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`+"\n\n"+
@@ -501,7 +503,7 @@ func TestResponsesStreamAnthropicV4FlashRejectsTruncatedUsage(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, "event: message_start\n"+
+		_, _ = fmt.Fprint(w, "event: message_start\n"+
 			`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"deepseek-v4-flash","content":[],"usage":{"input_tokens":101,"cache_creation_input_tokens":13,"cache_read_input_tokens":7,"output_tokens":0,"prompt_tokens":121}}}`+"\n\n")
 	}))
 	defer server.Close()
@@ -541,7 +543,7 @@ func TestChatCompletionStreamAnthropicV4FlashRejectsCollapsedUsageFirst(t *testi
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, "event: message_start\n"+
+		_, _ = fmt.Fprint(w, "event: message_start\n"+
 			`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"deepseek-v4-flash","content":[],"usage":{"input_tokens":121,"output_tokens":0}}}`+"\n\n"+
 			"event: message_delta\n"+
 			`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":23}}`+"\n\n"+
