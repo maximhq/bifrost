@@ -204,6 +204,18 @@ func (p *GovernancePlugin) filterModelsForVirtualKey(
 // validateRequiredHeaders checks that all configured required headers are present in the request.
 // Headers are compared case-insensitively (both sides lowercased).
 // Returns a BifrostError with status 400 if any required headers are missing, or nil if all present.
+// truncateExemplarForLog bounds one operator-supplied tier phrase echoed into a
+// routing log. It cuts on runes so a multi-byte phrase cannot be split
+// mid-character, and returns "" for a phrase that carries nothing to show.
+func truncateExemplarForLog(phrase string) string {
+	trimmed := strings.TrimSpace(phrase)
+	runes := []rune(trimmed)
+	if len(runes) <= maxLoggedExemplarChars {
+		return trimmed
+	}
+	return string(runes[:maxLoggedExemplarChars]) + "..."
+}
+
 func (p *GovernancePlugin) validateRequiredHeaders(ctx *schemas.BifrostContext) *schemas.BifrostError {
 	if p.requiredHeaders == nil || len(*p.requiredHeaders) == 0 {
 		return nil
