@@ -2079,6 +2079,9 @@ append_dynamic_columns_postgres() {
     echo "UPDATE logs SET redaction_mapping = '' WHERE id = 'log-migration-test-001';" >> "$output_file"
     echo "UPDATE logs SET redaction_mapping = '' WHERE id = 'log-migration-test-002';" >> "$output_file"
     echo "UPDATE logs SET redaction_mapping = '' WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
+
+  # -------------------------------------------------------------------------
   # v1.6.3 columns - config store tables
   # -------------------------------------------------------------------------
 
@@ -2164,6 +2167,9 @@ append_dynamic_columns_postgres() {
     echo "UPDATE logs SET server_side_fallback_model = NULL WHERE id = 'log-migration-test-001';" >> "$output_file"
     echo "UPDATE logs SET server_side_fallback_model = 'gpt-4-turbo' WHERE id = 'log-migration-test-002';" >> "$output_file"
     echo "UPDATE logs SET server_side_fallback_model = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
+
+  # -------------------------------------------------------------------------
   # v1.6.4 columns
   # -------------------------------------------------------------------------
 
@@ -2243,6 +2249,13 @@ append_dynamic_columns_postgres() {
   if column_exists_postgres "governance_budgets" "override_anchor_reset"; then
     echo "UPDATE governance_budgets SET override_anchor_reset = $now WHERE id = 'budget-migration-test-1';" >> "$output_file"
     echo "UPDATE governance_budgets SET override_anchor_reset = NULL WHERE id = 'budget-migration-test-2';" >> "$output_file"
+  fi
+
+  # governance_budgets.reset_config_json (added via migrationAddBudgetResetConfigColumn -
+  # nullable text, JSON reset config; '' when unset, e.g. '{"quarter_start_month":4}' for quarterly resets)
+  if column_exists_postgres "governance_budgets" "reset_config_json"; then
+    echo "UPDATE governance_budgets SET reset_config_json = '{\"quarter_start_month\":4}' WHERE id = 'budget-migration-test-1';" >> "$output_file"
+    echo "UPDATE governance_budgets SET reset_config_json = '' WHERE id = 'budget-migration-test-2';" >> "$output_file"
   fi
 
   # governance_pricing_overrides.user_id (added via add_pricing_override_user_id_column)
@@ -3471,12 +3484,6 @@ append_dynamic_columns_sqlite() {
     echo "UPDATE logs SET redaction_mapping = '' WHERE id = 'log-migration-test-001';" >> "$output_file"
     echo "UPDATE logs SET redaction_mapping = '' WHERE id = 'log-migration-test-002';" >> "$output_file"
     echo "UPDATE logs SET redaction_mapping = '' WHERE id = 'log-migration-test-003';" >> "$output_file"
-  # logs.redaction_mapping (added in v1.6.4 via logs_add_redaction_mapping_column -
-  # nullable text, stores the encrypted reversible redaction mapping)
-  if column_exists_sqlite "$logs_db" "logs" "redaction_mapping"; then
-    echo "UPDATE logs SET redaction_mapping = NULL WHERE id = 'log-migration-test-001';" >> "$output_file"
-    echo "UPDATE logs SET redaction_mapping = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
-    echo "UPDATE logs SET redaction_mapping = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
   fi
 
   # -------------------------------------------------------------------------
@@ -3570,6 +3577,13 @@ append_dynamic_columns_sqlite() {
   if column_exists_sqlite "$config_db" "governance_budgets" "override_anchor_reset"; then
     echo "UPDATE governance_budgets SET override_anchor_reset = $now WHERE id = 'budget-migration-test-1';" >> "$output_file"
     echo "UPDATE governance_budgets SET override_anchor_reset = NULL WHERE id = 'budget-migration-test-2';" >> "$output_file"
+  fi
+
+  # governance_budgets.reset_config_json (added via migrationAddBudgetResetConfigColumn -
+  # nullable text, JSON reset config; '' when unset, e.g. '{"quarter_start_month":4}' for quarterly resets)
+  if column_exists_sqlite "$config_db" "governance_budgets" "reset_config_json"; then
+    echo "UPDATE governance_budgets SET reset_config_json = '{\"quarter_start_month\":4}' WHERE id = 'budget-migration-test-1';" >> "$output_file"
+    echo "UPDATE governance_budgets SET reset_config_json = '' WHERE id = 'budget-migration-test-2';" >> "$output_file"
   fi
 
   # governance_pricing_overrides.user_id (added via add_pricing_override_user_id_column)
