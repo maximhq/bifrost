@@ -2006,6 +2006,12 @@ func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path 
 	if semanticCachePlugin, ok := plugin.(*semanticcache.Plugin); ok {
 		semanticCachePlugin.SetEmbeddingRequestExecutor(s.Client.EmbeddingRequest)
 	}
+	if routingEmbeddingPlugin, ok := plugin.(routing.EmbeddingExecutorSetter); ok {
+		routingEmbeddingPlugin.SetEmbeddingRequestExecutor(s.Client.EmbeddingRequest)
+	}
+	if routingVectorStorePlugin, ok := plugin.(routing.ComplexityVectorStoreSetter); ok {
+		routingVectorStorePlugin.SetComplexityVectorStore(s.Config.VectorStore)
+	}
 	return s.SyncLoadedPlugin(ctx, name, plugin, placement, order)
 }
 
@@ -2642,6 +2648,13 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	semanticCachePlugin, err := lib.FindPluginAs[*semanticcache.Plugin](s.Config, semanticcache.PluginName)
 	if err == nil && semanticCachePlugin != nil {
 		semanticCachePlugin.SetEmbeddingRequestExecutor(s.Client.EmbeddingRequest)
+	}
+	// Wire the routing plugin's semantic-classification embedding path. The
+	// executor cannot be passed at Init: the plugin is built while the bifrost
+	// client is still being assembled.
+	if routingPlugin, err := s.getRoutingPlugin(); err == nil {
+		routingPlugin.SetEmbeddingRequestExecutor(s.Client.EmbeddingRequest)
+		routingPlugin.SetComplexityVectorStore(s.Config.VectorStore)
 	}
 
 	// Initialize Sidekiq runner for background jobs

@@ -144,10 +144,7 @@ func (s *PineconeStore) GetAll(ctx context.Context, namespace string, queries []
 		return nil, nil, err
 	}
 
-	topK := uint32(limit)
-	if limit <= 0 {
-		topK = 100
-	}
+	topK := boundedPageLimit(limit, 100)
 
 	// Create zero vector for query - this allows us to use QueryByVectorValues
 	// which has much better consistency than ListVectors
@@ -209,10 +206,7 @@ func (s *PineconeStore) GetNearest(ctx context.Context, namespace string, vector
 		return nil, err
 	}
 
-	topK := uint32(limit)
-	if limit <= 0 {
-		topK = 10
-	}
+	topK := boundedPageLimit(limit, 10)
 
 	queryReq := &pinecone.QueryByVectorValuesRequest{
 		Vector:          vector,

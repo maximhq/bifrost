@@ -1557,62 +1557,121 @@
         },
         "type": {
           "type": "string",
-          "enum": ["weaviate", "redis", "qdrant", "pinecone"],
-          "description": "Vector store type (use \"redis\" for Redis or Valkey-compatible endpoints)"
+          "enum": ["weaviate", "redis", "qdrant", "pinecone", "chromem"],
+          "description": "Vector store type (use \"redis\" for Redis or Valkey-compatible endpoints). \"chromem\" runs in-process rather than against a service, so its data is local to one node and is not shared between replicas"
         },
         "config": {
+          "description": "Backend-specific settings. The block must match the backend named by the sibling \"type\"; the conditionals below pin it to that backend rather than accepting any backend's shape",
           "anyOf": [
             {
-              "if": {
-                "properties": {
-                  "type": {
-                    "const": "weaviate"
-                  }
-                }
-              },
-              "then": {
-                "$ref": "#/$defs/weaviate_config"
-              }
+              "$ref": "#/$defs/weaviate_config"
             },
             {
-              "if": {
-                "properties": {
-                  "type": {
-                    "const": "redis"
-                  }
-                }
-              },
-              "then": {
-                "$ref": "#/$defs/redis_config"
-              }
+              "$ref": "#/$defs/redis_config"
             },
             {
-              "if": {
-                "properties": {
-                  "type": {
-                    "const": "qdrant"
-                  }
-                }
-              },
-              "then": {
-                "$ref": "#/$defs/qdrant_config"
-              }
+              "$ref": "#/$defs/qdrant_config"
             },
             {
-              "if": {
-                "properties": {
-                  "type": {
-                    "const": "pinecone"
-                  }
-                }
-              },
-              "then": {
-                "$ref": "#/$defs/pinecone_config"
-              }
+              "$ref": "#/$defs/pinecone_config"
+            },
+            {
+              "$ref": "#/$defs/chromem_config"
             }
           ]
         }
       },
+      "allOf": [
+        {
+          "if": {
+            "required": ["type"],
+            "properties": {
+              "type": {
+                "const": "weaviate"
+              }
+            }
+          },
+          "then": {
+            "required": ["config"],
+            "properties": {
+              "config": {
+                "$ref": "#/$defs/weaviate_config"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": ["type"],
+            "properties": {
+              "type": {
+                "const": "redis"
+              }
+            }
+          },
+          "then": {
+            "required": ["config"],
+            "properties": {
+              "config": {
+                "$ref": "#/$defs/redis_config"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": ["type"],
+            "properties": {
+              "type": {
+                "const": "qdrant"
+              }
+            }
+          },
+          "then": {
+            "required": ["config"],
+            "properties": {
+              "config": {
+                "$ref": "#/$defs/qdrant_config"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": ["type"],
+            "properties": {
+              "type": {
+                "const": "pinecone"
+              }
+            }
+          },
+          "then": {
+            "required": ["config"],
+            "properties": {
+              "config": {
+                "$ref": "#/$defs/pinecone_config"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": ["type"],
+            "properties": {
+              "type": {
+                "const": "chromem"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "config": {
+                "$ref": "#/$defs/chromem_config"
+              }
+            }
+          }
+        }
+      ],
       "additionalProperties": false
     },
     "config_store": {
@@ -5893,6 +5952,30 @@
       },
       "required": ["api_key", "index_host"],
       "additionalProperties": false
+    },
+    "chromem_config": {
+      "type": "object",
+      "description": "Embedded chromem configuration for vector store. Chromem runs in-process (pure Go, no external service), so its data lives on one node and is never shared between replicas, and every filtered read is a full scan of the namespace. Suited to small, node-local vector sets rather than a shared cache.",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Directory for on-disk persistence, reloaded on startup. Must hold a non-whitespace value - omit the field entirely for a memory-only store that starts empty after every restart.",
+          "pattern": "\\S"
+        },
+        "compress": {
+          "type": "boolean",
+          "description": "Compress persisted documents on disk. Requires path - a memory-only store has nothing to compress.",
+          "default": false
+        }
+      },
+      "additionalProperties": false,
+      "if": {
+        "properties": { "compress": { "const": true } },
+        "required": ["compress"]
+      },
+      "then": {
+        "required": ["path"]
+      }
     },
     "proxy_config": {
       "type": "object",

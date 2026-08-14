@@ -631,6 +631,140 @@ func TestRedisStore_ParseSearchResults_EmptyRESP2(t *testing.T) {
 	assert.Empty(t, results)
 }
 
+// TestVectorDimensionFromFTInfo covers both protocol shapes of the FT.INFO
+// reply. The typed FTInfo helper this replaced could not decode under RESP3, so
+// the dimension check it fed silently never ran on a client speaking RESP3.
+func TestVectorDimensionFromFTInfo(t *testing.T) {
+	// What a live RESP3 server returns: each attribute entry is a map.
+	vectorAttributeMap := map[interface{}]interface{}{
+		"identifier":      "embedding",
+		"attribute":       "embedding",
+		"type":            "VECTOR",
+		"algorithm":       "HNSW",
+		"data_type":       "FLOAT32",
+		"dim":             1536,
+		"distance_metric": "COSINE",
+		"flags":           []interface{}{},
+	}
+	// RESP2 renders the same entry as a flat key/value sequence.
+	vectorAttributeFlat := []interface{}{
+		"identifier", "embedding",
+		"attribute", "embedding",
+		"type", "VECTOR",
+		"algorithm", "HNSW",
+		"data_type", "FLOAT32",
+		"dim", int64(1536),
+		"distance_metric", "COSINE",
+	}
+	tagAttribute := []interface{}{
+		"identifier", "tier",
+		"attribute", "tier",
+		"type", "TAG",
+		"SEPARATOR", ",",
+	}
+
+	tests := []struct {
+		name     string
+		reply    interface{}
+		expected int
+		found    bool
+	}{
+		{
+			name: "RESP3 map with map attribute entries",
+			reply: map[interface{}]interface{}{
+				"index_name": "BifrostComplexityRouter",
+				"attributes": []interface{}{vectorAttributeMap},
+			},
+			expected: 1536,
+			found:    true,
+		},
+		{
+			name: "RESP3 map with flat attribute entries",
+			reply: map[interface{}]interface{}{
+				"index_name": "BifrostComplexityRouter",
+				"attributes": []interface{}{tagAttribute, vectorAttributeFlat},
+			},
+			expected: 1536,
+			found:    true,
+		},
+		{
+			name: "RESP3 string-keyed map",
+			reply: map[string]interface{}{
+				"attributes": []interface{}{vectorAttributeMap},
+			},
+			expected: 1536,
+			found:    true,
+		},
+		{
+			name: "RESP2 flat sequence",
+			reply: []interface{}{
+				"index_name", "BifrostComplexityRouter",
+				"attributes", []interface{}{vectorAttributeFlat},
+			},
+			expected: 1536,
+			found:    true,
+		},
+		{
+			// Redis reports numerics as strings under RESP2 and as integers
+			// under RESP3, so both must parse.
+			name:     "dim as string",
+			reply:    map[string]interface{}{"attributes": []interface{}{[]interface{}{"type", "VECTOR", "dim", "768"}}},
+			expected: 768,
+			found:    true,
+		},
+		{
+			name:  "no vector attribute",
+			reply: map[string]interface{}{"attributes": []interface{}{tagAttribute}},
+			found: false,
+		},
+		{
+			name:  "no attributes field",
+			reply: map[string]interface{}{"index_name": "x"},
+			found: false,
+		},
+		{
+			name:  "unexpected shape",
+			reply: "not-a-reply",
+			found: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dimension, ok := vectorDimensionFromFTInfo(tt.reply)
+			assert.Equal(t, tt.found, ok)
+			if tt.found {
+				assert.Equal(t, tt.expected, dimension)
+			}
+		})
+	}
+}
+
+// TestRedisStore_CreateNamespaceRejectsDimensionChange proves the guard fires
+// against a live server: recreating an existing index with a different
+// dimension must fail rather than silently reuse the old index.
+func TestRedisStore_CreateNamespaceRejectsDimensionChange(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration tests in short mode")
+	}
+
+	setup := NewRedisTestSetup(t)
+	defer setup.Cleanup(t)
+
+	namespace := TestNamespace + "_dimguard"
+	_ = setup.Store.DeleteNamespace(setup.ctx, namespace)
+	defer func() { _ = setup.Store.DeleteNamespace(setup.ctx, namespace) }()
+
+	require.NoError(t, setup.Store.CreateNamespace(setup.ctx, namespace, RedisTestDimension, nil))
+
+	// Recreating at the same dimension stays idempotent.
+	require.NoError(t, setup.Store.CreateNamespace(setup.ctx, namespace, RedisTestDimension, nil))
+
+	err := setup.Store.CreateNamespace(setup.ctx, namespace, RedisTestDimension/2, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already exists with dimension")
+}
+
 func TestRedisStore_ParseSearchResults_ByteScore(t *testing.T) {
 	store := &RedisStore{}
 	// Simulates Valkey RESP2 returning score as []byte

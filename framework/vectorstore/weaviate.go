@@ -2,13 +2,16 @@ package vectorstore
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/weaviate/weaviate-go-client/v5/weaviate"
 	"github.com/weaviate/weaviate-go-client/v5/weaviate/auth"
+	"github.com/weaviate/weaviate-go-client/v5/weaviate/fault"
 	"github.com/weaviate/weaviate-go-client/v5/weaviate/filters"
 	"github.com/weaviate/weaviate-go-client/v5/weaviate/graphql"
 	"github.com/weaviate/weaviate-go-client/v5/weaviate/grpc"
@@ -96,10 +99,13 @@ func (s *WeaviateStore) GetChunk(ctx context.Context, className string, id strin
 		WithID(id).
 		Do(ctx)
 	if err != nil {
+		if isWeaviateNotFound(err) {
+			return SearchResult{}, fmt.Errorf("%w: %s", ErrNotFound, id)
+		}
 		return SearchResult{}, err
 	}
 	if len(obj) == 0 {
-		return SearchResult{}, fmt.Errorf("not found: %s", id)
+		return SearchResult{}, fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
 
 	props, ok := obj[0].Properties.(map[string]interface{})
@@ -114,6 +120,14 @@ func (s *WeaviateStore) GetChunk(ctx context.Context, className string, id strin
 	}, nil
 }
 
+// isWeaviateNotFound reports whether err is the client's 404 for an object that
+// does not exist. The client returns this as a normal error, so callers that
+// treat "absent" differently from "failed" must unwrap it themselves.
+func isWeaviateNotFound(err error) bool {
+	var clientErr *fault.WeaviateClientError
+	return errors.As(err, &clientErr) && clientErr.StatusCode == http.StatusNotFound
+}
+
 // GetChunks returns multiple objects by ID
 func (s *WeaviateStore) GetChunks(ctx context.Context, className string, ids []string) ([]SearchResult, error) {
 	out := make([]SearchResult, 0, len(ids))
@@ -123,6 +137,13 @@ func (s *WeaviateStore) GetChunks(ctx context.Context, className string, ids []s
 			WithID(id).
 			Do(ctx)
 		if err != nil {
+			// A missing object is an absent result, not a failure: Weaviate
+			// answers 404 where Qdrant, Pinecone, and Redis simply return
+			// nothing for the id. Surfacing it as an error breaks callers that
+			// probe for an id before writing it.
+			if isWeaviateNotFound(err) {
+				continue
+			}
 			return nil, err
 		}
 		if len(obj) > 0 {

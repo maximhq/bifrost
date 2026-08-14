@@ -97,6 +97,15 @@ func (mc *ModelCatalog) CalculateCostBreakdownForUsage(usage *schemas.BifrostLLM
 	return mc.datasheet.CalculateCostBreakdownForUsage(usage, provider, model, requestType, (*datasheet.LookupScopes)(scopes))
 }
 
+// CalculateRoutingEmbeddingCost prices the embedding call recorded in a
+// response's RoutingDebug stamp, independent of its CountTowardBudgets flag —
+// telemetry uses it to report routing overhead unconditionally, while
+// CalculateCost folds the same amount into the request's cost only when the
+// flag is set.
+func (mc *ModelCatalog) CalculateRoutingEmbeddingCost(routingDebug *schemas.BifrostRoutingDebug, scopes *PricingLookupScopes) float64 {
+	return mc.datasheet.RoutingEmbeddingCost(routingDebug, (*datasheet.LookupScopes)(scopes))
+}
+
 // CalculateGuardrailCost computes the aggregate cost of guardrail judge calls.
 func (mc *ModelCatalog) CalculateGuardrailCost(debug *schemas.BifrostGuardrailDebug, scopes *PricingLookupScopes) float64 {
 	return mc.datasheet.CalculateGuardrailCost(debug, (*datasheet.LookupScopes)(scopes))
