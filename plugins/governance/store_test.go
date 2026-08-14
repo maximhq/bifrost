@@ -1564,3 +1564,58 @@ func TestGovernanceStore_Customer_CalendarAligned_UpdateInMemory(t *testing.T) {
 func ptrInt64(i int64) *int64 {
 	return &i
 }
+
+// TestDumpSkipsRowsThatHaveNotMoved covers the write-amplification fix: a
+// budget whose usage has not changed since the last dump is already correct in
+// the database, so re-writing it costs a round trip and a row lock to change
+// nothing. On a large deployment most budgets are idle in any given cycle.
+func TestDumpSkipsRowsThatHaveNotMoved(t *testing.T) {
+	store := &LocalGovernanceStore{}
+	store.budgets.Store("budget", &configstoreTables.TableBudget{ID: "budget", CurrentUsage: 10})
+
+	rows, _, hashes := store.snapshotBudgetRows(nil)
+	require.Len(t, rows, 1, "a budget never dumped before must be written")
+	store.recordDumpedBudgetRows(rows, hashes)
+
+	rows, _, _ = store.snapshotBudgetRows(nil)
+	assert.Empty(t, rows, "an unchanged row must not be written again")
+
+	store.budgets.Store("budget", &configstoreTables.TableBudget{ID: "budget", CurrentUsage: 11})
+	rows, _, _ = store.snapshotBudgetRows(nil)
+	assert.Len(t, rows, 1, "a row that moved must be written")
+}
+
+// TestDumpRewritesAfterAReset pins the invalidation. A reset can clear the
+// database row out of band, so the fingerprint from the last dump no longer
+// describes what is stored and must not be trusted to skip the write.
+func TestDumpRewritesAfterAReset(t *testing.T) {
+	store := &LocalGovernanceStore{}
+	store.budgets.Store("budget", &configstoreTables.TableBudget{ID: "budget", CurrentUsage: 10})
+
+	rows, _, hashes := store.snapshotBudgetRows(nil)
+	store.recordDumpedBudgetRows(rows, hashes)
+	rows, _, _ = store.snapshotBudgetRows(nil)
+	require.Empty(t, rows)
+
+	store.LastDBUsagesBudgetsMu.Lock()
+	store.markBudgetResetLocked("budget")
+	store.LastDBUsagesBudgetsMu.Unlock()
+
+	rows, _, _ = store.snapshotBudgetRows(nil)
+	assert.Len(t, rows, 1, "after a reset the row must be written again even if usage looks unchanged")
+}
+
+// TestFailedDumpChunkIsRetried verifies the fingerprint is only recorded for
+// rows that actually reached the database. Recording on snapshot instead would
+// silently drop a chunk that failed to write.
+func TestFailedDumpChunkIsRetried(t *testing.T) {
+	store := &LocalGovernanceStore{}
+	store.budgets.Store("budget", &configstoreTables.TableBudget{ID: "budget", CurrentUsage: 10})
+
+	rows, _, _ := store.snapshotBudgetRows(nil)
+	require.Len(t, rows, 1)
+	// The write failed, so nothing is recorded.
+
+	rows, _, _ = store.snapshotBudgetRows(nil)
+	assert.Len(t, rows, 1, "a row whose write failed must be offered again")
+}

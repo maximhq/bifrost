@@ -810,7 +810,7 @@ func TestDumpBudgetsCannotUndoOperatorReset(t *testing.T) {
 	require.True(t, live.LastReset.Equal(now), "precondition: no sweep moved the boundary")
 
 	// The dump reads the pre-reset usage, then stalls before writing.
-	rows, gens := store.snapshotBudgetRows(nil)
+	rows, gens, hashes := store.snapshotBudgetRows(nil)
 	require.NotEmpty(t, rows)
 
 	// The operator reset lands in the gap: memory is cleared here, and the handler's
@@ -823,7 +823,7 @@ func TestDumpBudgetsCannotUndoOperatorReset(t *testing.T) {
 	require.NoError(t, configStore.UpdateBudgetUsage(ctx, seed.ID, 0))
 
 	// The stalled dump now writes. Its rows are stale and must be dropped.
-	require.NoError(t, store.writeBudgetRows(ctx, rows, gens))
+	require.NoError(t, store.writeBudgetRows(ctx, rows, gens, hashes))
 
 	persisted, err := configStore.GetBudget(ctx, seed.ID)
 	require.NoError(t, err)
