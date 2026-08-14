@@ -1507,7 +1507,8 @@
                 "pages": [
                   "GET /api/routing/complexity-analyzer-config",
                   "PUT /api/routing/complexity-analyzer-config",
-                  "POST /api/routing/complexity-analyzer-config/reset"
+                  "POST /api/routing/complexity-analyzer-config/reset",
+                  "GET /api/routing/complexity-analyzer-status"
                 ]
               }
             ]
