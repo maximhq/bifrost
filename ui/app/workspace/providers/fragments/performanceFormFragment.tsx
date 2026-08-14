@@ -70,7 +70,7 @@ export function PerformanceFormFragment({ provider }: PerformanceFormFragmentPro
 
 	return (
 		<Form {...form}>
-			<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6 px-6">
+			<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6 px-4 md:px-6">
 				{/* Performance Configuration */}
 				<div className="space-y-4">
 					<div className="flex flex-row gap-4">

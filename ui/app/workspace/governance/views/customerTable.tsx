@@ -223,7 +223,7 @@ export default function CustomersTable({
 				/>
 
 				<div className="flex grow flex-col">
-					<div className="mb-4 flex items-center justify-between">
+					<div className="mb-4 flex flex-wrap items-center justify-between gap-2">
 						<div>
 							<h2 className="text-lg font-semibold">Customers</h2>
 							<p className="text-muted-foreground text-sm">Manage customer accounts with their own teams, budgets, and access controls.</p>

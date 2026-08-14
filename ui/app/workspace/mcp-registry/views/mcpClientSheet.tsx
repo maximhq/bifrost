@@ -602,7 +602,7 @@ export default function MCPClientSheet({
 		<>
 			<Sheet open onOpenChange={(open) => !open && onClose()}>
 				<SheetContent className="flex w-full flex-col overflow-x-hidden pt-4 sm:max-w-[60%]">
-					<SheetHeader className="w-full p-0 px-8 py-4" showCloseButton={false} headerClassName="mb-0 sticky -top-4 bg-card z-10">
+					<SheetHeader className="w-full p-0 px-4 py-4 md:px-8" showCloseButton={false} headerClassName="mb-0 sticky -top-4 bg-card z-10">
 						<div className="flex w-full items-center justify-between">
 							<div className="space-y-2">
 								<SheetTitle className="flex w-fit items-center gap-2 font-medium">
@@ -635,7 +635,7 @@ export default function MCPClientSheet({
 					</SheetHeader>
 					<Form {...form}>
 						<form onSubmit={form.handleSubmit(onSubmit)} className="flex min-h-0 flex-1 flex-col">
-							<div className="min-h-0 flex-1 overflow-y-auto px-8">
+							<div className="min-h-0 flex-1 overflow-y-auto px-4 md:px-8">
 								<Tabs value={selectedTab} onValueChange={setSelectedTab} className="w-full">
 									<div className="bg-card sticky top-0 z-10 pb-4">
 										<TabsList>
@@ -1714,7 +1714,7 @@ export default function MCPClientSheet({
 								</Tabs>
 							</div>
 
-							<div className="bg-card sticky bottom-0 z-10 flex justify-end gap-2 border-t px-8 py-4">
+							<div className="bg-card sticky bottom-0 z-10 flex justify-end gap-2 border-t px-4 py-4 md:px-8">
 								<Button type="button" variant="outline" onClick={onClose}>
 									Cancel
 								</Button>

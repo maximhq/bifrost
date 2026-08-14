@@ -134,7 +134,7 @@ export default function PluginSequenceSheet({ open, onClose, plugins }: PluginSe
 
 	return (
 		<Sheet open={open} onOpenChange={onClose}>
-			<SheetContent className="flex w-full flex-col overflow-x-hidden p-8">
+			<SheetContent className="flex w-full flex-col overflow-x-hidden p-4 md:p-8">
 				<SheetHeader className="flex flex-col items-start p-0">
 					<SheetTitle>Edit Plugin Sequence</SheetTitle>
 					<SheetDescription>Drag plugins above or below the built-in plugins block to control execution order.</SheetDescription>

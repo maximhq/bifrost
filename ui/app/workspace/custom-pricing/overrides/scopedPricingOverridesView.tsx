@@ -319,7 +319,7 @@ export default function ScopedPricingOverridesView() {
 
 	return (
 		<div className="flex flex-col overflow-y-auto">
-			<div className="mb-4 flex items-center justify-between gap-4">
+			<div className="mb-4 flex flex-wrap items-center justify-between gap-2 sm:gap-4">
 				<div>
 					<h2 className="text-lg font-semibold tracking-tight">Pricing Overrides</h2>
 					<p className="text-muted-foreground text-sm">

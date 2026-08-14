@@ -199,7 +199,7 @@ export function AllowedRequestsFields({
 				</p>
 			</div>
 
-			<div className="grid grid-cols-2 gap-4">
+			<div className="grid grid-cols-1 gap-4 md:grid-cols-2">
 				<div className="space-y-3">{leftColumn.map(renderRequestField)}</div>
 				<div className="space-y-3">{rightColumn.map(renderRequestField)}</div>
 			</div>

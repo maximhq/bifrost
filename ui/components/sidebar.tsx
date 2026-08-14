@@ -539,7 +539,7 @@ export default function AppSidebar() {
 	// Wrapper that accepts arbitrary string URLs (TanStack Router's `to` is
 	// strictly typed, but our sidebar items come from a runtime config).
 	const navigate = useCallback((url: string) => tsNavigate({ to: url as string }), [tsNavigate]);
-	const { state: sidebarState, toggleSidebar } = useSidebar();
+	const { state: sidebarState, isMobile, toggleSidebar } = useSidebar();
 	const [mounted, setMounted] = useState(false);
 	const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
 	const [areCardsEmpty, setAreCardsEmpty] = useState(false);
@@ -1465,7 +1465,7 @@ export default function AppSidebar() {
 	// The promo card stack is hidden via CSS when collapsed (icon rail), so it
 	// shouldn't reserve vertical space there — otherwise the nav icon list
 	// gets squeezed into a shorter scroll area for a card nobody can see.
-	const hasPromoCards = promoCards.length > 0 && !areCardsEmpty && sidebarState !== "collapsed";
+	const hasPromoCards = promoCards.length > 0 && !areCardsEmpty && (isMobile || sidebarState !== "collapsed");
 	// When cards are present: 13rem (header 3rem + bottom section ~10rem)
 	// When no cards: 8rem (header 3rem + bottom section without cards ~5rem)
 	const sidebarGroupHeight = hasPromoCards ? "h-[calc(100vh-13rem)]" : "h-[calc(100vh-8rem)]";
@@ -1616,7 +1616,7 @@ export default function AppSidebar() {
 										onToggle={() => toggleItem(item.title)}
 										pathname={pathname}
 										search={search}
-										isSidebarCollapsed={sidebarState === "collapsed"}
+										isSidebarCollapsed={!isMobile && sidebarState === "collapsed"}
 										expandSidebar={() => toggleSidebar()}
 										highlightedUrl={highlightedUrl}
 									/>

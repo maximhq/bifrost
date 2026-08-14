@@ -124,15 +124,15 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 			{editing && <AttributeSheet model={editing} overrides={overridesById} onClose={() => setEditing(null)} />}
 
 			<div className="flex min-h-0 w-full grow flex-col overflow-hidden">
-				<div className="mb-4 flex shrink-0 items-center justify-between">
+				<div className="mb-4 flex shrink-0 flex-wrap items-center justify-between gap-2">
 					<div>
 						<h2 className="text-lg font-semibold">Models</h2>
 						<p className="text-muted-foreground text-sm">Attach descriptions and tags to specific models.</p>
 					</div>
 				</div>
 
-				<div className="mb-4 flex shrink-0 items-center gap-3">
-					<div className="relative max-w-sm flex-1">
+				<div className="mb-4 flex shrink-0 flex-wrap items-center gap-3">
+					<div className="relative w-full max-w-sm flex-1 basis-full sm:basis-auto">
 						<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 						<Input
 							aria-label="Search models"
@@ -144,7 +144,7 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 						/>
 					</div>
 					<Select value={providerFilter || "__all__"} onValueChange={(v) => setUrlState({ provider: v === "__all__" ? null : v })}>
-						<SelectTrigger className="w-[200px]" data-testid="model-catalog-provider-filter">
+						<SelectTrigger className="w-full sm:w-[200px]" data-testid="model-catalog-provider-filter">
 							<SelectValue placeholder="All providers" />
 						</SelectTrigger>
 						<SelectContent>
@@ -159,7 +159,7 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 				</div>
 
 				<div className="mb-2 min-h-0 grow overflow-hidden rounded-sm border" data-testid="model-catalog-attributes-table">
-					<Table containerClassName="h-full overflow-y-auto overflow-x-hidden" className="table-fixed">
+					<Table containerClassName="h-full overflow-y-auto overflow-x-auto" className="table-fixed">
 						<TableHeader className="bg-muted sticky top-0 z-20">
 							<TableRow className="hover:bg-transparent">
 								<TableHead className="w-[116px] font-medium">Provider</TableHead>
