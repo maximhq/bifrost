@@ -1096,6 +1096,8 @@ paths:
     $ref: "./paths/management/routing.yaml#/complexity"
   /api/routing/complexity-analyzer-config/reset:
     $ref: "./paths/management/routing.yaml#/complexity-reset"
+  /api/routing/complexity-analyzer-status:
+    $ref: "./paths/management/routing.yaml#/complexity-status"
 
   # Routing - deprecated paths, kept so existing clients keep working
   /api/governance/routing-rules:

@@ -2185,71 +2185,171 @@
             },
             "complexityAnalyzerConfig": {
               "type": ["object", "null"],
-              "description": "Runtime configuration for complexity_tier CEL routing. Renders into governance.complexity_analyzer_config in config.json.",
+              "description": "Runtime configuration for complexity_tier CEL routing. Renders into governance.complexity_analyzer_config in config.json. Semantic (embedding-based) classification is the only mechanism — without the semantic block no complexity_tier is published.",
               "properties": {
+                "semantic": {
+                  "type": "object",
+                  "description": "Embedding-based (semantic) complexity classification settings. Presence of this block enables the classifier; it embeds the per-tier keyword lists as reference phrases.",
+                  "properties": {
+                    "provider": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Provider used to generate embeddings for complexity classification (must have an enabled key)"
+                    },
+                    "embedding_model": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Model used to generate embeddings for complexity classification"
+                    },
+                    "timeout": {
+                      "description": "Per-request embedding timeout (duration string like '1.5s', or milliseconds as a number; default: 1.5s). On timeout no tier is published for that request.",
+                      "oneOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)$"
+                        },
+                        {
+                          "type": "number",
+                          "exclusiveMinimum": 0
+                        }
+                      ]
+                    },
+                    "min_similarity": {
+                      "type": "number",
+                      "minimum": 0,
+                      "exclusiveMaximum": 1,
+                      "description": "Similarity floor a nearest-phrase match must clear before its tier is used (default: 0, nearest phrase always wins). Compared against the backend's own score scale, so retune when switching vector stores."
+                    },
+                    "message_history_count": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 10,
+                      "description": "How many of the most recent user messages are combined (oldest first) into the embedded text (default: 1). Only user turns count; system prompts and assistant replies are never embedded."
+                    },
+                    "count_toward_budgets": {
+                      "type": "boolean",
+                      "description": "Record classification embedding cost against governance budgets (record-only, never enforced; default: false)"
+                    },
+                    "vector_store": {
+                      "type": "string",
+                      "enum": ["embedded", "vector_store"],
+                      "description": "Where phrase embeddings are stored: 'embedded' uses the built-in chromem store; 'vector_store' uses the configured top-level vectorStore and falls back to embedded when none is configured (default: embedded)."
+                    }
+                  },
+                  "required": ["provider", "embedding_model"],
+                  "additionalProperties": false
+                },
                 "tier_boundaries": {
                   "type": "object",
+                  "deprecated": true,
+                  "description": "Deprecated lexical-classifier score thresholds. Optional and accepted for upgrades, but ignored by semantic classification.",
                   "properties": {
                     "simple_medium": {
                       "type": "number",
                       "exclusiveMinimum": 0,
-                      "exclusiveMaximum": 1
+                      "exclusiveMaximum": 1,
+                      "deprecated": true,
+                      "description": "Deprecated and ignored by semantic classification"
                     },
                     "medium_complex": {
                       "type": "number",
                       "exclusiveMinimum": 0,
-                      "exclusiveMaximum": 1
+                      "exclusiveMaximum": 1,
+                      "deprecated": true,
+                      "description": "Deprecated and ignored by semantic classification. Must remain greater than simple_medium when the legacy block is supplied."
                     },
                     "complex_reasoning": {
                       "type": "number",
                       "exclusiveMinimum": 0,
-                      "exclusiveMaximum": 1
+                      "exclusiveMaximum": 1,
+                      "deprecated": true,
+                      "description": "Retired REASONING-tier boundary. It is ignored during configuration load because REASONING was merged into COMPLEX; accepted only so older values continue to validate."
                     }
                   },
-                  "required": ["simple_medium", "medium_complex", "complex_reasoning"],
+                  "required": ["simple_medium", "medium_complex"],
                   "additionalProperties": false
                 },
                 "keywords": {
-                  "type": "object",
-                  "properties": {
-                    "code_keywords": {
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "minLength": 1
+                  "description": "Required reference phrases per tier when complexityAnalyzerConfig is non-null. A request is embedded and takes the tier of its nearest phrase. In split mode these lists merge with stored phrases; the legacy four-list shape remains accepted for upgrades.",
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "simple_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000
+                          },
+                          "minItems": 1
+                        },
+                        "medium_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000
+                          },
+                          "minItems": 1
+                        },
+                        "complex_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000
+                          },
+                          "minItems": 1
+                        }
                       },
-                      "minItems": 1
+                      "required": ["simple_keywords", "medium_keywords", "complex_keywords"],
+                      "additionalProperties": false
                     },
-                    "reasoning_keywords": {
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "minLength": 1
+                    {
+                      "type": "object",
+                      "deprecated": true,
+                      "properties": {
+                        "code_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "minItems": 1
+                        },
+                        "reasoning_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "minItems": 1
+                        },
+                        "technical_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "minItems": 1
+                        },
+                        "simple_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "minItems": 1
+                        }
                       },
-                      "minItems": 1
-                    },
-                    "technical_keywords": {
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "minItems": 1
-                    },
-                    "simple_keywords": {
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "minItems": 1
+                      "required": ["code_keywords", "reasoning_keywords", "technical_keywords", "simple_keywords"],
+                      "additionalProperties": false
                     }
-                  },
-                  "required": ["code_keywords", "reasoning_keywords", "technical_keywords", "simple_keywords"],
-                  "additionalProperties": false
+                  ]
                 }
               },
-              "required": ["tier_boundaries", "keywords"],
+              "required": ["keywords"],
               "additionalProperties": false
             }
           },
@@ -4855,7 +4955,7 @@
         },
         "type": {
           "type": "string",
-          "enum": ["none", "weaviate", "redis", "qdrant", "pinecone"]
+          "enum": ["none", "weaviate", "redis", "qdrant", "pinecone", "chromem"]
         },
         "weaviate": {
           "type": "object",
@@ -5168,6 +5268,20 @@
               "then": {
                 "required": ["indexHost"]
               }
+            }
+          }
+        },
+        "chromem": {
+          "type": "object",
+          "description": "Chromem configuration — embedded in-process vector store (no external service). The top-level vectorStore.enabled controls activation. Renders into vector_store.config in config.json.",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Directory for file persistence; omit for a memory-only store that re-populates on restart"
+            },
+            "compress": {
+              "type": "boolean",
+              "description": "Gzip-compress persisted documents (only used when path is set)"
             }
           }
         }
