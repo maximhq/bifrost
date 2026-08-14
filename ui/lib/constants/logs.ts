@@ -30,6 +30,9 @@ export const KnownProvidersNames = [
 	"fireworks",
 	"sarvam",
 	"wafer",
+	"alibaba",
+	"kimi",
+	"zhipu",
 ] as const;
 
 // Local Provider type derived from KNOWN_PROVIDERS constant
@@ -40,6 +43,7 @@ export const ProviderNames: readonly ProviderName[] = KnownProvidersNames;
 // Built-in providers whose Bifrost implementation supports embedding requests.
 // Custom providers must instead be checked via custom_provider_config.allowed_requests.embedding.
 export const EmbeddingSupportedProviders: readonly ProviderName[] = [
+	"alibaba",
 	"azure",
 	"bedrock",
 	"cohere",
@@ -143,6 +147,9 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	fireworks: "Fireworks AI",
 	sarvam: "Sarvam AI",
 	wafer: "Wafer",
+	alibaba: "Alibaba Cloud",
+	kimi: "Kimi",
+	zhipu: "Zhipu AI",
 } as const;
 
 // Helper function to get provider label, supporting custom providers

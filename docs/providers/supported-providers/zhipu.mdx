@@ -1,0 +1,277 @@
+---
+title: "Zhipu AI (Z.AI / GLM)"
+description: "Zhipu AI (Z.AI / GLM) conversion guide - OpenAI-compatible chat by default on the General API and GLM Coding Plan surfaces, optional per-key/per-alias Anthropic-compatible endpoints (Coding Plan), streaming, tool calling, and reasoning"
+icon: "z"
+---
+
+## Overview
+
+Zhipu AI (Z.AI / GLM) is a provider with a dedicated Bifrost provider implementation. Zhipu runs the GLM model family on two storefronts with separate key pools — **Z.AI** (international, `api.z.ai`, the default) and **BigModel** (China, `open.bigmodel.cn`) — each with a pay-as-you-go General API surface and a GLM Coding Plan subscription surface. By default, Chat Completions use Zhipu's **OpenAI-compatible** endpoints. Each key (or an individual alias) can opt into routing Chat Completions and the Responses API through the **Anthropic-compatible** endpoint instead, using the `use_anthropic_endpoints` toggle. Key characteristics:
+
+- **OpenAI-compatible by default** - Chat Completions use `/chat/completions`, authenticated with a bearer token
+- **Optional Anthropic-compatible mode** - Set `use_anthropic_endpoints` on a key (or override it per-alias) to route Chat Completions and the Responses API through the Anthropic-compatible Messages endpoint. The Anthropic mount is only offered on the **GLM Coding Plan** surface — point `base_url` at a Coding Plan host before enabling it
+- **Streaming support** - Server-Sent Events for chat and responses, in both endpoint modes
+- **Tool calling** - Function tools are supported on both the OpenAI-compatible and Anthropic-compatible paths
+- **Reasoning support** - GLM models think by default; `reasoning_effort` is honored on GLM-5.2 and stripped elsewhere. Preserved-thinking is controlled via the `thinking` extra param (`{"type": "enabled", "clear_thinking": false}`)
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint (default) | Endpoint (`use_anthropic_endpoints: true`) |
+|-----------|---------------|-----------|---------------------|---------------------------------------------|
+| Chat Completions | ✅ | ✅ | `/chat/completions` | Anthropic Messages endpoint (Coding Plan) |
+| Responses API | ✅ | ✅ | `/chat/completions` (via Chat Completions fallback) | Anthropic Messages endpoint (Coding Plan) |
+| Text Completions | ❌ | ❌ | - | - |
+| List Models | ✅ | - | `/models` | `/models` (unaffected) |
+| Embeddings | ❌ | ❌ | - | - |
+| Image Generation | ❌ | ❌ | - | - |
+| Speech (TTS) | ❌ | ❌ | - | - |
+| Transcriptions (STT) | ❌ | ❌ | - | - |
+| Files | ❌ | ❌ | - | - |
+| Batch | ❌ | ❌ | - | - |
+
+<Note>
+**Unsupported Operations** (❌): Text Completions, Embeddings, Image Generation, Speech, Transcriptions, Files, Batch, cached content, containers, token counting, compaction, OCR, rerank, video, and passthrough are not supported through this provider. These return `UnsupportedOperationError`. (Embeddings exist on the China BigModel platform only — not on the Z.AI international surface this provider defaults to.)
+</Note>
+
+## Setup & Configuration
+
+Configure Zhipu as a provider.
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**. Look for **Zhipu** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **Zhipu**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.ZHIPU_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+6. Leave **Use Anthropic Endpoints** off to use Zhipu's OpenAI-compatible endpoints (the default), or turn it on to route Chat Completions and the Responses API through the Anthropic-compatible endpoint instead (GLM Coding Plan keys only). See [Anthropic-Compatible Endpoints](#anthropic-compatible-endpoints-optional) below.
+7. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "zhipu": {
+      "keys": [
+        {
+          "name": "zhipu-key-1",
+          "value": "env.ZHIPU_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.Zhipu:
+    return []schemas.Key{{
+        Name:   "zhipu-key-1",
+        Value:  *schemas.NewSecretVar("env.ZHIPU_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+### Base URL (storefront & plan)
+
+General API keys and GLM Coding Plan keys are **not interchangeable**. The default base URL is the Z.AI international General API. Override `network_config.base_url` to target another surface:
+
+| Surface | `base_url` |
+|---------|------------|
+| General API, international (default) | `https://api.z.ai/api/paas/v4` |
+| General API, China | `https://open.bigmodel.cn/api/paas/v4` |
+| GLM Coding Plan, international | `https://api.z.ai/api/coding/paas/v4` |
+| GLM Coding Plan, China | `https://open.bigmodel.cn/api/coding/paas/v4` |
+
+The Anthropic-compatible base URL is derived automatically from the configured OpenAI-compatible base URL (Coding Plan hosts derive their Anthropic mount; the General API has no Anthropic mount).
+
+<Warning>
+The GLM Coding Plan is a subscription intended for interactive coding tools; routing general gateway traffic through it may breach the vendor's terms of service. When a plan lapses, Coding-Plan-only models (e.g. glm-5.2 on the Anthropic mount) fail with a clean vendor 429 until the subscription is renewed.
+</Warning>
+
+---
+
+## Anthropic-Compatible Endpoints (optional)
+
+Zhipu exposes an Anthropic-compatible Messages endpoint on the **GLM Coding Plan** surface only. Setting `use_anthropic_endpoints` routes Chat Completions and the Responses API through that endpoint instead — List Models is unaffected and always uses the OpenAI-compatible endpoint.
+
+The setting can be configured per key, and overridden per model alias:
+
+- **Key-level** - Sets the default endpoint mode for every request made with that key.
+- **Alias-level** - Overrides the key-level default for a single alias, so one key can serve some aliases through the OpenAI-compatible endpoints and others through the Anthropic-compatible endpoint.
+
+If neither is set, requests fall back to Zhipu's OpenAI-compatible endpoints.
+
+<Tabs>
+<Tab title="Web UI">
+
+On the key form, toggle **Use Anthropic Endpoints** (off by default). To override this for a specific alias, open that alias's expanded row in the deployments table and toggle **Use Anthropic endpoints** under **Zhipu overrides** — this takes priority over the key-level setting for that alias only.
+
+</Tab>
+<Tab title="API">
+The `use_anthropic_endpoints` boolean is part of the same key payload used by [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider), and the alias payload for that key's `models` entries.
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "zhipu": {
+      "keys": [
+        {
+          "name": "zhipu-key-1",
+          "value": "env.ZHIPU_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0,
+          "use_anthropic_endpoints": true
+        }
+      ],
+      "network_config": {
+        "base_url": "https://api.z.ai/api/coding/paas/v4"
+      }
+    }
+  }
+}
+```
+
+To override this per-alias (for example, on a virtual key's model config), set `use_anthropic_endpoints` alongside the alias's `model_id`:
+
+```json
+{
+  "model_id": "glm-5.2",
+  "use_anthropic_endpoints": false
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|--------------|
+| `use_anthropic_endpoints` | boolean | No | Routes chat completions and responses requests through Anthropic-compatible endpoints (GLM Coding Plan surface only). Default: `false`. |
+
+</Tab>
+</Tabs>
+
+---
+
+# 1. Chat Completions
+
+## Request Parameters
+
+By default, Chat Completions use Zhipu's OpenAI-compatible `/chat/completions` endpoint, authenticated with `Authorization: Bearer <key>`. For the full parameter reference and message conversion behavior, see [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+
+When `use_anthropic_endpoints` is enabled, requests are sent instead to the Anthropic-compatible Messages endpoint (still authenticated with `Authorization: Bearer <key>` — Claude Code connects with an `ANTHROPIC_AUTH_TOKEN`, i.e. bearer auth) and built using the shared Anthropic converters. For that parameter reference and message conversion behavior, see [Anthropic Chat Completions](/providers/supported-providers/anthropic#1-chat-completions).
+
+### Reasoning Parameter
+
+- **Default (OpenAI-compatible):** `reasoning_effort` is forwarded only for GLM-5.2 (including the Coding Plan 1M-context alias `glm-5.2[1m]`) and stripped for every other model — the vendor rejects the field there. GLM-4.x thinking is always on; its behavior is tuned via the `thinking` extra param.
+- **`use_anthropic_endpoints: true`:** Reasoning/thinking parameters are mapped through the Anthropic converters (`reasoning` → `thinking`), the same as the [Anthropic provider](/providers/supported-providers/anthropic#1-chat-completions).
+
+### Extra Parameters
+
+Zhipu enables passthrough extra parameters for Chat Completions on the default OpenAI-compatible endpoints. Zhipu-specific fields such as `thinking` (`{"type": "enabled", "clear_thinking": false}` for preserved-thinking multi-turn replay), `do_sample`, or `request_id` can be sent under `extra_params` with the `x-bf-passthrough-extra-params: true` header. Extra parameters are **not** passed through by default when `use_anthropic_endpoints` is enabled.
+
+---
+
+# 2. Responses API
+
+- **Default (OpenAI-compatible):** Responses requests fall back to Chat Completions, the same conversion pattern used by other OpenAI-compatible-only providers (Zhipu exposes no `/responses` endpoint):
+
+  ```
+  ResponsesRequest → ChatRequest → Response conversion
+  ```
+
+- **`use_anthropic_endpoints: true`:** Responses requests are sent natively to the Anthropic-compatible Messages endpoint — both non-streaming and streaming requests build an Anthropic-format request body directly and convert the response back to Bifrost's Responses format.
+
+---
+
+# 3. List Models
+
+Lists available models from Zhipu through the OpenAI-compatible `/models` endpoint. The Anthropic-compatible mount has no models endpoint, so List Models always uses the OpenAI-compatible mount regardless of `use_anthropic_endpoints`.
+
+---
+
+## Unsupported Features
+
+| Feature | Reason |
+|---------|--------|
+| Text Completions | Not offered by Zhipu through this provider |
+| Embeddings | Offered on the China BigModel platform only, not on Z.AI international |
+| Image Generation | Not offered through this provider |
+| Speech/TTS | Not offered through this provider |
+| Transcription/STT | Not offered through this provider |
+| Batch Operations | Not offered through this provider |
+| File Management | Not offered through this provider |
+| Cached Content | Only Gemini and Vertex AI support cached content in Bifrost |
+| Container Management | Not offered by Zhipu through this provider |
+| Token Counting | Not offered by Zhipu through this provider |
+| Rerank/OCR/Video | Not offered through this provider |
+
+---
+
+## Caveats
+
+<Accordion title="Default Base URL">
+**Severity**: Low
+**Behavior**: Zhipu defaults to `https://api.z.ai/api/paas/v4` (Z.AI international General API)
+**Impact**: BigModel (China) keys and GLM Coding Plan keys must override `network_config.base_url`; a key/host mismatch returns 401
+**Code**: `NewZhipuProvider` sets the default base URL when no provider-level base URL is configured
+</Accordion>
+
+<Accordion title="Anthropic Mount Is Coding-Plan-Only">
+**Severity**: Medium
+**Behavior**: The Anthropic-compatible Messages endpoint exists only on the GLM Coding Plan surface. Enabling `use_anthropic_endpoints` with a General API `base_url` derives no valid mount
+**Impact**: Point `base_url` at a Coding Plan host (e.g. `https://api.z.ai/api/coding/paas/v4`) before enabling the toggle
+**Code**: `deriveAnthropicBaseURL` in `core/providers/zhipu/utils.go`
+</Accordion>
+
+<Accordion title="use_anthropic_endpoints Resolution Order">
+**Severity**: Low
+**Behavior**: An alias-level `use_anthropic_endpoints` override always wins over the key-level setting for that alias; if neither is set, requests default to the OpenAI-compatible endpoints
+**Impact**: A single key can serve some aliases through OpenAI-compatible endpoints and others through the Anthropic-compatible endpoint
+**Code**: `anthropic.ResolveUseAnthropicEndpoints` in `core/providers/anthropic/utils.go`, used by `ChatCompletion`, `ChatCompletionStream`, `Responses`, and `ResponsesStream` in `core/providers/zhipu/zhipu.go`
+</Accordion>
+
+<Accordion title="Reasoning Effort Stripped Except GLM-5.2">
+**Severity**: Medium
+**Behavior**: On the OpenAI-compatible path, `reasoning_effort` is only forwarded for GLM-5.2-series models; it is stripped for all others (the vendor rejects the field there)
+**Impact**: A `reasoning_effort` set on a GLM-4.x model is silently dropped; GLM-4.x models always think
+**Code**: `applyZhipuReasoning` in `core/providers/openai/chat.go`
+</Accordion>
+
+<Accordion title="Token-by-Token Reasoning Streams">
+**Severity**: Low
+**Behavior**: GLM models stream reasoning token-by-token, so a single response can produce hundreds of SSE chunks, and tool calls arrive only after the full reasoning trace
+**Impact**: Clients that cap or batch stream chunks should use generous limits; this is normal vendor behavior, not a stalled stream
+</Accordion>
+
+<Accordion title="Extra Parameters Not Passed Through in Anthropic-Compatible Mode">
+**Severity**: Low
+**Behavior**: Extra parameters are merged into the outbound request body by default on the OpenAI-compatible path (Chat Completions), but not on the Anthropic-compatible path
+**Impact**: Provider-specific `extra_params` set on a request may be silently dropped when `use_anthropic_endpoints` is enabled
+**Code**: `BifrostContextKeyPassthroughExtraParams` is set in the OpenAI-compatible branches of `ChatCompletion`/`ChatCompletionStream`, but not in the Anthropic-compatible branches, in `core/providers/zhipu/zhipu.go`
+</Accordion>
+
+<Accordion title="Mixed Endpoint Compatibility">
+**Severity**: Medium
+**Behavior**: List Models always uses Zhipu's OpenAI-compatible endpoint regardless of `use_anthropic_endpoints`. Chat Completions and the Responses API use the OpenAI-compatible endpoints by default, or the Anthropic-compatible Messages endpoint (Coding Plan) when `use_anthropic_endpoints` is enabled. Both mounts authenticate with `Authorization: Bearer <key>`
+**Impact**: When Anthropic-compatible mode is enabled, parameters and behavior documented for the [OpenAI provider](/providers/supported-providers/openai) no longer apply to Chat Completions or Responses — refer to the [Anthropic provider](/providers/supported-providers/anthropic) docs for those instead
+**Code**: `ChatCompletion`, `ChatCompletionStream`, `Responses`, and `ResponsesStream` in `core/providers/zhipu/zhipu.go` branch on `anthropic.ResolveUseAnthropicEndpoints`; `ListModels` always delegates to the `openai` package
+</Accordion>

@@ -343,6 +343,12 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		InterleavedThinking:    true,
 		ServiceTier:            true,
 	},
+	// Alibaba Cloud Model Studio / Kimi / Zhipu Anthropic-compatible mounts:
+	// start fail-closed (all Anthropic server-side features off). Enable flags
+	// only as vendor docs verify them (docs/research 02 §8.4, 03 §6.3, 04 §7.4).
+	schemas.Alibaba: {},
+	schemas.Kimi:    {},
+	schemas.Zhipu:   {},
 }
 
 // ==================== REQUEST TYPES ====================
