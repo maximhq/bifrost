@@ -135,34 +135,38 @@ export function AllowedRequestsFields({
 						</div>
 						<div className="flex items-center gap-2">
 							{/* Settings icon for path override - only show when enabled */}
-							{allowedField.value && !isDisabled && !isPathOverrideDisabled && !disabled && !PathOverrideUnsupported.has(requestType.key) && (
-								<FormField
-									control={control}
-									name={`${pathOverridesPrefix}.${requestType.key}`}
-									render={({ field: pathField }) => (
-										<Popover>
-											<PopoverTrigger asChild>
-												<button
-													type="button"
-													className="text-muted-foreground hover:text-foreground transition-colors"
-													aria-label="Customize endpoint path"
-												>
-													<Settings2 className="h-4 w-4" />
-												</button>
-											</PopoverTrigger>
-											<PopoverContent className="w-80" align="end" onOpenAutoFocus={(e) => e.preventDefault()}>
-												<div className="space-y-2">
-													<h4 className="text-sm font-medium">Custom Path or URL</h4>
-													<p className="text-muted-foreground text-xs">
-														Override with a path (e.g., /v1/chat) or a full URL (e.g., https://api.example.com/chat) to bypass base_url
-													</p>
-													<Input placeholder={placeholder} {...pathField} value={pathField.value || ""} className="h-9" />
-												</div>
-											</PopoverContent>
-										</Popover>
-									)}
-								/>
-							)}
+							{allowedField.value &&
+								!isDisabled &&
+								!isPathOverrideDisabled &&
+								!disabled &&
+								!PathOverrideUnsupported.has(requestType.key) && (
+									<FormField
+										control={control}
+										name={`${pathOverridesPrefix}.${requestType.key}`}
+										render={({ field: pathField }) => (
+											<Popover>
+												<PopoverTrigger asChild>
+													<button
+														type="button"
+														className="text-muted-foreground hover:text-foreground transition-colors"
+														aria-label="Customize endpoint path"
+													>
+														<Settings2 className="h-4 w-4" />
+													</button>
+												</PopoverTrigger>
+												<PopoverContent className="w-80" align="end" onOpenAutoFocus={(e) => e.preventDefault()}>
+													<div className="space-y-2">
+														<h4 className="text-sm font-medium">Custom Path or URL</h4>
+														<p className="text-muted-foreground text-xs">
+															Override with a path (e.g., /v1/chat) or a full URL (e.g., https://api.example.com/chat) to bypass base_url
+														</p>
+														<Input placeholder={placeholder} {...pathField} value={pathField.value || ""} className="h-9" />
+													</div>
+												</PopoverContent>
+											</Popover>
+										)}
+									/>
+								)}
 
 							<FormControl>
 								{isDisabled ? (

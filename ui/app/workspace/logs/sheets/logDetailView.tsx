@@ -46,7 +46,7 @@ import { applyRedactionMapping, hasRedactionMappingEntries } from "@/lib/utils/r
 import { isJson } from "@/lib/utils/validation";
 import { Link } from "@tanstack/react-router";
 import { addMilliseconds, format } from "date-fns";
-import { AlertCircle, ChevronDown, Clipboard, Copy, Download, Loader2, MoreVertical, Trash2, Wrench } from "lucide-react";
+import { AlertCircle, ChevronDown, Clipboard, Copy, Download, Loader2, MoreVertical, Trash2, Wrench, X } from "lucide-react";
 import { useMemo, useEffect, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import BlockHeader from "../views/blockHeader";
@@ -780,6 +780,18 @@ export function LogDetailView({
 								</AlertDialogFooter>
 							</AlertDialogContent>
 						</AlertDialog>
+					) : null}
+					{onClose ? (
+						<Button
+							variant="ghost"
+							className="size-8"
+							type="button"
+							onClick={onClose}
+							data-testid="logdetails-close-button"
+							aria-label="Close"
+						>
+							<X className="h-3 w-3" />
+						</Button>
 					) : null}
 				</div>
 			</div>

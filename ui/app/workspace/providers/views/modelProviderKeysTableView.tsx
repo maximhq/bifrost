@@ -201,16 +201,16 @@ export default function ModelProviderKeysTableView({ provider, className, header
 						{hasUpdateProviderAccess ? (
 							<Tooltip>
 								<TooltipTrigger asChild>
-								<Button
-									variant="outline"
-									className="size-9 px-0 md:h-9 md:w-auto md:px-4"
-									disabled={isRefreshing}
-									data-testid="provider-refresh-models"
-									aria-label={isRefreshingProvider ? "Refreshing model list" : "Refresh model list"}
-									onClick={handleRefreshProviderModels}
-								>
-									<RefreshCwIcon className={cn("h-4 w-4", isRefreshingProvider && "animate-spin")} />
-									<span className="hidden md:inline">{isRefreshingProvider ? "Refreshing..." : "Refresh model list"}</span>
+									<Button
+										variant="outline"
+										className="size-9 px-0 md:h-9 md:w-auto md:px-4"
+										disabled={isRefreshing}
+										data-testid="provider-refresh-models"
+										aria-label={isRefreshingProvider ? "Refreshing model list" : "Refresh model list"}
+										onClick={handleRefreshProviderModels}
+									>
+										<RefreshCwIcon className={cn("h-4 w-4", isRefreshingProvider && "animate-spin")} />
+										<span className="hidden md:inline">{isRefreshingProvider ? "Refreshing..." : "Refresh model list"}</span>
 									</Button>
 								</TooltipTrigger>
 								<TooltipContent className="max-w-xs">

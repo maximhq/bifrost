@@ -280,36 +280,36 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 			stdio_config:
 				connectionType === "stdio"
 					? {
-						command: data.stdio_config?.command || "",
-						args: parseArrayFromText(argsText),
-						// Each row becomes KEY=value, or a bare KEY when no value is given
-						// (read from Bifrost's host environment). Rows without a name are skipped.
-						envs: Object.entries(envVars)
-							.filter(([name]) => name.trim() !== "")
-							.map(([name, value]) => {
-								const v = value.trim();
-								return v ? `${name}=${v}` : name;
-							}),
-					}
+							command: data.stdio_config?.command || "",
+							args: parseArrayFromText(argsText),
+							// Each row becomes KEY=value, or a bare KEY when no value is given
+							// (read from Bifrost's host environment). Rows without a name are skipped.
+							envs: Object.entries(envVars)
+								.filter(([name]) => name.trim() !== "")
+								.map(([name, value]) => {
+									const v = value.trim();
+									return v ? `${name}=${v}` : name;
+								}),
+						}
 					: undefined,
 			tls_config: connectionType === "http" || connectionType === "sse" ? buildTLSConfigPayload(data.tls_config) : undefined,
 			oauth_config:
 				authType === "oauth" || authType === "per_user_oauth"
 					? {
-						client_id: data.oauth_config?.client_id ?? emptySecretVar,
-						client_secret:
-							data.oauth_config?.client_secret?.value ||
+							client_id: data.oauth_config?.client_id ?? emptySecretVar,
+							client_secret:
+								data.oauth_config?.client_secret?.value ||
 								data.oauth_config?.client_secret?.type === "env" ||
 								data.oauth_config?.client_secret?.type === "vault"
-								? data.oauth_config.client_secret
-								: undefined,
-						authorize_url: data.oauth_config?.authorize_url || undefined,
-						token_url: data.oauth_config?.token_url || undefined,
-						registration_url: data.oauth_config?.registration_url || undefined,
-						scopes: scopesText.trim() ? parseArrayFromText(scopesText) : undefined,
-						server_url: data.connection_string?.value || undefined,
-						resource: resourceText.trim() || undefined,
-					}
+									? data.oauth_config.client_secret
+									: undefined,
+							authorize_url: data.oauth_config?.authorize_url || undefined,
+							token_url: data.oauth_config?.token_url || undefined,
+							registration_url: data.oauth_config?.registration_url || undefined,
+							scopes: scopesText.trim() ? parseArrayFromText(scopesText) : undefined,
+							server_url: data.connection_string?.value || undefined,
+							resource: resourceText.trim() || undefined,
+						}
 					: undefined,
 			// "headers" and "per_user_headers" both can carry static admin
 			// headers on data.headers (per-user values are submitted
@@ -322,19 +322,19 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 			token_exchange:
 				authType === "token_exchange"
 					? {
-						audience: data.token_exchange?.audience?.trim() || "",
-						use_idp_credentials: data.token_exchange?.use_idp_credentials || undefined,
-						client_id: data.token_exchange?.use_idp_credentials ? undefined : (data.token_exchange?.client_id ?? emptySecretVar),
-						client_secret: data.token_exchange?.use_idp_credentials
-							? undefined
-							: data.token_exchange?.client_secret?.value ||
-								data.token_exchange?.client_secret?.type === "env" ||
-								data.token_exchange?.client_secret?.type === "vault"
-								? data.token_exchange.client_secret
-								: undefined,
-						scopes: tokenExchangeScopesText.trim() ? parseArrayFromText(tokenExchangeScopesText) : undefined,
-						authorization_server_url: data.token_exchange?.authorization_server_url?.trim() || undefined,
-					}
+							audience: data.token_exchange?.audience?.trim() || "",
+							use_idp_credentials: data.token_exchange?.use_idp_credentials || undefined,
+							client_id: data.token_exchange?.use_idp_credentials ? undefined : (data.token_exchange?.client_id ?? emptySecretVar),
+							client_secret: data.token_exchange?.use_idp_credentials
+								? undefined
+								: data.token_exchange?.client_secret?.value ||
+									  data.token_exchange?.client_secret?.type === "env" ||
+									  data.token_exchange?.client_secret?.type === "vault"
+									? data.token_exchange.client_secret
+									: undefined,
+							scopes: tokenExchangeScopesText.trim() ? parseArrayFromText(tokenExchangeScopesText) : undefined,
+							authorization_server_url: data.token_exchange?.authorization_server_url?.trim() || undefined,
+						}
 					: undefined,
 			tools_to_execute: ["*"],
 		};
@@ -507,8 +507,8 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 																	<TooltipContent className="max-w-xs">
 																		<p>
 																			Enable to keep one shared connection open and reused across every caller. Disable to connect fresh on
-																			every call instead, same as per-user auth types. Only applies to HTTP connections; SSE and STDIO always
-																			keep a persistent connection.
+																			every call instead, same as per-user auth types. Only applies to HTTP connections; SSE and STDIO
+																			always keep a persistent connection.
 																		</p>
 																	</TooltipContent>
 																</Tooltip>
@@ -782,7 +782,8 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 														useIdPCredentialsDedicatedDescription="A separate identity-provider app, scoped only to this server. Recommended for most providers."
 														useIdPCredentialsIdPDescription="Reuses your SSO login application's own credentials. Required for Microsoft Entra ID."
 														useIdPCredentialsRequiredWarning={
-															isEntraIdp && "Your identity provider is Microsoft Entra ID - a dedicated application might not work, switch to Identity provider application."
+															isEntraIdp &&
+															"Your identity provider is Microsoft Entra ID - a dedicated application might not work, switch to Identity provider application."
 														}
 														onUseIdPCredentialsToggled={(checked) => {
 															if (checked) clearErrors(["token_exchange.client_id", "token_exchange.client_secret"]);

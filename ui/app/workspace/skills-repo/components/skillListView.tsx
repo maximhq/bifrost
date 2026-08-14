@@ -373,7 +373,10 @@ export function SkillsListView({
 	// True empty state: no skills at all (not just filtered to zero)
 	if (total === 0 && !search && !debouncedSearch && !isFetching) {
 		return (
-			<div className="flex h-full w-full flex-col items-center justify-center gap-4 px-2 py-10 text-center md:px-0 md:py-0" data-testid="skills-repo-empty-state">
+			<div
+				className="flex h-full w-full flex-col items-center justify-center gap-4 px-2 py-10 text-center md:px-0 md:py-0"
+				data-testid="skills-repo-empty-state"
+			>
 				<div className="text-muted-foreground">
 					<BookOpenText className="h-24 w-24" strokeWidth={1} />
 				</div>
