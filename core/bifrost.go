@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -5924,6 +5925,7 @@ func executeRequestWithRetries[T any](
 	logger schemas.Logger,
 ) (result T, bifrostError *schemas.BifrostError) {
 	var attempts int
+	ctx.SetValue(schemas.BifrostContextKeyConfiguredRequestTimeoutSeconds, config.NetworkConfig.DefaultRequestTimeoutInSeconds)
 
 	// Emit the terminal routing-engine entry on every return path — including
 	// early returns from key-selection failures and tracer-missing — so the
@@ -6330,6 +6332,30 @@ func executeRequestWithRetries[T any](
 					result = any(checkedStream).(T)
 				}
 			}
+		}
+		if bifrostError != nil && bifrostError.ExtraFields.TimeoutSource != "" {
+			// The retry orchestrator owns the effective provider configuration.
+			// Overwrite rather than trust request context/plugin-provided metadata.
+			bifrostError.ExtraFields.ConfiguredTimeoutSeconds = config.NetworkConfig.DefaultRequestTimeoutInSeconds
+			builder := logger.LogHTTPRequest(schemas.LogLevelError, "provider request transport failure").
+				Str("request_id", GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)).
+				Str("provider", string(providerKey)).
+				Str("model", model).
+				Str("routing_rule_id", GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleID)).
+				Str("routing_rule_name", GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleName)).
+				Str("timeout_source", string(bifrostError.ExtraFields.TimeoutSource)).
+				Int("configured_timeout_seconds", bifrostError.ExtraFields.ConfiguredTimeoutSeconds).
+				Int64("elapsed_ms", bifrostError.ExtraFields.ElapsedMS)
+			if fallbackIndex, ok := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int); ok {
+				builder = builder.Int("fallback_index", fallbackIndex)
+			}
+			if bifrostError.ExtraFields.UpstreamResponseReceived != nil {
+				builder = builder.Str("upstream_response_received", strconv.FormatBool(*bifrostError.ExtraFields.UpstreamResponseReceived))
+			}
+			if bifrostError.Error != nil && bifrostError.Error.Error != nil {
+				builder = builder.Str("cause", safeNetworkErrorForLog(bifrostError.Error.Error))
+			}
+			builder.Send()
 		}
 
 		// Check if result is a streaming channel - if so, defer span completion

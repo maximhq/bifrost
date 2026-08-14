@@ -2,7 +2,9 @@ package utils
 
 import (
 	"context"
+	"errors"
 	"net"
+	"net/url"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -11,6 +13,12 @@ import (
 	"github.com/valyala/fasthttp"
 	"github.com/valyala/fasthttp/fasthttputil"
 )
+
+type upstreamTimeoutError struct{}
+
+func (upstreamTimeoutError) Error() string   { return "proxy read timeout" }
+func (upstreamTimeoutError) Timeout() bool   { return true }
+func (upstreamTimeoutError) Temporary() bool { return true }
 
 // newTestServer creates an in-memory fasthttp server that responds after the given delay.
 // Returns a client configured to talk to it and a cleanup function.
@@ -312,6 +320,146 @@ func TestNewBifrostTimeoutError(t *testing.T) {
 	// Note: ExtraFields.Provider is populated by bifrost.go's dispatcher via
 	// PopulateExtraFields, not by NewBifrostTimeoutError — the constructor has
 	// no provider context.
+}
+
+func TestMakeRequestWithDoFunc_ClassifiesTimeoutSources(t *testing.T) {
+	configuredCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	configuredCtx.SetValue(schemas.BifrostContextKeyConfiguredRequestTimeoutSeconds, 600)
+
+	tests := []struct {
+		name             string
+		err              error
+		wantSource       schemas.TimeoutSource
+		wantBifrostError bool
+		wantStatus       int
+	}{
+		{name: "early fasthttp timeout", err: fasthttp.ErrTimeout, wantSource: schemas.TimeoutSourceUnknown, wantBifrostError: false, wantStatus: 502},
+		{name: "upstream proxy timeout", err: upstreamTimeoutError{}, wantSource: schemas.TimeoutSourceUpstreamConnection, wantBifrostError: false, wantStatus: 502},
+		{name: "upstream disconnect", err: &net.OpError{Op: "read", Net: "tcp", Err: errors.New("connection reset by peer")}, wantSource: schemas.TimeoutSourceUpstreamDisconnect, wantBifrostError: false, wantStatus: 502},
+		{name: "unattributed deadline", err: context.DeadlineExceeded, wantSource: schemas.TimeoutSourceUnknown, wantBifrostError: false, wantStatus: 502},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, bifrostErr, wait := makeRequestWithDoFunc(configuredCtx, 600*time.Second, func() error { return tt.err })
+			defer wait()
+			if bifrostErr == nil {
+				t.Fatal("expected timeout error")
+			}
+			if bifrostErr.ExtraFields.TimeoutSource != tt.wantSource {
+				t.Fatalf("timeout source = %q, want %q", bifrostErr.ExtraFields.TimeoutSource, tt.wantSource)
+			}
+			if bifrostErr.ExtraFields.ConfiguredTimeoutSeconds != 600 {
+				t.Fatalf("configured timeout = %d, want 600", bifrostErr.ExtraFields.ConfiguredTimeoutSeconds)
+			}
+			if bifrostErr.ExtraFields.UpstreamResponseReceived == nil || *bifrostErr.ExtraFields.UpstreamResponseReceived {
+				t.Fatal("expected upstream_response_received=false")
+			}
+			if bifrostErr.IsBifrostError != tt.wantBifrostError {
+				t.Fatalf("IsBifrostError = %v, want %v", bifrostErr.IsBifrostError, tt.wantBifrostError)
+			}
+			if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != tt.wantStatus {
+				t.Fatalf("status = %v, want %d", bifrostErr.StatusCode, tt.wantStatus)
+			}
+			if errors.Is(tt.err, context.DeadlineExceeded) && bifrostErr.ExtraFields.TimeoutSource == schemas.TimeoutSourceBifrostHTTPClient {
+				t.Fatal("transport deadline must not be attributed to configured HTTP client timeout")
+			}
+		})
+	}
+}
+
+func TestTimeoutReachedConfiguredLimit(t *testing.T) {
+	if timeoutReachedConfiguredLimit(27*time.Second, 600) {
+		t.Fatal("27s failure must not be attributed to a configured 600s timeout")
+	}
+	if timeoutReachedConfiguredLimit(56*time.Second, 600) {
+		t.Fatal("56s failure must not be attributed to a configured 600s timeout")
+	}
+	if !timeoutReachedConfiguredLimit(599*time.Second, 600) {
+		t.Fatal("timeout at the configured boundary should be attributed to the HTTP client")
+	}
+}
+
+func TestClassifyTransportErrorDoesNotTreatEarlyStreamTimeoutAsConfiguredTimeout(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyConfiguredRequestTimeoutSeconds, 600)
+
+	bifrostErr := ClassifyTransportError(ctx, 0, fasthttp.ErrTimeout, 27*time.Second)
+	if bifrostErr.ExtraFields.TimeoutSource != schemas.TimeoutSourceUnknown {
+		t.Fatalf("timeout source = %q, want %q", bifrostErr.ExtraFields.TimeoutSource, schemas.TimeoutSourceUnknown)
+	}
+	if bifrostErr.ExtraFields.ConfiguredTimeoutSeconds != 600 {
+		t.Fatalf("configured timeout = %d, want 600", bifrostErr.ExtraFields.ConfiguredTimeoutSeconds)
+	}
+	if bifrostErr.IsBifrostError {
+		t.Fatal("early transport timeout must remain eligible for retry and fallback")
+	}
+	if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != fasthttp.StatusBadGateway {
+		t.Fatalf("status = %v, want 502", bifrostErr.StatusCode)
+	}
+}
+
+func TestClassifyTransportErrorRecognizesNetHTTPClientTimeoutAtConfiguredBoundary(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyConfiguredRequestTimeoutSeconds, 600)
+	err := &url.Error{Op: "Post", URL: "https://api.example.test", Err: context.DeadlineExceeded}
+
+	bifrostErr := ClassifyTransportError(ctx, 600*time.Second, err, 599*time.Second)
+	if bifrostErr.ExtraFields.TimeoutSource != schemas.TimeoutSourceBifrostHTTPClient {
+		t.Fatalf("timeout source = %q, want %q", bifrostErr.ExtraFields.TimeoutSource, schemas.TimeoutSourceBifrostHTTPClient)
+	}
+	if !bifrostErr.IsBifrostError {
+		t.Fatal("configured net/http client timeout should be attributed to Bifrost")
+	}
+}
+
+func TestClassifyTransportErrorPreservesGenericRequestFailure(t *testing.T) {
+	bifrostErr := ClassifyTransportError(context.Background(), 600*time.Second, errors.New("TLS certificate validation failed"), 27*time.Second)
+	if bifrostErr.ExtraFields.TimeoutSource != "" {
+		t.Fatalf("generic request error must not gain timeout_source, got %q", bifrostErr.ExtraFields.TimeoutSource)
+	}
+	if bifrostErr.Error == nil || bifrostErr.Error.Message != schemas.ErrProviderDoRequest {
+		t.Fatalf("generic request message = %#v, want %q", bifrostErr.Error, schemas.ErrProviderDoRequest)
+	}
+	if bifrostErr.IsBifrostError {
+		t.Fatal("generic upstream request failure must remain retryable")
+	}
+}
+
+func TestMakeRequestWithDoFunc_ClassifiesConfiguredHTTPClientTimeout(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyConfiguredRequestTimeoutSeconds, 1)
+
+	_, bifrostErr, wait := makeRequestWithDoFunc(ctx, time.Second, func() error {
+		time.Sleep(960 * time.Millisecond)
+		return fasthttp.ErrTimeout
+	})
+	defer wait()
+
+	if bifrostErr == nil || bifrostErr.ExtraFields.TimeoutSource != schemas.TimeoutSourceBifrostHTTPClient {
+		t.Fatalf("expected configured HTTP client timeout, got %#v", bifrostErr)
+	}
+	if !bifrostErr.IsBifrostError || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 504 {
+		t.Fatal("configured HTTP client timeout must remain a Bifrost 504")
+	}
+}
+
+func TestMakeRequestWithDoFunc_ClassifiesContextDeadline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+
+	_, bifrostErr, wait := makeRequestWithDoFunc(ctx, 600*time.Second, func() error {
+		time.Sleep(10 * time.Millisecond)
+		return nil
+	})
+	wait()
+
+	if bifrostErr == nil || bifrostErr.ExtraFields.TimeoutSource != schemas.TimeoutSourceBifrostContextDeadline {
+		t.Fatalf("expected context deadline source, got %#v", bifrostErr)
+	}
+	if bifrostErr.ExtraFields.ConfiguredTimeoutSeconds != 600 {
+		t.Fatalf("configured timeout = %d, want 600", bifrostErr.ExtraFields.ConfiguredTimeoutSeconds)
+	}
 }
 
 func TestMakeRequestWithContext_ClientError(t *testing.T) {

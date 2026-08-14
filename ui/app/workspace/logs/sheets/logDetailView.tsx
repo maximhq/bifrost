@@ -59,6 +59,7 @@ import PluginLogsView from "../views/pluginLogsView";
 import SpeechView from "../views/speechView";
 import TranscriptionView from "../views/transcriptionView";
 import VideoView from "../views/videoView";
+import { getTimeoutDetails } from "../utils/timeoutDetails";
 
 const formatRealtimeTransport = (value: unknown): string => {
 	const transport = String(value ?? "").trim();
@@ -637,6 +638,7 @@ export function LogDetailView({
 	};
 
 	if (!log) return null;
+	const timeoutDetails = getTimeoutDetails(log.error_details);
 
 	const selectedPromptDisplayName = resolvedSelectedPromptName ?? log.selected_prompt_name ?? "";
 
@@ -2365,7 +2367,7 @@ export function LogDetailView({
 						</CollapsibleBox>
 					)}
 
-					{(log.error_details?.error.message || log.error_details?.error.error != null) && (
+					{(log.error_details?.error.message || log.error_details?.error.error != null || timeoutDetails.length > 0) && (
 						<div className="rounded-sm border border-red-200 bg-red-50/70 p-5 dark:border-red-900 dark:bg-red-950/30">
 							<div className="flex items-center gap-2 text-red-700 dark:text-red-400">
 								<AlertCircle className="h-4 w-4 shrink-0" />
@@ -2375,6 +2377,16 @@ export function LogDetailView({
 							{log.error_details?.error.message ? (
 								<div className="mt-2 text-[13px] leading-relaxed break-words whitespace-pre-wrap text-red-700 dark:text-red-400">
 									{log.error_details.error.message}
+								</div>
+							) : null}
+							{timeoutDetails.length > 0 ? (
+								<div className="mt-3 grid gap-2 rounded-sm border border-red-200/70 bg-white/40 px-3 py-2 text-[12px] dark:border-red-900/70 dark:bg-red-950/40">
+									{timeoutDetails.map((detail) => (
+										<div key={detail.label} className="grid grid-cols-[minmax(120px,auto)_1fr] gap-3">
+											<span className="font-medium text-red-700 dark:text-red-400">{detail.label}</span>
+											<span className="break-words text-red-900 dark:text-red-300">{detail.value}</span>
+										</div>
+									))}
 								</div>
 							) : null}
 							{log.error_details?.error.error != null ? (

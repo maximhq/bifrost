@@ -57,6 +57,9 @@ func isContextTimeoutLogError(err *schemas.BifrostError) bool {
 	if err == nil || err.Error == nil {
 		return false
 	}
+	if err.ExtraFields.TimeoutSource != "" {
+		return err.ExtraFields.TimeoutSource == schemas.TimeoutSourceBifrostContextDeadline
+	}
 	message := strings.ToLower(strings.TrimSpace(err.Error.Message))
 	if message == "" || message == strings.ToLower(schemas.ErrProviderRequestTimedOut) {
 		return false

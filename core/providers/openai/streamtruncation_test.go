@@ -123,6 +123,12 @@ func assertTruncationError(t *testing.T, err *schemas.BifrostError) {
 	if err.Error != nil && (err.Error.Type == nil || *err.Error.Type != schemas.ProviderConnectionFailed) {
 		t.Errorf("expected error type %q, got %v", schemas.ProviderConnectionFailed, err.Error.Type)
 	}
+	if err.ExtraFields.TimeoutSource != schemas.TimeoutSourceUpstreamDisconnect {
+		t.Errorf("expected timeout source %q, got %q", schemas.TimeoutSourceUpstreamDisconnect, err.ExtraFields.TimeoutSource)
+	}
+	if err.ExtraFields.UpstreamResponseReceived == nil || !*err.ExtraFields.UpstreamResponseReceived {
+		t.Error("truncated stream must record that upstream response headers/body were received")
+	}
 }
 
 func basicChatRequest() *schemas.BifrostChatRequest {

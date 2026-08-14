@@ -543,10 +543,11 @@ func TestPostLLMHookContextTimeoutLogsCancelledStatus(t *testing.T) {
 		IsBifrostError: true,
 		StatusCode:     &statusCode,
 		Error: &schemas.ErrorField{
-			Message: "Request timed out by context: context deadline exceeded",
+			Message: "request exceeded the Bifrost context deadline",
 			Type:    schemas.Ptr(schemas.RequestTimedOut),
 		},
 		ExtraFields: schemas.BifrostErrorExtraFields{
+			TimeoutSource:          schemas.TimeoutSourceBifrostContextDeadline,
 			RequestType:            schemas.ChatCompletionRequest,
 			Provider:               schemas.OpenAI,
 			OriginalModelRequested: "gpt-4o",
