@@ -1,6 +1,7 @@
 import {
 	AnalyzerConfig,
 	DEFAULT_SEMANTIC_CONFIG,
+	formatSemanticTimeout,
 	KeywordListKey,
 	MAX_SEMANTIC_MESSAGE_HISTORY,
 	MAX_SEMANTIC_PHRASE_CHARACTERS,
@@ -28,10 +29,7 @@ const semanticSchema = z.object({
 	timeout: z
 		.string()
 		.min(1, "Enter an embedding timeout")
-		.refine(
-			(value) => isPositiveDurationString(value),
-			"Enter a timeout greater than 0",
-		)
+		.refine((value) => isPositiveDurationString(value), "Enter a timeout greater than 0")
 		.optional(),
 	min_similarity: z.number({ error: "Enter a number between 0 and 1" }).min(0, "Must be 0 or greater").lt(1, "Must be less than 1"),
 	message_history_count: z
@@ -109,6 +107,7 @@ export type SemanticFormValues = AnalyzerFormValues["semantic"];
 
 export const DEFAULT_SEMANTIC_FORM_VALUES: SemanticFormValues = {
 	...DEFAULT_SEMANTIC_CONFIG,
+	timeout: formatSemanticTimeout(parseSemanticTimeoutMs(DEFAULT_SEMANTIC_CONFIG.timeout)),
 	min_similarity: DEFAULT_SEMANTIC_CONFIG.min_similarity ?? 0,
 	message_history_count: DEFAULT_SEMANTIC_CONFIG.message_history_count ?? MIN_SEMANTIC_MESSAGE_HISTORY,
 	vector_store: "embedded",
@@ -132,6 +131,7 @@ export function toFormValues(config: AnalyzerConfig): AnalyzerFormValues {
 			? {
 					...DEFAULT_SEMANTIC_FORM_VALUES,
 					...saved,
+					timeout: formatSemanticTimeout(parseSemanticTimeoutMs(saved.timeout)),
 					min_similarity: saved.min_similarity ?? 0,
 					message_history_count: saved.message_history_count ?? MIN_SEMANTIC_MESSAGE_HISTORY,
 					vector_store: saved.vector_store ?? DEFAULT_SEMANTIC_FORM_VALUES.vector_store,
@@ -145,7 +145,8 @@ export function toFormValues(config: AnalyzerConfig): AnalyzerFormValues {
 // "0" the operator is midway through typing, which the schema rejects rather
 // than the field silently rewriting. Anything else — a saved "1s", a blank —
 // falls back to the parsed reading.
-export function semanticTimeoutFieldValue(timeout: string | undefined): string | number {
+export function semanticTimeoutFieldValue(timeout: string | number | undefined): string | number {
+	if (typeof timeout === "number") return timeout;
 	if (timeout === "") return "";
 	const millis = timeout?.trim().match(/^([0-9]*\.?[0-9]+)ms$/);
 	return millis ? millis[1] : parseSemanticTimeoutMs(timeout);

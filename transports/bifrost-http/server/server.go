@@ -1987,6 +1987,11 @@ func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path 
 	if routingWarmupObserverPlugin, ok := plugin.(routing.WarmupEmbedUsageObserverSetter); ok {
 		routingWarmupObserverPlugin.SetWarmupEmbedUsageObserver(s.ObserveWarmupRoutingEmbedding)
 	}
+	if routingSessionStorePlugin, ok := plugin.(routing.ComplexitySessionKVStoreSetter); ok && s.Config.KVStore != nil {
+		if err := routingSessionStorePlugin.SetComplexitySessionKVStore(s.Config.KVStore); err != nil {
+			logger.Warn("failed to attach complexity session store: %v", err)
+		}
+	}
 	return s.SyncLoadedPlugin(ctx, name, plugin, placement, order)
 }
 
@@ -2648,6 +2653,11 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		routingPlugin.SetEmbeddingRequestExecutor(s.Client.EmbeddingRequest)
 		routingPlugin.SetComplexityVectorStore(s.Config.VectorStore)
 		routingPlugin.SetWarmupEmbedUsageObserver(s.ObserveWarmupRoutingEmbedding)
+		if s.Config.KVStore != nil {
+			if err := routingPlugin.SetComplexitySessionKVStore(s.Config.KVStore); err != nil {
+				logger.Warn("failed to attach complexity session store: %v", err)
+			}
+		}
 	}
 
 	// Initialize Sidekiq runner for background jobs

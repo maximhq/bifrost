@@ -69,6 +69,7 @@ const codexTurnMetadataHeader = "x-codex-turn-metadata"
 
 type codexTurnMetadata struct {
 	RequestKind string
+	SessionID   string
 }
 
 // buildComplexityInput extracts text from normalized BifrostRequest values for
@@ -369,16 +370,21 @@ func parseCodexTurnMetadata(ctx *schemas.BifrostContext) (codexTurnMetadata, boo
 
 	var fields struct {
 		RequestKind json.RawMessage `json:"request_kind"`
+		SessionID   json.RawMessage `json:"session_id"`
 	}
 	if err := json.Unmarshal([]byte(rawMetadata), &fields); err != nil {
 		return codexTurnMetadata{}, false
 	}
 
 	// Decode fields independently so an invalid new field cannot change the
-	// established behavior of another one.
+	// established behavior of another one. In particular, a malformed session_id
+	// must not stop a valid background request_kind from being recognized.
 	var metadata codexTurnMetadata
 	if len(fields.RequestKind) > 0 {
 		_ = json.Unmarshal(fields.RequestKind, &metadata.RequestKind)
+	}
+	if len(fields.SessionID) > 0 {
+		_ = json.Unmarshal(fields.SessionID, &metadata.SessionID)
 	}
 	return metadata, true
 }

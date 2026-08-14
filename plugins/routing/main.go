@@ -89,6 +89,10 @@ type RoutingPlugin struct {
 	embeddingRequestExecutor atomic.Pointer[EmbeddingRequestExecutor]
 	warmupEmbedUsageObserver atomic.Pointer[WarmupEmbedUsageObserver]
 	complexityVectorStore    atomic.Pointer[vectorstore.VectorStore]
+
+	// complexitySessionStore is attached after construction and may stay nil when
+	// session routing has no backing store configured.
+	complexitySessionStore atomic.Pointer[SessionStore]
 }
 
 // Init initializes and returns a routing plugin instance.

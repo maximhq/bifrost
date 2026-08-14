@@ -14,7 +14,9 @@ export type SemanticVectorStore = "embedded" | "vector_store";
 export interface SemanticConfig {
 	provider: string;
 	embedding_model: string;
-	timeout?: string;
+	// API responses use milliseconds; duration strings remain accepted input for
+	// config.json, Helm, and older form state.
+	timeout?: string | number;
 	// Similarity floor the nearest reference phrase must clear; below it no tier
 	// is published. 0 means the nearest phrase always wins.
 	min_similarity?: number;
@@ -146,19 +148,21 @@ export const SEMANTIC_STATUS_LABELS: Record<SemanticStatusInfo["state"], string>
 	failed: "Failed",
 };
 
-// Duration strings round-trip through the API as Go durations ("500ms"), but the
-// form edits milliseconds. Anything unparseable falls back to the default rather
-// than silently sending 0, which the server rejects.
+// API responses use millisecond numbers, while human-authored configuration may
+// still contain Go duration strings. Anything unparseable falls back to the
+// default rather than silently sending 0, which the server rejects.
 const DURATION_UNIT_TO_MS: Record<string, number> = { ns: 1e-6, us: 1e-3, µs: 1e-3, ms: 1, s: 1000, m: 60000, h: 3600000 };
 const DURATION_SEGMENT = /([0-9]*\.?[0-9]+)(ns|us|µs|ms|s|m|h)/g;
 
-export function parseSemanticTimeoutMs(timeout: string | undefined): number {
+export function parseSemanticTimeoutMs(timeout: string | number | undefined): number {
+	if (typeof timeout === "number") {
+		return Number.isFinite(timeout) && timeout > 0 ? timeout : DEFAULT_SEMANTIC_TIMEOUT_MS;
+	}
 	if (!timeout) return DEFAULT_SEMANTIC_TIMEOUT_MS;
 	const trimmed = timeout.trim();
-	// Durations are summed segment by segment because time.Duration.String() — what the
-	// API marshals with — compounds anything from a minute up: 60000ms comes back as
-	// "1m0s", not "60s". Matching a single unit would send every such value to the
-	// fallback below and silently reset the field to the default.
+	// Human-authored Go durations may contain multiple segments: one minute can
+	// be written as "1m0s", not only "60s". Matching a single unit would send
+	// every such value to the fallback below and silently reset the field.
 	const segments = [...trimmed.matchAll(DURATION_SEGMENT)];
 	const consumed = segments.reduce((total, segment) => total + segment[0].length, 0);
 	// Every character has to belong to a segment, so "1m30x" or a stray sign is rejected

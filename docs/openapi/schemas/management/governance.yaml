@@ -2182,7 +2182,7 @@ ComplexitySemanticConfig:
       minLength: 1
       description: Embedding model, e.g. text-embedding-3-small
     timeout:
-      description: Ceiling on the inline embedding call. Accepts a duration string ("1.5s") or milliseconds as a number. Default 1.5s; exceeding it publishes no tier for that request.
+      description: Ceiling on the inline embedding call. Accepts a duration string ("1.5s") or milliseconds as a number and serializes as milliseconds. Default 1.5s; exceeding it publishes no tier for that request.
       oneOf:
         - type: string
           pattern: '^[0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h)$'

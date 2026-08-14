@@ -4035,9 +4035,69 @@
         },
         "semantic": {
           "$ref": "#/$defs/complexity_semantic_config"
+        },
+        "session": {
+          "$ref": "#/$defs/complexity_session_config"
         }
       },
       "required": ["keywords"],
+      "additionalProperties": false
+    },
+    "complexity_session_config": {
+      "type": "object",
+      "description": "Session state settings. Pinned mode resolves a conversation's complexity tier once and reuses it, skipping later embedding calls. Whether a provider's own prompt cache is actually preserved depends on that provider's retention, which Bifrost does not control or observe in this mode. Cache-aware mode reclassifies every turn that uses complexity routing, then gates tier changes so one noisy turn can't swing the whole session. Session state is node-local unless a shared backend is configured, so on multi-replica deployments turns handled by different replicas may resolve tiers independently.",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["off", "pinned", "cache_aware"],
+          "description": "'off' disables session state and classifies every turn (default). 'pinned' classifies turn 1 and holds that tier for the session. 'cache_aware' classifies every complexity-routed turn (including its embedding cost); it switches immediately once a turn clears switch_min_similarity, or after downgrade_after_n_turns consecutive downgrade-direction turns otherwise."
+        },
+        "ttl": {
+          "description": "Not consumed by the runtime under either session mode: pinned and cache_aware both use a fixed internal idle-expiry window instead, regardless of this value. Accepted, stored, and validated only so an already-persisted or hand-written config.json does not fail to parse.",
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)$"
+            },
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
+          ],
+          "default": "1h"
+        },
+        "identity_sources": {
+          "type": "array",
+          "description": "Which resolution steps may establish a session ID (default: ['header', 'harness']). They are always tried in the fixed order header → harness regardless of the order listed here.",
+          "items": {
+            "type": "string",
+            "enum": ["header", "harness"]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "switch_min_similarity": {
+          "type": "number",
+          "minimum": 0,
+          "exclusiveMaximum": 1,
+          "description": "Confidence a classification must reach before it may change session state, forming hysteresis with semantic.min_similarity: a low bar to classify, a higher bar to switch. Must be at least semantic.min_similarity when both are set. For a downgrade, meeting this bar on a single turn switches immediately without waiting on downgrade_after_n_turns; leaving this at zero requires the sustained-turns path instead. Compared against the vector store backend's own score, so retune when switching backends. cache_aware mode only."
+        },
+        "downgrade_after_n_turns": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "How many consecutive downgrade-direction turns (any lower-tier proposal, not necessarily the same specific tier each time) are needed before a downgrade is taken, when no single turn was confident enough to trigger switch_min_similarity's fast path (default: 2). Long agentic sessions are full of turns like 'yes' or 'run the tests' that classify as confidently simple; those are exactly the turns not to downgrade on immediately. cache_aware mode only."
+        },
+        "max_switches_per_session": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Cap on total tier moves within one session, as an oscillation backstop (default: 0, meaning unlimited). cache_aware mode only."
+        },
+        "always_allow_escalation": {
+          "type": "boolean",
+          "description": "Let an escalation to a higher tier bypass the switch_min_similarity gate (default: false). Escalations already ignore cache cost: holding a session on an undersized model to protect cache spend produces bad answers, which is a worse failure than overpaying. cache_aware mode only."
+        }
+      },
+      "required": ["mode"],
       "additionalProperties": false
     },
     "complexity_semantic_config": {
@@ -4055,7 +4115,7 @@
           "description": "Model used to generate embeddings for complexity classification"
         },
         "timeout": {
-          "description": "Per-request embedding timeout (duration string like '1.5s' or '1500ms', or milliseconds as a number; default: 1500ms). On timeout no complexity tier is published and the request is recorded as 'skipped'.",
+          "description": "Per-request embedding timeout (duration string like '1.5s' or '1500ms', or milliseconds as a number; default: 1500ms). Bifrost serializes this field as milliseconds. On timeout no complexity tier is published and the request is recorded as 'skipped'.",
           "oneOf": [
             {
               "type": "string",

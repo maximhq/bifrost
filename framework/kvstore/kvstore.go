@@ -15,6 +15,7 @@ var (
 	ErrEmptyKey   = errors.New("key cannot be empty")
 	ErrNotFound   = errors.New("key not found")
 	ErrInvalidTTL = errors.New("ttl cannot be negative")
+	ErrNilUpdate  = errors.New("update callback cannot be nil")
 )
 
 const (
@@ -51,9 +52,10 @@ type Store struct {
 	stopOnce  sync.Once
 	cleanupWg sync.WaitGroup
 
-	delegate  SyncDelegate
-	decoders  map[string]TypeDecoder
-	decoderMu sync.RWMutex
+	delegate   SyncDelegate
+	delegateMu sync.RWMutex
+	decoders   map[string]TypeDecoder
+	decoderMu  sync.RWMutex
 }
 
 // SyncDelegate is notified of all mutations, enabling cross-node replication.
@@ -70,9 +72,18 @@ type SyncDelegate interface {
 // Register decoders by key prefix via RegisterDecoder.
 type TypeDecoder func(data []byte) (any, error)
 
-// SetDelegate plugs in the cluster sync implementation.
+// SetDelegate installs or replaces the cluster sync implementation. Only
+// mutations that start after this call are guaranteed to use the new delegate.
 func (s *Store) SetDelegate(d SyncDelegate) {
+	s.delegateMu.Lock()
 	s.delegate = d
+	s.delegateMu.Unlock()
+}
+
+// HasSyncDelegate reports whether local mutations are currently forwarded to a
+// cluster sync implementation.
+func (s *Store) HasSyncDelegate() bool {
+	return s.syncDelegate() != nil
 }
 
 // RegisterDecoder registers a decoder for keys matching the given prefix.
@@ -119,6 +130,7 @@ func (s *Store) SetWithTTL(key string, value any, ttl time.Duration) error {
 	if err := s.validateMutable(key, ttl); err != nil {
 		return err
 	}
+	delegate := s.syncDelegate()
 
 	now := time.Now().UnixNano()
 	var expiresAt int64
@@ -129,7 +141,7 @@ func (s *Store) SetWithTTL(key string, value any, ttl time.Duration) error {
 	var valueJSON []byte
 	var err error
 
-	if s.delegate != nil {
+	if delegate != nil {
 		valueJSON, err = sonic.Marshal(value)
 		if err != nil {
 			return err
@@ -144,8 +156,8 @@ func (s *Store) SetWithTTL(key string, value any, ttl time.Duration) error {
 	}
 	s.mu.Unlock()
 
-	if s.delegate != nil {
-		s.delegate.OnSet(key, valueJSON, now, expiresAt)
+	if delegate != nil {
+		delegate.OnSet(key, valueJSON, now, expiresAt)
 	}
 
 	return nil
@@ -158,6 +170,7 @@ func (s *Store) SetNXWithTTL(key string, value any, ttl time.Duration) (bool, er
 	if err := s.validateMutable(key, ttl); err != nil {
 		return false, err
 	}
+	delegate := s.syncDelegate()
 
 	now := time.Now().UnixNano()
 	var expiresAt int64
@@ -168,7 +181,7 @@ func (s *Store) SetNXWithTTL(key string, value any, ttl time.Duration) (bool, er
 	var valueJSON []byte
 	var err error
 
-	if s.delegate != nil {
+	if delegate != nil {
 		valueJSON, err = sonic.Marshal(value)
 		if err != nil {
 			return false, err
@@ -176,7 +189,7 @@ func (s *Store) SetNXWithTTL(key string, value any, ttl time.Duration) (bool, er
 	}
 
 	s.mu.Lock()
-	
+
 	// Check if key exists and is not expired
 	if existing, ok := s.data[key]; ok {
 		if !isExpired(existing, now) {
@@ -185,7 +198,7 @@ func (s *Store) SetNXWithTTL(key string, value any, ttl time.Duration) (bool, er
 		}
 		// Key exists but is expired, allow overwrite
 	}
-	
+
 	// Key doesn't exist or is expired, set it
 	s.data[key] = entry{
 		value:     value,
@@ -194,11 +207,77 @@ func (s *Store) SetNXWithTTL(key string, value any, ttl time.Duration) (bool, er
 	}
 	s.mu.Unlock()
 
-	if s.delegate != nil {
-		s.delegate.OnSet(key, valueJSON, now, expiresAt)
+	if delegate != nil {
+		delegate.OnSet(key, valueJSON, now, expiresAt)
 	}
 
 	return true, nil
+}
+
+// UpdateWithTTL atomically replaces an existing, non-expired value and resets
+// its TTL. update runs while the store is locked and must complete promptly; it
+// must not call back into this store. Returning an error leaves the value and
+// TTL unchanged. A missing or expired key returns found=false without invoking
+// update. ttl=0 means no expiration.
+func (s *Store) UpdateWithTTL(key string, ttl time.Duration, update func(current any) (replacement any, err error)) (value any, found bool, err error) {
+	if err := s.validateMutable(key, ttl); err != nil {
+		return nil, false, err
+	}
+	if update == nil {
+		return nil, false, ErrNilUpdate
+	}
+	delegate := s.syncDelegate()
+
+	var (
+		valueJSON []byte
+		writtenAt int64
+		expiresAt int64
+	)
+
+	value, found, err = func() (any, bool, error) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+
+		current, ok := s.data[key]
+		now := time.Now().UnixNano()
+		if !ok || isExpired(current, now) {
+			if ok {
+				delete(s.data, key)
+			}
+			return nil, false, nil
+		}
+
+		replacement, err := update(current.value)
+		if err != nil {
+			return nil, true, err
+		}
+
+		if delegate != nil {
+			valueJSON, err = sonic.Marshal(replacement)
+			if err != nil {
+				return nil, true, err
+			}
+		}
+
+		writtenAt = time.Now().UnixNano()
+		if ttl > 0 {
+			expiresAt = writtenAt + int64(ttl)
+		}
+		s.data[key] = entry{
+			value:     replacement,
+			writtenAt: writtenAt,
+			expiresAt: expiresAt,
+		}
+		return replacement, true, nil
+	}()
+	if err != nil || !found {
+		return value, found, err
+	}
+
+	if delegate != nil {
+		delegate.OnSet(key, valueJSON, writtenAt, expiresAt)
+	}
+	return value, true, nil
 }
 
 // SetRemote applies a remotely-gossiped entry without triggering OnSet.
@@ -265,6 +344,7 @@ func (s *Store) GetAndDelete(key string) (any, error) {
 	}
 
 	now := time.Now().UnixNano()
+	delegate := s.syncDelegate()
 
 	s.mu.Lock()
 	e, ok := s.data[key]
@@ -276,8 +356,8 @@ func (s *Store) GetAndDelete(key string) (any, error) {
 	if !ok || isExpired(e, now) {
 		return nil, ErrNotFound
 	}
-	if s.delegate != nil {
-		s.delegate.OnDelete(key, now)
+	if delegate != nil {
+		delegate.OnDelete(key, now)
 	}
 	return e.value, nil
 }
@@ -292,6 +372,7 @@ func (s *Store) Delete(key string) (bool, error) {
 	}
 
 	deletedAt := time.Now().UnixNano()
+	delegate := s.syncDelegate()
 
 	s.mu.Lock()
 	_, ok := s.data[key]
@@ -303,8 +384,8 @@ func (s *Store) Delete(key string) (bool, error) {
 	if !ok {
 		return false, nil
 	}
-	if s.delegate != nil {
-		s.delegate.OnDelete(key, deletedAt)
+	if delegate != nil {
+		delegate.OnDelete(key, deletedAt)
 	}
 	return true, nil
 }
@@ -401,6 +482,13 @@ func (s *Store) validateMutable(key string, ttl time.Duration) error {
 		return ErrClosed
 	}
 	return nil
+}
+
+func (s *Store) syncDelegate() SyncDelegate {
+	s.delegateMu.RLock()
+	delegate := s.delegate
+	s.delegateMu.RUnlock()
+	return delegate
 }
 
 // decodeValue uses the registered decoder for the key's prefix, falling back

@@ -1,4 +1,5 @@
 import { describe, test, expect } from "vitest";
+import { semanticTimeoutFieldValue } from "../../app/workspace/complexity-router/formSchema";
 import { DEFAULT_SEMANTIC_TIMEOUT_MS, formatSemanticTimeout, parseSemanticTimeoutMs } from "./complexityRouter";
 
 describe("parseSemanticTimeoutMs", () => {
@@ -25,8 +26,10 @@ describe("parseSemanticTimeoutMs", () => {
 		}
 	});
 
-	test("accepts a bare millisecond number", () => {
+	test("accepts string and numeric millisecond values", () => {
 		expect(parseSemanticTimeoutMs("750")).toBe(750);
+		expect(parseSemanticTimeoutMs(750)).toBe(750);
+		expect(semanticTimeoutFieldValue(750)).toBe(750);
 	});
 
 	test("falls back to the default rather than sending a value the server rejects", () => {

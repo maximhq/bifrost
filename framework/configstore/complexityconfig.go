@@ -246,17 +246,17 @@ func (c *ComplexitySemanticConfig) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// MarshalJSON writes Timeout as a duration string so persisted configs decode
-// back to the same value (the default int encoding is nanoseconds, which the
-// millisecond-number decode path would misread).
+// MarshalJSON writes Timeout as milliseconds, matching the canonical JSON
+// representation for short request-path durations. UnmarshalJSON still accepts
+// duration strings for human-authored config files.
 func (c ComplexitySemanticConfig) MarshalJSON() ([]byte, error) {
 	type alias ComplexitySemanticConfig
-	var timeout string
+	var timeout int64
 	if c.Timeout != 0 {
-		timeout = c.Timeout.String()
+		timeout = c.Timeout.Milliseconds()
 	}
 	return json.Marshal(struct {
-		Timeout string `json:"timeout,omitempty"`
+		Timeout int64 `json:"timeout,omitempty"`
 		alias
 	}{
 		Timeout: timeout,
@@ -327,6 +327,292 @@ func (c *ComplexitySemanticConfig) Validate() error {
 	return nil
 }
 
+// Complexity session modes.
+//
+// "off" is a first-class value rather than only an absent block so the UI's
+// three-way toggle can disable session behaviour without discarding the TTL and
+// threshold settings an admin already tuned. A nil *ComplexitySessionConfig and
+// an explicit "off" are equivalent at runtime; use Enabled to test either.
+//
+// "pinned" classifies once per session and reuses the tier until the pin is
+// released. "cache_aware" classifies every turn whose routing rules consult
+// complexity and gates tier changes; it needs that proposal to decide.
+const (
+	ComplexitySessionModeOff        = "off"
+	ComplexitySessionModePinned     = "pinned"
+	ComplexitySessionModeCacheAware = "cache_aware"
+)
+
+// Complexity session identity sources, listed in resolution order: an explicit
+// x-bf-session-id header, then a harness-native ID.
+const (
+	ComplexitySessionIdentityHeader  = "header"
+	ComplexitySessionIdentityHarness = "harness"
+)
+
+// Complexity session defaults, applied by normalized when a field is unset.
+// SwitchMinSimilarity is deliberately absent: a sensible absolute value depends
+// on the exemplar set's score distribution, so it ships unset (no gating).
+const (
+	DefaultComplexitySessionTTL                  = time.Hour
+	DefaultComplexitySessionDowngradeAfterNTurns = 2
+)
+
+// ComplexitySessionInternalTTL is the fixed idle-expiry and upstream
+// key-affinity window every enabled session mode uses. Neither pinned nor
+// cache-aware mode reads TTL as part of its tier decision — pinned either
+// reuses a stored tier unconditionally or classifies once and persists;
+// cache-aware's switching policy (similarity, turn-persistence, escalation,
+// max-switches) never references it either, now that it has no
+// cache-evidence check left to bound. So this is not admin-tunable routing
+// policy for either mode — it only bounds how long an idle conversation's
+// stored record (and its sticky upstream API key) survives before the next
+// turn reclassifies from scratch. It starts equal to
+// DefaultComplexitySessionTTL so existing deployments see no behavior
+// change, but the two may diverge independently in the future.
+const ComplexitySessionInternalTTL = time.Hour
+
+// DefaultComplexitySessionIdentitySources is the identity ladder applied when
+// none is configured.
+func DefaultComplexitySessionIdentitySources() []string {
+	return []string{ComplexitySessionIdentityHeader, ComplexitySessionIdentityHarness}
+}
+
+// ComplexitySessionConfig gives the complexity router a memory of the
+// conversation a request belongs to. A nil value, like Mode "off", disables it.
+//
+// Session state is a memoised classifier result with a TTL, not an override of
+// routing: it replaces the lazy complexity computation, so every routing rule
+// still evaluates normally and only the classification is skipped.
+type ComplexitySessionConfig struct {
+	Mode string `json:"mode"`
+	// TTL is not consumed by the runtime under either enabled mode — see
+	// ComplexitySessionInternalTTL, which both use instead. It is still
+	// stored and validated so already-persisted configs need no migration,
+	// and so a hand-edited or API-written config.json does not fail to parse.
+	TTL time.Duration `json:"ttl,omitempty"`
+	// IdentitySources selects which of the resolution steps may establish a
+	// session ID, tried in the constant order above regardless of the order
+	// given here.
+	IdentitySources []string `json:"identity_sources,omitempty"`
+
+	// SwitchMinSimilarity is the confidence a classification must reach before
+	// it may change session state, forming hysteresis with the semantic
+	// classifier's MinSimilarity: a low bar to classify, a higher bar to switch.
+	// It must be at least Semantic.MinSimilarity. For a downgrade, clearing this
+	// bar on a single turn switches immediately without waiting on
+	// DowngradeAfterNTurns; leaving it at zero disables that fast path entirely
+	// (unlike its role gating escalations, where zero means no floor at all) and
+	// every downgrade goes through the sustained-turns path instead.
+	//
+	// Like MinSimilarity this is compared against the VectorStore backend's own
+	// score, and those scales differ (chromem, Qdrant, Pinecone, and Redis
+	// report raw cosine; Weaviate reports certainty). Retune on a backend
+	// switch. A lexical score is a different scale entirely and is never
+	// comparable against this value.
+	SwitchMinSimilarity float64 `json:"switch_min_similarity,omitempty"`
+	// DowngradeAfterNTurns is how many consecutive downgrade-direction turns —
+	// any tier lower than the one currently held, not necessarily the same
+	// specific tier each time — are needed before a downgrade is taken, when no
+	// single turn was confident enough to trigger SwitchMinSimilarity's fast
+	// path. Long agentic sessions are full of turns like "yes" or "run the
+	// tests" that classify as confidently simple; those are exactly the turns
+	// not to downgrade on immediately, because the classifier is right about the
+	// turn and wrong about the session.
+	DowngradeAfterNTurns int `json:"downgrade_after_n_turns,omitempty"`
+	// MaxSwitchesPerSession caps total tier moves as an oscillation backstop.
+	// Zero means unlimited.
+	MaxSwitchesPerSession int `json:"max_switches_per_session,omitempty"`
+	// AlwaysAllowEscalation lets an escalation bypass the SwitchMinSimilarity
+	// gate. Escalations already ignore cache cost: holding a session on an
+	// undersized model to protect cache spend produces bad answers, which is a
+	// worse failure than overpaying.
+	AlwaysAllowEscalation bool `json:"always_allow_escalation,omitempty"`
+}
+
+// UnmarshalJSON accepts TTL as a duration string ("30m") or a JSON number
+// (seconds). Seconds match the x-bf-session-ttl header and avoid expressing
+// minute- or hour-scale expiry in unwieldy millisecond values. All other fields
+// decode through the default path via an alias.
+func (c *ComplexitySessionConfig) UnmarshalJSON(data []byte) error {
+	// alias suppresses ComplexitySessionConfig's UnmarshalJSON to avoid
+	// infinite recursion. The outer TTL (json.RawMessage) shadows alias.TTL
+	// because the json package picks the shallower field.
+	type alias ComplexitySessionConfig
+	aux := &struct {
+		TTL json.RawMessage `json:"ttl,omitempty"`
+		*alias
+	}{alias: (*alias)(c)}
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+
+	if len(aux.TTL) == 0 || string(aux.TTL) == "null" {
+		return nil
+	}
+
+	var s string
+	if err := json.Unmarshal(aux.TTL, &s); err == nil {
+		d, err := time.ParseDuration(s)
+		if err != nil {
+			return fmt.Errorf("failed to parse session ttl duration string %q: %w", s, err)
+		}
+		c.TTL = d
+	} else {
+		var seconds float64
+		if err := json.Unmarshal(aux.TTL, &seconds); err != nil {
+			return fmt.Errorf("unsupported session ttl value: %s", string(aux.TTL))
+		}
+		c.TTL = time.Duration(seconds * float64(time.Second))
+	}
+	if c.TTL < 0 {
+		return fmt.Errorf("session ttl must be non-negative, got %v", c.TTL)
+	}
+	return nil
+}
+
+// MarshalJSON writes TTL as a duration string because session expiry is normally
+// configured in minutes or hours. The readable form is also lossless when the
+// persisted value is loaded again.
+func (c ComplexitySessionConfig) MarshalJSON() ([]byte, error) {
+	type alias ComplexitySessionConfig
+	var ttl string
+	if c.TTL != 0 {
+		ttl = c.TTL.String()
+	}
+	return json.Marshal(struct {
+		TTL string `json:"ttl,omitempty"`
+		alias
+	}{
+		TTL:   ttl,
+		alias: alias(c),
+	})
+}
+
+// Enabled reports whether session behaviour should engage. It is the only
+// correct way to test this: a nil block, an empty mode, and an explicit "off"
+// all mean disabled.
+func (c *ComplexitySessionConfig) Enabled() bool {
+	if c == nil {
+		return false
+	}
+	switch c.Mode {
+	case ComplexitySessionModePinned, ComplexitySessionModeCacheAware:
+		return true
+	default:
+		return false
+	}
+}
+
+// normalized returns a canonical deep copy with defaults applied. Defaults are
+// applied even when the mode is "off" so that toggling session behaviour back
+// on preserves what the admin configured.
+func (c *ComplexitySessionConfig) normalized() *ComplexitySessionConfig {
+	if c == nil {
+		return nil
+	}
+	out := &ComplexitySessionConfig{
+		Mode:                  strings.ToLower(strings.TrimSpace(c.Mode)),
+		TTL:                   c.TTL,
+		IdentitySources:       normalizeComplexitySessionIdentitySources(c.IdentitySources),
+		SwitchMinSimilarity:   c.SwitchMinSimilarity,
+		DowngradeAfterNTurns:  c.DowngradeAfterNTurns,
+		MaxSwitchesPerSession: c.MaxSwitchesPerSession,
+		AlwaysAllowEscalation: c.AlwaysAllowEscalation,
+	}
+	if out.Mode == "" {
+		out.Mode = ComplexitySessionModeOff
+	}
+	if out.TTL == 0 {
+		out.TTL = DefaultComplexitySessionTTL
+	}
+	if len(out.IdentitySources) == 0 {
+		out.IdentitySources = DefaultComplexitySessionIdentitySources()
+	}
+	if out.DowngradeAfterNTurns == 0 {
+		out.DowngradeAfterNTurns = DefaultComplexitySessionDowngradeAfterNTurns
+	}
+	return out
+}
+
+// normalizeComplexitySessionIdentitySources lowercases, de-duplicates, and
+// orders sources by the resolution ladder so callers can walk them directly.
+func normalizeComplexitySessionIdentitySources(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(values))
+	for _, value := range values {
+		normalized := strings.ToLower(strings.TrimSpace(value))
+		if normalized == "" {
+			continue
+		}
+		seen[normalized] = true
+	}
+	var out []string
+	for _, source := range []string{
+		ComplexitySessionIdentityHeader,
+		ComplexitySessionIdentityHarness,
+	} {
+		if seen[source] {
+			out = append(out, source)
+			delete(seen, source)
+		}
+	}
+	// Unknown values are preserved so Validate can name them rather than
+	// silently dropping a typo'd source.
+	unknown := make([]string, 0, len(seen))
+	for source := range seen {
+		unknown = append(unknown, source)
+	}
+	sort.Strings(unknown)
+	return append(out, unknown...)
+}
+
+// Validate checks a normalized session config. Cross-section rules that need
+// the surrounding analyzer config — notably SwitchMinSimilarity against
+// Semantic.MinSimilarity — are enforced by ComplexityAnalyzerConfig.Validate.
+func (c *ComplexitySessionConfig) Validate() error {
+	if c == nil {
+		return nil
+	}
+	switch c.Mode {
+	case ComplexitySessionModeOff, ComplexitySessionModePinned, ComplexitySessionModeCacheAware:
+	default:
+		return fmt.Errorf("session mode must be %q, %q, or %q, got %q",
+			ComplexitySessionModeOff, ComplexitySessionModePinned, ComplexitySessionModeCacheAware, c.Mode)
+	}
+	if c.TTL <= 0 {
+		return fmt.Errorf("session ttl must be positive, got %v", c.TTL)
+	}
+	for _, source := range c.IdentitySources {
+		switch source {
+		case ComplexitySessionIdentityHeader, ComplexitySessionIdentityHarness:
+		default:
+			return fmt.Errorf("session identity_sources may contain %q or %q, got %q",
+				ComplexitySessionIdentityHeader, ComplexitySessionIdentityHarness, source)
+		}
+	}
+	if len(c.IdentitySources) == 0 {
+		return fmt.Errorf("session identity_sources must list at least one source")
+	}
+	// 1 is a legal ceiling but rejects every real match, matching the
+	// MinSimilarity treatment: a misconfiguration, not "never switch". NaN is
+	// named explicitly because every comparison against it is false, so the
+	// range check alone would pass it through — and the cross-field hysteresis
+	// check below compares the same way.
+	if math.IsNaN(c.SwitchMinSimilarity) || c.SwitchMinSimilarity < 0 || c.SwitchMinSimilarity >= 1 {
+		return fmt.Errorf("session switch_min_similarity must be at least 0 and less than 1, got %v", c.SwitchMinSimilarity)
+	}
+	if c.DowngradeAfterNTurns < 1 {
+		return fmt.Errorf("session downgrade_after_n_turns must be at least 1, got %d", c.DowngradeAfterNTurns)
+	}
+	if c.MaxSwitchesPerSession < 0 {
+		return fmt.Errorf("session max_switches_per_session must be non-negative, got %d", c.MaxSwitchesPerSession)
+	}
+	return nil
+}
+
 // ComplexityAnalyzerConfigHashes tracks the config.json hash for each editable
 // analyzer section. It is persisted with the config row, but not exposed through
 // API responses or config.json.
@@ -339,6 +625,9 @@ type ComplexityAnalyzerConfigHashes struct {
 	// budgets flag, vector store). The semantic classifier's
 	// exemplars are the shared keyword lists, tracked by the sections above.
 	SemanticSettings string `json:"semantic_settings,omitempty"`
+	// SessionSettings covers the session block (mode, ttl, identity sources,
+	// and the cache-aware switch thresholds).
+	SessionSettings string `json:"session_settings,omitempty"`
 }
 
 type legacyComplexityAnalyzerConfigHashes struct {
@@ -404,6 +693,7 @@ type ComplexityAnalyzerConfig struct {
 	TierBoundaries ComplexityTierBoundaries        `json:"tier_boundaries"`
 	Keywords       ComplexityEditableKeywordConfig `json:"keywords"`
 	Semantic       *ComplexitySemanticConfig       `json:"semantic,omitempty"`
+	Session        *ComplexitySessionConfig        `json:"session,omitempty"`
 	ConfigHashes   ComplexityAnalyzerConfigHashes  `json:"-"`
 	// EmbeddingFingerprint is reserved for config-store implementations that
 	// persist routing state. The semantic classifier verifies a VectorStore-side
@@ -415,6 +705,7 @@ type complexityAnalyzerConfigRecord struct {
 	TierBoundaries       ComplexityTierBoundaries        `json:"tier_boundaries"`
 	Keywords             ComplexityEditableKeywordConfig `json:"keywords"`
 	Semantic             *ComplexitySemanticConfig       `json:"semantic,omitempty"`
+	Session              *ComplexitySessionConfig        `json:"session,omitempty"`
 	ConfigHashes         ComplexityAnalyzerConfigHashes  `json:"_config_hashes,omitempty"`
 	EmbeddingFingerprint string                          `json:"_embedding_fingerprint,omitempty"`
 }
@@ -449,6 +740,21 @@ func (c *ComplexityAnalyzerConfig) Validate() error {
 			return err
 		}
 	}
+	if err := c.Session.Validate(); err != nil {
+		return err
+	}
+	// SwitchMinSimilarity and MinSimilarity form hysteresis: a low bar to accept
+	// a classification, a higher bar to let it change session state. Inverting
+	// them would let a classification too weak to be believed still move a
+	// session, so the ordering is enforced rather than clamped. Zero means the
+	// switch gate is off entirely and is exempt.
+	if c.Session != nil && c.Semantic != nil && c.Session.SwitchMinSimilarity > 0 &&
+		c.Session.SwitchMinSimilarity < c.Semantic.MinSimilarity {
+		return fmt.Errorf(
+			"session switch_min_similarity (%v) must be at least semantic min_similarity (%v)",
+			c.Session.SwitchMinSimilarity, c.Semantic.MinSimilarity,
+		)
+	}
 	return nil
 }
 
@@ -469,6 +775,7 @@ func (c *ComplexityAnalyzerConfig) Normalized() ComplexityAnalyzerConfig {
 			ComplexKeywords: normalizeComplexityKeywordList(c.Keywords.ComplexKeywords),
 		},
 		Semantic:             c.Semantic.normalized(),
+		Session:              c.Session.normalized(),
 		ConfigHashes:         c.ConfigHashes,
 		EmbeddingFingerprint: c.EmbeddingFingerprint,
 	}
@@ -546,6 +853,7 @@ func MergeComplexityAnalyzerConfig(base, file *ComplexityAnalyzerConfig) (*Compl
 			ComplexKeywords: mergeComplexityKeywordLists(normalizedBase.Keywords.ComplexKeywords, normalizedFile.Keywords.ComplexKeywords),
 		},
 		Semantic:             mergeComplexitySemanticConfig(normalizedBase.Semantic, normalizedFile.Semantic),
+		Session:              mergeComplexitySessionConfig(normalizedBase.Session, normalizedFile.Session),
 		ConfigHashes:         normalizedFile.ConfigHashes,
 		EmbeddingFingerprint: normalizedBase.EmbeddingFingerprint,
 	}
@@ -559,6 +867,15 @@ func MergeComplexityAnalyzerConfig(base, file *ComplexityAnalyzerConfig) (*Compl
 // mergeComplexitySemanticConfig overlays the file semantic settings. A nil
 // file section keeps the base untouched.
 func mergeComplexitySemanticConfig(base, file *ComplexitySemanticConfig) *ComplexitySemanticConfig {
+	if file == nil {
+		return base.normalized()
+	}
+	return file.normalized()
+}
+
+// mergeComplexitySessionConfig overlays the file session settings. A nil file
+// section keeps the base untouched.
+func mergeComplexitySessionConfig(base, file *ComplexitySessionConfig) *ComplexitySessionConfig {
 	if file == nil {
 		return base.normalized()
 	}
@@ -610,6 +927,14 @@ func MergeComplexityAnalyzerConfigByHashes(base, file *ComplexityAnalyzerConfig)
 			merged.ConfigHashes.SemanticSettings = normalizedFile.ConfigHashes.SemanticSettings
 		}
 	}
+	// Same "absence means no opinion" rule as the semantic section above: a
+	// config.json without a session block leaves DB session state alone.
+	if normalizedFile.Session != nil {
+		if merged.Session == nil || merged.ConfigHashes.SessionSettings != normalizedFile.ConfigHashes.SessionSettings {
+			merged.Session = normalizedFile.Session.normalized()
+			merged.ConfigHashes.SessionSettings = normalizedFile.ConfigHashes.SessionSettings
+		}
+	}
 	normalizedMerged := merged.Normalized()
 	if err := normalizedMerged.Validate(); err != nil {
 		return nil, err
@@ -632,6 +957,7 @@ func DecodeComplexityAnalyzerConfig(data []byte) (*ComplexityAnalyzerConfig, err
 		TierBoundaries:       record.TierBoundaries,
 		Keywords:             record.Keywords,
 		Semantic:             record.Semantic,
+		Session:              record.Session,
 		ConfigHashes:         record.ConfigHashes,
 		EmbeddingFingerprint: record.EmbeddingFingerprint,
 	}
@@ -647,6 +973,7 @@ func encodeComplexityAnalyzerConfig(config ComplexityAnalyzerConfig) ([]byte, er
 		TierBoundaries:       config.TierBoundaries,
 		Keywords:             config.Keywords,
 		Semantic:             config.Semantic,
+		Session:              config.Session,
 		ConfigHashes:         config.ConfigHashes,
 		EmbeddingFingerprint: config.EmbeddingFingerprint,
 	}

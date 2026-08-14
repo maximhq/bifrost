@@ -6,9 +6,11 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/fasthttp/router"
 
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/valyala/fasthttp"
 )
@@ -145,6 +147,49 @@ func TestComplexityAnalyzerConfigPutRejectsInvalidPayloads(t *testing.T) {
 	}
 }
 
+// assertSessionSurvivedReset checks every field of the session block seeded by
+// TestComplexityAnalyzerConfigResetPersistsDefaultsAndReloads. Reset must carry
+// the block through whole: a field silently dropped here is a session control
+// that reverts on the next reset, and asserting only some of them lets the rest
+// regress unnoticed.
+func assertSessionSurvivedReset(t *testing.T, where string, session *configstore.ComplexitySessionConfig) {
+	t.Helper()
+	if session == nil {
+		t.Fatalf("expected the %s session config to survive reset, got nil", where)
+	}
+	if session.Mode != configstore.ComplexitySessionModePinned || session.TTL != 90*time.Minute {
+		t.Fatalf("expected the %s session mode and ttl to survive reset, got %+v", where, session)
+	}
+	if len(session.IdentitySources) != 1 || session.IdentitySources[0] != configstore.ComplexitySessionIdentityHeader {
+		t.Fatalf("expected the %s session identity ladder to survive reset, got %+v", where, session.IdentitySources)
+	}
+	if session.SwitchMinSimilarity != 0.85 || session.MaxSwitchesPerSession != 3 || !session.AlwaysAllowEscalation {
+		t.Fatalf("expected the %s session switch gates to survive reset, got %+v", where, session)
+	}
+	if session.DowngradeAfterNTurns != 5 {
+		t.Fatalf("expected the %s session switch thresholds to survive reset, got %+v", where, session)
+	}
+}
+
+// assertRawSessionTTL pins the wire encoding of session.ttl, which typed
+// decoding cannot: the decoder accepts both a duration string and a
+// millisecond number, so a change of encoding would round-trip silently here
+// while breaking the configuration UI that reads the raw field.
+func assertRawSessionTTL(t *testing.T, body []byte, want any) {
+	t.Helper()
+	var raw struct {
+		Session struct {
+			TTL any `json:"ttl"`
+		} `json:"session"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		t.Fatalf("unmarshal raw response: %v", err)
+	}
+	if raw.Session.TTL != want {
+		t.Fatalf("expected raw session ttl %v, got %#v", want, raw.Session.TTL)
+	}
+}
+
 func TestComplexityAnalyzerConfigResetPersistsDefaultsAndReloads(t *testing.T) {
 	SetLogger(&mockLogger{})
 	store := setupPricingOverrideHandlerStore(t)
@@ -166,6 +211,18 @@ func TestComplexityAnalyzerConfigResetPersistsDefaultsAndReloads(t *testing.T) {
 		EmbeddingModel: "text-embedding-3-small",
 		MinSimilarity:  0.42,
 		VectorStore:    "vector_store",
+	}
+	// Session behavior is deployment configuration for the same reason: losing it
+	// silently unpins every live conversation. Seeded away from the defaults so a
+	// wipe cannot be mistaken for a value that happens to match.
+	custom.Session = &configstore.ComplexitySessionConfig{
+		Mode:                  configstore.ComplexitySessionModePinned,
+		TTL:                   90 * time.Minute,
+		IdentitySources:       []string{configstore.ComplexitySessionIdentityHeader},
+		SwitchMinSimilarity:   0.85,
+		DowngradeAfterNTurns:  5,
+		MaxSwitchesPerSession: 3,
+		AlwaysAllowEscalation: true,
 	}
 	if err := store.UpdateComplexityAnalyzerConfig(context.Background(), &custom); err != nil {
 		t.Fatalf("seed custom config: %v", err)
@@ -200,6 +257,7 @@ func TestComplexityAnalyzerConfigResetPersistsDefaultsAndReloads(t *testing.T) {
 	if stored.Semantic.VectorStore != "vector_store" || stored.Semantic.MinSimilarity != 0.42 {
 		t.Fatalf("expected the storage selection and similarity floor to survive reset, got %+v", stored.Semantic)
 	}
+	assertSessionSurvivedReset(t, "stored", stored.Session)
 
 	// The reload and the response body carry the same record: the plugin
 	// reconfigures from one and the configuration UI reseeds its form from the
@@ -208,6 +266,8 @@ func TestComplexityAnalyzerConfigResetPersistsDefaultsAndReloads(t *testing.T) {
 	if manager.reloadedConfig == nil || manager.reloadedConfig.Semantic == nil {
 		t.Fatalf("expected reload with the embedding config retained, got %+v", manager.reloadedConfig)
 	}
+	assertSessionSurvivedReset(t, "reloaded", manager.reloadedConfig.Session)
+
 	var resp complexity.AnalyzerConfig
 	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
 		t.Fatalf("unmarshal response: %v", err)
@@ -215,6 +275,11 @@ func TestComplexityAnalyzerConfigResetPersistsDefaultsAndReloads(t *testing.T) {
 	if resp.Semantic == nil || resp.Semantic.EmbeddingModel != "text-embedding-3-small" {
 		t.Fatalf("expected the response to carry the embedding config, got %+v", resp.Semantic)
 	}
+	assertSessionSurvivedReset(t, "response", resp.Session)
+	// The TTL leaves as a Go duration string, which is what the configuration UI
+	// parses back into its milliseconds field. Decoding also accepts a plain
+	// number, so only the raw body pins which of the two is actually emitted.
+	assertRawSessionTTL(t, ctx.Response.Body(), "1h30m0s")
 	if resp.TierBoundaries != complexity.DefaultTierBoundaries() {
 		t.Fatalf("expected the response to carry default boundaries, got %+v", resp.TierBoundaries)
 	}
