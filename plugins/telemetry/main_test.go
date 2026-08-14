@@ -199,6 +199,116 @@ func TestPostLLMHookRequiresStartTime(t *testing.T) {
 
 // TestMetricsEnabledGating covers the pull-gateway (/metrics scrape) on/off switch: default-on
 // when the config omits the field (back-compat), and honoring an explicit value.
+// TestRoutingEmbeddingCounters: a response stamped with RoutingDebug increments
+// bifrost_routing_embedding_requests_total regardless of the count_toward_budgets
+// flag — the flag only controls budget folding (CalculateCost), never telemetry.
+// Cost stays unrecorded here because the test plugin has no pricing manager;
+// the routing embedding cost math is covered in modelcatalog's datasheet tests.
+func TestRoutingEmbeddingCounters(t *testing.T) {
+	for _, countTowardBudgets := range []bool{false, true} {
+		p := newTestPlugin(t)
+
+		provider := "openai"
+		model := "text-embedding-3-small"
+		inputTokens := 42
+		resp := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+			Usage: &schemas.BifrostLLMUsage{PromptTokens: 11, CompletionTokens: 7, TotalTokens: 18},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ChatCompletionRequest,
+				RoutingDebug: &schemas.BifrostRoutingDebug{
+					ProviderUsed:       &provider,
+					ModelUsed:          &model,
+					InputTokens:        &inputTokens,
+					CountTowardBudgets: countTowardBudgets,
+				},
+			},
+		}}
+		resp.PopulateExtraFields(schemas.ChatCompletionRequest, schemas.ModelProvider(provider), model, model)
+
+		ctx := newHookContext(schemas.ChatCompletionRequest)
+		if _, _, err := p.PostLLMHook(ctx, resp, nil); err != nil {
+			t.Fatalf("PostLLMHook (flag=%v): %v", countTowardBudgets, err)
+		}
+
+		waitForCounter(t, p.registry, "bifrost_routing_embedding_requests_total", 1)
+		if got := counterTotalWithLabel(t, p.registry, "bifrost_routing_embedding_requests_total", "phase", "request"); got != 1 {
+			t.Fatalf("request-phase requests counter = %v, want 1", got)
+		}
+		if got := counterTotal(t, p.registry, "bifrost_routing_embedding_cost_total"); got != 0 {
+			t.Fatalf("cost counter without pricing manager = %v, want 0", got)
+		}
+	}
+}
+
+// TestObserveWarmupRoutingEmbedding: warmup embeds report through the direct
+// observer method (no request/response exists for them) and land under
+// phase="warmup", separate from the request-phase series. Cost stays
+// unrecorded without a pricing manager, same as the request phase.
+func TestObserveWarmupRoutingEmbedding(t *testing.T) {
+	p := newTestPlugin(t)
+
+	p.ObserveWarmupRoutingEmbedding("openai", "text-embedding-3-small", 7)
+	p.ObserveWarmupRoutingEmbedding("openai", "text-embedding-3-small", 9)
+
+	if got := counterTotalWithLabel(t, p.registry, "bifrost_routing_embedding_requests_total", "phase", "warmup"); got != 2 {
+		t.Fatalf("warmup-phase requests counter = %v, want 2", got)
+	}
+	if got := counterTotalWithLabel(t, p.registry, "bifrost_routing_embedding_requests_total", "phase", "request"); got != 0 {
+		t.Fatalf("request-phase requests counter = %v, want 0 (warmup must not leak into it)", got)
+	}
+	if got := counterTotal(t, p.registry, "bifrost_routing_embedding_cost_total"); got != 0 {
+		t.Fatalf("cost counter without pricing manager = %v, want 0", got)
+	}
+}
+
+// counterTotalWithLabel sums every series of the named counter family whose
+// labels include name=value.
+func counterTotalWithLabel(t *testing.T, reg *prometheus.Registry, name, labelName, labelValue string) float64 {
+	t.Helper()
+	fams, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	var sum float64
+	for _, mf := range fams {
+		if mf.GetName() != name {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			for _, lp := range m.GetLabel() {
+				if lp.GetName() == labelName && lp.GetValue() == labelValue {
+					sum += m.GetCounter().GetValue()
+					break
+				}
+			}
+		}
+	}
+	return sum
+}
+
+// TestRoutingEmbeddingCountersAbsentWithoutStamp: responses without RoutingDebug
+// (no routing embed ran) must not touch the routing counters.
+func TestRoutingEmbeddingCountersAbsentWithoutStamp(t *testing.T) {
+	p := newTestPlugin(t)
+
+	resp := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Usage: &schemas.BifrostLLMUsage{PromptTokens: 11, CompletionTokens: 7, TotalTokens: 18},
+	}}
+	resp.PopulateExtraFields(schemas.ChatCompletionRequest, "openai", "test-model", "test-model")
+
+	ctx := newHookContext(schemas.ChatCompletionRequest)
+	if _, _, err := p.PostLLMHook(ctx, resp, nil); err != nil {
+		t.Fatalf("PostLLMHook: %v", err)
+	}
+
+	// Token counters record after the routing check in the same goroutine, so
+	// once they land we know the routing check already ran without recording.
+	waitForCounter(t, p.registry, "bifrost_input_tokens_total", 11)
+	if got := counterTotal(t, p.registry, "bifrost_routing_embedding_requests_total"); got != 0 {
+		t.Fatalf("routing requests counter = %v, want 0", got)
+	}
+}
+
 func TestMetricsEnabledGating(t *testing.T) {
 	cases := []struct {
 		name string

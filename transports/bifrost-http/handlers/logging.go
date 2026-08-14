@@ -662,6 +662,7 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 	if apps := string(ctx.QueryArgs().Peek("apps")); apps != "" {
 		filters.Apps = parseStringArrayParam(apps)
 	}
+	parseComplexityFilters(ctx, filters)
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		if t, err := time.Parse(time.RFC3339Nano, startTime); err == nil {
 			filters.StartTime = &t
@@ -923,6 +924,7 @@ func (h *LoggingHandler) getLogsStats(ctx *fasthttp.RequestCtx) {
 	if apps := string(ctx.QueryArgs().Peek("apps")); apps != "" {
 		filters.Apps = parseStringArrayParam(apps)
 	}
+	parseComplexityFilters(ctx, filters)
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		if t, err := time.Parse(time.RFC3339Nano, startTime); err == nil {
 			filters.StartTime = &t
@@ -1033,6 +1035,17 @@ func calculateBucketSize(start, end *time.Time) int64 {
 	}
 }
 
+// parseComplexityFilters extracts the structured complexity filters shared by
+// log search, aggregate, and histogram endpoints.
+func parseComplexityFilters(ctx *fasthttp.RequestCtx, filters *logstore.SearchFilters) {
+	if complexityTiers := string(ctx.QueryArgs().Peek("complexity_tiers")); complexityTiers != "" {
+		filters.ComplexityTiers = parseCommaSeparated(complexityTiers)
+	}
+	if complexityMechanisms := string(ctx.QueryArgs().Peek("complexity_mechanisms")); complexityMechanisms != "" {
+		filters.ComplexityMechanisms = parseCommaSeparated(complexityMechanisms)
+	}
+}
+
 // parseHistogramFilters extracts common filter parameters from query args
 func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 	filters := &logstore.SearchFilters{}
@@ -1088,6 +1101,7 @@ func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 	if apps := string(ctx.QueryArgs().Peek("apps")); apps != "" {
 		filters.Apps = parseStringArrayParam(apps)
 	}
+	parseComplexityFilters(ctx, filters)
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		if t, err := time.Parse(time.RFC3339Nano, startTime); err == nil {
 			filters.StartTime = &t

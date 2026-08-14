@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -30,6 +31,40 @@ func TestShouldUseFilterDataCacheAllowsUnscopedEmptyQuery(t *testing.T) {
 	if !shouldUseFilterDataCache(context.Background(), "   ") {
 		t.Fatal("expected whitespace-only query to use filterdata cache")
 	}
+}
+
+func TestParseComplexityFilters(t *testing.T) {
+	t.Run("parses tier and mechanism values", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.QueryArgs().Set("complexity_tiers", "SIMPLE,COMPLEX")
+		ctx.QueryArgs().Set("complexity_mechanisms", "semantic,lexical")
+		filters := &logstore.SearchFilters{}
+
+		parseComplexityFilters(ctx, filters)
+
+		if got, want := filters.ComplexityTiers, []string{"SIMPLE", "COMPLEX"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("complexity tiers = %#v, want %#v", got, want)
+		}
+		if got, want := filters.ComplexityMechanisms, []string{"semantic", "lexical"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("complexity mechanisms = %#v, want %#v", got, want)
+		}
+	})
+
+	t.Run("leaves filters unchanged when parameters are absent", func(t *testing.T) {
+		filters := &logstore.SearchFilters{
+			ComplexityTiers:      []string{"MEDIUM"},
+			ComplexityMechanisms: []string{"skipped"},
+		}
+
+		parseComplexityFilters(&fasthttp.RequestCtx{}, filters)
+
+		if got, want := filters.ComplexityTiers, []string{"MEDIUM"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("complexity tiers = %#v, want %#v", got, want)
+		}
+		if got, want := filters.ComplexityMechanisms, []string{"skipped"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("complexity mechanisms = %#v, want %#v", got, want)
+		}
+	})
 }
 
 // TestShouldUseFilterDataCacheRejectsSearchQuery verifies search requests are

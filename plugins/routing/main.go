@@ -11,6 +11,7 @@ package routing
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -45,7 +46,7 @@ type Governance interface {
 	AttributeRoutingEmbeddingCost(provider schemas.ModelProvider, model string, inputTokens int)
 }
 
-const noComplexitySignalLog = "Complexity analysis skipped: no configured complexity signal matched the latest user message; continuing with existing routing path"
+const noSemanticClassifierLog = "Complexity analysis skipped: no embedding model is configured for the complexity router; continuing with existing routing path"
 
 // Config is the configuration for the routing plugin
 type Config struct {
@@ -329,39 +330,115 @@ func (p *RoutingPlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *sche
 
 	// Set up lazy complexity computation; only runs if a rule references complexity_tier.
 	var computeComplexity func() *complexity.ComplexityResult
-	if analyzer := p.complexityAnalyzer.Load(); analyzer != nil {
+	if p.complexityAnalyzer.Load() != nil {
 		computeComplexity = func() *complexity.ComplexityResult {
 			input, ok := complexity.BuildInput(ctx, req)
 			if !ok {
 				if p.logger != nil {
-					p.logger.Debug("[Routing] Complexity analysis skipped: unsupported request type")
+					p.logger.Debug("[Routing] Complexity analysis skipped: no routable human-authored text detected")
 				}
-				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo, "Complexity analysis skipped: no supported text-bearing input detected")
+				ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityMechanism, complexity.MechanismSkipped)
+				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo, "Complexity analysis skipped: no routable human-authored text detected")
 				return nil
 			}
 
-			result := analyzer.Analyze(input)
-			if result == nil {
+			// Semantic classification is the only mechanism. Without it there is no
+			// tier to publish: the lexical scorer still exists for historical
+			// configs but is never run, because the phrase lists an operator
+			// authors are semantic exemplars — whole sentences — and scoring them
+			// as literal keywords produces tiers that look authoritative while
+			// resting on matches the operator never intended.
+			if p.semanticClassifier == nil || !p.semanticClassifier.IsConfigured() {
 				if p.logger != nil {
-					p.logger.Debug("[Routing] %s", noComplexitySignalLog)
+					p.logger.Debug("[Routing] %s", noSemanticClassifierLog)
 				}
-				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelDebug, noComplexitySignalLog)
+				ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityMechanism, complexity.MechanismSkipped)
+				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo, noSemanticClassifierLog)
 				return nil
 			}
-			if p.logger != nil {
-				p.logger.Debug(
-					"[Routing] Complexity analysis details: tier=%s score=%.2f words=%d",
-					result.Tier,
-					result.Score,
-					result.WordCount,
+
+			// How much of the conversation is embedded is configuration
+			// (semantic.message_history_count); the classifier applies it from
+			// the same snapshot that owns the exemplars.
+			semanticResult, err := p.semanticClassifier.Classify(ctx, input)
+			// Carried to the single routing log below rather than logged here. Every
+			// one of these branches ends at the same outcome — no tier published —
+			// so logging per branch *and* at the outcome put two lines in the
+			// request log for one decision, the second restating the first.
+			var rejectedResult *complexity.SemanticResult
+			var timedOut bool
+			if err != nil {
+				if p.logger != nil {
+					p.logger.Debug("[Routing] Semantic complexity classification unavailable: %v", err)
+				}
+				timedOut = errors.Is(err, ErrEmbeddingTimeout)
+			} else if semanticResult != nil && !semanticResult.Accepted {
+				rejectedResult = semanticResult
+				if p.logger != nil {
+					p.logger.Debug(
+						"[Routing] Semantic complexity below min_similarity: tier=%s similarity=%.2f min=%.2f",
+						semanticResult.Tier,
+						semanticResult.Score,
+						semanticResult.MinSimilarity,
+					)
+				}
+			} else if semanticResult != nil {
+				result := &complexity.ComplexityResult{Tier: semanticResult.Tier, Score: semanticResult.Score}
+				ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityTier, result.Tier)
+				ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityScore, result.Score)
+				ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityMechanism, complexity.MechanismSemantic)
+				// The exemplar is what makes the decision auditable: the tier alone
+				// cannot tell a reader whether the request genuinely resembled its
+				// nearest phrase or merely won an argmax over unrelated ones.
+				ctx.AppendRoutingEngineLog(
+					schemas.RoutingEngineRoutingRule,
+					schemas.LogLevelInfo,
+					withMatchedExemplar(
+						fmt.Sprintf("Semantic complexity: tier=%s similarity=%.2f", result.Tier, result.Score),
+						semanticResult.MatchedExemplar,
+					),
+				)
+				return result
+			}
+			// There is nowhere to fall back to: semantic is the only mechanism
+			// that runs.
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityMechanism, complexity.MechanismSkipped)
+			// One line per decision, naming the cause. The level is part of the
+			// message: a classifier that could not run is an operator problem,
+			// while a request that resembled nothing in the tier lists is routine
+			// and would be noise at Warn.
+			unavailableLevel := schemas.LogLevelWarn
+			unavailableLog := "Semantic complexity classification unavailable, so no complexity tier is published"
+			switch {
+			case err == nil && semanticResult == nil:
+				unavailableLevel = schemas.LogLevelInfo
+			case rejectedResult != nil:
+				unavailableLevel = schemas.LogLevelInfo
+				// A near miss is the case where the exemplar matters most: it is
+				// the difference between "the floor is set too high for a phrase
+				// that genuinely fits" and "nothing in the tier lists resembles
+				// this request".
+				unavailableLog = withMatchedExemplar(
+					fmt.Sprintf(
+						"Semantic complexity rejected: nearest tier=%s similarity=%.2f below min_similarity=%.2f, so no complexity tier is published",
+						rejectedResult.Tier,
+						rejectedResult.Score,
+						rejectedResult.MinSimilarity,
+					),
+					rejectedResult.MatchedExemplar,
+				)
+			case timedOut:
+				// An exhausted budget is a tuning problem with an obvious remedy,
+				// and naming it as merely "unavailable" sends the operator hunting
+				// for a broken provider or an incomplete warmup instead of raising
+				// semantic.timeout.
+				unavailableLog = fmt.Sprintf(
+					"Semantic complexity classification timed out after %s, so no complexity tier is published",
+					p.semanticClassifier.Timeout(),
 				)
 			}
-			ctx.AppendRoutingEngineLog(
-				schemas.RoutingEngineRoutingRule,
-				schemas.LogLevelInfo,
-				fmt.Sprintf("Complexity: tier=%s score=%.2f words=%d", result.Tier, result.Score, result.WordCount),
-			)
-			return result
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, unavailableLevel, unavailableLog)
+			return nil
 		}
 	}
 

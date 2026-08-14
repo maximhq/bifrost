@@ -31,21 +31,6 @@ var ErrEmbeddingTimeout = errors.New("embedding request timed out")
 // classification. It mirrors the signature of bifrost.Client.EmbeddingRequest.
 type EmbeddingRequestExecutor func(ctx *schemas.BifrostContext, req *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError)
 
-// routingEmbedUsageContextKey carries a *routingEmbedUsage on the triggering
-// request's context from classification (PreRequestHook) to PostLLMHook, where
-// it is stamped onto the response as ExtraFields.RoutingDebug. It mirrors the
-// semantic cache's per-request state handoff between its pre and post hooks.
-const routingEmbedUsageContextKey schemas.BifrostContextKey = "bf-routing-embed-usage"
-
-// routingEmbedUsage is the recorded usage of one semantic classification
-// embedding call made on behalf of a request.
-type routingEmbedUsage struct {
-	Provider           string
-	Model              string
-	InputTokens        int
-	CountTowardBudgets bool
-}
-
 // EmbeddingExecutorSetter is implemented by routing plugins that accept an
 // embedding request executor. The HTTP server wires the executor after the
 // bifrost client is constructed (the plugin itself is built while the client
@@ -177,10 +162,15 @@ func recordRoutingEmbedUsage(ctx context.Context, semantic *complexity.SemanticC
 	if !ok || semantic == nil {
 		return
 	}
-	bfCtx.SetValue(routingEmbedUsageContextKey, &routingEmbedUsage{
-		Provider:           string(semantic.Provider),
-		Model:              semantic.EmbeddingModel,
-		InputTokens:        inputTokens,
+	if inputTokens < 0 {
+		inputTokens = 0
+	}
+	provider := string(semantic.Provider)
+	model := semantic.EmbeddingModel
+	schemas.SetRoutingDebugOnContext(bfCtx, &schemas.BifrostRoutingDebug{
+		ProviderUsed:       &provider,
+		ModelUsed:          &model,
+		InputTokens:        &inputTokens,
 		CountTowardBudgets: semantic.CountTowardBudgets,
 	})
 }
@@ -198,30 +188,15 @@ func stampRoutingDebug(ctx *schemas.BifrostContext, result *schemas.BifrostRespo
 	if bifrost.IsStreamRequestType(requestType) && !isFinalChunk {
 		return
 	}
-	usage, ok := ctx.Value(routingEmbedUsageContextKey).(*routingEmbedUsage)
-	if !ok || usage == nil {
+	usage, ok := schemas.InitialAttemptRoutingDebugFromContext(ctx)
+	if !ok {
 		return
 	}
 	extraFields := result.GetExtraFields()
 	if extraFields == nil {
 		return
 	}
-	// InputTokens is provider-derived and must be non-negative before it reaches
-	// cost calculation: a negative count prices to a negative routing charge,
-	// which would subtract from the request's cost and its budget attribution
-	// when CountTowardBudgets is set. generateEmbeddings already drops negative
-	// provider usage; this is the invariant at the point of stamping, so any
-	// other writer of the usage key cannot bypass it.
-	inputTokens := usage.InputTokens
-	if inputTokens < 0 {
-		inputTokens = 0
-	}
-	extraFields.RoutingDebug = &schemas.BifrostRoutingDebug{
-		ProviderUsed:       bifrost.Ptr(usage.Provider),
-		ModelUsed:          bifrost.Ptr(usage.Model),
-		InputTokens:        &inputTokens,
-		CountTowardBudgets: usage.CountTowardBudgets,
-	}
+	extraFields.RoutingDebug = usage
 }
 
 // embedComplexityTexts adapts the same internal embedding path for bounded
