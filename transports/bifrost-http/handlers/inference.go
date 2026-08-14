@@ -171,6 +171,7 @@ var responsesParamsKnownFields = map[string]bool{
 	"parallel_tool_calls":    true,
 	"previous_response_id":   true,
 	"prompt_cache_key":       true,
+	"prompt_cache_options":   true,
 	"prompt_cache_retention": true,
 	"reasoning":              true,
 	"safety_identifier":      true,
