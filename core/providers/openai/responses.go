@@ -2,7 +2,11 @@ package openai
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
+
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 
 	"github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -46,18 +50,27 @@ type ResponsesFeatureSupport struct {
 	// ContextManagement reports whether the backend accepts the context_management
 	// Responses body field.
 	ContextManagement bool
+	// EmptyToolDescription reports whether the backend accepts an empty (or
+	// whitespace-only) `description` string on tools carried by
+	// additional_tools items; when false those descriptions are replaced with
+	// a deterministic fallback before forwarding.
+	EmptyToolDescription bool
 }
 
 // ProviderFeatures maps each OpenAI-compatible provider to its supported
 // Responses wire extensions. Only providers with a known deviation are listed.
 var ProviderFeatures = map[schemas.ModelProvider]ResponsesFeatureSupport{
-	schemas.OpenAI: {AdditionalToolsItem: true, ContextManagement: true},
+	schemas.OpenAI: {AdditionalToolsItem: true, ContextManagement: true, EmptyToolDescription: true},
 	// Bedrock Mantle validates `input` against the standard union and rejects
 	// additional_tools with "Invalid 'input': value did not match any expected
 	// variant", but accepts the same tools at the top level. It also rejects
 	// context_management outright as an unknown parameter.
-	schemas.Bedrock:       {AdditionalToolsItem: false, ContextManagement: false},
-	schemas.BedrockMantle: {AdditionalToolsItem: false, ContextManagement: false},
+	schemas.Bedrock:       {AdditionalToolsItem: false, ContextManagement: false, EmptyToolDescription: true},
+	schemas.BedrockMantle: {AdditionalToolsItem: false, ContextManagement: false, EmptyToolDescription: true},
+	// Azure keeps additional_tools items but validates tool descriptions with
+	// a minimum length of 1 ("Invalid 'input[0].tools[0].description': empty
+	// string."), which rejects the empty description Codex CLI 0.147.0 emits.
+	schemas.Azure: {AdditionalToolsItem: true, ContextManagement: true, EmptyToolDescription: false},
 }
 
 // supportsAdditionalToolsItem reports whether provider accepts codex
@@ -68,6 +81,82 @@ func supportsAdditionalToolsItem(provider schemas.ModelProvider) bool {
 		return true
 	}
 	return features.AdditionalToolsItem
+}
+
+// supportsEmptyToolDescription reports whether provider accepts empty tool
+// description strings inside additional_tools items. Unlisted providers are
+// assumed to.
+func supportsEmptyToolDescription(provider schemas.ModelProvider) bool {
+	features, ok := ProviderFeatures[provider]
+	if !ok {
+		return true
+	}
+	return features.EmptyToolDescription
+}
+
+// toolDescriptionFallback builds the deterministic description used in place
+// of an empty one. Namespace tools describe the tools they group; anything
+// else falls back to its name.
+func toolDescriptionFallback(toolType, name string) string {
+	if toolType == "namespace" && name != "" {
+		return "Tools in the " + name + " namespace"
+	}
+	if name != "" {
+		return "The " + name + " tool"
+	}
+	return "No description provided"
+}
+
+// fillEmptyToolDescriptions rewrites every tools[] entry under base (recursing
+// into nested namespace tools[].tools[]) whose `description` is present but
+// empty or whitespace-only, leaving all other bytes untouched. Descriptions
+// that are absent stay absent: strict upstreams reject the empty string, not
+// the missing key.
+func fillEmptyToolDescriptions(raw []byte, base string) ([]byte, bool) {
+	changed := false
+	tools := gjson.GetBytes(raw, base)
+	if !tools.IsArray() {
+		return raw, false
+	}
+	for i := range tools.Array() {
+		entry := base + "." + strconv.Itoa(i)
+		if desc := gjson.GetBytes(raw, entry+".description"); desc.Type == gjson.String && strings.TrimSpace(desc.String()) == "" {
+			fallback := toolDescriptionFallback(
+				gjson.GetBytes(raw, entry+".type").String(),
+				gjson.GetBytes(raw, entry+".name").String(),
+			)
+			if updated, err := sjson.SetBytes(raw, entry+".description", fallback); err == nil {
+				raw = updated
+				changed = true
+			}
+		}
+		if nested, nestedChanged := fillEmptyToolDescriptions(raw, entry+".tools"); nestedChanged {
+			raw = nested
+			changed = true
+		}
+	}
+	return raw, changed
+}
+
+// normalizeAdditionalToolsDescriptions returns message with empty tool
+// descriptions replaced (see fillEmptyToolDescriptions). The item is preserved
+// as raw bytes, so it is re-marshalled (which emits those bytes verbatim),
+// rewritten, and decoded again to re-preserve the corrected bytes. On any
+// error the original message is returned unchanged.
+func normalizeAdditionalToolsDescriptions(message schemas.ResponsesMessage) schemas.ResponsesMessage {
+	raw, err := json.Marshal(message)
+	if err != nil {
+		return message
+	}
+	rewritten, changed := fillEmptyToolDescriptions(raw, "tools")
+	if !changed {
+		return message
+	}
+	var normalized schemas.ResponsesMessage
+	if err := schemas.Unmarshal(rewritten, &normalized); err != nil {
+		return message
+	}
+	return normalized
 }
 
 // hoistAdditionalTools decodes the tools carried by a codex additional_tools item.
@@ -102,11 +191,16 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	// Tools lifted out of codex additional_tools items for providers that reject them.
 	var hoistedTools []schemas.ResponsesTool
 	keepAdditionalTools := supportsAdditionalToolsItem(bifrostReq.Provider)
+	fillDescriptions := !supportsEmptyToolDescription(bifrostReq.Provider)
 	for _, message := range bifrostReq.Input {
-		if !keepAdditionalTools && message.Type != nil &&
-			*message.Type == schemas.ResponsesMessageTypeAdditionalTools {
-			hoistedTools = append(hoistedTools, hoistAdditionalTools(message)...)
-			continue
+		if message.Type != nil && *message.Type == schemas.ResponsesMessageTypeAdditionalTools {
+			if !keepAdditionalTools {
+				hoistedTools = append(hoistedTools, hoistAdditionalTools(message)...)
+				continue
+			}
+			if fillDescriptions {
+				message = normalizeAdditionalToolsDescriptions(message)
+			}
 		}
 		// First, check if message has compaction/fallback content blocks and rewrite them
 		if message.Content != nil && len(message.Content.ContentBlocks) > 0 {
