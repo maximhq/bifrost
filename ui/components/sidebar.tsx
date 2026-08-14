@@ -24,12 +24,6 @@ import {
 	History,
 	KeyRound,
 	Landmark,
-<<<<<<< HEAD
-=======
-	Hexagon,
-	BadgeCheck,
-	BadgeInfo,
->>>>>>> 061d01944 (V2.0.0 (#4365))
 	LaptopMinimalCheck,
 	LayoutGrid,
 	LogOut,
@@ -291,14 +285,15 @@ const SidebarItemView = ({
 
 	const isHighlighted = !hasSubItems && highlightedUrl === item.url;
 
-	const buttonClassName = `group/nav-item relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${isHighlighted
-		? "bg-sidebar-accent text-accent-foreground border-primary/20"
-		: isActive || isAnySubItemActive
-			? "bg-sidebar-accent text-primary border-primary/20"
-			: item.hasAccess
-				? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
-				: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-		} `;
+	const buttonClassName = `group/nav-item relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${
+		isHighlighted
+			? "bg-sidebar-accent text-accent-foreground border-primary/20"
+			: isActive || isAnySubItemActive
+				? "bg-sidebar-accent text-primary border-primary/20"
+				: item.hasAccess
+					? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
+					: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+	} `;
 
 	const innerContent = (
 		<div className="flex w-full items-center justify-between">
@@ -449,16 +444,6 @@ const SidebarItemView = ({
 						const isSubItemActive = subItem.queryParam ? pathname === subItem.url : isRouteMatch(subItem.url);
 						const isSubItemHighlighted = highlightedUrl ? subItemHref.startsWith(highlightedUrl) : false;
 						const SubItemIcon = subItem.icon;
-<<<<<<< HEAD
-						const subItemClassName = `h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${isSubItemHighlighted
-							? "bg-sidebar-accent text-accent-foreground"
-							: isSubItemActive
-								? "bg-sidebar-accent text-primary font-medium"
-								: subItem.hasAccess === false
-									? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-									: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
-							}`;
-=======
 						const subItemClassName = `h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${
 							isSubItemHighlighted
 								? "bg-sidebar-accent text-accent-foreground"
@@ -468,7 +453,6 @@ const SidebarItemView = ({
 										? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
 										: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
 						}`;
->>>>>>> 061d01944 (V2.0.0 (#4365))
 						const subInner = (
 							<div className="flex w-full items-center gap-2">
 								{SubItemIcon && <SubItemIcon className={`h-3.5 w-3.5 ${isSubItemActive ? "text-primary" : "text-muted-foreground"}`} />}
@@ -1012,21 +996,21 @@ export default function AppSidebar() {
 			},
 			...(isDbConnected
 				? [
-					{
-						title: "Prompt Repository",
-						url: "/workspace/prompt-repo",
-						icon: FolderGit,
-						description: "Prompt repository",
-						hasAccess: hasPromptRepositoryAccess,
-					},
-					{
-						title: "Skills Repository",
-						url: "/workspace/skills-repo",
-						icon: BookOpenText,
-						description: "Skills repository",
-						hasAccess: hasSkillsRepositoryAccess,
-					},
-				]
+						{
+							title: "Prompt Repository",
+							url: "/workspace/prompt-repo",
+							icon: FolderGit,
+							description: "Prompt repository",
+							hasAccess: hasPromptRepositoryAccess,
+						},
+						{
+							title: "Skills Repository",
+							url: "/workspace/skills-repo",
+							icon: BookOpenText,
+							description: "Skills repository",
+							hasAccess: hasSkillsRepositoryAccess,
+						},
+					]
 				: []),
 			{
 				title: "Evals",
@@ -1073,14 +1057,14 @@ export default function AppSidebar() {
 					},
 					...(IS_ENTERPRISE
 						? [
-							{
-								title: "Proxy",
-								url: "/workspace/config/proxy",
-								icon: Globe,
-								description: "Proxy configuration",
-								hasAccess: hasSettingsAccess,
-							},
-						]
+								{
+									title: "Proxy",
+									url: "/workspace/config/proxy",
+									icon: Globe,
+									description: "Proxy configuration",
+									hasAccess: hasSettingsAccess,
+								},
+							]
 						: []),
 					{
 						title: "API Keys",
@@ -1105,23 +1089,13 @@ export default function AppSidebar() {
 					},
 					...(IS_ENTERPRISE
 						? [
-<<<<<<< HEAD
-							{
-								title: "Branding",
-								url: "/workspace/config/branding",
-								icon: Palette,
-								description: "Custom logo and icon",
-								hasAccess: hasSettingsAccess,
-							},
-							{
-								title: "License Info",
-								url: "/workspace/config/license",
-								icon: BadgeInfo,
-								description: "Enterprise license information",
-								hasAccess: hasSettingsAccess,
-							},
-						]
-=======
+								{
+									title: "Branding",
+									url: "/workspace/config/branding",
+									icon: Palette,
+									description: "Custom logo and icon",
+									hasAccess: hasSettingsAccess,
+								},
 								{
 									title: "License Info",
 									url: "/workspace/config/license",
@@ -1130,7 +1104,6 @@ export default function AppSidebar() {
 									hasAccess: hasSettingsAccess,
 								},
 							]
->>>>>>> 061d01944 (V2.0.0 (#4365))
 						: []),
 				],
 			},
@@ -1166,10 +1139,6 @@ export default function AppSidebar() {
 			hasPromptRepositoryAccess,
 			hasSkillsRepositoryAccess,
 			hasAccessProfilesAccess,
-<<<<<<< HEAD
-=======
-			hasAccessProfilesAccess,
->>>>>>> 061d01944 (V2.0.0 (#4365))
 			hasFeatureFlagsAccess,
 			hasDevicesAccess,
 			hasInventoryAccess,
@@ -1558,13 +1527,7 @@ export default function AppSidebar() {
 						{/* max-w caps an unusually wide uploaded logo so it cannot push the
 						    collapse button out of the header; object-contain preserves its
 						    aspect ratio within that box. */}
-						<img
-							className="h-[22px] w-auto max-w-[150px] object-contain"
-							src={logoSrc}
-							alt={logoAlt}
-							width={70}
-							height={70}
-						/>
+						<img className="h-[22px] w-auto max-w-[150px] object-contain" src={logoSrc} alt={logoAlt} width={70} height={70} />
 					</Link>
 					<button
 						onClick={toggleSidebar}
@@ -1581,14 +1544,7 @@ export default function AppSidebar() {
 					className="hidden w-full cursor-pointer flex-col items-center gap-2 py-2 group-data-[collapsible=icon]:flex"
 					onClick={toggleSidebar}
 				>
-					<img
-						className="h-[22px] w-auto object-contain"
-						src={iconSrc}
-						alt={logoAlt}
-						width={22}
-						height={22}
-						style={{ width: 18 }}
-					/>
+					<img className="h-[22px] w-auto object-contain" src={iconSrc} alt={logoAlt} width={22} height={22} style={{ width: 18 }} />
 				</div>
 			</SidebarHeader>
 			{envLabel && (

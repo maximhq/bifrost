@@ -153,7 +153,9 @@ function MCPClientActionsMenu({
 				{hasUpdateAccess && canReconnect && (
 					<DropdownMenuItem
 						className="cursor-pointer"
-						disabled={client.config.disabled || isReconnecting || client.state === "pending_verification" || client.state === "needs_reauth"}
+						disabled={
+							client.config.disabled || isReconnecting || client.state === "pending_verification" || client.state === "needs_reauth"
+						}
 						onSelect={(e) => {
 							e.preventDefault();
 							onReconnect(client);
@@ -723,8 +725,8 @@ export default function MCPClientsTable({
 							</p>
 							{exchangeVerifyClient?.state === "pending_verification" ? (
 								<p className="text-muted-foreground/80 text-xs">
-									That credential is only used to periodically fetch this server&apos;s tool list, not for real user requests, whose
-									tokens are exchanged automatically on every request.
+									That credential is only used to periodically fetch this server&apos;s tool list, not for real user requests, whose tokens
+									are exchanged automatically on every request.
 								</p>
 							) : (
 								<p className="text-muted-foreground/80 text-xs">
@@ -820,11 +822,7 @@ export default function MCPClientsTable({
 
 			<div className="flex grow flex-col overflow-hidden">
 				<div className="mb-2 grow overflow-hidden rounded-sm border">
-					<Table
-						data-testid="mcp-clients-table"
-						containerClassName="h-full overflow-auto"
-						className="w-full min-w-[1516px] table-fixed"
-					>
+					<Table data-testid="mcp-clients-table" containerClassName="h-full overflow-auto" className="w-full min-w-[1516px] table-fixed">
 						<TableHeader className="bg-muted sticky top-0 z-20">
 							<TableRow>
 								<TableHead className="w-[260px] font-semibold">Name</TableHead>

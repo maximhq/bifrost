@@ -269,7 +269,7 @@ export function RoutingRuleInfoSheet({ rule, open, onOpenChange, onNavigate, has
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="flex w-full flex-col overflow-x-hidden p-4 md:p-8 sm:max-w-2xl" data-testid="routing-rule-info">
+			<SheetContent className="flex w-full flex-col overflow-x-hidden p-4 sm:max-w-2xl md:p-8" data-testid="routing-rule-info">
 				{rule && (
 					<>
 						<SheetHeader className="flex flex-row items-start justify-between gap-1 p-0">

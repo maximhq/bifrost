@@ -462,14 +462,26 @@ export function SkillEditView({
 					<span className="hidden md:inline">Cancel</span>
 					<X className="h-3.5 w-3.5 md:hidden" />
 				</Button>
-				<Button variant="outline" size="sm" data-testid="skill-preview-btn" onClick={() => setShowPreviewDialog(true)} aria-label="Preview raw SKILL.md">
+				<Button
+					variant="outline"
+					size="sm"
+					data-testid="skill-preview-btn"
+					onClick={() => setShowPreviewDialog(true)}
+					aria-label="Preview raw SKILL.md"
+				>
 					<Eye className="h-3.5 w-3.5" />
 					<span className="hidden md:inline">Preview Raw SKILL.md</span>
 				</Button>
 				{isCreate ? (
 					<Popover open={versionPopover != null} onOpenChange={(open) => !open && closeVersionPopover()}>
 						<PopoverAnchor asChild>
-							<Button size="sm" data-testid="skill-create-save-btn" onClick={() => openVersionPopover(true)} disabled={isSaving} aria-label="Create skill">
+							<Button
+								size="sm"
+								data-testid="skill-create-save-btn"
+								onClick={() => openVersionPopover(true)}
+								disabled={isSaving}
+								aria-label="Create skill"
+							>
 								{isSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
 								<span className="hidden md:inline">{isSaving ? "Creating..." : "Create Skill"}</span>
 							</Button>
@@ -522,7 +534,13 @@ export function SkillEditView({
 						</Popover>
 						<Popover open={versionPopover?.serve === true} onOpenChange={(open) => !open && closeVersionPopover()}>
 							<PopoverAnchor asChild>
-								<Button size="sm" data-testid="skill-save-serve-btn" onClick={() => openVersionPopover(true)} disabled={isSaving} aria-label="Save and serve">
+								<Button
+									size="sm"
+									data-testid="skill-save-serve-btn"
+									onClick={() => openVersionPopover(true)}
+									disabled={isSaving}
+									aria-label="Save and serve"
+								>
 									{isSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
 									<span className="hidden md:inline">{isSaving ? "Saving..." : "Save & Serve"}</span>
 								</Button>

@@ -74,7 +74,7 @@ export function MCPFilterSidebar({ filters, onFiltersChange }: MCPFilterSidebarP
 				onClick={toggleCollapsed}
 				variant="outline"
 				size="sm"
-				className="group fixed top-2 right-4 z-30 flex h-8 w-8 shrink-0 flex-row items-center justify-center gap-0 rounded-md p-0 shadow-lg md:static md:h-full md:w-10 md:flex-col md:justify-start md:gap-3 md:rounded-r-md md:rounded-l-none md:border-0 md:bg-card md:py-4 md:shadow-none md:hover:bg-card md:hover:text-current md:active:scale-100 md:dark:bg-card md:dark:hover:bg-card"
+				className="group md:bg-card md:hover:bg-card md:dark:bg-card md:dark:hover:bg-card fixed top-2 right-4 z-30 flex h-8 w-8 shrink-0 flex-row items-center justify-center gap-0 rounded-md p-0 shadow-lg md:static md:h-full md:w-10 md:flex-col md:justify-start md:gap-3 md:rounded-l-none md:rounded-r-md md:border-0 md:py-4 md:shadow-none md:hover:text-current md:active:scale-100"
 				title="Show filters"
 				aria-label="Show filters"
 			>
@@ -82,7 +82,7 @@ export function MCPFilterSidebar({ filters, onFiltersChange }: MCPFilterSidebarP
 				<PanelLeftOpen className="text-muted-foreground group-hover:text-foreground hidden size-4 transition-colors md:block" />
 				<span className="hidden rotate-180 select-none [writing-mode:vertical-rl] md:block">Filters</span>
 				{activeFilterCount > 0 && (
-					<span className="bg-primary text-primary-foreground absolute -top-1 -right-1 flex size-5 items-center justify-center rounded-full text-[10px] font-medium md:static md:size-6 md:bg-primary/10 md:text-xs md:text-primary">
+					<span className="bg-primary text-primary-foreground md:bg-primary/10 md:text-primary absolute -top-1 -right-1 flex size-5 items-center justify-center rounded-full text-[10px] font-medium md:static md:size-6 md:text-xs">
 						{activeFilterCount}
 					</span>
 				)}
@@ -91,7 +91,7 @@ export function MCPFilterSidebar({ filters, onFiltersChange }: MCPFilterSidebarP
 	}
 
 	return (
-		<div className="bg-card fixed inset-y-2 left-2 z-40 flex h-auto w-[calc(100vw-1rem)] max-w-72 shrink-0 flex-col rounded-md border shadow-xl md:static md:h-full md:w-64 md:max-w-none md:rounded-r-md md:rounded-l-none md:border-0 md:shadow-none">
+		<div className="bg-card fixed inset-y-2 left-2 z-40 flex h-auto w-[calc(100vw-1rem)] max-w-72 shrink-0 flex-col rounded-md border shadow-xl md:static md:h-full md:w-64 md:max-w-none md:rounded-l-none md:rounded-r-md md:border-0 md:shadow-none">
 			{/* Header */}
 			<div className="flex h-11 items-center justify-between border-b pr-2 pl-5">
 				<span className="text-sm font-semibold">Filters</span>
