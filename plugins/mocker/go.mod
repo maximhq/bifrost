@@ -1,6 +1,6 @@
 module github.com/maximhq/bifrost/plugins/mocker
 
-go 1.26.5
+go 1.26.6
 
 require (
 	github.com/jaswdr/faker/v2 v2.8.0
@@ -45,7 +45,7 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/invopop/jsonschema v0.13.0 // indirect
-	github.com/klauspost/compress v1.18.6 // indirect
+	github.com/klauspost/compress v1.18.7 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/mailru/easyjson v0.9.1 // indirect
