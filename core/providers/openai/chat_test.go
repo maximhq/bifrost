@@ -265,6 +265,20 @@ func TestToOpenAIChatRequest_NormalizesReasoningEffort(t *testing.T) {
 			effort:   "max",
 			expected: "max",
 		},
+		{
+			name:     "preserves max for glm-5.3",
+			provider: schemas.ModelProvider("zai"),
+			model:    "glm-5.3",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "preserves max for provider-prefixed glm-5.3",
+			provider: schemas.ModelProvider("zai"),
+			model:    "zai/glm-5.3",
+			effort:   "max",
+			expected: "max",
+		},
 	}
 
 	for _, tt := range tests {
@@ -530,6 +544,18 @@ func TestOpenAIChatRequest_FilterOpenAISpecificParameters_NormalizesReasoningEff
 		{
 			name:     "preserves max for provider-prefixed glm-5.2",
 			model:    "zai/glm-5.2",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "preserves max for glm-5.3",
+			model:    "glm-5.3",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "preserves max for provider-prefixed glm-5.3",
+			model:    "zai/glm-5.3",
 			effort:   "max",
 			expected: "max",
 		},

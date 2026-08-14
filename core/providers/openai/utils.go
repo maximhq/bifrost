@@ -227,7 +227,7 @@ func supportsOpenAIMinimalReasoningEffort(model string) bool {
 	}
 }
 
-// supportsMaxReasoningEffort reports models that natively accept "max" effort (e.g. GPT-5.6, DeepSeek V4, GLM-5.2).
+// supportsMaxReasoningEffort reports models that natively accept "max" effort (e.g. GPT-5.6, DeepSeek V4, GLM-5.2+).
 func supportsMaxReasoningEffort(model string) bool {
 	_, parsedModel := schemas.ParseModelString(model, schemas.OpenAI)
 	if parsedModel != "" {
@@ -236,7 +236,8 @@ func supportsMaxReasoningEffort(model string) bool {
 	modelLower := strings.ToLower(model)
 	return strings.HasPrefix(modelLower, "gpt-5.6") ||
 		strings.HasPrefix(modelLower, "deepseek-v4") ||
-		strings.HasPrefix(modelLower, "glm-5.2")
+		strings.HasPrefix(modelLower, "glm-5.2") ||
+		strings.HasPrefix(modelLower, "glm-5.3")
 }
 
 // MaxUserFieldLength for OpenAI enforces a 64 character maximum on the user field

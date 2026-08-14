@@ -612,6 +612,21 @@ func TestToOpenAIResponsesRequest_NormalizesReasoningEffort(t *testing.T) {
 			effort:   "max",
 			expected: "max",
 		},
+		{
+			// GLM-5.3 (Z.ai) also natively supports "max" reasoning effort.
+			name:     "preserves max for glm-5.3",
+			provider: schemas.ModelProvider("zai"),
+			model:    "glm-5.3",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "preserves max for provider-prefixed glm-5.3",
+			provider: schemas.ModelProvider("zai"),
+			model:    "zai/glm-5.3",
+			effort:   "max",
+			expected: "max",
+		},
 	}
 
 	for _, tt := range tests {
