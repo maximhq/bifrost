@@ -136,6 +136,8 @@ tags:
     description: Model Context Protocol endpoints
   - name: Governance
     description: Virtual keys, teams, and customers management
+  - name: Routing
+    description: Routing rules and complexity analyzer configuration
   - name: Logging
     description: Log search and management endpoints
   - name: Cache
@@ -891,10 +893,6 @@ paths:
     $ref: "./paths/management/governance.yaml#/budgets"
   /api/governance/rate-limits:
     $ref: "./paths/management/governance.yaml#/rate-limits"
-  /api/governance/routing-rules:
-    $ref: "./paths/management/governance.yaml#/routing-rules"
-  /api/governance/routing-rules/{rule_id}:
-    $ref: "./paths/management/governance.yaml#/routing-rules-by-id"
 
   # Governance - Model Configs
   /api/governance/model-configs:
@@ -1083,11 +1081,25 @@ paths:
   /api/circuit-breaker/state:
     $ref: "./paths/management/circuitbreaker.yaml#/circuit-breaker-state"
 
-  # Governance - Complexity Analyzer Config
+  # Routing
+  /api/routing/rules:
+    $ref: "./paths/management/routing.yaml#/rules"
+  /api/routing/rules/{rule_id}:
+    $ref: "./paths/management/routing.yaml#/rules-by-id"
+  /api/routing/complexity-analyzer-config:
+    $ref: "./paths/management/routing.yaml#/complexity"
+  /api/routing/complexity-analyzer-config/reset:
+    $ref: "./paths/management/routing.yaml#/complexity-reset"
+
+  # Routing - deprecated paths, kept so existing clients keep working
+  /api/governance/routing-rules:
+    $ref: "./paths/management/routing.yaml#/rules-legacy"
+  /api/governance/routing-rules/{rule_id}:
+    $ref: "./paths/management/routing.yaml#/rules-by-id-legacy"
   /api/governance/complexity-analyzer-config:
-    $ref: "./paths/management/governance.yaml#/complexity"
+    $ref: "./paths/management/routing.yaml#/complexity-legacy"
   /api/governance/complexity-analyzer-config/reset:
-    $ref: "./paths/management/governance.yaml#/complexity-reset"
+    $ref: "./paths/management/routing.yaml#/complexity-reset-legacy"
 
   # Logging
   /api/logs:

@@ -1611,11 +1611,11 @@
                 "group": "Routing Rules",
                 "expanded": false,
                 "pages": [
-                  "GET /api/governance/routing-rules",
-                  "POST /api/governance/routing-rules",
-                  "GET /api/governance/routing-rules/{rule_id}",
-                  "PUT /api/governance/routing-rules/{rule_id}",
-                  "DELETE /api/governance/routing-rules/{rule_id}"
+                  "GET /api/routing/rules",
+                  "POST /api/routing/rules",
+                  "GET /api/routing/rules/{rule_id}",
+                  "PUT /api/routing/rules/{rule_id}",
+                  "DELETE /api/routing/rules/{rule_id}"
                 ]
               },
               {
@@ -1652,9 +1652,9 @@
                 "group": "Complexity Analyzer",
                 "expanded": false,
                 "pages": [
-                  "GET /api/governance/complexity-analyzer-config",
-                  "PUT /api/governance/complexity-analyzer-config",
-                  "POST /api/governance/complexity-analyzer-config/reset"
+                  "GET /api/routing/complexity-analyzer-config",
+                  "PUT /api/routing/complexity-analyzer-config",
+                  "POST /api/routing/complexity-analyzer-config/reset"
                 ]
               }
             ]
