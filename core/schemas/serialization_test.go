@@ -1131,6 +1131,14 @@ func TestNetworkConfig_TLSFieldsRoundTrip(t *testing.T) {
 	assert.Contains(t, string(data), `"ca_cert_pem"`)
 }
 
+func TestNetworkConfig_BaseURLFromEnv(t *testing.T) {
+	t.Setenv("BIFROST_TEST_BASE_URL", "https://gateway.example.com/v1")
+
+	var config NetworkConfig
+	require.NoError(t, json.Unmarshal([]byte(`{"base_url":"env.BIFROST_TEST_BASE_URL"}`), &config))
+	assert.Equal(t, "https://gateway.example.com/v1", config.BaseURL)
+}
+
 // TestNetworkConfig_StreamIdleTimeoutRoundTrip verifies that stream_idle_timeout_in_seconds
 // round-trips correctly through JSON marshaling.
 func TestNetworkConfig_StreamIdleTimeoutRoundTrip(t *testing.T) {
