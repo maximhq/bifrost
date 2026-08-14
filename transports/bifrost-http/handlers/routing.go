@@ -27,6 +27,13 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// ErrRoutingPluginUnavailable marks a RoutingManager call that failed because the routing
+// plugin could not be reached at all, rather than because the caller's payload was bad.
+// Implementations must wrap it so handlers can tell the two apart: the payload-rejection
+// case is the client's to fix and answers 400, while an unreachable plugin is a server
+// misconfiguration that would otherwise be reported as an invalid configuration.
+var ErrRoutingPluginUnavailable = errors.New("routing plugin unavailable")
+
 // RoutingManager applies routing-rule and complexity-analyzer edits to the running plugin.
 // Writes land in the config store first; these calls refresh the in-memory state that
 // request evaluation reads, so an edit takes effect without a restart.
@@ -34,6 +41,14 @@ type RoutingManager interface {
 	ReloadRoutingRule(ctx context.Context, id string) error
 	RemoveRoutingRule(ctx context.Context, id string) error
 	ReloadComplexityAnalyzerConfig(ctx context.Context, config *complexity.AnalyzerConfig) error
+	// ValidateComplexityAnalyzerConfig checks runtime dependencies that static
+	// JSON validation cannot prove, such as an external VectorStore being
+	// configured for semantic.vector_store "vector_store" mode.
+	ValidateComplexityAnalyzerConfig(ctx context.Context, config *complexity.AnalyzerConfig) error
+	// GetComplexitySemanticStatus returns the non-persisted readiness of
+	// semantic complexity routing so configuration clients can distinguish
+	// saved from ready.
+	GetComplexitySemanticStatus(ctx context.Context) (complexity.SemanticStatusInfo, error)
 }
 
 // RoutingHandler manages HTTP requests for routing rules and complexity analyzer config.
@@ -82,6 +97,8 @@ func (h *RoutingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 	register(fasthttp.MethodGet, "/api/routing/complexity-analyzer-config", "/api/governance/complexity-analyzer-config", h.getComplexityAnalyzerConfig)
 	register(fasthttp.MethodPut, "/api/routing/complexity-analyzer-config", "/api/governance/complexity-analyzer-config", h.updateComplexityAnalyzerConfig)
 	register(fasthttp.MethodPost, "/api/routing/complexity-analyzer-config/reset", "/api/governance/complexity-analyzer-config/reset", h.resetComplexityAnalyzerConfig)
+	// Status never shipped under /api/governance, so it has no legacy alias.
+	r.Handle(fasthttp.MethodGet, "/api/routing/complexity-analyzer-status", lib.ChainMiddlewares(h.getComplexitySemanticStatus, middlewares...))
 }
 
 // RoutingTarget represents a single weighted routing target within a rule.
@@ -307,6 +324,17 @@ func (h *RoutingHandler) updateComplexityAnalyzerConfig(ctx *fasthttp.RequestCtx
 		return
 	}
 
+	if err := h.routingManager.ValidateComplexityAnalyzerConfig(ctx, normalized); err != nil {
+		// An unreachable routing plugin says nothing about the submitted config, so it
+		// must not be reported as a rejected payload the operator could fix by editing.
+		if errors.Is(err, ErrRoutingPluginUnavailable) {
+			SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
+			return
+		}
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
 	if err := h.configStore.UpdateComplexityAnalyzerConfig(ctx, normalized); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update complexity analyzer config: %v", err))
 		return
@@ -357,6 +385,17 @@ func (h *RoutingHandler) resetComplexityAnalyzerConfig(ctx *fasthttp.RequestCtx)
 
 func (h *RoutingHandler) reloadComplexityAnalyzerConfig(ctx context.Context, config *complexity.AnalyzerConfig) error {
 	return h.routingManager.ReloadComplexityAnalyzerConfig(ctx, config)
+}
+
+// getComplexitySemanticStatus returns the non-persisted readiness of semantic
+// complexity routing so configuration clients can distinguish saved from ready.
+func (h *RoutingHandler) getComplexitySemanticStatus(ctx *fasthttp.RequestCtx) {
+	status, err := h.routingManager.GetComplexitySemanticStatus(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, fmt.Sprintf("failed to get semantic complexity status: %v", err))
+		return
+	}
+	SendJSON(ctx, status)
 }
 
 // getRoutingRules retrieves all routing rules with optional filtering from database
