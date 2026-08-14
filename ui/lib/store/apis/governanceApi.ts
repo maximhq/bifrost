@@ -140,7 +140,7 @@ export const governanceApi = baseApi.injectEndpoints({
 				method: "PUT",
 				body: data,
 			}),
-			invalidatesTags: ["VirtualKeys", "Budgets", "ModelConfigs"],
+			invalidatesTags: ["VirtualKeys", "预算", "ModelConfigs"],
 		}),
 
 		removeVirtualKeyBudgetOverride: builder.mutation<BudgetOverrideResponse, { vkId: string; budgetId: string }>({
@@ -148,7 +148,7 @@ export const governanceApi = baseApi.injectEndpoints({
 				url: `/governance/virtual-keys/${encodeURIComponent(vkId)}/budgets/${encodeURIComponent(budgetId)}/override`,
 				method: "DELETE",
 			}),
-			invalidatesTags: ["VirtualKeys", "Budgets", "ModelConfigs"],
+			invalidatesTags: ["VirtualKeys", "预算", "ModelConfigs"],
 		}),
 
 		// Teams
@@ -162,12 +162,12 @@ export const governanceApi = baseApi.injectEndpoints({
 					...(params?.customer_id && { customer_id: params.customer_id }),
 				},
 			}),
-			providesTags: ["Teams"],
+			providesTags: ["团队"],
 		}),
 
 		getTeam: builder.query<{ team: Team }, string>({
 			query: (teamId) => `/governance/teams/${encodeURIComponent(teamId)}`,
-			providesTags: (result, error, teamId) => [{ type: "Teams", id: teamId }],
+			providesTags: (result, error, teamId) => [{ type: "团队", id: teamId }],
 		}),
 
 		createTeam: builder.mutation<{ message: string; team: Team }, CreateTeamRequest>({
@@ -271,12 +271,12 @@ export const governanceApi = baseApi.injectEndpoints({
 					...(params?.search && { search: params.search }),
 				},
 			}),
-			providesTags: ["Customers"],
+			providesTags: ["客户"],
 		}),
 
 		getCustomer: builder.query<{ customer: Customer }, string>({
 			query: (customerId) => `/governance/customers/${customerId}`,
-			providesTags: (result, error, customerId) => [{ type: "Customers", id: customerId }],
+			providesTags: (result, error, customerId) => [{ type: "客户", id: customerId }],
 		}),
 
 		createCustomer: builder.mutation<{ message: string; customer: Customer }, CreateCustomerRequest>({
@@ -373,12 +373,12 @@ export const governanceApi = baseApi.injectEndpoints({
 		// Budgets
 		getBudgets: builder.query<GetBudgetsResponse, void>({
 			query: () => "/governance/budgets",
-			providesTags: ["Budgets"],
+			providesTags: ["预算"],
 		}),
 
 		getBudget: builder.query<{ budget: Budget }, string>({
 			query: (budgetId) => `/governance/budgets/${budgetId}`,
-			providesTags: (result, error, budgetId) => [{ type: "Budgets", id: budgetId }],
+			providesTags: (result, error, budgetId) => [{ type: "预算", id: budgetId }],
 		}),
 
 		updateBudget: builder.mutation<{ message: string; budget: Budget }, { budgetId: string; data: UpdateBudgetRequest }>({
@@ -549,9 +549,9 @@ export const governanceApi = baseApi.injectEndpoints({
 				body: data,
 			}),
 			// Wildcard model configs back provider/VK/user governance; refresh those pages too.
-			// "Users" + "UserGovernance" are no-op tags in OSS builds (no consumer registers them);
+			// "用户" + "UserGovernance" are no-op tags in OSS builds (no consumer registers them);
 			// enterprise consumers pick them up via the userGovernanceApi / usersApi tag wiring.
-			invalidatesTags: ["ProviderGovernance", "VirtualKeys", "Users", "UserGovernance"],
+			invalidatesTags: ["ProviderGovernance", "VirtualKeys", "用户", "UserGovernance"],
 			async onQueryStarted(arg, { dispatch, getState, queryFulfilled }) {
 				try {
 					const { data } = await queryFulfilled;
@@ -586,9 +586,9 @@ export const governanceApi = baseApi.injectEndpoints({
 				body: data,
 			}),
 			// Wildcard model configs back provider/VK/user governance; refresh those pages too.
-			// "Users" + "UserGovernance" are no-op tags in OSS builds (no consumer registers them);
+			// "用户" + "UserGovernance" are no-op tags in OSS builds (no consumer registers them);
 			// enterprise consumers pick them up via the userGovernanceApi / usersApi tag wiring.
-			invalidatesTags: ["ProviderGovernance", "VirtualKeys", "Users", "UserGovernance"],
+			invalidatesTags: ["ProviderGovernance", "VirtualKeys", "用户", "UserGovernance"],
 			async onQueryStarted({ id }, { dispatch, getState, queryFulfilled }) {
 				try {
 					const { data } = await queryFulfilled;
@@ -622,9 +622,9 @@ export const governanceApi = baseApi.injectEndpoints({
 				method: "DELETE",
 			}),
 			// Wildcard model configs back provider/VK/user governance; refresh those pages too.
-			// "Users" + "UserGovernance" are no-op tags in OSS builds (no consumer registers them);
+			// "用户" + "UserGovernance" are no-op tags in OSS builds (no consumer registers them);
 			// enterprise consumers pick them up via the userGovernanceApi / usersApi tag wiring.
-			invalidatesTags: ["ProviderGovernance", "VirtualKeys", "Users", "UserGovernance"],
+			invalidatesTags: ["ProviderGovernance", "VirtualKeys", "用户", "UserGovernance"],
 			async onQueryStarted(id, { dispatch, getState, queryFulfilled }) {
 				try {
 					await queryFulfilled;

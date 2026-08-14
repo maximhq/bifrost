@@ -142,7 +142,7 @@ export const logsApi = baseApi.injectEndpoints({
 					...buildFilterParams(filters),
 				},
 			}),
-			providesTags: ["Logs"],
+			providesTags: ["日志"],
 		}),
 
 		getLogSessionById: builder.query<
@@ -160,14 +160,14 @@ export const logsApi = baseApi.injectEndpoints({
 					order: pagination.order,
 				},
 			}),
-			providesTags: ["Logs"],
+			providesTags: ["日志"],
 		}),
 
 		getLogSessionSummaryById: builder.query<LogSessionSummaryResponse, string>({
 			query: (sessionId) => ({
 				url: `/logs/sessions/${encodeURIComponent(sessionId)}/summary`,
 			}),
-			providesTags: ["Logs"],
+			providesTags: ["日志"],
 		}),
 
 		// Get logs statistics with filters
@@ -181,7 +181,7 @@ export const logsApi = baseApi.injectEndpoints({
 				url: "/logs/stats",
 				params: buildFilterParams(filters),
 			}),
-			providesTags: ["Logs"],
+			providesTags: ["日志"],
 		}),
 
 		// Get logs histogram with filters
@@ -195,7 +195,7 @@ export const logsApi = baseApi.injectEndpoints({
 				url: "/logs/histogram",
 				params: buildFilterParams(filters),
 			}),
-			providesTags: ["Logs"],
+			providesTags: ["日志"],
 		}),
 
 		// Get token usage histogram with filters
@@ -209,7 +209,7 @@ export const logsApi = baseApi.injectEndpoints({
 				url: "/logs/histogram/tokens",
 				params: buildFilterParams(filters),
 			}),
-			providesTags: ["Logs"],
+			providesTags: ["日志"],
 		}),
 
 		// Get cost histogram with filters and model breakdown
@@ -223,7 +223,7 @@ export const logsApi = baseApi.injectEndpoints({
 				url: "/logs/histogram/cost",
 				params: buildFilterParams(filters),
 			}),
-			providesTags: ["Logs"],
+			providesTags: ["日志"],
 		}),
 
 		// Get model usage histogram with filters
@@ -237,7 +237,7 @@ export const logsApi = baseApi.injectEndpoints({
 				url: "/logs/histogram/models",
 				params: buildFilterParams(filters),
 			}),
-			providesTags: ["Logs"],
+			providesTags: ["日志"],
 		}),
 
 		// Get latency histogram with percentiles
@@ -251,7 +251,7 @@ export const logsApi = baseApi.injectEndpoints({
 				url: "/logs/histogram/latency",
 				params: buildFilterParams(filters),
 			}),
-			providesTags: ["Logs"],
+			providesTags: ["日志"],
 		}),
 
 		// Get throughput (tokens/sec) histogram
@@ -265,7 +265,7 @@ export const logsApi = baseApi.injectEndpoints({
 				url: "/logs/histogram/throughput",
 				params: buildFilterParams(filters),
 			}),
-			providesTags: ["Logs"],
+			providesTags: ["日志"],
 		}),
 
 		// Get provider throughput (tokens/sec) histogram with provider breakdown
@@ -279,7 +279,7 @@ export const logsApi = baseApi.injectEndpoints({
 				url: "/logs/histogram/throughput/by-provider",
 				params: buildFilterParams(filters),
 			}),
-			providesTags: ["Logs"],
+			providesTags: ["日志"],
 		}),
 
 		// Get provider cost histogram with provider breakdown
@@ -293,7 +293,7 @@ export const logsApi = baseApi.injectEndpoints({
 				url: "/logs/histogram/cost/by-provider",
 				params: buildFilterParams(filters),
 			}),
-			providesTags: ["Logs"],
+			providesTags: ["日志"],
 		}),
 
 		// Get provider token histogram with provider breakdown
@@ -307,7 +307,7 @@ export const logsApi = baseApi.injectEndpoints({
 				url: "/logs/histogram/tokens/by-provider",
 				params: buildFilterParams(filters),
 			}),
-			providesTags: ["Logs"],
+			providesTags: ["日志"],
 		}),
 
 		// Get provider latency histogram with provider breakdown
@@ -321,7 +321,7 @@ export const logsApi = baseApi.injectEndpoints({
 				url: "/logs/histogram/latency/by-provider",
 				params: buildFilterParams(filters),
 			}),
-			providesTags: ["Logs"],
+			providesTags: ["日志"],
 		}),
 
 		// Get model rankings with trends.
@@ -339,7 +339,7 @@ export const logsApi = baseApi.injectEndpoints({
 				url: "/logs/rankings",
 				params: { ...buildFilterParams(filters), ...buildRankingLimitParams(limit, all) },
 			}),
-			providesTags: ["Logs"],
+			providesTags: ["日志"],
 		}),
 
 		getDimensionRankings: builder.query<
@@ -355,13 +355,13 @@ export const logsApi = baseApi.injectEndpoints({
 				url: "/logs/rankings/by-dimension",
 				params: { ...buildFilterParams(filters), dimension, ...buildRankingLimitParams(limit, all) },
 			}),
-			providesTags: ["Logs"],
+			providesTags: ["日志"],
 		}),
 
 		// Get dropped requests count
 		getDroppedRequests: builder.query<{ dropped_requests: number }, void>({
 			query: () => "/logs/dropped",
-			providesTags: ["Logs"],
+			providesTags: ["日志"],
 		}),
 
 		// Get available filter data. Pass `dimensions` to fetch only a subset of
@@ -400,7 +400,7 @@ export const logsApi = baseApi.injectEndpoints({
 				const qs = params.toString();
 				return qs ? `/logs/filterdata?${qs}` : "/logs/filterdata";
 			},
-			providesTags: ["Logs"],
+			providesTags: ["日志"],
 		}),
 
 		// Delete logs by their IDs
@@ -410,7 +410,7 @@ export const logsApi = baseApi.injectEndpoints({
 				method: "DELETE",
 				body: { ids },
 			}),
-			invalidatesTags: ["Logs"],
+			invalidatesTags: ["日志"],
 		}),
 
 		recalculateLogCosts: builder.mutation<RecalculateCostResponse, { filters: LogFilters; limit?: number }>({
@@ -419,7 +419,7 @@ export const logsApi = baseApi.injectEndpoints({
 				method: "POST",
 				body: { filters, limit },
 			}),
-			invalidatesTags: ["Logs"],
+			invalidatesTags: ["日志"],
 		}),
 
 		// Status of a background cost-recalculation job. Intended to be polled with a
@@ -443,13 +443,13 @@ export const logsApi = baseApi.injectEndpoints({
 			// A cancelled job still committed costs for every row it got through, so
 			// every Logs-tagged query (stats, histograms, filter data) is stale — same
 			// as for the start mutation above.
-			invalidatesTags: ["Logs"],
+			invalidatesTags: ["日志"],
 		}),
 
 		// Get a single log entry by ID (includes raw_request and raw_response)
 		getLogById: builder.query<LogEntry, string>({
 			query: (id) => `/logs/${encodeURIComponent(id)}`,
-			providesTags: (result, error, id) => [{ type: "Logs", id }],
+			providesTags: (result, error, id) => [{ type: "日志", id }],
 		}),
 	}),
 });

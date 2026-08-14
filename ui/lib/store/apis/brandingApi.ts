@@ -46,7 +46,7 @@ export const brandingApi = baseApi.injectEndpoints({
 			query: () => ({
 				url: "/branding",
 			}),
-			providesTags: ["Branding"],
+			providesTags: ["品牌"],
 		}),
 
 		updateBranding: builder.mutation<BrandingState, BrandingPayload>({
@@ -55,7 +55,7 @@ export const brandingApi = baseApi.injectEndpoints({
 				method: "PUT",
 				body: data,
 			}),
-			invalidatesTags: ["Branding"],
+			invalidatesTags: ["品牌"],
 		}),
 
 		// Clears branding and restores the default Bifrost logo and icon.
@@ -64,7 +64,7 @@ export const brandingApi = baseApi.injectEndpoints({
 				url: "/branding",
 				method: "DELETE",
 			}),
-			invalidatesTags: ["Branding"],
+			invalidatesTags: ["品牌"],
 		}),
 	}),
 });

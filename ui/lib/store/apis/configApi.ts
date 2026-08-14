@@ -56,7 +56,7 @@ export const configApi = baseApi.injectEndpoints({
 				url: "/config",
 				params: { from_db: fromDB },
 			}),
-			providesTags: ["Config"],
+			providesTags: ["配置"],
 		}),
 
 		// Get version information
@@ -119,7 +119,7 @@ export const configApi = baseApi.injectEndpoints({
 				method: "PUT",
 				body: data,
 			}),
-			invalidatesTags: ["Config"],
+			invalidatesTags: ["配置"],
 		}),
 
 		// Update proxy configuration
@@ -129,7 +129,7 @@ export const configApi = baseApi.injectEndpoints({
 				method: "PUT",
 				body: data,
 			}),
-			invalidatesTags: ["Config"],
+			invalidatesTags: ["配置"],
 		}),
 
 		// Force a pricing sync immediately
@@ -138,7 +138,7 @@ export const configApi = baseApi.injectEndpoints({
 				url: "/pricing/force-sync",
 				method: "POST",
 			}),
-			invalidatesTags: ["Config"],
+			invalidatesTags: ["配置"],
 		}),
 
 		// Merge-patch the ClientConfig.metadata UI/admin preferences blob.

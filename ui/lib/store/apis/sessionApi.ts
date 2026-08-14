@@ -69,7 +69,7 @@ export const sessionApi = baseApi.injectEndpoints({
 					dispatch(baseApi.util.resetApiState());
 				}
 			},
-			invalidatesTags: ["Sessions", "Config", "Providers", "Logs", "VirtualKeys", "Teams", "Customers", "Budgets", "RateLimits"],
+			invalidatesTags: ["Sessions", "配置", "提供商", "日志", "VirtualKeys", "团队", "客户", "预算", "RateLimits"],
 		}),
 	}),
 });

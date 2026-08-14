@@ -164,7 +164,7 @@ export interface ClientApp {
 
 // userAgentAppMatchers maps User-Agent substrings to a client app. The DB stores
 // the raw User-Agent verbatim and this is the single place the UI maps it to an
-// app for the logs table, the "App" filter, and metrics breakdowns.
+// app for the logs table, the "应用" filter, and metrics breakdowns.
 //
 // Matching is case-insensitive substring matching against the lowercased UA, and
 // is evaluated top-to-bottom: list more specific identifiers first (e.g. a Roo
@@ -193,17 +193,17 @@ const appByName = new Map(userAgentAppMatchers.map((matcher) => [matcher.app.nam
 
 export const mapAppToClientApp = (app?: string | null): ClientApp => {
 	if (!app || app.trim() === "") {
-		return { name: "Unknown" };
+		return { name: "未知" };
 	}
 	return appByName.get(app) || { name: app };
 };
 
 // mapUserAgentToApp resolves a raw User-Agent string to a client app for display.
-// Returns { name: "Unknown" } for an empty/absent UA and { name: "Other" } for a
+// Returns { name: "未知" } for an empty/absent UA and { name: "其他" } for a
 // UA that matches no known client (so it can still be grouped and filtered).
 export const mapUserAgentToApp = (userAgent?: string | null): ClientApp => {
 	if (!userAgent || userAgent.trim() === "") {
-		return { name: "Unknown" };
+		return { name: "未知" };
 	}
 	const ua = userAgent.toLowerCase();
 	for (const matcher of userAgentAppMatchers) {
@@ -211,11 +211,11 @@ export const mapUserAgentToApp = (userAgent?: string | null): ClientApp => {
 			return matcher.app;
 		}
 	}
-	return { name: "Other" };
+	return { name: "其他" };
 };
 
 export const logAppDisplayName = (app: ClientApp, userAgent?: string | null): string => {
-	if ((app.name === "Unknown" || app.name === "Other") && userAgent?.trim()) {
+	if ((app.name === "未知" || app.name === "其他") && userAgent?.trim()) {
 		return userAgent.trim();
 	}
 	return app.name;
@@ -237,55 +237,55 @@ export const StatusBarColors = {
 
 export const RequestTypeLabels = {
 	"chat.completion": "Chat",
-	response: "Responses",
-	"response.completion.chunk": "Responses Stream",
+	response: "响应",
+	"response.completion.chunk": "响应流",
 	completion: "Completion",
 	"text.completion": "Text",
 	list: "List",
-	"audio.speech": "Speech",
-	"audio.transcription": "Transcription",
+	"audio.speech": "语音",
+	"audio.transcription": "转录",
 	"chat.completion.chunk": "Chat Stream",
-	"audio.speech.chunk": "Speech Stream",
-	"audio.transcription.chunk": "Transcription Stream",
+	"audio.speech.chunk": "语音流",
+	"audio.transcription.chunk": "转录流",
 
 	// Request Types
-	list_models: "List Models",
+	list_models: "模型列表",
 	text_completion: "Text",
 	text_completion_stream: "Text Stream",
 	chat_completion: "Chat",
 	chat_completion_stream: "Chat Stream",
-	responses: "Responses",
-	responses_stream: "Responses Stream",
-	responses_retrieve: "Responses Retrieve",
+	responses: "响应",
+	responses_stream: "响应流",
+	responses_retrieve: "响应检索",
 	responses_retrieve_stream: "Responses Retrieve Stream",
-	responses_delete: "Responses Delete",
-	responses_cancel: "Responses Cancel",
-	responses_input_items: "Responses Input Items",
+	responses_delete: "响应删除",
+	responses_cancel: "响应取消",
+	responses_input_items: "响应输入项",
 
 	embedding: "Embedding",
-	rerank: "Rerank",
+	rerank: "重排序",
 
-	speech: "Speech",
-	speech_stream: "Speech Stream",
+	speech: "语音",
+	speech_stream: "语音流",
 
-	transcription: "Transcription",
-	transcription_stream: "Transcription Stream",
+	transcription: "转录",
+	transcription_stream: "转录流",
 
-	image_generation: "Image Generation",
-	image_generation_stream: "Image Generation Stream",
-	image_edit: "Image Edit",
-	image_edit_stream: "Image Edit Stream",
-	image_variation: "Image Variation",
+	image_generation: "图像生成",
+	image_generation_stream: "图像生成流",
+	image_edit: "图像编辑",
+	image_edit_stream: "图像编辑流",
+	image_variation: "图像变体",
 	ocr: "OCR",
 	ocr_stream: "OCR Stream",
-	video_generation: "Video Generation",
+	video_generation: "视频生成",
 	video_retrieve: "Video Retrieve",
 	video_download: "Video Download",
 	video_delete: "Video Delete",
 	video_list: "Video List",
 	video_remix: "Video Remix",
-	count_tokens: "Count Tokens",
-	compaction: "Compaction",
+	count_tokens: "统计 Token",
+	compaction: "压缩",
 
 	batch_create: "Batch Create",
 	batch_list: "Batch List",
@@ -411,10 +411,10 @@ export const RequestTypeColors = {
 } as const;
 
 export const RoutingEngineUsedLabels = {
-	"routing-rule": "Routing Rule",
-	governance: "Governance",
+	"routing-rule": "路由规则",
+	governance: "治理",
 	loadbalancing: "Loadbalancing",
-	"model-catalog": "Model Catalog",
+	"model-catalog": "模型目录",
 	core: "Core",
 } as const;
 

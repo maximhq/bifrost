@@ -154,7 +154,7 @@ const DEFAULT_MODEL_PARAMETERS: ModelDatasheetResponse = {
 	model_parameters: [
 		{
 			id: "temperature",
-			label: "Temperature",
+			label: "温度",
 			helpText:
 				"What sampling temperature to use, between 0 and 2. Higher values like 0.8 will make the output more random, while lower values like 0.2 will make it more focused and deterministic.",
 			type: "number",
@@ -162,14 +162,14 @@ const DEFAULT_MODEL_PARAMETERS: ModelDatasheetResponse = {
 		},
 		{
 			id: "max_tokens",
-			label: "Max Tokens",
+			label: "最大 Token 数",
 			helpText: "The maximum number of tokens that can be generated in the Result.",
 			type: "number",
 			range: { min: 1, max: 8192, step: 1 },
 		},
 		{
 			id: "stream",
-			label: "Stream",
+			label: "流式",
 			helpText:
 				"The stream parameter in the API controls whether the response is sent in incremental updates, like tokenized data as it's generated, or as a complete result in one go.",
 			type: "boolean",
@@ -183,13 +183,13 @@ export const providersApi = baseApi.injectEndpoints({
 		getProviders: builder.query<ModelProvider[], void>({
 			query: () => "/providers",
 			transformResponse: (response: ListProvidersResponse): ModelProvider[] => (response.providers ?? []).sort(sortProviders),
-			providesTags: ["Providers"],
+			providesTags: ["提供商"],
 		}),
 
 		// Get single provider
 		getProvider: builder.query<ModelProvider, string>({
 			query: (provider) => `/providers/${encodeURIComponent(provider)}`,
-			providesTags: (result, error, provider) => [{ type: "Providers", id: provider }],
+			providesTags: (result, error, provider) => [{ type: "提供商", id: provider }],
 		}),
 
 		getProviderKeys: builder.query<ModelProviderKey[], string>({
@@ -392,7 +392,7 @@ export const providersApi = baseApi.injectEndpoints({
 			// routing-rule, pricing-override and virtual-key pickers keep showing
 			// the pre-refresh models, since a query only refetches on a tag it
 			// provides itself.
-			invalidatesTags: ["Models", "DBKeys"],
+			invalidatesTags: ["模型", "DBKeys"],
 			async onQueryStarted(provider, { dispatch, queryFulfilled }) {
 				try {
 					const { data: refreshedKeys } = await queryFulfilled;
@@ -408,8 +408,8 @@ export const providersApi = baseApi.injectEndpoints({
 				method: "POST",
 			}),
 			// See refreshProviderModels above for why "DBKeys" is invalidated
-			// alongside "Models".
-			invalidatesTags: ["Models", "DBKeys"],
+			// alongside "模型".
+			invalidatesTags: ["模型", "DBKeys"],
 			async onQueryStarted({ provider, keyId }, { dispatch, queryFulfilled }) {
 				try {
 					const { data: refreshedKey } = await queryFulfilled;
@@ -446,7 +446,7 @@ export const providersApi = baseApi.injectEndpoints({
 				if (unfiltered !== undefined) params.append("unfiltered", unfiltered.toString());
 				return `/models?${params.toString()}`;
 			},
-			providesTags: ["Models"],
+			providesTags: ["模型"],
 		}),
 
 		// Get distinct base model names from the catalog
@@ -501,7 +501,7 @@ export const providersApi = baseApi.injectEndpoints({
 				const qs = params.toString();
 				return `/models/details${qs ? `?${qs}` : ""}`;
 			},
-			providesTags: ["Models"],
+			providesTags: ["模型"],
 		}),
 
 		// Batch upsert additional_attributes on existing pricing rows. The
@@ -514,7 +514,7 @@ export const providersApi = baseApi.injectEndpoints({
 				method: "PUT",
 				body: entries,
 			}),
-			invalidatesTags: ["Models"],
+			invalidatesTags: ["模型"],
 		}),
 	}),
 });

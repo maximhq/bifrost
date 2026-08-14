@@ -135,19 +135,19 @@ export const promptsApi = baseApi.injectEndpoints({
 				url: `/prompt-repo/prompts/${id}`,
 				method: "DELETE",
 			}),
-			invalidatesTags: (result, error, id) => ["Prompts", { type: "Prompts", id }, "Folders", "Versions", "Sessions"],
+			invalidatesTags: (result, error, id) => ["Prompts", { type: "Prompts", id }, "Folders", "版本", "Sessions"],
 		}),
 
 		// Get all versions for a prompt
 		getVersions: builder.query<GetVersionsResponse, string>({
 			query: (promptId) => `/prompt-repo/prompts/${promptId}/versions`,
-			providesTags: (result, error, promptId) => [{ type: "Versions", id: promptId }],
+			providesTags: (result, error, promptId) => [{ type: "版本", id: promptId }],
 		}),
 
 		// Get single version
 		getPromptVersion: builder.query<GetVersionResponse, number>({
 			query: (id) => `/prompt-repo/versions/${id}`,
-			providesTags: (result, error, id) => [{ type: "Versions", id }],
+			providesTags: (result, error, id) => [{ type: "版本", id }],
 		}),
 
 		// Create version
@@ -157,7 +157,7 @@ export const promptsApi = baseApi.injectEndpoints({
 				method: "POST",
 				body: data,
 			}),
-			invalidatesTags: (result, error, { promptId }) => ["Prompts", { type: "Prompts", id: promptId }, { type: "Versions", id: promptId }],
+			invalidatesTags: (result, error, { promptId }) => ["Prompts", { type: "Prompts", id: promptId }, { type: "版本", id: promptId }],
 		}),
 
 		// Delete version
@@ -169,8 +169,8 @@ export const promptsApi = baseApi.injectEndpoints({
 			invalidatesTags: (result, error, { id, promptId }) => [
 				"Prompts",
 				{ type: "Prompts", id: promptId },
-				{ type: "Versions", id: promptId },
-				{ type: "Versions", id },
+				{ type: "版本", id: promptId },
+				{ type: "版本", id },
 			],
 		}),
 
@@ -241,7 +241,7 @@ export const promptsApi = baseApi.injectEndpoints({
 				method: "POST",
 				body: data,
 			}),
-			invalidatesTags: (result, error, { promptId }) => ["Prompts", { type: "Prompts", id: promptId }, { type: "Versions", id: promptId }],
+			invalidatesTags: (result, error, { promptId }) => ["Prompts", { type: "Prompts", id: promptId }, { type: "版本", id: promptId }],
 		}),
 	}),
 });

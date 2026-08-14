@@ -32,7 +32,7 @@ export const skillsApi = baseApi.injectEndpoints({
 				const qs = searchParams.toString();
 				return `/skills${qs ? `?${qs}` : ""}`;
 			},
-			providesTags: ["Skills"],
+			providesTags: ["技能"],
 		}),
 
 		// Get single skill by ID (optionally at a specific version)
@@ -44,7 +44,7 @@ export const skillsApi = baseApi.injectEndpoints({
 			},
 			providesTags: (_result, _error, arg) => {
 				const id = typeof arg === "string" ? arg : arg.id;
-				return [{ type: "Skills", id }];
+				return [{ type: "技能", id }];
 			},
 		}),
 
@@ -55,7 +55,7 @@ export const skillsApi = baseApi.injectEndpoints({
 				method: "POST",
 				body: data,
 			}),
-			invalidatesTags: ["Skills"],
+			invalidatesTags: ["技能"],
 		}),
 
 		// Update an existing skill (creates a new version)
@@ -65,7 +65,7 @@ export const skillsApi = baseApi.injectEndpoints({
 				method: "PUT",
 				body: data,
 			}),
-			invalidatesTags: (_result, _error, { id }) => ["Skills", { type: "Skills", id }],
+			invalidatesTags: (_result, _error, { id }) => ["技能", { type: "技能", id }],
 		}),
 
 		// Delete a skill
@@ -74,7 +74,7 @@ export const skillsApi = baseApi.injectEndpoints({
 				url: `/skills/${id}`,
 				method: "DELETE",
 			}),
-			invalidatesTags: (_result, _error, id) => ["Skills", { type: "Skills", id }],
+			invalidatesTags: (_result, _error, id) => ["技能", { type: "技能", id }],
 		}),
 
 		// List versions for a skill (paginated)
@@ -92,7 +92,7 @@ export const skillsApi = baseApi.injectEndpoints({
 				const qs = searchParams.toString();
 				return `/skills/${id}/versions${qs ? `?${qs}` : ""}`;
 			},
-			providesTags: (_result, _error, { id }) => [{ type: "Skills", id: `${id}-versions` }],
+			providesTags: (_result, _error, { id }) => [{ type: "技能", id: `${id}-versions` }],
 		}),
 
 		// Shift a skill to serve a specific version
@@ -102,13 +102,13 @@ export const skillsApi = baseApi.injectEndpoints({
 				method: "POST",
 				body: { version },
 			}),
-			invalidatesTags: (_result, _error, { id }) => ["Skills", { type: "Skills", id }, { type: "Skills", id: `${id}-versions` }],
+			invalidatesTags: (_result, _error, { id }) => ["技能", { type: "技能", id }, { type: "技能", id: `${id}-versions` }],
 		}),
 
 		// Current all-skills repository version
 		getAllSkillsVersion: builder.query<AllSkillsVersionResponse, void>({
 			query: () => "/skills/all/version",
-			providesTags: [{ type: "Skills", id: "all-version" }],
+			providesTags: [{ type: "技能", id: "all-version" }],
 		}),
 
 		// Manually bump the all-skills repository version
@@ -118,7 +118,7 @@ export const skillsApi = baseApi.injectEndpoints({
 				method: "PUT",
 				body: data,
 			}),
-			invalidatesTags: [{ type: "Skills", id: "all-version" }],
+			invalidatesTags: [{ type: "技能", id: "all-version" }],
 		}),
 
 		// Upload a skill file

@@ -6,7 +6,7 @@ export const pluginsApi = baseApi.injectEndpoints({
 		// Get builtin plugin names
 		getBuiltinPlugins: builder.query<string[], void>({
 			query: () => "/plugins/builtins",
-			providesTags: ["Plugins"],
+			providesTags: ["插件"],
 			transformResponse: (response: { plugins: string[] }) => response.plugins || [],
 		}),
 
@@ -15,21 +15,21 @@ export const pluginsApi = baseApi.injectEndpoints({
 		// lists every plugin that actually emits spans, including enterprise plugins.
 		getLoadedPlugins: builder.query<string[], void>({
 			query: () => "/plugins/loaded",
-			providesTags: ["Plugins"],
+			providesTags: ["插件"],
 			transformResponse: (response: { plugins: string[] }) => response.plugins || [],
 		}),
 
 		// Get all plugins
 		getPlugins: builder.query<Plugin[], void>({
 			query: () => "/plugins",
-			providesTags: ["Plugins"],
+			providesTags: ["插件"],
 			transformResponse: (response: PluginsResponse) => response.plugins || [],
 		}),
 
 		// Get a single plugin
 		getPlugin: builder.query<Plugin, string>({
 			query: (name) => `/plugins/${name}`,
-			providesTags: (result, error, name) => [{ type: "Plugins", id: name }],
+			providesTags: (result, error, name) => [{ type: "插件", id: name }],
 		}),
 
 		// Create new plugin
