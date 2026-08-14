@@ -66,6 +66,21 @@ export function formatQuarterPreview(startMonth?: number): string {
 		.join(" · ");
 }
 
+/**
+ * Compact read-only note naming a quarterly budget's fiscal-year start, e.g.
+ * " · FY starts Apr". Returns "" for non-quarterly budgets and for a January /
+ * unset start (the default), so it only ever appears when it changes behaviour.
+ * Callers append it after the reset-period label (which already reads "Quarterly").
+ */
+export function fiscalQuarterNote(resetDuration?: string, resetConfig?: { quarter_start_month?: number } | null): string {
+	if (!resetDuration || !resetDuration.endsWith("Q")) return "";
+	const start = resetConfig?.quarter_start_month;
+	// Number.isInteger also rejects undefined/NaN; a fractional month like 2.5 would
+	// otherwise pass the range check and index MONTH_ABBREVIATIONS between slots.
+	if (start === undefined || !Number.isInteger(start) || start === 1 || start < 1 || start > 12) return "";
+	return ` · FY starts ${MONTH_ABBREVIATIONS[start - 1]}`;
+}
+
 // Month choices for the fiscal quarter start select.
 export const quarterStartMonthOptions = MONTH_ABBREVIATIONS.map((_, index) => ({
 	label: new Date(Date.UTC(2026, index, 1)).toLocaleString("en-US", { month: "long", timeZone: "UTC" }),

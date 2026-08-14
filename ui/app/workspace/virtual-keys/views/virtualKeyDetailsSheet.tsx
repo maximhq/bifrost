@@ -9,7 +9,7 @@ import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useSheetNavigation } from "@/hooks/useSheetNavigation";
-import { supportsCalendarAlignment } from "@/lib/constants/governance";
+import { fiscalQuarterNote, supportsCalendarAlignment } from "@/lib/constants/governance";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { useRemoveVirtualKeyBudgetOverrideMutation, useSetVirtualKeyBudgetOverrideMutation } from "@/lib/store/apis/governanceApi";
@@ -351,6 +351,7 @@ export default function VirtualKeyDetailSheet({
 																		<span>
 																			Resets {parseResetPeriod(b.reset_duration)}
 																			{virtualKey.calendar_aligned && supportsCalendarAlignment(b.reset_duration) && " (calendar)"}
+																			{fiscalQuarterNote(b.reset_duration, b.reset_config)}
 																		</span>
 																		{b.last_reset ? (
 																			<span>
@@ -456,6 +457,7 @@ export default function VirtualKeyDetailSheet({
 																						<span>
 																							Resets {parseResetPeriod(b.reset_duration)}
 																							{virtualKey.calendar_aligned && supportsCalendarAlignment(b.reset_duration) && " (calendar)"}
+																			{fiscalQuarterNote(b.reset_duration, b.reset_config)}
 																						</span>
 																						{b.last_reset ? (
 																							<span>Last reset {formatDistanceToNow(new Date(b.last_reset), { addSuffix: true })}</span>
@@ -601,6 +603,7 @@ export default function VirtualKeyDetailSheet({
 											<span>
 												Resets {parseResetPeriod(b.reset_duration)}
 												{virtualKey.calendar_aligned && supportsCalendarAlignment(b.reset_duration) && " (calendar)"}
+												{fiscalQuarterNote(b.reset_duration, b.reset_config)}
 											</span>
 											{b.last_reset ? (
 												<span>

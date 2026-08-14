@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { periodRank, shortPeriod } from "@/lib/budgetOutline";
 import {
 	budgetResetDurationOptions,
+	fiscalQuarterNote,
 	formatQuarterPreview,
 	resetDurationLabels,
 	resetDurationOptions,
@@ -115,6 +116,31 @@ describe("fiscal quarter preview", () => {
 	// "Q1 undefined-undefined" rather than falling back.
 	it("falls back to January for a non-integer month", () => {
 		expect(formatQuarterPreview(1.5)).toBe(formatQuarterPreview(1));
+	});
+});
+describe("fiscalQuarterNote", () => {
+	it("names the fiscal start only for a non-January quarterly budget", () => {
+		expect(fiscalQuarterNote("1Q", { quarter_start_month: 4 })).toBe(" · FY starts Apr");
+		expect(fiscalQuarterNote("1Q", { quarter_start_month: 10 })).toBe(" · FY starts Oct");
+	});
+
+	it("is empty for a January or unset start (the default)", () => {
+		expect(fiscalQuarterNote("1Q", { quarter_start_month: 1 })).toBe("");
+		expect(fiscalQuarterNote("1Q", {})).toBe("");
+		expect(fiscalQuarterNote("1Q", undefined)).toBe("");
+	});
+
+	it("is empty for a non-quarterly duration regardless of config", () => {
+		expect(fiscalQuarterNote("1M", { quarter_start_month: 4 })).toBe("");
+		expect(fiscalQuarterNote(undefined, { quarter_start_month: 4 })).toBe("");
+	});
+
+	it("is empty for an out-of-range or non-integer month", () => {
+		expect(fiscalQuarterNote("1Q", { quarter_start_month: 0 })).toBe("");
+		expect(fiscalQuarterNote("1Q", { quarter_start_month: 13 })).toBe("");
+		// A fractional month sits in range but indexes MONTH_ABBREVIATIONS between
+		// slots, which would render "FY starts undefined" without the integer guard.
+		expect(fiscalQuarterNote("1Q", { quarter_start_month: 2.5 })).toBe("");
 	});
 });
 describe("budgetSignature", () => {
