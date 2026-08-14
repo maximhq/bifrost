@@ -19,6 +19,36 @@ type ListProviderKeysResponse struct {
 	Total int           `json:"total"`
 }
 
+// complexitySemanticRearmer is implemented by the governance plugin. Kept as a
+// local interface so these handlers do not take a dependency on the plugin
+// package for one notification.
+type complexitySemanticRearmer interface {
+	RearmComplexitySemanticClassifier(provider schemas.ModelProvider)
+}
+
+// rearmComplexitySemanticClassifier tells the complexity router that this
+// provider's configuration changed. Its semantic classifier only ever starts
+// warmup on a write to the complexity configuration, so without this a
+// classifier that failed because the provider could not serve — every key
+// disabled, say — stays failed after the provider is fixed, and the operator
+// has no way to restart it that does not involve editing a configuration that
+// was already correct.
+//
+// Deliberately unconditional and cheap on this side: the classifier ignores
+// providers it does not embed through, and ignores changes while it is healthy.
+func (h *ProviderHandler) rearmComplexitySemanticClassifier(provider schemas.ModelProvider) {
+	basePlugins := h.inMemoryStore.BasePlugins.Load()
+	if basePlugins == nil {
+		return
+	}
+	for _, plugin := range *basePlugins {
+		if rearmer, ok := plugin.(complexitySemanticRearmer); ok {
+			rearmer.RearmComplexitySemanticClassifier(provider)
+			return
+		}
+	}
+}
+
 func (h *ProviderHandler) listProviderKeys(ctx *fasthttp.RequestCtx) {
 	provider, err := getProviderFromCtx(ctx)
 	if err != nil {
@@ -144,6 +174,7 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 			logger.Warn("Catalog refresh failed for provider %s after key create: %v", provider, err)
 		}
 	}
+	h.rearmComplexitySemanticClassifier(provider)
 
 	redactedKey, err := h.inMemoryStore.GetProviderKeyRedacted(provider, key.ID)
 	if err != nil {
@@ -249,6 +280,7 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 			logger.Warn("Catalog refresh failed for provider %s after key update: %v", provider, err)
 		}
 	}
+	h.rearmComplexitySemanticClassifier(provider)
 
 	redactedKey, err := h.inMemoryStore.GetProviderKeyRedacted(provider, keyID)
 	if err != nil {
@@ -310,6 +342,7 @@ func (h *ProviderHandler) deleteProviderKey(ctx *fasthttp.RequestCtx) {
 	if err := h.modelsManager.OnKeyDeleted(ctx, provider, keyID); err != nil {
 		logger.Warn("Catalog refresh failed for provider %s after key delete: %v", provider, err)
 	}
+	h.rearmComplexitySemanticClassifier(provider)
 
 	SendJSON(ctx, redactedKey)
 }
