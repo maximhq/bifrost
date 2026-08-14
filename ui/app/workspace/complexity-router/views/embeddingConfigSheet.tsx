@@ -7,16 +7,23 @@ import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetT
 import { Switch } from "@/components/ui/switch";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { getProviderLabel } from "@/lib/constants/logs";
-import { MAX_SEMANTIC_MESSAGE_HISTORY, MIN_SEMANTIC_MESSAGE_HISTORY, SEMANTIC_VECTOR_STORE_OPTIONS } from "@/lib/types/complexityRouter";
+import {
+	MAX_LLM_MESSAGE_HISTORY,
+	MAX_SEMANTIC_MESSAGE_HISTORY,
+	MIN_LLM_MESSAGE_HISTORY,
+	MIN_SEMANTIC_MESSAGE_HISTORY,
+	SEMANTIC_FALLBACK_OPTIONS,
+	SEMANTIC_VECTOR_STORE_OPTIONS,
+} from "@/lib/types/complexityRouter";
 import { ModelProvider, ModelProviderName } from "@/lib/types/config";
 import { cn } from "@/lib/utils";
 import { Link } from "@tanstack/react-router";
 import { ArrowRight, Info, LoaderCircle, Save, TriangleAlert } from "lucide-react";
 import type { ReactNode } from "react";
 import { Controller, type Control, type FieldErrors, type UseFormRegister, type UseFormSetValue } from "react-hook-form";
-import type { AnalyzerFormValues, SemanticFormValues } from "../formSchema";
-import { semanticTimeoutFieldValue } from "../formSchema";
-import { FieldLabel } from "./formPrimitives";
+import type { AnalyzerFormValues, LLMFormValues, SemanticFormValues } from "../formSchema";
+import { llmTimeoutFieldValue, semanticTimeoutFieldValue } from "../formSchema";
+import { FieldLabel, InfoTip } from "./formPrimitives";
 
 interface Props {
 	open: boolean;
@@ -26,11 +33,23 @@ interface Props {
 	setValue: UseFormSetValue<AnalyzerFormValues>;
 	errors: FieldErrors<AnalyzerFormValues>["semantic"];
 	semantic: SemanticFormValues | undefined;
+	// The llm block's own errors and live values. Its fields render inline here,
+	// below the fallback selector, rather than in a sheet of their own: picking
+	// "LLM classifier" as the fallback is the only thing that makes them
+	// meaningful, so they appear and disappear with that choice instead of
+	// living behind a second button an operator has to discover separately.
+	llmErrors: FieldErrors<AnalyzerFormValues>["llm"];
+	llm: LLMFormValues | undefined;
 	canUpdate: boolean;
 	providers: ModelProvider[];
 	// Ids of the selected provider's enabled keys. Handed to ModelMultiselect so
 	// the model list is narrowed to what those keys are allowed to serve.
 	providerKeyIds: string[];
+	// Chat-capable providers/keys for the inline llm fallback fields — a
+	// separate pool from the embedding providers above, since the two calls
+	// need different provider capabilities.
+	llmProviders: ModelProvider[];
+	llmProviderKeyIds: string[];
 	providersLoading: boolean;
 	isVectorStoreConnected: boolean;
 	// Rendered above the footer, and scoped to the full re-embed that only the
@@ -62,9 +81,13 @@ export default function EmbeddingConfigSheet({
 	setValue,
 	errors,
 	semantic,
+	llmErrors,
+	llm,
 	canUpdate,
 	providers,
 	providerKeyIds,
+	llmProviders,
+	llmProviderKeyIds,
 	providersLoading,
 	isVectorStoreConnected,
 	warning,
@@ -81,6 +104,12 @@ export default function EmbeddingConfigSheet({
 	// than "what you selected stopped working". Say which it is.
 	const savedProviderUnavailable =
 		!providersLoading && !noProviders && Boolean(semantic?.provider) && !providers.some((provider) => provider.name === semantic?.provider);
+
+	const isLLMFallbackSelected = (semantic?.fallback ?? "none") === "llm";
+	const noLLMProviders = !providersLoading && llmProviders.length === 0;
+	const isLLMConfigured = Boolean(llm?.provider && llm?.model);
+	const savedLLMProviderUnavailable =
+		!providersLoading && !noLLMProviders && Boolean(llm?.provider) && !llmProviders.some((provider) => provider.name === llm?.provider);
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
@@ -344,7 +373,273 @@ export default function EmbeddingConfigSheet({
 								</div>
 							</div>
 
-							{/* Budget attribution */}
+							{/* Fallback classifier. Lives here rather than in its own sheet
+							    because it is a property of semantic classification — what to
+							    do when it cannot answer — and is meaningless without it. Its
+							    own settings appear inline, directly below, once this is
+							    switched on; its prompt stays on the page (see the tooltip on
+							    the section below), because that text needs width and
+							    iteration room a sheet cannot give it. */}
+							<div className="space-y-2 border-t pt-4">
+								<FieldLabel
+									htmlFor="semantic-fallback"
+									tooltip={
+										<span className="space-y-1.5">
+											{SEMANTIC_FALLBACK_OPTIONS.map((option) => (
+												<span key={option.value} className="block">
+													<b>{option.label}</b>: {option.description}
+												</span>
+											))}
+										</span>
+									}
+								>
+									When no phrase matches confidently
+								</FieldLabel>
+								<Controller
+									control={control}
+									name="semantic.fallback"
+									render={({ field }) => (
+										<Select value={field.value ?? "none"} onValueChange={field.onChange} disabled={!canUpdate || !isConfigured}>
+											<SelectTrigger className="w-full" id="semantic-fallback" data-testid="complexity-router-semantic-fallback-select">
+												<SelectValue />
+											</SelectTrigger>
+											<SelectContent>
+												{SEMANTIC_FALLBACK_OPTIONS.map((option) => (
+													<SelectItem key={option.value} value={option.value}>
+														{option.label}
+													</SelectItem>
+												))}
+											</SelectContent>
+										</Select>
+									)}
+								/>
+							</div>
+
+							{/* Fallback classifier fields. Rendered inline rather than in a
+							    sheet of their own, and only while "LLM classifier" is the
+							    selected fallback — a dormant llm block still keeps its saved
+							    settings, but they have nothing to configure until this is on. */}
+							{isLLMFallbackSelected && (
+								<div className="space-y-5 border-t pt-4" data-testid="complexity-router-llm-fallback-section">
+									<div className="flex items-center gap-1.5">
+										<h3 className="text-sm font-medium">Fallback classifier</h3>
+										<InfoTip label="About the fallback classifier prompt">
+											This configures the model and its request settings only. The classification prompt itself is edited on the Complexity
+											Router page, in the Fallback Classification Prompt section below the phrase lists.
+										</InfoTip>
+									</div>
+									<p className="text-muted-foreground -mt-3 text-xs leading-relaxed">
+										The chat model asked to name a tier when semantic classification cannot. API keys are inherited from the provider&apos;s
+										main configuration.
+									</p>
+
+									{/* The cost of this classifier is latency, and it is paid on every
+									    classified request, so it is stated up front rather than
+									    discovered in production. */}
+									<Alert variant="warning" data-testid="complexity-router-llm-latency-callout">
+										<TriangleAlert className="h-4 w-4" />
+										<AlertDescription>
+											A request that reaches this fallback waits on one completion from this model before it is routed. Pick a small, fast
+											model; the timeout below caps the wait, and a timed-out classification skips complexity routing for that request.
+										</AlertDescription>
+									</Alert>
+
+									{noLLMProviders && (
+										<Alert variant="warning" data-testid="complexity-router-no-llm-providers">
+											<TriangleAlert className="h-4 w-4" />
+											<AlertDescription className="gap-2">
+												<span>No provider with an enabled key is configured. There is nothing to select here until one exists.</span>
+												<Button asChild variant="outline" size="sm" data-testid="complexity-router-llm-add-provider-link">
+													<Link to="/workspace/providers">
+														Add a provider
+														<ArrowRight className="size-3.5" />
+													</Link>
+												</Button>
+											</AlertDescription>
+										</Alert>
+									)}
+
+									{savedLLMProviderUnavailable && (
+										<Alert variant="warning" data-testid="complexity-router-llm-saved-provider-unavailable">
+											<TriangleAlert className="h-4 w-4" />
+											<AlertDescription className="gap-2">
+												<span>
+													<span className="font-medium">{getProviderLabel(llm?.provider ?? "")}</span> is saved here but has no enabled key,
+													so it cannot classify anything. Re-enable a key for it, or select another provider below.
+												</span>
+												<Button asChild variant="outline" size="sm" data-testid="complexity-router-llm-saved-provider-link">
+													<Link to="/workspace/providers" search={{ provider: llm?.provider }}>
+														Review provider keys
+														<ArrowRight className="size-3.5" />
+													</Link>
+												</Button>
+											</AlertDescription>
+										</Alert>
+									)}
+
+									{!providersLoading && !noLLMProviders && !isLLMConfigured && (
+										<Alert variant="info" data-testid="complexity-router-llm-required-callout">
+											<Info className="h-4 w-4" />
+											<AlertDescription>
+												Pick a provider and model to configure the rest. Until then the LLM classifier cannot run.
+											</AlertDescription>
+										</Alert>
+									)}
+
+									<div className="space-y-2">
+										<FieldLabel htmlFor="llm-provider">Fallback provider</FieldLabel>
+										<Controller
+											control={control}
+											name="llm.provider"
+											render={({ field }) => (
+												<Select
+													value={field.value || undefined}
+													onValueChange={(value: ModelProviderName) => {
+														if (value === field.value) return;
+														field.onChange(value);
+														// A model name is only meaningful for its own provider.
+														setValue("llm.model", "", { shouldDirty: true });
+													}}
+													disabled={!canUpdate || noLLMProviders}
+												>
+													<SelectTrigger className="w-full" id="llm-provider" data-testid="complexity-router-llm-provider-select">
+														<SelectValue placeholder="Select provider" />
+													</SelectTrigger>
+													<SelectContent>
+														{llmProviders
+															.filter((provider) => provider.name)
+															.map((provider) => (
+																<SelectItem key={provider.name} value={provider.name}>
+																	<div className="flex items-center gap-2">
+																		<RenderProviderIcon provider={provider.name as ProviderIconType} size="sm" className="h-4 w-4" />
+																		<span>{getProviderLabel(provider.name)}</span>
+																	</div>
+																</SelectItem>
+															))}
+													</SelectContent>
+												</Select>
+											)}
+										/>
+										{llmErrors?.provider && <p className="text-destructive text-xs">{llmErrors.provider.message}</p>}
+									</div>
+
+									<div className="space-y-2">
+										<FieldLabel htmlFor="llm-model">Fallback model</FieldLabel>
+										<Controller
+											control={control}
+											name="llm.model"
+											render={({ field }) => (
+												<ModelMultiselect
+													inputId="llm-model"
+													data-testid="complexity-router-llm-model-select"
+													isSingleSelect
+													provider={llm?.provider || undefined}
+													keys={llmProviderKeyIds}
+													value={field.value ?? ""}
+													onChange={(model) => {
+														field.onChange(model);
+													}}
+													placeholder={llm?.provider ? "Search or type a chat model…" : "Select a provider first"}
+													disabled={!canUpdate || !llm?.provider}
+												/>
+											)}
+										/>
+										{llmErrors?.model ? <p className="text-destructive text-xs">{llmErrors.model.message}</p> : null}
+									</div>
+
+									{/* Timeout + conversation window */}
+									<div className="grid gap-4 sm:grid-cols-2">
+										<div className="space-y-2">
+											<FieldLabel
+												htmlFor="llm-timeout"
+												tooltip="Ceiling on the classification completion, which runs inline on the request path. Exceeding it skips complexity tier based routing for that request."
+											>
+												Classification timeout (ms)
+											</FieldLabel>
+											<Controller
+												control={control}
+												name="llm.timeout"
+												render={({ field }) => (
+													<Input
+														id="llm-timeout"
+														data-testid="complexity-router-llm-timeout-input"
+														type="number"
+														min={1}
+														step={100}
+														disabled={!canUpdate || !isLLMConfigured}
+														value={llmTimeoutFieldValue(field.value)}
+														onChange={(event) => {
+															const raw = event.target.value;
+															field.onChange(raw === "" ? "" : `${raw}ms`);
+														}}
+														aria-invalid={llmErrors?.timeout ? true : undefined}
+														className={cn("font-mono", llmErrors?.timeout && "border-destructive focus-visible:ring-destructive")}
+													/>
+												)}
+											/>
+											{llmErrors?.timeout && <p className="text-destructive text-xs">{llmErrors.timeout.message}</p>}
+										</div>
+
+										<div className="space-y-2">
+											<FieldLabel
+												htmlFor="llm-message-history"
+												tooltip={
+													<>
+														The most recent user messages are sent to the classifier oldest to newest. Widening this lets a short follow-up
+														like &ldquo;and make it faster&rdquo; inherit earlier intent, but sends more input tokens per request. System
+														prompts and assistant replies are never sent.
+													</>
+												}
+											>
+												Max messages to send
+											</FieldLabel>
+											<Input
+												id="llm-message-history"
+												data-testid="complexity-router-llm-message-history-input"
+												type="number"
+												min={MIN_LLM_MESSAGE_HISTORY}
+												max={MAX_LLM_MESSAGE_HISTORY}
+												step={1}
+												disabled={!canUpdate || !isLLMConfigured}
+												aria-invalid={llmErrors?.message_history_count ? true : undefined}
+												className={cn(
+													"font-mono",
+													llmErrors?.message_history_count && "border-destructive focus-visible:ring-destructive",
+												)}
+												{...register("llm.message_history_count", { valueAsNumber: true })}
+											/>
+											{llmErrors?.message_history_count && (
+												<p className="text-destructive text-xs">{llmErrors.message_history_count.message}</p>
+											)}
+										</div>
+									</div>
+
+									{/* Fallback classifier budget attribution */}
+									<div className="flex items-center justify-between gap-6">
+										<FieldLabel
+											htmlFor="llm-count-toward-budgets"
+											tooltip="Bills each classification completion to the same budgets as the request that triggered it. Cost is always reported to telemetry either way."
+										>
+											Count classification cost toward budgets
+										</FieldLabel>
+										<Controller
+											control={control}
+											name="llm.count_toward_budgets"
+											render={({ field }) => (
+												<Switch
+													id="llm-count-toward-budgets"
+													data-testid="complexity-router-llm-budgets-switch"
+													checked={field.value ?? false}
+													onCheckedChange={field.onChange}
+													disabled={!canUpdate || !isLLMConfigured}
+												/>
+											)}
+										/>
+									</div>
+								</div>
+							)}
+
+							{/* Embedding budget attribution */}
 							<div className="flex items-center justify-between gap-6 border-t pt-4">
 								<FieldLabel
 									htmlFor="semantic-count-toward-budgets"

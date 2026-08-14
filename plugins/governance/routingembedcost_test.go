@@ -72,10 +72,12 @@ func TestPostHookWorkerAddsRoutingCostToProviderUsageOnError(t *testing.T) {
 
 	provider, model, routingTokens := "openai", "text-embedding-3-small", 13
 	routingDebug := &schemas.BifrostRoutingDebug{
-		ProviderUsed:       &provider,
-		ModelUsed:          &model,
-		InputTokens:        &routingTokens,
-		CountTowardBudgets: true,
+		Calls: []schemas.BifrostRoutingCall{{
+			ProviderUsed:       &provider,
+			ModelUsed:          &model,
+			InputTokens:        &routingTokens,
+			CountTowardBudgets: true,
+		}},
 	}
 	billedUsage := &schemas.BifrostLLMUsage{
 		PromptTokens:     100,

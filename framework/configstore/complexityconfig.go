@@ -210,6 +210,18 @@ type ComplexitySemanticConfig struct {
 	MessageHistoryCount int    `json:"message_history_count,omitempty"`
 	CountTowardBudgets  bool   `json:"count_toward_budgets,omitempty"`
 	VectorStore         string `json:"vector_store,omitempty"`
+	// Fallback names what answers when semantic classification produces no
+	// tier: "none" (the default) records the request as skipped, "llm" asks
+	// the analyzer's llm block. The field lives here rather than at the top
+	// level because the fallback is meaningless without a primary — the LLM
+	// classifier only ever runs after a semantic non-answer.
+	//
+	// Session note: an LLM-classified turn carries no similarity score, so
+	// with a positive session switch_min_similarity it can never move a
+	// session tier (except through always_allow_escalation). That is
+	// deliberate: the LLM speaks exactly on the turns semantic was least
+	// confident about, which are the wrong turns to let re-pin a session.
+	Fallback string `json:"fallback,omitempty"`
 }
 
 // UnmarshalJSON accepts Timeout as a duration string ("500ms") or a JSON number
@@ -228,6 +240,7 @@ func (c *ComplexitySemanticConfig) UnmarshalJSON(data []byte) error {
 		"message_history_count": {},
 		"count_toward_budgets":  {},
 		"vector_store":          {},
+		"fallback":              {},
 	}
 	for field := range fields {
 		if _, ok := allowed[field]; !ok {
@@ -302,6 +315,7 @@ func (c *ComplexitySemanticConfig) normalized() *ComplexitySemanticConfig {
 		MessageHistoryCount: c.MessageHistoryCount,
 		CountTowardBudgets:  c.CountTowardBudgets,
 		VectorStore:         strings.ToLower(strings.TrimSpace(c.VectorStore)),
+		Fallback:            strings.ToLower(strings.TrimSpace(c.Fallback)),
 	}
 	if out.Timeout == 0 {
 		out.Timeout = DefaultComplexitySemanticTimeout
@@ -311,6 +325,9 @@ func (c *ComplexitySemanticConfig) normalized() *ComplexitySemanticConfig {
 	}
 	if out.MessageHistoryCount == 0 {
 		out.MessageHistoryCount = DefaultComplexitySemanticMessageHistoryCount
+	}
+	if out.Fallback == "" {
+		out.Fallback = ComplexitySemanticFallbackNone
 	}
 	return out
 }
@@ -349,6 +366,192 @@ func (c *ComplexitySemanticConfig) Validate() error {
 		return fmt.Errorf("semantic vector_store must be %q or %q, got %q",
 			ComplexitySemanticVectorStoreEmbedded, ComplexitySemanticVectorStoreConfigured, c.VectorStore)
 	}
+	switch c.Fallback {
+	case ComplexitySemanticFallbackNone, ComplexitySemanticFallbackLLM:
+	default:
+		return fmt.Errorf("semantic fallback must be %q or %q, got %q",
+			ComplexitySemanticFallbackNone, ComplexitySemanticFallbackLLM, c.Fallback)
+	}
+	return nil
+}
+
+// Semantic fallback selection. The fallback names what answers when semantic
+// classification produces no tier — a rejection below min_similarity, a
+// timeout, an unready warmup, or an unwired executor. "none" (also the
+// meaning of an absent field) keeps today's behaviour: the request is
+// recorded as "skipped". "llm" asks the configured chat model instead. The
+// LLM classifier only ever runs on this path; it is never the primary.
+const (
+	ComplexitySemanticFallbackNone = "none"
+	ComplexitySemanticFallbackLLM  = "llm"
+)
+
+// DefaultComplexityLLMTimeout bounds one LLM classification call. It is
+// deliberately larger than the semantic default: a chat completion is slower
+// than an embedding, and a budget the model can never meet turns every
+// fallback into a skip.
+const DefaultComplexityLLMTimeout = 4 * time.Second
+
+// MaxComplexityLLMPromptCharacters bounds the administrator's editable
+// classification guidance. The tier-name and response-format reinforcement is
+// appended by the gateway and does not count against this; the bound exists
+// because the guidance is sent with every fallback classification, so an
+// unbounded prompt is a token cost multiplier.
+const MaxComplexityLLMPromptCharacters = 4000
+
+// LLM message-history bounds, mirroring the semantic classifier's window over
+// recent user turns.
+const (
+	DefaultComplexityLLMMessageHistoryCount = 1
+	MaxComplexityLLMMessageHistoryCount     = 10
+)
+
+// ComplexityLLMConfig configures the chat-completion fallback classifier. It
+// is inert unless the semantic block's fallback field selects "llm". The
+// classification prompt splits in two: Prompt is the editable guidance, and a
+// fixed reinforcement naming the tiers and the response format is always
+// appended by the gateway — there is no way to rename tiers or change the
+// answer contract from configuration.
+type ComplexityLLMConfig struct {
+	Provider schemas.ModelProvider `json:"provider"`
+	Model    string                `json:"model"`
+	Timeout  time.Duration         `json:"timeout,omitempty"`
+	// Prompt replaces the shipped classification guidance when set; empty
+	// means the shipped guidance is used. The reinforcement section is
+	// appended either way.
+	Prompt string `json:"prompt,omitempty"`
+	// MessageHistoryCount is how many of the most recent user messages are
+	// given to the classifier, oldest first, matching the semantic field of
+	// the same name.
+	MessageHistoryCount int  `json:"message_history_count,omitempty"`
+	CountTowardBudgets  bool `json:"count_toward_budgets,omitempty"`
+}
+
+// UnmarshalJSON accepts Timeout as a duration string ("2s") or a JSON number
+// (milliseconds), and rejects unknown fields, both mirroring
+// ComplexitySemanticConfig.
+func (c *ComplexityLLMConfig) UnmarshalJSON(data []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	allowed := map[string]struct{}{
+		"provider":              {},
+		"model":                 {},
+		"timeout":               {},
+		"prompt":                {},
+		"message_history_count": {},
+		"count_toward_budgets":  {},
+	}
+	for field := range fields {
+		if _, ok := allowed[field]; !ok {
+			return fmt.Errorf("unknown llm complexity field %q", field)
+		}
+	}
+
+	// alias suppresses ComplexityLLMConfig's UnmarshalJSON to avoid infinite
+	// recursion. The outer Timeout (json.RawMessage) shadows alias.Timeout
+	// because the json package picks the shallower field.
+	type alias ComplexityLLMConfig
+	aux := &struct {
+		Timeout json.RawMessage `json:"timeout,omitempty"`
+		*alias
+	}{alias: (*alias)(c)}
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+
+	if len(aux.Timeout) == 0 || string(aux.Timeout) == "null" {
+		return nil
+	}
+
+	var s string
+	if err := json.Unmarshal(aux.Timeout, &s); err == nil {
+		d, err := time.ParseDuration(s)
+		if err != nil {
+			return fmt.Errorf("failed to parse llm timeout duration string %q: %w", s, err)
+		}
+		c.Timeout = d
+	} else {
+		var ms float64
+		if err := json.Unmarshal(aux.Timeout, &ms); err != nil {
+			return fmt.Errorf("unsupported llm timeout value: %s", string(aux.Timeout))
+		}
+		c.Timeout = time.Duration(ms * float64(time.Millisecond))
+	}
+	if c.Timeout < 0 {
+		return fmt.Errorf("llm timeout must be non-negative, got %v", c.Timeout)
+	}
+	return nil
+}
+
+// MarshalJSON writes Timeout as a duration string so persisted configs decode
+// back to the same value, matching ComplexitySemanticConfig.
+func (c ComplexityLLMConfig) MarshalJSON() ([]byte, error) {
+	type alias ComplexityLLMConfig
+	var timeout string
+	if c.Timeout != 0 {
+		timeout = c.Timeout.String()
+	}
+	return json.Marshal(struct {
+		Timeout string `json:"timeout,omitempty"`
+		alias
+	}{
+		Timeout: timeout,
+		alias:   alias(c),
+	})
+}
+
+// normalized returns a canonical deep copy with defaults applied.
+func (c *ComplexityLLMConfig) normalized() *ComplexityLLMConfig {
+	if c == nil {
+		return nil
+	}
+	out := &ComplexityLLMConfig{
+		Provider:            schemas.ModelProvider(strings.ToLower(strings.TrimSpace(string(c.Provider)))),
+		Model:               strings.TrimSpace(c.Model),
+		Timeout:             c.Timeout,
+		Prompt:              strings.TrimSpace(c.Prompt),
+		MessageHistoryCount: c.MessageHistoryCount,
+		CountTowardBudgets:  c.CountTowardBudgets,
+	}
+	if out.Timeout == 0 {
+		out.Timeout = DefaultComplexityLLMTimeout
+	}
+	if out.MessageHistoryCount == 0 {
+		out.MessageHistoryCount = DefaultComplexityLLMMessageHistoryCount
+	}
+	return out
+}
+
+// Validate checks a normalized llm config.
+func (c *ComplexityLLMConfig) Validate() error {
+	if c == nil {
+		return nil
+	}
+	if strings.TrimSpace(string(c.Provider)) == "" {
+		return fmt.Errorf("llm config requires a provider")
+	}
+	if strings.TrimSpace(c.Model) == "" {
+		return fmt.Errorf("llm config requires a model")
+	}
+	if c.Timeout <= 0 {
+		return fmt.Errorf("llm timeout must be positive, got %v", c.Timeout)
+	}
+	if characters := utf8.RuneCountInString(c.Prompt); characters > MaxComplexityLLMPromptCharacters {
+		return fmt.Errorf(
+			"llm prompt exceeds the %d-character limit: got %d characters",
+			MaxComplexityLLMPromptCharacters,
+			characters,
+		)
+	}
+	if c.MessageHistoryCount < 1 || c.MessageHistoryCount > MaxComplexityLLMMessageHistoryCount {
+		return fmt.Errorf(
+			"llm message_history_count must be between 1 and %d, got %d",
+			MaxComplexityLLMMessageHistoryCount,
+			c.MessageHistoryCount,
+		)
+	}
 	return nil
 }
 
@@ -364,6 +567,10 @@ type ComplexityAnalyzerConfigHashes struct {
 	// budgets flag, vector store). The semantic classifier's
 	// exemplars are the shared keyword lists, tracked by the sections above.
 	SemanticSettings string `json:"semantic_settings,omitempty"`
+	// LLMSettings covers the llm block (provider, model, timeout, prompt,
+	// history window, budgets flag). The fallback selector rides the
+	// SemanticSettings hash: it is a field of the semantic block.
+	LLMSettings string `json:"llm_settings,omitempty"`
 }
 
 type legacyComplexityAnalyzerConfigHashes struct {
@@ -429,7 +636,12 @@ type ComplexityAnalyzerConfig struct {
 	TierBoundaries ComplexityTierBoundaries        `json:"tier_boundaries"`
 	Keywords       ComplexityEditableKeywordConfig `json:"keywords"`
 	Semantic       *ComplexitySemanticConfig       `json:"semantic,omitempty"`
-	ConfigHashes   ComplexityAnalyzerConfigHashes  `json:"-"`
+	// LLM configures the chat-completion fallback classifier, engaged only
+	// when Semantic.Fallback selects "llm". It may be present while the
+	// fallback says "none": the block is retained so toggling the fallback
+	// never loses settings.
+	LLM          *ComplexityLLMConfig           `json:"llm,omitempty"`
+	ConfigHashes ComplexityAnalyzerConfigHashes `json:"-"`
 	// EmbeddingFingerprint is reserved for config-store implementations that
 	// persist routing state. The semantic classifier verifies a VectorStore-side
 	// marker before reuse and never treats this field alone as proof vectors exist.
@@ -482,6 +694,7 @@ type persistedComplexityTierBoundaries struct {
 type complexitySemanticConfigRecord struct {
 	Keywords             ComplexityEditableKeywordConfig `json:"keywords"`
 	Semantic             *ComplexitySemanticConfig       `json:"semantic,omitempty"`
+	LLM                  *ComplexityLLMConfig            `json:"llm,omitempty"`
 	ConfigHashes         complexitySemanticRowHashes     `json:"_config_hashes,omitempty"`
 	EmbeddingFingerprint string                          `json:"_embedding_fingerprint,omitempty"`
 }
@@ -493,6 +706,17 @@ type complexitySemanticRowHashes struct {
 	MediumKeywords   string `json:"medium_keywords,omitempty"`
 	ComplexKeywords  string `json:"complex_keywords,omitempty"`
 	SemanticSettings string `json:"semantic_settings,omitempty"`
+	LLMSettings      string `json:"llm_settings,omitempty"`
+}
+
+// LLMFallbackEnabled reports whether a semantic non-answer should be retried
+// through the llm block. Both halves are required: a fallback selector with
+// no llm block is rejected by Validate, and a dormant llm block with the
+// fallback on "none" never runs.
+func (c *ComplexityAnalyzerConfig) LLMFallbackEnabled() bool {
+	return c != nil && c.Semantic != nil &&
+		c.Semantic.Fallback == ComplexitySemanticFallbackLLM &&
+		c.LLM != nil
 }
 
 // Validate checks that the config is internally consistent.
@@ -525,6 +749,12 @@ func (c *ComplexityAnalyzerConfig) Validate() error {
 			return err
 		}
 	}
+	if err := c.LLM.Validate(); err != nil {
+		return err
+	}
+	if c.Semantic != nil && c.Semantic.Fallback == ComplexitySemanticFallbackLLM && c.LLM == nil {
+		return fmt.Errorf("semantic fallback %q requires an llm config block", ComplexitySemanticFallbackLLM)
+	}
 	return nil
 }
 
@@ -545,6 +775,7 @@ func (c *ComplexityAnalyzerConfig) Normalized() ComplexityAnalyzerConfig {
 			ComplexKeywords: normalizeComplexityKeywordList(c.Keywords.ComplexKeywords),
 		},
 		Semantic:             c.Semantic.normalized(),
+		LLM:                  c.LLM.normalized(),
 		ConfigHashes:         c.ConfigHashes,
 		EmbeddingFingerprint: c.EmbeddingFingerprint,
 	}
@@ -622,6 +853,7 @@ func MergeComplexityAnalyzerConfig(base, file *ComplexityAnalyzerConfig) (*Compl
 			ComplexKeywords: mergeComplexityKeywordLists(normalizedBase.Keywords.ComplexKeywords, normalizedFile.Keywords.ComplexKeywords),
 		},
 		Semantic:             mergeComplexitySemanticConfig(normalizedBase.Semantic, normalizedFile.Semantic),
+		LLM:                  mergeComplexityLLMConfig(normalizedBase.LLM, normalizedFile.LLM),
 		ConfigHashes:         normalizedFile.ConfigHashes,
 		EmbeddingFingerprint: normalizedBase.EmbeddingFingerprint,
 	}
@@ -635,6 +867,15 @@ func MergeComplexityAnalyzerConfig(base, file *ComplexityAnalyzerConfig) (*Compl
 // mergeComplexitySemanticConfig overlays the file semantic settings. A nil
 // file section keeps the base untouched.
 func mergeComplexitySemanticConfig(base, file *ComplexitySemanticConfig) *ComplexitySemanticConfig {
+	if file == nil {
+		return base.normalized()
+	}
+	return file.normalized()
+}
+
+// mergeComplexityLLMConfig overlays the file llm settings. A nil file section
+// keeps the base untouched.
+func mergeComplexityLLMConfig(base, file *ComplexityLLMConfig) *ComplexityLLMConfig {
 	if file == nil {
 		return base.normalized()
 	}
@@ -684,6 +925,15 @@ func MergeComplexityAnalyzerConfigByHashes(base, file *ComplexityAnalyzerConfig)
 		if merged.Semantic == nil || merged.ConfigHashes.SemanticSettings != normalizedFile.ConfigHashes.SemanticSettings {
 			merged.Semantic = normalizedFile.Semantic.normalized()
 			merged.ConfigHashes.SemanticSettings = normalizedFile.ConfigHashes.SemanticSettings
+		}
+	}
+	// The llm block follows the same "absence means no opinion" rule as the
+	// semantic section above: only a file that states it may change it, and
+	// only when its hash moved.
+	if normalizedFile.LLM != nil {
+		if merged.LLM == nil || merged.ConfigHashes.LLMSettings != normalizedFile.ConfigHashes.LLMSettings {
+			merged.LLM = normalizedFile.LLM.normalized()
+			merged.ConfigHashes.LLMSettings = normalizedFile.ConfigHashes.LLMSettings
 		}
 	}
 	normalizedMerged := merged.Normalized()
@@ -768,11 +1018,13 @@ func encodeComplexitySemanticConfigRow(config ComplexityAnalyzerConfig) ([]byte,
 	record := complexitySemanticConfigRecord{
 		Keywords: config.Keywords,
 		Semantic: config.Semantic,
+		LLM:      config.LLM,
 		ConfigHashes: complexitySemanticRowHashes{
 			SimpleKeywords:   config.ConfigHashes.SimpleKeywords,
 			MediumKeywords:   config.ConfigHashes.MediumKeywords,
 			ComplexKeywords:  config.ConfigHashes.ComplexKeywords,
 			SemanticSettings: config.ConfigHashes.SemanticSettings,
+			LLMSettings:      config.ConfigHashes.LLMSettings,
 		},
 		EmbeddingFingerprint: config.EmbeddingFingerprint,
 	}
@@ -792,10 +1044,12 @@ func applyComplexitySemanticConfigRow(base *ComplexityAnalyzerConfig, row *compl
 	combined := *base
 	combined.Keywords = row.Keywords
 	combined.Semantic = row.Semantic
+	combined.LLM = row.LLM
 	combined.ConfigHashes.SimpleKeywords = row.ConfigHashes.SimpleKeywords
 	combined.ConfigHashes.MediumKeywords = row.ConfigHashes.MediumKeywords
 	combined.ConfigHashes.ComplexKeywords = row.ConfigHashes.ComplexKeywords
 	combined.ConfigHashes.SemanticSettings = row.ConfigHashes.SemanticSettings
+	combined.ConfigHashes.LLMSettings = row.ConfigHashes.LLMSettings
 	combined.EmbeddingFingerprint = row.EmbeddingFingerprint
 	return &combined
 }
