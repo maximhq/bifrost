@@ -67463,7 +67463,7 @@
       "get": {
         "operationId": "getComplexityAnalyzerConfig",
         "summary": "Get complexity analyzer config",
-        "description": "Returns the full complexity analyzer runtime config, including tier thresholds and editable keyword lists. Returns built-in defaults if none have been configured.",
+        "description": "Returns the full complexity analyzer runtime config, including the semantic embedding configuration and per-tier reference phrase lists. Returns built-in defaults if none have been configured.",
         "tags": [
           "Routing"
         ],
@@ -67482,35 +67482,30 @@
                   "description": "Full runtime configuration for complexity routing analysis.",
                   "additionalProperties": false,
                   "required": [
-                    "tier_boundaries",
                     "keywords"
                   ],
                   "properties": {
                     "tier_boundaries": {
                       "type": "object",
-                      "description": "Score thresholds for complexity tier classification. All values must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.",
+                      "deprecated": true,
+                      "description": "Deprecated score thresholds for the retired lexical complexity classifier.\nThis block is optional and ignored by semantic classification, but remains\naccepted for backward compatibility. When supplied, values must satisfy\n0 < simple_medium < medium_complex < 1.\n",
                       "additionalProperties": false,
                       "required": [
                         "simple_medium",
-                        "medium_complex",
-                        "complex_reasoning"
+                        "medium_complex"
                       ],
                       "properties": {
                         "simple_medium": {
                           "type": "number",
-                          "description": "Score boundary between SIMPLE and MEDIUM tiers",
+                          "deprecated": true,
+                          "description": "Deprecated score boundary between SIMPLE and MEDIUM tiers (ignored by semantic classification)",
                           "exclusiveMinimum": 0,
                           "exclusiveMaximum": 1
                         },
                         "medium_complex": {
                           "type": "number",
-                          "description": "Score boundary between MEDIUM and COMPLEX tiers",
-                          "exclusiveMinimum": 0,
-                          "exclusiveMaximum": 1
-                        },
-                        "complex_reasoning": {
-                          "type": "number",
-                          "description": "Score boundary between COMPLEX and REASONING tiers",
+                          "deprecated": true,
+                          "description": "Deprecated score boundary between MEDIUM and COMPLEX tiers (ignored by semantic classification)",
                           "exclusiveMinimum": 0,
                           "exclusiveMaximum": 1
                         }
@@ -67518,42 +67513,98 @@
                     },
                     "keywords": {
                       "type": "object",
-                      "description": "Editable keyword lists used by the complexity analyzer. Only the four user-facing\ndimensions are exposed; `reasoning_keywords` entries drive the reasoning tier\noverride. Matching is normalized to lowercase and duplicates are removed on save.\n",
+                      "description": "Reference phrases for semantic complexity classification, one list per tier.\nEach request is embedded and takes the tier of its nearest phrase. Entries\nshould be whole example prompts rather than individual keywords. Each phrase\nis limited to 2000 characters, and the same phrase cannot appear in two\ntiers. The field names predate semantic classification and are kept for\nbackward compatibility.\n",
                       "additionalProperties": false,
                       "required": [
-                        "code_keywords",
-                        "reasoning_keywords",
-                        "technical_keywords",
-                        "simple_keywords"
+                        "simple_keywords",
+                        "medium_keywords",
+                        "complex_keywords"
                       ],
                       "properties": {
-                        "code_keywords": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          },
-                          "minItems": 1
-                        },
-                        "reasoning_keywords": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          },
-                          "minItems": 1
-                        },
-                        "technical_keywords": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          },
-                          "minItems": 1
-                        },
                         "simple_keywords": {
                           "type": "array",
+                          "description": "Reference phrases for the SIMPLE tier (50 built-in defaults)",
                           "items": {
-                            "type": "string"
+                            "type": "string",
+                            "maxLength": 2000
                           },
                           "minItems": 1
+                        },
+                        "medium_keywords": {
+                          "type": "array",
+                          "description": "Reference phrases for the MEDIUM tier (50 built-in defaults)",
+                          "items": {
+                            "type": "string",
+                            "maxLength": 2000
+                          },
+                          "minItems": 1
+                        },
+                        "complex_keywords": {
+                          "type": "array",
+                          "description": "Reference phrases for the COMPLEX tier (50 built-in defaults)",
+                          "items": {
+                            "type": "string",
+                            "maxLength": 2000
+                          },
+                          "minItems": 1
+                        }
+                      }
+                    },
+                    "semantic": {
+                      "type": "object",
+                      "description": "Embedding configuration for semantic complexity classification. When absent,\nno complexity tier is published and rules referencing complexity_tier fall\nthrough. The provider must have an enabled key.\n",
+                      "additionalProperties": false,
+                      "required": [
+                        "provider",
+                        "embedding_model"
+                      ],
+                      "properties": {
+                        "provider": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Provider used for embedding calls (must have an enabled key)"
+                        },
+                        "embedding_model": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Embedding model, e.g. text-embedding-3-small"
+                        },
+                        "timeout": {
+                          "description": "Ceiling on the inline embedding call. Accepts a duration string (\"1.5s\") or milliseconds as a number. Default 1.5s; exceeding it publishes no tier for that request.",
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)$"
+                            },
+                            {
+                              "type": "number",
+                              "exclusiveMinimum": 0
+                            }
+                          ]
+                        },
+                        "min_similarity": {
+                          "type": "number",
+                          "minimum": 0,
+                          "exclusiveMaximum": 1,
+                          "description": "Similarity floor for the nearest reference phrase; below it no tier is published. 0 (default) accepts the nearest eligible match. Compared against the vector store backend's own similarity scale (raw cosine for chromem/Qdrant/Pinecone/Redis, certainty for Weaviate)."
+                        },
+                        "message_history_count": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 10,
+                          "description": "Number of recent user messages joined oldest-first into the embedded text. 1 (default) embeds only the latest message. System prompts and assistant replies are never embedded."
+                        },
+                        "count_toward_budgets": {
+                          "type": "boolean",
+                          "description": "Whether embedding usage counts toward virtual-key budgets (default false)"
+                        },
+                        "vector_store": {
+                          "type": "string",
+                          "enum": [
+                            "embedded",
+                            "vector_store"
+                          ],
+                          "description": "Where reference-phrase embeddings live. `embedded` (default) uses the\nbuilt-in in-memory store, so phrases are re-embedded on every restart.\n`vector_store` uses the top-level `vector_store` when one is configured\nand falls back to the embedded store otherwise.\n"
                         }
                       }
                     }
@@ -67587,7 +67638,7 @@
       "put": {
         "operationId": "updateComplexityAnalyzerConfig",
         "summary": "Update complexity analyzer config",
-        "description": "Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Tier thresholds must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.",
+        "description": "Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Changing the embedding configuration or reference phrases triggers a background re-warm of the classifier; unchanged phrases are not re-embedded.",
         "tags": [
           "Routing"
         ],
@@ -67600,35 +67651,30 @@
                 "description": "Full runtime configuration for complexity routing analysis.",
                 "additionalProperties": false,
                 "required": [
-                  "tier_boundaries",
                   "keywords"
                 ],
                 "properties": {
                   "tier_boundaries": {
                     "type": "object",
-                    "description": "Score thresholds for complexity tier classification. All values must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.",
+                    "deprecated": true,
+                    "description": "Deprecated score thresholds for the retired lexical complexity classifier.\nThis block is optional and ignored by semantic classification, but remains\naccepted for backward compatibility. When supplied, values must satisfy\n0 < simple_medium < medium_complex < 1.\n",
                     "additionalProperties": false,
                     "required": [
                       "simple_medium",
-                      "medium_complex",
-                      "complex_reasoning"
+                      "medium_complex"
                     ],
                     "properties": {
                       "simple_medium": {
                         "type": "number",
-                        "description": "Score boundary between SIMPLE and MEDIUM tiers",
+                        "deprecated": true,
+                        "description": "Deprecated score boundary between SIMPLE and MEDIUM tiers (ignored by semantic classification)",
                         "exclusiveMinimum": 0,
                         "exclusiveMaximum": 1
                       },
                       "medium_complex": {
                         "type": "number",
-                        "description": "Score boundary between MEDIUM and COMPLEX tiers",
-                        "exclusiveMinimum": 0,
-                        "exclusiveMaximum": 1
-                      },
-                      "complex_reasoning": {
-                        "type": "number",
-                        "description": "Score boundary between COMPLEX and REASONING tiers",
+                        "deprecated": true,
+                        "description": "Deprecated score boundary between MEDIUM and COMPLEX tiers (ignored by semantic classification)",
                         "exclusiveMinimum": 0,
                         "exclusiveMaximum": 1
                       }
@@ -67636,42 +67682,98 @@
                   },
                   "keywords": {
                     "type": "object",
-                    "description": "Editable keyword lists used by the complexity analyzer. Only the four user-facing\ndimensions are exposed; `reasoning_keywords` entries drive the reasoning tier\noverride. Matching is normalized to lowercase and duplicates are removed on save.\n",
+                    "description": "Reference phrases for semantic complexity classification, one list per tier.\nEach request is embedded and takes the tier of its nearest phrase. Entries\nshould be whole example prompts rather than individual keywords. Each phrase\nis limited to 2000 characters, and the same phrase cannot appear in two\ntiers. The field names predate semantic classification and are kept for\nbackward compatibility.\n",
                     "additionalProperties": false,
                     "required": [
-                      "code_keywords",
-                      "reasoning_keywords",
-                      "technical_keywords",
-                      "simple_keywords"
+                      "simple_keywords",
+                      "medium_keywords",
+                      "complex_keywords"
                     ],
                     "properties": {
-                      "code_keywords": {
-                        "type": "array",
-                        "items": {
-                          "type": "string"
-                        },
-                        "minItems": 1
-                      },
-                      "reasoning_keywords": {
-                        "type": "array",
-                        "items": {
-                          "type": "string"
-                        },
-                        "minItems": 1
-                      },
-                      "technical_keywords": {
-                        "type": "array",
-                        "items": {
-                          "type": "string"
-                        },
-                        "minItems": 1
-                      },
                       "simple_keywords": {
                         "type": "array",
+                        "description": "Reference phrases for the SIMPLE tier (50 built-in defaults)",
                         "items": {
-                          "type": "string"
+                          "type": "string",
+                          "maxLength": 2000
                         },
                         "minItems": 1
+                      },
+                      "medium_keywords": {
+                        "type": "array",
+                        "description": "Reference phrases for the MEDIUM tier (50 built-in defaults)",
+                        "items": {
+                          "type": "string",
+                          "maxLength": 2000
+                        },
+                        "minItems": 1
+                      },
+                      "complex_keywords": {
+                        "type": "array",
+                        "description": "Reference phrases for the COMPLEX tier (50 built-in defaults)",
+                        "items": {
+                          "type": "string",
+                          "maxLength": 2000
+                        },
+                        "minItems": 1
+                      }
+                    }
+                  },
+                  "semantic": {
+                    "type": "object",
+                    "description": "Embedding configuration for semantic complexity classification. When absent,\nno complexity tier is published and rules referencing complexity_tier fall\nthrough. The provider must have an enabled key.\n",
+                    "additionalProperties": false,
+                    "required": [
+                      "provider",
+                      "embedding_model"
+                    ],
+                    "properties": {
+                      "provider": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Provider used for embedding calls (must have an enabled key)"
+                      },
+                      "embedding_model": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Embedding model, e.g. text-embedding-3-small"
+                      },
+                      "timeout": {
+                        "description": "Ceiling on the inline embedding call. Accepts a duration string (\"1.5s\") or milliseconds as a number. Default 1.5s; exceeding it publishes no tier for that request.",
+                        "oneOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)$"
+                          },
+                          {
+                            "type": "number",
+                            "exclusiveMinimum": 0
+                          }
+                        ]
+                      },
+                      "min_similarity": {
+                        "type": "number",
+                        "minimum": 0,
+                        "exclusiveMaximum": 1,
+                        "description": "Similarity floor for the nearest reference phrase; below it no tier is published. 0 (default) accepts the nearest eligible match. Compared against the vector store backend's own similarity scale (raw cosine for chromem/Qdrant/Pinecone/Redis, certainty for Weaviate)."
+                      },
+                      "message_history_count": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 10,
+                        "description": "Number of recent user messages joined oldest-first into the embedded text. 1 (default) embeds only the latest message. System prompts and assistant replies are never embedded."
+                      },
+                      "count_toward_budgets": {
+                        "type": "boolean",
+                        "description": "Whether embedding usage counts toward virtual-key budgets (default false)"
+                      },
+                      "vector_store": {
+                        "type": "string",
+                        "enum": [
+                          "embedded",
+                          "vector_store"
+                        ],
+                        "description": "Where reference-phrase embeddings live. `embedded` (default) uses the\nbuilt-in in-memory store, so phrases are re-embedded on every restart.\n`vector_store` uses the top-level `vector_store` when one is configured\nand falls back to the embedded store otherwise.\n"
                       }
                     }
                   }
@@ -67695,35 +67797,30 @@
                   "description": "Full runtime configuration for complexity routing analysis.",
                   "additionalProperties": false,
                   "required": [
-                    "tier_boundaries",
                     "keywords"
                   ],
                   "properties": {
                     "tier_boundaries": {
                       "type": "object",
-                      "description": "Score thresholds for complexity tier classification. All values must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.",
+                      "deprecated": true,
+                      "description": "Deprecated score thresholds for the retired lexical complexity classifier.\nThis block is optional and ignored by semantic classification, but remains\naccepted for backward compatibility. When supplied, values must satisfy\n0 < simple_medium < medium_complex < 1.\n",
                       "additionalProperties": false,
                       "required": [
                         "simple_medium",
-                        "medium_complex",
-                        "complex_reasoning"
+                        "medium_complex"
                       ],
                       "properties": {
                         "simple_medium": {
                           "type": "number",
-                          "description": "Score boundary between SIMPLE and MEDIUM tiers",
+                          "deprecated": true,
+                          "description": "Deprecated score boundary between SIMPLE and MEDIUM tiers (ignored by semantic classification)",
                           "exclusiveMinimum": 0,
                           "exclusiveMaximum": 1
                         },
                         "medium_complex": {
                           "type": "number",
-                          "description": "Score boundary between MEDIUM and COMPLEX tiers",
-                          "exclusiveMinimum": 0,
-                          "exclusiveMaximum": 1
-                        },
-                        "complex_reasoning": {
-                          "type": "number",
-                          "description": "Score boundary between COMPLEX and REASONING tiers",
+                          "deprecated": true,
+                          "description": "Deprecated score boundary between MEDIUM and COMPLEX tiers (ignored by semantic classification)",
                           "exclusiveMinimum": 0,
                           "exclusiveMaximum": 1
                         }
@@ -67731,42 +67828,98 @@
                     },
                     "keywords": {
                       "type": "object",
-                      "description": "Editable keyword lists used by the complexity analyzer. Only the four user-facing\ndimensions are exposed; `reasoning_keywords` entries drive the reasoning tier\noverride. Matching is normalized to lowercase and duplicates are removed on save.\n",
+                      "description": "Reference phrases for semantic complexity classification, one list per tier.\nEach request is embedded and takes the tier of its nearest phrase. Entries\nshould be whole example prompts rather than individual keywords. Each phrase\nis limited to 2000 characters, and the same phrase cannot appear in two\ntiers. The field names predate semantic classification and are kept for\nbackward compatibility.\n",
                       "additionalProperties": false,
                       "required": [
-                        "code_keywords",
-                        "reasoning_keywords",
-                        "technical_keywords",
-                        "simple_keywords"
+                        "simple_keywords",
+                        "medium_keywords",
+                        "complex_keywords"
                       ],
                       "properties": {
-                        "code_keywords": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          },
-                          "minItems": 1
-                        },
-                        "reasoning_keywords": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          },
-                          "minItems": 1
-                        },
-                        "technical_keywords": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          },
-                          "minItems": 1
-                        },
                         "simple_keywords": {
                           "type": "array",
+                          "description": "Reference phrases for the SIMPLE tier (50 built-in defaults)",
                           "items": {
-                            "type": "string"
+                            "type": "string",
+                            "maxLength": 2000
                           },
                           "minItems": 1
+                        },
+                        "medium_keywords": {
+                          "type": "array",
+                          "description": "Reference phrases for the MEDIUM tier (50 built-in defaults)",
+                          "items": {
+                            "type": "string",
+                            "maxLength": 2000
+                          },
+                          "minItems": 1
+                        },
+                        "complex_keywords": {
+                          "type": "array",
+                          "description": "Reference phrases for the COMPLEX tier (50 built-in defaults)",
+                          "items": {
+                            "type": "string",
+                            "maxLength": 2000
+                          },
+                          "minItems": 1
+                        }
+                      }
+                    },
+                    "semantic": {
+                      "type": "object",
+                      "description": "Embedding configuration for semantic complexity classification. When absent,\nno complexity tier is published and rules referencing complexity_tier fall\nthrough. The provider must have an enabled key.\n",
+                      "additionalProperties": false,
+                      "required": [
+                        "provider",
+                        "embedding_model"
+                      ],
+                      "properties": {
+                        "provider": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Provider used for embedding calls (must have an enabled key)"
+                        },
+                        "embedding_model": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Embedding model, e.g. text-embedding-3-small"
+                        },
+                        "timeout": {
+                          "description": "Ceiling on the inline embedding call. Accepts a duration string (\"1.5s\") or milliseconds as a number. Default 1.5s; exceeding it publishes no tier for that request.",
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)$"
+                            },
+                            {
+                              "type": "number",
+                              "exclusiveMinimum": 0
+                            }
+                          ]
+                        },
+                        "min_similarity": {
+                          "type": "number",
+                          "minimum": 0,
+                          "exclusiveMaximum": 1,
+                          "description": "Similarity floor for the nearest reference phrase; below it no tier is published. 0 (default) accepts the nearest eligible match. Compared against the vector store backend's own similarity scale (raw cosine for chromem/Qdrant/Pinecone/Redis, certainty for Weaviate)."
+                        },
+                        "message_history_count": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 10,
+                          "description": "Number of recent user messages joined oldest-first into the embedded text. 1 (default) embeds only the latest message. System prompts and assistant replies are never embedded."
+                        },
+                        "count_toward_budgets": {
+                          "type": "boolean",
+                          "description": "Whether embedding usage counts toward virtual-key budgets (default false)"
+                        },
+                        "vector_store": {
+                          "type": "string",
+                          "enum": [
+                            "embedded",
+                            "vector_store"
+                          ],
+                          "description": "Where reference-phrase embeddings live. `embedded` (default) uses the\nbuilt-in in-memory store, so phrases are re-embedded on every restart.\n`vector_store` uses the top-level `vector_store` when one is configured\nand falls back to the embedded store otherwise.\n"
                         }
                       }
                     }
@@ -67812,7 +67965,7 @@
       "post": {
         "operationId": "resetComplexityAnalyzerConfig",
         "summary": "Reset complexity analyzer config",
-        "description": "Restores the built-in complexity analyzer runtime config defaults and hot-reloads the routing plugin.",
+        "description": "Restores the built-in reference phrase lists and hot-reloads the routing plugin. The saved embedding provider, model, and storage configuration are preserved.",
         "tags": [
           "Routing"
         ],
@@ -67831,35 +67984,30 @@
                   "description": "Full runtime configuration for complexity routing analysis.",
                   "additionalProperties": false,
                   "required": [
-                    "tier_boundaries",
                     "keywords"
                   ],
                   "properties": {
                     "tier_boundaries": {
                       "type": "object",
-                      "description": "Score thresholds for complexity tier classification. All values must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.",
+                      "deprecated": true,
+                      "description": "Deprecated score thresholds for the retired lexical complexity classifier.\nThis block is optional and ignored by semantic classification, but remains\naccepted for backward compatibility. When supplied, values must satisfy\n0 < simple_medium < medium_complex < 1.\n",
                       "additionalProperties": false,
                       "required": [
                         "simple_medium",
-                        "medium_complex",
-                        "complex_reasoning"
+                        "medium_complex"
                       ],
                       "properties": {
                         "simple_medium": {
                           "type": "number",
-                          "description": "Score boundary between SIMPLE and MEDIUM tiers",
+                          "deprecated": true,
+                          "description": "Deprecated score boundary between SIMPLE and MEDIUM tiers (ignored by semantic classification)",
                           "exclusiveMinimum": 0,
                           "exclusiveMaximum": 1
                         },
                         "medium_complex": {
                           "type": "number",
-                          "description": "Score boundary between MEDIUM and COMPLEX tiers",
-                          "exclusiveMinimum": 0,
-                          "exclusiveMaximum": 1
-                        },
-                        "complex_reasoning": {
-                          "type": "number",
-                          "description": "Score boundary between COMPLEX and REASONING tiers",
+                          "deprecated": true,
+                          "description": "Deprecated score boundary between MEDIUM and COMPLEX tiers (ignored by semantic classification)",
                           "exclusiveMinimum": 0,
                           "exclusiveMaximum": 1
                         }
@@ -67867,44 +68015,171 @@
                     },
                     "keywords": {
                       "type": "object",
-                      "description": "Editable keyword lists used by the complexity analyzer. Only the four user-facing\ndimensions are exposed; `reasoning_keywords` entries drive the reasoning tier\noverride. Matching is normalized to lowercase and duplicates are removed on save.\n",
+                      "description": "Reference phrases for semantic complexity classification, one list per tier.\nEach request is embedded and takes the tier of its nearest phrase. Entries\nshould be whole example prompts rather than individual keywords. Each phrase\nis limited to 2000 characters, and the same phrase cannot appear in two\ntiers. The field names predate semantic classification and are kept for\nbackward compatibility.\n",
                       "additionalProperties": false,
                       "required": [
-                        "code_keywords",
-                        "reasoning_keywords",
-                        "technical_keywords",
-                        "simple_keywords"
+                        "simple_keywords",
+                        "medium_keywords",
+                        "complex_keywords"
                       ],
                       "properties": {
-                        "code_keywords": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          },
-                          "minItems": 1
-                        },
-                        "reasoning_keywords": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          },
-                          "minItems": 1
-                        },
-                        "technical_keywords": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          },
-                          "minItems": 1
-                        },
                         "simple_keywords": {
                           "type": "array",
+                          "description": "Reference phrases for the SIMPLE tier (50 built-in defaults)",
                           "items": {
-                            "type": "string"
+                            "type": "string",
+                            "maxLength": 2000
+                          },
+                          "minItems": 1
+                        },
+                        "medium_keywords": {
+                          "type": "array",
+                          "description": "Reference phrases for the MEDIUM tier (50 built-in defaults)",
+                          "items": {
+                            "type": "string",
+                            "maxLength": 2000
+                          },
+                          "minItems": 1
+                        },
+                        "complex_keywords": {
+                          "type": "array",
+                          "description": "Reference phrases for the COMPLEX tier (50 built-in defaults)",
+                          "items": {
+                            "type": "string",
+                            "maxLength": 2000
                           },
                           "minItems": 1
                         }
                       }
+                    },
+                    "semantic": {
+                      "type": "object",
+                      "description": "Embedding configuration for semantic complexity classification. When absent,\nno complexity tier is published and rules referencing complexity_tier fall\nthrough. The provider must have an enabled key.\n",
+                      "additionalProperties": false,
+                      "required": [
+                        "provider",
+                        "embedding_model"
+                      ],
+                      "properties": {
+                        "provider": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Provider used for embedding calls (must have an enabled key)"
+                        },
+                        "embedding_model": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Embedding model, e.g. text-embedding-3-small"
+                        },
+                        "timeout": {
+                          "description": "Ceiling on the inline embedding call. Accepts a duration string (\"1.5s\") or milliseconds as a number. Default 1.5s; exceeding it publishes no tier for that request.",
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)$"
+                            },
+                            {
+                              "type": "number",
+                              "exclusiveMinimum": 0
+                            }
+                          ]
+                        },
+                        "min_similarity": {
+                          "type": "number",
+                          "minimum": 0,
+                          "exclusiveMaximum": 1,
+                          "description": "Similarity floor for the nearest reference phrase; below it no tier is published. 0 (default) accepts the nearest eligible match. Compared against the vector store backend's own similarity scale (raw cosine for chromem/Qdrant/Pinecone/Redis, certainty for Weaviate)."
+                        },
+                        "message_history_count": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 10,
+                          "description": "Number of recent user messages joined oldest-first into the embedded text. 1 (default) embeds only the latest message. System prompts and assistant replies are never embedded."
+                        },
+                        "count_toward_budgets": {
+                          "type": "boolean",
+                          "description": "Whether embedding usage counts toward virtual-key budgets (default false)"
+                        },
+                        "vector_store": {
+                          "type": "string",
+                          "enum": [
+                            "embedded",
+                            "vector_store"
+                          ],
+                          "description": "Where reference-phrase embeddings live. `embedded` (default) uses the\nbuilt-in in-memory store, so phrases are re-embedded on every restart.\n`vector_store` uses the top-level `vector_store` when one is configured\nand falls back to the embedded store otherwise.\n"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/routing/complexity-analyzer-status": {
+      "get": {
+        "operationId": "getComplexityAnalyzerStatus",
+        "summary": "Get complexity classifier status",
+        "description": "Returns the runtime status of the semantic complexity classifier (disabled, warming, ready, or failed), including warmup progress and whether a previous generation is still serving.",
+        "tags": [
+          "Routing"
+        ],
+        "responses": {
+          "200": {
+            "description": "Complexity classifier status retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Runtime status of the semantic complexity classifier. Never contains phrases, embeddings, or provider secrets.",
+                  "properties": {
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "disabled",
+                        "warming",
+                        "ready",
+                        "failed"
+                      ],
+                      "description": "disabled = no embedding configuration; warming = reference phrases are being embedded; ready = serving the current configuration; failed = the desired configuration failed to warm"
+                    },
+                    "loaded": {
+                      "type": "integer",
+                      "description": "Reference phrases embedded so far in the current warmup"
+                    },
+                    "total": {
+                      "type": "integer",
+                      "description": "Total reference phrases to embed in the current warmup"
+                    },
+                    "serving_previous": {
+                      "type": "boolean",
+                      "description": "When true with state=failed, the previous generation is still serving while the new one failed to warm"
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Warmup failure detail when state=failed"
                     }
                   }
                 }
@@ -68249,7 +68524,7 @@
         "operationId": "getComplexityAnalyzerConfigLegacy",
         "deprecated": true,
         "summary": "Get complexity analyzer config (deprecated path)",
-        "description": "Returns the full complexity analyzer runtime config, including tier thresholds and editable keyword lists. Returns built-in defaults if none have been configured. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.",
+        "description": "Returns the full complexity analyzer runtime config, including the semantic embedding configuration and per-tier reference phrase lists. Returns built-in defaults if none have been configured. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.",
         "tags": [
           "Routing"
         ],
@@ -68268,35 +68543,30 @@
                   "description": "Full runtime configuration for complexity routing analysis.",
                   "additionalProperties": false,
                   "required": [
-                    "tier_boundaries",
                     "keywords"
                   ],
                   "properties": {
                     "tier_boundaries": {
                       "type": "object",
-                      "description": "Score thresholds for complexity tier classification. All values must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.",
+                      "deprecated": true,
+                      "description": "Deprecated score thresholds for the retired lexical complexity classifier.\nThis block is optional and ignored by semantic classification, but remains\naccepted for backward compatibility. When supplied, values must satisfy\n0 < simple_medium < medium_complex < 1.\n",
                       "additionalProperties": false,
                       "required": [
                         "simple_medium",
-                        "medium_complex",
-                        "complex_reasoning"
+                        "medium_complex"
                       ],
                       "properties": {
                         "simple_medium": {
                           "type": "number",
-                          "description": "Score boundary between SIMPLE and MEDIUM tiers",
+                          "deprecated": true,
+                          "description": "Deprecated score boundary between SIMPLE and MEDIUM tiers (ignored by semantic classification)",
                           "exclusiveMinimum": 0,
                           "exclusiveMaximum": 1
                         },
                         "medium_complex": {
                           "type": "number",
-                          "description": "Score boundary between MEDIUM and COMPLEX tiers",
-                          "exclusiveMinimum": 0,
-                          "exclusiveMaximum": 1
-                        },
-                        "complex_reasoning": {
-                          "type": "number",
-                          "description": "Score boundary between COMPLEX and REASONING tiers",
+                          "deprecated": true,
+                          "description": "Deprecated score boundary between MEDIUM and COMPLEX tiers (ignored by semantic classification)",
                           "exclusiveMinimum": 0,
                           "exclusiveMaximum": 1
                         }
@@ -68304,42 +68574,98 @@
                     },
                     "keywords": {
                       "type": "object",
-                      "description": "Editable keyword lists used by the complexity analyzer. Only the four user-facing\ndimensions are exposed; `reasoning_keywords` entries drive the reasoning tier\noverride. Matching is normalized to lowercase and duplicates are removed on save.\n",
+                      "description": "Reference phrases for semantic complexity classification, one list per tier.\nEach request is embedded and takes the tier of its nearest phrase. Entries\nshould be whole example prompts rather than individual keywords. Each phrase\nis limited to 2000 characters, and the same phrase cannot appear in two\ntiers. The field names predate semantic classification and are kept for\nbackward compatibility.\n",
                       "additionalProperties": false,
                       "required": [
-                        "code_keywords",
-                        "reasoning_keywords",
-                        "technical_keywords",
-                        "simple_keywords"
+                        "simple_keywords",
+                        "medium_keywords",
+                        "complex_keywords"
                       ],
                       "properties": {
-                        "code_keywords": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          },
-                          "minItems": 1
-                        },
-                        "reasoning_keywords": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          },
-                          "minItems": 1
-                        },
-                        "technical_keywords": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          },
-                          "minItems": 1
-                        },
                         "simple_keywords": {
                           "type": "array",
+                          "description": "Reference phrases for the SIMPLE tier (50 built-in defaults)",
                           "items": {
-                            "type": "string"
+                            "type": "string",
+                            "maxLength": 2000
                           },
                           "minItems": 1
+                        },
+                        "medium_keywords": {
+                          "type": "array",
+                          "description": "Reference phrases for the MEDIUM tier (50 built-in defaults)",
+                          "items": {
+                            "type": "string",
+                            "maxLength": 2000
+                          },
+                          "minItems": 1
+                        },
+                        "complex_keywords": {
+                          "type": "array",
+                          "description": "Reference phrases for the COMPLEX tier (50 built-in defaults)",
+                          "items": {
+                            "type": "string",
+                            "maxLength": 2000
+                          },
+                          "minItems": 1
+                        }
+                      }
+                    },
+                    "semantic": {
+                      "type": "object",
+                      "description": "Embedding configuration for semantic complexity classification. When absent,\nno complexity tier is published and rules referencing complexity_tier fall\nthrough. The provider must have an enabled key.\n",
+                      "additionalProperties": false,
+                      "required": [
+                        "provider",
+                        "embedding_model"
+                      ],
+                      "properties": {
+                        "provider": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Provider used for embedding calls (must have an enabled key)"
+                        },
+                        "embedding_model": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Embedding model, e.g. text-embedding-3-small"
+                        },
+                        "timeout": {
+                          "description": "Ceiling on the inline embedding call. Accepts a duration string (\"1.5s\") or milliseconds as a number. Default 1.5s; exceeding it publishes no tier for that request.",
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)$"
+                            },
+                            {
+                              "type": "number",
+                              "exclusiveMinimum": 0
+                            }
+                          ]
+                        },
+                        "min_similarity": {
+                          "type": "number",
+                          "minimum": 0,
+                          "exclusiveMaximum": 1,
+                          "description": "Similarity floor for the nearest reference phrase; below it no tier is published. 0 (default) accepts the nearest eligible match. Compared against the vector store backend's own similarity scale (raw cosine for chromem/Qdrant/Pinecone/Redis, certainty for Weaviate)."
+                        },
+                        "message_history_count": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 10,
+                          "description": "Number of recent user messages joined oldest-first into the embedded text. 1 (default) embeds only the latest message. System prompts and assistant replies are never embedded."
+                        },
+                        "count_toward_budgets": {
+                          "type": "boolean",
+                          "description": "Whether embedding usage counts toward virtual-key budgets (default false)"
+                        },
+                        "vector_store": {
+                          "type": "string",
+                          "enum": [
+                            "embedded",
+                            "vector_store"
+                          ],
+                          "description": "Where reference-phrase embeddings live. `embedded` (default) uses the\nbuilt-in in-memory store, so phrases are re-embedded on every restart.\n`vector_store` uses the top-level `vector_store` when one is configured\nand falls back to the embedded store otherwise.\n"
                         }
                       }
                     }
@@ -68374,7 +68700,7 @@
         "operationId": "updateComplexityAnalyzerConfigLegacy",
         "deprecated": true,
         "summary": "Update complexity analyzer config (deprecated path)",
-        "description": "Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Tier thresholds must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.",
+        "description": "Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Changing the embedding configuration or reference phrases triggers a background re-warm of the classifier; unchanged phrases are not re-embedded. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.",
         "tags": [
           "Routing"
         ],
@@ -68387,35 +68713,30 @@
                 "description": "Full runtime configuration for complexity routing analysis.",
                 "additionalProperties": false,
                 "required": [
-                  "tier_boundaries",
                   "keywords"
                 ],
                 "properties": {
                   "tier_boundaries": {
                     "type": "object",
-                    "description": "Score thresholds for complexity tier classification. All values must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.",
+                    "deprecated": true,
+                    "description": "Deprecated score thresholds for the retired lexical complexity classifier.\nThis block is optional and ignored by semantic classification, but remains\naccepted for backward compatibility. When supplied, values must satisfy\n0 < simple_medium < medium_complex < 1.\n",
                     "additionalProperties": false,
                     "required": [
                       "simple_medium",
-                      "medium_complex",
-                      "complex_reasoning"
+                      "medium_complex"
                     ],
                     "properties": {
                       "simple_medium": {
                         "type": "number",
-                        "description": "Score boundary between SIMPLE and MEDIUM tiers",
+                        "deprecated": true,
+                        "description": "Deprecated score boundary between SIMPLE and MEDIUM tiers (ignored by semantic classification)",
                         "exclusiveMinimum": 0,
                         "exclusiveMaximum": 1
                       },
                       "medium_complex": {
                         "type": "number",
-                        "description": "Score boundary between MEDIUM and COMPLEX tiers",
-                        "exclusiveMinimum": 0,
-                        "exclusiveMaximum": 1
-                      },
-                      "complex_reasoning": {
-                        "type": "number",
-                        "description": "Score boundary between COMPLEX and REASONING tiers",
+                        "deprecated": true,
+                        "description": "Deprecated score boundary between MEDIUM and COMPLEX tiers (ignored by semantic classification)",
                         "exclusiveMinimum": 0,
                         "exclusiveMaximum": 1
                       }
@@ -68423,42 +68744,98 @@
                   },
                   "keywords": {
                     "type": "object",
-                    "description": "Editable keyword lists used by the complexity analyzer. Only the four user-facing\ndimensions are exposed; `reasoning_keywords` entries drive the reasoning tier\noverride. Matching is normalized to lowercase and duplicates are removed on save.\n",
+                    "description": "Reference phrases for semantic complexity classification, one list per tier.\nEach request is embedded and takes the tier of its nearest phrase. Entries\nshould be whole example prompts rather than individual keywords. Each phrase\nis limited to 2000 characters, and the same phrase cannot appear in two\ntiers. The field names predate semantic classification and are kept for\nbackward compatibility.\n",
                     "additionalProperties": false,
                     "required": [
-                      "code_keywords",
-                      "reasoning_keywords",
-                      "technical_keywords",
-                      "simple_keywords"
+                      "simple_keywords",
+                      "medium_keywords",
+                      "complex_keywords"
                     ],
                     "properties": {
-                      "code_keywords": {
-                        "type": "array",
-                        "items": {
-                          "type": "string"
-                        },
-                        "minItems": 1
-                      },
-                      "reasoning_keywords": {
-                        "type": "array",
-                        "items": {
-                          "type": "string"
-                        },
-                        "minItems": 1
-                      },
-                      "technical_keywords": {
-                        "type": "array",
-                        "items": {
-                          "type": "string"
-                        },
-                        "minItems": 1
-                      },
                       "simple_keywords": {
                         "type": "array",
+                        "description": "Reference phrases for the SIMPLE tier (50 built-in defaults)",
                         "items": {
-                          "type": "string"
+                          "type": "string",
+                          "maxLength": 2000
                         },
                         "minItems": 1
+                      },
+                      "medium_keywords": {
+                        "type": "array",
+                        "description": "Reference phrases for the MEDIUM tier (50 built-in defaults)",
+                        "items": {
+                          "type": "string",
+                          "maxLength": 2000
+                        },
+                        "minItems": 1
+                      },
+                      "complex_keywords": {
+                        "type": "array",
+                        "description": "Reference phrases for the COMPLEX tier (50 built-in defaults)",
+                        "items": {
+                          "type": "string",
+                          "maxLength": 2000
+                        },
+                        "minItems": 1
+                      }
+                    }
+                  },
+                  "semantic": {
+                    "type": "object",
+                    "description": "Embedding configuration for semantic complexity classification. When absent,\nno complexity tier is published and rules referencing complexity_tier fall\nthrough. The provider must have an enabled key.\n",
+                    "additionalProperties": false,
+                    "required": [
+                      "provider",
+                      "embedding_model"
+                    ],
+                    "properties": {
+                      "provider": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Provider used for embedding calls (must have an enabled key)"
+                      },
+                      "embedding_model": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Embedding model, e.g. text-embedding-3-small"
+                      },
+                      "timeout": {
+                        "description": "Ceiling on the inline embedding call. Accepts a duration string (\"1.5s\") or milliseconds as a number. Default 1.5s; exceeding it publishes no tier for that request.",
+                        "oneOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)$"
+                          },
+                          {
+                            "type": "number",
+                            "exclusiveMinimum": 0
+                          }
+                        ]
+                      },
+                      "min_similarity": {
+                        "type": "number",
+                        "minimum": 0,
+                        "exclusiveMaximum": 1,
+                        "description": "Similarity floor for the nearest reference phrase; below it no tier is published. 0 (default) accepts the nearest eligible match. Compared against the vector store backend's own similarity scale (raw cosine for chromem/Qdrant/Pinecone/Redis, certainty for Weaviate)."
+                      },
+                      "message_history_count": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 10,
+                        "description": "Number of recent user messages joined oldest-first into the embedded text. 1 (default) embeds only the latest message. System prompts and assistant replies are never embedded."
+                      },
+                      "count_toward_budgets": {
+                        "type": "boolean",
+                        "description": "Whether embedding usage counts toward virtual-key budgets (default false)"
+                      },
+                      "vector_store": {
+                        "type": "string",
+                        "enum": [
+                          "embedded",
+                          "vector_store"
+                        ],
+                        "description": "Where reference-phrase embeddings live. `embedded` (default) uses the\nbuilt-in in-memory store, so phrases are re-embedded on every restart.\n`vector_store` uses the top-level `vector_store` when one is configured\nand falls back to the embedded store otherwise.\n"
                       }
                     }
                   }
@@ -68482,35 +68859,30 @@
                   "description": "Full runtime configuration for complexity routing analysis.",
                   "additionalProperties": false,
                   "required": [
-                    "tier_boundaries",
                     "keywords"
                   ],
                   "properties": {
                     "tier_boundaries": {
                       "type": "object",
-                      "description": "Score thresholds for complexity tier classification. All values must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.",
+                      "deprecated": true,
+                      "description": "Deprecated score thresholds for the retired lexical complexity classifier.\nThis block is optional and ignored by semantic classification, but remains\naccepted for backward compatibility. When supplied, values must satisfy\n0 < simple_medium < medium_complex < 1.\n",
                       "additionalProperties": false,
                       "required": [
                         "simple_medium",
-                        "medium_complex",
-                        "complex_reasoning"
+                        "medium_complex"
                       ],
                       "properties": {
                         "simple_medium": {
                           "type": "number",
-                          "description": "Score boundary between SIMPLE and MEDIUM tiers",
+                          "deprecated": true,
+                          "description": "Deprecated score boundary between SIMPLE and MEDIUM tiers (ignored by semantic classification)",
                           "exclusiveMinimum": 0,
                           "exclusiveMaximum": 1
                         },
                         "medium_complex": {
                           "type": "number",
-                          "description": "Score boundary between MEDIUM and COMPLEX tiers",
-                          "exclusiveMinimum": 0,
-                          "exclusiveMaximum": 1
-                        },
-                        "complex_reasoning": {
-                          "type": "number",
-                          "description": "Score boundary between COMPLEX and REASONING tiers",
+                          "deprecated": true,
+                          "description": "Deprecated score boundary between MEDIUM and COMPLEX tiers (ignored by semantic classification)",
                           "exclusiveMinimum": 0,
                           "exclusiveMaximum": 1
                         }
@@ -68518,42 +68890,98 @@
                     },
                     "keywords": {
                       "type": "object",
-                      "description": "Editable keyword lists used by the complexity analyzer. Only the four user-facing\ndimensions are exposed; `reasoning_keywords` entries drive the reasoning tier\noverride. Matching is normalized to lowercase and duplicates are removed on save.\n",
+                      "description": "Reference phrases for semantic complexity classification, one list per tier.\nEach request is embedded and takes the tier of its nearest phrase. Entries\nshould be whole example prompts rather than individual keywords. Each phrase\nis limited to 2000 characters, and the same phrase cannot appear in two\ntiers. The field names predate semantic classification and are kept for\nbackward compatibility.\n",
                       "additionalProperties": false,
                       "required": [
-                        "code_keywords",
-                        "reasoning_keywords",
-                        "technical_keywords",
-                        "simple_keywords"
+                        "simple_keywords",
+                        "medium_keywords",
+                        "complex_keywords"
                       ],
                       "properties": {
-                        "code_keywords": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          },
-                          "minItems": 1
-                        },
-                        "reasoning_keywords": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          },
-                          "minItems": 1
-                        },
-                        "technical_keywords": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          },
-                          "minItems": 1
-                        },
                         "simple_keywords": {
                           "type": "array",
+                          "description": "Reference phrases for the SIMPLE tier (50 built-in defaults)",
                           "items": {
-                            "type": "string"
+                            "type": "string",
+                            "maxLength": 2000
                           },
                           "minItems": 1
+                        },
+                        "medium_keywords": {
+                          "type": "array",
+                          "description": "Reference phrases for the MEDIUM tier (50 built-in defaults)",
+                          "items": {
+                            "type": "string",
+                            "maxLength": 2000
+                          },
+                          "minItems": 1
+                        },
+                        "complex_keywords": {
+                          "type": "array",
+                          "description": "Reference phrases for the COMPLEX tier (50 built-in defaults)",
+                          "items": {
+                            "type": "string",
+                            "maxLength": 2000
+                          },
+                          "minItems": 1
+                        }
+                      }
+                    },
+                    "semantic": {
+                      "type": "object",
+                      "description": "Embedding configuration for semantic complexity classification. When absent,\nno complexity tier is published and rules referencing complexity_tier fall\nthrough. The provider must have an enabled key.\n",
+                      "additionalProperties": false,
+                      "required": [
+                        "provider",
+                        "embedding_model"
+                      ],
+                      "properties": {
+                        "provider": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Provider used for embedding calls (must have an enabled key)"
+                        },
+                        "embedding_model": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Embedding model, e.g. text-embedding-3-small"
+                        },
+                        "timeout": {
+                          "description": "Ceiling on the inline embedding call. Accepts a duration string (\"1.5s\") or milliseconds as a number. Default 1.5s; exceeding it publishes no tier for that request.",
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)$"
+                            },
+                            {
+                              "type": "number",
+                              "exclusiveMinimum": 0
+                            }
+                          ]
+                        },
+                        "min_similarity": {
+                          "type": "number",
+                          "minimum": 0,
+                          "exclusiveMaximum": 1,
+                          "description": "Similarity floor for the nearest reference phrase; below it no tier is published. 0 (default) accepts the nearest eligible match. Compared against the vector store backend's own similarity scale (raw cosine for chromem/Qdrant/Pinecone/Redis, certainty for Weaviate)."
+                        },
+                        "message_history_count": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 10,
+                          "description": "Number of recent user messages joined oldest-first into the embedded text. 1 (default) embeds only the latest message. System prompts and assistant replies are never embedded."
+                        },
+                        "count_toward_budgets": {
+                          "type": "boolean",
+                          "description": "Whether embedding usage counts toward virtual-key budgets (default false)"
+                        },
+                        "vector_store": {
+                          "type": "string",
+                          "enum": [
+                            "embedded",
+                            "vector_store"
+                          ],
+                          "description": "Where reference-phrase embeddings live. `embedded` (default) uses the\nbuilt-in in-memory store, so phrases are re-embedded on every restart.\n`vector_store` uses the top-level `vector_store` when one is configured\nand falls back to the embedded store otherwise.\n"
                         }
                       }
                     }
@@ -68600,7 +69028,7 @@
         "operationId": "resetComplexityAnalyzerConfigLegacy",
         "deprecated": true,
         "summary": "Reset complexity analyzer config (deprecated path)",
-        "description": "Restores the built-in complexity analyzer runtime config defaults and hot-reloads the routing plugin. Deprecated, use /api/routing/complexity-analyzer-config/reset instead. This path is kept for backwards compatibility and behaves identically.",
+        "description": "Restores the built-in reference phrase lists and hot-reloads the routing plugin. The saved embedding provider, model, and storage configuration are preserved. Deprecated, use /api/routing/complexity-analyzer-config/reset instead. This path is kept for backwards compatibility and behaves identically.",
         "tags": [
           "Routing"
         ],
@@ -68619,35 +69047,30 @@
                   "description": "Full runtime configuration for complexity routing analysis.",
                   "additionalProperties": false,
                   "required": [
-                    "tier_boundaries",
                     "keywords"
                   ],
                   "properties": {
                     "tier_boundaries": {
                       "type": "object",
-                      "description": "Score thresholds for complexity tier classification. All values must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.",
+                      "deprecated": true,
+                      "description": "Deprecated score thresholds for the retired lexical complexity classifier.\nThis block is optional and ignored by semantic classification, but remains\naccepted for backward compatibility. When supplied, values must satisfy\n0 < simple_medium < medium_complex < 1.\n",
                       "additionalProperties": false,
                       "required": [
                         "simple_medium",
-                        "medium_complex",
-                        "complex_reasoning"
+                        "medium_complex"
                       ],
                       "properties": {
                         "simple_medium": {
                           "type": "number",
-                          "description": "Score boundary between SIMPLE and MEDIUM tiers",
+                          "deprecated": true,
+                          "description": "Deprecated score boundary between SIMPLE and MEDIUM tiers (ignored by semantic classification)",
                           "exclusiveMinimum": 0,
                           "exclusiveMaximum": 1
                         },
                         "medium_complex": {
                           "type": "number",
-                          "description": "Score boundary between MEDIUM and COMPLEX tiers",
-                          "exclusiveMinimum": 0,
-                          "exclusiveMaximum": 1
-                        },
-                        "complex_reasoning": {
-                          "type": "number",
-                          "description": "Score boundary between COMPLEX and REASONING tiers",
+                          "deprecated": true,
+                          "description": "Deprecated score boundary between MEDIUM and COMPLEX tiers (ignored by semantic classification)",
                           "exclusiveMinimum": 0,
                           "exclusiveMaximum": 1
                         }
@@ -68655,42 +69078,98 @@
                     },
                     "keywords": {
                       "type": "object",
-                      "description": "Editable keyword lists used by the complexity analyzer. Only the four user-facing\ndimensions are exposed; `reasoning_keywords` entries drive the reasoning tier\noverride. Matching is normalized to lowercase and duplicates are removed on save.\n",
+                      "description": "Reference phrases for semantic complexity classification, one list per tier.\nEach request is embedded and takes the tier of its nearest phrase. Entries\nshould be whole example prompts rather than individual keywords. Each phrase\nis limited to 2000 characters, and the same phrase cannot appear in two\ntiers. The field names predate semantic classification and are kept for\nbackward compatibility.\n",
                       "additionalProperties": false,
                       "required": [
-                        "code_keywords",
-                        "reasoning_keywords",
-                        "technical_keywords",
-                        "simple_keywords"
+                        "simple_keywords",
+                        "medium_keywords",
+                        "complex_keywords"
                       ],
                       "properties": {
-                        "code_keywords": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          },
-                          "minItems": 1
-                        },
-                        "reasoning_keywords": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          },
-                          "minItems": 1
-                        },
-                        "technical_keywords": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          },
-                          "minItems": 1
-                        },
                         "simple_keywords": {
                           "type": "array",
+                          "description": "Reference phrases for the SIMPLE tier (50 built-in defaults)",
                           "items": {
-                            "type": "string"
+                            "type": "string",
+                            "maxLength": 2000
                           },
                           "minItems": 1
+                        },
+                        "medium_keywords": {
+                          "type": "array",
+                          "description": "Reference phrases for the MEDIUM tier (50 built-in defaults)",
+                          "items": {
+                            "type": "string",
+                            "maxLength": 2000
+                          },
+                          "minItems": 1
+                        },
+                        "complex_keywords": {
+                          "type": "array",
+                          "description": "Reference phrases for the COMPLEX tier (50 built-in defaults)",
+                          "items": {
+                            "type": "string",
+                            "maxLength": 2000
+                          },
+                          "minItems": 1
+                        }
+                      }
+                    },
+                    "semantic": {
+                      "type": "object",
+                      "description": "Embedding configuration for semantic complexity classification. When absent,\nno complexity tier is published and rules referencing complexity_tier fall\nthrough. The provider must have an enabled key.\n",
+                      "additionalProperties": false,
+                      "required": [
+                        "provider",
+                        "embedding_model"
+                      ],
+                      "properties": {
+                        "provider": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Provider used for embedding calls (must have an enabled key)"
+                        },
+                        "embedding_model": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Embedding model, e.g. text-embedding-3-small"
+                        },
+                        "timeout": {
+                          "description": "Ceiling on the inline embedding call. Accepts a duration string (\"1.5s\") or milliseconds as a number. Default 1.5s; exceeding it publishes no tier for that request.",
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)$"
+                            },
+                            {
+                              "type": "number",
+                              "exclusiveMinimum": 0
+                            }
+                          ]
+                        },
+                        "min_similarity": {
+                          "type": "number",
+                          "minimum": 0,
+                          "exclusiveMaximum": 1,
+                          "description": "Similarity floor for the nearest reference phrase; below it no tier is published. 0 (default) accepts the nearest eligible match. Compared against the vector store backend's own similarity scale (raw cosine for chromem/Qdrant/Pinecone/Redis, certainty for Weaviate)."
+                        },
+                        "message_history_count": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 10,
+                          "description": "Number of recent user messages joined oldest-first into the embedded text. 1 (default) embeds only the latest message. System prompts and assistant replies are never embedded."
+                        },
+                        "count_toward_budgets": {
+                          "type": "boolean",
+                          "description": "Whether embedding usage counts toward virtual-key budgets (default false)"
+                        },
+                        "vector_store": {
+                          "type": "string",
+                          "enum": [
+                            "embedded",
+                            "vector_store"
+                          ],
+                          "description": "Where reference-phrase embeddings live. `embedded` (default) uses the\nbuilt-in in-memory store, so phrases are re-embedded on every restart.\n`vector_store` uses the top-level `vector_store` when one is configured\nand falls back to the embedded store otherwise.\n"
                         }
                       }
                     }
@@ -68791,6 +69270,22 @@
             "name": "routing_engine_used",
             "in": "query",
             "description": "Comma-separated list of routing engines to filter by (routing-rule, governance, or loadbalancing)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "complexity_tiers",
+            "in": "query",
+            "description": "Comma-separated list of routing complexity tiers to filter by (SIMPLE, MEDIUM, COMPLEX, or the legacy REASONING tier recorded on historical rows before it was merged into COMPLEX)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "complexity_mechanisms",
+            "in": "query",
+            "description": "Comma-separated list of complexity classification mechanisms to filter by (semantic or skipped)",
             "schema": {
               "type": "string"
             }
@@ -69376,6 +69871,22 @@
             }
           },
           {
+            "name": "complexity_tiers",
+            "in": "query",
+            "description": "Comma-separated list of routing complexity tiers to filter by (SIMPLE, MEDIUM, COMPLEX, or the legacy REASONING tier recorded on historical rows before it was merged into COMPLEX)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "complexity_mechanisms",
+            "in": "query",
+            "description": "Comma-separated list of complexity classification mechanisms to filter by (semantic or skipped)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "start_time",
             "in": "query",
             "description": "Start time filter (RFC3339 format)",
@@ -69606,6 +70117,22 @@
             "name": "routing_engine_used",
             "in": "query",
             "description": "Comma-separated list of routing engines to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "complexity_tiers",
+            "in": "query",
+            "description": "Comma-separated list of routing complexity tiers to filter by (SIMPLE, MEDIUM, COMPLEX, or the legacy REASONING tier recorded on historical rows before it was merged into COMPLEX)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "complexity_mechanisms",
+            "in": "query",
+            "description": "Comma-separated list of complexity classification mechanisms to filter by (semantic or skipped)",
             "schema": {
               "type": "string"
             }
@@ -69878,6 +70405,22 @@
             }
           },
           {
+            "name": "complexity_tiers",
+            "in": "query",
+            "description": "Comma-separated list of routing complexity tiers to filter by (SIMPLE, MEDIUM, COMPLEX, or the legacy REASONING tier recorded on historical rows before it was merged into COMPLEX)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "complexity_mechanisms",
+            "in": "query",
+            "description": "Comma-separated list of complexity classification mechanisms to filter by (semantic or skipped)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "start_time",
             "in": "query",
             "description": "Start time filter (RFC3339 format)",
@@ -70100,6 +70643,22 @@
             "name": "routing_engine_used",
             "in": "query",
             "description": "Comma-separated list of routing engines to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "complexity_tiers",
+            "in": "query",
+            "description": "Comma-separated list of routing complexity tiers to filter by (SIMPLE, MEDIUM, COMPLEX, or the legacy REASONING tier recorded on historical rows before it was merged into COMPLEX)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "complexity_mechanisms",
+            "in": "query",
+            "description": "Comma-separated list of complexity classification mechanisms to filter by (semantic or skipped)",
             "schema": {
               "type": "string"
             }
@@ -70332,6 +70891,22 @@
             "name": "routing_engine_used",
             "in": "query",
             "description": "Comma-separated list of routing engines to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "complexity_tiers",
+            "in": "query",
+            "description": "Comma-separated list of routing complexity tiers to filter by (SIMPLE, MEDIUM, COMPLEX, or the legacy REASONING tier recorded on historical rows before it was merged into COMPLEX)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "complexity_mechanisms",
+            "in": "query",
+            "description": "Comma-separated list of complexity classification mechanisms to filter by (semantic or skipped)",
             "schema": {
               "type": "string"
             }
@@ -70580,6 +71155,22 @@
             }
           },
           {
+            "name": "complexity_tiers",
+            "in": "query",
+            "description": "Comma-separated list of routing complexity tiers to filter by (SIMPLE, MEDIUM, COMPLEX, or the legacy REASONING tier recorded on historical rows before it was merged into COMPLEX)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "complexity_mechanisms",
+            "in": "query",
+            "description": "Comma-separated list of complexity classification mechanisms to filter by (semantic or skipped)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "start_time",
             "in": "query",
             "description": "Start time filter (RFC3339 format)",
@@ -70811,6 +71402,22 @@
             }
           },
           {
+            "name": "complexity_tiers",
+            "in": "query",
+            "description": "Comma-separated list of routing complexity tiers to filter by (SIMPLE, MEDIUM, COMPLEX, or the legacy REASONING tier recorded on historical rows before it was merged into COMPLEX)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "complexity_mechanisms",
+            "in": "query",
+            "description": "Comma-separated list of complexity classification mechanisms to filter by (semantic or skipped)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "start_time",
             "in": "query",
             "description": "Start time filter (RFC3339 format)",
@@ -71037,6 +71644,22 @@
             "name": "routing_engine_used",
             "in": "query",
             "description": "Comma-separated list of routing engines to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "complexity_tiers",
+            "in": "query",
+            "description": "Comma-separated list of routing complexity tiers to filter by (SIMPLE, MEDIUM, COMPLEX, or the legacy REASONING tier recorded on historical rows before it was merged into COMPLEX)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "complexity_mechanisms",
+            "in": "query",
+            "description": "Comma-separated list of complexity classification mechanisms to filter by (semantic or skipped)",
             "schema": {
               "type": "string"
             }
@@ -71280,6 +71903,22 @@
             "name": "routing_engine_used",
             "in": "query",
             "description": "Comma-separated list of routing engines to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "complexity_tiers",
+            "in": "query",
+            "description": "Comma-separated list of routing complexity tiers to filter by (SIMPLE, MEDIUM, COMPLEX, or the legacy REASONING tier recorded on historical rows before it was merged into COMPLEX)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "complexity_mechanisms",
+            "in": "query",
+            "description": "Comma-separated list of complexity classification mechanisms to filter by (semantic or skipped)",
             "schema": {
               "type": "string"
             }
@@ -71549,6 +72188,22 @@
             }
           },
           {
+            "name": "complexity_tiers",
+            "in": "query",
+            "description": "Comma-separated list of routing complexity tiers to filter by (SIMPLE, MEDIUM, COMPLEX, or the legacy REASONING tier recorded on historical rows before it was merged into COMPLEX)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "complexity_mechanisms",
+            "in": "query",
+            "description": "Comma-separated list of complexity classification mechanisms to filter by (semantic or skipped)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "start_time",
             "in": "query",
             "description": "Start time filter (RFC3339 format)",
@@ -71803,6 +72458,22 @@
             "name": "routing_engine_used",
             "in": "query",
             "description": "Comma-separated list of routing engines to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "complexity_tiers",
+            "in": "query",
+            "description": "Comma-separated list of routing complexity tiers to filter by (SIMPLE, MEDIUM, COMPLEX, or the legacy REASONING tier recorded on historical rows before it was merged into COMPLEX)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "complexity_mechanisms",
+            "in": "query",
+            "description": "Comma-separated list of complexity classification mechanisms to filter by (semantic or skipped)",
             "schema": {
               "type": "string"
             }
@@ -72073,6 +72744,22 @@
             "name": "routing_engine_used",
             "in": "query",
             "description": "Comma-separated list of routing engines to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "complexity_tiers",
+            "in": "query",
+            "description": "Comma-separated list of routing complexity tiers to filter by (SIMPLE, MEDIUM, COMPLEX, or the legacy REASONING tier recorded on historical rows before it was merged into COMPLEX)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "complexity_mechanisms",
+            "in": "query",
+            "description": "Comma-separated list of complexity classification mechanisms to filter by (semantic or skipped)",
             "schema": {
               "type": "string"
             }
@@ -72481,6 +73168,22 @@
             }
           },
           {
+            "name": "complexity_tiers",
+            "in": "query",
+            "description": "Comma-separated list of routing complexity tiers to filter by (SIMPLE, MEDIUM, COMPLEX, or the legacy REASONING tier recorded on historical rows before it was merged into COMPLEX)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "complexity_mechanisms",
+            "in": "query",
+            "description": "Comma-separated list of complexity classification mechanisms to filter by (semantic or skipped)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "start_time",
             "in": "query",
             "description": "Start time filter (RFC3339 format)",
@@ -72839,6 +73542,22 @@
             "name": "routing_engine_used",
             "in": "query",
             "description": "Comma-separated list of routing engines to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "complexity_tiers",
+            "in": "query",
+            "description": "Comma-separated list of routing complexity tiers to filter by (SIMPLE, MEDIUM, COMPLEX, or the legacy REASONING tier recorded on historical rows before it was merged into COMPLEX)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "complexity_mechanisms",
+            "in": "query",
+            "description": "Comma-separated list of complexity classification mechanisms to filter by (semantic or skipped)",
             "schema": {
               "type": "string"
             }
@@ -98364,6 +99083,27 @@
           },
           "routing_rule_name": {
             "type": "string",
+            "nullable": true
+          },
+          "complexity_tier": {
+            "type": "string",
+            "enum": [
+              "SIMPLE",
+              "MEDIUM",
+              "COMPLEX",
+              "REASONING"
+            ],
+            "description": "Complexity tier used for routing; null when no routing rule referenced complexity_tier. REASONING is historical-only — it was merged into COMPLEX and is never emitted for new requests, but survives in log rows recorded under the old scheme.",
+            "nullable": true
+          },
+          "complexity_mechanism": {
+            "type": "string",
+            "description": "How the complexity tier was classified (semantic for the embedding-based classifier, or skipped when classification was demanded but produced no tier)",
+            "nullable": true
+          },
+          "complexity_score": {
+            "type": "number",
+            "description": "Similarity score of the nearest reference phrase behind the tier",
             "nullable": true
           },
           "stream": {

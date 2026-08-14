@@ -939,15 +939,19 @@ bifrost:
       #   pricing_patch: "{\"input_cost_per_token\":0.000001,\"output_cost_per_token\":0.000002}"
     complexityAnalyzerConfig:
       null
-      # tier_boundaries:
-      #   simple_medium: 0.15
-      #   medium_complex: 0.35
-      #   complex_reasoning: 0.60
-      # keywords:
-      #   code_keywords: ["function", "class", "api", "debug", "deploy"]
-      #   reasoning_keywords: ["step by step", "explain why", "tradeoffs", "root cause analysis"]
-      #   technical_keywords: ["architecture", "kubernetes", "latency", "authentication"]
-      #   simple_keywords: ["hello", "hi", "thanks", "what is", "define"]
+      # semantic:                          # Semantic (embedding-based) complexity classification — the only mechanism; without it no complexity_tier is published
+      #   provider: "openai"               # Embedding provider (must have an enabled key in bifrost.providers)
+      #   embedding_model: "text-embedding-3-small"
+      #                                      # Bifrost detects the embedding dimension during warmup
+      #   timeout: "1.5s"                  # Ceiling on the inline embedding call; exceeding it skips tier routing for that request
+      #   min_similarity: 0                # Similarity floor for the nearest reference phrase; 0 accepts the nearest phrase unconditionally
+      #   message_history_count: 1         # Recent user messages joined into the embedded text (1 = latest only)
+      #   count_toward_budgets: false      # Count embedding usage toward virtual-key budgets
+      #   vector_store: "embedded"         # embedded (in-memory, re-embeds on restart) | vector_store (configured vectorStore, falls back to embedded when none is configured)
+      # keywords:                          # Required when complexityAnalyzerConfig is non-null; in split mode these phrases merge with stored defaults
+      #   simple_keywords: ["what is a mutex?", "fix the grammar in this sentence."]
+      #   medium_keywords: ["add api-key auth: hash the keys, reject revoked ones, and never log them."]
+      #   complex_keywords: ["balance testing, prescribing rules, and staffing against rising resistant infections."]
     authConfig:
       adminUsername: ""
       adminPassword: ""
@@ -1606,9 +1610,9 @@ postgresql:
 
 # Vector store configuration
 vectorStore:
-  # Enable vector store for semantic caching
+  # Enable vector store for semantic caching and semantic complexity routing
   enabled: false
-  type: none # Options: none, weaviate, redis, qdrant
+  type: none # Options: none, weaviate, redis, qdrant, pinecone, chromem
 
   # Weaviate configuration
   weaviate:
@@ -1759,6 +1763,12 @@ vectorStore:
       # Use existing Kubernetes secret for API key (takes precedence over apiKey field)
       existingSecret: ""
       apiKeyKey: "api-key"
+
+  # Chromem configuration (embedded in-process vector store, no external service).
+  # The top-level vectorStore.enabled controls activation.
+  chromem:
+    path: ""       # Directory for file persistence; empty keeps an in-memory store that re-populates on restart
+    compress: false # Gzip-compress persisted documents (only used when path is set)
 
 # Environment variables
 env: []
