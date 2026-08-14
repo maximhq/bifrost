@@ -275,6 +275,22 @@ func guardrailDebugForLog(ctx *schemas.BifrostContext, result *schemas.BifrostRe
 	return result.GetExtraFields().GuardrailDebug.Clone()
 }
 
+// routingDebugForLog returns the request's routing-classification debug
+// snapshot — the semantic classification embed, the llm classification
+// completion, or both. Classification runs once in PreRequestHook, before any
+// retry or fallback attempt, so the context snapshot is stable across every
+// PostLLMHook call for this request; unlike applyInternalCallCosts, this is
+// not gated to the initial attempt because it feeds display, not billing.
+func routingDebugForLog(ctx *schemas.BifrostContext, result *schemas.BifrostResponse) *schemas.BifrostRoutingDebug {
+	if debug, ok := schemas.RoutingDebugFromContext(ctx); ok {
+		return debug
+	}
+	if result == nil {
+		return nil
+	}
+	return result.GetExtraFields().RoutingDebug.Clone()
+}
+
 // applyInternalCallCosts adds sidecar costs when no response exists to carry them.
 func (p *LoggerPlugin) applyInternalCallCosts(ctx *schemas.BifrostContext, entry *logstore.Log, guardrailDebug *schemas.BifrostGuardrailDebug) {
 	if entry == nil || p.pricingManager == nil {
@@ -288,8 +304,12 @@ func (p *LoggerPlugin) applyInternalCallCosts(ctx *schemas.BifrostContext, entry
 	if guardrailDebug != nil {
 		cost += p.pricingManager.CalculateGuardrailCost(guardrailDebug, pricingScopes)
 	}
-	if routingDebug, ok := schemas.InitialAttemptRoutingDebugFromContext(ctx); ok && routingDebug.CountTowardBudgets {
-		cost += p.pricingManager.CalculateRoutingEmbeddingCost(routingDebug, pricingScopes)
+	if routingDebug, ok := schemas.InitialAttemptRoutingDebugFromContext(ctx); ok {
+		for _, call := range routingDebug.Calls {
+			if call.CountTowardBudgets {
+				cost += p.pricingManager.CalculateRoutingCallCost(call, pricingScopes)
+			}
+		}
 	}
 	if cost <= 0 {
 		return
@@ -1177,6 +1197,10 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	if result != nil && guardrailDebug != nil {
 		result.GetExtraFields().GuardrailDebug = guardrailDebug.Clone()
 	}
+	routingDebug := routingDebugForLog(ctx, result)
+	if result != nil && routingDebug != nil {
+		result.GetExtraFields().RoutingDebug = routingDebug.Clone()
+	}
 
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
 
@@ -1241,6 +1265,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			}
 			entry.ErrorDetailsParsed = sanitizeErrorForLogging(bifrostErr, contentLoggingEnabled, shouldStoreRaw)
 			entry.GuardrailDebugParsed = guardrailDebug
+			entry.RoutingDebugParsed = routingDebug
 			p.applyInternalCallCosts(ctx, entry, guardrailDebug)
 			if nodeID, _ := p.clusterNodeID.Load().(string); nodeID != "" {
 				entry.ClusterNodeID = &nodeID
@@ -1333,6 +1358,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	// Build the complete log entry with input (from PreLLMHook) + output (from PostLLMHook)
 	entry := buildCompleteLogEntryFromPending(pending)
 	entry.GuardrailDebugParsed = guardrailDebug
+	entry.RoutingDebugParsed = routingDebug
 	// Apply common output fields. For cache hits, prefer the cache-serve
 	// latency stamped by the semantic cache plugin over the original provider
 	// latency preserved in the cached response.

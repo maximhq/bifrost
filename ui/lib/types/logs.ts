@@ -465,6 +465,24 @@ export interface GuardrailDebug {
 	judge_calls?: GuardrailJudgeCall[];
 }
 
+export interface RoutingCall {
+	provider_used?: string;
+	model_used?: string;
+	input_tokens?: number;
+	// Present only when this call was a chat completion (the llm classifier);
+	// absent for a semantic classification embed.
+	output_tokens?: number;
+	count_toward_budgets?: boolean;
+}
+
+export interface RoutingDebug {
+	// One entry per billable routing-classification call this request made: a
+	// semantic classification embed, an llm classification completion, or
+	// both when semantic classification produced no tier and the llm fallback
+	// ran.
+	calls?: RoutingCall[];
+}
+
 // Error types
 export interface ErrorField {
 	type?: string;
@@ -568,7 +586,7 @@ export interface LogEntry {
 	routing_rule_id?: string;
 	routing_rule_name?: string;
 	complexity_tier?: string; // Complexity tier used for routing ("SIMPLE", "MEDIUM", "COMPLEX"); absent when no routing rule referenced complexity_tier
-	complexity_mechanism?: string; // How the complexity tier was classified ("semantic", "skipped"); absent when no routing rule referenced complexity_tier
+	complexity_mechanism?: string; // How the complexity tier was classified ("semantic", "llm", "session", "skipped"); absent when no routing rule referenced complexity_tier
 	complexity_score?: number; // Classifier score: the semantic classifier's similarity to the nearest reference phrase
 	routing_engine_logs?: string; // Human-readable routing decision logs
 	plugin_logs?: string; // JSON string of plugin execution logs grouped by plugin name
@@ -608,6 +626,7 @@ export interface LogEntry {
 	token_usage?: LLMUsage;
 	cache_debug?: CacheDebug;
 	guardrail_debug?: GuardrailDebug;
+	routing_debug?: RoutingDebug;
 	cost?: number; // Cost in dollars (total cost of the request - includes cache lookup cost and also guardrail judge calls)
 	// Served billing tier, denormalized onto the log row so cost recomputation can reprice
 	// at the rates the request was actually served at. OpenAI: "priority" / "flex" / "default".
@@ -651,7 +670,7 @@ export interface LogFilters {
 	status?: string[];
 	stop_reasons?: string[]; // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
 	complexity_tiers?: string[]; // For filtering by routing complexity tier (SIMPLE, MEDIUM, COMPLEX)
-	complexity_mechanisms?: string[]; // For filtering by complexity classification mechanism (semantic, skipped)
+	complexity_mechanisms?: string[]; // For filtering by complexity classification mechanism (semantic, llm, skipped)
 	objects?: string[]; // For filtering by request type (chat.completion, text.completion, embedding)
 	start_time?: string; // RFC3339 format
 	end_time?: string; // RFC3339 format

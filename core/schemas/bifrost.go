@@ -1828,18 +1828,34 @@ type BifrostCacheDebug struct {
 }
 
 // BifrostRoutingDebug records billable internal calls made by the routing
-// plugin, currently for complexity classification. It is not general routing-
-// decision metadata; tier, mechanism, selected rule, provider, and model are
-// exposed through their dedicated routing fields.
+// plugin during complexity classification. It is not general routing-decision
+// metadata; tier, mechanism, selected rule, provider, and model are exposed
+// through their dedicated routing fields.
 type BifrostRoutingDebug struct {
+	// Calls holds one entry per billable internal call this request made. A
+	// request makes at most two: a semantic classification embed, and, only
+	// when semantic classification produced no tier, an llm classifier chat
+	// completion. Both are recorded when both run, so cost calculation,
+	// telemetry, and logs never have to choose one over the other.
+	Calls []BifrostRoutingCall `json:"calls,omitempty"`
+}
+
+// BifrostRoutingCall records one billable routing-classification call: a
+// semantic classification embed, or an llm classifier chat completion.
+type BifrostRoutingCall struct {
 	ProviderUsed *string `json:"provider_used,omitempty"`
 	ModelUsed    *string `json:"model_used,omitempty"`
 	InputTokens  *int    `json:"input_tokens,omitempty"`
+	// OutputTokens is present only when this call was a chat completion (the
+	// llm classifier). Its presence is the signal that cost calculation must
+	// price the call at chat rates; a semantic classification embed never
+	// sets it.
+	OutputTokens *int `json:"output_tokens,omitempty"`
 
 	// CountTowardBudgets carries the governance count_toward_budgets flag to
-	// cost calculation, which cannot see governance config. When true, the
-	// routing embedding cost is added to the request's calculated cost (and so
-	// to its budget attribution); it is never budget-enforced.
+	// cost calculation, which cannot see governance config. When true, this
+	// call's cost is added to the request's calculated cost (and so to its
+	// budget attribution); it is never budget-enforced.
 	CountTowardBudgets bool `json:"count_toward_budgets,omitempty"`
 }
 

@@ -1,3 +1,4 @@
+import PageTitle from "@/components/pageTitle";
 import FullPageLoader from "@/components/fullPageLoader";
 import {
 	AlertDialog,
@@ -10,10 +11,10 @@ import {
 	AlertDialogTitle,
 } from "@/components/ui/alertDialog";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scrollArea";
 import { TagInput } from "@/components/ui/tagInput";
+import { Textarea } from "@/components/ui/textarea";
 import { EmbeddingSupportedProviders } from "@/lib/constants/logs";
 import { getErrorMessage, useGetCoreConfigQuery, useGetProvidersQuery } from "@/lib/store";
 import { useGetAllKeysQuery } from "@/lib/store/apis/providersApi";
@@ -23,7 +24,12 @@ import {
 	useResetComplexityAnalyzerConfigMutation,
 	useUpdateComplexityAnalyzerConfigMutation,
 } from "@/lib/store/apis/governanceApi";
-import { AnalyzerConfig, KeywordListKey, TIER_PHRASE_LIST_DEFINITIONS } from "@/lib/types/complexityRouter";
+import {
+	AnalyzerConfig,
+	KeywordListKey,
+	MAX_LLM_PROMPT_CHARACTERS,
+	TIER_PHRASE_LIST_DEFINITIONS,
+} from "@/lib/types/complexityRouter";
 import { ModelProvider } from "@/lib/types/config";
 import { DBKey } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
@@ -65,6 +71,18 @@ const supportsEmbedding = (provider: ModelProvider): boolean => {
 const hasEnabledKey = (provider: ModelProvider, keys: DBKey[]): boolean =>
 	keys.some((key) => key.provider === provider.name && key.enabled !== false);
 
+// The llm classifier needs chat completions rather than embeddings. Built-in
+// providers all serve chat; custom providers declare support through
+// allowed_requests.chat_completion, and no allowed_requests block at all means
+// unrestricted, matching how the Go side reads a nil AllowedRequests.
+const supportsChat = (provider: ModelProvider): boolean => {
+	if (provider.custom_provider_config) {
+		const allowed = provider.custom_provider_config.allowed_requests;
+		return !allowed || allowed.chat_completion === true;
+	}
+	return true;
+};
+
 // The three tier lists sit side by side, so they collapse to a fixed height
 // rather than to a fixed number of phrases: phrases wrap to different numbers of
 // lines, and equal counts would leave the columns visibly uneven.
@@ -90,27 +108,13 @@ export default function ComplexityRouterPage() {
 		() => (providersData || []).filter((provider) => supportsEmbedding(provider) && hasEnabledKey(provider, allKeys || [])),
 		[providersData, allKeys],
 	);
+	const chatProviders = useMemo(
+		() => (providersData || []).filter((provider) => supportsChat(provider) && hasEnabledKey(provider, allKeys || [])),
+		[providersData, allKeys],
+	);
 
 	const { data: coreConfig } = useGetCoreConfigQuery({ fromDB: true });
 	const isVectorStoreConnected = coreConfig?.is_cache_connected ?? false;
-
-	// Only the unsettled states are polled. Ready and disabled are steady until
-	// the next save, which refetches through the cache tag anyway.
-	//
-	// Failed is polled because it is no longer terminal: the gateway re-arms the
-	// classifier by itself when the provider it embeds through is fixed, and that
-	// fix happens somewhere else entirely — the providers screen, often another
-	// tab. Without this the badge would sit on "failed" describing a classifier
-	// that had already recovered. It polls slowly because it is waiting on a
-	// human, where warming is polled fast to keep the progress bar moving.
-	const [statusPollInterval, setStatusPollInterval] = useState(0);
-	const { data: semanticStatus, isLoading: statusLoading } = useGetComplexitySemanticStatusQuery(undefined, {
-		skip: !data?.semantic,
-		pollingInterval: statusPollInterval,
-	});
-	useEffect(() => {
-		setStatusPollInterval(semanticStatus?.state === "warming" ? 2000 : semanticStatus?.state === "failed" ? 10000 : 0);
-	}, [semanticStatus?.state]);
 
 	const {
 		register,
@@ -132,6 +136,7 @@ export default function ComplexityRouterPage() {
 	const isProviderListLoading = providersLoading || keysLoading;
 
 	const liveSemantic = watch("semantic");
+	const liveLLM = watch("llm");
 	const liveKeywords = watch("keywords");
 
 	// Narrows the model list to what this provider's enabled keys can actually
@@ -143,13 +148,41 @@ export default function ComplexityRouterPage() {
 		() => (allKeys || []).filter((key) => key.provider === liveSemantic?.provider && key.enabled !== false).map((key) => key.key_id),
 		[allKeys, liveSemantic?.provider],
 	);
+	const enabledKeyIdsForLLMProvider = useMemo(
+		() => (allKeys || []).filter((key) => key.provider === liveLLM?.provider && key.enabled !== false).map((key) => key.key_id),
+		[allKeys, liveLLM?.provider],
+	);
 
 	const isClassifierConfigured = Boolean(liveSemantic?.provider && liveSemantic?.embedding_model);
-	// The embedding fields live behind a sheet, so a pending edit to them would
-	// otherwise be invisible from the page.
+	const isLLMFallbackEnabled = liveSemantic?.fallback === "llm";
+
+	// Only the unsettled states are polled. Ready and disabled are steady until
+	// the next save, which refetches through the cache tag anyway.
+	//
+	// Failed is polled because it is no longer terminal: the gateway re-arms the
+	// classifier by itself when the provider it embeds through is fixed, and that
+	// fix happens somewhere else entirely — the providers screen, often another
+	// tab. Without this the badge would sit on "failed" describing a classifier
+	// that had already recovered. It polls slowly because it is waiting on a
+	// human, where warming is polled fast to keep the progress bar moving.
+	const [statusPollInterval, setStatusPollInterval] = useState(0);
+	// Also fetched as soon as the llm fallback is enabled in the form, before any
+	// save: the endpoint carries llm_default_prompt, which seeds the prompt field
+	// and powers "Reset to default" — gating on the saved config alone left a
+	// newly enabled fallback with no default prompt until after the first save.
+	const { data: semanticStatus, isLoading: statusLoading } = useGetComplexitySemanticStatusQuery(undefined, {
+		skip: !data?.semantic && !data?.llm && !isLLMFallbackEnabled,
+		pollingInterval: statusPollInterval,
+	});
+	useEffect(() => {
+		setStatusPollInterval(semanticStatus?.state === "warming" ? 2000 : semanticStatus?.state === "failed" ? 10000 : 0);
+	}, [semanticStatus?.state]);
+	// The embedding and llm fallback fields both live behind the same sheet, so a
+	// pending edit to either would otherwise be invisible from the page.
 	// react-hook-form keeps reverted fields in dirtyFields with a false value, so
 	// the flags are what matter, not the key count.
-	const hasUnsavedEmbeddingChanges = Object.values(dirtyFields.semantic ?? {}).some(Boolean);
+	const hasUnsavedEmbeddingConfigChanges =
+		Object.values(dirtyFields.semantic ?? {}).some(Boolean) || Object.values(dirtyFields.llm ?? {}).some(Boolean);
 
 	const totalPhrases = useMemo(
 		() =>
@@ -166,6 +199,19 @@ export default function ComplexityRouterPage() {
 	// it clean while the config query has not refetched yet — the exact window
 	// where a "saving will embed N phrases" line appears next to a disabled Save.
 	const hasPendingSave = isDirty;
+
+	// The prompt editor works on a concrete copy of the shipped guidance, the
+	// same lifecycle as the phrase lists: seeded from the gateway, owned by the
+	// operator once saved. Seeding is not a dirty edit — the operator has not
+	// said anything yet — but any save from then on persists the materialized
+	// text, which is what makes "what exactly is my classifier running?"
+	// answerable from the stored config alone.
+	const defaultLLMPrompt = semanticStatus?.llm_default_prompt ?? "";
+	const livePrompt = liveLLM?.prompt ?? "";
+	useEffect(() => {
+		if (!isLLMFallbackEnabled || !defaultLLMPrompt || livePrompt !== "") return;
+		setValue("llm.prompt", defaultLLMPrompt, { shouldDirty: false });
+	}, [isLLMFallbackEnabled, defaultLLMPrompt, livePrompt, setValue]);
 
 	// Saving re-runs warmup, but what it costs depends on what changed, because
 	// the gateway caches a vector per phrase (semanticEmbeddingCache).
@@ -271,9 +317,14 @@ export default function ComplexityRouterPage() {
 		// select has no clear option, and Restore defaults goes through its own
 		// endpoint.
 		const semantic = values.semantic.provider && values.semantic.embedding_model ? values.semantic : (data?.semantic ?? undefined);
+		// The llm block follows the same half-filled fallback as semantic: its
+		// controls also live in a sheet, so a save made without opening it must
+		// not silently drop a working block.
+		const llm = values.llm.provider && values.llm.model ? values.llm : (data?.llm ?? undefined);
 		const payload: AnalyzerConfig = {
 			keywords: values.keywords,
 			...(semantic ? { semantic } : {}),
+			...(llm ? { llm } : {}),
 		};
 		updateConfig(payload)
 			.unwrap()
@@ -288,10 +339,16 @@ export default function ComplexityRouterPage() {
 	};
 
 	// Saving from inside the sheet still submits the whole configuration, so a
-	// phrase error would report behind it. Close the sheet in that case, otherwise
-	// the message is hidden under the overlay.
+	// phrase error would report behind it. Close the sheet in that case,
+	// otherwise the message is hidden under the overlay. An llm error opens the
+	// sheet instead: selecting the llm classifier without configuring it fails
+	// on fields that live in the sheet the operator may never have opened.
 	const submit = handleSubmit(onValid, (formErrors) => {
-		if (!formErrors.semantic) setEmbeddingSheetOpen(false);
+		if (formErrors.semantic || formErrors.llm) {
+			setEmbeddingSheetOpen(true);
+		} else {
+			setEmbeddingSheetOpen(false);
+		}
 	});
 
 	if (isLoading && !data) {
@@ -321,7 +378,7 @@ export default function ComplexityRouterPage() {
 	}
 
 	const keywordErrors = errors.keywords;
-	const hasErrors = Boolean(keywordErrors || errors.semantic);
+	const hasErrors = Boolean(keywordErrors || errors.semantic || errors.llm);
 	const canSave = canUpdate && isDirty && !isResetting && !(isSubmitted && hasErrors);
 
 	// Rendered on the page and again inside the sheet: the re-embed cost is a
@@ -362,21 +419,21 @@ export default function ComplexityRouterPage() {
 				    of it. Radix wraps scrolled content in a display:table element, and
 				    position:sticky is unreliable inside table boxes: it parked the footer
 				    partway up the scrollport and left dead space beneath it. */}
-				<ScrollArea className="min-h-0 flex-1 px-14 pt-4">
-					<div className="mx-auto w-full max-w-7xl space-y-6 pb-8">
+				<ScrollArea className="min-h-0 flex-1 px-14 pt-3">
+					<div className="mx-auto w-full max-w-7xl space-y-4 pb-8">
 						{/* ── Page header ── */}
-						<div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-							<div className="space-y-1.5">
-								<div className="flex items-center gap-2">
-									<h2 className="text-lg font-semibold tracking-tight">Complexity Router</h2>
-									<Badge aria-label="Complexity Router is in beta">Beta</Badge>
-								</div>
-								<p className="text-muted-foreground max-w-2xl text-sm leading-relaxed">
-									Each request is embedded and takes the tier of the nearest reference phrase, filling the{" "}
-									<code className="bg-muted rounded-sm px-1 py-0.5 font-mono text-xs">complexity_tier</code> field that routing rules
-									target.
-								</p>
-							</div>
+						{/* PageTitle renders nothing inline (its badge/description are
+						    portalled into the topbar), so this row is just the action
+						    buttons. Tight vertical spacing here keeps it from reading as
+						    dead air above the phrase lists, which are the page's real
+						    work surface. */}
+						<div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-end">
+							<PageTitle title="Complexity Router" beta>
+								Each request is embedded and takes the tier of the nearest reference phrase, filling the{" "}
+								<code className="bg-muted rounded-sm px-1 py-0.5 font-mono text-xs">complexity_tier</code> field that routing rules
+								target.
+								{isLLMFallbackEnabled ? " Requests matching no phrase confidently fall back to the LLM classifier." : ""}
+							</PageTitle>
 
 							{/* Status and embedding setup ride in the header rather than as
 							    sections of their own: both are checked occasionally, while the
@@ -400,8 +457,8 @@ export default function ComplexityRouterPage() {
 								>
 									<Settings2 className="size-3.5" />
 									{isClassifierConfigured ? "Edit embedding configuration" : "Configure embedding"}
-									{hasUnsavedEmbeddingChanges && (
-										<span className="size-1.5 rounded-full bg-amber-500" role="status" aria-label="Unsaved embedding changes" />
+									{hasUnsavedEmbeddingConfigChanges && (
+										<span className="size-1.5 rounded-full bg-amber-500" role="status" aria-label="Unsaved embedding configuration changes" />
 									)}
 								</Button>
 								<Button asChild variant="outline" size="sm" data-testid="complexity-router-docs-link">
@@ -493,6 +550,63 @@ export default function ComplexityRouterPage() {
 							</div>
 						</div>
 
+						{/* ── Fallback Classification Prompt ── */}
+						{/* A second tuning surface below the phrase lists rather than a
+						    field in the embedding sheet: prompt text needs width and
+						    iteration, and the sheet holds set-once plumbing. Visible only
+						    while the fallback is on, because that is the only time it runs. */}
+						{isLLMFallbackEnabled && (
+							<div className="space-y-3">
+								<SectionHeading
+									title="Fallback Classification Prompt"
+									description="Guides the fallback model when a request matches no phrase confidently. Pick the model in the embedding configuration sheet."
+									aside={
+										<Button
+											type="button"
+											variant="ghost"
+											size="sm"
+											onClick={() => setValue("llm.prompt", defaultLLMPrompt, { shouldDirty: true })}
+											disabled={!canUpdate || !defaultLLMPrompt || livePrompt === defaultLLMPrompt}
+											data-testid="complexity-router-llm-prompt-reset-button"
+										>
+											<RotateCcw className="h-3.5 w-3.5" />
+											Reset to default
+										</Button>
+									}
+								/>
+								<Controller
+									control={control}
+									name="llm.prompt"
+									render={({ field }) => (
+										<Textarea
+											data-testid="complexity-router-llm-prompt-input"
+											rows={8}
+											maxLength={MAX_LLM_PROMPT_CHARACTERS}
+											value={field.value}
+											onChange={field.onChange}
+											disabled={!canUpdate}
+											aria-invalid={errors.llm?.prompt ? true : undefined}
+											className={cn(
+												"font-mono text-xs leading-relaxed",
+												errors.llm?.prompt && "border-destructive focus-visible:ring-destructive",
+											)}
+										/>
+									)}
+								/>
+								{errors.llm?.prompt ? (
+									<p className="text-destructive text-xs">{errors.llm.prompt.message}</p>
+								) : (
+									<p className="text-muted-foreground text-xs leading-relaxed">
+										Bifrost always appends a fixed response-format section (the tier names and the JSON answer contract), so edits here
+										refine what the tiers mean but cannot break routing.{" "}
+										<span className="font-mono tabular-nums">
+											{livePrompt.length}/{MAX_LLM_PROMPT_CHARACTERS}
+										</span>
+									</p>
+								)}
+							</div>
+						)}
+
 						{reembedWarning}
 
 						{/* ── Submit error ── */}
@@ -547,9 +661,13 @@ export default function ComplexityRouterPage() {
 				setValue={setValue}
 				errors={errors.semantic}
 				semantic={liveSemantic}
+				llmErrors={errors.llm}
+				llm={liveLLM}
 				canUpdate={canUpdate}
 				providers={embeddingProviders}
 				providerKeyIds={enabledKeyIdsForProvider}
+				llmProviders={chatProviders}
+				llmProviderKeyIds={enabledKeyIdsForLLMProvider}
 				providersLoading={isProviderListLoading}
 				isVectorStoreConnected={isVectorStoreConnected}
 				warning={reembedAllWarning}

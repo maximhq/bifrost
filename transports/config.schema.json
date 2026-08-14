@@ -3884,6 +3884,9 @@
         },
         "semantic": {
           "$ref": "#/$defs/complexity_semantic_config"
+        },
+        "llm": {
+          "$ref": "#/$defs/complexity_llm_config"
         }
       },
       "required": ["keywords"],
@@ -3937,9 +3940,61 @@
           "type": "string",
           "enum": ["embedded", "vector_store"],
           "description": "Where exemplar embeddings are stored: 'embedded' uses the built-in chromem store, 'vector_store' uses the store configured in the top-level vector_store section and falls back to embedded when none is configured (default: embedded)"
+        },
+        "fallback": {
+          "type": "string",
+          "enum": ["none", "llm"],
+          "description": "What answers when semantic classification produces no tier (a match below min_similarity, a timeout, an unfinished warmup): 'none' (the default) records the request as 'skipped'; 'llm' asks the chat model configured in the analyzer's llm block, which is required when this is set."
         }
       },
       "required": ["provider", "embedding_model"],
+      "additionalProperties": false
+    },
+    "complexity_llm_config": {
+      "type": "object",
+      "description": "Chat-completion (LLM) fallback classifier settings. The block is inert unless complexity_semantic_config.fallback selects 'llm'; the classifier runs only after semantic classification produces no tier. Tier names (SIMPLE, MEDIUM, COMPLEX) and the response format are fixed: the gateway always appends a non-editable reinforcement stating them.",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider used to run the classification chat completion"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Chat model asked to name the tier. Every fallback classification waits on one completion from this model, so pick a small, fast one."
+        },
+        "timeout": {
+          "description": "Per-request classification timeout (duration string like '2s' or milliseconds as a number; default: 4s). On timeout no complexity tier is published and the request is recorded as 'skipped'.",
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)$"
+            },
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
+          ],
+          "default": "4s"
+        },
+        "prompt": {
+          "type": "string",
+          "maxLength": 4000,
+          "description": "Replaces the shipped classification guidance (max 4000 characters); empty means the shipped guidance is used. The tier-name and response-format reinforcement is appended by the gateway either way and cannot be edited."
+        },
+        "message_history_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "description": "How many of the most recent user messages are given to the classifier, oldest first (default: 1, the latest message only). Only user turns count; system prompts and assistant replies are never sent."
+        },
+        "count_toward_budgets": {
+          "type": "boolean",
+          "description": "Record classification completion cost against governance budgets (record-only, never enforced; default: false)"
+        }
+      },
+      "required": ["provider", "model"],
       "additionalProperties": false
     },
     "auth_config": {
