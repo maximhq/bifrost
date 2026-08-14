@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 import { periodRank, shortPeriod } from "@/lib/budgetOutline";
 import {
 	budgetResetDurationOptions,
+	currentQuarterIndex,
 	fiscalQuarterNote,
 	formatQuarterPreview,
+	nextQuarterReset,
+	quarterRanges,
 	resetDurationLabels,
 	resetDurationOptions,
 	supportsCalendarAlignment,
@@ -141,6 +144,38 @@ describe("fiscalQuarterNote", () => {
 		// A fractional month sits in range but indexes MONTH_ABBREVIATIONS between
 		// slots, which would render "FY starts undefined" without the integer guard.
 		expect(fiscalQuarterNote("1Q", { quarter_start_month: 2.5 })).toBe("");
+	});
+});
+describe("quarter map helpers", () => {
+	it("labels the four quarters with en-dash ranges from the start month", () => {
+		expect(quarterRanges(4)).toEqual([
+			{ label: "Q1", range: "Apr–Jun" },
+			{ label: "Q2", range: "Jul–Sep" },
+			{ label: "Q3", range: "Oct–Dec" },
+			{ label: "Q4", range: "Jan–Mar" },
+		]);
+	});
+
+	it("falls back to January for a missing or invalid start month", () => {
+		expect(quarterRanges(undefined)).toEqual(quarterRanges(1));
+		expect(quarterRanges(2.5)).toEqual(quarterRanges(1));
+		expect(quarterRanges(13)).toEqual(quarterRanges(1));
+	});
+
+	it("finds the quarter containing a date for a non-January fiscal year", () => {
+		// April fiscal year: Q1 Apr–Jun, Q2 Jul–Sep, Q3 Oct–Dec, Q4 Jan–Mar.
+		expect(currentQuarterIndex(4, new Date(2026, 3, 15))).toBe(0); // April
+		expect(currentQuarterIndex(4, new Date(2026, 8, 1))).toBe(1); // September
+		expect(currentQuarterIndex(4, new Date(2026, 0, 31))).toBe(3); // January
+	});
+
+	it("returns the first day of the next quarter strictly after now", () => {
+		// April fiscal year, mid-May → next boundary is Jul 1.
+		expect(nextQuarterReset(4, new Date(2026, 4, 10)).getTime()).toBe(new Date(2026, 6, 1).getTime());
+		// On a boundary day, the next reset is the following quarter, not today.
+		expect(nextQuarterReset(4, new Date(2026, 3, 1)).getTime()).toBe(new Date(2026, 6, 1).getTime());
+		// A late-starting fiscal year wraps across the calendar year end.
+		expect(nextQuarterReset(11, new Date(2026, 11, 5)).getTime()).toBe(new Date(2027, 1, 1).getTime());
 	});
 });
 describe("budgetSignature", () => {
