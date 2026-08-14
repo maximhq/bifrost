@@ -39,6 +39,22 @@ func TestDeriveAnthropicBaseURL(t *testing.T) {
 			wantBase:     "https://proxy.example.com/kimi/anthropic",
 			wantMessages: "https://proxy.example.com/kimi/anthropic/v1/messages",
 		},
+		{
+			// Suffix semantics only hold on Kimi's own hosts: a custom host
+			// ending in /v1 must NOT have it rewritten away.
+			name:         "custom base ending in /v1 keeps its path",
+			openAIBase:   "https://proxy.example.com/v1",
+			wantBase:     "https://proxy.example.com/v1/anthropic",
+			wantMessages: "https://proxy.example.com/v1/anthropic/v1/messages",
+		},
+		{
+			// Likewise for the Kimi Code suffix shape on a foreign host: the
+			// base is not assumed to serve the Anthropic mount at its root.
+			name:         "custom base ending in /coding/v1 keeps its path",
+			openAIBase:   "https://proxy.example.com/coding/v1",
+			wantBase:     "https://proxy.example.com/coding/v1/anthropic",
+			wantMessages: "https://proxy.example.com/coding/v1/anthropic/v1/messages",
+		},
 	}
 
 	for _, tt := range tests {

@@ -1,6 +1,9 @@
 package kimi
 
-import "strings"
+import (
+	"net/url"
+	"strings"
+)
 
 const (
 	// defaultBaseURL is the Kimi Open Platform (international) OpenAI-compatible base URL.
@@ -29,6 +32,24 @@ const (
 	kimiCodingAnthropicMessagesPath = "/messages"
 )
 
+// kimiKnownHosts are the upstream hosts whose URL shapes the suffix rewrites
+// below rely on. Custom or proxied hosts never get their paths rewritten.
+var kimiKnownHosts = map[string]bool{
+	"api.kimi.com":    true, // Kimi Code subscription
+	"api.moonshot.ai": true, // Open Platform (international)
+	"api.moonshot.cn": true, // Open Platform (China)
+}
+
+// isKnownKimiHost reports whether the base URL sits on one of Kimi's own hosts.
+// Unparseable or scheme-less inputs are treated as custom hosts.
+func isKnownKimiHost(base string) bool {
+	parsed, err := url.Parse(base)
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+	return kimiKnownHosts[parsed.Host]
+}
+
 // deriveAnthropicBaseURL derives the Anthropic-compatible mount base URL from the
 // configured OpenAI-compatible base URL.
 //
@@ -36,10 +57,15 @@ const (
 //     with /anthropic, so messages live at /anthropic/v1/messages.
 //   - Kimi Code (api.kimi.com/coding/v1): the Anthropic mount shares the OpenAI base,
 //     with messages at /coding/v1/messages.
-//   - Any other base URL falls back to appending /anthropic; users on exotic hosts can
+//   - Any other host — including custom bases that happen to end in /v1 or
+//     /coding/v1 — keeps its configured path and gets /anthropic appended, so a
+//     proxy's URL shape is never silently rewritten; users on exotic hosts can
 //     always create a second provider instance with an explicit base URL.
 func deriveAnthropicBaseURL(openAIBaseURL string) string {
 	base := strings.TrimRight(openAIBaseURL, "/")
+	if !isKnownKimiHost(base) {
+		return base + openPlatformAnthropicMount
+	}
 	if strings.HasSuffix(base, kimiCodingBaseSuffix) {
 		return base
 	}
