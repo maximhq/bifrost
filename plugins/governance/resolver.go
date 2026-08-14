@@ -89,7 +89,7 @@ func (r *BudgetResolver) EvaluateModelAndProviderRequest(ctx *schemas.BifrostCon
 	}
 	// 1. Check provider-level rate limits FIRST (before model-level checks)
 	if provider != "" {
-		if decision, err := r.store.CheckProviderRateLimit(ctx, request, nil, nil); err != nil || isRateLimitViolation(decision) {
+		if decision, err := r.store.CheckProviderRateLimit(ctx, request, nil); err != nil || isRateLimitViolation(decision) {
 			return &EvaluationResult{
 				Decision: decision,
 				Reason:   fmt.Sprintf("Provider-level rate limit check failed: %s", reasonFromErr(err, decision)),
@@ -105,7 +105,7 @@ func (r *BudgetResolver) EvaluateModelAndProviderRequest(ctx *schemas.BifrostCon
 	}
 	// 3. Check model-level rate limits (after provider-level checks)
 	if model != "" {
-		if decision, err := r.store.CheckModelRateLimit(ctx, request, nil, nil); err != nil || isRateLimitViolation(decision) {
+		if decision, err := r.store.CheckModelRateLimit(ctx, request, nil); err != nil || isRateLimitViolation(decision) {
 			return &EvaluationResult{
 				Decision: decision,
 				Reason:   fmt.Sprintf("Model-level rate limit check failed: %s", reasonFromErr(err, decision)),
@@ -136,7 +136,7 @@ func (r *BudgetResolver) EvaluateCustomerRequest(ctx *schemas.BifrostContext, cu
 		}
 	}
 	// Check customer-level rate limits
-	if decision, err := r.store.CheckCustomerRateLimit(ctx, customerID, request, nil, nil); err != nil || isRateLimitViolation(decision) {
+	if decision, err := r.store.CheckCustomerRateLimit(ctx, customerID, request, nil); err != nil || isRateLimitViolation(decision) {
 		return &EvaluationResult{
 			Decision: decision,
 			Reason:   fmt.Sprintf("Customer-level rate limit exceeded: %s", reasonFromErr(err, decision)),
@@ -166,7 +166,7 @@ func (r *BudgetResolver) EvaluateTeamRequest(ctx *schemas.BifrostContext, teamID
 		}
 	}
 	// Check team-level rate limits
-	if decision, err := r.store.CheckTeamRateLimit(ctx, teamID, request, nil, nil); err != nil || isRateLimitViolation(decision) {
+	if decision, err := r.store.CheckTeamRateLimit(ctx, teamID, request, nil); err != nil || isRateLimitViolation(decision) {
 		return &EvaluationResult{
 			Decision: decision,
 			Reason:   fmt.Sprintf("Team-level rate limit exceeded: %s", reasonFromErr(err, decision)),
@@ -201,7 +201,7 @@ func (r *BudgetResolver) EvaluateUserRequest(ctx *schemas.BifrostContext, userID
 	}
 
 	// Check user-level rate limits
-	if decision, err := r.store.CheckUserRateLimit(ctx, userID, request, nil, nil); err != nil || isRateLimitViolation(decision) {
+	if decision, err := r.store.CheckUserRateLimit(ctx, userID, request, nil); err != nil || isRateLimitViolation(decision) {
 		return &EvaluationResult{
 			Decision: decision,
 			Reason:   fmt.Sprintf("User-level rate limit exceeded: %s", reasonFromErr(err, decision)),
@@ -220,7 +220,7 @@ func (r *BudgetResolver) EvaluateUserRequest(ctx *schemas.BifrostContext, userID
 	// VK-scoped block in EvaluateVirtualKeyRequest. Gated on model being present —
 	// MCP tool execution (no model) is excluded naturally by this guard.
 	if request.Model != "" {
-		if decision, err := r.store.CheckScopedModelRateLimit(ctx, configstoreTables.ModelConfigScopeUser, userID, request, nil, nil); err != nil || isRateLimitViolation(decision) {
+		if decision, err := r.store.CheckScopedModelRateLimit(ctx, configstoreTables.ModelConfigScopeUser, userID, request, nil); err != nil || isRateLimitViolation(decision) {
 			return &EvaluationResult{
 				Decision: decision,
 				Reason:   fmt.Sprintf("User-level model rate limit exceeded: %s", reasonFromErr(err, decision)),
@@ -319,7 +319,7 @@ func (r *BudgetResolver) EvaluateVirtualKeyRequest(ctx *schemas.BifrostContext, 
 		// request must satisfy both (most-restrictive wins). Gated on a model being present,
 		// mirroring the global model checks.
 		if model != "" {
-			if decision, err := r.store.CheckScopedModelRateLimit(ctx, configstoreTables.ModelConfigScopeVirtualKey, vk.ID, evaluationRequest, nil, nil); err != nil || isRateLimitViolation(decision) {
+			if decision, err := r.store.CheckScopedModelRateLimit(ctx, configstoreTables.ModelConfigScopeVirtualKey, vk.ID, evaluationRequest, nil); err != nil || isRateLimitViolation(decision) {
 				return &EvaluationResult{
 					Decision:   decision,
 					Reason:     fmt.Sprintf("Model-level rate limit check failed (virtual key scope): %s", reasonFromErr(err, decision)),
@@ -414,7 +414,7 @@ func (r *BudgetResolver) isProviderAllowed(vk *configstoreTables.TableVirtualKey
 
 // checkRateLimitHierarchy checks provider-level rate limits first, then VK rate limits using flexible approach
 func (r *BudgetResolver) checkRateLimitHierarchy(ctx context.Context, vk *configstoreTables.TableVirtualKey, request *EvaluationRequest) *EvaluationResult {
-	if decision, err := r.store.CheckVirtualKeyRateLimit(ctx, vk, request, nil, nil); err != nil || isRateLimitViolation(decision) {
+	if decision, err := r.store.CheckVirtualKeyRateLimit(ctx, vk, request, nil); err != nil || isRateLimitViolation(decision) {
 		// Check provider-level first (matching check order), then VK-level.
 		// Resolve by ID from the canonical rate-limit map because embedded
 		// references can intentionally remain stale after request-time resets.
@@ -481,7 +481,7 @@ func (r *BudgetResolver) isProviderRateLimitViolated(ctx context.Context, vk *co
 	request := &EvaluationRequest{Provider: schemas.ModelProvider(config.Provider)}
 
 	// 1. Check global provider-level rate limit first
-	if decision, err := r.store.CheckProviderRateLimit(ctx, request, nil, nil); err != nil || isRateLimitViolation(decision) {
+	if decision, err := r.store.CheckProviderRateLimit(ctx, request, nil); err != nil || isRateLimitViolation(decision) {
 		r.logger.Debug(fmt.Sprintf("Global provider rate limit exceeded for provider %s", config.Provider))
 		return true
 	}
@@ -490,7 +490,7 @@ func (r *BudgetResolver) isProviderRateLimitViolated(ctx context.Context, vk *co
 	if config.RateLimitID == nil {
 		return false
 	}
-	decision, err := r.store.CheckVirtualKeyRateLimit(ctx, vk, request, nil, nil)
+	decision, err := r.store.CheckVirtualKeyRateLimit(ctx, vk, request, nil)
 	if err != nil || isRateLimitViolation(decision) {
 		r.logger.Debug(fmt.Sprintf("VK provider config rate limit exceeded for VK %s, provider %s", vk.ID, config.Provider))
 		return true
