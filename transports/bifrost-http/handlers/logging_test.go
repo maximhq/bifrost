@@ -34,10 +34,13 @@ func TestShouldUseFilterDataCacheAllowsUnscopedEmptyQuery(t *testing.T) {
 }
 
 func TestParseComplexityFilters(t *testing.T) {
-	t.Run("parses tier and mechanism values", func(t *testing.T) {
+	t.Run("parses complexity and session dimensions", func(t *testing.T) {
 		ctx := &fasthttp.RequestCtx{}
 		ctx.QueryArgs().Set("complexity_tiers", "SIMPLE,COMPLEX")
-		ctx.QueryArgs().Set("complexity_mechanisms", "semantic,lexical")
+		ctx.QueryArgs().Set("complexity_mechanisms", "semantic,session")
+		ctx.QueryArgs().Set("complexity_session_id", " session-abc ")
+		ctx.QueryArgs().Set("complexity_session_modes", "pinned,cache_aware")
+		ctx.QueryArgs().Set("complexity_session_tier_sources", "classified,held")
 		filters := &logstore.SearchFilters{}
 
 		parseComplexityFilters(ctx, filters)
@@ -45,15 +48,27 @@ func TestParseComplexityFilters(t *testing.T) {
 		if got, want := filters.ComplexityTiers, []string{"SIMPLE", "COMPLEX"}; !reflect.DeepEqual(got, want) {
 			t.Fatalf("complexity tiers = %#v, want %#v", got, want)
 		}
-		if got, want := filters.ComplexityMechanisms, []string{"semantic", "lexical"}; !reflect.DeepEqual(got, want) {
+		if got, want := filters.ComplexityMechanisms, []string{"semantic", "session"}; !reflect.DeepEqual(got, want) {
 			t.Fatalf("complexity mechanisms = %#v, want %#v", got, want)
+		}
+		if got, want := filters.ComplexitySessionID, "session-abc"; got != want {
+			t.Fatalf("complexity session ID = %q, want %q", got, want)
+		}
+		if got, want := filters.ComplexitySessionModes, []string{"pinned", "cache_aware"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("complexity session modes = %#v, want %#v", got, want)
+		}
+		if got, want := filters.ComplexitySessionTierSources, []string{"classified", "held"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("complexity session tier sources = %#v, want %#v", got, want)
 		}
 	})
 
 	t.Run("leaves filters unchanged when parameters are absent", func(t *testing.T) {
 		filters := &logstore.SearchFilters{
-			ComplexityTiers:      []string{"MEDIUM"},
-			ComplexityMechanisms: []string{"skipped"},
+			ComplexityTiers:              []string{"MEDIUM"},
+			ComplexityMechanisms:         []string{"skipped"},
+			ComplexitySessionID:          "session-existing",
+			ComplexitySessionModes:       []string{"pinned"},
+			ComplexitySessionTierSources: []string{"memoised"},
 		}
 
 		parseComplexityFilters(&fasthttp.RequestCtx{}, filters)
@@ -63,6 +78,15 @@ func TestParseComplexityFilters(t *testing.T) {
 		}
 		if got, want := filters.ComplexityMechanisms, []string{"skipped"}; !reflect.DeepEqual(got, want) {
 			t.Fatalf("complexity mechanisms = %#v, want %#v", got, want)
+		}
+		if got, want := filters.ComplexitySessionID, "session-existing"; got != want {
+			t.Fatalf("complexity session ID = %q, want %q", got, want)
+		}
+		if got, want := filters.ComplexitySessionModes, []string{"pinned"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("complexity session modes = %#v, want %#v", got, want)
+		}
+		if got, want := filters.ComplexitySessionTierSources, []string{"memoised"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("complexity session tier sources = %#v, want %#v", got, want)
 		}
 	})
 }

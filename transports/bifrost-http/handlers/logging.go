@@ -1044,6 +1044,15 @@ func parseComplexityFilters(ctx *fasthttp.RequestCtx, filters *logstore.SearchFi
 	if complexityMechanisms := string(ctx.QueryArgs().Peek("complexity_mechanisms")); complexityMechanisms != "" {
 		filters.ComplexityMechanisms = parseCommaSeparated(complexityMechanisms)
 	}
+	if sessionID := strings.TrimSpace(string(ctx.QueryArgs().Peek("complexity_session_id"))); sessionID != "" {
+		filters.ComplexitySessionID = sessionID
+	}
+	if sessionModes := string(ctx.QueryArgs().Peek("complexity_session_modes")); sessionModes != "" {
+		filters.ComplexitySessionModes = parseCommaSeparated(sessionModes)
+	}
+	if tierSources := string(ctx.QueryArgs().Peek("complexity_session_tier_sources")); tierSources != "" {
+		filters.ComplexitySessionTierSources = parseCommaSeparated(tierSources)
+	}
 }
 
 // parseHistogramFilters extracts common filter parameters from query args

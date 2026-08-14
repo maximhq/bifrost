@@ -38,7 +38,7 @@ import {
 	RoutingEngineUsedLabels,
 	Status,
 } from "@/lib/constants/logs";
-import { COMPLEXITY_MECHANISM_LABELS } from "@/lib/types/complexityRouter";
+import { COMPLEXITY_MECHANISM_LABELS, COMPLEXITY_SESSION_TIER_SOURCE_LABELS, SESSION_MODE_LABELS } from "@/lib/types/complexityRouter";
 import { ContentBlock, LogEntry, ResponsesMessage } from "@/lib/types/logs";
 import { useGetUserAgentMappingsQuery } from "@/lib/store";
 import { cn } from "@/lib/utils";
@@ -632,6 +632,7 @@ interface LogDetailViewProps {
 	onClose?: () => void;
 	headerAction?: ReactNode;
 	onFilterByParentRequestId?: (parentRequestId: string) => void;
+	onFilterByComplexitySessionId?: (sessionID: string) => void;
 }
 
 export function LogDetailView({
@@ -643,6 +644,7 @@ export function LogDetailView({
 	onClose,
 	headerAction,
 	onFilterByParentRequestId,
+	onFilterByComplexitySessionId,
 }: LogDetailViewProps) {
 	const { copy: copyBody } = useCopyToClipboard({
 		successMessage: "Request body copied to clipboard",
@@ -1372,6 +1374,51 @@ export function LogDetailView({
 							)}
 							{complexityRouting.score !== undefined && (
 								<LogEntryDetailsView className="w-full" label="Complexity Score" value={complexityRouting.score.toFixed(2)} />
+							)}
+							{log.complexity_session_id && (
+								<LogEntryDetailsView
+									className="w-full"
+									label="Complexity Session ID"
+									value={
+										<span className="flex min-w-0 items-center gap-1">
+											{onFilterByComplexitySessionId ? (
+												<Tooltip>
+													<TooltipTrigger asChild>
+														<button
+															type="button"
+															className="min-w-0 cursor-pointer text-left font-mono text-xs break-all text-blue-600 underline-offset-2 hover:underline focus-visible:underline focus-visible:outline-none dark:text-blue-400"
+															onClick={() => onFilterByComplexitySessionId(log.complexity_session_id as string)}
+															data-testid="logdetails-filter-complexity-session-id-button"
+														>
+															{log.complexity_session_id}
+														</button>
+													</TooltipTrigger>
+													<TooltipContent sideOffset={6}>Filter this complexity session</TooltipContent>
+												</Tooltip>
+											) : (
+												<code className="min-w-0 font-mono text-xs break-all">{log.complexity_session_id}</code>
+											)}
+											<CopyInlineButton text={log.complexity_session_id} testId="logdetails-copy-complexity-session-id-button" />
+										</span>
+									}
+								/>
+							)}
+							{log.complexity_session_mode && (
+								<LogEntryDetailsView
+									className="w-full"
+									label="Complexity Session Mode"
+									value={SESSION_MODE_LABELS[log.complexity_session_mode] ?? log.complexity_session_mode}
+								/>
+							)}
+							{log.complexity_session_tier_source && (
+								<LogEntryDetailsView
+									className="w-full"
+									label="Session Tier Source"
+									value={COMPLEXITY_SESSION_TIER_SOURCE_LABELS[log.complexity_session_tier_source] ?? log.complexity_session_tier_source}
+								/>
+							)}
+							{log.complexity_session_switch_count !== undefined && (
+								<LogEntryDetailsView className="w-full" label="Session Tier Switches" value={log.complexity_session_switch_count} />
 							)}
 
 							{(log.params as any)?.audio && (

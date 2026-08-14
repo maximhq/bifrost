@@ -23,13 +23,13 @@ import {
 	useResetComplexityAnalyzerConfigMutation,
 	useUpdateComplexityAnalyzerConfigMutation,
 } from "@/lib/store/apis/governanceApi";
-import { AnalyzerConfig, KeywordListKey, TIER_PHRASE_LIST_DEFINITIONS } from "@/lib/types/complexityRouter";
+import { AnalyzerConfig, KeywordListKey, SESSION_MODE_LABELS, TIER_PHRASE_LIST_DEFINITIONS } from "@/lib/types/complexityRouter";
 import { ModelProvider } from "@/lib/types/config";
 import { DBKey } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { ExternalLink, Info, LoaderCircle, RotateCcw, Save, Settings2, TriangleAlert } from "lucide-react";
+import { ExternalLink, History, Info, LoaderCircle, RotateCcw, Save, Settings2, TriangleAlert } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Controller, useForm } from "react-hook-form";
 import { toast } from "sonner";
@@ -42,6 +42,7 @@ import {
 import { ClassifierStatusBadge } from "./views/classifierStatusBadge";
 import EmbeddingConfigSheet from "./views/embeddingConfigSheet";
 import { SectionHeading } from "./views/formPrimitives";
+import SessionConfigSheet from "./views/sessionConfigSheet";
 
 // Embedding-capable providers gate this page, matching the local cache screen's
 // rule: built-ins are listed in EmbeddingSupportedProviders, custom providers
@@ -83,6 +84,7 @@ export default function ComplexityRouterPage() {
 	const [submitError, setSubmitError] = useState<string | null>(null);
 	const [restoreDialogOpen, setRestoreDialogOpen] = useState(false);
 	const [embeddingSheetOpen, setEmbeddingSheetOpen] = useState(false);
+	const [sessionSheetOpen, setSessionSheetOpen] = useState(false);
 
 	const { data: providersData, isLoading: providersLoading } = useGetProvidersQuery();
 	const { data: allKeys, isLoading: keysLoading } = useGetAllKeysQuery();
@@ -104,8 +106,12 @@ export default function ComplexityRouterPage() {
 	// that had already recovered. It polls slowly because it is waiting on a
 	// human, where warming is polled fast to keep the progress bar moving.
 	const [statusPollInterval, setStatusPollInterval] = useState(0);
+	// Also fetched when only session behavior is configured: the same endpoint now
+	// carries the session store's guarantees, and skipping on the classifier alone
+	// left the session sheet with nothing to report on a deployment that had
+	// enabled sessions without configuring embeddings.
 	const { data: semanticStatus, isLoading: statusLoading } = useGetComplexitySemanticStatusQuery(undefined, {
-		skip: !data?.semantic,
+		skip: !data?.semantic && !data?.session,
 		pollingInterval: statusPollInterval,
 	});
 	useEffect(() => {
@@ -133,6 +139,7 @@ export default function ComplexityRouterPage() {
 
 	const liveSemantic = watch("semantic");
 	const liveKeywords = watch("keywords");
+	const liveSession = watch("session");
 
 	// Narrows the model list to what this provider's enabled keys can actually
 	// serve. /api/models only applies per-key allow-lists and blacklists when it
@@ -150,6 +157,10 @@ export default function ComplexityRouterPage() {
 	// react-hook-form keeps reverted fields in dirtyFields with a false value, so
 	// the flags are what matter, not the key count.
 	const hasUnsavedEmbeddingChanges = Object.values(dirtyFields.semantic ?? {}).some(Boolean);
+	const hasUnsavedSessionChanges = Object.values(dirtyFields.session ?? {}).some(Boolean);
+
+	const sessionMode = liveSession?.mode ?? "off";
+	const isSessionEnabled = sessionMode === "pinned" || sessionMode === "cache_aware";
 
 	const totalPhrases = useMemo(
 		() =>
@@ -271,15 +282,22 @@ export default function ComplexityRouterPage() {
 		// select has no clear option, and Restore defaults goes through its own
 		// endpoint.
 		const semantic = values.semantic.provider && values.semantic.embedding_model ? values.semantic : (data?.semantic ?? undefined);
+		// "off" is a stored value, not an absent block, so turning session behavior
+		// off keeps the settings behind it. The block is only introduced once it
+		// says something: a deployment that never opens the sheet keeps saving a
+		// config without one rather than acquiring an inert "off" block.
+		const session = values.session.mode !== "off" || data?.session ? values.session : undefined;
 		const payload: AnalyzerConfig = {
 			keywords: values.keywords,
 			...(semantic ? { semantic } : {}),
+			...(session ? { session } : {}),
 		};
 		updateConfig(payload)
 			.unwrap()
 			.then((res) => {
 				reset(toFormValues(res));
 				setEmbeddingSheetOpen(false);
+				setSessionSheetOpen(false);
 				toast.success("Configuration saved", { position: "top-right" });
 			})
 			.catch((err) => {
@@ -292,6 +310,7 @@ export default function ComplexityRouterPage() {
 	// the message is hidden under the overlay.
 	const submit = handleSubmit(onValid, (formErrors) => {
 		if (!formErrors.semantic) setEmbeddingSheetOpen(false);
+		if (!formErrors.session) setSessionSheetOpen(false);
 	});
 
 	if (isLoading && !data) {
@@ -321,7 +340,7 @@ export default function ComplexityRouterPage() {
 	}
 
 	const keywordErrors = errors.keywords;
-	const hasErrors = Boolean(keywordErrors || errors.semantic);
+	const hasErrors = Boolean(keywordErrors || errors.semantic || errors.session);
 	const canSave = canUpdate && isDirty && !isResetting && !(isSubmitted && hasErrors);
 
 	// Rendered on the page and again inside the sheet: the re-embed cost is a
@@ -404,6 +423,22 @@ export default function ComplexityRouterPage() {
 										<span className="size-1.5 rounded-full bg-amber-500" role="status" aria-label="Unsaved embedding changes" />
 									)}
 								</Button>
+								{/* The mode rides in the label rather than in a separate chip: unlike
+								    the classifier there is no async state to report, so a badge would
+								    only ever restate what the button already says. */}
+								<Button
+									type="button"
+									variant="outline"
+									size="sm"
+									onClick={() => setSessionSheetOpen(true)}
+									data-testid="complexity-router-session-config-button"
+								>
+									<History className="size-3.5" />
+									Session: {SESSION_MODE_LABELS[sessionMode]}
+									{hasUnsavedSessionChanges && (
+										<span className="size-1.5 rounded-full bg-amber-500" role="status" aria-label="Unsaved session changes" />
+									)}
+								</Button>
 								<Button asChild variant="outline" size="sm" data-testid="complexity-router-docs-link">
 									<a href={"https://docs.getbifrost.ai/features/governance/complexity-router"} target="_blank" rel="noopener noreferrer">
 										<ExternalLink className="size-3.5" />
@@ -429,6 +464,27 @@ export default function ComplexityRouterPage() {
 									</span>
 								}
 							/>
+
+							{/* Session mode changes when these phrases affect routing. Pinned mode
+							    consults them only on the first turn; cache-aware mode consults them
+							    on every relevant turn but may hold the existing tier. That distinction
+							    is otherwise invisible while an operator tunes the phrase lists. */}
+							{isSessionEnabled && (
+								<Alert variant="info" data-testid="complexity-router-session-scope-callout">
+									<Info className="h-4 w-4" />
+									{/* AlertDescription lays its children out as grid rows, so the
+									    sentence has to reach it as a single node — an inline <span>
+									    among the text broke it across three lines. */}
+									<AlertDescription>
+										<span>
+											Session behavior is set to <span className="font-medium">{SESSION_MODE_LABELS[sessionMode]}</span>, so
+											{sessionMode === "pinned"
+												? " these phrases classify the first turn. Later turns keep that tier without being classified again."
+												: " these phrases classify every complexity-routed turn, using one embedding each time. A new tier applies only when confidence and cache conditions allow it."}
+										</span>
+									</AlertDescription>
+								</Alert>
+							)}
 
 							<Alert variant="info" data-testid="complexity-router-phrase-defaults-callout">
 								<Info className="h-4 w-4" />
@@ -559,14 +615,30 @@ export default function ComplexityRouterPage() {
 				submitError={submitError}
 			/>
 
+			<SessionConfigSheet
+				open={sessionSheetOpen}
+				onOpenChange={setSessionSheetOpen}
+				control={control}
+				register={register}
+				errors={errors.session}
+				session={liveSession}
+				canUpdate={canUpdate}
+				isClassifierConfigured={isClassifierConfigured}
+				storeStatus={semanticStatus?.session_store}
+				storeStatusLoading={statusLoading}
+				canSave={canSave}
+				isSaving={isSaving}
+				onSave={() => void submit()}
+			/>
+
 			<AlertDialog open={restoreDialogOpen} onOpenChange={setRestoreDialogOpen}>
 				<AlertDialogContent>
 					<AlertDialogHeader>
 						<AlertDialogTitle>Restore defaults</AlertDialogTitle>
 						<AlertDialogDescription>
 							This will replace the phrase to tier mapping with the default reference phrases. Your current phrases will be lost and this
-							action cannot be undone. Your embedding configuration is kept, so classification keeps running and the restored phrases are
-							embedded through the configured provider straight away.
+							action cannot be undone. Your embedding configuration and session behavior are kept, so classification keeps running and the
+							restored phrases are embedded through the configured provider straight away.
 						</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>

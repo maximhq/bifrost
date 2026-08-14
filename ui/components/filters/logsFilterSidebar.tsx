@@ -9,7 +9,16 @@ import { TruncatedLabel } from "@/components/ui/truncatedLabel";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { RequestTypeLabels, RequestTypes, RoutingEngineUsedLabels, Statuses } from "@/lib/constants/logs";
 import { useGetAvailableFilterDataQuery, useGetProvidersQuery } from "@/lib/store";
-import { COMPLEXITY_TIER_VALUES, LEGACY_COMPLEXITY_TIER_VALUES, COMPLEXITY_MECHANISM_LABELS, COMPLEXITY_MECHANISM_VALUES } from "@/lib/types/complexityRouter";
+import {
+	COMPLEXITY_MECHANISM_LABELS,
+	COMPLEXITY_MECHANISM_VALUES,
+	COMPLEXITY_SESSION_LOG_MODE_VALUES,
+	COMPLEXITY_SESSION_TIER_SOURCE_LABELS,
+	COMPLEXITY_SESSION_TIER_SOURCE_VALUES,
+	COMPLEXITY_TIER_VALUES,
+	LEGACY_COMPLEXITY_TIER_VALUES,
+	SESSION_MODE_LABELS,
+} from "@/lib/types/complexityRouter";
 import type { LogFilters } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { ChevronDown, LoaderCircle, PanelLeftClose, Plus, RotateCcw, Search } from "lucide-react";
@@ -111,6 +120,7 @@ export function LogsFilterSidebar({ filters, onFiltersChange }: LogsSidebarProps
 					<RoutingRulesFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<ComplexityTierFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<ComplexityMechanismFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<ComplexitySessionFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<LocalCachingFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<UserFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<TeamFilter filters={filters} onFiltersChange={onFiltersChange} />
@@ -926,6 +936,68 @@ function ComplexityMechanismFilter({ filters, onFiltersChange, defaultOpen }: Fi
 					testId={`complexity-mechanism-filter-checkbox-${mechanism}`}
 				/>
 			))}
+		</FilterSection>
+	);
+}
+
+// ---------------------------------------------------------------------------
+// ComplexitySessionFilter – mode and tier source share one compact section
+// ---------------------------------------------------------------------------
+
+function ComplexitySessionFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const hasActive =
+		!!filters.complexity_session_id ||
+		(filters.complexity_session_modes || []).length > 0 ||
+		(filters.complexity_session_tier_sources || []).length > 0;
+	return (
+		<FilterSection title="Complexity Session" defaultOpen={defaultOpen || hasActive} testId="complexity-session-filter-toggle">
+			<div className="space-y-3">
+				<div>
+					<div className="text-muted-foreground mb-1 px-2 text-xs font-medium">Session ID</div>
+					<div className="relative">
+						<Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2" />
+						<Input
+							value={filters.complexity_session_id || ""}
+							onChange={(event) => onFiltersChange({ ...filters, complexity_session_id: event.target.value })}
+							placeholder="Exact session ID"
+							className="h-8 border-0 pl-8 text-sm"
+							data-testid="complexity-session-id-filter-input"
+						/>
+					</div>
+				</div>
+				<div>
+					<div className="text-muted-foreground mb-1 px-2 text-xs font-medium">Mode</div>
+					{COMPLEXITY_SESSION_LOG_MODE_VALUES.map((mode) => (
+						<CheckboxFilterItem
+							key={mode}
+							label={SESSION_MODE_LABELS[mode]}
+							checked={(filters.complexity_session_modes || []).includes(mode)}
+							onCheckedChange={() => {
+								const current = filters.complexity_session_modes || [];
+								const next = current.includes(mode) ? current.filter((value) => value !== mode) : [...current, mode];
+								onFiltersChange({ ...filters, complexity_session_modes: next });
+							}}
+							testId={`complexity-session-mode-filter-checkbox-${mode}`}
+						/>
+					))}
+				</div>
+				<div>
+					<div className="text-muted-foreground mb-1 px-2 text-xs font-medium">Tier source</div>
+					{COMPLEXITY_SESSION_TIER_SOURCE_VALUES.map((source) => (
+						<CheckboxFilterItem
+							key={source}
+							label={COMPLEXITY_SESSION_TIER_SOURCE_LABELS[source]}
+							checked={(filters.complexity_session_tier_sources || []).includes(source)}
+							onCheckedChange={() => {
+								const current = filters.complexity_session_tier_sources || [];
+								const next = current.includes(source) ? current.filter((value) => value !== source) : [...current, source];
+								onFiltersChange({ ...filters, complexity_session_tier_sources: next });
+							}}
+							testId={`complexity-session-tier-source-filter-checkbox-${source}`}
+						/>
+					))}
+				</div>
+			</div>
 		</FilterSection>
 	);
 }

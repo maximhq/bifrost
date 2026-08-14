@@ -13,7 +13,7 @@
 		"isolatedModules": true,
 		"jsx": "preserve",
 		"incremental": true,
-		"types": ["vite/client"],
+		"types": ["vite/client", "node"],
 		"paths": {
 			"@/*": ["./*"],
 			"@enterprise/*": ["./app/enterprise/*", "./app/_fallbacks/enterprise/*"],

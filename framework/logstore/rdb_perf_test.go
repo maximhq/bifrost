@@ -35,6 +35,31 @@ func newTestSQLiteStore(t *testing.T) *RDBLogStore {
 	return store
 }
 
+func TestComplexitySessionIDFilter(t *testing.T) {
+	store := newTestSQLiteStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	sessionA := "conversation-a"
+	sessionB := "conversation-b"
+
+	for _, entry := range []*Log{
+		{ID: "session-a-log", Timestamp: now, Object: "chat.completion", Provider: "openai", Model: "gpt-4o-mini", Status: "success", ComplexitySessionLogFields: ComplexitySessionLogFields{ComplexitySessionID: &sessionA}},
+		{ID: "session-b-log", Timestamp: now.Add(time.Second), Object: "chat.completion", Provider: "openai", Model: "gpt-4o-mini", Status: "success", ComplexitySessionLogFields: ComplexitySessionLogFields{ComplexitySessionID: &sessionB}},
+	} {
+		if err := store.Create(ctx, entry); err != nil {
+			t.Fatalf("Create(%s) error = %v", entry.ID, err)
+		}
+	}
+
+	result, err := store.SearchLogs(ctx, SearchFilters{ComplexitySessionID: sessionA}, PaginationOptions{Limit: 10})
+	if err != nil {
+		t.Fatalf("SearchLogs(complexity session ID) error = %v", err)
+	}
+	if len(result.Logs) != 1 || result.Logs[0].ID != "session-a-log" {
+		t.Fatalf("expected only session-a-log, got %+v", result.Logs)
+	}
+}
+
 func TestCancelledStatusIncludedInLogAggregates(t *testing.T) {
 	store := newTestSQLiteStore(t)
 	ctx := context.Background()
