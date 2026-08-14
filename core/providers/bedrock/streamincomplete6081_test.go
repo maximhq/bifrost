@@ -92,8 +92,21 @@ func TestIncompleteTerminalWithoutStopReasonDefaultsToMaxTokens(t *testing.T) {
 	require.NotNil(t, event.StopReason)
 	assert.Equal(t, "max_tokens", *event.StopReason)
 
-	// Same default must hold with no IncompleteDetails either.
+	// Same default must hold with no IncompleteDetails either, on both surfaces.
 	terminal.Response.IncompleteDetails = nil
+	events = anthropic.ToAnthropicResponsesStreamResponse(ctx, terminal)
+	require.NotEmpty(t, events)
+	messageDelta = nil
+	for _, ev := range events {
+		if ev.Type == anthropic.AnthropicStreamEventTypeMessageDelta {
+			messageDelta = ev
+		}
+	}
+	require.NotNil(t, messageDelta)
+	require.NotNil(t, messageDelta.Delta)
+	require.NotNil(t, messageDelta.Delta.StopReason)
+	assert.Equal(t, anthropic.AnthropicStopReasonMaxTokens, *messageDelta.Delta.StopReason)
+
 	event, err = bedrock.ToBedrockConverseStreamResponse(terminal)
 	require.NoError(t, err)
 	require.NotNil(t, event)
