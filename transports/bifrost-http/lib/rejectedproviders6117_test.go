@@ -17,7 +17,7 @@ func TestGetProviderConfigRawSurfacesLoadRejection(t *testing.T) {
 	cfg := &Config{
 		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{},
 		RejectedProviders: map[schemas.ModelProvider]string{
-			schemas.DeepSeek: `custom provider validation failed: cannot be created on standard providers: deepseek`,
+			schemas.DeepSeek: `custom provider validation failed: provider name "deepseek" is reserved for a built-in provider type; choose a different name for the custom provider`,
 		},
 	}
 
@@ -29,7 +29,7 @@ func TestGetProviderConfigRawSurfacesLoadRejection(t *testing.T) {
 		t.Errorf("error must keep ErrNotFound semantics, got %v", err)
 	}
 	if !strings.Contains(err.Error(), "rejected at config load") ||
-		!strings.Contains(err.Error(), "cannot be created on standard providers") {
+		!strings.Contains(err.Error(), "reserved for a built-in provider type") {
 		t.Errorf("error must carry the rejection reason, got %q", err.Error())
 	}
 
@@ -52,7 +52,10 @@ func TestValidateCustomProviderRejectsBuiltinName(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected validation error for built-in name collision")
 	}
-	if !strings.Contains(err.Error(), "standard providers") {
-		t.Errorf("error should name the collision, got %q", err.Error())
+	if !strings.Contains(err.Error(), `provider name "deepseek" is reserved`) {
+		t.Errorf("error must identify the reserved name, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "choose a different name") {
+		t.Errorf("error must tell the operator how to fix the collision, got %q", err.Error())
 	}
 }

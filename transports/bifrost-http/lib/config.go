@@ -7156,7 +7156,7 @@ func ValidateCustomProvider(config configstore.ProviderConfig, provider schemas.
 	}
 
 	if bifrost.IsStandardProvider(provider) {
-		return fmt.Errorf("custom provider validation failed: cannot be created on standard providers: %s", provider)
+		return fmt.Errorf("custom provider validation failed: provider name %q is reserved for a built-in provider type; choose a different name for the custom provider", provider)
 	}
 
 	cpc := config.CustomProviderConfig
