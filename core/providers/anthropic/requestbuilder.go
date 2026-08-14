@@ -148,6 +148,9 @@ var AnthropicProviderRequestDefaultsMap = map[schemas.ModelProvider]AnthropicPro
 // raw-vs-typed branching, field stripping, beta-header injection, fallbacks
 // deletion) are handled here.
 func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest, cfg AnthropicRequestBuildConfig) ([]byte, *schemas.BifrostError) {
+	if err := rejectDeepSeekV4UnsupportedResponsesContent(ctx, cfg.Provider, request); err != nil {
+		return nil, err
+	}
 	if providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
 		return nil, nil
 	}
@@ -451,6 +454,9 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 // ToAnthropicChatRequest. IsCountTokens is not honoured here — count-tokens
 // is a Responses-API concept.
 func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas.BifrostChatRequest, cfg AnthropicRequestBuildConfig) ([]byte, *schemas.BifrostError) {
+	if err := rejectDeepSeekV4UnsupportedChatContent(ctx, cfg.Provider, request); err != nil {
+		return nil, err
+	}
 	if providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
 		return nil, nil
 	}

@@ -129043,6 +129043,198 @@
           }
         }
       ]
+    },
+    {
+      "name": "52. DeepSeek V4 Unsupported Content Pre-Egress Guard (PR #5985)",
+      "description": "DeepSeek V4 Flash and Pro documentation marks image and document inputs as unsupported on the official Anthropic-compatible surface. These cases require Bifrost to reject those content kinds locally, before request conversion or provider egress, for Chat and Responses in both unary and streaming modes. Each response must be the stable payload-free 415 contract; a 2xx response reproduces the silent-accept content-spill defect.",
+      "item": [
+        {
+          "name": "deepseek/deepseek-v4-pro chat image is rejected before egress - PR #5985",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-pro\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\"type\": \"text\", \"text\": \"Describe this image.\"},\n        {\"type\": \"image_url\", \"image_url\": {\"url\": \"https://example.invalid/stage-r-content-must-not-appear.png\"}}\n      ]\n    }\n  ],\n  \"max_tokens\": 8\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text() || '';",
+                  "var parsed = {};",
+                  "try { parsed = pm.response.json(); } catch (e) {}",
+                  "pm.test('deepseek v4 pro chat image fails locally with the typed content error', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body).to.eql(415);",
+                  "  pm.expect((parsed.error || {}).type, 'wrong error type: ' + body).to.eql('unsupported_content_kind');",
+                  "  pm.expect((parsed.error || {}).code, 'wrong error code: ' + body).to.eql('deepseek_unsupported_content_kind');",
+                  "  pm.expect(body, 'payload leaked into error').to.not.include('stage-r-content-must-not-appear');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash chat document streaming is rejected before egress - PR #5985",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\"type\": \"text\", \"text\": \"Summarize this document.\"},\n        {\"type\": \"file\", \"file\": {\"file_data\": \"stage-r-content-must-not-appear\", \"filename\": \"stage-r.txt\", \"file_type\": \"text/plain\"}}\n      ]\n    }\n  ],\n  \"stream\": true,\n  \"max_tokens\": 8\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text() || '';",
+                  "var parsed = {};",
+                  "try { parsed = pm.response.json(); } catch (e) {}",
+                  "pm.test('deepseek v4 flash streaming chat document fails locally with the typed content error', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body).to.eql(415);",
+                  "  pm.expect((parsed.error || {}).type, 'wrong error type: ' + body).to.eql('unsupported_content_kind');",
+                  "  pm.expect((parsed.error || {}).code, 'wrong error code: ' + body).to.eql('deepseek_unsupported_content_kind');",
+                  "  pm.expect(body, 'payload leaked into error').to.not.include('stage-r-content-must-not-appear');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "deepseek/deepseek-v4-pro responses image is rejected before egress - PR #5985",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-pro\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\"type\": \"input_text\", \"text\": \"Describe this image.\"},\n        {\"type\": \"input_image\", \"image_url\": \"https://example.invalid/stage-r-content-must-not-appear.png\"}\n      ]\n    }\n  ],\n  \"max_output_tokens\": 8\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text() || '';",
+                  "var parsed = {};",
+                  "try { parsed = pm.response.json(); } catch (e) {}",
+                  "pm.test('deepseek v4 pro responses image fails locally with the typed content error', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body).to.eql(415);",
+                  "  pm.expect((parsed.error || {}).type, 'wrong error type: ' + body).to.eql('unsupported_content_kind');",
+                  "  pm.expect((parsed.error || {}).code, 'wrong error code: ' + body).to.eql('deepseek_unsupported_content_kind');",
+                  "  pm.expect(body, 'payload leaked into error').to.not.include('stage-r-content-must-not-appear');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash responses document streaming is rejected before egress - PR #5985",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\"type\": \"input_text\", \"text\": \"Summarize this document.\"},\n        {\"type\": \"input_file\", \"file_data\": \"stage-r-content-must-not-appear\", \"filename\": \"stage-r.txt\", \"file_type\": \"text/plain\"}\n      ]\n    }\n  ],\n  \"stream\": true,\n  \"max_output_tokens\": 8\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text() || '';",
+                  "var parsed = {};",
+                  "try { parsed = pm.response.json(); } catch (e) {}",
+                  "pm.test('deepseek v4 flash streaming responses document fails locally with the typed content error', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body).to.eql(415);",
+                  "  pm.expect((parsed.error || {}).type, 'wrong error type: ' + body).to.eql('unsupported_content_kind');",
+                  "  pm.expect((parsed.error || {}).code, 'wrong error code: ' + body).to.eql('deepseek_unsupported_content_kind');",
+                  "  pm.expect(body, 'payload leaked into error').to.not.include('stage-r-content-must-not-appear');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
