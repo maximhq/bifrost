@@ -11,6 +11,8 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 ### Upcoming
 
 - Added `bifrost.plugins.splunk` — the Splunk HTTP Event Collector (HEC) observability connector (Enterprise): one flattened event per request to `events_index` plus the derived metric set to `metrics_index`, with TLS (`ca_cert` / `insecure_skip_verify`), a content toggle (`disable_content_logging`), request-header capture, and indexer acknowledgement (`indexer_ack`, `ack_poll_interval_ms`, `ack_timeout_ms`, `max_ack_attempts`). Renders into the `splunk` plugin config.
+- Updated `bifrost.governance.complexityAnalyzerConfig` for semantic Complexity Router configuration: set an embedding provider and model, add reference phrases for Simple, Medium, and Complex, and choose `embedded` or `vector_store` phrase storage. Bifrost detects the embedding dimension during warmup. Legacy four-tier lists remain valid: Simple stays Simple, Code and Technical merge into Medium, and Reasoning merges into Complex. Legacy `tier_boundaries` remain accepted during upgrades but are optional and ignored by semantic routing. Renders into `governance.complexity_analyzer_config`.
+- Added `vectorStore.type: chromem` plus a `vectorStore.chromem` block (`path`, `compress`) for the embedded in-process vector store used by semantic complexity routing. Renders into `vector_store.config`.
 
 ### 2.1.36
 
@@ -746,7 +748,7 @@ Bifrost supports multiple vector stores for semantic caching:
 | Parameter             | Description                                              | Default |
 | --------------------- | -------------------------------------------------------- | ------- |
 | `vectorStore.enabled` | Enable vector store                                      | `false` |
-| `vectorStore.type`    | Vector store type: `none`, `weaviate`, `redis`, `qdrant` | `none`  |
+| `vectorStore.type`    | Vector store type: `none`, `weaviate`, `redis`, `qdrant`, `pinecone`, or `chromem` | `none`  |
 
 #### Weaviate
 

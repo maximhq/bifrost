@@ -173,7 +173,7 @@ complexity:
   get:
     operationId: getComplexityAnalyzerConfig
     summary: Get complexity analyzer config
-    description: Returns the full complexity analyzer runtime config, including tier thresholds and editable keyword lists. Returns built-in defaults if none have been configured.
+    description: Returns the full complexity analyzer runtime config, including the semantic embedding configuration and per-tier reference phrase lists. Returns built-in defaults if none have been configured.
     tags:
       - Routing
     security:
@@ -193,7 +193,7 @@ complexity:
   put:
     operationId: updateComplexityAnalyzerConfig
     summary: Update complexity analyzer config
-    description: Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Tier thresholds must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.
+    description: Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Changing the embedding configuration or reference phrases triggers a background re-warm of the classifier; unchanged phrases are not re-embedded.
     tags:
       - Routing
     requestBody:
@@ -222,7 +222,7 @@ complexity-reset:
   post:
     operationId: resetComplexityAnalyzerConfig
     summary: Reset complexity analyzer config
-    description: Restores the built-in complexity analyzer runtime config defaults and hot-reloads the routing plugin.
+    description: Restores the built-in reference phrase lists and hot-reloads the routing plugin. The saved embedding provider, model, and storage configuration are preserved.
     tags:
       - Routing
     security:
@@ -407,12 +407,31 @@ rules-by-id-legacy:
 
 # Model Configs CRUD
 
+complexity-status:
+  get:
+    operationId: getComplexityAnalyzerStatus
+    summary: Get complexity classifier status
+    description: Returns the runtime status of the semantic complexity classifier (disabled, warming, ready, or failed), including warmup progress and whether a previous generation is still serving.
+    tags:
+      - Routing
+    responses:
+      '200':
+        description: Complexity classifier status retrieved successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ComplexitySemanticStatus'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+
 complexity-legacy:
   get:
     operationId: getComplexityAnalyzerConfigLegacy
     deprecated: true
     summary: Get complexity analyzer config (deprecated path)
-    description: Returns the full complexity analyzer runtime config, including tier thresholds and editable keyword lists. Returns built-in defaults if none have been configured. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.
+    description: Returns the full complexity analyzer runtime config, including the semantic embedding configuration and per-tier reference phrase lists. Returns built-in defaults if none have been configured. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.
     tags:
       - Routing
     security:
@@ -433,7 +452,7 @@ complexity-legacy:
     operationId: updateComplexityAnalyzerConfigLegacy
     deprecated: true
     summary: Update complexity analyzer config (deprecated path)
-    description: Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Tier thresholds must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.
+    description: Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Changing the embedding configuration or reference phrases triggers a background re-warm of the classifier; unchanged phrases are not re-embedded. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.
     tags:
       - Routing
     requestBody:
@@ -463,7 +482,7 @@ complexity-reset-legacy:
     operationId: resetComplexityAnalyzerConfigLegacy
     deprecated: true
     summary: Reset complexity analyzer config (deprecated path)
-    description: Restores the built-in complexity analyzer runtime config defaults and hot-reloads the routing plugin. Deprecated, use /api/routing/complexity-analyzer-config/reset instead. This path is kept for backwards compatibility and behaves identically.
+    description: Restores the built-in reference phrase lists and hot-reloads the routing plugin. The saved embedding provider, model, and storage configuration are preserved. Deprecated, use /api/routing/complexity-analyzer-config/reset instead. This path is kept for backwards compatibility and behaves identically.
     tags:
       - Routing
     security:
