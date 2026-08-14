@@ -22,13 +22,13 @@ export function ColumnConfigDropdown({ entries, labels = {}, onToggleVisibility,
 	return (
 		<Popover>
 			<PopoverTrigger asChild>
-				<Button variant="outline" size="sm" className="h-7.5 w-7.5" data-testid="column-config-trigger" aria-label="Column configuration">
+				<Button variant="outline" size="sm" className="h-7.5 w-7.5" data-testid="column-config-trigger" aria-label="列配置">
 					<Columns3 className="h-4 w-4" />
 				</Button>
 			</PopoverTrigger>
 			<PopoverContent className="w-[200px] p-2" align="end">
 				<div className="space-y-1">
-					<div className="text-muted-foreground px-1 pb-1 text-xs font-medium">Toggle Columns</div>
+					<div className="text-muted-foreground px-1 pb-1 text-xs font-medium">切换列</div>
 					{entries.map((entry) => (
 						<label key={entry.id} className="hover:bg-muted/50 flex cursor-pointer items-center gap-2 rounded px-1 py-1">
 							<Checkbox
@@ -47,9 +47,7 @@ export function ColumnConfigDropdown({ entries, labels = {}, onToggleVisibility,
 							className="w-full justify-start text-sm"
 							data-testid="column-reset-default"
 						>
-							<RotateCcw className="h-3 w-3" />
-							Reset to default
-						</Button>
+							<RotateCcw className="h-3 w-3" />重置为默认</Button>
 					</div>
 				</div>
 			</PopoverContent>

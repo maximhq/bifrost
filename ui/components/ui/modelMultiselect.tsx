@@ -63,7 +63,7 @@ interface ModelOption {
 	isDisabled?: boolean;
 }
 
-const ALL_MODELS_OPTION: ModelOption = { label: "All Models", value: "*" };
+const ALL_MODELS_OPTION: ModelOption = { label: "所有模型", value: "*" };
 
 export function ModelMultiselect(props: ModelMultiselectProps) {
 	const {
@@ -337,9 +337,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 						>
 							<span className={cn("grow truncate text-sm", isDeprecated && "text-muted-foreground")}>{optionProps.data.label}</span>
 							{isDeprecated && (
-								<span className="text-muted-foreground border-border shrink-0 rounded-sm border px-1.5 py-0.5 text-[10px] font-medium tracking-wide uppercase">
-									Deprecated
-								</span>
+								<span className="text-muted-foreground border-border shrink-0 rounded-sm border px-1.5 py-0.5 text-[10px] font-medium tracking-wide uppercase">已弃用</span>
 							)}
 						</Option>
 					);

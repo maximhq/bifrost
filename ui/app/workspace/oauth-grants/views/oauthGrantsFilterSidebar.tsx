@@ -49,9 +49,9 @@ interface FilterOption {
 // Identity-mode icons match the glyphs used in BindingCell so the sidebar
 // reads as the same vocabulary as the rendered table column.
 const MODE_OPTIONS: FilterOption[] = [
-	{ value: "user", label: "User", icon: <UserRound className="size-3.5" /> },
-	{ value: "vk", label: "Virtual key", icon: <KeyRound className="size-3.5" /> },
-	{ value: "session", label: "Session", icon: <Fingerprint className="size-3.5" /> },
+	{ value: "user", label: "用户", icon: <UserRound className="size-3.5" /> },
+	{ value: "vk", label: "虚拟密钥", icon: <KeyRound className="size-3.5" /> },
+	{ value: "session", label: "会话", icon: <Fingerprint className="size-3.5" /> },
 ];
 
 interface SidebarProps {
@@ -94,7 +94,7 @@ export function OAuthGrantsFilterSidebar({ filters, onFiltersChange }: SidebarPr
 	// Mirrors mcpSessionsFilterSidebar's auth-mode guard: when Identity pins
 	// the row set to exactly one mode, the other mode's picker can't match
 	// anything, so hide it outright rather than leave a checkbox list that
-	// would only ever come back empty. Selecting "Session" hides both, since
+	// would only ever come back empty. Selecting "会话" hides both, since
 	// session-bound rows have no VK or user to pick. Neither/both selected
 	// leaves both pickers visible.
 	const modeOnly = filters.mode.length === 1 ? filters.mode[0] : null;
@@ -102,7 +102,7 @@ export function OAuthGrantsFilterSidebar({ filters, onFiltersChange }: SidebarPr
 	const showUsersFilter = modeOnly !== "vk" && modeOnly !== "session";
 
 	// A hidden picker's stale selection would otherwise keep silently
-	// filtering (a VK pick surviving a switch to "User" identity, say) with
+	// filtering (a VK pick surviving a switch to "用户" identity, say) with
 	// no visible control left to clear it — so drop it the moment its section
 	// disappears.
 	useEffect(() => {
@@ -123,12 +123,12 @@ export function OAuthGrantsFilterSidebar({ filters, onFiltersChange }: SidebarPr
 				type="button"
 				onClick={toggleCollapsed}
 				className="bg-card group flex h-full w-10 shrink-0 cursor-pointer flex-col items-center gap-3 rounded-r-md py-4 text-sm font-medium"
-				title="Show filters"
-				aria-label="Show filters"
+				title="显示筛选"
+				aria-label="显示筛选"
 				data-testid="oauthGrantsFilterSidebar-toggle-show"
 			>
 				<PanelLeftOpen className="text-muted-foreground group-hover:text-foreground size-4 transition-colors" />
-				<span className="rotate-180 select-none [writing-mode:vertical-rl]">Filters</span>
+				<span className="rotate-180 select-none [writing-mode:vertical-rl]">筛选</span>
 				{activeFilterCount > 0 && (
 					<span className="bg-primary/10 text-primary flex size-6 items-center justify-center rounded-full text-xs font-medium">
 						{activeFilterCount}
@@ -141,7 +141,7 @@ export function OAuthGrantsFilterSidebar({ filters, onFiltersChange }: SidebarPr
 	return (
 		<div className="bg-card flex h-full w-64 shrink-0 flex-col rounded-r-md">
 			<div className="flex h-11 items-center justify-between border-b pr-2 pl-5">
-				<span className="text-sm font-semibold">Filters</span>
+				<span className="text-sm font-semibold">筛选</span>
 				<div className="flex items-center gap-1">
 					{activeFilterCount > 0 && (
 						<Button
@@ -151,17 +151,15 @@ export function OAuthGrantsFilterSidebar({ filters, onFiltersChange }: SidebarPr
 							onClick={handleReset}
 							data-testid="oauthGrantsFilterSidebar-reset-button"
 						>
-							<RotateCcw className="size-3" />
-							Reset
-						</Button>
+							<RotateCcw className="size-3" />重置</Button>
 					)}
 					<Button
 						variant="ghost"
 						size="icon"
 						className="size-7"
 						onClick={toggleCollapsed}
-						title="Hide filters"
-						aria-label="Hide filters"
+						title="隐藏筛选"
+						aria-label="隐藏筛选"
 						data-testid="oauthGrantsFilterSidebar-toggle-hide"
 					>
 						<PanelLeftClose className="size-4" />
@@ -172,7 +170,7 @@ export function OAuthGrantsFilterSidebar({ filters, onFiltersChange }: SidebarPr
 			<ScrollArea className="flex flex-1 overflow-y-auto p-2 pb-0" viewportClassName="no-table">
 				<div className="flex grow flex-col gap-1">
 					<CheckboxFilterSection
-						title="Identity"
+						title="身份"
 						options={MODE_OPTIONS}
 						selected={filters.mode}
 						defaultOpen
@@ -316,7 +314,7 @@ function SearchableCheckboxList({
 	items,
 	isSelected,
 	onToggle,
-	placeholder = "Search...",
+	placeholder = "搜索...",
 	inputRef,
 	testIdPrefix,
 	onSearch,
@@ -367,7 +365,7 @@ function SearchableCheckboxList({
 					testId={testIdPrefix ? `${testIdPrefix}-checkbox-${item.key}` : undefined}
 				/>
 			))}
-			{filtered.length === 0 && <div className="text-muted-foreground flex h-9 items-center px-3 text-xs">No results</div>}
+			{filtered.length === 0 && <div className="text-muted-foreground flex h-9 items-center px-3 text-xs">无结果</div>}
 		</>
 	);
 }
@@ -397,10 +395,10 @@ function VirtualKeyFilterSection({ filters, onFiltersChange }: SidebarProps) {
 	};
 
 	return (
-		<FilterSection title="Virtual Key" defaultOpen={hasActive} onOpenChange={setOpened} testId="oauth-grants-filter-vk-toggle">
+		<FilterSection title="虚拟密钥" defaultOpen={hasActive} onOpenChange={setOpened} testId="oauth-grants-filter-vk-toggle">
 			<SearchableCheckboxList
 				inputRef={searchInputRef}
-				placeholder="Search virtual keys"
+				placeholder="搜索虚拟密钥"
 				items={virtualKeys.map((vk) => ({ key: vk.id, label: vk.name || vk.id }))}
 				isSelected={(key) => filters.virtual_key_id.includes(key)}
 				onToggle={toggle}
@@ -450,10 +448,10 @@ function UsersFilterSection({ filters, onFiltersChange }: SidebarProps) {
 	};
 
 	return (
-		<FilterSection title="Users" defaultOpen={hasActive} onOpenChange={setOpened} testId="oauth-grants-filter-users-toggle">
+		<FilterSection title="用户" defaultOpen={hasActive} onOpenChange={setOpened} testId="oauth-grants-filter-users-toggle">
 			<SearchableCheckboxList
 				inputRef={searchInputRef}
-				placeholder="Search by name or email"
+				placeholder="按名称或邮箱搜索"
 				items={users.map((user) => ({ key: user.id, label: user.label }))}
 				isSelected={(key) => filters.user_id.includes(key)}
 				onToggle={toggle}

@@ -42,13 +42,11 @@ export default function OCRView({ ocrInput, ocrOutput }: OCRViewProps) {
 			{ocrInput && (
 				<div className="w-full rounded-sm border">
 					<div className="flex items-center gap-2 border-b px-6 py-2 text-sm font-medium">
-						<FileText className="h-4 w-4" />
-						OCR Input
-					</div>
+						<FileText className="h-4 w-4" />OCR 输入</div>
 					<div className="space-y-4 p-6">
 						<div>
-							<div className="text-muted-foreground mb-2 text-xs font-medium">TYPE</div>
-							<div className="font-mono text-xs">{ocrInput.type === "document_url" ? "Document" : "Image"}</div>
+							<div className="text-muted-foreground mb-2 text-xs font-medium">类型</div>
+							<div className="font-mono text-xs">{ocrInput.type === "document_url" ? "Document" : "图片"}</div>
 						</div>
 						{(ocrInput.document_url || ocrInput.image_url) && (
 							<div>
@@ -66,19 +64,17 @@ export default function OCRView({ ocrInput, ocrOutput }: OCRViewProps) {
 			{ocrOutput && (
 				<div className="w-full rounded-sm border">
 					<div className="flex items-center gap-2 border-b px-6 py-2 text-sm font-medium">
-						<FileText className="h-4 w-4" />
-						OCR Output
-					</div>
+						<FileText className="h-4 w-4" />OCR 输出</div>
 
 					<div className="space-y-4 p-6">
 						{ocrOutput.usage_info && (
 							<div className="grid grid-cols-3 gap-3">
 								<div className="space-y-1">
-									<div className="text-muted-foreground text-xs font-medium">PAGES PROCESSED</div>
+									<div className="text-muted-foreground text-xs font-medium">已处理页数</div>
 									<div className="font-mono text-xs">{ocrOutput.usage_info.pages_processed}</div>
 								</div>
 								<div className="space-y-1">
-									<div className="text-muted-foreground text-xs font-medium">DOCUMENT SIZE</div>
+									<div className="text-muted-foreground text-xs font-medium">文档大小</div>
 									<div className="font-mono text-xs">{(ocrOutput.usage_info.doc_size_bytes / 1024).toFixed(1)} KB</div>
 								</div>
 							</div>
@@ -86,7 +82,7 @@ export default function OCRView({ ocrInput, ocrOutput }: OCRViewProps) {
 
 						{ocrOutput.document_annotation && (
 							<div>
-								<div className="text-muted-foreground mb-2 text-xs font-medium">DOCUMENT ANNOTATION</div>
+								<div className="text-muted-foreground mb-2 text-xs font-medium">文档注释</div>
 								<div className="font-mono text-xs">{ocrOutput.document_annotation}</div>
 							</div>
 						)}
@@ -96,7 +92,7 @@ export default function OCRView({ ocrInput, ocrOutput }: OCRViewProps) {
 								{currentPage.dimensions && (
 									<div className="grid grid-cols-3 gap-3">
 										<div className="space-y-1">
-											<div className="text-muted-foreground text-xs font-medium">DIMENSIONS</div>
+											<div className="text-muted-foreground text-xs font-medium">尺寸</div>
 											<div className="font-mono text-xs">
 												{currentPage.dimensions.width} × {currentPage.dimensions.height}px
 											</div>
@@ -110,7 +106,7 @@ export default function OCRView({ ocrInput, ocrOutput }: OCRViewProps) {
 
 								{currentPage.markdown ? (
 									<div>
-										<div className="text-muted-foreground mb-2 text-xs font-medium">MARKDOWN</div>
+										<div className="text-muted-foreground mb-2 text-xs font-medium">Markdown</div>
 										<CodeEditor
 											className="z-0 w-full"
 											shouldAdjustInitialHeight
@@ -127,7 +123,7 @@ export default function OCRView({ ocrInput, ocrOutput }: OCRViewProps) {
 										/>
 									</div>
 								) : (
-									<div className="text-muted-foreground font-mono text-xs">No text extracted from this page.</div>
+									<div className="text-muted-foreground font-mono text-xs">未从此页提取到文本。</div>
 								)}
 
 								{pageImages.length > 0 && (
@@ -152,8 +148,8 @@ export default function OCRView({ ocrInput, ocrOutput }: OCRViewProps) {
 											variant="outline"
 											size="sm"
 											onClick={goToPrevious}
-											aria-label="Previous page"
-											title="Previous page"
+											aria-label="上一页"
+											title="上一页"
 											data-testid="ocr-view-pagination-prev-button"
 										>
 											<ChevronLeft className="h-4 w-4" />
@@ -165,8 +161,8 @@ export default function OCRView({ ocrInput, ocrOutput }: OCRViewProps) {
 											variant="outline"
 											size="sm"
 											onClick={goToNext}
-											aria-label="Next page"
-											title="Next page"
+											aria-label="下一页"
+											title="下一页"
 											data-testid="ocr-view-pagination-next-button"
 										>
 											<ChevronRight className="h-4 w-4" />

@@ -139,7 +139,7 @@ export function UserMessageView({
 		e.preventDefault();
 		e.stopPropagation();
 		dragCounterRef.current++;
-		if (e.dataTransfer.types.includes("Files")) setIsDragging(true);
+		if (e.dataTransfer.types.includes("文件")) setIsDragging(true);
 	}, []);
 
 	const handleDragLeave = useCallback((e: React.DragEvent) => {
@@ -207,7 +207,7 @@ export function UserMessageView({
 				<div className="bg-background/80 border-primary absolute inset-0 z-50 flex items-center justify-center rounded-sm border-2 border-dashed backdrop-blur-sm">
 					<div className="text-primary flex flex-col items-center gap-1">
 						<Paperclip className="h-5 w-5" />
-						<span className="text-xs font-medium">Drop files to attach</span>
+						<span className="text-xs font-medium">拖放文件以附加</span>
 					</div>
 				</div>
 			)}
@@ -226,7 +226,7 @@ export function UserMessageView({
 							/>
 							<button
 								type="button"
-								aria-label="Attach file"
+								aria-label="附加文件"
 								data-testid="user-msg-attach"
 								onClick={() => fileInputRef.current?.click()}
 								className="hover:bg-muted focus:bg-muted rounded-sm p-1 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 focus:opacity-100"
@@ -238,7 +238,7 @@ export function UserMessageView({
 					{!disabled && (
 						<button
 							type="button"
-							aria-label="Edit message"
+							aria-label="编辑消息"
 							data-testid="user-msg-edit"
 							onClick={() => setEditMode(true)}
 							className="hover:bg-muted focus:bg-muted rounded-sm p-1 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 focus:opacity-100"
@@ -249,7 +249,7 @@ export function UserMessageView({
 					{!disabled && onRemove && (
 						<button
 							type="button"
-							aria-label="Delete message"
+							aria-label="删除消息"
 							data-testid="user-msg-delete"
 							onClick={onRemove}
 							className="hover:bg-muted focus:bg-muted rounded-sm p-1 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 focus:opacity-100"
@@ -280,7 +280,7 @@ export function UserMessageView({
 						highlightPatterns={JINJA_VAR_HIGHLIGHT_PATTERNS}
 					/>
 				) : isEmpty && messageAttachments.length === 0 ? (
-					<div className="text-muted-foreground min-h-[20px] text-sm italic">Enter user message...</div>
+					<div className="text-muted-foreground min-h-[20px] text-sm italic">输入用户消息...</div>
 				) : contentIsJson ? (
 					<CodeEditor
 						wrap

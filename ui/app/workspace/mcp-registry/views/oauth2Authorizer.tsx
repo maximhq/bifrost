@@ -23,7 +23,7 @@ interface OAuth2AuthorizerProps {
 	// round-trip risks the browser blocking it outright.
 	initialPopup?: Window | null;
 	// True when this dialog is redoing consent for an already-verified client
-	// (the "Refresh admin credential" action), as opposed to the first-time
+	// (the "刷新管理员凭据" action), as opposed to the first-time
 	// bootstrap verification. Only affects the confirm-step copy.
 	isReauthorize?: boolean;
 }
@@ -149,7 +149,7 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 						await handleOAuthComplete();
 					} else if (result.status === "failed" || result.status === "expired") {
 						stopPolling();
-						handleOAuthFailed("Authorization failed");
+						handleOAuthFailed("授权失败");
 					}
 				} catch {
 					// transient error — let polling continue
@@ -237,11 +237,11 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 	const isPerUserReauth = isPerUserOauth && isReauthorize;
 
 	const titles: Record<Status, string> = {
-		confirm: isPerUserReauth ? "Refresh admin credential" : "Authorize connection",
+		confirm: isPerUserReauth ? "刷新管理员凭据" : "Authorize connection",
 		polling: "Waiting for authorization",
 		blocked: "Popup blocked",
 		success: "Connection authorized",
-		failed: "Authorization failed",
+		failed: "授权失败",
 	};
 
 	const subtitles: Record<Status, string> = {
@@ -289,8 +289,7 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 					{status === "confirm" && (
 						<>
 							<InfoBox icon={<KeyRound className="size-4" />}>
-								<p>
-									We'll open <strong>{authorizationHost}</strong> to {isPerUserReauth ? "renew" : "verify"} the OAuth setup
+								<p>我们将打开<strong>{authorizationHost}</strong> to {isPerUserReauth ? "renew" : "verify"} the OAuth setup
 									{isPerUserReauth ? "" : " and discover available tools"}.
 								</p>
 								<p className="text-muted-foreground/80 text-xs">
@@ -300,13 +299,9 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 								</p>
 							</InfoBox>
 							<div className="flex justify-end gap-2">
-								<Button size="sm" variant="outline" onClick={handleCancel} data-testid="per-user-oauth-cancel">
-									Cancel
-								</Button>
+								<Button size="sm" variant="outline" onClick={handleCancel} data-testid="per-user-oauth-cancel">取消</Button>
 								<Button size="sm" onClick={openPopup} data-testid="per-user-oauth-confirm">
-									<ExternalLink className="size-3.5" />
-									Continue
-								</Button>
+									<ExternalLink className="size-3.5" />继续</Button>
 							</div>
 						</>
 					)}
@@ -315,14 +310,12 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 					{status === "polling" && (
 						<>
 							<InfoBox icon={<Loader2 className="size-4 animate-spin" />}>
-								<p>This dialog will update automatically once the provider redirects back.</p>
-								<p className="text-muted-foreground/80 text-xs">Keep the popup open until authorization is complete.</p>
+								<p>提供商重定向回来后，此对话框将自动更新。</p>
+								<p className="text-muted-foreground/80 text-xs">请保持弹窗打开，直到授权完成。</p>
 							</InfoBox>
 							<div className="flex items-center justify-between">
 								<StepDots active={2} total={3} />
-								<Button size="sm" variant="outline" onClick={handleCancel} data-testid="oauth-polling-cancel-btn">
-									Cancel
-								</Button>
+								<Button size="sm" variant="outline" onClick={handleCancel} data-testid="oauth-polling-cancel-btn">取消</Button>
 							</div>
 						</>
 					)}
@@ -331,17 +324,13 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 					{status === "blocked" && (
 						<>
 							<InfoBox variant="warning" icon={<AlertTriangle className="size-4" />}>
-								<p>Your browser prevented the authorization window from opening.</p>
-								<p className="text-xs opacity-80">Enable popups for this site in your browser settings, then try again.</p>
+								<p>您的浏览器阻止了授权窗口打开。</p>
+								<p className="text-xs opacity-80">请在浏览器设置中允许此站点的弹窗，然后重试。</p>
 							</InfoBox>
 							<div className="flex justify-end gap-2">
-								<Button size="sm" variant="outline" onClick={handleCancel} data-testid="oauth-pending-cancel-btn">
-									Cancel
-								</Button>
+								<Button size="sm" variant="outline" onClick={handleCancel} data-testid="oauth-pending-cancel-btn">取消</Button>
 								<Button size="sm" onClick={openPopup} data-testid="oauth-open-window-btn">
-									<ExternalLink className="size-3.5" />
-									Open authorization
-								</Button>
+									<ExternalLink className="size-3.5" />打开授权</Button>
 							</div>
 						</>
 					)}
@@ -349,8 +338,8 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 					{/* Success */}
 					{status === "success" && (
 						<InfoBox variant="success" icon={<CheckCircle2 className="size-4" />}>
-							<p className="font-medium">Finishing setup and syncing available tools.</p>
-							<p className="text-xs opacity-80">You can close this dialog; setup will complete in the background.</p>
+							<p className="font-medium">正在完成设置并同步可用工具。</p>
+							<p className="text-xs opacity-80">您可以关闭此对话框；设置将在后台完成。</p>
 						</InfoBox>
 					)}
 
@@ -358,17 +347,13 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 					{status === "failed" && (
 						<>
 							<InfoBox variant="danger" icon={<XCircle className="size-4" />}>
-								<p className="font-medium">Authorization did not complete.</p>
+								<p className="font-medium">授权未完成。</p>
 								<p className="text-xs opacity-80">{errorMessage ?? "Check your OAuth provider configuration or try again."}</p>
 							</InfoBox>
 							<div className="flex justify-end gap-2">
-								<Button size="sm" variant="outline" onClick={handleCancel} data-testid="oauth-failed-close-btn">
-									Close
-								</Button>
+								<Button size="sm" variant="outline" onClick={handleCancel} data-testid="oauth-failed-close-btn">关闭</Button>
 								<Button size="sm" onClick={handleRetry} data-testid="oauth-failed-retry-btn">
-									<RefreshCw className="size-3.5" />
-									Retry
-								</Button>
+									<RefreshCw className="size-3.5" />重试</Button>
 							</div>
 						</>
 					)}

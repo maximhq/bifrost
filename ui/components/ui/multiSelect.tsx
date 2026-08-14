@@ -154,7 +154,7 @@ interface MultiSelectProps
 
 	/**
 	 * Custom empty state message when no options match search.
-	 * Optional, defaults to "No results found."
+	 * Optional, defaults to "未找到结果。"
 	 */
 	emptyIndicator?: React.ReactNode;
 
@@ -655,9 +655,7 @@ export const MultiSelect = React.forwardRef<MultiSelectRef, MultiSelectProps>(
 				</div>
 
 				<Popover open={isPopoverOpen} onOpenChange={setIsPopoverOpen} modal={modalPopover}>
-					<div id={triggerDescriptionId} className="sr-only">
-						Multi-select dropdown. Use arrow keys to navigate, Enter to select, and Escape to close.
-					</div>
+					<div id={triggerDescriptionId} className="sr-only">多选下拉框。使用方向键浏览，回车选择，Esc 关闭。</div>
 					<div id={selectedCountId} className="sr-only" aria-live="polite">
 						{selectedValues.length === 0
 							? "No options selected"
@@ -833,7 +831,7 @@ export const MultiSelect = React.forwardRef<MultiSelectRef, MultiSelectProps>(
 						id={listboxId}
 						role="listbox"
 						aria-multiselectable="true"
-						aria-label="Available options"
+						aria-label="可用选项"
 						className={cn("w-full overflow-hidden p-0", popoverClassName)}
 						style={{
 							touchAction: "manipulation",
@@ -847,18 +845,16 @@ export const MultiSelect = React.forwardRef<MultiSelectRef, MultiSelectProps>(
 						<Command className={cn("flex w-full flex-col", commandClassName)}>
 							{searchable && (
 								<CommandInput
-									placeholder="Search options..."
+									placeholder="搜索选项..."
 									onKeyDown={handleInputKeyDown}
 									value={searchValue}
 									onValueChange={setSearchValue}
-									aria-label="Search through available options"
+									aria-label="在可用选项中搜索"
 									aria-describedby={`${multiSelectId}-search-help`}
 								/>
 							)}
 							{searchable && (
-								<div id={`${multiSelectId}-search-help`} className="sr-only">
-									Type to filter options. Use arrow keys to navigate results.
-								</div>
+								<div id={`${multiSelectId}-search-help`} className="sr-only">输入以筛选选项。使用方向键浏览结果。</div>
 							)}
 							<CommandList
 								className={cn(
@@ -871,7 +867,7 @@ export const MultiSelect = React.forwardRef<MultiSelectRef, MultiSelectProps>(
 									scrollbarColor: "rgba(156, 163, 175, 0.5) transparent",
 								}}
 							>
-								<CommandEmpty>{emptyIndicator || "No results found."}</CommandEmpty>{" "}
+								<CommandEmpty>{emptyIndicator || "未找到结果。"}</CommandEmpty>{" "}
 								{!hideSelectAll && !searchValue && (
 									<CommandGroup>
 										<CommandItem
@@ -975,9 +971,7 @@ export const MultiSelect = React.forwardRef<MultiSelectRef, MultiSelectProps>(
 										{selectedValues.length > 0 && (
 											<>
 												<Separator orientation="vertical" className="flex h-full min-h-6" />
-												<CommandItem onSelect={handleClear} className="flex-1 cursor-pointer justify-center">
-													Clear
-												</CommandItem>
+												<CommandItem onSelect={handleClear} className="flex-1 cursor-pointer justify-center">清除</CommandItem>
 											</>
 										)}
 									</div>

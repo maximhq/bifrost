@@ -63,28 +63,28 @@ const getPlaceholder = (providerType: BaseProvider | undefined, requestKey: Requ
 };
 
 const RequestTypes: Array<{ key: RequestType; label: string }> = [
-	{ key: "list_models", label: "List Models" },
-	{ key: "text_completion", label: "Text Completion" },
-	{ key: "text_completion_stream", label: "Text Completion Stream" },
-	{ key: "chat_completion", label: "Chat Completion" },
-	{ key: "chat_completion_stream", label: "Chat Completion Stream" },
-	{ key: "responses", label: "Responses" },
-	{ key: "responses_stream", label: "Responses Stream" },
-	{ key: "responses_retrieve", label: "Responses Retrieve" },
-	{ key: "responses_delete", label: "Responses Delete" },
-	{ key: "responses_cancel", label: "Responses Cancel" },
-	{ key: "responses_input_items", label: "Responses Input Items" },
+	{ key: "list_models", label: "模型列表" },
+	{ key: "text_completion", label: "文本补全" },
+	{ key: "text_completion_stream", label: "文本补全流" },
+	{ key: "chat_completion", label: "对话补全" },
+	{ key: "chat_completion_stream", label: "对话补全流" },
+	{ key: "responses", label: "响应" },
+	{ key: "responses_stream", label: "响应流" },
+	{ key: "responses_retrieve", label: "响应检索" },
+	{ key: "responses_delete", label: "响应删除" },
+	{ key: "responses_cancel", label: "响应取消" },
+	{ key: "responses_input_items", label: "响应输入项" },
 	{ key: "embedding", label: "Embedding" },
-	{ key: "speech", label: "Speech" },
-	{ key: "speech_stream", label: "Speech Stream" },
-	{ key: "transcription", label: "Transcription" },
-	{ key: "transcription_stream", label: "Transcription Stream" },
-	{ key: "image_generation", label: "Image Generation" },
-	{ key: "image_generation_stream", label: "Image Generation Stream" },
-	{ key: "image_edit", label: "Image Edit" },
-	{ key: "image_edit_stream", label: "Image Edit Stream" },
-	{ key: "image_variation", label: "Image Variation" },
-	{ key: "count_tokens", label: "Count Tokens" },
+	{ key: "speech", label: "语音" },
+	{ key: "speech_stream", label: "语音流" },
+	{ key: "transcription", label: "转录" },
+	{ key: "transcription_stream", label: "转录流" },
+	{ key: "image_generation", label: "图像生成" },
+	{ key: "image_generation_stream", label: "图像生成流" },
+	{ key: "image_edit", label: "图像编辑" },
+	{ key: "image_edit_stream", label: "图像编辑流" },
+	{ key: "image_variation", label: "图像变体" },
+	{ key: "count_tokens", label: "统计 Token" },
 ];
 
 // Path overrides replace the default path verbatim; these request paths embed the
@@ -145,14 +145,14 @@ export function AllowedRequestsFields({
 												<button
 													type="button"
 													className="text-muted-foreground hover:text-foreground transition-colors"
-													aria-label="Customize endpoint path"
+													aria-label="自定义端点路径"
 												>
 													<Settings2 className="h-4 w-4" />
 												</button>
 											</PopoverTrigger>
 											<PopoverContent className="w-80" align="end" onOpenAutoFocus={(e) => e.preventDefault()}>
 												<div className="space-y-2">
-													<h4 className="text-sm font-medium">Custom Path or URL</h4>
+													<h4 className="text-sm font-medium">自定义路径或 URL</h4>
 													<p className="text-muted-foreground text-xs">
 														Override with a path (e.g., /v1/chat) or a full URL (e.g., https://api.example.com/chat) to bypass base_url
 													</p>
@@ -192,7 +192,7 @@ export function AllowedRequestsFields({
 	return (
 		<div className="space-y-4">
 			<div>
-				<div className="text-sm font-medium">Allowed Request Types</div>
+				<div className="text-sm font-medium">允许的请求类型</div>
 				<p className="text-muted-foreground text-xs">
 					Select which request types this custom provider can handle.{" "}
 					{!isPathOverrideDisabled ? "Click the settings icon to customize endpoint paths or use full URLs." : ""}

@@ -1,10 +1,10 @@
 // ─── Scope config ──────────────────────────────────────────────────────────
 
 export const SCOPE_CONFIG = {
-	virtual_key: { label: "Virtual Key", color: "#7c3aed", headerClass: "bg-purple-100 dark:bg-purple-900/30" },
-	team: { label: "Team", color: "#2563eb", headerClass: "bg-blue-100 dark:bg-blue-900/30" },
-	customer: { label: "Customer", color: "#16a34a", headerClass: "bg-green-100 dark:bg-green-900/30" },
-	global: { label: "Global", color: "#6b7280", headerClass: "bg-gray-100 dark:bg-gray-800/30" },
+	virtual_key: { label: "虚拟密钥", color: "#7c3aed", headerClass: "bg-purple-100 dark:bg-purple-900/30" },
+	team: { label: "团队", color: "#2563eb", headerClass: "bg-blue-100 dark:bg-blue-900/30" },
+	customer: { label: "客户", color: "#16a34a", headerClass: "bg-green-100 dark:bg-green-900/30" },
+	global: { label: "全局", color: "#6b7280", headerClass: "bg-gray-100 dark:bg-gray-800/30" },
 } as const;
 
 export type ScopeKey = keyof typeof SCOPE_CONFIG;

@@ -141,9 +141,7 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 				</div>
 				<div className="bg-card sticky bottom-0 border-t px-8 py-4">
 					<div className="flex justify-end space-x-3">
-						<Button type="button" variant="outline" onClick={onCancel} data-testid="key-cancel-btn">
-							Cancel
-						</Button>
+						<Button type="button" variant="outline" onClick={onCancel} data-testid="key-cancel-btn">取消</Button>
 						<TooltipProvider>
 							<Tooltip>
 								<TooltipTrigger asChild>
@@ -154,9 +152,7 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 											isLoading={form.formState.isSubmitting || isCreatingProviderKey || isUpdatingProviderKey}
 											data-testid="key-save-btn"
 										>
-											<Save className="h-4 w-4 shrink-0" />
-											Save
-										</Button>
+											<Save className="h-4 w-4 shrink-0" />保存</Button>
 									</span>
 								</TooltipTrigger>
 								{getTooltipContent() && <TooltipContent>{getTooltipContent()}</TooltipContent>}

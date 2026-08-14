@@ -32,7 +32,7 @@ export default function ModelProviderConfig({ provider, onRequestDelete }: Props
 					variant="outline"
 					onClick={onRequestDelete}
 					className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-					aria-label="Delete provider"
+					aria-label="删除提供商"
 					data-testid="provider-delete-btn"
 				>
 					<Trash className="h-4 w-4" />

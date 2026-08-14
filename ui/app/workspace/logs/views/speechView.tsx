@@ -45,9 +45,7 @@ export default function SpeechView({ speechInput, speechOutput, isStreaming }: S
 			{speechInput && (
 				<div className="w-full rounded-sm border">
 					<div className="flex items-center gap-2 border-b px-6 py-2 text-sm font-medium">
-						<Volume2 className="h-4 w-4" />
-						Speech Input
-					</div>
+						<Volume2 className="h-4 w-4" />语音输入</div>
 					<div className="space-y-4 p-6">
 						<div className="font-mono text-xs">{speechInput.input}</div>
 					</div>
@@ -58,9 +56,7 @@ export default function SpeechView({ speechInput, speechOutput, isStreaming }: S
 			{(speechOutput || isStreaming) && (
 				<div className="w-full rounded-sm border">
 					<div className="flex items-center gap-2 border-b px-6 py-2 text-sm font-medium">
-						<Play className="h-4 w-4" />
-						Speech Output
-					</div>
+						<Play className="h-4 w-4" />语音输出</div>
 					<div className="space-y-4 p-6">
 						<AudioErrorBoundary>
 							<AudioPlayer src={speechOutput?.audio || ""} />

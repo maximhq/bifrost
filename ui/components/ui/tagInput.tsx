@@ -161,9 +161,7 @@ export const TagInput = React.forwardRef<HTMLInputElement, TagInputProps>(
 						type="button"
 						onClick={() => setTagsExpanded(false)}
 						className="text-muted-foreground/50 hover:text-muted-foreground/80 hover:bg-muted/15 border-border/40 bg-muted/10 relative z-[2] w-full cursor-pointer border-t py-2 text-xs transition-[color,background-color]"
-					>
-						Show less
-					</button>
+					>显示更少</button>
 				)}
 			</div>
 		);

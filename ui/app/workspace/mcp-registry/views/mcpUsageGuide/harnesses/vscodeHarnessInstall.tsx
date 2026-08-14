@@ -51,8 +51,8 @@ export function VSCodeHarnessInstall({
 						<SelectValue />
 					</SelectTrigger>
 					<SelectContent>
-						<SelectItem value="workspace">Workspace</SelectItem>
-						<SelectItem value="user">User</SelectItem>
+						<SelectItem value="workspace">工作区</SelectItem>
+						<SelectItem value="user">用户</SelectItem>
 					</SelectContent>
 				</Select>
 			}
@@ -60,7 +60,7 @@ export function VSCodeHarnessInstall({
 			deeplink={deeplink}
 			emptyMessage={virtualKey ? "Select servers or use Gateway root." : "Select a virtual key to generate the config."}
 			harnessName="VS Code"
-			label="Config"
+			label="配置"
 			logoSrc="/images/harness/vscode.svg"
 			registrationLabel={`${configPath} · ${getRegistrationLabel(serverScope, selectedServers)}`}
 		/>

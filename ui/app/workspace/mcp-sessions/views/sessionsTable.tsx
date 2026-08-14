@@ -79,7 +79,7 @@ export default function SessionsTable({
 			window.location.href = res.authorize_url;
 		} catch (err) {
 			setPendingActionRowId(null);
-			toast({ title: "Re-authentication failed", description: getErrorMessage(err), variant: "destructive" });
+			toast({ title: "重新认证失败", description: getErrorMessage(err), variant: "destructive" });
 		}
 	};
 
@@ -109,7 +109,7 @@ export default function SessionsTable({
 					<AlertDialogHeader>
 						{pendingDelete?.kind === "header" ? (
 							<>
-								<AlertDialogTitle>Revoke these stored header values?</AlertDialogTitle>
+								<AlertDialogTitle>吊销这些存储的请求头值？</AlertDialogTitle>
 								<AlertDialogDescription>
 									Bifrost will remove the stored credential values for this binding. There is no upstream token to revoke; the user will
 									need to resubmit their header values to use this MCP again.
@@ -117,7 +117,7 @@ export default function SessionsTable({
 							</>
 						) : (
 							<>
-								<AlertDialogTitle>Revoke this MCP session?</AlertDialogTitle>
+								<AlertDialogTitle>吊销此 MCP 会话？</AlertDialogTitle>
 								<AlertDialogDescription>
 									Bifrost will remove the stored credential for this binding. The upstream OAuth token is not revoked at the provider; it
 									stays detached and expires naturally. Anyone using this binding will need to re-authenticate to obtain a fresh token.
@@ -126,20 +126,16 @@ export default function SessionsTable({
 						)}
 					</AlertDialogHeader>
 					<AlertDialogFooter>
-						<AlertDialogCancel data-testid="mcp-session-revoke-cancel">Cancel</AlertDialogCancel>
-						<AlertDialogAction onClick={confirmRevoke} data-testid="mcp-session-revoke-confirm">
-							Revoke
-						</AlertDialogAction>
+						<AlertDialogCancel data-testid="mcp-session-revoke-cancel">取消</AlertDialogCancel>
+						<AlertDialogAction onClick={confirmRevoke} data-testid="mcp-session-revoke-confirm">吊销</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>
 			</AlertDialog>
 
 			<div className="mb-4 flex items-center justify-between gap-4">
 				<div>
-					<h2 className="text-lg font-semibold tracking-tight">MCP Auth Sessions</h2>
-					<p className="text-muted-foreground text-sm">
-						Per-user credentials stored for MCP servers (OAuth tokens and submitted headers), plus any pending authentication flows.
-					</p>
+					<h2 className="text-lg font-semibold tracking-tight">MCP 认证会话</h2>
+					<p className="text-muted-foreground text-sm">为 MCP 服务器存储的每用户凭据（OAuth 令牌和提交的请求头），以及任何待处理的认证流程。</p>
 				</div>
 			</div>
 
@@ -147,8 +143,8 @@ export default function SessionsTable({
 				<div className="relative max-w-sm min-w-[200px] flex-1">
 					<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 					<Input
-						aria-label="Search sessions"
-						placeholder="Search MCP, user, VK, session..."
+						aria-label="搜索会话"
+						placeholder="搜索 MCP、用户、VK、会话..."
 						value={search}
 						onChange={(e) => onSearchChange(e.target.value)}
 						className="pl-9"
@@ -162,32 +158,32 @@ export default function SessionsTable({
 					<Table>
 						<TableHeader className="bg-muted sticky top-0 z-20">
 							<TableRow>
-								<TableHead>MCP server</TableHead>
+								<TableHead>MCP 服务器</TableHead>
 								<TableHead>
 									<HeaderWithTooltip
-										label="Type"
+										label="类型"
 										tooltip="OAuth: per-user OAuth credential, either a stored token from a completed sign-in, or a pending sign-in flow. Headers: per-user header values (API keys / signed tokens), either stored or pending submission."
 									/>
 								</TableHead>
 								<TableHead>
 									<HeaderWithTooltip
-										label="Bound to"
-										tooltip="The identity this credential is keyed to: an end user (via SSO), a virtual key (shared by anyone using that VK), or a client-issued session ID (asserted via the x-bf-mcp-session-id header)."
+										label="绑定到"
+										tooltip="此凭据关联的身份：终端用户（通过 SSO）、虚拟密钥（使用该 VK 的任何人共享）或客户端颁发的会话 ID（通过 x-bf-mcp-session-id 请求头断言）。"
 									/>
 								</TableHead>
 								<TableHead>
 									<HeaderWithTooltip
-										label="Status"
+										label="状态"
 										tooltip="Active: credential valid and usable. Pending: OAuth flow in progress, user must complete sign-in. Needs re-auth: upstream credential expired or revoked at the provider; user must reconnect. Needs update: the admin changed the required header keys; user must resubmit. Orphaned: the user lost access to this MCP (e.g. an access profile change); credential is preserved and will become Active automatically if access is restored."
 									/>
 								</TableHead>
 								<TableHead>
 									<HeaderWithTooltip
-										label="Access token expiry"
+										label="访问令牌过期时间"
 										tooltip="When the current access token expires. Bifrost auto-refreshes using the refresh token on the next request, so an active row past its expiry will silently mint a new token at use time. Header rows do not have an upstream expiry; their values stay valid until revoked or the schema changes."
 									/>
 								</TableHead>
-								<TableHead>Created</TableHead>
+								<TableHead>创建时间</TableHead>
 								<TableHead className={`bg-muted sticky right-0 z-10 w-[56px] text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
 							</TableRow>
 						</TableHeader>
@@ -196,7 +192,7 @@ export default function SessionsTable({
 								<TableRow>
 									<TableCell colSpan={7} className="h-24 text-center">
 										{hasActiveFilters ? (
-											<div className="text-muted-foreground text-sm">No sessions match these filters.</div>
+											<div className="text-muted-foreground text-sm">没有会话匹配这些筛选条件。</div>
 										) : (
 											<span className="text-muted-foreground text-sm">
 												No sessions yet. Sessions appear here when an inference request or MCP gateway call triggers per-user authentication
@@ -258,13 +254,13 @@ export default function SessionsTable({
 								onClick={() => onOffsetChange(Math.max(0, offset - limit))}
 								disabled={offset === 0}
 								data-testid="mcp-sessions-pagination-prev-btn"
-								aria-label="Previous page"
+								aria-label="上一页"
 							>
 								<ChevronLeft className="size-3" />
 							</Button>
 
 							<div className="flex items-center gap-1">
-								<span>Page</span>
+								<span>页</span>
 								<span>{Math.floor(offset / limit) + 1}</span>
 								<span>of {Math.ceil(totalCount / limit)}</span>
 							</div>
@@ -275,7 +271,7 @@ export default function SessionsTable({
 								onClick={() => onOffsetChange(offset + limit)}
 								disabled={offset + limit >= totalCount}
 								data-testid="mcp-sessions-pagination-next-btn"
-								aria-label="Next page"
+								aria-label="下一页"
 							>
 								<ChevronRight className="size-3" />
 							</Button>
@@ -329,44 +325,40 @@ function BindingCell({ row }: { row: MCPSessionRow }) {
 			</div>
 		);
 	}
-	return <span className="text-muted-foreground text-sm">Session-bound</span>;
+	return <span className="text-muted-foreground text-sm">会话绑定</span>;
 }
 
 function TypeBadge({ authKind }: { authKind: string }) {
 	if (authKind === "headers") {
-		return <Badge variant="outline">Headers</Badge>;
+		return <Badge variant="outline">请求头</Badge>;
 	}
 	return <Badge variant="outline">OAuth</Badge>;
 }
 
 function StatusBadge({ status }: { status: string }) {
 	if (status === "pending") {
-		return <Badge variant="secondary">Pending</Badge>;
+		return <Badge variant="secondary">待处理</Badge>;
 	}
 	if (status === "orphaned") {
 		// Muted amber: distinct from destructive (red, action-required) and
 		// secondary (gray, in-progress). Signals "informational, no action
 		// needed from you" — the auto-restore cascade handles it.
 		return (
-			<Badge variant="outline" className="border-amber-500 bg-amber-100 text-amber-900 dark:bg-amber-900/30 dark:text-amber-200">
-				Orphaned
-			</Badge>
+			<Badge variant="outline" className="border-amber-500 bg-amber-100 text-amber-900 dark:bg-amber-900/30 dark:text-amber-200">已孤立</Badge>
 		);
 	}
 	if (status === "needs_reauth") {
-		return <Badge variant="destructive">Needs re-auth</Badge>;
+		return <Badge variant="destructive">需要重新认证</Badge>;
 	}
 	if (status === "needs_update") {
 		// Outlined red: signals user action required, but visually distinct from
 		// needs_reauth's solid destructive badge (which represents a hard auth failure).
 		// Distinct copy so the row affordance ("Update values") matches.
 		return (
-			<Badge variant="outline" className="border-red-500 bg-red-100 text-red-900 dark:bg-red-900/30 dark:text-red-200">
-				Needs update
-			</Badge>
+			<Badge variant="outline" className="border-red-500 bg-red-100 text-red-900 dark:bg-red-900/30 dark:text-red-200">需要更新</Badge>
 		);
 	}
-	return <Badge>Active</Badge>;
+	return <Badge>已激活</Badge>;
 }
 
 interface RowActionsProps {
@@ -387,7 +379,7 @@ function RowActions({ row, reauthing, revoking, isPendingRow, onReauth, onRevoke
 					variant="ghost"
 					size="icon"
 					className="h-8 w-8"
-					aria-label="MCP session actions"
+					aria-label="MCP 会话操作"
 					data-testid={`mcp-session-row-actions-${row.id}`}
 					disabled={busy}
 				>
@@ -400,9 +392,7 @@ function RowActions({ row, reauthing, revoking, isPendingRow, onReauth, onRevoke
 						// The PKCE state on this flow row is dead; a fresh request to the
 						// MCP client will start a new flow. No action we can offer wires
 						// up to the existing flow row, so surface guidance instead.
-						<DropdownMenuItem disabled className="text-muted-foreground cursor-default text-xs">
-							Trigger a request to re-authenticate
-						</DropdownMenuItem>
+						<DropdownMenuItem disabled className="text-muted-foreground cursor-default text-xs">触发重新认证请求</DropdownMenuItem>
 					) : (
 						<DropdownMenuItem
 							className="cursor-pointer"
@@ -419,9 +409,7 @@ function RowActions({ row, reauthing, revoking, isPendingRow, onReauth, onRevoke
 								window.location.href = url;
 							}}
 						>
-							<ExternalLink className="h-4 w-4" />
-							Complete authentication
-						</DropdownMenuItem>
+							<ExternalLink className="h-4 w-4" />完成认证</DropdownMenuItem>
 					)
 				) : row.kind === "header" ? (
 					<>
@@ -429,7 +417,7 @@ function RowActions({ row, reauthing, revoking, isPendingRow, onReauth, onRevoke
 							// "Edit values" hits reauth server-side: the handler mints a
 							// fresh header submission flow + temp token and returns the
 							// auth-landing URL. Same single-click → redirect dance as the
-							// OAuth row's "Re-authenticate" action. Hidden when can_reauth
+							// OAuth row's "重新认证" action. Hidden when can_reauth
 							// is false — user-bound credentials are only resubmittable by
 							// the bound user (server enforces with 403).
 							<DropdownMenuItem
@@ -455,9 +443,7 @@ function RowActions({ row, reauthing, revoking, isPendingRow, onReauth, onRevoke
 								onRevoke();
 							}}
 						>
-							<Trash2 className="h-4 w-4" />
-							Revoke
-						</DropdownMenuItem>
+							<Trash2 className="h-4 w-4" />吊销</DropdownMenuItem>
 					</>
 				) : (
 					<>
@@ -476,9 +462,7 @@ function RowActions({ row, reauthing, revoking, isPendingRow, onReauth, onRevoke
 									onReauth();
 								}}
 							>
-								<RefreshCcw className="h-4 w-4" />
-								Re-authenticate
-							</DropdownMenuItem>
+								<RefreshCcw className="h-4 w-4" />重新认证</DropdownMenuItem>
 						)}
 						<DropdownMenuItem
 							variant="destructive"
@@ -490,9 +474,7 @@ function RowActions({ row, reauthing, revoking, isPendingRow, onReauth, onRevoke
 								onRevoke();
 							}}
 						>
-							<Trash2 className="h-4 w-4" />
-							Revoke
-						</DropdownMenuItem>
+							<Trash2 className="h-4 w-4" />吊销</DropdownMenuItem>
 					</>
 				)}
 			</DropdownMenuContent>
@@ -538,7 +520,7 @@ function formatAccessExpiry(row: MCPSessionRow): string {
 			// expired (the refresh token itself is dead).
 			switch (row.status) {
 				case "active":
-					return "Refreshes on next use";
+					return "下次使用时刷新";
 				case "orphaned":
 					return "Refreshes when access is restored";
 				default:

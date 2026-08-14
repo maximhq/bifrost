@@ -21,9 +21,7 @@ export function NoPermissionView({ entity, className, align = "middle" }: NoPerm
 			</div>
 			<div className="flex flex-col items-center gap-1">
 				<h1 className="text-muted-foreground text-xl font-medium">You don't have permission to view {entity}</h1>
-				<p className="text-muted-foreground mt-2 max-w-[400px] text-sm font-normal">
-					Contact your administrator to request access to this resource.
-				</p>
+				<p className="text-muted-foreground mt-2 max-w-[400px] text-sm font-normal">联系您的管理员以请求访问此资源。</p>
 			</div>
 		</div>
 	);

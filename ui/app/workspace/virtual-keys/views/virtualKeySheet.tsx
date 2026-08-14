@@ -67,7 +67,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { formatDistanceToNow } from "date-fns";
 import { Info, Lock, RotateCcw, Trash2, Users } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-// Side-effect import: registers the enterprise user picker so "Assign to User"
+// Side-effect import: registers the enterprise user picker so "分配给用户"
 // becomes available. Resolves to an empty module on OSS builds.
 import "@enterprise/lib/registrations/userPicker";
 import { useForm } from "react-hook-form";
@@ -225,10 +225,10 @@ const toDatetimeLocal = (d: Date) =>
 const presetFromNow = (offsetMs: number) => toDatetimeLocal(new Date(Date.now() + offsetMs));
 
 const EXPIRY_PRESETS = [
-	{ label: "30 min", ms: 30 * 60_000 },
-	{ label: "1 hour", ms: 60 * 60_000 },
-	{ label: "24 hours", ms: 24 * 60 * 60_000 },
-	{ label: "7 days", ms: 7 * 24 * 60 * 60_000 },
+	{ label: "30 分钟", ms: 30 * 60_000 },
+	{ label: "1 小时", ms: 60 * 60_000 },
+	{ label: "24 小时", ms: 24 * 60 * 60_000 },
+	{ label: "7 天", ms: 7 * 24 * 60 * 60_000 },
 ] as const;
 
 interface ExpiryFieldProps {
@@ -243,7 +243,7 @@ function ExpiryPickerField({ value, onChange }: ExpiryFieldProps) {
 
 	return (
 		<FormItem>
-			<FormLabel>Expiry</FormLabel>
+			<FormLabel>过期时间</FormLabel>
 			<p className="text-muted-foreground text-xs">
 				{value ? `This key expires ${formatDistanceToNow(new Date(value), { addSuffix: true })}.` : "This key never expires."}
 			</p>
@@ -256,9 +256,7 @@ function ExpiryPickerField({ value, onChange }: ExpiryFieldProps) {
 						setSelectedPreset(null);
 						onChange(null);
 					}}
-				>
-					Never
-				</Button>
+				>从不</Button>
 				{EXPIRY_PRESETS.map(({ label, ms }) => (
 					<Button
 						key={label}
@@ -341,7 +339,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 	const persistedOverrideBudgets = [
 		...(virtualKey?.budgets ?? []).map((budget) => ({
 			budget,
-			label: "Virtual key",
+			label: "虚拟密钥",
 		})),
 		...(virtualKey?.provider_configs ?? []).flatMap((config) =>
 			(config.budgets ?? []).map((budget) => ({
@@ -763,7 +761,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 			return null;
 		}
 
-		const vkWarning = findBudgetUsageWarning(data.budgets, virtualKey.budgets, "Virtual key");
+		const vkWarning = findBudgetUsageWarning(data.budgets, virtualKey.budgets, "虚拟密钥");
 		if (vkWarning) {
 			return vkWarning;
 		}
@@ -832,7 +830,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 	const handleRotateVirtualKey = async () => {
 		if (!virtualKey) return;
 		if (!hasUpdateAccess) {
-			toast.error("You don't have permission to perform this action");
+			toast.error("您没有权限执行此操作");
 			return;
 		}
 		try {
@@ -847,7 +845,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 
 	const submitVirtualKeyForm = async (data: FormData, resetBudgetUsage = false) => {
 		if (!canSubmit) {
-			toast.error("You don't have permission to perform this action");
+			toast.error("您没有权限执行此操作");
 			return;
 		}
 		try {
@@ -1080,8 +1078,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 							{isTeamLocked && !isManagedByProfile && (
 								<Alert variant="info">
 									<Users className="h-4 w-4" />
-									<AlertDescription>
-										Creating this virtual key under team <span className="font-medium">{attachedTeam?.name ?? attachedTeamId}</span>. Team
+									<AlertDescription>正在团队下创建此虚拟密钥<span className="font-medium">{attachedTeam?.name ?? attachedTeamId}</span>. Team
 										assignment is pre-set; all other fields are editable.
 									</AlertDescription>
 								</Alert>
@@ -1094,9 +1091,9 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 									name="name"
 									render={({ field }) => (
 										<FormItem>
-											<FormLabel>Name *</FormLabel>
+											<FormLabel>名称 *</FormLabel>
 											<FormControl>
-												<Input placeholder="e.g., Production API Key" data-testid="vk-name-input" {...field} />
+												<Input placeholder="例如：生产 API 密钥" data-testid="vk-name-input" {...field} />
 											</FormControl>
 											<FormMessage />
 										</FormItem>
@@ -1108,9 +1105,9 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 									name="description"
 									render={({ field }) => (
 										<FormItem>
-											<FormLabel>Description</FormLabel>
+											<FormLabel>描述</FormLabel>
 											<FormControl>
-												<Textarea placeholder="This key is used for..." data-testid="vk-description-input" {...field} rows={3} />
+												<Textarea placeholder="此密钥用于..." data-testid="vk-description-input" {...field} rows={3} />
 											</FormControl>
 											<FormMessage />
 										</FormItem>
@@ -1129,7 +1126,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 										name="isActive"
 										render={({ field }) => (
 											<FormItem>
-												<Toggle label="Is this key active?" val={field.value} setVal={field.onChange} data-testid="vk-is-active-toggle" />
+												<Toggle label="此密钥是否启用？" val={field.value} setVal={field.onChange} data-testid="vk-is-active-toggle" />
 											</FormItem>
 										)}
 									/>
@@ -1142,7 +1139,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 								{/* Provider Configurations */}
 								<div className="space-y-2">
 									<div className="flex items-center gap-2">
-										<Label className="text-sm font-medium">Provider Configurations</Label>
+										<Label className="text-sm font-medium">提供商配置</Label>
 										<TooltipProvider>
 											<Tooltip>
 												<TooltipTrigger asChild>
@@ -1175,7 +1172,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 											}}
 										>
 											<SelectTrigger className="flex-1" data-testid="vk-provider-select">
-												<SelectValue placeholder="Select a provider to add" />
+												<SelectValue placeholder="选择要添加的提供商" />
 											</SelectTrigger>
 											<SelectContent>
 												{(() => {
@@ -1191,8 +1188,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 																className="text-muted-foreground hover:text-foreground"
 																data-testid="vk-provider-config-link"
 															>
-																<span>
-																	No providers left to configure. <span className="text-primary font-medium underline">Click to add</span>
+																<span>没有剩余的提供商可配置。<span className="text-primary font-medium underline">点击添加</span>
 																</span>
 															</SelectItem>
 														);
@@ -1304,7 +1300,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 								{((mcpClientsData && mcpClientsData.length > 0) || (mcpConfigs && mcpConfigs.length > 0)) && (
 									<div className="mt-6 space-y-2">
 										<div className="flex items-center gap-2">
-											<Label className="text-sm font-medium">MCP Client Configurations</Label>
+											<Label className="text-sm font-medium">MCP 客户端配置</Label>
 											<TooltipProvider>
 												<Tooltip>
 													<TooltipTrigger asChild>
@@ -1316,8 +1312,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 														<p>
 															Configure which MCP clients this virtual key can use and their allowed tools. Leaving this section empty
 															blocks all MCP tools. After adding an MCP client, you must select specific tools or choose{" "}
-															<span className="font-medium">Allow All Tools</span> to grant tool access.
-														</p>
+															<span className="font-medium">允许所有工具</span>以授予工具访问权限。</p>
 													</TooltipContent>
 												</Tooltip>
 											</TooltipProvider>
@@ -1355,7 +1350,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 													}}
 												>
 													<SelectTrigger className="flex-1">
-														<SelectValue placeholder="Select an MCP client to add" />
+														<SelectValue placeholder="选择要添加的 MCP 客户端" />
 													</SelectTrigger>
 													<SelectContent>
 														{mcpClientsData.filter((client) => !mcpConfigs.some((config) => config.mcp_client_name === client.config.name))
@@ -1382,7 +1377,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 																	);
 																})
 														) : (
-															<div className="text-muted-foreground px-2 py-1.5 text-sm">All MCP clients configured</div>
+															<div className="text-muted-foreground px-2 py-1.5 text-sm">所有 MCP 客户端均已配置</div>
 														)}
 													</SelectContent>
 												</Select>
@@ -1395,8 +1390,8 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 												<Table>
 													<TableHeader>
 														<TableRow>
-															<TableHead>MCP Client</TableHead>
-															<TableHead>Allowed Tools</TableHead>
+															<TableHead>MCP 客户端</TableHead>
+															<TableHead>允许的工具</TableHead>
 															<TableHead className="w-[50px]"></TableHead>
 														</TableRow>
 													</TableHeader>
@@ -1430,9 +1425,9 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 																		<MultiSelect
 																			options={[
 																				{
-																					label: "Allow All Tools",
+																					label: "允许所有工具",
 																					value: "*",
-																					description: "Allow all current and future tools",
+																					description: "允许所有当前和未来的工具",
 																				},
 																				...[...availableTools, ...enabledToolsByConfig]
 																					.filter((tool, index, arr) => arr.findIndex((t) => t.name === tool.name) === index)
@@ -1447,7 +1442,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 																				const hadStar = selectedTools.includes("*");
 																				const hasStar = tools.includes("*");
 																				if (!hadStar && hasStar) {
-																					// Just selected "Allow All Tools" — set to ["*"] only
+																					// Just selected "允许所有工具" — set to ["*"] only
 																					handleUpdateMCPConfig(index, "tools_to_execute", ["*"]);
 																				} else if (hadStar && hasStar && tools.length > 1) {
 																					// Had "*", still has "*", but user also selected a specific tool — drop "*"
@@ -1499,7 +1494,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 								<div className="space-y-4">
 									<MultiBudgetLines
 										data-testid="vk-budget-lines"
-										label="Budget Configuration"
+										label="预算配置"
 										lines={form.watch("budgets") ?? []}
 										onChange={(lines) => {
 											form.setValue("budgets", lines, { shouldDirty: true });
@@ -1511,10 +1506,8 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 									{isEditing && !isManagedByProfile && persistedOverrideBudgets.length > 0 ? (
 										<div className="space-y-3 rounded-sm border p-4" data-testid="vk-budget-overrides-section">
 											<div>
-												<h4 className="text-sm font-medium">Budget Overrides</h4>
-												<p className="text-muted-foreground text-xs">
-													Add temporary capacity without changing the configured base budgets above.
-												</p>
+												<h4 className="text-sm font-medium">预算覆盖</h4>
+												<p className="text-muted-foreground text-xs">在不更改上述已配置基础预算的情况下添加临时容量。</p>
 											</div>
 											<div className="divide-y">
 												{persistedOverrideBudgets.map(({ budget, label }) => (
@@ -1553,16 +1546,14 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 									>
 										<AlertDialogContent>
 											<AlertDialogHeader>
-												<AlertDialogTitle>Reassign to a different team?</AlertDialogTitle>
+												<AlertDialogTitle>重新分配给其他团队？</AlertDialogTitle>
 												<AlertDialogDescription>
 													This key is currently assigned to another team. Reassigning it will move budget tracking to this team; future
 													requests through this key will count against this team’s budget, not the previous one.
 												</AlertDialogDescription>
 											</AlertDialogHeader>
 											<AlertDialogFooter>
-												<AlertDialogCancel data-testid="virtual-key-reassign-cancel" onClick={() => setPendingTeamId(null)}>
-													Cancel
-												</AlertDialogCancel>
+												<AlertDialogCancel data-testid="virtual-key-reassign-cancel" onClick={() => setPendingTeamId(null)}>取消</AlertDialogCancel>
 												<AlertDialogAction
 													data-testid="virtual-key-reassign-confirm"
 													onClick={() => {
@@ -1575,9 +1566,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 														setPendingTeamId(null);
 														setShowReassignTeamWarning(false);
 													}}
-												>
-													Reassign
-												</AlertDialogAction>
+												>重新分配</AlertDialogAction>
 											</AlertDialogFooter>
 										</AlertDialogContent>
 									</AlertDialog>
@@ -1585,7 +1574,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 								{/* Rate Limiting Configuration */}
 								<div className="space-y-4">
 									<div className="flex items-center justify-between gap-2">
-										<Label className="text-sm font-medium">Rate Limiting Configuration</Label>
+										<Label className="text-sm font-medium">速率限制配置</Label>
 										{isEditing && (virtualKey?.rate_limit || watchedTokenMaxLimit || watchedRequestMaxLimit) && (
 											<Button
 												type="button"
@@ -1594,9 +1583,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 												onClick={clearVirtualKeyRateLimits}
 												data-testid="vk-rate-limit-reset-button"
 											>
-												<RotateCcw className="h-4 w-4" />
-												Reset
-											</Button>
+												<RotateCcw className="h-4 w-4" />重置</Button>
 										)}
 									</div>
 
@@ -1608,7 +1595,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 												<NumberAndSelect
 													id="tokenMaxLimit"
 													labelClassName="font-normal"
-													label="Maximum Tokens"
+													label="最大 Token 数"
 													value={field.value}
 													selectValue={form.watch("tokenResetDuration") || "1h"}
 													onChangeNumber={(value) => {
@@ -1634,7 +1621,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 												<NumberAndSelect
 													id="requestMaxLimit"
 													labelClassName="font-normal"
-													label="Maximum Requests"
+													label="最大请求数"
 													value={field.value}
 													selectValue={form.watch("requestResetDuration") || "1h"}
 													onChangeNumber={(value) => {
@@ -1656,9 +1643,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 								{showCalendarAlignToggle && (
 									<div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
 										<div className="space-y-0.5">
-											<Label htmlFor="vk-budget-calendar-aligned-toggle" className="text-sm font-normal">
-												Align to calendar cycle
-											</Label>
+											<Label htmlFor="vk-budget-calendar-aligned-toggle" className="text-sm font-normal">按日历周期对齐</Label>
 											<p id="vk-budget-calendar-aligned-description" className="text-muted-foreground text-xs">
 												Reset budgets and rate limits at the start of each period (e.g. 1st of month) instead of rolling from creation date.
 												Applies to durations of a day or longer.
@@ -1678,16 +1663,15 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 								<AlertDialog open={showCalendarAlignWarning} onOpenChange={setShowCalendarAlignWarning}>
 									<AlertDialogContent>
 										<AlertDialogHeader>
-											<AlertDialogTitle>Reset budget and rate-limit usage?</AlertDialogTitle>
-											<AlertDialogDescription>
-												Enabling calendar alignment will reset budget usage to <span className="font-semibold">$0.00</span> and
+											<AlertDialogTitle>重置预算和速率限制用量？</AlertDialogTitle>
+											<AlertDialogDescription>启用日历对齐会将预算用量重置为<span className="font-semibold">$0.00</span> and
 												token/request rate-limit counters to <span className="font-semibold">0</span> for this virtual key, then snap each
 												reset date to the start of its current period (e.g. start of day, week, month, or year). The usage reset cannot be
 												undone, but calendar alignment can be turned off later. This will take effect when you save.
 											</AlertDialogDescription>
 										</AlertDialogHeader>
 										<AlertDialogFooter>
-											<AlertDialogCancel data-testid="vk-calendar-align-cancel-btn">Cancel</AlertDialogCancel>
+											<AlertDialogCancel data-testid="vk-calendar-align-cancel-btn">取消</AlertDialogCancel>
 											<AlertDialogAction
 												data-testid="vk-calendar-align-enable-btn"
 												onClick={() => {
@@ -1696,9 +1680,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 													});
 													setShowCalendarAlignWarning(false);
 												}}
-											>
-												Enable Calendar Alignment
-											</AlertDialogAction>
+											>启用日历对齐</AlertDialogAction>
 										</AlertDialogFooter>
 									</AlertDialogContent>
 								</AlertDialog>
@@ -1706,7 +1688,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 
 								{/* Entity Assignment */}
 								<div className="space-y-4">
-									<Label className="text-sm font-medium">Entity Assignment</Label>
+									<Label className="text-sm font-medium">实体分配</Label>
 
 									<div className="grid grid-cols-1 items-start gap-2 md:grid-cols-2">
 										<FormField
@@ -1714,18 +1696,18 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 											name="entityType"
 											render={({ field }) => (
 												<FormItem>
-													<FormLabel className="font-normal">Assignment Type</FormLabel>
+													<FormLabel className="font-normal">分配类型</FormLabel>
 													<ComboboxSelect
 														options={[
-															{ value: "none", label: "No Assignment" },
-															{ value: "team", label: "Assign to Team" },
+															{ value: "none", label: "无分配" },
+															{ value: "team", label: "分配给团队" },
 															{
 																value: "customer",
-																label: "Assign to Customer",
+																label: "分配给客户",
 															},
 															// Enterprise-only; also kept visible when the VK is already
 															// user-assigned so the current state is never mislabelled.
-															...(UserPicker || field.value === "user" ? [{ value: "user", label: "Assign to User" }] : []),
+															...(UserPicker || field.value === "user" ? [{ value: "user", label: "分配给用户" }] : []),
 														]}
 														value={field.value}
 														onValueChange={(value) => {
@@ -1755,7 +1737,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 												name="teamId"
 												render={({ field }) => (
 													<FormItem>
-														<FormLabel className="font-normal">Select Team</FormLabel>
+														<FormLabel className="font-normal">选择团队</FormLabel>
 														<TeamSelector
 															value={field.value || ""}
 															onChange={(newVal) => {
@@ -1795,7 +1777,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 												name="customerId"
 												render={({ field }) => (
 													<FormItem>
-														<FormLabel className="font-normal">Select Customer</FormLabel>
+														<FormLabel className="font-normal">选择客户</FormLabel>
 														<CustomerSelector
 															value={field.value || ""}
 															onChange={(val) => {
@@ -1825,7 +1807,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 												name="userId"
 												render={({ field }) => (
 													<FormItem>
-														<FormLabel className="font-normal">Select User</FormLabel>
+														<FormLabel className="font-normal">选择用户</FormLabel>
 														<UserPicker
 															value={field.value || ""}
 															onChange={(val) => {
@@ -1862,7 +1844,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 						<AlertDialog open={showRotateWarning} onOpenChange={setShowRotateWarning}>
 							<AlertDialogContent>
 								<AlertDialogHeader>
-									<AlertDialogTitle>Rotate virtual key?</AlertDialogTitle>
+									<AlertDialogTitle>轮换虚拟密钥？</AlertDialogTitle>
 									<AlertDialogDescription>
 										This will replace the secret value for &quot;
 										{virtualKey?.name}&quot;. The key ID, budgets, rate limits, provider permissions, MCP access, and assignments stay the
@@ -1870,7 +1852,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 									</AlertDialogDescription>
 								</AlertDialogHeader>
 								<AlertDialogFooter>
-									<AlertDialogCancel data-testid="vk-rotate-cancel-btn">Cancel</AlertDialogCancel>
+									<AlertDialogCancel data-testid="vk-rotate-cancel-btn">取消</AlertDialogCancel>
 									<AlertDialogAction onClick={handleRotateVirtualKey} disabled={isRotating} data-testid="vk-rotate-confirm-btn">
 										{isRotating ? "Rotating..." : "Rotate Key"}
 									</AlertDialogAction>
@@ -1885,7 +1867,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 											? "Preserve over-limit usage?"
 											: pendingBudgetUsageWarning?.kind === "quarter-shift"
 												? "Carry usage into the new quarter?"
-												: "Reset budget usage?"}
+												: "重置预算用量？"}
 									</AlertDialogTitle>
 									<AlertDialogDescription>
 										{pendingBudgetUsageWarning
@@ -1895,11 +1877,9 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 								</AlertDialogHeader>
 								<AlertDialogFooter>
 									<AlertDialogCancel onClick={() => handleBudgetResetChoice(false)} data-testid="vk-budget-reset-preserve-btn">
-										{pendingBudgetUsageWarning ? "Preserve Anyway" : "Preserve Usage"}
+										{pendingBudgetUsageWarning ? "Preserve Anyway" : "保留用量"}
 									</AlertDialogCancel>
-									<AlertDialogAction onClick={() => handleBudgetResetChoice(true)} data-testid="vk-budget-reset-confirm-btn">
-										Reset Usage
-									</AlertDialogAction>
+									<AlertDialogAction onClick={() => handleBudgetResetChoice(true)} data-testid="vk-budget-reset-confirm-btn">重置用量</AlertDialogAction>
 								</AlertDialogFooter>
 							</AlertDialogContent>
 						</AlertDialog>
@@ -1926,15 +1906,13 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 									<span />
 								)}
 								<div className="flex justify-end gap-2">
-									<Button type="button" variant="outline" onClick={handleClose} data-testid="vk-cancel-btn">
-										Cancel
-									</Button>
+									<Button type="button" variant="outline" onClick={handleClose} data-testid="vk-cancel-btn">取消</Button>
 									<TooltipProvider>
 										<Tooltip>
 											<TooltipTrigger asChild>
 												<span className="inline-block">
 													<Button type="submit" disabled={isLoading || !form.formState.isDirty || !canSubmit} data-testid="vk-save-btn">
-														{isLoading ? "Saving..." : isEditing ? "Update" : "Create"}
+														{isLoading ? "Saving..." : isEditing ? "Update" : "创建"}
 													</Button>
 												</span>
 											</TooltipTrigger>
@@ -1942,7 +1920,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 												<TooltipContent>
 													<p>
 														{!canSubmit
-															? "You don't have permission to perform this action"
+															? "您没有权限执行此操作"
 															: isLoading
 																? "Saving..."
 																: !form.formState.isDirty

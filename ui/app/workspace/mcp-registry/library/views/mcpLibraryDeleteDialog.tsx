@@ -39,7 +39,7 @@ export function MCPLibraryDeleteDialog({ server, open, isDeleting, onOpenChange,
 					</AlertDialogDescription>
 				</AlertDialogHeader>
 				<AlertDialogFooter>
-					<AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
+					<AlertDialogCancel disabled={isDeleting}>取消</AlertDialogCancel>
 					<AlertDialogAction
 						onClick={(event) => {
 							event.preventDefault();
@@ -48,7 +48,7 @@ export function MCPLibraryDeleteDialog({ server, open, isDeleting, onOpenChange,
 						disabled={isDeleting}
 						data-testid={confirmTestId}
 					>
-						{isDeleting ? "Removing..." : "Remove"}
+						{isDeleting ? "Removing..." : "移除"}
 					</AlertDialogAction>
 				</AlertDialogFooter>
 			</AlertDialogContent>

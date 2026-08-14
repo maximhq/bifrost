@@ -88,8 +88,8 @@ export default function PerformanceTuningView() {
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-4">
 			<div>
-				<h2 className="text-lg font-semibold tracking-tight">Performance Tuning</h2>
-				<p className="text-muted-foreground text-sm">Configure performance-related settings.</p>
+				<h2 className="text-lg font-semibold tracking-tight">性能调优</h2>
+				<p className="text-muted-foreground text-sm">配置性能相关设置。</p>
 			</div>
 
 			<Alert variant="destructive">
@@ -105,10 +105,8 @@ export default function PerformanceTuningView() {
 				<div>
 					<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
-							<label htmlFor="initial-pool-size" className="text-sm font-medium">
-								Initial Pool Size
-							</label>
-							<p className="text-muted-foreground text-sm">The initial connection pool size.</p>
+							<label htmlFor="initial-pool-size" className="text-sm font-medium">初始连接池大小</label>
+							<p className="text-muted-foreground text-sm">初始连接池大小。</p>
 						</div>
 						<Input
 							id="initial-pool-size"
@@ -126,10 +124,8 @@ export default function PerformanceTuningView() {
 				<div>
 					<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
-							<label htmlFor="max-request-body-size-mb" className="text-sm font-medium">
-								Max Request Body Size (MB)
-							</label>
-							<p className="text-muted-foreground text-sm">Maximum size of request body in megabytes.</p>
+							<label htmlFor="max-request-body-size-mb" className="text-sm font-medium">最大请求体大小 (MB)</label>
+							<p className="text-muted-foreground text-sm">请求体的最大大小（以 MB 为单位）。</p>
 						</div>
 						<Input
 							id="max-request-body-size-mb"
@@ -145,7 +141,7 @@ export default function PerformanceTuningView() {
 			</div>
 			<div className="flex justify-end pt-2">
 				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>
-					{isLoading ? "Saving..." : "Save Changes"}
+					{isLoading ? "Saving..." : "保存更改"}
 				</Button>
 			</div>
 		</div>
@@ -153,5 +149,5 @@ export default function PerformanceTuningView() {
 }
 
 const RestartWarning = () => {
-	return <div className="text-muted-foreground mt-2 pl-4 text-xs font-semibold">Need to restart Bifrost to apply changes.</div>;
+	return <div className="text-muted-foreground mt-2 pl-4 text-xs font-semibold">需要重启 Bifrost 才能生效。</div>;
 };

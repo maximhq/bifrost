@@ -22,7 +22,7 @@ export const useGetVirtualKeyUsersQuery = (
 });
 
 // Attach/detach exist so OSS callers (the virtual key sheet's assignment section)
-// type-check and link. The UI never reaches them: the "Assign to User" option is
+// type-check and link. The UI never reaches them: the "分配给用户" option is
 // gated on the user picker registry, which OSS leaves unregistered.
 const unavailable = () => {
 	throw new Error("Virtual key user assignment is an enterprise feature");

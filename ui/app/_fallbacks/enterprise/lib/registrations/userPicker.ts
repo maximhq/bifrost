@@ -4,5 +4,5 @@
 // and routing rule sheets) compile to a no-op when the @enterprise alias
 // resolves to _fallbacks/. The enterprise build replaces this module with
 // one that registers the async user picker, which is what reveals the
-// "User" scope options.
+// "用户" scope options.
 export {};

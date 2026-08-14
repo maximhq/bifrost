@@ -5,8 +5,8 @@ import { Mic, FileIcon, XIcon } from "lucide-react";
  * Renders a compact badge for a single attachment with an inline remove control.
  *
  * Displays different visuals based on the attachment type:
- * - image_url with a valid URL: a thumbnail and the label "Image"
- * - input_audio: a microphone icon and the audio format in uppercase or "Audio"
+ * - image_url with a valid URL: a thumbnail and the label "图片"
+ * - input_audio: a microphone icon and the audio format in uppercase or "音频"
  * - other: a file icon and the filename or "File"
  *
  * @param attachment - The attachment to display; its `type` determines the badge content.
@@ -22,12 +22,12 @@ export function AttachmentBadge({ attachment, onRemove }: { attachment: MessageC
 			{isImage && attachment.image_url?.url ? (
 				<>
 					<img src={attachment.image_url.url} alt="attachment" className="h-8 w-8 rounded object-cover" />
-					<span className="text-muted-foreground max-w-[100px] truncate">Image</span>
+					<span className="text-muted-foreground max-w-[100px] truncate">图片</span>
 				</>
 			) : isAudio ? (
 				<>
 					<Mic className="text-muted-foreground size-3" />
-					<span className="text-muted-foreground max-w-[100px] truncate">{attachment.input_audio?.format?.toUpperCase() || "Audio"}</span>
+					<span className="text-muted-foreground max-w-[100px] truncate">{attachment.input_audio?.format?.toUpperCase() || "音频"}</span>
 				</>
 			) : (
 				<>

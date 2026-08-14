@@ -1246,7 +1246,7 @@ export const mcpClientUpdateSchema = z
 			ctx.addIssue({
 				code: "custom",
 				path: ["per_user_header_keys"],
-				message: "Declare at least one header name users must supply.",
+				message: "请至少声明一个用户必须提供的请求头名称。",
 			});
 		}
 	});

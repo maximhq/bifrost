@@ -248,7 +248,7 @@ export async function executeToolCall(toolCall: ToolCall, config: Pick<Execution
 			if (authRequired) {
 				throw new MCPAuthRequiredError({
 					kind: authRequired.kind,
-					mcpClientName: authRequired.mcp_client_name || "MCP server",
+					mcpClientName: authRequired.mcp_client_name || "MCP 服务器",
 					authorizeUrl: authRequired.authorize_url || authRequired.submit_url || "",
 					message: authRequired.message || errorMessage,
 				});

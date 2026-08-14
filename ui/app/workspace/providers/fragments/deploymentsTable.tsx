@@ -161,9 +161,9 @@ function TriStateOverrideRow({
 					<SelectValue />
 				</SelectTrigger>
 				<SelectContent>
-					<SelectItem value="inherit">Use key setting</SelectItem>
+					<SelectItem value="inherit">使用密钥设置</SelectItem>
 					<SelectItem value="on">On</SelectItem>
-					<SelectItem value="off">Off</SelectItem>
+					<SelectItem value="off">关闭</SelectItem>
 				</SelectContent>
 			</Select>
 		</div>
@@ -174,10 +174,10 @@ function AzureSection({ config, onChange, disabled }: ProviderSectionProps) {
 	return (
 		<div className="space-y-4">
 			<SectionHeader
-				title="Azure overrides"
-				description="Override key-level Azure defaults for this deployment. Leave blank to use the key's settings."
+				title="Azure 覆盖"
+				description="为此部署覆盖密钥级别的 Azure 默认值。留空使用密钥的设置。"
 			/>
-			<FieldRow label="API version" hint="Override the Azure OpenAI api-version query parameter.">
+			<FieldRow label="API 版本" hint="覆盖 Azure OpenAI 的 api-version 查询参数。">
 				<StringField
 					value={config.api_version}
 					onChange={(v) => onChange({ api_version: v })}
@@ -185,7 +185,7 @@ function AzureSection({ config, onChange, disabled }: ProviderSectionProps) {
 					disabled={disabled}
 				/>
 			</FieldRow>
-			<FieldRow label="Anthropic version" hint="Override the anthropic-version header for Claude-on-Azure deployments.">
+			<FieldRow label="Anthropic 版本" hint="为 Azure 上的 Claude 部署覆盖 anthropic-version 请求头。">
 				<StringField
 					value={config.anthropic_version}
 					onChange={(v) => onChange({ anthropic_version: v })}
@@ -193,7 +193,7 @@ function AzureSection({ config, onChange, disabled }: ProviderSectionProps) {
 					disabled={disabled}
 				/>
 			</FieldRow>
-			<FieldRow label="Endpoint" hint="Point this deployment at a different Azure resource than the key default.">
+			<FieldRow label="端点" hint="将此部署指向与密钥默认值不同的 Azure 资源。">
 				<SecretVarField
 					value={config.endpoint}
 					onChange={(v) => onChange({ endpoint: v })}
@@ -209,26 +209,26 @@ function VertexSection({ config, onChange, disabled }: ProviderSectionProps) {
 	return (
 		<div className="space-y-4">
 			<SectionHeader
-				title="Vertex overrides"
-				description="Override key-level Vertex defaults for this deployment. Leave blank to use the key's settings."
+				title="Vertex 覆盖"
+				description="为此部署覆盖密钥级别的 Vertex 默认值。留空使用密钥的设置。"
 			/>
-			<FieldRow label="Project ID">
+			<FieldRow label="项目 ID">
 				<SecretVarField
 					value={config.project_id}
 					onChange={(v) => onChange({ project_id: v })}
-					placeholder="gcp-project-id or env.VERTEX_PROJECT_ID"
+					placeholder="gcp-project-id 或 env.VERTEX_PROJECT_ID"
 					disabled={disabled}
 				/>
 			</FieldRow>
-			<FieldRow label="Project number" hint="Required for fine-tuned models.">
+			<FieldRow label="项目编号" hint="微调模型必填。">
 				<SecretVarField
 					value={config.project_number}
 					onChange={(v) => onChange({ project_number: v })}
-					placeholder="123456789 or env.VERTEX_PROJECT_NUMBER"
+					placeholder="123456789 或 env.VERTEX_PROJECT_NUMBER"
 					disabled={disabled}
 				/>
 			</FieldRow>
-			<FieldRow label="Region" hint="Multi-region-only models are auto-routed to a multi-region endpoint unless Force single region is on.">
+			<FieldRow label="区域" hint="除非启用强制单区域，否则仅多区域模型会自动路由到多区域端点。">
 				<SecretVarField
 					value={config.region}
 					onChange={(v) => onChange({ region: v })}
@@ -238,10 +238,8 @@ function VertexSection({ config, onChange, disabled }: ProviderSectionProps) {
 			</FieldRow>
 			<div className="flex items-start justify-between gap-4 rounded-md border p-3">
 				<div className="space-y-0.5">
-					<label className="text-sm font-medium">Force single region</label>
-					<p className="text-muted-foreground text-xs">
-						Call the region above as-is and skip multi-region promotion of multi-region-only models. Use for provisioned throughput.
-					</p>
+					<label className="text-sm font-medium">强制单区域</label>
+					<p className="text-muted-foreground text-xs">按原样调用上述区域，跳过仅多区域模型的跨区域提升。用于预置吞吐量。</p>
 				</div>
 				<Switch
 					checked={config.force_single_region ?? false}
@@ -257,28 +255,28 @@ function BedrockSection({ config, onChange, disabled }: ProviderSectionProps) {
 	return (
 		<div className="space-y-4">
 			<SectionHeader
-				title="Bedrock overrides"
-				description="Override key-level Bedrock defaults for this deployment. Leave blank to use the key's settings."
+				title="Bedrock 覆盖"
+				description="为此部署覆盖密钥级别的 Bedrock 默认值。留空使用密钥的设置。"
 			/>
-			<FieldRow label="Region">
+			<FieldRow label="区域">
 				<SecretVarField
 					value={config.region}
 					onChange={(v) => onChange({ region: v })}
-					placeholder="us-east-1 or env.BEDROCK_REGION"
+					placeholder="us-east-1 或 env.BEDROCK_REGION"
 					disabled={disabled}
 				/>
 			</FieldRow>
-			<FieldRow label="Inference profile ARN" hint="Cross-region inference profile ARN to invoke instead of the model ID.">
+			<FieldRow label="推理配置文件 ARN" hint="要调用的跨区域推理配置文件 ARN（代替模型 ID）。">
 				<SecretVarField
 					value={config.inference_profile_arn}
 					onChange={(v) => onChange({ inference_profile_arn: v })}
-					placeholder="arn:aws:bedrock:us-east-1:123:inference-profile/... or env.BEDROCK_PROFILE_ARN"
+					placeholder="arn:aws:bedrock:us-east-1:123:inference-profile/... 或 env.BEDROCK_PROFILE_ARN"
 					disabled={disabled}
 				/>
 			</FieldRow>
 			<FieldRow
-				label="Project ID"
-				hint="Scope this deployment's Bedrock Mantle (gpt-*/Gemma) calls to a specific project via the OpenAI-Project header. Leave blank to use the key's project."
+				label="项目 ID"
+				hint="通过 OpenAI-Project 请求头将此部署的 Bedrock Mantle（gpt-*/Gemma）调用限定到特定项目。留空使用密钥的项目。"
 			>
 				<SecretVarField
 					value={config.project_id}
@@ -295,20 +293,20 @@ function BedrockMantleSection({ config, onChange, disabled }: ProviderSectionPro
 	return (
 		<div className="space-y-4">
 			<SectionHeader
-				title="Bedrock Mantle overrides"
-				description="Override key-level Bedrock Mantle defaults for this deployment. Leave blank to use the key's settings."
+				title="Bedrock Mantle 覆盖"
+				description="为此部署覆盖密钥级别的 Bedrock Mantle 默认值。留空使用密钥的设置。"
 			/>
-			<FieldRow label="Region">
+			<FieldRow label="区域">
 				<SecretVarField
 					value={config.region}
 					onChange={(v) => onChange({ region: v })}
-					placeholder="us-east-1 or env.BEDROCK_REGION"
+					placeholder="us-east-1 或 env.BEDROCK_REGION"
 					disabled={disabled}
 				/>
 			</FieldRow>
 			<FieldRow
-				label="Project ID"
-				hint="Scope this deployment to a specific project via the OpenAI-Project / anthropic-workspace-id header. Leave blank to use the key's project."
+				label="项目 ID"
+				hint="通过 OpenAI-Project / anthropic-workspace-id 请求头将此部署限定到特定项目。留空使用密钥的项目。"
 			>
 				<SecretVarField
 					value={config.project_id}
@@ -324,10 +322,10 @@ function BedrockMantleSection({ config, onChange, disabled }: ProviderSectionPro
 function ReplicateSection({ config, onChange, disabled }: ProviderSectionProps) {
 	return (
 		<div className="space-y-4">
-			<SectionHeader title="Replicate overrides" description="Override key-level Replicate defaults for this deployment." />
+			<SectionHeader title="Replicate 覆盖" description="为此部署覆盖密钥级别的 Replicate 默认值。" />
 			<TriStateOverrideRow
-				label="Use deployments endpoint"
-				hint="Route through Replicate's deployments endpoint instead of the models endpoint."
+				label="使用部署端点"
+				hint="通过 Replicate 的部署端点路由，而不是模型端点。"
 				value={config.use_deployments_endpoint}
 				onChange={(next) => onChange({ use_deployments_endpoint: next })}
 				disabled={disabled}
@@ -342,8 +340,8 @@ function UseAnthropicEndpointsToggleSection({ config, onChange, disabled, provid
 		<div className="space-y-4">
 			<SectionHeader title={`${providerName} overrides`} description={`Override key-level ${providerName} defaults for this deployment.`} />
 			<TriStateOverrideRow
-				label="Use Anthropic endpoints"
-				hint="Route chat completions and responses requests through Anthropic-compatible endpoints."
+				label="使用 Anthropic 端点"
+				hint="通过 Anthropic 兼容端点路由对话补全和响应请求。"
 				value={config.use_anthropic_endpoints}
 				onChange={(next) => onChange({ use_anthropic_endpoints: next })}
 				disabled={disabled}
@@ -392,25 +390,25 @@ function ExpandedConfigPanel({
 	return (
 		<div className="space-y-6 border-t p-4">
 			<div className="space-y-4">
-				<FieldRow label="Canonical model name" hint="The canonical name used for routing and pricing. Defaults to the model ID when blank.">
+				<FieldRow label="规范模型名称" hint="用于路由和价格的规范名称。留空默认为模型 ID。">
 					<StringField
 						value={config.model_name}
 						onChange={(v) => onChange({ model_name: v })}
-						placeholder="e.g. claude-sonnet-4-5"
+						placeholder="例如 claude-sonnet-4-5"
 						disabled={disabled}
 					/>
 				</FieldRow>
-				<FieldRow label="Model family" hint="Forces the family used for routing decisions. Derived from model name when left blank.">
+				<FieldRow label="模型系列" hint="强制用于路由决策的模型系列。留空则从模型名称推导。">
 					<Select
 						value={config.model_family ?? "__none__"}
 						onValueChange={(v) => onChange({ model_family: v === "__none__" ? undefined : (v as ModelFamily) })}
 						disabled={disabled}
 					>
 						<SelectTrigger className="w-full">
-							<SelectValue placeholder="Select a model family" />
+							<SelectValue placeholder="选择模型系列" />
 						</SelectTrigger>
 						<SelectContent>
-							<SelectItem value="__none__">None</SelectItem>
+							<SelectItem value="__none__">无</SelectItem>
 							{ModelFamilyValues.map((f) => (
 								<SelectItem key={f} value={f}>
 									{f}
@@ -419,14 +417,14 @@ function ExpandedConfigPanel({
 						</SelectContent>
 					</Select>
 				</FieldRow>
-				<FieldRow label="Description" hint="Note for users. Not used by Bifrost.">
+				<FieldRow label="描述" hint="给用户的备注。Bifrost 不使用。">
 					<Textarea
 						value={config.description ?? ""}
 						onChange={(e) => {
 							const v = e.target.value;
 							onChange({ description: v === "" ? undefined : v });
 						}}
-						placeholder="What is this deployment used for?"
+						placeholder="此部署用于什么？"
 						rows={2}
 						disabled={disabled}
 					/>
@@ -559,9 +557,9 @@ export function DeploymentsTable({ value, onChange, providerName, disabled = fal
 		<div className="overflow-hidden rounded-md border">
 			<div className="bg-muted/50 text-foreground grid h-10 grid-cols-[28px_1fr_1fr_28px] items-center gap-2 border-b px-4 text-sm font-medium">
 				<div />
-				<div>Deployment name</div>
-				<div>Model ID</div>
-				<span className="sr-only">Actions</span>
+				<div>部署名称</div>
+				<div>模型 ID</div>
+				<span className="sr-only">操作</span>
 			</div>
 			<div className="divide-y">
 				{rowsWithIds.map((row) => {
@@ -586,7 +584,7 @@ export function DeploymentsTable({ value, onChange, providerName, disabled = fal
 										<Input
 											value={pending ?? row.name}
 											onChange={(e) => renameRow(row.rowId, row.name, e.target.value)}
-											placeholder="Request model name"
+											placeholder="请求模型名称"
 											disabled={disabled}
 											data-testid={`deployment-name-${row.name}`}
 										/>
@@ -601,7 +599,7 @@ export function DeploymentsTable({ value, onChange, providerName, disabled = fal
 										provider={providerName}
 										value={row.config.model_id}
 										onChange={(v) => patchConfig(row.name, { model_id: typeof v === "string" ? v : "" })}
-										placeholder="Deployment / profile / resource ID"
+										placeholder="部署 / 配置文件 / 资源 ID"
 										disabled={disabled}
 										unfiltered={true}
 										data-testid={`deployment-model-${row.name}`}
@@ -648,7 +646,7 @@ export function DeploymentsTable({ value, onChange, providerName, disabled = fal
 										commitDraftIfReady();
 									}
 								}}
-								placeholder="Request model name"
+								placeholder="请求模型名称"
 								disabled={disabled}
 								data-testid="draft-deployment-name"
 							/>
@@ -662,7 +660,7 @@ export function DeploymentsTable({ value, onChange, providerName, disabled = fal
 									setDraftRow(nextDraft);
 									commitDraftIfReady(nextDraft);
 								}}
-								placeholder="Deployment / profile / resource ID"
+								placeholder="部署 / 配置文件 / 资源 ID"
 								disabled={disabled}
 								unfiltered={true}
 								data-testid="draft-deployment-model"
@@ -671,9 +669,7 @@ export function DeploymentsTable({ value, onChange, providerName, disabled = fal
 						</div>
 						{(draftRow.name.trim() !== "" || draftRow.config.model_id.trim() !== "") &&
 							!(draftRow.name.trim() && draftRow.config.model_id.trim()) && (
-								<p className="text-muted-foreground px-4 pb-2 text-xs">
-									Both deployment name and model ID are required; this row will not be saved until both are filled.
-								</p>
+								<p className="text-muted-foreground px-4 pb-2 text-xs">部署名称和模型 ID 均为必填；两者都填写后此行才会保存。</p>
 							)}
 						<CollapsibleContent>
 							<ExpandedConfigPanel config={draftRow.config} onChange={patchDraftConfig} providerName={providerName} disabled={disabled} />

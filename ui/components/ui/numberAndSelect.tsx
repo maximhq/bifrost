@@ -97,9 +97,7 @@ const NumberAndSelect = ({
 		<div className="flex w-full items-center justify-between gap-4">
 			<div className="grow space-y-2">{numberInput}</div>
 			<div className="w-40 space-y-2">
-				<Label htmlFor={`${id}-select`} className={labelClassName}>
-					Reset Period
-				</Label>
+				<Label htmlFor={`${id}-select`} className={labelClassName}>重置周期</Label>
 				<Select value={selectValue} onValueChange={(value) => onChangeSelect(value as string)}>
 					<SelectTrigger className="m-0 w-full">
 						<SelectValue />

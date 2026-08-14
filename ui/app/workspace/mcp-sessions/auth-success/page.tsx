@@ -7,7 +7,7 @@ export default function MCPSessionsAuthSuccessPage() {
 				<div className="bg-primary/10 mx-auto mb-5 flex size-12 items-center justify-center rounded-full">
 					<CheckCircle2 className="text-primary size-6" />
 				</div>
-				<h1 className="text-xl font-semibold tracking-tight">Authentication successful</h1>
+				<h1 className="text-xl font-semibold tracking-tight">认证成功</h1>
 				<p className="text-muted-foreground mt-2 text-sm">
 					Your credential has been stored. You can close this tab and return to your MCP client - future requests will use this credential
 					automatically.

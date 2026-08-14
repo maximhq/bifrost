@@ -98,18 +98,18 @@ export function VersionDetailDialog({
 								className="h-8 w-8"
 								asChild
 								data-testid="skill-version-download-zip"
-								aria-label="Download ZIP"
+								aria-label="下载 ZIP"
 							>
 								<a href={downloadUrl} download>
 									<Download className="h-4 w-4" />
-									<span className="sr-only">Download ZIP</span>
+									<span className="sr-only">下载 ZIP</span>
 								</a>
 							</Button>
 						)}
 						<DialogClose asChild>
-							<Button variant="ghost" size="icon" className="h-8 w-8" data-testid="skill-version-dialog-close" aria-label="Close">
+							<Button variant="ghost" size="icon" className="h-8 w-8" data-testid="skill-version-dialog-close" aria-label="关闭">
 								<X className="h-4 w-4" />
-								<span className="sr-only">Close</span>
+								<span className="sr-only">关闭</span>
 							</Button>
 						</DialogClose>
 					</div>
@@ -137,9 +137,7 @@ export function VersionDetailDialog({
 												<Badge
 													variant="secondary"
 													className="bg-emerald-100 text-xs text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400"
-												>
-													Serving
-												</Badge>
+												>服务中</Badge>
 											)}
 										</>
 									}
@@ -148,14 +146,10 @@ export function VersionDetailDialog({
 											<Button size="sm" data-testid="skill-version-shift-btn" onClick={handleShiftVersion} disabled={isShifting}>
 												{isShifting ? (
 													<>
-														<Loader2 className="h-3.5 w-3.5 animate-spin" />
-														Shifting...
-													</>
+														<Loader2 className="h-3.5 w-3.5 animate-spin" />切换中...</>
 												) : (
 													<>
-														<RefreshCw className="h-3.5 w-3.5" />
-														Shift to this version
-													</>
+														<RefreshCw className="h-3.5 w-3.5" />切换到该版本</>
 												)}
 											</Button>
 										) : undefined
@@ -175,9 +169,9 @@ export function VersionDetailDialog({
 							</div>
 						</>
 					) : isError ? (
-						<p className="text-muted-foreground flex flex-1 items-center justify-center text-sm">Failed to load version</p>
+						<p className="text-muted-foreground flex flex-1 items-center justify-center text-sm">无法加载版本</p>
 					) : (
-						<p className="text-muted-foreground flex flex-1 items-center justify-center text-sm">Version data not found</p>
+						<p className="text-muted-foreground flex flex-1 items-center justify-center text-sm">未找到版本数据</p>
 					)}
 				</div>
 			</DialogContent>

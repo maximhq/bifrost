@@ -24,7 +24,7 @@ export default function RevokeGrantDialog({ open, onOpenChange, onConfirm }: Rev
 		<AlertDialog open={open} onOpenChange={onOpenChange}>
 			<AlertDialogContent>
 				<AlertDialogHeader>
-					<AlertDialogTitle>Revoke this OAuth grant?</AlertDialogTitle>
+					<AlertDialogTitle>吊销此 OAuth 授权？</AlertDialogTitle>
 					<AlertDialogDescription>
 						The refresh token for this grant stops rotating right away, so the
 						MCP client can no longer renew its access. Its current access token
@@ -35,15 +35,11 @@ export default function RevokeGrantDialog({ open, onOpenChange, onConfirm }: Rev
 					</AlertDialogDescription>
 				</AlertDialogHeader>
 				<AlertDialogFooter>
-					<AlertDialogCancel data-testid="oauth-grants-revoke-cancel-btn">
-						Cancel
-					</AlertDialogCancel>
+					<AlertDialogCancel data-testid="oauth-grants-revoke-cancel-btn">取消</AlertDialogCancel>
 					<AlertDialogAction
 						data-testid="oauth-grants-revoke-confirm-btn"
 						onClick={onConfirm}
-					>
-						Revoke
-					</AlertDialogAction>
+					>吊销</AlertDialogAction>
 				</AlertDialogFooter>
 			</AlertDialogContent>
 		</AlertDialog>

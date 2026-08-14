@@ -133,16 +133,16 @@ export default function ModelSettingsView() {
 		<div className="mx-auto w-full max-w-7xl space-y-4" data-testid="model-settings-view">
 			<form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
 				<div>
-					<h2 className="text-lg font-semibold tracking-tight">Model Settings</h2>
-					<p className="text-muted-foreground text-sm">Configure pricing and routing behaviour.</p>
+					<h2 className="text-lg font-semibold tracking-tight">模型设置</h2>
+					<p className="text-muted-foreground text-sm">配置价格和路由行为。</p>
 				</div>
 
 				<div className="space-y-4">
 					{/* Pricing Datasheet URL */}
 					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
-							<Label htmlFor="pricing-datasheet-url">Pricing Datasheet URL</Label>
-							<p className="text-muted-foreground text-sm">URL to a custom pricing datasheet. Leave empty to use default pricing.</p>
+							<Label htmlFor="pricing-datasheet-url">价格数据表 URL</Label>
+							<p className="text-muted-foreground text-sm">自定义价格数据表 URL。留空使用默认价格。</p>
 						</div>
 						<Input
 							id="pricing-datasheet-url"
@@ -170,8 +170,8 @@ export default function ModelSettingsView() {
 					{/* Model Parameters URL */}
 					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
-							<Label htmlFor="model-parameters-url">Model Parameters URL</Label>
-							<p className="text-muted-foreground text-sm">URL to a custom model parameters datasheet. Leave empty to use default.</p>
+							<Label htmlFor="model-parameters-url">模型参数 URL</Label>
+							<p className="text-muted-foreground text-sm">自定义模型参数数据表 URL。留空使用默认值。</p>
 						</div>
 						<Input
 							id="model-parameters-url"
@@ -199,8 +199,8 @@ export default function ModelSettingsView() {
 					{/* Pricing Sync Interval */}
 					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
-							<Label htmlFor="pricing-sync-interval">Pricing Sync Interval (hours)</Label>
-							<p className="text-muted-foreground text-sm">How often to sync pricing data from the datasheet URL.</p>
+							<Label htmlFor="pricing-sync-interval">价格同步间隔（小时）</Label>
+							<p className="text-muted-foreground text-sm">从数据表 URL 同步价格数据的频率。</p>
 						</div>
 						<Input
 							id="pricing-sync-interval"
@@ -220,7 +220,7 @@ export default function ModelSettingsView() {
 					{/* Model Discovery Interval */}
 					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
-							<Label htmlFor="live-models-sync-interval">Model Discovery Interval (minutes)</Label>
+							<Label htmlFor="live-models-sync-interval">模型发现间隔（分钟）</Label>
 							<p className="text-muted-foreground text-sm">
 								How often each provider&apos;s model list is re-fetched in the background, so models a provider starts serving become
 								available without a restart. Set to 0 to turn it off and refresh only from the Providers page.
@@ -248,19 +248,15 @@ export default function ModelSettingsView() {
 							<p className="text-destructive text-sm">{errors.live_models_sync_interval_minutes.message}</p>
 						)}
 						{formValues.live_models_sync_interval_minutes === 0 && !errors.live_models_sync_interval_minutes && (
-							<p className="text-muted-foreground text-sm">
-								Background discovery is off. Model lists update only at startup, on key changes, and when refreshed manually.
-							</p>
+							<p className="text-muted-foreground text-sm">后台发现已关闭。模型列表仅在启动时、密钥变更时和手动刷新时更新。</p>
 						)}
 					</div>
 
 					{/* Routing Chain Max Depth */}
 					<div className="flex items-center justify-between rounded-sm border p-4">
 						<div className="space-y-0.5">
-							<Label htmlFor="routing-chain-max-depth">Routing Chain Max Depth</Label>
-							<p className="text-muted-foreground text-sm">
-								Maximum number of chained routing rule evaluations per request. Prevents infinite loops from circular rule definitions.
-							</p>
+							<Label htmlFor="routing-chain-max-depth">路由链最大深度</Label>
+							<p className="text-muted-foreground text-sm">每个请求的链式路由规则评估最大次数。防止循环规则定义导致无限循环。</p>
 						</div>
 						<Input
 							id="routing-chain-max-depth"
@@ -289,7 +285,7 @@ export default function ModelSettingsView() {
 						{isForceSyncing ? "Syncing..." : "Force Sync Now"}
 					</Button>
 					<Button type="submit" disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess} data-testid="model-settings-save-btn">
-						{isLoading ? "Saving..." : "Save Changes"}
+						{isLoading ? "Saving..." : "保存更改"}
 					</Button>
 				</div>
 			</form>

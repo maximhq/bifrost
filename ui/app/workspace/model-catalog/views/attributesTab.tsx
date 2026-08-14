@@ -111,10 +111,8 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 	if (error) {
 		return (
 			<div className="flex h-full flex-col items-center justify-center gap-4 text-center">
-				<p className="text-muted-foreground text-sm">Failed to load models</p>
-				<button type="button" onClick={refetch} className="text-sm underline" data-testid="model-catalog-retry-button">
-					Retry
-				</button>
+				<p className="text-muted-foreground text-sm">无法加载模型</p>
+				<button type="button" onClick={refetch} className="text-sm underline" data-testid="model-catalog-retry-button">重试</button>
 			</div>
 		);
 	}
@@ -126,8 +124,8 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 			<div className="flex min-h-0 w-full grow flex-col overflow-hidden">
 				<div className="mb-4 flex shrink-0 items-center justify-between">
 					<div>
-						<h2 className="text-lg font-semibold">Models</h2>
-						<p className="text-muted-foreground text-sm">Attach descriptions and tags to specific models.</p>
+						<h2 className="text-lg font-semibold">模型</h2>
+						<p className="text-muted-foreground text-sm">为特定模型附加描述和标签。</p>
 					</div>
 				</div>
 
@@ -135,8 +133,8 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 					<div className="relative max-w-sm flex-1">
 						<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 						<Input
-							aria-label="Search models"
-							placeholder="Search by model name..."
+							aria-label="搜索模型"
+							placeholder="按模型名称搜索..."
 							value={search}
 							onChange={(e) => setUrlState({ search: e.target.value || null })}
 							className="pl-9"
@@ -145,10 +143,10 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 					</div>
 					<Select value={providerFilter || "__all__"} onValueChange={(v) => setUrlState({ provider: v === "__all__" ? null : v })}>
 						<SelectTrigger className="w-[200px]" data-testid="model-catalog-provider-filter">
-							<SelectValue placeholder="All providers" />
+							<SelectValue placeholder="所有提供商" />
 						</SelectTrigger>
 						<SelectContent>
-							<SelectItem value="__all__">All providers</SelectItem>
+							<SelectItem value="__all__">所有提供商</SelectItem>
 							{providerOptions.map((p) => (
 								<SelectItem key={p} value={p}>
 									{ProviderLabels[p as ProviderName] || p}
@@ -162,14 +160,14 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 					<Table containerClassName="h-full overflow-y-auto overflow-x-hidden" className="table-fixed">
 						<TableHeader className="bg-muted sticky top-0 z-20">
 							<TableRow className="hover:bg-transparent">
-								<TableHead className="w-[116px] font-medium">Provider</TableHead>
-								<TableHead className="font-medium">Model</TableHead>
-								<TableHead className="w-[104px] px-2 text-right font-medium">Input</TableHead>
-								<TableHead className="w-[104px] px-2 text-right font-medium">Output</TableHead>
-								<TableHead className="w-[112px] px-2 text-right font-medium">Cache Write</TableHead>
-								<TableHead className="w-[108px] px-2 text-right font-medium">Cache Read</TableHead>
-								<TableHead className="font-medium">Description</TableHead>
-								<TableHead className="w-[68px] font-medium">Other</TableHead>
+								<TableHead className="w-[116px] font-medium">提供商</TableHead>
+								<TableHead className="font-medium">模型</TableHead>
+								<TableHead className="w-[104px] px-2 text-right font-medium">输入</TableHead>
+								<TableHead className="w-[104px] px-2 text-right font-medium">输出</TableHead>
+								<TableHead className="w-[112px] px-2 text-right font-medium">缓存写入</TableHead>
+								<TableHead className="w-[108px] px-2 text-right font-medium">缓存读取</TableHead>
+								<TableHead className="font-medium">描述</TableHead>
+								<TableHead className="w-[68px] font-medium">其他</TableHead>
 								<TableHead className="w-[80px] px-1"></TableHead>
 							</TableRow>
 						</TableHeader>
@@ -287,12 +285,12 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 								onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
 								disabled={offset === 0}
 								data-testid="model-catalog-pagination-prev-btn"
-								aria-label="Previous page"
+								aria-label="上一页"
 							>
 								<ChevronLeft className="size-3" />
 							</Button>
 							<div className="flex items-center gap-1">
-								<span>Page</span>
+								<span>页</span>
 								<span>{Math.floor(offset / PAGE_SIZE) + 1}</span>
 								<span>of {Math.ceil(totalCount / PAGE_SIZE)}</span>
 							</div>
@@ -302,7 +300,7 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 								onClick={() => setOffset(offset + PAGE_SIZE)}
 								disabled={offset + PAGE_SIZE >= totalCount}
 								data-testid="model-catalog-pagination-next-btn"
-								aria-label="Next page"
+								aria-label="下一页"
 							>
 								<ChevronRight className="size-3" />
 							</Button>

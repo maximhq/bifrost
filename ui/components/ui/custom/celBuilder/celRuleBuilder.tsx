@@ -193,7 +193,7 @@ export function CELRuleBuilder({
 		return (
 			<div className="flex items-center justify-center space-x-2 rounded-md border p-8">
 				<Loader2 className="h-5 w-5 animate-spin" />
-				<span className="text-muted-foreground text-sm">Loading CEL builder...</span>
+				<span className="text-muted-foreground text-sm">正在加载 CEL 规则构建器...</span>
 			</div>
 		);
 	}
@@ -218,9 +218,7 @@ export function CELRuleBuilder({
 								mode === "builder" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground",
 							)}
 							data-testid="cel-builder-mode-builder"
-						>
-							Builder
-						</button>
+						>构建器</button>
 						<button
 							type="button"
 							onClick={switchToCel}
@@ -229,9 +227,7 @@ export function CELRuleBuilder({
 								mode === "cel" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground",
 							)}
 							data-testid="cel-builder-mode-cel"
-						>
-							CEL
-						</button>
+						>CEL</button>
 					</div>
 				</div>
 			)}
@@ -261,8 +257,8 @@ export function CELRuleBuilder({
 									combinatorSelector: CombinatorSelector,
 								}}
 								translations={{
-									addRule: { label: "Add Rule" },
-									addGroup: { label: "Add Rule Group" },
+									addRule: { label: "添加规则" },
+									addGroup: { label: "添加规则组" },
 								}}
 							/>
 						</QueryBuilderWrapper>
@@ -273,7 +269,7 @@ export function CELRuleBuilder({
 			{(mode === "cel" || !options.hideCELExpression) && (
 				<div className="space-y-2">
 					<div className="flex items-center justify-between">
-						<Label>{mode === "cel" ? "CEL Expression" : "CEL Expression Preview"}</Label>
+						<Label>{mode === "cel" ? "CEL 表达式" : "CEL Expression Preview"}</Label>
 						<Button
 							variant="outline"
 							size="sm"
@@ -284,14 +280,10 @@ export function CELRuleBuilder({
 						>
 							{copied ? (
 								<>
-									<Check className="h-4 w-4" />
-									Copied
-								</>
+									<Check className="h-4 w-4" />已复制</>
 							) : (
 								<>
-									<Copy className="h-4 w-4" />
-									Copy
-								</>
+									<Copy className="h-4 w-4" />复制</>
 							)}
 						</Button>
 					</div>
@@ -302,7 +294,7 @@ export function CELRuleBuilder({
 								onChange={(e) => handleCelTextChange(e.target.value)}
 								className={cn("font-mono text-sm", celError && "border-destructive focus-visible:ring-destructive")}
 								rows={4}
-								placeholder='e.g. model == "claude-sonnet-4-6"'
+								placeholder='例如 model == "claude-sonnet-4-6"'
 								aria-invalid={!!celError}
 								data-testid="cel-builder-cel-textarea"
 							/>
@@ -311,7 +303,7 @@ export function CELRuleBuilder({
 									{celError}
 								</p>
 							) : (
-								<p className="text-muted-foreground text-xs">Leave empty to match all requests.</p>
+								<p className="text-muted-foreground text-xs">留空则匹配所有请求。</p>
 							)}
 						</>
 					) : (
@@ -323,22 +315,20 @@ export function CELRuleBuilder({
 			<AlertDialog open={confirmSwitchToBuilder} onOpenChange={setConfirmSwitchToBuilder}>
 				<AlertDialogContent>
 					<AlertDialogHeader>
-						<AlertDialogTitle>Switch to the visual builder?</AlertDialogTitle>
+						<AlertDialogTitle>切换到可视化构建器？</AlertDialogTitle>
 						<AlertDialogDescription>
 							The visual builder can&apos;t import a hand-written CEL expression, so your current CEL will be discarded and the builder
 							will start empty. Copy it first if you want to keep it.
 						</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
-						<AlertDialogCancel>Cancel</AlertDialogCancel>
+						<AlertDialogCancel>取消</AlertDialogCancel>
 						<AlertDialogAction
 							onClick={() => {
 								setConfirmSwitchToBuilder(false);
 								applySwitchToBuilder();
 							}}
-						>
-							Discard CEL &amp; switch
-						</AlertDialogAction>
+						>放弃 CEL 并切换</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>
 			</AlertDialog>

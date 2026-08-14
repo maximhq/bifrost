@@ -133,7 +133,7 @@ export function MCPLogDetailSheet({
 			<Sheet open={open} onOpenChange={onOpenChange}>
 				<SheetContent className="flex w-full flex-col gap-4 overflow-x-hidden p-8 sm:max-w-[60%]">
 					<div className="flex h-full items-center justify-center">
-						<SheetTitle className="sr-only">Loading MCP log details</SheetTitle>
+						<SheetTitle className="sr-only">正在加载 MCP 日志详情</SheetTitle>
 						<Loader2 className="text-muted-foreground h-6 w-6 animate-spin" />
 					</div>
 				</SheetContent>
@@ -168,9 +168,7 @@ export function MCPLogDetailSheet({
 					/>
 					{revealAvailable && (
 						<div className="flex items-center gap-2 whitespace-nowrap">
-							<label htmlFor="mcplogdetails-reveal-toggle" className="text-muted-foreground text-[11px] font-medium">
-								Show original values
-							</label>
+							<label htmlFor="mcplogdetails-reveal-toggle" className="text-muted-foreground text-[11px] font-medium">显示原始值</label>
 							<Switch
 								id="mcplogdetails-reveal-toggle"
 								checked={revealEnabled}
@@ -195,9 +193,7 @@ export function MCPLogDetailSheet({
 										setDropdownOpen(false);
 									}}
 								>
-									<Download className="h-4 w-4" />
-									Export as JSON
-								</DropdownMenuItem>
+									<Download className="h-4 w-4" />导出为 JSON</DropdownMenuItem>
 								{handleDelete ? (
 									<>
 										<DropdownMenuSeparator />
@@ -209,20 +205,18 @@ export function MCPLogDetailSheet({
 												setDropdownOpen(false);
 											}}
 										>
-											<Trash2 className="h-4 w-4" />
-											Delete log
-										</DropdownMenuItem>
+											<Trash2 className="h-4 w-4" />删除日志</DropdownMenuItem>
 									</>
 								) : null}
 							</DropdownMenuContent>
 						</DropdownMenu>
 						<AlertDialogContent>
 							<AlertDialogHeader>
-								<AlertDialogTitle>Are you sure you want to delete this log?</AlertDialogTitle>
-								<AlertDialogDescription>This action cannot be undone. This will permanently delete the log entry.</AlertDialogDescription>
+								<AlertDialogTitle>确定要删除此日志吗？</AlertDialogTitle>
+								<AlertDialogDescription>此操作无法撤销，将永久删除该日志记录。</AlertDialogDescription>
 							</AlertDialogHeader>
 							<AlertDialogFooter>
-								<AlertDialogCancel>Cancel</AlertDialogCancel>
+								<AlertDialogCancel>取消</AlertDialogCancel>
 								<AlertDialogAction
 									onClick={async (e) => {
 										e.preventDefault();
@@ -237,20 +231,18 @@ export function MCPLogDetailSheet({
 											// Keep dialog open on error so user can see the error and retry
 										}
 									}}
-								>
-									Delete
-								</AlertDialogAction>
+								>删除</AlertDialogAction>
 							</AlertDialogFooter>
 						</AlertDialogContent>
 					</AlertDialog>
 				</SheetHeader>
 				<div className="space-y-4 rounded-sm border px-6 py-4">
 					<div className="space-y-4">
-						<BlockHeader title="Timings" />
+						<BlockHeader title="耗时" />
 						<div className="grid w-full grid-cols-3 items-center justify-between gap-4">
 							<LogEntryDetailsView
 								className="w-full"
-								label="Start Timestamp"
+								label="开始时间戳"
 								value={
 									isValid(new Date(displayLog.timestamp))
 										? format(new Date(displayLog.timestamp), "yyyy-MM-dd hh:mm:ss aa")
@@ -259,7 +251,7 @@ export function MCPLogDetailSheet({
 							/>
 							<LogEntryDetailsView
 								className="w-full"
-								label="End Timestamp"
+								label="结束时间戳"
 								value={
 									isValid(new Date(displayLog.timestamp))
 										? format(addMilliseconds(new Date(displayLog.timestamp), displayLog.latency || 0), "yyyy-MM-dd hh:mm:ss aa")
@@ -268,18 +260,18 @@ export function MCPLogDetailSheet({
 							/>
 							<LogEntryDetailsView
 								className="w-full"
-								label="Latency"
+								label="延迟"
 								value={displayLog.latency ? `${displayLog.latency.toFixed(2)}ms` : "NA"}
 							/>
 						</div>
 					</div>
 					<DottedSeparator />
 					<div className="space-y-4">
-						<BlockHeader title="Request Details" />
+						<BlockHeader title="请求详情" />
 						<div className="grid w-full grid-cols-3 items-start justify-between gap-4">
 							<LogEntryDetailsView
 								className="col-span-2 w-full"
-								label="Tool Name"
+								label="工具名称"
 								value={
 									<Link
 										to="/workspace/mcp-logs"
@@ -293,7 +285,7 @@ export function MCPLogDetailSheet({
 							/>
 							<LogEntryDetailsView
 								className="w-full"
-								label="Server"
+								label="服务器"
 								value={
 									displayLog.server_label ? (
 										<Link
@@ -313,7 +305,7 @@ export function MCPLogDetailSheet({
 							{displayLog.virtual_key && (
 								<LogEntryDetailsView
 									className="w-full"
-									label="Virtual Key"
+									label="虚拟密钥"
 									value={
 										<Link
 											to="/workspace/governance/virtual-keys"
@@ -329,7 +321,7 @@ export function MCPLogDetailSheet({
 							{displayLog.llm_request_id && (
 								<LogEntryDetailsView
 									className="col-span-3 w-full"
-									label="LLM Request ID"
+									label="LLM 请求 ID"
 									value={
 										<Link
 											to="/workspace/logs"
@@ -348,9 +340,7 @@ export function MCPLogDetailSheet({
 
 				<Tabs key={displayLog.id} defaultValue="execution" className="gap-2">
 					<TabsList className="bg-muted/60 h-10 w-fit">
-						<TabsTrigger value="execution" className="px-3">
-							Execution
-						</TabsTrigger>
+						<TabsTrigger value="execution" className="px-3">执行</TabsTrigger>
 						<TabsTrigger value="plugins" className="px-3">
 							Plugin Logs
 							{pluginLogCount > 0 ? (
@@ -365,7 +355,7 @@ export function MCPLogDetailSheet({
 						{/* Arguments */}
 						{displayedArguments && (
 							<div className="w-full rounded-sm border">
-								<div className="border-b px-6 py-2 text-sm font-medium">Arguments</div>
+								<div className="border-b px-6 py-2 text-sm font-medium">参数</div>
 								<CodeEditor
 									className="z-0 w-full"
 									shouldAdjustInitialHeight={true}
@@ -382,7 +372,7 @@ export function MCPLogDetailSheet({
 						{/* Result */}
 						{displayedResult && displayLog.status !== "processing" && (
 							<div className="w-full rounded-sm border">
-								<div className="border-b px-6 py-2 text-sm font-medium">Result</div>
+								<div className="border-b px-6 py-2 text-sm font-medium">结果</div>
 								<CodeEditor
 									className="z-0 w-full"
 									shouldAdjustInitialHeight={true}
@@ -399,7 +389,7 @@ export function MCPLogDetailSheet({
 						{/* Metadata */}
 						{displayLog.metadata && Object.keys(displayLog.metadata).length > 0 && (
 							<div className="space-y-4 rounded-sm border px-6 py-4">
-								<BlockHeader title="Metadata" />
+								<BlockHeader title="元数据" />
 								<div className="grid w-full grid-cols-3 items-start justify-between gap-4">
 									{Object.entries(displayLog.metadata).map(([key, value]) => (
 										<LogEntryDetailsView key={key} className="w-full" label={key} value={String(value)} />
@@ -411,7 +401,7 @@ export function MCPLogDetailSheet({
 						{/* Error Details */}
 						{displayedErrorDetails && (
 							<div className="border-destructive/50 w-full rounded-sm border">
-								<div className="border-destructive/50 text-destructive border-b px-6 py-2 text-sm font-medium">Error Details</div>
+								<div className="border-destructive/50 text-destructive border-b px-6 py-2 text-sm font-medium">错误详情</div>
 								<CodeEditor
 									className="z-0 w-full"
 									shouldAdjustInitialHeight={true}
@@ -430,9 +420,7 @@ export function MCPLogDetailSheet({
 						{displayLog.plugin_logs ? (
 							<PluginLogsView pluginLogs={displayLog.plugin_logs} />
 						) : (
-							<div className="text-muted-foreground rounded-sm border border-dashed p-5 text-center text-sm">
-								No plugin logs for this request.
-							</div>
+							<div className="text-muted-foreground rounded-sm border border-dashed p-5 text-center text-sm">此请求没有插件日志。</div>
 						)}
 					</TabsContent>
 				</Tabs>

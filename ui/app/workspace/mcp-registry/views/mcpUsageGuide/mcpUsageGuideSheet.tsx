@@ -126,7 +126,7 @@ export function MCPUsageGuideSheet() {
 		<>
 			<Button type="button" onClick={() => setOpen(true)} data-testid="mcp-usage-guide-trigger" variant="outline" className="h-8">
 				<SquareTerminal />
-				<span className="hidden sm:inline">Connect agent</span>
+				<span className="hidden sm:inline">连接代理</span>
 			</Button>
 
 			<Sheet open={open} onOpenChange={setOpen}>
@@ -134,8 +134,8 @@ export function MCPUsageGuideSheet() {
 					<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 sticky px-8 -top-4 bg-card z-10">
 						<div className="flex items-center gap-2">
 							<div>
-								<SheetTitle>Install Bifrost MCP</SheetTitle>
-								<SheetDescription>Build a copy-ready command or config for your agent harness.</SheetDescription>
+								<SheetTitle>安装 Bifrost MCP</SheetTitle>
+								<SheetDescription>为您的代理工具链构建可直接复制的命令或配置。</SheetDescription>
 							</div>
 						</div>
 					</SheetHeader>
@@ -144,7 +144,7 @@ export function MCPUsageGuideSheet() {
 						{/* ── Harness selector tabs ───────────────────────── */}
 						<section className="flex flex-col gap-2 transition-[border-color,background-color] duration-150 ease-out">
 							<div className="flex items-center gap-2 text-sm font-medium">
-								<span>Harness</span>
+								<span>工具链</span>
 							</div>
 							<Tabs value={harness} onValueChange={(value) => setUrlState({ harness: value as HarnessID })}>
 								<TabsList className="no-scrollbar flex w-full flex-row justify-start overflow-x-auto rounded-sm">
@@ -163,7 +163,7 @@ export function MCPUsageGuideSheet() {
 						{/* ── Virtual key picker ─────────────────────────── */}
 						<section className="flex flex-col gap-2 transition-[border-color,background-color] duration-150 ease-out">
 							<div className="flex items-center gap-2 text-sm font-medium">
-								<span>Virtual key</span>
+								<span>虚拟密钥</span>
 							</div>
 							<SearchSelect<VirtualKeyOption>
 								async
@@ -187,7 +187,7 @@ export function MCPUsageGuideSheet() {
 										data-testid="mcp-usage-guide-vk-select"
 									>
 										<KeyRound className="text-muted-foreground size-4" />
-										<span className="truncate">{selectedVirtualKey?.name ?? "Search virtual keys"}</span>
+										<span className="truncate">{selectedVirtualKey?.name ?? "搜索虚拟密钥"}</span>
 										{selectedVirtualKey && (
 											<span className="text-muted-foreground ml-auto hidden font-mono text-xs sm:inline">
 												{maskSecret(selectedVirtualKey.value)}
@@ -204,8 +204,8 @@ export function MCPUsageGuideSheet() {
 										{selectedVirtualKey?.id === option.virtualKey.id && <Check className="ml-auto size-4 text-green-600" />}
 									</div>
 								)}
-								searchPlaceholder="Search virtual keys..."
-								emptyMessage="No active virtual keys found."
+								searchPlaceholder="搜索虚拟密钥..."
+								emptyMessage="未找到有效的虚拟密钥。"
 								align="start"
 								className="w-full"
 								contentClassName="w-[var(--radix-popover-trigger-width)]"
@@ -216,7 +216,7 @@ export function MCPUsageGuideSheet() {
 						{selectedVirtualKey && (
 							<section className="flex flex-col gap-2 transition-[opacity,transform] duration-200 ease-out motion-reduce:transition-none">
 								<div className="flex items-center gap-2 text-sm font-medium">
-									<span>Server access</span>
+									<span>服务器访问</span>
 								</div>
 								<div className="grid gap-2 sm:grid-cols-2">
 									<button
@@ -229,7 +229,7 @@ export function MCPUsageGuideSheet() {
 										data-testid="mcp-usage-guide-server-scope-all"
 									>
 										<Globe2 className="text-muted-foreground size-4" />
-										<span className="font-medium">All servers</span>
+										<span className="font-medium">所有服务器</span>
 										{serverScope === "all" && <Check className="ml-auto size-4 text-green-600" />}
 									</button>
 									<button
@@ -242,7 +242,7 @@ export function MCPUsageGuideSheet() {
 										data-testid="mcp-usage-guide-server-scope-selected"
 									>
 										<Server className="text-muted-foreground size-4" />
-										<span className="font-medium">Selected servers</span>
+										<span className="font-medium">已选中的服务器</span>
 										{serverScope === "selected" && <Check className="ml-auto size-4 text-green-600" />}
 									</button>
 								</div>
@@ -270,7 +270,7 @@ export function MCPUsageGuideSheet() {
 						{selectedVirtualKey && activeHarness.usesPlatform && (
 							<section className="flex flex-col gap-2 transition-[opacity,transform] duration-200 ease-out motion-reduce:transition-none">
 								<div className="flex items-center gap-2 text-sm font-medium">
-									<span>Platform</span>
+									<span>平台</span>
 								</div>
 								<PlatformSelect platform={platform} onPlatformChange={(value) => setUrlState({ platform: value })} />
 							</section>

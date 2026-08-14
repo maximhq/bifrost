@@ -69,7 +69,7 @@ export function ExportPopover({ getData, activeTab, onPreloadData, onPdfExport, 
 				await generatePdf(sections, fileName(scope), {
 					branding: {
 						logoSrc: "/bifrost-logo.webp",
-						text: "Powered by",
+						text: "由",
 					},
 				});
 			} finally {
@@ -87,39 +87,31 @@ export function ExportPopover({ getData, activeTab, onPreloadData, onPdfExport, 
 			<DropdownMenuTrigger asChild>
 				<Button variant="outline" size="default" disabled={exporting} data-testid="dashboard-export-trigger">
 					{exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-					{exporting ? "Exporting..." : "Export"}
+					{exporting ? "正在导出..." : "Export"}
 				</Button>
 			</DropdownMenuTrigger>
 			<DropdownMenuContent align="end">
 				<DropdownMenuSub>
 					<DropdownMenuSubTrigger data-testid="export-csv-item" className="flex gap-2">
-						<FileSpreadsheet className="h-4 w-4" />
-						CSV
-					</DropdownMenuSubTrigger>
+						<FileSpreadsheet className="h-4 w-4" />CSV</DropdownMenuSubTrigger>
 					<DropdownMenuPortal>
 						<DropdownMenuSubContent>
 							<DropdownMenuItem onClick={() => handleCsvExport(activeTab)} data-testid="export-csv-current-tab">
 								This tab ({activeTabLabel})
 							</DropdownMenuItem>
-							<DropdownMenuItem onClick={() => handleCsvExport("all")} data-testid="export-csv-all-tabs">
-								All tabs
-							</DropdownMenuItem>
+							<DropdownMenuItem onClick={() => handleCsvExport("all")} data-testid="export-csv-all-tabs">所有标签页</DropdownMenuItem>
 						</DropdownMenuSubContent>
 					</DropdownMenuPortal>
 				</DropdownMenuSub>
 				<DropdownMenuSub>
 					<DropdownMenuSubTrigger data-testid="export-pdf-item" className="flex gap-2">
-						<FileText className="h-4 w-4" />
-						PDF
-					</DropdownMenuSubTrigger>
+						<FileText className="h-4 w-4" />PDF</DropdownMenuSubTrigger>
 					<DropdownMenuPortal>
 						<DropdownMenuSubContent>
 							<DropdownMenuItem onClick={() => handlePdfExport(activeTab)} data-testid="export-pdf-current-tab">
 								This tab ({activeTabLabel})
 							</DropdownMenuItem>
-							<DropdownMenuItem onClick={() => handlePdfExport("all")} data-testid="export-pdf-all-tabs">
-								All tabs
-							</DropdownMenuItem>
+							<DropdownMenuItem onClick={() => handlePdfExport("all")} data-testid="export-pdf-all-tabs">所有标签页</DropdownMenuItem>
 						</DropdownMenuSubContent>
 					</DropdownMenuPortal>
 				</DropdownMenuSub>

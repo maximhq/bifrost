@@ -120,7 +120,7 @@ export function PromoCardStack({ cards, className = "", onCardsEmpty, onDismiss 
 									<div className="min-w-0 flex-1">{typeof card.title === "string" ? card.title : card.title}</div>
 									{card.dismissible !== false && isTopCard && (
 										<button
-											aria-label="Dismiss"
+											aria-label="关闭"
 											type="button"
 											onClick={() => handleDismiss(card.id)}
 											disabled={isAnimating}

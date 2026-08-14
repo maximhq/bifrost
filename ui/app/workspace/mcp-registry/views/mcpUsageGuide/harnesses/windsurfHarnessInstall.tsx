@@ -31,7 +31,7 @@ export function WindsurfHarnessInstall({
 			copySuccessMessage="Config copied"
 			emptyMessage={virtualKey ? "Select servers or use Gateway root." : "Select a virtual key to generate the config."}
 			harnessName="Windsurf (Devin)"
-			label="Config"
+			label="配置"
 			logoSrc="/images/harness/windsurf.svg"
 			registrationLabel={`${configPath} · ${getRegistrationLabel(serverScope, selectedServers)}`}
 		/>

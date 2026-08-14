@@ -1,22 +1,22 @@
 // Governance-related constants
 
 export const resetDurationOptions = [
-	{ label: "Every Minute", value: "1m" },
-	{ label: "Every 5 Minutes", value: "5m" },
-	{ label: "Every 15 Minutes", value: "15m" },
-	{ label: "Every 30 Minutes", value: "30m" },
-	{ label: "Hourly", value: "1h" },
-	{ label: "Every 6 Hours", value: "6h" },
-	{ label: "Daily", value: "1d" },
-	{ label: "Weekly", value: "1w" },
-	{ label: "Monthly", value: "1M" },
+	{ label: "每分钟", value: "1m" },
+	{ label: "每 5 分钟", value: "5m" },
+	{ label: "每 15 分钟", value: "15m" },
+	{ label: "每 30 分钟", value: "30m" },
+	{ label: "每小时", value: "1h" },
+	{ label: "每 6 小时", value: "6h" },
+	{ label: "每天", value: "1d" },
+	{ label: "每周", value: "1w" },
+	{ label: "每月", value: "1M" },
 ];
 
 // Reset periods offered on budgets. Quarterly is budget-only: resetDurationOptions
 // above is shared with the rate-limit selects, and the backend has no notion of a
 // quarterly token or request limit, so adding "1Q" there would offer a window it
 // cannot enforce.
-export const budgetResetDurationOptions = [...resetDurationOptions, { label: "Quarterly", value: "1Q" }];
+export const budgetResetDurationOptions = [...resetDurationOptions, { label: "每季度", value: "1Q" }];
 
 // Durations that support calendar-aligned resets (snap to day/week/month/quarter/year boundaries).
 // Must stay in sync with IsCalendarAlignableDuration in framework/configstore/tables/utils.go.
@@ -25,16 +25,16 @@ export const supportsCalendarAlignment = (duration: string): boolean => duration
 
 // Map of duration values to short labels for display
 export const resetDurationLabels: Record<string, string> = {
-	"1m": "Every Minute",
-	"5m": "Every 5 Minutes",
-	"15m": "Every 15 Minutes",
-	"30m": "Every 30 Minutes",
-	"1h": "Hourly",
-	"6h": "Every 6 Hours",
-	"1d": "Daily",
-	"1w": "Weekly",
-	"1M": "Monthly",
-	"1Q": "Quarterly",
+	"1m": "每分钟",
+	"5m": "每 5 分钟",
+	"15m": "每 15 分钟",
+	"30m": "每 30 分钟",
+	"1h": "每小时",
+	"6h": "每 6 小时",
+	"1d": "每天",
+	"1w": "每周",
+	"1M": "每月",
+	"1Q": "每季度",
 };
 
 const MONTH_ABBREVIATIONS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];

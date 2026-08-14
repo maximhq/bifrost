@@ -36,7 +36,7 @@ function LogActionsMenu({ log, onDelete }: { log: LogEntry; onDelete: (log: LogE
 	return (
 		<DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
 			<DropdownMenuTrigger asChild onClick={(event) => event.stopPropagation()}>
-				<Button variant="ghost" size="icon" data-testid="log-actions-btn" aria-label="Log actions" className="h-7 w-7">
+				<Button variant="ghost" size="icon" data-testid="log-actions-btn" aria-label="日志操作" className="h-7 w-7">
 					<MoreHorizontal className="h-4 w-4" />
 				</Button>
 			</DropdownMenuTrigger>
@@ -51,9 +51,7 @@ function LogActionsMenu({ log, onDelete }: { log: LogEntry; onDelete: (log: LogE
 						setIsOpen(false);
 					}}
 				>
-					<Trash2 className="h-4 w-4" />
-					Delete
-				</DropdownMenuItem>
+					<Trash2 className="h-4 w-4" />删除</DropdownMenuItem>
 			</DropdownMenuContent>
 		</DropdownMenu>
 	);
@@ -116,7 +114,7 @@ export function getRealtimeTurnMessages(log?: LogEntry): {
 
 export function getMessage(log?: LogEntry) {
 	if (log?.object === "list_models") {
-		return "N/A";
+		return "不适用";
 	}
 	if (log?.object === "realtime.turn") {
 		const messages = getRealtimeTurnMessages(log);
@@ -190,7 +188,7 @@ export function LogMessageCell({ log, contentClassName = "max-w-full" }: { log: 
 			{isLargePayload && (
 				<span
 					className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/50 dark:text-amber-400"
-					title="Large payload - streamed directly to provider"
+					title="大型负载 - 直接流式传输给提供商"
 				>
 					LP
 				</span>
@@ -328,9 +326,7 @@ export const createColumns = (
 		{
 			accessorKey: "timestamp",
 			header: ({ column }) => (
-				<Button variant="ghost" data-testid="logs-time-sort-btn" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
-					Time
-					<ArrowUpDown className="ml-2 h-4 w-4" />
+				<Button variant="ghost" data-testid="logs-time-sort-btn" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>时间<ArrowUpDown className="ml-2 h-4 w-4" />
 				</Button>
 			),
 			size: 130,
@@ -339,7 +335,7 @@ export const createColumns = (
 				const date = timestamp ? new Date(timestamp) : null;
 				const isValid = date && date.toString() !== "Invalid Date";
 				if (!isValid) {
-					return <div className="truncate text-xs">N/A</div>;
+					return <div className="truncate text-xs">不适用</div>;
 				}
 				return (
 					<div className="flex flex-col leading-tight">
@@ -351,7 +347,7 @@ export const createColumns = (
 		},
 		{
 			id: "request_type",
-			header: "Type",
+			header: "类型",
 			size: 150,
 			cell: ({ row }) => {
 				return (
@@ -369,13 +365,13 @@ export const createColumns = (
 		},
 		{
 			accessorKey: "input",
-			header: "Message",
+			header: "消息",
 			size: 350,
 			cell: ({ row }) => <LogMessageCell log={row.original} />,
 		},
 		{
 			accessorKey: "model",
-			header: "Model",
+			header: "模型",
 			size: 190,
 			cell: ({ row }) => {
 				const provider = row.original.provider as ProviderName | undefined;
@@ -384,8 +380,8 @@ export const createColumns = (
 					<div className="flex min-w-0 items-center gap-2">
 						{provider ? <RenderProviderIcon provider={provider as ProviderIconType} size="xs" /> : null}
 						<div className="flex min-w-0 flex-col leading-tight">
-							<span className="truncate font-mono text-[12px]">{model || "N/A"}</span>
-							<span className="text-muted-foreground truncate text-[10.5px]">{provider ? getProviderLabel(provider) : "N/A"}</span>
+							<span className="truncate font-mono text-[12px]">{model || "不适用"}</span>
+							<span className="text-muted-foreground truncate text-[10.5px]">{provider ? getProviderLabel(provider) : "不适用"}</span>
 						</div>
 					</div>
 				);
@@ -394,7 +390,7 @@ export const createColumns = (
 		{
 			id: "app",
 			accessorKey: "app",
-			header: "App",
+			header: "应用",
 			size: 140,
 			cell: ({ row }) => {
 				const app = row.original.app ? mapAppToClientApp(row.original.app) : mapUserAgentToApp(row.original.user_agent);
@@ -411,16 +407,14 @@ export const createColumns = (
 		{
 			accessorKey: "latency",
 			header: ({ column }) => (
-				<Button variant="ghost" data-testid="logs-latency-sort-btn" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
-					Latency
-					<ArrowUpDown className="ml-2 h-4 w-4" />
+				<Button variant="ghost" data-testid="logs-latency-sort-btn" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>延迟<ArrowUpDown className="ml-2 h-4 w-4" />
 				</Button>
 			),
 			size: 170,
 			cell: ({ row }) => {
 				const latency = row.original.latency;
 				if (latency === undefined || latency === null) {
-					return <div className="pl-4 font-mono text-xs">N/A</div>;
+					return <div className="pl-4 font-mono text-xs">不适用</div>;
 				}
 				const tone = latency >= 5000 ? "bg-red-500" : latency >= 2000 ? "bg-amber-500" : "bg-emerald-500";
 				const pct = Math.min(100, (latency / 5000) * 100);
@@ -437,16 +431,14 @@ export const createColumns = (
 		{
 			accessorKey: "tokens",
 			header: ({ column }) => (
-				<Button variant="ghost" data-testid="logs-tokens-sort-btn" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
-					Tokens
-					<ArrowUpDown className="ml-2 h-4 w-4" />
+				<Button variant="ghost" data-testid="logs-tokens-sort-btn" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>Token 数<ArrowUpDown className="ml-2 h-4 w-4" />
 				</Button>
 			),
 			size: 190,
 			cell: ({ row }) => {
 				const tokenUsage = row.original.token_usage;
 				if (!tokenUsage) {
-					return <div className="pl-4 font-mono text-xs">N/A</div>;
+					return <div className="pl-4 font-mono text-xs">不适用</div>;
 				}
 				const prompt = tokenUsage.prompt_tokens ?? 0;
 				const completion = tokenUsage.completion_tokens ?? 0;
@@ -479,15 +471,13 @@ export const createColumns = (
 		{
 			accessorKey: "cost",
 			header: ({ column }) => (
-				<Button variant="ghost" data-testid="logs-cost-sort-btn" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
-					Cost
-					<ArrowUpDown className="ml-2 h-4 w-4" />
+				<Button variant="ghost" data-testid="logs-cost-sort-btn" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>费用<ArrowUpDown className="ml-2 h-4 w-4" />
 				</Button>
 			),
 			size: 120,
 			cell: ({ row }) => {
 				if (row.original.cost == null) {
-					return <div className="pl-4 font-mono text-[12px]">N/A</div>;
+					return <div className="pl-4 font-mono text-[12px]">不适用</div>;
 				}
 				return <div className="pl-4 font-mono text-sm tabular-nums">{formatCost(row.original.cost)}</div>;
 			},
@@ -497,19 +487,19 @@ export const createColumns = (
 	const attributionColumns: ColumnDef<LogEntry>[] = [
 		{
 			id: "virtual_key",
-			header: "Virtual Key",
+			header: "虚拟密钥",
 			size: 170,
 			cell: ({ row }) => <AttributionCell name={row.original.virtual_key_name} id={row.original.virtual_key_id} />,
 		},
 		{
 			id: "routing_rule",
-			header: "Routing Rule",
+			header: "路由规则",
 			size: 170,
 			cell: ({ row }) => <AttributionCell name={row.original.routing_rule_name} id={row.original.routing_rule_id} />,
 		},
 		{
 			id: "team",
-			header: "Team",
+			header: "团队",
 			size: 150,
 			cell: ({ row }) => (
 				<AttributionCell
@@ -522,7 +512,7 @@ export const createColumns = (
 		},
 		{
 			id: "customer",
-			header: "Customer",
+			header: "客户",
 			size: 150,
 			cell: ({ row }) => (
 				<AttributionCell
@@ -535,13 +525,13 @@ export const createColumns = (
 		},
 		{
 			id: "user",
-			header: "User",
+			header: "用户",
 			size: 150,
 			cell: ({ row }) => <AttributionCell name={row.original.user_name} id={row.original.user_id} />,
 		},
 		{
 			id: "business_unit",
-			header: "Business Unit",
+			header: "业务单元",
 			size: 150,
 			cell: ({ row }) => (
 				<AttributionCell

@@ -193,11 +193,11 @@ export function isRedacted(value: string): boolean {
 }
 
 const PASSWORD_REQUIREMENTS = [
-	{ label: "at least 12 characters", test: (password: string) => password.length >= 12 },
-	{ label: "one uppercase letter", test: (password: string) => /[A-Z]/.test(password) },
-	{ label: "one lowercase letter", test: (password: string) => /[a-z]/.test(password) },
-	{ label: "one number", test: (password: string) => /\d/.test(password) },
-	{ label: "one special character", test: (password: string) => /[^A-Za-z0-9]/.test(password) },
+	{ label: "至少 12 个字符", test: (password: string) => password.length >= 12 },
+	{ label: "一个大写字母", test: (password: string) => /[A-Z]/.test(password) },
+	{ label: "一个小写字母", test: (password: string) => /[a-z]/.test(password) },
+	{ label: "一个数字", test: (password: string) => /\d/.test(password) },
+	{ label: "一个特殊字符", test: (password: string) => /[^A-Za-z0-9]/.test(password) },
 ];
 
 /**

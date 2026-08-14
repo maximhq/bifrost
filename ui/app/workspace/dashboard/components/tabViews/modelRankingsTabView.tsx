@@ -11,7 +11,7 @@ import { DASHBOARD_RANKINGS_LIMIT } from "../../utils/rankings";
 import { ModelRankingsTab } from "../modelRankingsTab";
 
 export interface ModelRankingsTabViewHandle {
-	getData: () => Partial<DashboardData>;
+	getData: () =>Partial<DashboardData>;
 	loadData: () => Promise<void>;
 }
 

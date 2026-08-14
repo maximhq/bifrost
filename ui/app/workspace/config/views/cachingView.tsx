@@ -265,9 +265,8 @@ export default function CachingView() {
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-6">
 			<div>
-				<h2 className="text-lg font-semibold tracking-tight">Local Cache</h2>
-				<p className="text-muted-foreground text-sm">
-					Cache responses locally with two complementary lookup paths: <b>direct</b> hash matching for exact replays, and <b>semantic</b>{" "}
+				<h2 className="text-lg font-semibold tracking-tight">本地缓存</h2>
+				<p className="text-muted-foreground text-sm">在本地缓存响应，支持两条互补的查找路径：<b>direct</b> hash matching for exact replays, and <b>semantic</b>{" "}
 					similarity search for related content. Send the <b>x-bf-cache-key</b> header to scope cached responses to a tenant or feature.{" "}
 					{!isVectorStoreEnabled && (
 						<span className="text-destructive font-medium">
@@ -279,7 +278,7 @@ export default function CachingView() {
 
 			{configError !== undefined && (
 				<div className="border-destructive/50 bg-destructive/10 rounded-sm border p-4">
-					<p className="text-destructive text-sm font-medium">Failed to load configuration</p>
+					<p className="text-destructive text-sm font-medium">无法加载配置</p>
 					<p className="text-muted-foreground mt-1 text-sm">
 						{getErrorMessage(configError) || "An unexpected error occurred. Please try again."}
 					</p>
@@ -299,9 +298,7 @@ export default function CachingView() {
 					    RemovePlugin transparently on update. */}
 					<div className="flex items-center justify-between space-x-2">
 						<div className="space-y-0.5">
-							<label htmlFor="enable-caching" className="text-sm font-medium">
-								Enable Caching
-							</label>
+							<label htmlFor="enable-caching" className="text-sm font-medium">启用缓存</label>
 							<p className="text-muted-foreground text-sm">
 								Loads (or unloads) the plugin without a server restart. Configuration changes you make below mutate the live plugin in
 								place, no redeploy needed.{" "}
@@ -326,12 +323,10 @@ export default function CachingView() {
 							<div className={cn("space-y-4", !cachingActive && "pointer-events-none opacity-50")} aria-disabled={!cachingActive}>
 								{/* Mode picker. Direct-only is first-class. */}
 								<div className="space-y-2">
-									<Label className="text-sm font-medium">Cache Mode</Label>
+									<Label className="text-sm font-medium">缓存模式</Label>
 									<Tabs value={mode} onValueChange={(v) => setMode(v as CacheMode)}>
 										<TabsList className="grid w-full grid-cols-2">
-											<TabsTrigger value="direct" data-testid="caching-mode-direct-tab">
-												Direct only
-											</TabsTrigger>
+											<TabsTrigger value="direct" data-testid="caching-mode-direct-tab">仅直接（哈希）</TabsTrigger>
 											<TabsTrigger
 												value="semantic"
 												data-testid="caching-mode-semantic-tab"
@@ -339,9 +334,7 @@ export default function CachingView() {
 												title={
 													embeddingProviders.length === 0 ? "Configure an embedding-capable provider to enable semantic mode." : undefined
 												}
-											>
-												Direct + Semantic
-											</TabsTrigger>
+											>直接 + 语义</TabsTrigger>
 										</TabsList>
 									</Tabs>
 									<p className="text-muted-foreground text-xs">
@@ -371,7 +364,7 @@ export default function CachingView() {
 									<>
 										{hasStructuralChange && (
 											<div className="rounded-sm border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
-												<b>Heads up:</b> a vector store namespace can only hold vectors of <em>one</em> dimension. Whenever you change the
+												<b>注意：</b> a vector store namespace can only hold vectors of <em>one</em> dimension. Whenever you change the
 												embedding <b>provider</b>, <b>model</b>, or <b>dimension</b>, make sure the <b>dimension</b> still matches what the
 												model produces, otherwise writes to the existing namespace will fail and reads will silently miss. The namespace is{" "}
 												<em>not</em> recreated automatically; either use a fresh namespace or drop the existing class/index in your vector
@@ -383,7 +376,7 @@ export default function CachingView() {
 											<h3 className="text-sm font-medium">Embedding Provider &amp; Model</h3>
 											<div className="grid grid-cols-2 gap-4">
 												<div className="space-y-2">
-													<Label htmlFor="provider">Configured Providers</Label>
+													<Label htmlFor="provider">已配置的提供商</Label>
 													<Select
 														value={cacheConfig.provider}
 														onValueChange={(value: ModelProviderName) =>
@@ -394,7 +387,7 @@ export default function CachingView() {
 														}
 													>
 														<SelectTrigger className="w-full" data-testid="caching-provider-select">
-															<SelectValue placeholder="Select provider" />
+															<SelectValue placeholder="选择提供商" />
 														</SelectTrigger>
 														<SelectContent>
 															{embeddingProviders
@@ -411,7 +404,7 @@ export default function CachingView() {
 													</Select>
 												</div>
 												<div className="space-y-2">
-													<Label htmlFor="embedding_model">Embedding Model*</Label>
+													<Label htmlFor="embedding_model">Embedding 模型*</Label>
 													<ModelMultiselect
 														inputId="embedding_model"
 														data-testid="caching-embedding-model-select"
@@ -429,7 +422,7 @@ export default function CachingView() {
 												here.
 											</p>
 											<div className="space-y-2">
-												<Label htmlFor="dimension">Dimension</Label>
+												<Label htmlFor="dimension">维度</Label>
 												<Input
 													id="dimension"
 													data-testid="caching-dimension-input"
@@ -460,10 +453,10 @@ export default function CachingView() {
 
 								{/* Cache settings shared across modes. */}
 								<div className="space-y-4">
-									<h3 className="text-sm font-medium">Cache Settings</h3>
+									<h3 className="text-sm font-medium">缓存设置</h3>
 									<div className={cn("grid gap-4", mode === "semantic" ? "grid-cols-2" : "grid-cols-1")}>
 										<div className="space-y-2">
-											<Label htmlFor="ttl">TTL (seconds)</Label>
+											<Label htmlFor="ttl">TTL（秒）</Label>
 											<Input
 												id="ttl"
 												data-testid="caching-ttl-input"
@@ -488,7 +481,7 @@ export default function CachingView() {
 										</div>
 										{mode === "semantic" && (
 											<div className="space-y-2">
-												<Label htmlFor="threshold">Similarity Threshold</Label>
+												<Label htmlFor="threshold">相似度阈值</Label>
 												<Input
 													id="threshold"
 													data-testid="caching-threshold-input"
@@ -522,7 +515,7 @@ export default function CachingView() {
 									<h3 className="text-sm font-medium">Storage &amp; Cache Key</h3>
 									<div className="grid grid-cols-2 gap-4">
 										<div className="space-y-2">
-											<Label htmlFor="vector_store_namespace">Vector Store Namespace</Label>
+											<Label htmlFor="vector_store_namespace">向量存储命名空间</Label>
 											<Input
 												id="vector_store_namespace"
 												data-testid="caching-vector-store-namespace-input"
@@ -538,7 +531,7 @@ export default function CachingView() {
 											</p>
 										</div>
 										<div className="space-y-2">
-											<Label htmlFor="default_cache_key">Default Cache Key</Label>
+											<Label htmlFor="default_cache_key">默认缓存键</Label>
 											<Input
 												id="default_cache_key"
 												data-testid="caching-default-cache-key-input"
@@ -549,7 +542,7 @@ export default function CachingView() {
 											/>
 											<p className="text-muted-foreground text-xs">
 												Fallback partition key used when a request doesn&apos;t set <b>x-bf-cache-key</b>. Cache keys isolate entries: same
-												key ↔ shared cache pool. Leave blank to <b>disable caching</b> for any request that doesn&apos;t send the header.
+												key ↔ shared cache pool. Leave blank to <b>禁用缓存</b> for any request that doesn&apos;t send the header.
 											</p>
 										</div>
 									</div>
@@ -557,10 +550,10 @@ export default function CachingView() {
 
 								{/* Conversation Settings. */}
 								<div className="space-y-4">
-									<h3 className="text-sm font-medium">Conversation Settings</h3>
+									<h3 className="text-sm font-medium">对话设置</h3>
 									<div className="grid grid-cols-2 gap-4">
 										<div className="space-y-2">
-											<Label htmlFor="conversation_history_threshold">Conversation History Threshold</Label>
+											<Label htmlFor="conversation_history_threshold">对话历史阈值</Label>
 											<Input
 												id="conversation_history_threshold"
 												data-testid="caching-conversation-history-threshold-input"
@@ -594,8 +587,8 @@ export default function CachingView() {
 									<div className="space-y-2">
 										<div className="flex h-fit items-center justify-between space-x-2 rounded-sm border p-3">
 											<div className="space-y-0.5">
-												<Label className="text-sm font-medium">Exclude System Prompt</Label>
-												<p className="text-muted-foreground text-xs">Strip system messages from the cache key.</p>
+												<Label className="text-sm font-medium">排除系统提示词</Label>
+												<p className="text-muted-foreground text-xs">从缓存键中移除系统消息。</p>
 											</div>
 											<Switch
 												data-testid="caching-exclude-system-prompt-switch"
@@ -609,11 +602,11 @@ export default function CachingView() {
 
 								{/* Cache Behavior applies to both modes. */}
 								<div className="space-y-4">
-									<h3 className="text-sm font-medium">Cache Key Composition</h3>
+									<h3 className="text-sm font-medium">缓存键组成</h3>
 									<div className="space-y-3">
 										<div className="flex items-center justify-between space-x-2 rounded-sm border p-3">
 											<div className="space-y-0.5">
-												<Label className="text-sm font-medium">Cache by Model</Label>
+												<Label className="text-sm font-medium">按模型缓存</Label>
 												<p className="text-muted-foreground text-xs">
 													Include model name in the cache key. Different models won&apos;t share cached responses.
 												</p>
@@ -627,7 +620,7 @@ export default function CachingView() {
 										</div>
 										<div className="flex items-center justify-between space-x-2 rounded-sm border p-3">
 											<div className="space-y-0.5">
-												<Label className="text-sm font-medium">Cache by Provider</Label>
+												<Label className="text-sm font-medium">按提供商缓存</Label>
 												<p className="text-muted-foreground text-xs">
 													Include provider name in the cache key. Different providers won&apos;t share cached responses.
 												</p>
@@ -643,7 +636,7 @@ export default function CachingView() {
 								</div>
 
 								<div className="space-y-2">
-									<Label className="text-sm font-medium">Per-request overrides</Label>
+									<Label className="text-sm font-medium">按请求覆盖</Label>
 									<ul className="text-muted-foreground list-inside list-disc text-xs">
 										<li>
 											<b>x-bf-cache-key</b>: scope this request to a specific cache partition.
@@ -670,7 +663,7 @@ export default function CachingView() {
 									onClick={handleSave}
 									disabled={!hasUnsavedConfigChanges || isSaving || Boolean(validationError)}
 								>
-									{isSaving ? "Saving..." : "Save Changes"}
+									{isSaving ? "Saving..." : "保存更改"}
 								</Button>
 							</div>
 						</>

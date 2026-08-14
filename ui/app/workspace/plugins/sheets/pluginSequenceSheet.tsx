@@ -136,8 +136,8 @@ export default function PluginSequenceSheet({ open, onClose, plugins }: PluginSe
 		<Sheet open={open} onOpenChange={onClose}>
 			<SheetContent className="flex w-full flex-col overflow-x-hidden p-8">
 				<SheetHeader className="flex flex-col items-start p-0">
-					<SheetTitle>Edit Plugin Sequence</SheetTitle>
-					<SheetDescription>Drag plugins above or below the built-in plugins block to control execution order.</SheetDescription>
+					<SheetTitle>编辑插件顺序</SheetTitle>
+					<SheetDescription>将插件拖到内置插件块的上方或下方以控制执行顺序。</SheetDescription>
 				</SheetHeader>
 
 				<div className="mt-4 flex flex-1 flex-col gap-2">
@@ -172,12 +172,8 @@ export default function PluginSequenceSheet({ open, onClose, plugins }: PluginSe
 						</AlertDescription>
 					</Alert>
 					<div className="flex justify-end gap-2 pt-4">
-						<Button type="button" variant="outline" onClick={onClose} disabled={isLoading} data-testid="plugin-sequence-cancel-button">
-							Cancel
-						</Button>
-						<Button onClick={handleSave} disabled={isLoading} isLoading={isLoading} data-testid="plugin-sequence-save-button" type="button">
-							Save Sequence
-						</Button>
+						<Button type="button" variant="outline" onClick={onClose} disabled={isLoading} data-testid="plugin-sequence-cancel-button">取消</Button>
+						<Button onClick={handleSave} disabled={isLoading} isLoading={isLoading} data-testid="plugin-sequence-save-button" type="button">保存顺序</Button>
 					</div>
 				</div>
 			</SheetContent>

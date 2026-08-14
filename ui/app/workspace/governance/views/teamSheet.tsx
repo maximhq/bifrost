@@ -365,7 +365,7 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 				<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-8">
 					<SheetTitle className="flex items-center gap-2">
 						{isEditing ? "Edit Team" : "Create Team"}
-						{team?.id && <CopyableId id={team.id} entityLabel="Team" />}
+						{team?.id && <CopyableId id={team.id} entityLabel="团队" />}
 					</SheetTitle>
 					<SheetDescription>
 						{isEditing ? "Update the team information and settings." : "Create a new team to organize users and manage shared resources."}
@@ -377,10 +377,10 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 						{/* Basic Information */}
 						<div className="flex flex-col gap-6">
 							<div className="space-y-2">
-								<Label htmlFor="name">Team Name *</Label>
+								<Label htmlFor="name">团队名称 *</Label>
 								<Input
 									id="name"
-									placeholder="e.g., Engineering Team"
+									placeholder="例如：工程团队"
 									value={formData.name}
 									maxLength={50}
 									onChange={(e) => updateField("name", e.target.value)}
@@ -392,7 +392,7 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 							{/* Customer Assignment — searchable/paginated, so the sheet never
 							    depends on the caller having fetched every customer up front. */}
 							<div className="space-y-2">
-								<Label htmlFor="customer">Customer (optional)</Label>
+								<Label htmlFor="customer">客户（可选）</Label>
 								<div className="flex items-center gap-2" data-testid="team-customer-selector">
 									<CustomerSelector
 										value={formData.customerId}
@@ -416,30 +416,26 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 											size="sm"
 											onClick={() => updateField("customerId", "")}
 											data-testid="team-customer-clear-btn"
-										>
-											Clear
-										</Button>
+										>清除</Button>
 									)}
 								</div>
-								<p className="text-muted-foreground text-sm">Assign to a customer or leave independent.</p>
+								<p className="text-muted-foreground text-sm">分配给客户或保持独立。</p>
 							</div>
 						</div>
 
 						{/* Multi-budget configuration: one row per budget, each keyed by reset_duration */}
 						<div className="space-y-3">
 							<div className="flex items-center justify-between">
-								<Label>Budgets</Label>
+								<Label>预算</Label>
 								<button
 									type="button"
 									onClick={addBudgetRow}
 									className="text-primary text-xs font-medium hover:underline"
 									data-testid="team-add-budget-btn"
-								>
-									+ Add budget
-								</button>
+								>+ 添加预算</button>
 							</div>
 							{formData.budgets.length === 0 && (
-								<p className="text-muted-foreground text-xs">No budgets. Click "Add budget" to enforce a spend limit.</p>
+								<p className="text-muted-foreground text-xs">没有预算。点击“添加预算”以实施支出限制。</p>
 							)}
 							{formData.budgets.map((row, idx) => (
 								<div key={row.id} className="space-y-2 rounded-md border p-3" data-testid={`team-budget-row-${idx}`}>
@@ -467,9 +463,7 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 											onClick={() => removeBudgetRow(idx)}
 											className="text-muted-foreground hover:text-destructive mt-6 text-xs font-medium"
 											data-testid={`team-remove-budget-btn-${idx}`}
-										>
-											Remove
-										</button>
+										>移除</button>
 									</div>
 									{row.resetDuration.endsWith("Q") && (
 										<QuarterStartSelect
@@ -485,7 +479,7 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 						{/* Rate Limit Configuration - Token Limits */}
 						<NumberAndSelect
 							id="tokenMaxLimit"
-							label="Maximum Tokens"
+							label="最大 Token 数"
 							value={formData.tokenMaxLimit}
 							selectValue={formData.tokenResetDuration}
 							onChangeNumber={(value) => updateField("tokenMaxLimit", value)}
@@ -496,7 +490,7 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 						{/* Rate Limit Configuration - Request Limits */}
 						<NumberAndSelect
 							id="requestMaxLimit"
-							label="Maximum Requests"
+							label="最大请求数"
 							value={formData.requestMaxLimit}
 							selectValue={formData.requestResetDuration}
 							onChangeNumber={(value) => updateField("requestMaxLimit", value)}
@@ -520,9 +514,7 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 							return (
 								<div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
 									<div className="space-y-0.5">
-										<Label htmlFor="team-calendar-aligned-toggle" className="text-sm font-normal">
-											Align to calendar cycle
-										</Label>
+										<Label htmlFor="team-calendar-aligned-toggle" className="text-sm font-normal">按日历周期对齐</Label>
 										<p className="text-muted-foreground text-xs">
 											Reset budgets and rate limits at the start of each period (e.g. 1st of month) instead of rolling from creation date.
 											Applies to durations of a day or longer.
@@ -542,25 +534,22 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 						<AlertDialog open={showCalendarAlignWarning} onOpenChange={setShowCalendarAlignWarning}>
 							<AlertDialogContent>
 								<AlertDialogHeader>
-									<AlertDialogTitle>Reset budget and rate-limit usage?</AlertDialogTitle>
-									<AlertDialogDescription>
-										Enabling calendar alignment will reset budget usage to <span className="font-semibold">$0.00</span> and token/request
+									<AlertDialogTitle>重置预算和速率限制用量？</AlertDialogTitle>
+									<AlertDialogDescription>启用日历对齐会将预算用量重置为<span className="font-semibold">$0.00</span> and token/request
 										rate-limit counters to <span className="font-semibold">0</span> for this team, then snap each reset date to the start of
 										its current period (e.g. start of day, week, month, or year). The usage reset cannot be undone, but calendar alignment
 										can be turned off later. This will take effect when you save.
 									</AlertDialogDescription>
 								</AlertDialogHeader>
 								<AlertDialogFooter>
-									<AlertDialogCancel data-testid="team-calendar-align-cancel-btn">Cancel</AlertDialogCancel>
+									<AlertDialogCancel data-testid="team-calendar-align-cancel-btn">取消</AlertDialogCancel>
 									<AlertDialogAction
 										data-testid="team-calendar-align-enable-btn"
 										onClick={() => {
 											updateField("calendarAligned", true);
 											setShowCalendarAlignWarning(false);
 										}}
-									>
-										Enable Calendar Alignment
-									</AlertDialogAction>
+									>启用日历对齐</AlertDialogAction>
 								</AlertDialogFooter>
 							</AlertDialogContent>
 						</AlertDialog>
@@ -575,7 +564,7 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 						{/* Current Usage Section (only shown when editing with existing limits) */}
 						{isEditing && ((team?.budgets && team.budgets.length > 0) || team?.rate_limit) && (
 							<div className="bg-muted/50 space-y-4 rounded-lg border p-4">
-								<p className="text-sm font-medium">Current Usage</p>
+								<p className="text-sm font-medium">当前用量</p>
 								<div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
 									{team?.budgets?.map((b) => (
 										<div key={b.id} className="space-y-1">
@@ -598,7 +587,7 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 									))}
 									{team?.rate_limit?.token_max_limit && (
 										<div className="space-y-1">
-											<p className="text-muted-foreground text-xs">Tokens</p>
+											<p className="text-muted-foreground text-xs">Token 数</p>
 											<div className="flex items-center gap-2">
 												<span className="font-mono text-sm">
 													{team.rate_limit.token_current_usage.toLocaleString()} / {team.rate_limit.token_max_limit.toLocaleString()}
@@ -624,7 +613,7 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 									)}
 									{team?.rate_limit?.request_max_limit && (
 										<div className="space-y-1">
-											<p className="text-muted-foreground text-xs">Requests</p>
+											<p className="text-muted-foreground text-xs">请求数</p>
 											<div className="flex items-center gap-2">
 												<span className="font-mono text-sm">
 													{team.rate_limit.request_current_usage.toLocaleString()} / {team.rate_limit.request_max_limit.toLocaleString()}
@@ -656,9 +645,7 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 
 					<div className="border-border bg-card sticky bottom-0 z-10 border-t px-8 py-4">
 						<div className="flex justify-end gap-2">
-							<Button type="button" variant="outline" onClick={onCancel} disabled={loading}>
-								Cancel
-							</Button>
+							<Button type="button" variant="outline" onClick={onCancel} disabled={loading}>取消</Button>
 							<TooltipProvider>
 								<Tooltip>
 									<TooltipTrigger asChild>
@@ -672,7 +659,7 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 										<TooltipContent>
 											<p>
 												{!hasPermission
-													? "You don't have permission to perform this action"
+													? "您没有权限执行此操作"
 													: loading
 														? "Saving..."
 														: validator.getFirstError() || "Please fix validation errors"}

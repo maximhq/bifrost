@@ -11,10 +11,10 @@ export function ProviderFilterSelect({ providers, selectedProvider, onProviderCh
 	return (
 		<Select value={selectedProvider} onValueChange={onProviderChange}>
 			<SelectTrigger className="!h-7.5 w-[110px] text-xs sm:w-[130px]" data-testid={testId} size="sm">
-				<SelectValue placeholder="All Providers" />
+				<SelectValue placeholder="所有提供商" />
 			</SelectTrigger>
 			<SelectContent>
-				<SelectItem value="all">All Providers</SelectItem>
+				<SelectItem value="all">所有提供商</SelectItem>
 				{providers.filter(Boolean).map((provider) => (
 					<SelectItem key={provider} value={provider} className="text-xs">
 						{provider}

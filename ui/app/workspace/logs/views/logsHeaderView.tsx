@@ -154,7 +154,7 @@ export function LogsHeaderView({
 		setRecalcCancelRequested(true);
 		toast.loading("Cancelling cost recalculation…", {
 			id: RECALC_TOAST_ID,
-			description: "Finishing the current batch. Costs already recalculated are kept.",
+			description: "正在完成当前批次。已重新计算的费用将保留。",
 		});
 		try {
 			await cancelRecalcJob({ id: jobId }).unwrap();
@@ -177,7 +177,7 @@ export function LogsHeaderView({
 		if (!activeRecalcJobId || !recalcJobStatusError) return;
 		toast.error("Cost recalculation failed", {
 			id: RECALC_TOAST_ID,
-			description: "Lost track of the recalculation job status. Please refresh and try again.",
+			description: "无法跟踪重新计算任务的状态。请刷新后重试。",
 		});
 		setActiveRecalcJobId(null);
 		setRecalcCancelRequested(false);
@@ -239,7 +239,7 @@ export function LogsHeaderView({
 					? `${processed}/${total} checked, ${recalcJobStatus.updated} updated, ${recalcJobStatus.skipped} skipped`
 					: `${recalcJobStatus.processed} checked, ${recalcJobStatus.updated} updated, ${recalcJobStatus.skipped} skipped`,
 			action: {
-				label: "Cancel",
+				label: "取消",
 				// preventDefault keeps the toast mounted so it can report the cancellation;
 				// sonner otherwise dismisses a toast as soon as its action fires.
 				onClick: (event) => {
@@ -275,9 +275,7 @@ export function LogsHeaderView({
 				}}
 				disabled={loading}
 			>
-				<RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-				Refresh
-			</Button>
+				<RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />刷新</Button>
 			<Button
 				data-testid="logs-live-btn"
 				variant={polling ? "default" : "outline"}
@@ -297,22 +295,18 @@ export function LogsHeaderView({
 						className="h-7.5"
 						onClick={() => onGroupedToggle(!grouped)}
 					>
-						<ListTree className="h-4 w-4" />
-						Group
-					</Button>
+						<ListTree className="h-4 w-4" />分组</Button>
 				</TooltipTrigger>
 				<TooltipContent sideOffset={6} className="max-w-64">
 					Groups fallback attempts and linked requests under the original root request. Expand any row to view the complete request chain.
-					<br /><br />
-					This grouped view may load more slowly than the flat view for very large log tables.
-				</TooltipContent>
+					<br /><br />对于非常大的日志表，分组视图可能比平面视图加载更慢。</TooltipContent>
 			</Tooltip>
 			<div className="border-input flex h-7.5 flex-1 items-center gap-2 rounded-sm border">
 				<Search className="mr-0.5 ml-2 size-4" />
 				<Input
 					type="text"
 					className="!h-7 rounded-tl-none rounded-tr-sm rounded-br-sm rounded-bl-none border-none bg-slate-50 shadow-none outline-none focus-visible:ring-0"
-					placeholder="Search logs"
+					placeholder="搜索日志"
 					value={localSearch}
 					onChange={(e) => handleSearchChange(e.target.value)}
 				/>
@@ -371,7 +365,7 @@ export function LogsHeaderView({
 								)}
 								<div className="flex flex-col">
 									<span className="text-sm">
-										{recalcCancelRequested ? "Cancelling…" : isRecalcRunning ? "Cancel recalculation" : "Recalculate costs"}
+										{recalcCancelRequested ? "Cancelling…" : isRecalcRunning ? "Cancel recalculation" : "重新计算费用"}
 									</span>
 									<span className="text-muted-foreground text-xs">
 										{recalcCancelRequested

@@ -37,7 +37,7 @@ export function AntigravityHarnessInstall({
 			copySuccessMessage="Config copied"
 			emptyMessage={virtualKey ? "Select servers or use Gateway root." : "Select a virtual key to generate the config."}
 			harnessName="Antigravity"
-			label="Config"
+			label="配置"
 			logoSrc="/images/harness/antigravity.svg"
 			registrationLabel={`${configPath} · ${getRegistrationLabel(serverScope, selectedServers)}`}
 		/>

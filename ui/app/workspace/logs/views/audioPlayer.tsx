@@ -155,9 +155,7 @@ const AudioPlayer = ({ src, format }: AudioPlayerProps) => {
 				</Button>
 
 				<Button onClick={handleDownload} variant="outline" size="sm" className="flex items-center gap-2" disabled={!!error}>
-					<Download className="h-4 w-4" />
-					Download
-				</Button>
+					<Download className="h-4 w-4" />下载</Button>
 			</div>
 			{error && <div className="text-sm text-red-500">{error}</div>}
 		</div>

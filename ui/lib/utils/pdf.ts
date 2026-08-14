@@ -7,7 +7,7 @@
  *
  * Usage:
  *   await generatePdf(
- *     [{ element: el, label: "Overview" }, ...],
+ *     [{ element: el, label: "概览" }, ...],
  *     "dashboard-export",
  *   );
  */

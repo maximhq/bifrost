@@ -68,7 +68,7 @@ export function HeadersTable<T extends HeaderValue>({
 	onChange,
 	keyPlaceholder = "Header name",
 	valuePlaceholder = "Header value",
-	label = "Headers",
+	label = "请求头",
 	disabled = false,
 	useSecretVarInput,
 	fixedKeys,
@@ -214,11 +214,11 @@ export function HeadersTable<T extends HeaderValue>({
 				<Table className="table-fixed">
 					<TableHeader>
 						<TableRow>
-							<TableHead className="w-[40%] px-4 py-2">Name</TableHead>
-							<TableHead className="px-4 py-2">Value</TableHead>
+							<TableHead className="w-[40%] px-4 py-2">名称</TableHead>
+							<TableHead className="px-4 py-2">值</TableHead>
 							{!isFixedKeys && (
 								<TableHead className="w-10 p-0">
-									<span className="sr-only">Actions</span>
+									<span className="sr-only">操作</span>
 								</TableHead>
 							)}
 						</TableRow>
@@ -272,7 +272,7 @@ export function HeadersTable<T extends HeaderValue>({
 													disabled={disabled}
 												/>
 											)}
-											{hasConflict && <span className="text-destructive px-3 text-xs">Duplicate key</span>}
+											{hasConflict && <span className="text-destructive px-3 text-xs">重复的键</span>}
 										</div>
 									</TableCell>
 									<TableCell className="p-2">

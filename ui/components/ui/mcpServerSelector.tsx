@@ -205,7 +205,7 @@ export function MCPServerSelector({
 										href={`${registryPath}?server=${server.clientId}`}
 										target="_blank"
 										rel="noopener noreferrer"
-										title="Open server details in new tab"
+										title="在新标签页打开服务器详情"
 									>
 										<ExternalLink className="h-4 w-4" />
 									</a>
@@ -228,9 +228,7 @@ export function MCPServerSelector({
 
 			{/* Empty state */}
 			{selectedServersWithInfo.length === 0 && (
-				<div className="text-muted-foreground rounded-md border border-dashed p-4 text-center text-sm">
-					No servers selected. Use the search above to add MCP servers.
-				</div>
+				<div className="text-muted-foreground rounded-md border border-dashed p-4 text-center text-sm">未选择服务器。使用上方搜索添加 MCP 服务器。</div>
 			)}
 		</div>
 	);

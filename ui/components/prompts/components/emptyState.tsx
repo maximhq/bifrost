@@ -8,7 +8,7 @@ export function EmptyState() {
 	return (
 		<div className="text-muted-foreground flex h-full items-center justify-center">
 			<div className="text-center">
-				<p className="text-lg font-medium">No prompt selected</p>
+				<p className="text-lg font-medium">未选择提示词</p>
 				<p className="text-sm">
 					{canCreate ? (
 						<>
@@ -18,9 +18,7 @@ export function EmptyState() {
 								className="h-auto p-0 text-sm"
 								data-testid="empty-state-create-prompt-link"
 								onClick={() => setPromptSheet({ open: true })}
-							>
-								create a new one
-							</Button>
+							>新建一个</Button>
 						</>
 					) : (
 						"Select a prompt from the sidebar"
@@ -40,7 +38,7 @@ export function PromptsEmptyState() {
 				<SquareTerminal className="h-[5.5rem] w-[5.5rem]" strokeWidth={1} />
 			</div>
 			<div className="flex flex-col gap-1">
-				<h1 className="text-muted-foreground text-xl font-medium">Build, test, and version your prompts</h1>
+				<h1 className="text-muted-foreground text-xl font-medium">构建、测试和版本化管理您的提示词</h1>
 				<div className="text-muted-foreground mx-auto mt-2 max-w-[600px] text-sm font-normal">
 					{canCreate
 						? "Create prompts, test them with different models and parameters in the playground, and version your changes for deployment."
@@ -49,22 +47,19 @@ export function PromptsEmptyState() {
 				<div className="mx-auto mt-6 flex flex-row flex-wrap items-center justify-center gap-2">
 					<Button
 						variant="outline"
-						aria-label="Read more about prompt repository (opens in new tab)"
+						aria-label="了解更多提示词仓库（在新标签页打开）"
 						data-testid="empty-state-read-more"
 						onClick={() => {
 							window.open(`https://docs.getbifrost.ai/features/prompt-repository?utm_source=bfd`, "_blank", "noopener,noreferrer");
 						}}
-					>
-						Read more <ArrowUpRight className="text-muted-foreground h-3 w-3" />
+					>阅读更多<ArrowUpRight className="text-muted-foreground h-3 w-3" />
 					</Button>
 					{canCreate && (
 						<Button
-							aria-label="Create your first prompt"
+							aria-label="创建您的第一个提示词"
 							data-testid="empty-state-create-prompt"
 							onClick={() => setPromptSheet({ open: true })}
-						>
-							Create Prompt
-						</Button>
+						>创建提示词</Button>
 					)}
 				</div>
 			</div>

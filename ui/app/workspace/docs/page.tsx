@@ -6,45 +6,45 @@ import { BookOpen, Code, ExternalLink, FileText, GitBranch, Play, Shield, Users,
 
 const docSections = [
 	{
-		title: "Quick Start",
-		description: "Get Bifrost running in under 30 seconds",
+		title: "快速开始",
+		description: "30 秒内运行 Bifrost",
 		icon: Play,
 		url: "https://github.com/maximhq/bifrost/tree/main/docs/quickstart",
 		badge: "Popular",
 		items: ["HTTP Transport Setup", "Go Package Usage", "Docker Guide"],
 	},
 	{
-		title: "Architecture",
-		description: "Deep dive into Bifrost's design and performance",
+		title: "架构",
+		description: "深入了解 Bifrost 的设计和性能",
 		icon: GitBranch,
 		url: "https://github.com/maximhq/bifrost/tree/main/docs/architecture",
 		items: ["System Overview", "Request Flow", "Concurrency Model", "Design Decisions"],
 	},
 	{
-		title: "Usage Guides",
-		description: "Complete API reference and configuration guides",
+		title: "使用指南",
+		description: "完整的 API 参考和配置指南",
 		icon: BookOpen,
 		url: "https://github.com/maximhq/bifrost/tree/main/docs/usage",
 		badge: "Comprehensive",
 		items: ["Providers Setup", "Key Management", "Error Handling", "Memory & Networking"],
 	},
 	{
-		title: "Contributing",
-		description: "Help improve Bifrost for everyone",
+		title: "参与贡献",
+		description: "帮助改进 Bifrost，造福所有人",
 		icon: Users,
 		url: "https://github.com/maximhq/bifrost/tree/main/docs/contributing",
 		items: ["Contributing Guide", "Adding Providers", "Plugin Development", "Code Conventions"],
 	},
 	{
-		title: "Integration Examples",
-		description: "Practical examples and testing code",
+		title: "集成示例",
+		description: "实用示例和测试代码",
 		icon: Code,
 		url: "https://github.com/maximhq/bifrost/tree/main/docs/usage/http-transport/integrations",
 		items: ["OpenAI Integration", "Anthropic Integration", "GenAI Integration", "Migration Guides"],
 	},
 	{
-		title: "Benchmarks",
-		description: "Performance metrics and guides",
+		title: "基准测试",
+		description: "性能指标和指南",
 		icon: Zap,
 		url: "https://github.com/maximhq/bifrost/blob/main/docs/benchmarks.md",
 		items: ["5K RPS Test Results", "Performance Metrics", "Configuration Tuning", "Hardware Comparisons"],
@@ -53,8 +53,8 @@ const docSections = [
 
 const featuredDocs = [
 	{
-		title: "MCP Documentation",
-		description: "Comprehensive guide to Model Context Protocol integration",
+		title: "MCP 文档",
+		description: "模型上下文协议集成综合指南",
 		content: "Learn how to build sophisticated AI agents with MCP support, tool calling, and external integrations.",
 		href: "https://github.com/maximhq/bifrost/blob/main/docs/mcp.md",
 		icon: FileText,
@@ -64,8 +64,8 @@ const featuredDocs = [
 		iconColor: "text-primary",
 	},
 	{
-		title: "Governance Plugin",
-		description: "Complete access control, budgets, and rate limiting guide",
+		title: "治理插件",
+		description: "完整的访问控制、预算和速率限制指南",
 		content: "Master Virtual Keys, hierarchical budgets, rate limiting, and usage tracking for secure AI infrastructure.",
 		href: "https://github.com/maximhq/bifrost/blob/main/docs/governance.md",
 		icon: Shield,
@@ -85,12 +85,10 @@ export default function DocsPage() {
 					<div className="space-y-4 text-center">
 						<div className="bg-primary/10 text-primary inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm">
 							<BookOpen className="h-4 w-4" />
-							<span className="font-semibold">Documentation</span>
+							<span className="font-semibold">文档</span>
 						</div>
-						<GradientHeader title="Power Up Your Bifrost Stack" />
-						<p className="text-muted-foreground mx-auto max-w-2xl text-lg">
-							Everything you need to know about building production AI applications with Bifrost
-						</p>
+						<GradientHeader title="为您的 Bifrost 技术栈赋能" />
+						<p className="text-muted-foreground mx-auto max-w-2xl text-lg">使用 Bifrost 构建生产级 AI 应用所需的一切</p>
 						<div className="flex justify-center gap-4">
 							<Button asChild>
 								<a
@@ -99,9 +97,7 @@ export default function DocsPage() {
 									rel="noopener noreferrer"
 									data-testid="docs-view-full-documentation-link"
 								>
-									<ExternalLink className="mr-2 h-4 w-4" />
-									View Full Documentation
-								</a>
+									<ExternalLink className="mr-2 h-4 w-4" />查看完整文档</a>
 							</Button>
 							<Button variant="outline" asChild>
 								<a
@@ -110,9 +106,7 @@ export default function DocsPage() {
 									rel="noopener noreferrer"
 									data-testid="docs-quick-start-guide-link"
 								>
-									<Play className="mr-2 h-4 w-4" />
-									Quick Start Guide
-								</a>
+									<Play className="mr-2 h-4 w-4" />快速入门指南</a>
 							</Button>
 						</div>
 					</div>
@@ -155,9 +149,7 @@ export default function DocsPage() {
 												rel="noopener noreferrer"
 												className="flex items-center justify-center gap-2"
 												data-testid={`docs-read-more-${section.title.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}`}
-											>
-												Read More
-												<ExternalLink className="h-4 w-4" />
+											>阅读更多<ExternalLink className="h-4 w-4" />
 											</a>
 										</Button>
 									</CardContent>

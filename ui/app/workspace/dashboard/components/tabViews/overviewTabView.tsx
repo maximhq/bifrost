@@ -22,7 +22,7 @@ import type { ChartType } from "../charts/chartTypeToggle";
 import { OverviewTab } from "../overviewTab";
 
 export interface OverviewTabViewHandle {
-	getData: () => Partial<DashboardData>;
+	getData: () =>Partial<DashboardData>;
 	loadData: () => Promise<void>;
 }
 
@@ -126,7 +126,7 @@ export const OverviewTabView = forwardRef<OverviewTabViewHandle, OverviewTabView
 		[histogramData, tokenData, costData, modelData, latencyData, loadData],
 	);
 
-	// Legend lists mirror the charts' display order (top-N by volume + "Other"),
+	// Legend lists mirror the charts' display order (top-N by volume + "其他"),
 	// not the API's alphabetical order — index-based colors must match the bars.
 	const costModels = useMemo(() => computeDisplaySeries(costData?.buckets, costData?.models, (b, m) => b.by_model?.[m] ?? 0), [costData]);
 	const usageModels = useMemo(

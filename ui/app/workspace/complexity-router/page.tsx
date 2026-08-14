@@ -46,10 +46,10 @@ const P3 = "color-mix(in oklch, var(--primary) 75%, transparent)";
 const P4 = "var(--primary)";
 
 const TIER_PALETTE = {
-	simple: { color: P1, name: "SIMPLE" },
-	medium: { color: P2, name: "MEDIUM" },
-	complex: { color: P3, name: "COMPLEX" },
-	reasoning: { color: P4, name: "REASONING" },
+	simple: { color: P1, name: "简单" },
+	medium: { color: P2, name: "中等" },
+	complex: { color: P3, name: "复杂" },
+	reasoning: { color: P4, name: "推理" },
 } as const;
 
 interface BoundaryFieldConfig {
@@ -65,28 +65,28 @@ interface BoundaryFieldConfig {
 const BOUNDARY_FIELDS: BoundaryFieldConfig[] = [
 	{
 		key: "simple_medium",
-		label: "Simple → Medium",
-		description: "Scores at or below this are classified as SIMPLE.",
-		fromTier: "SIMPLE",
-		toTier: "MEDIUM",
+		label: "简单 → 中等",
+		description: "不高于此分数的归类为简单。",
+		fromTier: "简单",
+		toTier: "中等",
 		fromColor: P1,
 		toColor: P2,
 	},
 	{
 		key: "medium_complex",
-		label: "Medium → Complex",
-		description: "Scores above simple_medium and at or below this are MEDIUM.",
-		fromTier: "MEDIUM",
-		toTier: "COMPLEX",
+		label: "中等 → 复杂",
+		description: "高于简单-中等分数且不高于此分数的为中等。",
+		fromTier: "中等",
+		toTier: "复杂",
 		fromColor: P2,
 		toColor: P3,
 	},
 	{
 		key: "complex_reasoning",
-		label: "Complex → Reasoning",
-		description: "Scores above this are REASONING. Everything in between is COMPLEX.",
-		fromTier: "COMPLEX",
-		toTier: "REASONING",
+		label: "复杂 → 推理",
+		description: "高于此分数的是推理级。介于两者之间的是复杂级。",
+		fromTier: "复杂",
+		toTier: "推理",
 		fromColor: P3,
 		toColor: P4,
 	},
@@ -185,10 +185,10 @@ function TierSpectrumBar({ boundaries }: { boundaries: TierBoundaries }) {
 	const cr = clampUnit(finiteBoundaryValue(boundaries?.complex_reasoning, DEFAULT_TIER_BOUNDARIES.complex_reasoning));
 
 	const segments = [
-		{ tier: "SIMPLE", width: Math.max(0, sm * 100), color: TIER_PALETTE.simple.color },
-		{ tier: "MEDIUM", width: Math.max(0, (mc - sm) * 100), color: TIER_PALETTE.medium.color },
-		{ tier: "COMPLEX", width: Math.max(0, (cr - mc) * 100), color: TIER_PALETTE.complex.color },
-		{ tier: "REASONING", width: Math.max(0, (1 - cr) * 100), color: TIER_PALETTE.reasoning.color },
+		{ tier: "简单", width: Math.max(0, sm * 100), color: TIER_PALETTE.simple.color },
+		{ tier: "中等", width: Math.max(0, (mc - sm) * 100), color: TIER_PALETTE.medium.color },
+		{ tier: "复杂", width: Math.max(0, (cr - mc) * 100), color: TIER_PALETTE.complex.color },
+		{ tier: "推理", width: Math.max(0, (1 - cr) * 100), color: TIER_PALETTE.reasoning.color },
 	];
 
 	const markers = [
@@ -312,9 +312,7 @@ export default function ComplexityRouterPage() {
 		return (
 			<div className="mx-auto w-full max-w-7xl space-y-4 px-14 pt-8">
 				<p className="text-destructive font-mono text-sm">{getErrorMessage(error)}</p>
-				<Button data-testid="complexity-router-fetch-retry-button" type="button" variant="outline" size="sm" onClick={() => refetch()}>
-					Retry
-				</Button>
+				<Button data-testid="complexity-router-fetch-retry-button" type="button" variant="outline" size="sm" onClick={() => refetch()}>重试</Button>
 			</div>
 		);
 	}
@@ -322,10 +320,8 @@ export default function ComplexityRouterPage() {
 	if (!data) {
 		return (
 			<div className="mx-auto w-full max-w-7xl space-y-4 px-14 pt-8">
-				<p className="text-muted-foreground font-mono text-sm">No complexity router configuration is available.</p>
-				<Button data-testid="complexity-router-fetch-retry-button" type="button" variant="outline" size="sm" onClick={() => refetch()}>
-					Retry
-				</Button>
+				<p className="text-muted-foreground font-mono text-sm">没有可用的复杂度路由器配置。</p>
+				<Button data-testid="complexity-router-fetch-retry-button" type="button" variant="outline" size="sm" onClick={() => refetch()}>重试</Button>
 			</div>
 		);
 	}
@@ -340,7 +336,7 @@ export default function ComplexityRouterPage() {
 				{/* ── Page header ── */}
 				<div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
 					<div className="space-y-1.5">
-						<h1 className="text-2xl font-semibold tracking-tight">Complexity Router</h1>
+						<h1 className="text-2xl font-semibold tracking-tight">复杂度路由器</h1>
 						<p className="text-muted-foreground max-w-2xl text-sm leading-relaxed">
 							Tune how incoming requests are classified into four tiers. Thresholds and keyword lists feed the{" "}
 							<code className="bg-muted rounded-sm px-1 py-0.5 font-mono text-xs">complexity_tier</code> field that routing rules can
@@ -349,16 +345,14 @@ export default function ComplexityRouterPage() {
 					</div>
 					<Button asChild variant="outline" size="sm" className="w-fit shrink-0" data-testid="complexity-router-docs-link">
 						<a href={"https://docs.getbifrost.ai/features/governance/complexity-router"} target="_blank" rel="noopener noreferrer">
-							<ExternalLink className="size-3.5" />
-							Docs
-						</a>
+							<ExternalLink className="size-3.5" />文档</a>
 					</Button>
 				</div>
 
 				{/* ── Complexity Spectrum ── */}
 				<div className="bg-card space-y-4 rounded-sm border p-5">
 					<div className="flex items-center justify-between">
-						<p className="text-muted-foreground font-mono text-xs font-semibold tracking-widest uppercase">Complexity Spectrum</p>
+						<p className="text-muted-foreground font-mono text-xs font-semibold tracking-widest uppercase">复杂度谱</p>
 						<div className="flex items-center gap-4">
 							{Object.values(TIER_PALETTE).map(({ color, name }) => (
 								<div key={name} className="flex items-center gap-1.5">
@@ -373,7 +367,7 @@ export default function ComplexityRouterPage() {
 
 				{/* ── Tier Boundaries ── */}
 				<div className="space-y-3">
-					<h2 className="text-sm font-semibold">Tier Boundaries</h2>
+					<h2 className="text-sm font-semibold">级别边界</h2>
 
 					<div className="grid gap-3 md:grid-cols-3">
 						{BOUNDARY_FIELDS.map(({ key, label, description, fromTier, toTier, fromColor, toColor }) => {
@@ -460,10 +454,8 @@ export default function ComplexityRouterPage() {
 				{/* ── Keyword Lists ── */}
 				<div className="space-y-3">
 					<div className="flex items-baseline gap-2.5">
-						<h2 className="text-sm font-semibold">Keyword Lists</h2>
-						<span className="text-muted-foreground text-xs">
-							Lowercased and deduplicated on save. Each list requires at least one entry.
-						</span>
+						<h2 className="text-sm font-semibold">关键词列表</h2>
+						<span className="text-muted-foreground text-xs">保存时转为小写并去重。每个列表至少需要一个条目。</span>
 					</div>
 
 					<div className="grid gap-3 md:grid-cols-2">
@@ -491,7 +483,7 @@ export default function ComplexityRouterPage() {
 													onValueChange={field.onChange}
 													collapsedTagLimit={KEYWORD_COLLAPSED_LIMIT}
 													expandButtonTestId={`complexity-router-keywords-${testIdPart(key)}-expand-button`}
-													placeholder="Type a keyword and press Enter"
+													placeholder="输入关键词并按回车"
 													aria-invalid={fieldError ? true : undefined}
 													aria-describedby={fieldError ? errorId : undefined}
 													className={cn(fieldError && "border-destructive")}
@@ -540,9 +532,7 @@ export default function ComplexityRouterPage() {
 						size="sm"
 						onClick={handleDiscard}
 						disabled={!isDirty || isSaving || isResetting || isFetching}
-					>
-						Discard changes
-					</Button>
+					>放弃更改</Button>
 					<Button
 						data-testid="complexity-router-save-changes-button"
 						type="submit"
@@ -558,7 +548,7 @@ export default function ComplexityRouterPage() {
 			<AlertDialog open={restoreDialogOpen} onOpenChange={setRestoreDialogOpen}>
 				<AlertDialogContent>
 					<AlertDialogHeader>
-						<AlertDialogTitle>Restore defaults</AlertDialogTitle>
+						<AlertDialogTitle>恢复默认值</AlertDialogTitle>
 						<AlertDialogDescription>
 							This will reset all tier boundaries and keyword lists to the factory defaults. Your current configuration will be lost. This
 							action cannot be undone.
@@ -569,9 +559,7 @@ export default function ComplexityRouterPage() {
 							data-testid="complexity-router-restore-cancel-button"
 							onClick={() => setRestoreDialogOpen(false)}
 							disabled={isResetting}
-						>
-							Cancel
-						</AlertDialogCancel>
+						>取消</AlertDialogCancel>
 						<AlertDialogAction
 							data-testid="complexity-router-restore-confirm-button"
 							onClick={() => {
@@ -579,9 +567,7 @@ export default function ComplexityRouterPage() {
 								handleRestoreDefaults();
 							}}
 							disabled={!canUpdate || isResetting}
-						>
-							Restore defaults
-						</AlertDialogAction>
+						>恢复默认值</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>
 			</AlertDialog>

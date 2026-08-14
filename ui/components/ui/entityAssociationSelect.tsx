@@ -85,12 +85,12 @@ const defaultNoOptionsMessages: Record<EntityType, string> = {
 
 // Label text for each entity type
 export const entityTypeLabels: Record<EntityType, string> = {
-	virtualKey: "Virtual Keys",
-	team: "Teams",
-	customer: "Customers",
-	user: "Users",
-	provider: "Providers",
-	apiKey: "API Keys",
+	virtualKey: "虚拟密钥",
+	team: "团队",
+	customer: "客户",
+	user: "用户",
+	provider: "提供商",
+	apiKey: "API 密钥",
 };
 
 export function EntityAssociationSelect({
@@ -213,7 +213,7 @@ export function EntityAssociationSelect({
 							>
 								<div className="flex items-center justify-between">
 									<span className="text-content-primary font-medium">{data.label}</span>
-									{props.isSelected && <span className="text-primary text-xs">Selected</span>}
+									{props.isSelected && <span className="text-primary text-xs">已选择</span>}
 								</div>
 								{data.meta?.description && <span className="text-content-tertiary line-clamp-1 text-xs">{data.meta.description}</span>}
 							</div>

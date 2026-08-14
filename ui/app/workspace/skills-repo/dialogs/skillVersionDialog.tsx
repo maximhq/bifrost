@@ -78,9 +78,7 @@ export function SkillVersionsPopover({
 	return (
 		<Popover open={open} onOpenChange={setOpen}>
 			<PopoverTrigger asChild>
-				<Button variant="outline" size="sm" data-testid="skill-versions-popover-trigger" className="h-8 gap-1.5">
-					Versions
-					<ChevronDown className="h-3.5 w-3.5" />
+				<Button variant="outline" size="sm" data-testid="skill-versions-popover-trigger" className="h-8 gap-1.5">版本<ChevronDown className="h-3.5 w-3.5" />
 				</Button>
 			</PopoverTrigger>
 			<PopoverContent align="end" className="w-72 p-0">
@@ -171,14 +169,14 @@ export function SkillVersionsList({
 		<Command shouldFilter={false}>
 			<CommandInput
 				data-testid="skill-versions-search-input"
-				placeholder="Search versions..."
+				placeholder="搜索版本..."
 				value={search}
 				onValueChange={setSearch}
 				isLoading={isFetching}
 			/>
 			<CommandList>
 				{!isFetching && accumulated.length === 0 && (
-					<CommandEmpty>{debouncedSearch ? "No versions match your search" : "No versions yet"}</CommandEmpty>
+					<CommandEmpty>{debouncedSearch ? "No versions match your search" : "还没有版本"}</CommandEmpty>
 				)}
 				<CommandGroup>
 					{accumulated.map((v) => {
@@ -194,9 +192,7 @@ export function SkillVersionsList({
 								<span className="flex items-center gap-2">
 									<span className="text-sm font-medium">{v.version}</span>
 									{isServing && (
-										<Badge variant="secondary" className="h-auto bg-emerald-100 px-1.5 py-0 text-xs">
-											Serving
-										</Badge>
+										<Badge variant="secondary" className="h-auto bg-emerald-100 px-1.5 py-0 text-xs">服务中</Badge>
 									)}
 								</span>
 								<span className="text-muted-foreground shrink-0 text-xs">{formatDate(v.created_at)}</span>
@@ -205,7 +201,7 @@ export function SkillVersionsList({
 					})}
 
 					{isError && !isFetching && accumulated.length === 0 && (
-						<div className="text-muted-foreground py-6 text-center text-xs">Failed to load versions</div>
+						<div className="text-muted-foreground py-6 text-center text-xs">无法加载版本</div>
 					)}
 
 					{/* Sentinel observed to trigger the next page fetch */}

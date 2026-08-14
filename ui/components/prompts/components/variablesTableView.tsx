@@ -21,16 +21,14 @@ export function VariablesTableView({
 
 	return (
 		<div className="flex flex-col gap-3">
-			<Label className="text-muted-foreground text-xs font-medium uppercase">Variables</Label>
-			<p className="text-muted-foreground text-xs">
-				Detected from <code className="bg-muted rounded px-1">{"{{ }}"}</code> syntax in messages. Values are substituted at runtime.
-			</p>
+			<Label className="text-muted-foreground text-xs font-medium uppercase">变量</Label>
+			<p className="text-muted-foreground text-xs">检测自<code className="bg-muted rounded px-1">{"{{ }}"}</code>消息中的语法。值在运行时替换。</p>
 			<div className="border-border overflow-hidden rounded-sm border">
 				<table className="w-full table-fixed text-sm">
 					<thead>
 						<tr className="bg-muted/50 border-border border-b">
-							<th className="text-muted-foreground w-[40%] max-w-[40%] px-3 py-1.5 text-left text-xs font-medium">Variable</th>
-							<th className="text-muted-foreground px-3 py-1.5 text-left text-xs font-medium">Value</th>
+							<th className="text-muted-foreground w-[40%] max-w-[40%] px-3 py-1.5 text-left text-xs font-medium">变量</th>
+							<th className="text-muted-foreground px-3 py-1.5 text-left text-xs font-medium">值</th>
 						</tr>
 					</thead>
 					<tbody>

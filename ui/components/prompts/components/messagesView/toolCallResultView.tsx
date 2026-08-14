@@ -96,7 +96,7 @@ export default function ToolResultMessageView({
 					{!disabled && (
 						<button
 							type="button"
-							aria-label="Edit message"
+							aria-label="编辑消息"
 							data-testid="tool-result-msg-edit"
 							onClick={() => setEditMode(true)}
 							className="hover:bg-muted focus:bg-muted rounded-sm p-1 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 focus:opacity-100"
@@ -107,7 +107,7 @@ export default function ToolResultMessageView({
 					{!disabled && onRemove && (
 						<button
 							type="button"
-							aria-label="Delete message"
+							aria-label="删除消息"
 							data-testid="tool-result-msg-delete"
 							onClick={onRemove}
 							className="hover:bg-muted focus:bg-muted rounded-sm p-1 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 focus:opacity-100"
@@ -132,7 +132,7 @@ export default function ToolResultMessageView({
 						onBlur={() => setEditMode(false)}
 					/>
 				) : isEmpty ? (
-					<div className="text-muted-foreground min-h-[20px] font-mono text-sm italic">Enter tool result...</div>
+					<div className="text-muted-foreground min-h-[20px] font-mono text-sm italic">输入工具结果...</div>
 				) : contentIsJson ? (
 					<CodeEditor
 						wrap

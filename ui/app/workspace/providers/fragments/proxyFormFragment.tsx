@@ -100,7 +100,7 @@ export function ProxyFormFragment({ provider }: ProxyFormFragmentProps) {
 							name="proxy_config.type"
 							render={({ field }) => (
 								<FormItem>
-									<FormLabel>Proxy Type</FormLabel>
+									<FormLabel>代理类型</FormLabel>
 									<Select
 										onValueChange={field.onChange}
 										value={field.value === "none" ? "" : field.value}
@@ -114,7 +114,7 @@ export function ProxyFormFragment({ provider }: ProxyFormFragmentProps) {
 										<SelectContent>
 											<SelectItem value="http">HTTP</SelectItem>
 											<SelectItem value="socks5">SOCKS5</SelectItem>
-											<SelectItem value="environment">Environment</SelectItem>
+											<SelectItem value="environment">环境</SelectItem>
 										</SelectContent>
 									</Select>
 									<FormMessage />
@@ -134,7 +134,7 @@ export function ProxyFormFragment({ provider }: ProxyFormFragmentProps) {
 									name="proxy_config.url"
 									render={({ field }) => (
 										<FormItem>
-											<FormLabel>Proxy URL</FormLabel>
+											<FormLabel>代理 URL</FormLabel>
 											<FormControl>
 												<SecretVarInput
 													placeholder="http://proxy.example.com or env.OPENAI_PROXY_URL"
@@ -154,10 +154,10 @@ export function ProxyFormFragment({ provider }: ProxyFormFragmentProps) {
 										name="proxy_config.username"
 										render={({ field }) => (
 											<FormItem>
-												<FormLabel>Username</FormLabel>
+												<FormLabel>用户名</FormLabel>
 												<FormControl>
 													<SecretVarInput
-														placeholder="Proxy username or env.OPENAI_PROXY_USERNAME"
+														placeholder="代理用户名或 env.OPENAI_PROXY_USERNAME"
 														{...field}
 														value={field.value}
 														disabled={!hasUpdateProviderAccess}
@@ -173,11 +173,11 @@ export function ProxyFormFragment({ provider }: ProxyFormFragmentProps) {
 										name="proxy_config.password"
 										render={({ field }) => (
 											<FormItem>
-												<FormLabel>Password</FormLabel>
+												<FormLabel>密码</FormLabel>
 												<FormControl>
 													<SecretVarInput
 														type="password"
-														placeholder="Proxy password or env.OPENAI_PROXY_PASSWORD"
+														placeholder="代理密码或 env.OPENAI_PROXY_PASSWORD"
 														hideValueWhenEnv
 														redactNonEnvValue
 														{...field}
@@ -196,7 +196,7 @@ export function ProxyFormFragment({ provider }: ProxyFormFragmentProps) {
 									name="proxy_config.ca_cert_pem"
 									render={({ field }) => (
 										<FormItem>
-											<FormLabel>CA Certificate (PEM) (Optional)</FormLabel>
+											<FormLabel>CA 证书 (PEM)（可选）</FormLabel>
 											<FormControl>
 												<SecretVarInput
 													variant="textarea"
@@ -211,9 +211,7 @@ export function ProxyFormFragment({ provider }: ProxyFormFragmentProps) {
 													data-testid="env-var-proxy-ca-cert-pem"
 												/>
 											</FormControl>
-											<FormDescription>
-												PEM-encoded CA certificate to trust for TLS connections through SSL-intercepting proxies. You can also use
-												<code> env.YOUR_PROXY_CA_CERT_VAR</code>.
+											<FormDescription>通过 SSL 拦截代理进行 TLS 连接时要信任的 PEM 编码 CA 证书。也可以使用<code> env.YOUR_PROXY_CA_CERT_VAR</code>.
 											</FormDescription>
 											<FormMessage />
 										</FormItem>
@@ -233,16 +231,12 @@ export function ProxyFormFragment({ provider }: ProxyFormFragmentProps) {
 							onSubmit({ proxy_config: { type: "none" } });
 						}}
 						disabled={!hasUpdateProviderAccess || isUpdatingProvider || !provider.proxy_config || provider.proxy_config.type === "none"}
-					>
-						Remove configuration
-					</Button>
+					>移除配置</Button>
 					<Button
 						type="submit"
 						disabled={!form.formState.isDirty || !hasUpdateProviderAccess || isUpdatingProvider}
 						isLoading={isUpdatingProvider}
-					>
-						Save Proxy Configuration
-					</Button>
+					>保存代理配置</Button>
 				</div>
 			</form>
 		</Form>

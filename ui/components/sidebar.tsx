@@ -108,9 +108,9 @@ const MCPIcon = ({ className }: { className?: string }) => (
 		viewBox="0 0 24 24"
 		width="1em"
 		xmlns="http://www.w3.org/2000/svg"
-		aria-label="MCP clients icon"
+		aria-label="MCP 客户端图标"
 	>
-		<title>MCP clients icon</title>
+		<title>MCP 客户端图标</title>
 		<path d="M15.688 2.343a2.588 2.588 0 00-3.61 0l-9.626 9.44a.863.863 0 01-1.203 0 .823.823 0 010-1.18l9.626-9.44a4.313 4.313 0 016.016 0 4.116 4.116 0 011.204 3.54 4.3 4.3 0 013.609 1.18l.05.05a4.115 4.115 0 010 5.9l-8.706 8.537a.274.274 0 000 .393l1.788 1.754a.823.823 0 010 1.18.863.863 0 01-1.203 0l-1.788-1.753a1.92 1.92 0 010-2.754l8.706-8.538a2.47 2.47 0 000-3.54l-.05-.049a2.588 2.588 0 00-3.607-.003l-7.172 7.034-.002.002-.098.097a.863.863 0 01-1.204 0 .823.823 0 010-1.18l7.273-7.133a2.47 2.47 0 00-.003-3.537z" />
 		<path d="M14.485 4.703a.823.823 0 000-1.18.863.863 0 00-1.204 0l-7.119 6.982a4.115 4.115 0 000 5.9 4.314 4.314 0 006.016 0l7.12-6.982a.823.823 0 000-1.18.863.863 0 00-1.204 0l-7.119 6.982a2.588 2.588 0 01-3.61 0 2.47 2.47 0 010-3.54l7.12-6.982z" />
 	</svg>
@@ -121,23 +121,23 @@ const MCPIcon = ({ className }: { className?: string }) => (
 // External links
 const externalLinks = [
 	{
-		title: "Discord Server",
+		title: "Discord 服务器",
 		url: "https://discord.gg/exN5KAydbU",
 		icon: DiscordLogoIcon,
 	},
 	{
-		title: "GitHub Repository",
+		title: "GitHub 仓库",
 		url: "https://github.com/maximhq/bifrost",
 		icon: GithubLogoIcon,
 	},
 	{
-		title: "Report a bug",
+		title: "报告问题",
 		url: "https://github.com/maximhq/bifrost/issues/new?title=[Bug Report]&labels=bug&type=bug&projects=maximhq/1",
 		icon: BugIcon,
 		strokeWidth: 1.5,
 	},
 	{
-		title: "Full Documentation",
+		title: "完整文档",
 		url: "https://docs.getbifrost.ai",
 		icon: BooksIcon,
 		strokeWidth: 1,
@@ -147,11 +147,9 @@ const externalLinks = [
 // Base promotional card (memoized outside component to prevent recreation)
 const productionSetupHelpCard = {
 	id: "production-setup",
-	title: "Need help with production setup?",
+	title: "需要生产环境搭建帮助？",
 	description: (
-		<>
-			We offer help with production setup including custom integrations and dedicated support.
-			<br />
+		<>我们可协助生产环境搭建，包括自定义集成和专属支持。<br />
 			<br />
 			Book a demo with our team{" "}
 			<a
@@ -618,7 +616,7 @@ export default function AppSidebar() {
 	const onboardingDoneCount = onboardingSteps.filter((step) => step.complete || onboardingSkippedIds.includes(step.id)).length;
 	const isOnboardingIncomplete = onboardingChecklistReady && onboardingDoneCount < onboardingSteps.length;
 	// The widget itself hides via these two cookies (X close / "Remind me
-	// later"); "I accept the risk - hide for everyone" is a deliberate
+	// later"); "我接受风险 - 对所有人隐藏" is a deliberate
 	// permanent opt-out and should not resurrect this card.
 	const showOnboardingResumeCard =
 		isDbConnected &&
@@ -634,360 +632,360 @@ export default function AppSidebar() {
 	const items = useMemo(
 		() => [
 			{
-				title: "Observability",
+				title: "可观测性",
 				url: "/workspace/logs",
 				icon: Telescope,
-				description: "Request logs & monitoring",
+				description: "请求日志与监控",
 				hasAccess: hasLogsAccess,
 				subItems: [
 					{
-						title: "Dashboard",
+						title: "仪表盘",
 						url: "/workspace/dashboard",
 						icon: ChartColumnBig,
-						description: "Dashboard",
+						description: "仪表盘",
 						hasAccess: hasDashboardAccess,
 					},
 					{
-						title: "LLM Logs",
+						title: "LLM 日志",
 						url: "/workspace/logs",
 						icon: Logs,
-						description: "LLM request logs & monitoring",
+						description: "LLM 请求日志与监控",
 						hasAccess: hasLogsAccess,
 					},
 					{
-						title: "MCP Logs",
+						title: "MCP 日志",
 						url: "/workspace/mcp-logs",
 						icon: MCPIcon,
-						description: "MCP tool execution logs",
+						description: "MCP 工具执行日志",
 						hasAccess: hasMCPLogsAccess,
 					},
 					{
-						title: "Connectors",
+						title: "连接器",
 						url: "/workspace/observability",
 						icon: ChevronsLeftRightEllipsis,
-						description: "Log connectors",
+						description: "日志连接器",
 						hasAccess: hasObservabilityAccess,
 					},
 					{
-						title: "Logs Settings",
+						title: "日志设置",
 						url: "/workspace/config/logging",
 						icon: Settings,
-						description: "Logs configuration",
+						description: "日志配置",
 						hasAccess: hasSettingsAccess,
 					},
 				],
 			},
 			{
-				title: "Models",
+				title: "模型",
 				url: "/workspace/providers",
 				icon: BoxIcon,
-				description: "Configure models",
+				description: "配置模型",
 				hasAccess: true,
 				subItems: [
 					{
-						title: "Model Catalog",
+						title: "模型目录",
 						url: "/workspace/model-catalog",
 						icon: LayoutGrid,
-						description: "Overview of providers, keys, and usage",
+						description: "提供商、密钥和用量概览",
 						hasAccess: hasModelProvidersAccess,
 					},
 					{
-						title: "Model Providers",
+						title: "模型提供商",
 						url: "/workspace/providers",
 						icon: Boxes,
-						description: "Configure models",
+						description: "配置模型",
 						hasAccess: hasModelProvidersAccess,
 					},
 					{
-						title: "Budgets & Limits",
+						title: "预算与限制",
 						url: "/workspace/model-limits",
 						icon: Wallet,
-						description: "Budgets and rate limits",
+						description: "预算和速率限制",
 						hasAccess: hasGovernanceLegacyAccess,
 					},
 					{
-						title: "Routing Rules",
+						title: "路由规则",
 						url: "/workspace/routing-rules",
 						icon: Network,
-						description: "Intelligent routing rules",
+						description: "智能路由规则",
 						hasAccess: hasRoutingRulesAccess,
 					},
 					{
-						title: "Complexity Router",
+						title: "复杂度路由器",
 						url: "/workspace/complexity-router",
 						icon: GitCompareArrows,
-						description: "Complexity tier routing",
+						description: "复杂度级别路由",
 						hasAccess: hasRoutingRulesAccess,
 					},
 					{
-						title: "Circuit Breaker",
+						title: "熔断器",
 						url: "/workspace/circuit-breaker",
 						icon: CircuitBoard,
-						description: "Automatic fallback when primary endpoints fail",
+						description: "主端点失败时自动回退",
 						hasAccess: hasCircuitBreakerAccess,
 					},
 					{
-						title: "Pricing Overrides",
+						title: "价格覆盖",
 						url: "/workspace/custom-pricing/overrides",
 						icon: SlidersHorizontal,
-						description: "Scoped pricing overrides",
+						description: "作用域价格覆盖",
 						hasAccess: hasSettingsAccess,
 					},
 					{
-						title: "Model Settings",
+						title: "模型设置",
 						url: "/workspace/custom-pricing",
 						icon: Settings,
-						description: "Model and routing configuration",
+						description: "模型与路由配置",
 						hasAccess: hasSettingsAccess,
 					},
 				],
 			},
 			{
-				title: "MCP Gateway",
+				title: "MCP 网关",
 				icon: MCPIcon,
-				description: "MCP configuration",
+				description: "MCP 配置",
 				url: "/workspace/mcp-gateway",
 				hasAccess: hasMCPGatewayAccess || hasMCPToolGroupsAccess,
 				subItems: [
 					{
-						title: "MCP Catalog",
+						title: "MCP 目录",
 						url: "/workspace/mcp-registry",
 						icon: LayoutGrid,
-						description: "MCP tool catalog",
+						description: "MCP 工具目录",
 						hasAccess: hasMCPGatewayAccess,
 					},
 					{
-						title: "MCP Library",
+						title: "MCP 库",
 						url: "/workspace/mcp-registry/library",
 						icon: Boxes,
-						description: "Install curated MCP servers",
+						description: "安装精选 MCP 服务器",
 						hasAccess: hasMCPGatewayAccess,
 					},
 					{
-						title: "Tool Groups",
+						title: "工具组",
 						url: "/workspace/mcp-tool-groups",
 						icon: ToolCase,
-						description: "Tool Groups",
+						description: "工具组",
 						hasAccess: hasMCPToolGroupsAccess,
 					},
 					{
-						title: "Auth Sessions",
+						title: "认证会话",
 						url: "/workspace/mcp-sessions",
 						icon: KeyRound,
-						description: "Per-user OAuth sessions",
+						description: "每用户 OAuth 会话",
 						hasAccess: hasMCPGatewayAccess,
 					},
 					{
-						title: "OAuth Grants",
+						title: "OAuth 授权",
 						url: "/workspace/oauth-grants",
 						icon: ShieldCheck,
-						description: "Downstream OAuth grants",
+						description: "下游 OAuth 授权",
 						hasAccess: hasMCPGatewayAccess,
 					},
 					{
-						title: "MCP Settings",
+						title: "MCP 设置",
 						url: "/workspace/mcp-settings",
 						icon: Settings,
-						description: "MCP configuration",
+						description: "MCP 配置",
 						hasAccess: hasMCPGatewayAccess,
 					},
 				],
 			},
 			{
-				title: "Plugins",
+				title: "插件",
 				url: "/workspace/plugins",
 				icon: Puzzle,
-				description: "Manage custom plugins",
+				description: "管理自定义插件",
 				hasAccess: hasPluginsAccess,
 			},
 			{
-				title: "Alerting",
+				title: "告警",
 				url: "/workspace/alerting",
 				icon: Siren,
-				description: "Manage alert channels, rules, and history",
+				description: "管理告警渠道、规则和历史",
 				hasAccess: hasAlertingAccess,
 				subItems: [
 					{
-						title: "Channels",
+						title: "通知渠道",
 						url: "/workspace/alerting/channels",
 						icon: Megaphone,
-						description: "Configure notification channels",
+						description: "配置通知渠道",
 						hasAccess: hasAlertingAccess,
 					},
 					{
-						title: "Rules",
+						title: "规则",
 						url: "/workspace/alerting/rules",
 						icon: Gavel,
-						description: "Define alerting rules",
+						description: "定义告警规则",
 						hasAccess: hasAlertingAccess,
 					},
 					{
-						title: "History",
+						title: "历史",
 						url: "/workspace/alerting/history",
 						icon: History,
-						description: "Review alert delivery history",
+						description: "查看告警投递历史",
 						hasAccess: hasAlertingAccess,
 					},
 				],
 			},
 			{
-				title: "Governance",
+				title: "治理",
 				url: "/workspace/governance",
 				icon: Landmark,
-				description: "Virtual keys, users, teams, customers & roles",
+				description: "虚拟密钥、用户、团队、客户与角色",
 				hasAccess: hasAnyGovernanceAccess,
 				subItems: [
 					{
-						title: "Virtual Keys",
+						title: "虚拟密钥",
 						url: "/workspace/governance/virtual-keys",
 						icon: KeyRound,
-						description: "Manage virtual keys & access",
+						description: "管理虚拟密钥与访问",
 						hasAccess: hasVirtualKeysAccess,
 					},
 					{
-						title: "Users",
+						title: "用户",
 						url: "/workspace/governance/users",
 						icon: Users,
-						description: "Manage users",
+						description: "管理用户",
 						hasAccess: hasUsersAccess,
 					},
 					{
-						title: "Teams",
+						title: "团队",
 						url: "/workspace/governance/teams",
 						icon: Building,
-						description: "Manage teams",
+						description: "管理团队",
 						hasAccess: hasTeamsAccess,
 					},
 					{
-						title: "Business Units",
+						title: "业务单元",
 						url: "/workspace/governance/business-units",
 						icon: Building2,
-						description: "Manage business units",
+						description: "管理业务单元",
 						hasAccess: hasBusinessUnitsAccess,
 					},
 					{
-						title: "Customers",
+						title: "客户",
 						url: "/workspace/governance/customers",
 						icon: WalletCards,
-						description: "Manage customers",
+						description: "管理客户",
 						hasAccess: hasCustomersAccess,
 					},
 					{
-						title: "User Provisioning",
+						title: "用户供给",
 						url: "/workspace/scim",
 						icon: BookUser,
-						description: "User management and provisioning",
+						description: "用户管理与供给",
 						hasAccess: hasUserProvisioningAccess,
 					},
 					{
-						title: "Roles & Permissions",
+						title: "角色与权限",
 						url: "/workspace/governance/rbac",
 						icon: UserRoundCheck,
-						description: "User roles and permissions",
+						description: "用户角色与权限",
 						hasAccess: hasRbacAccess,
 					},
 					{
-						title: "Access Profiles",
+						title: "访问配置文件",
 						url: "/workspace/governance/access-profiles",
 						icon: ShieldCheck,
-						description: "Manage access profiles for roles",
+						description: "管理角色访问配置文件",
 						hasAccess: hasAccessProfilesAccess,
 					},
 					{
-						title: "Audit Logs",
+						title: "审计日志",
 						url: "/workspace/audit-logs",
 						icon: ScrollText,
-						description: "Audit logs and compliance",
+						description: "审计日志与合规",
 						hasAccess: hasAuditLogsAccess,
 					},
 				],
 			},
 			{
-				title: "Guardrails",
+				title: "护栏",
 				url: "/workspace/guardrails",
 				icon: Construction,
-				description: "Guardrails configuration",
+				description: "护栏配置",
 				hasAccess: hasGuardrailsConfigAccess || hasGuardrailsProvidersAccess,
 				subItems: [
 					{
-						title: "Rules",
+						title: "规则",
 						url: "/workspace/guardrails/configuration",
 						icon: SearchCheck,
-						description: "Guardrail rules",
+						description: "护栏规则",
 						hasAccess: hasGuardrailsConfigAccess,
 					},
 					{
-						title: "Providers",
+						title: "提供商",
 						url: "/workspace/guardrails/providers",
 						icon: Boxes,
-						description: "Guardrail providers configuration",
+						description: "护栏提供商配置",
 						hasAccess: hasGuardrailsProvidersAccess,
 					},
 				],
 			},
 			{
-				title: "Webhooks",
+				title: "Webhook",
 				url: "/workspace/webhooks",
 				icon: Webhook,
-				description: "Async job webhook endpoints",
+				description: "异步任务 Webhook 端点",
 				hasAccess: hasGovernanceLegacyAccess,
 			},
 			{
-				title: "Edge Control",
+				title: "边缘控制",
 				icon: Hexagon,
-				description: "Edge device management",
+				description: "边缘设备管理",
 				url: "/workspace/edge-control",
 				hasAccess: hasAnyEdgeControlAccess,
 				subItems: [
 					{
-						title: "Devices",
+						title: "设备",
 						url: "/workspace/edge-control/devices",
 						icon: LaptopMinimalCheck,
-						description: "Manage edge devices",
+						description: "管理边缘设备",
 						hasAccess: hasDevicesAccess,
 					},
 					{
-						title: "Approvals",
+						title: "审批",
 						url: "/workspace/edge-control/inventory",
 						icon: BadgeCheck,
-						description: "Approve apps and MCP servers",
+						description: "审批应用和 MCP 服务器",
 						hasAccess: hasInventoryAccess,
 					},
 					{
-						title: "Edge Settings",
+						title: "边缘设置",
 						url: "/workspace/edge-control/config",
 						icon: Settings,
-						description: "Edge settings",
+						description: "边缘设置",
 						hasAccess: hasEdgeConfigAccess,
 					},
 				],
 			},
 			{
-				title: "Cluster Config",
+				title: "集群配置",
 				url: "/workspace/cluster",
 				icon: Network,
-				description: "Manage Bifrost cluster",
+				description: "管理 Bifrost 集群",
 				hasAccess: hasClusterConfigAccess,
 			},
 			{
-				title: "Adaptive Routing",
+				title: "自适应路由",
 				url: "/workspace/adaptive-routing",
 				icon: Shuffle,
-				description: "Manage adaptive routing",
+				description: "管理自适应路由",
 				hasAccess: isAdaptiveRoutingAllowed,
 				subItems: [
 					{
-						title: "Dashboard",
+						title: "仪表盘",
 						url: "/workspace/adaptive-routing",
 						icon: ChartColumnBig,
-						description: "Adaptive routing metrics",
+						description: "自适应路由指标",
 						hasAccess: isAdaptiveRoutingAllowed,
 					},
 					{
-						title: "Settings",
+						title: "设置",
 						url: "/workspace/adaptive-routing/settings",
 						icon: Settings,
-						description: "Adaptive routing settings",
+						description: "自适应路由设置",
 						hasAccess: isAdaptiveRoutingAllowed,
 					},
 				],
@@ -995,110 +993,110 @@ export default function AppSidebar() {
 			...(isDbConnected
 				? [
 					{
-						title: "Prompt Repository",
+						title: "提示词仓库",
 						url: "/workspace/prompt-repo",
 						icon: FolderGit,
-						description: "Prompt repository",
+						description: "提示词仓库",
 						hasAccess: hasPromptRepositoryAccess,
 					},
 					{
-						title: "Skills Repository",
+						title: "技能仓库",
 						url: "/workspace/skills-repo",
 						icon: BookOpenText,
-						description: "Skills repository",
+						description: "技能仓库",
 						hasAccess: hasSkillsRepositoryAccess,
 					},
 				]
 				: []),
 			{
-				title: "Evals",
+				title: "评估",
 				url: "https://www.getmaxim.ai",
 				icon: FlaskConical,
 				isExternal: true,
-				description: "Evaluations",
+				description: "评估",
 				hasAccess: true,
 			},
 			{
-				title: "Settings",
+				title: "设置",
 				url: "/workspace/config",
 				icon: Settings2Icon,
-				description: "Bifrost settings",
+				description: "Bifrost 设置",
 				hasAccess: hasSettingsAccess || hasAuditLogsAccess || hasUserProvisioningAccess,
 				subItems: [
 					{
-						title: "Client Settings",
+						title: "客户端设置",
 						url: "/workspace/config/client-settings",
 						icon: Settings,
-						description: "Client configuration settings",
+						description: "客户端配置设置",
 						hasAccess: hasSettingsAccess,
 					},
 					{
-						title: "Compatibility",
+						title: "兼容性",
 						url: "/workspace/config/compatibility",
 						icon: Plug,
-						description: "Compatibility conversion settings",
+						description: "兼容性转换设置",
 						hasAccess: hasSettingsAccess,
 					},
 					{
-						title: "Caching",
+						title: "缓存",
 						url: "/workspace/config/caching",
 						icon: DatabaseZap,
-						description: "Caching configuration",
+						description: "缓存配置",
 						hasAccess: hasSettingsAccess,
 					},
 					{
-						title: "Security",
+						title: "安全",
 						url: "/workspace/config/security",
 						icon: ShieldCheck,
-						description: "Security settings",
+						description: "安全设置",
 						hasAccess: hasSettingsAccess,
 					},
 					...(IS_ENTERPRISE
 						? [
 							{
-								title: "Proxy",
+								title: "代理",
 								url: "/workspace/config/proxy",
 								icon: Globe,
-								description: "Proxy configuration",
+								description: "代理配置",
 								hasAccess: hasSettingsAccess,
 							},
 						]
 						: []),
 					{
-						title: "API Keys",
+						title: "API 密钥",
 						url: "/workspace/config/api-keys",
 						icon: KeyRound,
-						description: "API keys management",
+						description: "API 密钥管理",
 						hasAccess: hasAPIKeyAccess,
 					},
 					{
-						title: "Performance Tuning",
+						title: "性能调优",
 						url: "/workspace/config/performance-tuning",
 						icon: TrendingUp,
-						description: "Performance tuning settings",
+						description: "性能调优设置",
 						hasAccess: hasSettingsAccess,
 					},
 					{
-						title: "Feature Flags",
+						title: "功能开关",
 						url: "/workspace/config/feature-flags",
 						icon: Flag,
-						description: "Toggle feature flags",
+						description: "切换功能开关",
 						hasAccess: hasFeatureFlagsAccess,
 					},
 					...(IS_ENTERPRISE
 						? [
 							{
-								title: "Branding",
+								title: "品牌",
 								url: "/workspace/config/branding",
 								icon: Palette,
-								description: "Custom logo and icon",
+								description: "自定义徽标和图标",
 								hasAccess: hasSettingsAccess,
 							},
 							{
-								title: "License Info",
+								title: "许可证信息",
 								url: "/workspace/config/license",
 								icon: BadgeInfo,
-								description: "Enterprise license information",
+								description: "企业版许可证信息",
 								hasAccess: hasSettingsAccess,
 							},
 						]
@@ -1380,7 +1378,7 @@ export default function AppSidebar() {
 		if (coreConfig?.restart_required?.required) {
 			cards.push({
 				id: "restart-required",
-				title: "Restart Required",
+				title: "需要重启",
 				description: (
 					<div className="text-xs text-amber-700 dark:text-amber-300/80">
 						{coreConfig.restart_required.reason || "Configuration changes require a server restart to take effect."}
@@ -1396,7 +1394,7 @@ export default function AppSidebar() {
 			const remainingSteps = onboardingSteps.length - onboardingDoneCount;
 			cards.push({
 				id: "onboarding-incomplete",
-				title: "Setup checklist incomplete",
+				title: "设置清单未完成",
 				description: (
 					<div className="flex h-full flex-col gap-2 text-xs text-amber-700 dark:text-amber-300/80">
 						<p>
@@ -1408,9 +1406,7 @@ export default function AppSidebar() {
 							onClick={handleResumeOnboarding}
 							data-testid="onboarding-resume-btn"
 							className="text-primary mt-auto self-start pb-1 font-medium underline"
-						>
-							Resume setup
-						</button>
+						>继续设置</button>
 					</div>
 				),
 				dismissible: true,
@@ -1429,9 +1425,7 @@ export default function AppSidebar() {
 							target="_blank"
 							rel="noopener noreferrer"
 							className="text-primary mt-auto pb-1 font-medium underline"
-						>
-							View release notes
-						</a>
+						>查看发布说明</a>
 					</div>
 				),
 				dismissible: true,
@@ -1485,7 +1479,7 @@ export default function AppSidebar() {
 				});
 			}
 			if (cardId === "onboarding-incomplete") {
-				// If the widget itself is snoozed via "Remind me later", align the
+				// If the widget itself is snoozed via "稍后提醒", align the
 				// card's dismissal to that same date — otherwise the card would
 				// keep nagging on its own 1-day clock while the widget stays quiet
 				// for the full snooze period. Falls back to 1 day when the card is
@@ -1538,7 +1532,7 @@ export default function AppSidebar() {
 						type="button"
 						data-testid="sidebar-collapse-btn"
 						className="text-muted-foreground hover:text-foreground hover:bg-sidebar-accent flex h-7 w-7 items-center justify-center rounded-md transition-colors"
-						aria-label="Collapse sidebar"
+						aria-label="折叠侧边栏"
 					>
 						<PanelLeftClose className="h-4 w-4" />
 					</button>
@@ -1581,8 +1575,8 @@ export default function AppSidebar() {
 					<input
 						ref={searchInputRef}
 						type="text"
-						aria-label="Search sidebar navigation"
-						placeholder="Search..."
+						aria-label="搜索侧边栏导航"
+						placeholder="搜索..."
 						value={searchQuery}
 						onChange={(e) => {
 							setSearchQuery(e.target.value);
@@ -1658,7 +1652,7 @@ export default function AppSidebar() {
 										<button
 											className="hover:text-primary text-muted-foreground flex cursor-pointer items-center space-x-3 p-0.5"
 											type="button"
-											aria-label="User menu"
+											aria-label="用户菜单"
 										>
 											<User className="hover:text-primary text-muted-foreground h-4 w-4" size={20} strokeWidth={2} />
 										</button>
@@ -1666,7 +1660,7 @@ export default function AppSidebar() {
 									<PopoverContent side="top" align="start" className="w-56 p-0">
 										<div className="flex flex-col">
 											<div className="px-4 py-3">
-												<p className="text-sm font-medium">{userInfo.name || userInfo.email || userInfo.preferred_username || "User"}</p>
+												<p className="text-sm font-medium">{userInfo.name || userInfo.email || userInfo.preferred_username || "用户"}</p>
 											</div>
 											<Separator />
 											<button
@@ -1675,7 +1669,7 @@ export default function AppSidebar() {
 												type="button"
 											>
 												<LogOut className="h-4 w-4" strokeWidth={2} />
-												<span>Logout</span>
+												<span>退出登录</span>
 											</button>
 										</div>
 									</PopoverContent>
@@ -1686,7 +1680,7 @@ export default function AppSidebar() {
 										className="hover:text-primary text-muted-foreground flex cursor-pointer items-center space-x-3 p-0.5"
 										onClick={handleLogout}
 										type="button"
-										aria-label="Logout"
+										aria-label="退出登录"
 									>
 										<LogOut className="hover:text-primary text-muted-foreground h-4 w-4" size={20} strokeWidth={2} />
 									</button>
@@ -1698,7 +1692,7 @@ export default function AppSidebar() {
 									type="button"
 									data-testid="sidebar-expand-btn"
 									className="text-muted-foreground hover:text-foreground hover:bg-sidebar-accent flex cursor-pointer items-center justify-center rounded-md transition-colors"
-									aria-label="Expand sidebar"
+									aria-label="展开侧边栏"
 								>
 									<PanelLeftOpen className="h-4 w-4" />
 								</button>

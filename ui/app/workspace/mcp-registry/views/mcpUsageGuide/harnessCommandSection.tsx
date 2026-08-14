@@ -10,10 +10,10 @@ export function HarnessCommandSection({
 	controls,
 	copySuccessMessage = "Command copied",
 	deeplink,
-	deeplinkLabel = "Install",
+	deeplinkLabel = "安装",
 	emptyMessage,
 	harnessName,
-	label = "Command",
+	label = "命令",
 	logoSrc,
 	registrationLabel,
 }: HarnessCommandSectionProps) {
@@ -74,10 +74,10 @@ export function HarnessCommandSection({
 								data-testid="mcp-usage-guide-copy-command"
 							>
 								{copied ? <Check className="size-4 text-green-600" /> : <Copy className="size-4" />}
-								<span>{copied ? "Copied" : "Copy"}</span>
+								<span>{copied ? "已复制" : "复制"}</span>
 							</Button>
 						</TooltipTrigger>
-						<TooltipContent>{canCopyCommand ? (copied ? "Copied" : `Copy ${copyLabel}`) : "Finish the selections first"}</TooltipContent>
+						<TooltipContent>{canCopyCommand ? (copied ? "已复制" : `Copy ${copyLabel}`) : "Finish the selections first"}</TooltipContent>
 					</Tooltip>
 				</div>
 			</div>

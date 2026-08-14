@@ -70,7 +70,7 @@ export function OpenAIConfigFormFragment({ provider }: OpenAIConfigFormFragmentP
 							<FormItem>
 								<div className="flex items-center justify-between space-x-2">
 									<div className="space-y-0.5">
-										<FormLabel>Disable Store</FormLabel>
+										<FormLabel>禁用存储</FormLabel>
 										<p className="text-muted-foreground text-xs">
 											With the Responses API, store defaults to true, and when it is on, the generated response is stored for later
 											retrieval via API. OpenAI exposes endpoints to retrieve and delete stored responses, so your response IDs become
@@ -101,9 +101,7 @@ export function OpenAIConfigFormFragment({ provider }: OpenAIConfigFormFragmentP
 						type="submit"
 						disabled={!form.formState.isDirty || !form.formState.isValid || !hasUpdateProviderAccess || isUpdatingProvider}
 						isLoading={isUpdatingProvider}
-					>
-						Save OpenAI Configuration
-					</Button>
+					>保存 OpenAI 配置</Button>
 				</div>
 			</form>
 		</Form>

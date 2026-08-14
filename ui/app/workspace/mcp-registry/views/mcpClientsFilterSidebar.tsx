@@ -53,30 +53,30 @@ const CONNECTION_TYPE_OPTIONS: FilterOption[] = [
 ];
 
 const AUTH_TYPE_OPTIONS: FilterOption[] = [
-	{ value: "none", label: "None" },
-	{ value: "headers", label: "Headers" },
+	{ value: "none", label: "无" },
+	{ value: "headers", label: "请求头" },
 	{ value: "oauth", label: "OAuth" },
-	{ value: "per_user_oauth", label: "Per-User OAuth" },
-	{ value: "per_user_headers", label: "Per-User Headers" },
-	{ value: "token_exchange", label: "Token Exchange" },
+	{ value: "per_user_oauth", label: "每用户 OAuth" },
+	{ value: "per_user_headers", label: "每用户请求头" },
+	{ value: "token_exchange", label: "令牌交换" },
 ];
 
 // Connection state is runtime, not a column — the backend resolves these
 // against live engine state. "unstable" covers everything not healthy.
 const STATE_OPTIONS: FilterOption[] = [
-	{ value: "healthy", label: "Healthy" },
-	{ value: "unstable", label: "Unstable" },
+	{ value: "healthy", label: "健康" },
+	{ value: "unstable", label: "不稳定" },
 ];
 
 const CODE_MODE_OPTIONS: FilterOption[] = [
-	{ value: "true", label: "Enabled" },
-	{ value: "false", label: "Disabled" },
+	{ value: "true", label: "已启用" },
+	{ value: "false", label: "已禁用" },
 ];
 
 // Status maps to the `disabled` column: an enabled client has disabled=false.
 const STATUS_OPTIONS: FilterOption[] = [
-	{ value: "false", label: "Enabled" },
-	{ value: "true", label: "Disabled" },
+	{ value: "false", label: "已启用" },
+	{ value: "true", label: "已禁用" },
 ];
 
 interface SidebarProps {
@@ -129,12 +129,12 @@ export function MCPClientsFilterSidebar({ filters, onFiltersChange }: SidebarPro
 				type="button"
 				onClick={toggleCollapsed}
 				className="bg-card group flex h-full w-10 shrink-0 cursor-pointer flex-col items-center gap-3 rounded-r-md py-4 text-sm font-medium"
-				title="Show filters"
-				aria-label="Show filters"
+				title="显示筛选"
+				aria-label="显示筛选"
 				data-testid="mcpClientsFilterSidebar-toggle-show"
 			>
 				<PanelLeftOpen className="text-muted-foreground group-hover:text-foreground size-4 transition-colors" />
-				<span className="rotate-180 select-none [writing-mode:vertical-rl]">Filters</span>
+				<span className="rotate-180 select-none [writing-mode:vertical-rl]">筛选</span>
 				{activeFilterCount > 0 && (
 					<span className="bg-primary/10 text-primary flex size-6 items-center justify-center rounded-full text-xs font-medium">
 						{activeFilterCount}
@@ -147,7 +147,7 @@ export function MCPClientsFilterSidebar({ filters, onFiltersChange }: SidebarPro
 	return (
 		<div className="bg-card flex h-full w-64 shrink-0 flex-col rounded-r-md">
 			<div className="flex h-11 items-center justify-between border-b pr-2 pl-5">
-				<span className="text-sm font-semibold">Filters</span>
+				<span className="text-sm font-semibold">筛选</span>
 				<div className="flex items-center gap-1">
 					{activeFilterCount > 0 && (
 						<Button
@@ -157,17 +157,15 @@ export function MCPClientsFilterSidebar({ filters, onFiltersChange }: SidebarPro
 							onClick={handleReset}
 							data-testid="mcpClientsFilterSidebar-reset-button"
 						>
-							<RotateCcw className="size-3" />
-							Reset
-						</Button>
+							<RotateCcw className="size-3" />重置</Button>
 					)}
 					<Button
 						variant="ghost"
 						size="icon"
 						className="size-7"
 						onClick={toggleCollapsed}
-						title="Hide filters"
-						aria-label="Hide filters"
+						title="隐藏筛选"
+						aria-label="隐藏筛选"
 						data-testid="mcpClientsFilterSidebar-toggle-hide"
 					>
 						<PanelLeftClose className="size-4" />
@@ -178,7 +176,7 @@ export function MCPClientsFilterSidebar({ filters, onFiltersChange }: SidebarPro
 			<ScrollArea className="flex flex-1 overflow-y-auto p-2 pb-0" viewportClassName="no-table">
 				<div className="flex grow flex-col gap-1">
 					<CheckboxFilterSection
-						title="Connection Type"
+						title="连接类型"
 						options={CONNECTION_TYPE_OPTIONS}
 						selected={filters.connection_types}
 						defaultOpen
@@ -186,14 +184,14 @@ export function MCPClientsFilterSidebar({ filters, onFiltersChange }: SidebarPro
 						testIdPrefix="mcp-clients-filter-connection-type"
 					/>
 					<CheckboxFilterSection
-						title="Auth Type"
+						title="认证类型"
 						options={AUTH_TYPE_OPTIONS}
 						selected={filters.auth_types}
 						onChange={(auth_types) => onFiltersChange({ ...filters, auth_types })}
 						testIdPrefix="mcp-clients-filter-auth-type"
 					/>
 					<CheckboxFilterSection
-						title="State"
+						title="状态"
 						options={STATE_OPTIONS}
 						selected={filters.states}
 						onChange={(states) => onFiltersChange({ ...filters, states })}
@@ -207,7 +205,7 @@ export function MCPClientsFilterSidebar({ filters, onFiltersChange }: SidebarPro
 						testIdPrefix="mcp-clients-filter-code-mode"
 					/>
 					<CheckboxFilterSection
-						title="Status"
+						title="状态"
 						options={STATUS_OPTIONS}
 						selected={filters.status}
 						onChange={(status) => onFiltersChange({ ...filters, status })}
@@ -346,7 +344,7 @@ function SearchableCheckboxList({
 	pinnedItems = [],
 	isSelected,
 	onToggle,
-	placeholder = "Search...",
+	placeholder = "搜索...",
 	inputRef,
 	testIdPrefix,
 	onSearch,
@@ -409,19 +407,19 @@ function SearchableCheckboxList({
 					testId={testIdPrefix ? `${testIdPrefix}-checkbox-${item.key}` : undefined}
 				/>
 			))}
-			{filtered.length === 0 && <div className="text-muted-foreground flex h-9 items-center px-3 text-xs">No results</div>}
+			{filtered.length === 0 && <div className="text-muted-foreground flex h-9 items-center px-3 text-xs">无结果</div>}
 		</>
 	);
 }
 
 // ---------------------------------------------------------------------------
 // VKAccessFilterSection – a single checkbox list whose pinned first option is
-// "All virtual keys" (allow_on_all_virtual_keys); the rest are individual VKs
+// "所有虚拟密钥" (allow_on_all_virtual_keys); the rest are individual VKs
 // resolved via server-side search. They OR together server-side: a client
 // matches if it is open to all VKs OR assigned to one of the selected VKs.
 // ---------------------------------------------------------------------------
 
-// Reserved key for the pinned "All virtual keys" row — namespaced so it can
+// Reserved key for the pinned "所有虚拟密钥" row — namespaced so it can
 // never collide with a real virtual key id.
 const ALL_VKS_KEY = "__all_virtual_keys__";
 
@@ -450,11 +448,11 @@ function VKAccessFilterSection({ filters, onFiltersChange }: SidebarProps) {
 	};
 
 	return (
-		<FilterSection title="VK Access" defaultOpen={hasActive} onOpenChange={setOpened} testId="mcp-clients-filter-vk-access-toggle">
+		<FilterSection title="虚拟密钥访问" defaultOpen={hasActive} onOpenChange={setOpened} testId="mcp-clients-filter-vk-access-toggle">
 			<SearchableCheckboxList
 				inputRef={searchInputRef}
-				placeholder="Search virtual keys"
-				pinnedItems={[{ key: ALL_VKS_KEY, label: "All virtual keys" }]}
+				placeholder="搜索虚拟密钥"
+				pinnedItems={[{ key: ALL_VKS_KEY, label: "所有虚拟密钥" }]}
 				items={virtualKeys.map((vk) => ({ key: vk.id, label: vk.name }))}
 				isSelected={isSelected}
 				onToggle={toggle}

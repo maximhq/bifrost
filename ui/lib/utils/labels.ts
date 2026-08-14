@@ -13,9 +13,9 @@ export function getScopeLabel(scope: string): string {
 		return entry.label;
 	}
 	const legacy: Record<string, string> = {
-		team: "Team",
-		customer: "Customer",
-		user: "User",
+		team: "团队",
+		customer: "客户",
+		user: "用户",
 	};
 	return legacy[scope] || scope;
 }

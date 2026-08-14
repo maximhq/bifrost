@@ -291,7 +291,7 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 	const isSubmitDisabled = loading || !validator.isValid() || !hasPermission;
 
 	const getTooltipMessage = () => {
-		if (!hasPermission) return "You don't have permission to perform this action";
+		if (!hasPermission) return "您没有权限执行此操作";
 		if (loading) return "Saving...";
 		return validator.getFirstError() || "Please fix validation errors";
 	};
@@ -304,7 +304,7 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 				<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-8">
 					<SheetTitle className="flex items-center gap-2">
 						{isEditing ? "Edit Customer" : "Create Customer"}
-						{customer?.id && <CopyableId id={customer.id} entityLabel="Customer" />}
+						{customer?.id && <CopyableId id={customer.id} entityLabel="客户" />}
 					</SheetTitle>
 					<SheetDescription>
 						{isEditing
@@ -318,30 +318,30 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 						<div className="space-y-6">
 							<div className="space-y-4">
 								<div className="space-y-2">
-									<Label htmlFor="name">Customer Name *</Label>
+									<Label htmlFor="name">客户名称 *</Label>
 									<Input
 										id="name"
 										data-testid="customer-name-input"
-										placeholder="e.g., Acme Corporation"
+										placeholder="例如：Acme Corporation"
 										value={formData.name}
 										maxLength={50}
 										onChange={(e) => updateField("name", e.target.value)}
 									/>
 									{nameError && <p className="text-destructive text-sm">{nameError}</p>}
-									<p className="text-muted-foreground text-sm">This name will be used to identify the customer account.</p>
+									<p className="text-muted-foreground text-sm">此名称将用于标识客户账户。</p>
 								</div>
 							</div>
 
 							<MultiBudgetLines
 								data-testid="customer-budgets"
-								label="Budget Limits"
+								label="预算限制"
 								lines={formData.budgets}
 								onChange={(lines) => updateField("budgets", lines)}
 							/>
 
 							<NumberAndSelect
 								id="tokenMaxLimit"
-								label="Maximum Tokens"
+								label="最大 Token 数"
 								value={formData.tokenMaxLimit}
 								selectValue={formData.tokenResetDuration}
 								onChangeNumber={(value) => updateField("tokenMaxLimit", value)}
@@ -351,7 +351,7 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 
 							<NumberAndSelect
 								id="requestMaxLimit"
-								label="Maximum Requests"
+								label="最大请求数"
 								value={formData.requestMaxLimit}
 								selectValue={formData.requestResetDuration}
 								onChangeNumber={(value) => updateField("requestMaxLimit", value)}
@@ -362,9 +362,7 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 							{showCalendarAlignToggle && (
 								<div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
 									<div className="space-y-0.5">
-										<Label htmlFor="customer-calendar-aligned-toggle" className="text-sm font-normal">
-											Align to calendar cycle
-										</Label>
+										<Label htmlFor="customer-calendar-aligned-toggle" className="text-sm font-normal">按日历周期对齐</Label>
 										<p className="text-muted-foreground text-xs">
 											Reset budgets and rate limits at the start of each period (e.g. 1st of month) instead of rolling from creation date.
 											Applies to durations of a day or longer.
@@ -382,25 +380,22 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 							<AlertDialog open={showCalendarAlignWarning} onOpenChange={setShowCalendarAlignWarning}>
 								<AlertDialogContent>
 									<AlertDialogHeader>
-										<AlertDialogTitle>Reset budget and rate-limit usage?</AlertDialogTitle>
-										<AlertDialogDescription>
-											Enabling calendar alignment will reset budget usage to <span className="font-semibold">$0.00</span> and token/request
+										<AlertDialogTitle>重置预算和速率限制用量？</AlertDialogTitle>
+										<AlertDialogDescription>启用日历对齐会将预算用量重置为<span className="font-semibold">$0.00</span> and token/request
 											rate-limit counters to <span className="font-semibold">0</span> for this customer, then snap each reset date to the
 											start of its current period (e.g. start of day, week, month, or year). The usage reset cannot be undone, but calendar
 											alignment can be turned off later. This will take effect when you save.
 										</AlertDialogDescription>
 									</AlertDialogHeader>
 									<AlertDialogFooter>
-										<AlertDialogCancel data-testid="customer-calendar-align-cancel-btn">Cancel</AlertDialogCancel>
+										<AlertDialogCancel data-testid="customer-calendar-align-cancel-btn">取消</AlertDialogCancel>
 										<AlertDialogAction
 											data-testid="customer-calendar-align-enable-btn"
 											onClick={() => {
 												updateField("calendarAligned", true);
 												setShowCalendarAlignWarning(false);
 											}}
-										>
-											Enable Calendar Alignment
-										</AlertDialogAction>
+										>启用日历对齐</AlertDialogAction>
 									</AlertDialogFooter>
 								</AlertDialogContent>
 							</AlertDialog>
@@ -415,9 +410,7 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 					</div>
 
 					<SheetFooter className="bg-card sticky bottom-0 flex-row justify-end gap-2 border-t px-6 py-4">
-						<Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={loading}>
-							Cancel
-						</Button>
+						<Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={loading}>取消</Button>
 						<TooltipProvider>
 							<Tooltip>
 								<TooltipTrigger asChild>

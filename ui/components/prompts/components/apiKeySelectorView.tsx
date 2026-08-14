@@ -41,7 +41,7 @@ export function ApiKeySelectorView({
 	// arrive from the server pre-narrowed by the same query.
 	const apiKeyOptions = useMemo(() => {
 		if (requireVirtualKey) return [];
-		const opts = [{ label: "Auto (default)", value: "__auto__" }, ...providerKeys.map((k) => ({ label: k.name, value: k.key_id }))];
+		const opts = [{ label: "自动（默认）", value: "__auto__" }, ...providerKeys.map((k) => ({ label: k.name, value: k.key_id }))];
 		if (!query) return opts;
 		const q = query.toLowerCase();
 		return opts.filter((o) => o.label.toLowerCase().includes(q));
@@ -68,7 +68,7 @@ export function ApiKeySelectorView({
 	const getLabel = useCallback(
 		(val: string | null) => {
 			if (!val) return "";
-			if (val === "__auto__") return requireVirtualKey ? "" : "Auto (default)";
+			if (val === "__auto__") return requireVirtualKey ? "" : "自动（默认）";
 			const providerKey = providerKeys.find((k) => k.key_id === val);
 			if (providerKey) return providerKey.name;
 			const virtualKey = virtualKeys.find((vk) => vk.value === val);
@@ -84,7 +84,7 @@ export function ApiKeySelectorView({
 	return (
 		<div className="flex flex-col gap-2">
 			<Label className="text-muted-foreground text-xs font-medium uppercase">
-				{requireVirtualKey ? "Virtual key" : "Virtual key / API Key"}
+				{requireVirtualKey ? "虚拟密钥" : "Virtual key / API Key"}
 			</Label>
 			<Combobox
 				value={value}
@@ -97,7 +97,7 @@ export function ApiKeySelectorView({
 				itemToStringLabel={getLabel}
 			>
 				<ComboboxInput
-					placeholder={placeholder ?? (requireVirtualKey ? "Select virtual key" : "Select API key")}
+					placeholder={placeholder ?? (requireVirtualKey ? "选择虚拟密钥" : "Select API key")}
 					showClear={Boolean(value) && value !== "__auto__"}
 					showTrigger
 					disabled={disabled}
@@ -106,7 +106,7 @@ export function ApiKeySelectorView({
 					<ComboboxList>
 						{apiKeyOptions.length > 0 && (
 							<ComboboxGroup>
-								<ComboboxLabel>API Keys</ComboboxLabel>
+								<ComboboxLabel>API 密钥</ComboboxLabel>
 								{apiKeyOptions.map((o) => (
 									<ComboboxItem key={o.value} value={o.value}>
 										{o.label}
@@ -117,7 +117,7 @@ export function ApiKeySelectorView({
 						{apiKeyOptions.length > 0 && virtualKeyOptions.length > 0 && <ComboboxSeparator />}
 						{virtualKeyOptions.length > 0 && (
 							<ComboboxGroup>
-								<ComboboxLabel>Virtual Keys</ComboboxLabel>
+								<ComboboxLabel>虚拟密钥</ComboboxLabel>
 								{virtualKeyOptions.map((o) => (
 									<ComboboxItem key={o.value} value={o.value}>
 										{o.label}
@@ -127,11 +127,9 @@ export function ApiKeySelectorView({
 						)}
 						{isSearching && !hasResults && (
 							<div className="text-muted-foreground flex items-center justify-center gap-2 py-6 text-sm">
-								<Loader2 className="size-4 animate-spin" />
-								Searching...
-							</div>
+								<Loader2 className="size-4 animate-spin" />正在搜索...</div>
 						)}
-						{!isSearching && !hasResults && <div className="text-muted-foreground py-6 text-center text-sm">No results found.</div>}
+						{!isSearching && !hasResults && <div className="text-muted-foreground py-6 text-center text-sm">未找到结果。</div>}
 					</ComboboxList>
 				</ComboboxContent>
 			</Combobox>

@@ -26,12 +26,8 @@ export default function ModelCatalogView() {
 		<div className="no-padding-parent mx-auto flex h-[calc(100dvh-1rem)] min-h-0 w-full max-w-7xl flex-col overflow-hidden p-4">
 			<Tabs value={tab} onValueChange={(value) => setTab(value as ModelCatalogTab)} className="flex min-h-0 grow flex-col gap-4">
 				<TabsList className="shrink-0">
-					<TabsTrigger value="overview" data-testid="model-catalog-tab-overview">
-						Overview
-					</TabsTrigger>
-					<TabsTrigger value="attributes" data-testid="model-catalog-tab-attributes">
-						Models
-					</TabsTrigger>
+					<TabsTrigger value="overview" data-testid="model-catalog-tab-overview">概览</TabsTrigger>
+					<TabsTrigger value="attributes" data-testid="model-catalog-tab-attributes">模型</TabsTrigger>
 				</TabsList>
 				<TabsContent value="overview" className="min-h-0 overflow-auto">
 					<OverviewTab hasAccess={hasAccess} />

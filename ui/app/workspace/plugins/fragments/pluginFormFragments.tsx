@@ -35,9 +35,7 @@ export function PluginFormFragment({ form, isEditMode = false }: PluginFormFragm
 						rel="noopener noreferrer"
 						className="text-primary hover:underline"
 						data-testid="plugins-form-docs-link"
-					>
-						Learn more
-					</a>
+					>了解更多</a>
 				</p>
 			</div>
 
@@ -46,9 +44,9 @@ export function PluginFormFragment({ form, isEditMode = false }: PluginFormFragm
 				name="name"
 				render={({ field }) => (
 					<FormItem>
-						<FormLabel>Plugin Name *</FormLabel>
+						<FormLabel>插件名称 *</FormLabel>
 						<FormControl>
-							<Input placeholder="e.g., my-custom-plugin" {...field} disabled={isEditMode} />
+							<Input placeholder="例如：my-custom-plugin" {...field} disabled={isEditMode} />
 						</FormControl>
 						<FormMessage />
 					</FormItem>
@@ -60,7 +58,7 @@ export function PluginFormFragment({ form, isEditMode = false }: PluginFormFragm
 				name="path"
 				render={({ field }) => (
 					<FormItem>
-						<FormLabel>Plugin Path/URL *</FormLabel>
+						<FormLabel>插件路径/URL *</FormLabel>
 						<FormControl>
 							<Input placeholder="e.g., /path/to/plugin.so or https://example.com/plugin.so" {...field} disabled={isEditMode} />
 						</FormControl>
@@ -83,9 +81,7 @@ export function PluginFormFragment({ form, isEditMode = false }: PluginFormFragm
 					}}
 					className="w-full"
 				>
-					<PlusIcon className="mr-2 h-4 w-4" />
-					Add Configuration
-				</Button>
+					<PlusIcon className="mr-2 h-4 w-4" />添加配置</Button>
 			) : (
 				<FormField
 					control={form.control}
@@ -93,7 +89,7 @@ export function PluginFormFragment({ form, isEditMode = false }: PluginFormFragm
 					render={({ field }) => (
 						<FormItem>
 							<div className="flex items-center justify-between">
-								<FormLabel>Configuration (JSON)</FormLabel>
+								<FormLabel>配置 (JSON)</FormLabel>
 								<Button
 									type="button"
 									variant="ghost"
@@ -104,9 +100,7 @@ export function PluginFormFragment({ form, isEditMode = false }: PluginFormFragm
 										form.setValue("config", undefined);
 									}}
 									className="h-auto p-1 text-xs"
-								>
-									Remove
-								</Button>
+								>移除</Button>
 							</div>
 							<FormControl>
 								<div className="rounded-sm border">

@@ -21,7 +21,7 @@ interface RecalculateCostDialogProps {
 export function RecalculateCostDialog({ open, onOpenChange, filters, totalLogs, onConfirm }: RecalculateCostDialogProps) {
 	const [mode, setMode] = useState<RecalculateCostMode>("missing");
 	// Lazy query for the missing-cost count: triggered imperatively on open and on
-	// selecting "Missing cost only", so there is no data-fetching effect to manage.
+	// selecting "仅缺失费用", so there is no data-fetching effect to manage.
 	const [triggerStats, { data, isFetching, isError }] = useLazyGetLogsStatsQuery();
 
 	const loadMissingCount = useCallback(() => {
@@ -50,24 +50,22 @@ export function RecalculateCostDialog({ open, onOpenChange, filters, totalLogs, 
 				}}
 			>
 				<DialogHeader className="pb-2">
-					<DialogTitle>Recalculate costs</DialogTitle>
-					<DialogDescription>
-						The current time window and filters will be applied. Choose which logs to recompute cost for.
-					</DialogDescription>
+					<DialogTitle>重新计算费用</DialogTitle>
+					<DialogDescription>将应用当前时间窗口和筛选条件。选择要为哪些日志重新计算费用。</DialogDescription>
 				</DialogHeader>
 
 				<div className="flex flex-col gap-2">
 					<RecalculateModeOption
 						selected={mode === "missing"}
 						onSelect={() => selectMode("missing")}
-						title="Missing cost only"
-						description="Only recompute logs that don't have a cost yet."
+						title="仅缺失费用"
+						description="仅重新计算还没有费用的日志。"
 					/>
 					<RecalculateModeOption
 						selected={mode === "all"}
 						onSelect={() => selectMode("all")}
-						title="All selected logs"
-						description="Recompute cost for every log matching the current filters."
+						title="所有选中的日志"
+						description="为匹配当前筛选条件的每条日志重新计算费用。"
 					/>
 				</div>
 
@@ -93,16 +91,12 @@ export function RecalculateCostDialog({ open, onOpenChange, filters, totalLogs, 
 
 				<div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-muted-foreground">
 					<Info className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-500" />
-					<span>Affects the logs dashboard only. Governance budgets and usage tracking remain unchanged.</span>
+					<span>仅影响日志仪表盘。治理预算和用量跟踪保持不变。</span>
 				</div>
 
 				<DialogFooter className="pt-0">
-					<Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>
-						Cancel
-					</Button>
-					<Button size="sm" onClick={() => onConfirm(mode)} disabled={confirmDisabled}>
-						Recalculate
-					</Button>
+					<Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>取消</Button>
+					<Button size="sm" onClick={() => onConfirm(mode)} disabled={confirmDisabled}>重新计算</Button>
 				</DialogFooter>
 			</DialogContent>
 		</Dialog>

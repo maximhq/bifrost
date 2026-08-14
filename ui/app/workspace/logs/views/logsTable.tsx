@@ -203,14 +203,10 @@ export function LogsDataTable({
 								<div className="text-muted-foreground flex items-center justify-center gap-2 text-sm">
 									{loading ? (
 										<>
-											<RefreshCw className="h-4 w-4 animate-spin" />
-											Loading logs...
-										</>
+											<RefreshCw className="h-4 w-4 animate-spin" />正在加载日志...</>
 									) : polling ? (
 										<>
-											<RefreshCw className="h-4 w-4 animate-spin" />
-											Waiting for new logs...
-										</>
+											<RefreshCw className="h-4 w-4 animate-spin" />等待新日志...</>
 									) : (
 										<Button
 											type="button"
@@ -265,9 +261,7 @@ export function LogsDataTable({
 							))
 						) : loading ? null : (
 							<TableRow>
-								<TableCell colSpan={columns.length} className="h-24 text-center">
-									No results found. Try adjusting your filters and/or time range.
-								</TableCell>
+								<TableCell colSpan={columns.length} className="h-24 text-center">未找到结果。请尝试调整筛选条件或时间范围。</TableCell>
 							</TableRow>
 						)}
 					</TableBody>
@@ -282,7 +276,7 @@ export function LogsDataTable({
 
 				<div className="flex items-center gap-3">
 					<div className="flex items-center gap-1.5">
-						<span className="text-muted-foreground">Rows per page</span>
+						<span className="text-muted-foreground">每页行数</span>
 						<ComboboxSelect
 							options={pageSizeOptions}
 							value={String(pageSizePref)}
@@ -301,13 +295,13 @@ export function LogsDataTable({
 							onClick={() => goToPage(currentPage - 1)}
 							disabled={currentPage <= 1}
 							data-testid="prev-page"
-							aria-label="Previous page"
+							aria-label="上一页"
 						>
 							<ChevronLeft className="size-3" />
 						</Button>
 
 						<div className="flex items-center gap-1">
-							<span>Page</span>
+							<span>页</span>
 							<span>{currentPage}</span>
 							<span>of {totalPages}</span>
 						</div>
@@ -318,7 +312,7 @@ export function LogsDataTable({
 							onClick={() => goToPage(currentPage + 1)}
 							disabled={totalPages === 0 || currentPage >= totalPages}
 							data-testid="next-page"
-							aria-label="Next page"
+							aria-label="下一页"
 						>
 							<ChevronRight className="size-3" />
 						</Button>

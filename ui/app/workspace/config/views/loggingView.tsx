@@ -77,8 +77,8 @@ export default function LoggingView() {
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-4 py-6">
 			<div>
-				<h2 className="text-lg font-semibold tracking-tight">Logs Settings</h2>
-				<p className="text-muted-foreground text-sm">Configure logging settings for requests and responses.</p>
+				<h2 className="text-lg font-semibold tracking-tight">日志设置</h2>
+				<p className="text-muted-foreground text-sm">配置请求和响应的日志设置。</p>
 			</div>
 
 			<div className="space-y-4">
@@ -86,13 +86,11 @@ export default function LoggingView() {
 				<div>
 					<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
-							<label htmlFor="enable-logging" className="text-sm font-medium">
-								Enable Logs
-							</label>
+							<label htmlFor="enable-logging" className="text-sm font-medium">启用日志</label>
 							<p className="text-muted-foreground text-sm">
 								Enable logging of requests and responses to a SQL database. This can add 40-60mb of overhead to the system memory.
 								{!bifrostConfig?.is_logs_connected && (
-									<span className="text-destructive font-medium"> Requires logs store to be configured and enabled in config.json.</span>
+									<span className="text-destructive font-medium">需要在 config.json 中配置并启用日志存储。</span>
 								)}
 							</p>
 						</div>
@@ -116,9 +114,7 @@ export default function LoggingView() {
 					<div>
 						<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 							<div className="space-y-0.5">
-								<label htmlFor="disable-content-logging" className="text-sm font-medium">
-									Disable Content Logging
-								</label>
+								<label htmlFor="disable-content-logging" className="text-sm font-medium">禁用内容日志</label>
 								<p className="text-muted-foreground text-sm">
 									When enabled, only usage metadata (latency, cost, token count, status, routing IDs, etc.) is logged. Request/response
 									content (messages, params, tool calls, and any raw provider bytes) is dropped from log records, even when{" "}
@@ -140,9 +136,7 @@ export default function LoggingView() {
 				{localConfig.enable_logging && bifrostConfig?.is_logs_connected && (
 					<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
-							<label htmlFor="retain-content-in-object-storage" className="text-sm font-medium">
-								Retain Content in Object Storage
-							</label>
+							<label htmlFor="retain-content-in-object-storage" className="text-sm font-medium">在对象存储中保留内容</label>
 							<p className="text-muted-foreground text-sm">
 								When enabled, requests with content logging disabled (via the global setting above or the{" "}
 								<code className="text-xs">x-bf-disable-content-logging</code> header) still have their full content offloaded to object
@@ -176,9 +170,7 @@ export default function LoggingView() {
 				{localConfig.enable_logging && bifrostConfig?.is_logs_connected && (
 					<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
-							<label htmlFor="allow-per-request-content-storage-override" className="text-sm font-medium">
-								Allow Per-Request Content Storage Override
-							</label>
+							<label htmlFor="allow-per-request-content-storage-override" className="text-sm font-medium">允许按请求覆盖内容存储</label>
 							<p className="text-muted-foreground text-sm">
 								When enabled, individual requests can override the global content logging setting using the{" "}
 								<code className="text-xs">x-bf-disable-content-logging</code> header or context key, and can opt-in to persisting raw
@@ -202,9 +194,7 @@ export default function LoggingView() {
 				{/* Allow Per-Request Raw Override */}
 				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 					<div className="space-y-0.5">
-						<label htmlFor="allow-per-request-raw-override" className="text-sm font-medium">
-							Allow Per-Request Raw Override
-						</label>
+						<label htmlFor="allow-per-request-raw-override" className="text-sm font-medium">允许按请求覆盖原始数据</label>
 						<p className="text-muted-foreground text-sm">
 							When enabled, individual requests can send raw provider request/response bytes back to the caller using the{" "}
 							<code className="text-xs">x-bf-send-back-raw-request</code> and <code className="text-xs">x-bf-send-back-raw-response</code>{" "}
@@ -225,12 +215,8 @@ export default function LoggingView() {
 				{localConfig.enable_logging && bifrostConfig?.is_logs_connected && (
 					<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
-							<Label htmlFor="log-retention-days" className="text-sm font-medium">
-								Log Retention Days
-							</Label>
-							<p className="text-muted-foreground text-sm">
-								Number of days to retain logs in the database. Minimum is 1 day. Older logs will be automatically deleted.
-							</p>
+							<Label htmlFor="log-retention-days" className="text-sm font-medium">日志保留天数</Label>
+							<p className="text-muted-foreground text-sm">日志在数据库中保留的天数。最少 1 天。更早的日志将自动删除。</p>
 						</div>
 						<Input
 							id="log-retention-days"
@@ -248,12 +234,8 @@ export default function LoggingView() {
 
 				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 					<div className="space-y-0.5">
-						<label htmlFor="hide-deleted-virtual-keys-in-filters" className="text-sm font-medium">
-							Do Not Show Deleted VirtualKeys In Filters
-						</label>
-						<p className="text-muted-foreground text-sm">
-							When enabled, deleted virtual keys are excluded from Virtual Keys filter options in Logs, Dashboard, and MCP Logs.
-						</p>
+						<label htmlFor="hide-deleted-virtual-keys-in-filters" className="text-sm font-medium">在筛选中不显示已删除的虚拟密钥</label>
+						<p className="text-muted-foreground text-sm">启用后，已删除的虚拟密钥将从日志、仪表盘和 MCP 日志的虚拟密钥筛选选项中排除。</p>
 					</div>
 					<Switch
 						id="hide-deleted-virtual-keys-in-filters"
@@ -267,9 +249,7 @@ export default function LoggingView() {
 				{/* Logging Headers */}
 				{localConfig.enable_logging && bifrostConfig?.is_logs_connected && (
 					<div className="space-y-2 rounded-sm border p-4">
-						<label htmlFor="logging-headers" className="text-sm font-medium">
-							Logging Headers
-						</label>
+						<label htmlFor="logging-headers" className="text-sm font-medium">日志请求头</label>
 						<p className="text-muted-foreground text-sm">
 							Comma-separated list of request headers to capture in log metadata. Supports exact names and wildcard patterns (e.g.{" "}
 							<code className="text-xs">x-custom-*</code> captures all headers with that prefix, <code className="text-xs">*</code> logs all
@@ -291,7 +271,7 @@ export default function LoggingView() {
 
 			<div className="flex justify-end pt-2">
 				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>
-					{isLoading ? "Saving..." : "Save Changes"}
+					{isLoading ? "Saving..." : "保存更改"}
 				</Button>
 			</div>
 		</div>
@@ -299,5 +279,5 @@ export default function LoggingView() {
 }
 
 const RestartWarning = () => {
-	return <div className="text-muted-foreground mt-2 pl-4 text-xs font-semibold">Need to restart Bifrost to apply changes.</div>;
+	return <div className="text-muted-foreground mt-2 pl-4 text-xs font-semibold">需要重启 Bifrost 才能生效。</div>;
 };

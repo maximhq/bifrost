@@ -212,8 +212,8 @@ export function MCPToolSelector({
 						<TableHeader>
 							<TableRow>
 								<TableHead className="w-10"></TableHead>
-								<TableHead className="w-auto">Tool</TableHead>
-								<TableHead className="hidden w-32 md:table-cell">Server</TableHead>
+								<TableHead className="w-auto">工具</TableHead>
+								<TableHead className="hidden w-32 md:table-cell">服务器</TableHead>
 								<TableHead className="w-10"></TableHead>
 							</TableRow>
 						</TableHeader>
@@ -271,7 +271,7 @@ export function MCPToolSelector({
 												<tr>
 													<td colSpan={4} className="p-0">
 														<div className="bg-muted/30 border-t px-4 py-3">
-															<div className="text-muted-foreground mb-2 text-xs font-medium">Parameters Schema</div>
+															<div className="text-muted-foreground mb-2 text-xs font-medium">参数 Schema</div>
 															{tool.parameters ? (
 																<CodeEditor
 																	className="z-0 w-full rounded-md border"
@@ -289,7 +289,7 @@ export function MCPToolSelector({
 																	}}
 																/>
 															) : (
-																<div className="text-muted-foreground text-sm">No parameters defined</div>
+																<div className="text-muted-foreground text-sm">未定义参数</div>
 															)}
 														</div>
 													</td>
@@ -306,9 +306,7 @@ export function MCPToolSelector({
 
 			{/* Empty state */}
 			{selectedToolsWithInfo.length === 0 && (
-				<div className="text-muted-foreground rounded-md border border-dashed p-4 text-center text-sm">
-					No tools selected. Use the search above to add tools.
-				</div>
+				<div className="text-muted-foreground rounded-md border border-dashed p-4 text-center text-sm">未选择工具。使用上方搜索添加工具。</div>
 			)}
 		</div>
 	);

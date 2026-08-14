@@ -1,7 +1,7 @@
 // Runtime registry for the governance user picker.
 //
 // OSS has no user directory, so the base build registers nothing and
-// consumers (pricing overrides, routing rules) hide their "User" scope
+// consumers (pricing overrides, routing rules) hide their "用户" scope
 // options. Downstream builds (enterprise) register a picker by importing
 // their registration module via the @enterprise alias; see
 // ui/app/_fallbacks/enterprise/lib/registrations/userPicker.ts for the
@@ -18,7 +18,7 @@ export interface UserPickerProps {
 	// picker. Callers pass the edited row's own user id when editing an
 	// existing row.
 	fallbackOption?: { value: string; label: string } | null;
-	/** Placeholder for the empty state — e.g. "All Users" when used as a filter. */
+	/** Placeholder for the empty state — e.g. "所有用户" when used as a filter. */
 	placeholder?: string;
 	className?: string;
 	/** Extra classes for the combobox trigger, e.g. `h-9` to line up with a search input. */

@@ -80,7 +80,7 @@ export function PerformanceFormFragment({ provider }: PerformanceFormFragmentPro
 								name="concurrency_and_buffer_size.concurrency"
 								render={({ field }) => (
 									<FormItem>
-										<FormLabel>Concurrency</FormLabel>
+										<FormLabel>并发数</FormLabel>
 										<FormControl>
 											<Input
 												type="number"
@@ -113,7 +113,7 @@ export function PerformanceFormFragment({ provider }: PerformanceFormFragmentPro
 								name="concurrency_and_buffer_size.buffer_size"
 								render={({ field }) => (
 									<FormItem>
-										<FormLabel>Buffer Size</FormLabel>
+										<FormLabel>缓冲区大小</FormLabel>
 										<FormControl>
 											<Input
 												type="number"
@@ -149,9 +149,7 @@ export function PerformanceFormFragment({ provider }: PerformanceFormFragmentPro
 						type="submit"
 						disabled={!form.formState.isDirty || !hasUpdateProviderAccess || isUpdatingProvider}
 						isLoading={isUpdatingProvider}
-					>
-						Save Performance Configuration
-					</Button>
+					>保存性能配置</Button>
 				</div>
 			</form>
 		</Form>

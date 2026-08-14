@@ -12,24 +12,24 @@ export interface CELOperatorDefinition {
 export const celOperatorsRouting: CELOperatorDefinition[] = [
 	// Comparison operators
 	{ name: "=", label: "equals", celSyntax: "==" },
-	{ name: "!=", label: "does not equal", celSyntax: "!=" },
-	{ name: ">", label: "greater than", celSyntax: ">" },
-	{ name: "<", label: "less than", celSyntax: "<" },
-	{ name: ">=", label: "greater than or equal", celSyntax: ">=" },
-	{ name: "<=", label: "less than or equal", celSyntax: "<=" },
+	{ name: "!=", label: "不等于", celSyntax: "!=" },
+	{ name: ">", label: "大于", celSyntax: ">" },
+	{ name: "<", label: "小于", celSyntax: "<" },
+	{ name: ">=", label: "大于等于", celSyntax: ">=" },
+	{ name: "<=", label: "小于等于", celSyntax: "<=" },
 
 	// List operators
-	{ name: "in", label: "is in list", celSyntax: "in" },
-	{ name: "notIn", label: "is not in list", celSyntax: "!in" },
+	{ name: "in", label: "在列表中", celSyntax: "in" },
+	{ name: "notIn", label: "不在列表中", celSyntax: "!in" },
 
 	// String operators
 	{ name: "contains", label: "contains", celSyntax: "contains" },
-	{ name: "beginsWith", label: "begins with", celSyntax: "startsWith" },
-	{ name: "endsWith", label: "ends with", celSyntax: "endsWith" },
-	{ name: "matches", label: "matches (regex)", celSyntax: "matches" },
+	{ name: "beginsWith", label: "以...开头", celSyntax: "startsWith" },
+	{ name: "endsWith", label: "以...结尾", celSyntax: "endsWith" },
+	{ name: "matches", label: "匹配（正则）", celSyntax: "matches" },
 
 	// Existence operators
-	{ name: "null", label: "does not exist", celSyntax: "!has" },
+	{ name: "null", label: "不存在", celSyntax: "!has" },
 	{ name: "notNull", label: "exists", celSyntax: "has" },
 ];
 

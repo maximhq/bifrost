@@ -25,16 +25,16 @@ function CustomTooltip({ active, payload }: any) {
 				<div className="flex items-center justify-between gap-4">
 					<span className="flex items-center gap-1.5">
 						<span className="h-2 w-2 rounded-full" style={{ backgroundColor: THROUGHPUT_COLOR }} />
-						<span className="text-zinc-600 dark:text-zinc-400">Throughput</span>
+						<span className="text-zinc-600 dark:text-zinc-400">吞吐量</span>
 					</span>
 					<span className="font-medium">{formatTokensPerSecond(data.tokens_per_second)}</span>
 				</div>
 				<div className="flex items-center justify-between gap-4">
-					<span className="text-zinc-600 dark:text-zinc-400">Completion tokens</span>
+					<span className="text-zinc-600 dark:text-zinc-400">完成 Token 数</span>
 					<span className="font-medium">{data.total_completion_tokens.toLocaleString()}</span>
 				</div>
 				<div className="flex items-center justify-between gap-4 border-t border-zinc-200 pt-1 dark:border-zinc-700">
-					<span className="text-zinc-600 dark:text-zinc-400">Requests</span>
+					<span className="text-zinc-600 dark:text-zinc-400">请求数</span>
 					<span className="font-medium">{data.total_requests.toLocaleString()}</span>
 				</div>
 			</div>
@@ -56,7 +56,7 @@ function ThroughputChartImpl({ data, chartType, startTime, endTime }: Throughput
 	}, [data]);
 
 	if (!data?.buckets || chartData.length === 0) {
-		return <div className="text-muted-foreground flex h-full items-center justify-center text-sm">No data available</div>;
+		return <div className="text-muted-foreground flex h-full items-center justify-center text-sm">暂无数据</div>;
 	}
 
 	const commonProps = {

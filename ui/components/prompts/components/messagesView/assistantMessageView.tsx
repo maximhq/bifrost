@@ -96,13 +96,13 @@ export function AssistantMessageView({
 							<TooltipContent side="bottom">
 								<div className="flex flex-col gap-0.5 text-xs tabular-nums">
 									<span>
-										<span className="inline-block w-12">Input:</span> {usage.prompt_tokens} tokens
+										<span className="inline-block w-12">输入：</span> {usage.prompt_tokens} tokens
 									</span>
 									<span>
-										<span className="inline-block w-12">Output:</span> {usage.completion_tokens} tokens
+										<span className="inline-block w-12">输出：</span> {usage.completion_tokens} tokens
 									</span>
 									<span>
-										<span className="inline-block w-12">Total:</span> {usage.total_tokens} tokens
+										<span className="inline-block w-12">总计：</span> {usage.total_tokens} tokens
 									</span>
 								</div>
 							</TooltipContent>
@@ -111,7 +111,7 @@ export function AssistantMessageView({
 					{!disabled && !isStreaming && (
 						<button
 							type="button"
-							aria-label="Edit message"
+							aria-label="编辑消息"
 							data-testid="assistant-msg-edit"
 							onClick={() => setEditMode(true)}
 							className="hover:bg-muted focus:bg-muted rounded-sm p-1 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 focus:opacity-100"
@@ -122,7 +122,7 @@ export function AssistantMessageView({
 					{!disabled && onRemove && (
 						<button
 							type="button"
-							aria-label="Delete message"
+							aria-label="删除消息"
 							data-testid="assistant-msg-delete"
 							onClick={onRemove}
 							className="hover:bg-muted focus:bg-muted rounded-sm p-1 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 focus:opacity-100"
@@ -163,7 +163,7 @@ export function AssistantMessageView({
 						}}
 					/>
 				) : isEmpty ? (
-					<div className="text-muted-foreground min-h-[20px] text-sm italic">Enter assistant message...</div>
+					<div className="text-muted-foreground min-h-[20px] text-sm italic">输入助手消息...</div>
 				) : contentIsJson ? (
 					<CodeEditor
 						wrap

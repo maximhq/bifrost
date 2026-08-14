@@ -21,7 +21,7 @@ export interface BudgetOverrideRow {
 	calendarAligned?: boolean;
 }
 
-// A titled group of budget rows in the modal (e.g. "Provider budget", "Model: gpt-4o").
+// A titled group of budget rows in the modal (e.g. "提供商预算", "Model: gpt-4o").
 export interface BudgetOverrideSection {
 	key: string;
 	title: string;
@@ -38,11 +38,11 @@ interface BudgetOverrideManagerDialogProps {
 }
 
 /**
- * One "Add override" button opening a modal whose sections group a scope's budgets —
+ * One "添加覆盖" button opening a modal whose sections group a scope's budgets —
  * e.g. a provider's own budget plus one section per model beneath it. Each row's
  * additive override can be added, edited, or removed inline and independently.
  */
-export function BudgetOverrideManagerDialog({ title, sections, onSave, onRemove, disabled, triggerLabel = "Add override" }: BudgetOverrideManagerDialogProps) {
+export function BudgetOverrideManagerDialog({ title, sections, onSave, onRemove, disabled, triggerLabel = "添加覆盖" }: BudgetOverrideManagerDialogProps) {
 	const [open, setOpen] = useState(false);
 	const [expandedKey, setExpandedKey] = useState<string | null>(null);
 	const [amount, setAmount] = useState("");
@@ -140,9 +140,7 @@ export function BudgetOverrideManagerDialog({ title, sections, onSave, onRemove,
 									onClick={() => (expanded ? closeForm() : startEdit(row))}
 									data-testid={`budget-override-edit-${b.id}`}
 								>
-									<Pencil className="h-3 w-3" />
-									Edit
-								</Button>
+									<Pencil className="h-3 w-3" />编辑</Button>
 								<Button
 									type="button"
 									variant="ghost"
@@ -152,9 +150,7 @@ export function BudgetOverrideManagerDialog({ title, sections, onSave, onRemove,
 									isLoading={busy && !expanded}
 									onClick={() => remove(row)}
 									data-testid={`budget-override-remove-${b.id}`}
-								>
-									Remove
-								</Button>
+								>移除</Button>
 							</>
 						) : (
 							<Button
@@ -166,9 +162,7 @@ export function BudgetOverrideManagerDialog({ title, sections, onSave, onRemove,
 								onClick={() => (expanded ? closeForm() : startEdit(row))}
 								data-testid={`budget-override-add-${b.id}`}
 							>
-								<Plus className="h-3 w-3" />
-								Add override
-							</Button>
+								<Plus className="h-3 w-3" />添加覆盖</Button>
 						)}
 					</div>
 				</div>
@@ -177,9 +171,7 @@ export function BudgetOverrideManagerDialog({ title, sections, onSave, onRemove,
 					<div className="mt-3 space-y-3 border-t pt-3">
 						<div className="grid grid-cols-2 gap-3">
 							<div className="space-y-1.5">
-								<Label className="text-xs" htmlFor={`override-amount-${b.id}`}>
-									Additional budget
-								</Label>
+								<Label className="text-xs" htmlFor={`override-amount-${b.id}`}>额外预算</Label>
 								<div className="relative">
 									<span className="text-muted-foreground pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-sm" aria-hidden="true">
 										$
@@ -199,14 +191,14 @@ export function BudgetOverrideManagerDialog({ title, sections, onSave, onRemove,
 								</div>
 							</div>
 							<div className="space-y-1.5">
-								<Label className="text-xs">Duration</Label>
+								<Label className="text-xs">时长</Label>
 								<Select value={mode} onValueChange={(value) => setMode(value as "cycles" | "forever")} disabled={busy}>
 									<SelectTrigger className="w-full rounded-sm" data-testid="budget-override-mode">
 										<SelectValue />
 									</SelectTrigger>
 									<SelectContent className="rounded-sm">
-										<SelectItem value="cycles">For a number of reset cycles</SelectItem>
-										<SelectItem value="forever">Until removed</SelectItem>
+										<SelectItem value="cycles">按重置周期数</SelectItem>
+										<SelectItem value="forever">直到移除</SelectItem>
 									</SelectContent>
 								</Select>
 							</div>
@@ -214,9 +206,7 @@ export function BudgetOverrideManagerDialog({ title, sections, onSave, onRemove,
 
 						{mode === "cycles" ? (
 							<div className="space-y-1.5">
-								<Label className="text-xs" htmlFor={`override-cycles-${b.id}`}>
-									Reset cycles
-								</Label>
+								<Label className="text-xs" htmlFor={`override-cycles-${b.id}`}>重置周期</Label>
 								<Input
 									id={`override-cycles-${b.id}`}
 									type="number"
@@ -229,8 +219,7 @@ export function BudgetOverrideManagerDialog({ title, sections, onSave, onRemove,
 									data-testid="budget-override-cycles"
 								/>
 								{validUntil ? (
-									<p className="text-muted-foreground text-xs">
-										Valid until <span className="text-foreground font-medium">{validUntil.toLocaleString()}</span>
+									<p className="text-muted-foreground text-xs">有效期至<span className="text-foreground font-medium">{validUntil.toLocaleString()}</span>
 									</p>
 								) : null}
 							</div>
@@ -243,11 +232,9 @@ export function BudgetOverrideManagerDialog({ title, sections, onSave, onRemove,
 						) : null}
 
 						<div className="flex justify-end gap-2">
-							<Button type="button" variant="ghost" size="sm" className="rounded-sm" onClick={closeForm} disabled={busy} data-testid={`budget-override-cancel-${b.id}`}>
-								Cancel
-							</Button>
+							<Button type="button" variant="ghost" size="sm" className="rounded-sm" onClick={closeForm} disabled={busy} data-testid={`budget-override-cancel-${b.id}`}>取消</Button>
 							<Button type="button" size="sm" className="rounded-sm" onClick={() => submit(row)} isLoading={busy} data-testid="budget-override-save">
-								{active ? "Update" : "Add"}
+								{active ? "Update" : "添加"}
 							</Button>
 						</div>
 					</div>
@@ -276,7 +263,7 @@ export function BudgetOverrideManagerDialog({ title, sections, onSave, onRemove,
 			<DialogContent className="rounded-sm sm:max-w-lg" data-testid="budget-override-manager-dialog">
 				<DialogHeader>
 					<DialogTitle>{title}</DialogTitle>
-					<DialogDescription>Temporarily add spending capacity to a budget without changing its base limit.</DialogDescription>
+					<DialogDescription>在不更改基础限制的情况下，临时向预算添加支出容量。</DialogDescription>
 				</DialogHeader>
 
 				<div className="max-h-[60vh] space-y-4 overflow-y-auto py-2">

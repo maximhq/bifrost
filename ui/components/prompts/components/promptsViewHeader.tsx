@@ -171,14 +171,12 @@ export default function PromptsViewHeader() {
 					{hasChanges && <span className="text-destructive ml-1">*</span>}
 				</h3>
 				{displayVersion && <Badge variant={"secondary"}>v{displayVersion.version_number}</Badge>}
-				{hasVersionChanges && versions.length > 0 && <Badge variant="outline">Unpublished Changes</Badge>}
+				{hasVersionChanges && versions.length > 0 && <Badge variant="outline">未发布的更改</Badge>}
 			</div>
 			<div className="flex shrink-0 items-center gap-4">
 				{messages.length > 1 && (
 					<Button variant="ghost" size="sm" data-testid="header-clear" onClick={handleClearConversation} disabled={isStreaming}>
-						<Trash2 className="h-4 w-4" />
-						Clear
-					</Button>
+						<Trash2 className="h-4 w-4" />清除</Button>
 				)}
 				<SplitButton
 					onClick={handleSaveSession}
@@ -190,9 +188,9 @@ export default function PromptsViewHeader() {
 						onOpenChange: setSessionsOpen,
 						children: (
 							<Command>
-								<CommandInput placeholder="Search sessions..." data-testid="header-sessions-search" />
+								<CommandInput placeholder="搜索会话..." data-testid="header-sessions-search" />
 								<CommandList>
-									<CommandEmpty>No sessions found.</CommandEmpty>
+									<CommandEmpty>未找到会话。</CommandEmpty>
 									<CommandGroup>
 										{sessions.map((session) => (
 											<SessionItem
@@ -221,9 +219,7 @@ export default function PromptsViewHeader() {
 						disabled: !hasChanges || !canUpdate,
 					}}
 				>
-					<Save className="h-4 w-4" />
-					Save Session
-				</SplitButton>
+					<Save className="h-4 w-4" />保存会话</SplitButton>
 				<SplitButton
 					onClick={handleCommitVersion}
 					disabled={isCreatingSession || isStreaming}
@@ -231,10 +227,10 @@ export default function PromptsViewHeader() {
 						className: "w-64 max-h-72 overflow-y-auto",
 						children: (
 							<>
-								<DropdownMenuLabel>Versions</DropdownMenuLabel>
+								<DropdownMenuLabel>版本</DropdownMenuLabel>
 								<DropdownMenuSeparator />
 								{versions.length === 0 ? (
-									<div className="text-muted-foreground px-2 py-3 text-center text-sm">No versions yet</div>
+									<div className="text-muted-foreground px-2 py-3 text-center text-sm">还没有版本</div>
 								) : (
 									versions.map((version) => (
 										<DropdownMenuItem
@@ -267,9 +263,7 @@ export default function PromptsViewHeader() {
 						disabled: !hasVersionChanges || !canUpdate,
 					}}
 				>
-					<GitCommit className="h-4 w-4" />
-					Commit Version
-				</SplitButton>
+					<GitCommit className="h-4 w-4" />提交版本</SplitButton>
 			</div>
 		</div>
 	);
@@ -318,7 +312,7 @@ function SessionItem({
 				<Input
 					ref={inputRef}
 					defaultValue={session.name}
-					placeholder="Session name"
+					placeholder="会话名称"
 					className="h-auto border-none bg-transparent p-0 text-sm shadow-none focus-visible:border-none focus-visible:ring-0"
 					data-testid="session-rename-input"
 					autoFocus
@@ -347,7 +341,7 @@ function SessionItem({
 			<div className="flex shrink-0 items-center gap-1">
 				<button
 					type="button"
-					aria-label="Rename session"
+					aria-label="重命名会话"
 					data-testid="session-rename"
 					onPointerDown={(e) => {
 						e.preventDefault();

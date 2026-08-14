@@ -128,7 +128,7 @@ export function NewMessageInputView() {
 		e.preventDefault();
 		e.stopPropagation();
 		dragCounterRef.current++;
-		if (e.dataTransfer.types.includes("Files")) {
+		if (e.dataTransfer.types.includes("文件")) {
 			setIsDragging(true);
 		}
 	}, []);
@@ -180,7 +180,7 @@ export function NewMessageInputView() {
 				<div className="bg-background/80 border-primary absolute inset-0 z-50 flex items-center justify-center rounded-sm border-2 border-dashed backdrop-blur-sm">
 					<div className="text-primary flex flex-col items-center gap-1">
 						<Paperclip className="h-5 w-5" />
-						<span className="text-xs font-medium">Drop files to attach</span>
+						<span className="text-xs font-medium">拖放文件以附加</span>
 					</div>
 				</div>
 			)}
@@ -206,7 +206,7 @@ export function NewMessageInputView() {
 						/>
 						<button
 							type="button"
-							aria-label="Attach file"
+							aria-label="附加文件"
 							data-testid="new-message-attach-file"
 							onClick={() => fileInputRef.current?.click()}
 							className="hover:bg-muted focus:bg-muted rounded-sm p-1"
@@ -225,7 +225,7 @@ export function NewMessageInputView() {
 			)}
 			<div className="relative">
 				<Textarea
-					placeholder="Type a message..."
+					placeholder="输入消息..."
 					value={userInput}
 					ref={userInputRef}
 					onChange={(e) => setUserInput(e.target.value)}
@@ -243,9 +243,7 @@ export function NewMessageInputView() {
 						data-testid="new-message-add"
 						className="text-muted-foreground hover:text-foreground flex items-center gap-1 rounded px-1.5 py-1 text-xs disabled:pointer-events-none disabled:opacity-50"
 					>
-						<Plus className="h-3.5 w-3.5" />
-						Add
-					</Button>
+						<Plus className="h-3.5 w-3.5" />添加</Button>
 					{isStreaming ? (
 						<Button
 							onClick={onStopStreaming}
@@ -253,9 +251,7 @@ export function NewMessageInputView() {
 							data-testid="new-message-stop"
 							className="text-destructive hover:text-destructive hover:bg-destructive/10 flex items-center gap-1 rounded px-1.5 py-1 text-xs"
 						>
-							<Square className="!h-3 !w-3 fill-current" />
-							Stop
-						</Button>
+							<Square className="!h-3 !w-3 fill-current" />停止</Button>
 					) : (
 						<Tooltip>
 							<TooltipTrigger asChild>
@@ -266,12 +262,10 @@ export function NewMessageInputView() {
 									data-testid="new-message-run"
 									className="text-muted-foreground hover:text-foreground flex items-center gap-1 rounded px-1.5 py-1 text-xs disabled:pointer-events-none disabled:opacity-50"
 								>
-									<Play className="h-3.5 w-3.5" />
-									Run
-								</Button>
+									<Play className="h-3.5 w-3.5" />运行</Button>
 							</TooltipTrigger>
 							<TooltipContent side="top">
-								{!canRun ? <span>Select a provider and model to run</span> : <span>Run prompt</span>}
+								{!canRun ? <span>选择要运行的提供商和模型</span> : <span>运行提示词</span>}
 								<kbd className="bg-primary-foreground/20 ml-1.5 rounded px-1 py-0.5 font-mono text-[10px]">↵</kbd>
 							</TooltipContent>
 						</Tooltip>

@@ -73,12 +73,12 @@ export function MCPLibraryFilterSidebar({ filters, onFiltersChange }: SidebarPro
 				type="button"
 				onClick={toggleCollapsed}
 				className="bg-card group flex h-full w-10 shrink-0 cursor-pointer flex-col items-center gap-3 rounded-r-md py-4 text-sm font-medium"
-				title="Show filters"
-				aria-label="Show filters"
+				title="显示筛选"
+				aria-label="显示筛选"
 				data-testid="mcpLibraryFilterSidebar-toggle-show"
 			>
 				<PanelLeftOpen className="text-muted-foreground group-hover:text-foreground size-4 transition-colors" />
-				<span className="rotate-180 select-none [writing-mode:vertical-rl]">Filters</span>
+				<span className="rotate-180 select-none [writing-mode:vertical-rl]">筛选</span>
 				{activeFilterCount > 0 && (
 					<span className="bg-primary/10 text-primary flex size-6 items-center justify-center rounded-full text-xs font-medium">
 						{activeFilterCount}
@@ -91,7 +91,7 @@ export function MCPLibraryFilterSidebar({ filters, onFiltersChange }: SidebarPro
 	return (
 		<div className="bg-card flex h-full w-64 shrink-0 flex-col rounded-r-md">
 			<div className="flex h-11 items-center justify-between border-b pr-2 pl-5">
-				<span className="text-sm font-semibold">Filters</span>
+				<span className="text-sm font-semibold">筛选</span>
 				<div className="flex items-center gap-1">
 					{activeFilterCount > 0 && (
 						<Button
@@ -101,17 +101,15 @@ export function MCPLibraryFilterSidebar({ filters, onFiltersChange }: SidebarPro
 							onClick={handleReset}
 							data-testid="mcpLibraryFilterSidebar-reset-button"
 						>
-							<RotateCcw className="size-3" />
-							Reset
-						</Button>
+							<RotateCcw className="size-3" />重置</Button>
 					)}
 					<Button
 						variant="ghost"
 						size="icon"
 						className="size-7"
 						onClick={toggleCollapsed}
-						title="Hide filters"
-						aria-label="Hide filters"
+						title="隐藏筛选"
+						aria-label="隐藏筛选"
 						data-testid="mcpLibraryFilterSidebar-toggle-hide"
 					>
 						<PanelLeftClose className="size-4" />
@@ -122,16 +120,14 @@ export function MCPLibraryFilterSidebar({ filters, onFiltersChange }: SidebarPro
 			<ScrollArea className="flex flex-1 overflow-y-auto p-2 pb-0" viewportClassName="no-table">
 				{isError ? (
 					<div className="flex flex-col items-center gap-3 px-3 py-8 text-center" data-testid="mcpLibraryFilterSidebar-error">
-						<p className="text-muted-foreground text-sm">Failed to load filters.</p>
+						<p className="text-muted-foreground text-sm">无法加载筛选条件。</p>
 						<Button variant="outline" size="sm" onClick={() => refetch()} data-testid="mcpLibraryFilterSidebar-retry-button">
-							<RotateCcw className="size-3" />
-							Retry
-						</Button>
+							<RotateCcw className="size-3" />重试</Button>
 					</div>
 				) : (
 					<div className="flex grow flex-col gap-1">
 						<CheckboxFilterSection
-							title="Category"
+							title="分类"
 							items={filterData?.categories || []}
 							selected={filters.categories}
 							loading={isLoading}
@@ -140,7 +136,7 @@ export function MCPLibraryFilterSidebar({ filters, onFiltersChange }: SidebarPro
 							testIdPrefix="mcp-library-filter-category"
 						/>
 						<CheckboxFilterSection
-							title="Connection Type"
+							title="连接类型"
 							items={filterData?.connection_types || []}
 							selected={filters.connection_types}
 							loading={isLoading}
@@ -148,7 +144,7 @@ export function MCPLibraryFilterSidebar({ filters, onFiltersChange }: SidebarPro
 							testIdPrefix="mcp-library-filter-connection-type"
 						/>
 						<CheckboxFilterSection
-							title="Auth Type"
+							title="认证类型"
 							items={filterData?.auth_types || []}
 							selected={filters.auth_types}
 							loading={isLoading}
@@ -156,7 +152,7 @@ export function MCPLibraryFilterSidebar({ filters, onFiltersChange }: SidebarPro
 							testIdPrefix="mcp-library-filter-auth-type"
 						/>
 						<CheckboxFilterSection
-							title="Tags"
+							title="标签"
 							items={filterData?.tags || []}
 							selected={filters.tags}
 							loading={isLoading}
@@ -290,7 +286,7 @@ function CheckboxFilterSection({
 					<Input
 						value={query}
 						onChange={(e) => setQuery(e.target.value)}
-						placeholder="Search..."
+						placeholder="搜索..."
 						className="h-8 border-0 pl-8 text-xs"
 						data-testid={testIdPrefix ? `${testIdPrefix}-search` : undefined}
 					/>
@@ -305,7 +301,7 @@ function CheckboxFilterSection({
 					testId={testIdPrefix ? `${testIdPrefix}-checkbox-${item}` : undefined}
 				/>
 			))}
-			{filtered.length === 0 && <div className="text-muted-foreground flex h-9 items-center px-3 text-xs">No results</div>}
+			{filtered.length === 0 && <div className="text-muted-foreground flex h-9 items-center px-3 text-xs">无结果</div>}
 		</FilterSection>
 	);
 }

@@ -32,7 +32,7 @@ export default function OAuth2ConsentPage() {
 		return (
 			<Shell>
 				<div className="text-center">
-					<h1 className="text-xl font-semibold">Missing flow identifier</h1>
+					<h1 className="text-xl font-semibold">缺少流程标识符</h1>
 					<p className="text-muted-foreground mt-2 text-sm">
 						This URL is missing the{" "}
 						<code className="bg-muted rounded px-1 py-0.5 text-xs">flow</code>{" "}
@@ -114,13 +114,13 @@ function ConsentView({ flowId }: { flowId: string }) {
 			// schemes while still allowing http(s) and native custom-scheme
 			// redirects that clients may register.
 			if (!isSafeRedirect(res.redirect_url)) {
-				toast.error("Authentication failed", { description: "Invalid redirect URL" });
+				toast.error("认证失败", { description: "无效的重定向 URL" });
 				setSelectedMode(null);
 				return;
 			}
 			window.location.href = res.redirect_url;
 		} catch (err) {
-			toast.error("Authentication failed", { description: getErrorMessage(err) });
+			toast.error("认证失败", { description: getErrorMessage(err) });
 			setSelectedMode(null);
 		}
 	};
@@ -133,7 +133,7 @@ function ConsentView({ flowId }: { flowId: string }) {
 		return (
 			<Shell>
 				<div className="text-center">
-					<h1 className="text-xl font-semibold">Link unavailable</h1>
+					<h1 className="text-xl font-semibold">链接不可用</h1>
 					<p className="text-muted-foreground mt-2 text-sm">
 						This authorization link may have expired or already been used.
 						Restart the connection from your MCP client to get a fresh link.
@@ -147,7 +147,7 @@ function ConsentView({ flowId }: { flowId: string }) {
 	const hasVK = flow.available_modes.includes("vk");
 	const hasSession = flow.available_modes.includes("session");
 	const hasAnyMode = hasUser || hasVK || hasSession;
-	const clientName = flow.client_name || "MCP Client";
+	const clientName = flow.client_name || "MCP 客户端";
 
 	return (
 		<Shell>
@@ -159,9 +159,7 @@ function ConsentView({ flowId }: { flowId: string }) {
 				<h1 className="text-xl font-semibold tracking-tight">
 					{clientName} wants to connect
 				</h1>
-				<p className="text-muted-foreground mt-1.5 text-sm">
-					Choose how you'd like to identify yourself to Bifrost
-				</p>
+				<p className="text-muted-foreground mt-1.5 text-sm">选择您希望如何向 Bifrost 表明身份</p>
 			</div>
 
 			<div className="space-y-3">
@@ -171,12 +169,8 @@ function ConsentView({ flowId }: { flowId: string }) {
 						className="rounded-sm border p-4 text-center"
 						data-testid="oauth-consent-empty-state"
 					>
-						<p className="text-sm font-medium">
-							No authentication options available
-						</p>
-						<p className="text-muted-foreground mt-1 text-xs">
-							Restart the connection from your MCP client.
-						</p>
+						<p className="text-sm font-medium">没有可用的认证选项</p>
+						<p className="text-muted-foreground mt-1 text-xs">从您的 MCP 客户端重新启动连接。</p>
 					</div>
 				)}
 
@@ -191,7 +185,7 @@ function ConsentView({ flowId }: { flowId: string }) {
 								<p className="text-sm font-medium leading-tight">
 									{flow.logged_in_user.name || flow.logged_in_user.id}
 								</p>
-								<p className="text-muted-foreground text-xs">Signed-in account</p>
+								<p className="text-muted-foreground text-xs">已登录账户</p>
 							</div>
 						</div>
 						<Button
@@ -201,7 +195,7 @@ function ConsentView({ flowId }: { flowId: string }) {
 							disabled={submitting}
 						>
 							{submitting && selectedMode === "user" ? (
-								<><Loader2 className="mr-2 size-4 animate-spin" />Connecting…</>
+								<><Loader2 className="mr-2 size-4 animate-spin" />连接中…</>
 							) : (
 								<>Continue as {flow.logged_in_user.name || flow.logged_in_user.id}</>
 							)}
@@ -217,17 +211,13 @@ function ConsentView({ flowId }: { flowId: string }) {
 								<UserRound className="text-muted-foreground size-4" />
 							</div>
 							<div>
-								<p className="text-sm font-medium">Sign in with your account</p>
-								<p className="text-muted-foreground text-xs">
-									Requires a Bifrost dashboard account
-								</p>
+								<p className="text-sm font-medium">使用您的账户登录</p>
+								<p className="text-muted-foreground text-xs">需要 Bifrost 仪表盘账户</p>
 							</div>
 						</div>
 						<Button asChild variant="outline" className="mt-4 w-full">
 							<a href={loginHref} data-testid="oauth-consent-signin-link">
-								<LogIn className="mr-2 size-4" />
-								Sign in to continue
-							</a>
+								<LogIn className="mr-2 size-4" />登录以继续</a>
 						</Button>
 					</div>
 				)}
@@ -250,10 +240,8 @@ function ConsentView({ flowId }: { flowId: string }) {
 								<KeyRound className="text-muted-foreground size-4" />
 							</div>
 							<div>
-								<p className="text-sm font-medium">Virtual Key</p>
-								<p className="text-muted-foreground text-xs">
-									Use a Virtual Key from your Bifrost workspace
-								</p>
+								<p className="text-sm font-medium">虚拟密钥</p>
+								<p className="text-muted-foreground text-xs">使用 Bifrost 工作区中的虚拟密钥</p>
 							</div>
 						</div>
 						<Input
@@ -278,7 +266,7 @@ function ConsentView({ flowId }: { flowId: string }) {
 							disabled={submitting || !vkValue.trim()}
 						>
 							{submitting && selectedMode === "vk" ? (
-								<><Loader2 className="mr-2 size-4 animate-spin" />Connecting…</>
+								<><Loader2 className="mr-2 size-4 animate-spin" />连接中…</>
 							) : (
 								"Connect with key"
 							)}
@@ -314,12 +302,10 @@ function ConsentView({ flowId }: { flowId: string }) {
 						<div className="text-left">
 							<span className="block text-sm font-normal">
 								{submitting && selectedMode === "session"
-									? "Connecting…"
+									? "连接中…"
 									: "Continue without an identity"}
 							</span>
-							<span className="text-xs opacity-70">
-								Anonymous session - no account required
-							</span>
+							<span className="text-xs opacity-70">匿名会话 - 无需账户</span>
 						</div>
 					</Button>
 				)}
@@ -362,9 +348,7 @@ function InvalidLinkView() {
 	return (
 		<Shell>
 			<div className="text-center">
-				<h1 className="text-xl font-semibold tracking-tight">
-					This link is no longer valid
-				</h1>
+				<h1 className="text-xl font-semibold tracking-tight">此链接已失效</h1>
 				<p className="text-muted-foreground mt-2 text-sm">
 					The authorization link has expired, been used already, or had its
 					token stripped. Restart the connection from your MCP client to get a

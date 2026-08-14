@@ -77,14 +77,10 @@ function TeamActionsMenu({
 							setIsOpen(false);
 						}}
 					>
-						<Edit className="h-4 w-4" />
-						Edit
-					</DropdownMenuItem>
+						<Edit className="h-4 w-4" />编辑</DropdownMenuItem>
 					<DropdownMenuItem asChild className="cursor-pointer" data-testid={`team-view-logs-btn-${team.name}`}>
 						<Link to="/workspace/logs" search={{ team_ids: [team.id] }} onClick={() => setIsOpen(false)}>
-							<ScrollText className="h-4 w-4" />
-							View logs
-						</Link>
+							<ScrollText className="h-4 w-4" />查看日志</Link>
 					</DropdownMenuItem>
 					<DropdownMenuItem
 						variant="destructive"
@@ -97,24 +93,22 @@ function TeamActionsMenu({
 							setIsOpen(false);
 						}}
 					>
-						<Trash2 className="h-4 w-4" />
-						Delete
-					</DropdownMenuItem>
+						<Trash2 className="h-4 w-4" />删除</DropdownMenuItem>
 				</DropdownMenuContent>
 			</DropdownMenu>
 			<AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
 				<AlertDialogContent>
 					<AlertDialogHeader>
-						<AlertDialogTitle>Delete Team</AlertDialogTitle>
+						<AlertDialogTitle>删除团队</AlertDialogTitle>
 						<AlertDialogDescription>
 							Are you sure you want to delete &quot;{team.name}&quot;? This will also unassign any virtual keys from this team. This action
 							cannot be undone.
 						</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
-						<AlertDialogCancel>Cancel</AlertDialogCancel>
+						<AlertDialogCancel>取消</AlertDialogCancel>
 						<AlertDialogAction onClick={() => onDelete(team.id)} disabled={isDeleting} className="bg-red-600 hover:bg-red-700">
-							{isDeleting ? "Deleting..." : "Delete"}
+							{isDeleting ? "删除中..." : "删除"}
 						</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>
@@ -222,21 +216,19 @@ export default function TeamsTable({
 				<div className="flex grow flex-col overflow-y-auto">
 					<div className="mb-4 flex items-center justify-between">
 						<div>
-							<h2 className="text-lg font-semibold">Teams</h2>
-							<p className="text-muted-foreground text-sm">Organize users into teams with shared budgets and access controls.</p>
+							<h2 className="text-lg font-semibold">团队</h2>
+							<p className="text-muted-foreground text-sm">将用户组织成拥有共享预算和访问控制的团队。</p>
 						</div>
 						<Button data-testid="create-team-btn" onClick={handleAddTeam} disabled={!hasCreateAccess}>
-							<Plus className="h-4 w-4" />
-							Add Team
-						</Button>
+							<Plus className="h-4 w-4" />添加团队</Button>
 					</div>
 
 					<div className="mb-4 flex items-center gap-3">
 						<div className="relative max-w-sm flex-1">
 							<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 							<Input
-								aria-label="Search teams by name"
-								placeholder="Search by name..."
+								aria-label="按名称搜索团队"
+								placeholder="按名称搜索..."
 								value={search}
 								onChange={(e) => onSearchChange(e.target.value)}
 								className="pl-9"
@@ -249,11 +241,11 @@ export default function TeamsTable({
 						<Table className="min-w-[1100px]" containerClassName="h-full">
 							<TableHeader className="bg-background sticky top-0">
 								<TableRow>
-									<TableHead>Name</TableHead>
-									<TableHead>Customer</TableHead>
-									<TableHead>Budget</TableHead>
-									<TableHead>Rate Limit</TableHead>
-									<TableHead>Virtual Keys</TableHead>
+									<TableHead>名称</TableHead>
+									<TableHead>客户</TableHead>
+									<TableHead>预算</TableHead>
+									<TableHead>速率限制</TableHead>
+									<TableHead>虚拟密钥</TableHead>
 									<TableHead className={`bg-muted sticky right-0 z-10 w-[56px] text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
 								</TableRow>
 							</TableHeader>
@@ -261,7 +253,7 @@ export default function TeamsTable({
 								{teams.length === 0 ? (
 									<TableRow>
 										<TableCell colSpan={6} className="h-24 text-center">
-											<span className="text-muted-foreground text-sm">No matching teams found.</span>
+											<span className="text-muted-foreground text-sm">未找到匹配的团队。</span>
 										</TableCell>
 									</TableRow>
 								) : (
@@ -304,9 +296,7 @@ export default function TeamsTable({
 													<div className="flex flex-col gap-2">
 														<span className="truncate font-medium">{team.name}</span>
 														{isExhausted && (
-															<Badge variant="destructive" className="w-fit text-xs">
-																Limit Reached
-															</Badge>
+															<Badge variant="destructive" className="w-fit text-xs">已达上限</Badge>
 														)}
 													</div>
 												</TableCell>
@@ -478,13 +468,13 @@ export default function TeamsTable({
 									onClick={() => onOffsetChange(Math.max(0, offset - limit))}
 									disabled={offset === 0}
 									data-testid="teams-pagination-prev-btn"
-									aria-label="Previous page"
+									aria-label="上一页"
 								>
 									<ChevronLeft className="size-3" />
 								</Button>
 
 								<div className="flex items-center gap-1">
-									<span>Page</span>
+									<span>页</span>
 									<span>{Math.floor(offset / limit) + 1}</span>
 									<span>of {Math.ceil(totalCount / limit)}</span>
 								</div>
@@ -495,7 +485,7 @@ export default function TeamsTable({
 									onClick={() => onOffsetChange(offset + limit)}
 									disabled={offset + limit >= totalCount}
 									data-testid="teams-pagination-next-btn"
-									aria-label="Next page"
+									aria-label="下一页"
 								>
 									<ChevronRight className="size-3" />
 								</Button>

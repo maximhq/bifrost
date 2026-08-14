@@ -1,7 +1,7 @@
 import { MCPClient } from "@/lib/types/mcp";
 
 /**
- * canReconnectMCPClient reports whether the "Reconnect" action applies to
+ * canReconnectMCPClient reports whether the "重新连接" action applies to
  * this client at all — mirrors core/mcp/credstore's RequiresPerCallConnection
  * exactly, so the UI never offers an action the backend rejects with
  * ErrMCPReconnectNotApplicable:

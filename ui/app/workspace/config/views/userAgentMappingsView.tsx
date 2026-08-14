@@ -31,9 +31,9 @@ import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
 const matchTypeOptions: Array<{ value: UserAgentMappingMatchType; label: string }> = [
-	{ value: "contains", label: "Contains" },
-	{ value: "starts_with", label: "Starts with" },
-	{ value: "exact", label: "Exact match" },
+	{ value: "contains", label: "包含" },
+	{ value: "starts_with", label: "以...开头" },
+	{ value: "exact", label: "精确匹配" },
 	{ value: "regex", label: "Regex" },
 ];
 
@@ -116,14 +116,12 @@ export default function UserAgentMappingsView({ disabled }: UserAgentMappingsVie
 		<div className="space-y-4">
 			<div className="flex items-start justify-between gap-4">
 				<div>
-					<h3 className="text-lg font-semibold tracking-tight">User Agent Mappings</h3>
-					<p className="text-muted-foreground text-sm">Map incoming User-Agent strings to app names and optional logos used in logs.</p>
+					<h3 className="text-lg font-semibold tracking-tight">User-Agent 映射</h3>
+					<p className="text-muted-foreground text-sm">将传入的 User-Agent 字符串映射到日志中使用的应用名称和可选徽标。</p>
 				</div>
 				<div className="pt-2">
 					<Button type="button" variant="outline" size="sm" onClick={openAddSheet} disabled={controlsDisabled} data-testid="user-agent-mapping-add-btn">
-						<Plus className="h-4 w-4" />
-						Add
-					</Button>
+						<Plus className="h-4 w-4" />添加</Button>
 				</div>
 			</div>
 
@@ -131,17 +129,15 @@ export default function UserAgentMappingsView({ disabled }: UserAgentMappingsVie
 				<SheetContent className="p-0">
 					<SheetHeader className="flex flex-col items-start px-6 pt-6">
 						<SheetTitle>{isEditing ? "Edit User Agent Mapping" : "Add User Agent Mapping"}</SheetTitle>
-						<SheetDescription>Define how a User-Agent value maps to an app label in logs.</SheetDescription>
+						<SheetDescription>定义 User-Agent 值如何映射到日志中的应用标签。</SheetDescription>
 					</SheetHeader>
 					<div className="flex-1 space-y-4 px-6">
 						<MappingForm draft={draft} onChange={setDraft} disabled={controlsDisabled} />
 					</div>
 					<SheetFooter className="flex-row justify-end border-t px-6 py-4">
-						<Button type="button" variant="outline" onClick={() => handleSheetOpenChange(false)} data-testid="user-agent-mapping-cancel-btn">
-							Cancel
-						</Button>
+						<Button type="button" variant="outline" onClick={() => handleSheetOpenChange(false)} data-testid="user-agent-mapping-cancel-btn">取消</Button>
 						<Button type="button" onClick={handleSubmit} disabled={controlsDisabled} data-testid="user-agent-mapping-submit-btn">
-							{isEditing ? "Save Changes" : "Add Mapping"}
+							{isEditing ? "保存更改" : "Add Mapping"}
 						</Button>
 					</SheetFooter>
 				</SheetContent>
@@ -150,26 +146,22 @@ export default function UserAgentMappingsView({ disabled }: UserAgentMappingsVie
 			<Table containerClassName="rounded-sm border">
 				<TableHeader>
 					<TableRow>
-						<TableHead>Pattern</TableHead>
-						<TableHead>Match</TableHead>
-						<TableHead>App</TableHead>
-						<TableHead>Logo</TableHead>
-						<TableHead>Active</TableHead>
-						<TableHead className="w-[92px] text-right">Actions</TableHead>
+						<TableHead>模式</TableHead>
+						<TableHead>匹配</TableHead>
+						<TableHead>应用</TableHead>
+						<TableHead>徽标</TableHead>
+						<TableHead>已激活</TableHead>
+						<TableHead className="w-[92px] text-right">操作</TableHead>
 					</TableRow>
 				</TableHeader>
 				<TableBody>
 					{isLoading ? (
 						<TableRow>
-							<TableCell colSpan={6} className="text-muted-foreground py-6 text-center">
-								Loading mappings...
-							</TableCell>
+							<TableCell colSpan={6} className="text-muted-foreground py-6 text-center">正在加载映射...</TableCell>
 						</TableRow>
 					) : mappings.length === 0 ? (
 						<TableRow>
-							<TableCell colSpan={6} className="text-muted-foreground py-6 text-center">
-								No user agent mappings configured.
-							</TableCell>
+							<TableCell colSpan={6} className="text-muted-foreground py-6 text-center">未配置 User-Agent 映射。</TableCell>
 						</TableRow>
 					) : (
 						mappings.map((mapping) => {
@@ -194,7 +186,7 @@ export default function UserAgentMappingsView({ disabled }: UserAgentMappingsVie
 									</TableCell>
 									<TableCell>
 										<span className={mapping.is_active ? "text-sm text-emerald-700" : "text-muted-foreground text-sm"}>
-											{mapping.is_active ? "Active" : "Inactive"}
+											{mapping.is_active ? "已激活" : "Inactive"}
 										</span>
 									</TableCell>
 									<TableCell className="text-right">
@@ -206,7 +198,7 @@ export default function UserAgentMappingsView({ disabled }: UserAgentMappingsVie
 														variant="ghost"
 														size="icon"
 														disabled={controlsDisabled}
-														aria-label="Mapping actions"
+														aria-label="映射操作"
 														data-testid={`user-agent-mapping-actions-${mapping.id}`}
 													>
 														<MoreVertical className="h-4 w-4" />
@@ -214,30 +206,24 @@ export default function UserAgentMappingsView({ disabled }: UserAgentMappingsVie
 												</DropdownMenuTrigger>
 												<DropdownMenuContent align="end">
 													<DropdownMenuItem onSelect={() => openEditSheet(mapping)} data-testid={`user-agent-mapping-edit-${mapping.id}`}>
-														<Pencil className="h-4 w-4" />
-														Edit
-													</DropdownMenuItem>
+														<Pencil className="h-4 w-4" />编辑</DropdownMenuItem>
 													<AlertDialogTrigger asChild>
 														<DropdownMenuItem variant="destructive" data-testid={`user-agent-mapping-delete-${mapping.id}`}>
-															<Trash2 className="h-4 w-4" />
-															Delete
-														</DropdownMenuItem>
+															<Trash2 className="h-4 w-4" />删除</DropdownMenuItem>
 													</AlertDialogTrigger>
 												</DropdownMenuContent>
 											</DropdownMenu>
 											<AlertDialogContent>
 												<AlertDialogHeader>
-													<AlertDialogTitle>Are you sure you want to delete this mapping?</AlertDialogTitle>
-													<AlertDialogDescription>This action cannot be undone. This will permanently delete the user agent mapping.</AlertDialogDescription>
+													<AlertDialogTitle>确定要删除此映射吗？</AlertDialogTitle>
+													<AlertDialogDescription>此操作无法撤销。将永久删除该 User-Agent 映射。</AlertDialogDescription>
 												</AlertDialogHeader>
 												<AlertDialogFooter>
-													<AlertDialogCancel data-testid={`user-agent-mapping-delete-cancel-${mapping.id}`}>Cancel</AlertDialogCancel>
+													<AlertDialogCancel data-testid={`user-agent-mapping-delete-cancel-${mapping.id}`}>取消</AlertDialogCancel>
 													<AlertDialogAction
 														data-testid={`user-agent-mapping-delete-confirm-${mapping.id}`}
 														onClick={() => handleDelete(mapping.id)}
-													>
-														Delete
-													</AlertDialogAction>
+													>删除</AlertDialogAction>
 												</AlertDialogFooter>
 											</AlertDialogContent>
 										</AlertDialog>
@@ -264,12 +250,10 @@ function MappingForm({
 	return (
 		<div className="space-y-4">
 			<div className="space-y-2">
-				<label htmlFor="user-agent-mapping-pattern-input" className="text-sm font-medium">
-					Pattern
-				</label>
+				<label htmlFor="user-agent-mapping-pattern-input" className="text-sm font-medium">模式</label>
 				<Input
 					id="user-agent-mapping-pattern-input"
-					placeholder="User-Agent string or regex"
+					placeholder="User-Agent 字符串或正则"
 					value={draft.pattern}
 					onChange={(event) => onChange({ ...draft, pattern: event.target.value })}
 					disabled={disabled}
@@ -288,12 +272,10 @@ function MappingForm({
 				/>
 			</div>
 			<div className="space-y-2">
-				<label htmlFor="user-agent-mapping-app-input" className="text-sm font-medium">
-					App
-				</label>
+				<label htmlFor="user-agent-mapping-app-input" className="text-sm font-medium">应用</label>
 				<Input
 					id="user-agent-mapping-app-input"
-					placeholder="App"
+					placeholder="应用"
 					value={draft.app}
 					onChange={(event) => onChange({ ...draft, app: event.target.value })}
 					disabled={disabled}
@@ -301,15 +283,13 @@ function MappingForm({
 				/>
 			</div>
 			<div className="space-y-2">
-				<label htmlFor="user-agent-mapping-logo-upload" className="text-sm font-medium">
-					Logo
-				</label>
+				<label htmlFor="user-agent-mapping-logo-upload" className="text-sm font-medium">徽标</label>
 				<LogoInput draft={draft} onChange={onChange} disabled={disabled} />
 			</div>
 			<div className="flex items-center justify-between rounded-sm border p-3">
 				<div>
-					<p className="text-sm font-medium">Active</p>
-					<p className="text-muted-foreground text-xs">Inactive mappings are saved but ignored by detection.</p>
+					<p className="text-sm font-medium">已激活</p>
+					<p className="text-muted-foreground text-xs">未启用的映射会被保存，但检测时会忽略。</p>
 				</div>
 				<Switch
 					checked={draft.is_active}
@@ -363,7 +343,7 @@ function LogoInput({
 		<div className="flex items-center gap-2">
 			{dataUrl && <img src={dataUrl} alt="" className="size-7 rounded-sm border object-contain" />}
 			<Button type="button" variant="outline" size="icon" disabled={disabled} asChild>
-				<label aria-label="Upload logo">
+				<label aria-label="上传徽标">
 					<Upload className="h-4 w-4" />
 					<input
 						id="user-agent-mapping-logo-upload"
@@ -396,7 +376,7 @@ function LogoInput({
 				size="icon"
 				disabled={disabled || !draft.logo}
 				onClick={() => onChange({ ...draft, logo: undefined, logo_mime: null })}
-				aria-label="Remove logo"
+				aria-label="移除徽标"
 				data-testid="user-agent-mapping-logo-remove"
 			>
 				<X className="h-4 w-4" />

@@ -27,17 +27,13 @@ export default function TrialExpiryBanner() {
 			{expired ? (
 				<span>
 					Your Bifrost Enterprise Trial has expired.{" "}
-					<a href={supportHref} className="font-semibold underline underline-offset-2">
-						Contact us
-					</a>{" "}
+					<a href={supportHref} className="font-semibold underline underline-offset-2">联系我们</a>{" "}
 					if you need any assistance.
 				</span>
 			) : (
 				<span>
 					Your Bifrost Enterprise Trial expires in {daysRemaining} {daysRemaining === 1 ? "day" : "days"}.{" "}
-					<a href={supportHref} className="font-semibold underline underline-offset-2">
-						Contact us
-					</a>{" "}
+					<a href={supportHref} className="font-semibold underline underline-offset-2">联系我们</a>{" "}
 					if you need any assistance.
 				</span>
 			)}

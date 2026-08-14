@@ -81,21 +81,18 @@ export function DebuggingFormFragment({ provider }: DebuggingFormFragmentProps) 
 								<div className="flex items-center justify-between space-x-2">
 									<div className="space-y-0.5">
 										<div className="flex items-center gap-1.5">
-											<FormLabel>Send Back Raw Request</FormLabel>
+											<FormLabel>回传原始请求</FormLabel>
 											<TooltipProvider>
 												<Tooltip>
 													<TooltipTrigger asChild data-testid="provider-debugging-send-back-raw-request-tooltip-trigger">
 														<Info className="text-muted-foreground h-3 w-3 cursor-pointer" />
 													</TooltipTrigger>
-													<TooltipContent>
-														Override per-request with header: <code>x-bf-send-back-raw-request: {String(!sendBackRawRequest)}</code>
+													<TooltipContent>使用请求头按请求覆盖：<code>x-bf-send-back-raw-request: {String(!sendBackRawRequest)}</code>
 													</TooltipContent>
 												</Tooltip>
 											</TooltipProvider>
 										</div>
-										<p className="text-muted-foreground text-xs">
-											Include the raw provider request alongside the parsed request in the API response.
-										</p>
+										<p className="text-muted-foreground text-xs">在 API 响应中包含原始提供商请求及解析后的请求。</p>
 									</div>
 									<FormControl>
 										<Switch
@@ -123,21 +120,18 @@ export function DebuggingFormFragment({ provider }: DebuggingFormFragmentProps) 
 								<div className="flex items-center justify-between space-x-2">
 									<div className="space-y-0.5">
 										<div className="flex items-center gap-1.5">
-											<FormLabel>Send Back Raw Response</FormLabel>
+											<FormLabel>回传原始响应</FormLabel>
 											<TooltipProvider>
 												<Tooltip>
 													<TooltipTrigger asChild data-testid="provider-debugging-send-back-raw-response-tooltip-trigger">
 														<Info className="text-muted-foreground h-3 w-3 cursor-pointer" />
 													</TooltipTrigger>
-													<TooltipContent>
-														Override per-request with header: <code>x-bf-send-back-raw-response: {String(!sendBackRawResponse)}</code>
+													<TooltipContent>使用请求头按请求覆盖：<code>x-bf-send-back-raw-response: {String(!sendBackRawResponse)}</code>
 													</TooltipContent>
 												</Tooltip>
 											</TooltipProvider>
 										</div>
-										<p className="text-muted-foreground text-xs">
-											Include the raw provider response alongside the parsed response in the API response.
-										</p>
+										<p className="text-muted-foreground text-xs">在 API 响应中包含原始提供商响应及解析后的响应。</p>
 									</div>
 									<FormControl>
 										<Switch
@@ -165,7 +159,7 @@ export function DebuggingFormFragment({ provider }: DebuggingFormFragmentProps) 
 								<div className="flex items-center justify-between space-x-2">
 									<div className="space-y-0.5">
 										<div className="flex items-center gap-1.5">
-											<FormLabel>Store Raw Request/Response</FormLabel>
+											<FormLabel>存储原始请求/响应</FormLabel>
 											<TooltipProvider>
 												<Tooltip>
 													<TooltipTrigger asChild data-testid="provider-debugging-store-raw-request-response-tooltip-trigger">
@@ -178,7 +172,7 @@ export function DebuggingFormFragment({ provider }: DebuggingFormFragmentProps) 
 												</Tooltip>
 											</TooltipProvider>
 										</div>
-										<p className="text-muted-foreground text-xs">Persist raw request and response payloads in log records.</p>
+										<p className="text-muted-foreground text-xs">在日志记录中持久化原始请求和响应负载。</p>
 									</div>
 									<FormControl>
 										<Switch
@@ -204,9 +198,7 @@ export function DebuggingFormFragment({ provider }: DebuggingFormFragmentProps) 
 						type="submit"
 						disabled={!form.formState.isDirty || !hasUpdateProviderAccess || isUpdatingProvider}
 						isLoading={isUpdatingProvider}
-					>
-						Save Debugging Configuration
-					</Button>
+					>保存调试配置</Button>
 				</div>
 			</form>
 		</Form>

@@ -46,7 +46,7 @@ const titles: Record<Status, string> = {
 	input: "Enter sample values",
 	testing: "Verifying connection",
 	success: "Connection verified",
-	failed: "Verification failed",
+	failed: "验证失败",
 };
 
 const subtitles: Record<Status, string> = {
@@ -165,12 +165,8 @@ export const MCPHeadersAuthorizer: React.FC<MCPHeadersAuthorizerProps> = ({
 								</p>
 							</InfoBox>
 							<div className="flex justify-end gap-2">
-								<Button size="sm" variant="outline" onClick={handleCancel} data-testid="per-user-headers-cancel">
-									Cancel
-								</Button>
-								<Button size="sm" onClick={handleConfirm} data-testid="per-user-headers-confirm">
-									Continue
-								</Button>
+								<Button size="sm" variant="outline" onClick={handleCancel} data-testid="per-user-headers-cancel">取消</Button>
+								<Button size="sm" onClick={handleConfirm} data-testid="per-user-headers-confirm">继续</Button>
 							</div>
 						</>
 					)}
@@ -198,8 +194,8 @@ export const MCPHeadersAuthorizer: React.FC<MCPHeadersAuthorizerProps> = ({
 					{status === "testing" && (
 						<>
 							<InfoBox icon={<Loader2 className="size-4 animate-spin" />}>
-								<p>Checking your headers against the server and discovering available tools.</p>
-								<p className="text-muted-foreground/80 text-xs">This only takes a moment.</p>
+								<p>正在向服务器检查您的请求头并发现可用工具。</p>
+								<p className="text-muted-foreground/80 text-xs">这只需要片刻。</p>
 							</InfoBox>
 							<div className="flex items-center justify-end">
 								<StepDots active={2} total={3} />
@@ -210,8 +206,8 @@ export const MCPHeadersAuthorizer: React.FC<MCPHeadersAuthorizerProps> = ({
 					{/* Success */}
 					{status === "success" && (
 						<InfoBox variant="success" icon={<CheckCircle2 className="size-4" />}>
-							<p className="font-medium">Header configuration verified.</p>
-							<p className="text-xs opacity-80">You can close this dialog.</p>
+							<p className="font-medium">请求头配置已验证。</p>
+							<p className="text-xs opacity-80">您可以关闭此对话框。</p>
 						</InfoBox>
 					)}
 
@@ -219,17 +215,13 @@ export const MCPHeadersAuthorizer: React.FC<MCPHeadersAuthorizerProps> = ({
 					{status === "failed" && (
 						<>
 							<InfoBox variant="danger" icon={<XCircle className="size-4" />}>
-								<p className="font-medium">Verification did not complete.</p>
+								<p className="font-medium">验证未完成。</p>
 								<p className="text-xs opacity-80">{errorMessage ?? "Check your header values and try again."}</p>
 							</InfoBox>
 							<div className="flex justify-end gap-2">
-								<Button size="sm" variant="outline" onClick={handleCancel} data-testid="mcp-headers-authorizer-close-btn">
-									Close
-								</Button>
+								<Button size="sm" variant="outline" onClick={handleCancel} data-testid="mcp-headers-authorizer-close-btn">关闭</Button>
 								<Button size="sm" onClick={handleRetry} data-testid="mcp-headers-authorizer-retry-btn">
-									<RefreshCw className="size-3.5" />
-									Retry
-								</Button>
+									<RefreshCw className="size-3.5" />重试</Button>
 							</div>
 						</>
 					)}

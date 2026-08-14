@@ -66,18 +66,18 @@ const traceTypeOptions: {
 	disabled?: boolean;
 	disabledReason?: string;
 }[] = [
-	{ value: "genai_extension", label: "OTel GenAI Extension (Recommended)" },
+	{ value: "genai_extension", label: "OTel GenAI 扩展（推荐）" },
 	{
 		value: "vercel",
 		label: "Vercel AI SDK",
 		disabled: true,
-		disabledReason: "Coming soon",
+		disabledReason: "即将推出",
 	},
 	{
 		value: "open_inference",
 		label: "Arize OpenInference",
 		disabled: true,
-		disabledReason: "Coming soon",
+		disabledReason: "即将推出",
 	},
 ];
 const protocolOptions: {
@@ -231,8 +231,7 @@ export function OtelFormFragment({
 					disabled={!hasOtelAccess}
 					data-testid="otel-add-profile-btn"
 				>
-					<Plus className="size-4" /> Add Profile
-				</Button>
+					<Plus className="size-4" />添加配置</Button>
 
 				{/* Form Actions */}
 				<div className="flex w-full flex-row items-center border-t pt-4">
@@ -241,7 +240,7 @@ export function OtelFormFragment({
 						name="enabled"
 						render={({ field }) => (
 							<FormItem className="flex items-center gap-2 py-2">
-								<FormLabel className="text-muted-foreground text-sm font-medium">Enabled</FormLabel>
+								<FormLabel className="text-muted-foreground text-sm font-medium">已启用</FormLabel>
 								<FormControl>
 									<Switch
 										checked={field.value}
@@ -261,8 +260,8 @@ export function OtelFormFragment({
 								onClick={onDelete}
 								disabled={isDeleting || !hasOtelAccess}
 								data-testid="otel-connector-delete-btn"
-								title="Delete connector"
-								aria-label="Delete connector"
+								title="删除连接器"
+								aria-label="删除连接器"
 							>
 								<Trash2 className="size-4" />
 							</Button>
@@ -274,15 +273,11 @@ export function OtelFormFragment({
 								form.reset(buildDefaults(initialConfig));
 							}}
 							disabled={!hasOtelAccess || isLoading || !form.formState.isDirty}
-						>
-							Reset
-						</Button>
+						>重置</Button>
 						<TooltipProvider>
 							<Tooltip>
 								<TooltipTrigger asChild>
-									<Button type="submit" disabled={!hasOtelAccess || !form.formState.isDirty} isLoading={isSaving}>
-										Save OTEL Configuration
-									</Button>
+									<Button type="submit" disabled={!hasOtelAccess || !form.formState.isDirty} isLoading={isSaving}>保存 OTEL 配置</Button>
 								</TooltipTrigger>
 								{!form.formState.isDirty && (
 									<TooltipContent>
@@ -353,8 +348,8 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 						<div className="flex min-w-0 flex-col">
 							<span className="flex items-center gap-2 truncate text-sm font-medium">
 								{serviceName || `Profile ${index + 1}`}
-								{!enabled && <Badge variant="secondary">Disabled</Badge>}
-								{enabled && !tracesEnabled && metricsEnabled && <Badge variant="secondary">Metrics only</Badge>}
+								{!enabled && <Badge variant="secondary">已禁用</Badge>}
+								{enabled && !tracesEnabled && metricsEnabled && <Badge variant="secondary">仅指标</Badge>}
 								{hasError && <Badge variant="destructive">Error</Badge>}
 							</span>
 							{collectorPreview && <span className="text-muted-foreground truncate text-xs">{collectorPreview}</span>}
@@ -373,7 +368,7 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 									onCheckedChange={field.onChange}
 									disabled={!hasOtelAccess}
 									data-testid={`otel-profile-${index}-enable-toggle`}
-									aria-label="Enable profile"
+									aria-label="启用配置"
 								/>
 							</FormControl>
 						</FormItem>
@@ -388,8 +383,8 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 						onClick={onRemove}
 						disabled={!hasOtelAccess}
 						data-testid={`otel-profile-${index}-remove-btn`}
-						title="Remove profile"
-						aria-label="Remove profile"
+						title="移除配置"
+						aria-label="移除配置"
 					>
 						<Trash2 className="size-4" />
 					</Button>
@@ -404,8 +399,8 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 						name={`${base}.service_name`}
 						render={({ field }) => (
 							<FormItem className="w-full">
-								<FormLabel>Service Name</FormLabel>
-								<FormDescription>If kept empty, the service name will be set to "bifrost"</FormDescription>
+								<FormLabel>服务名称</FormLabel>
+								<FormDescription>留空时服务名称将设置为“bifrost”</FormDescription>
 								<FormControl>
 									<Input placeholder="bifrost" disabled={!hasOtelAccess} {...field} />
 								</FormControl>
@@ -418,12 +413,12 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 						name={`${base}.protocol`}
 						render={({ field }) => (
 							<FormItem className="w-full max-w-xs">
-								<FormLabel>Protocol</FormLabel>
+								<FormLabel>协议</FormLabel>
 								<FormDescription>Transport used for both trace and metrics export.</FormDescription>
 								<Select onValueChange={field.onChange} value={field.value} disabled={!hasOtelAccess}>
 									<FormControl>
 										<SelectTrigger className="w-full">
-											<SelectValue placeholder="Select protocol" />
+											<SelectValue placeholder="选择协议" />
 										</SelectTrigger>
 									</FormControl>
 									<SelectContent>
@@ -445,14 +440,14 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 							<FormItem className="w-full">
 								<FormControl>
 									<HeadersTable
-										label="Common Headers"
+										label="公共请求头"
 										value={field.value || {}}
 										onChange={field.onChange}
 										disabled={!hasOtelAccess}
 										useSecretVarInput
 									/>
 								</FormControl>
-								<FormDescription>Sent to both the trace and metrics endpoints.</FormDescription>
+								<FormDescription>同时发送到追踪和指标端点。</FormDescription>
 								<FormMessage />
 							</FormItem>
 						)}
@@ -466,10 +461,8 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 								<FormItem className="flex flex-row items-center gap-2">
 									<div className="flex w-full flex-row items-center gap-2">
 										<div className="flex flex-col gap-1">
-											<FormLabel>Insecure (Skip TLS)</FormLabel>
-											<FormDescription>
-												Skip TLS verification. Disable this to use TLS with system root CAs or a custom CA certificate.
-											</FormDescription>
+											<FormLabel>不安全（跳过 TLS）</FormLabel>
+											<FormDescription>跳过 TLS 验证。禁用此选项可使用系统根 CA 或自定义 CA 证书进行 TLS。</FormDescription>
 										</div>
 										<div className="ml-auto">
 											<Switch
@@ -493,10 +486,8 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 								name={`${base}.tls_ca_cert`}
 								render={({ field }) => (
 									<FormItem className="w-full">
-										<FormLabel>TLS CA Certificate Path</FormLabel>
-										<FormDescription>
-											File path to the CA certificate on the Bifrost server. Leave empty to use system root CAs.
-										</FormDescription>
+										<FormLabel>TLS CA 证书路径</FormLabel>
+										<FormDescription>Bifrost 服务器上 CA 证书的文件路径。留空使用系统根 CA。</FormDescription>
 										<FormControl>
 											<Input placeholder="/path/to/ca.crt" disabled={!hasOtelAccess} {...field} />
 										</FormControl>
@@ -537,10 +528,8 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 									<FormItem className="flex flex-row items-center gap-2">
 										<div className="flex w-full flex-row items-center gap-2">
 											<div className="flex flex-col gap-1">
-												<h3 className="text-sm font-medium">Enable Trace Export</h3>
-												<p className="text-muted-foreground text-xs">
-													Export spans to the OTLP collector. Turn off for a metrics-only profile.
-												</p>
+												<h3 className="text-sm font-medium">启用追踪导出</h3>
+												<p className="text-muted-foreground text-xs">将 Span 导出到 OTLP Collector。关闭则仅使用指标配置。</p>
 											</div>
 											<div className="ml-auto">
 												<Switch
@@ -588,14 +577,14 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 											<FormItem className="w-full">
 												<FormControl>
 													<HeadersTable
-														label="Trace Headers"
+														label="追踪请求头"
 														value={field.value || {}}
 														onChange={field.onChange}
 														disabled={!hasOtelAccess}
 														useSecretVarInput
 													/>
 												</FormControl>
-												<FormDescription>Sent only to the trace endpoint, in addition to the common headers.</FormDescription>
+												<FormDescription>除公共请求头外，仅发送到追踪端点。</FormDescription>
 												<FormMessage />
 											</FormItem>
 										)}
@@ -605,7 +594,7 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 										name={`${base}.trace_type`}
 										render={({ field }) => (
 											<FormItem className="w-full max-w-xs">
-												<FormLabel>Format</FormLabel>
+												<FormLabel>格式</FormLabel>
 												<Select onValueChange={field.onChange} value={field.value ?? traceTypeOptions[0].value} disabled={!hasOtelAccess}>
 													<FormControl>
 														<SelectTrigger className="w-full">
@@ -634,7 +623,7 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 										name={`${base}.export_timeout`}
 										render={({ field }) => (
 											<FormItem className="w-full max-w-xs">
-												<FormLabel>Export Timeout (seconds)</FormLabel>
+												<FormLabel>导出超时（秒）</FormLabel>
 												<FormControl>
 													<Input
 														type="number"
@@ -659,8 +648,7 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 										name={`${base}.request_headers`}
 										render={({ field }) => (
 											<FormItem className="w-full">
-												<FormLabel>
-													Request Headers <span className="text-muted-foreground font-normal">(Optional)</span>
+												<FormLabel>请求头<span className="text-muted-foreground font-normal">（可选）</span>
 												</FormLabel>
 												<FormDescription>
 													Comma-separated list of request headers to capture and emit as span attributes. Supports exact names and wildcard
@@ -688,7 +676,7 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 										render={({ field }) => (
 											<FormItem className="flex flex-row items-center justify-between">
 												<div className="space-y-0.5">
-													<FormLabel className="text-base">Disable Content Logging</FormLabel>
+													<FormLabel className="text-base">禁用内容日志</FormLabel>
 													<FormDescription>
 														When enabled, message content (input/output messages, tool definitions, and tool call arguments/results) is
 														dropped from exported spans. Only metadata such as model, tokens, and latency is sent to the collector.
@@ -711,7 +699,7 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 										render={({ field }) => (
 											<FormItem className="flex flex-row items-center justify-between">
 												<div className="space-y-0.5">
-													<FormLabel className="text-base">Group Traces by Session</FormLabel>
+													<FormLabel className="text-base">按会话分组追踪</FormLabel>
 													<FormDescription>
 														When enabled, requests sharing the same x-bf-session-id header are grouped into a single trace, each request
 														appearing as a top-level sibling span. A request carrying an inbound W3C traceparent stays on its own
@@ -735,7 +723,7 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 										render={({ field }) => (
 											<FormItem className="flex flex-row items-center justify-between">
 												<div className="space-y-0.5">
-													<FormLabel className="text-base">Disable Root Span Content</FormLabel>
+													<FormLabel className="text-base">禁用根 Span 内容</FormLabel>
 													<FormDescription>
 														When enabled, input/output message content is dropped from the root span only; the underlying generation
 														(llm.call) span keeps the full content.
@@ -765,12 +753,9 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 									<FormItem className="flex flex-row items-center gap-2">
 										<div className="flex w-full flex-row items-center gap-2">
 											<div className="flex flex-col gap-1">
-												<h3 className="flex flex-row items-center gap-2 text-sm font-medium">
-													Enable Metrics Export <Badge variant="secondary">BETA</Badge>
+												<h3 className="flex flex-row items-center gap-2 text-sm font-medium">启用指标导出<Badge variant="secondary">测试版</Badge>
 												</h3>
-												<p className="text-muted-foreground text-xs">
-													Push metrics to an OTEL Collector for proper aggregation in cluster deployments
-												</p>
+												<p className="text-muted-foreground text-xs">将指标推送到 OTEL Collector，以便在集群部署中正确聚合</p>
 											</div>
 											<div className="ml-auto">
 												<Switch
@@ -793,7 +778,7 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 										name={`${base}.metrics_endpoint`}
 										render={({ field }) => (
 											<FormItem className="w-full">
-												<FormLabel>Metrics Endpoint</FormLabel>
+												<FormLabel>指标端点</FormLabel>
 												<div className="text-muted-foreground text-xs">
 													<code>{protocol === "http" ? "http(s)://<host>:<port>/v1/metrics" : "<host>:<port>"}</code>
 												</div>
@@ -820,7 +805,7 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 											<FormItem className="w-full">
 												<FormControl>
 													<HeadersTable
-														label="Metrics Headers"
+														label="指标请求头"
 														value={field.value || {}}
 														onChange={field.onChange}
 														disabled={!hasOtelAccess}
@@ -840,7 +825,7 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 										name={`${base}.metrics_push_interval`}
 										render={({ field }) => (
 											<FormItem className="w-full max-w-xs">
-												<FormLabel>Push Interval (seconds)</FormLabel>
+												<FormLabel>推送间隔（秒）</FormLabel>
 												<FormControl>
 													<Input
 														type="number"
@@ -852,7 +837,7 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 														onChange={(e) => field.onChange(e.target.value === "" ? null : Number(e.target.value))}
 													/>
 												</FormControl>
-												<FormDescription>How often to push metrics (1-300 seconds)</FormDescription>
+												<FormDescription>推送指标的频率（1-300 秒）</FormDescription>
 												<FormMessage />
 											</FormItem>
 										)}

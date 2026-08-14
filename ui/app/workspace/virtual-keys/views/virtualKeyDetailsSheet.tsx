@@ -93,7 +93,7 @@ export default function VirtualKeyDetailSheet({
 				.map((b) => ({ key: b.id, label: parseResetPeriod(b.reset_duration), budget: b, calendarAligned: virtualKey.calendar_aligned }));
 		const sections: BudgetOverrideSection[] = [];
 		const providerRows = toRows(config.budgets);
-		if (providerRows.length > 0) sections.push({ key: "provider", title: "Provider budget", rows: providerRows });
+		if (providerRows.length > 0) sections.push({ key: "provider", title: "提供商预算", rows: providerRows });
 		for (const mb of config.model_budgets ?? []) {
 			const rows = toRows(mb.budgets);
 			if (rows.length > 0) sections.push({ key: `m:${mb.model_name}`, title: `Model: ${mb.model_name}`, rows });
@@ -110,12 +110,12 @@ export default function VirtualKeyDetailSheet({
 
 	const getEntityInfo = () => {
 		if (virtualKey.team) {
-			return { type: "Team", name: virtualKey.team.name };
+			return { type: "团队", name: virtualKey.team.name };
 		}
 		if (virtualKey.customer) {
-			return { type: "Customer", name: virtualKey.customer.name };
+			return { type: "客户", name: virtualKey.customer.name };
 		}
-		return { type: "None", name: "" };
+		return { type: "无", name: "" };
 	};
 
 	const entityInfo = getEntityInfo();
@@ -141,7 +141,7 @@ export default function VirtualKeyDetailSheet({
 					<div className="flex min-w-0 flex-col items-start">
 						<div className="flex min-w-0 items-center gap-1">
 							<SheetTitle className="truncate">{virtualKey.name}</SheetTitle>
-							<CopyableId id={virtualKey.id} entityLabel="Virtual key" />
+							<CopyableId id={virtualKey.id} entityLabel="虚拟密钥" />
 						</div>
 						<SheetDescription>{virtualKey.description || "Virtual key details and usage information"}</SheetDescription>
 					</div>
@@ -160,7 +160,7 @@ export default function VirtualKeyDetailSheet({
 
 					{assignedUsers.length > 0 ? (
 						<div className="space-y-1">
-							<Label className="text-sm font-medium">Assigned Users</Label>
+							<Label className="text-sm font-medium">已分配的用户</Label>
 							<div className="flex items-center gap-2">
 								<Users className="text-muted-foreground h-4 w-4" />
 								<span className="text-sm">{assignedUsers.map((u) => u.name || u.email).join(", ")}</span>
@@ -170,16 +170,16 @@ export default function VirtualKeyDetailSheet({
 
 					{/* Basic Information */}
 					<div className="space-y-4">
-						<h3 className="font-semibold">Basic Information</h3>
+						<h3 className="font-semibold">基本信息</h3>
 
 						<div className="grid gap-4">
 							<div className="grid grid-cols-3 items-center gap-4">
-								<span className="text-muted-foreground text-sm">Status</span>
+								<span className="text-muted-foreground text-sm">状态</span>
 								<div className="col-span-2">
 									{(() => {
 										const isExpired = !!virtualKey.expires_at && Date.now() >= new Date(virtualKey.expires_at).getTime();
 										const variant = !virtualKey.is_active ? "secondary" : isExpired || isExhausted ? "destructive" : "default";
-										const label = !virtualKey.is_active ? "Inactive" : isExpired ? "Expired" : isExhausted ? "Exhausted" : "Active";
+										const label = !virtualKey.is_active ? "Inactive" : isExpired ? "已过期" : isExhausted ? "已耗尽" : "已激活";
 										return <Badge variant={variant}>{label}</Badge>;
 									})()}
 								</div>
@@ -187,7 +187,7 @@ export default function VirtualKeyDetailSheet({
 
 							{virtualKey.expires_at && (
 								<div className="grid grid-cols-3 items-center gap-4">
-									<span className="text-muted-foreground text-sm">Expires</span>
+									<span className="text-muted-foreground text-sm">过期时间</span>
 									<div className="col-span-2 text-sm">
 										{formatDistanceToNow(new Date(virtualKey.expires_at), {
 											addSuffix: true,
@@ -198,7 +198,7 @@ export default function VirtualKeyDetailSheet({
 							)}
 
 							<div className="grid grid-cols-3 items-center gap-4">
-								<span className="text-muted-foreground text-sm">Created</span>
+								<span className="text-muted-foreground text-sm">创建时间</span>
 								<div className="col-span-2 text-sm">
 									{formatDistanceToNow(new Date(virtualKey.created_at), {
 										addSuffix: true,
@@ -207,7 +207,7 @@ export default function VirtualKeyDetailSheet({
 							</div>
 
 							<div className="grid grid-cols-3 items-center gap-4">
-								<span className="text-muted-foreground text-sm">Last Updated</span>
+								<span className="text-muted-foreground text-sm">最后更新</span>
 								<div className="col-span-2 text-sm">
 									{formatDistanceToNow(new Date(virtualKey.updated_at), {
 										addSuffix: true,
@@ -215,11 +215,11 @@ export default function VirtualKeyDetailSheet({
 								</div>
 							</div>
 
-							{entityInfo.type !== "None" && (
+							{entityInfo.type !== "无" && (
 								<div className="grid grid-cols-3 items-center gap-4">
-									<span className="text-muted-foreground text-sm">Assigned To</span>
+									<span className="text-muted-foreground text-sm">分配给</span>
 									<div className="col-span-2 flex items-center gap-2">
-										<Badge variant={entityInfo.type === "None" ? "outline" : "secondary"}>{entityInfo.type}</Badge>
+										<Badge variant={entityInfo.type === "无" ? "outline" : "secondary"}>{entityInfo.type}</Badge>
 										<span className="text-sm">{entityInfo.name}</span>
 									</div>
 								</div>
@@ -231,11 +231,11 @@ export default function VirtualKeyDetailSheet({
 
 					{/* Provider Configurations */}
 					<div className="space-y-4">
-						<h3 className="font-semibold">Provider Configurations</h3>
+						<h3 className="font-semibold">提供商配置</h3>
 
 						<div className="space-y-3">
 							{!virtualKey.provider_configs || virtualKey.provider_configs.length === 0 ? (
-								<span className="text-muted-foreground text-sm">No providers configured (deny-by-default)</span>
+								<span className="text-muted-foreground text-sm">未配置提供商（默认拒绝）</span>
 							) : (
 								<div className="space-y-4">
 									{virtualKey.provider_configs.map((config, index) => (
@@ -248,7 +248,7 @@ export default function VirtualKeyDetailSheet({
 												</div>
 												<div className="flex items-center gap-2">
 													<Badge variant="outline" className="font-mono text-xs">
-														Weight: {config.weight != null ? config.weight : <span className="text-muted-foreground italic">Not Set</span>}
+														Weight: {config.weight != null ? config.weight : <span className="text-muted-foreground italic">未设置</span>}
 													</Badge>
 													{!isManagedByProfile ? (
 														<BudgetOverrideManagerDialog
@@ -265,12 +265,10 @@ export default function VirtualKeyDetailSheet({
 											{/* Basic Config */}
 											<div className="space-y-3">
 												<div className="grid grid-cols-3 items-start gap-4">
-													<span className="text-muted-foreground pt-0.5 text-sm font-medium">Allowed Models</span>
+													<span className="text-muted-foreground pt-0.5 text-sm font-medium">允许的模型</span>
 													<div className="col-span-2">
 														{config.allowed_models?.includes("*") ? (
-															<Badge variant="success" className="text-xs">
-																All Models
-															</Badge>
+															<Badge variant="success" className="text-xs">所有模型</Badge>
 														) : config.allowed_models && config.allowed_models.length > 0 ? (
 															<div className="flex flex-wrap gap-1">
 																{config.allowed_models.map((model) => (
@@ -280,20 +278,16 @@ export default function VirtualKeyDetailSheet({
 																))}
 															</div>
 														) : (
-															<Badge variant="destructive" className="text-xs">
-																No models (deny all)
-															</Badge>
+															<Badge variant="destructive" className="text-xs">无模型（全部拒绝）</Badge>
 														)}
 													</div>
 												</div>
 
 												<div className="grid grid-cols-3 items-start gap-4">
-													<span className="text-muted-foreground pt-0.5 text-sm font-medium">Blocked Models</span>
+													<span className="text-muted-foreground pt-0.5 text-sm font-medium">禁止的模型</span>
 													<div className="col-span-2">
 														{config.blacklisted_models?.includes("*") ? (
-															<Badge variant="destructive" className="text-xs">
-																All Models Blocked
-															</Badge>
+															<Badge variant="destructive" className="text-xs">所有模型被禁止</Badge>
 														) : config.blacklisted_models && config.blacklisted_models.length > 0 ? (
 															<div className="flex flex-wrap gap-1">
 																{config.blacklisted_models.map((model) => (
@@ -303,20 +297,16 @@ export default function VirtualKeyDetailSheet({
 																))}
 															</div>
 														) : (
-															<Badge variant="secondary" className="text-xs">
-																No models blocked
-															</Badge>
+															<Badge variant="secondary" className="text-xs">未禁止任何模型</Badge>
 														)}
 													</div>
 												</div>
 
 												<div className="grid grid-cols-3 items-start gap-4">
-													<span className="text-muted-foreground pt-0.5 text-sm font-medium">Allowed Keys</span>
+													<span className="text-muted-foreground pt-0.5 text-sm font-medium">允许的密钥</span>
 													<div className="col-span-2">
 														{config.allow_all_keys ? (
-															<Badge variant="success" className="text-xs">
-																All Keys
-															</Badge>
+															<Badge variant="success" className="text-xs">所有密钥</Badge>
 														) : config.keys && config.keys.length > 0 ? (
 															<div className="flex flex-wrap gap-1">
 																{config.keys.map((key) => (
@@ -326,9 +316,7 @@ export default function VirtualKeyDetailSheet({
 																))}
 															</div>
 														) : (
-															<Badge variant="destructive" className="text-xs">
-																No keys (deny all)
-															</Badge>
+															<Badge variant="destructive" className="text-xs">无密钥（全部拒绝）</Badge>
 														)}
 													</div>
 												</div>
@@ -338,7 +326,7 @@ export default function VirtualKeyDetailSheet({
 													<>
 														<DottedSeparator />
 														<div className="space-y-2">
-															<h4 className="text-sm font-medium">Provider Budgets</h4>
+															<h4 className="text-sm font-medium">提供商预算</h4>
 															{config.budgets.map((b, bIdx) => (
 																<div key={bIdx} className="space-y-2">
 																	<UsageLine current={b.current_usage} max={getEffectiveBudgetLimit(b)} format={formatCurrency} />
@@ -372,12 +360,12 @@ export default function VirtualKeyDetailSheet({
 													<>
 														<DottedSeparator />
 														<div className="space-y-3">
-															<h4 className="text-sm font-medium">Provider Rate Limits</h4>
+															<h4 className="text-sm font-medium">提供商速率限制</h4>
 
 															{/* Token Limits */}
 															{config.rate_limit.token_max_limit != null ? (
 																<div className="space-y-2">
-																	<span className="text-muted-foreground text-xs font-medium">TOKEN LIMITS</span>
+																	<span className="text-muted-foreground text-xs font-medium">TOKEN 限制</span>
 																	<UsageLine
 																		current={config.rate_limit.token_current_usage}
 																		max={config.rate_limit.token_max_limit}
@@ -402,7 +390,7 @@ export default function VirtualKeyDetailSheet({
 															{/* Request Limits */}
 															{config.rate_limit.request_max_limit != null ? (
 																<div className="space-y-2">
-																	<span className="text-muted-foreground text-xs font-medium">REQUEST LIMITS</span>
+																	<span className="text-muted-foreground text-xs font-medium">请求限制</span>
 																	<UsageLine
 																		current={config.rate_limit.request_current_usage}
 																		max={config.rate_limit.request_max_limit}
@@ -426,7 +414,7 @@ export default function VirtualKeyDetailSheet({
 															) : null}
 
 															{config.rate_limit.token_max_limit == null && config.rate_limit.request_max_limit == null && (
-																<p className="text-muted-foreground text-sm">No rate limits configured for this provider</p>
+																<p className="text-muted-foreground text-sm">此提供商未配置速率限制</p>
 															)}
 														</div>
 													</>
@@ -437,7 +425,7 @@ export default function VirtualKeyDetailSheet({
 													<>
 														<DottedSeparator />
 														<div className="space-y-3">
-															<h4 className="text-sm font-medium">Model Budgets</h4>
+															<h4 className="text-sm font-medium">模型预算</h4>
 															{config.model_budgets.map((mb, mbIdx) => (
 																<div key={`${mb.model_name}-${mbIdx}`} className="space-y-3 rounded-md border p-3">
 																	<span className="text-sm font-medium">{mb.model_name}</span>
@@ -468,7 +456,7 @@ export default function VirtualKeyDetailSheet({
 																	{/* Token Limits */}
 																	{mb.rate_limit?.token_max_limit != null ? (
 																		<div className="space-y-2">
-																			<span className="text-muted-foreground text-xs font-medium">TOKEN LIMITS</span>
+																			<span className="text-muted-foreground text-xs font-medium">TOKEN 限制</span>
 																			<UsageLine
 																				current={mb.rate_limit.token_current_usage}
 																				max={mb.rate_limit.token_max_limit}
@@ -486,7 +474,7 @@ export default function VirtualKeyDetailSheet({
 																	{/* Request Limits */}
 																	{mb.rate_limit?.request_max_limit != null ? (
 																		<div className="space-y-2">
-																			<span className="text-muted-foreground text-xs font-medium">REQUEST LIMITS</span>
+																			<span className="text-muted-foreground text-xs font-medium">请求限制</span>
 																			<UsageLine
 																				current={mb.rate_limit.request_current_usage}
 																				max={mb.rate_limit.request_max_limit}
@@ -515,18 +503,18 @@ export default function VirtualKeyDetailSheet({
 
 					{/* MCP Client Configurations */}
 					<div className="space-y-4">
-						<h3 className="font-semibold">MCP Client Configurations</h3>
+						<h3 className="font-semibold">MCP 客户端配置</h3>
 
 						<div className="space-y-3">
 							{!virtualKey.mcp_configs || virtualKey.mcp_configs.length === 0 ? (
-								<span className="text-muted-foreground text-sm">No MCP clients configured (deny-by-default)</span>
+								<span className="text-muted-foreground text-sm">未配置 MCP 客户端（默认拒绝）</span>
 							) : (
 								<div className="rounded-md border">
 									<Table>
 										<TableHeader>
 											<TableRow>
-												<TableHead>MCP Client</TableHead>
-												<TableHead>Allowed Tools</TableHead>
+												<TableHead>MCP 客户端</TableHead>
+												<TableHead>允许的工具</TableHead>
 											</TableRow>
 										</TableHeader>
 										<TableBody>
@@ -535,9 +523,7 @@ export default function VirtualKeyDetailSheet({
 													<TableCell>{config.mcp_client?.name || "Unknown Client"}</TableCell>
 													<TableCell>
 														{config.tools_to_execute?.includes("*") ? (
-															<Badge variant="success" className="text-xs">
-																All Tools
-															</Badge>
+															<Badge variant="success" className="text-xs">所有工具</Badge>
 														) : config.tools_to_execute && config.tools_to_execute.length > 0 ? (
 															<div className="flex flex-wrap gap-1">
 																{config.tools_to_execute.map((tool) => (
@@ -547,9 +533,7 @@ export default function VirtualKeyDetailSheet({
 																))}
 															</div>
 														) : (
-															<Badge variant="destructive" className="text-xs">
-																No tools (deny all)
-															</Badge>
+															<Badge variant="destructive" className="text-xs">无工具（全部拒绝）</Badge>
 														)}
 													</TableCell>
 												</TableRow>
@@ -615,7 +599,7 @@ export default function VirtualKeyDetailSheet({
 								))}
 							</div>
 						) : (
-							<p className="text-muted-foreground text-sm">No budget limits configured</p>
+							<p className="text-muted-foreground text-sm">未配置预算限制</p>
 						)}
 					</div>
 
@@ -633,7 +617,7 @@ export default function VirtualKeyDetailSheet({
 								{/* Token Limits */}
 								{displayRateLimit.token_max_limit != null ? (
 									<div className="space-y-3 rounded-lg border p-4">
-										<span className="text-sm font-medium">Token Limits</span>
+										<span className="text-sm font-medium">Token 限制</span>
 										<UsageLine
 											current={displayRateLimit.token_current_usage}
 											max={displayRateLimit.token_max_limit}
@@ -661,7 +645,7 @@ export default function VirtualKeyDetailSheet({
 								{/* Request Limits */}
 								{displayRateLimit.request_max_limit != null ? (
 									<div className="space-y-3 rounded-lg border p-4">
-										<span className="text-sm font-medium">Request Limits</span>
+										<span className="text-sm font-medium">请求限制</span>
 										<UsageLine
 											current={displayRateLimit.request_current_usage}
 											max={displayRateLimit.request_max_limit}
@@ -687,11 +671,11 @@ export default function VirtualKeyDetailSheet({
 								) : null}
 
 								{displayRateLimit.token_max_limit == null && displayRateLimit.request_max_limit == null && (
-									<p className="text-muted-foreground text-sm">No rate limits configured</p>
+									<p className="text-muted-foreground text-sm">未配置速率限制</p>
 								)}
 							</div>
 						) : (
-							<p className="text-muted-foreground text-sm">No rate limits configured</p>
+							<p className="text-muted-foreground text-sm">未配置速率限制</p>
 						)}
 					</div>
 				</div>

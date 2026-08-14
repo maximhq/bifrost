@@ -138,7 +138,7 @@ export default function ObservabilityView() {
 				<div className="flex w-[270px] flex-col gap-2 pb-10">
 					<div className="rounded-md bg-zinc-100/10 p-4 dark:bg-zinc-800/20">
 						<div className="flex flex-col gap-1">
-							<div className="text-muted-foreground mb-2 text-xs font-medium">Providers</div>
+							<div className="text-muted-foreground mb-2 text-xs font-medium">提供商</div>
 							{supportedPlatforms.map((tab) => (
 								<button
 									type="button"
@@ -171,7 +171,7 @@ export default function ObservabilityView() {
 									)}
 									{tab.disabled && (
 										<Badge variant="secondary" className="text-muted-foreground ml-auto text-[10px] font-medium">
-											{"Coming soon".toUpperCase()}
+											{"即将推出".toUpperCase()}
 										</Badge>
 									)}
 								</button>

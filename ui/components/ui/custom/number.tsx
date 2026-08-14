@@ -194,7 +194,7 @@ const NumberInput = React.forwardRef<HTMLInputElement, NumberInputProps>(
 			}
 
 			// Allow control keys
-			const allowedKeys = ["Backspace", "Delete", "ArrowLeft", "ArrowRight", "Tab", "Enter", "Home", "End", "ArrowUp", "ArrowDown"];
+			const allowedKeys = ["Backspace", "删除", "ArrowLeft", "ArrowRight", "Tab", "Enter", "Home", "End", "ArrowUp", "ArrowDown"];
 
 			if (allowedKeys.includes(e.key)) {
 				if (e.key === "ArrowUp") {

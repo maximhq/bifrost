@@ -16,7 +16,7 @@ import type { ChartType } from "../charts/chartTypeToggle";
 import { ProviderUsageTab } from "../providerUsageTab";
 
 export interface ProviderUsageTabViewHandle {
-	getData: () => Partial<DashboardData>;
+	getData: () =>Partial<DashboardData>;
 	loadData: () => Promise<void>;
 }
 
@@ -123,7 +123,7 @@ export const ProviderUsageTabView = forwardRef<ProviderUsageTabViewHandle, Provi
 		[providerCostData?.providers, providerTokenData?.providers, providerLatencyData?.providers, providerThroughputData?.providers],
 	);
 	// Legend lists mirror each chart's display order (top-N by its own ranking
-	// metric, plus "Other" where the chart rolls up the tail) — index-based
+	// metric, plus "其他" where the chart rolls up the tail) — index-based
 	// colors must match the drawn series, not the API's alphabetical order.
 	const providerCostProviders = useMemo(
 		() => computeDisplaySeries(providerCostData?.buckets, providerCostData?.providers, (b, p) => b.by_provider?.[p] ?? 0),

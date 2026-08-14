@@ -100,7 +100,7 @@ function MCPClientActionsMenu({
 					variant="ghost"
 					size="icon"
 					className="h-8 w-8"
-					aria-label="MCP server actions"
+					aria-label="MCP 服务器操作"
 					data-testid={`mcp-client-actions-${client.config.client_id}-btn`}
 					disabled={isReconnecting || isReauthorizing || isVerifyingExchange}
 				>
@@ -131,9 +131,7 @@ function MCPClientActionsMenu({
 							setIsOpen(false);
 						}}
 					>
-						<PencilIcon className="h-4 w-4" />
-						Edit
-					</DropdownMenuItem>
+						<PencilIcon className="h-4 w-4" />编辑</DropdownMenuItem>
 				)}
 				{hasUpdateAccess && client.state === "pending_verification" && (
 					<DropdownMenuItem
@@ -146,9 +144,7 @@ function MCPClientActionsMenu({
 							setIsOpen(false);
 						}}
 					>
-						<KeyRound className="h-4 w-4" />
-						Authorize
-					</DropdownMenuItem>
+						<KeyRound className="h-4 w-4" />授权</DropdownMenuItem>
 				)}
 				{hasUpdateAccess && canReconnect && (
 					<DropdownMenuItem
@@ -160,9 +156,7 @@ function MCPClientActionsMenu({
 							setIsOpen(false);
 						}}
 					>
-						<RefreshCcw className="h-4 w-4" />
-						Reconnect
-					</DropdownMenuItem>
+						<RefreshCcw className="h-4 w-4" />重新连接</DropdownMenuItem>
 				)}
 				{hasUpdateAccess &&
 					client.state !== "pending_verification" &&
@@ -179,7 +173,7 @@ function MCPClientActionsMenu({
 							}}
 						>
 							<KeyRound className="h-4 w-4" />
-							{client.config.auth_type === "per_user_oauth" ? "Refresh admin credential" : "Reauthorize"}
+							{client.config.auth_type === "per_user_oauth" ? "刷新管理员凭据" : "Reauthorize"}
 						</DropdownMenuItem>
 					)}
 				{hasUpdateAccess &&
@@ -195,9 +189,7 @@ function MCPClientActionsMenu({
 								setIsOpen(false);
 							}}
 						>
-							<KeyRound className="h-4 w-4" />
-							Refresh admin credential
-						</DropdownMenuItem>
+							<KeyRound className="h-4 w-4" />刷新管理员凭据</DropdownMenuItem>
 					)}
 				{hasUpdateAccess &&
 					client.state !== "pending_verification" &&
@@ -213,9 +205,7 @@ function MCPClientActionsMenu({
 								setIsOpen(false);
 							}}
 						>
-							<KeyRound className="h-4 w-4" />
-							Re-verify as me
-						</DropdownMenuItem>
+							<KeyRound className="h-4 w-4" />以我的身份重新验证</DropdownMenuItem>
 					)}
 				{hasDeleteAccess && (
 					<DropdownMenuItem
@@ -227,9 +217,7 @@ function MCPClientActionsMenu({
 							setIsOpen(false);
 						}}
 					>
-						<Trash2 className="h-4 w-4" />
-						Delete
-					</DropdownMenuItem>
+						<Trash2 className="h-4 w-4" />删除</DropdownMenuItem>
 				)}
 			</DropdownMenuContent>
 		</DropdownMenu>
@@ -272,7 +260,7 @@ export default function MCPClientsTable({
 	const hasDeleteMCPClientAccess = useRbac(RbacResource.MCPGateway, RbacOperation.Delete);
 	const [selectedMCPClient, setSelectedMCPClient] = useState<MCPClient | null>(null);
 	const [clientToDelete, setClientToDelete] = useState<MCPClient | null>(null);
-	// Drives the token_exchange "Re-verify as me" confirm dialog. Unlike
+	// Drives the token_exchange "以我的身份重新验证" confirm dialog. Unlike
 	// per_user_oauth/per_user_headers, verify-exchange needs no popup or
 	// sample values — it fires as soon as confirmed — but admins still need
 	// the same "what does this touch, when do I need it" context those flows
@@ -333,7 +321,7 @@ export default function MCPClientsTable({
 			setReconnectingClients((prev) => [...prev, client.config.client_id]);
 			await reconnectMCPClient(client.config.client_id).unwrap();
 			setReconnectingClients((prev) => prev.filter((id) => id !== client.config.client_id));
-			toast({ title: "Reconnected", description: `Client ${client.config.name} reconnected successfully.` });
+			toast({ title: "已重新连接", description: `Client ${client.config.name} reconnected successfully.` });
 			if (refetch) {
 				await refetch();
 			}
@@ -345,7 +333,7 @@ export default function MCPClientsTable({
 
 	const handleStartBootstrap = async (client: MCPClient) => {
 		// per_user_headers takes a synchronous form-based path, token_exchange
-		// opens the same "Re-verify as me" confirm dialog used to repair an
+		// opens the same "以我的身份重新验证" confirm dialog used to repair an
 		// already-verified client; OAuth-based types kick off the existing
 		// browser flow below.
 		if (client.config.auth_type === "per_user_headers") {
@@ -358,7 +346,7 @@ export default function MCPClientsTable({
 		}
 		const isPerUserOauth = client.config.auth_type === "per_user_oauth";
 		// OAuth2Authorizer always shows a confirm step first and opens its own
-		// popup synchronously from that step's own "Continue" click, for both
+		// popup synchronously from that step's own "继续" click, for both
 		// OAuth flavors — nothing to pre-open here. (This used to pre-open a
 		// blank popup for the shared-oauth case, based on a stale assumption
 		// that only per_user_oauth showed a confirm step; that left a stray
@@ -375,13 +363,13 @@ export default function MCPClientsTable({
 				});
 			} else {
 				toast({
-					title: "Authorization failed",
-					description: "Unexpected response from server. Please try again.",
+					title: "授权失败",
+					description: "服务器返回意外响应。请重试。",
 					variant: "destructive",
 				});
 			}
 		} catch (error) {
-			toast({ title: "Authorization failed", description: getErrorMessage(error), variant: "destructive" });
+			toast({ title: "授权失败", description: getErrorMessage(error), variant: "destructive" });
 		} finally {
 			setAuthorizingClients((prev) => prev.filter((id) => id !== client.config.client_id));
 		}
@@ -400,13 +388,13 @@ export default function MCPClientsTable({
 				});
 			} else {
 				toast({
-					title: "Reauthorization failed",
-					description: "Unexpected response from server. Please try again.",
+					title: "重新授权失败",
+					description: "服务器返回意外响应。请重试。",
 					variant: "destructive",
 				});
 			}
 		} catch (error) {
-			toast({ title: "Reauthorization failed", description: getErrorMessage(error), variant: "destructive" });
+			toast({ title: "重新授权失败", description: getErrorMessage(error), variant: "destructive" });
 		} finally {
 			setReauthorizingClients((prev) => prev.filter((id) => id !== client.config.client_id));
 		}
@@ -423,7 +411,7 @@ export default function MCPClientsTable({
 		});
 	};
 
-	// Opens the "Re-verify as me" confirm dialog for a token_exchange client.
+	// Opens the "以我的身份重新验证" confirm dialog for a token_exchange client.
 	// The exchange call itself is synchronous and inputless — the backend
 	// exchanges the signed-in admin's own identity token, so there's nothing
 	// to collect — but admins still need the same "what does this touch, when
@@ -437,12 +425,12 @@ export default function MCPClientsTable({
 		try {
 			setVerifyingExchangeClients((prev) => [...prev, client.config.client_id]);
 			const response = await verifyMCPClientExchange(client.config.client_id).unwrap();
-			toast({ title: "Verified", description: response.message });
+			toast({ title: "已验证", description: response.message });
 			if (refetch) {
 				await refetch();
 			}
 		} catch (error) {
-			toast({ title: "Verification failed", description: getErrorMessage(error), variant: "destructive" });
+			toast({ title: "验证失败", description: getErrorMessage(error), variant: "destructive" });
 		} finally {
 			setVerifyingExchangeClients((prev) => prev.filter((id) => id !== client.config.client_id));
 		}
@@ -451,7 +439,7 @@ export default function MCPClientsTable({
 	const handleDelete = async (client: MCPClient) => {
 		try {
 			await deleteMCPClient(client.config.client_id).unwrap();
-			toast({ title: "Deleted", description: `Client ${client.config.name} removed successfully.` });
+			toast({ title: "已删除", description: `Client ${client.config.name} removed successfully.` });
 			if (refetch) {
 				await refetch();
 			}
@@ -485,15 +473,15 @@ export default function MCPClientsTable({
 			case "none":
 			case undefined:
 			case "":
-				return "None";
+				return "无";
 			case "headers":
 			case "per_user_headers":
-				return "Headers";
+				return "请求头";
 			case "oauth":
 			case "per_user_oauth":
 				return "OAuth";
 			case "token_exchange":
-				return "Token Exchange";
+				return "令牌交换";
 			default:
 				return type;
 		}
@@ -504,10 +492,10 @@ export default function MCPClientsTable({
 			case "per_user_oauth":
 			case "per_user_headers":
 			case "token_exchange":
-				return "Per-User";
+				return "按用户";
 			case "oauth":
 			case "headers":
-				return "Shared";
+				return "共享";
 			default:
 				return "-";
 		}
@@ -586,22 +574,20 @@ export default function MCPClientsTable({
 			<AlertDialog open={!!clientToDelete} onOpenChange={(open) => !open && setClientToDelete(null)}>
 				<AlertDialogContent>
 					<AlertDialogHeader>
-						<AlertDialogTitle>Remove MCP Server</AlertDialogTitle>
+						<AlertDialogTitle>移除 MCP 服务器</AlertDialogTitle>
 						<AlertDialogDescription>
 							Are you sure you want to remove MCP server {clientToDelete?.config.name}? You will need to reconnect the server to continue
 							using it.
 						</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
-						<AlertDialogCancel>Cancel</AlertDialogCancel>
+						<AlertDialogCancel>取消</AlertDialogCancel>
 						<AlertDialogAction
 							onClick={() => {
 								if (clientToDelete) void handleDelete(clientToDelete);
 							}}
 							className="bg-destructive hover:bg-destructive/90"
-						>
-							Delete
-						</AlertDialogAction>
+						>删除</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>
 			</AlertDialog>
@@ -611,7 +597,7 @@ export default function MCPClientsTable({
 					onClose={() => setBootstrapAuthorize(null)}
 					onSuccess={async () => {
 						toast({
-							title: "Success",
+							title: "成功",
 							description: bootstrapAuthorize.isPerUserOauth
 								? "OAuth setup verified successfully. Each user will authenticate individually."
 								: "MCP client connected successfully",
@@ -622,11 +608,11 @@ export default function MCPClientsTable({
 						}
 					}}
 					onError={(error) => {
-						toast({ title: "Authorization failed", description: error, variant: "destructive" });
+						toast({ title: "授权失败", description: error, variant: "destructive" });
 					}}
 					onConflict={(error) => {
 						setBootstrapAuthorize(null);
-						toast({ title: "Authorization failed", description: error, variant: "destructive" });
+						toast({ title: "授权失败", description: error, variant: "destructive" });
 					}}
 					authorizeUrl={bootstrapAuthorize.authorizeUrl}
 					oauthConfigId={bootstrapAuthorize.oauthConfigId}
@@ -640,8 +626,8 @@ export default function MCPClientsTable({
 					onClose={() => setBootstrapHeadersClient(null)}
 					onSuccess={async () => {
 						toast({
-							title: "Success",
-							description: "Headers verified successfully. Each user will submit their own values when using this MCP server.",
+							title: "成功",
+							description: "请求头验证成功。每个用户使用此 MCP 服务器时将提交自己的值。",
 						});
 						setBootstrapHeadersClient(null);
 						if (refetch) {
@@ -654,7 +640,7 @@ export default function MCPClientsTable({
 					onConflict={async (error) => {
 						// 409: tools were already discovered (e.g. double submit or a
 						// concurrent verification) — the client is verified; refresh.
-						toast({ title: "Already verified", description: error });
+						toast({ title: "已验证", description: error });
 						setBootstrapHeadersClient(null);
 						if (refetch) {
 							await refetch();
@@ -680,7 +666,7 @@ export default function MCPClientsTable({
 					// Keep the dialog open (with a spinner) for the duration of the
 					// verify call itself, so there's visible feedback while the
 					// backend does the token exchange + live connect + tools/list
-					// round trip, instead of closing immediately on "Continue" and
+					// round trip, instead of closing immediately on "继续" and
 					// leaving nothing on screen until the toast lands.
 					if (!next && !(exchangeVerifyClient && verifyingExchangeClients.includes(exchangeVerifyClient.config.client_id))) {
 						setExchangeVerifyClient(null);
@@ -704,7 +690,7 @@ export default function MCPClientsTable({
 							/>
 							<div className="min-w-0 space-y-0.5">
 								<DialogTitle className="text-sm leading-snug font-medium">
-									{exchangeVerifyClient?.state === "pending_verification" ? "Verify as me" : "Re-verify as me"}
+									{exchangeVerifyClient?.state === "pending_verification" ? "Verify as me" : "以我的身份重新验证"}
 								</DialogTitle>
 								<DialogDescription className="text-xs leading-relaxed">
 									{exchangeVerifyClient?.state === "pending_verification"
@@ -741,9 +727,7 @@ export default function MCPClientsTable({
 								disabled={exchangeVerifyClient ? verifyingExchangeClients.includes(exchangeVerifyClient.config.client_id) : false}
 								onClick={() => setExchangeVerifyClient(null)}
 								data-testid="verify-exchange-cancel-btn"
-							>
-								Cancel
-							</Button>
+							>取消</Button>
 							<Button
 								size="sm"
 								disabled={exchangeVerifyClient ? verifyingExchangeClients.includes(exchangeVerifyClient.config.client_id) : false}
@@ -767,26 +751,26 @@ export default function MCPClientsTable({
 
 			<div className="mb-4 flex items-center justify-between gap-4">
 				<div>
-					<h2 className="text-lg font-semibold tracking-tight">MCP Server Catalog</h2>
-					<p className="text-muted-foreground text-sm">Manage servers that can connect to the MCP Tools endpoint.</p>
+					<h2 className="text-lg font-semibold tracking-tight">MCP 服务器目录</h2>
+					<p className="text-muted-foreground text-sm">管理可以连接到 MCP 工具端点的服务器。</p>
 				</div>
 				<div className="flex gap-2">
 					<MCPUsageGuideSheet />
 					<Button asChild variant="outline" data-testid="mcp-library-link-btn" className="h-8">
 						<Link to="/workspace/mcp-registry/library">
 							<Box />
-							<span className="hidden sm:inline">Library</span>
+							<span className="hidden sm:inline">库</span>
 						</Link>
 					</Button>
 					<Button
 						onClick={handleCreate}
 						disabled={!hasCreateMCPClientAccess}
 						data-testid="create-mcp-client-btn"
-						aria-label="New MCP Server"
+						aria-label="新建 MCP 服务器"
 						className="h-8 gap-2"
 					>
 						<Plus />
-						<span className="hidden sm:inline">New MCP Server</span>
+						<span className="hidden sm:inline">新建 MCP 服务器</span>
 					</Button>
 				</div>
 			</div>
@@ -796,8 +780,8 @@ export default function MCPClientsTable({
 				<div className="relative max-w-sm flex-1">
 					<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 					<Input
-						aria-label="Search MCP servers by name"
-						placeholder="Search by name..."
+						aria-label="按名称搜索 MCP 服务器"
+						placeholder="按名称搜索..."
 						value={search}
 						onChange={(e) => onSearchChange(e.target.value)}
 						className="pl-9"
@@ -811,9 +795,7 @@ export default function MCPClientsTable({
 						className="h-8 gap-2"
 						onClick={onServerFilterClear}
 						data-testid="mcp-client-server-filter-clear-btn"
-					>
-						Server filter
-						<X className="size-3" />
+					>服务器筛选<X className="size-3" />
 					</Button>
 				)}
 			</div>
@@ -827,21 +809,21 @@ export default function MCPClientsTable({
 					>
 						<TableHeader className="bg-muted sticky top-0 z-20">
 							<TableRow>
-								<TableHead className="w-[260px] font-semibold">Name</TableHead>
-								<TableHead className="w-[150px] font-semibold">Connection Type</TableHead>
-								<TableHead className="w-[150px] font-semibold">Auth Type</TableHead>
-								<TableHead className="w-[140px] font-semibold">Auth Scope</TableHead>
+								<TableHead className="w-[260px] font-semibold">名称</TableHead>
+								<TableHead className="w-[150px] font-semibold">连接类型</TableHead>
+								<TableHead className="w-[150px] font-semibold">认证类型</TableHead>
+								<TableHead className="w-[140px] font-semibold">认证范围</TableHead>
 								<TableHead className="w-[120px] font-semibold">Code Mode</TableHead>
-								<TableHead className="w-[120px] font-semibold">VK Access</TableHead>
-								<TableHead className="w-[130px] font-semibold">Enabled Tools</TableHead>
-								<TableHead className="w-[160px] font-semibold">Auto-execute Tools</TableHead>
+								<TableHead className="w-[120px] font-semibold">虚拟密钥访问</TableHead>
+								<TableHead className="w-[130px] font-semibold">已启用的工具</TableHead>
+								<TableHead className="w-[160px] font-semibold">自动执行工具</TableHead>
 								<TableHead className="w-[140px] font-semibold">
 									<HeaderWithTooltip
-										label="State"
+										label="状态"
 										tooltip={
 											<>
 												<p>
-													The client's connection state (healthy, unstable, needs re-authorization, and so on). "Unstable" reflects
+													The client's connection state (healthy, unstable, needs re-authorization, and so on). "不稳定" reflects
 													Bifrost's own connection checks to the server, not the results of tool calls made through it: it self-heals and
 													never blocks tool calls. For per-user clients (OAuth, headers, token exchange), this reflects Bifrost's own
 													retained admin credential (used only to periodically refresh the tool list), not any individual user's own
@@ -853,14 +835,12 @@ export default function MCPClientsTable({
 													target="_blank"
 													rel="noreferrer"
 													className="text-primary mt-2 inline-block underline"
-												>
-													See all connection states
-												</a>
+												>查看所有连接状态</a>
 											</>
 										}
 									/>
 								</TableHead>
-								<TableHead className="w-[90px] font-semibold">Status</TableHead>
+								<TableHead className="w-[90px] font-semibold">状态</TableHead>
 								<TableHead className={`bg-muted sticky right-0 z-10 w-14 text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
 							</TableRow>
 						</TableHeader>
@@ -868,7 +848,7 @@ export default function MCPClientsTable({
 							{mcpClients.length === 0 ? (
 								<TableRow>
 									<TableCell colSpan={11} className="h-24 text-center">
-										<span className="text-muted-foreground text-sm">No matching MCP servers found.</span>
+										<span className="text-muted-foreground text-sm">未找到匹配的 MCP 服务器。</span>
 									</TableCell>
 								</TableRow>
 							) : (
@@ -910,7 +890,7 @@ export default function MCPClientsTable({
 															: ""
 													}
 												>
-													{c.state == "healthy" ? <>{c.config.is_code_mode_client ? "Enabled" : "Disabled"}</> : "-"}
+													{c.state == "healthy" ? <>{c.config.is_code_mode_client ? "已启用" : "已禁用"}</> : "-"}
 												</Badge>
 											</TableCell>
 											<TableCell data-testid="mcp-client-vk-access">
@@ -918,7 +898,7 @@ export default function MCPClientsTable({
 													? "All"
 													: c.vk_configs?.length
 														? `${c.vk_configs.length} ${c.vk_configs.length === 1 ? "VK" : "VKs"}`
-														: "None"}
+														: "无"}
 											</TableCell>
 											<TableCell>
 												{c.state == "healthy" ? (
@@ -1030,13 +1010,13 @@ export default function MCPClientsTable({
 								onClick={() => onOffsetChange(Math.max(0, offset - limit))}
 								disabled={offset === 0}
 								data-testid="mcp-clients-pagination-prev-btn"
-								aria-label="Previous page"
+								aria-label="上一页"
 							>
 								<ChevronLeft className="size-3" />
 							</Button>
 
 							<div className="flex items-center gap-1">
-								<span>Page</span>
+								<span>页</span>
 								<span>{Math.floor(offset / limit) + 1}</span>
 								<span>of {Math.ceil(totalCount / limit)}</span>
 							</div>
@@ -1047,7 +1027,7 @@ export default function MCPClientsTable({
 								onClick={() => onOffsetChange(offset + limit)}
 								disabled={offset + limit >= totalCount}
 								data-testid="mcp-clients-pagination-next-btn"
-								aria-label="Next page"
+								aria-label="下一页"
 							>
 								<ChevronRight className="size-3" />
 							</Button>
@@ -1063,16 +1043,16 @@ export default function MCPClientsTable({
 					onClose={() => setReauthorizeFlow(null)}
 					onSuccess={() => {
 						toast({
-							title: "Success",
+							title: "成功",
 							description: reauthorizeFlow.isPerUserOauth
-								? "Admin discovery credential refreshed successfully."
+								? "管理员发现凭据已成功刷新。"
 								: "MCP client re-authorized successfully",
 						});
 						setReauthorizeFlow(null);
 						if (refetch) void refetch();
 					}}
 					onError={(error) => {
-						toast({ title: "Reauthorization failed", description: error, variant: "destructive" });
+						toast({ title: "重新授权失败", description: error, variant: "destructive" });
 					}}
 					onConflict={() => {
 						// 409: the flow's completion raced (popup postMessage vs.
@@ -1080,9 +1060,9 @@ export default function MCPClientsTable({
 						// double submit. Either way the credential is already live
 						// server-side, so treat it as success rather than an error.
 						toast({
-							title: "Success",
+							title: "成功",
 							description: reauthorizeFlow.isPerUserOauth
-								? "Admin discovery credential refreshed successfully."
+								? "管理员发现凭据已成功刷新。"
 								: "MCP client re-authorized successfully",
 						});
 						setReauthorizeFlow(null);
@@ -1100,7 +1080,7 @@ export default function MCPClientsTable({
 					open={!!headersRefreshFlow}
 					onClose={() => setHeadersRefreshFlow(null)}
 					onSuccess={() => {
-						toast({ title: "Success", description: "Admin discovery credential refreshed successfully." });
+						toast({ title: "成功", description: "管理员发现凭据已成功刷新。" });
 						setHeadersRefreshFlow(null);
 						if (refetch) void refetch();
 					}}
@@ -1111,7 +1091,7 @@ export default function MCPClientsTable({
 						// 409: the flow's completion raced (double submit / concurrent
 						// verification) or the credential no longer needed a refresh;
 						// either way the client is fine, so treat it as success.
-						toast({ title: "Already verified", description: error });
+						toast({ title: "已验证", description: error });
 						setHeadersRefreshFlow(null);
 						if (refetch) void refetch();
 					}}

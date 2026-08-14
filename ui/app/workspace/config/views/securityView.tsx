@@ -231,8 +231,8 @@ export default function SecurityView() {
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-4">
 			<div>
-				<h2 className="text-lg font-semibold tracking-tight">Security Settings</h2>
-				<p className="text-muted-foreground text-sm">Configure security and access control settings.</p>
+				<h2 className="text-lg font-semibold tracking-tight">安全设置</h2>
+				<p className="text-muted-foreground text-sm">配置安全和访问控制设置。</p>
 			</div>
 
 			<div className="space-y-4">
@@ -240,7 +240,7 @@ export default function SecurityView() {
 				{IS_ENTERPRISE && authTypeLoading ? (
 					<div className="flex items-center justify-center rounded-sm border p-8" data-testid="security-auth-type-loading">
 						<Loader2 className="text-muted-foreground h-5 w-5 animate-spin" aria-hidden />
-						<span className="sr-only">Loading authentication settings</span>
+						<span className="sr-only">正在加载认证设置</span>
 					</div>
 				) : null}
 				{IS_ENTERPRISE && !authTypeLoading && authTypeError ? (
@@ -257,8 +257,7 @@ export default function SecurityView() {
 						<div className="space-y-4 rounded-sm border p-4">
 							<div className="flex items-center justify-between">
 								<div className="space-y-0.5">
-									<Label htmlFor="auth-enabled" className="text-sm font-medium">
-										Password protect the dashboard <Badge variant="secondary">BETA</Badge>
+									<Label htmlFor="auth-enabled" className="text-sm font-medium">为仪表盘启用密码保护<Badge variant="secondary">测试版</Badge>
 									</Label>
 									<p className="text-muted-foreground text-sm">
 										Set up authentication credentials to protect your Bifrost dashboard. Once configured, use the generated token for all
@@ -269,25 +268,25 @@ export default function SecurityView() {
 							</div>
 							<div className="space-y-4">
 								<div className="space-y-2">
-									<Label htmlFor="admin-username">Username</Label>
+									<Label htmlFor="admin-username">用户名</Label>
 									<SecretVarInput
 										id="admin-username"
 										type="text"
-										placeholder="Enter admin username or env.VAR_NAME"
+										placeholder="输入管理员用户名或 env.VAR_NAME"
 										value={authConfig.admin_username}
 										disabled={!authConfig.is_enabled}
 										onChange={(value) => handleAuthFieldChange("admin_username", value)}
 									/>
 								</div>
 								<div className="space-y-2">
-									<Label htmlFor="admin-password">Password</Label>
+									<Label htmlFor="admin-password">密码</Label>
 									<SecretVarInput
 										ref={passwordInputRef}
 										id="admin-password"
 										aria-invalid={!!passwordError}
 										aria-describedby={passwordError ? "admin-password-error" : undefined}
 										type="password"
-										placeholder="Enter admin password or env.VAR_NAME"
+										placeholder="输入管理员密码或 env.VAR_NAME"
 										value={authConfig.admin_password}
 										disabled={!authConfig.is_enabled}
 										onChange={(value) => handleAuthFieldChange("admin_password", value)}
@@ -303,21 +302,20 @@ export default function SecurityView() {
 								</div>
 								{isFirstTimeSetup && authConfig.is_enabled ? (
 									<div className="space-y-2">
-										<Label htmlFor="setup-token">Setup token</Label>
+										<Label htmlFor="setup-token">设置令牌</Label>
 										<Input
 											id="setup-token"
 											data-testid="security-setup-token-input"
 											type="password"
 											autoComplete="off"
-											placeholder="Paste the setup token configured by your operator"
+											placeholder="粘贴由您的运维人员配置的设置令牌"
 											value={setupToken}
 											onChange={(e) => setSetupToken(e.target.value)}
 										/>
 										<p className="text-muted-foreground text-xs">
 											No admin account exists yet, so this instance is reachable without a password. To finish setup, ask your
 											operator for the setup token configured via <code>setup_token</code> in <code>config.json</code> (or the{" "}
-											<code>BIFROST_SETUP_TOKEN</code> environment variable) and paste it here.
-										</p>
+											<code>BIFROST_SETUP_TOKEN</code>环境变量）并粘贴到此处。</p>
 									</div>
 								) : null}
 							</div>
@@ -358,13 +356,11 @@ export default function SecurityView() {
 				{IS_ENTERPRISE && (
 					<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
-							<label htmlFor="dual-credential-conflict-behavior" className="text-sm font-medium">
-								Dual Credential Conflict Behavior
-							</label>
+							<label htmlFor="dual-credential-conflict-behavior" className="text-sm font-medium">双凭据冲突行为</label>
 							<p className="text-muted-foreground text-sm">
 								How to handle inference requests that present both an identity provider access token (<b>Authorization: Bearer</b>) and a
-								virtual key (<b>x-bf-vk</b>). <b>Prefer IDP token</b> uses the user token for identity, <b>Prefer virtual key</b> drops the
-								IDP token and authenticates via the virtual key, and <b>Reject request</b> returns a 400 error.
+								virtual key (<b>x-bf-vk</b>). <b>优先使用 IDP 令牌</b> uses the user token for identity, <b>优先使用虚拟密钥</b> drops the
+								IDP token and authenticates via the virtual key, and <b>拒绝请求</b> returns a 400 error.
 							</p>
 						</div>
 						<Select
@@ -377,9 +373,9 @@ export default function SecurityView() {
 								<SelectValue />
 							</SelectTrigger>
 							<SelectContent>
-								<SelectItem value="prefer_idp">Prefer IDP token</SelectItem>
-								<SelectItem value="prefer_vk">Prefer virtual key</SelectItem>
-								<SelectItem value="error">Reject request</SelectItem>
+								<SelectItem value="prefer_idp">优先使用 IDP 令牌</SelectItem>
+								<SelectItem value="prefer_vk">优先使用虚拟密钥</SelectItem>
+								<SelectItem value="error">拒绝请求</SelectItem>
 							</SelectContent>
 						</Select>
 					</div>
@@ -387,9 +383,7 @@ export default function SecurityView() {
 				{/* Allow Direct API Keys */}
 				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 					<div className="space-y-0.5">
-						<label htmlFor="allow-direct-keys" className="text-sm font-medium">
-							Allow Direct API Keys
-						</label>
+						<label htmlFor="allow-direct-keys" className="text-sm font-medium">允许直接 API 密钥</label>
 						<p className="text-muted-foreground text-sm">
 							When enabled, callers can pass a provider API key directly in the <b>Authorization</b>, <b>x-api-key</b>, or{" "}
 							<b>x-goog-api-key</b> header alongside <b>x-bf-direct-key: true</b>. Bifrost will use that key directly, bypassing the
@@ -408,9 +402,7 @@ export default function SecurityView() {
 				<div>
 					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
-							<label htmlFor="allowed-origins" className="text-sm font-medium">
-								Allowed Origins
-							</label>
+							<label htmlFor="allowed-origins" className="text-sm font-medium">允许的来源</label>
 							<p className="text-muted-foreground text-sm">
 								Comma-separated list of allowed origins for CORS and WebSocket connections. Localhost origins are always allowed. Each
 								origin must be a complete URL with protocol (e.g., https://app.example.com, http://10.0.0.100:3000). Wildcards are supported
@@ -430,10 +422,8 @@ export default function SecurityView() {
 				<div>
 					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
-							<label htmlFor="allowed-headers" className="text-sm font-medium">
-								Allowed Headers
-							</label>
-							<p className="text-muted-foreground text-sm">Comma-separated list of allowed headers for CORS.</p>
+							<label htmlFor="allowed-headers" className="text-sm font-medium">允许的请求头</label>
+							<p className="text-muted-foreground text-sm">CORS 允许的请求头列表（逗号分隔）。</p>
 						</div>
 						<Textarea
 							id="allowed-headers"
@@ -448,9 +438,7 @@ export default function SecurityView() {
 				<div>
 					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
-							<label htmlFor="required-headers" className="text-sm font-medium">
-								Required Headers
-							</label>
+							<label htmlFor="required-headers" className="text-sm font-medium">必填请求头</label>
 							<p className="text-muted-foreground text-sm">
 								Comma-separated list of headers that must be present on every request. Requests missing any of these headers will be
 								rejected with a 400 error. Header names are case-insensitive.
@@ -470,9 +458,7 @@ export default function SecurityView() {
 				<div>
 					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
-							<label htmlFor="whitelisted-routes" className="text-sm font-medium">
-								Whitelisted Routes
-							</label>
+							<label htmlFor="whitelisted-routes" className="text-sm font-medium">白名单路由</label>
 							<p className="text-muted-foreground text-sm">
 								Comma-separated list of routes that bypass the auth middleware. Requests to these routes will not require authentication.
 								System routes like <b>/health</b>, <b>/api/session/login</b>, and <b>/api/session/is-auth-enabled</b> are always whitelisted
@@ -492,19 +478,17 @@ export default function SecurityView() {
 			</div>
 			<div className="bg-card sticky bottom-0 flex justify-end py-2">
 				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>
-					{isLoading ? "Saving..." : "Save Changes"}
+					{isLoading ? "Saving..." : "保存更改"}
 				</Button>
 			</div>
 			<Dialog open={!!setupTokenErrorMessage} onOpenChange={(open) => !open && setSetupTokenErrorMessage(null)}>
 				<DialogContent data-testid="setup-token-error-dialog">
 					<DialogHeader>
-						<DialogTitle>Setup token required</DialogTitle>
+						<DialogTitle>需要设置令牌</DialogTitle>
 						<DialogDescription>{setupTokenErrorMessage}</DialogDescription>
 					</DialogHeader>
 					<DialogFooter>
-						<Button variant="outline" onClick={() => setSetupTokenErrorMessage(null)} data-testid="setup-token-error-close">
-							Close
-						</Button>
+						<Button variant="outline" onClick={() => setSetupTokenErrorMessage(null)} data-testid="setup-token-error-close">关闭</Button>
 						<Button asChild data-testid="setup-token-error-view-docs">
 							<a href="https://docs.getbifrost.ai/quickstart/gateway/setting-up-auth" target="_blank" rel="noopener noreferrer">
 								View docs
@@ -521,7 +505,7 @@ const RestartWarning = () => {
 	return (
 		<Alert variant="destructive" className="mt-2">
 			<AlertTriangle className="h-4 w-4" />
-			<AlertDescription>Need to restart Bifrost to apply changes.</AlertDescription>
+			<AlertDescription>需要重启 Bifrost 才能生效。</AlertDescription>
 		</Alert>
 	);
 };

@@ -58,7 +58,7 @@ export default function CompatibilityView() {
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-6">
 			<div>
-				<h2 className="text-lg font-semibold tracking-tight">Compatibility</h2>
+				<h2 className="text-lg font-semibold tracking-tight">兼容性</h2>
 				<p className="text-muted-foreground text-sm">
 					Configure request conversions and compatibility fallbacks.{" "}
 					<a
@@ -67,19 +67,15 @@ export default function CompatibilityView() {
 						target="_blank"
 						rel="noopener noreferrer"
 						data-testid="litellm-docs-link"
-					>
-						Learn more
-					</a>
+					>了解更多</a>
 				</p>
 			</div>
 
 			<div className="space-y-4">
 				<div className="flex items-center justify-between space-x-2">
 					<div className="space-y-0.5">
-						<label htmlFor="compat-convert-text-to-chat" className="text-sm font-medium">
-							Convert Text to Chat
-						</label>
-						<p className="text-muted-foreground text-sm">Convert text completion requests to chat for models that only support chat.</p>
+						<label htmlFor="compat-convert-text-to-chat" className="text-sm font-medium">将文本转换为对话</label>
+						<p className="text-muted-foreground text-sm">为仅支持对话的模型将文本补全请求转换为对话。</p>
 					</div>
 					<Switch
 						id="compat-convert-text-to-chat"
@@ -93,12 +89,8 @@ export default function CompatibilityView() {
 
 				<div className="flex items-center justify-between space-x-2">
 					<div className="space-y-0.5">
-						<label htmlFor="compat-convert-chat-to-responses" className="text-sm font-medium">
-							Convert Chat to Responses
-						</label>
-						<p className="text-muted-foreground text-sm">
-							Convert chat completion requests to responses for models that only support responses.
-						</p>
+						<label htmlFor="compat-convert-chat-to-responses" className="text-sm font-medium">将对话转换为 Responses</label>
+						<p className="text-muted-foreground text-sm">为仅支持 responses 的模型将对话补全请求转换为 responses。</p>
 					</div>
 					<Switch
 						id="compat-convert-chat-to-responses"
@@ -112,10 +104,8 @@ export default function CompatibilityView() {
 
 				<div className="flex items-center justify-between space-x-2">
 					<div className="space-y-0.5">
-						<label htmlFor="compat-should-drop-params" className="text-sm font-medium">
-							Drop Unsupported Params
-						</label>
-						<p className="text-muted-foreground text-sm">Drop unsupported parameters based on model catalog allowlist.</p>
+						<label htmlFor="compat-should-drop-params" className="text-sm font-medium">丢弃不支持的参数</label>
+						<p className="text-muted-foreground text-sm">根据模型目录白名单丢弃不支持的参数。</p>
 					</div>
 					<Switch
 						id="compat-should-drop-params"
@@ -129,10 +119,8 @@ export default function CompatibilityView() {
 
 				<div className="flex items-center justify-between space-x-2">
 					<div className="space-y-0.5">
-						<label htmlFor="compat-should-convert-params" className="text-sm font-medium">
-							Convert Unsupported Param Values
-						</label>
-						<p className="text-muted-foreground text-sm">Converts model parameter values that are not supported by the model.</p>
+						<label htmlFor="compat-should-convert-params" className="text-sm font-medium">转换不支持的参数值</label>
+						<p className="text-muted-foreground text-sm">转换模型不支持的模型参数值。</p>
 					</div>
 					<Switch
 						id="compat-should-convert-params"
@@ -147,7 +135,7 @@ export default function CompatibilityView() {
 
 			<div className="flex justify-end pt-2">
 				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess} data-testid="compat-save-button">
-					{isLoading ? "Saving..." : "Save Changes"}
+					{isLoading ? "Saving..." : "保存更改"}
 				</Button>
 			</div>
 		</div>

@@ -123,7 +123,7 @@ function WeightInput({
 			inputMode="decimal"
 			data-testid={testId}
 			value={display}
-			placeholder="Exclude from routing"
+			placeholder="从路由中排除"
 			onChange={(e) => {
 				const cleaned = cleanNumericInput(e.target.value);
 				setDisplay(cleaned);
@@ -266,7 +266,7 @@ export function ProviderConfigCard({
 						)}
 					>
 						<span className="text-muted-foreground/50 text-sm">└</span>
-						<span className="text-muted-foreground text-sm font-medium whitespace-nowrap">Provider budget</span>
+						<span className="text-muted-foreground text-sm font-medium whitespace-nowrap">提供商预算</span>
 						<span className="text-muted-foreground min-w-0 flex-1 truncate text-sm">{capLabel}</span>
 						{ws != null && (
 							<span className="text-muted-foreground/70 shrink-0 text-sm whitespace-nowrap">
@@ -282,7 +282,7 @@ export function ProviderConfigCard({
 						<div className="bg-muted/30 border-t py-3 pr-3.5 pl-16">
 							<MultiBudgetLines
 								data-testid={`${tid}-provider-budget-${index}`}
-								label="Provider Budget"
+								label="提供商预算"
 								lines={(value.budgets || []).map((b) => ({
 									id: b.id,
 									max_limit: b.max_limit,
@@ -319,7 +319,7 @@ export function ProviderConfigCard({
 								className="hover:bg-accent/30 flex cursor-pointer items-center gap-2.5 border-t py-2.5 pr-3.5 pl-10"
 							>
 								<span className="text-muted-foreground/50 text-sm">└</span>
-								<span className="text-muted-foreground text-sm font-medium whitespace-nowrap">Model budgets</span>
+								<span className="text-muted-foreground text-sm font-medium whitespace-nowrap">模型预算</span>
 								<span className="text-muted-foreground/60 min-w-0 flex-1 truncate text-sm">
 									{modelsOpen
 										? "If you skip this, models share the provider budget freely"
@@ -384,7 +384,7 @@ export function ProviderConfigCard({
 												<div className="bg-muted/30 space-y-4 border-t py-3 pr-3.5 pl-16">
 													<MultiBudgetLines
 														data-testid={`${tid}-model-budget-lines-${index}-${mbIndex}`}
-														label="Model Budget"
+														label="模型预算"
 														lines={(mb.budgets || []).map((b) => ({
 															max_limit: b.max_limit,
 															reset_duration: b.reset_duration || "1d",
@@ -411,8 +411,8 @@ export function ProviderConfigCard({
 														id={`${tid}-modelTokenLimit-${index}-${mbIndex}`}
 														dataTestId={`${tid}-modelTokenLimit-${index}-${mbIndex}`}
 														labelClassName="font-medium"
-														label="Maximum tokens"
-														placeholder="No limit"
+														label="最大 Token 数"
+														placeholder="无限制"
 														value={mb.rate_limit?.token_max_limit}
 														selectValue={mb.rate_limit?.token_reset_duration || "1h"}
 														onChangeNumber={(v) => {
@@ -444,8 +444,8 @@ export function ProviderConfigCard({
 														id={`${tid}-modelRequestLimit-${index}-${mbIndex}`}
 														dataTestId={`${tid}-modelRequestLimit-${index}-${mbIndex}`}
 														labelClassName="font-medium"
-														label="Maximum requests"
-														placeholder="No limit"
+														label="最大请求数"
+														placeholder="无限制"
 														value={mb.rate_limit?.request_max_limit}
 														selectValue={mb.rate_limit?.request_reset_duration || "1h"}
 														onChangeNumber={(v) => {
@@ -497,7 +497,7 @@ export function ProviderConfigCard({
 												});
 												setOpenModelEditor(model);
 											}}
-											placeholder="Add model…"
+											placeholder="添加模型…"
 										/>
 									</div>
 								</div>
@@ -519,7 +519,7 @@ export function ProviderConfigCard({
 						className="hover:bg-accent/30 flex cursor-pointer items-center gap-2.5 border-t py-2.5 pr-3.5 pl-10"
 					>
 						<span className="text-muted-foreground/50 text-sm">└</span>
-						<span className="text-muted-foreground text-sm font-medium whitespace-nowrap">Access & rate limits</span>
+						<span className="text-muted-foreground text-sm font-medium whitespace-nowrap">访问与速率限制</span>
 						<span className="text-muted-foreground/60 min-w-0 flex-1 truncate text-sm">
 							{keysSummary} · {modelsSummary} · {rlSummary}
 						</span>
@@ -538,14 +538,14 @@ export function ProviderConfigCard({
 									const configKeyIds = value.keyIds;
 									const hasWildcard = configKeyIds.includes("*");
 									const allKeyOptions: KeyOption[] = [
-										{ label: "Allow All Keys", value: "*", description: "Allow all current and future keys for this provider" },
+										{ label: "允许所有密钥", value: "*", description: "允许此提供商的所有当前和未来密钥" },
 										...keys.map((key) => ({
 											label: key.name,
 											value: key.key_id,
 											description:
 												key.models == null || key.models.includes("*")
 													? "All models"
-													: key.models.filter((m) => m !== "*").join(", ") || "No models (deny all)",
+													: key.models.filter((m) => m !== "*").join(", ") || "无模型（全部拒绝）",
 										})),
 									];
 									const selectedProviderKeys = hasWildcard
@@ -558,12 +558,12 @@ export function ProviderConfigCard({
 													description:
 														key.models == null || key.models.includes("*")
 															? "All models"
-															: key.models.filter((m) => m !== "*").join(", ") || "No models (deny all)",
+															: key.models.filter((m) => m !== "*").join(", ") || "无模型（全部拒绝）",
 												}));
 									return (
 										<div className="w-[260px] shrink-0 space-y-1.5">
 											<div className="flex h-5 items-center">
-												<Label>Provider keys</Label>
+												<Label>提供商密钥</Label>
 											</div>
 											<AsyncMultiSelect
 												hideSelectedOptions
@@ -629,13 +629,13 @@ export function ProviderConfigCard({
 									);
 								})()}
 
-								{/* ALLOWED MODELS — single textbox with an in-dropdown "All Models" option */}
+								{/* ALLOWED MODELS — single textbox with an in-dropdown "所有模型" option */}
 								{(() => {
 									const hasWildcardModels = value.allowedModels.includes("*");
 									return (
 										<div className="min-w-0 flex-1 space-y-1.5">
 											<div className="flex h-5 items-center">
-												<Label>Allowed models</Label>
+												<Label>允许的模型</Label>
 											</div>
 											<ModelMultiselect
 												allowAllOption
@@ -651,8 +651,8 @@ export function ProviderConfigCard({
 													hasWildcardModels
 														? "All models allowed"
 														: value.allowedModels.length === 0
-															? "No models (deny all)"
-															: "Add model…"
+															? "无模型（全部拒绝）"
+															: "添加模型…"
 												}
 											/>
 										</div>
@@ -664,7 +664,7 @@ export function ProviderConfigCard({
 							<div className="flex items-start gap-3.5">
 								<div className="w-[260px] shrink-0 space-y-1.5">
 									<div className="flex h-5 items-center">
-										<Label htmlFor={`${tid}-weight-${index}`}>Weight</Label>
+										<Label htmlFor={`${tid}-weight-${index}`}>权重</Label>
 									</div>
 									<WeightInput
 										id={`${tid}-weight-${index}`}
@@ -675,7 +675,7 @@ export function ProviderConfigCard({
 								</div>
 								<div className="min-w-0 flex-1 space-y-1.5">
 									<div className="flex h-5 items-center">
-										<Label>Blocked models</Label>
+										<Label>禁止的模型</Label>
 									</div>
 									{(() => {
 										const hasWildcardBlocked = value.blacklistedModels.includes("*");
@@ -708,8 +708,8 @@ export function ProviderConfigCard({
 								id={`${tid}-providerTokenLimit-${index}`}
 								dataTestId={`${tid}-providerTokenLimit-${index}`}
 								labelClassName="font-medium"
-								label="Maximum tokens"
-								placeholder="No limit"
+								label="最大 Token 数"
+								placeholder="无限制"
 								value={value.rateLimit?.token_max_limit}
 								selectValue={value.rateLimit?.token_reset_duration || "1h"}
 								onChangeNumber={(v) => {
@@ -726,8 +726,8 @@ export function ProviderConfigCard({
 								id={`${tid}-providerRequestLimit-${index}`}
 								dataTestId={`${tid}-providerRequestLimit-${index}`}
 								labelClassName="font-medium"
-								label="Maximum requests"
-								placeholder="No limit"
+								label="最大请求数"
+								placeholder="无限制"
 								value={value.rateLimit?.request_max_limit}
 								selectValue={value.rateLimit?.request_reset_duration || "1h"}
 								onChangeNumber={(v) => {

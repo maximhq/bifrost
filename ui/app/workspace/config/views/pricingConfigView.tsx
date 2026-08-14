@@ -90,16 +90,16 @@ export default function PricingConfigView() {
 		<div className="mx-auto w-full max-w-7xl space-y-4" data-testid="pricing-config-view">
 			<form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
 				<div>
-					<h2 className="text-lg font-semibold tracking-tight">Pricing Configuration</h2>
-					<p className="text-muted-foreground text-sm">Configure custom pricing datasheet and sync intervals.</p>
+					<h2 className="text-lg font-semibold tracking-tight">价格配置</h2>
+					<p className="text-muted-foreground text-sm">配置自定义价格数据表和同步间隔。</p>
 				</div>
 
 				<div className="space-y-4">
 					{/* Pricing Datasheet URL */}
 					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
-							<Label htmlFor="pricing-datasheet-url">Pricing Datasheet URL</Label>
-							<p className="text-muted-foreground text-sm">URL to a custom pricing datasheet. Leave empty to use default pricing.</p>
+							<Label htmlFor="pricing-datasheet-url">价格数据表 URL</Label>
+							<p className="text-muted-foreground text-sm">自定义价格数据表 URL。留空使用默认价格。</p>
 						</div>
 						<Input
 							id="pricing-datasheet-url"
@@ -126,8 +126,8 @@ export default function PricingConfigView() {
 					{/* Model Parameters URL */}
 					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
-							<Label htmlFor="model-parameters-url">Model Parameters URL</Label>
-							<p className="text-muted-foreground text-sm">URL to a custom model parameters datasheet. Leave empty to use default.</p>
+							<Label htmlFor="model-parameters-url">模型参数 URL</Label>
+							<p className="text-muted-foreground text-sm">自定义模型参数数据表 URL。留空使用默认值。</p>
 						</div>
 						<Input
 							id="model-parameters-url"
@@ -155,8 +155,8 @@ export default function PricingConfigView() {
 					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-2">
 							<div className="space-y-0.5">
-								<Label htmlFor="pricing-sync-interval">Pricing Sync Interval (hours)</Label>
-								<p className="text-muted-foreground text-sm">How often to sync pricing data from the datasheet URL.</p>
+								<Label htmlFor="pricing-sync-interval">价格同步间隔（小时）</Label>
+								<p className="text-muted-foreground text-sm">从数据表 URL 同步价格数据的频率。</p>
 							</div>
 							<Input
 								id="pricing-sync-interval"
@@ -192,7 +192,7 @@ export default function PricingConfigView() {
 						{isForceSyncing ? "Syncing..." : "Force Sync Now"}
 					</Button>
 					<Button type="submit" disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess} data-testid="pricing-save-btn">
-						{isLoading ? "Saving..." : "Save Changes"}
+						{isLoading ? "Saving..." : "保存更改"}
 					</Button>
 				</div>
 			</form>

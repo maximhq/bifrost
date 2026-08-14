@@ -31,10 +31,8 @@ export function LoggingDisabledView() {
 				<ScrollText className="h-10 w-10" />
 			</div>
 			<div className="flex flex-col gap-1">
-				<h1 className="text-muted-foreground text-xl font-medium">Logging is disabled</h1>
-				<div className="text-muted-foreground mt-2 max-w-[600px] text-sm font-normal">
-					Enable logging to view LLM and MCP request logs, traces, and observability data.
-				</div>
+				<h1 className="text-muted-foreground text-xl font-medium">日志已禁用</h1>
+				<div className="text-muted-foreground mt-2 max-w-[600px] text-sm font-normal">启用日志以查看 LLM 和 MCP 请求日志、追踪和可观测性数据。</div>
 			</div>
 			<Button onClick={handleEnable} disabled={isLoading}>
 				{isLoading ? "Enabling…" : "Enable logging"}

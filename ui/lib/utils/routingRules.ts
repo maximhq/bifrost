@@ -126,19 +126,19 @@ export function detectCELOperators(expression: string): string[] {
 
 	// Common CEL operators
 	const operatorPatterns = [
-		{ regex: /==/, label: "Equals" },
-		{ regex: /!=/, label: "Not equals" },
-		{ regex: />=/, label: "Greater than or equal" },
-		{ regex: /<=/, label: "Less than or equal" },
-		{ regex: />/, label: "Greater than" },
-		{ regex: /</, label: "Less than" },
+		{ regex: /==/, label: "等于" },
+		{ regex: /!=/, label: "不等于" },
+		{ regex: />=/, label: "大于等于" },
+		{ regex: /<=/, label: "小于等于" },
+		{ regex: />/, label: "大于" },
+		{ regex: /</, label: "小于" },
 		{ regex: /&&/, label: "AND" },
 		{ regex: /\|\|/, label: "OR" },
 		{ regex: /!(?!=)/, label: "NOT" },
 		{ regex: /in\s/, label: "IN" },
 		{ regex: /.matches\(/, label: "Regex" },
 		{ regex: /.startsWith\(/, label: "StartsWith" },
-		{ regex: /.contains\(/, label: "Contains" },
+		{ regex: /.contains\(/, label: "包含" },
 		{ regex: /.endsWith\(/, label: "EndsWith" },
 	];
 

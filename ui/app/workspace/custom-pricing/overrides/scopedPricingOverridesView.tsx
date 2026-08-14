@@ -63,9 +63,7 @@ function PricingOverrideActionsMenu({
 						setIsOpen(false);
 					}}
 				>
-					<Edit className="h-4 w-4" />
-					Edit
-				</DropdownMenuItem>
+					<Edit className="h-4 w-4" />编辑</DropdownMenuItem>
 				<DropdownMenuItem
 					data-testid={`pricing-override-delete-btn-${row.id}`}
 					variant="destructive"
@@ -76,9 +74,7 @@ function PricingOverrideActionsMenu({
 						setIsOpen(false);
 					}}
 				>
-					<Trash2 className="h-4 w-4" />
-					Delete
-				</DropdownMenuItem>
+					<Trash2 className="h-4 w-4" />删除</DropdownMenuItem>
 			</DropdownMenuContent>
 		</DropdownMenu>
 	);
@@ -103,23 +99,23 @@ function parseScopeKind(value: string | null): ScopeFilter {
 	return "all";
 }
 
-// Returns the top-level scope label: "Global", "Virtual Key", or "User".
+// Returns the top-level scope label: "全局", "虚拟密钥", or "用户".
 function scopeLabel(override: PricingOverride): string {
 	const scopeKind = resolveScopeKind(override);
 	if (override.virtual_key_id && scopeKind.startsWith("virtual_key")) {
-		return "Virtual Key";
+		return "虚拟密钥";
 	}
 	if (override.user_id && scopeKind.startsWith("user")) {
-		return "User";
+		return "用户";
 	}
-	return "Global";
+	return "全局";
 }
 
 // Returns the key label for the override, or "-" when no specific key is scoped.
 function keyLabel(override: PricingOverride, keyLabelMap: Map<string, string>): string {
 	if (!override.provider_key_id) {
 		if (!override.provider_id) return "-";
-		return "All Keys";
+		return "所有密钥";
 	}
 	return keyLabelMap.get(override.provider_key_id) || override.provider_key_id;
 }
@@ -321,14 +317,14 @@ export default function ScopedPricingOverridesView() {
 		<div className="flex flex-col overflow-y-auto">
 			<div className="mb-4 flex items-center justify-between gap-4">
 				<div>
-					<h2 className="text-lg font-semibold tracking-tight">Pricing Overrides</h2>
+					<h2 className="text-lg font-semibold tracking-tight">价格覆盖</h2>
 					<p className="text-muted-foreground text-sm">
 						Set custom rates for any model across global, virtual key, or user scopes, optionally narrowed to a specific provider or key
 					</p>
 				</div>
 				<Button data-testid="pricing-override-create-btn" onClick={openCreateDrawer} className="gap-2">
 					<Plus className="h-4 w-4" />
-					<span className="hidden sm:inline">New Override</span>
+					<span className="hidden sm:inline">新建覆盖</span>
 				</Button>
 			</div>
 
@@ -337,8 +333,8 @@ export default function ScopedPricingOverridesView() {
 				<div className="relative w-full max-w-sm">
 					<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 					<Input
-						aria-label="Search pricing overrides by name"
-						placeholder="Search by name..."
+						aria-label="按名称搜索价格覆盖"
+						placeholder="按名称搜索..."
 						value={search}
 						onChange={(e) => setSearch(e.target.value)}
 						className="pl-9"
@@ -350,7 +346,7 @@ export default function ScopedPricingOverridesView() {
 					<VirtualKeySelector
 						value={virtualKeyID}
 						onChange={setVirtualKeyID}
-						placeholder="All virtual keys"
+						placeholder="所有虚拟密钥"
 						triggerClassName="h-9"
 						// A page, not a sheet — portalling keeps the popover out of the
 						// scrolling table container.
@@ -364,36 +360,32 @@ export default function ScopedPricingOverridesView() {
 						size="sm"
 						onClick={() => setVirtualKeyID("")}
 						data-testid="pricing-overrides-virtual-key-filter-clear-btn"
-					>
-						Clear
-					</Button>
+					>清除</Button>
 				)}
 			</div>
 
 			<div className="mb-2 overflow-hidden rounded-sm border">
 				{isLoading ? (
-					<div className="p-4 text-sm">Loading overrides...</div>
+					<div className="p-4 text-sm">正在加载覆盖...</div>
 				) : error ? (
-					<div className="p-4 text-sm text-red-500">Failed to load pricing overrides. Please try refreshing the page.</div>
+					<div className="p-4 text-sm text-red-500">无法加载价格覆盖。请尝试刷新页面。</div>
 				) : (
 					<Table containerClassName="h-full overflow-auto">
 						<TableHeader className="bg-muted sticky top-0 z-10">
 							<TableRow className="bg-muted/50">
-								<TableHead className="font-semibold">Name</TableHead>
-								<TableHead className="font-semibold">Scope</TableHead>
-								<TableHead className="font-semibold">Provider</TableHead>
-								<TableHead className="font-semibold">Key</TableHead>
-								<TableHead className="font-semibold">Model</TableHead>
-								<TableHead className={`bg-muted sticky right-0 z-30 w-[50px] text-right font-semibold ${PIN_SHADOW_RIGHT}`}>
-									Actions
-								</TableHead>
+								<TableHead className="font-semibold">名称</TableHead>
+								<TableHead className="font-semibold">范围</TableHead>
+								<TableHead className="font-semibold">提供商</TableHead>
+								<TableHead className="font-semibold">密钥</TableHead>
+								<TableHead className="font-semibold">模型</TableHead>
+								<TableHead className={`bg-muted sticky right-0 z-30 w-[50px] text-right font-semibold ${PIN_SHADOW_RIGHT}`}>操作</TableHead>
 							</TableRow>
 						</TableHeader>
 						<TableBody>
 							{rows.length === 0 ? (
 								<TableRow>
 									<TableCell colSpan={6} className="h-24 text-center">
-										<span className="text-muted-foreground text-sm">No matching pricing overrides found.</span>
+										<span className="text-muted-foreground text-sm">未找到匹配的价格覆盖。</span>
 									</TableCell>
 								</TableRow>
 							) : (
@@ -448,13 +440,13 @@ export default function ScopedPricingOverridesView() {
 							onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
 							disabled={offset === 0}
 							data-testid="pricing-overrides-pagination-prev-btn"
-							aria-label="Previous page"
+							aria-label="上一页"
 						>
 							<ChevronLeft className="size-3" />
 						</Button>
 
 						<div className="flex items-center gap-1">
-							<span>Page</span>
+							<span>页</span>
 							<span>{Math.floor(offset / PAGE_SIZE) + 1}</span>
 							<span>of {Math.ceil(totalCount / PAGE_SIZE)}</span>
 						</div>
@@ -465,7 +457,7 @@ export default function ScopedPricingOverridesView() {
 							onClick={() => setOffset(offset + PAGE_SIZE)}
 							disabled={offset + PAGE_SIZE >= totalCount}
 							data-testid="pricing-overrides-pagination-next-btn"
-							aria-label="Next page"
+							aria-label="下一页"
 						>
 							<ChevronRight className="size-3" />
 						</Button>
@@ -483,15 +475,13 @@ export default function ScopedPricingOverridesView() {
 			<AlertDialog open={!!deleteTarget} onOpenChange={(open) => (!open ? setDeleteTarget(null) : undefined)}>
 				<AlertDialogContent>
 					<AlertDialogHeader>
-						<AlertDialogTitle>Delete Pricing Override</AlertDialogTitle>
+						<AlertDialogTitle>删除价格覆盖</AlertDialogTitle>
 						<AlertDialogDescription>
 							Are you sure you want to delete &quot;{deleteTarget?.name}&quot;? This action cannot be undone.
 						</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
-						<AlertDialogCancel data-testid="pricing-override-delete-cancel-btn" disabled={isDeleting}>
-							Cancel
-						</AlertDialogCancel>
+						<AlertDialogCancel data-testid="pricing-override-delete-cancel-btn" disabled={isDeleting}>取消</AlertDialogCancel>
 						<AlertDialogAction
 							data-testid="pricing-override-delete-confirm-btn"
 							onClick={(e) => {
@@ -501,7 +491,7 @@ export default function ScopedPricingOverridesView() {
 							disabled={isDeleting}
 							className="bg-destructive hover:bg-destructive/90"
 						>
-							{isDeleting ? "Deleting..." : "Delete"}
+							{isDeleting ? "删除中..." : "删除"}
 						</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>

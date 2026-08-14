@@ -91,7 +91,7 @@ export function BudgetOverrideDialog({ budget, onSave, onRemove, disabled, calen
 					data-testid={`budget-override-open-${budget.id}`}
 				>
 					{active ? <Pencil className="h-3 w-3" /> : <Plus className="h-3 w-3" />}
-					{active ? "Edit override" : "Add override"}
+					{active ? "Edit override" : "添加覆盖"}
 				</Button>
 			</DialogTrigger>
 			<DialogContent className="rounded-sm sm:max-w-md" data-testid={`budget-override-dialog-${budget.id}`}>
@@ -105,7 +105,7 @@ export function BudgetOverrideDialog({ budget, onSave, onRemove, disabled, calen
 
 					<div className="space-y-4 py-5">
 						<div className="space-y-2">
-							<Label htmlFor={`budget-override-amount-${budget.id}`}>Additional budget</Label>
+							<Label htmlFor={`budget-override-amount-${budget.id}`}>额外预算</Label>
 							<div className="relative">
 								<span
 									className="text-muted-foreground pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-sm"
@@ -129,21 +129,21 @@ export function BudgetOverrideDialog({ budget, onSave, onRemove, disabled, calen
 						</div>
 
 						<div className="space-y-2">
-							<Label>Duration</Label>
+							<Label>时长</Label>
 							<Select value={mode} onValueChange={(value) => setMode(value as "cycles" | "forever")} disabled={isSaving}>
 								<SelectTrigger className="w-full rounded-sm" data-testid="budget-override-mode">
 									<SelectValue />
 								</SelectTrigger>
 								<SelectContent className="rounded-sm">
-									<SelectItem value="cycles">For a number of reset cycles</SelectItem>
-									<SelectItem value="forever">Until removed</SelectItem>
+									<SelectItem value="cycles">按重置周期数</SelectItem>
+									<SelectItem value="forever">直到移除</SelectItem>
 								</SelectContent>
 							</Select>
 						</div>
 
 						{mode === "cycles" ? (
 							<div className="space-y-2">
-								<Label htmlFor={`budget-override-cycles-${budget.id}`}>Reset cycles</Label>
+								<Label htmlFor={`budget-override-cycles-${budget.id}`}>重置周期</Label>
 								<Input
 									id={`budget-override-cycles-${budget.id}`}
 									type="number"
@@ -155,18 +155,16 @@ export function BudgetOverrideDialog({ budget, onSave, onRemove, disabled, calen
 									disabled={isSaving}
 									data-testid="budget-override-cycles"
 								/>
-								<p className="text-muted-foreground text-xs">The current reset cycle counts as the first cycle.</p>
+								<p className="text-muted-foreground text-xs">当前重置周期计为第一个周期。</p>
 								{validUntil ? (
-									<p className="text-muted-foreground text-xs">
-										Valid until <span className="text-foreground font-medium">{validUntil.toLocaleString()}</span>
+									<p className="text-muted-foreground text-xs">有效期至<span className="text-foreground font-medium">{validUntil.toLocaleString()}</span>
 									</p>
 								) : null}
 							</div>
 						) : null}
 
 						{active ? (
-							<div className="bg-muted/50 rounded-sm px-3 py-2 text-xs">
-								Current effective limit: <span className="font-medium">{formatCurrency(getEffectiveBudgetLimit(budget))}</span>
+							<div className="bg-muted/50 rounded-sm px-3 py-2 text-xs">当前生效限制：<span className="font-medium">{formatCurrency(getEffectiveBudgetLimit(budget))}</span>
 							</div>
 						) : null}
 
@@ -186,14 +184,12 @@ export function BudgetOverrideDialog({ budget, onSave, onRemove, disabled, calen
 								onClick={handleRemove}
 								disabled={isSaving}
 								data-testid="budget-override-remove"
-							>
-								Remove override
-							</Button>
+							>移除覆盖</Button>
 						) : (
 							<span />
 						)}
 						<Button type="submit" className="rounded-sm" isLoading={isSaving} data-testid="budget-override-save">
-							{active ? "Update override" : "Add override"}
+							{active ? "Update override" : "添加覆盖"}
 						</Button>
 					</DialogFooter>
 				</form>

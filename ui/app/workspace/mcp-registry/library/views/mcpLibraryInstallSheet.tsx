@@ -106,11 +106,11 @@ function TransportIcon({ connectionType }: { connectionType?: string }) {
 function authLabel(authType?: MCPAuthType | string): string {
 	switch (authType) {
 		case "headers":
-			return "Headers";
+			return "请求头";
 		case "oauth":
 			return "OAuth 2.0";
 		case "per_user_oauth":
-			return "Per-user OAuth";
+			return "每用户 OAuth";
 		case "per_user_headers":
 			return "User headers";
 		case "token_exchange":
@@ -274,8 +274,8 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 			}
 			if (resourceText.trim() && !isValidOAuthResourceURI(resourceText.trim())) {
 				toast({
-					title: "Invalid resource URI",
-					description: "OAuth resource must be an absolute URI without a fragment.",
+					title: "无效的资源 URI",
+					description: "OAuth 资源必须是绝对 URI，且不能包含片段。",
 					variant: "destructive",
 				});
 				hasErrors = true;
@@ -285,8 +285,8 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 		if (authType === "per_user_headers") {
 			if (perUserHeaderKeys.length === 0) {
 				toast({
-					title: "Header keys required",
-					description: "Declare at least one header name users must supply.",
+					title: "必填请求头键",
+					description: "请至少声明一个用户必须提供的请求头名称。",
 					variant: "destructive",
 				});
 				hasErrors = true;
@@ -362,7 +362,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 			}
 
 			toast({
-				title: "Installed",
+				title: "已安装",
 				description: `${server.name} MCP server installed.`,
 			});
 			onInstalled();
@@ -387,14 +387,14 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 	const isPerUserHeaders = authType === "per_user_headers";
 	const displayUrl =
 		server.connection_url || (server.stdio_config ? `${server.stdio_config.command} ${(server.stdio_config.args || []).join(" ")}` : "—");
-	const installButtonLabel = isOauth || isPerUserHeaders ? "Continue" : "Install";
+	const installButtonLabel = isOauth || isPerUserHeaders ? "继续" : "安装";
 
 	return (
 		<Sheet open={open} onOpenChange={(sheetOpen) => !sheetOpen && !oauthFlow && !headersFlow && onClose()}>
 			<SheetContent className="flex w-full flex-col overflow-x-hidden p-0 pt-4 sm:max-w-2xl">
 				<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 sticky px-8 -top-4 bg-card z-10">
-					<SheetTitle>Install MCP server</SheetTitle>
-					<SheetDescription>Confirm the catalog configuration before adding this server to Bifrost.</SheetDescription>
+					<SheetTitle>安装 MCP 服务器</SheetTitle>
+					<SheetDescription>在将此服务器添加到 Bifrost 之前，确认目录配置。</SheetDescription>
 				</SheetHeader>
 
 				<Form {...form}>
@@ -439,8 +439,8 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 
 							<section className="space-y-4">
 								<div className="space-y-1">
-									<h3 className="text-sm font-medium">Client details</h3>
-									<p className="text-muted-foreground text-sm">Bifrost uses this name internally when routing MCP tool calls.</p>
+									<h3 className="text-sm font-medium">客户端详情</h3>
+									<p className="text-muted-foreground text-sm">路由 MCP 工具调用时，Bifrost 内部使用此名称。</p>
 								</div>
 
 								<FormField
@@ -463,7 +463,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 									}}
 									render={({ field }) => (
 										<FormItem>
-											<FormLabel>Server name</FormLabel>
+											<FormLabel>服务器名称</FormLabel>
 											<FormControl>
 												<Input {...field} data-testid="library-mcp-name-input" maxLength={50} />
 											</FormControl>
@@ -477,19 +477,19 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 								<section className="space-y-4 border-t pt-5">
 									<div className="space-y-1">
 										<div className="flex items-center gap-2">
-											<h3 className="text-sm font-medium">Launch environment</h3>
+											<h3 className="text-sm font-medium">启动环境</h3>
 											<TooltipProvider>
 												<Tooltip>
 													<TooltipTrigger asChild>
 														<Info className="text-muted-foreground h-4 w-4 cursor-help" />
 													</TooltipTrigger>
 													<TooltipContent className="max-w-xs">
-														<p>Leave a value blank to read it from the environment where Bifrost runs.</p>
+														<p>值留空则从 Bifrost 运行的环境中读取。</p>
 													</TooltipContent>
 												</Tooltip>
 											</TooltipProvider>
 										</div>
-										<p className="text-muted-foreground text-sm">Values used when Bifrost starts this stdio MCP server.</p>
+										<p className="text-muted-foreground text-sm">Bifrost 启动此 stdio MCP 服务器时使用的值。</p>
 									</div>
 									<HeadersTable
 										value={envVars}
@@ -506,7 +506,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 								<div className="space-y-1">
 									<div className="flex items-center gap-2">
 										<KeyRound className="text-muted-foreground size-4" />
-										<h3 className="text-sm font-medium">Authentication</h3>
+										<h3 className="text-sm font-medium">认证</h3>
 									</div>
 									<p className="text-muted-foreground text-sm">{authHelpText(authType)}</p>
 								</div>
@@ -521,12 +521,8 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 											</SelectTrigger>
 										</FormControl>
 										<SelectContent>
-											<SelectItem value="none" data-testid="library-auth-type-none">
-												None
-											</SelectItem>
-											<SelectItem value="headers" data-testid="library-auth-type-headers">
-												Headers
-											</SelectItem>
+											<SelectItem value="none" data-testid="library-auth-type-none">无</SelectItem>
+											<SelectItem value="headers" data-testid="library-auth-type-headers">请求头</SelectItem>
 											<SelectItem value="oauth" data-testid="library-auth-type-oauth">
 												OAuth 2.0
 											</SelectItem>
@@ -537,20 +533,16 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 								{/* Auth Scope — only meaningful when there's an auth flow */}
 								{authKind !== "none" && (
 									<FormItem className="w-full">
-										<FormLabel>Auth Scope</FormLabel>
+										<FormLabel>认证范围</FormLabel>
 										<Select value={authScope} onValueChange={(value: "shared" | "per_user") => applyAuthScope(value)}>
 											<FormControl>
 												<SelectTrigger className="w-full" data-testid="library-auth-scope-select">
-													<SelectValue placeholder="Select auth scope" />
+													<SelectValue placeholder="选择认证范围" />
 												</SelectTrigger>
 											</FormControl>
 											<SelectContent>
-												<SelectItem value="shared" data-testid="library-auth-scope-shared">
-													Shared
-												</SelectItem>
-												<SelectItem value="per_user" data-testid="library-auth-scope-per-user">
-													Per-User
-												</SelectItem>
+												<SelectItem value="shared" data-testid="library-auth-scope-shared">共享</SelectItem>
+												<SelectItem value="per_user" data-testid="library-auth-scope-per-user">按用户</SelectItem>
 											</SelectContent>
 										</Select>
 									</FormItem>
@@ -567,7 +559,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 													onChange={field.onChange}
 													keyPlaceholder="Header name"
 													valuePlaceholder="Header value"
-													label="Headers"
+													label="请求头"
 													useSecretVarInput
 												/>
 												{headersValidationError && <p className="text-destructive text-xs">{headersValidationError}</p>}
@@ -583,7 +575,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 										    per-user on install via the MCPHeadersAuthorizer dialog. */}
 										<div className="space-y-1">
 											<div className="space-y-0.5">
-												<div className="text-sm font-medium">Required Headers</div>
+												<div className="text-sm font-medium">必填请求头</div>
 												<p className="text-muted-foreground text-sm">
 													Comma-separated list of header names each caller must supply when they first use this server (e.g.{" "}
 													<code>X-API-Key, X-Tenant-ID</code>). Values are submitted per user - never stored on this server config.
@@ -613,7 +605,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 														onChange={field.onChange}
 														keyPlaceholder="Header name"
 														valuePlaceholder="Header value"
-														label="Static Headers (optional, applied alongside user values)"
+														label="静态请求头（可选，与用户值同时应用）"
 														useSecretVarInput
 													/>
 													{headersValidationError && <p className="text-destructive text-xs">{headersValidationError}</p>}
@@ -628,7 +620,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 									<Accordion type="single" collapsible className="w-full">
 										<AccordionItem value="oauth-advanced" className="border-b-0">
 											<AccordionTrigger className="py-0" data-testid="library-oauth-advanced-trigger">
-												<span className="text-sm font-medium">OAuth Client Advanced Settings</span>
+												<span className="text-sm font-medium">OAuth 客户端高级设置</span>
 											</AccordionTrigger>
 											<AccordionContent className="space-y-4 pt-4 pb-0">
 												<FormField
@@ -637,14 +629,14 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 													render={({ field }) => (
 														<FormItem>
 															<div className="flex items-center gap-2">
-																<FormLabel>OAuth client ID</FormLabel>
+																<FormLabel>OAuth 客户端 ID</FormLabel>
 																<TooltipProvider>
 																	<Tooltip>
 																		<TooltipTrigger asChild>
 																			<Info className="text-muted-foreground h-4 w-4 cursor-help" />
 																		</TooltipTrigger>
 																		<TooltipContent className="max-w-xs">
-																			<p>Leave empty to use Dynamic Client Registration when the provider supports it.</p>
+																			<p>提供商支持时，留空则使用动态客户端注册。</p>
 																		</TooltipContent>
 																	</Tooltip>
 																</TooltipProvider>
@@ -667,12 +659,12 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 													name="oauth_config.client_secret"
 													render={({ field }) => (
 														<FormItem>
-															<FormLabel>OAuth client secret</FormLabel>
+															<FormLabel>OAuth 客户端密钥</FormLabel>
 															<FormControl>
 																<SecretVarInput
 																	value={field.value}
 																	onChange={field.onChange}
-																	placeholder="optional for PKCE"
+																	placeholder="PKCE 可选"
 																	hideValueWhenEnv
 																	maskNonEnvValue
 																	data-testid="library-oauth-client-secret"
@@ -689,7 +681,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 														name="oauth_config.authorize_url"
 														render={({ field }) => (
 															<FormItem>
-																<FormLabel>Authorization URL</FormLabel>
+																<FormLabel>授权 URL</FormLabel>
 																<FormControl>
 																	<Input
 																		{...field}
@@ -698,7 +690,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 																			field.onChange(event);
 																			clearErrors("oauth_config.authorize_url");
 																		}}
-																		placeholder="Auto-discovered"
+																		placeholder="自动发现"
 																		data-testid="library-oauth-authorize-url"
 																	/>
 																</FormControl>
@@ -721,7 +713,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 																			field.onChange(event);
 																			clearErrors("oauth_config.token_url");
 																		}}
-																		placeholder="Auto-discovered"
+																		placeholder="自动发现"
 																		data-testid="library-oauth-token-url"
 																	/>
 																</FormControl>
@@ -736,7 +728,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 													name="oauth_config.registration_url"
 													render={({ field }) => (
 														<FormItem>
-															<FormLabel>Registration URL</FormLabel>
+															<FormLabel>注册 URL</FormLabel>
 															<FormControl>
 																<Input
 																	{...field}
@@ -745,7 +737,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 																		field.onChange(event);
 																		clearErrors("oauth_config.registration_url");
 																	}}
-																	placeholder="Auto-discovered"
+																	placeholder="自动发现"
 																	data-testid="library-oauth-registration-url"
 																/>
 															</FormControl>
@@ -755,7 +747,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 												/>
 
 												<div className="space-y-2">
-													<Label>Scopes</Label>
+													<Label>范围</Label>
 													<Input
 														value={scopesText}
 														onChange={(event) => setScopesText(event.target.value)}
@@ -764,7 +756,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 													/>
 												</div>
 												<div className="space-y-2">
-													<Label>Resource</Label>
+													<Label>资源</Label>
 													<Input
 														value={resourceText}
 														onChange={(event) => setResourceText(event.target.value)}
@@ -782,7 +774,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 									<Accordion type="single" collapsible className="w-full">
 										<AccordionItem value="tls-config" className="border-b-0">
 											<AccordionTrigger className="py-0" data-testid="library-tls-config-trigger">
-												<span className="text-sm font-medium">TLS / Certificate</span>
+												<span className="text-sm font-medium">TLS / 证书</span>
 											</AccordionTrigger>
 											<AccordionContent className="space-y-4 pt-4 pb-0">
 												<FormField
@@ -791,7 +783,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 													render={({ field }) => (
 														<FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
 															<div className="space-y-0.5">
-																<FormLabel>Skip TLS verification</FormLabel>
+																<FormLabel>跳过 TLS 验证</FormLabel>
 																<p className="text-muted-foreground text-sm">
 																	Disable TLS certificate verification. Use only in trusted isolated environments. Takes priority over CA
 																	certificate.
@@ -812,7 +804,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 													name="tls_config.ca_cert_pem"
 													render={({ field }) => (
 														<FormItem>
-															<FormLabel>CA Certificate (PEM) (Optional)</FormLabel>
+															<FormLabel>CA 证书 (PEM)（可选）</FormLabel>
 															<FormControl>
 																<SecretVarInput
 																	variant="textarea"
@@ -826,9 +818,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 																	data-testid="library-mcp-tls-ca-cert-pem"
 																/>
 															</FormControl>
-															<p className="text-muted-foreground text-sm">
-																PEM-encoded CA certificate to trust for MCP server connections (e.g. self-signed or private CA).
-															</p>
+															<p className="text-muted-foreground text-sm">用于 MCP 服务器连接的 PEM 编码 CA 证书（如自签名或私有 CA）。</p>
 															<FormMessage />
 														</FormItem>
 													)}
@@ -850,9 +840,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 											: "All discovered tools will be enabled after install."}
 								</p>
 								<div className="flex justify-end gap-2">
-									<Button type="button" variant="outline" onClick={onClose} disabled={isLoading} data-testid="library-install-cancel-btn">
-										Cancel
-									</Button>
+									<Button type="button" variant="outline" onClick={onClose} disabled={isLoading} data-testid="library-install-cancel-btn">取消</Button>
 									<TooltipProvider>
 										<Tooltip>
 											<TooltipTrigger asChild>
@@ -869,7 +857,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 											</TooltipTrigger>
 											{!hasCreateMCPClientAccess && (
 												<TooltipContent>
-													<p>You don't have permission to perform this action</p>
+													<p>您没有权限执行此操作</p>
 												</TooltipContent>
 											)}
 										</Tooltip>
@@ -887,7 +875,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 					onClose={() => setOauthFlow(null)}
 					onSuccess={() => {
 						toast({
-							title: "Installed",
+							title: "已安装",
 							description: `${server.name} MCP server connected with OAuth.`,
 						});
 						setOauthFlow(null);
@@ -896,7 +884,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 					}}
 					onError={(error) => {
 						toast({
-							title: "OAuth Error",
+							title: "OAuth 错误",
 							description: error,
 							variant: "destructive",
 						});
@@ -922,7 +910,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 					onSuccess={() => {
 						setHeadersFlow(null);
 						toast({
-							title: "Installed",
+							title: "已安装",
 							description: `${server.name} MCP server connected with per-user headers.`,
 						});
 						onInstalled();

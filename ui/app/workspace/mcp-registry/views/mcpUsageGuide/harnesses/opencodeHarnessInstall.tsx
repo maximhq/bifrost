@@ -35,7 +35,7 @@ export function OpenCodeHarnessInstall({
 			copySuccessMessage="Config copied"
 			emptyMessage={virtualKey ? "Select servers or use Gateway root." : "Select a virtual key to generate the config."}
 			harnessName="OpenCode"
-			label="Config"
+			label="配置"
 			logoSrc="/images/harness/opencode.svg"
 			registrationLabel={`${configPath} · ${getRegistrationLabel(serverScope, selectedServers)}`}
 		/>

@@ -22,8 +22,8 @@ export default function PubSubConnectorView(_props: PubSubConnectorViewProps) {
 						align="middle"
 						className="mx-auto w-full max-w-lg"
 						icon={<Radio className="h-[5.5rem] w-[5.5rem]" strokeWidth={1} />}
-						title="Unlock Google Cloud Pub/Sub trace streaming"
-						description="This feature is a part of the Bifrost enterprise license. We would love to know more about your use case and how we can help you."
+						title="解锁 Google Cloud Pub/Sub 追踪流"
+						description="此功能属于 Bifrost 企业版许可的一部分。我们非常希望了解您的使用场景以及我们能如何帮助您。"
 						readmeLink="https://docs.getbifrost.ai/enterprise/pubsub-connector"
 						testIdPrefix="pubsub-connector"
 					/>

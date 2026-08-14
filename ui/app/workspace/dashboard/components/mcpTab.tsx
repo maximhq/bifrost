@@ -66,17 +66,17 @@ function MCPTabImpl({
 		<div className="grid grid-cols-1 gap-2 lg:grid-cols-2 2xl:grid-cols-3">
 			{/* MCP Tool Calls Volume */}
 			<ChartCard
-				title="MCP Tool Calls"
+				title="MCP 工具调用"
 				loading={loadingMcpHistogram}
 				testId="chart-mcp-volume"
-				totalLabel="Total"
+				totalLabel="总计"
 				total={mcpVolumeTotal !== null ? <NumberFlow value={mcpVolumeTotal} format={COMPACT_NUMBER_FORMAT} /> : undefined}
 				totalTooltip={mcpVolumeTotal !== null ? mcpVolumeTotal.toLocaleString("en-US") : undefined}
 				legend={
 					<div className={CHART_HEADER_LEGEND_CLASS}>
 						<span className="flex items-center gap-1">
 							<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.success }} />
-							<span className="text-muted-foreground">Success</span>
+							<span className="text-muted-foreground">成功</span>
 						</span>
 						<span className="flex items-center gap-1">
 							<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.error }} />
@@ -97,10 +97,10 @@ function MCPTabImpl({
 
 			{/* MCP Cost */}
 			<ChartCard
-				title="MCP Cost"
+				title="MCP 费用"
 				loading={loadingMcpCost}
 				testId="chart-mcp-cost"
-				totalLabel="Total"
+				totalLabel="总计"
 				total={
 					mcpCostTotal !== null ? (
 						<NumberFlow value={mcpCostTotal} format={{ ...COMPACT_NUMBER_FORMAT, style: "currency", currency: "USD" }} />
@@ -115,7 +115,7 @@ function MCPTabImpl({
 					<div className={CHART_HEADER_LEGEND_CLASS}>
 						<span className="flex items-center gap-1">
 							<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.cost }} />
-							<span className="text-muted-foreground">Cost</span>
+							<span className="text-muted-foreground">费用</span>
 						</span>
 					</div>
 				}
@@ -128,10 +128,10 @@ function MCPTabImpl({
 
 			{/* Top 10 MCP Tools */}
 			<ChartCard
-				title="Top 10 MCP Tools"
+				title="Top 10 MCP 工具"
 				loading={loadingMcpTopTools}
 				testId="chart-mcp-top-tools"
-				totalLabel="Total"
+				totalLabel="总计"
 				total={mcpTopToolsTotal !== null ? <NumberFlow value={mcpTopToolsTotal} format={COMPACT_NUMBER_FORMAT} /> : undefined}
 				totalTooltip={mcpTopToolsTotal !== null ? mcpTopToolsTotal.toLocaleString("en-US") : undefined}
 			>

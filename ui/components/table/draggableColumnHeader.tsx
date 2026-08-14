@@ -87,38 +87,28 @@ export function DraggableColumnHeader<TData>({
 									className="ml-1 shrink-0 opacity-0 transition-opacity group-hover/col:opacity-100 focus-visible:opacity-100"
 									onClick={(e) => e.stopPropagation()}
 									onMouseDown={(e) => e.stopPropagation()}
-									aria-label="Column actions"
+									aria-label="列操作"
 								>
 									<Ellipsis className="h-3.5 w-3.5" />
 								</Button>
 							</DropdownMenuTrigger>
 							<DropdownMenuContent align="start" side="bottom">
 								<DropdownMenuItem onClick={() => onHide(header.column.id)}>
-									<EyeOff className="h-4 w-4" />
-									Hide column
-								</DropdownMenuItem>
+									<EyeOff className="h-4 w-4" />隐藏列</DropdownMenuItem>
 								<DropdownMenuSeparator />
 								{pinned === "left" ? (
 									<DropdownMenuItem onClick={() => onPin(header.column.id, "left")}>
-										<PinOff className="h-4 w-4" />
-										Unpin
-									</DropdownMenuItem>
+										<PinOff className="h-4 w-4" />取消固定</DropdownMenuItem>
 								) : (
 									<DropdownMenuItem onClick={() => onPin(header.column.id, "left")}>
-										<ArrowLeftToLine className="h-4 w-4" />
-										Pin to left
-									</DropdownMenuItem>
+										<ArrowLeftToLine className="h-4 w-4" />固定到左侧</DropdownMenuItem>
 								)}
 								{pinned === "right" ? (
 									<DropdownMenuItem onClick={() => onPin(header.column.id, "right")}>
-										<PinOff className="h-4 w-4" />
-										Unpin
-									</DropdownMenuItem>
+										<PinOff className="h-4 w-4" />取消固定</DropdownMenuItem>
 								) : (
 									<DropdownMenuItem onClick={() => onPin(header.column.id, "right")}>
-										<ArrowRightToLine className="h-4 w-4" />
-										Pin to right
-									</DropdownMenuItem>
+										<ArrowRightToLine className="h-4 w-4" />固定到右侧</DropdownMenuItem>
 								)}
 							</DropdownMenuContent>
 						</DropdownMenu>

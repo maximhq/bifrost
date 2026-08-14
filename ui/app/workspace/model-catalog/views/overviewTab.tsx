@@ -184,10 +184,8 @@ export default function OverviewTab({ hasAccess }: OverviewTabProps) {
 	if (providersError) {
 		return (
 			<div className="flex h-full flex-col items-center justify-center gap-4 text-center">
-				<p className="text-muted-foreground text-sm">Failed to load providers</p>
-				<button type="button" data-testid="model-catalog-retry-btn" onClick={refetchProviders} className="text-sm underline">
-					Retry
-				</button>
+				<p className="text-muted-foreground text-sm">无法加载提供商</p>
+				<button type="button" data-testid="model-catalog-retry-btn" onClick={refetchProviders} className="text-sm underline">重试</button>
 			</div>
 		);
 	}

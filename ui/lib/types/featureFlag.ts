@@ -23,7 +23,7 @@ export interface FeatureFlagStatus {
 	registered: boolean;
 	// True when the flag's registration is marked EnterpriseOnly. The
 	// backend forces enabled=false and locked=true in OSS mode; the UI
-	// shows an "Enterprise" badge so operators can see the feature exists
+	// shows an "企业版" badge so operators can see the feature exists
 	// but is gated. In enterprise builds the flag toggles normally and
 	// this field is informational.
 	enterprise_only: boolean;

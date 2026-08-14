@@ -10,7 +10,7 @@ export function OperatorSelector({ value, handleOnChange, options }: OperatorSel
 	return (
 		<Select value={value || ""} onValueChange={handleOnChange}>
 			<SelectTrigger className="w-[160px]">
-				<SelectValue placeholder="Select operator..." />
+				<SelectValue placeholder="选择运算符..." />
 			</SelectTrigger>
 			<SelectContent>
 				{options.map((option) => {

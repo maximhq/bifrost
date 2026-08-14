@@ -13,7 +13,7 @@ import type { ChartType } from "../charts/chartTypeToggle";
 import { MCPTab } from "../mcpTab";
 
 export interface MCPTabViewHandle {
-	getData: () => Partial<DashboardData>;
+	getData: () =>Partial<DashboardData>;
 	loadData: () => Promise<void>;
 }
 

@@ -485,19 +485,19 @@ export default function LogsPage() {
 	const statCards = useMemo(
 		() => [
 			{
-				title: "Total Requests",
+				title: "总请求数",
 				value: <NumberFlow value={stats?.total_requests ?? 0} format={COMPACT_NUMBER_FORMAT} />,
 				icon: <BarChart className="size-4" />,
 			},
 			{
-				title: "Success Rate",
+				title: "成功率",
 				value: <NumberFlow value={stats?.success_rate ?? 0} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="%" />,
 				icon: <CheckCircle className="size-4" />,
 				description:
-					"Success rate as perceived by the system. Each fallback counts as a separate attempt. Retries on the same request are counted as one attempt.",
+					"系统感知的成功率。每次回退计为一次独立尝试。同一请求的重试计为一次尝试。",
 			},
 			{
-				title: "User Success Rate",
+				title: "用户成功率",
 				value: (
 					<NumberFlow
 						value={stats?.user_facing_success_rate ?? 0}
@@ -506,17 +506,17 @@ export default function LogsPage() {
 					/>
 				),
 				icon: <CheckCircle className="size-4" />,
-				description: "Success rate as perceived by the end user. It includes fallback chains as one request.",
+				description: "终端用户感知的成功率。回退链计为一个请求。",
 			},
 			{
-				title: "Avg Latency",
+				title: "平均延迟",
 				value: (
 					<NumberFlow value={stats?.average_latency ?? 0} format={{ minimumFractionDigits: 2, maximumFractionDigits: 2 }} suffix="ms" />
 				),
 				icon: <Clock className="size-4" />,
 			},
 			{
-				title: "Total Tokens",
+				title: "Token 总数",
 				value: <NumberFlow value={stats?.total_tokens ?? 0} format={COMPACT_NUMBER_FORMAT} />,
 				icon: <Hash className="size-4" />,
 				subValue: (
@@ -527,10 +527,10 @@ export default function LogsPage() {
 						<span> out</span>
 					</>
 				),
-				description: "Total tokens used, split into input (prompt) and output (completion) tokens.",
+				description: "使用的 Token 总数，分为输入（提示）和输出（完成）Token。",
 			},
 			{
-				title: "Total Cost",
+				title: "总费用",
 				value: (
 					<NumberFlow
 						value={stats?.total_cost ?? 0}
@@ -580,21 +580,21 @@ export default function LogsPage() {
 
 	const COLUMN_LABELS: Record<string, string> = useMemo(
 		() => ({
-			timestamp: "Time",
-			request_type: "Type",
-			input: "Message",
-			provider: "Provider",
-			model: "Model",
-			app: "App",
-			latency: "Latency",
-			tokens: "Tokens",
-			cost: "Cost",
-			virtual_key: "Virtual Key",
-			routing_rule: "Routing Rule",
-			team: "Team",
-			customer: "Customer",
-			user: "User",
-			business_unit: "Business Unit",
+			timestamp: "时间",
+			request_type: "类型",
+			input: "消息",
+			provider: "提供商",
+			model: "模型",
+			app: "应用",
+			latency: "延迟",
+			tokens: "Token 数",
+			cost: "费用",
+			virtual_key: "虚拟密钥",
+			routing_rule: "路由规则",
+			team: "团队",
+			customer: "客户",
+			user: "用户",
+			business_unit: "业务单元",
 		}),
 		[],
 	);

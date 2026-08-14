@@ -60,16 +60,16 @@ export default function ProxyView() {
 			<Form {...form}>
 				<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
 					<div>
-						<h2 className="text-lg font-semibold tracking-tight">Proxy Settings</h2>
-						<p className="text-muted-foreground text-sm">Configure global proxy settings for outbound requests.</p>
+						<h2 className="text-lg font-semibold tracking-tight">代理设置</h2>
+						<p className="text-muted-foreground text-sm">配置出站请求的全局代理设置。</p>
 					</div>
 
 					<fieldset disabled={!hasSettingsUpdateAccess} className="space-y-4">
 						{/* Enable Proxy */}
 						<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 							<div className="space-y-0.5">
-								<FormLabel className="text-sm font-medium">Enable Proxy</FormLabel>
-								<p className="text-muted-foreground text-sm">Enable global proxy for outbound HTTP requests.</p>
+								<FormLabel className="text-sm font-medium">启用代理</FormLabel>
+								<p className="text-muted-foreground text-sm">为出站 HTTP 请求启用全局代理。</p>
 							</div>
 							<FormField
 								control={form.control}
@@ -86,7 +86,7 @@ export default function ProxyView() {
 
 						{/* Proxy Configuration Section */}
 						<div className={cn("space-y-4 rounded-sm border p-4 transition-opacity", !watchedEnabled && "pointer-events-none opacity-50")}>
-							<h3 className="text-lg font-medium">Proxy Configuration</h3>
+							<h3 className="text-lg font-medium">代理配置</h3>
 
 							{/* Proxy Type */}
 							<FormField
@@ -94,7 +94,7 @@ export default function ProxyView() {
 								name="type"
 								render={({ field }) => (
 									<FormItem>
-										<FormLabel>Proxy Type</FormLabel>
+										<FormLabel>代理类型</FormLabel>
 										<Select onValueChange={field.onChange} value={field.value} disabled={!watchedEnabled}>
 											<FormControl>
 												<SelectTrigger className="w-48">
@@ -105,15 +105,11 @@ export default function ProxyView() {
 												<SelectItem value="http">HTTP / HTTPS</SelectItem>
 												<SelectItem value="socks5" disabled>
 													SOCKS5{" "}
-													<Badge variant="outline" className="ml-2 text-xs">
-														Coming soon
-													</Badge>
+													<Badge variant="outline" className="ml-2 text-xs">即将推出</Badge>
 												</SelectItem>
 												<SelectItem value="tcp" disabled>
 													TCP{" "}
-													<Badge variant="outline" className="ml-2 text-xs">
-														Coming soon
-													</Badge>
+													<Badge variant="outline" className="ml-2 text-xs">即将推出</Badge>
 												</SelectItem>
 											</SelectContent>
 										</Select>
@@ -136,11 +132,11 @@ export default function ProxyView() {
 								name="url"
 								render={({ field }) => (
 									<FormItem>
-										<FormLabel>Proxy URL</FormLabel>
+										<FormLabel>代理 URL</FormLabel>
 										<FormControl>
 											<Input placeholder="http://proxy.example.com:8080" disabled={!watchedEnabled} {...field} />
 										</FormControl>
-										<FormDescription>Full URL of the proxy server including protocol and port.</FormDescription>
+										<FormDescription>代理服务器的完整 URL，包括协议和端口。</FormDescription>
 										<FormMessage />
 									</FormItem>
 								)}
@@ -148,16 +144,16 @@ export default function ProxyView() {
 
 							{/* Authentication Section */}
 							<div className="bg-muted/20 space-y-4 rounded-sm border p-4">
-								<h4 className="text-sm font-medium">Authentication (Optional)</h4>
+								<h4 className="text-sm font-medium">认证（可选）</h4>
 								<div className="grid grid-cols-2 gap-4">
 									<FormField
 										control={form.control}
 										name="username"
 										render={({ field }) => (
 											<FormItem>
-												<FormLabel>Username</FormLabel>
+												<FormLabel>用户名</FormLabel>
 												<FormControl>
-													<Input placeholder="Proxy username" disabled={!watchedEnabled} {...field} value={field.value || ""} />
+													<Input placeholder="代理用户名" disabled={!watchedEnabled} {...field} value={field.value || ""} />
 												</FormControl>
 												<FormMessage />
 											</FormItem>
@@ -168,11 +164,11 @@ export default function ProxyView() {
 										name="password"
 										render={({ field }) => (
 											<FormItem>
-												<FormLabel>Password</FormLabel>
+												<FormLabel>密码</FormLabel>
 												<FormControl>
 													<Input
 														type="password"
-														placeholder="Proxy password"
+														placeholder="代理密码"
 														disabled={!watchedEnabled}
 														{...field}
 														value={field.value || ""}
@@ -187,7 +183,7 @@ export default function ProxyView() {
 
 							{/* Advanced Settings */}
 							<div className="bg-muted/20 space-y-4 rounded-sm border p-4">
-								<h4 className="text-sm font-medium">Advanced Settings</h4>
+								<h4 className="text-sm font-medium">高级设置</h4>
 
 								{/* No Proxy */}
 								<FormField
@@ -195,7 +191,7 @@ export default function ProxyView() {
 									name="no_proxy"
 									render={({ field }) => (
 										<FormItem>
-											<FormLabel>No Proxy Hosts</FormLabel>
+											<FormLabel>不使用代理的主机</FormLabel>
 											<FormControl>
 												<Textarea
 													placeholder="localhost, 127.0.0.1, .internal.example.com"
@@ -205,7 +201,7 @@ export default function ProxyView() {
 													value={field.value || ""}
 												/>
 											</FormControl>
-											<FormDescription>Comma-separated list of hosts that should bypass the proxy.</FormDescription>
+											<FormDescription>应绕过代理的主机列表（逗号分隔）。</FormDescription>
 											<FormMessage />
 										</FormItem>
 									)}
@@ -217,7 +213,7 @@ export default function ProxyView() {
 									name="timeout"
 									render={({ field }) => (
 										<FormItem>
-											<FormLabel>Connection Timeout (seconds)</FormLabel>
+											<FormLabel>连接超时（秒）</FormLabel>
 											<FormControl>
 												<Input
 													type="number"
@@ -231,9 +227,7 @@ export default function ProxyView() {
 													onChange={(e) => field.onChange(e.target.value !== "" ? parseInt(e.target.value, 10) : undefined)}
 												/>
 											</FormControl>
-											<FormDescription>
-												Timeout for establishing proxy connections. 0 means no timeout. Default is 60 seconds.
-											</FormDescription>
+											<FormDescription>建立代理连接的超时时间。0 表示无超时。默认 60 秒。</FormDescription>
 											<FormMessage />
 										</FormItem>
 									)}
@@ -245,7 +239,7 @@ export default function ProxyView() {
 									name="ca_cert_pem"
 									render={({ field }) => (
 										<FormItem>
-											<FormLabel>CA Certificate (PEM) (Optional)</FormLabel>
+											<FormLabel>CA 证书 (PEM)（可选）</FormLabel>
 											<FormControl>
 												<Textarea
 													placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
@@ -256,9 +250,7 @@ export default function ProxyView() {
 													value={field.value || ""}
 												/>
 											</FormControl>
-											<FormDescription>
-												PEM-encoded CA certificate to trust for TLS connections through SSL-intercepting proxies.
-											</FormDescription>
+											<FormDescription>通过 SSL 拦截代理进行 TLS 连接时要信任的 PEM 编码 CA 证书。</FormDescription>
 											<FormMessage />
 										</FormItem>
 									)}
@@ -267,10 +259,8 @@ export default function ProxyView() {
 								{/* Skip TLS Verify */}
 								<div className="flex items-center justify-between">
 									<div className="space-y-0.5">
-										<FormLabel className="text-sm font-medium">Skip TLS Verification</FormLabel>
-										<p className="text-muted-foreground text-sm">
-											Disable TLS certificate verification for HTTPS proxies. Not recommended for production.
-										</p>
+										<FormLabel className="text-sm font-medium">跳过 TLS 验证</FormLabel>
+										<p className="text-muted-foreground text-sm">禁用 HTTPS 代理的 TLS 证书验证。不建议在生产环境使用。</p>
 									</div>
 									<FormField
 										control={form.control}
@@ -290,8 +280,8 @@ export default function ProxyView() {
 						{/* Entity Enablement Section */}
 						<div className={cn("space-y-4 rounded-sm border p-4 transition-opacity", !watchedEnabled && "pointer-events-none opacity-50")}>
 							<div className="space-y-1">
-								<h3 className="text-lg font-medium">Enable Proxy For</h3>
-								<p className="text-muted-foreground text-sm">Select which components should use the proxy for outbound requests.</p>
+								<h3 className="text-lg font-medium">为以下组件启用代理</h3>
+								<p className="text-muted-foreground text-sm">选择哪些组件应对出站请求使用代理。</p>
 							</div>
 
 							{/* SCIM - Enterprise only */}
@@ -300,9 +290,9 @@ export default function ProxyView() {
 									<div className="space-y-0.5">
 										<div className="flex items-center gap-2">
 											<FormLabel className="text-sm font-medium">SCIM</FormLabel>
-											<Badge variant="secondary">Enterprise</Badge>
+											<Badge variant="secondary">企业版</Badge>
 										</div>
-										<p className="text-muted-foreground text-sm">Use proxy for SCIM directory sync requests.</p>
+										<p className="text-muted-foreground text-sm">对 SCIM 目录同步请求使用代理。</p>
 									</div>
 									<FormField
 										control={form.control}
@@ -322,10 +312,10 @@ export default function ProxyView() {
 							<div className="flex items-center justify-between rounded-sm border p-4 opacity-60">
 								<div className="space-y-0.5">
 									<div className="flex items-center gap-2">
-										<FormLabel className="text-sm font-medium">Inference</FormLabel>
-										<Badge variant="outline">Coming soon</Badge>
+										<FormLabel className="text-sm font-medium">推理</FormLabel>
+										<Badge variant="outline">即将推出</Badge>
 									</div>
-									<p className="text-muted-foreground text-sm">Use proxy for LLM inference requests to model providers.</p>
+									<p className="text-muted-foreground text-sm">对发送给模型提供商的 LLM 推理请求使用代理。</p>
 								</div>
 								<Switch disabled checked={false} />
 							</div>
@@ -335,9 +325,9 @@ export default function ProxyView() {
 								<div className="space-y-0.5">
 									<div className="flex items-center gap-2">
 										<FormLabel className="text-sm font-medium">API</FormLabel>
-										<Badge variant="outline">Coming soon</Badge>
+										<Badge variant="outline">即将推出</Badge>
 									</div>
-									<p className="text-muted-foreground text-sm">Use proxy for external API calls and webhooks.</p>
+									<p className="text-muted-foreground text-sm">对外部 API 调用和 Webhook 使用代理。</p>
 								</div>
 								<Switch disabled checked={false} />
 							</div>
@@ -345,7 +335,7 @@ export default function ProxyView() {
 							{!IS_ENTERPRISE && (
 								<Alert>
 									<Info className="h-4 w-4" />
-									<AlertDescription>SCIM proxy support is available in Bifrost Enterprise.</AlertDescription>
+									<AlertDescription>SCIM 代理支持在 Bifrost 企业版中可用。</AlertDescription>
 								</Alert>
 							)}
 						</div>
@@ -358,11 +348,11 @@ export default function ProxyView() {
 										type="submit"
 										disabled={!form.formState.isDirty || !form.formState.isValid || isLoading || !hasSettingsUpdateAccess}
 									>
-										{isLoading ? "Saving..." : "Save Changes"}
+										{isLoading ? "Saving..." : "保存更改"}
 									</Button>
 								</span>
 							</TooltipTrigger>
-							{!hasSettingsUpdateAccess && <TooltipContent>You don't have permission to update settings</TooltipContent>}
+							{!hasSettingsUpdateAccess && <TooltipContent>您没有权限更新设置</TooltipContent>}
 						</Tooltip>
 					</div>
 				</form>

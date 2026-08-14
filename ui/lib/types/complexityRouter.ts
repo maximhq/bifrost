@@ -23,7 +23,7 @@ export interface AnalyzerConfig {
 
 export type KeywordListKey = keyof EditableKeywordConfig;
 
-export const COMPLEXITY_TIER_VALUES = ["SIMPLE", "MEDIUM", "COMPLEX", "REASONING"] as const;
+export const COMPLEXITY_TIER_VALUES = ["简单", "中等", "复杂", "推理"] as const;
 
 export const KEYWORD_LIST_DEFINITIONS: Array<{
 	key: KeywordListKey;
@@ -32,23 +32,23 @@ export const KEYWORD_LIST_DEFINITIONS: Array<{
 }> = [
 	{
 		key: "simple_keywords",
-		label: "Simple keywords",
-		description: "Phrases that bias the request toward the SIMPLE tier (greetings, trivia, small talk).",
+		label: "简单关键词",
+		description: "将请求偏向简单级的短语（问候、闲聊、寒暄）。",
 	},
 	{
 		key: "code_keywords",
-		label: "Code keywords",
-		description: "Signals that the request involves code, debugging, or programming artifacts.",
+		label: "代码关键词",
+		description: "表示请求涉及代码、调试或编程产物的信号。",
 	},
 	{
 		key: "technical_keywords",
-		label: "Technical keywords",
-		description: "Architecture, infra, and operational terms that raise the complexity score.",
+		label: "技术关键词",
+		description: "提高复杂度分数的架构、基础设施和运维术语。",
 	},
 	{
 		key: "reasoning_keywords",
-		label: "Reasoning keywords",
-		description: "Strong reasoning triggers. Matching these phrases can override tier selection toward the REASONING tier.",
+		label: "推理关键词",
+		description: "强推理触发词。匹配这些短语可将级别选择覆盖为推理级。",
 	},
 ];
 

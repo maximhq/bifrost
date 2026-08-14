@@ -116,7 +116,7 @@ export default function PluginTracingSheet({ open, onClose, pluginName, destinat
 		<Sheet open={open} onOpenChange={onClose}>
 			<SheetContent className="flex w-full flex-col overflow-hidden p-8">
 				<SheetHeader className="flex flex-col items-start p-0">
-					<SheetTitle>Configure Plugin Tracing</SheetTitle>
+					<SheetTitle>配置插件追踪</SheetTitle>
 					<SheetDescription>
 						Choose which plugin hook spans are exported to {destination}. Disabling a plugin removes its spans from traces without affecting
 						execution.
@@ -127,7 +127,7 @@ export default function PluginTracingSheet({ open, onClose, pluginName, destinat
 					<div className="flex flex-col gap-4">
 						<div>
 							<div className="mb-2 flex items-center justify-between">
-								<p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">Plugins</p>
+								<p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">插件</p>
 								<TriStateCheckbox
 									allIds={allPlugins}
 									selectedIds={allPlugins.filter((n) => toggles[n] ?? true)}
@@ -156,24 +156,20 @@ export default function PluginTracingSheet({ open, onClose, pluginName, destinat
 					<Alert variant="info">
 						<AlertDescription>
 							<span>
-								If <strong className="inline">plugin_span_filter</strong> is set in the <strong className="inline">{pluginName}</strong>{" "}
+								If <strong className="inline">plugin_span_filter</strong>已在<strong className="inline">{pluginName}</strong>{" "}
 								plugin config in config.json, it takes precedence over these settings after restarting Bifrost.
 							</span>
 						</AlertDescription>
 					</Alert>
 					<div className="flex justify-end gap-2 pt-2">
-						<Button type="button" variant="outline" onClick={onClose} disabled={isLoading} data-testid="plugin-tracing-cancel-button">
-							Cancel
-						</Button>
+						<Button type="button" variant="outline" onClick={onClose} disabled={isLoading} data-testid="plugin-tracing-cancel-button">取消</Button>
 						<Button
 							onClick={handleSave}
 							disabled={isLoading || !wasOpenRef.current}
 							isLoading={isLoading}
 							data-testid="plugin-tracing-save-button"
 							type="button"
-						>
-							Save
-						</Button>
+						>保存</Button>
 					</div>
 				</div>
 			</SheetContent>

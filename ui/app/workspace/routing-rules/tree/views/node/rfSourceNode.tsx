@@ -9,10 +9,8 @@ export function RFSourceNode() {
 			<RFEdgeHandle type="source" position={Position.Right} accentColor="var(--primary)" />
 			<div className="border-primary dark:bg-card relative z-10 flex h-full cursor-grab flex-col justify-center rounded-xl border-2 bg-white px-5 shadow-md active:cursor-grabbing">
 				<div className="text-foreground flex items-center gap-2 font-semibold">
-					<Network className="text-primary h-4 w-4" />
-					Incoming Request
-				</div>
-				<p className="text-muted-foreground mt-0.5 text-[11px]">provider · model · headers · params · limits</p>
+					<Network className="text-primary h-4 w-4" />传入请求</div>
+				<p className="text-muted-foreground mt-0.5 text-[11px]">提供商 · 模型 · 请求头 · 参数 · 限制</p>
 			</div>
 		</div>
 	);

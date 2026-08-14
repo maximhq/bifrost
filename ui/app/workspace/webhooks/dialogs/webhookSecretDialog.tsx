@@ -37,7 +37,7 @@ export function WebhookSecretDialog({ reveal, onClose }: WebhookSecretDialogProp
 					<Button
 						variant="ghost"
 						size="sm"
-						aria-label="Copy signing secret"
+						aria-label="复制签名密钥"
 						onClick={() => reveal && copy(reveal.secret)}
 						data-testid="webhook-secret-copy-btn"
 					>
@@ -53,12 +53,9 @@ export function WebhookSecretDialog({ reveal, onClose }: WebhookSecretDialogProp
 						onClick={() => {
 							window.open(WEBHOOKS_VERIFICATION_DOCS_URL, "_blank", "noopener,noreferrer");
 						}}
-					>
-						Read more <ArrowUpRight className="text-muted-foreground h-3 w-3" />
+					>阅读更多<ArrowUpRight className="text-muted-foreground h-3 w-3" />
 					</Button>
-					<Button onClick={onClose} data-testid="webhook-secret-done-btn">
-						I&apos;ve stored the secret
-					</Button>
+					<Button onClick={onClose} data-testid="webhook-secret-done-btn">我已保存该密钥</Button>
 				</DialogFooter>
 			</DialogContent>
 		</Dialog>

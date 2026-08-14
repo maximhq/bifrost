@@ -78,7 +78,7 @@ const CELRuleBuilderLazy = lazy(() =>
 	})),
 );
 const CELRuleBuilder = (props: React.ComponentProps<typeof CELRuleBuilderLazy>) => (
-	<Suspense fallback={<div className="text-sm text-gray-500">Loading CEL builder...</div>}>
+	<Suspense fallback={<div className="text-sm text-gray-500">正在加载 CEL 规则构建器...</div>}>
 		<CELRuleBuilderLazy {...props} />
 	</Suspense>
 );
@@ -121,7 +121,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 	const scopeId = watch("scope_id");
 
 	// Registered by the downstream build at module load; undefined in builds
-	// without a user directory, which hides the "User" scope option.
+	// without a user directory, which hides the "用户" scope option.
 	const UserPicker = getUserPicker();
 	const fallbacks = watch("fallbacks");
 
@@ -219,7 +219,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 		// Validate scope_id is required when scope is not global
 		if (data.scope !== "global" && !data.scope_id?.trim()) {
 			toast.error(
-				`${data.scope === "team" ? "Team" : data.scope === "customer" ? "Customer" : data.scope === "user" ? "User" : "Virtual Key"} is required`,
+				`${data.scope === "team" ? "团队" : data.scope === "customer" ? "客户" : data.scope === "user" ? "用户" : "虚拟密钥"} is required`,
 			);
 			return;
 		}
@@ -339,12 +339,11 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 					<div className="flex grow flex-col gap-6 px-8 pb-6">
 						{/* Rule Name */}
 						<div className="space-y-3">
-							<Label htmlFor="name">
-								Rule Name <span className="text-red-500">*</span>
+							<Label htmlFor="name">规则名称<span className="text-red-500">*</span>
 							</Label>
 							<Input
 								id="name"
-								placeholder="e.g., Route GPT-4 to Azure"
+								placeholder="例如：将 GPT-4 路由到 Azure"
 								{...register("name", { required: "Rule name is required", maxLength: 255 })}
 							/>
 							{errors.name && <p className="text-destructive text-sm">{errors.name.message}</p>}
@@ -352,15 +351,15 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 
 						{/* Description */}
 						<div className="space-y-3">
-							<Label htmlFor="description">Description</Label>
-							<Textarea id="description" placeholder="Describe what this rule does..." rows={2} {...register("description")} />
+							<Label htmlFor="description">描述</Label>
+							<Textarea id="description" placeholder="描述此规则的作用..." rows={2} {...register("description")} />
 						</div>
 
 						{/* Enabled Switch */}
 						<div className="flex items-center justify-between rounded-lg border p-4">
 							<div className="space-y-0.5">
-								<Label htmlFor="enabled">Enable Rule</Label>
-								<p className="text-muted-foreground text-sm">Rule will be active and applied to matching requests</p>
+								<Label htmlFor="enabled">启用规则</Label>
+								<p className="text-muted-foreground text-sm">规则将生效并应用于匹配的请求</p>
 							</div>
 							<Switch id="enabled" checked={enabled} onCheckedChange={(checked) => setValue("enabled", checked)} />
 						</div>
@@ -368,7 +367,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 						{/* Chain Rule Switch */}
 						<div className="flex items-center justify-between rounded-lg border p-4">
 							<div className="space-y-0.5">
-								<Label htmlFor="chain_rule">Chain Rule</Label>
+								<Label htmlFor="chain_rule">链式规则</Label>
 								<p className="text-muted-foreground text-sm">
 									After this rule matches, re-evaluate routing rules using the resolved provider/model as the new context. Useful for
 									composing rules, e.g. normalize a model alias first, then route based on the canonical name.
@@ -385,7 +384,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 						{/* Scope and Priority - Side by Side */}
 						<div className="grid grid-cols-2 gap-4">
 							<div className="space-y-3">
-								<Label htmlFor="scope">Scope</Label>
+								<Label htmlFor="scope">范围</Label>
 								<Select
 									value={scope}
 									onValueChange={(value) => {
@@ -395,7 +394,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 									}}
 								>
 									<SelectTrigger className="w-full">
-										<SelectValue placeholder="Select scope..." />
+										<SelectValue placeholder="选择作用域..." />
 									</SelectTrigger>
 									<SelectContent>
 										{ROUTING_RULE_SCOPES.map((scopeOption) => (
@@ -403,14 +402,13 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 												{scopeOption.label}
 											</SelectItem>
 										))}
-										{(UserPicker || scope === "user") && <SelectItem value="user">User</SelectItem>}
+										{(UserPicker || scope === "user") && <SelectItem value="user">用户</SelectItem>}
 									</SelectContent>
 								</Select>
 							</div>
 
 							<div className="space-y-3">
-								<Label htmlFor="priority">
-									Priority <span className="text-red-500">*</span>
+								<Label htmlFor="priority">优先级<span className="text-red-500">*</span>
 								</Label>
 								<Input
 									id="priority"
@@ -424,7 +422,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 										valueAsNumber: true,
 									})}
 								/>
-								<p className="text-muted-foreground text-xs">Lower numbers = higher priority (0 is highest)</p>
+								<p className="text-muted-foreground text-xs">数字越小优先级越高（0 为最高）</p>
 								{errors.priority && <p className="text-destructive text-sm">{errors.priority.message}</p>}
 							</div>
 						</div>
@@ -432,7 +430,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 						{scope !== "global" && (
 							<div className="space-y-2">
 								<Label htmlFor="scope_id">
-									{scope === "team" ? "Team" : scope === "customer" ? "Customer" : scope === "user" ? "User" : "Virtual Key"}{" "}
+									{scope === "team" ? "团队" : scope === "customer" ? "客户" : scope === "user" ? "用户" : "虚拟密钥"}{" "}
 									<span className="text-red-500">*</span>
 								</Label>
 								{/* A rule stores only its scope_id, so there is no name to seed
@@ -449,7 +447,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 										<Input
 											id="scope_id"
 											data-testid="routing-rule-scope-user-input"
-											placeholder="Governance user ID"
+											placeholder="治理用户 ID"
 											value={scopeId || ""}
 											onChange={(e) => setValue("scope_id", e.target.value)}
 										/>
@@ -464,10 +462,8 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 
 						{/* CEL Rule Builder */}
 						<div className="space-y-3">
-							<Label>Rule Builder</Label>
-							<p className="text-muted-foreground text-sm">
-								Build conditions to determine when this rule should apply. Leave empty to apply this rule to all requests.
-							</p>
+							<Label>规则构建器</Label>
+							<p className="text-muted-foreground text-sm">构建条件以确定此规则何时生效。留空则此规则应用于所有请求。</p>
 							<CELRuleBuilder
 								key={builderKey}
 								initialQuery={query}
@@ -487,7 +483,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 						<p className="text-muted-foreground text-xs">
 							Note: Ensure token limits, request limits, and budget are configured in{" "}
 							<strong>Model Providers → Configurations → {"{provider}"} → Governance</strong> (provider-level) or{" "}
-							<strong>Model Providers → Budgets & Limits</strong> section (model-level) before using them in routing rules.
+							<strong>模型提供商 → 预算与限制</strong> section (model-level) before using them in routing rules.
 						</p>
 
 						<Separator />
@@ -496,10 +492,8 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 						<div className="space-y-3">
 							<div className="flex items-center justify-between">
 								<div>
-									<Label>Routing Targets</Label>
-									<p className="text-muted-foreground mt-0.5 text-xs">
-										Weights must sum to 1. Leave provider or model empty to use the incoming request value.
-									</p>
+									<Label>路由目标</Label>
+									<p className="text-muted-foreground mt-0.5 text-xs">权重之和必须为 1。提供商或模型留空则使用传入请求的值。</p>
 								</div>
 								<Button
 									type="button"
@@ -509,9 +503,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 									className="shrink-0 gap-2"
 									data-testid="routing-rule-target-add"
 								>
-									<Plus className="h-4 w-4" />
-									Add Target
-								</Button>
+									<Plus className="h-4 w-4" />添加目标</Button>
 							</div>
 
 							<div className="space-y-3">
@@ -534,7 +526,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 								className={`flex items-center justify-end gap-2 text-xs font-medium ${Math.abs(totalWeight - 1) > 0.001 ? "text-destructive" : "text-muted-foreground"}`}
 							>
 								Total weight: {totalWeight.toFixed(4)}
-								{Math.abs(totalWeight - 1) > 0.001 && <span className="text-destructive">(must equal 1)</span>}
+								{Math.abs(totalWeight - 1) > 0.001 && <span className="text-destructive">（必须等于 1）</span>}
 							</div>
 						</div>
 
@@ -542,10 +534,8 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 						<div className="space-y-3">
 							<div className="flex items-center justify-between">
 								<div>
-									<Label>Fallbacks</Label>{" "}
-									<p className="text-muted-foreground mt-0.5 text-xs">
-										Provider is required, but model is optional. Leave model empty to use the incoming request value.
-									</p>
+									<Label>回退</Label>{" "}
+									<p className="text-muted-foreground mt-0.5 text-xs">提供商必填，模型可选。模型留空则使用传入请求的值。</p>
 								</div>
 								<Button
 									type="button"
@@ -554,13 +544,11 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 									onClick={() => setValue("fallbacks", [...(fallbacks || []), ""])}
 									className="gap-2"
 								>
-									<Plus className="h-4 w-4" />
-									Add Fallback
-								</Button>
+									<Plus className="h-4 w-4" />添加回退</Button>
 							</div>
 							<div className="space-y-2">
 								{(fallbacks || []).length === 0 ? (
-									<p className="text-muted-foreground text-sm">No fallbacks configured</p>
+									<p className="text-muted-foreground text-sm">未配置回退</p>
 								) : (
 									(fallbacks || []).map((fallback, index) => {
 										// Parse provider/model from fallback string
@@ -596,7 +584,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 														options={providerOptions}
 														value={fbProvider || null}
 														onValueChange={(value) => handleProviderChange(value ?? "")}
-														placeholder="Select provider..."
+														placeholder="选择提供商..."
 														className="h-9"
 														noPortal
 													/>
@@ -606,7 +594,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 														provider={fbProvider || undefined}
 														value={fbModel}
 														onChange={handleModelChange}
-														placeholder="Incoming (optional)"
+														placeholder="传入（可选）"
 														isSingleSelect
 														disabled={!fbProvider}
 														className="!h-9 !min-h-9 w-full"
@@ -627,14 +615,12 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 									})
 								)}
 							</div>
-							<p className="text-muted-foreground text-xs">Fallbacks will be used in the order they are defined</p>
+							<p className="text-muted-foreground text-xs">回退将按定义顺序使用</p>
 						</div>
 					</div>
 					{/* Action Buttons */}
 					<div className="bg-card sticky bottom-0 flex justify-end gap-3 border-t px-8 py-4">
-						<Button type="button" variant="outline" onClick={handleCancel} disabled={isLoading}>
-							Cancel
-						</Button>
+						<Button type="button" variant="outline" onClick={handleCancel} disabled={isLoading}>取消</Button>
 						<Button type="submit" disabled={isLoading || !hasRequiredAccess}>
 							{isEditing ? "Update Rule" : "Save Rule"}
 						</Button>
@@ -666,9 +652,7 @@ function TargetRow({ target, index, providerOptions, allKeys, showRemove, onUpda
 				<span className="text-muted-foreground text-sm font-medium">Target {index + 1}</span>
 				<div className="flex items-center gap-2">
 					<div className="flex items-center gap-1.5">
-						<Label htmlFor={`routing-target-${index}-weight-input`} className="text-muted-foreground shrink-0 text-xs">
-							Weight
-						</Label>
+						<Label htmlFor={`routing-target-${index}-weight-input`} className="text-muted-foreground shrink-0 text-xs">权重</Label>
 						<Input
 							id={`routing-target-${index}-weight-input`}
 							type="number"
@@ -699,9 +683,7 @@ function TargetRow({ target, index, providerOptions, allKeys, showRemove, onUpda
 
 			<div className="grid grid-cols-2 gap-3">
 				<div className="space-y-1.5">
-					<Label id={`routing-target-${index}-provider-label`} className="text-xs">
-						Provider
-					</Label>
+					<Label id={`routing-target-${index}-provider-label`} className="text-xs">提供商</Label>
 					<div className="flex gap-1.5">
 						<ComboboxSelect
 							options={providerOptions}
@@ -711,7 +693,7 @@ function TargetRow({ target, index, providerOptions, allKeys, showRemove, onUpda
 								onUpdate(index, "model", "");
 								onUpdate(index, "key_id", "");
 							}}
-							placeholder="Incoming (optional)"
+							placeholder="传入（可选）"
 							className="h-9 flex-1 text-sm"
 							data-testid={`routing-target-${index}-provider-select`}
 							noPortal
@@ -737,16 +719,14 @@ function TargetRow({ target, index, providerOptions, allKeys, showRemove, onUpda
 				</div>
 
 				<div className="space-y-1.5">
-					<Label id={`routing-target-${index}-model-label`} className="text-xs">
-						Model
-					</Label>
+					<Label id={`routing-target-${index}-model-label`} className="text-xs">模型</Label>
 					<div className="flex gap-1.5">
 						<div className="flex-1" data-testid={`routing-target-${index}-model-select`}>
 							<ModelMultiselect
 								provider={target.provider || undefined}
 								value={target.model}
 								onChange={(value) => onUpdate(index, "model", value)}
-								placeholder="Incoming (optional)"
+								placeholder="传入（可选）"
 								isSingleSelect
 								loadModelsOnEmptyProvider
 								className="!h-9 !min-h-9"
@@ -773,8 +753,7 @@ function TargetRow({ target, index, providerOptions, allKeys, showRemove, onUpda
 
 			{target.provider && (availableKeys.length > 0 || target.key_id) && (
 				<div className="space-y-1.5">
-					<Label id={`routing-target-${index}-apikey-label`} className="text-xs">
-						API Key <span className="text-muted-foreground">(optional; leave unset for load-balanced selection)</span>
+					<Label id={`routing-target-${index}-apikey-label`} className="text-xs">API 密钥<span className="text-muted-foreground">（可选；留空则负载均衡选择）</span>
 					</Label>
 					<div className="flex gap-1.5">
 						<Select value={target.key_id || ""} onValueChange={(value) => onUpdate(index, "key_id", value)}>
@@ -784,7 +763,7 @@ function TargetRow({ target, index, providerOptions, allKeys, showRemove, onUpda
 								className="h-9 flex-1 text-sm"
 								data-testid={`routing-target-${index}-apikey-select`}
 							>
-								<SelectValue placeholder="Select key (optional)" />
+								<SelectValue placeholder="选择密钥（可选）" />
 							</SelectTrigger>
 							<SelectContent>
 								{availableKeys.map((key) => (

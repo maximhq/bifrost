@@ -11,8 +11,8 @@ import { Search, X } from "lucide-react";
 const EVENT_OPTIONS = WEBHOOK_EVENTS.map((event) => ({ label: event.value, value: event.value }));
 
 const STATUS_OPTIONS = [
-	{ label: "Enabled", value: "enabled" },
-	{ label: "Disabled", value: "disabled" },
+	{ label: "已启用", value: "enabled" },
+	{ label: "已禁用", value: "disabled" },
 ];
 
 export interface WebhooksFilterBarProps {
@@ -32,8 +32,8 @@ export default function WebhooksFilterBar(props: WebhooksFilterBarProps) {
 			<div className="relative max-w-sm min-w-[200px] flex-1">
 				<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 				<Input
-					aria-label="Search webhook endpoints"
-					placeholder="Search by name or URL"
+					aria-label="搜索 Webhook 端点"
+					placeholder="按名称或 URL 搜索"
 					value={props.search}
 					onChange={(e) => props.onSearchChange(e.target.value)}
 					className="pl-9"
@@ -48,7 +48,7 @@ export default function WebhooksFilterBar(props: WebhooksFilterBarProps) {
 				options={EVENT_OPTIONS}
 				value={props.eventFilter}
 				onValueChange={props.onEventFilterChange}
-				placeholder="All events"
+				placeholder="所有事件"
 				className="h-9 w-[220px]"
 			/>
 			<ComboboxSelect
@@ -59,14 +59,12 @@ export default function WebhooksFilterBar(props: WebhooksFilterBarProps) {
 				options={STATUS_OPTIONS}
 				value={props.statusFilter}
 				onValueChange={props.onStatusFilterChange}
-				placeholder="All statuses"
+				placeholder="所有状态"
 				className="h-9 w-[170px]"
 			/>
 			{props.hasActiveFilters && (
 				<Button variant="ghost" size="sm" onClick={props.onClearFilters} data-testid="webhooks-clear-filters-btn" className="h-9">
-					<X className="h-4 w-4" />
-					Clear filters
-				</Button>
+					<X className="h-4 w-4" />清除筛选</Button>
 			)}
 		</div>
 	);

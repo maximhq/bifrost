@@ -17,13 +17,13 @@ export function ThemeToggle() {
 				>
 					<Sun className="h-5.5 w-5.5 scale-100 rotate-0 transition-all dark:scale-0 dark:-rotate-90" strokeWidth={2} />
 					<Moon className="absolute h-5.5 w-5.5 scale-0 rotate-90 transition-all dark:scale-100 dark:rotate-0" strokeWidth={2} />
-					<span className="sr-only">Toggle theme</span>
+					<span className="sr-only">切换主题</span>
 				</Button>
 			</DropdownMenuTrigger>
 			<DropdownMenuContent align="end">
-				<DropdownMenuItem onClick={() => setTheme("light")}>Light</DropdownMenuItem>
-				<DropdownMenuItem onClick={() => setTheme("dark")}>Dark</DropdownMenuItem>
-				<DropdownMenuItem onClick={() => setTheme("system")}>System</DropdownMenuItem>
+				<DropdownMenuItem onClick={() => setTheme("light")}>浅色</DropdownMenuItem>
+				<DropdownMenuItem onClick={() => setTheme("dark")}>深色</DropdownMenuItem>
+				<DropdownMenuItem onClick={() => setTheme("system")}>系统</DropdownMenuItem>
 			</DropdownMenuContent>
 		</DropdownMenu>
 	);

@@ -7,7 +7,7 @@ import { useMemo } from "react";
 
 export const METADATA_DISMISSED_KEY = "onboarding_dismissed";
 export const METADATA_SKIPPED_KEY = "onboarding_skipped";
-// "Remind me later" snoozes the widget by setting this cookie's expiry to the
+// "稍后提醒" snoozes the widget by setting this cookie's expiry to the
 // chosen date — once the browser drops the cookie, the widget is due again.
 export const REMIND_LATER_COOKIE = "bifrost_onboarding_remind_at";
 // Closing via X is a session-scoped hide, not a long-lived dismissal — no
@@ -16,7 +16,7 @@ export const REMIND_LATER_COOKIE = "bifrost_onboarding_remind_at";
 // card can read the same hidden/snoozed state the floating widget uses.
 export const HIDDEN_UNTIL_NAV_COOKIE = "bifrost_onboarding_hidden_until_nav";
 
-export type OnboardingSection = "Security" | "Provider Setup" | "Everything Else";
+export type OnboardingSection = "安全" | "Provider Setup" | "Everything Else";
 
 export interface OnboardingStep {
 	id: string;
@@ -72,29 +72,29 @@ export function useOnboardingChecklist({ skip = false }: { skip?: boolean } = {}
 		const common: OnboardingStep[] = [
 			{
 				id: "cors",
-				title: "Restrict CORS origins",
+				title: "限制 CORS 来源",
 				route: "/workspace/config/security",
-				section: "Security",
+				section: "安全",
 				complete:
 					allowedOrigins.some((origin) => origin.trim().length > 0) && allowedOrigins.every((origin) => origin.trim() !== "*"),
 			},
 			{
 				id: "dashboard-auth",
-				title: "Set up dashboard auth",
+				title: "设置仪表盘认证",
 				route: "/workspace/config/security",
-				section: "Security",
+				section: "安全",
 				complete: !!authConfig?.is_enabled && authValueSet(authConfig?.admin_username) && authValueSet(authConfig?.admin_password),
 			},
 			{
 				id: "enforce-inference-auth",
-				title: "Enforce auth on inference",
+				title: "在推理上强制执行认证",
 				route: "/workspace/config/security",
-				section: "Security",
+				section: "安全",
 				complete: !!clientConfig?.enforce_auth_on_inference,
 			},
 			{
 				id: "provider-key",
-				title: "Add a provider key",
+				title: "添加提供商密钥",
 				route: "/workspace/providers",
 				section: "Provider Setup",
 				complete: (allKeys?.length ?? 0) > 0,
@@ -104,21 +104,21 @@ export function useOnboardingChecklist({ skip = false }: { skip?: boolean } = {}
 			? [
 					{
 						id: "scim",
-						title: "Configure SCIM provisioning",
+						title: "配置 SCIM 供给",
 						route: "/workspace/scim",
 						section: "Everything Else",
 						complete: (scimProviders?.length ?? 0) > 0,
 					},
 					{
 						id: "models",
-						title: "Configure governance model catalog",
+						title: "配置治理模型目录",
 						route: "/workspace/model-catalog",
 						section: "Everything Else",
 						complete: (modelConfigsResponse?.total_count ?? 0) > 0,
 					},
 					{
 						id: "virtual-keys",
-						title: "Set up virtual keys / access profiles",
+						title: "设置虚拟密钥 / 访问配置文件",
 						route: "/workspace/virtual-keys",
 						section: "Everything Else",
 						complete: (vksResponse?.total_count ?? 0) > 0,

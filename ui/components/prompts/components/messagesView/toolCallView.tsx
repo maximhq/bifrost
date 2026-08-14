@@ -272,7 +272,7 @@ export default function ToolCallMessageView({
 					{!disabled && onRemove && (
 						<button
 							type="button"
-							aria-label="Delete message"
+							aria-label="删除消息"
 							data-testid="tool-call-msg-delete"
 							onClick={onRemove}
 							className="hover:bg-destructive/10 focus:bg-destructive/10 rounded-md p-1 opacity-0 transition group-focus-within:opacity-100 group-hover:opacity-100 focus:opacity-100"
@@ -328,15 +328,11 @@ export default function ToolCallMessageView({
 										<span className="text-foreground truncate font-mono text-xs font-semibold">{tc.function.name}</span>
 
 										{isResponded && (
-											<span className="animate-in fade-in-0 zoom-in-90 shrink-0 rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-medium text-emerald-600 duration-200 motion-reduce:animate-none dark:text-emerald-400">
-												Responded
-											</span>
+											<span className="animate-in fade-in-0 zoom-in-90 shrink-0 rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-medium text-emerald-600 duration-200 motion-reduce:animate-none dark:text-emerald-400">已响应</span>
 										)}
 										{!isResponded && isMultiple && hasResult && (
 											<span className="animate-in fade-in-0 zoom-in-90 flex shrink-0 items-center gap-0.5 rounded-full bg-blue-500/10 px-1.5 py-0.5 text-[9px] font-medium text-blue-600 duration-200 motion-reduce:animate-none dark:text-blue-400">
-												<Check className="size-2.5" />
-												Ready
-											</span>
+												<Check className="size-2.5" />就绪</span>
 										)}
 									</div>
 
@@ -347,7 +343,7 @@ export default function ToolCallMessageView({
 							{/* Arguments */}
 							{formattedArgs && (
 								<div className="border-t px-3 py-2">
-									<div className="text-muted-foreground mb-1.5 text-[10px] font-semibold tracking-wide uppercase">Arguments</div>
+									<div className="text-muted-foreground mb-1.5 text-[10px] font-semibold tracking-wide uppercase">参数</div>
 
 									{argsIsJson ? (
 										<div className="bg-background overflow-hidden rounded-md border">
@@ -390,9 +386,7 @@ export default function ToolCallMessageView({
 												className="text-muted-foreground ml-auto h-7 px-2 text-xs"
 												onClick={() => hideManualEntry(tc.id)}
 												disabled={isBusy}
-											>
-												Clear
-											</Button>
+											>清除</Button>
 										)}
 										{!isMultiple && (
 											<Button
@@ -402,14 +396,12 @@ export default function ToolCallMessageView({
 												data-testid="tool-call-response-cancel"
 												onClick={() => hideManualEntry(tc.id)}
 												disabled={isBusy}
-											>
-												Cancel
-											</Button>
+											>取消</Button>
 										)}
 									</div>
 									<Textarea
 										autoFocus={isManualEntryOpen && !isResolved}
-										placeholder="Paste tool result..."
+										placeholder="粘贴工具结果..."
 										value={responses[tc.id] ?? ""}
 										onChange={(e) => handleResponseChange(tc.id, e.target.value)}
 										data-testid="tool-call-response-textarea"
@@ -428,9 +420,7 @@ export default function ToolCallMessageView({
 												disabled={!responses[tc.id]?.trim() || isBusy}
 												onClick={() => handleSubmitResponse(tc.id)}
 											>
-												<Send className="size-3.5" />
-												Submit result
-											</Button>
+												<Send className="size-3.5" />提交结果</Button>
 										</div>
 									)}
 								</div>
@@ -448,7 +438,7 @@ export default function ToolCallMessageView({
 												<div className="text-foreground text-xs font-medium">
 													Authentication required for {authErrors[tc.id].mcpClientName}
 												</div>
-												<div className="text-muted-foreground text-[10px]">Connect your account to execute this tool.</div>
+												<div className="text-muted-foreground text-[10px]">连接您的账户以执行此工具。</div>
 											</div>
 										</div>
 										<div className="ml-auto flex items-center gap-1.5">
@@ -458,9 +448,7 @@ export default function ToolCallMessageView({
 													className="bg-primary text-primary-foreground hover:bg-primary/90 h-8 transition-transform active:scale-[0.97]"
 													onClick={() => window.open(authErrors[tc.id].authorizeUrl, "_blank", "noopener,noreferrer")}
 												>
-													<ExternalLink className="size-3.5" />
-													Authenticate
-												</Button>
+													<ExternalLink className="size-3.5" />认证</Button>
 											)}
 											<Button
 												variant="secondary"
@@ -469,9 +457,7 @@ export default function ToolCallMessageView({
 												onClick={() => handleRetry(tc)}
 												disabled={isBusy}
 											>
-												<RefreshCw className="size-3.5" />
-												Retry
-											</Button>
+												<RefreshCw className="size-3.5" />重试</Button>
 										</div>
 									</div>
 								</div>
@@ -483,8 +469,8 @@ export default function ToolCallMessageView({
 									<div className="flex flex-wrap items-center gap-2">
 										{!isMultiple && (
 											<div className="min-w-0">
-												<div className="text-foreground text-xs font-medium">Awaiting tool result</div>
-												<div className="text-muted-foreground text-[10px]">Execute the call or add the result manually.</div>
+												<div className="text-foreground text-xs font-medium">等待工具结果</div>
+												<div className="text-muted-foreground text-[10px]">执行调用或手动添加结果。</div>
 											</div>
 										)}
 										<div className={cn("flex items-center gap-1.5", !isMultiple && "ml-auto")}>
@@ -509,9 +495,7 @@ export default function ToolCallMessageView({
 												disabled={isBusy}
 												onClick={() => showManualEntry(tc.id)}
 											>
-												<PencilLine className="size-3.5" />
-												Add manually
-											</Button>
+												<PencilLine className="size-3.5" />手动添加</Button>
 										</div>
 									</div>
 								</div>

@@ -202,7 +202,7 @@ export function patchSummary(override: PricingOverride): string {
 		// ignore
 	}
 	const keys = Object.keys(parsed) as PricingFieldKey[];
-	if (keys.length === 0) return "None";
+	if (keys.length === 0) return "无";
 	const labels = keys.map((key) => fieldLabelByKey[key] || key);
 	if (labels.length <= 2) return labels.join(", ");
 	return `${labels.slice(0, 2).join(", ")} +${labels.length - 2} more`;
@@ -312,7 +312,7 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 	const shouldLockScope = useMemo(() => !editingOverride && isCompleteScopeLock(scopeLock), [editingOverride, scopeLock]);
 
 	// Registered by the downstream build at module load; undefined in builds
-	// without a user directory, which hides the "User" scope root.
+	// without a user directory, which hides the "用户" scope root.
 	const UserPicker = getUserPicker();
 
 	const providerKeyOptions = useMemo(
@@ -608,11 +608,10 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 									rules={{ required: "Name is required" }}
 									render={({ field }) => (
 										<FormItem>
-											<FormLabel>
-												Name <span className="text-red-500">*</span>
+											<FormLabel>名称<span className="text-red-500">*</span>
 											</FormLabel>
 											<FormControl>
-												<Input data-testid="pricing-override-name-input" placeholder="e.g., GPT-4 Negotiated Rate" {...field} />
+												<Input data-testid="pricing-override-name-input" placeholder="例如：GPT-4 协商价格" {...field} />
 											</FormControl>
 											<FormMessage />
 										</FormItem>
@@ -621,7 +620,7 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 
 								{shouldLockScope && scopeLock ? (
 									<div className="space-y-2">
-										<Label htmlFor="pricing-override-scope-lock-input">Scope</Label>
+										<Label htmlFor="pricing-override-scope-lock-input">范围</Label>
 										<Input
 											id="pricing-override-scope-lock-input"
 											data-testid="pricing-override-scope-lock-input"
@@ -636,7 +635,7 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 											name="scopeRoot"
 											render={({ field }) => (
 												<FormItem>
-													<FormLabel>Scope root</FormLabel>
+													<FormLabel>作用域根</FormLabel>
 													<Select
 														value={field.value}
 														onValueChange={(value: ScopeRoot) => {
@@ -653,9 +652,9 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 															</SelectTrigger>
 														</FormControl>
 														<SelectContent>
-															<SelectItem value="global">Global</SelectItem>
-															<SelectItem value="virtual_key">Virtual key</SelectItem>
-															{(UserPicker || scopeRoot === "user") && <SelectItem value="user">User</SelectItem>}
+															<SelectItem value="global">全局</SelectItem>
+															<SelectItem value="virtual_key">虚拟密钥</SelectItem>
+															{(UserPicker || scopeRoot === "user") && <SelectItem value="user">用户</SelectItem>}
 														</SelectContent>
 													</Select>
 												</FormItem>
@@ -668,8 +667,7 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 												name="userID"
 												render={({ field }) => (
 													<FormItem>
-														<FormLabel>
-															User <span className="text-red-500">*</span>
+														<FormLabel>用户<span className="text-red-500">*</span>
 														</FormLabel>
 														<FormControl>
 															{UserPicker ? (
@@ -688,7 +686,7 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 																// existing user-scoped overrides remain editable.
 																<Input
 																	data-testid="pricing-override-user-id-input"
-																	placeholder="Governance user ID"
+																	placeholder="治理用户 ID"
 																	{...field}
 																	onChange={(e) => {
 																		field.onChange(e);
@@ -709,8 +707,7 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 												name="virtualKeyID"
 												render={({ field }) => (
 													<FormItem>
-														<FormLabel>
-															Virtual key <span className="text-red-500">*</span>
+														<FormLabel>虚拟密钥<span className="text-red-500">*</span>
 														</FormLabel>
 														<FormControl>
 															<VirtualKeySelector
@@ -726,7 +723,7 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 																		? { value: editingOverride.virtual_key_id, label: editingOverride.virtual_key_id }
 																		: null
 																}
-																placeholder="Select virtual key"
+																placeholder="选择虚拟密钥"
 															/>
 														</FormControl>
 														<FormMessage />
@@ -741,7 +738,7 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 												name="providerID"
 												render={({ field }) => (
 													<FormItem>
-														<FormLabel>Provider</FormLabel>
+														<FormLabel>提供商</FormLabel>
 														<Select
 															value={field.value || "__none__"}
 															onValueChange={(value) => {
@@ -756,7 +753,7 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 																	disabled={isProvidersLoading || !!providersError}
 																>
 																	{isProvidersLoading ? (
-																		<span className="text-muted-foreground">Loading...</span>
+																		<span className="text-muted-foreground">加载中...</span>
 																	) : field.value ? (
 																		<div className="flex items-center gap-1.5">
 																			<RenderProviderIcon
@@ -767,12 +764,12 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 																			<span>{getProviderLabel(field.value)}</span>
 																		</div>
 																	) : (
-																		<span className="text-muted-foreground">All providers</span>
+																		<span className="text-muted-foreground">所有提供商</span>
 																	)}
 																</SelectTrigger>
 															</FormControl>
 															<SelectContent>
-																<SelectItem value="__none__">All providers</SelectItem>
+																<SelectItem value="__none__">所有提供商</SelectItem>
 																{providers.map((provider) => (
 																	<SelectItem key={provider.name} value={provider.name}>
 																		<div className="flex items-center gap-1.5">
@@ -800,14 +797,14 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 													name="providerKeyID"
 													render={({ field }) => (
 														<FormItem>
-															<FormLabel>Provider key</FormLabel>
+															<FormLabel>提供商密钥</FormLabel>
 															<FormControl>
 																<ComboboxSelect
 																	data-testid="pricing-override-provider-key-select"
 																	options={providerScopedKeyOptions.map((option) => ({ label: option.label, value: option.id }))}
 																	value={field.value || null}
 																	onValueChange={(value) => field.onChange(value ?? "")}
-																	placeholder="All provider keys"
+																	placeholder="所有提供商密钥"
 																	noPortal
 																	className="h-9"
 																/>
@@ -844,8 +841,8 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 														</SelectTrigger>
 													</FormControl>
 													<SelectContent>
-														<SelectItem value="exact">Exact</SelectItem>
-														<SelectItem value="wildcard">Wildcard</SelectItem>
+														<SelectItem value="exact">精确</SelectItem>
+														<SelectItem value="wildcard">通配符</SelectItem>
 													</SelectContent>
 												</Select>
 											</FormItem>
@@ -856,8 +853,7 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 										name="pattern"
 										render={({ field }) => (
 											<FormItem>
-												<FormLabel>
-													Pattern <span className="text-red-500">*</span>
+												<FormLabel>模式<span className="text-red-500">*</span>
 												</FormLabel>
 												<FormControl>
 													<Input
@@ -882,8 +878,7 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 								name="requestTypes"
 								render={({ field }) => (
 									<FormItem>
-										<FormLabel>
-											Request types <span className="text-red-500">*</span>
+										<FormLabel>请求类型<span className="text-red-500">*</span>
 										</FormLabel>
 										<Popover open={requestTypePopoverOpen} onOpenChange={setRequestTypePopoverOpen} modal={false}>
 											<PopoverTrigger asChild>
@@ -898,7 +893,7 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 															{field.value.length > 0 ? (
 																field.value.map((rt) => RequestTypeLabels[rt as keyof typeof RequestTypeLabels] ?? rt).join(", ")
 															) : (
-																<span className="text-muted-foreground">Select request types...</span>
+																<span className="text-muted-foreground">选择请求类型...</span>
 															)}
 														</span>
 														<ChevronDown className="h-4 w-4 shrink-0" />
@@ -943,9 +938,7 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 														size="sm"
 														variant="ghost"
 														onClick={() => field.onChange([])}
-													>
-														Clear
-													</Button>
+													>清除</Button>
 												</div>
 											</PopoverContent>
 										</Popover>
@@ -959,9 +952,8 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 								name="pricingValues"
 								render={({ field }) => (
 									<FormItem>
-										<FormLabel>
-											Pricing fields <span className="text-red-500">*</span>{" "}
-											<span className="text-muted-foreground text-xs font-normal">(USD per unit)</span>
+										<FormLabel>价格字段<span className="text-red-500">*</span>{" "}
+											<span className="text-muted-foreground text-xs font-normal">（美元/单位）</span>
 										</FormLabel>
 										<PricingFieldSelector
 											key={open ? (editingOverride?.id ?? "new") : "closed"}
@@ -1006,9 +998,7 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 								onClick={handleCloseDrawer}
 								disabled={isSaving}
 							>
-								<X className="h-4 w-4" />
-								Cancel
-							</Button>
+								<X className="h-4 w-4" />取消</Button>
 							<Button data-testid="pricing-override-save-btn" type="submit" disabled={isSaving}>
 								<Save className="h-4 w-4" />
 								{editingOverride ? "Update Override" : "Save Override"}

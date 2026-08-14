@@ -35,9 +35,7 @@ export const createMCPColumns = (
 	{
 		accessorKey: "timestamp",
 		header: ({ column }) => (
-			<Button variant="ghost" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
-				Time
-				<ArrowUpDown className="ml-2 h-4 w-4" />
+			<Button variant="ghost" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>时间<ArrowUpDown className="ml-2 h-4 w-4" />
 			</Button>
 		),
 		size: 230,
@@ -49,7 +47,7 @@ export const createMCPColumns = (
 	},
 	{
 		accessorKey: "tool_name",
-		header: "Tool Name",
+		header: "工具名称",
 		size: 300,
 		cell: ({ row }) => {
 			const toolName = row.getValue("tool_name") as string;
@@ -58,7 +56,7 @@ export const createMCPColumns = (
 	},
 	{
 		accessorKey: "server_label",
-		header: "Server",
+		header: "服务器",
 		size: 150,
 		cell: ({ row }) => {
 			const serverLabel = row.getValue("server_label") as string;
@@ -74,7 +72,7 @@ export const createMCPColumns = (
 	{
 		id: "app",
 		accessorKey: "app",
-		header: "App",
+		header: "应用",
 		size: 140,
 		cell: ({ row }) => {
 			const app = row.original.app ? mapAppToClientApp(row.original.app) : mapUserAgentToApp(row.original.user_agent);
@@ -90,32 +88,30 @@ export const createMCPColumns = (
 	{
 		accessorKey: "latency",
 		header: ({ column }) => (
-			<Button variant="ghost" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
-				Latency
-				<ArrowUpDown className="ml-2 h-4 w-4" />
+			<Button variant="ghost" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>延迟<ArrowUpDown className="ml-2 h-4 w-4" />
 			</Button>
 		),
 		size: 120,
 		cell: ({ row }) => {
 			const latency = row.original.latency;
 			return (
-				<div className="pl-4 font-mono text-sm">{latency === undefined || latency === null ? "N/A" : `${latency.toLocaleString()}ms`}</div>
+				<div className="pl-4 font-mono text-sm">{latency === undefined || latency === null ? "不适用" : `${latency.toLocaleString()}ms`}</div>
 			);
 		},
 	},
 	{
 		accessorKey: "cost",
-		header: "Cost",
+		header: "费用",
 		size: 120,
 		cell: ({ row }) => {
 			const cost = row.original.cost;
 			const isValidNumber = typeof cost === "number" && Number.isFinite(cost);
-			return <div className="font-mono text-sm">{isValidNumber ? `${cost.toFixed(4)}` : "N/A"}</div>;
+			return <div className="font-mono text-sm">{isValidNumber ? `${cost.toFixed(4)}` : "不适用"}</div>;
 		},
 	},
 	{
 		id: "virtual_key",
-		header: "Virtual Key",
+		header: "虚拟密钥",
 		size: 170,
 		cell: ({ row }) => {
 			const value = row.original.virtual_key?.name ?? row.original.virtual_key_name ?? row.original.virtual_key_id;
@@ -134,7 +130,7 @@ export const createMCPColumns = (
 							<div className="flex justify-center">
 								<DropdownMenu>
 									<DropdownMenuTrigger asChild onClick={(event) => event.stopPropagation()}>
-										<Button variant="ghost" size="icon" data-testid="log-actions-btn" aria-label="Log actions" className="h-7 w-7">
+										<Button variant="ghost" size="icon" data-testid="log-actions-btn" aria-label="日志操作" className="h-7 w-7">
 											<MoreHorizontal className="h-4 w-4" />
 										</Button>
 									</DropdownMenuTrigger>
@@ -148,9 +144,7 @@ export const createMCPColumns = (
 												void handleDelete(log);
 											}}
 										>
-											<Trash2 className="h-4 w-4" />
-											Delete
-										</DropdownMenuItem>
+											<Trash2 className="h-4 w-4" />删除</DropdownMenuItem>
 									</DropdownMenuContent>
 								</DropdownMenu>
 							</div>

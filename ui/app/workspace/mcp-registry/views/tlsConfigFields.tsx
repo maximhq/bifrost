@@ -21,7 +21,7 @@ export function TLSConfigFields({ control, disabled }: TLSConfigFieldsProps) {
 				render={({ field }) => (
 					<FormItem className="flex flex-row items-center justify-between gap-4">
 						<div className="space-y-0.5">
-							<FormLabel>Skip TLS verification</FormLabel>
+							<FormLabel>跳过 TLS 验证</FormLabel>
 							<p className="text-muted-foreground text-sm">
 								Disable TLS certificate verification. Use only in trusted isolated environments. Takes priority over CA certificate.
 							</p>
@@ -42,10 +42,8 @@ export function TLSConfigFields({ control, disabled }: TLSConfigFieldsProps) {
 				name="tls_config.ca_cert_pem"
 				render={({ field }) => (
 					<FormItem>
-						<FormLabel>CA Certificate (PEM) (Optional)</FormLabel>
-						<p className="text-muted-foreground text-xs">
-							PEM-encoded CA certificate to trust for MCP server connections (e.g. self-signed or private CA).
-						</p>
+						<FormLabel>CA 证书 (PEM)（可选）</FormLabel>
+						<p className="text-muted-foreground text-xs">用于 MCP 服务器连接的 PEM 编码 CA 证书（如自签名或私有 CA）。</p>
 						<FormControl>
 							<SecretVarInput
 								variant="textarea"

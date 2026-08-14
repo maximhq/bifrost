@@ -24,7 +24,7 @@ export default function PromptsView() {
 			<div className="no-padding-parent no-border-parent p-4">
 				<Alert variant="destructive">
 					<AlertCircle className="h-4 w-4" />
-					<AlertDescription>Failed to load prompt repository</AlertDescription>
+					<AlertDescription>无法加载提示词仓库</AlertDescription>
 				</Alert>
 			</div>
 		);

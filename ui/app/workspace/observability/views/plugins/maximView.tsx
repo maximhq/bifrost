@@ -43,10 +43,8 @@ export default function MaximView({ onDelete, isDeleting }: MaximViewProps) {
 	return (
 		<div className="flex w-full flex-col gap-4">
 			<div className="flex w-full flex-col gap-2">
-				<div className="text-muted-foreground text-xs font-medium">Configuration</div>
-				<div className="text-muted-foreground mb-2 text-xs font-normal">
-					You can send in header <code>x-bf-log-repo-id</code> with a repository ID to log to a specific repository.
-				</div>
+				<div className="text-muted-foreground text-xs font-medium">配置</div>
+				<div className="text-muted-foreground mb-2 text-xs font-normal">您可以在请求头中发送<code>x-bf-log-repo-id</code>以及仓库 ID，以记录到特定仓库。</div>
 				<MaximFormFragment onSave={handleMaximConfigSave} initialConfig={currentConfig} onDelete={onDelete} isDeleting={isDeleting} />
 			</div>
 		</div>

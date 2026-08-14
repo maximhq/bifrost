@@ -69,12 +69,12 @@ export function getModelLimitScope(value: string): ModelLimitScopeEntry | undefi
 
 registerModelLimitScope({
 	value: "global",
-	label: "Global",
+	label: "全局",
 });
 
 registerModelLimitScope({
 	value: "virtual_key",
-	label: "Virtual Key",
+	label: "虚拟密钥",
 	PickerComponent: VirtualKeySelector,
 	buildDeepLink: (scopeId) => ({
 		to: "/workspace/governance/virtual-keys",

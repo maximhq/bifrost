@@ -68,9 +68,7 @@ function ProviderKeyActionsMenu({
 					}}
 					disabled={!hasUpdateAccess}
 				>
-					<PencilIcon className="mr-1 h-4 w-4" />
-					Edit
-				</DropdownMenuItem>
+					<PencilIcon className="mr-1 h-4 w-4" />编辑</DropdownMenuItem>
 				<DropdownMenuItem
 					variant="destructive"
 					onSelect={(e) => {
@@ -80,9 +78,7 @@ function ProviderKeyActionsMenu({
 					}}
 					disabled={!hasDeleteAccess}
 				>
-					<TrashIcon className="mr-1 h-4 w-4" />
-					Delete
-				</DropdownMenuItem>
+					<TrashIcon className="mr-1 h-4 w-4" />删除</DropdownMenuItem>
 			</DropdownMenuContent>
 		</DropdownMenu>
 	);
@@ -156,9 +152,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 							</AlertDialogDescription>
 						</AlertDialogHeader>
 						<AlertDialogFooter className="pt-4">
-							<AlertDialogCancel onClick={() => setShowDeleteKeyDialog(undefined)} disabled={isMutatingProviderKey}>
-								Cancel
-							</AlertDialogCancel>
+							<AlertDialogCancel onClick={() => setShowDeleteKeyDialog(undefined)} disabled={isMutatingProviderKey}>取消</AlertDialogCancel>
 							<AlertDialogAction
 								disabled={isMutatingProviderKey || !hasDeleteProviderAccess}
 								onClick={() => {
@@ -177,9 +171,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 											});
 										});
 								}}
-							>
-								Delete
-							</AlertDialogAction>
+							>删除</AlertDialogAction>
 						</AlertDialogFooter>
 					</AlertDialogContent>
 				</AlertDialog>
@@ -211,9 +203,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 										{isRefreshingProvider ? "Refreshing..." : "Refresh model list"}
 									</Button>
 								</TooltipTrigger>
-								<TooltipContent className="max-w-xs">
-									Re-check what models this provider serves. Otherwise this runs on the interval set in Model Settings.
-								</TooltipContent>
+								<TooltipContent className="max-w-xs">重新检查此提供商提供哪些模型。否则将按模型设置中的间隔运行。</TooltipContent>
 							</Tooltip>
 						) : null}
 						{!isKeyless && hasUpdateProviderAccess ? (
@@ -233,8 +223,8 @@ export default function ModelProviderKeysTableView({ provider, className, header
 			</CardHeader>
 			{isKeyless ? (
 				<div className="text-muted-foreground flex flex-col items-center justify-center gap-2 rounded-sm border py-10 text-center text-sm">
-					<p>This is a keyless provider - no API keys are required.</p>
-					<p>You can edit the provider configuration using the button above.</p>
+					<p>这是免密钥提供商 - 不需要 API 密钥。</p>
+					<p>您可以使用上面的按钮编辑提供商配置。</p>
 				</div>
 			) : (
 				<div className="flex w-full flex-col gap-2 rounded-sm border">
@@ -247,9 +237,9 @@ export default function ModelProviderKeysTableView({ provider, className, header
 						</colgroup>
 						<TableHeader className="w-full">
 							<TableRow>
-								<TableHead>{isVLLM ? "Model" : isOllamaOrSGL ? "Server" : "API Key"}</TableHead>
-								<TableHead>Weight</TableHead>
-								<TableHead>Enabled</TableHead>
+								<TableHead>{isVLLM ? "模型" : isOllamaOrSGL ? "服务器" : "API 密钥"}</TableHead>
+								<TableHead>权重</TableHead>
+								<TableHead>已启用</TableHead>
 								<TableHead className="text-right"></TableHead>
 							</TableRow>
 						</TableHeader>
@@ -277,14 +267,14 @@ export default function ModelProviderKeysTableView({ provider, className, header
 														<TooltipTrigger asChild>
 															<button
 																type="button"
-																aria-label="Key status: list models working"
+																aria-label="密钥状态：模型列表正常"
 																data-testid={`key-status-success-${key.name}`}
 																className="inline-flex"
 															>
 																<CheckCircle2 aria-hidden className="h-4 w-4 flex-shrink-0 text-green-600" />
 															</button>
 														</TooltipTrigger>
-														<TooltipContent>List models working</TooltipContent>
+														<TooltipContent>模型列表正常</TooltipContent>
 													</Tooltip>
 												)}
 												{key.status === "list_models_failed" &&
@@ -306,7 +296,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 																<TooltipTrigger asChild>
 																	<button
 																		type="button"
-																		aria-label="Key status: secret reference may not be resolved"
+																		aria-label="密钥状态：密钥引用可能无法解析"
 																		data-testid={`key-status-warning-${key.name}`}
 																		className="inline-flex"
 																	>
@@ -322,7 +312,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 																<TooltipTrigger asChild>
 																	<button
 																		type="button"
-																		aria-label="Key status: list models failed"
+																		aria-label="密钥状态：模型列表获取失败"
 																		data-testid={`key-status-error-${key.name}`}
 																		className="inline-flex"
 																	>

@@ -41,7 +41,7 @@ export function transportIcon(connectionType: string) {
 export function authLabel(authType?: string): string {
 	switch (authType) {
 		case "headers":
-			return "Headers";
+			return "请求头";
 		case "oauth":
 			return "OAuth";
 		case "per_user_headers":
@@ -104,8 +104,8 @@ export function MCPLibraryServerCard({ server, isInstalled, canCreateMCPClient, 
 								<span className="block truncate">{server.name}</span>
 							</CardTitle>
 							<div className="flex shrink-0 items-center gap-1.5">
-								{isCustom && <Badge variant="outline">Custom</Badge>}
-								{isInstalled && <Badge variant="success">Installed</Badge>}
+								{isCustom && <Badge variant="outline">自定义</Badge>}
+								{isInstalled && <Badge variant="success">已安装</Badge>}
 							</div>
 						</div>
 						<div className="flex min-w-0 flex-wrap items-center gap-1.5">
@@ -171,7 +171,7 @@ export function MCPLibraryServerCard({ server, isInstalled, canCreateMCPClient, 
 										<Trash2 className="h-4 w-4" />
 									</Button>
 								</TooltipTrigger>
-								<TooltipContent>Remove from library</TooltipContent>
+								<TooltipContent>从库中移除</TooltipContent>
 							</Tooltip>
 						</div>
 					)}
@@ -190,12 +190,12 @@ export function MCPLibraryServerCard({ server, isInstalled, canCreateMCPClient, 
 									</a>
 								</Button>
 							</TooltipTrigger>
-							<TooltipContent>Documentation</TooltipContent>
+							<TooltipContent>文档</TooltipContent>
 						</Tooltip>
 					)}
 					{isInstalled ? (
 						<Button asChild size="sm" data-testid={`mcp-library-open-${server.slug}`}>
-							<Link to="/workspace/mcp-registry">Open</Link>
+							<Link to="/workspace/mcp-registry">打开</Link>
 						</Button>
 					) : (
 						<Button
@@ -203,9 +203,7 @@ export function MCPLibraryServerCard({ server, isInstalled, canCreateMCPClient, 
 							onClick={() => onInstall(server)}
 							disabled={!canCreateMCPClient}
 							data-testid={`mcp-library-install-${server.slug}`}
-						>
-							Install
-						</Button>
+						>安装</Button>
 					)}
 				</div>
 			</CardFooter>

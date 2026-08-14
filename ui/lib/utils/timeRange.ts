@@ -1,9 +1,9 @@
 export const TIME_PERIODS = [
-	{ label: "Last hour", value: "1h" },
-	{ label: "Last 6 hours", value: "6h" },
-	{ label: "Last 24 hours", value: "24h" },
-	{ label: "Last 7 days", value: "7d" },
-	{ label: "Last 30 days", value: "30d" },
+	{ label: "最近 1 小时", value: "1h" },
+	{ label: "最近 6 小时", value: "6h" },
+	{ label: "最近 24 小时", value: "24h" },
+	{ label: "最近 7 天", value: "7d" },
+	{ label: "最近 30 天", value: "30d" },
 ];
 
 export type TimePeriod = (typeof TIME_PERIODS)[number]["value"];

@@ -46,10 +46,10 @@ export function MCPLibraryServersTable({
 			<Table containerClassName="overflow-x-clip">
 				<TableHeader className="bg-muted sticky top-0 z-10">
 					<TableRow>
-						<TableHead className="w-16">Icon</TableHead>
-						<TableHead>Server</TableHead>
-						<TableHead className="hidden w-10 lg:table-cell">Details</TableHead>
-						<TableHead className="w-32 text-right">Actions</TableHead>
+						<TableHead className="w-16">图标</TableHead>
+						<TableHead>服务器</TableHead>
+						<TableHead className="hidden w-10 lg:table-cell">详情</TableHead>
+						<TableHead className="w-32 text-right">操作</TableHead>
 					</TableRow>
 				</TableHeader>
 				<TableBody>
@@ -80,11 +80,9 @@ export function MCPLibraryServersTable({
 											<span className="font-medium">{server.name}</span>
 											{isInstalled && (
 												<Badge variant="success" className="gap-1">
-													<Check className="size-3" />
-													Installed
-												</Badge>
+													<Check className="size-3" />已安装</Badge>
 											)}
-											{server.source === "custom" && <Badge variant="outline">Custom</Badge>}
+											{server.source === "custom" && <Badge variant="outline">自定义</Badge>}
 										</div>
 										<p className="text-muted-foreground line-clamp-1 max-w-4xl text-sm leading-5">
 											{server.description || "No description available."}
@@ -117,7 +115,7 @@ export function MCPLibraryServersTable({
 															<Trash2 className="h-4 w-4" />
 														</Button>
 													</TooltipTrigger>
-													<TooltipContent>Remove from library</TooltipContent>
+													<TooltipContent>从库中移除</TooltipContent>
 												</Tooltip>
 											</div>
 										)}
@@ -136,7 +134,7 @@ export function MCPLibraryServersTable({
 														</a>
 													</Button>
 												</TooltipTrigger>
-												<TooltipContent>Documentation</TooltipContent>
+												<TooltipContent>文档</TooltipContent>
 											</Tooltip>
 										)}
 										{isInstalled ? (
@@ -148,7 +146,7 @@ export function MCPLibraryServersTable({
 														</Link>
 													</Button>
 												</TooltipTrigger>
-												<TooltipContent>Open installed server</TooltipContent>
+												<TooltipContent>打开已安装的服务器</TooltipContent>
 											</Tooltip>
 										) : (
 											<Tooltip>
@@ -163,7 +161,7 @@ export function MCPLibraryServersTable({
 														<Download className="h-4 w-4" />
 													</Button>
 												</TooltipTrigger>
-												<TooltipContent>Install</TooltipContent>
+												<TooltipContent>安装</TooltipContent>
 											</Tooltip>
 										)}
 									</div>
@@ -193,10 +191,10 @@ export function MCPLibraryServersTableSkeleton({ rows = 8 }: { rows?: number }) 
 			<Table containerClassName="overflow-x-clip">
 				<TableHeader className="bg-muted sticky top-0 z-10">
 					<TableRow>
-						<TableHead className="w-16">Icon</TableHead>
-						<TableHead>Server</TableHead>
-						<TableHead className="hidden w-10 lg:table-cell">Details</TableHead>
-						<TableHead className="w-32 text-right">Actions</TableHead>
+						<TableHead className="w-16">图标</TableHead>
+						<TableHead>服务器</TableHead>
+						<TableHead className="hidden w-10 lg:table-cell">详情</TableHead>
+						<TableHead className="w-32 text-right">操作</TableHead>
 					</TableRow>
 				</TableHeader>
 				<TableBody>

@@ -217,7 +217,7 @@ export function OAuthAdvancedFields({
 							data-testid={scopesTestId}
 						/>
 					</FormControl>
-					<p className="text-muted-foreground text-xs">Comma-separated.</p>
+					<p className="text-muted-foreground text-xs">逗号分隔。</p>
 				</FormItem>
 				{resource.mode === "field" ? (
 					<FormField

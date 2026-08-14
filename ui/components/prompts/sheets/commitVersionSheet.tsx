@@ -61,7 +61,7 @@ function MessagePreview({
 					) : content ? (
 						<Markdown content={content} className="text-muted-foreground [&_*]:text-sm" />
 					) : (
-						<span className="italic">Empty message</span>
+						<span className="italic">空消息</span>
 					)}
 				</div>
 			</div>
@@ -153,8 +153,8 @@ export function CommitVersionSheet({ open, onOpenChange, session, onCommitted }:
 			>
 				<form onSubmit={handleSubmit(onSubmit)} className="flex flex-1 flex-col overflow-hidden">
 					<SheetHeader className="flex flex-col items-start">
-						<SheetTitle>Commit as Version</SheetTitle>
-						<SheetDescription>Select the messages to include in this version. Uncheck any messages you want to exclude.</SheetDescription>
+						<SheetTitle>提交为版本</SheetTitle>
+						<SheetDescription>选择要包含在此版本中的消息。取消勾选要排除的消息。</SheetDescription>
 					</SheetHeader>
 
 					{/* Messages selection - scrollable */}
@@ -184,11 +184,11 @@ export function CommitVersionSheet({ open, onOpenChange, session, onCommitted }:
 					{/* Commit message + CTAs - always visible at bottom */}
 					<div className="mt-4 shrink-0 space-y-4">
 						<div className="space-y-2">
-							<Label htmlFor="commitMessage">Commit Message</Label>
+							<Label htmlFor="commitMessage">提交信息</Label>
 							<Input
 								id="commitMessage"
 								data-testid="commit-version-message"
-								placeholder="Added system message for better context..."
+								placeholder="已添加系统消息以提供更好的上下文..."
 								{...register("commitMessage", {
 									required: "Commit message is required",
 									validate: (v) => v.trim().length > 0 || "Commit message cannot be blank",
@@ -198,23 +198,19 @@ export function CommitVersionSheet({ open, onOpenChange, session, onCommitted }:
 							{errors.commitMessage ? (
 								<p className="text-destructive text-xs">{errors.commitMessage.message}</p>
 							) : (
-								<p className="text-muted-foreground text-xs">
-									Describe what changed in this version (e.g., &quot;Added error handling instructions&quot;)
-								</p>
+								<p className="text-muted-foreground text-xs">描述此版本中的更改（例如“添加了错误处理指令”）</p>
 							)}
 						</div>
 
 						<SheetFooter className="flex flex-row items-center justify-end gap-2 p-0">
-							<Button type="button" variant="outline" data-testid="commit-version-cancel" onClick={() => onOpenChange(false)}>
-								Cancel
-							</Button>
+							<Button type="button" variant="outline" data-testid="commit-version-cancel" onClick={() => onOpenChange(false)}>取消</Button>
 							<Button
 								type="submit"
 								data-testid="commit-version-submit"
 								disabled={isLoading || selectedIndices.size === 0}
 								className={selectedIndices.size === 0 ? "opacity-50" : ""}
 							>
-								{isLoading ? "Committing..." : "Commit Version"}
+								{isLoading ? "Committing..." : "提交版本"}
 							</Button>
 						</SheetFooter>
 					</div>

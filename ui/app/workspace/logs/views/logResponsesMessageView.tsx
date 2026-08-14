@@ -23,7 +23,7 @@ function ContentBlockView({ block }: { block: ResponsesMessageContentBlock; inde
 			case "reasoning_text":
 				return "Reasoning Text";
 			case "refusal":
-				return "Refusal";
+				return "拒绝";
 			default:
 				return type.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase());
 		}
@@ -143,7 +143,7 @@ function ContentBlockView({ block }: { block: ResponsesMessageContentBlock; inde
 	if (block.annotations && block.annotations.length > 0) {
 		const jsonContent = JSON.stringify(block.annotations, null, 2);
 		return (
-			<CollapsibleBox title="Annotations" onCopy={() => jsonContent} collapsedHeight={100}>
+			<CollapsibleBox title="注释" onCopy={() => jsonContent} collapsedHeight={100}>
 				<CodeEditor
 					className="z-0 w-full"
 					shouldAdjustInitialHeight={true}
@@ -162,7 +162,7 @@ function ContentBlockView({ block }: { block: ResponsesMessageContentBlock; inde
 	if (block.logprobs && block.logprobs.length > 0) {
 		const jsonContent = JSON.stringify(block.logprobs, null, 2);
 		return (
-			<CollapsibleBox title="Log Probabilities" onCopy={() => jsonContent} collapsedHeight={100}>
+			<CollapsibleBox title="对数概率" onCopy={() => jsonContent} collapsedHeight={100}>
 				<CodeEditor
 					className="z-0 w-full"
 					shouldAdjustInitialHeight={true}
@@ -185,11 +185,11 @@ function MessageView({ message, index }: { message: ResponsesMessage; index: num
 		if (message.type) {
 			switch (message.type) {
 				case "reasoning":
-					return "Reasoning";
+					return "推理";
 				case "message":
-					return message.role ? `${message.role.charAt(0).toUpperCase() + message.role.slice(1)} Message` : "Message";
+					return message.role ? `${message.role.charAt(0).toUpperCase() + message.role.slice(1)} Message` : "消息";
 				case "function_call":
-					return `Function Call: ${message.name || "Unknown"}`;
+					return `Function Call: ${message.name || "未知"}`;
 				case "function_call_output":
 					return `Function Call Output${message.call_id ? `: ${message.call_id}` : ""}`;
 				case "file_search_call":
@@ -209,14 +209,14 @@ function MessageView({ message, index }: { message: ResponsesMessage; index: num
 				case "custom_tool_call_output":
 					return "Custom Tool Output";
 				case "image_generation_call":
-					return "Image Generation";
+					return "图像生成";
 				case "refusal":
-					return "Refusal";
+					return "拒绝";
 				default:
 					return message.type.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase());
 			}
 		}
-		return message.role ? `${message.role.charAt(0).toUpperCase() + message.role.slice(1)}` : "Message";
+		return message.role ? `${message.role.charAt(0).toUpperCase() + message.role.slice(1)}` : "消息";
 	};
 
 	if (message.type == "reasoning" && (!message.summary || message.summary.length === 0) && !message.encrypted_content && !message.content) {
@@ -244,7 +244,7 @@ function MessageView({ message, index }: { message: ResponsesMessage; index: num
 						))
 					) : (
 						// Fallback to JSON display for mixed or non-text types
-						<CollapsibleBox title="Summary" onCopy={() => JSON.stringify(message.summary, null, 2)} collapsedHeight={100}>
+						<CollapsibleBox title="摘要" onCopy={() => JSON.stringify(message.summary, null, 2)} collapsedHeight={100}>
 							<CodeEditor
 								className="z-0 w-full"
 								shouldAdjustInitialHeight={true}
@@ -262,7 +262,7 @@ function MessageView({ message, index }: { message: ResponsesMessage; index: num
 
 			{/* Handle encrypted reasoning content */}
 			{message.type === "reasoning" && message.encrypted_content && (
-				<CollapsibleBox title="Encrypted Reasoning Content" onCopy={() => message.encrypted_content || ""} collapsedHeight={100}>
+				<CollapsibleBox title="加密的推理内容" onCopy={() => message.encrypted_content || ""} collapsedHeight={100}>
 					<div className="custom-scrollbar max-h-[400px] overflow-y-auto px-6 py-2 font-mono text-xs break-words whitespace-pre-wrap">
 						{message.encrypted_content}
 					</div>
@@ -276,7 +276,7 @@ function MessageView({ message, index }: { message: ResponsesMessage; index: num
 						<>
 							{isJson(message.content) ? (
 								<CollapsibleBox
-									title="Content"
+									title="内容"
 									onCopy={() => JSON.stringify(cleanJson(message.content as string), null, 2)}
 									collapsedHeight={100}
 								>
@@ -292,7 +292,7 @@ function MessageView({ message, index }: { message: ResponsesMessage; index: num
 									/>
 								</CollapsibleBox>
 							) : (
-								<CollapsibleBox title="Content" onCopy={() => (message.content as string) || ""} collapsedHeight={100}>
+								<CollapsibleBox title="内容" onCopy={() => (message.content as string) || ""} collapsedHeight={100}>
 									<div className="custom-scrollbar max-h-[400px] overflow-y-auto px-6 py-2 font-mono text-xs break-words whitespace-pre-wrap">
 										{message.content}
 									</div>
@@ -309,7 +309,7 @@ function MessageView({ message, index }: { message: ResponsesMessage; index: num
 			{/* Handle tool call specific fields */}
 			{(message.call_id || message.name || message.arguments) && (
 				<CollapsibleBox
-					title="Tool Details"
+					title="工具详情"
 					onCopy={() =>
 						JSON.stringify(
 							{
@@ -347,7 +347,7 @@ function MessageView({ message, index }: { message: ResponsesMessage; index: num
 			{/* Handle function call output */}
 			{message.output !== undefined && (
 				<CollapsibleBox
-					title="Output"
+					title="输出"
 					onCopy={() => (typeof message.output === "string" ? message.output : JSON.stringify(message.output, null, 2))}
 					collapsedHeight={100}
 				>
@@ -391,7 +391,7 @@ function MessageView({ message, index }: { message: ResponsesMessage; index: num
 					),
 			) && (
 				<CollapsibleBox
-					title="Additional Fields"
+					title="附加字段"
 					onCopy={() =>
 						JSON.stringify(
 							Object.fromEntries(
@@ -459,7 +459,7 @@ export default function LogResponsesMessageView({ messages }: LogResponsesMessag
 	if (!messages || messages.length === 0) {
 		return (
 			<div className="w-full rounded-sm border">
-				<div className="text-muted-foreground px-6 py-4 text-center text-sm">No responses messages available</div>
+				<div className="text-muted-foreground px-6 py-4 text-center text-sm">无响应消息</div>
 			</div>
 		);
 	}

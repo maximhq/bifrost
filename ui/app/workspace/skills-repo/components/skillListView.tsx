@@ -96,13 +96,11 @@ function MarketplacePopover() {
 		<Popover open={open} onOpenChange={setOpen}>
 			<PopoverTrigger asChild>
 				<Button variant="outline" size="sm">
-					<Package className="h-3.5 w-3.5" />
-					Register as Marketplace
-				</Button>
+					<Package className="h-3.5 w-3.5" />注册为市场</Button>
 			</PopoverTrigger>
 			<PopoverContent align="end" className="w-auto max-w-md p-0">
 				<div className="border-b px-3 py-2">
-					<p className="text-muted-foreground text-xs font-medium">Copy CLI command to register this repository</p>
+					<p className="text-muted-foreground text-xs font-medium">复制 CLI 命令以注册此仓库</p>
 				</div>
 				<div className="py-1">
 					{items.map((item) => (
@@ -235,7 +233,7 @@ function SkillActionsMenu({
 						}}
 					>
 						{isDownloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-						{isDownloading ? "Downloading..." : "Download ZIP"}
+						{isDownloading ? "Downloading..." : "下载 ZIP"}
 					</DropdownMenuItem>
 					<DropdownMenuItem
 						variant="destructive"
@@ -248,9 +246,7 @@ function SkillActionsMenu({
 							setIsOpen(false);
 						}}
 					>
-						<Trash2 className="h-4 w-4" />
-						Delete
-					</DropdownMenuItem>
+						<Trash2 className="h-4 w-4" />删除</DropdownMenuItem>
 				</DropdownMenuContent>
 			</DropdownMenu>
 
@@ -258,17 +254,14 @@ function SkillActionsMenu({
 				<AlertDialogContent>
 					<AlertDialogHeader>
 						<AlertDialogTitle>Delete {skill.name}?</AlertDialogTitle>
-						<AlertDialogDescription>
-							This action cannot be undone. The skill, its files, and version history will be permanently deleted.
-						</AlertDialogDescription>
+						<AlertDialogDescription>此操作无法撤销。该技能及其文件和版本历史将被永久删除。</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
-						<AlertDialogCancel>Cancel</AlertDialogCancel>
+						<AlertDialogCancel>取消</AlertDialogCancel>
 						<AlertDialogAction data-testid="skill-delete-confirm-btn" onClick={() => onDelete(skill.id)} disabled={isDeleting}>
 							{isDeleting ? (
 								<>
-									<Loader2 className="h-3.5 w-3.5 animate-spin" /> Deleting...
-								</>
+									<Loader2 className="h-3.5 w-3.5 animate-spin" />删除中...</>
 							) : (
 								"Delete skill"
 							)}
@@ -362,10 +355,8 @@ export function SkillsListView({
 	if (isError) {
 		return (
 			<div className="flex flex-col items-center justify-center gap-3 py-20">
-				<p className="text-muted-foreground text-sm">Failed to load skills</p>
-				<Button variant="outline" size="sm" onClick={refetch}>
-					Retry
-				</Button>
+				<p className="text-muted-foreground text-sm">无法加载技能</p>
+				<Button variant="outline" size="sm" onClick={refetch}>重试</Button>
 			</div>
 		);
 	}
@@ -378,7 +369,7 @@ export function SkillsListView({
 					<BookOpenText className="h-24 w-24" strokeWidth={1} />
 				</div>
 				<div className="flex flex-col gap-1">
-					<h1 className="text-muted-foreground text-xl font-medium">Create, version, and share Agent Skills from Bifrost</h1>
+					<h1 className="text-muted-foreground text-xl font-medium">从 Bifrost 创建、版本化和分享 Agent 技能</h1>
 					<div className="text-muted-foreground mx-auto mt-2 max-w-xl text-sm font-normal">
 						Manage SKILL.md instructions and supporting files in one place, publish immutable versions, and expose them as installable
 						plugins for Claude Code, Codex, and other skill-aware clients.
@@ -386,18 +377,15 @@ export function SkillsListView({
 					<div className="mx-auto mt-6 flex flex-row flex-wrap items-center justify-center gap-2">
 						<Button
 							variant="outline"
-							aria-label="Read more about skills (opens in new tab)"
+							aria-label="了解更多技能信息（在新标签页打开）"
 							data-testid="skills-button-read-more"
 							onClick={() => {
 								window.open(`${SKILLS_REPOSITORY_DOCS_URL}?utm_source=bfd`, "_blank", "noopener,noreferrer");
 							}}
-						>
-							Read more <ArrowUpRight className="text-muted-foreground h-3 w-3" />
+						>阅读更多<ArrowUpRight className="text-muted-foreground h-3 w-3" />
 						</Button>
 						{hasCreateAccess && (
-							<Button aria-label="Create your first skill" data-testid="skill-create-btn" onClick={onCreateNew}>
-								Create Skill
-							</Button>
+							<Button aria-label="创建您的第一个技能" data-testid="skill-create-btn" onClick={onCreateNew}>创建技能</Button>
 						)}
 					</div>
 				</div>
@@ -411,10 +399,10 @@ export function SkillsListView({
 			<div className="mb-4 flex shrink-0 items-center justify-between">
 				<div>
 					<div className="flex items-center gap-2">
-						<h2 className="text-lg font-semibold">Skills Repository</h2>
-						<Badge aria-label="Skills Repository is in beta">Beta</Badge>
+						<h2 className="text-lg font-semibold">技能仓库</h2>
+						<Badge aria-label="技能仓库处于测试阶段">测试版</Badge>
 					</div>
-					<p className="text-muted-foreground text-sm">Manage Agent Skills for distribution to AI coding assistants</p>
+					<p className="text-muted-foreground text-sm">管理 Agent 技能以分发给 AI 编程助手</p>
 				</div>
 				<div className="flex items-center gap-2">
 					{isGitAvailable ? (
@@ -424,9 +412,7 @@ export function SkillsListView({
 							<TooltipTrigger asChild>
 								<span tabIndex={0}>
 									<Button variant="outline" size="sm" disabled>
-										<Package className="h-3.5 w-3.5" />
-										Register as Marketplace
-									</Button>
+										<Package className="h-3.5 w-3.5" />注册为市场</Button>
 								</span>
 							</TooltipTrigger>
 							<TooltipContent side="bottom">
@@ -468,9 +454,7 @@ export function SkillsListView({
 					</Button>
 					{hasCreateAccess && (
 						<Button data-testid="skill-create-btn" onClick={onCreateNew} size="sm">
-							<Plus className="h-4 w-4" />
-							New Skill
-						</Button>
+							<Plus className="h-4 w-4" />新建技能</Button>
 					)}
 				</div>
 			</div>
@@ -481,8 +465,8 @@ export function SkillsListView({
 					<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 					<Input
 						data-testid="skill-search-input"
-						aria-label="Search skills by name"
-						placeholder="Search skills..."
+						aria-label="按名称搜索技能"
+						placeholder="搜索技能..."
 						value={search}
 						onChange={(e) => {
 							setSearch(e.target.value);
@@ -549,16 +533,16 @@ export function SkillsListView({
 					<TableHeader className="bg-muted sticky top-0 z-20">
 						<TableRow className="hover:bg-transparent">
 							<TableHead className="w-60">
-								<SortableHeader column="name" label="Name" sortBy={sortBy} order={sortOrder} onToggle={toggleSort} />
+								<SortableHeader column="name" label="名称" sortBy={sortBy} order={sortOrder} onToggle={toggleSort} />
 							</TableHead>
-							<TableHead>Description</TableHead>
-							<TableHead className="w-36">Version</TableHead>
-							<TableHead className="w-36">Files</TableHead>
+							<TableHead>描述</TableHead>
+							<TableHead className="w-36">版本</TableHead>
+							<TableHead className="w-36">文件</TableHead>
 							<TableHead className="w-44">
-								<SortableHeader column="updated_at" label="Updated" sortBy={sortBy} order={sortOrder} onToggle={toggleSort} />
+								<SortableHeader column="updated_at" label="已更新" sortBy={sortBy} order={sortOrder} onToggle={toggleSort} />
 							</TableHead>
 							<TableHead className={`bg-muted sticky right-0 z-30 w-14 text-right ${PIN_SHADOW_RIGHT}`}>
-								<span className="sr-only">Actions</span>
+								<span className="sr-only">操作</span>
 							</TableHead>
 						</TableRow>
 					</TableHeader>
@@ -571,9 +555,7 @@ export function SkillsListView({
 										<p className="text-muted-foreground text-sm">{search ? "No skills match your search" : "No skills created yet"}</p>
 										{!search && hasCreateAccess && (
 											<Button variant="outline" size="sm" onClick={onCreateNew} className="mt-2">
-												<Plus className="h-3.5 w-3.5" />
-												Create your first skill
-											</Button>
+												<Plus className="h-3.5 w-3.5" />创建您的第一个技能</Button>
 										)}
 									</div>
 								</TableCell>
@@ -651,12 +633,12 @@ export function SkillsListView({
 							data-testid="skill-pagination-prev"
 							onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
 							disabled={offset === 0 || isFetching}
-							aria-label="Previous page"
+							aria-label="上一页"
 						>
 							<ChevronLeft className="size-3" />
 						</Button>
 						<div className="flex items-center gap-1">
-							<span>Page</span>
+							<span>页</span>
 							<span>{Math.floor(offset / PAGE_SIZE) + 1}</span>
 							<span>of {Math.ceil(total / PAGE_SIZE)}</span>
 						</div>
@@ -666,7 +648,7 @@ export function SkillsListView({
 							data-testid="skill-pagination-next"
 							onClick={() => setOffset(offset + PAGE_SIZE)}
 							disabled={offset + PAGE_SIZE >= total || isFetching}
-							aria-label="Next page"
+							aria-label="下一页"
 						>
 							<ChevronRight className="size-3" />
 						</Button>

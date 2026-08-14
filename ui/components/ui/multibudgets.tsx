@@ -28,7 +28,7 @@ interface MultiBudgetLinesProps {
 
 export default function MultiBudgetLines({
 	"data-testid": testId,
-	label = "Budget Configuration",
+	label = "预算配置",
 	lines,
 	onChange,
 	options = budgetResetDurationOptions,
@@ -90,19 +90,15 @@ export default function MultiBudgetLines({
 				<div className="flex items-center gap-2">
 					{onReset && (showReset ?? true) && (
 						<Button data-testid={`${testId}-reset-btn`} type="button" variant="ghost" size="sm" onClick={onReset}>
-							<RotateCcw className="mr-1 h-3 w-3" />
-							Reset
-						</Button>
+							<RotateCcw className="mr-1 h-3 w-3" />重置</Button>
 					)}
 					<Button data-testid={`${testId}-add-btn`} variant="outline" size="sm" type="button" onClick={addLine}>
-						<Plus className="mr-1 h-3 w-3" />
-						Add Budget
-					</Button>
+						<Plus className="mr-1 h-3 w-3" />添加预算</Button>
 				</div>
 			</div>
 
 			{lines.length === 0 && (
-				<div className="text-muted-foreground rounded-md border border-dashed p-3 text-center text-sm">No budget limits configured.</div>
+				<div className="text-muted-foreground rounded-md border border-dashed p-3 text-center text-sm">未配置预算限制。</div>
 			)}
 
 			{lines.map((line, index) => {
@@ -115,7 +111,7 @@ export default function MultiBudgetLines({
 									id={`${testId}-${index}`}
 									dataTestId={`${testId}-amount-${index}`}
 									labelClassName="font-normal"
-									label="Maximum Spend (USD)"
+									label="最大支出 (USD)"
 									value={line.max_limit}
 									selectValue={line.reset_duration}
 									onChangeNumber={(value) => updateMaxLimit(index, value)}
@@ -143,7 +139,7 @@ export default function MultiBudgetLines({
 							/>
 						)}
 						{isDuplicate && (
-							<p className="text-destructive pl-0.5 text-xs">Duplicate reset period; each budget line must use a different interval.</p>
+							<p className="text-destructive pl-0.5 text-xs">重置周期重复；每行预算必须使用不同的间隔。</p>
 						)}
 					</div>
 				);

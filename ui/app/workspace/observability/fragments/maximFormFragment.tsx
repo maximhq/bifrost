@@ -70,12 +70,12 @@ export function MaximFormFragment({ initialConfig, onSave, onDelete, isDeleting 
 							name="maxim_config.api_key"
 							render={({ field }) => (
 								<FormItem>
-									<FormLabel>API Key</FormLabel>
+									<FormLabel>API 密钥</FormLabel>
 									<FormControl>
 										<div className="relative">
 											<Input
 												type={showApiKey ? "text" : "password"}
-												placeholder="Enter your Maxim API key"
+												placeholder="输入您的 Maxim API 密钥"
 												disabled={!hasMaximAccess}
 												{...field}
 												className="pr-10"
@@ -102,9 +102,9 @@ export function MaximFormFragment({ initialConfig, onSave, onDelete, isDeleting 
 							name="maxim_config.log_repo_id"
 							render={({ field }) => (
 								<FormItem>
-									<FormLabel>Log Repository ID (Optional)</FormLabel>
+									<FormLabel>日志仓库 ID（可选）</FormLabel>
 									<FormControl>
-										<Input placeholder="Enter log repository ID" disabled={!hasMaximAccess} {...field} value={field.value ?? ""} />
+										<Input placeholder="输入日志仓库 ID" disabled={!hasMaximAccess} {...field} value={field.value ?? ""} />
 									</FormControl>
 									<FormMessage />
 								</FormItem>
@@ -116,8 +116,7 @@ export function MaximFormFragment({ initialConfig, onSave, onDelete, isDeleting 
 							name="maxim_config.request_headers"
 							render={({ field }) => (
 								<FormItem>
-									<FormLabel>
-										Request Headers <span className="text-muted-foreground font-normal">(Optional)</span>
+									<FormLabel>请求头<span className="text-muted-foreground font-normal">（可选）</span>
 									</FormLabel>
 									<FormDescription>
 										Comma-separated list of request headers to capture and attach as trace tags. Supports exact names and wildcard patterns
@@ -149,7 +148,7 @@ export function MaximFormFragment({ initialConfig, onSave, onDelete, isDeleting 
 						name="enabled"
 						render={({ field }) => (
 							<FormItem className="flex items-center gap-2 py-2">
-								<FormLabel className="text-muted-foreground text-sm font-medium">Enabled</FormLabel>
+								<FormLabel className="text-muted-foreground text-sm font-medium">已启用</FormLabel>
 								<FormControl>
 									<Switch
 										checked={field.value}
@@ -168,8 +167,8 @@ export function MaximFormFragment({ initialConfig, onSave, onDelete, isDeleting 
 								variant="outline"
 								onClick={onDelete}
 								disabled={isDeleting}
-								title="Delete connector"
-								aria-label="Delete connector"
+								title="删除连接器"
+								aria-label="删除连接器"
 							>
 								<Trash2 className="size-4" />
 							</Button>
@@ -188,15 +187,11 @@ export function MaximFormFragment({ initialConfig, onSave, onDelete, isDeleting 
 								});
 							}}
 							disabled={!hasMaximAccess || isLoading || !form.formState.isDirty}
-						>
-							Reset
-						</Button>
+						>重置</Button>
 						<TooltipProvider>
 							<Tooltip>
 								<TooltipTrigger asChild>
-									<Button type="submit" disabled={!hasMaximAccess || !form.formState.isDirty} isLoading={isSaving}>
-										Save Maxim Configuration
-									</Button>
+									<Button type="submit" disabled={!hasMaximAccess || !form.formState.isDirty} isLoading={isSaving}>保存 Maxim 配置</Button>
 								</TooltipTrigger>
 								{!form.formState.isDirty && (
 									<TooltipContent>

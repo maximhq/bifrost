@@ -89,9 +89,7 @@ function ModelLimitActionsMenu({
 						setIsOpen(false);
 					}}
 				>
-					<Edit className="h-4 w-4" />
-					Edit
-				</DropdownMenuItem>
+					<Edit className="h-4 w-4" />编辑</DropdownMenuItem>
 				<DropdownMenuItem
 					variant="destructive"
 					className="cursor-pointer"
@@ -103,9 +101,7 @@ function ModelLimitActionsMenu({
 						setIsOpen(false);
 					}}
 				>
-					<Trash2 className="h-4 w-4" />
-					Delete
-				</DropdownMenuItem>
+					<Trash2 className="h-4 w-4" />删除</DropdownMenuItem>
 			</DropdownMenuContent>
 		</DropdownMenu>
 	);
@@ -236,7 +232,7 @@ export default function ModelLimitsTable({
 			<AlertDialog open={!!deletingModelConfig} onOpenChange={(open) => !open && setDeleteModelConfigId(null)}>
 				<AlertDialogContent>
 					<AlertDialogHeader>
-						<AlertDialogTitle>Delete Limit</AlertDialogTitle>
+						<AlertDialogTitle>删除限制</AlertDialogTitle>
 						<AlertDialogDescription>
 							Are you sure you want to delete the limit for &quot;
 							{deletingModelConfig?.model_name && deletingModelConfig.model_name.length > 30
@@ -246,13 +242,13 @@ export default function ModelLimitsTable({
 						</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
-						<AlertDialogCancel>Cancel</AlertDialogCancel>
+						<AlertDialogCancel>取消</AlertDialogCancel>
 						<AlertDialogAction
 							onClick={() => deletingModelConfig && handleDelete(deletingModelConfig.id)}
 							disabled={isDeleting}
 							className="bg-red-600 hover:bg-red-700"
 						>
-							{isDeleting ? "Deleting..." : "Delete"}
+							{isDeleting ? "删除中..." : "删除"}
 						</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>
@@ -261,15 +257,11 @@ export default function ModelLimitsTable({
 			<div className="flex flex-col overflow-y-auto">
 				<div className="mb-4 flex items-center justify-between">
 					<div>
-						<h1 className="text-lg font-semibold">Budgets &amp; Limits</h1>
-						<p className="text-muted-foreground text-sm">
-							Configure budgets and rate limits at any scope: virtual keys, users, providers, or specific models.
-						</p>
+						<h1 className="text-lg font-semibold">预算与限制</h1>
+						<p className="text-muted-foreground text-sm">在任何作用域配置预算和速率限制：虚拟密钥、用户、提供商或特定模型。</p>
 					</div>
 					<Button onClick={handleAddModelLimit} disabled={!hasCreateAccess} data-testid="model-limits-button-create">
-						<Plus className="h-4 w-4" />
-						Add Limit
-					</Button>
+						<Plus className="h-4 w-4" />添加限制</Button>
 				</div>
 
 				{/* Toolbar: Search + Filters */}
@@ -277,8 +269,8 @@ export default function ModelLimitsTable({
 					<div className="relative min-w-[220px] flex-1">
 						<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 						<Input
-							aria-label="Search model limits by model name"
-							placeholder="Search by model name..."
+							aria-label="按模型名称搜索模型限制"
+							placeholder="按模型名称搜索..."
 							value={search}
 							onChange={(e) => onSearchChange(e.target.value)}
 							className="pl-9"
@@ -288,10 +280,10 @@ export default function ModelLimitsTable({
 
 					<Select value={scope || "all"} onValueChange={(v) => onScopeChange(v === "all" ? "" : v)}>
 						<SelectTrigger className="w-[160px]" data-testid="model-limits-filter-scope">
-							<SelectValue placeholder="All Scopes" />
+							<SelectValue placeholder="所有作用域" />
 						</SelectTrigger>
 						<SelectContent>
-							<SelectItem value="all">All Scopes</SelectItem>
+							<SelectItem value="all">所有作用域</SelectItem>
 							{getModelLimitScopes().map((o) => (
 								<SelectItem key={o.value} value={o.value}>
 									{o.label}
@@ -302,10 +294,10 @@ export default function ModelLimitsTable({
 
 					<Select value={provider || "all"} onValueChange={(v) => onProviderChange(v === "all" ? "" : v)}>
 						<SelectTrigger className="w-[160px]" data-testid="model-limits-filter-provider">
-							<SelectValue placeholder="All Providers" />
+							<SelectValue placeholder="所有提供商" />
 						</SelectTrigger>
 						<SelectContent>
-							<SelectItem value="all">All Providers</SelectItem>
+							<SelectItem value="all">所有提供商</SelectItem>
 							{(providers ?? []).map((p) => (
 								<SelectItem key={p.name} value={p.name}>
 									<div className="flex items-center gap-2">
@@ -327,9 +319,7 @@ export default function ModelLimitsTable({
 								onProviderChange("");
 							}}
 							data-testid="model-limits-filter-clear"
-						>
-							Clear filters
-						</Button>
+						>清除筛选</Button>
 					)}
 				</div>
 
@@ -337,12 +327,12 @@ export default function ModelLimitsTable({
 					<Table containerClassName="h-full overflow-auto">
 						<TableHeader className="bg-muted sticky top-0 z-10">
 							<TableRow className="hover:bg-transparent">
-								<TableHead className="font-medium">Model</TableHead>
-								<TableHead className="font-medium">Provider</TableHead>
-								<TableHead className="font-medium">Scope</TableHead>
-								<TableHead className="font-medium">Scope Target</TableHead>
-								<TableHead className="font-medium">Budget</TableHead>
-								<TableHead className="font-medium">Rate Limit</TableHead>
+								<TableHead className="font-medium">模型</TableHead>
+								<TableHead className="font-medium">提供商</TableHead>
+								<TableHead className="font-medium">范围</TableHead>
+								<TableHead className="font-medium">作用域目标</TableHead>
+								<TableHead className="font-medium">预算</TableHead>
+								<TableHead className="font-medium">速率限制</TableHead>
 								<TableHead className={`bg-muted sticky right-0 z-30 w-[50px] text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
 							</TableRow>
 						</TableHeader>
@@ -388,12 +378,10 @@ export default function ModelLimitsTable({
 											<TableCell className="max-w-[280px] py-4">
 												<div className="flex flex-col gap-2">
 													<span className="truncate font-mono text-sm font-medium">
-														{config.model_name === "*" ? "All Models" : config.model_name}
+														{config.model_name === "*" ? "所有模型" : config.model_name}
 													</span>
 													{isExhausted && (
-														<Badge variant="destructive" className="w-fit text-xs">
-															Limit Reached
-														</Badge>
+														<Badge variant="destructive" className="w-fit text-xs">已达上限</Badge>
 													)}
 												</div>
 											</TableCell>
@@ -404,7 +392,7 @@ export default function ModelLimitsTable({
 														<span className="text-sm">{ProviderLabels[config.provider as ProviderName] || config.provider}</span>
 													</div>
 												) : (
-													<span className="text-muted-foreground text-sm">All Providers</span>
+													<span className="text-muted-foreground text-sm">所有提供商</span>
 												)}
 											</TableCell>
 											<TableCell>
@@ -577,13 +565,13 @@ export default function ModelLimitsTable({
 								onClick={() => onOffsetChange(Math.max(0, offset - limit))}
 								disabled={offset === 0}
 								data-testid="model-limits-pagination-prev-btn"
-								aria-label="Previous page"
+								aria-label="上一页"
 							>
 								<ChevronLeft className="size-3" />
 							</Button>
 
 							<div className="flex items-center gap-1">
-								<span>Page</span>
+								<span>页</span>
 								<span>{Math.floor(offset / limit) + 1}</span>
 								<span>of {Math.ceil(totalCount / limit)}</span>
 							</div>
@@ -594,7 +582,7 @@ export default function ModelLimitsTable({
 								onClick={() => onOffsetChange(offset + limit)}
 								disabled={offset + limit >= totalCount}
 								data-testid="model-limits-pagination-next-btn"
-								aria-label="Next page"
+								aria-label="下一页"
 							>
 								<ChevronRight className="size-3" />
 							</Button>

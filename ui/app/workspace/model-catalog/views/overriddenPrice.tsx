@@ -37,11 +37,11 @@ export default function OverriddenPrice({ base, override, variant, overrideName,
 					>
 						{/* The strikethrough is visual only, so name each value for screen readers. */}
 						<span className="text-muted-foreground text-xs line-through" data-testid={testId ? `${testId}-original` : undefined}>
-							<span className="sr-only">Original price: </span>
+							<span className="sr-only">原始价格：</span>
 							{format(base)}
 						</span>
 						<span data-testid={testId ? `${testId}-override` : undefined}>
-							<span className="sr-only">Effective price: </span>
+							<span className="sr-only">生效价格：</span>
 							{format(override)}
 						</span>
 					</span>

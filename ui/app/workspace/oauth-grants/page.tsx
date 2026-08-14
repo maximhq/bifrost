@@ -95,7 +95,7 @@ export default function OAuthGrantsPage() {
 
 			<div className="mb-4 flex items-center justify-between gap-4">
 				<div>
-					<h2 className="text-lg font-semibold tracking-tight">OAuth Grants</h2>
+					<h2 className="text-lg font-semibold tracking-tight">OAuth 授权</h2>
 					<p className="text-muted-foreground text-sm">
 						Active downstream OAuth grants issued to MCP clients that connected via the OAuth consent flow.
 					</p>
@@ -107,8 +107,8 @@ export default function OAuthGrantsPage() {
 					<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 					<Input
 						data-testid="oauth-grants-search-input"
-						aria-label="Search grants"
-						placeholder="Search client, identity..."
+						aria-label="搜索授权"
+						placeholder="搜索客户端、身份..."
 						value={urlState.q}
 						onChange={(e) => handleSearchChange(e.target.value)}
 						className="pl-9"

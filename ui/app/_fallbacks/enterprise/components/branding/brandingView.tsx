@@ -10,7 +10,7 @@ export default function BrandingView() {
 			<ContactUsView
 				className="mx-auto min-h-[80vh]"
 				icon={<Palette className="h-[5.5rem] w-[5.5rem]" strokeWidth={1} />}
-				title="Unlock custom branding"
+				title="解锁自定义品牌"
 				description="Replace the Bifrost logo with your own across the dashboard and login screen. This feature is a part of the Bifrost enterprise license. We would love to know more about your use case and how we can help you."
 				readmeLink="https://docs.getbifrost.ai/enterprise/overview"
 				testIdPrefix="branding"

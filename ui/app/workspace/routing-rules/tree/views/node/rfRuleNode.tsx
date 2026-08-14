@@ -50,9 +50,7 @@ export function RFRuleNode({ data }: { data: any }) {
 					<div className="ml-auto flex items-center gap-1">
 						{rule.chain_rule && <Link2 className="h-3 w-3" style={{ color: scopeColor }} />}
 						{!rule.enabled && (
-							<Badge variant="secondary" className="px-1 py-0 text-[9px]">
-								Off
-							</Badge>
+							<Badge variant="secondary" className="px-1 py-0 text-[9px]">关闭</Badge>
 						)}
 					</div>
 				</div>
@@ -104,13 +102,11 @@ export function RFRuleNode({ data }: { data: any }) {
 						{rule.chain_rule && (
 							<div className="mb-1 flex items-start gap-2 border-b px-3 pb-1.5">
 								<Link2 className="mt-0.5 h-3 w-3 shrink-0" style={{ color: scopeColor }} />
-								<p className="text-muted-foreground text-[10px] leading-snug">
-									Chain rule: resolved provider/model feeds back as the new input and the full scope chain re-evaluates.
-								</p>
+								<p className="text-muted-foreground text-[10px] leading-snug">链式规则：解析出的提供商/模型反馈为新输入，整个作用域链重新评估。</p>
 							</div>
 						)}
 						<p className="mb-1 px-3 text-[10px] font-semibold tracking-wide uppercase" style={{ color: scopeColor }}>
-							{rule.chain_rule ? "Resolved target (new input)" : "Targets"}
+							{rule.chain_rule ? "Resolved target (new input)" : "目标"}
 						</p>
 						{rule.targets.map((t, i) => {
 							const isPassthrough = !t.provider && !t.model;
@@ -126,7 +122,7 @@ export function RFRuleNode({ data }: { data: any }) {
 											{isPassthrough ? "Passthrough" : t.provider ? getProviderLabel(t.provider) : t.model}
 										</p>
 										{t.model && t.provider && <p className="text-muted-foreground truncate font-mono text-[10px]">{t.model}</p>}
-										{isPassthrough && <p className="text-muted-foreground/60 text-[10px] italic">original provider &amp; model</p>}
+										{isPassthrough && <p className="text-muted-foreground/60 text-[10px] italic">原始提供商与模型</p>}
 									</div>
 									{multi && (
 										<span className="ml-1 shrink-0 text-[11px] font-semibold" style={{ color: scopeColor }}>

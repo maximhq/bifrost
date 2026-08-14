@@ -53,7 +53,7 @@ async function fireConfettiFrom(el: HTMLElement) {
 export default function OnboardingWidget() {
 	const navigate = useNavigate();
 	const pathname = useLocation({ select: (l) => l.pathname });
-	// "Remind me later" is a real snooze: it survives navigation and reloads
+	// "稍后提醒" is a real snooze: it survives navigation and reloads
 	// until the chosen date, via a cookie whose own expiry is that date.
 	const [cookies, setCookie, removeCookie] = useCookies([REMIND_LATER_COOKIE, HIDDEN_UNTIL_NAV_COOKIE]);
 	const isSnoozed = !!cookies[REMIND_LATER_COOKIE];
@@ -156,7 +156,7 @@ export default function OnboardingWidget() {
 		return (
 			<button
 				type="button"
-				aria-label="Expand setup checklist"
+				aria-label="展开设置清单"
 				data-testid="onboarding-widget-restore"
 				onClick={() => setMinimized(false)}
 				className="bg-card text-card-foreground fixed right-6 bottom-4 z-40 flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-medium shadow-lg transition-transform hover:scale-105"
@@ -256,7 +256,7 @@ export default function OnboardingWidget() {
 							👋
 						</span>
 						<div className="min-w-0 flex-1">
-							<div className="text-sm font-semibold">Setup checklist</div>
+							<div className="text-sm font-semibold">设置清单</div>
 							<div className="text-muted-foreground text-xs">
 								{doneCount} of {steps.length} steps complete
 							</div>
@@ -264,7 +264,7 @@ export default function OnboardingWidget() {
 					</div>
 					<div className="flex flex-shrink-0 items-center gap-1">
 						<button
-							aria-label="Minimize"
+							aria-label="最小化"
 							type="button"
 							data-testid="onboarding-widget-minimize"
 							onClick={() => setMinimized(true)}
@@ -273,7 +273,7 @@ export default function OnboardingWidget() {
 							<Minus className="size-4" />
 						</button>
 						<button
-							aria-label="Close for now"
+							aria-label="暂时关闭"
 							type="button"
 							data-testid="onboarding-widget-close"
 							onClick={() => setCookie(HIDDEN_UNTIL_NAV_COOKIE, "true", { path: "/" })}
@@ -343,13 +343,11 @@ export default function OnboardingWidget() {
 												onClick={() => handleSkip(step.id)}
 												disabled={writingMetadata}
 												className="text-muted-foreground hover:text-foreground text-xs opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100 focus-visible:opacity-100 disabled:opacity-50"
-											>
-												Skip
-											</button>
+											>跳过</button>
 											<ChevronRight className="text-muted-foreground size-4 transition-transform group-hover:translate-x-0.5" />
 										</>
 									)}
-									{skipped && !step.complete && <span className="text-muted-foreground text-xs">Skipped</span>}
+									{skipped && !step.complete && <span className="text-muted-foreground text-xs">已跳过</span>}
 								</div>
 							</div>
 						);
@@ -368,14 +366,12 @@ export default function OnboardingWidget() {
 								type="button"
 								data-testid="onboarding-later"
 								className="text-muted-foreground hover:text-foreground py-2 text-center"
-							>
-								Remind me later
-							</button>
+							>稍后提醒</button>
 						</PopoverTrigger>
 						<PopoverContent align="start" className="w-64 p-3">
 							<div className="mb-2 flex items-start gap-1.5 text-amber-600 dark:text-amber-500">
 								<AlertTriangle className="mt-0.5 size-3.5 flex-shrink-0" />
-								<p className="text-xs leading-snug">Not completing these steps keeps your Bifrost setup vulnerable.</p>
+								<p className="text-xs leading-snug">不完成这些步骤会使您的 Bifrost 设置存在风险。</p>
 							</div>
 							{remindPickerView === "options" ? (
 								<div className="flex flex-col gap-0.5">
@@ -384,25 +380,19 @@ export default function OnboardingWidget() {
 										data-testid="onboarding-remind-tomorrow"
 										onClick={() => handleRemindAt(addDaysFromToday(1))}
 										className="hover:bg-accent rounded-sm px-2 py-1.5 text-left text-sm"
-									>
-										Tomorrow
-									</button>
+									>明天</button>
 									<button
 										type="button"
 										data-testid="onboarding-remind-week"
 										onClick={() => handleRemindAt(addDaysFromToday(7))}
 										className="hover:bg-accent rounded-sm px-2 py-1.5 text-left text-sm"
-									>
-										In a week
-									</button>
+									>一周后</button>
 									<button
 										type="button"
 										data-testid="onboarding-remind-pick-date"
 										onClick={() => setRemindPickerView("calendar")}
 										className="hover:bg-accent rounded-sm px-2 py-1.5 text-left text-sm"
-									>
-										Pick a date…
-									</button>
+									>选择日期…</button>
 								</div>
 							) : (
 								<Calendar
@@ -422,9 +412,7 @@ export default function OnboardingWidget() {
 						onClick={handleHideForAll}
 						disabled={writingMetadata}
 						className="text-muted-foreground hover:text-foreground py-2 text-center disabled:opacity-50"
-					>
-						I accept the risk - hide for everyone
-					</button>
+					>我接受风险 - 对所有人隐藏</button>
 				</CardFooter>
 			</Card>
 		</>

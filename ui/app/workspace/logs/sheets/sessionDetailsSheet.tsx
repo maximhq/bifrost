@@ -80,30 +80,30 @@ export function SessionDetailsSheet({
 	const summaryCards: SummaryCard[] = useMemo(
 		() => [
 			{
-				label: "Logs",
+				label: "日志",
 				value: (sessionSummary?.count || 0).toLocaleString(),
 				helper: sessionSummary && sessionLogs.length < sessionSummary.count ? `(${sessionLogs.length.toLocaleString()} loaded)` : undefined,
 			},
 			{
-				label: "Total Cost",
+				label: "总费用",
 				value: `$${(sessionSummary?.total_cost || 0).toFixed(4)}`,
 			},
 			{
-				label: "Total Tokens",
+				label: "Token 总数",
 				value: (sessionSummary?.total_tokens || 0).toLocaleString(),
 			},
 			{
-				label: "Started",
-				value: sessionSummary?.started_at ? format(new Date(sessionSummary.started_at), "MMM d, yyyy hh:mm:ss aa") : "N/A",
+				label: "已开始",
+				value: sessionSummary?.started_at ? format(new Date(sessionSummary.started_at), "MMM d, yyyy hh:mm:ss aa") : "不适用",
 				size: "sm",
 			},
 			{
-				label: "Latest Update",
-				value: sessionSummary?.latest_at ? format(new Date(sessionSummary.latest_at), "MMM d, yyyy hh:mm:ss aa") : "N/A",
+				label: "最近更新",
+				value: sessionSummary?.latest_at ? format(new Date(sessionSummary.latest_at), "MMM d, yyyy hh:mm:ss aa") : "不适用",
 				size: "sm",
 			},
 			{
-				label: "Duration",
+				label: "时长",
 				value: formatDurationFromMs(sessionSummary?.duration_ms),
 			},
 		],
@@ -184,7 +184,7 @@ export function SessionDetailsSheet({
 			<SheetContent className="flex w-full flex-col gap-4 overflow-x-hidden p-8 sm:max-w-[60%]">
 				<div className="flex items-center justify-between gap-4">
 					<div>
-						<div className="text-lg font-medium">Session</div>
+						<div className="text-lg font-medium">会话</div>
 						{sessionId && onFilterByParentRequestId ? (
 							<Tooltip>
 								<TooltipTrigger asChild>
@@ -195,7 +195,7 @@ export function SessionDetailsSheet({
 										{sessionId}
 									</code>
 								</TooltipTrigger>
-								<TooltipContent sideOffset={6}>Filter this session</TooltipContent>
+								<TooltipContent sideOffset={6}>筛选此会话</TooltipContent>
 							</Tooltip>
 						) : (
 							<code className="text-sm break-all">{sessionId}</code>
@@ -245,11 +245,11 @@ export function SessionDetailsSheet({
 						<TableHeader className="sticky top-0 z-10 bg-[#f9f9f9] dark:bg-[#27272a]">
 							<TableRow>
 								<TableHead className="w-2"></TableHead>
-								<TableHead>Time</TableHead>
-								<TableHead>Type</TableHead>
-								<TableHead>Message</TableHead>
-								<TableHead>Provider</TableHead>
-								<TableHead>Model</TableHead>
+								<TableHead>时间</TableHead>
+								<TableHead>类型</TableHead>
+								<TableHead>消息</TableHead>
+								<TableHead>提供商</TableHead>
+								<TableHead>模型</TableHead>
 							</TableRow>
 						</TableHeader>
 						<TableBody>
@@ -257,9 +257,7 @@ export function SessionDetailsSheet({
 								<TableRow>
 									<TableCell colSpan={6} className="h-24 text-center">
 										<div className="flex items-center justify-center gap-2">
-											<Loader2 className="h-4 w-4 animate-spin" />
-											Loading session...
-										</div>
+											<Loader2 className="h-4 w-4 animate-spin" />正在加载会话...</div>
 									</TableCell>
 								</TableRow>
 							) : sessionLogs.length ? (
@@ -274,9 +272,7 @@ export function SessionDetailsSheet({
 										</TableCell>
 										<TableCell className="relative text-xs">
 											{log.id === highlightedLogId ? (
-												<div className="bg-background pointer-events-none absolute -top-1.5 left-1 z-10 rounded-full border border-sky-400/45 px-1.5 py-0 text-[9px] leading-tight font-semibold tracking-wide text-sky-600 uppercase dark:text-sky-300">
-													Current
-												</div>
+												<div className="bg-background pointer-events-none absolute -top-1.5 left-1 z-10 rounded-full border border-sky-400/45 px-1.5 py-0 text-[9px] leading-tight font-semibold tracking-wide text-sky-600 uppercase dark:text-sky-300">当前</div>
 											) : null}
 											{format(new Date(log.timestamp), "yyyy-MM-dd hh:mm:ss aa (XXX)")}
 										</TableCell>
@@ -294,14 +290,12 @@ export function SessionDetailsSheet({
 												{log.provider as ProviderName}
 											</Badge>
 										</TableCell>
-										<TableCell className="max-w-[140px] truncate font-mono text-xs">{log.model || "N/A"}</TableCell>
+										<TableCell className="max-w-[140px] truncate font-mono text-xs">{log.model || "不适用"}</TableCell>
 									</TableRow>
 								))
 							) : (
 								<TableRow>
-									<TableCell colSpan={6} className="text-muted-foreground h-24 text-center">
-										No logs found for this session.
-									</TableCell>
+									<TableCell colSpan={6} className="text-muted-foreground h-24 text-center">未找到此会话的日志。</TableCell>
 								</TableRow>
 							)}
 						</TableBody>

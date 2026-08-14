@@ -81,7 +81,7 @@ function TopDimensionChart({
 			loading={loading}
 			testId={`${testIdPrefix}-top-chart`}
 			className="z-[1] h-full"
-			totalLabel={attributed && actualTotal === null ? "Total Requests (attributed)" : "Total Requests"}
+			totalLabel={attributed && actualTotal === null ? "Total Requests (attributed)" : "总请求数"}
 			total={
 				actualTotal !== null ? (
 					<NumberFlow value={actualTotal} format={COMPACT_NUMBER_FORMAT} />
@@ -91,7 +91,7 @@ function TopDimensionChart({
 			}
 			totalTooltip={
 				grandTotal === null ? undefined : actualTotal !== null ? (
-					<div className="max-w-[240px] text-xs opacity-80">Actual number of requests sent</div>
+					<div className="max-w-[240px] text-xs opacity-80">实际发送的请求数</div>
 				) : attributed ? (
 					<div className="space-y-1">
 						<div className="max-w-[240px] text-xs opacity-80">
@@ -160,7 +160,7 @@ function TopDimensionChart({
 						</ResponsiveContainer>
 					</ChartErrorBoundary>
 				) : (
-					<div className="text-muted-foreground flex h-full items-center justify-center text-sm">No data available</div>
+					<div className="text-muted-foreground flex h-full items-center justify-center text-sm">暂无数据</div>
 				)}
 			</div>
 			<div className="py-2">
@@ -242,7 +242,7 @@ function DimensionRankingsTabImpl({ data, loading, dimensionLabel, testIdPrefix,
 								<TableHead>{dimensionLabel}</TableHead>
 								<TableHead className="text-right">
 									<SortableHeader
-										label="Requests"
+										label="请求数"
 										field="total_requests"
 										currentSort={sortField}
 										currentOrder={sortOrder}
@@ -251,7 +251,7 @@ function DimensionRankingsTabImpl({ data, loading, dimensionLabel, testIdPrefix,
 								</TableHead>
 								<TableHead className="text-right">
 									<SortableHeader
-										label="Tokens"
+										label="Token 数"
 										field="total_tokens"
 										currentSort={sortField}
 										currentOrder={sortOrder}
@@ -259,7 +259,7 @@ function DimensionRankingsTabImpl({ data, loading, dimensionLabel, testIdPrefix,
 									/>
 								</TableHead>
 								<TableHead className="text-right">
-									<SortableHeader label="Cost" field="total_cost" currentSort={sortField} currentOrder={sortOrder} onSort={handleSort} />
+									<SortableHeader label="费用" field="total_cost" currentSort={sortField} currentOrder={sortOrder} onSort={handleSort} />
 								</TableHead>
 							</TableRow>
 						</TableHeader>

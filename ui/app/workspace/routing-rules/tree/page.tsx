@@ -6,8 +6,8 @@
 import { RoutingTreeView } from "./views/routingTreeView";
 
 export const metadata = {
-	title: "Routing Tree | Bifrost",
-	description: "Read-only decision tree visualization of routing rules",
+	title: "路由树 | Bifrost",
+	description: "路由规则的只读决策树可视化",
 };
 
 export default function RoutingTreePage() {

@@ -3,10 +3,10 @@ import { cn } from "@/lib/utils";
 import { ChevronDown } from "lucide-react";
 
 const AVAILABLE_ROLES = [
-	{ value: "system", label: "System" },
-	{ value: "user", label: "User" },
-	{ value: "assistant", label: "Assistant" },
-	{ value: "tool", label: "Tool" },
+	{ value: "system", label: "系统" },
+	{ value: "user", label: "用户" },
+	{ value: "assistant", label: "助手" },
+	{ value: "tool", label: "工具" },
 ] as const;
 
 /**

@@ -67,7 +67,7 @@ export function getModelColor(index: number): string {
 // the legend already says "+N more", so the data path follows the palette.
 export const TOP_SERIES_LIMIT = MODEL_COLORS.length;
 export const OTHER_SERIES_KEY = "__other__";
-export const OTHER_SERIES_LABEL = "Other";
+export const OTHER_SERIES_LABEL = "其他";
 export const OTHER_SERIES_COLOR = "#94a3b8"; // slate-400
 
 export const UNNAMED_MODEL_LABEL = "(unnamed)";

@@ -70,9 +70,7 @@ function RoutingRuleActionsMenu({
 						setIsOpen(false);
 					}}
 				>
-					<Edit className="h-4 w-4" />
-					Edit
-				</DropdownMenuItem>
+					<Edit className="h-4 w-4" />编辑</DropdownMenuItem>
 				<DropdownMenuItem
 					variant="destructive"
 					className="cursor-pointer"
@@ -84,9 +82,7 @@ function RoutingRuleActionsMenu({
 						setIsOpen(false);
 					}}
 				>
-					<Trash2 className="h-4 w-4" />
-					Delete
-				</DropdownMenuItem>
+					<Trash2 className="h-4 w-4" />删除</DropdownMenuItem>
 			</DropdownMenuContent>
 		</DropdownMenu>
 	);
@@ -145,13 +141,13 @@ export function RoutingRulesTable({
 				<Table>
 					<TableHeader>
 						<TableRow>
-							<TableHead>Name</TableHead>
-							<TableHead>Targets</TableHead>
-							<TableHead>Scope</TableHead>
-							<TableHead className="text-right">Priority</TableHead>
-							<TableHead>Expression</TableHead>
-							<TableHead>Enabled</TableHead>
-							<TableHead className="text-right">Actions</TableHead>
+							<TableHead>名称</TableHead>
+							<TableHead>目标</TableHead>
+							<TableHead>范围</TableHead>
+							<TableHead className="text-right">优先级</TableHead>
+							<TableHead>表达式</TableHead>
+							<TableHead>已启用</TableHead>
+							<TableHead className="text-right">操作</TableHead>
 						</TableRow>
 					</TableHeader>
 					<TableBody>
@@ -178,8 +174,8 @@ export function RoutingRulesTable({
 				<div className="relative max-w-sm flex-1">
 					<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 					<Input
-						aria-label="Search routing rules by name"
-						placeholder="Search by name..."
+						aria-label="按名称搜索路由规则"
+						placeholder="按名称搜索..."
 						value={search}
 						onChange={(e) => onSearchChange(e.target.value)}
 						className="pl-9"
@@ -192,22 +188,20 @@ export function RoutingRulesTable({
 				<Table containerClassName="h-full overflow-auto">
 					<TableHeader className="bg-muted sticky top-0 z-10">
 						<TableRow className="bg-muted/50">
-							<TableHead className="font-semibold">Name</TableHead>
-							<TableHead className="font-semibold">Targets</TableHead>
-							<TableHead className="font-semibold">Scope</TableHead>
-							<TableHead className="text-right font-semibold">Priority</TableHead>
-							<TableHead className="font-semibold">Expression</TableHead>
-							<TableHead className="font-semibold">Status</TableHead>
-							<TableHead className={`bg-muted sticky right-0 z-30 w-[50px] text-right font-semibold ${PIN_SHADOW_RIGHT}`}>
-								Actions
-							</TableHead>
+							<TableHead className="font-semibold">名称</TableHead>
+							<TableHead className="font-semibold">目标</TableHead>
+							<TableHead className="font-semibold">范围</TableHead>
+							<TableHead className="text-right font-semibold">优先级</TableHead>
+							<TableHead className="font-semibold">表达式</TableHead>
+							<TableHead className="font-semibold">状态</TableHead>
+							<TableHead className={`bg-muted sticky right-0 z-30 w-[50px] text-right font-semibold ${PIN_SHADOW_RIGHT}`}>操作</TableHead>
 						</TableRow>
 					</TableHeader>
 					<TableBody>
 						{sortedRules.length === 0 ? (
 							<TableRow>
 								<TableCell colSpan={7} className="h-24 text-center">
-									<span className="text-muted-foreground text-sm">No matching routing rules found.</span>
+									<span className="text-muted-foreground text-sm">未找到匹配的路由规则。</span>
 								</TableCell>
 							</TableRow>
 						) : (
@@ -299,13 +293,13 @@ export function RoutingRulesTable({
 							onClick={() => onOffsetChange(Math.max(0, offset - limit))}
 							disabled={offset === 0}
 							data-testid="routing-rules-pagination-prev-btn"
-							aria-label="Previous page"
+							aria-label="上一页"
 						>
 							<ChevronLeft className="size-3" />
 						</Button>
 
 						<div className="flex items-center gap-1">
-							<span>Page</span>
+							<span>页</span>
 							<span>{Math.floor(offset / limit) + 1}</span>
 							<span>of {Math.ceil(totalCount / limit)}</span>
 						</div>
@@ -316,7 +310,7 @@ export function RoutingRulesTable({
 							onClick={() => onOffsetChange(offset + limit)}
 							disabled={offset + limit >= totalCount}
 							data-testid="routing-rules-pagination-next-btn"
-							aria-label="Next page"
+							aria-label="下一页"
 						>
 							<ChevronRight className="size-3" />
 						</Button>
@@ -327,15 +321,15 @@ export function RoutingRulesTable({
 			<AlertDialog open={!!deleteRuleId} onOpenChange={(open) => !open && setDeleteRuleId(null)}>
 				<AlertDialogContent>
 					<AlertDialogHeader>
-						<AlertDialogTitle>Delete Routing Rule</AlertDialogTitle>
+						<AlertDialogTitle>删除路由规则</AlertDialogTitle>
 						<AlertDialogDescription>
 							Are you sure you want to delete &quot;{ruleToDelete?.name}&quot;? This action cannot be undone.
 						</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
-						<AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
+						<AlertDialogCancel disabled={isDeleting}>取消</AlertDialogCancel>
 						<AlertDialogAction onClick={handleDelete} disabled={isDeleting} className="bg-destructive hover:bg-destructive/90">
-							{isDeleting ? "Deleting..." : "Delete"}
+							{isDeleting ? "删除中..." : "删除"}
 						</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>

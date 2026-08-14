@@ -164,14 +164,10 @@ export function MCPLogsDataTable({
 									<div className="text-muted-foreground flex items-center justify-center gap-2 text-sm">
 										{polling ? (
 											<>
-												<RefreshCw className="h-4 w-4 animate-spin" />
-												Waiting for new MCP logs...
-											</>
+												<RefreshCw className="h-4 w-4 animate-spin" />等待新的 MCP 日志...</>
 										) : (
 											<Button variant="ghost" size="sm" onClick={onRefresh} disabled={loading} data-testid="mcp-logs-table-refresh-btn">
-												<RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-												Refresh
-											</Button>
+												<RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />刷新</Button>
 										)}
 									</div>
 								</TableCell>
@@ -203,9 +199,7 @@ export function MCPLogsDataTable({
 								))
 							) : loading ? null : (
 								<TableRow>
-									<TableCell colSpan={columns.length} className="h-24 text-center">
-										No results found. Try adjusting your filters and/or time range.
-									</TableCell>
+									<TableCell colSpan={columns.length} className="h-24 text-center">未找到结果。请尝试调整筛选条件或时间范围。</TableCell>
 								</TableRow>
 							)}
 						</TableBody>
@@ -224,13 +218,13 @@ export function MCPLogsDataTable({
 							onClick={() => goToPage(currentPage - 1)}
 							disabled={currentPage <= 1}
 							data-testid="prev-page"
-							aria-label="Previous page"
+							aria-label="上一页"
 						>
 							<ChevronLeft className="size-3" />
 						</Button>
 
 						<div className="flex items-center gap-1">
-							<span>Page</span>
+							<span>页</span>
 							<span>{currentPage}</span>
 							<span>of {totalPages}</span>
 						</div>
@@ -241,7 +235,7 @@ export function MCPLogsDataTable({
 							onClick={() => goToPage(currentPage + 1)}
 							disabled={totalPages === 0 || currentPage >= totalPages}
 							data-testid="next-page"
-							aria-label="Next page"
+							aria-label="下一页"
 						>
 							<ChevronRight className="size-3" />
 						</Button>

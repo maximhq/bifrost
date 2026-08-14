@@ -201,7 +201,7 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 										formatDate(dateTime.from, "LLL dd, y")
 									)
 								) : (
-									<span>Pick a date</span>
+									<span>选择日期</span>
 								)}
 							</>
 						)}
@@ -242,9 +242,9 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 							/>
 							<div className="-mt-1 flex flex-row items-center px-2 pb-1">
 								<div className="m-1 flex flex-1 flex-col gap-1">
-									<Label className="ml-0.5">From Time</Label>
+									<Label className="ml-0.5">开始时间</Label>
 									<TimePicker
-										aria-label="From Time"
+										aria-label="开始时间"
 										className=""
 										value={timeValue?.from}
 										onChange={(v) => {
@@ -263,9 +263,9 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 									/>
 								</div>
 								<div className="m-1 flex flex-1 flex-col gap-1">
-									<Label className="ml-0.5">To Time</Label>
+									<Label className="ml-0.5">结束时间</Label>
 									<TimePicker
-										aria-label="To Time"
+										aria-label="结束时间"
 										className=""
 										value={timeValue?.to}
 										onChange={(v) => {
@@ -307,7 +307,7 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 					{props.showTimezone && (
 						<div className="flex items-center gap-2 border-t px-3 py-2">
 							<Globe className="text-muted-foreground size-4 shrink-0" />
-							<Label className="text-muted-foreground shrink-0 text-xs">Timezone</Label>
+							<Label className="text-muted-foreground shrink-0 text-xs">时区</Label>
 							<div className="ml-auto w-[260px]">
 								<ComboboxSelect
 									options={timezoneOptions}
@@ -344,7 +344,7 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 										}
 									}}
 									hideClear
-									placeholder="Select timezone"
+									placeholder="选择时区"
 									data-testid="datepicker-timezone-select"
 								/>
 							</div>
@@ -453,7 +453,7 @@ export function DateTimePicker(props: DateTimePickerProps) {
 								{format(date, "LLL dd, y")} {printTimeValue(timeValue)}
 							</>
 						) : (
-							<span>Pick a date and time</span>
+							<span>选择日期和时间</span>
 						)}
 					</Button>
 				</PopoverTrigger>
@@ -477,9 +477,9 @@ export function DateTimePicker(props: DateTimePickerProps) {
 							}}
 						/>
 						<div className="mt-3 flex flex-col gap-1 px-2 pb-2">
-							<Label className="ml-0.5">Time</Label>
+							<Label className="ml-0.5">时间</Label>
 							<TimePicker
-								aria-label="Time"
+								aria-label="时间"
 								className=""
 								value={timeValue}
 								onChange={(v) => {

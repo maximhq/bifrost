@@ -43,11 +43,11 @@ export function AddProviderDropdown({
 					size={variant === "empty" ? "default" : "sm"}
 					data-testid="add-provider-btn"
 					className={variant === "empty" ? "" : "w-full justify-start"}
-					aria-label="Add new provider"
+					aria-label="添加新提供商"
 					disabled={disabled}
 				>
 					<PlusIcon className="h-4 w-4" />
-					{variant === "empty" ? <span>Add provider</span> : <div className="text-xs">Add New Provider</div>}
+					{variant === "empty" ? <span>添加提供商</span> : <div className="text-xs">添加新提供商</div>}
 				</Button>
 			</DropdownMenuTrigger>
 			<DropdownMenuContent
@@ -65,7 +65,7 @@ export function AddProviderDropdown({
 				{/* Add New Provider > Custom provider... — used by E2E (add-provider-option-custom) */}
 				<DropdownMenuItem data-testid="add-provider-option-custom" onSelect={onAddCustomProvider}>
 					<Settings2Icon className="h-4 w-4" />
-					<span>Custom provider...</span>
+					<span>自定义提供商...</span>
 				</DropdownMenuItem>
 			</DropdownMenuContent>
 		</DropdownMenu>

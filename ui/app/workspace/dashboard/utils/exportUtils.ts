@@ -24,20 +24,20 @@ import type {
 type CSVData = { headers: string[]; rows: unknown[][] };
 
 export function overviewVolumeToCSV(data: LogsHistogramResponse | null): CSVData {
-	const headers = ["Timestamp", "Total Requests", "Success", "Error", "Cancelled"];
+	const headers = ["Timestamp", "总请求数", "成功", "Error", "已取消"];
 	const rows = (data?.buckets ?? []).map((b) => [b.timestamp, b.count, b.success, b.error, b.cancelled ?? 0]);
 	return { headers, rows };
 }
 
 export function overviewTokensToCSV(data: TokenHistogramResponse | null): CSVData {
-	const headers = ["Timestamp", "Prompt Tokens", "Completion Tokens", "Total Tokens", "Cached Read Tokens"];
+	const headers = ["Timestamp", "提示 Token 数", "完成 Token 数", "Token 总数", "Cached Read Tokens"];
 	const rows = (data?.buckets ?? []).map((b) => [b.timestamp, b.prompt_tokens, b.completion_tokens, b.total_tokens, b.cached_read_tokens]);
 	return { headers, rows };
 }
 
 export function overviewCostToCSV(data: CostHistogramResponse | null): CSVData {
 	const models = data?.models ?? [];
-	const headers = ["Timestamp", "Total Cost", ...models];
+	const headers = ["Timestamp", "总费用", ...models];
 	const rows = (data?.buckets ?? []).map((b) => [b.timestamp, b.total_cost, ...models.map((m) => b.by_model?.[m] ?? 0)]);
 	return { headers, rows };
 }
@@ -57,7 +57,7 @@ export function overviewModelUsageToCSV(data: ModelHistogramResponse | null): CS
 }
 
 export function overviewLatencyToCSV(data: LatencyHistogramResponse | null): CSVData {
-	const headers = ["Timestamp", "Avg Latency (ms)", "P90 (ms)", "P95 (ms)", "P99 (ms)", "Total Requests"];
+	const headers = ["Timestamp", "Avg Latency (ms)", "P90 (ms)", "P95 (ms)", "P99 (ms)", "总请求数"];
 	const rows = (data?.buckets ?? []).map((b) => [
 		b.timestamp,
 		b.avg_latency,
@@ -71,7 +71,7 @@ export function overviewLatencyToCSV(data: LatencyHistogramResponse | null): CSV
 
 export function providerCostToCSV(data: ProviderCostHistogramResponse | null): CSVData {
 	const providers = data?.providers ?? [];
-	const headers = ["Timestamp", "Total Cost", ...providers];
+	const headers = ["Timestamp", "总费用", ...providers];
 	const rows = (data?.buckets ?? []).map((b) => [b.timestamp, b.total_cost, ...providers.map((p) => b.by_provider?.[p] ?? 0)]);
 	return { headers, rows };
 }
@@ -106,13 +106,13 @@ export function providerLatencyToCSV(data: ProviderLatencyHistogramResponse | nu
 
 export function modelRankingsToCSV(data: ModelRankingsResponse | null): CSVData {
 	const headers = [
-		"Model",
-		"Canonical Model",
-		"Provider",
-		"Total Requests",
+		"模型",
+		"规范模型",
+		"提供商",
+		"总请求数",
 		"Success Count",
 		"Success Rate (%)",
-		"Total Tokens",
+		"Token 总数",
 		"Total Cost ($)",
 		"Avg Latency (ms)",
 		"Throughput (tok/s)",
@@ -133,11 +133,11 @@ export function modelRankingsToCSV(data: ModelRankingsResponse | null): CSVData 
 		r.total_cost,
 		r.avg_latency,
 		r.throughput,
-		r.trend.has_previous_period ? r.trend.requests_trend : "N/A",
-		r.trend.has_previous_period ? r.trend.tokens_trend : "N/A",
-		r.trend.has_previous_period ? r.trend.cost_trend : "N/A",
-		r.trend.has_previous_period ? r.trend.latency_trend : "N/A",
-		r.trend.has_previous_period ? r.trend.throughput_trend : "N/A",
+		r.trend.has_previous_period ? r.trend.requests_trend : "不适用",
+		r.trend.has_previous_period ? r.trend.tokens_trend : "不适用",
+		r.trend.has_previous_period ? r.trend.cost_trend : "不适用",
+		r.trend.has_previous_period ? r.trend.latency_trend : "不适用",
+		r.trend.has_previous_period ? r.trend.throughput_trend : "不适用",
 	]);
 	return { headers, rows };
 }
@@ -146,8 +146,8 @@ export function dimensionRankingsToCSV(data: DimensionRankingsResponse | null, d
 	const headers = [
 		`${dimensionLabel} ID`,
 		`${dimensionLabel} Name`,
-		"Total Requests",
-		"Total Tokens",
+		"总请求数",
+		"Token 总数",
 		"Total Cost ($)",
 		"Requests Trend (%)",
 		"Tokens Trend (%)",
@@ -159,15 +159,15 @@ export function dimensionRankingsToCSV(data: DimensionRankingsResponse | null, d
 		r.total_requests,
 		r.total_tokens,
 		r.total_cost,
-		r.trend.has_previous_period ? r.trend.requests_trend : "N/A",
-		r.trend.has_previous_period ? r.trend.tokens_trend : "N/A",
-		r.trend.has_previous_period ? r.trend.cost_trend : "N/A",
+		r.trend.has_previous_period ? r.trend.requests_trend : "不适用",
+		r.trend.has_previous_period ? r.trend.tokens_trend : "不适用",
+		r.trend.has_previous_period ? r.trend.cost_trend : "不适用",
 	]);
 	return { headers, rows };
 }
 
 export function mcpVolumeToCSV(data: MCPHistogramResponse | null): CSVData {
-	const headers = ["Timestamp", "Total Executions", "Success", "Error"];
+	const headers = ["Timestamp", "总执行次数", "成功", "Error"];
 	const rows = (data?.buckets ?? []).map((b) => [b.timestamp, b.count, b.success, b.error]);
 	return { headers, rows };
 }
@@ -179,7 +179,7 @@ export function mcpCostToCSV(data: MCPCostHistogramResponse | null): CSVData {
 }
 
 export function mcpTopToolsToCSV(data: MCPTopToolsResponse | null): CSVData {
-	const headers = ["Tool Name", "Execution Count", "Cost ($)"];
+	const headers = ["工具名称", "Execution Count", "Cost ($)"];
 	const rows = (data?.tools ?? []).map((t) => [t.tool_name, t.count, t.cost]);
 	return { headers, rows };
 }
@@ -229,15 +229,15 @@ export type ExportTab = DashboardTab | "all";
  * PDF section headings, and for the DOM ids the PDF capture reads.
  */
 export const DASHBOARD_EXPORT_TABS: { value: DashboardTab; label: string; sectionId: string }[] = [
-	{ value: "overview", label: "Overview", sectionId: "dashboard-section-overview" },
-	{ value: "provider-usage", label: "Provider Usage", sectionId: "dashboard-section-provider-usage" },
-	{ value: "rankings", label: "Model Rankings", sectionId: "dashboard-section-rankings" },
-	{ value: "mcp", label: "MCP Usage", sectionId: "dashboard-section-mcp" },
-	{ value: "team-rankings", label: "Team Rankings", sectionId: "dashboard-section-team-rankings" },
-	{ value: "customer-rankings", label: "Customer Rankings", sectionId: "dashboard-section-customer-rankings" },
-	{ value: "bu-rankings", label: "BU Rankings", sectionId: "dashboard-section-bu-rankings" },
-	{ value: "user-rankings", label: "User Rankings", sectionId: "dashboard-section-user-rankings" },
-	{ value: "virtual-key-rankings", label: "Virtual Key Rankings", sectionId: "dashboard-section-virtual-key-rankings" },
+	{ value: "overview", label: "概览", sectionId: "dashboard-section-overview" },
+	{ value: "provider-usage", label: "提供商用量", sectionId: "dashboard-section-provider-usage" },
+	{ value: "rankings", label: "模型排行", sectionId: "dashboard-section-rankings" },
+	{ value: "mcp", label: "MCP 用量", sectionId: "dashboard-section-mcp" },
+	{ value: "team-rankings", label: "团队排行", sectionId: "dashboard-section-team-rankings" },
+	{ value: "customer-rankings", label: "客户排行", sectionId: "dashboard-section-customer-rankings" },
+	{ value: "bu-rankings", label: "业务单元排行", sectionId: "dashboard-section-bu-rankings" },
+	{ value: "user-rankings", label: "用户排行", sectionId: "dashboard-section-user-rankings" },
+	{ value: "virtual-key-rankings", label: "虚拟密钥排行", sectionId: "dashboard-section-virtual-key-rankings" },
 	{ value: "app-rankings", label: "App Rankings", sectionId: "dashboard-section-app-rankings" },
 ];
 
@@ -270,27 +270,27 @@ export function getCSVSections(data: DashboardData, tab: ExportTab): { name: str
 	}
 
 	if (tab === "all" || tab === "team-rankings") {
-		sections.push({ name: "team-rankings", csv: dimensionRankingsToCSV(data.teamRankingsData, "Team") });
+		sections.push({ name: "team-rankings", csv: dimensionRankingsToCSV(data.teamRankingsData, "团队") });
 	}
 
 	if (tab === "all" || tab === "customer-rankings") {
-		sections.push({ name: "customer-rankings", csv: dimensionRankingsToCSV(data.customerRankingsData, "Customer") });
+		sections.push({ name: "customer-rankings", csv: dimensionRankingsToCSV(data.customerRankingsData, "客户") });
 	}
 
 	if (tab === "all" || tab === "bu-rankings") {
-		sections.push({ name: "bu-rankings", csv: dimensionRankingsToCSV(data.buRankingsData, "Business Unit") });
+		sections.push({ name: "bu-rankings", csv: dimensionRankingsToCSV(data.buRankingsData, "业务单元") });
 	}
 
 	if (tab === "all" || tab === "user-rankings") {
-		sections.push({ name: "user-rankings", csv: dimensionRankingsToCSV(data.userRankingsData, "User") });
+		sections.push({ name: "user-rankings", csv: dimensionRankingsToCSV(data.userRankingsData, "用户") });
 	}
 
 	if (tab === "all" || tab === "virtual-key-rankings") {
-		sections.push({ name: "virtual-key-rankings", csv: dimensionRankingsToCSV(data.virtualKeyRankingsData, "Virtual Key") });
+		sections.push({ name: "virtual-key-rankings", csv: dimensionRankingsToCSV(data.virtualKeyRankingsData, "虚拟密钥") });
 	}
 
 	if (tab === "all" || tab === "app-rankings") {
-		sections.push({ name: "app-rankings", csv: dimensionRankingsToCSV(data.appRankingsData, "App") });
+		sections.push({ name: "app-rankings", csv: dimensionRankingsToCSV(data.appRankingsData, "应用") });
 	}
 
 	if (tab === "all" || tab === "mcp") {

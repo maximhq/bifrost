@@ -114,9 +114,7 @@ function MetricCard({
 					<div className="flex flex-wrap items-center gap-2">
 						<span className="text-muted-foreground text-sm font-medium whitespace-nowrap">{title}</span>
 						{isExhausted && (
-							<Badge variant="destructive" className="text-xs whitespace-nowrap">
-								Exhausted
-							</Badge>
+							<Badge variant="destructive" className="text-xs whitespace-nowrap">已耗尽</Badge>
 						)}
 					</div>
 
@@ -170,7 +168,7 @@ export default function ProviderGovernanceTable({ provider, className }: Props) 
 			<div className={cn("w-full", className)}>
 				<CardHeader className="mb-4 px-0">
 					<CardTitle className="flex items-center justify-between">
-						<div className="flex items-center gap-2">Governance</div>
+						<div className="flex items-center gap-2">治理</div>
 					</CardTitle>
 				</CardHeader>
 				<div className="flex items-center justify-center py-12">
@@ -203,7 +201,7 @@ export default function ProviderGovernanceTable({ provider, className }: Props) 
 		<div className={cn("w-full", className)}>
 			<CardHeader className="mb-4 px-0">
 				<CardTitle className="flex items-center justify-between">
-					<div className="flex items-center gap-2">Governance</div>
+					<div className="flex items-center gap-2">治理</div>
 				</CardTitle>
 			</CardHeader>
 
@@ -224,7 +222,7 @@ export default function ProviderGovernanceTable({ provider, className }: Props) 
 				{/* Token Rate Limit Card */}
 				{rateLimit?.token_max_limit && (
 					<MetricCard
-						title="Token Limit"
+						title="Token 限制"
 						value={rateLimit.token_current_usage}
 						max={rateLimit.token_max_limit}
 						unit="tokens"
@@ -236,7 +234,7 @@ export default function ProviderGovernanceTable({ provider, className }: Props) 
 				{/* Request Rate Limit Card */}
 				{rateLimit?.request_max_limit && (
 					<MetricCard
-						title="Request Limit"
+						title="请求限制"
 						value={rateLimit.request_current_usage}
 						max={rateLimit.request_max_limit}
 						unit="requests"

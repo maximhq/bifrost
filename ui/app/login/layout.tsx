@@ -37,7 +37,7 @@ function PendingCard() {
 						<img src={logoSrc} alt={logoAlt} width={160} height={26} className="max-h-[40px] w-auto max-w-[220px] object-contain" />
 					</div>
 					<div className="flex items-center justify-center py-6">
-						<div className="text-muted-foreground text-sm">Checking authentication...</div>
+						<div className="text-muted-foreground text-sm">正在检查认证...</div>
 					</div>
 				</div>
 			</div>

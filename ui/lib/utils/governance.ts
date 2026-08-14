@@ -2,7 +2,7 @@
  * Parses a duration string (e.g., "1m", "5m", "1h", "1d", "1w", "1M") into human readable format
  */
 export function parseResetPeriod(duration: string): string {
-	if (!duration) return "Unknown";
+	if (!duration) return "未知";
 
 	const timeValue = parseInt(duration.slice(0, -1));
 	const timeUnit = duration.slice(-1);

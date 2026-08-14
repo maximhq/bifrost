@@ -301,11 +301,11 @@ function AllocationTable({
 			<table className="w-full">
 				<thead>
 					<tr className="border-b border-zinc-800">
-						<th scope="col" className="w-8 px-2 py-3" aria-label="Expand" />
+						<th scope="col" className="w-8 px-2 py-3" aria-label="展开" />
 						<SortHeader field="function">Function</SortHeader>
-						<SortHeader field="file">File:Line</SortHeader>
-						<SortHeader field="bytes">Bytes</SortHeader>
-						<SortHeader field="count">Count</SortHeader>
+						<SortHeader field="file">文件:行</SortHeader>
+						<SortHeader field="bytes">字节</SortHeader>
+						<SortHeader field="count">数量</SortHeader>
 					</tr>
 				</thead>
 				<tbody>
@@ -361,7 +361,7 @@ function AllocationTable({
 									<tr className="border-b border-zinc-800/50 bg-zinc-900/50">
 										<td />
 										<td colSpan={4} className="px-4 py-3">
-											<div className="mb-2 text-xs font-medium text-zinc-500">Stack Trace</div>
+											<div className="mb-2 text-xs font-medium text-zinc-500">堆栈跟踪</div>
 											<div className="space-y-0.5 font-mono text-xs">
 												{alloc.stack.map((line, j) => (
 													<div key={j} className="break-all text-zinc-400">
@@ -377,9 +377,7 @@ function AllocationTable({
 					})}
 					{allocations.length === 0 && (
 						<tr>
-							<td colSpan={5} className="px-4 py-8 text-center text-zinc-500">
-								No allocations data available
-							</td>
+							<td colSpan={5} className="px-4 py-8 text-center text-zinc-500">无分配数据</td>
 						</tr>
 					)}
 				</tbody>
@@ -403,28 +401,16 @@ function LeakTable({
 			<table className="w-full">
 				<thead>
 					<tr className="border-b border-zinc-800">
-						<th scope="col" className="w-8 px-2 py-3" aria-label="Expand" />
-						<th scope="col" className="px-4 py-3 text-left text-sm font-medium text-zinc-400">
-							Severity
-						</th>
+						<th scope="col" className="w-8 px-2 py-3" aria-label="展开" />
+						<th scope="col" className="px-4 py-3 text-left text-sm font-medium text-zinc-400">严重程度</th>
 						<th scope="col" className="px-4 py-3 text-left text-sm font-medium text-zinc-400">
 							Function
 						</th>
-						<th scope="col" className="px-4 py-3 text-left text-sm font-medium text-zinc-400">
-							File:Line
-						</th>
-						<th scope="col" className="px-4 py-3 text-left text-sm font-medium text-zinc-400">
-							Live
-						</th>
-						<th scope="col" className="px-4 py-3 text-left text-sm font-medium text-zinc-400">
-							Retention
-						</th>
-						<th scope="col" className="px-4 py-3 text-left text-sm font-medium text-zinc-400">
-							Trend
-						</th>
-						<th scope="col" className="px-4 py-3 text-left text-sm font-medium text-zinc-400">
-							Live Count
-						</th>
+						<th scope="col" className="px-4 py-3 text-left text-sm font-medium text-zinc-400">文件:行</th>
+						<th scope="col" className="px-4 py-3 text-left text-sm font-medium text-zinc-400">实时</th>
+						<th scope="col" className="px-4 py-3 text-left text-sm font-medium text-zinc-400">保留</th>
+						<th scope="col" className="px-4 py-3 text-left text-sm font-medium text-zinc-400">趋势</th>
+						<th scope="col" className="px-4 py-3 text-left text-sm font-medium text-zinc-400">实时数量</th>
 					</tr>
 				</thead>
 				<tbody>
@@ -487,11 +473,9 @@ function LeakTable({
 										<td />
 										<td colSpan={7} className="px-4 py-3">
 											<div className="mb-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-500">
-												<span>
-													Cumulative: <span className="text-zinc-300">{formatBytes(c.cumulativeBytes)}</span>
+												<span>累计：<span className="text-zinc-300">{formatBytes(c.cumulativeBytes)}</span>
 												</span>
-												<span>
-													Retained: <span className="text-zinc-300">{(c.retention * 100).toFixed(1)}%</span>
+												<span>保留：<span className="text-zinc-300">{(c.retention * 100).toFixed(1)}%</span>
 												</span>
 												{c.samples.length >= 2 && (
 													<span>
@@ -500,7 +484,7 @@ function LeakTable({
 													</span>
 												)}
 											</div>
-											<div className="mb-2 text-xs font-medium text-zinc-500">Stack Trace</div>
+											<div className="mb-2 text-xs font-medium text-zinc-500">堆栈跟踪</div>
 											<div className="space-y-0.5 font-mono text-xs">
 												{c.stack.map((line, j) => (
 													<div key={j} className="break-all text-zinc-400">
@@ -516,9 +500,7 @@ function LeakTable({
 					})}
 					{candidates.length === 0 && (
 						<tr>
-							<td colSpan={8} className="px-4 py-8 text-center text-zinc-500">
-								No obvious leak signatures; all live allocations have normal retention ratios.
-							</td>
+							<td colSpan={8} className="px-4 py-8 text-center text-zinc-500">没有明显的泄漏特征；所有实时分配都具有正常的保留比率。</td>
 						</tr>
 					)}
 				</tbody>
@@ -570,8 +552,7 @@ function GoroutineGroupRow({
 						)}
 					</div>
 					{group.wait_reason && (
-						<div className="mt-1 text-xs text-zinc-500">
-							Wait reason: <span className="text-amber-400">{group.wait_reason}</span>
+						<div className="mt-1 text-xs text-zinc-500">等待原因：<span className="text-amber-400">{group.wait_reason}</span>
 						</div>
 					)}
 				</div>
@@ -585,15 +566,15 @@ function GoroutineGroupRow({
 					}}
 					data-testid="pprof-goroutine-skip"
 					className="shrink-0 rounded p-1.5 text-zinc-600 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 hover:bg-zinc-700 hover:text-zinc-300 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-zinc-500"
-					title="Hide goroutines from this file"
-					aria-label="Hide goroutines from this file"
+					title="隐藏此文件中的 goroutine"
+					aria-label="隐藏此文件中的 goroutine"
 				>
 					<EyeOff className="h-4 w-4" />
 				</button>
 			</div>
 			{isExpanded && (
 				<div className="border-t border-zinc-800/50 bg-zinc-900/50 px-4 py-3">
-					<div className="mb-2 text-xs font-medium text-zinc-500">Stack Trace</div>
+					<div className="mb-2 text-xs font-medium text-zinc-500">堆栈跟踪</div>
 					<div className="space-y-0.5 font-mono text-xs">
 						{group.stack.map((line, j) => (
 							<div key={j} className="break-all text-zinc-400">
@@ -824,9 +805,7 @@ export default function PprofPage() {
 		return (
 			<div className="flex min-h-screen items-center justify-center">
 				<div className="flex items-center gap-3 text-zinc-400">
-					<RefreshCw className="h-5 w-5 animate-spin" />
-					Loading profiling data...
-				</div>
+					<RefreshCw className="h-5 w-5 animate-spin" />正在加载性能分析数据...</div>
 			</div>
 		);
 	}
@@ -835,9 +814,7 @@ export default function PprofPage() {
 	if (error && !data) {
 		return (
 			<div className="flex min-h-screen items-center justify-center">
-				<div className="rounded-lg border border-red-800 bg-red-900/20 px-6 py-4 text-red-400">
-					Failed to load profiling data. Make sure the backend is running in dev mode.
-				</div>
+				<div className="rounded-lg border border-red-800 bg-red-900/20 px-6 py-4 text-red-400">无法加载性能分析数据。请确保后端以开发模式运行。</div>
 			</div>
 		);
 	}
@@ -847,22 +824,18 @@ export default function PprofPage() {
 			{/* Header */}
 			<div className="mb-8 flex items-center justify-between">
 				<div>
-					<h1 className="text-2xl font-semibold text-zinc-100">Pprof Profiler</h1>
-					<p className="mt-1 text-sm text-zinc-500">Development only - Runtime profiling and memory analysis</p>
+					<h1 className="text-2xl font-semibold text-zinc-100">Pprof 性能分析器</h1>
+					<p className="mt-1 text-sm text-zinc-500">仅开发模式 - 运行时性能分析和内存分析</p>
 				</div>
 				<div className="flex items-center gap-4">
 					<span className="flex items-center gap-2 text-sm text-zinc-500">
-						<span className="h-2 w-2 animate-pulse rounded-full bg-emerald-400" />
-						Auto-refresh: 10s
-					</span>
+						<span className="h-2 w-2 animate-pulse rounded-full bg-emerald-400" />自动刷新：10 秒</span>
 					<button
 						onClick={() => refetch()}
 						data-testid="pprof-data-refresh"
 						className="flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-300 transition-colors hover:bg-zinc-700"
 					>
-						<RefreshCw className="h-4 w-4" />
-						Refresh
-					</button>
+						<RefreshCw className="h-4 w-4" />刷新</button>
 				</div>
 			</div>
 
@@ -870,10 +843,10 @@ export default function PprofPage() {
 				<>
 					{/* Overview Stats */}
 					<div className="mb-8 grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-6">
-						<StatCard label="CPU Usage" value={`${data.cpu.usage_percent.toFixed(1)}%`} color="text-orange-400" icon={Cpu} />
-						<StatCard label="Heap Alloc" value={formatBytes(data.memory.alloc)} color="text-cyan-400" icon={HardDrive} />
-						<StatCard label="Heap In-Use" value={formatBytes(data.memory.heap_inuse)} color="text-blue-400" icon={HardDrive} />
-						<StatCard label="System Memory" value={formatBytes(data.memory.sys)} color="text-purple-400" icon={HardDrive} />
+						<StatCard label="CPU 使用率" value={`${data.cpu.usage_percent.toFixed(1)}%`} color="text-orange-400" icon={Cpu} />
+						<StatCard label="堆分配" value={formatBytes(data.memory.alloc)} color="text-cyan-400" icon={HardDrive} />
+						<StatCard label="堆使用中" value={formatBytes(data.memory.heap_inuse)} color="text-blue-400" icon={HardDrive} />
+						<StatCard label="系统内存" value={formatBytes(data.memory.sys)} color="text-purple-400" icon={HardDrive} />
 						<StatCard
 							label="Goroutines"
 							value={data.runtime.num_goroutine}
@@ -882,7 +855,7 @@ export default function PprofPage() {
 							icon={Activity}
 						/>
 						<StatCard
-							label="GC Pause"
+							label="GC 暂停"
 							value={formatNs(data.runtime.gc_pause_ns)}
 							subValue={`${data.runtime.num_gc} GCs`}
 							color="text-amber-400"
@@ -896,8 +869,8 @@ export default function PprofPage() {
 						<div className="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
 							<div className="mb-4 flex items-center gap-2">
 								<Cpu className="h-4 w-4 text-orange-400" />
-								<span className="font-medium text-zinc-300">CPU Usage & Goroutines</span>
-								<span className="text-sm text-zinc-500">(last 5 min)</span>
+								<span className="font-medium text-zinc-300">CPU 使用率与 Goroutines</span>
+								<span className="text-sm text-zinc-500">（最近 5 分钟）</span>
 							</div>
 							<div className="h-64">
 								<ResponsiveContainer width="100%" height="100%">
@@ -963,13 +936,9 @@ export default function PprofPage() {
 							</div>
 							<div className="mt-3 flex gap-6 text-sm">
 								<span className="flex items-center gap-2">
-									<span className="h-3 w-3 rounded-full bg-orange-500" />
-									CPU %
-								</span>
+									<span className="h-3 w-3 rounded-full bg-orange-500" />CPU %</span>
 								<span className="flex items-center gap-2">
-									<span className="h-3 w-3 rounded-full bg-emerald-400" />
-									Goroutines
-								</span>
+									<span className="h-3 w-3 rounded-full bg-emerald-400" />Goroutines</span>
 							</div>
 						</div>
 
@@ -977,8 +946,8 @@ export default function PprofPage() {
 						<div className="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
 							<div className="mb-4 flex items-center gap-2">
 								<HardDrive className="h-4 w-4 text-cyan-400" />
-								<span className="font-medium text-zinc-300">Memory Usage</span>
-								<span className="text-sm text-zinc-500">(last 5 min)</span>
+								<span className="font-medium text-zinc-300">内存使用</span>
+								<span className="text-sm text-zinc-500">（最近 5 分钟）</span>
 							</div>
 							<div className="h-64">
 								<ResponsiveContainer width="100%" height="100%">
@@ -1011,27 +980,23 @@ export default function PprofPage() {
 											}}
 											labelStyle={{ color: "#a1a1aa" }}
 										/>
-										<Area type="monotone" dataKey="alloc" stroke="#22d3ee" strokeWidth={2} fill="url(#allocGradient)" name="Alloc (MB)" />
+										<Area type="monotone" dataKey="alloc" stroke="#22d3ee" strokeWidth={2} fill="url(#allocGradient)" name="分配 (MB)" />
 										<Area
 											type="monotone"
 											dataKey="heapInuse"
 											stroke="#3b82f6"
 											strokeWidth={2}
 											fill="url(#heapGradient)"
-											name="Heap In-Use (MB)"
+											name="堆使用中 (MB)"
 										/>
 									</AreaChart>
 								</ResponsiveContainer>
 							</div>
 							<div className="mt-3 flex gap-6 text-sm">
 								<span className="flex items-center gap-2">
-									<span className="h-3 w-3 rounded-full bg-cyan-400" />
-									Alloc
-								</span>
+									<span className="h-3 w-3 rounded-full bg-cyan-400" />分配</span>
 								<span className="flex items-center gap-2">
-									<span className="h-3 w-3 rounded-full bg-blue-500" />
-									Heap In-Use
-								</span>
+									<span className="h-3 w-3 rounded-full bg-blue-500" />堆使用中</span>
 							</div>
 						</div>
 					</div>
@@ -1041,7 +1006,7 @@ export default function PprofPage() {
 						<div className="border-b border-zinc-800 px-4 py-3">
 							<div className="flex items-center gap-2">
 								<AlertTriangle className="h-4 w-4 text-amber-400" />
-								<span className="font-medium text-zinc-300">Potential Leaks</span>
+								<span className="font-medium text-zinc-300">潜在泄漏</span>
 								<span className="text-sm text-zinc-500">({leakCandidates.length} suspicious)</span>
 								{leakSummary.high > 0 && (
 									<span className="rounded border border-red-400/20 bg-red-400/10 px-2 py-0.5 text-xs text-red-400">
@@ -1072,12 +1037,10 @@ export default function PprofPage() {
 						<div className="border-b border-zinc-800 px-4 py-3">
 							<div className="flex items-center gap-2">
 								<HardDrive className="h-4 w-4 text-emerald-400" />
-								<span className="font-medium text-zinc-300">Live Heap Allocations</span>
+								<span className="font-medium text-zinc-300">实时堆分配</span>
 								<span className="text-sm text-zinc-500">({sortedInuseAllocations.length} sites)</span>
 							</div>
-							<p className="mt-1 text-xs text-zinc-500">
-								Call stacks currently holding memory on the heap right now. Expand a row to see the full stack.
-							</p>
+							<p className="mt-1 text-xs text-zinc-500">当前在堆上持有内存的调用堆栈。展开行查看完整堆栈。</p>
 						</div>
 						<AllocationTable
 							allocations={sortedInuseAllocations}
@@ -1096,12 +1059,10 @@ export default function PprofPage() {
 						<div className="border-b border-zinc-800 px-4 py-3">
 							<div className="flex items-center gap-2">
 								<HardDrive className="h-4 w-4 text-rose-400" />
-								<span className="font-medium text-zinc-300">Cumulative Memory Allocations</span>
+								<span className="font-medium text-zinc-300">累计内存分配</span>
 								<span className="text-sm text-zinc-500">({sortedAllocations.length} sites)</span>
 							</div>
-							<p className="mt-1 text-xs text-zinc-500">
-								Total bytes allocated since process start (includes memory already freed). Expand a row to see the full stack.
-							</p>
+							<p className="mt-1 text-xs text-zinc-500">进程启动以来分配的总字节数（包括已释放的内存）。展开行查看完整堆栈。</p>
 						</div>
 						<AllocationTable
 							allocations={sortedAllocations}
@@ -1118,7 +1079,7 @@ export default function PprofPage() {
 						<div className="flex items-center justify-between border-b border-zinc-800 px-4 py-3">
 							<div className="flex items-center gap-2">
 								<Activity className="h-4 w-4 text-emerald-400" />
-								<span className="font-medium text-zinc-300">Goroutine Health</span>
+								<span className="font-medium text-zinc-300">Goroutine 健康状态</span>
 								{goroutineTrend?.isGrowing && (
 									<span className="flex items-center gap-1 rounded bg-amber-500/10 px-2 py-0.5 text-xs text-amber-400">
 										<TrendingUp className="h-3 w-3" />
@@ -1127,18 +1088,14 @@ export default function PprofPage() {
 								)}
 								{goroutineHealth === "critical" && (
 									<span className="flex items-center gap-1 rounded bg-red-500/10 px-2 py-0.5 text-xs text-red-400">
-										<AlertTriangle className="h-3 w-3" />
-										Stuck Goroutines
-									</span>
+										<AlertTriangle className="h-3 w-3" />卡住的 Goroutines</span>
 								)}
 								{goroutineHealth === "warning" && (
 									<span className="flex items-center gap-1 rounded bg-amber-500/10 px-2 py-0.5 text-xs text-amber-400">
-										<AlertTriangle className="h-3 w-3" />
-										Long Waiting
-									</span>
+										<AlertTriangle className="h-3 w-3" />长时间等待</span>
 								)}
 								{goroutineHealth === "healthy" && (
-									<span className="rounded bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-400">Healthy</span>
+									<span className="rounded bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-400">健康</span>
 								)}
 							</div>
 							{skippedGoroutines.size > 0 && (
@@ -1158,15 +1115,15 @@ export default function PprofPage() {
 							<div className="grid grid-cols-4 gap-4 border-b border-zinc-800 p-4">
 								<div className="text-center">
 									<div className="text-2xl font-semibold text-emerald-400">{goroutineData.total_goroutines}</div>
-									<div className="text-sm text-zinc-500">Total</div>
+									<div className="text-sm text-zinc-500">总计</div>
 								</div>
 								<div className="text-center">
 									<div className="text-2xl font-semibold text-blue-400">{goroutineData.summary.background}</div>
-									<div className="text-sm text-zinc-500">Background</div>
+									<div className="text-sm text-zinc-500">后台</div>
 								</div>
 								<div className="text-center">
 									<div className="text-2xl font-semibold text-amber-400">{goroutineData.summary.per_request}</div>
-									<div className="text-sm text-zinc-500">Per-Request</div>
+									<div className="text-sm text-zinc-500">每请求</div>
 								</div>
 								<div className="text-center">
 									<div
@@ -1174,7 +1131,7 @@ export default function PprofPage() {
 									>
 										{goroutineData.summary.potentially_stuck}
 									</div>
-									<div className="text-sm text-zinc-500">Stuck</div>
+									<div className="text-sm text-zinc-500">卡住</div>
 								</div>
 							</div>
 						)}
@@ -1207,19 +1164,19 @@ export default function PprofPage() {
 					<div className="rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3">
 						<div className="flex flex-wrap items-center gap-6 text-sm text-zinc-400">
 							<span>
-								<span className="text-zinc-500">CPUs:</span> {data.runtime.num_cpu}
+								<span className="text-zinc-500">CPU 数：</span> {data.runtime.num_cpu}
 							</span>
 							<span>
-								<span className="text-zinc-500">GOMAXPROCS:</span> {data.runtime.gomaxprocs}
+								<span className="text-zinc-500">GOMAXPROCS：</span> {data.runtime.gomaxprocs}
 							</span>
 							<span>
-								<span className="text-zinc-500">GC Runs:</span> {data.runtime.num_gc}
+								<span className="text-zinc-500">GC 运行次数：</span> {data.runtime.num_gc}
 							</span>
 							<span>
-								<span className="text-zinc-500">Heap Objects:</span> {data.memory.heap_objects.toLocaleString()}
+								<span className="text-zinc-500">堆对象：</span> {data.memory.heap_objects.toLocaleString()}
 							</span>
 							<span>
-								<span className="text-zinc-500">Total Alloc:</span> {formatBytes(data.memory.total_alloc)}
+								<span className="text-zinc-500">总分配：</span> {formatBytes(data.memory.total_alloc)}
 							</span>
 						</div>
 					</div>

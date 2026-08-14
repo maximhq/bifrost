@@ -152,7 +152,7 @@ function SheetHeader({
 					className="-ml-5 shrink-0 cursor-pointer opacity-70 transition-opacity hover:scale-105 hover:opacity-100"
 				>
 					{sheetContext?.expanded ? <ArrowRightFromLineIcon className="size-4" /> : <ArrowLeftFromLineIcon className="size-4" />}
-					<span className="sr-only">{sheetContext?.expanded ? "Collapse" : "Expand"}</span>
+					<span className="sr-only">{sheetContext?.expanded ? "Collapse" : "展开"}</span>
 				</button>
 			)}
 
@@ -162,7 +162,7 @@ function SheetHeader({
 			{showCloseButton && (
 				<SheetPrimitive.Close className="hover:bg-accent shrink-0 cursor-pointer rounded-md p-2 opacity-70 transition-opacity hover:opacity-100">
 					<XIcon className="size-4" />
-					<span className="sr-only">Close</span>
+					<span className="sr-only">关闭</span>
 				</SheetPrimitive.Close>
 			)}
 		</div>

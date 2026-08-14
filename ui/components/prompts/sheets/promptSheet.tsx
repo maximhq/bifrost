@@ -79,7 +79,7 @@ export function PromptSheet({ open, onOpenChange, prompt, folderId, onSaved }: P
 			>
 				<form onSubmit={handleSubmit(onSubmit)} className="flex grow flex-col">
 					<SheetHeader className="flex flex-col items-start px-8 pt-8">
-						<SheetTitle>{isEditing ? "Rename Prompt" : "Create Prompt"}</SheetTitle>
+						<SheetTitle>{isEditing ? "Rename Prompt" : "创建提示词"}</SheetTitle>
 						<SheetDescription>
 							{isEditing ? "Update the prompt name." : folderId ? "Create a new prompt in this folder." : "Create a new prompt."}
 						</SheetDescription>
@@ -88,11 +88,11 @@ export function PromptSheet({ open, onOpenChange, prompt, folderId, onSaved }: P
 					<div className="flex grow flex-col gap-6">
 						<div className="grow space-y-4 px-8">
 							<div className="space-y-2">
-								<Label htmlFor="name">Name</Label>
+								<Label htmlFor="name">名称</Label>
 								<Input
 									id="name"
 									data-testid="prompt-name-input"
-									placeholder="Customer Support Assistant"
+									placeholder="客户支持助手"
 									{...register("name", {
 										required: "Prompt name is required",
 										validate: (v) => v.trim().length > 0 || "Prompt name cannot be blank",
@@ -104,11 +104,9 @@ export function PromptSheet({ open, onOpenChange, prompt, folderId, onSaved }: P
 						</div>
 
 						<SheetFooter className="flex flex-row items-center justify-end gap-2 border-t px-8 py-4">
-							<Button type="button" variant="outline" data-testid="prompt-cancel" onClick={() => onOpenChange(false)}>
-								Cancel
-							</Button>
+							<Button type="button" variant="outline" data-testid="prompt-cancel" onClick={() => onOpenChange(false)}>取消</Button>
 							<Button type="submit" data-testid="prompt-submit" disabled={isLoading}>
-								{isLoading ? "Saving..." : isEditing ? "Update" : "Create"}
+								{isLoading ? "Saving..." : isEditing ? "Update" : "创建"}
 							</Button>
 						</SheetFooter>
 					</div>

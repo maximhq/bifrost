@@ -53,27 +53,27 @@ interface FilterOption {
 	icon?: React.ReactNode;
 }
 
-// Labels mirror the Type column's TypeBadge ("OAuth" / "Headers") so the
+// Labels mirror the Type column's TypeBadge ("OAuth" / "请求头") so the
 // filter vocabulary matches what the user sees in the table.
 const KIND_OPTIONS: FilterOption[] = [
 	{ value: "token", label: "OAuth" },
-	{ value: "header", label: "Headers" },
+	{ value: "header", label: "请求头" },
 ];
 
 const STATUS_OPTIONS: FilterOption[] = [
-	{ value: "active", label: "Active" },
-	{ value: "orphaned", label: "Orphaned" },
-	{ value: "needs_reauth", label: "Needs re-auth" },
-	{ value: "needs_update", label: "Needs update" },
-	{ value: "pending", label: "Pending" },
+	{ value: "active", label: "已激活" },
+	{ value: "orphaned", label: "已孤立" },
+	{ value: "needs_reauth", label: "需要重新认证" },
+	{ value: "needs_update", label: "需要更新" },
+	{ value: "pending", label: "待处理" },
 ];
 
 // Identity-mode icons match the glyphs used in BindingCell so the sidebar
 // reads as the same vocabulary as the rendered table column.
 const AUTH_MODE_OPTIONS: FilterOption[] = [
-	{ value: "user", label: "User", icon: <UserRound className="size-3.5" /> },
-	{ value: "vk", label: "Virtual key", icon: <KeyRound className="size-3.5" /> },
-	{ value: "session", label: "Session", icon: <Fingerprint className="size-3.5" /> },
+	{ value: "user", label: "用户", icon: <UserRound className="size-3.5" /> },
+	{ value: "vk", label: "虚拟密钥", icon: <KeyRound className="size-3.5" /> },
+	{ value: "session", label: "会话", icon: <Fingerprint className="size-3.5" /> },
 ];
 
 interface SidebarProps {
@@ -123,7 +123,7 @@ export function MCPSessionsFilterSidebar({ filters, onFiltersChange }: SidebarPr
 	// visibility rather than query narrowing: when the Identity facet pins the
 	// row set to exactly one mode, the other mode's picker can't match
 	// anything, so hide it outright rather than leave a checkbox list that
-	// would only ever come back empty. Selecting "Session" hides both, since
+	// would only ever come back empty. Selecting "会话" hides both, since
 	// session-bound rows have no VK or user to pick. Neither/both selected
 	// leaves both pickers visible.
 	const authModeOnly = filters.auth_mode.length === 1 ? filters.auth_mode[0] : null;
@@ -131,7 +131,7 @@ export function MCPSessionsFilterSidebar({ filters, onFiltersChange }: SidebarPr
 	const showUsersFilter = authModeOnly !== "vk" && authModeOnly !== "session";
 
 	// A hidden picker's stale selection would otherwise keep silently
-	// filtering (a VK pick surviving a switch to "User" identity, say) with
+	// filtering (a VK pick surviving a switch to "用户" identity, say) with
 	// no visible control left to clear it — so drop it the moment its section
 	// disappears.
 	useEffect(() => {
@@ -152,12 +152,12 @@ export function MCPSessionsFilterSidebar({ filters, onFiltersChange }: SidebarPr
 				type="button"
 				onClick={toggleCollapsed}
 				className="bg-card group flex h-full w-10 shrink-0 cursor-pointer flex-col items-center gap-3 rounded-r-md py-4 text-sm font-medium"
-				title="Show filters"
-				aria-label="Show filters"
+				title="显示筛选"
+				aria-label="显示筛选"
 				data-testid="mcp-sessions-filter-sidebar-toggle-show"
 			>
 				<PanelLeftOpen className="text-muted-foreground group-hover:text-foreground size-4 transition-colors" />
-				<span className="rotate-180 select-none [writing-mode:vertical-rl]">Filters</span>
+				<span className="rotate-180 select-none [writing-mode:vertical-rl]">筛选</span>
 				{activeFilterCount > 0 && (
 					<span className="bg-primary/10 text-primary flex size-6 items-center justify-center rounded-full text-xs font-medium">
 						{activeFilterCount}
@@ -170,7 +170,7 @@ export function MCPSessionsFilterSidebar({ filters, onFiltersChange }: SidebarPr
 	return (
 		<div className="bg-card flex h-full w-64 shrink-0 flex-col rounded-r-md">
 			<div className="flex h-11 items-center justify-between border-b pr-2 pl-5">
-				<span className="text-sm font-semibold">Filters</span>
+				<span className="text-sm font-semibold">筛选</span>
 				<div className="flex items-center gap-1">
 					{activeFilterCount > 0 && (
 						<Button
@@ -180,17 +180,15 @@ export function MCPSessionsFilterSidebar({ filters, onFiltersChange }: SidebarPr
 							onClick={handleReset}
 							data-testid="mcp-sessions-filter-sidebar-reset-button"
 						>
-							<RotateCcw className="size-3" />
-							Reset
-						</Button>
+							<RotateCcw className="size-3" />重置</Button>
 					)}
 					<Button
 						variant="ghost"
 						size="icon"
 						className="size-7"
 						onClick={toggleCollapsed}
-						title="Hide filters"
-						aria-label="Hide filters"
+						title="隐藏筛选"
+						aria-label="隐藏筛选"
 						data-testid="mcp-sessions-filter-sidebar-toggle-hide"
 					>
 						<PanelLeftClose className="size-4" />
@@ -201,7 +199,7 @@ export function MCPSessionsFilterSidebar({ filters, onFiltersChange }: SidebarPr
 			<ScrollArea className="flex flex-1 overflow-y-auto p-2 pb-0" viewportClassName="no-table">
 				<div className="flex grow flex-col gap-1">
 					<CheckboxFilterSection
-						title="Type"
+						title="类型"
 						options={KIND_OPTIONS}
 						selected={filters.kind}
 						defaultOpen
@@ -209,14 +207,14 @@ export function MCPSessionsFilterSidebar({ filters, onFiltersChange }: SidebarPr
 						testIdPrefix="mcp-sessions-filter-kind"
 					/>
 					<CheckboxFilterSection
-						title="Status"
+						title="状态"
 						options={STATUS_OPTIONS}
 						selected={filters.status}
 						onChange={(status) => onFiltersChange({ ...filters, status })}
 						testIdPrefix="mcp-sessions-filter-status"
 					/>
 					<CheckboxFilterSection
-						title="Identity"
+						title="身份"
 						options={AUTH_MODE_OPTIONS}
 						selected={filters.auth_mode}
 						onChange={(auth_mode) => onFiltersChange({ ...filters, auth_mode })}
@@ -360,7 +358,7 @@ function SearchableCheckboxList({
 	items,
 	isSelected,
 	onToggle,
-	placeholder = "Search...",
+	placeholder = "搜索...",
 	inputRef,
 	testIdPrefix,
 	onSearch,
@@ -411,7 +409,7 @@ function SearchableCheckboxList({
 					testId={testIdPrefix ? `${testIdPrefix}-checkbox-${item.key}` : undefined}
 				/>
 			))}
-			{filtered.length === 0 && <div className="text-muted-foreground flex h-9 items-center px-3 text-xs">No results</div>}
+			{filtered.length === 0 && <div className="text-muted-foreground flex h-9 items-center px-3 text-xs">无结果</div>}
 		</>
 	);
 }
@@ -452,10 +450,10 @@ function MCPClientFilterSection({ filters, onFiltersChange }: SidebarProps) {
 	};
 
 	return (
-		<FilterSection title="MCP Server" defaultOpen={hasActive} onOpenChange={setOpened} testId="mcp-sessions-filter-mcp-client-toggle">
+		<FilterSection title="MCP 服务器" defaultOpen={hasActive} onOpenChange={setOpened} testId="mcp-sessions-filter-mcp-client-toggle">
 			<SearchableCheckboxList
 				inputRef={searchInputRef}
-				placeholder="Search MCP servers"
+				placeholder="搜索 MCP 服务器"
 				items={mcpClients.map((client) => ({ key: client.config.client_id, label: client.config.name || client.config.client_id }))}
 				isSelected={(key) => filters.mcp_client_id.includes(key)}
 				onToggle={toggle}
@@ -493,10 +491,10 @@ function VirtualKeyFilterSection({ filters, onFiltersChange }: SidebarProps) {
 	};
 
 	return (
-		<FilterSection title="Virtual Key" defaultOpen={hasActive} onOpenChange={setOpened} testId="mcp-sessions-filter-vk-toggle">
+		<FilterSection title="虚拟密钥" defaultOpen={hasActive} onOpenChange={setOpened} testId="mcp-sessions-filter-vk-toggle">
 			<SearchableCheckboxList
 				inputRef={searchInputRef}
-				placeholder="Search virtual keys"
+				placeholder="搜索虚拟密钥"
 				items={virtualKeys.map((vk) => ({ key: vk.id, label: vk.name || vk.id }))}
 				isSelected={(key) => filters.virtual_key_id.includes(key)}
 				onToggle={toggle}
@@ -516,7 +514,7 @@ function VirtualKeyFilterSection({ filters, onFiltersChange }: SidebarProps) {
 // anything — an unresolvable search box would be worse than no filter at
 // all. Enterprise builds register a search hook via getUserSearchQuery()
 // (see ui/lib/registries/userPicker.tsx), wrapping the same users API the
-// single-select UserPicker (routing rules' "User" scope, the VK table's
+// single-select UserPicker (routing rules' "用户" scope, the VK table's
 // user filter) already uses.
 function UsersFilterSection({ filters, onFiltersChange }: SidebarProps) {
 	const useUserSearchQuery = getUserSearchQuery();
@@ -541,10 +539,10 @@ function UsersFilterSection({ filters, onFiltersChange }: SidebarProps) {
 	};
 
 	return (
-		<FilterSection title="Users" defaultOpen={hasActive} onOpenChange={setOpened} testId="mcp-sessions-filter-users-toggle">
+		<FilterSection title="用户" defaultOpen={hasActive} onOpenChange={setOpened} testId="mcp-sessions-filter-users-toggle">
 			<SearchableCheckboxList
 				inputRef={searchInputRef}
-				placeholder="Search by name or email"
+				placeholder="按名称或邮箱搜索"
 				items={users.map((user) => ({ key: user.id, label: user.label }))}
 				isSelected={(key) => filters.user_id.includes(key)}
 				onToggle={toggle}

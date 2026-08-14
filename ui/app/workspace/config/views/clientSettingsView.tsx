@@ -288,22 +288,19 @@ export default function ClientSettingsView() {
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-6">
 			<div>
-				<h2 className="text-lg font-semibold tracking-tight">Client Settings</h2>
-				<p className="text-muted-foreground text-sm">Configure client behavior and request handling.</p>
+				<h2 className="text-lg font-semibold tracking-tight">客户端设置</h2>
+				<p className="text-muted-foreground text-sm">配置客户端行为和请求处理。</p>
 			</div>
 
 			<div className="space-y-4">
 				{/* Drop Excess Requests */}
 				<div className="flex items-center justify-between space-x-2">
 					<div className="space-y-0.5">
-						<label htmlFor="drop-excess-requests" className="text-sm font-medium">
-							Drop Excess Requests
-						</label>
+						<label htmlFor="drop-excess-requests" className="text-sm font-medium">丢弃过量请求</label>
 						<p className="text-muted-foreground text-sm">
 							If enabled, Bifrost will drop requests that exceed pool capacity.{" "}
 							{localConfig.drop_excess_requests && droppedRequests > 0 ? (
-								<span>
-									Have dropped <b>{droppedRequests} requests</b> since last restart.
+								<span>已丢弃<b>{droppedRequests} requests</b> since last restart.
 								</span>
 							) : (
 								<></>
@@ -322,9 +319,7 @@ export default function ClientSettingsView() {
 				{/* Disable DB Pings in Health */}
 				<div className="flex items-center justify-between space-x-2">
 					<div className="space-y-0.5">
-						<label htmlFor="disable-db-pings-in-health" className="text-sm font-medium">
-							Disable DB Pings in Health Check
-						</label>
+						<label htmlFor="disable-db-pings-in-health" className="text-sm font-medium">在健康检查中禁用数据库 Ping</label>
 						<p className="text-muted-foreground text-sm">
 							If enabled, the /health endpoint will skip database connectivity checks and return OK immediately.
 						</p>
@@ -341,9 +336,7 @@ export default function ClientSettingsView() {
 				{/* Dump Errors in Console Logs */}
 				<div className="flex items-center justify-between space-x-2">
 					<div className="space-y-0.5">
-						<label htmlFor="dump-errors-in-console-logs" className="text-sm font-medium">
-							Dump Errors in Console Logs
-						</label>
+						<label htmlFor="dump-errors-in-console-logs" className="text-sm font-medium">在控制台日志中输出错误</label>
 						<p className="text-muted-foreground text-sm">
 							If enabled, full error details are written to the server console logs. Useful for debugging, but may be noisy in production.
 						</p>
@@ -360,12 +353,8 @@ export default function ClientSettingsView() {
 				{/* Async Job Result TTL */}
 				<div className="flex items-center justify-between space-x-2">
 					<div className="space-y-0.5">
-						<label htmlFor="async-job-result-ttl" className="text-sm font-medium">
-							Async Job Result TTL (seconds)
-						</label>
-						<p className="text-muted-foreground text-sm">
-							Default time-to-live for async job results in seconds. Results are automatically cleaned up after expiry.
-						</p>
+						<label htmlFor="async-job-result-ttl" className="text-sm font-medium">异步任务结果 TTL（秒）</label>
+						<p className="text-muted-foreground text-sm">异步任务结果的默认存活时间（秒）。结果过期后自动清理。</p>
 					</div>
 					<Input
 						id="async-job-result-ttl"
@@ -385,7 +374,7 @@ export default function ClientSettingsView() {
 			{/* Header Filter Section */}
 			<div className="space-y-4">
 				<div>
-					<h3 className="text-lg font-semibold tracking-tight">Header Forwarding</h3>
+					<h3 className="text-lg font-semibold tracking-tight">请求头转发</h3>
 					<p className="text-muted-foreground text-sm">Control which extra headers are forwarded to LLM providers.</p>
 				</div>
 
@@ -393,32 +382,30 @@ export default function ClientSettingsView() {
 					<AccordionItem value="about-extra-headers">
 						<AccordionTrigger>
 							<span className="flex items-center gap-2">
-								<Info className="h-4 w-4" />
-								About Header Forwarding
-							</span>
+								<Info className="h-4 w-4" />关于请求头转发</span>
 						</AccordionTrigger>
 						<AccordionContent className="space-y-3">
 							<div>
-								<p className="mb-2 font-medium">Two ways to forward headers:</p>
+								<p className="mb-2 font-medium">转发请求头的两种方式：</p>
 								<ul className="text-muted-foreground list-inside list-disc space-y-1 text-sm">
 									<li>
-										<span className="font-medium">Prefixed headers:</span> Use{" "}
+										<span className="font-medium">带前缀的请求头：</span> Use{" "}
 										<code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">x-bf-eh-*</code> prefix. For example,{" "}
 										<code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">x-bf-eh-custom-id</code> is forwarded as{" "}
 										<code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">custom-id</code>.
 									</li>
 									<li>
-										<span className="font-medium">Direct headers:</span> Any header explicitly added to the allowlist can be forwarded
+										<span className="font-medium">直接请求头：</span> Any header explicitly added to the allowlist can be forwarded
 										directly without the prefix (e.g.,{" "}
 										<code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">anthropic-beta</code>).
 									</li>
 								</ul>
 							</div>
 							<div>
-								<p className="mb-2 font-medium">How allowlist and denylist work:</p>
+								<p className="mb-2 font-medium">白名单和黑名单的工作原理：</p>
 								<ul className="text-muted-foreground list-inside list-disc space-y-1 text-sm">
 									<li>
-										<span className="font-medium">Allowlist empty:</span> Only{" "}
+										<span className="font-medium">白名单为空：</span> Only{" "}
 										<code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">x-bf-eh-*</code> prefixed headers are forwarded
 										(default behavior)
 									</li>
@@ -427,10 +414,9 @@ export default function ClientSettingsView() {
 										header in the allowlist is forwarded
 									</li>
 									<li>
-										<span className="font-medium">Denylist:</span> Headers in the denylist are always blocked from forwarding
-									</li>
+										<span className="font-medium">黑名单：</span>黑名单中的请求头始终被阻止转发</li>
 									<li>
-										<span className="font-medium">Wildcards:</span> Use{" "}
+										<span className="font-medium">通配符：</span> Use{" "}
 										<code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">*</code> at the end of a pattern to match prefixes
 										(e.g., <code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">anthropic-*</code> matches all headers starting
 										with <code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">anthropic-</code>). Use{" "}
@@ -439,7 +425,7 @@ export default function ClientSettingsView() {
 								</ul>
 							</div>
 							<div>
-								<p className="mb-2 font-medium">Important:</p>
+								<p className="mb-2 font-medium">重要：</p>
 								<ul className="text-muted-foreground list-inside list-disc space-y-1 text-sm">
 									<li>
 										Allowlist/denylist entries should be the header name <span className="font-medium">without</span> the{" "}
@@ -458,9 +444,7 @@ export default function ClientSettingsView() {
 					<AccordionItem value="security-note">
 						<AccordionTrigger>
 							<span className="flex items-center gap-2">
-								<Info className="h-4 w-4" />
-								Security Note
-							</span>
+								<Info className="h-4 w-4" />安全说明</span>
 						</AccordionTrigger>
 						<AccordionContent>
 							<p className="text-sm">
@@ -478,7 +462,7 @@ export default function ClientSettingsView() {
 				{/* Allowlist Section */}
 				<div className="space-y-3">
 					<div className="space-y-1">
-						<h4 className="text-sm font-medium">Allowlist</h4>
+						<h4 className="text-sm font-medium">白名单</h4>
 						<p className="text-muted-foreground text-xs">
 							Headers to allow. Enter names without the <code className="bg-muted rounded px-1 font-mono">x-bf-eh-</code> prefix. Any header
 							in this list can also be sent directly without the prefix.
@@ -489,7 +473,7 @@ export default function ClientSettingsView() {
 						{(localConfig.header_filter_config?.allowlist || []).map((header, index) => (
 							<div key={index} className="flex items-center gap-2">
 								<Input
-									placeholder="e.g. anthropic-*, custom-id"
+									placeholder="例如 anthropic-*、custom-id"
 									data-testid="header-filter-allowlist-input"
 									className={cn(
 										"font-mono lowercase",
@@ -513,16 +497,14 @@ export default function ClientSettingsView() {
 							</div>
 						))}
 						<Button type="button" variant="outline" size="sm" onClick={handleAddAllowlistHeader} disabled={!hasSettingsUpdateAccess}>
-							<Plus className="mr-2 h-4 w-4" />
-							Add Header
-						</Button>
+							<Plus className="mr-2 h-4 w-4" />添加请求头</Button>
 					</div>
 				</div>
 
 				{/* Denylist Section */}
 				<div className="space-y-3">
 					<div className="space-y-1">
-						<h4 className="text-sm font-medium">Denylist</h4>
+						<h4 className="text-sm font-medium">黑名单</h4>
 						<p className="text-muted-foreground text-xs">
 							Headers to block. Enter names without the <code className="bg-muted rounded px-1 font-mono">x-bf-eh-</code> prefix. Applies to
 							both prefixed and direct header forwarding.
@@ -533,7 +515,7 @@ export default function ClientSettingsView() {
 						{(localConfig.header_filter_config?.denylist || []).map((header, index) => (
 							<div key={index} className="flex items-center gap-2">
 								<Input
-									placeholder="e.g. x-internal-*"
+									placeholder="例如 x-internal-*"
 									data-testid="header-filter-denylist-input"
 									className={cn(
 										"font-mono lowercase",
@@ -557,9 +539,7 @@ export default function ClientSettingsView() {
 							</div>
 						))}
 						<Button type="button" variant="outline" size="sm" onClick={handleAddDenylistHeader} disabled={!hasSettingsUpdateAccess}>
-							<Plus className="mr-2 h-4 w-4" />
-							Add Header
-						</Button>
+							<Plus className="mr-2 h-4 w-4" />添加请求头</Button>
 					</div>
 				</div>
 			</div>
@@ -576,7 +556,7 @@ export default function ClientSettingsView() {
 					<Tooltip>
 						<TooltipTrigger asChild>
 							<span>
-								<Button disabled>{isLoading ? "Saving..." : "Save Changes"}</Button>
+								<Button disabled>{isLoading ? "Saving..." : "保存更改"}</Button>
 							</span>
 						</TooltipTrigger>
 						<TooltipContent>
@@ -585,7 +565,7 @@ export default function ClientSettingsView() {
 					</Tooltip>
 				) : (
 					<Button onClick={handleSave} disabled={!hasChanges || isLoading || isQueriesLoading || !hasSettingsUpdateAccess}>
-						{isLoading ? "Saving..." : "Save Changes"}
+						{isLoading ? "Saving..." : "保存更改"}
 					</Button>
 				)}
 			</div>

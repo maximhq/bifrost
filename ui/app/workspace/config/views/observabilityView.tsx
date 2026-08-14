@@ -75,10 +75,8 @@ export default function ObservabilityView() {
 				<div>
 					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
-							<label htmlFor="prometheus-labels" className="text-sm font-medium">
-								Prometheus Labels
-							</label>
-							<p className="text-muted-foreground text-sm">Comma-separated list of custom labels to add to the Prometheus metrics.</p>
+							<label htmlFor="prometheus-labels" className="text-sm font-medium">Prometheus 标签</label>
+							<p className="text-muted-foreground text-sm">要添加到 Prometheus 指标的自定义标签列表（逗号分隔）。</p>
 						</div>
 						<Textarea
 							id="prometheus-labels"
@@ -93,7 +91,7 @@ export default function ObservabilityView() {
 			</div>
 			<div className="flex justify-end pt-2">
 				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>
-					{isLoading ? "Saving..." : "Save Changes"}
+					{isLoading ? "Saving..." : "保存更改"}
 				</Button>
 			</div>
 		</div>
@@ -101,5 +99,5 @@ export default function ObservabilityView() {
 }
 
 const RestartWarning = () => {
-	return <div className="text-muted-foreground mt-2 pl-4 text-xs font-semibold">Need to restart Bifrost to apply changes.</div>;
+	return <div className="text-muted-foreground mt-2 pl-4 text-xs font-semibold">需要重启 Bifrost 才能生效。</div>;
 };

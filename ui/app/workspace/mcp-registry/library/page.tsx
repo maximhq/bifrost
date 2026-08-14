@@ -165,21 +165,17 @@ export default function MCPLibraryPage() {
 						{/* Header */}
 						<div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
 							<div className="space-y-1">
-								<h2 className="text-lg font-semibold tracking-tight">MCP Server Library</h2>
-								<p className="text-muted-foreground max-w-2xl text-sm">Browse and install MCP servers from the synced catalog.</p>
+								<h2 className="text-lg font-semibold tracking-tight">MCP 服务器库</h2>
+								<p className="text-muted-foreground max-w-2xl text-sm">从已同步的目录中浏览和安装 MCP 服务器。</p>
 							</div>
 							<div className="flex items-center gap-2">
 								{hasCreateMCPClientAccess && (
 									<Button variant="outline" size="sm" onClick={() => setAddServerOpen(true)} data-testid="mcp-library-add-server-btn">
-										<Plus className="h-4 w-4" />
-										Add Server
-									</Button>
+										<Plus className="h-4 w-4" />添加服务器</Button>
 								)}
 								{hasSettingsAccess && (
 									<Button variant="outline" size="sm" onClick={() => setSettingsOpen(true)} data-testid="mcp-library-settings-btn">
-										<Settings className="h-4 w-4" />
-										Settings
-									</Button>
+										<Settings className="h-4 w-4" />设置</Button>
 								)}
 							</div>
 						</div>
@@ -192,12 +188,12 @@ export default function MCPLibraryPage() {
 									<Input
 										value={urlState.search}
 										onChange={(e) => setUrlState({ search: e.target.value, offset: 0 })}
-										placeholder="Search servers..."
+										placeholder="搜索服务器..."
 										className="h-9 pl-9"
 										data-testid="mcp-library-search-input"
 									/>
 								</div>
-								<div className="border-border flex w-fit overflow-hidden rounded-sm border p-0.5" aria-label="Library view mode">
+								<div className="border-border flex w-fit overflow-hidden rounded-sm border p-0.5" aria-label="库视图模式">
 									<Button
 										type="button"
 										variant="ghost"
@@ -212,7 +208,7 @@ export default function MCPLibraryPage() {
 										data-testid="mcp-library-table-view-toggle"
 									>
 										<List className="h-4 w-4" />
-										<span className="hidden sm:inline">Table</span>
+										<span className="hidden sm:inline">表格</span>
 									</Button>
 									<Button
 										type="button"
@@ -228,7 +224,7 @@ export default function MCPLibraryPage() {
 										data-testid="mcp-library-grid-view-toggle"
 									>
 										<LayoutGrid className="h-4 w-4" />
-										<span className="hidden sm:inline">Grid</span>
+										<span className="hidden sm:inline">网格</span>
 									</Button>
 								</div>
 							</div>
@@ -268,9 +264,7 @@ export default function MCPLibraryPage() {
 										{isCatalogEmpty && hasSettingsAccess && (
 											<div className="mx-auto mt-6 flex flex-row flex-wrap items-center justify-center gap-2">
 												<Button onClick={() => setSettingsOpen(true)} data-testid="mcp-library-empty-settings-btn">
-													<Settings className="h-4 w-4" />
-													Configure sync
-												</Button>
+													<Settings className="h-4 w-4" />配置同步</Button>
 											</div>
 										)}
 									</div>
@@ -320,13 +314,13 @@ export default function MCPLibraryPage() {
 													onClick={() => setUrlState({ offset: Math.max(0, urlState.offset - PAGE_SIZE) }, { history: "push" })}
 													disabled={urlState.offset === 0}
 													data-testid="mcp-library-pagination-prev-btn"
-													aria-label="Previous page"
+													aria-label="上一页"
 												>
 													<ChevronLeft className="size-3" />
 												</Button>
 
 												<div className="flex items-center gap-1">
-													<span>Page</span>
+													<span>页</span>
 													<span>{currentPage}</span>
 													<span>of {totalPages}</span>
 												</div>
@@ -337,7 +331,7 @@ export default function MCPLibraryPage() {
 													onClick={() => setUrlState({ offset: urlState.offset + PAGE_SIZE }, { history: "push" })}
 													disabled={urlState.offset + PAGE_SIZE >= totalCount}
 													data-testid="mcp-library-pagination-next-btn"
-													aria-label="Next page"
+													aria-label="下一页"
 												>
 													<ChevronRight className="size-3" />
 												</Button>

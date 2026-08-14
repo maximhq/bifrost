@@ -32,7 +32,7 @@ curl --location 'http://localhost:8080/v1/chat/completions'
 	const { copy: copyToClipboard } = useCopyToClipboard();
 
 	if (isLoading) {
-		return <div>Loading...</div>;
+		return <div>加载中...</div>;
 	}
 	if (!isAuthConfigure) {
 		return (
@@ -41,13 +41,9 @@ curl --location 'http://localhost:8080/v1/chat/completions'
 				<AlertDescription>
 					<p className="text-md text-muted-foreground">
 						To generate API keys, you need to set up admin username and password first.{" "}
-						<Link to="/workspace/config/security" className="text-md text-primary underline">
-							Configure Security Settings
-						</Link>
+						<Link to="/workspace/config/security" className="text-md text-primary underline">配置安全设置</Link>
 						.<br />
-						<br />
-						Once generated you will need to use this API key for all API calls to the Bifrost admin APIs and UI.
-					</p>
+						<br />生成后，您需要使用此 API 密钥进行所有对 Bifrost 管理 API 和 UI 的 API 调用。</p>
 				</AlertDescription>
 			</Alert>
 		);
@@ -62,8 +58,7 @@ curl --location 'http://localhost:8080/v1/chat/completions'
 				<AlertDescription>
 					<p className="text-md text-muted-foreground">
 						{isInferenceAuthDisabled ? (
-							<>
-								Authentication is currently <strong>disabled for inference API calls</strong>. You can make inference requests without
+							<>认证当前<strong>disabled for inference API calls</strong>. You can make inference requests without
 								authentication. Dashboard and admin API calls still require Basic auth with your admin credentials encoded in the standard{" "}
 								<code className="bg-muted rounded px-1 py-0.5 text-sm">username:password</code> format with base64 encoding.
 							</>
@@ -78,7 +73,7 @@ curl --location 'http://localhost:8080/v1/chat/completions'
 						<>
 							<br />
 							<p className="text-md text-muted-foreground">
-								<strong>Example:</strong>
+								<strong>示例：</strong>
 							</p>
 
 							<div className="relative mt-2 w-full min-w-0 overflow-x-auto">
@@ -95,8 +90,8 @@ curl --location 'http://localhost:8080/v1/chat/completions'
 			<ContactUsView
 				className="mt-4 rounded-md border px-3 py-8"
 				icon={<KeyRound size={48} />}
-				title="Scope Based API Keys"
-				description="Need granular access control with scope-based API keys? Enterprise customers can create multiple API keys with specific permissions for different services, teams, or environments."
+				title="基于作用域的 API 密钥"
+				description="需要基于作用域的 API 密钥实现细粒度访问控制？企业客户可以为不同服务、团队或环境创建具有特定权限的多个 API 密钥。"
 				readmeLink="https://docs.getbifrost.io/enterprise/api-keys"
 			/>
 		</div>

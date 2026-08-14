@@ -353,7 +353,7 @@ export function RoutingTreeView() {
 		return (
 			<div className="text-muted-foreground flex h-full items-center justify-center gap-2">
 				<AlertCircle className="h-5 w-5" />
-				<span className="text-sm">Failed to load routing rules</span>
+				<span className="text-sm">无法加载路由规则</span>
 			</div>
 		);
 	}
@@ -361,16 +361,14 @@ export function RoutingTreeView() {
 		return (
 			<div className="text-muted-foreground flex h-full flex-col items-center justify-center gap-3">
 				<GitBranch className="h-10 w-10 opacity-20" />
-				<p className="text-sm">No routing rules to display</p>
+				<p className="text-sm">没有可显示的路由规则</p>
 				<Button
 					variant="outline"
 					size="sm"
 					data-testid="routing-tree-back-empty-btn"
 					onClick={() => navigate({ to: "/workspace/routing-rules" })}
 				>
-					<ArrowLeft className="mr-1.5 h-4 w-4" />
-					Back to rules
-				</Button>
+					<ArrowLeft className="mr-1.5 h-4 w-4" />返回规则</Button>
 			</div>
 		);
 	}
@@ -413,13 +411,11 @@ export function RoutingTreeView() {
 							data-testid="routing-tree-back-toolbar-btn"
 							onClick={() => navigate({ to: "/workspace/routing-rules" })}
 						>
-							<ArrowLeft className="h-4 w-4" />
-							Back
-						</Button>
+							<ArrowLeft className="h-4 w-4" />返回</Button>
 						<div className="bg-border h-5 w-px" />
 						<div className="flex items-center gap-2">
 							<GitBranch className="text-muted-foreground h-4 w-4" />
-							<p className="text-foreground text-sm leading-tight font-semibold">Routing Tree</p>
+							<p className="text-foreground text-sm leading-tight font-semibold">路由树</p>
 							<p className="text-muted-foreground text-[11px]">
 								{search
 									? highlightedIds && highlightedIds.size > 0
@@ -434,7 +430,7 @@ export function RoutingTreeView() {
 							<Input
 								value={search}
 								onChange={(e) => setSearch(e.target.value)}
-								placeholder="Search conditions or rules…"
+								placeholder="搜索条件或规则…"
 								className="h-8 w-56 pl-8 text-sm"
 							/>
 						</div>
@@ -444,12 +440,10 @@ export function RoutingTreeView() {
 							size="sm"
 							className="text-muted-foreground hover:text-foreground gap-1.5"
 							onClick={handleResetLayout}
-							title="Reset to default layout"
+							title="重置为默认布局"
 							data-testid="routing-tree-reset-layout-btn"
 						>
-							<RotateCcw className="h-3.5 w-3.5" />
-							Reset layout
-						</Button>
+							<RotateCcw className="h-3.5 w-3.5" />重置布局</Button>
 					</div>
 					{/* Scope + edge legend — floats below */}
 					<div className="dark:bg-card flex items-center gap-3 rounded-md border bg-white px-3 py-1.5 shadow-sm">
@@ -462,7 +456,7 @@ export function RoutingTreeView() {
 						<div className="bg-border h-3 w-px" />
 						<div className="flex items-center gap-1.5">
 							<Link2 className="text-muted-foreground h-2.5 w-2.5" />
-							<span className="text-muted-foreground text-[10px] font-medium">Chain rule</span>
+							<span className="text-muted-foreground text-[10px] font-medium">链式规则</span>
 						</div>
 						<div className="bg-border h-3 w-px" />
 						{/* Chain edge styles — both dashed (long = static, short = dynamic); arrows at path midpoint */}
@@ -480,7 +474,7 @@ export function RoutingTreeView() {
 								/>
 								<polygon points="20,6 14,2.5 14,9.5" fill="var(--muted-foreground)" />
 							</svg>
-							<span className="text-muted-foreground text-[10px] font-medium">Static chain</span>
+							<span className="text-muted-foreground text-[10px] font-medium">静态链</span>
 							<Tooltip>
 								<TooltipTrigger asChild>
 									<Info
@@ -488,9 +482,7 @@ export function RoutingTreeView() {
 										data-testid="routing-tree-static-chain-info-trigger"
 									/>
 								</TooltipTrigger>
-								<TooltipContent side="top" className="max-w-[200px] text-center">
-									Re-entry point is fully proven by static analysis; every condition on the path evaluated to a known value.
-								</TooltipContent>
+								<TooltipContent side="top" className="max-w-[200px] text-center">重入点已通过静态分析完全证明；路径上的每个条件都评估为已知值。</TooltipContent>
 							</Tooltip>
 						</div>
 						<div className="flex items-center gap-1.5">
@@ -515,7 +507,7 @@ export function RoutingTreeView() {
 									strokeLinejoin="round"
 								/>
 							</svg>
-							<span className="text-muted-foreground text-[10px] font-medium">Dynamic chain</span>
+							<span className="text-muted-foreground text-[10px] font-medium">动态链</span>
 							<Tooltip>
 								<TooltipTrigger asChild>
 									<Info
@@ -523,9 +515,7 @@ export function RoutingTreeView() {
 										data-testid="routing-tree-dynamic-chain-info-trigger"
 									/>
 								</TooltipTrigger>
-								<TooltipContent side="top" className="max-w-[200px] text-center">
-									Re-entry point is a conditional; one or more conditions on the path are not fully evaluated at build time.
-								</TooltipContent>
+								<TooltipContent side="top" className="max-w-[200px] text-center">重入点是条件性的；路径上的一个或多个条件在构建时未完全评估。</TooltipContent>
 							</Tooltip>
 						</div>
 					</div>

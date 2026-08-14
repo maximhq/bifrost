@@ -65,7 +65,7 @@ export default function SelectFieldView(props: Props) {
 					value={(value as string) || null}
 					onValueChange={onFieldChange}
 					disabled={props.disabled}
-					placeholder="Select"
+					placeholder="选择"
 					disableSearch
 					className="h-8"
 				/>

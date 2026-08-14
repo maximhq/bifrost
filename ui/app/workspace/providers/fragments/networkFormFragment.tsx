@@ -182,7 +182,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 								name="network_config.base_url"
 								render={({ field }) => (
 									<FormItem>
-										<FormLabel>Base URL {baseURLRequired ? "(Required)" : "(Optional)"}</FormLabel>
+										<FormLabel>Base URL {baseURLRequired ? "(Required)" : "（可选）"}</FormLabel>
 										<FormControl>
 											<Input
 												placeholder={isCustomProvider ? "https://api.your-provider.com" : "https://api.example.com"}
@@ -202,7 +202,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 								name="network_config.default_request_timeout_in_seconds"
 								render={({ field }) => (
 									<FormItem className="flex-1">
-										<FormLabel>Timeout (seconds)</FormLabel>
+										<FormLabel>超时（秒）</FormLabel>
 										<FormControl>
 											<Input
 												placeholder="30"
@@ -233,7 +233,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 								name="network_config.stream_idle_timeout_in_seconds"
 								render={({ field }) => (
 									<FormItem className="flex-1">
-										<FormLabel>Stream Idle Timeout (seconds)</FormLabel>
+										<FormLabel>流空闲超时（秒）</FormLabel>
 										<FormControl>
 											<Input
 												placeholder="60"
@@ -268,7 +268,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 								name="network_config.max_retries"
 								render={({ field }) => (
 									<FormItem className="flex-1">
-										<FormLabel>Max Retries</FormLabel>
+										<FormLabel>最大重试次数</FormLabel>
 										<FormControl>
 											<Input
 												placeholder="0"
@@ -300,10 +300,10 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 								name="network_config.retry_backoff_initial"
 								render={({ field }) => (
 									<FormItem className="flex-1">
-										<FormLabel>Initial Backoff (ms)</FormLabel>
+										<FormLabel>初始退避 (ms)</FormLabel>
 										<FormControl>
 											<Input
-												placeholder="e.g 500"
+												placeholder="例如 500"
 												{...field}
 												value={field.value === undefined || Number.isNaN(field.value) ? "" : field.value}
 												disabled={!hasUpdateProviderAccess}
@@ -330,10 +330,10 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 								name="network_config.retry_backoff_max"
 								render={({ field }) => (
 									<FormItem className="flex-1">
-										<FormLabel>Max Backoff (ms)</FormLabel>
+										<FormLabel>最大退避 (ms)</FormLabel>
 										<FormControl>
 											<Input
-												placeholder="e.g 10000"
+												placeholder="例如 10000"
 												{...field}
 												value={field.value === undefined || Number.isNaN(field.value) ? "" : field.value}
 												disabled={!hasUpdateProviderAccess}
@@ -362,7 +362,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 								name="network_config.max_conns_per_host"
 								render={({ field }) => (
 									<FormItem className="flex-1">
-										<FormLabel>Max Connections Per Host</FormLabel>
+										<FormLabel>每主机最大连接数</FormLabel>
 										<FormControl>
 											<Input
 												data-testid="network-config-max-conns-per-host-input"
@@ -397,7 +397,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 								name="network_config.keep_alive_timeout_in_seconds"
 								render={({ field }) => (
 									<FormItem className="flex-1">
-										<FormLabel>Keep-Alive Timeout (seconds)</FormLabel>
+										<FormLabel>Keep-Alive 超时（秒）</FormLabel>
 										<FormControl>
 											<Input
 												data-testid="network-config-keep-alive-timeout-input"
@@ -434,7 +434,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 							render={({ field }) => (
 								<FormItem className="flex flex-row items-center justify-between">
 									<div className="space-y-0.5">
-										<FormLabel>Enforce HTTP/2</FormLabel>
+										<FormLabel>强制 HTTP/2</FormLabel>
 										<FormDescription>
 											Force HTTP/2 on provider connections. Relevant for net/http-based providers (e.g. Bedrock) where each HTTP/2
 											connection supports ~100 concurrent streams.
@@ -457,9 +457,8 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 							render={({ field }) => (
 								<FormItem className="flex flex-row items-center justify-between">
 									<div className="space-y-0.5">
-										<FormLabel>Allow Private Network</FormLabel>
-										<FormDescription>
-											Allow connections to private IPs (e.g. <code>10.x</code>, <code>192.168.x</code>). Required for providers on a LAN,
+										<FormLabel>允许私有网络</FormLabel>
+										<FormDescription>允许连接到私有 IP（例如<code>10.x</code>, <code>192.168.x</code>). Required for providers on a LAN,
 											k8s pod network, or private VPC. Cloud metadata addresses (169.254.x.x) are always blocked.
 										</FormDescription>
 									</div>
@@ -485,7 +484,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 											onChange={field.onChange}
 											keyPlaceholder="Header name"
 											valuePlaceholder="Header value"
-											label="Extra Headers"
+											label="附加请求头"
 											disabled={!hasUpdateProviderAccess}
 										/>
 									</FormControl>
@@ -496,7 +495,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 						<Accordion type="single" collapsible className="w-full">
 							<AccordionItem value="tls-config" className="border-b-0">
 								<AccordionTrigger className="py-0" data-testid="tls-config-trigger">
-									<span className="text-sm font-medium">TLS / Certificate</span>
+									<span className="text-sm font-medium">TLS / 证书</span>
 								</AccordionTrigger>
 								<AccordionContent className="space-y-4 pt-4 pb-0">
 									<FormField
@@ -505,7 +504,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 										render={({ field }) => (
 											<FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
 												<div className="space-y-0.5">
-													<FormLabel>Skip TLS verification</FormLabel>
+													<FormLabel>跳过 TLS 验证</FormLabel>
 													<FormDescription>
 														Disable TLS certificate verification for provider connections. This bypasses server certificate validation and
 														should be used only as a last resort when a trusted CA chain cannot be configured. Prefer ca_cert_pem for
@@ -528,7 +527,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 										name="network_config.ca_cert_pem"
 										render={({ field }) => (
 											<FormItem>
-												<FormLabel>CA Certificate (PEM) (Optional)</FormLabel>
+												<FormLabel>CA 证书 (PEM)（可选）</FormLabel>
 												<FormControl>
 													<SecretVarInput
 														variant="textarea"
@@ -545,9 +544,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 														data-testid="network-config-ca-cert-pem"
 													/>
 												</FormControl>
-												<FormDescription>
-													PEM-encoded CA certificate to trust for provider endpoint connections (e.g. self-signed or internal CA).
-												</FormDescription>
+												<FormDescription>提供商端点连接时要信任的 PEM 编码 CA 证书（例如自签名或内部 CA）。</FormDescription>
 												<FormMessage />
 											</FormItem>
 										)}
@@ -577,16 +574,12 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 								!provider.network_config.base_url ||
 								provider.network_config.base_url.trim() === ""
 							}
-						>
-							Remove configuration
-						</Button>
+						>移除配置</Button>
 					)}
 					<TooltipProvider>
 						<Tooltip>
 							<TooltipTrigger asChild>
-								<Button type="submit" disabled={!form.formState.isDirty || !hasUpdateProviderAccess} isLoading={isUpdatingProvider}>
-									Save Network Configuration
-								</Button>
+								<Button type="submit" disabled={!form.formState.isDirty || !hasUpdateProviderAccess} isLoading={isUpdatingProvider}>保存网络配置</Button>
 							</TooltipTrigger>
 							{(!form.formState.isDirty || !form.formState.isValid) && (
 								<TooltipContent>

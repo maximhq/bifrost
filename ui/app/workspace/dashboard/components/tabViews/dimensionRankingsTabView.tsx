@@ -6,7 +6,7 @@ import { DASHBOARD_RANKINGS_LIMIT } from "../../utils/rankings";
 import { DimensionRankingsTab } from "../dimensionRankingsTab";
 
 export interface DimensionRankingsTabViewHandle {
-	getData: () => Partial<DashboardData>;
+	getData: () =>Partial<DashboardData>;
 	loadData: () => Promise<void>;
 }
 

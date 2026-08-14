@@ -119,9 +119,7 @@ function ClampedDescription({ description }: { description: string }) {
 						type="button"
 						onClick={() => setExpanded(false)}
 						className="ml-1 cursor-pointer text-xs font-medium text-blue-600 transition-colors hover:underline dark:text-blue-400"
-					>
-						Show less
-					</button>
+					>显示更少</button>
 				)}
 			</p>
 			{!expanded && isOverflowing && (
@@ -130,9 +128,7 @@ function ClampedDescription({ description }: { description: string }) {
 					onClick={() => setExpanded(true)}
 					className="bg-card absolute right-0 bottom-0 cursor-pointer pr-4 pl-8 text-xs font-medium text-blue-600 transition-colors hover:underline dark:text-blue-400"
 				>
-					<span className="from-card pointer-events-none absolute top-0 right-full h-full w-8 bg-gradient-to-l to-transparent" />
-					Show more
-				</button>
+					<span className="from-card pointer-events-none absolute top-0 right-full h-full w-8 bg-gradient-to-l to-transparent" />显示更多</button>
 			)}
 		</div>
 	);
@@ -178,7 +174,7 @@ export function SkillHeader({
 			<div className={cn("flex w-full flex-row items-center gap-2 bg-card relative", sticky && "sticky top-0 z-30 py-4")}>
 				<div className="flex h-5 flex-row items-center gap-2 align-middle">
 					{onBack ? (
-						<nav aria-label="Breadcrumb" className="min-w-0">
+						<nav aria-label="面包屑导航" className="min-w-0">
 							<ol className="text-muted-foreground flex items-center gap-1.5 text-sm">
 								<li>
 									<button
@@ -186,9 +182,7 @@ export function SkillHeader({
 										data-testid="skill-back-btn"
 										onClick={onBack}
 										className="hover:text-foreground cursor-pointer transition-colors"
-									>
-										Skills
-									</button>
+									>技能</button>
 								</li>
 								<li aria-hidden="true" className="text-muted-foreground/60">
 									/
@@ -210,9 +204,7 @@ export function SkillHeader({
 							size="sm"
 							className="h-auto shrink-0 px-1 py-0 text-xs text-blue-600 dark:text-blue-400"
 							onClick={() => setShowRawDialog(true)}
-						>
-							View raw SKILL.md
-						</Button>
+						>查看原始 SKILL.md</Button>
 					)}
 				</div>
 				<div className="absolute top-4 right-0 ml-auto flex flex-row items-center align-middle">
@@ -221,9 +213,7 @@ export function SkillHeader({
 						<div className="ml-auto flex shrink-0 items-center gap-1.5">
 							{downloadSkillName && (
 								<Button variant="outline" size="sm" asChild>
-									<a href={`${getApiBaseUrl()}/skills/serve/${encodeURIComponent(downloadSkillName)}/download.zip`} download>
-										Download ZIP
-									</a>
+									<a href={`${getApiBaseUrl()}/skills/serve/${encodeURIComponent(downloadSkillName)}/download.zip`} download>下载 ZIP</a>
 								</Button>
 							)}
 							{actions}
@@ -235,9 +225,9 @@ export function SkillHeader({
 				<ClampedDescription description={description} />
 				<TooltipProvider>
 					<div className="mt-4 flex flex-wrap items-center gap-2 pb-2">
-						<HeaderMetaItem label="License" value={license} missingText="No license defined" icon={Scale} />
-						<HeaderMetaItem label="Compatibility" value={compatibility} missingText="No compatibility defined" icon={Bot} />
-						<HeaderMetaItem label="Allowed tools" value={allowedTools} missingText="No allowed tools defined" icon={Hammer} />
+						<HeaderMetaItem label="许可证" value={license} missingText="No license defined" icon={Scale} />
+						<HeaderMetaItem label="兼容性" value={compatibility} missingText="No compatibility defined" icon={Bot} />
+						<HeaderMetaItem label="允许的工具" value={allowedTools} missingText="No allowed tools defined" icon={Hammer} />
 					</div>
 				</TooltipProvider>
 			</div>
@@ -248,7 +238,7 @@ export function SkillHeader({
 						className="h-[90vh] w-full border-0 p-0 sm:w-[85vw] sm:max-w-[85vw] md:w-[75vw] md:max-w-[75vw]"
 					>
 						<DialogHeader className="sr-only">
-							<DialogTitle>Raw SKILL.md</DialogTitle>
+							<DialogTitle>原始 SKILL.md</DialogTitle>
 						</DialogHeader>
 						<div className="bg-muted relative overflow-hidden rounded-sm border shadow-lg">
 							<div className="absolute top-3 right-3 z-10 flex items-center gap-1">
@@ -263,7 +253,7 @@ export function SkillHeader({
 								</Button>
 								<DialogClose className="text-muted-foreground hover:bg-card hover:text-foreground flex h-8 w-8 cursor-pointer items-center justify-center rounded-sm transition-colors">
 									<X className="h-4 w-4" />
-									<span className="sr-only">Close</span>
+									<span className="sr-only">关闭</span>
 								</DialogClose>
 							</div>
 							<ScrollArea className="h-full" viewportClassName="bg-muted">
@@ -333,11 +323,11 @@ export function ReadOnlyMetadataTable({ value, className }: { value: Record<stri
 	const entries = Object.entries(value);
 
 	return (
-		<FormSection title="Metadata" className={cn("flex flex-1 flex-col", className)}>
+		<FormSection title="元数据" className={cn("flex flex-1 flex-col", className)}>
 			<div className="flex flex-1 flex-col rounded-sm border">
 				<div className="bg-muted/30 sticky top-0 z-10 grid grid-cols-2 border-b px-3 py-2 text-sm font-medium">
-					<span>Key</span>
-					<span>Value</span>
+					<span>密钥</span>
+					<span>值</span>
 				</div>
 				<div className="text-muted-foreground flex-1 divide-y overflow-y-auto">
 					{entries.map(([key, item]) => (
@@ -464,17 +454,15 @@ export function SkillMarkdown({
 			<Dialog open={externalLink != null} onOpenChange={(open) => !open && setExternalLink(null)}>
 				<DialogContent>
 					<DialogHeader>
-						<DialogTitle>Open external link?</DialogTitle>
-						<DialogDescription>This link opens outside Bifrost in a new browser tab.</DialogDescription>
+						<DialogTitle>打开外部链接？</DialogTitle>
+						<DialogDescription>此链接将在新浏览器标签页中打开（Bifrost 外部）。</DialogDescription>
 					</DialogHeader>
 					<div className="bg-muted/40 rounded-sm border px-3 py-2">
 						<p className="truncate text-sm font-medium">{externalLink?.label}</p>
 						<p className="text-muted-foreground truncate font-mono text-xs">{externalLink?.href}</p>
 					</div>
 					<DialogFooter>
-						<Button variant="outline" onClick={() => setExternalLink(null)}>
-							Cancel
-						</Button>
+						<Button variant="outline" onClick={() => setExternalLink(null)}>取消</Button>
 						<Button
 							onClick={() => {
 								if (!externalLink) return;
@@ -482,9 +470,7 @@ export function SkillMarkdown({
 								setExternalLink(null);
 							}}
 						>
-							<ExternalLink className="h-4 w-4" />
-							Open link
-						</Button>
+							<ExternalLink className="h-4 w-4" />打开链接</Button>
 					</DialogFooter>
 				</DialogContent>
 			</Dialog>
@@ -506,14 +492,10 @@ export function ReadOnlySkillBody({
 	return (
 		<Tabs defaultValue="preview" onValueChange={setActiveTab} className="flex min-h-0 w-full flex-1 flex-col gap-2">
 			<div className="flex items-center justify-between gap-2">
-				<h2 className="text-foreground text-base leading-[normal] font-semibold">SKILL.md Body</h2>
+				<h2 className="text-foreground text-base leading-[normal] font-semibold">SKILL.md 正文</h2>
 				<TabsList className="bg-muted h-8">
-					<TabsTrigger value="preview" className="h-6 px-2.5 text-xs">
-						Preview
-					</TabsTrigger>
-					<TabsTrigger value="raw" className="h-6 px-2.5 text-xs">
-						Raw
-					</TabsTrigger>
+					<TabsTrigger value="preview" className="h-6 px-2.5 text-xs">预览</TabsTrigger>
+					<TabsTrigger value="raw" className="h-6 px-2.5 text-xs">原始</TabsTrigger>
 				</TabsList>
 			</div>
 			<div className={cn("flex min-h-0 flex-1 flex-col overflow-hidden rounded-sm border")}>
@@ -600,7 +582,7 @@ export function ReadOnlyFileTree({
 	skillName: string;
 	files: SkillFileEntry[];
 	composedSkillMd: string;
-	// When true, render only the tree (no "Files" FormSection heading) so it can
+	// When true, render only the tree (no "文件" FormSection heading) so it can
 	// be embedded in a sidebar that supplies its own header.
 	bare?: boolean;
 	// When provided, clicking a file/SKILL.md row selects it (for an external
@@ -764,7 +746,7 @@ export function ReadOnlyFileTree({
 							}}
 							role={hasChildren || isDownloadable ? "button" : undefined}
 							tabIndex={hasChildren || isDownloadable ? 0 : undefined}
-							aria-label={isFolder ? `${isExpanded ? "Collapse" : "Expand"} ${item.name}` : item.name}
+							aria-label={isFolder ? `${isExpanded ? "Collapse" : "展开"} ${item.name}` : item.name}
 						>
 							<TreeRowChevron hasChildren={hasChildren} isExpanded={isExpanded} />
 							<TreeRowIcon isSkillMd={isSkillMd} isFile={isFile} isFolder={isFolder} isExpanded={isExpanded} />
@@ -796,9 +778,7 @@ export function ReadOnlyFileTree({
 										</DropdownMenuTrigger>
 										<DropdownMenuContent align="end">
 											<DropdownMenuItem className="cursor-pointer" onSelect={() => downloadFile()}>
-												<Download className="h-3.5 w-3.5" />
-												Download
-											</DropdownMenuItem>
+												<Download className="h-3.5 w-3.5" />下载</DropdownMenuItem>
 										</DropdownMenuContent>
 									</DropdownMenu>
 								</div>
@@ -812,24 +792,18 @@ export function ReadOnlyFileTree({
 								>
 									<DropdownMenu>
 										<DropdownMenuTrigger asChild>
-											<Button variant="ghost" size="icon" className="h-6 w-6" aria-label="File actions">
+											<Button variant="ghost" size="icon" className="h-6 w-6" aria-label="文件操作">
 												<MoreHorizontal className="h-3.5 w-3.5" />
 											</Button>
 										</DropdownMenuTrigger>
 										<DropdownMenuContent align="end">
 											<DropdownMenuItem className="cursor-pointer" disabled={isAllExpanded} onSelect={() => onExpandAll()}>
-												<ChevronsUpDown className="h-3.5 w-3.5" />
-												Expand all
-											</DropdownMenuItem>
+												<ChevronsUpDown className="h-3.5 w-3.5" />全部展开</DropdownMenuItem>
 											<DropdownMenuItem className="cursor-pointer" disabled={isAllCollapsed} onSelect={() => onCollapseAll()}>
-												<ChevronsDownUp className="h-3.5 w-3.5" />
-												Collapse all
-											</DropdownMenuItem>
+												<ChevronsDownUp className="h-3.5 w-3.5" />全部折叠</DropdownMenuItem>
 											<DropdownMenuItem className="cursor-pointer" asChild>
 												<a href={downloadUrl} download>
-													<Download className="h-3.5 w-3.5" />
-													Download ZIP
-												</a>
+													<Download className="h-3.5 w-3.5" />下载 ZIP</a>
 											</DropdownMenuItem>
 										</DropdownMenuContent>
 									</DropdownMenu>
@@ -844,7 +818,7 @@ export function ReadOnlyFileTree({
 
 	if (bare) return tree;
 
-	return <FormSection title="Files">{tree}</FormSection>;
+	return <FormSection title="文件">{tree}</FormSection>;
 }
 
 export function SkillReadOnlyContent({
@@ -892,9 +866,7 @@ export function SkillReadOnlyContent({
 									"flex-1 rounded-md border px-3 py-2 text-left text-xs font-medium transition-colors",
 									selected === METADATA_KEY ? "border-primary/20 bg-primary/10 text-primary hover:bg-primary/10" : "bg-card hover:bg-muted",
 								)}
-							>
-								Metadata
-							</button>
+							>元数据</button>
 						)}
 						{hasFrontmatter && (
 							<button
@@ -907,9 +879,7 @@ export function SkillReadOnlyContent({
 										? "border-primary/20 bg-primary/10 text-primary hover:bg-primary/10"
 										: "bg-card hover:bg-muted",
 								)}
-							>
-								Extra Frontmatter
-							</button>
+							>附加 Frontmatter</button>
 						)}
 					</div>
 				)}
@@ -931,7 +901,7 @@ export function SkillReadOnlyContent({
 				{selected === METADATA_KEY && metadata ? (
 					<ReadOnlyMetadataTable value={metadata} />
 				) : selected === FRONTMATTER_KEY && extraFrontmatter ? (
-					<ReadOnlyYamlBlock title="Extra Frontmatter" value={extraFrontmatter} />
+					<ReadOnlyYamlBlock title="附加 Frontmatter" value={extraFrontmatter} />
 				) : selectedFile ? (
 					<FilePreviewPane file={selectedFile} skillName={skillName} mode="view" />
 				) : (
@@ -964,7 +934,7 @@ function SkillFilesSidebar({
 				<div className="relative grow">
 					<Search className="text-muted-foreground absolute top-1/2 left-2.5 h-4 w-4 -translate-y-1/2" />
 					<Input
-						placeholder="Search files..."
+						placeholder="搜索文件..."
 						value={searchQuery}
 						onChange={(e) => setSearchQuery(e.target.value)}
 						data-testid="sidebar-search"

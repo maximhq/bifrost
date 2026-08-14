@@ -91,7 +91,7 @@ export default function Providers() {
 					);
 					return;
 				}
-				toast.error("Something went wrong", {
+				toast.error("出现问题", {
 					description: `We encountered an error while getting provider config: ${getErrorMessage(err)}`,
 				});
 			});
@@ -198,7 +198,7 @@ export default function Providers() {
 							{/* Configured Providers (standard with keys + custom) */}
 							{configuredProviders.length > 0 && (
 								<div className="mb-4">
-									<div className="text-muted-foreground mb-2 text-xs font-medium">Configured Providers</div>
+									<div className="text-muted-foreground mb-2 text-xs font-medium">已配置的提供商</div>
 									{configuredProviders.map((p) => {
 										const isCustom = !ProviderNames.includes(p.name as KnownProvider);
 										const label = isCustom ? p.name : ProviderLabels[p.name as keyof typeof ProviderLabels];
@@ -232,9 +232,7 @@ export default function Providers() {
 												<KeyDiscoveryFailedBadge provider={p} />
 												<ProviderStatusBadge status={p.provider_status} />
 												{isCustom && (
-													<Badge variant="secondary" className="text-muted-foreground ml-auto shrink-0 px-1.5 py-0.5 text-[10px] font-bold">
-														CUSTOM
-													</Badge>
+													<Badge variant="secondary" className="text-muted-foreground ml-auto shrink-0 px-1.5 py-0.5 text-[10px] font-bold">自定义</Badge>
 												)}
 											</div>
 										);
@@ -263,7 +261,7 @@ export default function Providers() {
 			)}
 			{!selectedProvider && (
 				<div className="bg-muted/10 flex w-full items-center justify-center rounded-md" style={{ maxHeight: "calc(100vh - 300px)" }}>
-					<div className="text-muted-foreground text-sm">Select a provider</div>
+					<div className="text-muted-foreground text-sm">选择一个提供商</div>
 				</div>
 			)}
 			{!isLoadingProvider && selectedProvider && (

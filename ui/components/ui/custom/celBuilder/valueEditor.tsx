@@ -121,7 +121,7 @@ export function ValueEditor({
 				<ModelMultiselect
 					value={selectedModels}
 					onChange={handleMultiModelChange}
-					placeholder="Select models..."
+					placeholder="选择模型..."
 					loadModelsOnEmptyProvider
 					className="!min-h-9 w-[360px]"
 					menuPosition={menuPosition}
@@ -148,7 +148,7 @@ export function ValueEditor({
 			<ModelMultiselect
 				value={valueToUse || ""}
 				onChange={handleOnChange}
-				placeholder="Search for a model..."
+				placeholder="搜索模型..."
 				isSingleSelect
 				clearable={true}
 				loadModelsOnEmptyProvider
@@ -206,7 +206,7 @@ export function ValueEditor({
 					value={selectedValues}
 					onValueChange={handleMultiselectChange}
 					options={options}
-					placeholder="Select providers..."
+					placeholder="选择提供商..."
 					className="h-10 w-[360px]"
 					noPortal
 				/>
@@ -233,7 +233,7 @@ export function ValueEditor({
 				type="text"
 				value={keyValuePair.value}
 				onChange={(e) => handleKeyValueValueChange(e.target.value)}
-				placeholder="Value"
+				placeholder="值"
 				className="w-[180px]"
 				data-testid="cel-builder-keyvalue-value-input"
 			/>

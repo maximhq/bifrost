@@ -37,7 +37,7 @@ interface TokenExchangeFieldsProps {
 	/** Short one-liner shown below the picker for the currently selected option — swaps as the user toggles, so the consequence of each choice is visible without both descriptions competing for attention at once. */
 	useIdPCredentialsDedicatedDescription?: React.ReactNode;
 	useIdPCredentialsIdPDescription?: React.ReactNode;
-	/** Shown as a warning under the picker when "Dedicated application" is selected but the connected identity provider requires "Identity provider application" (currently Microsoft Entra ID). Omit when the provider has no such requirement. */
+	/** Shown as a warning under the picker when "专用应用" is selected but the connected identity provider requires "身份提供商应用" (currently Microsoft Entra ID). Omit when the provider has no such requirement. */
 	useIdPCredentialsRequiredWarning?: React.ReactNode;
 	useIdPCredentialsTestId?: string;
 	onUseIdPCredentialsToggled?: (checked: boolean) => void;
@@ -137,9 +137,7 @@ export function TokenExchangeFields({
 												role="radio"
 												aria-checked={!checked}
 												data-testid={`${useIdPCredentialsTestId}-dedicated`}
-											>
-												Dedicated application
-											</Button>
+											>专用应用</Button>
 											<Button
 												type="button"
 												size="sm"
@@ -150,9 +148,7 @@ export function TokenExchangeFields({
 												role="radio"
 												aria-checked={checked}
 												data-testid={`${useIdPCredentialsTestId}-idp`}
-											>
-												Identity provider application
-											</Button>
+											>身份提供商应用</Button>
 										</div>
 									</FormControl>
 									{(checked ? useIdPCredentialsIdPDescription : useIdPCredentialsDedicatedDescription) && (

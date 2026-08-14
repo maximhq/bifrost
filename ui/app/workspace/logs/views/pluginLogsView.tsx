@@ -40,7 +40,7 @@ export default function PluginLogsView({ pluginLogs }: PluginLogsViewProps) {
 
 	return (
 		<div>
-			<div className="py-3 text-sm font-semibold">Plugin Logs</div>
+			<div className="py-3 text-sm font-semibold">插件日志</div>
 			<div className="flex flex-col gap-2 pb-3">
 				{pluginNames.map((name) => (
 					<PluginSection key={name} name={name} entries={parsed[name]} />

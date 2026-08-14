@@ -5,7 +5,7 @@ import { Check, Copy } from "lucide-react";
 
 interface CopyableIdProps {
 	id: string | number;
-	/** Entity name used in the toast, tooltip, and aria-label, e.g. "Team" -> "Copy team ID". */
+	/** Entity name used in the toast, tooltip, and aria-label, e.g. "团队" -> "Copy team ID". */
 	entityLabel?: string;
 	className?: string;
 	testId?: string;

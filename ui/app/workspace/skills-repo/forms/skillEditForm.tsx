@@ -40,7 +40,7 @@ export function SkillEditView({
 	onSave: (serve: boolean) => void;
 	onCancel: () => void;
 	onBack: () => void;
-	/** Navigate all the way back to the skills list (the "Skills" breadcrumb crumb). Falls back to onBack. */
+	/** Navigate all the way back to the skills list (the "技能" breadcrumb crumb). Falls back to onBack. */
 	onNavigateToList?: () => void;
 	isSaving: boolean;
 	mode?: "edit" | "create";
@@ -59,7 +59,7 @@ export function SkillEditView({
 		serve: boolean;
 	} | null>(null);
 
-	// Lets the file editor commit any buffered ("Save file") content before a version save.
+	// Lets the file editor commit any buffered ("保存文件") content before a version save.
 	const flushFileEditRef = useRef<(() => void) | null>(null);
 
 	// Which pane each validatable field lives in, so a failed save can surface
@@ -160,7 +160,7 @@ export function SkillEditView({
 		<div className="flex h-full min-h-0 flex-col overflow-hidden">
 			<div className="shrink-0 overflow-y-auto px-4">
 				{/* Breadcrumb */}
-				<nav aria-label="Breadcrumb" className="py-4">
+				<nav aria-label="面包屑导航" className="py-4">
 					<ol className="text-muted-foreground flex min-w-0 items-center gap-1.5 text-sm">
 						<li>
 							<button
@@ -168,9 +168,7 @@ export function SkillEditView({
 								data-testid="skill-back-btn"
 								onClick={onNavigateToList ?? onBack}
 								className="hover:text-foreground cursor-pointer transition-colors"
-							>
-								Skills
-							</button>
+							>技能</button>
 						</li>
 						<li aria-hidden="true" className="text-muted-foreground/60">
 							/
@@ -215,18 +213,18 @@ export function SkillEditView({
 					<div className="flex flex-col gap-8 pt-4">
 						<section className="flex flex-col gap-2">
 							<div className="flex items-center gap-1.5">
-								<h2 className="text-foreground text-base leading-[normal] font-semibold">Name</h2>
+								<h2 className="text-foreground text-base leading-[normal] font-semibold">名称</h2>
 								<Tooltip>
 									<TooltipTrigger asChild>
 										<button
 											type="button"
 											className="text-muted-foreground hover:text-foreground inline-flex h-4 w-4 items-center justify-center"
-											aria-label="Skill names cannot be changed after creation"
+											aria-label="技能名称创建后不能更改"
 										>
 											<Info className="h-3.5 w-3.5" aria-hidden="true" />
 										</button>
 									</TooltipTrigger>
-									<TooltipContent className="max-w-xs text-xs">Name cannot be changed after creation.</TooltipContent>
+									<TooltipContent className="max-w-xs text-xs">名称创建后不能更改。</TooltipContent>
 								</Tooltip>
 							</div>
 							<div className="flex flex-col gap-1">
@@ -258,7 +256,7 @@ export function SkillEditView({
 				<ResizablePanelGroup direction="horizontal" className="h-full min-h-0">
 					{/* Left: files panel */}
 					<ResizablePanel defaultSize="28%" minSize="18%" maxSize="50%" className="bg-card flex min-h-0 flex-col gap-2">
-						<p className="text-muted-foreground/70 px-1 text-[10px] font-semibold tracking-wider uppercase">Details</p>
+						<p className="text-muted-foreground/70 px-1 text-[10px] font-semibold tracking-wider uppercase">详情</p>
 						<button
 							type="button"
 							data-testid="skill-details-pane-btn"
@@ -273,16 +271,14 @@ export function SkillEditView({
 									: "bg-card hover:bg-muted",
 							)}
 						>
-							<Settings2 className="h-3.5 w-3.5 shrink-0" />
-							Skill Metadata
-						</button>
-						<p className="text-muted-foreground/70 mt-2 px-1 text-[10px] font-semibold tracking-wider uppercase">Files</p>
+							<Settings2 className="h-3.5 w-3.5 shrink-0" />技能元数据</button>
+						<p className="text-muted-foreground/70 mt-2 px-1 text-[10px] font-semibold tracking-wider uppercase">文件</p>
 						<div className="bg-card flex min-h-0 flex-1 flex-col rounded-md border">
 							<div className="flex h-9 items-center border-b">
 								<div className="relative grow">
 									<Search className="text-muted-foreground absolute top-1/2 left-2.5 h-4 w-4 -translate-y-1/2" />
 									<Input
-										placeholder="Search files..."
+										placeholder="搜索文件..."
 										value={fileSearchQuery}
 										onChange={(e) => setFileSearchQuery(e.target.value)}
 										data-testid="sidebar-search"
@@ -358,7 +354,7 @@ export function SkillEditView({
 							/>
 						) : (
 							<div className="flex h-full min-h-0 flex-col overflow-hidden rounded-sm border">
-								<div className="flex h-9 shrink-0 items-center gap-1 border-b px-2" role="tablist" aria-label="Body editor tabs">
+								<div className="flex h-9 shrink-0 items-center gap-1 border-b px-2" role="tablist" aria-label="正文编辑器标签页">
 									<button
 										type="button"
 										className={cn(
@@ -369,9 +365,7 @@ export function SkillEditView({
 										onClick={() => setBodyTab("edit")}
 										role="tab"
 										aria-selected={bodyTab === "edit"}
-									>
-										Edit
-									</button>
+									>编辑</button>
 									<button
 										type="button"
 										className={cn(
@@ -382,11 +376,8 @@ export function SkillEditView({
 										onClick={() => setBodyTab("preview")}
 										role="tab"
 										aria-selected={bodyTab === "preview"}
-									>
-										Preview
-									</button>
-									<span className="text-muted-foreground ml-auto pr-1 text-xs">
-										Use <code className="font-mono">@</code> to reference files
+									>预览</button>
+									<span className="text-muted-foreground ml-auto pr-1 text-xs">使用<code className="font-mono">@</code> to reference files
 									</span>
 								</div>
 								<div className="min-h-0 grow overflow-y-auto">
@@ -455,19 +446,15 @@ export function SkillEditView({
 					data-testid="skill-cancel-btn"
 					onClick={onCancel}
 					className="text-muted-foreground hover:bg-transparent hover:text-red-600 dark:hover:text-red-400"
-				>
-					Cancel
-				</Button>
+				>取消</Button>
 				<Button variant="outline" size="sm" data-testid="skill-preview-btn" onClick={() => setShowPreviewDialog(true)}>
-					<Eye className="h-3.5 w-3.5" />
-					Preview Raw SKILL.md
-				</Button>
+					<Eye className="h-3.5 w-3.5" />预览原始 SKILL.md</Button>
 				{isCreate ? (
 					<Popover open={versionPopover != null} onOpenChange={(open) => !open && closeVersionPopover()}>
 						<PopoverAnchor asChild>
 							<Button size="sm" data-testid="skill-create-save-btn" onClick={() => openVersionPopover(true)} disabled={isSaving}>
 								{isSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
-								{isSaving ? "Creating..." : "Create Skill"}
+								{isSaving ? "Creating..." : "创建技能"}
 							</Button>
 						</PopoverAnchor>
 						<PopoverContent align="end" className="w-max">
@@ -497,7 +484,7 @@ export function SkillEditView({
 									disabled={isSaving}
 								>
 									{isSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-									{isSaving ? "Saving..." : "Save"}
+									{isSaving ? "Saving..." : "保存"}
 								</Button>
 							</PopoverAnchor>
 							<PopoverContent align="end" className="w-max">
@@ -548,7 +535,7 @@ export function SkillEditView({
 					className="h-[90vh] w-full border-0 p-0 sm:w-[85vw] sm:max-w-[85vw] md:w-[75vw] md:max-w-[75vw]"
 				>
 					<DialogHeader className="sr-only">
-						<DialogTitle>SKILL.md Preview</DialogTitle>
+						<DialogTitle>SKILL.md 预览</DialogTitle>
 					</DialogHeader>
 					<div className="bg-muted relative overflow-hidden rounded-sm border shadow-lg">
 						<div className="absolute top-3 right-3 z-10 flex items-center gap-1">
@@ -564,7 +551,7 @@ export function SkillEditView({
 							</Button>
 							<DialogClose className="text-muted-foreground hover:bg-background/80 hover:text-foreground cursor-pointer rounded-sm p-1.5 transition-colors">
 								<X className="h-4 w-4" />
-								<span className="sr-only">Close</span>
+								<span className="sr-only">关闭</span>
 							</DialogClose>
 						</div>
 						<ScrollArea className="h-dvh" viewportClassName="bg-muted">
@@ -629,7 +616,7 @@ function DetailsEditorPane({
 		<div className="flex h-full min-h-0 flex-col overflow-hidden">
 			<ScrollArea className="min-h-0 flex-1 rounded-sm border">
 				<div className="flex flex-col gap-8 p-4">
-					<FormSection title="Description">
+					<FormSection title="描述">
 						<div className="flex flex-col gap-2">
 							<Textarea
 								data-testid="skill-description-input"
@@ -638,7 +625,7 @@ function DetailsEditorPane({
 									form.setDescription(e.target.value);
 									form.validateField("description", e.target.value);
 								}}
-								placeholder="What does this skill do?"
+								placeholder="这个技能是做什么的？"
 								rows={3}
 								className={form.errors.description ? "border-destructive" : undefined}
 							/>
@@ -651,35 +638,35 @@ function DetailsEditorPane({
 						</div>
 					</FormSection>
 
-					<FormSection title="Spec Fields">
+					<FormSection title="规范字段">
 						<div className="grid grid-cols-3 gap-4">
 							<div className="flex flex-col gap-1">
-								<Label className="text-muted-foreground text-xs">License</Label>
+								<Label className="text-muted-foreground text-xs">许可证</Label>
 								<Input
 									data-testid="skill-license-input"
 									value={form.license}
 									onChange={(e) => form.setLicense(e.target.value)}
-									placeholder="MIT (optional)"
+									placeholder="MIT（可选）"
 									className="h-8 text-sm"
 								/>
 							</div>
 							<div className="flex flex-col gap-1">
-								<Label className="text-muted-foreground text-xs">Compatibility</Label>
+								<Label className="text-muted-foreground text-xs">兼容性</Label>
 								<Input
 									data-testid="skill-compatibility-input"
 									value={form.compatibility}
 									onChange={(e) => form.setCompatibility(e.target.value)}
-									placeholder="Claude Code, Codex (optional)"
+									placeholder="Claude Code、Codex（可选）"
 									className="h-8 text-sm"
 								/>
 							</div>
 							<div className="flex flex-col gap-1">
-								<Label className="text-muted-foreground text-xs">Allowed Tools</Label>
+								<Label className="text-muted-foreground text-xs">允许的工具</Label>
 								<Input
 									data-testid="skill-allowed-tools-input"
 									value={form.allowedTools}
 									onChange={(e) => form.setAllowedTools(e.target.value)}
-									placeholder="Bash Read Grep (optional)"
+									placeholder="Bash 读取 Grep（可选）"
 									className="h-8 text-sm"
 								/>
 							</div>
@@ -687,7 +674,7 @@ function DetailsEditorPane({
 					</FormSection>
 
 					<FormSection
-						title="Metadata"
+						title="元数据"
 						helperText={
 							<>
 								Flat key-value pairs nested under <code className="font-mono">metadata:</code> in SKILL.md
@@ -704,7 +691,7 @@ function DetailsEditorPane({
 						/>
 					</FormSection>
 
-					<FormSection title="Extra Frontmatter" helperText="Valid JSON merged into the SKILL.md YAML frontmatter">
+					<FormSection title="附加 Frontmatter" helperText="合并到 SKILL.md YAML frontmatter 中的有效 JSON">
 						<div className="flex flex-col gap-2">
 							<div className="h-64 overflow-hidden rounded-sm border">
 								<CodeEditor
@@ -775,7 +762,7 @@ function VersionPopoverBody({
 				</p>
 			</div>
 			<div className="flex flex-col gap-1.5">
-				<Label className="text-muted-foreground text-xs">Version</Label>
+				<Label className="text-muted-foreground text-xs">版本</Label>
 				<div className="flex items-center gap-2">
 					{!isCreate && previousVersion && (
 						<>
@@ -806,15 +793,13 @@ function VersionPopoverBody({
 						{versionError}
 					</p>
 				) : (
-					!isCreate && <p className="text-muted-foreground text-xs">Bump major (2.x.x), minor (1.1.x), or patch (1.0.1).</p>
+					!isCreate && <p className="text-muted-foreground text-xs">升级主版本 (2.x.x)、次版本 (1.1.x) 或补丁版本 (1.0.1)。</p>
 				)}
 			</div>
 			<div className="mt-4 flex justify-end gap-2">
-				<Button variant="ghost" size="sm" onClick={onClose}>
-					Cancel
-				</Button>
+				<Button variant="ghost" size="sm" onClick={onClose}>取消</Button>
 				<Button size="sm" data-testid="skill-version-confirm-btn" disabled={!canSave} onClick={submit}>
-					{isCreate ? "Create" : serve ? "Save & Serve" : "Save"}
+					{isCreate ? "创建" : serve ? "Save & Serve" : "保存"}
 				</Button>
 			</div>
 		</>

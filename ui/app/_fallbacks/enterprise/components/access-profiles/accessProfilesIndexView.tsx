@@ -7,8 +7,8 @@ export default function AccessProfilesIndexView() {
 			<ContactUsView
 				className="mx-auto min-h-[80vh]"
 				icon={<ShieldCheck className="h-[5.5rem] w-[5.5rem]" strokeWidth={1} />}
-				title="Unlock access profiles for better performance"
-				description="This feature is a part of the Bifrost enterprise license. Create access profiles to control access to your resources."
+				title="解锁访问配置文件以获得更好性能"
+				description="此功能属于 Bifrost 企业版许可的一部分。创建访问配置文件以控制对资源的访问。"
 				readmeLink="https://docs.getbifrost.ai/enterprise/access-profiles"
 				testIdPrefix="access-profiles"
 			/>

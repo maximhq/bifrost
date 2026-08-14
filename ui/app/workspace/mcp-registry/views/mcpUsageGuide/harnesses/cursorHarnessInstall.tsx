@@ -46,8 +46,8 @@ export function CursorHarnessInstall({
 						<SelectValue />
 					</SelectTrigger>
 					<SelectContent>
-						<SelectItem value="global">Global</SelectItem>
-						<SelectItem value="project">Project</SelectItem>
+						<SelectItem value="global">全局</SelectItem>
+						<SelectItem value="project">项目</SelectItem>
 					</SelectContent>
 				</Select>
 			}
@@ -55,7 +55,7 @@ export function CursorHarnessInstall({
 			deeplink={deeplink}
 			emptyMessage={virtualKey ? "Select servers or use Gateway root." : "Select a virtual key to generate the config."}
 			harnessName="Cursor"
-			label="Config"
+			label="配置"
 			logoSrc="/images/harness/cursor.svg"
 			registrationLabel={`${configPath} · ${getRegistrationLabel(serverScope, selectedServers)}`}
 		/>

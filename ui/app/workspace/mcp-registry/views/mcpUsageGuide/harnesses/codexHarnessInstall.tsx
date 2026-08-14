@@ -37,8 +37,8 @@ export function CodexHarnessInstall({
 							<SelectValue />
 						</SelectTrigger>
 						<SelectContent>
-							<SelectItem value="user">User</SelectItem>
-							<SelectItem value="project">Project</SelectItem>
+							<SelectItem value="user">用户</SelectItem>
+							<SelectItem value="project">项目</SelectItem>
 						</SelectContent>
 					</Select>
 				}

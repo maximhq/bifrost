@@ -76,9 +76,7 @@ export default function TextArrayFieldView(props: Props) {
 					setShouldFocus(true);
 					props.onChange([...((config[field.id] as string[]) || []), ""]);
 				}}
-			>
-				Add string
-			</Button>
+			>添加字符串</Button>
 		</div>
 	);
 }

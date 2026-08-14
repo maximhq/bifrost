@@ -172,29 +172,25 @@ function GoroutineHealthSection({
 			<div className="mb-2 flex items-center justify-between">
 				<div className="flex items-center gap-2">
 					<Activity className="h-3 w-3 text-emerald-400" />
-					<span className="text-zinc-400">Goroutine Health</span>
+					<span className="text-zinc-400">Goroutine 健康状态</span>
 				</div>
 				<div className="flex items-center gap-2">
 					{goroutineTrend?.isGrowing && (
-						<span className="flex items-center gap-1 text-amber-400" title="Goroutine count growing">
+						<span className="flex items-center gap-1 text-amber-400" title="Goroutine 数量增长">
 							<TrendingUp className="h-3 w-3" />
 							<span className="text-[10px]">+{goroutineTrend.growthPercent.toFixed(0)}%</span>
 						</span>
 					)}
 					{goroutineHealth === "critical" && (
 						<span className="flex items-center gap-1 rounded bg-red-500/20 px-1.5 py-0.5 text-[10px] text-red-400">
-							<AlertTriangle className="h-3 w-3" />
-							Stuck
-						</span>
+							<AlertTriangle className="h-3 w-3" />卡住</span>
 					)}
 					{goroutineHealth === "warning" && (
 						<span className="flex items-center gap-1 rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] text-amber-400">
-							<AlertTriangle className="h-3 w-3" />
-							Long Wait
-						</span>
+							<AlertTriangle className="h-3 w-3" />长时间等待</span>
 					)}
 					{goroutineHealth === "healthy" && (
-						<span className="rounded bg-emerald-500/20 px-1.5 py-0.5 text-[10px] text-emerald-400">Healthy</span>
+						<span className="rounded bg-emerald-500/20 px-1.5 py-0.5 text-[10px] text-emerald-400">健康</span>
 					)}
 				</div>
 			</div>
@@ -202,19 +198,19 @@ function GoroutineHealthSection({
 			{/* Summary stats */}
 			<div className="mb-2 grid grid-cols-4 gap-2 rounded bg-zinc-800/50 p-2">
 				<div className="flex flex-col items-center">
-					<span className="text-[10px] text-zinc-500">Total</span>
+					<span className="text-[10px] text-zinc-500">总计</span>
 					<span className="font-semibold text-emerald-400">{total_goroutines}</span>
 				</div>
 				<div className="flex flex-col items-center">
-					<span className="text-[10px] text-zinc-500">Background</span>
+					<span className="text-[10px] text-zinc-500">后台</span>
 					<span className="font-semibold text-blue-400">{summary.background}</span>
 				</div>
 				<div className="flex flex-col items-center">
-					<span className="text-[10px] text-zinc-500">Per-Request</span>
+					<span className="text-[10px] text-zinc-500">每请求</span>
 					<span className="font-semibold text-amber-400">{summary.per_request}</span>
 				</div>
 				<div className="flex flex-col items-center">
-					<span className="text-[10px] text-zinc-500">Stuck</span>
+					<span className="text-[10px] text-zinc-500">卡住</span>
 					<span className={`font-semibold ${summary.potentially_stuck > 0 ? "text-red-400" : "text-zinc-500"}`}>
 						{summary.potentially_stuck}
 					</span>
@@ -225,12 +221,12 @@ function GoroutineHealthSection({
 			{(problemGoroutines.length > 0 || skippedGoroutines.size > 0) && (
 				<div className="space-y-1">
 					<div className="flex items-center justify-between">
-						<span className="text-[10px] text-zinc-500">Potential Leaks</span>
+						<span className="text-[10px] text-zinc-500">潜在泄漏</span>
 						{skippedGoroutines.size > 0 && (
 							<button
 								onClick={onClearSkipped}
 								className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200"
-								title="Clear all hidden goroutines"
+								title="清除所有隐藏的 goroutine"
 							>
 								<RotateCcw className="h-2.5 w-2.5" />
 								{skippedGoroutines.size} hidden
@@ -276,17 +272,15 @@ function GoroutineHealthSection({
 										if (filePath) onSkipGoroutine(filePath);
 									}}
 									className="absolute top-1.5 right-1 shrink-0 rounded p-1 text-zinc-500 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-zinc-600 hover:text-zinc-300"
-									title="Hide goroutines from this file"
+									title="隐藏此文件中的 goroutine"
 								>
 									<EyeOff className="h-3 w-3" />
 								</button>
 								{expandedGoroutines.has(gid) && (
 									<div className="border-t border-zinc-700 bg-zinc-900/50 px-2 py-1.5">
-										<div className="mb-1 text-[10px] text-zinc-500">
-											State: <span className="text-zinc-400">{g.state}</span>
+										<div className="mb-1 text-[10px] text-zinc-500">状态：<span className="text-zinc-400">{g.state}</span>
 											{g.wait_reason && (
-												<span className="ml-2">
-													Wait: <span className="text-amber-400">{g.wait_reason}</span>
+												<span className="ml-2">等待：<span className="text-amber-400">{g.wait_reason}</span>
 												</span>
 											)}
 										</div>
@@ -305,7 +299,7 @@ function GoroutineHealthSection({
 					})}
 
 					{problemGoroutines.length === 0 && skippedGoroutines.size > 0 && (
-						<div className="rounded bg-zinc-800/30 py-2 text-center text-[10px] text-zinc-500">All potential leaks hidden</div>
+						<div className="rounded bg-zinc-800/30 py-2 text-center text-[10px] text-zinc-500">所有潜在泄漏已隐藏</div>
 					)}
 					{problemGoroutines.length === 0 &&
 						skippedGoroutines.size === 0 &&
@@ -323,7 +317,7 @@ function GoroutineHealthSection({
 
 			{/* No problems message */}
 			{problemGoroutines.length === 0 && summary.long_waiting === 0 && summary.potentially_stuck === 0 && (
-				<div className="rounded bg-zinc-800/30 py-2 text-center text-[10px] text-zinc-500">No goroutine leaks detected</div>
+				<div className="rounded bg-zinc-800/30 py-2 text-center text-[10px] text-zinc-500">未检测到 goroutine 泄漏</div>
 			)}
 		</div>
 	);
@@ -463,7 +457,7 @@ export function DevProfiler(): React.ReactNode {
 			<button
 				onClick={handleToggleVisible}
 				className="fixed right-4 bottom-4 z-50 flex h-10 w-10 items-center justify-center rounded-full bg-zinc-900 text-white shadow-lg transition-all hover:bg-zinc-800"
-				title="Show Dev Profiler"
+				title="显示开发性能分析器"
 			>
 				<Activity className="h-5 w-5" />
 			</button>
@@ -475,46 +469,46 @@ export function DevProfiler(): React.ReactNode {
 			{/* Header */}
 			<div className="flex items-center justify-between border-b border-zinc-700 bg-zinc-800 px-3 py-2">
 				<div className="flex items-center gap-2">
-					<span className="font-semibold text-emerald-400">Dev Profiler</span>
+					<span className="font-semibold text-emerald-400">开发性能分析器</span>
 					{isLoading && <span className="ml-2 h-2 w-2 animate-pulse rounded-full bg-amber-400" />}
 				</div>
 				<div className="flex items-center gap-1">
 					<button
 						onClick={handleToggleExpand}
 						className="rounded p-1 transition-colors hover:bg-zinc-700"
-						title={isExpanded ? "Collapse" : "Expand"}
+						title={isExpanded ? "Collapse" : "展开"}
 					>
 						{isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}
 					</button>
-					<button onClick={handleToggleVisible} className="rounded p-1 transition-colors hover:bg-zinc-700" title="Minimize">
+					<button onClick={handleToggleVisible} className="rounded p-1 transition-colors hover:bg-zinc-700" title="最小化">
 						<ChevronDown className="h-4 w-4" />
 					</button>
-					<button onClick={handleDismiss} className="rounded p-1 transition-colors hover:bg-zinc-700" title="Dismiss">
+					<button onClick={handleDismiss} className="rounded p-1 transition-colors hover:bg-zinc-700" title="关闭">
 						<X className="h-4 w-4" />
 					</button>
 				</div>
 			</div>
 
-			{Boolean(error) && <div className="border-b border-zinc-700 bg-red-900/30 px-3 py-2 text-red-300">Failed to load profiling data</div>}
+			{Boolean(error) && <div className="border-b border-zinc-700 bg-red-900/30 px-3 py-2 text-red-300">无法加载性能分析数据</div>}
 
 			{isExpanded && data && (
 				<div className="custom-scrollbar max-h-[70vh] overflow-x-hidden overflow-y-auto">
 					{/* Current Stats */}
 					<div className="grid grid-cols-3 gap-2 border-b border-zinc-700 p-3">
 						<div className="flex flex-col">
-							<span className="text-zinc-500">CPU Usage</span>
+							<span className="text-zinc-500">CPU 使用率</span>
 							<span className="font-semibold text-orange-400">{data.cpu.usage_percent.toFixed(1)}%</span>
 						</div>
 						<div className="flex flex-col">
-							<span className="text-zinc-500">Heap Alloc</span>
+							<span className="text-zinc-500">堆分配</span>
 							<span className="font-semibold text-cyan-400">{formatBytes(data.memory.alloc)}</span>
 						</div>
 						<div className="flex flex-col">
-							<span className="text-zinc-500">Heap In-Use</span>
+							<span className="text-zinc-500">堆使用中</span>
 							<span className="font-semibold text-blue-400">{formatBytes(data.memory.heap_inuse)}</span>
 						</div>
 						<div className="flex flex-col">
-							<span className="text-zinc-500">System</span>
+							<span className="text-zinc-500">系统</span>
 							<span className="font-semibold text-purple-400">{formatBytes(data.memory.sys)}</span>
 						</div>
 						<div className="flex flex-col">
@@ -522,7 +516,7 @@ export function DevProfiler(): React.ReactNode {
 							<span className="font-semibold text-emerald-400">{data.runtime.num_goroutine}</span>
 						</div>
 						<div className="flex flex-col">
-							<span className="text-zinc-500">GC Pause</span>
+							<span className="text-zinc-500">GC 暂停</span>
 							<span className="font-semibold text-amber-400">{formatNs(data.runtime.gc_pause_ns)}</span>
 						</div>
 					</div>
@@ -531,7 +525,7 @@ export function DevProfiler(): React.ReactNode {
 					<div className="border-b border-zinc-700 p-3">
 						<div className="mb-2 flex items-center gap-2">
 							<Cpu className="h-3 w-3 text-orange-400" />
-							<span className="text-zinc-400">CPU Usage (last 5 min)</span>
+							<span className="text-zinc-400">CPU 使用率（最近 5 分钟）</span>
 						</div>
 						<div className="h-24">
 							<ResponsiveContainer width="100%" height="100%">
@@ -597,13 +591,9 @@ export function DevProfiler(): React.ReactNode {
 						</div>
 						<div className="mt-1 flex gap-4 text-[10px]">
 							<span className="flex items-center gap-1">
-								<span className="h-2 w-2 rounded-full bg-orange-500" />
-								CPU %
-							</span>
+								<span className="h-2 w-2 rounded-full bg-orange-500" />CPU %</span>
 							<span className="flex items-center gap-1">
-								<span className="h-2 w-2 rounded-full bg-emerald-400" />
-								Goroutines
-							</span>
+								<span className="h-2 w-2 rounded-full bg-emerald-400" />Goroutines</span>
 						</div>
 					</div>
 
@@ -611,7 +601,7 @@ export function DevProfiler(): React.ReactNode {
 					<div className="border-b border-zinc-700 p-3">
 						<div className="mb-2 flex items-center gap-2">
 							<HardDrive className="h-3 w-3 text-cyan-400" />
-							<span className="text-zinc-400">Memory (last 5 min)</span>
+							<span className="text-zinc-400">内存（最近 5 分钟）</span>
 						</div>
 						<div className="h-24">
 							<ResponsiveContainer width="100%" height="100%">
@@ -644,27 +634,23 @@ export function DevProfiler(): React.ReactNode {
 										}}
 										labelStyle={{ color: "#a1a1aa" }}
 									/>
-									<Area type="monotone" dataKey="alloc" stroke="#22d3ee" strokeWidth={1.5} fill="url(#allocGradient)" name="Alloc" />
+									<Area type="monotone" dataKey="alloc" stroke="#22d3ee" strokeWidth={1.5} fill="url(#allocGradient)" name="分配" />
 									<Area
 										type="monotone"
 										dataKey="heapInuse"
 										stroke="#3b82f6"
 										strokeWidth={1.5}
 										fill="url(#heapGradient)"
-										name="Heap In-Use"
+										name="堆使用中"
 									/>
 								</AreaChart>
 							</ResponsiveContainer>
 						</div>
 						<div className="mt-1 flex gap-4 text-[10px]">
 							<span className="flex items-center gap-1">
-								<span className="h-2 w-2 rounded-full bg-cyan-400" />
-								Alloc
-							</span>
+								<span className="h-2 w-2 rounded-full bg-cyan-400" />分配</span>
 							<span className="flex items-center gap-1">
-								<span className="h-2 w-2 rounded-full bg-blue-500" />
-								Heap In-Use
-							</span>
+								<span className="h-2 w-2 rounded-full bg-blue-500" />堆使用中</span>
 						</div>
 					</div>
 
@@ -672,7 +658,7 @@ export function DevProfiler(): React.ReactNode {
 					<div className="border-b border-zinc-700 p-3">
 						<div className="mb-2 flex items-center gap-2">
 							<HardDrive className="h-3 w-3 text-rose-400" />
-							<span className="text-zinc-400">Top Allocations</span>
+							<span className="text-zinc-400">最高分配</span>
 						</div>
 						<div className="space-y-1">
 							{(data.top_allocations ?? []).map((alloc, i) => (

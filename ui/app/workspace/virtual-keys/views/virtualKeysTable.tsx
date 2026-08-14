@@ -77,7 +77,7 @@ const formatResetDuration = (duration: string) => resetDurationLabels[duration] 
 type ExportScope = "current_page" | "all";
 
 function virtualKeysToCSV(vks: VirtualKey[]): string {
-	const headers = ["Name", "Status", "Assigned To", "Budget Limit", "Budget Spent", "Budget Reset", "Description", "Created At"];
+	const headers = ["名称", "状态", "分配给", "Budget Limit", "Budget Spent", "Budget Reset", "描述", "Created At"];
 	const rows = vks.map((vk) => {
 		const isExhausted =
 			vk.budgets?.some((b) => b.current_usage >= getEffectiveBudgetLimit(b)) ||
@@ -88,7 +88,7 @@ function virtualKeysToCSV(vks: VirtualKey[]): string {
 				vk.rate_limit?.request_max_limit &&
 				vk.rate_limit.request_current_usage >= vk.rate_limit.request_max_limit);
 		const isExpired = !!vk.expires_at && Date.now() >= new Date(vk.expires_at).getTime();
-		const status = !vk.is_active ? "Inactive" : isExpired ? "Expired" : isExhausted ? "Exhausted" : "Active";
+		const status = !vk.is_active ? "Inactive" : isExpired ? "已过期" : isExhausted ? "已耗尽" : "已激活";
 		const assignedTo = vk.team ? `Team: ${vk.team.name}` : vk.customer ? `Customer: ${vk.customer.name}` : "";
 		const budgetLimit = vk.budgets?.length ? vk.budgets.map((b) => formatCurrency(getEffectiveBudgetLimit(b))).join("; ") : "";
 		const budgetSpent = vk.budgets?.length ? vk.budgets.map((b) => formatCurrency(b.current_usage)).join("; ") : "";
@@ -226,7 +226,7 @@ function VKActionsMenu({
 						variant="ghost"
 						size="icon"
 						className="h-8 w-8"
-						aria-label="Virtual key actions"
+						aria-label="虚拟密钥操作"
 						data-testid={`vk-actions-btn-${vk.name}`}
 					>
 						<MoreHorizontal className="h-4 w-4" />
@@ -243,14 +243,10 @@ function VKActionsMenu({
 							setIsOpen(false);
 						}}
 					>
-						<Edit className="h-4 w-4" />
-						Edit
-					</DropdownMenuItem>
+						<Edit className="h-4 w-4" />编辑</DropdownMenuItem>
 					<DropdownMenuItem asChild className="cursor-pointer" data-testid={`vk-view-logs-btn-${vk.name}`}>
 						<Link to="/workspace/logs" search={{ virtual_key_ids: [vk.id] }} onClick={() => setIsOpen(false)}>
-							<ScrollText className="h-4 w-4" />
-							View logs
-						</Link>
+							<ScrollText className="h-4 w-4" />查看日志</Link>
 					</DropdownMenuItem>
 					<DropdownMenuItem
 						variant="destructive"
@@ -264,15 +260,13 @@ function VKActionsMenu({
 							setIsOpen(false);
 						}}
 					>
-						<Trash2 className="h-4 w-4" />
-						Delete
-					</DropdownMenuItem>
+						<Trash2 className="h-4 w-4" />删除</DropdownMenuItem>
 				</DropdownMenuContent>
 			</DropdownMenu>
 			<AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
 				<AlertDialogContent>
 					<AlertDialogHeader>
-						<AlertDialogTitle>Delete Virtual Key</AlertDialogTitle>
+						<AlertDialogTitle>删除虚拟密钥</AlertDialogTitle>
 						<AlertDialogDescription>
 							Are you sure you want to delete &quot;
 							{vk.name.length > 20 ? `${vk.name.slice(0, 20)}...` : vk.name}
@@ -280,14 +274,14 @@ function VKActionsMenu({
 						</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
-						<AlertDialogCancel data-testid={`vk-delete-cancel-${vk.name}`}>Cancel</AlertDialogCancel>
+						<AlertDialogCancel data-testid={`vk-delete-cancel-${vk.name}`}>取消</AlertDialogCancel>
 						<AlertDialogAction
 							onClick={() => onDelete(vk.id)}
 							disabled={isDeleting}
 							className="bg-destructive hover:bg-destructive/90"
 							data-testid={`vk-delete-confirm-${vk.name}`}
 						>
-							{isDeleting ? "Deleting..." : "Delete"}
+							{isDeleting ? "删除中..." : "删除"}
 						</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>
@@ -668,12 +662,12 @@ export default function VirtualKeysTable({
 			<Dialog open={showExportDialog} onOpenChange={setShowExportDialog}>
 				<DialogContent className="sm:max-w-[425px]">
 					<DialogHeader className="pb-0">
-						<DialogTitle>Export Virtual Keys</DialogTitle>
-						<DialogDescription>Download as CSV with current filters and sorting applied.</DialogDescription>
+						<DialogTitle>导出虚拟密钥</DialogTitle>
+						<DialogDescription>按当前筛选和排序条件下载为 CSV。</DialogDescription>
 					</DialogHeader>
 					<div className="space-y-4">
 						<div className="space-y-2">
-							<Label className="text-sm">Export scope</Label>
+							<Label className="text-sm">导出范围</Label>
 							<div className="grid grid-cols-2 gap-2" data-testid="vk-export-scope">
 								<button
 									type="button"
@@ -685,7 +679,7 @@ export default function VirtualKeysTable({
 											: "border-border text-muted-foreground hover:border-primary/50 hover:text-foreground",
 									)}
 								>
-									<span className="font-medium">Current page</span>
+									<span className="font-medium">当前页</span>
 									<span className="text-muted-foreground text-xs">{virtualKeys.length} entries</span>
 								</button>
 								<button
@@ -698,7 +692,7 @@ export default function VirtualKeysTable({
 											: "border-border text-muted-foreground hover:border-primary/50 hover:text-foreground",
 									)}
 								>
-									<span className="font-medium">All entries</span>
+									<span className="font-medium">所有条目</span>
 									<span className="text-muted-foreground text-xs">{totalCount} total</span>
 								</button>
 							</div>
@@ -706,8 +700,7 @@ export default function VirtualKeysTable({
 
 						{exportScope === "all" && (
 							<div className="space-y-2">
-								<Label htmlFor="export-max-limit" className="text-sm">
-									Max entries <span className="text-muted-foreground font-normal">(optional)</span>
+								<Label htmlFor="export-max-limit" className="text-sm">最大条目数<span className="text-muted-foreground font-normal">(optional)</span>
 								</Label>
 								<Input
 									id="export-max-limit"
@@ -741,20 +734,14 @@ export default function VirtualKeysTable({
 						</div>
 					</div>
 					<DialogFooter className="pt-0">
-						<Button variant="outline" onClick={() => setShowExportDialog(false)} disabled={isExporting}>
-							Cancel
-						</Button>
+						<Button variant="outline" onClick={() => setShowExportDialog(false)} disabled={isExporting}>取消</Button>
 						<Button onClick={handleExportCSV} disabled={isExporting} data-testid="vk-export-confirm-btn">
 							{isExporting ? (
 								<>
-									<Loader2 className="h-4 w-4 animate-spin" />
-									Exporting...
-								</>
+									<Loader2 className="h-4 w-4 animate-spin" />正在导出...</>
 							) : (
 								<>
-									<Download className="h-4 w-4" />
-									Export CSV
-								</>
+									<Download className="h-4 w-4" />导出 CSV</>
 							)}
 						</Button>
 					</DialogFooter>
@@ -764,7 +751,7 @@ export default function VirtualKeysTable({
 			<AlertDialog open={showBulkRotateDialog} onOpenChange={setShowBulkRotateDialog}>
 				<AlertDialogContent>
 					<AlertDialogHeader>
-						<AlertDialogTitle>Rotate selected virtual keys?</AlertDialogTitle>
+						<AlertDialogTitle>轮换选中的虚拟密钥？</AlertDialogTitle>
 						<AlertDialogDescription>
 							This will replace the secret value for {selectedCount} selected virtual {selectedCount === 1 ? "key" : "keys"}. IDs, budgets,
 							rate limits, provider permissions, MCP access, and assignments stay the same. Previous key values will stop working
@@ -772,7 +759,7 @@ export default function VirtualKeysTable({
 						</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
-						<AlertDialogCancel data-testid="vk-bulk-rotate-cancel-btn">Cancel</AlertDialogCancel>
+						<AlertDialogCancel data-testid="vk-bulk-rotate-cancel-btn">取消</AlertDialogCancel>
 						<AlertDialogAction
 							onClick={handleBulkRotate}
 							disabled={isBulkRotating || selectedCount === 0}
@@ -787,8 +774,8 @@ export default function VirtualKeysTable({
 			<div className="flex min-h-0 w-full grow flex-col overflow-hidden">
 				<div className="mb-4 flex shrink-0 items-center justify-between">
 					<div>
-						<h2 className="text-lg font-semibold">Virtual Keys</h2>
-						<p className="text-muted-foreground text-sm">Manage virtual keys, their permissions, budgets, and rate limits.</p>
+						<h2 className="text-lg font-semibold">虚拟密钥</h2>
+						<p className="text-muted-foreground text-sm">管理虚拟密钥及其权限、预算和速率限制。</p>
 					</div>
 					<div className="flex items-center gap-2">
 						{selectedCount > 0 && (
@@ -803,13 +790,9 @@ export default function VirtualKeysTable({
 							</Button>
 						)}
 						<Button variant="outline" onClick={openExportDialog} disabled={virtualKeys.length === 0} data-testid="vk-export-btn">
-							<Download className="h-4 w-4" />
-							Export CSV
-						</Button>
+							<Download className="h-4 w-4" />导出 CSV</Button>
 						<Button onClick={handleAddVirtualKey} disabled={!hasCreateAccess} data-testid="create-vk-btn">
-							<Plus className="h-4 w-4" />
-							Add Virtual Key
-						</Button>
+							<Plus className="h-4 w-4" />添加虚拟密钥</Button>
 					</div>
 				</div>
 
@@ -818,8 +801,8 @@ export default function VirtualKeysTable({
 					<div className="relative max-w-sm flex-1">
 						<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 						<Input
-							aria-label="Search virtual keys by name"
-							placeholder="Search by name..."
+							aria-label="按名称搜索虚拟密钥"
+							placeholder="按名称搜索..."
 							value={search}
 							onChange={(e) => onSearchChange(e.target.value)}
 							className="pl-9"
@@ -832,13 +815,13 @@ export default function VirtualKeysTable({
 						<CustomerSelector
 							value={customerFilter}
 							onChange={onCustomerFilterChange}
-							placeholder="All Customers"
+							placeholder="所有客户"
 							triggerClassName="h-9"
 							className="w-[250px]"
 						/>
 						<FilterClearButton
 							show={!!customerFilter}
-							label="Clear customer filter"
+							label="清除客户筛选"
 							onClear={() => onCustomerFilterChange("")}
 							data-testid="vk-customer-filter-clear-btn"
 						/>
@@ -848,13 +831,13 @@ export default function VirtualKeysTable({
 						<TeamSelector
 							value={teamFilter}
 							onChange={onTeamFilterChange}
-							placeholder="All Teams"
+							placeholder="所有团队"
 							triggerClassName="h-9"
 							className="w-[250px]"
 						/>
 						<FilterClearButton
 							show={!!teamFilter}
-							label="Clear team filter"
+							label="清除团队筛选"
 							onClear={() => onTeamFilterChange("")}
 							data-testid="vk-team-filter-clear-btn"
 						/>
@@ -867,13 +850,13 @@ export default function VirtualKeysTable({
 							<UserPicker
 								value={userFilter}
 								onChange={onUserFilterChange}
-								placeholder="All Users"
+								placeholder="所有用户"
 								triggerClassName="h-9"
 								className="w-[250px]"
 							/>
 							<FilterClearButton
 								show={!!userFilter}
-								label="Clear user filter"
+								label="清除用户筛选"
 								onClear={() => onUserFilterChange("")}
 								data-testid="vk-user-filter-clear-btn"
 							/>
@@ -889,21 +872,21 @@ export default function VirtualKeysTable({
 									<Checkbox
 										checked={allVisibleSelected || (someVisibleSelected ? "indeterminate" : false)}
 										onCheckedChange={(checked) => toggleSelectAllVisible(checked === true)}
-										aria-label="Select all virtual keys on this page"
+										aria-label="选择此页上的所有虚拟密钥"
 										data-testid="vk-select-all-checkbox"
 									/>
 								</TableHead>
 								<TableHead className="w-[250px]">
-									<SortableHeader column="name" label="Name" />
+									<SortableHeader column="name" label="名称" />
 								</TableHead>
-								<TableHead className="w-[160px]">Assigned To</TableHead>
-								<TableHead className="w-[440px]">Key</TableHead>
+								<TableHead className="w-[160px]">分配给</TableHead>
+								<TableHead className="w-[440px]">密钥</TableHead>
 								<TableHead className="w-[200px]">
-									<SortableHeader column="budget_spent" label="Budget" />
+									<SortableHeader column="budget_spent" label="预算" />
 								</TableHead>
-								<TableHead className="w-[200px]">Rate Limits</TableHead>
+								<TableHead className="w-[200px]">速率限制</TableHead>
 								<TableHead className="w-[120px]">
-									<SortableHeader column="status" label="Status" />
+									<SortableHeader column="status" label="状态" />
 								</TableHead>
 								<TableHead className={`bg-muted sticky right-0 z-30 w-[56px] text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
 							</TableRow>
@@ -912,7 +895,7 @@ export default function VirtualKeysTable({
 							{virtualKeys.length === 0 ? (
 								<TableRow>
 									<TableCell colSpan={8} className="h-24 text-center">
-										<span className="text-muted-foreground text-sm">No matching virtual keys found.</span>
+										<span className="text-muted-foreground text-sm">未找到匹配的虚拟密钥。</span>
 									</TableCell>
 								</TableRow>
 							) : (
@@ -975,9 +958,7 @@ export default function VirtualKeysTable({
 											</TableCell>
 											<TableCell onClick={(e) => e.stopPropagation()}>
 												{showExpiredBadge ? (
-													<Badge variant="destructive" className="text-xs">
-														Expired
-													</Badge>
+													<Badge variant="destructive" className="text-xs">已过期</Badge>
 												) : (
 													<VKActiveSwitch vk={vk} hasUpdateAccess={hasUpdateAccess} onToggle={handleToggleActive} />
 												)}
@@ -1018,13 +999,13 @@ export default function VirtualKeysTable({
 								onClick={() => onOffsetChange(Math.max(0, offset - limit))}
 								disabled={offset === 0}
 								data-testid="vk-pagination-prev-btn"
-								aria-label="Previous page"
+								aria-label="上一页"
 							>
 								<ChevronLeft className="size-3" />
 							</Button>
 
 							<div className="flex items-center gap-1">
-								<span>Page</span>
+								<span>页</span>
 								<span>{Math.floor(offset / limit) + 1}</span>
 								<span>of {Math.ceil(totalCount / limit)}</span>
 							</div>
@@ -1035,7 +1016,7 @@ export default function VirtualKeysTable({
 								onClick={() => onOffsetChange(offset + limit)}
 								disabled={offset + limit >= totalCount}
 								data-testid="vk-pagination-next-btn"
-								aria-label="Next page"
+								aria-label="下一页"
 							>
 								<ChevronRight className="size-3" />
 							</Button>

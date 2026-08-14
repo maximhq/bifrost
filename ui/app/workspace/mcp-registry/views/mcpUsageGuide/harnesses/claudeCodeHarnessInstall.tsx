@@ -34,9 +34,9 @@ export function ClaudeCodeHarnessInstall({
 						<SelectValue />
 					</SelectTrigger>
 					<SelectContent>
-						<SelectItem value="local">Local</SelectItem>
-						<SelectItem value="project">Project</SelectItem>
-						<SelectItem value="user">User</SelectItem>
+						<SelectItem value="local">本地</SelectItem>
+						<SelectItem value="project">项目</SelectItem>
+						<SelectItem value="user">用户</SelectItem>
 					</SelectContent>
 				</Select>
 			}

@@ -11,17 +11,17 @@ import { useEffect, useState } from "react";
 
 const externalLinks = [
 	{
-		title: "Discord Server",
+		title: "Discord 服务器",
 		url: "https://discord.gg/exN5KAydbU",
 		icon: DiscordLogoIcon,
 	},
 	{
-		title: "GitHub Repository",
+		title: "GitHub 仓库",
 		url: "https://github.com/maximhq/bifrost",
 		icon: GithubLogoIcon,
 	},
 	{
-		title: "Full Documentation",
+		title: "完整文档",
 		url: "https://docs.getbifrost.ai",
 		icon: BooksIcon,
 		strokeWidth: 1,
@@ -70,21 +70,19 @@ export default function LoginView() {
 					</div>
 
 					<div className="space-y-2 text-center">
-						<h1 className="text-foreground text-lg font-semibold">Welcome back</h1>
-						<p className="text-muted-foreground text-sm">Sign in to your account to continue</p>
+						<h1 className="text-foreground text-lg font-semibold">欢迎回来</h1>
+						<p className="text-muted-foreground text-sm">登录您的账户以继续</p>
 					</div>
 
 					<form onSubmit={handleSubmit} className="space-y-5">
 						{errorMessage && <div className="bg-destructive/10 text-destructive rounded-sm p-3 text-sm">{errorMessage}</div>}
 
 						<div className="space-y-2">
-							<Label htmlFor="username" className="text-sm font-medium">
-								Username
-							</Label>
+							<Label htmlFor="username" className="text-sm font-medium">用户名</Label>
 							<Input
 								id="username"
 								type="text"
-								placeholder="Enter your username"
+								placeholder="请输入用户名"
 								value={username}
 								onChange={(e) => setUsername(e.target.value)}
 								required
@@ -94,14 +92,12 @@ export default function LoginView() {
 						</div>
 
 						<div className="space-y-2">
-							<Label htmlFor="password" className="text-sm font-medium">
-								Password
-							</Label>
+							<Label htmlFor="password" className="text-sm font-medium">密码</Label>
 							<div className="relative">
 								<Input
 									id="password"
 									type={showPassword ? "text" : "password"}
-									placeholder="Enter your password"
+									placeholder="请输入密码"
 									value={password}
 									onChange={(e) => setPassword(e.target.value)}
 									required

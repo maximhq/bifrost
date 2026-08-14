@@ -154,11 +154,9 @@ export function SkillDetailView({
 	if (!skill) {
 		return (
 			<div className="flex w-full flex-1 flex-col items-center justify-center p-4">
-				<p className="text-muted-foreground text-sm">Skill not found</p>
+				<p className="text-muted-foreground text-sm">未找到技能</p>
 				<Button variant="outline" size="sm" className="mt-3" onClick={onBack}>
-					<ArrowLeft className="h-3.5 w-3.5" />
-					Back to list
-				</Button>
+					<ArrowLeft className="h-3.5 w-3.5" />返回列表</Button>
 			</div>
 		);
 	}
@@ -236,9 +234,7 @@ export function SkillDetailView({
 										),
 									}}
 								>
-									<Plus className="h-3.5 w-3.5" />
-									Add New Version
-								</SplitButton>
+									<Plus className="h-3.5 w-3.5" />添加新版本</SplitButton>
 								<DropdownMenu>
 									<DropdownMenuTrigger asChild>
 										<Button variant="ghost" size="icon" className="h-8 w-8" aria-label={`Actions for ${skill.name}`}>
@@ -248,9 +244,7 @@ export function SkillDetailView({
 									<DropdownMenuContent align="end">
 										<DropdownMenuItem className="cursor-pointer" asChild>
 											<a href={`${getApiBaseUrl()}/skills/serve/${encodeURIComponent(skill.name)}/download.zip`} download>
-												<Download className="h-4 w-4" />
-												Download ZIP
-											</a>
+												<Download className="h-4 w-4" />下载 ZIP</a>
 										</DropdownMenuItem>
 										{hasDeleteAccess && (
 											<DropdownMenuItem
@@ -262,9 +256,7 @@ export function SkillDetailView({
 													setDeleteDialogOpen(true);
 												}}
 											>
-												<Trash2 className="h-4 w-4" />
-												Delete
-											</DropdownMenuItem>
+												<Trash2 className="h-4 w-4" />删除</DropdownMenuItem>
 										)}
 									</DropdownMenuContent>
 								</DropdownMenu>
@@ -272,17 +264,14 @@ export function SkillDetailView({
 									<AlertDialogContent>
 										<AlertDialogHeader>
 											<AlertDialogTitle>Delete {skill.name}?</AlertDialogTitle>
-											<AlertDialogDescription>
-												This action cannot be undone. The skill, its files, and version history will be permanently deleted.
-											</AlertDialogDescription>
+											<AlertDialogDescription>此操作无法撤销。该技能及其文件和版本历史将被永久删除。</AlertDialogDescription>
 										</AlertDialogHeader>
 										<AlertDialogFooter>
-											<AlertDialogCancel>Cancel</AlertDialogCancel>
+											<AlertDialogCancel>取消</AlertDialogCancel>
 											<AlertDialogAction onClick={handleDelete} disabled={isDeleting}>
 												{isDeleting ? (
 													<>
-														<Loader2 className="h-3.5 w-3.5 animate-spin" /> Deleting...
-													</>
+														<Loader2 className="h-3.5 w-3.5 animate-spin" />删除中...</>
 												) : (
 													"Delete skill"
 												)}

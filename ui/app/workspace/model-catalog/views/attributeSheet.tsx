@@ -141,7 +141,7 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 
 	const handleSubmit = async () => {
 		if (!hasUpdateAccess) {
-			toast.error("You don't have permission to perform this action");
+			toast.error("您没有权限执行此操作");
 			return;
 		}
 
@@ -198,7 +198,7 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 				data-testid="model-catalog-attribute-sheet"
 			>
 				<SheetHeader className="flex flex-col items-start p-0 px-8 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10">
-					<SheetTitle>Edit Model Attributes</SheetTitle>
+					<SheetTitle>编辑模型属性</SheetTitle>
 					<SheetDescription>
 						Update the description and other attributes for this model. These attributes are stored on the pricing row and preserved across
 						the pricing sync.
@@ -210,14 +210,14 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 						{/* Read-only provider / model header */}
 						<div className="grid grid-cols-2 gap-4">
 							<div>
-								<Label className="text-sm font-medium">Provider</Label>
+								<Label className="text-sm font-medium">提供商</Label>
 								<div className="bg-muted/30 mt-2 flex items-center gap-2 rounded-sm border px-3 py-2 text-sm">
 									<RenderProviderIcon provider={model.provider as KnownProvider} size="sm" className="h-4 w-4" />
 									<span>{ProviderLabels[model.provider as ProviderName] || model.provider}</span>
 								</div>
 							</div>
 							<div>
-								<Label className="text-sm font-medium">Model</Label>
+								<Label className="text-sm font-medium">模型</Label>
 								<div className="bg-muted/30 mt-2 rounded-sm border px-3 py-2 font-mono text-sm">{model.name}</div>
 							</div>
 						</div>
@@ -227,7 +227,7 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 						{/* Pricing */}
 						<div className="space-y-3">
 							<div className="flex items-center justify-between gap-3">
-								<Label className="text-sm font-medium">Pricing</Label>
+								<Label className="text-sm font-medium">价格</Label>
 								{canOpenPricingSource ? (
 									<a
 										href={pricingSourceUrl}
@@ -235,9 +235,7 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 										rel="noreferrer"
 										className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-xs"
 										data-testid="model-catalog-pricing-source-link"
-									>
-										Source
-										<ExternalLink className="h-3 w-3" />
+									>来源<ExternalLink className="h-3 w-3" />
 									</a>
 								) : (
 									<span className="text-muted-foreground max-w-[260px] truncate text-right font-mono text-xs" title={pricingSourceUrl}>
@@ -247,7 +245,7 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 							</div>
 							<div className="grid grid-cols-2 gap-4">
 								<div className="bg-muted/30 rounded-sm border px-3 py-2">
-									<p className="text-muted-foreground text-xs">Input</p>
+									<p className="text-muted-foreground text-xs">输入</p>
 									<p className="mt-1 font-mono text-sm" data-testid="model-catalog-input-cost">
 										<OverriddenPrice
 											variant="full"
@@ -258,7 +256,7 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 									</p>
 								</div>
 								<div className="bg-muted/30 rounded-sm border px-3 py-2">
-									<p className="text-muted-foreground text-xs">Output</p>
+									<p className="text-muted-foreground text-xs">输出</p>
 									<p className="mt-1 font-mono text-sm" data-testid="model-catalog-output-cost">
 										<OverriddenPrice
 											variant="full"
@@ -269,7 +267,7 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 									</p>
 								</div>
 								<div className="bg-muted/30 rounded-sm border px-3 py-2">
-									<p className="text-muted-foreground text-xs">Cache Write</p>
+									<p className="text-muted-foreground text-xs">缓存写入</p>
 									<p className="mt-1 font-mono text-sm" data-testid="model-catalog-cache-write-cost">
 										<OverriddenPrice
 											variant="full"
@@ -280,7 +278,7 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 									</p>
 								</div>
 								<div className="bg-muted/30 rounded-sm border px-3 py-2">
-									<p className="text-muted-foreground text-xs">Cache Read</p>
+									<p className="text-muted-foreground text-xs">缓存读取</p>
 									<p className="mt-1 font-mono text-sm" data-testid="model-catalog-cache-read-cost">
 										<OverriddenPrice
 											variant="full"
@@ -300,13 +298,11 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 								{/* Pricing overrides */}
 								<div className="space-y-3" data-testid="model-catalog-pricing-overrides">
 									<div className="flex items-center justify-between gap-3">
-										<Label className="text-sm font-medium">Pricing overrides</Label>
+										<Label className="text-sm font-medium">价格覆盖</Label>
 										<Link
 											to="/workspace/custom-pricing/overrides"
 											className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-xs"
-										>
-											Manage
-											<ExternalLink className="h-3 w-3" />
+										>管理<ExternalLink className="h-3 w-3" />
 										</Link>
 									</div>
 									{matchingOverrides.map((override) => {
@@ -321,10 +317,10 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 												<div className="flex flex-wrap items-center gap-2">
 													<span className="text-sm font-medium">{override.name || override.id}</span>
 													<Badge variant="secondary">{override.scope_kind}</Badge>
-													{override.id === model.applied_override_id && <Badge variant="outline">Applied</Badge>}
+													{override.id === model.applied_override_id && <Badge variant="outline">已应用</Badge>}
 												</div>
 												<p className="text-muted-foreground font-mono text-xs">
-													{override.match_type === "wildcard" ? "Matches" : "Exact"} {override.pattern}
+													{override.match_type === "wildcard" ? "Matches" : "精确"} {override.pattern}
 												</p>
 												{caveat && <p className="text-muted-foreground text-xs">{caveat}</p>}
 												{override.request_types && override.request_types.length > 0 && (
@@ -357,13 +353,13 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 
 						{/* Description */}
 						<div>
-							<Label className="text-sm font-medium">Description</Label>
+							<Label className="text-sm font-medium">描述</Label>
 							<Textarea
 								className="mt-2"
 								value={description}
 								onChange={(e) => setDescription(e.target.value)}
 								rows={4}
-								placeholder="A short description of this model, shown anywhere additional_attributes.description is consumed."
+								placeholder="此模型的简短描述，显示在使用 additional_attributes.description 的任何位置。"
 								data-testid="model-catalog-description-textarea"
 							/>
 						</div>
@@ -373,16 +369,12 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 						{/* Other attributes */}
 						<div className="space-y-3">
 							<div className="flex items-center justify-between">
-								<Label className="text-sm font-medium">Other Attributes</Label>
+								<Label className="text-sm font-medium">其他属性</Label>
 								<Button type="button" variant="outline" size="sm" onClick={handleAddRow} data-testid="model-catalog-add-attribute-row">
-									<Plus className="mr-1 h-3 w-3" />
-									Add
-								</Button>
+									<Plus className="mr-1 h-3 w-3" />添加</Button>
 							</div>
 							{extraRows.length === 0 ? (
-								<p className="text-muted-foreground text-xs">
-									No additional attributes. Add a key-value pair for anything beyond description.
-								</p>
+								<p className="text-muted-foreground text-xs">没有附加属性。除描述外，可添加键值对。</p>
 							) : (
 								<div className="space-y-2">
 									{extraRows.map((row, i) => (
@@ -419,17 +411,15 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 
 					<div className="bg-card sticky bottom-0 shrink-0 border-t px-8 py-4">
 						<div className="flex items-center justify-end gap-3">
-							{!hasUpdateAccess && <p className="text-destructive text-sm">You don't have permission to perform this action</p>}
-							<Button type="button" variant="outline" onClick={handleClose} data-testid="model-catalog-attribute-cancel">
-								Cancel
-							</Button>
+							{!hasUpdateAccess && <p className="text-destructive text-sm">您没有权限执行此操作</p>}
+							<Button type="button" variant="outline" onClick={handleClose} data-testid="model-catalog-attribute-cancel">取消</Button>
 							<Button
 								type="button"
 								onClick={handleSubmit}
 								disabled={isLoading || !isDirty || !hasUpdateAccess}
 								data-testid="model-catalog-attribute-submit"
 							>
-								{isLoading ? "Saving..." : "Save Changes"}
+								{isLoading ? "Saving..." : "保存更改"}
 							</Button>
 						</div>
 					</div>

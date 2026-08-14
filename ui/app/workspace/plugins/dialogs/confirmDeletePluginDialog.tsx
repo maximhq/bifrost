@@ -39,15 +39,15 @@ export default function ConfirmDeletePluginDialog({ show, onCancel, onDelete, pl
 		<AlertDialog open={show}>
 			<AlertDialogContent>
 				<AlertDialogHeader>
-					<AlertDialogTitle>Delete Plugin</AlertDialogTitle>
+					<AlertDialogTitle>删除插件</AlertDialogTitle>
 					<AlertDialogDescription>
 						Are you sure you want to delete the plugin "{plugin.name}"? This action cannot be undone.
 					</AlertDialogDescription>
 				</AlertDialogHeader>
 				<AlertDialogFooter>
-					<AlertDialogCancel onClick={onCancel}>Cancel</AlertDialogCancel>
+					<AlertDialogCancel onClick={onCancel}>取消</AlertDialogCancel>
 					<AlertDialogAction onClick={onDeleteHandler} disabled={isDeletingPlugin}>
-						{isDeletingPlugin ? "Deleting..." : "Delete"}
+						{isDeletingPlugin ? "删除中..." : "删除"}
 					</AlertDialogAction>
 				</AlertDialogFooter>
 			</AlertDialogContent>

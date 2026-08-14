@@ -253,8 +253,8 @@ const result = await chain.invoke({ input: "What is LangChain?" });`,
 			<div className="w-full space-y-6 p-4">
 				<div className="flex flex-row items-center gap-2">
 					<div>
-						<h3 className="text-lg font-semibold">Integrate under 60 seconds</h3>
-						<p className="text-muted-foreground text-sm">Send your first request to get started</p>
+						<h3 className="text-lg font-semibold">60 秒内完成集成</h3>
+						<p className="text-muted-foreground text-sm">发送您的第一个请求开始使用</p>
 					</div>
 				</div>
 
