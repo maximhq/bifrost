@@ -308,6 +308,11 @@ type ConfigStore interface {
 	GetComplexityAnalyzerConfig(ctx context.Context) (*ComplexityAnalyzerConfig, error)
 	// UpdateComplexityAnalyzerConfig persists the normalized analyzer config.
 	UpdateComplexityAnalyzerConfig(ctx context.Context, config *ComplexityAnalyzerConfig, tx ...*gorm.DB) error
+	// ResetComplexityAnalyzerConfig restores the tier boundaries and phrase lists from the
+	// supplied defaults, preserves every other section of the stored record, and returns what
+	// was persisted. Read and save share one transaction so a concurrent edit to a preserved
+	// section cannot be overwritten.
+	ResetComplexityAnalyzerConfig(ctx context.Context, defaults *ComplexityAnalyzerConfig) (*ComplexityAnalyzerConfig, error)
 
 	// Plugins CRUD
 	GetPlugins(ctx context.Context) ([]*tables.TablePlugin, error)

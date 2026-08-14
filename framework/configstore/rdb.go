@@ -6055,29 +6055,122 @@ func (s *RDBConfigStore) UpdateComplexityAnalyzerConfig(ctx context.Context, con
 		return err
 	}
 
-	txDB := s.DB()
 	if len(tx) > 0 && tx[0] != nil {
-		txDB = tx[0]
+		return s.updateComplexityAnalyzerConfigWithTx(ctx, &normalized, tx[0])
+	}
+	// Standalone calls own the transaction so the carry-over read below and the save
+	// that follows it cannot interleave with a concurrent update.
+	return s.DB().WithContext(ctx).Transaction(func(txDB *gorm.DB) error {
+		return s.updateComplexityAnalyzerConfigWithTx(ctx, &normalized, txDB)
+	})
+}
+
+// ResetComplexityAnalyzerConfig restores the tier boundaries and the phrase lists from
+// defaults and keeps every other section of the stored record — the semantic block, the
+// section hashes, the embedding fingerprint — returning what was persisted.
+//
+// The read and the save share one transaction, and the read takes the same FOR UPDATE lock
+// as updateComplexityAnalyzerConfigWithTx, for the same reason that function does: a reset
+// that read the record outside the transaction would hold a stale copy of the very sections
+// it means to preserve, and would write that stale copy back over an edit committed in
+// between. Which sections count as "default" is the caller's to define, so they arrive as an
+// argument rather than being rebuilt here.
+func (s *RDBConfigStore) ResetComplexityAnalyzerConfig(ctx context.Context, defaults *ComplexityAnalyzerConfig) (*ComplexityAnalyzerConfig, error) {
+	if defaults == nil {
+		return nil, fmt.Errorf("complexity analyzer defaults are nil")
 	}
 
-	if normalized.ConfigHashes.Empty() {
-		existing, err := s.getComplexityAnalyzerConfigWithDB(ctx, txDB)
+	var persisted ComplexityAnalyzerConfig
+	err := s.DB().WithContext(ctx).Transaction(func(txDB *gorm.DB) error {
+		// Lock before reading, so the read is serialized against a concurrent save even
+		// when no row exists yet — otherwise a first-time save committed in between is
+		// invisible here and gets overwritten by the defaults below.
+		if err := s.lockComplexityAnalyzerConfigRow(ctx, txDB); err != nil {
+			return err
+		}
+		existing, err := s.getComplexityAnalyzerConfigWithDB(ctx, dbForUpdate(txDB))
+		if err != nil {
+			return err
+		}
+		restored := *defaults
+		if existing != nil {
+			restored = *existing
+			restored.TierBoundaries = defaults.TierBoundaries
+			restored.Keywords = defaults.Keywords
+		}
+		normalized := restored.Normalized()
+		if err := normalized.Validate(); err != nil {
+			return err
+		}
+		if err := s.updateComplexityAnalyzerConfigWithTx(ctx, &normalized, txDB); err != nil {
+			return err
+		}
+		persisted = normalized
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &persisted, nil
+}
+
+// lockComplexityAnalyzerConfigRow takes the row lock that serializes the reset and update
+// paths against each other, and is what makes that serialization hold on a fresh install.
+//
+// FOR UPDATE locks a row, so it locks nothing at all when the row does not exist yet: a
+// reset and a first-time save would both read "absent" and proceed, letting the reset write
+// its defaults over the semantic block the save had just committed — the one section reset
+// exists to preserve. Inserting a placeholder first gives both transactions the same row to
+// contend for. An empty value still reads back as "no stored config" through
+// getComplexityAnalyzerConfigWithDB, so the placeholder changes no caller's view, and the
+// caller's own save overwrites it before the transaction commits.
+//
+// txDB must be a transaction, otherwise the lock is released before the caller can use it.
+func (s *RDBConfigStore) lockComplexityAnalyzerConfigRow(ctx context.Context, txDB *gorm.DB) error {
+	if err := txDB.WithContext(ctx).
+		Clauses(clause.OnConflict{DoNothing: true}).
+		Create(&tables.TableGovernanceConfig{Key: tables.ConfigComplexityAnalyzerConfigKey}).Error; err != nil {
+		return err
+	}
+	var row tables.TableGovernanceConfig
+	return dbForUpdate(txDB.WithContext(ctx)).
+		First(&row, "key = ?", tables.ConfigComplexityAnalyzerConfigKey).Error
+}
+
+// updateComplexityAnalyzerConfigWithTx carries over ConfigHashes and EmbeddingFingerprint
+// from the stored config when the incoming one omits them, then persists the result. The
+// row is locked first (a plain read on SQLite, whose writer serialization already prevents
+// the interleave) so a concurrent updater cannot save a stale copy of either field between
+// this read and the save. txDB must be a transaction.
+func (s *RDBConfigStore) updateComplexityAnalyzerConfigWithTx(ctx context.Context, normalized *ComplexityAnalyzerConfig, txDB *gorm.DB) error {
+	// Taken unconditionally, not just when the carry-over read below runs: a save that
+	// already carries both fields still has to serialize against a concurrent reset.
+	if err := s.lockComplexityAnalyzerConfigRow(ctx, txDB); err != nil {
+		return err
+	}
+	if normalized.ConfigHashes.Empty() || normalized.EmbeddingFingerprint == "" {
+		existing, err := s.getComplexityAnalyzerConfigWithDB(ctx, dbForUpdate(txDB))
 		if err != nil {
 			return err
 		}
 		if existing != nil {
-			normalized.ConfigHashes = existing.ConfigHashes
+			if normalized.ConfigHashes.Empty() {
+				normalized.ConfigHashes = existing.ConfigHashes
+			}
+			if normalized.EmbeddingFingerprint == "" {
+				normalized.EmbeddingFingerprint = existing.EmbeddingFingerprint
+			}
 		}
 	}
 
-	raw, err := encodeComplexityAnalyzerConfig(normalized)
+	raw, err := encodeComplexityAnalyzerConfig(*normalized)
 	if err != nil {
 		return err
 	}
 	return s.UpdateConfig(ctx, &tables.TableGovernanceConfig{
 		Key:   tables.ConfigComplexityAnalyzerConfigKey,
 		Value: string(raw),
-	}, tx...)
+	}, txDB)
 }
 
 // GetAuthConfig retrieves the auth configuration from the database.

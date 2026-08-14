@@ -1281,30 +1281,48 @@ func GenerateComplexityAnalyzerConfigHashes(config *ComplexityAnalyzerConfig) (C
 	if err != nil {
 		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash tier boundaries: %w", err)
 	}
-	codeHash, err := hashComplexityValue(normalized.Keywords.CodeKeywords)
-	if err != nil {
-		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash code keywords: %w", err)
-	}
-	reasoningHash, err := hashComplexityValue(normalized.Keywords.ReasoningKeywords)
-	if err != nil {
-		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash reasoning keywords: %w", err)
-	}
-	technicalHash, err := hashComplexityValue(normalized.Keywords.TechnicalKeywords)
-	if err != nil {
-		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash technical keywords: %w", err)
-	}
 	simpleHash, err := hashComplexityValue(normalized.Keywords.SimpleKeywords)
 	if err != nil {
 		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash simple keywords: %w", err)
 	}
+	mediumHash, err := hashComplexityValue(normalized.Keywords.MediumKeywords)
+	if err != nil {
+		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash medium keywords: %w", err)
+	}
+	complexHash, err := hashComplexityValue(normalized.Keywords.ComplexKeywords)
+	if err != nil {
+		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash complex keywords: %w", err)
+	}
 
-	return ComplexityAnalyzerConfigHashes{
-		TierBoundaries:    tierHash,
+	hashes := ComplexityAnalyzerConfigHashes{
+		TierBoundaries:  tierHash,
+		SimpleKeywords:  simpleHash,
+		MediumKeywords:  mediumHash,
+		ComplexKeywords: complexHash,
+	}
+
+	if normalized.Semantic != nil {
+		settingsHash, err := hashComplexityValue(normalized.Semantic)
+		if err != nil {
+			return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash semantic settings: %w", err)
+		}
+		hashes.SemanticSettings = settingsHash
+	}
+
+	return hashes, nil
+}
+
+func legacyMediumKeywordsHashFromSectionHashes(codeHash, technicalHash string) (string, error) {
+	if codeHash == "" && technicalHash == "" {
+		return "", nil
+	}
+	return hashComplexityValue(struct {
+		CodeKeywords      string `json:"code_keywords"`
+		TechnicalKeywords string `json:"technical_keywords"`
+	}{
 		CodeKeywords:      codeHash,
-		ReasoningKeywords: reasoningHash,
 		TechnicalKeywords: technicalHash,
-		SimpleKeywords:    simpleHash,
-	}, nil
+	})
 }
 
 func hashComplexityValue(value any) (string, error) {

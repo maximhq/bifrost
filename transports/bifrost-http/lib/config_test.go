@@ -376,8 +376,8 @@ import (
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/objectstore"
 	"github.com/maximhq/bifrost/framework/vectorstore"
-	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	otelPlugin "github.com/maximhq/bifrost/plugins/otel"
+	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
@@ -1929,15 +1929,13 @@ func TestMergeGovernanceConfig_SyncsComplexityAnalyzerConfig(t *testing.T) {
 	}
 	fileConfig := &configstore.ComplexityAnalyzerConfig{
 		TierBoundaries: configstore.ComplexityTierBoundaries{
-			SimpleMedium:     0.11,
-			MediumComplex:    0.33,
-			ComplexReasoning: 0.77,
+			SimpleMedium:  0.11,
+			MediumComplex: 0.33,
 		},
 		Keywords: configstore.ComplexityEditableKeywordConfig{
-			CodeKeywords:      []string{" Function ", "api", "API", "file-code-seed"},
-			ReasoningKeywords: []string{"tradeoffs", "file-reason-seed"},
-			TechnicalKeywords: []string{"latency", "file-tech-seed"},
-			SimpleKeywords:    []string{"hello", "file-simple-seed"},
+			SimpleKeywords:  []string{"hello", "file-simple-seed"},
+			MediumKeywords:  []string{" Function ", "api", "API", "latency", "file-medium-seed"},
+			ComplexKeywords: []string{"tradeoffs", "file-complex-seed"},
 		},
 	}
 	configData := &ConfigData{
@@ -1951,11 +1949,11 @@ func TestMergeGovernanceConfig_SyncsComplexityAnalyzerConfig(t *testing.T) {
 	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
 	require.NoError(t, err)
 	require.NotNil(t, stored)
-	require.Equal(t, 0.77, stored.TierBoundaries.ComplexReasoning)
+	require.Equal(t, 0.11, stored.TierBoundaries.SimpleMedium)
+	require.Equal(t, 0.33, stored.TierBoundaries.MediumComplex)
 	defaults := complexity.DefaultAnalyzerConfig()
-	require.Equal(t, expectedMergedComplexityKeywords(defaults.Keywords.CodeKeywords, fileConfig.Keywords.CodeKeywords), stored.Keywords.CodeKeywords)
-	require.Equal(t, expectedMergedComplexityKeywords(defaults.Keywords.ReasoningKeywords, fileConfig.Keywords.ReasoningKeywords), stored.Keywords.ReasoningKeywords)
-	require.Equal(t, expectedMergedComplexityKeywords(defaults.Keywords.TechnicalKeywords, fileConfig.Keywords.TechnicalKeywords), stored.Keywords.TechnicalKeywords)
+	require.Equal(t, expectedMergedComplexityKeywords(defaults.Keywords.MediumKeywords, fileConfig.Keywords.MediumKeywords), stored.Keywords.MediumKeywords)
+	require.Equal(t, expectedMergedComplexityKeywords(defaults.Keywords.ComplexKeywords, fileConfig.Keywords.ComplexKeywords), stored.Keywords.ComplexKeywords)
 	require.Equal(t, expectedMergedComplexityKeywords(defaults.Keywords.SimpleKeywords, fileConfig.Keywords.SimpleKeywords), stored.Keywords.SimpleKeywords)
 	require.False(t, stored.ConfigHashes.Empty())
 	require.Equal(t, stored, config.GovernanceConfig.ComplexityAnalyzerConfig)
@@ -1967,7 +1965,7 @@ func TestMergeGovernanceConfig_AppliesComplexityAnalyzerConfigWhenHashesAreEmpty
 	store := NewMockConfigStore()
 	dbConfig := testRuntimeComplexityAnalyzerConfig()
 	dbConfig.TierBoundaries.SimpleMedium = 0.12
-	dbConfig.Keywords.CodeKeywords = []string{"ui-code"}
+	dbConfig.Keywords.MediumKeywords = []string{"ui-medium"}
 	dbConfig.ConfigHashes = configstore.ComplexityAnalyzerConfigHashes{}
 	dbGovernance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: dbConfig}
 	store.governanceConfig = dbGovernance
@@ -1990,7 +1988,7 @@ func TestMergeGovernanceConfig_AppliesComplexityAnalyzerConfigWhenHashesAreEmpty
 	require.NoError(t, err)
 	require.NotNil(t, stored)
 	require.Equal(t, fileConfig.TierBoundaries, stored.TierBoundaries)
-	require.ElementsMatch(t, []string{"file-code", "ui-code"}, stored.Keywords.CodeKeywords)
+	require.ElementsMatch(t, []string{"file-medium", "ui-medium"}, stored.Keywords.MediumKeywords)
 	require.Equal(t, fileHashes, stored.ConfigHashes)
 }
 
@@ -2023,7 +2021,7 @@ func TestMergeGovernanceConfig_PreservesComplexityAnalyzerConfigWhenSectionHashe
 	dbConfig := testRuntimeComplexityAnalyzerConfig()
 	dbConfig.ConfigHashes = fileHashes
 	dbConfig.TierBoundaries.SimpleMedium = 0.21
-	dbConfig.Keywords.CodeKeywords = []string{"ui-code"}
+	dbConfig.Keywords.MediumKeywords = []string{"ui-medium"}
 	dbGovernance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: dbConfig}
 	store.governanceConfig = dbGovernance
 	config := &Config{
@@ -2042,7 +2040,7 @@ func TestMergeGovernanceConfig_PreservesComplexityAnalyzerConfigWhenSectionHashe
 	require.NoError(t, err)
 	require.NotNil(t, stored)
 	require.Equal(t, 0.21, stored.TierBoundaries.SimpleMedium)
-	require.Equal(t, []string{"ui-code"}, stored.Keywords.CodeKeywords)
+	require.Equal(t, []string{"ui-medium"}, stored.Keywords.MediumKeywords)
 	require.Equal(t, fileHashes, stored.ConfigHashes)
 }
 
@@ -2052,15 +2050,13 @@ func TestMergeGovernanceConfig_MergesComplexityKeywordsWhenSectionHashesChange(t
 	store := NewMockConfigStore()
 	dbConfig := testRuntimeComplexityAnalyzerConfig()
 	dbConfig.ConfigHashes = configstore.ComplexityAnalyzerConfigHashes{
-		TierBoundaries:    "old-tier-hash",
-		CodeKeywords:      "old-code-hash",
-		ReasoningKeywords: "old-reason-hash",
-		TechnicalKeywords: "old-tech-hash",
-		SimpleKeywords:    "old-simple-hash",
+		TierBoundaries:  "old-tier-hash",
+		SimpleKeywords:  "old-simple-hash",
+		MediumKeywords:  "old-medium-hash",
+		ComplexKeywords: "old-complex-hash",
 	}
-	dbConfig.Keywords.CodeKeywords = []string{"ui-code"}
-	dbConfig.Keywords.ReasoningKeywords = []string{"ui-reason"}
-	dbConfig.Keywords.TechnicalKeywords = []string{"ui-tech"}
+	dbConfig.Keywords.MediumKeywords = []string{"ui-medium", "ui-technical"}
+	dbConfig.Keywords.ComplexKeywords = []string{"ui-complex"}
 	dbConfig.Keywords.SimpleKeywords = []string{"ui-simple"}
 	dbGovernance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: dbConfig}
 	store.governanceConfig = dbGovernance
@@ -2083,9 +2079,8 @@ func TestMergeGovernanceConfig_MergesComplexityKeywordsWhenSectionHashesChange(t
 	require.NoError(t, err)
 	require.NotNil(t, stored)
 	require.Equal(t, fileConfig.TierBoundaries, stored.TierBoundaries)
-	require.ElementsMatch(t, []string{"file-code", "ui-code"}, stored.Keywords.CodeKeywords)
-	require.ElementsMatch(t, []string{"file-reason", "ui-reason"}, stored.Keywords.ReasoningKeywords)
-	require.ElementsMatch(t, []string{"file-tech", "ui-tech"}, stored.Keywords.TechnicalKeywords)
+	require.ElementsMatch(t, []string{"file-medium", "ui-medium", "ui-technical"}, stored.Keywords.MediumKeywords)
+	require.ElementsMatch(t, []string{"file-complex", "ui-complex"}, stored.Keywords.ComplexKeywords)
 	require.ElementsMatch(t, []string{"file-simple", "ui-simple"}, stored.Keywords.SimpleKeywords)
 	require.Equal(t, fileHashes, stored.ConfigHashes)
 }
@@ -2101,9 +2096,8 @@ func TestMergeGovernanceConfig_OnlyChangedComplexitySectionsApply(t *testing.T) 
 	dbConfig := testRuntimeComplexityAnalyzerConfig()
 	dbConfig.ConfigHashes = oldFileHashes
 	dbConfig.TierBoundaries.SimpleMedium = 0.21
-	dbConfig.Keywords.CodeKeywords = []string{"ui-code"}
-	dbConfig.Keywords.ReasoningKeywords = []string{"ui-reason"}
-	dbConfig.Keywords.TechnicalKeywords = []string{"ui-tech"}
+	dbConfig.Keywords.MediumKeywords = []string{"ui-medium", "ui-technical"}
+	dbConfig.Keywords.ComplexKeywords = []string{"ui-complex"}
 	dbConfig.Keywords.SimpleKeywords = []string{"ui-simple"}
 	dbGovernance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: dbConfig}
 	store.governanceConfig = dbGovernance
@@ -2113,7 +2107,7 @@ func TestMergeGovernanceConfig_OnlyChangedComplexitySectionsApply(t *testing.T) 
 	}
 
 	newFileConfig := testFileComplexityAnalyzerConfig()
-	newFileConfig.Keywords.CodeKeywords = []string{"file-code", "file-code-new"}
+	newFileConfig.Keywords.MediumKeywords = []string{"file-medium", "file-medium-new"}
 	newFileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(newFileConfig)
 	require.NoError(t, err)
 	configData := &ConfigData{
@@ -2128,14 +2122,12 @@ func TestMergeGovernanceConfig_OnlyChangedComplexitySectionsApply(t *testing.T) 
 	require.NoError(t, err)
 	require.NotNil(t, stored)
 	require.Equal(t, 0.21, stored.TierBoundaries.SimpleMedium)
-	require.ElementsMatch(t, []string{"file-code", "file-code-new", "ui-code"}, stored.Keywords.CodeKeywords)
-	require.Equal(t, []string{"ui-reason"}, stored.Keywords.ReasoningKeywords)
-	require.Equal(t, []string{"ui-tech"}, stored.Keywords.TechnicalKeywords)
+	require.ElementsMatch(t, []string{"file-medium", "file-medium-new", "ui-medium", "ui-technical"}, stored.Keywords.MediumKeywords)
+	require.Equal(t, []string{"ui-complex"}, stored.Keywords.ComplexKeywords)
 	require.Equal(t, []string{"ui-simple"}, stored.Keywords.SimpleKeywords)
 	require.Equal(t, oldFileHashes.TierBoundaries, stored.ConfigHashes.TierBoundaries)
-	require.Equal(t, newFileHashes.CodeKeywords, stored.ConfigHashes.CodeKeywords)
-	require.Equal(t, oldFileHashes.ReasoningKeywords, stored.ConfigHashes.ReasoningKeywords)
-	require.Equal(t, oldFileHashes.TechnicalKeywords, stored.ConfigHashes.TechnicalKeywords)
+	require.Equal(t, newFileHashes.MediumKeywords, stored.ConfigHashes.MediumKeywords)
+	require.Equal(t, oldFileHashes.ComplexKeywords, stored.ConfigHashes.ComplexKeywords)
 	require.Equal(t, oldFileHashes.SimpleKeywords, stored.ConfigHashes.SimpleKeywords)
 }
 
@@ -2145,13 +2137,12 @@ func TestMergeGovernanceConfig_SourceOfTruthConfigJSONUsesComplexityFileConfig(t
 	store := NewMockConfigStore()
 	dbConfig := testRuntimeComplexityAnalyzerConfig()
 	dbConfig.ConfigHashes = configstore.ComplexityAnalyzerConfigHashes{
-		TierBoundaries:    "old-tier-hash",
-		CodeKeywords:      "old-code-hash",
-		ReasoningKeywords: "old-reason-hash",
-		TechnicalKeywords: "old-tech-hash",
-		SimpleKeywords:    "old-simple-hash",
+		TierBoundaries:  "old-tier-hash",
+		SimpleKeywords:  "old-simple-hash",
+		MediumKeywords:  "old-medium-hash",
+		ComplexKeywords: "old-complex-hash",
 	}
-	dbConfig.Keywords.CodeKeywords = []string{"ui-code"}
+	dbConfig.Keywords.MediumKeywords = []string{"ui-medium"}
 	dbGovernance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: dbConfig}
 	store.governanceConfig = dbGovernance
 	config := &Config{
@@ -2174,7 +2165,7 @@ func TestMergeGovernanceConfig_SourceOfTruthConfigJSONUsesComplexityFileConfig(t
 	require.NoError(t, err)
 	require.NotNil(t, stored)
 	require.Equal(t, fileConfig.TierBoundaries, stored.TierBoundaries)
-	require.Equal(t, []string{"file-code"}, stored.Keywords.CodeKeywords)
+	require.Equal(t, []string{"file-medium"}, stored.Keywords.MediumKeywords)
 	require.Equal(t, fileHashes, stored.ConfigHashes)
 }
 
@@ -2184,11 +2175,10 @@ func TestMergeGovernanceConfig_SourceOfTruthConfigJSONMissingComplexityLeavesDBC
 	store := NewMockConfigStore()
 	dbConfig := testRuntimeComplexityAnalyzerConfig()
 	dbConfig.ConfigHashes = configstore.ComplexityAnalyzerConfigHashes{
-		TierBoundaries:    "old-tier-hash",
-		CodeKeywords:      "old-code-hash",
-		ReasoningKeywords: "old-reason-hash",
-		TechnicalKeywords: "old-tech-hash",
-		SimpleKeywords:    "old-simple-hash",
+		TierBoundaries:  "old-tier-hash",
+		SimpleKeywords:  "old-simple-hash",
+		MediumKeywords:  "old-medium-hash",
+		ComplexKeywords: "old-complex-hash",
 	}
 	dbGovernance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: dbConfig}
 	store.governanceConfig = dbGovernance
@@ -2213,15 +2203,13 @@ func TestMergeGovernanceConfig_SourceOfTruthConfigJSONMissingComplexityLeavesDBC
 func testRuntimeComplexityAnalyzerConfig() *configstore.ComplexityAnalyzerConfig {
 	return &configstore.ComplexityAnalyzerConfig{
 		TierBoundaries: configstore.ComplexityTierBoundaries{
-			SimpleMedium:     0.10,
-			MediumComplex:    0.30,
-			ComplexReasoning: 0.70,
+			SimpleMedium:  0.10,
+			MediumComplex: 0.30,
 		},
 		Keywords: configstore.ComplexityEditableKeywordConfig{
-			CodeKeywords:      []string{"runtime-code"},
-			ReasoningKeywords: []string{"runtime-reason"},
-			TechnicalKeywords: []string{"runtime-tech"},
-			SimpleKeywords:    []string{"runtime-simple"},
+			SimpleKeywords:  []string{"runtime-simple"},
+			MediumKeywords:  []string{"runtime-medium", "runtime-technical"},
+			ComplexKeywords: []string{"runtime-complex"},
 		},
 	}
 }
@@ -2229,15 +2217,13 @@ func testRuntimeComplexityAnalyzerConfig() *configstore.ComplexityAnalyzerConfig
 func testFileComplexityAnalyzerConfig() *configstore.ComplexityAnalyzerConfig {
 	return &configstore.ComplexityAnalyzerConfig{
 		TierBoundaries: configstore.ComplexityTierBoundaries{
-			SimpleMedium:     0.20,
-			MediumComplex:    0.40,
-			ComplexReasoning: 0.80,
+			SimpleMedium:  0.20,
+			MediumComplex: 0.40,
 		},
 		Keywords: configstore.ComplexityEditableKeywordConfig{
-			CodeKeywords:      []string{"file-code"},
-			ReasoningKeywords: []string{"file-reason"},
-			TechnicalKeywords: []string{"file-tech"},
-			SimpleKeywords:    []string{"file-simple"},
+			SimpleKeywords:  []string{"file-simple"},
+			MediumKeywords:  []string{"file-medium"},
+			ComplexKeywords: []string{"file-complex"},
 		},
 	}
 }
@@ -18052,6 +18038,9 @@ var excludedSchemaFields = map[string]map[string]bool{
 	},
 	"governance.virtual_keys.mcp_configs": {
 		"mcp_client_name": true, // Config-file format; captured via custom UnmarshalJSON and resolved to mcp_client_id at startup
+	},
+	"governance.complexity_analyzer_config.tier_boundaries": {
+		"complex_reasoning": true, // Deprecated config.json/Helm compatibility field; ignored by the runtime.
 	},
 	"mcp": {
 		"tool_groups": true, // Enterprise governance feature; not in OSS MCPConfig

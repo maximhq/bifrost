@@ -2979,3 +2979,99 @@ func TestMigrationAddBudgetResetConfigColumn_NonRollbackable(t *testing.T) {
 	assert.Equal(t, time.April, got.QuarterStartMonth(),
 		"the fiscal quarter definition must survive the refused rollback")
 }
+
+func setupComplexityExemplarMigrationDB(t *testing.T) *gorm.DB {
+	t.Helper()
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&tables.TableGovernanceConfig{}))
+	require.NoError(t, db.Exec(`CREATE TABLE migrations (id VARCHAR(255) PRIMARY KEY)`).Error)
+	return db
+}
+
+func seedComplexityAnalyzerConfig(t *testing.T, db *gorm.DB, value string) {
+	t.Helper()
+	require.NoError(t, db.Create(&tables.TableGovernanceConfig{
+		Key:   tables.ConfigComplexityAnalyzerConfigKey,
+		Value: value,
+	}).Error)
+}
+
+func readRawComplexityAnalyzerConfig(t *testing.T, db *gorm.DB) string {
+	t.Helper()
+	var entry tables.TableGovernanceConfig
+	require.NoError(t, db.First(&entry, "key = ?", tables.ConfigComplexityAnalyzerConfigKey).Error)
+	return entry.Value
+}
+
+func TestMigrationBackfillDefaultComplexityExemplars(t *testing.T) {
+	ctx := context.Background()
+	defaults := DefaultComplexityExemplars()
+
+	t.Run("backfills defaults without replacing administrator state", func(t *testing.T) {
+		db := setupComplexityExemplarMigrationDB(t)
+		config := testSemanticAnalyzerConfig()
+		config.Keywords = ComplexityEditableKeywordConfig{
+			SimpleKeywords:  []string{"custom simple"},
+			MediumKeywords:  []string{"custom medium", defaults.SimpleKeywords[0]},
+			ComplexKeywords: []string{"custom complex"},
+		}
+		config.ConfigHashes = ComplexityAnalyzerConfigHashes{
+			TierBoundaries:   "tier-hash",
+			SimpleKeywords:   "simple-hash",
+			MediumKeywords:   "medium-hash",
+			ComplexKeywords:  "complex-hash",
+			SemanticSettings: "semantic-hash",
+		}
+		config.EmbeddingFingerprint = "stale-fingerprint"
+		expectedSemantic := config.Normalized().Semantic
+
+		raw, err := encodeComplexityAnalyzerConfig(config.Normalized())
+		require.NoError(t, err)
+		seedComplexityAnalyzerConfig(t, db, string(raw))
+
+		require.NoError(t, migrationBackfillDefaultComplexityExemplars(ctx, db, testMigrationLogger))
+
+		got, err := DecodeComplexityAnalyzerConfig([]byte(readRawComplexityAnalyzerConfig(t, db)))
+		require.NoError(t, err)
+		assert.Equal(t, expectedSemantic, got.Semantic)
+		assert.Equal(t, config.ConfigHashes, got.ConfigHashes)
+		assert.Empty(t, got.EmbeddingFingerprint, "changed exemplars must invalidate the stored embedding fingerprint")
+		assert.Contains(t, got.Keywords.SimpleKeywords, "custom simple")
+		assert.Contains(t, got.Keywords.MediumKeywords, "custom medium")
+		assert.Contains(t, got.Keywords.ComplexKeywords, "custom complex")
+
+		// An administrator already assigned this shipped phrase to MEDIUM. The
+		// migration must not duplicate or move it back to its default SIMPLE tier.
+		crossTierDefault := normalizeComplexityExemplarKey(defaults.SimpleKeywords[0])
+		assert.NotContains(t, got.Keywords.SimpleKeywords, crossTierDefault)
+		assert.Contains(t, got.Keywords.MediumKeywords, crossTierDefault)
+
+		for _, phrase := range defaults.SimpleKeywords[1:] {
+			assert.Contains(t, got.Keywords.SimpleKeywords, normalizeComplexityExemplarKey(phrase))
+		}
+		for _, phrase := range defaults.MediumKeywords {
+			assert.Contains(t, got.Keywords.MediumKeywords, normalizeComplexityExemplarKey(phrase))
+		}
+		for _, phrase := range defaults.ComplexKeywords {
+			assert.Contains(t, got.Keywords.ComplexKeywords, normalizeComplexityExemplarKey(phrase))
+		}
+	})
+
+	t.Run("keeps an already complete config byte-for-byte unchanged", func(t *testing.T) {
+		db := setupComplexityExemplarMigrationDB(t)
+		config := testComplexityAnalyzerConfig()
+		config.Keywords = defaults
+		config.EmbeddingFingerprint = "keep-fingerprint"
+		raw, err := encodeComplexityAnalyzerConfig(config.Normalized())
+		require.NoError(t, err)
+		seedComplexityAnalyzerConfig(t, db, string(raw))
+
+		require.NoError(t, migrationBackfillDefaultComplexityExemplars(ctx, db, testMigrationLogger))
+
+		assert.Equal(t, string(raw), readRawComplexityAnalyzerConfig(t, db))
+	})
+}
