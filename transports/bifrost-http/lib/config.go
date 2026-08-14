@@ -3935,11 +3935,14 @@ func updateGovernanceConfigInStore(
 		}
 
 		if complexityAnalyzerConfigToUpdate != nil {
+			// Returned, not logged: the update takes a row lock that inserts both
+			// complexity rows before it writes either of them, so swallowing a
+			// failure here commits whatever part of it landed. Every other branch
+			// in this transaction fails the same way.
 			if err := config.ConfigStore.UpdateComplexityAnalyzerConfig(ctx, complexityAnalyzerConfigToUpdate, tx); err != nil {
-				logger.Warn("failed to sync complexity analyzer config from config file: %v", err)
-			} else {
-				config.GovernanceConfig.ComplexityAnalyzerConfig = complexityAnalyzerConfigToUpdate
+				return fmt.Errorf("failed to sync complexity analyzer config from config file: %w", err)
 			}
+			config.GovernanceConfig.ComplexityAnalyzerConfig = complexityAnalyzerConfigToUpdate
 		}
 
 		return nil

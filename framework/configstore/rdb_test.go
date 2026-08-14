@@ -83,15 +83,13 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 func testComplexityAnalyzerConfig() *ComplexityAnalyzerConfig {
 	return &ComplexityAnalyzerConfig{
 		TierBoundaries: ComplexityTierBoundaries{
-			SimpleMedium:     0.10,
-			MediumComplex:    0.30,
-			ComplexReasoning: 0.70,
+			SimpleMedium:  0.10,
+			MediumComplex: 0.30,
 		},
 		Keywords: ComplexityEditableKeywordConfig{
-			CodeKeywords:      []string{" Function ", "api", "API"},
-			ReasoningKeywords: []string{"tradeoffs"},
-			TechnicalKeywords: []string{"latency"},
-			SimpleKeywords:    []string{"hello"},
+			SimpleKeywords:  []string{"hello"},
+			MediumKeywords:  []string{" Function ", "api", "API", "latency"},
+			ComplexKeywords: []string{"tradeoffs"},
 		},
 	}
 }
@@ -132,11 +130,10 @@ func TestRDBConfigStore_ComplexityAnalyzerConfigRoundTrip(t *testing.T) {
 
 	cfg := testComplexityAnalyzerConfig()
 	cfg.ConfigHashes = ComplexityAnalyzerConfigHashes{
-		TierBoundaries:    "tier-hash-1",
-		CodeKeywords:      "code-hash-1",
-		ReasoningKeywords: "reason-hash-1",
-		TechnicalKeywords: "tech-hash-1",
-		SimpleKeywords:    "simple-hash-1",
+		TierBoundaries:  "tier-hash-1",
+		SimpleKeywords:  "simple-hash-1",
+		MediumKeywords:  "medium-hash-1",
+		ComplexKeywords: "complex-hash-1",
 	}
 	require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, cfg))
 
@@ -144,12 +141,61 @@ func TestRDBConfigStore_ComplexityAnalyzerConfigRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, ComplexityTierBoundaries{
-		SimpleMedium:     0.10,
-		MediumComplex:    0.30,
-		ComplexReasoning: 0.70,
+		SimpleMedium:  0.10,
+		MediumComplex: 0.30,
 	}, got.TierBoundaries)
-	assert.Equal(t, []string{"api", "function"}, got.Keywords.CodeKeywords)
+	assert.Equal(t, []string{"api", "function", "latency"}, got.Keywords.MediumKeywords)
 	assert.Equal(t, cfg.ConfigHashes, got.ConfigHashes)
+}
+
+// TestRDBConfigStore_GetComplexityAnalyzerConfigMarksUnreadableRows pins that a
+// stored config this version cannot run is reported as unreadable rather than as
+// a plain error. The API handler degrades to defaults on that distinction and
+// still fails on anything else, so losing it here turns a recoverable page into
+// a 500 without any test noticing.
+func TestRDBConfigStore_GetComplexityAnalyzerConfigMarksUnreadableRows(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("analyzer row", func(t *testing.T) {
+		store := setupRDBTestStore(t)
+		require.NoError(t, store.UpdateConfig(ctx, &tables.TableGovernanceConfig{
+			Key:   tables.ConfigComplexityAnalyzerConfigKey,
+			Value: `{"tier_boundaries":{"simple_medium":0.9,"medium_complex":0.1}}`,
+		}))
+
+		_, err := store.GetComplexityAnalyzerConfig(ctx)
+		require.ErrorIs(t, err, ErrConfigUnreadable)
+	})
+
+	t.Run("semantic row", func(t *testing.T) {
+		store := setupRDBTestStore(t)
+		require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, testComplexityAnalyzerConfig()))
+		require.NoError(t, store.UpdateConfig(ctx, &tables.TableGovernanceConfig{
+			Key:   tables.ConfigComplexitySemanticConfigKey,
+			Value: `{"keywords":`,
+		}))
+
+		_, err := store.GetComplexityAnalyzerConfig(ctx)
+		require.ErrorIs(t, err, ErrConfigUnreadable)
+	})
+
+	t.Run("rows that do not combine into a runnable config", func(t *testing.T) {
+		store := setupRDBTestStore(t)
+		require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, testComplexityAnalyzerConfig()))
+		// Each row is well formed on its own; the pair is not, because one
+		// phrase claims two tiers. The semantic block has to be present for the
+		// phrase rules to apply at all — without a classifier to embed them,
+		// the lists are just unused strings.
+		require.NoError(t, store.UpdateConfig(ctx, &tables.TableGovernanceConfig{
+			Key: tables.ConfigComplexitySemanticConfigKey,
+			Value: `{"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small"},` +
+				`"keywords":{"simple_keywords":["shared phrase"],` +
+				`"medium_keywords":["shared phrase"],"complex_keywords":["complex"]}}`,
+		}))
+
+		_, err := store.GetComplexityAnalyzerConfig(ctx)
+		require.ErrorIs(t, err, ErrConfigUnreadable)
+	})
 }
 
 func TestRDBConfigStore_GetComplexityAnalyzerConfigMissingReturnsNil(t *testing.T) {
@@ -167,11 +213,10 @@ func TestRDBConfigStore_UpdateComplexityAnalyzerConfigPreservesExistingHashesOnR
 
 	fileConfig := testComplexityAnalyzerConfig()
 	fileConfig.ConfigHashes = ComplexityAnalyzerConfigHashes{
-		TierBoundaries:    "tier-hash-1",
-		CodeKeywords:      "code-hash-1",
-		ReasoningKeywords: "reason-hash-1",
-		TechnicalKeywords: "tech-hash-1",
-		SimpleKeywords:    "simple-hash-1",
+		TierBoundaries:  "tier-hash-1",
+		SimpleKeywords:  "simple-hash-1",
+		MediumKeywords:  "medium-hash-1",
+		ComplexKeywords: "complex-hash-1",
 	}
 	require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, fileConfig))
 
@@ -190,9 +235,9 @@ func TestRDBConfigStore_UpdateComplexityAnalyzerConfigPreservesExistingHashesOnR
 func TestGenerateComplexityAnalyzerConfigHashesCanonicalizesKeywords(t *testing.T) {
 	left := testComplexityAnalyzerConfig()
 	right := testComplexityAnalyzerConfig()
-	right.Keywords.CodeKeywords = []string{"api", "function"}
-	left.ConfigHashes = ComplexityAnalyzerConfigHashes{CodeKeywords: "stored-code-hash-a"}
-	right.ConfigHashes = ComplexityAnalyzerConfigHashes{CodeKeywords: "stored-code-hash-b"}
+	right.Keywords.MediumKeywords = []string{"api", "function", "latency"}
+	left.ConfigHashes = ComplexityAnalyzerConfigHashes{MediumKeywords: "stored-medium-hash-a"}
+	right.ConfigHashes = ComplexityAnalyzerConfigHashes{MediumKeywords: "stored-medium-hash-b"}
 
 	leftHashes, err := GenerateComplexityAnalyzerConfigHashes(left)
 	require.NoError(t, err)
@@ -206,13 +251,11 @@ func TestMergeComplexityAnalyzerConfigAddsKeywordsAndOverlaysBoundaries(t *testi
 	base := testComplexityAnalyzerConfig()
 	file := testComplexityAnalyzerConfig()
 	file.TierBoundaries = ComplexityTierBoundaries{
-		SimpleMedium:     0.20,
-		MediumComplex:    0.40,
-		ComplexReasoning: 0.80,
+		SimpleMedium:  0.20,
+		MediumComplex: 0.40,
 	}
-	file.Keywords.CodeKeywords = []string{"GraphQL", "api"}
-	file.Keywords.ReasoningKeywords = []string{"tradeoffs", "step by step"}
-	file.Keywords.TechnicalKeywords = []string{"latency", "kubernetes"}
+	file.Keywords.MediumKeywords = []string{"GraphQL", "api", "latency", "kubernetes"}
+	file.Keywords.ComplexKeywords = []string{"tradeoffs", "step by step"}
 	file.Keywords.SimpleKeywords = []string{"hello", "thanks"}
 
 	merged, err := MergeComplexityAnalyzerConfig(base, file)
@@ -220,41 +263,39 @@ func TestMergeComplexityAnalyzerConfigAddsKeywordsAndOverlaysBoundaries(t *testi
 	require.NotNil(t, merged)
 
 	assert.Equal(t, file.TierBoundaries, merged.TierBoundaries)
-	assert.Equal(t, []string{"api", "function", "graphql"}, merged.Keywords.CodeKeywords)
-	assert.Equal(t, []string{"step by step", "tradeoffs"}, merged.Keywords.ReasoningKeywords)
-	assert.Equal(t, []string{"kubernetes", "latency"}, merged.Keywords.TechnicalKeywords)
+	assert.Equal(t, []string{"api", "function", "graphql", "kubernetes", "latency"}, merged.Keywords.MediumKeywords)
+	assert.Equal(t, []string{"step by step", "tradeoffs"}, merged.Keywords.ComplexKeywords)
 	assert.Equal(t, []string{"hello", "thanks"}, merged.Keywords.SimpleKeywords)
 }
 
 func TestMergeComplexityAnalyzerConfigByHashesOnlyAppliesChangedSections(t *testing.T) {
 	base := testComplexityAnalyzerConfig()
 	base.ConfigHashes = ComplexityAnalyzerConfigHashes{
-		TierBoundaries:    "tier-hash-1",
-		CodeKeywords:      "code-hash-1",
-		ReasoningKeywords: "reason-hash-1",
-		TechnicalKeywords: "tech-hash-1",
-		SimpleKeywords:    "simple-hash-1",
+		TierBoundaries:  "tier-hash-1",
+		SimpleKeywords:  "simple-hash-1",
+		MediumKeywords:  "medium-hash-1",
+		ComplexKeywords: "complex-hash-1",
 	}
 	base.TierBoundaries.SimpleMedium = 0.12
-	base.Keywords.CodeKeywords = []string{"ui-code"}
-	base.Keywords.ReasoningKeywords = []string{"ui-reason"}
+	base.Keywords.MediumKeywords = []string{"ui-medium"}
+	base.Keywords.ComplexKeywords = []string{"ui-complex"}
 
 	file := testComplexityAnalyzerConfig()
 	file.ConfigHashes = base.ConfigHashes
-	file.ConfigHashes.CodeKeywords = "code-hash-2"
+	file.ConfigHashes.MediumKeywords = "medium-hash-2"
 	file.TierBoundaries.SimpleMedium = 0.20
-	file.Keywords.CodeKeywords = []string{"file-code"}
-	file.Keywords.ReasoningKeywords = []string{"file-reason"}
+	file.Keywords.MediumKeywords = []string{"file-medium"}
+	file.Keywords.ComplexKeywords = []string{"file-complex"}
 
 	merged, err := MergeComplexityAnalyzerConfigByHashes(base, file)
 	require.NoError(t, err)
 	require.NotNil(t, merged)
 
 	assert.Equal(t, 0.12, merged.TierBoundaries.SimpleMedium)
-	assert.Equal(t, []string{"file-code", "ui-code"}, merged.Keywords.CodeKeywords)
-	assert.Equal(t, []string{"ui-reason"}, merged.Keywords.ReasoningKeywords)
-	assert.Equal(t, "code-hash-2", merged.ConfigHashes.CodeKeywords)
-	assert.Equal(t, "reason-hash-1", merged.ConfigHashes.ReasoningKeywords)
+	assert.Equal(t, []string{"file-medium", "ui-medium"}, merged.Keywords.MediumKeywords)
+	assert.Equal(t, []string{"ui-complex"}, merged.Keywords.ComplexKeywords)
+	assert.Equal(t, "medium-hash-2", merged.ConfigHashes.MediumKeywords)
+	assert.Equal(t, "complex-hash-1", merged.ConfigHashes.ComplexKeywords)
 }
 
 func TestRDBConfigStore_GetGovernanceConfigIncludesComplexityAnalyzerConfig(t *testing.T) {
@@ -263,11 +304,10 @@ func TestRDBConfigStore_GetGovernanceConfigIncludesComplexityAnalyzerConfig(t *t
 
 	cfg := testComplexityAnalyzerConfig()
 	cfg.ConfigHashes = ComplexityAnalyzerConfigHashes{
-		TierBoundaries:    "tier-hash-2",
-		CodeKeywords:      "code-hash-2",
-		ReasoningKeywords: "reason-hash-2",
-		TechnicalKeywords: "tech-hash-2",
-		SimpleKeywords:    "simple-hash-2",
+		TierBoundaries:  "tier-hash-2",
+		SimpleKeywords:  "simple-hash-2",
+		MediumKeywords:  "medium-hash-2",
+		ComplexKeywords: "complex-hash-2",
 	}
 	require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, cfg))
 
@@ -275,7 +315,7 @@ func TestRDBConfigStore_GetGovernanceConfigIncludesComplexityAnalyzerConfig(t *t
 	require.NoError(t, err)
 	require.NotNil(t, governanceConfig)
 	require.NotNil(t, governanceConfig.ComplexityAnalyzerConfig)
-	assert.Equal(t, 0.70, governanceConfig.ComplexityAnalyzerConfig.TierBoundaries.ComplexReasoning)
+	assert.Equal(t, 0.30, governanceConfig.ComplexityAnalyzerConfig.TierBoundaries.MediumComplex)
 	assert.Equal(t, cfg.ConfigHashes, governanceConfig.ComplexityAnalyzerConfig.ConfigHashes)
 }
 
@@ -294,39 +334,45 @@ func TestRDBConfigStore_UpdateComplexityAnalyzerConfigRejectsInvalidConfig(t *te
 			},
 		},
 		{
+			name: "simple medium at minimum",
+			mutate: func(cfg *ComplexityAnalyzerConfig) {
+				cfg.TierBoundaries.SimpleMedium = 0
+			},
+		},
+		{
 			name: "medium complex at minimum",
 			mutate: func(cfg *ComplexityAnalyzerConfig) {
 				cfg.TierBoundaries.MediumComplex = 0
 			},
 		},
 		{
-			name: "complex reasoning at maximum",
+			name: "medium complex at maximum",
 			mutate: func(cfg *ComplexityAnalyzerConfig) {
-				cfg.TierBoundaries.ComplexReasoning = 1.0
+				cfg.TierBoundaries.MediumComplex = 1.0
 			},
 		},
 		{
 			name: "boundaries out of order",
 			mutate: func(cfg *ComplexityAnalyzerConfig) {
-				cfg.TierBoundaries.ComplexReasoning = cfg.TierBoundaries.MediumComplex - 0.1
+				cfg.TierBoundaries.MediumComplex = cfg.TierBoundaries.SimpleMedium - 0.05
 			},
 		},
 		{
-			name: "empty code keywords",
+			name: "boundaries equal",
 			mutate: func(cfg *ComplexityAnalyzerConfig) {
-				cfg.Keywords.CodeKeywords = nil
+				cfg.TierBoundaries.MediumComplex = cfg.TierBoundaries.SimpleMedium
 			},
 		},
 		{
-			name: "empty reasoning keywords",
+			name: "empty medium keywords",
 			mutate: func(cfg *ComplexityAnalyzerConfig) {
-				cfg.Keywords.ReasoningKeywords = nil
+				cfg.Keywords.MediumKeywords = nil
 			},
 		},
 		{
-			name: "empty technical keywords",
+			name: "empty complex keywords",
 			mutate: func(cfg *ComplexityAnalyzerConfig) {
-				cfg.Keywords.TechnicalKeywords = nil
+				cfg.Keywords.ComplexKeywords = nil
 			},
 		},
 		{

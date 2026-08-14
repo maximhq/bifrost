@@ -2979,3 +2979,227 @@ func TestMigrationAddBudgetResetConfigColumn_NonRollbackable(t *testing.T) {
 	assert.Equal(t, time.April, got.QuarterStartMonth(),
 		"the fiscal quarter definition must survive the refused rollback")
 }
+
+func setupComplexityExemplarMigrationDB(t *testing.T) *gorm.DB {
+	t.Helper()
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&tables.TableGovernanceConfig{}))
+	require.NoError(t, db.Exec(`CREATE TABLE migrations (id VARCHAR(255) PRIMARY KEY)`).Error)
+	return db
+}
+
+func seedComplexityAnalyzerConfig(t *testing.T, db *gorm.DB, value string) {
+	t.Helper()
+	require.NoError(t, db.Create(&tables.TableGovernanceConfig{
+		Key:   tables.ConfigComplexityAnalyzerConfigKey,
+		Value: value,
+	}).Error)
+}
+
+func seedComplexitySemanticConfig(t *testing.T, db *gorm.DB, value string) {
+	t.Helper()
+	require.NoError(t, db.Create(&tables.TableGovernanceConfig{
+		Key:   tables.ConfigComplexitySemanticConfigKey,
+		Value: value,
+	}).Error)
+}
+
+func readRawComplexityAnalyzerConfig(t *testing.T, db *gorm.DB) string {
+	t.Helper()
+	var entry tables.TableGovernanceConfig
+	require.NoError(t, db.First(&entry, "key = ?", tables.ConfigComplexityAnalyzerConfigKey).Error)
+	return entry.Value
+}
+
+func readRawComplexitySemanticConfig(t *testing.T, db *gorm.DB) string {
+	t.Helper()
+	var entry tables.TableGovernanceConfig
+	require.NoError(t, db.First(&entry, "key = ?", tables.ConfigComplexitySemanticConfigKey).Error)
+	return entry.Value
+}
+
+func TestMigrationBackfillDefaultComplexityExemplars(t *testing.T) {
+	ctx := context.Background()
+	defaults := DefaultComplexityExemplars()
+
+	t.Run("backfills defaults without replacing administrator state", func(t *testing.T) {
+		db := setupComplexityExemplarMigrationDB(t)
+		config := testSemanticAnalyzerConfig()
+		config.Keywords = ComplexityEditableKeywordConfig{
+			SimpleKeywords:  []string{"custom simple"},
+			MediumKeywords:  []string{"custom medium", defaults.SimpleKeywords[0]},
+			ComplexKeywords: []string{"custom complex"},
+		}
+		config.ConfigHashes = ComplexityAnalyzerConfigHashes{
+			TierBoundaries:   "tier-hash",
+			SimpleKeywords:   "simple-hash",
+			MediumKeywords:   "medium-hash",
+			ComplexKeywords:  "complex-hash",
+			SemanticSettings: "semantic-hash",
+		}
+		config.EmbeddingFingerprint = "stale-fingerprint"
+
+		raw, err := encodeComplexityAnalyzerConfig(config.Normalized())
+		require.NoError(t, err)
+		seedComplexityAnalyzerConfig(t, db, string(raw))
+		semanticRaw, err := encodeComplexitySemanticConfigRow(config.Normalized())
+		require.NoError(t, err)
+		seedComplexitySemanticConfig(t, db, string(semanticRaw))
+
+		require.NoError(t, migrationBackfillDefaultComplexityExemplars(ctx, db, testMigrationLogger))
+
+		// Exemplars live in the semantic row, so that is where the backfill lands.
+		semanticRow, err := decodeComplexitySemanticConfigRow([]byte(readRawComplexitySemanticConfig(t, db)))
+		require.NoError(t, err)
+		require.NotNil(t, semanticRow)
+		got := &ComplexityAnalyzerConfig{Keywords: semanticRow.Keywords}
+
+		// The semantic settings survive, but the fingerprint recorded against the
+		// old exemplars must not: the exemplars just changed.
+		assert.Equal(t, config.Normalized().Semantic, semanticRow.Semantic)
+		assert.Equal(t, "semantic-hash", semanticRow.ConfigHashes.SemanticSettings)
+		assert.Empty(t, semanticRow.EmbeddingFingerprint, "changed exemplars must invalidate the stored embedding fingerprint")
+
+		// The analyzer row is untouched: it belongs to the lexical classifier,
+		// and nothing about exemplars concerns it.
+		assert.Equal(t, string(raw), readRawComplexityAnalyzerConfig(t, db))
+
+		assert.Contains(t, got.Keywords.SimpleKeywords, "custom simple")
+		assert.Contains(t, got.Keywords.MediumKeywords, "custom medium")
+		assert.Contains(t, got.Keywords.ComplexKeywords, "custom complex")
+
+		// An administrator already assigned this shipped phrase to MEDIUM. The
+		// migration must not duplicate or move it back to its default SIMPLE tier.
+		crossTierDefault := normalizeComplexityExemplarKey(defaults.SimpleKeywords[0])
+		assert.NotContains(t, got.Keywords.SimpleKeywords, crossTierDefault)
+		assert.Contains(t, got.Keywords.MediumKeywords, crossTierDefault)
+
+		for _, phrase := range defaults.SimpleKeywords[1:] {
+			assert.Contains(t, got.Keywords.SimpleKeywords, normalizeComplexityExemplarKey(phrase))
+		}
+		for _, phrase := range defaults.MediumKeywords {
+			assert.Contains(t, got.Keywords.MediumKeywords, normalizeComplexityExemplarKey(phrase))
+		}
+		for _, phrase := range defaults.ComplexKeywords {
+			assert.Contains(t, got.Keywords.ComplexKeywords, normalizeComplexityExemplarKey(phrase))
+		}
+	})
+
+	t.Run("keeps an already complete config byte-for-byte unchanged", func(t *testing.T) {
+		db := setupComplexityExemplarMigrationDB(t)
+		config := testComplexityAnalyzerConfig()
+		config.Keywords = defaults
+		config.EmbeddingFingerprint = "keep-fingerprint"
+		raw, err := encodeComplexityAnalyzerConfig(config.Normalized())
+		require.NoError(t, err)
+		seedComplexityAnalyzerConfig(t, db, string(raw))
+		semanticRaw, err := encodeComplexitySemanticConfigRow(config.Normalized())
+		require.NoError(t, err)
+		seedComplexitySemanticConfig(t, db, string(semanticRaw))
+
+		require.NoError(t, migrationBackfillDefaultComplexityExemplars(ctx, db, testMigrationLogger))
+
+		assert.Equal(t, string(raw), readRawComplexityAnalyzerConfig(t, db))
+		// Nothing was added, so the fingerprint stays valid and untouched.
+		assert.Equal(t, string(semanticRaw), readRawComplexitySemanticConfig(t, db))
+	})
+
+	// A pre-split build of this version kept the semantic block inside the
+	// analyzer row. It has to travel to the semantic row with the exemplars,
+	// otherwise the split itself is what loses it.
+	t.Run("carries a pre-split semantic block into the semantic row", func(t *testing.T) {
+		db := setupComplexityExemplarMigrationDB(t)
+		seedComplexityAnalyzerConfig(t, db, `{
+			"tier_boundaries": {"simple_medium": 0.2, "medium_complex": 0.4},
+			"keywords": {
+				"simple_keywords": ["custom simple"],
+				"medium_keywords": ["custom medium"],
+				"complex_keywords": ["custom complex"]
+			},
+			"semantic": {
+				"provider": "openai",
+				"embedding_model": "text-embedding-3-small",
+				"min_similarity": 0.3
+			},
+			"_config_hashes": {"semantic_settings": "carried-hash"}
+		}`)
+
+		require.NoError(t, migrationBackfillDefaultComplexityExemplars(ctx, db, testMigrationLogger))
+
+		semanticRow, err := decodeComplexitySemanticConfigRow([]byte(readRawComplexitySemanticConfig(t, db)))
+		require.NoError(t, err)
+		require.NotNil(t, semanticRow)
+		require.NotNil(t, semanticRow.Semantic, "the semantic block must survive the split")
+		assert.Equal(t, schemas.ModelProvider("openai"), semanticRow.Semantic.Provider)
+		assert.Equal(t, 0.3, semanticRow.Semantic.MinSimilarity)
+		assert.Equal(t, "carried-hash", semanticRow.ConfigHashes.SemanticSettings)
+		assert.Contains(t, semanticRow.Keywords.SimpleKeywords, "custom simple")
+	})
+
+	// A build further up the stack can write semantic fields this version has no
+	// name for. That must cost the unreadable section, not the whole migration.
+	t.Run("skips an unreadable semantic block without failing", func(t *testing.T) {
+		db := setupComplexityExemplarMigrationDB(t)
+		seedComplexityAnalyzerConfig(t, db, `{
+			"tier_boundaries": {"simple_medium": 0.2, "medium_complex": 0.4},
+			"keywords": {
+				"simple_keywords": ["custom simple"],
+				"medium_keywords": ["custom medium"],
+				"complex_keywords": ["custom complex"]
+			},
+			"semantic": {
+				"provider": "openai",
+				"embedding_model": "text-embedding-3-small",
+				"a_field_from_a_higher_branch": "llm"
+			}
+		}`)
+
+		require.NoError(t, migrationBackfillDefaultComplexityExemplars(ctx, db, testMigrationLogger))
+
+		semanticRow, err := decodeComplexitySemanticConfigRow([]byte(readRawComplexitySemanticConfig(t, db)))
+		require.NoError(t, err)
+		require.NotNil(t, semanticRow)
+		assert.Nil(t, semanticRow.Semantic)
+		// The exemplars still made it across.
+		assert.Contains(t, semanticRow.Keywords.SimpleKeywords, "custom simple")
+	})
+
+	// The upgrade path: an installation that predates the split has phrases in
+	// its analyzer row and no semantic row at all. Those phrases are what it has
+	// been routing with, so they seed the semantic row instead of being replaced
+	// by the defaults.
+	t.Run("seeds the semantic row from a pre-split analyzer row", func(t *testing.T) {
+		db := setupComplexityExemplarMigrationDB(t)
+		seedComplexityAnalyzerConfig(t, db, `{
+			"tier_boundaries": {"simple_medium": 0.15, "medium_complex": 0.35, "complex_reasoning": 0.6},
+			"keywords": {
+				"code_keywords": ["function"],
+				"reasoning_keywords": ["step by step"],
+				"technical_keywords": ["architecture"],
+				"simple_keywords": ["hello"]
+			}
+		}`)
+
+		require.NoError(t, migrationBackfillDefaultComplexityExemplars(ctx, db, testMigrationLogger))
+
+		semanticRow, err := decodeComplexitySemanticConfigRow([]byte(readRawComplexitySemanticConfig(t, db)))
+		require.NoError(t, err)
+		require.NotNil(t, semanticRow)
+
+		// The operator's own phrases carry over, mapped onto the three tiers.
+		assert.Nil(t, semanticRow.Semantic, "the seeded row had no semantic block to carry")
+		assert.Contains(t, semanticRow.Keywords.SimpleKeywords, "hello")
+		assert.Contains(t, semanticRow.Keywords.MediumKeywords, "function")
+		assert.Contains(t, semanticRow.Keywords.MediumKeywords, "architecture")
+		assert.Contains(t, semanticRow.Keywords.ComplexKeywords, "step by step")
+
+		// And the curated defaults are appended alongside them.
+		for _, phrase := range defaults.ComplexKeywords {
+			assert.Contains(t, semanticRow.Keywords.ComplexKeywords, normalizeComplexityExemplarKey(phrase))
+		}
+	})
+}
