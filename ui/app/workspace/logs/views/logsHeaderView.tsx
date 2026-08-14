@@ -262,7 +262,7 @@ export function LogsHeaderView({
 	);
 
 	return (
-		<div className="flex grow items-center justify-between space-x-2">
+		<div className="flex grow flex-wrap items-center justify-between gap-2">
 			<Button
 				data-testid="logs-refresh-btn"
 				variant="outline"
@@ -303,11 +303,12 @@ export function LogsHeaderView({
 				</TooltipTrigger>
 				<TooltipContent sideOffset={6} className="max-w-64">
 					Groups fallback attempts and linked requests under the original root request. Expand any row to view the complete request chain.
-					<br /><br />
+					<br />
+					<br />
 					This grouped view may load more slowly than the flat view for very large log tables.
 				</TooltipContent>
 			</Tooltip>
-			<div className="border-input flex h-7.5 flex-1 items-center gap-2 rounded-sm border">
+			<div className="border-input flex h-7.5 min-w-[12rem] flex-1 items-center gap-2 rounded-sm border">
 				<Search className="mr-0.5 ml-2 size-4" />
 				<Input
 					type="text"
@@ -319,6 +320,7 @@ export function LogsHeaderView({
 			</div>
 
 			<DateTimePickerWithRange
+				buttonClassName="w-full sm:w-auto"
 				triggerTestId="filter-date-range"
 				dateTime={{ from: startTime, to: endTime }}
 				predefinedPeriod={period || undefined}

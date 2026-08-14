@@ -131,7 +131,7 @@ export function MCPLogDetailSheet({
 	if (!isFullDataReady) {
 		return (
 			<Sheet open={open} onOpenChange={onOpenChange}>
-				<SheetContent className="flex w-full flex-col gap-4 overflow-x-hidden p-8 sm:max-w-[60%]">
+				<SheetContent className="flex w-full flex-col gap-4 overflow-x-hidden p-4 sm:max-w-[60%] md:p-8">
 					<div className="flex h-full items-center justify-center">
 						<SheetTitle className="sr-only">Loading MCP log details</SheetTitle>
 						<Loader2 className="text-muted-foreground h-6 w-6 animate-spin" />
@@ -148,7 +148,7 @@ export function MCPLogDetailSheet({
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="flex w-full flex-col gap-4 overflow-x-hidden p-8 sm:max-w-[60%]">
+			<SheetContent className="flex w-full flex-col gap-4 overflow-x-hidden p-4 sm:max-w-[60%] md:p-8">
 				<SheetHeader className="flex flex-row items-center px-0">
 					<div className="flex w-full items-center justify-between">
 						<SheetTitle className="flex w-fit items-center gap-2 font-medium">
@@ -244,10 +244,10 @@ export function MCPLogDetailSheet({
 						</AlertDialogContent>
 					</AlertDialog>
 				</SheetHeader>
-				<div className="space-y-4 rounded-sm border px-6 py-4">
+				<div className="space-y-4 rounded-sm border px-4 py-4 md:px-6">
 					<div className="space-y-4">
 						<BlockHeader title="Timings" />
-						<div className="grid w-full grid-cols-3 items-center justify-between gap-4">
+						<div className="grid w-full grid-cols-1 items-center justify-between gap-4 md:grid-cols-3">
 							<LogEntryDetailsView
 								className="w-full"
 								label="Start Timestamp"
@@ -276,7 +276,7 @@ export function MCPLogDetailSheet({
 					<DottedSeparator />
 					<div className="space-y-4">
 						<BlockHeader title="Request Details" />
-						<div className="grid w-full grid-cols-3 items-start justify-between gap-4">
+						<div className="grid w-full grid-cols-1 items-start justify-between gap-4 md:grid-cols-3">
 							<LogEntryDetailsView
 								className="col-span-2 w-full"
 								label="Tool Name"
@@ -365,7 +365,7 @@ export function MCPLogDetailSheet({
 						{/* Arguments */}
 						{displayedArguments && (
 							<div className="w-full rounded-sm border">
-								<div className="border-b px-6 py-2 text-sm font-medium">Arguments</div>
+								<div className="border-b px-4 py-2 text-sm font-medium md:px-6">Arguments</div>
 								<CodeEditor
 									className="z-0 w-full"
 									shouldAdjustInitialHeight={true}
@@ -382,7 +382,7 @@ export function MCPLogDetailSheet({
 						{/* Result */}
 						{displayedResult && displayLog.status !== "processing" && (
 							<div className="w-full rounded-sm border">
-								<div className="border-b px-6 py-2 text-sm font-medium">Result</div>
+								<div className="border-b px-4 py-2 text-sm font-medium md:px-6">Result</div>
 								<CodeEditor
 									className="z-0 w-full"
 									shouldAdjustInitialHeight={true}
@@ -398,9 +398,9 @@ export function MCPLogDetailSheet({
 
 						{/* Metadata */}
 						{displayLog.metadata && Object.keys(displayLog.metadata).length > 0 && (
-							<div className="space-y-4 rounded-sm border px-6 py-4">
+							<div className="space-y-4 rounded-sm border px-4 py-4 md:px-6">
 								<BlockHeader title="Metadata" />
-								<div className="grid w-full grid-cols-3 items-start justify-between gap-4">
+								<div className="grid w-full grid-cols-1 items-start justify-between gap-4 md:grid-cols-3">
 									{Object.entries(displayLog.metadata).map(([key, value]) => (
 										<LogEntryDetailsView key={key} className="w-full" label={key} value={String(value)} />
 									))}
@@ -411,7 +411,7 @@ export function MCPLogDetailSheet({
 						{/* Error Details */}
 						{displayedErrorDetails && (
 							<div className="border-destructive/50 w-full rounded-sm border">
-								<div className="border-destructive/50 text-destructive border-b px-6 py-2 text-sm font-medium">Error Details</div>
+								<div className="border-destructive/50 text-destructive border-b px-4 py-2 text-sm font-medium md:px-6">Error Details</div>
 								<CodeEditor
 									className="z-0 w-full"
 									shouldAdjustInitialHeight={true}

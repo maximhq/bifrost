@@ -32,7 +32,7 @@ export function LoggingDisabledView() {
 			</div>
 			<div className="flex flex-col gap-1">
 				<h1 className="text-muted-foreground text-xl font-medium">Logging is disabled</h1>
-				<div className="text-muted-foreground mt-2 max-w-[600px] text-sm font-normal">
+				<div className="text-muted-foreground mt-2 w-full max-w-[600px] text-sm font-normal">
 					Enable logging to view LLM and MCP request logs, traces, and observability data.
 				</div>
 			</div>

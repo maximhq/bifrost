@@ -149,7 +149,7 @@ export default function ProxyView() {
 							{/* Authentication Section */}
 							<div className="bg-muted/20 space-y-4 rounded-sm border p-4">
 								<h4 className="text-sm font-medium">Authentication (Optional)</h4>
-								<div className="grid grid-cols-2 gap-4">
+								<div className="grid grid-cols-1 gap-4 md:grid-cols-2">
 									<FormField
 										control={form.control}
 										name="username"

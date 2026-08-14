@@ -136,7 +136,7 @@ export default function VirtualKeyDetailSheet({
 			<SheetContent className="flex w-full flex-col overflow-x-hidden p-0 pt-4 sm:max-w-2xl">
 				<SheetHeader
 					className="flex flex-row items-center justify-between px-0 py-4"
-					headerClassName="mb-0 sticky -top-4 bg-card z-10 px-8"
+					headerClassName="mb-0 sticky -top-4 bg-card z-10 px-4 md:px-8"
 				>
 					<div className="flex min-w-0 flex-col items-start">
 						<div className="flex min-w-0 items-center gap-1">
@@ -155,7 +155,7 @@ export default function VirtualKeyDetailSheet({
 					/>
 				</SheetHeader>
 
-				<div className="space-y-6 px-8 py-4">
+				<div className="space-y-6 px-4 py-4 md:px-8">
 					<ManagedVirtualKeyNotice isManagedByProfile={isManagedByProfile} managingProfile={managingProfile} />
 
 					{assignedUsers.length > 0 ? (
@@ -173,7 +173,7 @@ export default function VirtualKeyDetailSheet({
 						<h3 className="font-semibold">Basic Information</h3>
 
 						<div className="grid gap-4">
-							<div className="grid grid-cols-3 items-center gap-4">
+							<div className="grid grid-cols-1 items-center gap-4 md:grid-cols-3">
 								<span className="text-muted-foreground text-sm">Status</span>
 								<div className="col-span-2">
 									{(() => {
@@ -186,7 +186,7 @@ export default function VirtualKeyDetailSheet({
 							</div>
 
 							{virtualKey.expires_at && (
-								<div className="grid grid-cols-3 items-center gap-4">
+								<div className="grid grid-cols-1 items-center gap-4 md:grid-cols-3">
 									<span className="text-muted-foreground text-sm">Expires</span>
 									<div className="col-span-2 text-sm">
 										{formatDistanceToNow(new Date(virtualKey.expires_at), {
@@ -197,7 +197,7 @@ export default function VirtualKeyDetailSheet({
 								</div>
 							)}
 
-							<div className="grid grid-cols-3 items-center gap-4">
+							<div className="grid grid-cols-1 items-center gap-4 md:grid-cols-3">
 								<span className="text-muted-foreground text-sm">Created</span>
 								<div className="col-span-2 text-sm">
 									{formatDistanceToNow(new Date(virtualKey.created_at), {
@@ -206,7 +206,7 @@ export default function VirtualKeyDetailSheet({
 								</div>
 							</div>
 
-							<div className="grid grid-cols-3 items-center gap-4">
+							<div className="grid grid-cols-1 items-center gap-4 md:grid-cols-3">
 								<span className="text-muted-foreground text-sm">Last Updated</span>
 								<div className="col-span-2 text-sm">
 									{formatDistanceToNow(new Date(virtualKey.updated_at), {
@@ -216,7 +216,7 @@ export default function VirtualKeyDetailSheet({
 							</div>
 
 							{entityInfo.type !== "None" && (
-								<div className="grid grid-cols-3 items-center gap-4">
+								<div className="grid grid-cols-1 items-center gap-4 md:grid-cols-3">
 									<span className="text-muted-foreground text-sm">Assigned To</span>
 									<div className="col-span-2 flex items-center gap-2">
 										<Badge variant={entityInfo.type === "None" ? "outline" : "secondary"}>{entityInfo.type}</Badge>
@@ -264,7 +264,7 @@ export default function VirtualKeyDetailSheet({
 
 											{/* Basic Config */}
 											<div className="space-y-3">
-												<div className="grid grid-cols-3 items-start gap-4">
+												<div className="grid grid-cols-1 items-start gap-4 md:grid-cols-3">
 													<span className="text-muted-foreground pt-0.5 text-sm font-medium">Allowed Models</span>
 													<div className="col-span-2">
 														{config.allowed_models?.includes("*") ? (
@@ -287,7 +287,7 @@ export default function VirtualKeyDetailSheet({
 													</div>
 												</div>
 
-												<div className="grid grid-cols-3 items-start gap-4">
+												<div className="grid grid-cols-1 items-start gap-4 md:grid-cols-3">
 													<span className="text-muted-foreground pt-0.5 text-sm font-medium">Blocked Models</span>
 													<div className="col-span-2">
 														{config.blacklisted_models?.includes("*") ? (
@@ -310,7 +310,7 @@ export default function VirtualKeyDetailSheet({
 													</div>
 												</div>
 
-												<div className="grid grid-cols-3 items-start gap-4">
+												<div className="grid grid-cols-1 items-start gap-4 md:grid-cols-3">
 													<span className="text-muted-foreground pt-0.5 text-sm font-medium">Allowed Keys</span>
 													<div className="col-span-2">
 														{config.allow_all_keys ? (

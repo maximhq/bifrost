@@ -362,7 +362,7 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 				onInteractOutside={(e) => e.preventDefault()}
 				onEscapeKeyDown={() => onCancel()}
 			>
-				<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-8">
+				<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-4 md:px-8">
 					<SheetTitle className="flex items-center gap-2">
 						{isEditing ? "Edit Team" : "Create Team"}
 						{team?.id && <CopyableId id={team.id} entityLabel="Team" />}
@@ -373,7 +373,7 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 				</SheetHeader>
 
 				<form onSubmit={handleSubmit} className="flex h-full flex-col gap-6">
-					<div className="grow space-y-6 px-8">
+					<div className="grow space-y-6 px-4 md:px-8">
 						{/* Basic Information */}
 						<div className="flex flex-col gap-6">
 							<div className="space-y-2">
@@ -654,7 +654,7 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 						)}
 					</div>
 
-					<div className="border-border bg-card sticky bottom-0 z-10 border-t px-8 py-4">
+					<div className="border-border bg-card sticky bottom-0 z-10 border-t px-4 py-4 md:px-8">
 						<div className="flex justify-end gap-2">
 							<Button type="button" variant="outline" onClick={onCancel} disabled={loading}>
 								Cancel

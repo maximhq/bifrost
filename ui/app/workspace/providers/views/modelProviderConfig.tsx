@@ -26,7 +26,7 @@ export default function ModelProviderConfig({ provider, onRequestDelete }: Props
 	}, [provider.name, provider.custom_provider_config?.is_key_less]);
 
 	const editConfigButton = (
-		<div className="flex items-center gap-2">
+		<div className="flex min-w-0 flex-wrap items-center gap-2">
 			{onRequestDelete && hasDeleteProviderAccess && (
 				<Button
 					variant="outline"
@@ -38,9 +38,14 @@ export default function ModelProviderConfig({ provider, onRequestDelete }: Props
 					<Trash className="h-4 w-4" />
 				</Button>
 			)}
-			<Button variant="outline" onClick={() => setShowConfigSheet(true)}>
+			<Button
+				variant="outline"
+				className="size-9 px-0 md:h-9 md:w-auto md:px-4"
+				onClick={() => setShowConfigSheet(true)}
+				aria-label={hasUpdateProviderAccess ? "Edit provider configuration" : "View provider configuration"}
+			>
 				<SettingsIcon className="h-4 w-4" />
-				{hasUpdateProviderAccess ? "Edit Provider Config" : "View Provider Config"}
+				<span className="hidden md:inline">{hasUpdateProviderAccess ? "Edit Provider Config" : "View Provider Config"}</span>
 			</Button>
 		</div>
 	);

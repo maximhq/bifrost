@@ -154,14 +154,14 @@ export default function MCPLibraryPage() {
 	const isCatalogEmpty = !isFetching && totalCount === 0 && !debouncedSearch && !hasActiveFilters;
 
 	return (
-		<div className="dark:bg-card no-padding-parent no-border-parent h-[calc(100dvh_-_16px)]">
-			<div className="bg-background flex h-full w-full grow gap-3">
+		<div className="dark:bg-card no-padding-parent no-border-parent min-h-full md:h-[calc(100dvh_-_16px)]">
+			<div className="bg-background flex min-h-full w-full grow gap-3 md:h-full">
 				{/* Sidebar Filters */}
 				<MCPLibraryFilterSidebar filters={filters} onFiltersChange={setFilters} />
 
 				{/* Main Content */}
-				<div className="bg-card h-full w-full rounded-l-md">
-					<div className="flex h-full flex-col gap-4 p-4 pb-2">
+				<div className="bg-card min-h-full w-full rounded-l-md md:h-full">
+					<div className="flex min-h-full flex-col gap-4 p-4 pb-2 md:h-full">
 						{/* Header */}
 						<div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
 							<div className="space-y-1">
@@ -233,11 +233,14 @@ export default function MCPLibraryPage() {
 								</div>
 							</div>
 						)}
-						<div className="flex grow flex-col overflow-hidden">
+						<div className="flex flex-col md:min-h-0 md:grow md:overflow-hidden">
 							{/* Loading skeletons */}
 							{isFetching && servers.length === 0 ? (
 								viewMode === "grid" ? (
-									<ScrollArea className="mb-2 overflow-y-auto">
+									<ScrollArea
+										className="mb-2 overflow-visible md:min-h-0 md:overflow-y-auto"
+										viewportClassName="!h-auto !overflow-visible md:!h-full md:!overflow-x-hidden md:!overflow-y-scroll"
+									>
 										<div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3" data-testid="mcp-library-grid-skeleton">
 											{Array.from({ length: 6 }).map((_, i) => (
 												// biome-ignore lint/suspicious/noArrayIndexKey: static skeleton placeholders have no stable id
@@ -260,7 +263,7 @@ export default function MCPLibraryPage() {
 										<h1 className="text-muted-foreground text-xl font-medium">
 											{isCatalogEmpty ? "No synced servers yet" : "No servers found"}
 										</h1>
-										<div className="text-muted-foreground mx-auto mt-2 max-w-[600px] text-sm font-normal">
+										<div className="text-muted-foreground mx-auto mt-2 w-full max-w-[600px] text-sm font-normal">
 											{isCatalogEmpty
 												? "Configure the library sync source in Settings to populate this catalog."
 												: "Try adjusting your search or filters."}
@@ -278,7 +281,10 @@ export default function MCPLibraryPage() {
 							) : (
 								<>
 									{viewMode === "grid" ? (
-										<ScrollArea className="mb-2 overflow-y-auto">
+										<ScrollArea
+											className="mb-2 overflow-visible md:min-h-0 md:overflow-y-auto"
+											viewportClassName="!h-auto !overflow-visible md:!h-full md:!overflow-x-hidden md:!overflow-y-scroll"
+										>
 											<div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3" data-testid="mcp-library-grid-view">
 												{servers.map((server) => {
 													const isInstalled = installedServerSlugs.has(server.slug);

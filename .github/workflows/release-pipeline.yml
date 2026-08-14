@@ -51,14 +51,15 @@ jobs:
             echo "should-skip=false" >> $GITHUB_OUTPUT
           fi
 
-          # --skip-core-test drops ONLY the test-core job (the ~90 minute provider
-          # harness that makes live calls to every upstream). Every other test job
-          # still runs, including test-core-unit and test-core-integrations, so the
-          # release is still gated on the whole suite minus the one job that depends
-          # on eight third-party APIs being healthy at that moment.
+          # --skip-core-test drops the two jobs that make live calls to every
+          # upstream provider: test-core (the ~90 minute provider harness) and
+          # test-core-integrations (the core module's live provider suite). Every
+          # other test job still runs, including test-core-unit, so the release is
+          # still gated on the whole suite minus the jobs that depend on eight
+          # third-party APIs being healthy at that moment.
           #
-          # Skipping it does not cascade: every downstream release job already
-          # accepts `needs.test-core.result == 'skipped'` alongside 'success' (the
+          # Skipping them does not cascade: every downstream release job already
+          # accepts `needs.<job>.result == 'skipped'` alongside 'success' (the
           # same path a bifrost-http-only release takes when test-core never runs).
           #
           # Distinct from --skip-ci, which skips the entire pipeline including the
@@ -68,7 +69,7 @@ jobs:
           # passed. Use it when a provider outage is blocking a release that has
           # nothing to do with that provider - not to get a red harness out the door.
           if [[ "$FIRST_LINE" == *"--skip-core-test"* ]]; then
-            echo "::warning::--skip-core-test found in the commit subject: the provider harness (test-core) will not run for this release. All other test jobs still gate it."
+            echo "::warning::--skip-core-test found in the commit subject: the live provider jobs (test-core, test-core-integrations) will not run for this release. All other test jobs still gate it."
             echo "skip-core-test=true" >> $GITHUB_OUTPUT
           else
             echo "skip-core-test=false" >> $GITHUB_OUTPUT
@@ -482,7 +483,9 @@ jobs:
 
   test-core-integrations:
     needs: [check-skip, detect-changes, build-gateway]
-    if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.core-needs-release == 'true'
+    # skip-core-test drops this alongside test-core: both make live calls to the
+    # upstream providers, so a provider outage that blocks one blocks both.
+    if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.check-skip.outputs.skip-core-test != 'true' && needs.detect-changes.outputs.core-needs-release == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
