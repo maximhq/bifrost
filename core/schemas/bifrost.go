@@ -1714,17 +1714,18 @@ type BifrostResponseExtraFields struct {
 	// matched (i.e. RoutingInfo.ResolvedKeyAlias != nil), otherwise
 	// RoutingInfo.Model. Still populated for backward compatibility; new
 	// consumers should read from RoutingInfo.
-	ResolvedModelUsed string     `json:"resolved_model_used,omitempty"`
-	Latency           int64      `json:"latency"` // in milliseconds (for streaming responses this will be each chunk latency, and the last chunk latency will be the total latency)
+	ResolvedModelUsed string `json:"resolved_model_used,omitempty"`
+	Latency           int64  `json:"latency"` // in milliseconds (for streaming responses this will be each chunk latency, and the last chunk latency will be the total latency)
 	// UpstreamLatency is the total time spent blocked on upstream sockets across
 	// every attempt, in milliseconds. Unlike Latency it survives retries and
 	// fallbacks, so total-UpstreamLatency is Bifrost's own cost. Nil when the
 	// request never accumulated one; nil means unknown, not zero.
-	UpstreamLatency           *int64             `json:"upstream_latency,omitempty"`
+	UpstreamLatency           *int64                 `json:"upstream_latency,omitempty"`
 	ChunkIndex                int                    `json:"chunk_index"` // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
 	RawRequest                interface{}            `json:"raw_request,omitempty"`
 	RawResponse               interface{}            `json:"raw_response,omitempty"`
 	CacheDebug                *BifrostCacheDebug     `json:"cache_debug,omitempty"`
+	RoutingDebug              *BifrostRoutingDebug   `json:"routing_debug,omitempty"`
 	GuardrailDebug            *BifrostGuardrailDebug `json:"guardrail_debug,omitempty"`
 	ParseErrors               []BatchError           `json:"parse_errors,omitempty"` // errors encountered while parsing JSONL batch results
 	ConvertedRequestType      RequestType            `json:"converted_request_type,omitempty"`
@@ -1734,8 +1735,8 @@ type BifrostResponseExtraFields struct {
 	// web_search requested against a non-Nova Bedrock model). Currently populated
 	// only by the Bedrock provider.
 	DroppedUnsupportedTools []string          `json:"dropped_unsupported_tools,omitempty"`
-	ProviderResponseHeaders map[string]string     `json:"provider_response_headers,omitempty"` // HTTP response headers from the provider (filtered to exclude transport-level headers)
-	PassthroughPath         string                `json:"passthrough_path,omitempty"`          // Stripped provider path for passthrough requests, e.g. "/v1/chat/completions"
+	ProviderResponseHeaders map[string]string `json:"provider_response_headers,omitempty"` // HTTP response headers from the provider (filtered to exclude transport-level headers)
+	PassthroughPath         string            `json:"passthrough_path,omitempty"`          // Stripped provider path for passthrough requests, e.g. "/v1/chat/completions"
 }
 
 type RoutingInfo struct {
@@ -1800,6 +1801,24 @@ type BifrostCacheDebug struct {
 	// CacheHitLatency is the time in milliseconds spent serving the cache hit
 	// (lookup + response build). Only set when CacheHit is true.
 	CacheHitLatency *int64 `json:"cache_hit_latency,omitempty"`
+}
+
+// BifrostRoutingDebug records routing-classification overhead attached to the
+// triggering request — today the embedding call semantic complexity routing
+// makes before provider selection. It is stamped whenever a routing embedding
+// ran, independent of budget attribution, so routing cost stays observable.
+// Routing-mechanism fields (tier, mechanism, similarity) may be added here as
+// classification logging grows.
+type BifrostRoutingDebug struct {
+	ProviderUsed *string `json:"provider_used,omitempty"`
+	ModelUsed    *string `json:"model_used,omitempty"`
+	InputTokens  *int    `json:"input_tokens,omitempty"`
+
+	// CountTowardBudgets carries the governance count_toward_budgets flag to
+	// cost calculation, which cannot see governance config. When true, the
+	// routing embedding cost is added to the request's calculated cost (and so
+	// to its budget attribution); it is never budget-enforced.
+	CountTowardBudgets bool `json:"count_toward_budgets,omitempty"`
 }
 
 const (
