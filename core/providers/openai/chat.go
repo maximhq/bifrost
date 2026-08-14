@@ -96,6 +96,10 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		openaiReq.filterOpenAISpecificParameters(capModel)
 		openaiReq.applyMistralCompatibility()
 		return openaiReq
+	case schemas.Ollama:
+		openaiReq.filterOpenAISpecificParameters(capModel)
+		openaiReq.applyOllamaCompatibility(bifrostReq.Params)
+		return openaiReq
 	case schemas.Vertex:
 		openaiReq.filterOpenAISpecificParameters(capModel)
 
@@ -185,6 +189,23 @@ func (req *OpenAIChatRequest) normalizeReasoningEffort(capModel string) {
 			req.ChatParameters.Reasoning.MaxTokens = nil
 		}
 	}
+}
+
+// applyOllamaCompatibility applies Ollama-specific transformations to the request.
+// Ollama's OpenAI-compatible endpoint reads the legacy max_tokens field and
+// silently ignores max_completion_tokens, so the token cap must be carried on
+// max_tokens (issue #6132). The client's original value is restored from params:
+// OpenAI's 16-token floor (MinMaxCompletionTokens) is an OpenAI API constraint
+// that Ollama does not share, so a smaller cap must survive un-clamped.
+func (req *OpenAIChatRequest) applyOllamaCompatibility(params *schemas.ChatParameters) {
+	if req.MaxCompletionTokens == nil {
+		return
+	}
+	req.MaxTokens = req.MaxCompletionTokens
+	if params != nil && params.MaxCompletionTokens != nil {
+		req.MaxTokens = params.MaxCompletionTokens
+	}
+	req.MaxCompletionTokens = nil
 }
 
 // applyMistralCompatibility applies Mistral-specific transformations to the request
