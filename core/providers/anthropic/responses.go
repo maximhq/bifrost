@@ -180,10 +180,11 @@ type anthropicToResponsesStreamState struct {
 	nextBlockIndex   int
 	blockIndexByItem map[string]int
 
-	// emittedTextByBlock holds bounded progress for text actually emitted to a
-	// normalized Anthropic client. Responses output_text.done is cumulative, so
-	// this lets the converter recover only its missing suffix without retaining a
-	// second full copy of the streamed response.
+	// emittedTextByBlock holds bounded progress for text that actually reached a
+	// normalized Anthropic client. Responses output_text.done is cumulative, while
+	// Anthropic clients assemble incremental content_block_delta events, so the
+	// converter needs this state to recover only a verified missing suffix without
+	// retaining a second full copy of the streamed response.
 	emittedTextByBlock map[int]*emittedTextProgress
 
 	// blockIndexMisses records non-empty item keys for which blockIndexFor was
@@ -247,13 +248,17 @@ type anthropicToResponsesStreamState struct {
 	codeExecServerClosedByItem map[string]bool
 }
 
-// emittedTextProgress records the byte length and SHA-256 state of one emitted text prefix.
+// emittedTextProgress records one Anthropic text block's wire-visible prefix.
+// emittedBytes locates the possible terminal suffix, while prefixHasher proves
+// that output_text.done still extends the exact bytes already sent. Keeping only
+// the count and digest makes the bookkeeping bounded regardless of output size.
 type emittedTextProgress struct {
 	emittedBytes int
 	prefixHasher hash.Hash
 }
 
-// recordEmittedText advances one block's bounded text progress.
+// recordEmittedText advances one block's bounded progress after a text delta is
+// known to be client-visible.
 func (s *anthropicToResponsesStreamState) recordEmittedText(blockIndex int, text string) {
 	if text == "" {
 		return
@@ -270,7 +275,9 @@ func (s *anthropicToResponsesStreamState) recordEmittedText(blockIndex int, text
 	progress.emittedBytes += len(text)
 }
 
-// recordEmittedTextEvents tracks text deltas that survived protocol validation and will reach the client.
+// recordEmittedTextEvents tracks only text deltas that survived protocol
+// validation and will reach the normalized client. Raw passthrough frames remain
+// authoritative, so the converter must neither track nor later supplement them.
 func (s *anthropicToResponsesStreamState) recordEmittedTextEvents(events []*AnthropicStreamEvent) {
 	if s.passthrough {
 		return
@@ -284,7 +291,11 @@ func (s *anthropicToResponsesStreamState) recordEmittedTextEvents(events []*Anth
 	}
 }
 
-// missingTerminalText returns the append-only suffix absent from prior emitted deltas.
+// missingTerminalText returns the append-only suffix not present in prior
+// client-visible deltas. Responses output_text.done carries cumulative text, so
+// the emitted prefix must match byte-for-byte before the remainder can safely be
+// converted into an Anthropic delta; a shorter or divergent aggregate is rejected
+// instead of duplicating or guessing client-visible content.
 func (s *anthropicToResponsesStreamState) missingTerminalText(blockIndex int, aggregate string) (string, bool) {
 	emittedBytes := 0
 	if progress := s.emittedTextByBlock[blockIndex]; progress != nil {
@@ -301,7 +312,8 @@ func (s *anthropicToResponsesStreamState) missingTerminalText(blockIndex int, ag
 	return missing, missing != ""
 }
 
-// clearEmittedTextProgress releases one content block's terminal-text bookkeeping.
+// clearEmittedTextProgress releases terminal-text bookkeeping once
+// output_item.done closes the corresponding Anthropic content block.
 func (s *anthropicToResponsesStreamState) clearEmittedTextProgress(key string) {
 	if key == "" || s.blockIndexByItem == nil || s.emittedTextByBlock == nil {
 		return
@@ -3316,6 +3328,10 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 		}
 
 	case schemas.ResponsesStreamResponseTypeOutputTextDone:
+		// Runtime redaction may hold every output_text.delta and release the safe
+		// cumulative text only in output_text.done. Anthropic has no equivalent
+		// cumulative text event, so emit only the verified suffix before the block
+		// closes; passthrough streams keep their raw upstream frames authoritative.
 		state := getOrCreateAnthropicToResponsesStreamState(ctx)
 		if state.passthrough || bifrostResp.Text == nil || *bifrostResp.Text == "" {
 			return nil
