@@ -89,6 +89,30 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		// tool-calling conversation — see issue #5887.
 		openaiReq.stripReasoningDetailsExceptToolCalls()
 		return openaiReq
+	case schemas.Kimi:
+		// Kimi natively supports prediction and prompt_cache_key — the generic filter
+		// strips both, so preserve them.
+		prediction := openaiReq.ChatParameters.Prediction
+		promptCacheKey := openaiReq.ChatParameters.PromptCacheKey
+		openaiReq.filterOpenAISpecificParameters(caps)
+		openaiReq.ChatParameters.Prediction = prediction
+		openaiReq.ChatParameters.PromptCacheKey = promptCacheKey
+		// Reasoning content must be replayed verbatim on K-series assistant turns
+		// (Preserved Thinking), so do NOT strip reasoning here.
+		openaiReq.applyKimiReasoning(capModel)
+		return openaiReq
+	case schemas.Zhipu:
+		openaiReq.filterOpenAISpecificParameters(caps)
+		// GLM-5.2+ and GLM-4.7 (forced thinking) rely on reasoning_content replay for
+		// interleaved/preserved thinking — do NOT strip reasoning here.
+		openaiReq.applyZhipuReasoning(capModel)
+		return openaiReq
+	case schemas.Alibaba:
+		openaiReq.filterOpenAISpecificParameters(caps)
+		// qwen3.8-max (+ hosted deepseek-v4/glm) replay reasoning_content on multi-turn
+		// thinking flows — do NOT strip reasoning here.
+		openaiReq.applyAlibabaReasoning(capModel)
+		return openaiReq
 	case schemas.XAI:
 		openaiReq.filterOpenAISpecificParameters(caps)
 		openaiReq.applyXAICompatibility(caps)
@@ -298,4 +322,97 @@ func (req *OpenAIChatRequest) applyXAICompatibility(caps schemas.ModelCaps) {
 		caps.FieldUnsupported(schemas.FieldReasoningEffort, effortUnsupported) {
 		req.ChatParameters.Reasoning.Effort = nil
 	}
+}
+
+// applyKimiReasoning routes ingress reasoning.effort to Kimi's top-level
+// reasoning_effort field. Only K3-class models (kimi-k3 and the Kimi Code aliases
+// k3 / k3-256k) accept the field (low/high/max); every other Kimi model rejects
+// it outright (K2.x thinking is controlled via the `thinking` extra param instead).
+// Runs after filterOpenAISpecificParameters, so effort values are already
+// normalized (minimal→low; max preserved for kimi-k3 via supportsMaxReasoningEffort;
+// xhigh→high — a safe downgrade for K3, which 400s on xhigh).
+func (req *OpenAIChatRequest) applyKimiReasoning(capModel string) {
+	if req.ChatParameters.Reasoning == nil {
+		return
+	}
+	if !isKimiK3Model(capModel) {
+		req.ChatParameters.Reasoning = nil
+		return
+	}
+	if req.ChatParameters.Reasoning.Effort == nil {
+		return
+	}
+	switch *req.ChatParameters.Reasoning.Effort {
+	case "none":
+		// K3 always thinks and 400s on "none" — drop the field so the model
+		// default applies instead of surfacing a vendor error.
+		req.ChatParameters.Reasoning = nil
+	case "medium":
+		req.ChatParameters.Reasoning.Effort = schemas.Ptr("high")
+	}
+}
+
+// isKimiK3Model reports whether the model accepts top-level reasoning_effort
+// (kimi-k3 plus the Kimi Code stable aliases k3 / k3-256k).
+func isKimiK3Model(model string) bool {
+	_, parsedModel := schemas.ParseModelString(model, schemas.Kimi)
+	if parsedModel != "" {
+		model = parsedModel
+	}
+	modelLower := strings.ToLower(model)
+	return strings.HasPrefix(modelLower, "kimi-k3") ||
+		modelLower == "k3" ||
+		strings.HasPrefix(modelLower, "k3-")
+}
+
+// applyZhipuReasoning keeps reasoning_effort only for GLM-5.2+ — the Zhipu
+// series that honors it (full enum max/xhigh/high/medium/low/minimal/none).
+// GLM-4.x ignore or 400 the field; their thinking is controlled via the
+// `thinking` extra param instead.
+func (req *OpenAIChatRequest) applyZhipuReasoning(capModel string) {
+	if req.ChatParameters.Reasoning == nil {
+		return
+	}
+	if !isZhipuReasoningEffortModel(capModel) {
+		req.ChatParameters.Reasoning = nil
+	}
+}
+
+// isZhipuReasoningEffortModel reports whether the model accepts reasoning_effort
+// (GLM-5.2 and later revisions, including the Coding Plan 1M-context alias
+// glm-5.2[1m]). Version-floored so future GLM releases work on day one.
+func isZhipuReasoningEffortModel(model string) bool {
+	_, parsedModel := schemas.ParseModelString(model, schemas.Zhipu)
+	if parsedModel != "" {
+		model = parsedModel
+	}
+	return isGLM52OrLater(strings.ToLower(model))
+}
+
+// applyAlibabaReasoning keeps reasoning_effort only for the Model Studio models
+// that honor it: qwen3.8-max (low/medium/xhigh; the vendor auto-maps
+// max/high→xhigh, minimal→low, none→thinking off) and hosted DeepSeek-V4 / GLM-5
+// series (high/max). Every other model rejects the field — thinking there is
+// controlled via the enable_thinking / thinking_budget extra params instead.
+func (req *OpenAIChatRequest) applyAlibabaReasoning(capModel string) {
+	if req.ChatParameters.Reasoning == nil {
+		return
+	}
+	if !isAlibabaReasoningEffortModel(capModel) {
+		req.ChatParameters.Reasoning = nil
+	}
+}
+
+// isAlibabaReasoningEffortModel reports whether the model accepts reasoning_effort
+// on the Model Studio OpenAI-compatible mount.
+func isAlibabaReasoningEffortModel(model string) bool {
+	_, parsedModel := schemas.ParseModelString(model, schemas.Alibaba)
+	if parsedModel != "" {
+		model = parsedModel
+	}
+	modelLower := strings.ToLower(model)
+	return strings.HasPrefix(modelLower, "qwen3.8-max") ||
+		strings.HasPrefix(modelLower, "deepseek-v4") ||
+		// Hosted GLM-5 series (glm-5, glm-5.1, glm-5.2, and later revisions).
+		strings.HasPrefix(modelLower, "glm-5")
 }

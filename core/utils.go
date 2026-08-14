@@ -87,6 +87,7 @@ var rateLimitPatterns = []string{
 // dynamicallyConfigurableProviders is the list of providers that can be dynamically configured.
 // Excluding providers that require extra configuration (e.g. Ollama, SGL, vLLM).
 var dynamicallyConfigurableProviders = []schemas.ModelProvider{
+	schemas.Alibaba,
 	schemas.Anthropic,
 	schemas.Azure,
 	schemas.Bedrock,
@@ -98,6 +99,7 @@ var dynamicallyConfigurableProviders = []schemas.ModelProvider{
 	schemas.Gemini,
 	schemas.Groq,
 	schemas.HuggingFace,
+	schemas.Kimi,
 	schemas.Mistral,
 	schemas.Nebius,
 	schemas.OpenAI,
@@ -108,6 +110,7 @@ var dynamicallyConfigurableProviders = []schemas.ModelProvider{
 	schemas.Vertex,
 	schemas.Wafer,
 	schemas.XAI,
+	schemas.Zhipu,
 }
 
 // isModelRequired returns true if the request type requires a model

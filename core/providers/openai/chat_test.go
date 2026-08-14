@@ -2039,3 +2039,200 @@ func TestOpenAICompatFiltersReadDatasheet(t *testing.T) {
 		require.Nil(t, req.FrequencyPenalty, "fields the row omits keep the grok name-based default")
 	})
 }
+
+// Kimi routes reasoning.effort to top-level reasoning_effort only for K3-class
+// models (kimi-k3 and the Kimi Code aliases k3 / k3-256k); every other Kimi model
+// rejects the field. K3 accepts low/high/max — "none" is dropped (K3 always
+// thinks) and "medium" maps to "high". Regression: effort "max" on kimi-k3 must
+// arrive as "max" (not silently downgraded to "high").
+func TestToOpenAIChatRequest_KimiReasoningRouting(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+
+	tests := []struct {
+		name       string
+		model      string
+		effort     string
+		wantEffort *string // nil = reasoning must be stripped entirely
+	}{
+		{name: "kimi-k3 keeps max", model: "kimi-k3", effort: "max", wantEffort: schemas.Ptr("max")},
+		{name: "kimi-k3 keeps low", model: "kimi-k3", effort: "low", wantEffort: schemas.Ptr("low")},
+		{name: "kimi-k3 maps medium to high", model: "kimi-k3", effort: "medium", wantEffort: schemas.Ptr("high")},
+		{name: "kimi-k3 maps minimal to low", model: "kimi-k3", effort: "minimal", wantEffort: schemas.Ptr("low")},
+		{name: "kimi-k3 drops none", model: "kimi-k3", effort: "none", wantEffort: nil},
+		{name: "Kimi Code alias k3 keeps max", model: "k3", effort: "max", wantEffort: schemas.Ptr("max")},
+		{name: "Kimi Code alias k3-256k keeps high", model: "k3-256k", effort: "high", wantEffort: schemas.Ptr("high")},
+		{name: "provider-prefixed model still routes", model: "kimi/kimi-k3", effort: "high", wantEffort: schemas.Ptr("high")},
+		{name: "kimi-k2.7-code strips effort", model: "kimi-k2.7-code", effort: "high", wantEffort: nil},
+		{name: "kimi-k2.6 strips effort", model: "kimi-k2.6", effort: "max", wantEffort: nil},
+		{name: "kimi-k2.5 strips effort", model: "kimi-k2.5", effort: "low", wantEffort: nil},
+		{name: "moonshot-v1 strips effort", model: "moonshot-v1-8k", effort: "high", wantEffort: nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out := ToOpenAIChatRequest(ctx, &schemas.BifrostChatRequest{
+				Provider: schemas.Kimi,
+				Model:    tt.model,
+				Input: []schemas.ChatMessage{{
+					Role:    schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+				}},
+				Params: &schemas.ChatParameters{
+					Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr(tt.effort)},
+				},
+			})
+			require.NotNil(t, out)
+
+			if tt.wantEffort == nil {
+				if out.ChatParameters.Reasoning != nil && out.ChatParameters.Reasoning.Effort != nil {
+					t.Fatalf("expected reasoning to be stripped, got effort %q", *out.ChatParameters.Reasoning.Effort)
+				}
+				return
+			}
+			require.NotNil(t, out.ChatParameters.Reasoning, "expected reasoning to be kept")
+			require.NotNil(t, out.ChatParameters.Reasoning.Effort, "expected effort to be kept")
+			require.Equal(t, *tt.wantEffort, *out.ChatParameters.Reasoning.Effort)
+		})
+	}
+}
+
+// Kimi natively supports prediction and prompt_cache_key; the generic
+// OpenAI-specific filter would strip both, so the Kimi case must preserve them.
+func TestToOpenAIChatRequest_KimiPreservesPredictionAndCacheKey(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+
+	prediction := &schemas.ChatPrediction{Type: "content", Content: "the capital of France is"}
+	cacheKey := "session-42"
+	safety := "user-hash-7"
+
+	out := ToOpenAIChatRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.Kimi,
+		Model:    "kimi-k2.6",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+		}},
+		Params: &schemas.ChatParameters{
+			Prediction:       prediction,
+			PromptCacheKey:   &cacheKey,
+			SafetyIdentifier: &safety,
+		},
+	})
+	require.NotNil(t, out)
+	require.Same(t, prediction, out.ChatParameters.Prediction, "prediction must survive the Kimi case")
+	require.NotNil(t, out.ChatParameters.PromptCacheKey)
+	require.Equal(t, cacheKey, *out.ChatParameters.PromptCacheKey)
+	require.NotNil(t, out.ChatParameters.SafetyIdentifier, "safety_identifier is first-class and must pass through")
+	require.Equal(t, safety, *out.ChatParameters.SafetyIdentifier)
+}
+
+// Zhipu keeps reasoning_effort only for GLM-5.2+ (full enum, incl. the Coding
+// Plan 1M-context alias glm-5.2[1m]); every other GLM model ignores or 400s
+// the field. The 5.2+ family is version-floored, so future revisions
+// (glm-5.3, glm-5.5, ...) are covered on day one.
+func TestToOpenAIChatRequest_ZhipuReasoningRouting(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+
+	tests := []struct {
+		name       string
+		model      string
+		effort     string
+		wantEffort *string
+	}{
+		{name: "glm-5.2 keeps max", model: "glm-5.2", effort: "max", wantEffort: schemas.Ptr("max")},
+		{name: "glm-5.2 keeps none", model: "glm-5.2", effort: "none", wantEffort: schemas.Ptr("none")},
+		{name: "glm-5.2[1m] keeps high", model: "glm-5.2[1m]", effort: "high", wantEffort: schemas.Ptr("high")},
+		{name: "glm-5.3 keeps max", model: "glm-5.3", effort: "max", wantEffort: schemas.Ptr("max")},
+		{name: "glm-5.5 keeps max", model: "glm-5.5", effort: "max", wantEffort: schemas.Ptr("max")},
+		{name: "glm-5.2-air keeps medium", model: "glm-5.2-air", effort: "medium", wantEffort: schemas.Ptr("medium")},
+		{name: "glm-5.1 strips effort", model: "glm-5.1", effort: "high", wantEffort: nil},
+		{name: "glm-4.7 strips effort", model: "glm-4.7", effort: "high", wantEffort: nil},
+		{name: "glm-4.5-flash strips effort", model: "glm-4.5-flash", effort: "low", wantEffort: nil},
+		{name: "glm-4.6v strips effort", model: "glm-4.6v", effort: "medium", wantEffort: nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out := ToOpenAIChatRequest(ctx, &schemas.BifrostChatRequest{
+				Provider: schemas.Zhipu,
+				Model:    tt.model,
+				Input: []schemas.ChatMessage{{
+					Role:    schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+				}},
+				Params: &schemas.ChatParameters{
+					Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr(tt.effort)},
+				},
+			})
+			require.NotNil(t, out)
+
+			if tt.wantEffort == nil {
+				if out.ChatParameters.Reasoning != nil && out.ChatParameters.Reasoning.Effort != nil {
+					t.Fatalf("expected reasoning to be stripped, got effort %q", *out.ChatParameters.Reasoning.Effort)
+				}
+				return
+			}
+			require.NotNil(t, out.ChatParameters.Reasoning, "expected reasoning to be kept")
+			require.NotNil(t, out.ChatParameters.Reasoning.Effort, "expected effort to be kept")
+			require.Equal(t, *tt.wantEffort, *out.ChatParameters.Reasoning.Effort)
+		})
+	}
+}
+
+// Alibaba Model Studio honors reasoning_effort only on qwen3.8-max and hosted
+// DeepSeek-V4 / GLM-5 series; all other models reject it (thinking is controlled
+// via enable_thinking / thinking_budget extra params there).
+func TestToOpenAIChatRequest_AlibabaReasoningRouting(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+
+	tests := []struct {
+		name       string
+		model      string
+		effort     string
+		wantEffort *string
+	}{
+		{name: "qwen3.8-max keeps max", model: "qwen3.8-max", effort: "max", wantEffort: schemas.Ptr("max")},
+		{name: "qwen3.8-max maps minimal to low", model: "qwen3.8-max", effort: "minimal", wantEffort: schemas.Ptr("low")},
+		{name: "qwen3.8-max-preview keeps medium", model: "qwen3.8-max-preview", effort: "medium", wantEffort: schemas.Ptr("medium")},
+		{name: "hosted deepseek-v4-pro keeps high", model: "deepseek-v4-pro", effort: "high", wantEffort: schemas.Ptr("high")},
+		{name: "hosted glm-5.2 keeps max", model: "glm-5.2", effort: "max", wantEffort: schemas.Ptr("max")},
+		{name: "hosted glm-5.1 keeps high", model: "glm-5.1", effort: "high", wantEffort: schemas.Ptr("high")},
+		{name: "hosted glm-5.3 keeps max", model: "glm-5.3", effort: "max", wantEffort: schemas.Ptr("max")},
+		{name: "hosted glm-5.5 keeps max", model: "glm-5.5", effort: "max", wantEffort: schemas.Ptr("max")},
+		{name: "qwen3.6-flash strips effort", model: "qwen3.6-flash", effort: "high", wantEffort: nil},
+		{name: "qwen-max strips effort", model: "qwen-max", effort: "low", wantEffort: nil},
+		{name: "qwen3-coder-plus strips effort", model: "qwen3-coder-plus", effort: "medium", wantEffort: nil},
+		{name: "qwen-turbo strips effort", model: "qwen-turbo", effort: "high", wantEffort: nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out := ToOpenAIChatRequest(ctx, &schemas.BifrostChatRequest{
+				Provider: schemas.Alibaba,
+				Model:    tt.model,
+				Input: []schemas.ChatMessage{{
+					Role:    schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+				}},
+				Params: &schemas.ChatParameters{
+					Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr(tt.effort)},
+				},
+			})
+			require.NotNil(t, out)
+
+			if tt.wantEffort == nil {
+				if out.ChatParameters.Reasoning != nil && out.ChatParameters.Reasoning.Effort != nil {
+					t.Fatalf("expected reasoning to be stripped, got effort %q", *out.ChatParameters.Reasoning.Effort)
+				}
+				return
+			}
+			require.NotNil(t, out.ChatParameters.Reasoning, "expected reasoning to be kept")
+			require.NotNil(t, out.ChatParameters.Reasoning.Effort, "expected effort to be kept")
+			require.Equal(t, *tt.wantEffort, *out.ChatParameters.Reasoning.Effort)
+		})
+	}
+}

@@ -66,6 +66,9 @@ export const ModelPlaceholders = {
 	fireworks: "e.g. accounts/fireworks/models/deepseek-v3p2",
 	sarvam: "e.g. sarvam-30b, sarvam-105b",
 	wafer: "e.g. glm-5.2, kimi-k2.6",
+	alibaba: "e.g. qwen3.8-max, qwen3.7-plus, qwen3.6-flash, text-embedding-v4",
+	kimi: "e.g. kimi-k3, kimi-k2.6, k3 (Kimi Code)",
+	zhipu: "e.g. glm-5.2, glm-4.7, glm-4.7-flash",
 };
 
 export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
@@ -99,6 +102,9 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	fireworks: true,
 	sarvam: true,
 	wafer: true,
+	alibaba: true,
+	kimi: true,
+	zhipu: true,
 };
 
 export const DefaultNetworkConfig = {

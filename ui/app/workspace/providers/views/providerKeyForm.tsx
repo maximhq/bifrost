@@ -135,6 +135,7 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 						control={form.control}
 						providerName={provider.name}
 						baseProviderType={provider.custom_provider_config?.base_provider_type}
+						providerBaseURL={provider.network_config?.base_url}
 						form={form}
 					/>
 					{isEditing && currentKey?.config_hash && <ConfigSyncAlert className="mt-4" />}

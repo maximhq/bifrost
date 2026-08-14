@@ -194,6 +194,9 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Fireworks,
 		schemas.Sarvam,
 		schemas.Wafer,
+		schemas.Alibaba,
+		schemas.Kimi,
+		schemas.Zhipu,
 		ProviderOpenAICustom,
 	}, nil
 }
@@ -480,6 +483,33 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:          *schemas.NewSecretVar("env.DEEPSEEK_API_KEY"),
+				Models:         []string{"*"},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
+	case schemas.Alibaba:
+		return []schemas.Key{
+			{
+				Value:          *schemas.NewSecretVar("env.ALIBABA_API_KEY"),
+				Models:         []string{"*"},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
+	case schemas.Kimi:
+		return []schemas.Key{
+			{
+				Value:          *schemas.NewSecretVar("env.KIMI_API_KEY"),
+				Models:         []string{"*"},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
+	case schemas.Zhipu:
+		return []schemas.Key{
+			{
+				Value:          *schemas.NewSecretVar("env.ZHIPU_API_KEY"),
 				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -863,6 +893,46 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            5 * time.Second,
+				RetryBackoffMax:                3 * time.Minute,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.Alibaba:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				// Thinking models on 1M-context hosts need a generous timeout.
+				DefaultRequestTimeoutInSeconds: 180,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            5 * time.Second,
+				RetryBackoffMax:                3 * time.Minute,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.Kimi:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 180,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            5 * time.Second,
+				RetryBackoffMax:                3 * time.Minute,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.Zhipu:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 180,
 				MaxRetries:                     10,
 				RetryBackoffInitial:            5 * time.Second,
 				RetryBackoffMax:                3 * time.Minute,

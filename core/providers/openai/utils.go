@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/providers/utils"
@@ -109,12 +110,44 @@ func acceptsMinimalEffort(model string) bool {
 	return rest == "" || strings.HasPrefix(rest, "-2")
 }
 
-// acceptsMaxEffort reports models that natively accept "max" effort.
+// acceptsMaxEffort reports models that natively accept "max" effort
+// (e.g. GPT-5.6, DeepSeek V4, GLM-5.2+).
 func acceptsMaxEffort(model string) bool {
 	modelLower := bareModelLower(model)
 	return strings.Contains(modelLower, "gpt-5.6") ||
 		strings.Contains(modelLower, "deepseek-v4") ||
-		strings.Contains(modelLower, "glm-5.2")
+		isGLM52OrLater(modelLower) ||
+		strings.Contains(modelLower, "kimi-k3") ||
+		// Kimi Code stable aliases for Kimi K3 (k3, k3-256k).
+		modelLower == "k3" || strings.HasPrefix(modelLower, "k3-") ||
+		strings.Contains(modelLower, "qwen3.8-max")
+}
+
+// isGLM52OrLater reports whether the (lowercased) model is a GLM-5.x revision
+// from 5.2 onward — the first Zhipu series whose OpenAI-compatible surface
+// accepts top-level reasoning_effort with the full enum including "max".
+// GLM-4.x and GLM-5.0/5.1 ignore or 400 the field (their thinking is controlled
+// via the `thinking` extra param), so the floor stays at 5.2. Matching the
+// family by version floor instead of listing each revision keeps future GLM
+// releases (glm-5.3, glm-5.5, ...) working without a gateway patch.
+// Covers the Coding Plan aliases too (glm-5.2[1m]) and -air/-flash style
+// variants via the leading-digit parse. Substring-anchored so multi-segment
+// catalog IDs ("vendor/region/glm-5.3") match as well.
+func isGLM52OrLater(modelLower string) bool {
+	i := strings.Index(modelLower, "glm-5.")
+	if i < 0 {
+		return false
+	}
+	rest := modelLower[i+len("glm-5."):]
+	digits := 0
+	for digits < len(rest) && rest[digits] >= '0' && rest[digits] <= '9' {
+		digits++
+	}
+	if digits == 0 {
+		return false
+	}
+	minor, err := strconv.Atoi(rest[:digits])
+	return err == nil && minor >= 2
 }
 
 // bareModelLower strips any provider prefix and lowercases, so the effort
@@ -125,7 +158,6 @@ func bareModelLower(model string) string {
 	}
 	return strings.ToLower(model)
 }
-
 
 func ConvertOpenAIMessagesToBifrostMessages(messages []OpenAIMessage) []schemas.ChatMessage {
 	bifrostMessages := make([]schemas.ChatMessage, len(messages))
