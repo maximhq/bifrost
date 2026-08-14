@@ -55,6 +55,14 @@ func TestDeriveAnthropicBaseURL(t *testing.T) {
 			wantBase:     "https://proxy.example.com/coding/v1/anthropic",
 			wantMessages: "https://proxy.example.com/coding/v1/anthropic/v1/messages",
 		},
+		{
+			// Scheme-less values must take the custom-host fallback even when
+			// the remainder parses to a known Kimi host.
+			name:         "scheme-less base takes the custom-host fallback",
+			openAIBase:   "//api.kimi.com/v1",
+			wantBase:     "//api.kimi.com/v1/anthropic",
+			wantMessages: "//api.kimi.com/v1/anthropic/v1/messages",
+		},
 	}
 
 	for _, tt := range tests {

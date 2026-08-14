@@ -44,7 +44,7 @@ var kimiKnownHosts = map[string]bool{
 // Unparseable or scheme-less inputs are treated as custom hosts.
 func isKnownKimiHost(base string) bool {
 	parsed, err := url.Parse(base)
-	if err != nil || parsed.Host == "" {
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return false
 	}
 	return kimiKnownHosts[parsed.Host]
