@@ -110,8 +110,7 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 		if err != nil {
 			return nil, fmt.Errorf("routing plugin requires the governance plugin: %w", err)
 		}
-		return routing.Init(ctx, routingConfig, logger, bifrostConfig.ConfigStore,
-			governancePlugin.GetGovernanceStore())
+		return routing.Init(ctx, routingConfig, logger, bifrostConfig.ConfigStore, governancePlugin)
 
 	case maxim.PluginName:
 		maximConfig, err := MarshalPluginConfig[maxim.Config](pluginConfig)
@@ -228,7 +227,7 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 	}
 	s.Config.SetPluginOrderInfo(logging.PluginName, builtinPlacement, schemas.Ptr(3))
 
-	// 5. Governance (if enabled and not enterprise)
+	// 4. Governance (if enabled and not enterprise)
 	if ctx.Value(schemas.BifrostContextKeyIsEnterprise) == nil {
 		config := &governance.Config{
 			IsVkMandatory:         &s.Config.ClientConfig.EnforceAuthOnInference,
@@ -239,11 +238,11 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 	} else {
 		s.markPluginDisabled(governance.PluginName)
 	}
-	s.Config.SetPluginOrderInfo(governance.PluginName, builtinPlacement, schemas.Ptr(5))
+	s.Config.SetPluginOrderInfo(governance.PluginName, builtinPlacement, schemas.Ptr(4))
 
-	// 4. Routing rules (registered after governance because it reads the governance store,
-	// but ordered ahead of it: a matched rule decides provider/model/key before the virtual
-	// key's own provider configs are load balanced over).
+	// 5. Routing rules. Runs after governance so rules evaluate against a fully stamped
+	// context, and drives the rest of the routing pipeline itself: it publishes the virtual
+	// key's provider allowlist and load balances its providers once a rule has decided.
 	if s.Config.IsPluginLoaded(s.getGovernancePluginName()) {
 		config := &routing.Config{
 			ChainMaxDepth: &s.Config.ClientConfig.RoutingChainMaxDepth,
@@ -252,7 +251,7 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 	} else {
 		s.markPluginDisabled(routing.PluginName)
 	}
-	s.Config.SetPluginOrderInfo(routing.PluginName, builtinPlacement, schemas.Ptr(4))
+	s.Config.SetPluginOrderInfo(routing.PluginName, builtinPlacement, schemas.Ptr(5))
 
 	// 6. OTEL (if configured in PluginConfigs)
 	otelConfig := s.getPluginConfig(otel.PluginName)
