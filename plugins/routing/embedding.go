@@ -92,9 +92,15 @@ const warmupEmbeddingTimeout = 60 * time.Second
 func (p *RoutingPlugin) SetEmbeddingRequestExecutor(executor EmbeddingRequestExecutor) {
 	if executor == nil {
 		p.embeddingRequestExecutor.Store(nil)
+		if p.semanticClassifier != nil {
+			p.semanticClassifier.SetEmbeddingFunctions(nil, nil)
+		}
 		return
 	}
 	p.embeddingRequestExecutor.Store(&executor)
+	if p.semanticClassifier != nil {
+		p.semanticClassifier.SetEmbeddingFunctions(p.embedComplexityText, p.embedComplexityTexts)
+	}
 }
 
 // SetComplexityVectorStore supplies the configured shared VectorStore. The
@@ -103,9 +109,12 @@ func (p *RoutingPlugin) SetEmbeddingRequestExecutor(executor EmbeddingRequestExe
 func (p *RoutingPlugin) SetComplexityVectorStore(store vectorstore.VectorStore) {
 	if store == nil {
 		p.complexityVectorStore.Store(nil)
-		return
+	} else {
+		p.complexityVectorStore.Store(&store)
 	}
-	p.complexityVectorStore.Store(&store)
+	if p.semanticClassifier != nil {
+		p.semanticClassifier.SetConfiguredStore(store)
+	}
 }
 
 // embedComplexityText adapts Governance's Bifrost-aware embedding path to the

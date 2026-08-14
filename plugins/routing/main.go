@@ -72,6 +72,7 @@ type RoutingPlugin struct {
 	rules              rules.Store
 	engine             *rules.Engine
 	complexityAnalyzer atomic.Pointer[complexity.ComplexityAnalyzer]
+	semanticClassifier *complexity.SemanticClassifier
 
 	// governance supplies the virtual key, its live budget/rate-limit usage, and the provider
 	// materialization that runs once rules have decided. Required: rules address budgets and
@@ -141,11 +142,12 @@ func InitFromStore(
 	}
 
 	plugin := &RoutingPlugin{
-		rules:       ruleStore,
-		engine:      engine,
-		governance:  governancePlugin,
-		configStore: configStore,
-		logger:      logger,
+		rules:              ruleStore,
+		engine:             engine,
+		governance:         governancePlugin,
+		configStore:        configStore,
+		logger:             logger,
+		semanticClassifier: complexity.NewSemanticClassifier(ctx, logger),
 	}
 
 	var analyzerOverride *complexity.AnalyzerConfig
@@ -181,6 +183,40 @@ func (p *RoutingPlugin) storeComplexityAnalyzerConfig(config *complexity.Analyze
 		resolved = &defaults
 	}
 	p.complexityAnalyzer.Store(complexity.NewComplexityAnalyzerWithConfig(resolved))
+	if p.semanticClassifier != nil {
+		p.semanticClassifier.Configure(resolved)
+	}
+}
+
+// RearmComplexitySemanticClassifier restarts semantic warmup after the given
+// provider's own configuration changed (key re-enabled, model list widened).
+// The classifier decides whether the change is worth acting on.
+func (p *RoutingPlugin) RearmComplexitySemanticClassifier(provider schemas.ModelProvider) {
+	if p.semanticClassifier != nil {
+		p.semanticClassifier.RearmForProvider(provider)
+	}
+}
+
+// ValidateComplexityAnalyzerConfig runs the semantic classifier's own
+// validation before a handler persists a complexity configuration.
+//
+// This is schema validation only. It is routed through the classifier rather
+// than calling complexity.ValidateAndNormalize directly so that a future
+// setting whose validity depends on live process state has a seam to hook
+// into; no semantic setting needs one today.
+func (p *RoutingPlugin) ValidateComplexityAnalyzerConfig(config *complexity.AnalyzerConfig) error {
+	if p.semanticClassifier == nil {
+		return nil
+	}
+	return p.semanticClassifier.ValidateConfig(config)
+}
+
+// ComplexitySemanticStatus returns the current semantic classifier readiness.
+func (p *RoutingPlugin) ComplexitySemanticStatus() complexity.SemanticStatusInfo {
+	if p.semanticClassifier == nil {
+		return complexity.SemanticStatusInfo{State: complexity.SemanticStatusDisabled}
+	}
+	return p.semanticClassifier.Status()
 }
 
 // PreRequestHook evaluates routing rules, then materializes the virtual key's provider choice
@@ -295,7 +331,7 @@ func (p *RoutingPlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *sche
 	var computeComplexity func() *complexity.ComplexityResult
 	if analyzer := p.complexityAnalyzer.Load(); analyzer != nil {
 		computeComplexity = func() *complexity.ComplexityResult {
-			input, ok := complexity.BuildInput(req)
+			input, ok := complexity.BuildInput(ctx, req)
 			if !ok {
 				if p.logger != nil {
 					p.logger.Debug("[Routing] Complexity analysis skipped: unsupported request type")
@@ -421,6 +457,11 @@ func (p *RoutingPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.B
 // Cleanup implements schemas.BasePlugin.
 func (p *RoutingPlugin) Cleanup() error {
 	p.cleanupOnce.Do(func() {
+		if p.semanticClassifier != nil {
+			if err := p.semanticClassifier.Close(); err != nil {
+				p.logger.Warn("[Routing] failed to close semantic classifier: %v", err)
+			}
+		}
 		p.logger.Debug("[Routing] plugin cleaned up")
 	})
 	return nil
