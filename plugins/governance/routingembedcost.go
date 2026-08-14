@@ -32,7 +32,15 @@ func (p *GovernancePlugin) AttributeRoutingEmbeddingCost(provider schemas.ModelP
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if err := p.store.UpdateProviderAndModelBudgetUsageInMemory(ctx, model, provider, cost); err != nil && p.logger != nil {
+	// Warmup has no permit to bill, so only the deployment's own limits apply.
+	// The provider-level and global model-level readers are the no-permit half
+	// of what a single combined call used to return.
+	providerBudgets, _ := p.store.GlobalProviderLimits(ctx, provider)
+	modelBudgets, _ := p.store.GlobalModelLimits(ctx, provider, model)
+	budgets := make([]schemas.Limit, 0, len(providerBudgets)+len(modelBudgets))
+	budgets = append(budgets, providerBudgets...)
+	budgets = append(budgets, modelBudgets...)
+	if err := p.store.ChargeBudgets(ctx, budgets, cost); err != nil && p.logger != nil {
 		p.logger.Error("failed to attribute warmup embedding cost to provider/model budgets: %v", err)
 	}
 }

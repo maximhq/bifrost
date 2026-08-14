@@ -300,14 +300,17 @@ func (p *LoggerPlugin) applyInternalCallCosts(ctx *schemas.BifrostContext, entry
 		return
 	}
 	pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
-	var cacheCost, guardrailCost float64
+	var cacheCost, guardrailCost, routingCost float64
 	if cacheDebug, ok := schemas.CacheDebugFromContext(ctx); ok {
 		cacheCost = p.pricingManager.CalculateCacheEmbeddingCost(cacheDebug, pricingScopes)
 	}
 	if guardrailDebug != nil {
 		guardrailCost = p.pricingManager.CalculateGuardrailCost(guardrailDebug, pricingScopes)
 	}
-	cost := cacheCost + guardrailCost
+	if routingDebug, ok := schemas.InitialAttemptRoutingDebugFromContext(ctx); ok && routingDebug.CountTowardBudgets {
+		routingCost = p.pricingManager.CalculateRoutingEmbeddingCost(routingDebug, pricingScopes)
+	}
+	cost := cacheCost + guardrailCost + routingCost
 	if cost <= 0 {
 		return
 	}
@@ -317,22 +320,23 @@ func (p *LoggerPlugin) applyInternalCallCosts(ctx *schemas.BifrostContext, entry
 		*entry.Cost += cost
 	}
 
-	// Both are additional-side sidecar costs. Merge onto the usage carrier's
+	// All three are additional-side sidecar costs. Merge onto the usage carrier's
 	// breakdown when one exists (SerializeFields denormalizes from it); otherwise
 	// write the additional_cost column directly. Don't synthesize a carrier: that
 	// suppresses the deferred-usage watcher.
 	sidecar := &schemas.BifrostCost{TotalCost: cost}
-	if cacheCost > 0 || guardrailCost > 0 {
-		sidecar.AdditionalCost = cacheCost + guardrailCost
+	if cacheCost > 0 || guardrailCost > 0 || routingCost > 0 {
+		sidecar.AdditionalCost = cacheCost + guardrailCost + routingCost
 		sidecar.AdditionalCostDetails = &schemas.AdditionalCostDetails{
 			SemanticCacheCost: cacheCost,
 			GuardrailCost:     guardrailCost,
+			RoutingCost:       routingCost,
 		}
 	}
 	if entry.TokenUsageParsed != nil {
 		entry.TokenUsageParsed.Cost = entry.TokenUsageParsed.Cost.Add(sidecar)
 	} else {
-		entry.AdditionalCost += cacheCost + guardrailCost
+		entry.AdditionalCost += cacheCost + guardrailCost + routingCost
 	}
 }
 
@@ -1815,6 +1819,22 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			}
 			applyModelAlias(entry, originalModelRequested, resolvedModelUsed)
 			applyResolvedAliasInfo(entry, resolvedKeyAlias)
+			// Read here rather than with the rest of the governance fields below:
+			// this branch runs before the non-final-chunk fast path, and it is only
+			// reached on an error with no pending entry, so the lookups stay off the
+			// path that fast path exists to keep cheap.
+			complexityTier := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceComplexityTier)
+			complexityMechanism := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceComplexityMechanism)
+			complexityScore, hasComplexityScore := ctx.Value(schemas.BifrostContextKeyGovernanceComplexityScore).(float64)
+			if complexityTier != "" {
+				entry.ComplexityTier = &complexityTier
+			}
+			if complexityMechanism != "" {
+				entry.ComplexityMechanism = &complexityMechanism
+			}
+			if hasComplexityScore {
+				entry.ComplexityScore = &complexityScore
+			}
 			entry.ErrorDetailsParsed = sanitizeErrorForLogging(bifrostErr, contentLoggingEnabled, shouldStoreRaw)
 			entry.GuardrailDebugParsed = guardrailDebug
 			p.applyInternalCallCosts(ctx, entry, guardrailDebug)
@@ -1876,6 +1896,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	virtualKeyName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyName)
 	routingRuleID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleID)
 	routingRuleName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleName)
+	complexityTier := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceComplexityTier)
+	complexityMechanism := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceComplexityMechanism)
+	complexityScore, hasComplexityScore := ctx.Value(schemas.BifrostContextKeyGovernanceComplexityScore).(float64)
 	selectedPromptName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedPromptName)
 	selectedPromptVersion := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedPromptVersion)
 	selectedPromptID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedPromptID)
@@ -1938,6 +1961,15 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		}
 	}
 	applyOutputFieldsToEntry(entry, selectedKeyID, selectedKeyName, virtualKeyID, virtualKeyName, routingRuleID, routingRuleName, selectedPromptID, selectedPromptName, selectedPromptVersion, teamID, teamName, customerID, customerName, userID, userName, businessUnitID, businessUnitName, projectID, projectName, numberOfRetries, latency, upstreamLatency, overheadLatency, attemptTrail)
+	if complexityTier != "" {
+		entry.ComplexityTier = &complexityTier
+	}
+	if complexityMechanism != "" {
+		entry.ComplexityMechanism = &complexityMechanism
+	}
+	if hasComplexityScore {
+		entry.ComplexityScore = &complexityScore
+	}
 	applyResolvedAliasInfo(entry, resolvedKeyAlias)
 	// Attach cluster governance metadata for disconnected node usage recovery
 	if nodeID, _ := p.clusterNodeID.Load().(string); nodeID != "" {
