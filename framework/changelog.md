@@ -1,0 +1,2 @@
+- fix: map Bedrock's Converse camelCase `stopSequences` onto the neutral `stop` parameter alongside Anthropic's `stop_sequences` - 81 Nova and Titan catalog rows silently lost `stop` to compat's `dropUnsupportedParams`, so the provider ran to `end_turn` instead of stopping
+- chore: upgraded core to v1.7.10
