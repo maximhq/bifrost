@@ -194,10 +194,12 @@ func (s *QdrantStore) GetAll(ctx context.Context, namespace string, queries []Qu
 		}
 	}
 
-	scrollLimit := uint32(limit)
-	if limit <= 0 {
-		scrollLimit = 100
-	}
+	// Clamped rather than converted: a truncated-to-zero limit would scroll
+	// nothing, and the len(scrollResult) >= scrollLimit check below would then
+	// read 0 >= 0 as a full page and hand back a cursor pointing at the empty
+	// lastID — which the next call treats as no cursor at all, so a caller
+	// paging to completion would never advance.
+	scrollLimit := boundedPageLimit(limit, 100)
 
 	scrollResult, err := s.client.Scroll(ctx, &qdrant.ScrollPoints{
 		CollectionName: namespace,

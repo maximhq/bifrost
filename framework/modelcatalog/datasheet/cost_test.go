@@ -2241,6 +2241,64 @@ func TestCalculateCostBreakdown_SemanticCacheMissAddsAdditional(t *testing.T) {
 	assert.InDelta(t, bd.TotalCost, bd.InputCost+bd.OutputCost+bd.AdditionalCost, 1e-12)
 }
 
+// TestCalculateCostBreakdown_RoutingEmbeddingIsItsOwnDetail verifies the routing
+// classification embed lands on the additional side under its own detail line,
+// so a breakdown that also carries a guardrail or cache sidecar stays
+// attributable to the call that incurred each part.
+func TestCalculateCostBreakdown_RoutingEmbeddingIsItsOwnDetail(t *testing.T) {
+	routeProvider := "openai"
+	routeModel := "text-embedding-3-small"
+	routeTokens := 500
+
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o", "openai", "chat"): {
+			Model: "gpt-4o", Provider: "openai", Mode: "chat",
+			InputCostPerToken: bifrost.Ptr(0.000005), OutputCostPerToken: bifrost.Ptr(0.000015),
+		},
+		makeKey("text-embedding-3-small", "openai", "embedding"): {
+			Model: "text-embedding-3-small", Provider: "openai", Mode: "embedding",
+			InputCostPerToken: bifrost.Ptr(0.00000002),
+		},
+	})
+
+	newResponse := func(countTowardBudgets bool) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{
+			ChatResponse: &schemas.BifrostChatResponse{
+				Usage: &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500},
+				ExtraFields: schemas.BifrostResponseExtraFields{
+					RequestType: schemas.ChatCompletionRequest,
+					RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
+					RoutingDebug: &schemas.BifrostRoutingDebug{
+						ProviderUsed: &routeProvider, ModelUsed: &routeModel, InputTokens: &routeTokens,
+						CountTowardBudgets: countTowardBudgets,
+					},
+				},
+			},
+		}
+	}
+
+	bd := s.CalculateCostBreakdown(newResponse(true), nil)
+	require.NotNil(t, bd)
+	require.NotNil(t, bd.AdditionalCostDetails)
+	// Base: 1000*5e-6 + 500*1.5e-5 = 0.0125. Routing embed: 500*2e-8 = 0.00001.
+	assert.InDelta(t, 0.005, bd.InputCost, 1e-12)
+	assert.InDelta(t, 0.0075, bd.OutputCost, 1e-12)
+	assert.InDelta(t, 0.00001, bd.AdditionalCost, 1e-12)
+	assert.InDelta(t, 0.00001, bd.AdditionalCostDetails.RoutingCost, 1e-12)
+	assert.Zero(t, bd.AdditionalCostDetails.GuardrailCost, "a routing embed must not be reported as a guardrail call")
+	assert.InDelta(t, 0.01251, bd.TotalCost, 1e-12)
+	assert.InDelta(t, bd.TotalCost, bd.InputCost+bd.OutputCost+bd.AdditionalCost, 1e-12)
+
+	// The detail line tracks the cost actually charged: a request that never
+	// opted routing into budget attribution carries neither.
+	optedOut := s.CalculateCostBreakdown(newResponse(false), nil)
+	require.NotNil(t, optedOut)
+	assert.Zero(t, optedOut.AdditionalCost)
+	if optedOut.AdditionalCostDetails != nil {
+		assert.Zero(t, optedOut.AdditionalCostDetails.RoutingCost)
+	}
+}
+
 // TestCalculateCostBreakdown_SemanticCacheHitAddsRequestSurcharge verifies the
 // embedding model's flat CostPerRequest fee is included in the semantic-cache
 // lookup cost on a hit, not just the per-token charge.
