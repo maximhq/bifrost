@@ -196,7 +196,7 @@ export function LogMessageCell({ log, contentClassName = "max-w-full" }: { log: 
 				</span>
 			)}
 			{realtimeMessages &&
-				(realtimeMessages.tool || realtimeMessages.user || realtimeMessages.assistantToolCall || realtimeMessages.assistant) ? (
+			(realtimeMessages.tool || realtimeMessages.user || realtimeMessages.assistantToolCall || realtimeMessages.assistant) ? (
 				<div className={cn(contentClassName, "font-mono text-sm font-normal leading-5")}>
 					{realtimeMessages.tool ? <div className="truncate">Tool Result: {realtimeMessages.tool}</div> : null}
 					{realtimeMessages.user ? <div className="truncate">User: {realtimeMessages.user}</div> : null}
@@ -223,17 +223,7 @@ const MAX_ATTRIBUTION_LINES = 1;
 // plural names -> singular name -> plural ids -> singular id. When a plural
 // (array) source is used, values render one per line, capped at
 // MAX_ATTRIBUTION_LINES with a "+N more" indicator for the remainder.
-function AttributionCell({
-	names,
-	name,
-	ids,
-	id,
-}: {
-	names?: string[];
-	name?: string | null;
-	ids?: string[];
-	id?: string | null;
-}) {
+function AttributionCell({ names, name, ids, id }: { names?: string[]; name?: string | null; ids?: string[]; id?: string | null }) {
 	let values: string[] = [];
 	if (Array.isArray(names) && names.filter(Boolean).length > 0) {
 		values = names.filter(Boolean);
@@ -275,43 +265,43 @@ export const createColumns = (
 	// corner connector instead so the hierarchy stays readable in any column order.
 	const expandColumn: ColumnDef<LogEntry>[] = groupedView
 		? [
-			{
-				id: "expand",
-				header: "",
-				size: 52,
-				cell: ({ row, table }) => {
-					const meta = table.options.meta as LogsTableMeta | undefined;
-					const log = row.original as DisplayLogEntry;
-					if (log.__chainChild) {
-						return <CornerDownRight className="text-muted-foreground/70 mx-auto size-3.5" />;
-					}
-					const childCount = log.child_count ?? 0;
-					if (!childCount || !meta) return null;
-					const isExpanded = meta.expandedChainIds.has(log.id);
-					const isLoading = meta.loadingChainIds.has(log.id);
-					return (
-						<button
-							type="button"
-							data-testid="log-chain-expand-btn"
-							aria-label={isExpanded ? "Collapse fallback chain" : `Expand fallback chain (${childCount} attempts)`}
-							aria-expanded={isExpanded}
-							className="text-muted-foreground hover:text-foreground gap-1 rounded-sm transition-colors absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center justify-center cursor-pointer"
-							onClick={(event) => {
-								event.stopPropagation();
-								meta.onToggleChain(log);
-							}}
-						>
-							{isLoading ? (
-								<Loader2 className="size-3.5 animate-spin" />
-							) : (
-								<ChevronRight className={cn("size-3.5 transition-transform", isExpanded && "rotate-90")} />
-							)}
-							<span className="font-mono text-[10.5px] tabular-nums">{childCount}</span>
-						</button>
-					);
+				{
+					id: "expand",
+					header: "",
+					size: 52,
+					cell: ({ row, table }) => {
+						const meta = table.options.meta as LogsTableMeta | undefined;
+						const log = row.original as DisplayLogEntry;
+						if (log.__chainChild) {
+							return <CornerDownRight className="text-muted-foreground/70 mx-auto size-3.5" />;
+						}
+						const childCount = log.child_count ?? 0;
+						if (!childCount || !meta) return null;
+						const isExpanded = meta.expandedChainIds.has(log.id);
+						const isLoading = meta.loadingChainIds.has(log.id);
+						return (
+							<button
+								type="button"
+								data-testid="log-chain-expand-btn"
+								aria-label={isExpanded ? "Collapse fallback chain" : `Expand fallback chain (${childCount} attempts)`}
+								aria-expanded={isExpanded}
+								className="text-muted-foreground hover:text-foreground absolute top-1/2 left-1/2 flex -translate-x-1/2 -translate-y-1/2 cursor-pointer items-center justify-center gap-1 rounded-sm transition-colors"
+								onClick={(event) => {
+									event.stopPropagation();
+									meta.onToggleChain(log);
+								}}
+							>
+								{isLoading ? (
+									<Loader2 className="size-3.5 animate-spin" />
+								) : (
+									<ChevronRight className={cn("size-3.5 transition-transform", isExpanded && "rotate-90")} />
+								)}
+								<span className="font-mono text-[10.5px] tabular-nums">{childCount}</span>
+							</button>
+						);
+					},
 				},
-			},
-		]
+			]
 		: [];
 
 	const baseColumns: ColumnDef<LogEntry>[] = [
@@ -566,20 +556,20 @@ export const createColumns = (
 
 	const actionsColumn: ColumnDef<LogEntry>[] = hasDeleteAccess
 		? [
-			{
-				id: "actions",
-				header: "",
-				size: 56,
-				cell: ({ row }) => {
-					const log = row.original;
-					return (
-						<div className="flex justify-center">
-							<LogActionsMenu log={log} onDelete={onDelete} />
-						</div>
-					);
+				{
+					id: "actions",
+					header: "",
+					size: 56,
+					cell: ({ row }) => {
+						const log = row.original;
+						return (
+							<div className="flex justify-center">
+								<LogActionsMenu log={log} onDelete={onDelete} />
+							</div>
+						);
+					},
 				},
-			},
-		]
+			]
 		: [];
 
 	return [...expandColumn, ...baseColumns, ...attributionColumns, ...metadataColumns, ...actionsColumn];

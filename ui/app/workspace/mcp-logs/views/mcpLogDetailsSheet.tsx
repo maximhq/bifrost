@@ -131,7 +131,7 @@ export function MCPLogDetailSheet({
 	if (!isFullDataReady) {
 		return (
 			<Sheet open={open} onOpenChange={onOpenChange}>
-				<SheetContent className="flex w-full flex-col gap-4 overflow-x-hidden p-4 md:p-8 sm:max-w-[60%]">
+				<SheetContent className="flex w-full flex-col gap-4 overflow-x-hidden p-4 sm:max-w-[60%] md:p-8">
 					<div className="flex h-full items-center justify-center">
 						<SheetTitle className="sr-only">Loading MCP log details</SheetTitle>
 						<Loader2 className="text-muted-foreground h-6 w-6 animate-spin" />
@@ -148,7 +148,7 @@ export function MCPLogDetailSheet({
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="flex w-full flex-col gap-4 overflow-x-hidden p-4 md:p-8 sm:max-w-[60%]">
+			<SheetContent className="flex w-full flex-col gap-4 overflow-x-hidden p-4 sm:max-w-[60%] md:p-8">
 				<SheetHeader className="flex flex-row items-center px-0">
 					<div className="flex w-full items-center justify-between">
 						<SheetTitle className="flex w-fit items-center gap-2 font-medium">

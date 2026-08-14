@@ -196,7 +196,7 @@ export function WebhookDetailsSheet({ endpoint, isTesting, canManage, onTest, on
 
 	return (
 		<Sheet open={open} onOpenChange={(sheetOpen) => !sheetOpen && onClose()}>
-			<SheetContent className="flex w-full flex-col gap-0 overflow-x-hidden p-4 md:p-8 sm:max-w-[60%]">
+			<SheetContent className="flex w-full flex-col gap-0 overflow-x-hidden p-4 sm:max-w-[60%] md:p-8">
 				<SheetHeader className="flex flex-col items-start px-0">
 					<SheetTitle className="flex w-fit items-center gap-2 font-medium">
 						<p className="text-md max-w-full truncate">{endpoint?.name}</p>
