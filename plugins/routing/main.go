@@ -90,6 +90,11 @@ type RoutingPlugin struct {
 	warmupEmbedUsageObserver atomic.Pointer[WarmupEmbedUsageObserver]
 	complexityVectorStore    atomic.Pointer[vectorstore.VectorStore]
 
+	// complexitySessionConfig mirrors the analyzer config's session block so the
+	// request path can read mode, ttl, and identity sources without holding the
+	// whole config. Kept in step by storeComplexityAnalyzerConfig, so it follows
+	// live reloads. Nil means session behaviour is off.
+	complexitySessionConfig atomic.Pointer[configstore.ComplexitySessionConfig]
 	// complexitySessionStore is attached after construction and may stay nil when
 	// session routing has no backing store configured.
 	complexitySessionStore atomic.Pointer[SessionStore]
@@ -190,6 +195,14 @@ func (p *RoutingPlugin) storeComplexityAnalyzerConfig(config *complexity.Analyze
 	p.complexityAnalyzer.Store(complexity.NewComplexityAnalyzerWithConfig(resolved))
 	if p.semanticClassifier != nil {
 		p.semanticClassifier.Configure(resolved)
+	}
+	// Only a session block that is actually switched on is published: the request
+	// path then treats "no config" and "mode off" identically without repeating
+	// the mode check at every read.
+	if resolved.Session.Enabled() {
+		p.complexitySessionConfig.Store(resolved.Session)
+	} else {
+		p.complexitySessionConfig.Store(nil)
 	}
 }
 
@@ -332,6 +345,15 @@ func (p *RoutingPlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *sche
 	headers, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
 	queryParams, _ := ctx.Value(schemas.BifrostContextKeyRequestQuery).(map[string]string)
 
+	// Resolved before the routing context is built because target stickiness
+	// needs the same identity the tier is stored under. Nil means classify
+	// normally, which is the behaviour that predates session state.
+	sessionState := p.resolveComplexitySessionState(ctx, virtualKey)
+	// Published before key selection runs so the conversation keeps one API key
+	// as well as one tier; a rotating key would discard the provider cache the
+	// pinned tier exists to protect.
+	p.publishSessionKeyAffinity(ctx, sessionState)
+
 	// Set up lazy complexity computation; only runs if a rule references complexity_tier.
 	var computeComplexity func() *complexity.ComplexityResult
 	if p.complexityAnalyzer.Load() != nil {
@@ -446,6 +468,21 @@ func (p *RoutingPlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *sche
 		}
 	}
 
+	// Session policy stays inside the lazy closure: pinned mode can short-circuit
+	// classification, while cache-aware mode classifies and gates a tier change.
+	// A request whose rules never mention complexity_tier still performs neither
+	// classification nor session-store work.
+	computeComplexity = p.withComplexitySession(ctx, sessionState, computeComplexity)
+
+	// Target stickiness keys on the resolved identity, not the raw header, so a
+	// harness-native id pins targets the same way an explicit header does. With
+	// session behaviour off, sessionState is nil and this falls back to the header
+	// read that predates it — which the stickiness gate ignores anyway.
+	sessionID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySessionID)
+	if sessionState != nil {
+		sessionID = sessionState.ID
+	}
+
 	routingCtx := &rules.EvaluationContext{
 		VirtualKey:               virtualKey,
 		UserID:                   bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID),
@@ -456,6 +493,8 @@ func (p *RoutingPlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *sche
 		QueryParams:              queryParams,
 		BudgetAndRateLimitStatus: p.governance.GetBudgetAndRateLimitStatus(ctx, model, provider, virtualKey, nil, nil, nil),
 		ComputeComplexity:        computeComplexity,
+		SessionID:                sessionID,
+		SessionComplexityEnabled: sessionState != nil,
 	}
 
 	p.logger.Debug("[Routing] Built routing context: provider=%s, model=%s, requestType=%s, vk=%v",
@@ -529,7 +568,8 @@ func (p *RoutingPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.Bifro
 func (p *RoutingPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	if ctx != nil && resp != nil {
 		if extraFields := resp.GetExtraFields(); extraFields != nil {
-			stampRoutingDebug(ctx, resp, extraFields.RequestType, bifrost.IsFinalChunk(ctx))
+			isFinalChunk := bifrost.IsFinalChunk(ctx)
+			stampRoutingDebug(ctx, resp, extraFields.RequestType, isFinalChunk)
 		}
 	}
 	return resp, bifrostErr, nil

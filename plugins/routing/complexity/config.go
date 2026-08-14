@@ -47,7 +47,10 @@ const (
 // there are no historical rows carrying it and nothing offers it as a filter.
 const (
 	MechanismSemantic = "semantic"
-	MechanismSkipped  = "skipped"
+	// MechanismSession means pinned mode reused a tier without classifying this
+	// request.
+	MechanismSession = "session"
+	MechanismSkipped = "skipped"
 )
 
 // Default boundaries are retained for the dormant lexical analyzer and its
