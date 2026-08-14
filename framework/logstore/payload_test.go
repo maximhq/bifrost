@@ -51,7 +51,19 @@ func TestExtractPayload_RoundTrip(t *testing.T) {
 	}
 
 	payload := ExtractPayload(log)
-	assert.Equal(t, len(payloadFields)+1, len(payload), "payload map should have all payload fields plus metadata")
+	// Every payload field, plus metadata, plus the dimension keys ExtractPayload
+	// always writes so object consumers can attribute a snapshot without the row.
+	wantKeys := append([]string{}, payloadFields...)
+	wantKeys = append(wantKeys,
+		"metadata",
+		"provider", "model", "status", "timestamp",
+		"selected_key_id", "selected_key_name",
+	)
+	gotKeys := make([]string, 0, len(payload))
+	for k := range payload {
+		gotKeys = append(gotKeys, k)
+	}
+	assert.ElementsMatch(t, wantKeys, gotKeys, "payload map should have all payload fields, metadata, and the always-present dimension keys")
 	assert.Equal(t, `[{"role":"user","content":"hello"}]`, payload["input_history"])
 	assert.Equal(t, `{"role":"assistant","content":"world"}`, payload["output_message"])
 	assert.Equal(t, `{"judge_calls":[{"total_tokens":18}]}`, payload["guardrail_debug"])
