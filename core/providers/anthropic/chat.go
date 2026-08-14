@@ -675,7 +675,18 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 
 		// Convert reasoning
 		if reasoningParams != nil {
-			if reasoningParams.MaxTokens != nil {
+			if isDeepSeekV4Request(bifrostReq.Provider, capModel) {
+				// Reviewed DeepSeek V4 models use output_config.effort for active reasoning
+				// and thinking.type=disabled for an explicit "none". A neutral
+				// max_tokens value alone does not enable legacy Anthropic thinking.
+				if reasoningParams.Effort != nil {
+					if *reasoningParams.Effort == "none" {
+						anthropicReq.Thinking = &AnthropicThinking{Type: "disabled"}
+					} else {
+						setEffortOnOutputConfig(anthropicReq, MapBifrostEffortToAnthropic(*reasoningParams.Effort))
+					}
+				}
+			} else if reasoningParams.MaxTokens != nil {
 				if IsAdaptiveOnlyThinkingModel(capModel) {
 					// Opus 4.7+ and Fable/Mythos: budget_tokens removed; adaptive thinking is the only thinking-on mode.
 					anthropicReq.Thinking = &AnthropicThinking{Type: "adaptive"}
@@ -763,9 +774,10 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			}
 		}
 
-		// DeepSeek rejects a forced tool_choice while thinking is enabled (which is
-		// the default). Force thinking off when tool_choice pins a specific tool.
-		if bifrostReq.Provider == schemas.DeepSeek && anthropicReq.ToolChoice != nil &&
+		// DeepSeek models outside the reviewed V4 set reject a forced tool_choice while
+		// thinking is enabled (which is the default). Force thinking off when a
+		// specific tool is pinned; the reviewed V4 models support tools in thinking mode.
+		if bifrostReq.Provider == schemas.DeepSeek && !isDeepSeekV4Request(bifrostReq.Provider, capModel) && anthropicReq.ToolChoice != nil &&
 			anthropicReq.ToolChoice.Type == "tool" {
 			anthropicReq.Thinking = &AnthropicThinking{Type: "disabled"}
 		}

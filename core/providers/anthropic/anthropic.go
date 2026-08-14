@@ -528,9 +528,17 @@ func HandleAnthropicChatCompletionRequest(
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, config.ShouldSendBackRawRequest, config.ShouldSendBackRawResponse, latency)
 	}
+	isLargeResp, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool)
+	// Large-response mode exposes only a prefix preview here; usage is normally
+	// trailing metadata, so validating the preview would reject valid payloads.
+	if expectedModel, validateUsage := expectedDeepSeekV4UsageModel(ctx, config.Provider, request.Model); validateUsage && !isLargeResp {
+		if err := validateDeepSeekV4ResponseMetadata(responseBody, expectedModel); err != nil {
+			return nil, providerUtils.EnrichError(ctx, newDeepSeekUsageFidelityError(err), jsonBody, nil, config.ShouldSendBackRawRequest, false, latency)
+		}
+	}
 
 	// Large response mode: return lightweight response with metadata only.
-	if isLargeResp, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool); isLargeResp {
+	if isLargeResp {
 		return &schemas.BifrostChatResponse{
 			Model: request.Model,
 			ExtraFields: schemas.BifrostResponseExtraFields{
@@ -765,6 +773,8 @@ func HandleAnthropicChatCompletionStreaming(
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	resetAnthropicStreamAttemptState(ctx)
+	expectedDeepSeekModel, validateDeepSeekUsage := expectedDeepSeekV4UsageModelFromBody(ctx, providerName, jsonBody)
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, streamIdleTimeoutInSeconds)
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -965,6 +975,7 @@ func HandleAnthropicChatCompletionStreaming(
 
 		// True once message_stop arrives — Anthropic's only completion signal.
 		sawTerminalEvent := false
+		deepSeekUsageState := &deepSeekStreamUsageState{}
 
 		for {
 			// If context was cancelled/timed out, let defer handle it
@@ -988,6 +999,13 @@ func HandleAnthropicChatCompletionStreaming(
 			eventData := string(eventDataBytes)
 			if eventType == "" || eventData == "" {
 				continue
+			}
+			if validateDeepSeekUsage {
+				if err := validateDeepSeekV4StreamMetadata(eventType, eventDataBytes, expectedDeepSeekModel, deepSeekUsageState); err != nil {
+					normalizeUsage()
+					sendDeepSeekUsageFidelityStreamError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody, sendBackRawRequest, err)
+					return
+				}
 			}
 			var event AnthropicStreamEvent
 			if err := sonic.Unmarshal([]byte(eventData), &event); err != nil {
@@ -1201,6 +1219,13 @@ func HandleAnthropicChatCompletionStreaming(
 		// io.EOF — indistinguishable from a healthy close — so without the terminal
 		// event the synthesized final chunk below would present a truncated stream
 		// to the client as a clean stop.
+		if validateDeepSeekUsage {
+			if err := validateDeepSeekV4StreamComplete(deepSeekUsageState); err != nil {
+				normalizeUsage()
+				sendDeepSeekUsageFidelityStreamError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody, sendBackRawRequest, err)
+				return
+			}
+		}
 		if !sawTerminalEvent {
 			// Fold cached tokens in before billing: SendStreamTruncatedError snapshots
 			// the accumulated usage handle, so a fold after the send never reaches the
@@ -1296,9 +1321,17 @@ func HandleAnthropicResponsesRequest(
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, config.ShouldSendBackRawRequest, config.ShouldSendBackRawResponse, latency)
 	}
+	isLargeResp, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool)
+	// Large-response mode exposes only a prefix preview here; usage is normally
+	// trailing metadata, so validating the preview would reject valid payloads.
+	if expectedModel, validateUsage := expectedDeepSeekV4UsageModel(ctx, config.Provider, request.Model); validateUsage && !isLargeResp {
+		if err := validateDeepSeekV4ResponseMetadata(responseBody, expectedModel); err != nil {
+			return nil, providerUtils.EnrichError(ctx, newDeepSeekUsageFidelityError(err), jsonBody, nil, config.ShouldSendBackRawRequest, false, latency)
+		}
+	}
 
 	// Large response mode: return lightweight response with usage from the prefetch preview.
-	if isLargeResp, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool); isLargeResp {
+	if isLargeResp {
 		preview, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadResponsePreview).(string)
 		return &schemas.BifrostResponsesResponse{
 			ID:        schemas.Ptr("resp_" + providerUtils.GetRandomString(50)),
@@ -1407,6 +1440,8 @@ func HandleAnthropicResponsesStream(
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	resetAnthropicStreamAttemptState(ctx)
+	expectedDeepSeekModel, validateDeepSeekUsage := expectedDeepSeekV4UsageModelFromBody(ctx, providerName, jsonBody)
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, streamIdleTimeoutInSeconds)
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -1592,6 +1627,7 @@ func HandleAnthropicResponsesStream(
 		var modelName string
 		var servedSpeed *string
 		var servedInferenceGeo *string
+		deepSeekUsageState := &deepSeekStreamUsageState{}
 		// Model that served the turn after a server-side fallback handoff. Latched
 		// here rather than stamped in the converter: the per-chunk loop below replaces
 		// ExtraFields wholesale, so anything the converter puts there is discarded.
@@ -1621,6 +1657,13 @@ func HandleAnthropicResponsesStream(
 			eventData := string(eventDataBytes)
 			if eventType == "" || eventData == "" {
 				continue
+			}
+			if validateDeepSeekUsage {
+				if err := validateDeepSeekV4StreamMetadata(eventType, eventDataBytes, expectedDeepSeekModel, deepSeekUsageState); err != nil {
+					normalizeBilledUsage()
+					sendDeepSeekUsageFidelityStreamError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody, sendBackRawRequest, err)
+					return
+				}
 			}
 			var event AnthropicStreamEvent
 			if err := sonic.Unmarshal([]byte(eventData), &event); err != nil {
@@ -1751,6 +1794,14 @@ func HandleAnthropicResponsesStream(
 				}
 			}
 
+		}
+
+		if validateDeepSeekUsage {
+			if err := validateDeepSeekV4StreamComplete(deepSeekUsageState); err != nil {
+				normalizeBilledUsage()
+				sendDeepSeekUsageFidelityStreamError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody, sendBackRawRequest, err)
+				return
+			}
 		}
 
 		// The loop returns as soon as the terminal chunk is emitted, so falling out

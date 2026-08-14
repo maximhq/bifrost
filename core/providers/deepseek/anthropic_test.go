@@ -43,8 +43,10 @@ func newTestDeepSeekProvider(baseURL string) (*deepseek.DeepSeekProvider, error)
 	}, testLogger{})
 }
 
+// newAnthropicResponse returns the complete V4 Flash fixture shared by the
+// Anthropic-compatible endpoint tests.
 func newAnthropicResponse() string {
-	return `{"id":"msg_1","type":"message","role":"assistant","model":"deepseek-chat","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`
+	return validV4FlashResponse
 }
 
 func TestChatCompletion_UsesAnthropicEndpoint(t *testing.T) {
@@ -79,7 +81,7 @@ func TestChatCompletion_UsesAnthropicEndpoint(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, newAnthropicResponse())
+		_, _ = fmt.Fprint(w, newAnthropicResponse())
 	}))
 	defer server.Close()
 
@@ -109,6 +111,8 @@ func TestChatCompletion_UsesAnthropicEndpoint(t *testing.T) {
 	}
 }
 
+// TestResponses_UsesAnthropicEndpointAndKeepsWebSearch verifies the DeepSeek
+// Responses route preserves Anthropic-native web-search tools.
 func TestResponses_UsesAnthropicEndpointAndKeepsWebSearch(t *testing.T) {
 	t.Parallel()
 
@@ -138,7 +142,7 @@ func TestResponses_UsesAnthropicEndpointAndKeepsWebSearch(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, newAnthropicResponse())
+		_, _ = fmt.Fprint(w, validV4ProResponse)
 	}))
 	defer server.Close()
 
@@ -178,7 +182,9 @@ func TestResponses_UsesAnthropicEndpointAndKeepsWebSearch(t *testing.T) {
 	}
 }
 
-func TestChatCompletion_DisablesThinkingForForcedToolChoice(t *testing.T) {
+// TestChatCompletion_V4FlashOmitsThinkingForForcedToolChoice verifies a forced
+// tool does not reintroduce unsupported thinking metadata for V4 Flash.
+func TestChatCompletion_V4FlashOmitsThinkingForForcedToolChoice(t *testing.T) {
 	t.Parallel()
 
 	var captured map[string]any
@@ -196,7 +202,7 @@ func TestChatCompletion_DisablesThinkingForForcedToolChoice(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, newAnthropicResponse())
+		_, _ = fmt.Fprint(w, newAnthropicResponse())
 	}))
 	defer server.Close()
 
@@ -235,16 +241,14 @@ func TestChatCompletion_DisablesThinkingForForcedToolChoice(t *testing.T) {
 		t.Fatalf("ChatCompletion: %v", bifrostErr.Error.Message)
 	}
 
-	thinking, ok := captured["thinking"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected thinking block in outbound body, got %#v", captured)
-	}
-	if got := thinking["type"]; got != "disabled" {
-		t.Fatalf("thinking.type = %v, want disabled", got)
+	if thinking, exists := captured["thinking"]; exists {
+		t.Fatalf("V4 Flash wire body gained unsupported thinking: %#v", thinking)
 	}
 }
 
-func TestResponses_DisablesThinkingForForcedToolChoice(t *testing.T) {
+// TestResponses_V4ProKeepsForcedToolWithoutThinking verifies the reviewed Pro
+// route preserves an exact forced tool without synthesizing legacy thinking.
+func TestResponses_V4ProKeepsForcedToolWithoutThinking(t *testing.T) {
 	t.Parallel()
 
 	var captured map[string]any
@@ -262,7 +266,7 @@ func TestResponses_DisablesThinkingForForcedToolChoice(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, newAnthropicResponse())
+		_, _ = fmt.Fprint(w, validV4ProResponse)
 	}))
 	defer server.Close()
 
@@ -301,12 +305,8 @@ func TestResponses_DisablesThinkingForForcedToolChoice(t *testing.T) {
 		t.Fatalf("Responses: %v", bifrostErr.Error.Message)
 	}
 
-	thinking, ok := captured["thinking"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected thinking block in outbound body, got %#v", captured)
-	}
-	if got := thinking["type"]; got != "disabled" {
-		t.Fatalf("thinking.type = %v, want disabled", got)
+	if thinking, exists := captured["thinking"]; exists {
+		t.Fatalf("V4 Pro wire body gained legacy thinking: %#v", thinking)
 	}
 }
 
@@ -322,7 +322,7 @@ func TestChatCompletion_DefaultsToOpenAIEndpoint(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"id":"chatcmpl_1","object":"chat.completion","model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+		_, _ = fmt.Fprint(w, `{"id":"chatcmpl_1","object":"chat.completion","model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
 	}))
 	defer server.Close()
 
@@ -369,7 +369,7 @@ func TestChatCompletion_OpenAIEndpointDisablesThinkingForRequiredToolChoice(t *t
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"id":"chatcmpl_1","object":"chat.completion","model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+		_, _ = fmt.Fprint(w, `{"id":"chatcmpl_1","object":"chat.completion","model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
 	}))
 	defer server.Close()
 
