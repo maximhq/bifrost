@@ -334,11 +334,11 @@ func TestEmbedComplexityTextRecordsRoutingUsage(t *testing.T) {
 	_, err := plugin.embedComplexityText(ctx, cfg, "classify me")
 	require.NoError(t, err)
 
-	usage, ok := ctx.Value(routingEmbedUsageContextKey).(*routingEmbedUsage)
+	usage, ok := schemas.RoutingDebugFromContext(ctx)
 	require.True(t, ok, "classification embed must record usage on the request context")
-	assert.Equal(t, "openai", usage.Provider)
-	assert.Equal(t, "text-embedding-3-small", usage.Model)
-	assert.Equal(t, 42, usage.InputTokens)
+	assert.Equal(t, "openai", *usage.ProviderUsed)
+	assert.Equal(t, "text-embedding-3-small", *usage.ModelUsed)
+	assert.Equal(t, 42, *usage.InputTokens)
 	assert.True(t, usage.CountTowardBudgets)
 }
 
@@ -353,9 +353,9 @@ func TestRecordRoutingEmbedUsageReplacesPreviousSnapshot(t *testing.T) {
 	recordRoutingEmbedUsage(ctx, cfg, 20)
 	recordRoutingEmbedUsage(ctx, cfg, 7)
 
-	usage, ok := ctx.Value(routingEmbedUsageContextKey).(*routingEmbedUsage)
+	usage, ok := schemas.RoutingDebugFromContext(ctx)
 	require.True(t, ok)
-	assert.Equal(t, 7, usage.InputTokens)
+	assert.Equal(t, 7, *usage.InputTokens)
 }
 
 // A provider that reports a negative token count must not have it recorded:
@@ -375,9 +375,9 @@ func TestEmbedComplexityTextDropsNegativeProviderUsage(t *testing.T) {
 	_, err := plugin.embedComplexityText(ctx, cfg, "classify me")
 	require.NoError(t, err)
 
-	usage, ok := ctx.Value(routingEmbedUsageContextKey).(*routingEmbedUsage)
+	usage, ok := schemas.RoutingDebugFromContext(ctx)
 	require.True(t, ok)
-	assert.Equal(t, 0, usage.InputTokens, "negative provider usage must not reach budget accounting")
+	assert.Equal(t, 0, *usage.InputTokens, "negative provider usage must not reach budget accounting")
 }
 
 // warmupObservation captures one WarmupEmbedUsageObserver invocation.
@@ -441,7 +441,8 @@ func TestEmbedComplexityTextsObservesWarmupNeverRecordsRoutingUsage(t *testing.T
 	defer ctx.Cancel()
 	_, err := plugin.embedComplexityTexts(ctx, testEmbeddingSemanticConfig(), []string{"a", "b"})
 	require.NoError(t, err)
-	assert.Nil(t, ctx.Value(routingEmbedUsageContextKey))
+	_, hasRoutingDebug := schemas.RoutingDebugFromContext(ctx)
+	assert.False(t, hasRoutingDebug)
 	require.Len(t, observed, 1)
 	assert.Equal(t, warmupObservation{"openai", "text-embedding-3-small", 7}, observed[0])
 }
@@ -500,7 +501,8 @@ func TestRequestClassificationEmbedDoesNotObserveWarmup(t *testing.T) {
 	defer ctx.Cancel()
 	_, err := plugin.embedComplexityText(ctx, testEmbeddingSemanticConfig(), "classify me")
 	require.NoError(t, err)
-	assert.NotNil(t, ctx.Value(routingEmbedUsageContextKey))
+	_, hasRoutingDebug := schemas.RoutingDebugFromContext(ctx)
+	assert.True(t, hasRoutingDebug)
 	assert.Empty(t, observed)
 }
 
@@ -526,9 +528,9 @@ func TestRequestClassificationEmbedRecordsUsageWhenProviderReturnsNoVectors(t *t
 	_, err := plugin.embedComplexityText(ctx, testEmbeddingSemanticConfig(), "classify me")
 	require.Error(t, err)
 
-	usage, ok := ctx.Value(routingEmbedUsageContextKey).(*routingEmbedUsage)
+	usage, ok := schemas.RoutingDebugFromContext(ctx)
 	require.True(t, ok, "a billed classification embed must be recorded for the stamp")
-	assert.Equal(t, 42, usage.InputTokens)
+	assert.Equal(t, 42, *usage.InputTokens)
 	assert.Empty(t, observed, "a request embed must never fire the warmup observer")
 }
 
@@ -552,12 +554,13 @@ func TestStampRoutingDebug(t *testing.T) {
 		t.Helper()
 		ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
 		t.Cleanup(ctx.Cancel)
-		ctx.SetValue(routingEmbedUsageContextKey, &routingEmbedUsage{
-			Provider:           "openai",
-			Model:              "text-embedding-3-small",
-			InputTokens:        42,
+		provider, model, inputTokens := "openai", "text-embedding-3-small", 42
+		require.True(t, schemas.SetRoutingDebugOnContext(ctx, &schemas.BifrostRoutingDebug{
+			ProviderUsed:       &provider,
+			ModelUsed:          &model,
+			InputTokens:        &inputTokens,
 			CountTowardBudgets: countTowardBudgets,
-		})
+		}))
 		return ctx
 	}
 	newChatResult := func() *schemas.BifrostResponse {
@@ -591,7 +594,7 @@ func TestStampRoutingDebug(t *testing.T) {
 		final := newChatResult()
 		stampRoutingDebug(ctx, final, schemas.ChatCompletionStreamRequest, true)
 		assert.NotNil(t, final.GetExtraFields().RoutingDebug)
-		_, usageRemainsAvailable := ctx.Value(routingEmbedUsageContextKey).(*routingEmbedUsage)
+		_, usageRemainsAvailable := schemas.RoutingDebugFromContext(ctx)
 		assert.True(t, usageRemainsAvailable, "no-response consumers read the context snapshot")
 	})
 
@@ -606,8 +609,30 @@ func TestStampRoutingDebug(t *testing.T) {
 	t.Run("nil result leaves usage pending", func(t *testing.T) {
 		ctx := newCtxWithUsage(t, true)
 		stampRoutingDebug(ctx, nil, schemas.ChatCompletionRequest, false)
-		_, usageStillPending := ctx.Value(routingEmbedUsageContextKey).(*routingEmbedUsage)
+		_, usageStillPending := schemas.RoutingDebugFromContext(ctx)
 		assert.True(t, usageStillPending)
+	})
+
+	t.Run("retry and fallback attempts do not restamp usage", func(t *testing.T) {
+		for _, attempt := range []struct {
+			name          string
+			retryNumber   int
+			fallbackIndex int
+		}{
+			{name: "retry", retryNumber: 1},
+			{name: "fallback", fallbackIndex: 1},
+		} {
+			t.Run(attempt.name, func(t *testing.T) {
+				ctx := newCtxWithUsage(t, true)
+				ctx.SetValue(schemas.BifrostContextKeyNumberOfRetries, attempt.retryNumber)
+				ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, attempt.fallbackIndex)
+				result := newChatResult()
+
+				stampRoutingDebug(ctx, result, schemas.ChatCompletionRequest, false)
+
+				assert.Nil(t, result.GetExtraFields().RoutingDebug)
+			})
+		}
 	})
 
 	// The stamp feeds cost calculation, so a negative token count must never
@@ -616,12 +641,7 @@ func TestStampRoutingDebug(t *testing.T) {
 	t.Run("negative input tokens are rejected", func(t *testing.T) {
 		ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
 		defer ctx.Cancel()
-		ctx.SetValue(routingEmbedUsageContextKey, &routingEmbedUsage{
-			Provider:           "openai",
-			Model:              "text-embedding-3-small",
-			InputTokens:        -42,
-			CountTowardBudgets: true,
-		})
+		recordRoutingEmbedUsage(ctx, testEmbeddingSemanticConfig(), -42)
 
 		result := newChatResult()
 		stampRoutingDebug(ctx, result, schemas.ChatCompletionRequest, false)

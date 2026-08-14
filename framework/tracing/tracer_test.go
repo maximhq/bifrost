@@ -8,6 +8,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/require"
 )
 
 type testRealtimeObservabilityPlugin struct {
@@ -415,6 +416,26 @@ func TestTracer_SetAttribute(t *testing.T) {
 	if span.Attributes["http.status_code"] != 200 {
 		t.Errorf("span attribute http.status_code = %v, want 200", span.Attributes["http.status_code"])
 	}
+}
+
+func TestTracer_PopulateLLMResponseAttributesRecordsComplexityScore(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	traceID := tracer.CreateTrace("")
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityScore, 0.875)
+
+	_, handle := tracer.StartSpan(ctx, "llm-call", schemas.SpanKindLLMCall)
+	tracer.PopulateLLMResponseAttributes(ctx, handle, nil, nil)
+
+	trace := store.GetTrace(traceID)
+	require.NotNil(t, trace)
+	require.Equal(t, 0.875, trace.RootSpan.Attributes[schemas.AttrBifrostComplexityScore])
 }
 
 func TestTracer_GetSpanHandleByID_RootSpan(t *testing.T) {
