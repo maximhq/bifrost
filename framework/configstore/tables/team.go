@@ -44,7 +44,7 @@ type TableTeam struct {
 	UpdatedAt time.Time `gorm:"index;not null" json:"updated_at"`
 }
 
-// TableName sets the table name for each model
+// TableName sets the table name for team table
 func (TableTeam) TableName() string { return "governance_teams" }
 
 // BeforeSave hook for TableTeam to serialize JSON fields
