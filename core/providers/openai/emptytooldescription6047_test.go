@@ -1,6 +1,7 @@
 package openai_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 	"time"
@@ -88,6 +89,12 @@ func TestAdditionalToolsEmptyDescriptionVerbatimForOpenAI(t *testing.T) {
 	input := wireInput(t, schemas.OpenAI, buildResponsesInput(t, codexAdditionalToolsInput))
 
 	item := input.Get("0")
+	// encoding/json compacts MarshalJSON output when embedding, so the wire is
+	// the preserved bytes minus insignificant whitespace: compare against the
+	// compacted original to pin key order, unasserted fields, and escaping.
+	var expected bytes.Buffer
+	require.NoError(t, json.Compact(&expected, []byte(gjson.Parse(codexAdditionalToolsInput).Get("0").Raw)))
+	assert.Equal(t, expected.String(), item.Raw, "OpenAI must preserve additional_tools bytes verbatim")
 	assert.Equal(t, "", item.Get("tools.0.description").String())
 	assert.True(t, item.Get("tools.0.description").Exists())
 	assert.Equal(t, "  ", item.Get("tools.0.tools.0.description").String())
