@@ -79,15 +79,12 @@ func (s *RedisStore) CreateNamespace(ctx context.Context, namespace string, dime
 	// Check if index already exists
 	infoResult := s.client.Do(ctx, "FT.INFO", namespace)
 	if infoResult.Err() == nil {
-		ftInfo, ftInfoErr := s.client.FTInfo(ctx, namespace).Result()
-		if ftInfoErr != nil {
-			s.logger.Warn(fmt.Sprintf("could not inspect existing index %q for dimension validation (check skipped): %v", namespace, ftInfoErr))
-		} else {
-			for _, attr := range ftInfo.Attributes {
-				if strings.EqualFold(attr.Type, "VECTOR") && attr.Dim > 0 && attr.Dim != dimension {
-					return fmt.Errorf("namespace %q already exists with dimension %d but config requires %d — update vector_store_namespace to a new name or drop the existing index manually", namespace, attr.Dim, dimension)
-				}
-			}
+		// Read the dimension out of the raw reply rather than the typed FTInfo
+		// helper. That helper refuses to decode while the client speaks RESP3
+		// without UnstableResp3 — which is exactly how this store configures it
+		// — so it always failed and the check below silently never ran.
+		if existing, ok := vectorDimensionFromFTInfo(infoResult.Val()); ok && existing != dimension {
+			return fmt.Errorf("namespace %q already exists with dimension %d but config requires %d — update vector_store_namespace to a new name or drop the existing index manually", namespace, existing, dimension)
 		}
 		s.cacheNamespaceFieldTypes(namespace, properties)
 		return nil // Index already exists with matching dimension
@@ -890,6 +887,67 @@ func attributesToMap(value interface{}) map[string]interface{} {
 	default:
 		return nil
 	}
+}
+
+// vectorDimensionFromFTInfo reads the declared dimension of an index's VECTOR
+// attribute out of a raw FT.INFO reply, returning false when the reply carries
+// no such attribute. Shape depends on the protocol the client negotiated: the
+// top level is a map under RESP3 and a flat key/value sequence under RESP2,
+// and each entry of "attributes" varies the same way.
+func vectorDimensionFromFTInfo(reply interface{}) (int, bool) {
+	attributes, ok := ftInfoField(reply, "attributes")
+	if !ok {
+		return 0, false
+	}
+	entries, ok := attributes.([]interface{})
+	if !ok {
+		return 0, false
+	}
+	for _, entry := range entries {
+		entryType, ok := ftInfoField(entry, "type")
+		if !ok {
+			continue
+		}
+		typeText, ok := toString(entryType)
+		if !ok || !strings.EqualFold(typeText, "VECTOR") {
+			continue
+		}
+		rawDimension, ok := ftInfoField(entry, "dim")
+		if !ok {
+			continue
+		}
+		if value, ok := toFloat64(rawDimension); ok && value > 0 {
+			return int(value), true
+		}
+	}
+	return 0, false
+}
+
+// ftInfoField looks up one field of an FT.INFO reply across both protocol
+// shapes. Used for the top level and for individual attribute entries, which
+// are maps under RESP3 and flat key/value sequences under RESP2.
+func ftInfoField(reply interface{}, name string) (interface{}, bool) {
+	switch typed := reply.(type) {
+	case map[interface{}]interface{}:
+		for key, value := range typed {
+			if keyText, ok := toString(key); ok && strings.EqualFold(keyText, name) {
+				return value, true
+			}
+		}
+	case map[string]interface{}:
+		for key, value := range typed {
+			if strings.EqualFold(key, name) {
+				return value, true
+			}
+		}
+	case []interface{}:
+		for i := 0; i+1 < len(typed); i += 2 {
+			if keyText, ok := toString(typed[i]); ok && strings.EqualFold(keyText, name) {
+				return typed[i+1], true
+			}
+		}
+	}
+	return nil, false
 }
 
 func toString(value interface{}) (string, bool) {

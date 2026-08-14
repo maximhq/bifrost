@@ -20,6 +20,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/maximhq/bifrost/plugins/routing/rules"
 )
@@ -38,6 +39,10 @@ type Governance interface {
 	rules.GovernanceStore
 	PublishRoutingAllowlist(ctx *schemas.BifrostContext, virtualKey *configstoreTables.TableVirtualKey, modelStr string)
 	LoadBalanceProvider(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, virtualKey *configstoreTables.TableVirtualKey) error
+	// AttributeRoutingEmbeddingCost bills one warmup/boot embedding of semantic
+	// complexity routing to the admin-owned provider/model budgets. Governance
+	// owns the model catalog and the budget ledger; routing only reports usage.
+	AttributeRoutingEmbeddingCost(provider schemas.ModelProvider, model string, inputTokens int)
 }
 
 const noComplexitySignalLog = "Complexity analysis skipped: no configured complexity signal matched the latest user message; continuing with existing routing path"
@@ -75,6 +80,13 @@ type RoutingPlugin struct {
 	configStore configstore.ConfigStore
 	logger      schemas.Logger
 	cleanupOnce sync.Once
+
+	// Wired by the HTTP server after the bifrost client exists; see
+	// SetEmbeddingRequestExecutor / SetWarmupEmbedUsageObserver /
+	// SetComplexityVectorStore in embedding.go.
+	embeddingRequestExecutor atomic.Pointer[EmbeddingRequestExecutor]
+	warmupEmbedUsageObserver atomic.Pointer[WarmupEmbedUsageObserver]
+	complexityVectorStore    atomic.Pointer[vectorstore.VectorStore]
 }
 
 // Init initializes and returns a routing plugin instance.
@@ -393,8 +405,16 @@ func (p *RoutingPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.Bifro
 	return req, nil, nil
 }
 
-// PostLLMHook implements schemas.LLMPlugin (no-op).
-func (p *RoutingPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+// PostLLMHook stamps routing-classification telemetry onto the response.
+// Routing's post hook runs before governance's (post hooks run in reverse
+// pre-hook order), so the stamp is visible to governance cost calculation and
+// every later post-hook consumer.
+func (p *RoutingPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	if ctx != nil && resp != nil {
+		if extraFields := resp.GetExtraFields(); extraFields != nil {
+			stampRoutingDebug(ctx, resp, extraFields.RequestType, bifrost.IsFinalChunk(ctx))
+		}
+	}
 	return resp, bifrostErr, nil
 }
 

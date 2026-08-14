@@ -1533,8 +1533,8 @@
         },
         "type": {
           "type": "string",
-          "enum": ["weaviate", "redis", "qdrant", "pinecone"],
-          "description": "Vector store type (use \"redis\" for Redis or Valkey-compatible endpoints)"
+          "enum": ["weaviate", "redis", "qdrant", "pinecone", "chromem"],
+          "description": "Vector store type (use \"redis\" for Redis or Valkey-compatible endpoints). \"chromem\" runs in-process rather than against a service, so its data is local to one node and is not shared between replicas"
         },
         "config": {
           "anyOf": [
@@ -1584,6 +1584,18 @@
               },
               "then": {
                 "$ref": "#/$defs/pinecone_config"
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "type": {
+                    "const": "chromem"
+                  }
+                }
+              },
+              "then": {
+                "$ref": "#/$defs/chromem_config"
               }
             }
           ]
@@ -5852,6 +5864,30 @@
       },
       "required": ["api_key", "index_host"],
       "additionalProperties": false
+    },
+    "chromem_config": {
+      "type": "object",
+      "description": "Embedded chromem configuration for vector store. Chromem runs in-process (pure Go, no external service), so its data lives on one node and is never shared between replicas, and every filtered read is a full scan of the namespace. Suited to small, node-local vector sets rather than a shared cache.",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Directory for on-disk persistence, reloaded on startup. Must hold a non-whitespace value - omit the field entirely for a memory-only store that starts empty after every restart.",
+          "pattern": "\\S"
+        },
+        "compress": {
+          "type": "boolean",
+          "description": "Compress persisted documents on disk. Requires path - a memory-only store has nothing to compress.",
+          "default": false
+        }
+      },
+      "additionalProperties": false,
+      "if": {
+        "properties": { "compress": { "const": true } },
+        "required": ["compress"]
+      },
+      "then": {
+        "required": ["path"]
+      }
     },
     "proxy_config": {
       "type": "object",

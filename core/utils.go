@@ -427,6 +427,17 @@ func ClearContextForInternalRequest(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyURLPath)
 }
 
+// PrepareContextForInternalRequest marks ctx as an internal sub-request issued
+// by a plugin on its own behalf. It skips the plugin pipeline — the request
+// cannot recurse back into the plugin that issued it — and sheds the
+// caller-specific key-routing and body-transport state documented on
+// ClearContextForInternalRequest. Plugins should call this instead of setting
+// BifrostContextKeySkipPluginPipeline (a reserved core key) themselves.
+func PrepareContextForInternalRequest(ctx *schemas.BifrostContext) {
+	ctx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
+	ClearContextForInternalRequest(ctx)
+}
+
 var supportedBaseProvidersSet = func() map[schemas.ModelProvider]struct{} {
 	m := make(map[schemas.ModelProvider]struct{}, len(schemas.SupportedBaseProviders))
 	for _, p := range schemas.SupportedBaseProviders {
