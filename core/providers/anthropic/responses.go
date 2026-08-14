@@ -1,10 +1,12 @@
 package anthropic
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"hash"
 	"maps"
 	"math"
 	"strings"
@@ -178,6 +180,12 @@ type anthropicToResponsesStreamState struct {
 	nextBlockIndex   int
 	blockIndexByItem map[string]int
 
+	// emittedTextByBlock holds bounded progress for text actually emitted to a
+	// normalized Anthropic client. Responses output_text.done is cumulative, so
+	// this lets the converter recover only its missing suffix without retaining a
+	// second full copy of the streamed response.
+	emittedTextByBlock map[int]*emittedTextProgress
+
 	// blockIndexMisses records non-empty item keys for which blockIndexFor was
 	// asked for an index that allocBlockIndex never assigned — i.e. a
 	// content_block_stop/_delta referencing a block whose content_block_start was
@@ -237,6 +245,70 @@ type anthropicToResponsesStreamState struct {
 	// Code can't carry and never spawns nested blocks, so it is left open here and
 	// closed at output_item.done from the verbatim carry input instead.
 	codeExecServerClosedByItem map[string]bool
+}
+
+// emittedTextProgress records the byte length and SHA-256 state of one emitted text prefix.
+type emittedTextProgress struct {
+	emittedBytes int
+	prefixHasher hash.Hash
+}
+
+// recordEmittedText advances one block's bounded text progress.
+func (s *anthropicToResponsesStreamState) recordEmittedText(blockIndex int, text string) {
+	if text == "" {
+		return
+	}
+	if s.emittedTextByBlock == nil {
+		s.emittedTextByBlock = make(map[int]*emittedTextProgress)
+	}
+	progress := s.emittedTextByBlock[blockIndex]
+	if progress == nil {
+		progress = &emittedTextProgress{prefixHasher: sha256.New()}
+		s.emittedTextByBlock[blockIndex] = progress
+	}
+	_, _ = progress.prefixHasher.Write([]byte(text))
+	progress.emittedBytes += len(text)
+}
+
+// recordEmittedTextEvents tracks text deltas that survived protocol validation and will reach the client.
+func (s *anthropicToResponsesStreamState) recordEmittedTextEvents(events []*AnthropicStreamEvent) {
+	if s.passthrough {
+		return
+	}
+	for _, event := range events {
+		if event == nil || event.Type != AnthropicStreamEventTypeContentBlockDelta || event.Index == nil ||
+			event.Delta == nil || event.Delta.Type != AnthropicStreamDeltaTypeText || event.Delta.Text == nil {
+			continue
+		}
+		s.recordEmittedText(*event.Index, *event.Delta.Text)
+	}
+}
+
+// missingTerminalText returns the append-only suffix absent from prior emitted deltas.
+func (s *anthropicToResponsesStreamState) missingTerminalText(blockIndex int, aggregate string) (string, bool) {
+	emittedBytes := 0
+	if progress := s.emittedTextByBlock[blockIndex]; progress != nil {
+		emittedBytes = progress.emittedBytes
+		if emittedBytes > len(aggregate) {
+			return "", false
+		}
+		aggregatePrefixHash := sha256.Sum256([]byte(aggregate[:emittedBytes]))
+		if !bytes.Equal(progress.prefixHasher.Sum(nil), aggregatePrefixHash[:]) {
+			return "", false
+		}
+	}
+	missing := aggregate[emittedBytes:]
+	return missing, missing != ""
+}
+
+// clearEmittedTextProgress releases one content block's terminal-text bookkeeping.
+func (s *anthropicToResponsesStreamState) clearEmittedTextProgress(key string) {
+	if key == "" || s.blockIndexByItem == nil || s.emittedTextByBlock == nil {
+		return
+	}
+	if blockIndex, ok := s.blockIndexByItem[key]; ok {
+		delete(s.emittedTextByBlock, blockIndex)
+	}
 }
 
 // allocBlockIndex assigns and returns the next Anthropic content-block index. A
@@ -549,8 +621,8 @@ func anthropicNativeEffortFrom(ctx *schemas.BifrostContext) (anthropicNativeEffo
 
 // SetResponsesStreamPassthrough marks this request's Anthropic reverse stream
 // conversion as running on the Claude Code passthrough path (raw upstream frames
-// interleaved with converted ones). The converter reads state.passthrough only for
-// collapsed server-tool result blocks that must still consume an upstream index.
+// interleaved with converted ones). The converter keeps raw upstream text
+// authoritative while still consuming indices for collapsed server-tool results.
 func SetResponsesStreamPassthrough(ctx *schemas.BifrostContext) {
 	getOrCreateAnthropicToResponsesStreamState(ctx).passthrough = true
 }
@@ -2784,7 +2856,10 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 	if len(events) == 0 || ctx == nil {
 		return events
 	}
-	return enforceStreamBlockTypes(getOrCreateAnthropicToResponsesStreamState(ctx), events)
+	state := getOrCreateAnthropicToResponsesStreamState(ctx)
+	events = enforceStreamBlockTypes(state, events)
+	state.recordEmittedTextEvents(events)
+	return events
 }
 
 // enforceStreamBlockTypes tracks the type each content_block_start opens and drops
@@ -3240,6 +3315,26 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 			}
 		}
 
+	case schemas.ResponsesStreamResponseTypeOutputTextDone:
+		state := getOrCreateAnthropicToResponsesStreamState(ctx)
+		if state.passthrough || bifrostResp.Text == nil || *bifrostResp.Text == "" {
+			return nil
+		}
+		blockIndex, ok := state.blockIndexByItem[reverseStreamItemKey(bifrostResp)]
+		if !ok || state.blockType(blockIndex) != AnthropicContentBlockTypeText {
+			return nil
+		}
+		missing, ok := state.missingTerminalText(blockIndex, *bifrostResp.Text)
+		if !ok {
+			return nil
+		}
+		streamResp.Type = AnthropicStreamEventTypeContentBlockDelta
+		streamResp.Index = schemas.Ptr(blockIndex)
+		streamResp.Delta = &AnthropicStreamDelta{
+			Type: AnthropicStreamDeltaTypeText,
+			Text: schemas.Ptr(missing),
+		}
+
 	case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta:
 		// Skip WebSearch tool argument deltas - they will be sent synthetically in output_item.done
 		if bifrostResp.ItemID != nil {
@@ -3314,6 +3409,7 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 		return nil
 
 	case schemas.ResponsesStreamResponseTypeOutputItemDone:
+		getOrCreateAnthropicToResponsesStreamState(ctx).clearEmittedTextProgress(reverseStreamItemKey(bifrostResp))
 		// Handle WebSearch tool completion with sanitization and synthetic delta generation
 		if bifrostResp.Item != nil &&
 			bifrostResp.Item.Type != nil &&
