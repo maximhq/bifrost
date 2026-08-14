@@ -84,6 +84,8 @@ export interface DBKey {
 	provider_id: string; // identifier for the provider
 	models: string[]; // List of models this key can access
 	provider: ModelProviderName; // Provider name
+	// Omitted by the API when unset, which the Go side reads as enabled.
+	enabled?: boolean;
 }
 
 export interface RedactedDBKey {
