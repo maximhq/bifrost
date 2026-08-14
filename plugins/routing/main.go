@@ -2,10 +2,11 @@
 // set, the compiled CEL programs behind each rule, and the request-complexity analyzer that
 // backs the complexity_tier variable.
 //
-// The plugin runs in PreRequestHook, ahead of the plugins that materialize a virtual key's
-// provider configuration, so a matched rule decides provider, model, fallback chain and key
-// pin before any load balancing happens. Requests with no rules configured pay a single map
-// check and return.
+// The plugin runs in PreRequestHook, after governance has resolved the request's virtual key
+// and stamped its scope on the context, and it drives the rest of the routing pipeline from
+// there: rules decide provider, model, fallback chain and key pin, and only then does the
+// virtual key's provider allowlist get published and its providers load balanced. Requests
+// with no rules configured pay a single map check before that materialization.
 package routing
 
 import (
@@ -25,6 +26,19 @@ import (
 
 // PluginName is the name of the routing plugin
 const PluginName = "routing"
+
+// Governance is what routing needs from the governance plugin. The two reads feed rule
+// evaluation; the two writes materialize the virtual key's provider choice for the model the
+// rules settled on, and run from the routing hook so they see post-rule values.
+//
+// It is satisfied by the registered governance plugin rather than by its store, so a
+// deployment that swaps in its own governance implementation supplies its own load balancing
+// through this same call.
+type Governance interface {
+	rules.GovernanceStore
+	PublishRoutingAllowlist(ctx *schemas.BifrostContext, virtualKey *configstoreTables.TableVirtualKey, modelStr string)
+	LoadBalanceProvider(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, virtualKey *configstoreTables.TableVirtualKey) error
+}
 
 const noComplexitySignalLog = "Complexity analysis skipped: no configured complexity signal matched the latest user message; continuing with existing routing path"
 
@@ -54,9 +68,10 @@ type RoutingPlugin struct {
 	engine             *rules.Engine
 	complexityAnalyzer atomic.Pointer[complexity.ComplexityAnalyzer]
 
-	// governance supplies the virtual key and its live budget/rate-limit usage. Required:
-	// rules address both, and the scope chain is built from the virtual key hierarchy.
-	governance  rules.GovernanceStore
+	// governance supplies the virtual key, its live budget/rate-limit usage, and the provider
+	// materialization that runs once rules have decided. Required: rules address budgets and
+	// rate limits, and the scope chain is built from the virtual key hierarchy.
+	governance  Governance
 	configStore configstore.ConfigStore
 	logger      schemas.Logger
 	cleanupOnce sync.Once
@@ -71,19 +86,19 @@ type RoutingPlugin struct {
 //   - config: plugin flags; may be nil, in which case defaults apply.
 //   - logger: logger used by the engine and the rule store.
 //   - configStore: configuration store rules are read from; may be nil.
-//   - governanceStore: virtual key and budget state provider; must not be nil.
+//   - governancePlugin: virtual key state and provider materialization; must not be nil.
 func Init(
 	ctx context.Context,
 	config *Config,
 	logger schemas.Logger,
 	configStore configstore.ConfigStore,
-	governanceStore rules.GovernanceStore,
+	governancePlugin Governance,
 ) (*RoutingPlugin, error) {
 	ruleStore, err := rules.NewLocalStore(ctx, logger, configStore)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize routing rule store: %w", err)
 	}
-	return InitFromStore(ctx, config, logger, configStore, ruleStore, governanceStore)
+	return InitFromStore(ctx, config, logger, configStore, ruleStore, governancePlugin)
 }
 
 // InitFromStore initializes and returns a routing plugin instance with a custom rule store.
@@ -97,7 +112,7 @@ func InitFromStore(
 	logger schemas.Logger,
 	configStore configstore.ConfigStore,
 	ruleStore rules.Store,
-	governanceStore rules.GovernanceStore,
+	governancePlugin Governance,
 ) (*RoutingPlugin, error) {
 	if logger == nil {
 		return nil, fmt.Errorf("logger cannot be nil")
@@ -108,7 +123,7 @@ func InitFromStore(
 
 	chainMaxDepth := config.chainMaxDepthOrDefault()
 
-	engine, err := rules.NewEngine(ruleStore, governanceStore, logger, chainMaxDepth)
+	engine, err := rules.NewEngine(ruleStore, governancePlugin, logger, chainMaxDepth)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize routing engine: %w", err)
 	}
@@ -116,7 +131,7 @@ func InitFromStore(
 	plugin := &RoutingPlugin{
 		rules:       ruleStore,
 		engine:      engine,
-		governance:  governanceStore,
+		governance:  governancePlugin,
 		configStore: configStore,
 		logger:      logger,
 	}
@@ -156,16 +171,20 @@ func (p *RoutingPlugin) storeComplexityAnalyzerConfig(config *complexity.Analyze
 	p.complexityAnalyzer.Store(complexity.NewComplexityAnalyzerWithConfig(resolved))
 }
 
-// PreRequestHook evaluates routing rules and applies the matched decision to the request.
+// PreRequestHook evaluates routing rules, then materializes the virtual key's provider choice
+// for whatever provider/model the rules settled on.
 //
-// It runs for both normal body-having requests (routing on req.Model) and large-payload
+// The order inside this hook is load bearing: a matched rule can rewrite provider, model and
+// fallbacks, so the virtual key's provider allowlist and its load balancer must both see the
+// post-rule values. Both of those belong to the governance plugin and are invoked from here
+// rather than from governance's own hook, which runs earlier so that rules evaluate against a
+// fully stamped context.
+//
+// It handles both normal body-having requests (routing on req.Model) and large-payload
 // streaming requests (routing on LargePayloadMetadata.Model from ctx, since the body is
-// opaque mid-stream). Requests with no rules configured return immediately.
+// opaque mid-stream).
 func (p *RoutingPlugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error {
 	if req.RequestType == schemas.PassthroughRequest || req.RequestType == schemas.PassthroughStreamRequest {
-		return nil
-	}
-	if !p.rules.HasRules(ctx) {
 		return nil
 	}
 
@@ -194,11 +213,19 @@ func (p *RoutingPlugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas
 	if _, err := p.applyRoutingRules(ctx, req, virtualKey); err != nil {
 		return err
 	}
-	return nil
+
+	_, routedModel, _ := req.GetRequestFields()
+
+	// Downstream routing layers (load balancing, model-catalog resolution) and core
+	// enforcement intersect their candidates with this allowlist, so a later layer cannot
+	// select a provider the key forbids for the routed model. Without a virtual key there is
+	// nothing to allow or deny and the call is a no-op.
+	p.governance.PublishRoutingAllowlist(ctx, virtualKey, routedModel)
+	return p.governance.LoadBalanceProvider(ctx, req, virtualKey)
 }
 
 // routeLargePayloadModel wraps a model string in a synthetic BifrostRequest, runs the same
-// applyRoutingRules helper used by the main PreRequestHook path, and returns the resolved
+// rule evaluation and virtual key materialization as the main PreRequestHook path, and returns the resolved
 // model (provider-prefixed when a provider was selected, plain model otherwise). Used by the
 // large-payload branch where req.Model is empty because the body wasn't parsed.
 func (p *RoutingPlugin) routeLargePayloadModel(ctx *schemas.BifrostContext, virtualKey *configstoreTables.TableVirtualKey, modelIn string, requestType schemas.RequestType) (string, error) {
@@ -215,6 +242,18 @@ func (p *RoutingPlugin) routeLargePayloadModel(ctx *schemas.BifrostContext, virt
 		return modelIn, err
 	}
 
+	// Publish before load balancing, exactly as the body-having path does: the allowlist is
+	// matched against the key's allowed/blacklisted model patterns, which are written against
+	// caller-facing model names. Load balancing may replace the model with a provider-specific
+	// one (RefineModelForProvider), and an allowlist computed from that refined name can come
+	// back empty, which downstream layers read as "no provider permitted".
+	_, routedModel, _ := synthetic.GetRequestFields()
+	p.governance.PublishRoutingAllowlist(ctx, virtualKey, routedModel)
+
+	if err := p.governance.LoadBalanceProvider(ctx, synthetic, virtualKey); err != nil {
+		return modelIn, err
+	}
+
 	provider, model, _ := synthetic.GetRequestFields()
 	if provider != "" {
 		return string(provider) + "/" + model, nil
@@ -223,9 +262,14 @@ func (p *RoutingPlugin) routeLargePayloadModel(ctx *schemas.BifrostContext, virt
 }
 
 // applyRoutingRules evaluates routing rules against req and mutates
-// req.Provider/req.Model/req.Fallbacks when a rule matches. Returns the matched rules.Decision
-// (nil when no rule matched).
+// req.Provider/req.Model/req.Fallbacks when a rule matches, returning the matched
+// rules.Decision, or nil when no rule matched. A deployment with no rules configured pays a
+// single map check here and falls through to the virtual key's own provider selection.
 func (p *RoutingPlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, virtualKey *configstoreTables.TableVirtualKey) (*rules.Decision, error) {
+	if !p.rules.HasRules(ctx) {
+		return nil, nil
+	}
+
 	provider, model, _ := req.GetRequestFields()
 	if model == "" {
 		return nil, nil

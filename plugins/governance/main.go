@@ -53,6 +53,12 @@ type BaseGovernancePlugin interface {
 	PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.BifrostMCPResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostMCPResponse, *schemas.BifrostError, error)
 	Cleanup() error
 	GetGovernanceStore() GovernanceStore
+	// Routing collaboration: the routing plugin calls these after evaluating routing rules,
+	// so the allowlist and the load balancer both act on the post-rule provider/model.
+	GetVirtualKey(ctx context.Context, vkValue string) (*configstoreTables.TableVirtualKey, bool)
+	GetBudgetAndRateLimitStatus(ctx context.Context, model string, provider schemas.ModelProvider, vk *configstoreTables.TableVirtualKey, budgetBaselines map[string]float64, tokenBaselines map[string]int64, requestBaselines map[string]int64) *BudgetAndRateLimitStatus
+	PublishRoutingAllowlist(ctx *schemas.BifrostContext, virtualKey *configstoreTables.TableVirtualKey, modelStr string)
+	LoadBalanceProvider(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, virtualKey *configstoreTables.TableVirtualKey) error
 }
 
 // GovernancePlugin implements the main governance plugin with hierarchical budget system
@@ -324,51 +330,6 @@ func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req
 	return nil, nil
 }
 
-// runPreRequestRouting wraps a model string in a synthetic BifrostRequest, runs the same
-// loadBalanceProvider helper used by the main PreRequestHook path, and returns the resolved
-// model (provider-prefixed when a provider was selected, plain model otherwise). Used by
-// PreRequestHook's large-payload branch where req.Model is empty because the body wasn't
-// parsed.
-func (p *GovernancePlugin) runPreRequestRouting(ctx *schemas.BifrostContext, virtualKey *configstoreTables.TableVirtualKey, modelIn string, requestType schemas.RequestType) (string, error) {
-	// Parse a provider-prefixed model string the same way the transport does for
-	// body-having requests, so an explicit prefix like "openai/gpt-4o" lands in
-	// ChatRequest.Provider and load balancing honors the caller's routing intent.
-	providerIn, parsedModel := schemas.ParseModelString(modelIn, "")
-	synthetic := &schemas.BifrostRequest{
-		RequestType: requestType,
-		ChatRequest: &schemas.BifrostChatRequest{Provider: providerIn, Model: parsedModel},
-	}
-
-	if virtualKey != nil {
-		if err := p.loadBalanceProvider(ctx, synthetic, virtualKey); err != nil {
-			return modelIn, err
-		}
-
-		// A caller-provided include-tools list can only narrow the virtual key's
-		// tool grant, never expand it — prune entries the key does not allow.
-		includeToolsProvided := p.pruneMCPIncludeToolsFromContext(ctx, virtualKey)
-
-		p.cfgMutex.RLock()
-		autoInjectDisabled := p.disableAutoToolInject != nil && *p.disableAutoToolInject
-		p.cfgMutex.RUnlock()
-		// An include-clients filter opts the request into tool injection even when
-		// auto-injection is disabled (see ParseAndAddToolsToRequest in core/mcp), so
-		// the key's allowlist must be stamped on every path where injection can run.
-		includeClientsPresent := ctx.Value(schemas.MCPContextKeyIncludeClients) != nil
-		if !includeToolsProvided && (!autoInjectDisabled || includeClientsPresent) {
-			if tools := p.computeMCPIncludeTools(virtualKey); tools != nil {
-				ctx.SetValue(schemas.MCPContextKeyIncludeTools, tools)
-			}
-		}
-	}
-
-	provider, model, _ := synthetic.GetRequestFields()
-	if provider != "" {
-		return string(provider) + "/" + model, nil
-	}
-	return model, nil
-}
-
 // HTTPTransportPostHook intercepts requests after they are processed (governance decision point)
 // It modifies the response in-place and returns nil to continue
 func (p *GovernancePlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error {
@@ -380,10 +341,26 @@ func (p *GovernancePlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostCont
 	return chunk, nil
 }
 
-// loadBalanceProvider picks a weighted provider from the VK's configs for req.Model
+// GetVirtualKey resolves a virtual key by its value. Exposed so the routing plugin can build
+// the rule scope chain from the same key this plugin governs.
+func (p *GovernancePlugin) GetVirtualKey(ctx context.Context, vkValue string) (*configstoreTables.TableVirtualKey, bool) {
+	return p.store.GetVirtualKey(ctx, vkValue)
+}
+
+// GetBudgetAndRateLimitStatus reports live budget and rate limit usage for a provider/model
+// pair. Exposed so routing rules can test budget_used, tokens_used and request.
+func (p *GovernancePlugin) GetBudgetAndRateLimitStatus(ctx context.Context, model string, provider schemas.ModelProvider, vk *configstoreTables.TableVirtualKey, budgetBaselines map[string]float64, tokenBaselines map[string]int64, requestBaselines map[string]int64) *BudgetAndRateLimitStatus {
+	return p.store.GetBudgetAndRateLimitStatus(ctx, model, provider, vk, budgetBaselines, tokenBaselines, requestBaselines)
+}
+
+// LoadBalanceProvider picks a weighted provider from the VK's configs for req.Model
 // and mutates req.Provider/req.Model with the refined provider/model. Also populates req.Fallbacks
 // from the remaining weighted providers if no fallbacks were configured by the caller.
-func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, virtualKey *configstoreTables.TableVirtualKey) error {
+func (p *GovernancePlugin) LoadBalanceProvider(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, virtualKey *configstoreTables.TableVirtualKey) error {
+	if virtualKey == nil {
+		return nil
+	}
+
 	provider, modelStr, existingFallbacks := req.GetRequestFields()
 	if modelStr == "" {
 		return nil
@@ -562,7 +539,7 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 	return nil
 }
 
-// publishRoutingAllowlist records, for downstream routing layers, which of the VK's configured
+// PublishRoutingAllowlist records, for downstream routing layers, which of the VK's configured
 // providers permit modelStr according to the VK's own allowed_models / blocked_models. It is a
 // coarse provider gate (BifrostContextKeyRoutingAllowedProviders) layered on top of the model
 // catalog checks those layers already run — its purpose is to stop a later routing layer (load
@@ -573,7 +550,7 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 // Provider prefixes on the request model are already split into req.Provider + bare model at the
 // HTTP layer (resolveModelAndProvider), so VK allowed_models / blocked_models are matched against
 // bare names and plain membership checks are sufficient here.
-func (p *GovernancePlugin) publishRoutingAllowlist(ctx *schemas.BifrostContext, virtualKey *configstoreTables.TableVirtualKey, modelStr string) {
+func (p *GovernancePlugin) PublishRoutingAllowlist(ctx *schemas.BifrostContext, virtualKey *configstoreTables.TableVirtualKey, modelStr string) {
 	if virtualKey == nil {
 		return
 	}
@@ -993,13 +970,14 @@ func (p *GovernancePlugin) isMCPToolAllowedByVKWith(vk *configstoreTables.TableV
 	return false
 }
 
-// PreRequestHook is the per-request governance phase: it stamps the virtual key's scope on
-// ctx, publishes the key's provider allowlist, load balances across the key's provider
-// configs, and narrows the MCP tool list. It runs for both normal body-having requests
-// (routing on req.Model) and large-payload streaming requests (routing on
-// LargePayloadMetadata.Model from ctx — the body is opaque mid-stream, so routing is
-// constrained to same-protocol-family targets that the upstream provider can hydrate
-// from the rewritten metadata).
+// PreRequestHook is the per-request governance phase: it resolves the request's virtual key,
+// stamps the key's scope on ctx for downstream plugins, and narrows the MCP tool list to what
+// the key grants.
+//
+// It deliberately runs before the routing plugin so a routing rule evaluates against a fully
+// stamped context. The provider allowlist and load balancing that used to live here now run
+// from the routing plugin after rule evaluation, through PublishRoutingAllowlist and
+// LoadBalanceProvider, because both must act on the post-rule model.
 //
 // Realtime + generic streaming bypass handleRequest (see core/bifrost.go
 // RunRealtimeTurnPreHooks / RunStreamPreHooks) and are still handled at HTTPTransportPreHook.
@@ -1019,35 +997,6 @@ func (p *GovernancePlugin) PreRequestHook(ctx *schemas.BifrostContext, req *sche
 	}
 
 	stampGovernanceCtxFromVK(ctx, virtualKey)
-
-	// Large-payload mode: the body streams to the provider unparsed, so req.Model is
-	// empty for routes where the model lives in the body (OpenAI/Anthropic chat,
-	// responses, etc.). Route on LargePayloadMetadata.Model — the provider's
-	// streaming body rewriter (ApplyLargePayloadRequestBodyWithModelNormalization)
-	// reads metadata.Model when it rewrites the model field in the body prefix, so
-	// mutating it here is what propagates the routing decision to the upstream call.
-	if metadata, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadMetadata).(*schemas.LargePayloadMetadata); metadata != nil && metadata.Model != "" {
-		newModel, err := p.runPreRequestRouting(ctx, virtualKey, metadata.Model, req.RequestType)
-		if err != nil {
-			return err
-		}
-		if newModel != "" && newModel != metadata.Model {
-			metadata.Model = newModel
-		}
-		_, routedModel := schemas.ParseModelString(metadata.Model, "")
-		p.publishRoutingAllowlist(ctx, virtualKey, routedModel)
-		return nil
-	}
-
-	// Publish the VK provider allowlist for the (post routing-rules) model so downstream routing
-	// layers (load balancing, model-catalog resolution) and core enforcement intersect their
-	// candidates with it — a later layer must not select a provider the VK forbids for this model.
-	_, routedModel, _ := req.GetRequestFields()
-	p.publishRoutingAllowlist(ctx, virtualKey, routedModel)
-
-	if err := p.loadBalanceProvider(ctx, req, virtualKey); err != nil {
-		return err
-	}
 
 	// A caller-provided include-tools list can only narrow the virtual key's
 	// tool grant, never expand it — prune entries the key does not allow.
