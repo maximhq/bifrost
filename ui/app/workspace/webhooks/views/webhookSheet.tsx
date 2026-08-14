@@ -194,7 +194,7 @@ export function WebhookSheet({ open, endpoint, onClose, onSecret }: WebhookSheet
 	return (
 		<Sheet open={open} onOpenChange={(sheetOpen) => !sheetOpen && onClose()}>
 			<SheetContent className="flex w-full flex-col overflow-x-hidden px-0" data-testid="webhook-sheet-content">
-				<SheetHeader className="flex flex-col items-start px-7 pt-8">
+				<SheetHeader className="flex flex-col items-start px-4 pt-8 md:px-7">
 					<SheetTitle>{isEditing ? endpoint.name : "Add Webhook Endpoint"}</SheetTitle>
 					<SheetDescription>
 						{isEditing
@@ -204,7 +204,7 @@ export function WebhookSheet({ open, endpoint, onClose, onSecret }: WebhookSheet
 				</SheetHeader>
 
 				<form onSubmit={handleSubmit(onSubmit)} className="flex min-h-0 flex-1 flex-col">
-					<div className="flex-1 space-y-4 overflow-y-auto px-8">
+					<div className="flex-1 space-y-4 overflow-y-auto px-4 md:px-8">
 						<div className="space-y-2">
 							<Label htmlFor="webhook-name">Name</Label>
 							<Input
@@ -343,7 +343,7 @@ export function WebhookSheet({ open, endpoint, onClose, onSecret }: WebhookSheet
 						</div>
 					</div>
 
-					<div className="dark:bg-card border-border border-t bg-white px-8 py-4">
+					<div className="dark:bg-card border-border border-t bg-white px-4 py-4 md:px-8">
 						<div className="flex justify-end gap-2">
 							<Button type="button" variant="outline" onClick={onClose} disabled={isSaving} data-testid="webhook-cancel-btn">
 								Cancel

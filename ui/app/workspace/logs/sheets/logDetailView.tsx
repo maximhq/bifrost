@@ -902,7 +902,7 @@ export function LogDetailView({
 						<span className="uppercase">{log.provider}</span>
 					</div>
 				</div>
-				<div className="border-border grid grid-cols-2 border-t md:grid-cols-5">
+				<div className="border-border grid grid-cols-1 border-t sm:grid-cols-2 md:grid-cols-5">
 					<HeroStat
 						label="Latency"
 						valueClass="text-primary"
@@ -977,10 +977,10 @@ export function LogDetailView({
 						<ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
 					</span>
 				</summary>
-				<div className="space-y-4 border-t px-6 py-4">
+				<div className="space-y-4 border-t px-4 py-4 md:px-6">
 					<div className="space-y-4">
 						<BlockHeader title="Timings" />
-						<div className="grid w-full grid-cols-3 items-center justify-between gap-4">
+						<div className="grid w-full grid-cols-1 items-center justify-between gap-4 md:grid-cols-3">
 							<LogEntryDetailsView
 								className="w-full"
 								label="Start Timestamp"
@@ -1007,7 +1007,7 @@ export function LogDetailView({
 					<DottedSeparator />
 					<div className="space-y-4">
 						<BlockHeader title="Request Details" />
-						<div className="grid w-full grid-cols-3 items-start justify-between gap-4">
+						<div className="grid w-full grid-cols-1 items-start justify-between gap-4 md:grid-cols-3">
 							<LogEntryDetailsView
 								className="w-full"
 								label="Provider"
@@ -1399,7 +1399,7 @@ export function LogDetailView({
 							<DottedSeparator />
 							<div className="space-y-4">
 								<BlockHeader title="Tokens" />
-								<div className="grid w-full grid-cols-3 items-center justify-between gap-4">
+								<div className="grid w-full grid-cols-1 items-center justify-between gap-4 md:grid-cols-3">
 									<LogEntryDetailsView className="w-full" label="Input Tokens" value={log.token_usage?.prompt_tokens || "-"} />
 									<LogEntryDetailsView className="w-full" label="Output Tokens" value={log.token_usage?.completion_tokens || "-"} />
 									<LogEntryDetailsView className="w-full" label="Total Tokens" value={log.token_usage?.total_tokens || "-"} />
@@ -1513,7 +1513,7 @@ export function LogDetailView({
 										<DottedSeparator />
 										<div className="space-y-4">
 											<BlockHeader title="Reasoning Parameters" />
-											<div className="grid w-full grid-cols-3 items-center justify-between gap-4">
+											<div className="grid w-full grid-cols-1 items-center justify-between gap-4 md:grid-cols-3">
 												{reasoning.effort && (
 													<LogEntryDetailsView
 														className="w-full"
@@ -1558,7 +1558,7 @@ export function LogDetailView({
 									<DottedSeparator />
 									<div className="space-y-4">
 										<BlockHeader title={`Caching Details (${log.cache_debug.cache_hit ? "Hit" : "Miss"})`} />
-										<div className="grid w-full grid-cols-3 items-center justify-between gap-4">
+										<div className="grid w-full grid-cols-1 items-center justify-between gap-4 md:grid-cols-3">
 											{log.cache_debug.cache_hit ? (
 												<>
 													<LogEntryDetailsView
@@ -1717,7 +1717,7 @@ export function LogDetailView({
 								<DottedSeparator />
 								<div className="space-y-4">
 									<BlockHeader title="Metadata" />
-									<div className="grid w-full grid-cols-3 items-start justify-between gap-4">
+									<div className="grid w-full grid-cols-1 items-start justify-between gap-4 md:grid-cols-3">
 										{Object.entries(log.metadata)
 											.filter(([key]) => {
 												if (key === "isAsyncRequest") return false;
@@ -2464,7 +2464,7 @@ export function LogDetailView({
 					) : null}
 					{log.params?.instructions && (
 						<CollapsibleBox title="Instructions" onCopy={() => log.params?.instructions || ""}>
-							<div className="custom-scrollbar max-h-[400px] overflow-y-auto px-6 py-2 font-mono text-xs break-words whitespace-pre-wrap">
+							<div className="custom-scrollbar max-h-[400px] overflow-y-auto px-4 py-2 font-mono text-xs break-words whitespace-pre-wrap md:px-6">
 								{log.params.instructions}
 							</div>
 						</CollapsibleBox>
@@ -2482,7 +2482,7 @@ export function LogDetailView({
 							title={`Attempt Trail (${log.attempt_trail.length} attempts)`}
 							onCopy={() => JSON.stringify(log.attempt_trail, null, 2)}
 						>
-							<div className="overflow-x-auto px-6 py-3">
+							<div className="overflow-x-auto px-4 py-3 md:px-6">
 								<table className="w-full border-collapse text-xs">
 									<thead>
 										<tr className="border-border text-muted-foreground border-b">

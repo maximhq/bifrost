@@ -129,14 +129,14 @@ export default function UserAgentMappingsView({ disabled }: UserAgentMappingsVie
 
 			<Sheet open={isSheetOpen} onOpenChange={handleSheetOpenChange}>
 				<SheetContent className="p-0">
-					<SheetHeader className="flex flex-col items-start px-6 pt-6">
+					<SheetHeader className="flex flex-col items-start px-4 pt-6 md:px-6">
 						<SheetTitle>{isEditing ? "Edit User Agent Mapping" : "Add User Agent Mapping"}</SheetTitle>
 						<SheetDescription>Define how a User-Agent value maps to an app label in logs.</SheetDescription>
 					</SheetHeader>
-					<div className="flex-1 space-y-4 px-6">
+					<div className="flex-1 space-y-4 px-4 md:px-6">
 						<MappingForm draft={draft} onChange={setDraft} disabled={controlsDisabled} />
 					</div>
-					<SheetFooter className="flex-row justify-end border-t px-6 py-4">
+					<SheetFooter className="flex-row justify-end border-t px-4 py-4 md:px-6">
 						<Button type="button" variant="outline" onClick={() => handleSheetOpenChange(false)} data-testid="user-agent-mapping-cancel-btn">
 							Cancel
 						</Button>

@@ -474,8 +474,8 @@ export default function DashboardPage() {
 			{/* Main Content */}
 			<ScrollArea className="bg-card flex min-w-0 flex-1 flex-col gap-4 rounded-l-md" viewportClassName="no-table">
 				{/* Header */}
-				<div className="flex items-center justify-between p-4">
-					<div className="flex items-center gap-2">
+				<div className="flex flex-wrap items-center justify-between gap-2 p-4">
+					<div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
 						<h1 className="text-lg font-semibold">Dashboard</h1>
 					</div>
 					<div className="flex items-center gap-2">
@@ -487,7 +487,7 @@ export default function DashboardPage() {
 							onExportDone={handleExportDone}
 						/>
 						{activeTab === "mcp" && mcpFilterData && (
-							<div className="flex items-center gap-1">
+							<div className="flex w-full flex-wrap items-center gap-1 sm:w-auto">
 								{(mcpFilterData.tool_names?.length ?? 0) > 0 && (
 									<ModelFilterSelect
 										models={mcpFilterData.tool_names ?? []}

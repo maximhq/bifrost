@@ -42,8 +42,8 @@ export function MCPLibraryServersTable({
 	};
 
 	return (
-		<div className="mb-2 overflow-y-auto rounded-md border" data-testid="mcp-library-table-view">
-			<Table containerClassName="overflow-x-clip">
+		<div className="mb-2 overflow-visible rounded-md border md:overflow-y-auto" data-testid="mcp-library-table-view">
+			<Table className="min-w-[32rem] md:min-w-0" containerClassName="overflow-x-auto md:overflow-x-clip">
 				<TableHeader className="bg-muted sticky top-0 z-10">
 					<TableRow>
 						<TableHead className="w-16">Icon</TableHead>
@@ -189,8 +189,8 @@ export function MCPLibraryServersTable({
 /** Skeleton placeholder mirroring the table layout while the library catalog loads. */
 export function MCPLibraryServersTableSkeleton({ rows = 8 }: { rows?: number }) {
 	return (
-		<div className="mb-2 overflow-y-auto rounded-md border" data-testid="mcp-library-table-skeleton">
-			<Table containerClassName="overflow-x-clip">
+		<div className="mb-2 overflow-visible rounded-md border md:overflow-y-auto" data-testid="mcp-library-table-skeleton">
+			<Table className="min-w-[32rem] md:min-w-0" containerClassName="overflow-x-auto md:overflow-x-clip">
 				<TableHeader className="bg-muted sticky top-0 z-10">
 					<TableRow>
 						<TableHead className="w-16">Icon</TableHead>

@@ -144,7 +144,7 @@ export default function OAuthGrantsPage() {
 	// No grants at all and no active filters/search: render full-width without
 	// the filter sidebar, mirroring the MCP clients/sessions onboarding state.
 	if (!isLoading && totalCount === 0 && !hasActiveFilters) {
-		return <div className="mx-auto flex h-[calc(100dvh-50px)] w-full max-w-7xl flex-col">{content}</div>;
+		return <div className="mx-auto flex h-[calc(100dvh-50px)] w-full max-w-7xl flex-col p-4 md:p-0">{content}</div>;
 	}
 
 	return (

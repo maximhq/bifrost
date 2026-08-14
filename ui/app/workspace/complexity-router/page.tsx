@@ -310,7 +310,7 @@ export default function ComplexityRouterPage() {
 
 	if (error && !data) {
 		return (
-			<div className="mx-auto w-full max-w-7xl space-y-4 px-14 pt-8">
+			<div className="mx-auto w-full max-w-7xl space-y-4 px-4 pt-6 sm:px-6 sm:pt-8 lg:px-14">
 				<p className="text-destructive font-mono text-sm">{getErrorMessage(error)}</p>
 				<Button data-testid="complexity-router-fetch-retry-button" type="button" variant="outline" size="sm" onClick={() => refetch()}>
 					Retry
@@ -321,7 +321,7 @@ export default function ComplexityRouterPage() {
 
 	if (!data) {
 		return (
-			<div className="mx-auto w-full max-w-7xl space-y-4 px-14 pt-8">
+			<div className="mx-auto w-full max-w-7xl space-y-4 px-4 pt-6 sm:px-6 sm:pt-8 lg:px-14">
 				<p className="text-muted-foreground font-mono text-sm">No complexity router configuration is available.</p>
 				<Button data-testid="complexity-router-fetch-retry-button" type="button" variant="outline" size="sm" onClick={() => refetch()}>
 					Retry
@@ -335,8 +335,14 @@ export default function ComplexityRouterPage() {
 	const hasErrors = Boolean(boundaryErrors || keywordErrors);
 
 	return (
-		<ScrollArea className="no-padding-parent h-[calc(100vh_-_16px)] w-full px-14 pt-4">
-			<form className="mx-auto w-full max-w-7xl space-y-8" onSubmit={handleSubmit(onValid)} noValidate>
+		<div className="no-padding-parent flex h-[calc(100dvh_-_16px)] min-w-0 flex-col">
+			<ScrollArea className="min-h-0 w-full flex-1">
+				<form
+					id="complexity-router-form"
+					className="mx-auto w-full max-w-7xl space-y-6 px-4 pt-4 pb-6 sm:space-y-8 sm:px-6 lg:px-14"
+					onSubmit={handleSubmit(onValid)}
+					noValidate
+				>
 				{/* ── Page header ── */}
 				<div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
 					<div className="space-y-1.5">
@@ -347,7 +353,7 @@ export default function ComplexityRouterPage() {
 							target.
 						</p>
 					</div>
-					<Button asChild variant="outline" size="sm" className="w-fit shrink-0" data-testid="complexity-router-docs-link">
+					<Button asChild variant="outline" size="sm" className="w-full shrink-0 sm:w-fit" data-testid="complexity-router-docs-link">
 						<a href={"https://docs.getbifrost.ai/features/governance/complexity-router"} target="_blank" rel="noopener noreferrer">
 							<ExternalLink className="size-3.5" />
 							Docs
@@ -356,10 +362,10 @@ export default function ComplexityRouterPage() {
 				</div>
 
 				{/* ── Complexity Spectrum ── */}
-				<div className="bg-card space-y-4 rounded-sm border p-5">
-					<div className="flex items-center justify-between">
+				<div className="bg-card space-y-4 rounded-sm border p-4 sm:p-5">
+					<div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
 						<p className="text-muted-foreground font-mono text-xs font-semibold tracking-widest uppercase">Complexity Spectrum</p>
-						<div className="flex items-center gap-4">
+						<div className="grid grid-cols-2 gap-x-4 gap-y-2 min-[480px]:grid-cols-4 sm:flex sm:items-center">
 							{Object.values(TIER_PALETTE).map(({ color, name }) => (
 								<div key={name} className="flex items-center gap-1.5">
 									<div className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: color }} />
@@ -459,7 +465,7 @@ export default function ComplexityRouterPage() {
 
 				{/* ── Keyword Lists ── */}
 				<div className="space-y-3">
-					<div className="flex items-baseline gap-2.5">
+					<div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:gap-2.5">
 						<h2 className="text-sm font-semibold">Keyword Lists</h2>
 						<span className="text-muted-foreground text-xs">
 							Lowercased and deduplicated on save. Each list requires at least one entry.
@@ -477,8 +483,8 @@ export default function ComplexityRouterPage() {
 										name={`keywords.${key}` as const}
 										rules={{ validate: (value) => (value.length > 0 ? true : `${label} cannot be empty`) }}
 										render={({ field }) => (
-											<div className="space-y-2 p-4 pl-5">
-												<div className="flex items-center justify-between">
+											<div className="space-y-2 p-4 sm:pl-5">
+												<div className="flex flex-wrap items-center justify-between gap-2">
 													<span className="text-xs font-medium">{label}</span>
 													<span className="text-muted-foreground font-mono text-[11px] tabular-nums">
 														{field.value.length} {field.value.length === 1 ? "entry" : "entries"}
@@ -520,40 +526,48 @@ export default function ComplexityRouterPage() {
 					</div>
 				)}
 
-				{/* ── Action footer ── */}
-				<div className="bg-card sticky bottom-0 flex flex-wrap items-center justify-end gap-2.5 border-t py-4 z-10">
+				</form>
+			</ScrollArea>
+
+			{/* ── Persistent action footer ── */}
+			<div className="bg-card sticky bottom-0 z-10 shrink-0 border-t px-4 py-3 sm:px-6 sm:py-4 md:static md:z-auto lg:px-14">
+				<div className="mx-auto grid w-full max-w-7xl grid-cols-3 gap-2 sm:flex sm:flex-wrap sm:items-center sm:justify-end sm:gap-2.5">
 					<Button
 						data-testid="complexity-router-restore-defaults-button"
 						type="button"
 						variant="ghost"
 						size="sm"
+						className="w-full sm:w-auto"
 						onClick={() => setRestoreDialogOpen(true)}
 						disabled={!canUpdate || isSaving || isResetting}
 					>
 						{isResetting ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
-						Restore defaults
+						Default
 					</Button>
 					<Button
 						data-testid="complexity-router-discard-changes-button"
 						type="button"
 						variant="outline"
 						size="sm"
+						className="w-full sm:w-auto"
 						onClick={handleDiscard}
 						disabled={!isDirty || isSaving || isResetting || isFetching}
 					>
-						Discard changes
+						Discard
 					</Button>
 					<Button
 						data-testid="complexity-router-save-changes-button"
 						type="submit"
+						form="complexity-router-form"
 						size="sm"
+						className="w-full sm:w-auto"
 						disabled={!canUpdate || !isDirty || isSaving || isResetting || (isSubmitted && hasErrors)}
 					>
 						{isSaving ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-						{isSaving ? "Saving…" : "Save changes"}
+						{isSaving ? "Saving…" : "Save"}
 					</Button>
 				</div>
-			</form>
+			</div>
 
 			<AlertDialog open={restoreDialogOpen} onOpenChange={setRestoreDialogOpen}>
 				<AlertDialogContent>
@@ -585,6 +599,6 @@ export default function ComplexityRouterPage() {
 					</AlertDialogFooter>
 				</AlertDialogContent>
 			</AlertDialog>
-		</ScrollArea>
+		</div>
 	);
 }

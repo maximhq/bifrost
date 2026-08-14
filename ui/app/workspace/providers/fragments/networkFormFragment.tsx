@@ -174,7 +174,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 		<Form {...form}>
 			<form onSubmit={form.handleSubmit(onSubmit)}>
 				{/* Network Configuration */}
-				<div className="space-y-4 px-6 pb-6">
+				<div className="space-y-4 px-4 pb-6 md:px-6">
 					<div className="grid grid-cols-1 gap-4">
 						{!hideBaseURL && (
 							<FormField
@@ -559,7 +559,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				</div>
 
 				{/* Form Actions */}
-				<div className="bg-card sticky bottom-0 flex justify-end space-x-2 rounded-b-sm border-t px-6 py-4">
+				<div className="bg-card sticky bottom-0 flex justify-end space-x-2 rounded-b-sm border-t px-4 py-4 md:px-6">
 					{!hideBaseURL && (
 						<Button
 							type="button"
