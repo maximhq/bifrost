@@ -3,7 +3,11 @@ package governance
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
+	"hash/fnv"
+	"maps"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -58,6 +62,19 @@ type LocalGovernanceStore struct {
 	// every cycle. Guarded by LastDBUsagesBudgetsMu, which every reset already holds
 	// to clear the matching baseline, so this adds no new lock.
 	budgetResetGens map[string]uint64
+
+	// lastDumpedBudgetRows fingerprints each budget row as it was last written
+	// to the database by this node, so a dump can skip rows that have not moved.
+	// Only the leader dumps, so the database matches what this node last wrote;
+	// a new leader starts with an empty map and therefore writes everything once.
+	lastDumpedBudgetRowsMu sync.Mutex
+	lastDumpedBudgetRows   map[string]uint64
+
+	// dirtyBudgets and dirtyRateLimits record which entries were charged,
+	// reset or removed since the last drain, so cluster usage sync can look at
+	// those instead of walking every key in memory on every tick.
+	dirtyBudgets    dirtyKeySet
+	dirtyRateLimits dirtyKeySet
 
 	// CEL caching layer for routing rules
 	compiledRoutingPrograms sync.Map // string -> cel.Program (key: ruleID -> compiled CEL program)
@@ -391,6 +408,9 @@ func (gs *LocalGovernanceStore) UpsertBudgetConfig(ctx context.Context, budgetID
 // DeleteBudget deletes a budget from the local store.
 func (gs *LocalGovernanceStore) DeleteBudget(ctx context.Context, budgetID string) {
 	gs.budgets.Delete(budgetID)
+	// Marked so usage sync notices the ID is gone and sends a tombstone; a
+	// receiver must never infer removal from absence.
+	gs.dirtyBudgets.mark(budgetID)
 	// Clean up LastDB baselines so the gossip delta doesn't carry stale entries.
 	gs.LastDBUsagesBudgetsMu.Lock()
 	delete(gs.LastDBUsagesBudgets, budgetID)
@@ -421,6 +441,13 @@ func (gs *LocalGovernanceStore) markBudgetResetLocked(budgetID string) {
 		gs.budgetResetGens = make(map[string]uint64)
 	}
 	gs.budgetResetGens[budgetID]++
+	// A reset zeroes usage, which peers have to hear about like any other change.
+	gs.dirtyBudgets.mark(budgetID)
+	// A reset can clear the database row directly, out of band from this node's
+	// dumps. Drop the persisted fingerprint so the next dump writes the row
+	// unconditionally instead of assuming the database still holds what this
+	// node last sent.
+	gs.forgetDumpedBudgetRow(budgetID)
 }
 
 // budgetResetGensSnapshot copies the current reset generations. A dump takes this
@@ -594,6 +621,9 @@ func (gs *LocalGovernanceStore) BumpBudgetUsage(ctx context.Context, budgetID st
 		}
 		clone.CurrentUsage += cost
 		if gs.budgets.CompareAndSwap(budgetID, raw, &clone) {
+			// Marked after the swap wins, not before: a losing CAS iteration has
+			// changed nothing, and marking there would be harmless but wasteful.
+			gs.dirtyBudgets.mark(budgetID)
 			return nil
 		}
 	}
@@ -684,6 +714,7 @@ func (gs *LocalGovernanceStore) BumpRateLimitUsageBy(ctx context.Context, rateLi
 		clone.TokenCurrentUsage += tokenDelta
 		clone.RequestCurrentUsage += requestDelta
 		if gs.rateLimits.CompareAndSwap(rateLimitID, raw, &clone) {
+			gs.dirtyRateLimits.mark(rateLimitID)
 			return nil
 		}
 	}
@@ -2709,18 +2740,23 @@ func (gs *LocalGovernanceStore) DumpBudgets(ctx context.Context, baselines Budge
 	if gs.configStore == nil {
 		return nil
 	}
-	rows, gens := gs.snapshotBudgetRows(baselines)
-	return gs.writeBudgetRows(ctx, rows, gens)
+	rows, gens, hashes := gs.snapshotBudgetRows(baselines)
+	return gs.writeBudgetRows(ctx, rows, gens, hashes)
 }
 
 // snapshotBudgetRows captures every budget's current usage as dump rows, together
 // with the reset generation each row was read at.
-func (gs *LocalGovernanceStore) snapshotBudgetRows(baselines BudgetBaselines) ([]budgetDumpRow, map[string]uint64) {
+func (gs *LocalGovernanceStore) snapshotBudgetRows(baselines BudgetBaselines) ([]budgetDumpRow, map[string]uint64, map[string]uint64) {
 	baselines = BudgetBaselinesOrEmpty(baselines)
 	// Read the generations first. Taking them before the budgets means a reset that
 	// races this snapshot is either fully visible in both, or shows up as a bumped
 	// generation later; it can never look unchanged while the usage read was stale.
 	gens := gs.budgetResetGensSnapshot()
+	gs.lastDumpedBudgetRowsMu.Lock()
+	lastDumped := make(map[string]uint64, len(gs.lastDumpedBudgetRows))
+	maps.Copy(lastDumped, gs.lastDumpedBudgetRows)
+	gs.lastDumpedBudgetRowsMu.Unlock()
+	hashes := make(map[string]uint64)
 	budgets := make(map[string]*configstoreTables.TableBudget)
 	gs.budgets.Range(func(key, value interface{}) bool {
 		// Type-safe conversion
@@ -2737,7 +2773,7 @@ func (gs *LocalGovernanceStore) snapshotBudgetRows(baselines BudgetBaselines) ([
 		// Fold this node's view of remote usage in before writing so every node
 		// persists the same cluster-wide total.
 		newUsage := budget.CurrentUsage + baselines.BudgetUsage(budget.ID)
-		rows = append(rows, budgetDumpRow{
+		row := budgetDumpRow{
 			ID:                      budget.ID,
 			CurrentUsage:            newUsage,
 			LastReset:               budget.LastReset,
@@ -2746,16 +2782,74 @@ func (gs *LocalGovernanceStore) snapshotBudgetRows(baselines BudgetBaselines) ([
 			OverrideCyclesRemaining: budget.OverrideCyclesRemaining,
 			OverrideCyclesTotal:     budget.OverrideCyclesTotal,
 			OverrideAnchorReset:     budget.OverrideAnchorReset,
-		})
+		}
+		// A row identical to the one this node last persisted is already in the
+		// database, so writing it again costs a round trip and a row lock to
+		// change nothing. On a large deployment most budgets see no traffic in
+		// any given cycle, so most rows are skipped here.
+		hash := row.fingerprint()
+		if lastHash, ok := lastDumped[budget.ID]; ok && lastHash == hash {
+			continue
+		}
+		hashes[budget.ID] = hash
+		rows = append(rows, row)
 	}
 	// Stable ID order keeps concurrent dumpers taking row locks in the same
 	// sequence, which is what keeps them deadlock-free rather than merely lucky.
 	sort.Slice(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
-	return rows, gens
+	return rows, gens, hashes
+}
+
+// fingerprint hashes every field this row writes, so an unchanged row can be
+// recognised without comparing them one by one.
+func (r budgetDumpRow) fingerprint() uint64 {
+	h := fnv.New64a()
+	var buf [8]byte
+	write := func(v uint64) {
+		binary.LittleEndian.PutUint64(buf[:], v)
+		h.Write(buf[:])
+	}
+	write(math.Float64bits(r.CurrentUsage))
+	write(uint64(r.LastReset.UnixNano()))
+	write(math.Float64bits(r.OverrideAmount))
+	h.Write([]byte(r.OverrideMode))
+	write(uint64(r.OverrideCyclesRemaining))
+	write(uint64(r.OverrideCyclesTotal))
+	if r.OverrideAnchorReset != nil {
+		write(uint64(r.OverrideAnchorReset.UnixNano()))
+	} else {
+		write(0)
+	}
+	return h.Sum64()
+}
+
+// recordDumpedBudgetRows remembers the fingerprints of rows that reached the
+// database, so the next dump can skip them. Called only after a successful
+// write: a chunk that failed must be retried, not skipped.
+func (gs *LocalGovernanceStore) recordDumpedBudgetRows(rows []budgetDumpRow, hashes map[string]uint64) {
+	gs.lastDumpedBudgetRowsMu.Lock()
+	if gs.lastDumpedBudgetRows == nil {
+		gs.lastDumpedBudgetRows = make(map[string]uint64, len(hashes))
+	}
+	for _, row := range rows {
+		if hash, ok := hashes[row.ID]; ok {
+			gs.lastDumpedBudgetRows[row.ID] = hash
+		}
+	}
+	gs.lastDumpedBudgetRowsMu.Unlock()
+}
+
+// forgetDumpedBudgetRow drops a budget's persisted fingerprint so the next dump
+// writes it again unconditionally. Used when in-memory usage is cleared out of
+// band, where the row in the database no longer reflects what this node holds.
+func (gs *LocalGovernanceStore) forgetDumpedBudgetRow(budgetID string) {
+	gs.lastDumpedBudgetRowsMu.Lock()
+	delete(gs.lastDumpedBudgetRows, budgetID)
+	gs.lastDumpedBudgetRowsMu.Unlock()
 }
 
 // writeBudgetRows persists a snapshot taken by snapshotBudgetRows.
-func (gs *LocalGovernanceStore) writeBudgetRows(ctx context.Context, rows []budgetDumpRow, gens map[string]uint64) error {
+func (gs *LocalGovernanceStore) writeBudgetRows(ctx context.Context, rows []budgetDumpRow, gens map[string]uint64, hashes map[string]uint64) error {
 	if gs.configStore == nil {
 		return nil
 	}
@@ -2780,6 +2874,7 @@ func (gs *LocalGovernanceStore) writeBudgetRows(ctx context.Context, rows []budg
 			}
 			return fmt.Errorf("failed to dump budgets to database: %w", err)
 		}
+		gs.recordDumpedBudgetRows(batch, hashes)
 	}
 	return nil
 }
