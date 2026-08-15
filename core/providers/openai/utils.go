@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/providers/utils"
@@ -162,6 +163,24 @@ func isOpenAIReasoningModel(model string) bool {
 }
 
 func normalizeOpenAIReasoningEffort(model string, effort string) string {
+	// GLM-5.3 narrowed reasoning_effort to exactly max/high/low and errors on
+	// any other value (docs.z.ai/guides/capabilities/thinking). Map wider tiers
+	// onto the nearest supported one — mirroring Zhipu's own Coding Plan
+	// coercion table — before the generic normalizer runs, so routes to glm-5.3
+	// don't surface vendor 400s. GLM-5.2 keeps the full legacy enum (the vendor
+	// maps it itself).
+	if isGLM53OrLaterModel(model) {
+		switch effort {
+		case "max", "high", "low":
+			return effort
+		case "xhigh":
+			return "max"
+		case "medium":
+			return "high"
+		default:
+			return "low"
+		}
+	}
 	switch effort {
 	case "minimal":
 		if supportsOpenAIMinimalReasoningEffort(model) {
@@ -236,8 +255,49 @@ func supportsMaxReasoningEffort(model string) bool {
 	modelLower := strings.ToLower(model)
 	return strings.HasPrefix(modelLower, "gpt-5.6") ||
 		strings.HasPrefix(modelLower, "deepseek-v4") ||
-		strings.HasPrefix(modelLower, "glm-5.2") ||
-		strings.HasPrefix(modelLower, "glm-5.3")
+		isGLM52OrLater(modelLower)
+}
+
+// glm5Minor returns the GLM-5.x minor revision of a (lowercased) model name,
+// or -1 when the model is not a glm-5.<digit>... shape. Covers the Coding Plan
+// aliases (glm-5.2[1m]) and -air/-flash style variants via the leading-digit
+// parse.
+func glm5Minor(modelLower string) int {
+	rest, ok := strings.CutPrefix(modelLower, "glm-5.")
+	if !ok {
+		return -1
+	}
+	digits := 0
+	for digits < len(rest) && rest[digits] >= '0' && rest[digits] <= '9' {
+		digits++
+	}
+	if digits == 0 {
+		return -1
+	}
+	minor, err := strconv.Atoi(rest[:digits])
+	if err != nil {
+		return -1
+	}
+	return minor
+}
+
+// isGLM52OrLater reports whether the (lowercased) model is a GLM-5.x revision
+// from 5.2 onward — the first Zhipu series whose OpenAI-compatible surface
+// accepts reasoning_effort with the full enum including "max". Version-floored
+// so future GLM releases (glm-5.5, ...) work without a gateway patch.
+func isGLM52OrLater(modelLower string) bool {
+	return glm5Minor(modelLower) >= 2
+}
+
+// isGLM53OrLaterModel reports whether the (possibly provider-prefixed) model is
+// a GLM-5.x revision from 5.3 onward — the revision that narrowed
+// reasoning_effort to exactly max/high/low.
+func isGLM53OrLaterModel(model string) bool {
+	_, parsedModel := schemas.ParseModelString(model, schemas.OpenAI)
+	if parsedModel != "" {
+		model = parsedModel
+	}
+	return glm5Minor(strings.ToLower(model)) >= 3
 }
 
 // MaxUserFieldLength for OpenAI enforces a 64 character maximum on the user field
