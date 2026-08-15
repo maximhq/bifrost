@@ -12,7 +12,7 @@ Zhipu AI (Z.AI / GLM) is a provider with a dedicated Bifrost provider implementa
 - **Optional Anthropic-compatible mode** - Set `use_anthropic_endpoints` on a key (or override it per-alias) to route Chat Completions and the Responses API through the Anthropic-compatible Messages endpoint. The Anthropic mount is only offered on the **GLM Coding Plan** surface — point `base_url` at a Coding Plan host before enabling it
 - **Streaming support** - Server-Sent Events for chat and responses, in both endpoint modes
 - **Tool calling** - Function tools are supported on both the OpenAI-compatible and Anthropic-compatible paths
-- **Reasoning support** - GLM models think by default; `reasoning_effort` is honored on GLM-5.2 and stripped elsewhere. Preserved-thinking is controlled via the `thinking` extra param (`{"type": "enabled", "clear_thinking": false}`)
+- **Reasoning support** - GLM models think by default; `reasoning_effort` is honored on GLM-5.2+ and stripped elsewhere. GLM-5.3 narrowed the enum to `max`/`high`/`low` — wider tiers are mapped for you (`xhigh`→`max`, `medium`→`high`, `minimal`/`none`→`low`). Preserved-thinking is controlled via the `thinking` extra param (`{"type": "enabled", "clear_thinking": false}`); GLM-5.3 no longer accepts `thinking.type: "disabled"` (thinking is always on)
 
 ### Supported Operations
 
@@ -181,7 +181,10 @@ When `use_anthropic_endpoints` is enabled, requests are sent instead to the Anth
 
 ### Reasoning Parameter
 
-- **Default (OpenAI-compatible):** `reasoning_effort` is forwarded only for GLM-5.2 (including the Coding Plan 1M-context alias `glm-5.2[1m]`) and stripped for every other model — the vendor rejects the field there. GLM-4.x thinking is always on; its behavior is tuned via the `thinking` extra param.
+- **Default (OpenAI-compatible):** `reasoning_effort` is forwarded only for GLM-5.2+ (including the Coding Plan 1M-context alias `glm-5.2[1m]`) and stripped for every other model — the vendor rejects the field there. Per-model enums differ:
+  - **GLM-5.2** accepts the full legacy enum (`max`, `xhigh`, `high`, `medium`, `low`, `minimal`, `none`) and maps the extra tiers itself (`low`/`medium`→`high`, `xhigh`→`max`, `none`/`minimal`→thinking off).
+  - **GLM-5.3+** accepts exactly `max` (the default and recommended tier), `high`, and `low` — the API errors on any other value. Bifrost maps wider tiers onto the nearest supported one before forwarding: `xhigh`→`max`, `medium`→`high`, `minimal`/`none`→`low`. (The Coding Plan performs the same mapping server-side.)
+  - **GLM-5.3 forced thinking:** `thinking.type: "disabled"` is rejected by the vendor for GLM-5.3 — thinking cannot be turned off on that model. Sending `thinking: {"type": "enabled"}` (or omitting `thinking`) is fine.
 - **`use_anthropic_endpoints: true`:** Reasoning/thinking parameters are mapped through the Anthropic converters (`reasoning` → `thinking`), the same as the [Anthropic provider](/providers/supported-providers/anthropic#1-chat-completions).
 
 ### Extra Parameters
@@ -249,10 +252,10 @@ Lists available models from Zhipu through the OpenAI-compatible `/models` endpoi
 **Code**: `anthropic.ResolveUseAnthropicEndpoints` in `core/providers/anthropic/utils.go`, used by `ChatCompletion`, `ChatCompletionStream`, `Responses`, and `ResponsesStream` in `core/providers/zhipu/zhipu.go`
 </Accordion>
 
-<Accordion title="Reasoning Effort Stripped Except GLM-5.2">
+<Accordion title="Reasoning Effort Stripped Except GLM-5.2+, Narrowed For GLM-5.3+">
 **Severity**: Medium
-**Behavior**: On the OpenAI-compatible path, `reasoning_effort` is only forwarded for GLM-5.2-series models; it is stripped for all others (the vendor rejects the field there)
-**Impact**: A `reasoning_effort` set on a GLM-4.x model is silently dropped; GLM-4.x models always think
+**Behavior**: On the OpenAI-compatible path, `reasoning_effort` is only forwarded for GLM-5.2-and-later models; it is stripped for all others (the vendor rejects the field there). For GLM-5.3-and-later, values outside the vendor's `max`/`high`/`low` enum are mapped onto the nearest tier before forwarding
+**Impact**: A `reasoning_effort` set on a GLM-4.x model is silently dropped (those models always think); a legacy tier sent to GLM-5.3+ is coerced (e.g. `medium`→`high`) instead of surfacing a vendor 400
 **Code**: `applyZhipuReasoning` in `core/providers/openai/chat.go`
 </Accordion>
 

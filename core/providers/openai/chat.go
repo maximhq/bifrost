@@ -366,27 +366,41 @@ func isKimiK3Model(model string) bool {
 }
 
 // applyZhipuReasoning keeps reasoning_effort only for GLM-5.2+ — the Zhipu
-// series that honors it (full enum max/xhigh/high/medium/low/minimal/none).
-// GLM-4.x ignore or 400 the field; their thinking is controlled via the
-// `thinking` extra param instead.
+// series that honors it. GLM-5.2 accepts the full legacy enum and maps the
+// extra tiers itself (low/medium→high, xhigh→max). GLM-5.3 narrowed the enum
+// to exactly max/high/low and rejects every other value on the General API,
+// so for GLM-5.3+ the wider tiers are mapped onto the nearest supported one,
+// mirroring the Coding Plan's own coercion table (xhigh→max, medium→high,
+// minimal/none→low). GLM-4.x ignore or 400 the field; their thinking is
+// controlled via the `thinking` extra param instead.
 func (req *OpenAIChatRequest) applyZhipuReasoning(capModel string) {
 	if req.ChatParameters.Reasoning == nil {
 		return
 	}
-	if !isZhipuReasoningEffortModel(capModel) {
-		req.ChatParameters.Reasoning = nil
-	}
-}
-
-// isZhipuReasoningEffortModel reports whether the model accepts reasoning_effort
-// (GLM-5.2 and later revisions, including the Coding Plan 1M-context alias
-// glm-5.2[1m]). Version-floored so future GLM releases work on day one.
-func isZhipuReasoningEffortModel(model string) bool {
-	_, parsedModel := schemas.ParseModelString(model, schemas.Zhipu)
+	_, parsedModel := schemas.ParseModelString(capModel, schemas.Zhipu)
 	if parsedModel != "" {
-		model = parsedModel
+		capModel = parsedModel
 	}
-	return isGLM52OrLater(strings.ToLower(model))
+	modelLower := strings.ToLower(capModel)
+	if !isGLM52OrLater(modelLower) {
+		req.ChatParameters.Reasoning = nil
+		return
+	}
+	effort := req.ChatParameters.Reasoning.Effort
+	if effort == nil || !isGLM53OrLater(modelLower) {
+		return
+	}
+	switch *effort {
+	case "max", "high", "low":
+		// Already in GLM-5.3's accepted set.
+	case "xhigh":
+		req.ChatParameters.Reasoning.Effort = schemas.Ptr("max")
+	case "medium":
+		req.ChatParameters.Reasoning.Effort = schemas.Ptr("high")
+	default:
+		// "minimal", "none", and anything else legacy — the mildest tier.
+		req.ChatParameters.Reasoning.Effort = schemas.Ptr("low")
+	}
 }
 
 // applyAlibabaReasoning keeps reasoning_effort only for the Model Studio models
