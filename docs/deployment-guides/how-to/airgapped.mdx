@@ -6,9 +6,11 @@ icon: "wifi-slash"
 
 ## Overview
 
-Bifrost fetches its pricing and model parameter datasheets from `https://getbifrost.ai/datasheet` on startup and periodically in the background. In environments without outbound internet access, these fetches fail and Bifrost cannot start.
+Bifrost fetches its pricing and model parameter datasheets from `https://getbifrost.ai/datasheet`, and its MCP server library catalog from `https://getbifrost.ai/mcp-library`, on startup and periodically in the background. In environments without outbound internet access, these fetches fail.
 
-Both fields accept `file://` URLs so you can load the datasheets from the local filesystem instead.
+The two failures differ in severity. A pricing or model parameters fetch that fails with no existing data in the database stops Bifrost from starting. A failed MCP library fetch is never fatal: Bifrost logs a warning, starts normally, and retries on the next sync tick, leaving the MCP library page empty until a sync succeeds.
+
+All three fields accept `file://` URLs so you can load the datasheets and catalog from the local filesystem instead.
 
 ---
 
@@ -19,6 +21,7 @@ Both fields accept `file://` URLs so you can load the datasheets from the local 
 ```bash
 curl -o pricing.json https://getbifrost.ai/datasheet
 curl -o model-parameters.json https://getbifrost.ai/datasheet/model-parameters
+curl -o mcp-library.json https://getbifrost.ai/mcp-library
 ```
 
 Transfer the files to your air-gapped host (or bake them into your container image / Kubernetes volume).
@@ -31,7 +34,9 @@ Transfer the files to your air-gapped host (or bake them into your container ima
     "pricing": {
       "pricing_url": "file:///opt/bifrost/pricing.json",
       "model_parameters_url": "file:///opt/bifrost/model-parameters.json",
-      "pricing_sync_interval": 86400
+      "pricing_sync_interval": 86400,
+      "mcp_library_url": "file:///opt/bifrost/mcp-library.json",
+      "mcp_library_sync_interval": 86400
     }
   }
 }
@@ -47,4 +52,4 @@ Transfer the files to your air-gapped host (or bake them into your container ima
 
 ## Keeping datasheets current
 
-Bifrost re-reads the file on every sync tick (`pricing_sync_interval`, minimum 3600 s).
+Bifrost re-reads the files on every sync tick (`pricing_sync_interval` and `mcp_library_sync_interval`, minimum 3600 s each).
