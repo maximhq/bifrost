@@ -99,6 +99,25 @@ func TestValidateChatToolsForProvider_CustomProviderDropsAdvisor(t *testing.T) {
 	}
 }
 
+// A directly constructed ChatTool can carry an Anthropic-only server tool Type
+// alongside a populated Function — wire input is canonicalized by
+// UnmarshalJSON, in-memory values are not. The Anthropic-only gate must win
+// over the function/custom fast path.
+func TestValidateChatToolsForProvider_CustomProviderDropsAdvisorWithFunctionSet(t *testing.T) {
+	tools := []schemas.ChatTool{
+		{Type: schemas.ChatToolType(AnthropicToolTypeAdvisor20260301), Function: &schemas.ChatToolFunction{Name: "smuggled"}},
+		{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "TaskList"}},
+	}
+
+	keep, dropped := ValidateChatToolsForProvider(tools, customProvider)
+	if len(dropped) != 1 || dropped[0] != string(AnthropicToolTypeAdvisor20260301) {
+		t.Fatalf("expected hybrid advisor tool dropped for unknown provider, got dropped=%v", dropped)
+	}
+	if len(keep) != 1 || keep[0].Function == nil || keep[0].Function.Name != "TaskList" {
+		t.Fatalf("expected only the plain function tool kept, got %v", keep)
+	}
+}
+
 func TestAddMissingBetaHeaders_CustomProviderNoAdvisorHeader(t *testing.T) {
 	advisorType := AnthropicToolTypeAdvisor20260301
 	req := &AnthropicMessageRequest{

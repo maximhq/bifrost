@@ -104,10 +104,11 @@ func ValidateChatToolsForProvider(tools []schemas.ChatTool, provider schemas.Mod
 		// leaves the Anthropic-only flags false, matching enumerated
 		// third-party providers like DeepSeek.
 		for _, tool := range tools {
-			if tool.Function != nil || tool.Custom != nil {
-				keep = append(keep, tool)
-				continue
-			}
+			// Gate Anthropic-only types before the function/custom fast
+			// path: a directly constructed ChatTool can carry an
+			// Anthropic-only server tool Type alongside a populated
+			// Function (wire input is canonicalized by UnmarshalJSON,
+			// in-memory values are not).
 			t := string(tool.Type)
 			if isAnthropicOnlyServerToolType(t) {
 				dropped = append(dropped, t)
