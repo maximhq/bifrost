@@ -1,3 +1,4 @@
+import PageTitle from "@/components/pageTitle";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -59,10 +60,7 @@ export default function ProxyView() {
 		<div className="mx-auto w-full max-w-4xl space-y-4">
 			<Form {...form}>
 				<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-					<div>
-						<h2 className="text-lg font-semibold tracking-tight">Proxy Settings</h2>
-						<p className="text-muted-foreground text-sm">Configure global proxy settings for outbound requests.</p>
-					</div>
+					<PageTitle title="Proxy Settings">Configure global proxy settings for outbound requests.</PageTitle>
 
 					<fieldset disabled={!hasSettingsUpdateAccess} className="space-y-4">
 						{/* Enable Proxy */}

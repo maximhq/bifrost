@@ -1,3 +1,4 @@
+import PageTitle from "@/components/pageTitle";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -76,10 +77,7 @@ export default function LoggingView() {
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-4 px-4 py-6 md:px-0">
-			<div>
-				<h2 className="text-lg font-semibold tracking-tight">Logs Settings</h2>
-				<p className="text-muted-foreground text-sm">Configure logging settings for requests and responses.</p>
-			</div>
+			<PageTitle title="Logs Settings">Configure logging settings for requests and responses.</PageTitle>
 
 			<div className="space-y-4">
 				{/* Enable Logs */}

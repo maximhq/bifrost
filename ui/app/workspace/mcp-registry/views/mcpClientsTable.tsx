@@ -1,3 +1,4 @@
+import PageTitle from "@/components/pageTitle";
 import ClientForm from "@/app/workspace/mcp-registry/views/mcpClientForm";
 import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import {
@@ -563,10 +564,16 @@ export default function MCPClientsTable({
 
 	const hasActiveFilters = Boolean(debouncedSearch) || Boolean(server) || filtersActive;
 
+	// Rendered on the empty branch too, not just the populated one: PageTitle
+	// draws nothing inline, and leaving it out drops the topbar to the
+	// route-derived fallback, which for this route reads "MCP Registry".
+	const pageTitle = <PageTitle title="MCP Server Catalog">Manage servers that can connect to the MCP Tools endpoint.</PageTitle>;
+
 	// True empty state: no servers at all (not just filtered to zero)
 	if (totalCount === 0 && !hasActiveFilters) {
 		return (
 			<>
+				{pageTitle}
 				{formOpen && <ClientForm open={formOpen} onClose={() => setFormOpen(false)} onSaved={handleSaved} />}
 				<MCPServersEmptyState onAddClick={handleCreate} canCreate={hasCreateMCPClientAccess} />
 			</>
@@ -862,34 +869,10 @@ export default function MCPClientsTable({
 				</DialogContent>
 			</Dialog>
 
-			<div className="mb-4 flex flex-wrap items-center justify-between gap-2 sm:gap-4">
-				<div>
-					<h2 className="text-lg font-semibold tracking-tight">MCP Server Catalog</h2>
-					<p className="text-muted-foreground text-sm">Manage servers that can connect to the MCP Tools endpoint.</p>
-				</div>
-				<div className="flex gap-2">
-					<MCPUsageGuideSheet />
-					<Button asChild variant="outline" data-testid="mcp-library-link-btn" className="h-8">
-						<Link to="/workspace/mcp-registry/library">
-							<Box />
-							<span className="hidden sm:inline">Library</span>
-						</Link>
-					</Button>
-					<Button
-						onClick={handleCreate}
-						disabled={!hasCreateMCPClientAccess}
-						data-testid="create-mcp-client-btn"
-						aria-label="New MCP Server"
-						className="h-8 gap-2"
-					>
-						<Plus />
-						<span className="hidden sm:inline">New MCP Server</span>
-					</Button>
-				</div>
-			</div>
+			{/* Toolbar: Search + Actions */}
+			<div className="mb-4 flex flex-wrap items-center gap-3">
+				{pageTitle}
 
-			{/* Toolbar: Search */}
-			<div className="mb-4 flex items-center gap-3">
 				<div className="relative max-w-sm flex-1">
 					<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 					<Input
@@ -913,6 +896,27 @@ export default function MCPClientsTable({
 						<X className="size-3" />
 					</Button>
 				)}
+
+				<div className="flex gap-2 sm:ml-auto">
+					<MCPUsageGuideSheet />
+					<Button asChild variant="outline" data-testid="mcp-library-link-btn" className="h-8">
+						{/* The label is hidden below sm, leaving a bare icon. */}
+						<Link to="/workspace/mcp-registry/library" aria-label="MCP server library">
+							<Box />
+							<span className="hidden sm:inline">Library</span>
+						</Link>
+					</Button>
+					<Button
+						onClick={handleCreate}
+						disabled={!hasCreateMCPClientAccess}
+						data-testid="create-mcp-client-btn"
+						aria-label="New MCP Server"
+						className="h-8 gap-2"
+					>
+						<Plus />
+						<span className="hidden sm:inline">New MCP Server</span>
+					</Button>
+				</div>
 			</div>
 
 			<div className="flex grow flex-col overflow-hidden">
