@@ -94,3 +94,48 @@ func TestChatContentBlock_InputVideoBridgeRoundTrip(t *testing.T) {
 		t.Fatalf("video payload lost converting responses -> chat: %+v", cBlocks[0])
 	}
 }
+
+// Tool-output messages convert through two separate paths
+// (ToResponsesToolMessage and the function_call_output branch of
+// ToResponsesMessages) — both must carry input_video like regular messages do.
+func TestChatContentBlock_InputVideoToolOutputPaths(t *testing.T) {
+	data := "AAAAGGZ0eXBpc29t"
+	url := "https://example.com/clip.mp4"
+	callID := "call_1"
+	msg := ChatMessage{
+		Role:            ChatMessageRoleTool,
+		ChatToolMessage: &ChatToolMessage{ToolCallID: &callID},
+		Content: &ChatMessageContent{
+			ContentBlocks: []ChatContentBlock{
+				{Type: ChatContentBlockTypeInputVideo, InputVideo: &ChatInputVideo{Data: &data}},
+				{Type: ChatContentBlockTypeInputVideo, InputVideo: &ChatInputVideo{URL: &url}},
+			},
+		},
+	}
+
+	checkBlocks := func(t *testing.T, path string, out *ResponsesToolMessageOutputStruct) {
+		t.Helper()
+		if out == nil || len(out.ResponsesFunctionToolCallOutputBlocks) != 2 {
+			t.Fatalf("%s: unexpected tool output: %+v", path, out)
+		}
+		blocks := out.ResponsesFunctionToolCallOutputBlocks
+		if blocks[0].Video == nil || blocks[0].Video.Data == nil || *blocks[0].Video.Data != data {
+			t.Fatalf("%s: video data payload lost: %+v", path, blocks[0])
+		}
+		if blocks[1].Video == nil || blocks[1].Video.URL == nil || *blocks[1].Video.URL != url {
+			t.Fatalf("%s: video url payload lost: %+v", path, blocks[1])
+		}
+	}
+
+	rm := msg.ToResponsesToolMessage()
+	if rm == nil || rm.ResponsesToolMessage == nil {
+		t.Fatalf("ToResponsesToolMessage returned no tool message: %+v", rm)
+	}
+	checkBlocks(t, "ToResponsesToolMessage", rm.ResponsesToolMessage.Output)
+
+	rms := msg.ToResponsesMessages()
+	if len(rms) != 1 || rms[0].ResponsesToolMessage == nil {
+		t.Fatalf("ToResponsesMessages returned no tool message: %+v", rms)
+	}
+	checkBlocks(t, "ToResponsesMessages", rms[0].ResponsesToolMessage.Output)
+}

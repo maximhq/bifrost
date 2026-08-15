@@ -230,6 +230,14 @@ func (cm *ChatMessage) ToResponsesToolMessage() *ResponsesMessage {
 						Format: format,
 					}
 				}
+
+				// Map video
+				if block.InputVideo != nil {
+					respBlocks[i].Video = &ResponsesInputMessageContentBlockVideo{
+						Data: block.InputVideo.Data,
+						URL:  block.InputVideo.URL,
+					}
+				}
 			}
 			respMsg.ResponsesToolMessage.Output = &ResponsesToolMessageOutputStruct{
 				ResponsesFunctionToolCallOutputBlocks: respBlocks,
@@ -709,6 +717,14 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 						respBlocks[i].Audio = &ResponsesInputMessageContentBlockAudio{
 							Data:   block.InputAudio.Data,
 							Format: format,
+						}
+					}
+
+					// Map video
+					if block.InputVideo != nil {
+						respBlocks[i].Video = &ResponsesInputMessageContentBlockVideo{
+							Data: block.InputVideo.Data,
+							URL:  block.InputVideo.URL,
 						}
 					}
 				}
