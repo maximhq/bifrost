@@ -1,3 +1,4 @@
+import PageTitle from "@/components/pageTitle";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -27,13 +28,10 @@ export default function FeatureFlagsView() {
 
 	return (
 		<div className="w-full space-y-4">
-			<div>
-				<h2 className="text-lg font-semibold tracking-tight">Feature Flags</h2>
-				<p className="text-muted-foreground text-sm">
-					Toggle in-process feature flags. Flags are declared in code; values can also be set via{" "}
-					<code className="text-xs">config.json</code> or Helm, in which case they appear here as locked.
-				</p>
-			</div>
+			<PageTitle title="Feature Flags">
+				Toggle in-process feature flags. Flags are declared in code; values can also be set via <code className="text-xs">config.json</code>{" "}
+				or Helm, in which case they appear here as locked.
+			</PageTitle>
 
 			{isLoading && <p className="text-muted-foreground text-sm">Loading feature flags...</p>}
 			{isError && <p className="text-sm text-red-500">Failed to load feature flags: {getErrorMessage(error)}</p>}

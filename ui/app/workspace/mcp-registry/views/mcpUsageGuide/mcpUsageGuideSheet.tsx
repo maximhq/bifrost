@@ -147,7 +147,9 @@ export function MCPUsageGuideSheet() {
 								<span>Harness</span>
 							</div>
 							<Tabs value={harness} onValueChange={(value) => setUrlState({ harness: value as HarnessID })}>
-								<TabsList className="no-scrollbar flex w-full flex-row justify-start overflow-x-auto rounded-sm">
+								{/* No overflow-x-auto: TabsList now collapses whatever does not fit
+								    into its own trailing dropdown, so the strip never clips. */}
+								<TabsList className="flex w-full flex-row justify-start rounded-sm">
 									{HARNESSES.map((h) => (
 										<TabsTrigger key={h.id} value={h.id} className="flex flex-none shrink-0 gap-2">
 											<div className="flex items-center gap-2">

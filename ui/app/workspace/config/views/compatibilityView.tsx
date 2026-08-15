@@ -1,3 +1,4 @@
+import PageTitle from "@/components/pageTitle";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } from "@/lib/store";
@@ -57,21 +58,18 @@ export default function CompatibilityView() {
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-6">
-			<div>
-				<h2 className="text-lg font-semibold tracking-tight">Compatibility</h2>
-				<p className="text-muted-foreground text-sm">
-					Configure request conversions and compatibility fallbacks.{" "}
-					<a
-						className="text-primary underline"
-						href="https://docs.getbifrost.ai/features/compat-plugin"
-						target="_blank"
-						rel="noopener noreferrer"
-						data-testid="litellm-docs-link"
-					>
-						Learn more
-					</a>
-				</p>
-			</div>
+			<PageTitle title="Compatibility">
+				Configure request conversions and compatibility fallbacks.{" "}
+				<a
+					className="text-primary underline"
+					href="https://docs.getbifrost.ai/features/compat-plugin"
+					target="_blank"
+					rel="noopener noreferrer"
+					data-testid="litellm-docs-link"
+				>
+					Learn more
+				</a>
+			</PageTitle>
 
 			<div className="space-y-4">
 				<div className="flex items-center justify-between space-x-2">

@@ -1,3 +1,4 @@
+import PageTitle from "@/components/pageTitle";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -230,10 +231,7 @@ export default function SecurityView() {
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-4">
-			<div>
-				<h2 className="text-lg font-semibold tracking-tight">Security Settings</h2>
-				<p className="text-muted-foreground text-sm">Configure security and access control settings.</p>
-			</div>
+			<PageTitle title="Security Settings">Configure security and access control settings.</PageTitle>
 
 			<div className="space-y-4">
 				{/* Password Protect the Dashboard */}
