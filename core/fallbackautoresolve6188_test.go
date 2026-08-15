@@ -36,7 +36,7 @@ func TestFallbackRunsWhenProviderCannotBeAutoResolved(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		fallbackHits.Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, autoResolveChatBody)
+		_, _ = fmt.Fprint(w, autoResolveChatBody)
 	}))
 	defer server.Close()
 
@@ -116,7 +116,7 @@ func TestMissingModelStaysTerminalWithFallbacks(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		fallbackHits.Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, autoResolveChatBody)
+		_, _ = fmt.Fprint(w, autoResolveChatBody)
 	}))
 	defer server.Close()
 
