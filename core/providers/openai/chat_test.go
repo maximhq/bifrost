@@ -329,6 +329,57 @@ func TestToOpenAIChatRequest_NormalizesReasoningEffort(t *testing.T) {
 			effort:   "max",
 			expected: "max",
 		},
+		{
+			name:     "preserves max for glm-5.3",
+			provider: schemas.ModelProvider("zai"),
+			model:    "glm-5.3",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "preserves max for provider-prefixed glm-5.3",
+			provider: schemas.ModelProvider("zai"),
+			model:    "zai/glm-5.3",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			// GLM-5.3 only accepts max/high/low; wider tiers are mapped.
+			name:     "maps medium to high for glm-5.3",
+			provider: schemas.ModelProvider("zai"),
+			model:    "glm-5.3",
+			effort:   "medium",
+			expected: "high",
+		},
+		{
+			name:     "maps none to low for glm-5.3",
+			provider: schemas.ModelProvider("zai"),
+			model:    "glm-5.3",
+			effort:   "none",
+			expected: "low",
+		},
+		{
+			name:     "maps xhigh to max for glm-5.3",
+			provider: schemas.ModelProvider("zai"),
+			model:    "glm-5.3",
+			effort:   "xhigh",
+			expected: "max",
+		},
+		{
+			name:     "maps minimal to low for glm-5.3",
+			provider: schemas.ModelProvider("zai"),
+			model:    "glm-5.3",
+			effort:   "minimal",
+			expected: "low",
+		},
+		{
+			// GLM-5.2 keeps the full legacy enum (the vendor maps it itself).
+			name:     "keeps medium for glm-5.2",
+			provider: schemas.ModelProvider("zai"),
+			model:    "glm-5.2",
+			effort:   "medium",
+			expected: "medium",
+		},
 	}
 
 	for _, tt := range tests {
@@ -596,6 +647,30 @@ func TestOpenAIChatRequest_FilterOpenAISpecificParameters_NormalizesReasoningEff
 			model:    "zai/glm-5.2",
 			effort:   "max",
 			expected: "max",
+		},
+		{
+			name:     "preserves max for glm-5.3",
+			model:    "glm-5.3",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "preserves max for provider-prefixed glm-5.3",
+			model:    "zai/glm-5.3",
+			effort:   "max",
+			expected: "max",
+		},
+		{
+			name:     "maps medium to high for glm-5.3",
+			model:    "glm-5.3",
+			effort:   "medium",
+			expected: "high",
+		},
+		{
+			name:     "maps none to low for glm-5.3",
+			model:    "zai/glm-5.3",
+			effort:   "none",
+			expected: "low",
 		},
 	}
 
@@ -2103,8 +2178,15 @@ func TestToOpenAIChatRequest_ZhipuReasoningRouting(t *testing.T) {
 		{name: "glm-5.2 keeps max", model: "glm-5.2", effort: "max", wantEffort: schemas.Ptr("max")},
 		{name: "glm-5.2 keeps none", model: "glm-5.2", effort: "none", wantEffort: schemas.Ptr("none")},
 		{name: "glm-5.2[1m] keeps high", model: "glm-5.2[1m]", effort: "high", wantEffort: schemas.Ptr("high")},
+		{name: "glm-5.2 keeps medium (vendor maps it)", model: "glm-5.2", effort: "medium", wantEffort: schemas.Ptr("medium")},
 		{name: "glm-5.3 keeps max", model: "glm-5.3", effort: "max", wantEffort: schemas.Ptr("max")},
-		{name: "glm-5.5 keeps max", model: "glm-5.5", effort: "max", wantEffort: schemas.Ptr("max")},
+		{name: "glm-5.3 keeps high", model: "glm-5.3", effort: "high", wantEffort: schemas.Ptr("high")},
+		{name: "glm-5.3 keeps low", model: "glm-5.3", effort: "low", wantEffort: schemas.Ptr("low")},
+		{name: "glm-5.3 maps medium to high", model: "glm-5.3", effort: "medium", wantEffort: schemas.Ptr("high")},
+		{name: "glm-5.3 maps none to low", model: "glm-5.3", effort: "none", wantEffort: schemas.Ptr("low")},
+		{name: "glm-5.3 maps minimal to low", model: "glm-5.3", effort: "minimal", wantEffort: schemas.Ptr("low")},
+		{name: "glm-5.3 maps xhigh to max", model: "glm-5.3", effort: "xhigh", wantEffort: schemas.Ptr("max")},
+		{name: "glm-5.5 maps medium to high", model: "glm-5.5", effort: "medium", wantEffort: schemas.Ptr("high")},
 		{name: "glm-5.2-air keeps medium", model: "glm-5.2-air", effort: "medium", wantEffort: schemas.Ptr("medium")},
 		{name: "glm-5.1 strips effort", model: "glm-5.1", effort: "high", wantEffort: nil},
 		{name: "glm-4.7 strips effort", model: "glm-4.7", effort: "high", wantEffort: nil},

@@ -67,6 +67,22 @@ func defaultEffortControl(model string) *schemas.EffortControl {
 	if acceptsMaxEffort(model) {
 		levels = append(levels, schemas.ReasoningEffortMax)
 	}
+	// GLM-5.3 narrowed reasoning_effort to exactly max/high/low and rejects
+	// every other value on the General API (low is newly added; medium/minimal/
+	// none/xhigh are gone). Publishing the narrowed ladder lets the shared
+	// normalizer clamp wider tiers onto the nearest rung — mirroring Zhipu's
+	// own Coding Plan coercion table: xhigh→max, medium→high, minimal→low —
+	// on every OpenAI-dialect mount (zhipu, zai-style custom providers).
+	// "none" is unranked in the downgrade ladder by design (it disables
+	// reasoning rather than lowering it), so it reaches "low" through Renames,
+	// which is consulted before the ladder. GLM-5.2 keeps the full legacy enum;
+	// the vendor maps the extra tiers itself.
+	if isGLM53OrLater(bareModelLower(model)) {
+		return &schemas.EffortControl{
+			Levels:  []string{schemas.ReasoningEffortLow, schemas.ReasoningEffortHigh, schemas.ReasoningEffortMax},
+			Renames: map[string]string{schemas.ReasoningEffortNone: schemas.ReasoningEffortLow},
+		}
+	}
 	return &schemas.EffortControl{Levels: levels}
 }
 
@@ -123,20 +139,15 @@ func acceptsMaxEffort(model string) bool {
 		strings.Contains(modelLower, "qwen3.8-max")
 }
 
-// isGLM52OrLater reports whether the (lowercased) model is a GLM-5.x revision
-// from 5.2 onward — the first Zhipu series whose OpenAI-compatible surface
-// accepts top-level reasoning_effort with the full enum including "max".
-// GLM-4.x and GLM-5.0/5.1 ignore or 400 the field (their thinking is controlled
-// via the `thinking` extra param), so the floor stays at 5.2. Matching the
-// family by version floor instead of listing each revision keeps future GLM
-// releases (glm-5.3, glm-5.5, ...) working without a gateway patch.
-// Covers the Coding Plan aliases too (glm-5.2[1m]) and -air/-flash style
-// variants via the leading-digit parse. Substring-anchored so multi-segment
-// catalog IDs ("vendor/region/glm-5.3") match as well.
-func isGLM52OrLater(modelLower string) bool {
+// glm5Minor returns the GLM-5.x minor revision of a (lowercased) model name,
+// or -1 when the model is not a glm-5.<digit>... shape. Covers the Coding Plan
+// aliases (glm-5.2[1m]) and -air/-flash style variants via the leading-digit
+// parse. Substring-anchored so multi-segment catalog IDs
+// ("vendor/region/glm-5.3") match as well.
+func glm5Minor(modelLower string) int {
 	i := strings.Index(modelLower, "glm-5.")
 	if i < 0 {
-		return false
+		return -1
 	}
 	rest := modelLower[i+len("glm-5."):]
 	digits := 0
@@ -144,10 +155,39 @@ func isGLM52OrLater(modelLower string) bool {
 		digits++
 	}
 	if digits == 0 {
-		return false
+		return -1
 	}
 	minor, err := strconv.Atoi(rest[:digits])
-	return err == nil && minor >= 2
+	if err != nil {
+		return -1
+	}
+	return minor
+}
+
+// isGLM52OrLater reports whether the (lowercased) model is a GLM-5.x revision
+// from 5.2 onward — the first Zhipu series whose OpenAI-compatible surface
+// accepts top-level reasoning_effort with the full enum including "max".
+// GLM-4.x and GLM-5.0/5.1 ignore or 400 the field (their thinking is controlled
+// via the `thinking` extra param), so the floor stays at 5.2. Matching the
+// family by version floor instead of listing each revision keeps future GLM
+// releases (glm-5.3, glm-5.5, ...) working without a gateway patch.
+func isGLM52OrLater(modelLower string) bool {
+	return glm5Minor(modelLower) >= 2
+}
+
+// isGLM53OrLater reports whether the (lowercased) model is a GLM-5.x revision
+// from 5.3 onward — the revision that narrowed reasoning_effort to exactly
+// max/high/low and made thinking non-disableable.
+func isGLM53OrLater(modelLower string) bool {
+	return glm5Minor(modelLower) >= 3
+}
+
+// isGLM53OrLaterModel reports whether the (possibly provider-prefixed) model is
+// a GLM-5.x revision from 5.3 onward — the revision that narrowed
+// reasoning_effort to exactly max/high/low.
+func isGLM53OrLaterModel(model string) bool {
+	modelLower := bareModelLower(model)
+	return isGLM53OrLater(modelLower)
 }
 
 // bareModelLower strips any provider prefix and lowercases, so the effort
