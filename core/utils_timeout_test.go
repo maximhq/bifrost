@@ -18,6 +18,12 @@ func TestNewBifrostCtxDoneErrorClassifiesDeadline(t *testing.T) {
 	time.Sleep(2 * time.Millisecond)
 
 	bifrostErr := newBifrostCtxDoneError(ctx, "waiting for provider response")
+	if bifrostErr.Error == nil {
+		t.Fatal("expected timeout error details")
+	}
+	if bifrostErr.Error.Message != schemas.TimeoutSourceBifrostContextDeadline.SafeMessage() {
+		t.Fatalf("timeout message = %q, want %q", bifrostErr.Error.Message, schemas.TimeoutSourceBifrostContextDeadline.SafeMessage())
+	}
 	if bifrostErr.ExtraFields.TimeoutSource != schemas.TimeoutSourceBifrostContextDeadline {
 		t.Fatalf("timeout source = %q", bifrostErr.ExtraFields.TimeoutSource)
 	}

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { getTimeoutDetails } from "@/app/workspace/logs/utils/timeoutDetails";
 import type { BifrostError } from "@/lib/types/logs";
-import { getTimeoutDetails } from "./timeoutDetails";
 
 describe("getTimeoutDetails", () => {
 	it("shows upstream timeout evidence without claiming the configured timeout fired", () => {

@@ -334,10 +334,9 @@ func (provider *BedrockProvider) executeBedrockRequest(req *http.Request) ([]byt
 		}
 		// Check for timeout first using net.Error before checking net.OpError
 		var netErr net.Error
-		if errors.As(err, &netErr) && netErr.Timeout() {
-			return nil, latency, nil, providerUtils.ClassifyTransportError(req.Context(), provider.client.Timeout, err, latency)
-		}
-		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
+		if (errors.As(err, &netErr) && netErr.Timeout()) ||
+			errors.Is(err, http.ErrHandlerTimeout) ||
+			errors.Is(err, context.DeadlineExceeded) {
 			return nil, latency, nil, providerUtils.ClassifyTransportError(req.Context(), provider.client.Timeout, err, latency)
 		}
 		// Check for DNS lookup and network errors after timeout checks
@@ -430,10 +429,9 @@ func (provider *BedrockProvider) completeAgentRuntimeRequest(ctx *schemas.Bifros
 			}, latency)
 		}
 		var netErr net.Error
-		if errors.As(err, &netErr) && netErr.Timeout() {
-			return nil, latency, nil, providerUtils.ClassifyTransportError(req.Context(), provider.client.Timeout, err, latency)
-		}
-		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
+		if (errors.As(err, &netErr) && netErr.Timeout()) ||
+			errors.Is(err, http.ErrHandlerTimeout) ||
+			errors.Is(err, context.DeadlineExceeded) {
 			return nil, latency, nil, providerUtils.ClassifyTransportError(req.Context(), provider.client.Timeout, err, latency)
 		}
 		var opErr *net.OpError
@@ -533,10 +531,9 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 		}
 		// Check for timeout first using net.Error before checking net.OpError
 		var netErr net.Error
-		if errors.As(respErr, &netErr) && netErr.Timeout() {
-			return nil, providerUtils.ClassifyTransportError(req.Context(), provider.streamingClient.Timeout, respErr, latency)
-		}
-		if errors.Is(respErr, http.ErrHandlerTimeout) || errors.Is(respErr, context.DeadlineExceeded) {
+		if (errors.As(respErr, &netErr) && netErr.Timeout()) ||
+			errors.Is(respErr, http.ErrHandlerTimeout) ||
+			errors.Is(respErr, context.DeadlineExceeded) {
 			return nil, providerUtils.ClassifyTransportError(req.Context(), provider.streamingClient.Timeout, respErr, latency)
 		}
 		// Check for DNS lookup and network errors after timeout checks
@@ -894,10 +891,9 @@ func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 		}
 		// Check for timeout first using net.Error before checking net.OpError
 		var netErr net.Error
-		if errors.As(err, &netErr) && netErr.Timeout() {
-			return nil, providerUtils.ClassifyTransportError(req.Context(), provider.client.Timeout, err, latency)
-		}
-		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
+		if (errors.As(err, &netErr) && netErr.Timeout()) ||
+			errors.Is(err, http.ErrHandlerTimeout) ||
+			errors.Is(err, context.DeadlineExceeded) {
 			return nil, providerUtils.ClassifyTransportError(req.Context(), provider.client.Timeout, err, latency)
 		}
 		// Check for DNS lookup and network errors after timeout checks

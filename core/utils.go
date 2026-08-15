@@ -293,7 +293,7 @@ func newBifrostCtxDoneError(ctx *schemas.BifrostContext, stage string) *schemas.
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		statusCode = 504
 		errorType = schemas.RequestTimedOut
-		message = fmt.Sprintf("request exceeded the Bifrost context deadline %s", stage)
+		message = schemas.TimeoutSourceBifrostContextDeadline.SafeMessage()
 	} else {
 		statusCode = 499
 		errorType = schemas.RequestCancelled
