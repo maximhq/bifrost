@@ -1507,6 +1507,7 @@ const (
 	ResponsesInputMessageContentBlockTypeImage     ResponsesMessageContentBlockType = "input_image"
 	ResponsesInputMessageContentBlockTypeFile      ResponsesMessageContentBlockType = "input_file"
 	ResponsesInputMessageContentBlockTypeAudio     ResponsesMessageContentBlockType = "input_audio"
+	ResponsesInputMessageContentBlockTypeVideo     ResponsesMessageContentBlockType = "input_video"
 	ResponsesInputMessageContentBlockTypeContainer ResponsesMessageContentBlockType = "input_container" // Anthropic-only: file staged into the code-execution container input dir
 
 	ResponsesOutputMessageContentTypeText      ResponsesMessageContentBlockType = "output_text"
@@ -1537,6 +1538,7 @@ type ResponsesMessageContentBlock struct {
 	*ResponsesInputMessageContentBlockImage
 	*ResponsesInputMessageContentBlockFile
 	Audio *ResponsesInputMessageContentBlockAudio `json:"input_audio,omitempty"`
+	Video *ResponsesInputMessageContentBlockVideo `json:"input_video,omitempty"`
 
 	*ResponsesOutputMessageContentText            // Normal text output from the model
 	*ResponsesOutputMessageContentRefusal         // Model refusal to answer
@@ -1588,6 +1590,13 @@ type ResponsesInputMessageContentBlockFile struct {
 type ResponsesInputMessageContentBlockAudio struct {
 	Format string `json:"format"` // "mp3" or "wav"
 	Data   string `json:"data"`   // base64 encoded audio data
+}
+
+// ResponsesInputMessageContentBlockVideo mirrors the chat-path ChatInputVideo
+// (llama.cpp-style input_video content part): raw base64 data or a direct URL.
+type ResponsesInputMessageContentBlockVideo struct {
+	Data *string `json:"data,omitempty"` // base64 encoded video data
+	URL  *string `json:"url,omitempty"`  // direct URL to video
 }
 
 // =============================================================================
