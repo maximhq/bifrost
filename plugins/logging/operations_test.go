@@ -2320,6 +2320,8 @@ func TestApplyNonStreamingOutputToEntryVideoOutputs(t *testing.T) {
 			t.Error("expected VideoGenerationOutputParsed to be nil when contentLoggingEnabled=false")
 		}
 	})
+}
+
 // TestGuardrailDebugForLogReadsContextWithoutResponse verifies input blocks remain observable.
 func TestGuardrailDebugForLogReadsContextWithoutResponse(t *testing.T) {
 	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
