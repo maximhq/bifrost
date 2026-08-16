@@ -2058,6 +2058,8 @@ const (
 // seen on image_generation_call items. OpenAI-compatible providers have used
 // both a scalar ("generate") and an object ({"type":"generate"}) shape.
 type ResponsesImageGenerationToolCallAction struct {
+	// Type is ignored by MarshalJSON when Raw is populated, because Raw retains
+	// an extension-bearing provider payload for lossless round trips.
 	Type   ResponsesImageGenerationAction `json:"type,omitempty"`
 	Scalar bool                           `json:"-"`
 	// Raw is populated only when a known image action object contains fields
@@ -2141,7 +2143,7 @@ func (action *ResponsesToolMessageActionStruct) UnmarshalJSON(data []byte) error
 	var typeStruct struct {
 		Type string `json:"type"`
 	}
-	if err := Unmarshal(data, &typeStruct); err != nil {
+	if err := Unmarshal(data, &typeStruct); err != nil { //nolint:nilerr // non-object actions are preserved verbatim in Raw
 		// Preserve a provider-native action shape that is not an object with a
 		// string discriminator. This keeps the surrounding Responses item
 		// decodable while retaining bytes for a later round trip.

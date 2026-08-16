@@ -17,7 +17,7 @@ func TestResponsesImageGenerationActionRequestRoundTrip(t *testing.T) {
 			tool := ResponsesTool{
 				Type: ResponsesToolTypeImageGeneration,
 				ResponsesToolImageGeneration: &ResponsesToolImageGeneration{
-					Action: &want,
+					Action: Ptr(want),
 				},
 			}
 

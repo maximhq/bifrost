@@ -16,16 +16,16 @@ import (
 // opt-in because it consumes a real image-generation request. Set
 // BIFROST_RESPONSES_IMAGE_GENERATION_MODEL to override the default Luna model.
 func RunResponsesImageGenerationToolTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) {
+	if os.Getenv("BIFROST_RUN_RESPONSES_IMAGE_GENERATION_TESTS") != "true" {
+		return
+	}
 	model := os.Getenv("BIFROST_RESPONSES_IMAGE_GENERATION_MODEL")
 	if model == "" {
-		if os.Getenv("BIFROST_RUN_RESPONSES_IMAGE_GENERATION_TESTS") != "true" {
-			return
-		}
 		model = "gpt-5.6-luna"
 	}
 
 	t.Run("ResponsesImageGenerationTool", func(t *testing.T) {
-		request := func(_ bool) *schemas.BifrostResponsesRequest {
+		request := func() *schemas.BifrostResponsesRequest {
 			return &schemas.BifrostResponsesRequest{
 				Provider: testConfig.Provider,
 				Model:    model,
@@ -45,7 +45,7 @@ func RunResponsesImageGenerationToolTest(t *testing.T, client *bifrost.Bifrost, 
 		}
 
 		t.Run("non_streaming", func(t *testing.T) {
-			response, err := client.ResponsesRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), request(false))
+			response, err := client.ResponsesRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), request())
 			if err != nil {
 				if strings.Contains(GetErrorMessage(err), "failed to peek at type field") {
 					t.Fatalf("image_generation response schema regression: %s", GetErrorMessage(err))
@@ -63,7 +63,7 @@ func RunResponsesImageGenerationToolTest(t *testing.T, client *bifrost.Bifrost, 
 		t.Run("streaming", func(t *testing.T) {
 			streamCtx, cancel := context.WithTimeout(ctx, 180*time.Second)
 			defer cancel()
-			stream, err := client.ResponsesStreamRequest(schemas.NewBifrostContext(streamCtx, schemas.NoDeadline), request(true))
+			stream, err := client.ResponsesStreamRequest(schemas.NewBifrostContext(streamCtx, schemas.NoDeadline), request())
 			if err != nil {
 				t.Fatalf("Responses image_generation stream setup failed for %s/%s: %s", testConfig.Provider, model, GetErrorMessage(err))
 			}

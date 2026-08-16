@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -38,12 +37,19 @@ func TestResponsesImageGenerationUnaryProviderIntegration(t *testing.T) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Errorf("failed to read request body: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
 		}
-		if !strings.Contains(string(body), `"type": "image_generation"`) {
-			t.Errorf("request did not contain image_generation tool: %s", body)
+		var request struct {
+			Tools []struct {
+				Type   string `json:"type"`
+				Action string `json:"action"`
+			} `json:"tools"`
 		}
-		if !strings.Contains(string(body), `"action": "generate"`) {
-			t.Errorf("request did not contain generate action: %s", body)
+		if err := json.Unmarshal(body, &request); err != nil {
+			t.Errorf("failed to decode request body: %v", err)
+		} else if len(request.Tools) != 1 || request.Tools[0].Type != "image_generation" || request.Tools[0].Action != "generate" {
+			t.Errorf("unexpected image_generation tool payload: %s", body)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprint(w, `{"id":"resp_unary","object":"response","status":"completed","output":[{"type":"image_generation_call","id":"ig_unary","status":"completed","action":"generate","result":"aGVsbG8="}]}`)
@@ -125,5 +131,6 @@ func TestResponsesImageGenerationStreamingProviderIntegration(t *testing.T) {
 	require.NotNil(t, completed)
 	require.NotNil(t, completed.Response)
 	require.Len(t, completed.Response.Output, 1)
+	require.NotNil(t, completed.Response.Output[0].ResponsesImageGenerationCall)
 	require.Equal(t, "aGVsbG8=", completed.Response.Output[0].ResponsesImageGenerationCall.Result)
 }
