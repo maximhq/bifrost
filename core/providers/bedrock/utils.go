@@ -28,6 +28,10 @@ import (
 var awsRegionRegex = regexp.MustCompile(`^[a-z]{2,3}(?:-[a-z]+)+-\d+$`)
 var bedrockUnsafeToolNameCharRegex = regexp.MustCompile(`[^A-Za-z0-9_-]+`)
 
+// bedrockUnsafeToolUseIDCharRegex matches characters outside Bedrock's toolUseId charset
+// (^[a-zA-Z0-9_.:-]+$), which is wider than the tool-name charset above.
+var bedrockUnsafeToolUseIDCharRegex = regexp.MustCompile(`[^A-Za-z0-9_.:-]+`)
+
 // bedrockToolNameAliasKey stores Bedrock wire-name aliases on the request context.
 type bedrockToolNameAliasKey struct{}
 
@@ -339,6 +343,26 @@ func bedrockRestoreToolName(ctx context.Context, name string) string {
 		}
 	}
 	return name
+}
+
+// bedrockAliasToolUseID returns a Bedrock-safe toolUseId (<=64 chars, [a-zA-Z0-9_.:-]).
+// Deterministic, so a tool_use id and its tool_result id always alias to the same value.
+func bedrockAliasToolUseID(id string) string {
+	if id != "" && len(id) <= 64 && !bedrockUnsafeToolUseIDCharRegex.MatchString(id) {
+		return id
+	}
+
+	// Hash the full id (all 64 bits, not just a uint32-truncated slice) so two ids
+	// sharing a truncated head can't collide within a feasible search space.
+	hash := fmt.Sprintf("%016x", xxhash.Sum64String(id))
+	semantic := bedrockUnsafeToolUseIDCharRegex.ReplaceAllString(id, "_")
+	if maxSemanticLen := 64 - len(hash) - 1; len(semantic) > maxSemanticLen {
+		semantic = semantic[:maxSemanticLen]
+	}
+	if semantic == "" {
+		return hash
+	}
+	return hash + "_" + semantic
 }
 
 // convertParameters handles parameter conversion
@@ -1218,7 +1242,7 @@ func convertToolMessages(ctx context.Context, msgs []schemas.ChatMessage) (Bedro
 		}
 		toolResultBlock := BedrockContentBlock{
 			ToolResult: &BedrockToolResult{
-				ToolUseID: *msg.ChatToolMessage.ToolCallID,
+				ToolUseID: bedrockAliasToolUseID(*msg.ChatToolMessage.ToolCallID),
 				Content:   toolResultContent,
 				Status:    schemas.Ptr(status),
 			},
@@ -2323,7 +2347,7 @@ func convertToolCallToContentBlock(ctx context.Context, toolCall schemas.ChatAss
 
 	return BedrockContentBlock{
 		ToolUse: &BedrockToolUse{
-			ToolUseID: toolUseID,
+			ToolUseID: bedrockAliasToolUseID(toolUseID),
 			Name:      toolName,
 			Input:     input,
 		},
