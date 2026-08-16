@@ -358,6 +358,17 @@ func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.Respons
 				copyAction := *original.ResponsesToolMessage.Action.ResponsesMCPApprovalRequestAction
 				copy.ResponsesToolMessage.Action.ResponsesMCPApprovalRequestAction = &copyAction
 			}
+
+			if original.ResponsesToolMessage.Action.ResponsesImageGenerationToolCallAction != nil {
+				copyAction := *original.ResponsesToolMessage.Action.ResponsesImageGenerationToolCallAction
+				if copyAction.Raw != nil {
+					copyAction.Raw = append([]byte(nil), original.ResponsesToolMessage.Action.ResponsesImageGenerationToolCallAction.Raw...)
+				}
+				copy.ResponsesToolMessage.Action.ResponsesImageGenerationToolCallAction = &copyAction
+			}
+			if original.ResponsesToolMessage.Action.Raw != nil {
+				copy.ResponsesToolMessage.Action.Raw = append([]byte(nil), original.ResponsesToolMessage.Action.Raw...)
+			}
 		}
 
 		if original.ResponsesToolMessage.Caller != nil {
