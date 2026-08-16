@@ -1,8 +1,0 @@
-Runtime evidence captured after the null-preservation patch.
-Deployment: Helm release bf, namespace claude, image localhost:32000/bifrost:codex-image-20260816-null-preserve, revision 22.
-Harness: scripts/responses_image_generation_runtime.py
-Endpoint: http://bifrost.localdev.com/v1 (local MicroK8s ingress)
-
-RESULT non-stream: provider/API limitation or request error: Error code: 400 ... provider API error (status 400) ... request_type: responses
-PASS stream: response.created, response.in_progress, response.output_item.added, response.image_generation_call.in_progress, response.image_generation_call.generating, response.image_generation_call.partial_image, response.output_item.done, response.output_item.added, response.content_part.added, response.output_text.done, response.content_part.done, response.output_item.done, response.completed
-RESULT images-batch: provider/API limitation or request error: Error code: 400 - {'is_bifrost_error': False, 'error': {'code': 'unsupported_operation', 'message': 'image_generation is not supported by codex provider'}, ... request_type: image_generation}
