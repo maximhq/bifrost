@@ -10,6 +10,77 @@ import (
 	bfws "github.com/maximhq/bifrost/transports/bifrost-http/websocket"
 )
 
+func TestBuildRealtimeTurnPreRequestIncludesResponseCreateContent(t *testing.T) {
+	t.Parallel()
+
+	event := &schemas.BifrostRealtimeEvent{
+		Type: schemas.RTEventResponseCreate,
+		ExtraParams: map[string]json.RawMessage{
+			"response": json.RawMessage(`{
+				"instructions":"one line on war in english",
+				"input":[{"type":"message","role":"user","content":"inline input"}],
+				"tools":[{"type":"function","name":"lookup","description":"look something up","parameters":{"type":"object"}}]
+			}`),
+		},
+	}
+
+	req := buildRealtimeTurnPreRequest(schemas.OpenAI, "gpt-realtime", nil, nil, event)
+	if req.ResponsesRequest == nil || req.ResponsesRequest.Params == nil {
+		t.Fatal("expected response.create parameters in realtime pre-hook request")
+	}
+	instructions := req.ResponsesRequest.Params.Instructions
+	if instructions == nil || *instructions != "one line on war in english" {
+		t.Fatalf("unexpected instructions: %#v", instructions)
+	}
+	if len(req.ResponsesRequest.Input) != 1 {
+		t.Fatalf("input length = %d, want 1", len(req.ResponsesRequest.Input))
+	}
+	if len(req.ResponsesRequest.Params.Tools) != 1 || req.ResponsesRequest.Params.Tools[0].Name == nil || *req.ResponsesRequest.Params.Tools[0].Name != "lookup" {
+		t.Fatalf("unexpected tools: %#v", req.ResponsesRequest.Params.Tools)
+	}
+}
+
+func TestBuildRealtimeTurnPreRequestCombinesConversationAndResponseInput(t *testing.T) {
+	t.Parallel()
+
+	event := &schemas.BifrostRealtimeEvent{
+		Type: schemas.RTEventResponseCreate,
+		ExtraParams: map[string]json.RawMessage{
+			"response": json.RawMessage(`{"input":[{"type":"message","role":"user","content":"inline input"}]}`),
+		},
+	}
+	turnInputs := []bfws.RealtimeTurnInput{{Role: string(schemas.ChatMessageRoleUser), Summary: "conversation input"}}
+
+	req := buildRealtimeTurnPreRequest(schemas.OpenAI, "gpt-realtime", turnInputs, nil, event)
+	if len(req.ResponsesRequest.Input) != 2 {
+		t.Fatalf("input length = %d, want 2", len(req.ResponsesRequest.Input))
+	}
+}
+
+// TestBuildRealtimeTurnPreRequestPreservesEmptyResponseTools verifies an explicit empty tool list overrides session tools.
+func TestBuildRealtimeTurnPreRequestPreservesEmptyResponseTools(t *testing.T) {
+	t.Parallel()
+
+	event := &schemas.BifrostRealtimeEvent{
+		Type: schemas.RTEventResponseCreate,
+		ExtraParams: map[string]json.RawMessage{
+			"response": json.RawMessage(`{"tools":[]}`),
+		},
+	}
+	sessionTools := json.RawMessage(`[{"type":"function","name":"lookup","parameters":{"type":"object"}}]`)
+
+	req := buildRealtimeTurnPreRequest(schemas.OpenAI, "gpt-realtime", nil, sessionTools, event)
+	if req.ResponsesRequest == nil || req.ResponsesRequest.Params == nil {
+		t.Fatal("expected explicit empty response tools to preserve response parameters")
+	}
+	if req.ResponsesRequest.Params.Tools == nil {
+		t.Fatal("expected explicit empty response tools to remain non-nil")
+	}
+	if len(req.ResponsesRequest.Params.Tools) != 0 {
+		t.Fatalf("tools = %#v, want explicit empty list", req.ResponsesRequest.Params.Tools)
+	}
+}
+
 func TestShouldAccumulateRealtimeOutput(t *testing.T) {
 	provider := &openai.OpenAIProvider{}
 	if !provider.ShouldAccumulateRealtimeOutput(schemas.RTEventResponseTextDelta) {

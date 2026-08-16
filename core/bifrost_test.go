@@ -627,6 +627,7 @@ func TestTransientServerStatusCodes(t *testing.T) {
 	// deterministic 408 (previously these fell through as raw passthrough
 	// statuses); without this, Bedrock timeouts stopped retrying. Found via
 	// greptile review on the error-normalization PR.
+	// 529 is Anthropic's capacity-wide overloaded_error and is retried on the same key.
 	expected := []int{408, 500, 502, 503, 504}
 	for _, code := range expected {
 		if !transientServerStatusCodes[code] {
@@ -667,6 +668,32 @@ func TestIsTransientServerStatus_AnthropicOverloadedException(t *testing.T) {
 	}
 	if isTransientServerStatus(schemas.Anthropic, 429) {
 		t.Error("Anthropic + 429 should NOT be transient — 429 is a per-key failure, not a server-transient one")
+	}
+}
+
+func TestExecuteRequestWithRetries_529RetriesSameKeyWithoutRotation(t *testing.T) {
+	config := createTestConfig(2, 0, 0)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	logger := NewDefaultLogger(schemas.LogLevelError)
+	keyA := schemas.Key{ID: "key-a", Name: "Key A", Value: *schemas.NewSecretVar("sk-a"), Weight: 1}
+	keyB := schemas.Key{ID: "key-b", Name: "Key B", Value: *schemas.NewSecretVar("sk-b"), Weight: 1}
+	keyProvider := func(usedKeyIDs, deadKeyIDs map[string]bool) (schemas.Key, error) {
+		if usedKeyIDs[keyA.ID] || deadKeyIDs[keyA.ID] { return keyB, nil }
+		return keyA, nil
+	}
+	var seenKeyIDs []string
+	callCount := 0
+	handler := func(k schemas.Key) (string, *schemas.BifrostError) {
+		seenKeyIDs = append(seenKeyIDs, k.ID); callCount++
+		if callCount == 1 { return "", createBifrostError("overloaded_error", Ptr(529), Ptr("overloaded_error"), false) }
+		return "recovered", nil
+	}
+	result, err := executeRequestWithRetries(ctx, config, handler, keyProvider,
+		schemas.ChatCompletionRequest, schemas.Anthropic, "claude-sonnet-4-5", nil, logger)
+	if err != nil || result != "recovered" { t.Fatalf("expected retry success, result=%q err=%v", result, err) }
+	if len(seenKeyIDs) != 2 || seenKeyIDs[0] != keyA.ID || seenKeyIDs[1] != keyA.ID {
+		t.Fatalf("expected same key for both attempts, got %v", seenKeyIDs)
 	}
 }
 

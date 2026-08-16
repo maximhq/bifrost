@@ -37,19 +37,37 @@ type GovernanceStore interface {
 	GetVirtualKey(ctx context.Context, vkValue string) (*configstoreTables.TableVirtualKey, bool)
 }
 
-// AsyncJobExecutor manages async job creation and background execution.
-type AsyncJobExecutor struct {
-	logstore        LogStore
-	governanceStore GovernanceStore
-	logger          schemas.Logger
+// WebhookDispatcher queues a webhook notification for a job that reached a
+// terminal state. Implementations must not block on receiver I/O.
+type WebhookDispatcher interface {
+	EnqueueJobEvent(ctx context.Context, job *AsyncJob)
 }
 
-// NewAsyncJobExecutor creates a new AsyncJobExecutor.
-func NewAsyncJobExecutor(logstore LogStore, governanceStore GovernanceStore, logger schemas.Logger) *AsyncJobExecutor {
+// WebhookManager resolves registered webhook endpoints so submit-time
+// references can be validated before a job is accepted.
+type WebhookManager interface {
+	WebhookEndpointByName(endpointName string) (*configstoreTables.TableWebhookEndpoint, bool)
+}
+
+// AsyncJobExecutor manages async job creation and background execution.
+type AsyncJobExecutor struct {
+	logstore          LogStore
+	governanceStore   GovernanceStore
+	webhookDispatcher WebhookDispatcher
+	webhookManager    WebhookManager
+	logger            schemas.Logger
+}
+
+// NewAsyncJobExecutor creates a new AsyncJobExecutor. A nil webhookDispatcher
+// leaves webhook notification disabled; a nil webhookManager rejects any
+// submit that references a webhook endpoint.
+func NewAsyncJobExecutor(logstore LogStore, governanceStore GovernanceStore, webhookDispatcher WebhookDispatcher, webhookManager WebhookManager, logger schemas.Logger) *AsyncJobExecutor {
 	return &AsyncJobExecutor{
-		logstore:        logstore,
-		governanceStore: governanceStore,
-		logger:          logger,
+		logstore:          logstore,
+		governanceStore:   governanceStore,
+		webhookDispatcher: webhookDispatcher,
+		webhookManager:    webhookManager,
+		logger:            logger,
 	}
 }
 
@@ -97,14 +115,31 @@ func (e *AsyncJobExecutor) SubmitJob(bifrostCtx *schemas.BifrostContext, resultT
 		virtualKeyID = &vk.ID
 	}
 
+	endpoint, err := e.getWebhookEndpointIfPresent(bifrostCtx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve webhook endpoint: %w", err)
+	}
+
+	// The background execution inherits the submit call's request id, so its
+	// LLM log row is keyed by it — store it for reconciliation.
+	requestID := ""
+	if bifrostCtx != nil {
+		requestID = bifrost.GetStringFromContext(bifrostCtx, schemas.BifrostContextKeyRequestID)
+	}
+
 	now := time.Now().UTC()
 	job := &AsyncJob{
 		ID:           uuid.New().String(),
+		RequestID:    requestID,
 		Status:       schemas.AsyncJobStatusPending,
 		RequestType:  operationType,
 		VirtualKeyID: virtualKeyID,
 		ResultTTL:    resultTTL,
 		CreatedAt:    now,
+	}
+
+	if endpoint != nil {
+		job.WebhookEndpointID = &endpoint.ID
 	}
 
 	ctx := context.Background()
@@ -116,13 +151,13 @@ func (e *AsyncJobExecutor) SubmitJob(bifrostCtx *schemas.BifrostContext, resultT
 	if bifrostCtx != nil {
 		contextValues = bifrostCtx.GetUserValues()
 	}
-	go e.executeJob(job.ID, job.ResultTTL, operation, contextValues)
+	go e.executeJob(job, operation, contextValues)
 
 	return job, nil
 }
 
 // executeJob runs the operation in the background and updates the job record.
-func (e *AsyncJobExecutor) executeJob(jobID string, resultTTL int, operation AsyncOperation, contextValues map[any]any) {
+func (e *AsyncJobExecutor) executeJob(job *AsyncJob, operation AsyncOperation, contextValues map[any]any) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	// Restore original request context values (virtual key, tracing headers, etc.)
@@ -137,9 +172,9 @@ func (e *AsyncJobExecutor) executeJob(jobID string, resultTTL int, operation Asy
 
 	markFailed := func(msg string) {
 		now := time.Now().UTC()
-		expiresAt := now.Add(time.Duration(resultTTL) * time.Second)
+		expiresAt := now.Add(time.Duration(job.ResultTTL) * time.Second)
 		errJSON, _ := sonic.Marshal(&schemas.BifrostError{Error: &schemas.ErrorField{Message: msg}})
-		if err := e.logstore.UpdateAsyncJob(ctx, jobID, map[string]any{
+		if err := e.logstore.UpdateAsyncJob(ctx, job.ID, map[string]any{
 			"status":       schemas.AsyncJobStatusFailed,
 			"status_code":  fasthttp.StatusInternalServerError,
 			"error":        string(errJSON),
@@ -147,7 +182,9 @@ func (e *AsyncJobExecutor) executeJob(jobID string, resultTTL int, operation Asy
 			"expires_at":   expiresAt,
 		}); err != nil {
 			e.logger.Warn("failed to update async job to failed: %v", err)
+			return
 		}
+		e.notifyWebhook(ctx, job, schemas.AsyncJobStatusFailed)
 	}
 
 	// The bifrost execution flow is very stable and panics are not expected.
@@ -155,13 +192,13 @@ func (e *AsyncJobExecutor) executeJob(jobID string, resultTTL int, operation Asy
 	// state rather than being stuck in "processing" if an unexpected panic occurs.
 	defer func() {
 		if r := recover(); r != nil {
-			e.logger.Warn("async job %s panicked: %v", jobID, r)
+			e.logger.Warn("async job %s panicked: %v", job.ID, r)
 			markFailed(fmt.Sprintf("internal error: %v", r))
 		}
 	}()
 
 	// Mark as processing
-	if err := e.logstore.UpdateAsyncJob(ctx, jobID, map[string]any{
+	if err := e.logstore.UpdateAsyncJob(ctx, job.ID, map[string]any{
 		"status": schemas.AsyncJobStatusProcessing,
 	}); err != nil {
 		e.logger.Warn("failed to update async job: %v", err)
@@ -173,7 +210,7 @@ func (e *AsyncJobExecutor) executeJob(jobID string, resultTTL int, operation Asy
 	resp, bifrostErr := operation(ctx)
 
 	now := time.Now().UTC()
-	expiresAt := now.Add(time.Duration(resultTTL) * time.Second)
+	expiresAt := now.Add(time.Duration(job.ResultTTL) * time.Second)
 
 	if bifrostErr != nil {
 		errJSON, err := sonic.Marshal(bifrostErr)
@@ -186,7 +223,7 @@ func (e *AsyncJobExecutor) executeJob(jobID string, resultTTL int, operation Asy
 		if bifrostErr.StatusCode != nil {
 			statusCode = *bifrostErr.StatusCode
 		}
-		if err := e.logstore.UpdateAsyncJob(ctx, jobID, map[string]interface{}{
+		if err := e.logstore.UpdateAsyncJob(ctx, job.ID, map[string]interface{}{
 			"status":       schemas.AsyncJobStatusFailed,
 			"status_code":  statusCode,
 			"error":        string(errJSON),
@@ -194,7 +231,9 @@ func (e *AsyncJobExecutor) executeJob(jobID string, resultTTL int, operation Asy
 			"expires_at":   expiresAt,
 		}); err != nil {
 			e.logger.Warn("failed to update async job: %v", err)
+			return
 		}
+		e.notifyWebhook(ctx, job, schemas.AsyncJobStatusFailed)
 		return
 	}
 
@@ -204,7 +243,7 @@ func (e *AsyncJobExecutor) executeJob(jobID string, resultTTL int, operation Asy
 		markFailed(fmt.Sprintf("failed to serialize result: %v", err))
 		return
 	}
-	if err := e.logstore.UpdateAsyncJob(ctx, jobID, map[string]interface{}{
+	if err := e.logstore.UpdateAsyncJob(ctx, job.ID, map[string]interface{}{
 		"status":       schemas.AsyncJobStatusCompleted,
 		"status_code":  fasthttp.StatusOK,
 		"response":     string(respJSON),
@@ -212,7 +251,61 @@ func (e *AsyncJobExecutor) executeJob(jobID string, resultTTL int, operation Asy
 		"expires_at":   expiresAt,
 	}); err != nil {
 		e.logger.Warn("failed to update async job: %v", err)
+		return
 	}
+	e.notifyWebhook(ctx, job, schemas.AsyncJobStatusCompleted)
+}
+
+// notifyWebhook hands a job that just reached a terminal state to the
+// webhook dispatcher. It only fires after the terminal update committed: a
+// job whose terminal write failed still reads as processing, so notifying
+// for it would contradict what polling callers see.
+func (e *AsyncJobExecutor) notifyWebhook(ctx context.Context, job *AsyncJob, status schemas.AsyncJobStatus) {
+	if e.webhookDispatcher == nil || job.WebhookEndpointID == nil {
+		return
+	}
+	// The job's terminal state is already committed; a dispatcher panic must
+	// not reach executeJob's recovery, which would overwrite a completed job
+	// as failed.
+	defer func() {
+		if r := recover(); r != nil {
+			e.logger.Warn("async job %s webhook enqueue panicked: %v", job.ID, r)
+		}
+	}()
+	notified := *job
+	notified.Status = status
+	e.webhookDispatcher.EnqueueJobEvent(ctx, &notified)
+}
+
+// getWebhookEndpointIfPresent resolves the webhook endpoint name the caller
+// attached to the request context, if any. A reference that does not resolve
+// to an existing, enabled endpoint is an error: accepting the job anyway
+// would silently drop the notification the caller asked for.
+func (e *AsyncJobExecutor) getWebhookEndpointIfPresent(ctx *schemas.BifrostContext) (*configstoreTables.TableWebhookEndpoint, error) {
+	if ctx == nil {
+		return nil, nil
+	}
+	webhookEndpointName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyAsyncWebhookEndpoint)
+	if webhookEndpointName == "" {
+		return nil, nil
+	}
+	if e.webhookManager == nil {
+		return nil, fmt.Errorf("webhook manager is not available")
+	}
+	// Fail fast when delivery is not wired: without a dispatcher the job would
+	// persist an endpoint reference that notifyWebhook can never act on,
+	// silently dropping the notification the caller asked for.
+	if e.webhookDispatcher == nil {
+		return nil, fmt.Errorf("webhook dispatcher is not available")
+	}
+	endpoint, ok := e.webhookManager.WebhookEndpointByName(webhookEndpointName)
+	if !ok {
+		return nil, fmt.Errorf("%w: unknown webhook endpoint with name %q", ErrInvalidWebhookReference, webhookEndpointName)
+	}
+	if endpoint.Disabled {
+		return nil, fmt.Errorf("%w: webhook endpoint %q is disabled", ErrInvalidWebhookReference, endpoint.Name)
+	}
+	return endpoint, nil
 }
 
 // --- Cleaner ---
@@ -299,6 +392,14 @@ func (c *AsyncJobCleaner) cleanupExpiredJobs(ctx context.Context) {
 		c.logger.Warn("failed to delete stale processing async jobs: %v", err)
 	} else if staleDeleted > 0 {
 		c.logger.Warn("async job cleanup: deleted %d stale processing jobs (stuck > %dh)", staleDeleted, asyncJobStaleProcessingHours)
+	}
+
+	// Reap webhook delivery history whose retention window has passed.
+	deliveriesDeleted, err := c.store.DeleteExpiredWebhookDeliveries(ctx)
+	if err != nil {
+		c.logger.Warn("failed to delete expired webhook deliveries: %v", err)
+	} else if deliveriesDeleted > 0 {
+		c.logger.Debug("webhook delivery cleanup completed: deleted %d expired records", deliveriesDeleted)
 	}
 }
 

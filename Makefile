@@ -34,17 +34,18 @@ USE_NODE = NVM_SH="$${NVM_DIR:-$$HOME/.nvm}/nvm.sh"; \
 	[ -s "$$NVM_SH" ] || NVM_SH="$$(brew --prefix nvm 2>/dev/null)/nvm.sh"; \
 	if [ -s "$$NVM_SH" ]; then . "$$NVM_SH" >/dev/null && nvm install >/dev/null 2>&1 && nvm use >/dev/null 2>&1; fi
 
-# Loads secrets into the current recipe shell. Reads USE_INFISICAL env var:
-#   USE_INFISICAL=1  -> source secrets from Infisical (`infisical export --path <p>`)
-#   anything else    -> source ./.env (legacy default)
-# Honors INFISICAL_PATH (default /local) when USE_INFISICAL=1.
+# Loads secrets into the current recipe shell. Infisical is the default source (Reads
+# USE_INFISICAL env var):
+#   USE_INFISICAL=0|n|N|no|NO|false|FALSE  -> source ./.env instead (explicit opt-out)
+#   anything else (including unset)        -> source secrets from Infisical (`infisical export --path <p>`)
+# Honors INFISICAL_PATH (default /local) when sourcing from Infisical.
 # After invoking `$(EXPOSE_ENV);`, all subsequent commands inherit the secrets
 # - no per-command prefix needed.
 # Use as: `$(EXPOSE_ENV); <your command>`
 define EXPOSE_ENV
 	case "$$USE_INFISICAL" in \
-		1|y|Y|yes|YES|true|TRUE) USE_INFISICAL_RESOLVED=1 ;; \
-		*) USE_INFISICAL_RESOLVED=0 ;; \
+		0|n|N|no|NO|false|FALSE) USE_INFISICAL_RESOLVED=0 ;; \
+		*) USE_INFISICAL_RESOLVED=1 ;; \
 	esac; \
 	if [ "$$USE_INFISICAL_RESOLVED" = "1" ]; then \
 		if ! which infisical > /dev/null 2>&1; then \
@@ -67,7 +68,7 @@ define EXPOSE_ENV
 	fi
 endef
 
-.PHONY: all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed run-e2e-api format ui install-newman run-provider-harness-test run-cli-harness-test test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner helm-index
+.PHONY: all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed run-e2e-api format ui install-newman run-provider-harness-test smoke-provider-harness-test run-cli-harness-test cli-harness-report test-harness-runner-lib test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner helm-index install-microsocks socks5-proxy install-tinyproxy http-proxy
 
 all: help
 
@@ -151,6 +152,31 @@ install-junit-viewer: ## Install junit-viewer for HTML report generation (if not
 	else \
 		$(ECHO) "$(YELLOW)CI environment detected, skipping junit-viewer installation$(NC)"; \
 	fi
+
+install-microsocks: ## Install microsocks SOCKS5 proxy for local testing (if not already installed)
+	@which microsocks > /dev/null || (command -v brew > /dev/null && $(ECHO) "$(YELLOW)Installing microsocks via Homebrew...$(NC)" && brew install microsocks) || ($(ECHO) "$(RED)Error: microsocks not found and Homebrew is unavailable. Install manually: https://github.com/rofl0r/microsocks$(NC)" && exit 1)
+	@$(ECHO) "$(GREEN)microsocks is ready$(NC)"
+
+socks5-proxy: install-microsocks ## Run a local SOCKS5 proxy for testing provider proxy_config (Usage: make socks5-proxy [PORT=1080] [HOST=127.0.0.1])
+	@PROXY_PORT=$${PORT:-1080}; \
+	PROXY_HOST=$${HOST:-127.0.0.1}; \
+	$(ECHO) "$(GREEN)Starting SOCKS5 proxy on $$PROXY_HOST:$$PROXY_PORT (no auth, logs each connection, Ctrl+C to stop)...$(NC)"; \
+	$(ECHO) "$(YELLOW)Point a provider's proxy_config at socks5://$$PROXY_HOST:$$PROXY_PORT to test$(NC)"; \
+	microsocks -i $$PROXY_HOST -p $$PROXY_PORT
+
+install-tinyproxy: ## Install tinyproxy HTTP proxy for local testing (if not already installed)
+	@which tinyproxy > /dev/null || (command -v brew > /dev/null && $(ECHO) "$(YELLOW)Installing tinyproxy via Homebrew...$(NC)" && brew install tinyproxy) || ($(ECHO) "$(RED)Error: tinyproxy not found and Homebrew is unavailable. Install manually: https://github.com/tinyproxy/tinyproxy$(NC)" && exit 1)
+	@$(ECHO) "$(GREEN)tinyproxy is ready$(NC)"
+
+http-proxy: install-tinyproxy ## Run a local HTTP proxy for testing provider proxy_config (Usage: make http-proxy [PORT=8888] [HOST=127.0.0.1])
+	@PROXY_PORT=$${PORT:-8888}; \
+	PROXY_HOST=$${HOST:-127.0.0.1}; \
+	CONF=$$(mktemp -t bifrost-tinyproxy); \
+	trap 'rm -f "$$CONF"' EXIT INT TERM; \
+	printf 'Port %s\nListen %s\nTimeout 600\nAllow 127.0.0.1\nAllow ::1\nLogLevel Info\n' "$$PROXY_PORT" "$$PROXY_HOST" > "$$CONF"; \
+	$(ECHO) "$(GREEN)Starting HTTP proxy on $$PROXY_HOST:$$PROXY_PORT (no auth, logs each connection, Ctrl+C to stop)...$(NC)"; \
+	$(ECHO) "$(YELLOW)Point a provider's proxy_config at http://$$PROXY_HOST:$$PROXY_PORT to test$(NC)"; \
+	tinyproxy -d -c "$$CONF"
 
 dev: install-ui install-air setup-workspace $(if $(DEBUG),install-delve) ## Start complete development environment (UI + API with proxy)
 	@$(EXPOSE_ENV); \
@@ -335,7 +361,13 @@ build: build-ui ## Build bifrost-http binary
 		$(ECHO) "$(YELLOW)Note: This will create a statically linked build.$(NC)"; \
 	fi
 	@mkdir -p ./tmp
-	@TARGET_OS="$(GOOS)"; \
+	@# set -e: this recipe is ONE shell, and its branches chain with `;`, so a
+	@# failed `go build` fell through to the success echo below and left the
+	@# recipe exiting 0 - make reported a green build for a binary that was
+	@# never produced. Only the caller's own "binary not found" guard caught
+	@# it, several steps later and with a misleading message.
+	@set -e; \
+	TARGET_OS="$(GOOS)"; \
 	TARGET_ARCH="$(GOARCH)"; \
 	ACTUAL_OS=$$(uname -s | tr '[:upper:]' '[:lower:]' | sed 's/darwin/darwin/;s/linux/linux/;s/mingw.*/windows/'); \
 	ACTUAL_ARCH=$$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/;s/arm64/arm64/'); \
@@ -388,7 +420,10 @@ build-cli: ## Build bifrost CLI binary
 	@$(ECHO) "$(GREEN)Built: tmp/bifrost$(NC)"
 
 _build-with-docker: # Internal target for Docker-based cross-compilation
-	@$(ECHO) "$(CYAN)Using Docker for cross-compilation...$(NC)"; \
+	@# set -e for the same reason as build-http above: without it a failed
+	@# `docker run` still reaches the "Built:" echo and returns 0.
+	@set -e; \
+	$(ECHO) "$(CYAN)Using Docker for cross-compilation...$(NC)"; \
 	if [ "$(TARGET_OS)" = "linux" ]; then \
 		if [ -n "$(DYNAMIC)" ]; then \
 			$(ECHO) "$(CYAN)Building for $(TARGET_OS)/$(TARGET_ARCH) in Docker container with dynamic linking...$(NC)"; \
@@ -400,7 +435,7 @@ _build-with-docker: # Internal target for Docker-based cross-compilation
 				-e GOOS=$(TARGET_OS) \
 				-e GOARCH=$(TARGET_ARCH) \
 				 $(if $(LOCAL),,-e GOWORK=off) \
-				golang:1.26.4-alpine3.23@sha256:f23e8b227fb4493eabe03bede4d5a32d04092da71962f1fb79b5f7d1e6c2a17f \
+				golang:1.26.5-alpine3.23@sha256:622e56dbc11a8cfe87cafa2331e9a201877271cbff918af53d3be315f3da88cc \
 				sh -c "apk add --no-cache gcc musl-dev && \
 				go build \
 					-ldflags='-w -s -X main.Version=v$(VERSION)' \
@@ -417,7 +452,7 @@ _build-with-docker: # Internal target for Docker-based cross-compilation
 				-e GOOS=$(TARGET_OS) \
 				-e GOARCH=$(TARGET_ARCH) \
 				 $(if $(LOCAL),,-e GOWORK=off) \
-				golang:1.26.4-alpine3.23@sha256:f23e8b227fb4493eabe03bede4d5a32d04092da71962f1fb79b5f7d1e6c2a17f \
+				golang:1.26.5-alpine3.23@sha256:622e56dbc11a8cfe87cafa2331e9a201877271cbff918af53d3be315f3da88cc \
 				sh -c "apk add --no-cache gcc musl-dev && \
 				go build \
 					-ldflags='-w -s -extldflags "-static" -X main.Version=v$(VERSION)' \
@@ -677,15 +712,15 @@ test-core: install-gotestsum $(if $(DEBUG),install-delve) ## Run core tests (Usa
 			exit 1; \
 		fi; \
 		if [ -n "$(PATTERN)" ]; then \
-			$(ECHO) "$(CYAN)Running tests matching '$(PATTERN)' across all providers...$(NC)"; \
+			$(ECHO) "$(CYAN)Running tests matching '$(PATTERN)' across core and all providers...$(NC)"; \
 			REPORT_FILE="$(TEST_REPORTS_DIR)/core-all-$(PATTERN).xml"; \
 			if [ -n "$(DEBUG)" ]; then \
-				cd core && GOWORK=off dlv test --headless --listen=:2345 --api-version=2 ./providers/... -- -test.v -test.run ".*$(PATTERN).*" || TEST_FAILED=1; \
+				cd core && GOWORK=off dlv test --headless --listen=:2345 --api-version=2 . ./providers/... -- -test.v -test.run ".*$(PATTERN).*" || TEST_FAILED=1; \
 			else \
 				cd core && GOWORK=off gotestsum \
 					--format=$(GOTESTSUM_FORMAT) \
 					--junitfile=../$$REPORT_FILE \
-					-- -v -timeout 20m -run ".*$(PATTERN).*" ./providers/... || TEST_FAILED=1; \
+					-- -v -timeout 20m -run ".*$(PATTERN).*" . ./providers/... || TEST_FAILED=1; \
 			fi; \
 		else \
 			REPORT_FILE="$(TEST_REPORTS_DIR)/core-all.xml"; \
@@ -1352,7 +1387,7 @@ test-integrations-py: ## Run Python integration tests (Usage: make test-integrat
 		$(ECHO) "$(CYAN)Bifrost logs: /tmp/bifrost-test.log$(NC)"; \
 		(tail -f /tmp/bifrost-test.log 2>/dev/null | grep -E "error|panic|Error|ERRO|fatal|Fatal|FATAL" --line-buffered &) & \
 		TAIL_PID=$$!; \
-		for i in 1 2 3 4 5 6 7 8 9 10; do \
+		for i in $$(seq 1 30); do \
 			if curl -s -o /dev/null http://$$TEST_HOST:$$TEST_PORT/health 2>/dev/null; then \
 				$(ECHO) "$(GREEN)✓ Bifrost is ready (PID: $$BIFROST_PID)$(NC)"; \
 				break; \
@@ -1383,7 +1418,12 @@ test-integrations-py: ## Run Python integration tests (Usage: make test-integrat
 		if [ -n "$(INTEGRATION)" ]; then \
 			if [ -n "$(TESTCASE)" ]; then \
 				$(ECHO) "$(CYAN)Running $(INTEGRATION) integration test: $(TESTCASE)...$(NC)"; \
-				cd tests/integrations/python && pytest tests/test_$(INTEGRATION).py::$(TESTCASE) $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+				cd tests/integrations/python && \
+				if [[ "$(TESTCASE)" == *::* ]]; then \
+					pytest tests/test_$(INTEGRATION).py::$(TESTCASE) $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+				else \
+					pytest tests/test_$(INTEGRATION).py -k "$(TESTCASE)" $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+				fi; \
 			elif [ -n "$(PATTERN)" ]; then \
 				$(ECHO) "$(CYAN)Running $(INTEGRATION) integration tests matching '$(PATTERN)'...$(NC)"; \
 				cd tests/integrations/python && pytest tests/test_$(INTEGRATION).py -k "$(PATTERN)" $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
@@ -1406,7 +1446,11 @@ test-integrations-py: ## Run Python integration tests (Usage: make test-integrat
 		if [ -n "$(INTEGRATION)" ]; then \
 			if [ -n "$(TESTCASE)" ]; then \
 				$(ECHO) "$(CYAN)Running $(INTEGRATION) integration test: $(TESTCASE)...$(NC)"; \
-				uv run pytest tests/test_$(INTEGRATION).py::$(TESTCASE) $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+				if [[ "$(TESTCASE)" == *::* ]]; then \
+					uv run pytest tests/test_$(INTEGRATION).py::$(TESTCASE) $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+				else \
+					uv run pytest tests/test_$(INTEGRATION).py -k "$(TESTCASE)" $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+				fi; \
 			elif [ -n "$(PATTERN)" ]; then \
 				$(ECHO) "$(CYAN)Running $(INTEGRATION) integration tests matching '$(PATTERN)'...$(NC)"; \
 				uv run pytest tests/test_$(INTEGRATION).py -k "$(PATTERN)" $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
@@ -1479,7 +1523,7 @@ test-integrations-ts: ## Run TypeScript integration tests (Usage: make test-inte
 		$(ECHO) "$(CYAN)Bifrost logs: /tmp/bifrost-test.log$(NC)"; \
 		(tail -f /tmp/bifrost-test.log 2>/dev/null | grep -E "error|panic|Error|ERRO|fatal|Fatal|FATAL" --line-buffered &) & \
 		TAIL_PID=$$!; \
-		for i in 1 2 3 4 5 6 7 8 9 10; do \
+		for i in $$(seq 1 30); do \
 			if curl -s -o /dev/null http://$$TEST_HOST:$$TEST_PORT/health 2>/dev/null; then \
 				$(ECHO) "$(GREEN)✓ Bifrost is ready (PID: $$BIFROST_PID)$(NC)"; \
 				break; \
@@ -1746,7 +1790,33 @@ test-cli: install-gotestsum ## Run CLI tests
 		--junitfile=../$(TEST_REPORTS_DIR)/cli.xml \
 		-- ./...
 
-run-cli-harness-test: ## Run the Claude Code + Codex + OpenCode E2E harness (non-interactive, multi-turn JSON streams). Live mirror on by default. Usage: make run-cli-harness-test [TESTCASE='TestCLIs/...'] [CLI=claude|codex|opencode] [PROVIDER=openai|anthropic|azure|gemini|bedrock|vertex] [MODEL=<id-substring>] [SCENARIO=simple-chat|conversation-memory|...] [PARALLEL=4] [BASE_URL=http://localhost:8080] [API_KEY=...] [TIMEOUT=60m] [QUIET=1]
+# The CLI harness always runs `go test -v`, because without it `go test` buffers
+# the whole package's stdout AND stderr and discards it when the package passes -
+# which would swallow the harness's own per-cell RUNNING/PASS/FAIL lines and its
+# progress table, leaving a multi-minute run with no output at all.
+#
+# -v then emits its own per-subtest scaffolding, which for this matrix is three
+# lines (=== RUN / PAUSE / CONT) per cell plus a skip line per gated scenario -
+# far more volume than the results themselves. This strips exactly that, leaving
+# every diagnostic (t.Fatal bodies, panics, build errors) intact. The two skip
+# messages matched here are the harness's own strings from clis_test.go, not
+# go test's, so this cannot drift out from under a Go release.
+#
+# awk rather than grep: awk exits 0 even when it emits nothing (grep exits 1,
+# which `set -o pipefail` would turn into a spurious failure), and fflush keeps
+# the stream line-buffered so results appear as cells finish rather than in one
+# dump at the end. VERBOSE=1 bypasses the filter entirely.
+# The `--- PASS/FAIL/SKIP` summary is emitted once per nesting level and indented
+# to match, so the pattern allows leading whitespace - anchoring at column 0
+# would strip only the outermost line and leave the rest of the tree.
+#
+# The package-result line is `FAIL<TAB>pkg<TAB>0.13s`, matched on the TAB
+# specifically: the harness's own status column is space-padded ("FAIL" then
+# spaces), so a `^FAIL[ \t]` pattern would swallow every failed cell's result -
+# the single most important line in the output.
+CLI_HARNESS_FILTER = awk '/^=== /||/^[ \t]*--- (PASS|FAIL|SKIP)[: ]/||/^(PASS|FAIL)$$/||/^ok[ \t]/||/^FAIL\t/||/unsupported for /||/not configured in bifrost/{next} {print; fflush()}'
+
+run-cli-harness-test: ## Run the Claude Code + Codex + OpenCode E2E harness (non-interactive, multi-turn JSON streams). Prints one line per cell plus a progress table; MIRROR=1 adds the raw CLI stream, VERBOSE=1 adds go test -v. Usage: make run-cli-harness-test [TESTCASE='TestCLIs/...'] [CLI=claude|codex|opencode] [PROVIDER=openai|anthropic|azure|gemini|bedrock|vertex] [MODEL=<id-substring>] [SCENARIO=simple-chat|conversation-memory|...] [PARALLEL=4] [BASE_URL=http://localhost:8080] [API_KEY=...] [TIMEOUT=60m] [MIRROR=1] [VERBOSE=1] [QUIET=1]
 	@$(EXPOSE_ENV); \
 	$(ECHO) "$(GREEN)Running CLI harness E2E tests...$(NC)"; \
 	BASE_URL_VAL="$${BASE_URL:-$(BASE_URL)}"; BASE_URL_VAL="$${BASE_URL_VAL:-http://localhost:8080}"; \
@@ -1765,7 +1835,7 @@ run-cli-harness-test: ## Run the Claude Code + Codex + OpenCode E2E harness (non
 		exit 1; \
 	fi; \
 	for bin in claude codex opencode; do \
-		if [ "$(CLI)" = "" ] || [ "$(CLI)" = "$$bin" ]; then \
+		if [ "$(CLI)" = "" ] || [ "$(CLI)" = "$$bin" ] || { [ "$$bin" = opencode ] && [ "$(CLI)" = opencode-responses ]; }; then \
 			if ! command -v $$bin >/dev/null 2>&1; then \
 				$(ECHO) "$(YELLOW)Warning: $$bin not on PATH; matrix cells for $$bin will fail.$(NC)"; \
 				$(ECHO) "$(YELLOW)  Install: npm i -g $$( [ $$bin = claude ] && echo @anthropic-ai/claude-code || { [ $$bin = codex ] && echo @openai/codex || echo opencode-ai; } )$(NC)"; \
@@ -1783,23 +1853,122 @@ run-cli-harness-test: ## Run the Claude Code + Codex + OpenCode E2E harness (non
 	fi; \
 	$(ECHO) "$(CYAN)  Filter:   $$RUN_PARTS$(NC)"; \
 	if [ -n "$(MODEL)" ]; then $(ECHO) "$(CYAN)  Model:    $(MODEL) (substring filter)$(NC)"; fi; \
+	set -o pipefail; \
 	cd tests/e2e/clis && \
 		BIFROST_BASE_URL="$$BASE_URL_VAL" \
 		BIFROST_API_KEY="$${API_KEY:-$(API_KEY)}" \
 		BIFROST_E2E_CLIS_QUIET="$(QUIET)" \
+		BIFROST_E2E_CLIS_MIRROR="$(MIRROR)" \
 		MODEL="$(MODEL)" \
 		GOWORK=off go test \
 			-count=1 \
 			-timeout=$${TIMEOUT:-$(if $(TIMEOUT),$(TIMEOUT),60m)} \
 			-parallel="$$PARALLEL_VAL" \
 			-run "^$$RUN_PARTS$$" \
-			$(if $(QUIET),,-v) \
-			./...
+			-v \
+			./... $(if $(VERBOSE),,| $(CLI_HARNESS_FILTER))
 
-install-newman: ## Install newman + htmlextra reporter if not already installed
-	@$(USE_NODE); which newman > /dev/null 2>&1 || ($(ECHO) "$(YELLOW)Installing newman...$(NC)" && npm install -g newman)
-	@$(USE_NODE); npm list -g newman-reporter-htmlextra > /dev/null 2>&1 || ($(ECHO) "$(YELLOW)Installing newman-reporter-htmlextra...$(NC)" && npm install -g newman-reporter-htmlextra)
-	@$(ECHO) "$(GREEN)Newman + htmlextra are ready$(NC)"
+cli-harness-report: ## Regenerate tests/e2e/clis/reports/index.html from existing reports/*.json, without running any tests (free, instant). Usage: make cli-harness-report
+	@$(ECHO) "$(GREEN)Rendering CLI harness report from existing reports/*.json...$(NC)"
+	@cd tests/e2e/clis && GOWORK=off go test -run "^TestRenderReport$$" -v ./...
+
+# The harness runner unit tests are plain node scripts with no framework (the
+# tests/e2e/api dir configures no test runner), so nothing discovers them
+# automatically. Without a target they are only ever run by hand, which is how
+# they rot - and they cover the parsing that produces the status table's numbers.
+test-harness-runner-lib: ## Run the provider-harness runner unit tests (tests/e2e/api/runners/lib/*.test.mjs). No network, no Bifrost, no credentials.
+	@$(ECHO) "$(GREEN)Running provider-harness runner lib tests...$(NC)"
+	@$(USE_NODE); RC=0; \
+	for t in tests/e2e/api/runners/lib/*.test.mjs; do \
+		printf '%s\n' "$(CYAN)-> $$t$(NC)"; \
+		node "$$t" || RC=1; \
+	done; \
+	if [ "$$RC" -ne 0 ]; then $(ECHO) "$(RED)harness runner lib tests failed$(NC)"; else $(ECHO) "$(GREEN)harness runner lib tests passed$(NC)"; fi; \
+	exit $$RC
+
+# Named target rather than documentation telling people to type SMOKE=1: a smoke
+# set nobody can invoke in one word does not get used before a release.
+smoke-provider-harness-test: ## Run the curated ~100-request provider-harness smoke set (tests/e2e/api/collections/smoke-manifest.json). Same flags as run-provider-harness-test; equivalent to SMOKE=1.
+	@$(MAKE) run-provider-harness-test SMOKE=1
+
+# Versions pinned to match the CI installs in .github/workflows/release-pipeline.yml
+# (test-core, test-api-integrations, test-docker-image-*). Keep them in sync.
+NEWMAN_VERSION ?= 6.2.1
+NEWMAN_HTMLEXTRA_VERSION ?= 1.23.1
+
+# Every provider fork the harness knows how to run. Also the provider set the
+# status table lists, including the deferred cache-parity pass, so it lives in
+# one place rather than being restated per newman invocation.
+HARNESS_PROVIDERS := openai anthropic bedrock gemini vertex azure passthrough openrouter
+
+# Second parallelism axis. Each provider fork is sharded again by modality class so the run is not
+# bound by one provider's whole sequential item list: openai alone is ~1264 requests, and its
+# largest class is ~268. filter-collection.mjs --class assigns every item to exactly one of these
+# (first match wins, "other" is the catch-all), so the shards partition the fork rather than
+# overlapping it. Order here is only the launch order; the priority order lives in CLASS_ORDER.
+#
+# Listed SLOWEST-FIRST, measured rather than guessed: in a full sweep the last six shards to finish
+# were reasoning (x4 providers), tools and chat, with reasoning trailing the median shard by ~20
+# minutes. Launch order only matters once HARNESS_JOBS actually binds, which it now does - the
+# sub-shard axis below pushes the grid past the cap - and when it binds, a slow shard that starts
+# last sets the wall clock all by itself.
+HARNESS_CLASSES := reasoning tools chat streaming json vision other audio embeddings image-gen
+
+# Third parallelism axis: how many sub-shards each modality class is split into, via
+# filter-collection.mjs --shard <k>/<n>. The class axis alone cannot flatten the tail, because the
+# expensive classes are expensive PER REQUEST rather than per row count: a reasoning row costs ~8s
+# against a chat row's ~1s, so "openai reasoning" is a ~21 minute serial run at 161 rows while
+# "anthropic tools" clears 226 rows in a fraction of that. Splitting the slow classes cuts their
+# serial length by n while the fast ones stay single shards, so the grid grows only where it buys
+# wall clock. Counts are set from that same measured finish order. A class not listed here is 1.
+# Set SUBSHARDS=0 to collapse this axis and get the previous one-shard-per-class behaviour.
+#
+# FALLBACK ONLY as of the shard planner. When a timing table exists (HARNESS_TIMINGS, written at
+# the end of every run by build-harness-timings.mjs), filter-collection.mjs --plan sizes each
+# (provider, class) cell from measured cost and this table is not consulted. It still runs a fresh
+# checkout's first sweep, a run with a corrupt table, and SUBSHARDS=0.
+#
+# It is a fallback rather than the mechanism because one number per CLASS cannot fit eight
+# providers: "reasoning" is ~30 minutes for openai and seconds for embeddings-heavy providers, so
+# any single count is badly wrong for one of them. Measured: a full sweep spent 77% of its 10.7
+# minute wall clock on the last 16% of its requests, dropping from 98 concurrent shards to 1 while
+# openai--reasoning-s4 finished alone. Sizing from cost puts the same work in 2.8 minutes.
+HARNESS_SUBSHARDS := reasoning=4 tools=3 chat=3 streaming=3 json=2 vision=2
+
+# Wall clock a single sub-shard aims for, in seconds. The planner splits each cell into
+# ceil(cellCost / target) shards, capped by its row count. Simulated against a measured sweep at
+# 120/150/180/240s: 150 is the smallest target that still reaches the floor set by the slowest
+# single request (2.8 min worst shard) without buying shards that cannot help - 120s costs 21 more
+# node processes for the same 2.8 min, 180s saves 16 processes for +0.2 min.
+#
+# Lower it to trade processes for wall clock, raise it to trade the other way. It cannot push the
+# sweep below its slowest single request (~170s today), because a request is not divisible.
+HARNESS_SHARD_TARGET ?= 150
+
+# Where the measured per-request timing table lives. Refreshed at the end of every run from that
+# run's newman reports, and merged onto whatever was there so a scoped run refines its own rows
+# instead of erasing the seven providers it did not touch. The committed baseline at
+# tests/e2e/api/collections/harness-timings.json is consulted when this file is absent, which is
+# what lets a fresh checkout and CI balance on their first sweep rather than their second.
+HARNESS_TIMINGS ?= tmp/harness-timings.json
+
+# Cap on concurrently running newman shards. The provider x class x sub-shard grid is ~168 cells
+# now that HARNESS_SUBSHARDS splits the slow classes, so unlike before the cap genuinely binds and
+# the launcher blocks - which is exactly why HARNESS_CLASSES is ordered slowest-first, so the long
+# shards hold slots from the start instead of queueing behind a hundred cheap ones. The cap is kept
+# rather than removed because the grid grows with HARNESS_PROVIDERS, HARNESS_CLASSES and
+# HARNESS_SUBSHARDS together, and an unbounded loop would fork whatever their product becomes.
+# Lower it if a provider starts returning 429s - analyze-failures.mjs does file those as
+# rate_limit rather than as defects, but they still fail the run.
+HARNESS_JOBS ?= 100
+
+# Echoes are suppressed under CI so run-provider-harness-test, which takes this
+# as a prerequisite, really does emit nothing but its status table. Install
+# failures still surface: npm's own stderr is untouched and the recipe still fails.
+install-newman: ## Install newman + htmlextra reporter if not already installed (pinned via NEWMAN_VERSION / NEWMAN_HTMLEXTRA_VERSION)
+	@$(USE_NODE); which newman > /dev/null 2>&1 || ([ -n "$$CI" ] || $(ECHO) "$(YELLOW)Installing newman@$(NEWMAN_VERSION)...$(NC)"; npm install -g newman@$(NEWMAN_VERSION))
+	@$(USE_NODE); npm list -g newman-reporter-htmlextra > /dev/null 2>&1 || ([ -n "$$CI" ] || $(ECHO) "$(YELLOW)Installing newman-reporter-htmlextra@$(NEWMAN_HTMLEXTRA_VERSION)...$(NC)"; npm install -g newman-reporter-htmlextra@$(NEWMAN_HTMLEXTRA_VERSION))
+	@[ -n "$$CI" ] || $(ECHO) "$(GREEN)Newman + htmlextra are ready$(NC)"
 
 run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost provider-harness Postman collection. HELP=1 prints full parameter docs. Filter via PROVIDER=openai|anthropic|bedrock|gemini|vertex|azure|passthrough|openrouter, FEATURE="<kw>" or FEATURE="<kw1>,<kw2>" (AND across substrings; matches request name/URL/body), RERUN_FAILED=1 (re-run only items that failed last run). INCLUDE_PREVIEW=1 to run [PREVIEW]-tagged account/region-scoped cases. SKIP_STREAM_CANCEL=1 skips stream cancellation probes. USE_INFISICAL=1 to source from Infisical (Usage: make run-provider-harness-test [HELP=1] [PROVIDER=anthropic] [FEATURE="web search"] [FEATURE="cross-cut,structured output"] [RERUN_FAILED=1] [INCLUDE_PREVIEW=1] [BASE_URL=...] [FOLDER="..."] [ENV_FILE=...] [VIEWER_PORT=8090] [CI=1])
 	@if [ -n "$(HELP)" ]; then \
@@ -1817,21 +1986,96 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-18s %s\n' ""                "  Composes with PROVIDER and FEATURE (predicates AND together)."; \
 		printf '  %-18s %s\n' "BASE_URL=<url>"  "Bifrost gateway URL (default: http://localhost:8080). Skips auto-start if /health responds."; \
 		printf '  %-18s %s\n' "APP_DIR=<dir>"   "Config dir passed to 'make dev' if Bifrost isn't already running (default: tests/integrations/python)."; \
-		printf '  %-18s %s\n' "FOLDER=\"<name>\"" "Newman --folder: scope to a single Postman folder (e.g. \"8. Cross-Model\"). Applied AFTER filtering."; \
+		printf '  %-18s %s\n' "FOLDER=\"<name>\"" "Scope to a single Postman folder (substring match, e.g. \"8. Cross-Model\"). Pre-filters (like PROVIDER/FEATURE) AND is"; \
+		printf '  %-18s %s\n' ""                "  passed to newman's own --folder as the final scope. In parallel mode (default), provider forks with zero items"; \
+		printf '  %-18s %s\n' ""                "  in that folder are skipped cleanly instead of forked-then-failed - use with PROVIDER=<one> to run a single fork."; \
 		printf '  %-18s %s\n' "ENV_FILE=<path>" "Postman environment JSON with real keys (kept out of git)."; \
 		printf '  %-18s %s\n' "VIEWER_PORT=N"   "Port for the interactive HTML viewer (default: 8090). Ignored if CI=1."; \
-		printf '  %-18s %s\n' "CI=1"            "CI mode: skip the interactive viewer, emit artifacts only."; \
+		printf '  %-18s %s\n' "CI=1"            "CI mode: skip the interactive viewer, emit artifacts only. Prints a one-line heartbeat every"; \
+		printf '  %-18s %s\n' ""                "  MONITOR_INTERVAL seconds and the provider status table (provider x total/pass/failed) exactly ONCE,"; \
+		printf '  %-18s %s\n' ""                "  at the end - an Actions log is append-only, so reprinting the table left hundreds of stale copies."; \
+		printf '  %-18s %s\n' ""                "  Everything the run would"; \
+		printf '  %-18s %s\n' ""                "  otherwise have echoed goes to tmp/harness-quiet.log; newman's own output goes to tmp/newman-cli*.log."; \
+		printf '  %-18s %s\n' "MONITOR_INTERVAL=N" "Seconds between heartbeat lines in CI mode (default 5, clamped to 5..2700)."; \
+		printf '  %-18s %s\n' "MONITOR_TABLE_REPRINT=1" "Restore the old CI behaviour of reprinting the whole table on every interval. Debugging only."; \
 		printf '  %-18s %s\n' "INCLUDE_PREVIEW=1" "Run [PREVIEW]-tagged requests (account/region-scoped: vector stores, cached content, MCP servers, preview-model deployments). Off by default."; \
 		printf '  %-18s %s\n' "INCLUDE_SKIP=1"   "Run [SKIP]-tagged criss-cross cells (provider+modality pairs that return NewUnsupportedOperationError by design, e.g., anthropic embeddings, bedrock audio). Off by default."; \
+		printf '  %-18s %s\n' "SMOKE=1"          "Run only the curated smoke set in tests/e2e/api/collections/smoke-manifest.json (~100 requests"; \
+		printf '  %-18s %s\n' ""                "  across all 8 providers) instead of the full ~1900-request sweep. SMOKE=<path> uses a different manifest."; \
+		printf '  %-18s %s\n' ""                "  Rows are matched by (folder, name) against the AUGMENTED collection, which is the only way to reach the"; \
+		printf '  %-18s %s\n' ""                "  generated cache-parity rows - they do not exist in provider-harness.json and cannot be tagged in place."; \
+		printf '  %-18s %s\n' ""                "  Forces the deferred cache-parity pass ON: a third of the smoke set is cache parity, and the default"; \
+		printf '  %-18s %s\n' ""                "  deferral only fires on an unfiltered run. Composes with PROVIDER; RERUN_FAILED wins and skips the defer."; \
 		printf '  %-18s %s\n' "PARALLEL=0"       "Disable per-provider parallelism (default: ON). When ON, forks one newman per provider (openai, anthropic, bedrock, gemini, vertex, azure) concurrently; reports merged into tmp/newman-report.json. The htmlextra report is only emitted in sequential mode (PARALLEL=0)."; \
+		printf '  %-18s %s\n' "CLASS_SHARDS=0"  "Collapse the second parallelism axis. By default each provider fork is sharded again by modality"; \
+		printf '  %-18s %s\n' ""                "  class (streaming, tools, chat, reasoning, json, vision, other, audio, embeddings, image-gen) so the"; \
+		printf '  %-18s %s\n' ""                "  run is not bound by one provider's whole sequential list - openai alone is ~1264 requests and its"; \
+		printf '  %-18s %s\n' ""                "  largest class is ~268. filter-collection.mjs --class puts every request in exactly one class, so the"; \
+		printf '  %-18s %s\n' ""                "  shards partition the fork instead of overlapping it. Shard artifacts are named <provider>--<class>."; \
+		printf '  %-18s %s\n' "SUBSHARDS=0"    "Collapse the third parallelism axis. By default each (provider, class) cell is split again via"; \
+		printf '  %-18s %s\n' ""                "  filter-collection.mjs --shard <k>/<n>, because the slow classes are slow PER REQUEST (~8s for a"; \
+		printf '  %-18s %s\n' ""                "  reasoning row vs ~1s for chat), so the class axis alone leaves a long tail. How many sub-shards"; \
+		printf '  %-18s %s\n' ""                "  and which rows go in each are both MEASURED, from HARNESS_TIMINGS - see the two knobs below."; \
+		printf '  %-18s %s\n' ""                "  Sub-shard artifacts are named <provider>--<class>-s<k>."; \
+		printf '  %-18s %s\n' "HARNESS_SHARD_TARGET=N" ""; \
+		printf '  %-18s %s\n' ""                "  Wall clock a single sub-shard aims for, in seconds (default 150). Each cell is split into"; \
+		printf '  %-18s %s\n' ""                "  ceil(cellCost / target) shards, capped by its row count, and filled by greedy longest-"; \
+		printf '  %-18s %s\n' ""                "  processing-time rather than by row position. Lower it to trade node processes for wall clock."; \
+		printf '  %-18s %s\n' ""                "  It cannot push a sweep below its slowest single request (~170s today) - a request is not"; \
+		printf '  %-18s %s\n' ""                "  divisible. Measured effect: worst shard 9.4min -> 2.8min, using fewer shards than the old table."; \
+		printf '  %-18s %s\n' "HARNESS_TIMINGS=path" ""; \
+		printf '  %-18s %s\n' ""                "  Per-request timing table (default tmp/harness-timings.json), refreshed at the end of every run"; \
+		printf '  %-18s %s\n' ""                "  and MERGED onto what was there, so a scoped run refines its own rows without erasing the"; \
+		printf '  %-18s %s\n' ""                "  providers it never ran. Falls back to tests/e2e/api/collections/harness-timings.json, which is"; \
+		printf '  %-18s %s\n' ""                "  what lets a fresh checkout and CI balance on their FIRST sweep. With no table at all the run"; \
+		printf '  %-18s %s\n' ""                "  falls back to the static HARNESS_SUBSHARDS counts and positional slicing - slower, never wrong."; \
+		printf '  %-18s %s\n' "HARNESS_JOBS=N"  "Cap on concurrently running newman shards (default 100). The grid is ~168 live cells with sub-shards"; \
+		printf '  %-18s %s\n' ""                "  on, so the cap does block - which is why HARNESS_CLASSES is ordered slowest-first, to keep the long"; \
+		printf '  %-18s %s\n' ""                "  shards holding slots from the start. Lower it if a provider starts returning 429s."; \
+		printf '  %-18s %s\n' "RETRY_429=N"     "Max transient-failure retry attempts per shard (default 3; 0 disables). Covers 429 plus the two"; \
+		printf '  %-18s %s\n' ""                "  overload codes - 503 (OpenAI 'engine is currently overloaded') and 529 (Anthropic"; \
+		printf '  %-18s %s\n' ""                "  overloaded_error, which is its whole equivalent of 503; its error table has no 503). Other 5xx"; \
+		printf '  %-18s %s\n' ""                "  are NOT retried: a 500/502 is ambiguous between an upstream blip and a Bifrost defect, and"; \
+		printf '  %-18s %s\n' ""                "  finding the second kind is what this sweep is for. After the main pass, any shard that failed"; \
+		printf '  %-18s %s\n' ""                "  on one of those replays ONLY its affected rows, after waiting max(retry-after) across them"; \
+		printf '  %-18s %s\n' ""                "  or an exponential 5/10/20s when the provider sent no header (capped at 120s). A shard with any"; \
+		printf '  %-18s %s\n' ""                "  non-retryable failure stays failed however well the retry went, so a real defect is never masked."; \
+		printf '  %-18s %s\n' ""                "  Retry reports merge LAST, so a successful attempt supersedes its own failure in tmp/newman-report.json."; \
+		printf '  %-18s %s\n' "SHARD_LINES=0"  "Drop the per-shard completion lines (<shard> N total/pass/fail) and show only the provider table."; \
 		printf '  %-18s %s\n' "SKIP_STREAM_CANCEL=1" "Skip the post-Newman stream-abort probes that verify server-side cancellation on client disconnect."; \
 		printf '  %-18s %s\n' "DB_VERIFY=0"      "Disable the dbverify reporter (ON by default). When on, [Costing]/[Accounting] requests assert the logs DB cost matches the getbifrost.ai/datasheet-computed cost (resolves DB from APP_DIR/config.json or BIFROST_LOGS_DB_URL); skips gracefully if no logs DB is reachable."; \
 		printf '  %-18s %s\n' "USE_INFISICAL=1" "Source secrets from Infisical CLI ('infisical export --path /local --format dotenv') instead of .env."; \
 		printf '  %-18s %s\n' "VERTEX_GCS_BUCKET" "Env-sourced (.env/Infisical): GCS bucket for Vertex file ops (forwarded to Newman as vertexGcsBucket)."; \
 		printf '  %-18s %s\n' "VERTEX_GCS_PREFIX" "Env-sourced: GCS object prefix for Vertex file ops (forwarded as vertexGcsPrefix)."; \
+		printf '\n%s\n' "$(CYAN)Token Parity Matrix$(NC) ('Cross-Cut Round 33', generated - FOLDER or FEATURE=\"token parity\" to target it)"; \
+		printf '  %s\n' "Runs the same 3-round conversation directly against each provider AND through Bifrost, asserts usage lands in the same"; \
+		printf '  %s\n' "range, and writes tmp/harness-token-parity.md. Reuses the SAME env vars tests/integrations/python/config.json already reads"; \
+		printf '  %s\n' "for Bifrost's own provider config (sourced via .env/Infisical, same as everything else in this target - no separate setup):"; \
+		printf '  %s\n' "  openai/anthropic/gemini: OPENAI_API_KEY / ANTHROPIC_API_KEY / GEMINI_API_KEY -> {{openaiKey}}/{{anthropicKey}}/{{genaiKey}}."; \
+		printf '  %s\n' "  bedrock:  AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_REGION (same creds Bifrost's own bedrock provider uses), plus {{bedrockModel}} via ENV_FILE."; \
+		printf '  %s\n' "  vertex:   VERTEX_PROJECT_ID / GOOGLE_LOCATION for project/region, plus gcloud CLI on PATH + authenticated ('gcloud auth login') -"; \
+		printf '  %s\n' "            the Makefile mints a fresh OAuth access token per run (VERTEX_CREDENTIALS in config.json is a service-account key,"; \
+		printf '  %s\n' "            not a bearer token Postman can use directly, so this is the one leg that still needs its own auth step)."; \
+		printf '  %s\n' "  ENV_FILE still overrides any of the above if set - these are just sane defaults from what's already injected."; \
+		printf '  %s\n' "  Skipped cells (provider genuinely can't do it, e.g. OpenAI+PDF, Anthropic+audio/video) are listed in the folder description."; \
+		printf '\n%s\n' "$(CYAN)Cache Parity Matrices$(NC) ('Cross-Cut Rounds 34 + 35', generated - pick 'cache-parity' in the menu or FEATURE=\"cache\")"; \
+		printf '  %s\n' "Round 34 (Mid-Conversation System Cache-Anchor Parity) runs the same conversation on three legs - direct Bedrock Converse"; \
+		printf '  %s\n' "  over SigV4, Bifrost /anthropic/v1/messages, Bifrost /openai/v1/responses - and diffs the cache read/write counts. The direct"; \
+		printf '  %s\n' "  leg is the baseline: a Bifrost leg reading materially less on identical bytes means a dropped cache breakpoint."; \
+		printf '  %s\n' "Round 35 (Cross-Provider Prompt-Cache Matrix) sweeps provider x model x explicit/implicit mechanism through Bifrost."; \
+		printf '  %s\n' "Both write tmp/harness-cache-parity.md. Credentials reuse the same AWS_*/provider keys as the Round 33 token-parity matrix."; \
+		printf '  %s\n' "Selecting 'cache-parity' in the interactive menu does NOT drop the run to PARALLEL=0: those rows are pulled out of the main"; \
+		printf '  %s\n' "  pass (which keeps its per-provider parallelism) and replayed afterwards in one sequential newman, because they match every"; \
+		printf '  %s\n' "  provider fork and would otherwise run up to six times each. A FEATURE whose comma-separated keywords include"; \
+		printf '  %s\n' "  'cache-parity' (matched case-insensitively, like FEATURE itself) gets the same treatment, and the whole FEATURE and"; \
+		printf '  %s\n' "  FOLDER predicate is forwarded to that pass so the scope still applies. RERUN_FAILED=1 does not defer, because the"; \
+		printf '  %s\n' "  failed-row selection comes from the main pass it would skip. A keyword that merely contains the key, such as"; \
+		printf '  %s\n' "  FEATURE=\"cache\", is not the key and has no such protection - add PARALLEL=0 yourself in that case."; \
 		printf '\n%s\n' "$(YELLOW)EXAMPLES$(NC)"; \
 		printf '  %s\n' "make run-provider-harness-test HELP=1"; \
 		printf '  %s\n' "make run-provider-harness-test                       # full provider sweep"; \
+		printf '  %s\n' "make smoke-provider-harness-test                    # curated ~100-request smoke set (all providers)"; \
+		printf '  %s\n' "make run-provider-harness-test SMOKE=1 PROVIDER=bedrock   # the smoke set, bedrock rows only"; \
 		printf '  %s\n' "make run-provider-harness-test PROVIDER=bedrock      # bedrock-only"; \
 		printf '  %s\n' "make run-provider-harness-test FEATURE=\"web search\"                       # all providers, web-search entries"; \
 		printf '  %s\n' "make run-provider-harness-test FEATURE=\"cross-cut,structured output\"      # AND of substrings"; \
@@ -1842,32 +2086,120 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '\n%s\n' "$(YELLOW)ARTIFACTS$(NC)"; \
 		printf '  %-30s %s\n' "tmp/newman-report.json"      "Machine-readable run report (used by RERUN_FAILED and the analyzer)."; \
 		printf '  %-30s %s\n' "tmp/newman-cli.log"          "Captured newman CLI output (stdout+stderr)."; \
+		printf '  %-30s %s\n' "tmp/newman-cli-cache-parity.log" "Newman CLI output of the deferred sequential cache-parity pass (also appended to tmp/newman-cli.log)."; \
+		printf '  %-30s %s\n' "tmp/harness-quiet.log"       "Everything the target would have echoed, when CI=1 or a live status table suppressed it."; \
+		printf '  %-30s %s\n' "tmp/harness-monitor-passes.jsonl" "Pass manifest the single run-wide status table follows (one record per newman invocation)."; \
 		printf '  %-30s %s\n' "tmp/harness-failures.md"     "Categorized failure analyzer output + coverage matrices."; \
 		printf '  %-30s %s\n' "tmp/bifrost-dev.log"         "Bifrost runtime log (only if we auto-started it)."; \
 		printf '  %-30s %s\n' "tmp/harness-augmented.json"  "Provider harness plus generated streaming/thinking rows."; \
 		printf '  %-30s %s\n' "tmp/harness-filtered.json"   "Filtered collection (only if PROVIDER/FEATURE/RERUN_FAILED set)."; \
-		printf '  %-30s %s\n' "tmp/newman-report-<p>.json" "Per-provider newman report (parallel mode only)."; \
+		printf '  %-30s %s\n' "tmp/harness-timings.json"    "Measured median ms per request name, merged across runs. Drives both the shard sizing and the"; \
+		printf '  %-30s %s\n' ""                            "  slice fill. Safe to delete: the next run falls back to the static table and rewrites it."; \
+		printf '  %-30s %s\n' "tmp/harness-shard-plan.txt"  "The sized grid this run launched: '<provider> <class> <shards> <rows> <seconds>' per cell."; \
+		printf '  %-30s %s\n' ""                            "  Absent means no timing table was available and the static HARNESS_SUBSHARDS counts were used."; \
+		printf '  %-30s %s\n' "tmp/newman-report-<shard>.json" "Per-shard newman report (parallel mode only). <shard> is \"<provider>--<class>\", \"<provider>--<class>-s<k>\" for a sub-sharded class, or plain \"<provider>\" under CLASS_SHARDS=0."; \
+		printf '  %-30s %s\n' "tmp/parallel-exit-<shard>"  "Exit code of each shard's newman process. Read instead of 'wait <pid>' because the HARNESS_JOBS cap reaps pids as slots free up."; \
 		printf '  %-30s %s\n' "tmp/newman-cli-<p>.log"     "Per-provider newman stdout/stderr (parallel mode only)."; \
 		printf '  %-30s %s\n' "tmp/parallel-status"        "Per-provider pass/fail summary (parallel mode only)."; \
 		printf '  %-30s %s\n' "tmp/newman-report.html"     "htmlextra report (sequential mode only — PARALLEL=0)."; \
 		printf '  %-30s %s\n' "tmp/stream-cancel-report.json" "Server-side stream cancellation probe report."; \
+		printf '  %-30s %s\n' "tmp/harness-token-parity-*.json" "Per-newman-process token parity fragments (one per provider fork in parallel mode)."; \
+		printf '  %-30s %s\n' "tmp/harness-token-parity.md"     "Direct-vs-Bifrost token usage table (prompt/completion/cached/total per backend+modality) - see Token Parity Matrix above."; \
+		printf '  %-30s %s\n' ""                                "  Same table is also injected into tmp/newman-report.html when present (sequential mode / PARALLEL=0 only)."; \
+		printf '  %-30s %s\n' "tmp/harness-cache-parity-*.json" "Per-newman-process cache parity fragments (CACHE_ANCHOR_REPORT + CACHE_MATRIX_REPORT blobs)."; \
+		printf '  %-30s %s\n' "tmp/harness-cache-parity.md"     "Round 34 direct-vs-Bifrost cache hit-rate table + Round 35 cross-provider matrix - see Cache Parity Matrices above."; \
+		printf '  %-30s %s\n' ""                                "  Both parity .md files are DELETED at run start alongside their fragments, because rendering is skipped"; \
+		printf '  %-30s %s\n' ""                                "  when a run produces no fragments (scope excluded those rows, or the reporter deps failed to install)."; \
+		printf '  %-30s %s\n' ""                                "  Absent means 'this run measured none'; a leftover from an earlier run reads as current and contradicts"; \
+		printf '  %-30s %s\n' ""                                "  the freshly written tmp/harness-failures.md, which is rewritten unconditionally on every run."; \
+		printf '  %-30s %s\n' "tmp/newman-report-cache-parity.json" "Newman report for the deferred sequential cache pass (merged into tmp/newman-report.json)."; \
+		printf '  %-30s %s\n' "tmp/newman-merge.jq"            "jq program used to merge per-provider + cache-pass reports into tmp/newman-report.json."; \
 		printf '\n'; \
 		exit 0; \
 	fi
 	@if [ -n "$(HELP)" ]; then exit 0; fi; \
+	HARNESS_QUIET=0; \
+	if [ -n "$$CI" ] || [ -n "$(CI)" ]; then HARNESS_QUIET=1; fi; \
+	HARNESS_MONITORED=0; \
+	mkdir -p tmp; \
+	QUIET_LOG="$(CURDIR)/tmp/harness-quiet.log"; \
+	: > "$$QUIET_LOG"; \
+	MONITOR_ROSTER="$(or $(PROVIDER),$(HARNESS_PROVIDERS))"; \
+	MONITOR_PASSES="tmp/harness-monitor-passes.jsonl"; \
+	MONITOR_LIVE=0; \
+	: "Per-shard totals, reported as each shard finishes. On by default: with the provider x class"; \
+	: "grid running up to 80 shards, the provider row says how much is failing but not which slice,"; \
+	: "and that is otherwise only recoverable from 80 separate tmp/newman-cli-*.log files."; \
+	: "SHARD_LINES=0 drops back to the plain table."; \
+	STREAM_FLAG=""; \
+	if [ "$(SHARD_LINES)" = "0" ]; then STREAM_FLAG="--shard-lines 0"; fi; \
+	: > "$$MONITOR_PASSES"; \
+	if [ -f tmp/harness-monitor.pid ]; then \
+		kill $$(cat tmp/harness-monitor.pid) 2>/dev/null || true; \
+		rm -f tmp/harness-monitor.pid; \
+	fi; \
+	say() { \
+		if [ "$$HARNESS_QUIET" = "1" ] || [ "$$MONITOR_LIVE" = "1" ]; then \
+			printf '%b\n' "$$@" >> "$$QUIET_LOG"; \
+		else printf '%b\n' "$$@"; fi; \
+	}; \
+	run_quiet() { \
+		if [ "$$HARNESS_QUIET" = "1" ] || [ "$$MONITOR_LIVE" = "1" ]; then "$$@" >> "$$QUIET_LOG" 2>&1; \
+		else "$$@"; fi; \
+	}; \
+	start_monitor() { \
+		if [ -f tmp/harness-monitor.pid ]; then return 0; fi; \
+		if [ "$$HARNESS_QUIET" != "1" ] && [ ! -t 1 ]; then return 0; fi; \
+		$(USE_NODE); \
+		if [ "$$HARNESS_QUIET" = "1" ]; then \
+			node tests/e2e/api/runners/harness-monitor.mjs \
+				--providers "$$MONITOR_ROSTER" --tmp-dir tmp --passes "$$MONITOR_PASSES" \
+				--ci --ci-interval "$(or $(MONITOR_INTERVAL),5)" \
+				$$STREAM_FLAG \
+				$(if $(MONITOR_TABLE_REPRINT),--ci-reprint-table,) < /dev/null & \
+		else \
+			node tests/e2e/api/runners/harness-monitor.mjs \
+				--providers "$$MONITOR_ROSTER" --tmp-dir tmp --passes "$$MONITOR_PASSES" \
+				$$STREAM_FLAG \
+				< /dev/null > /dev/tty 2>&1 & \
+		fi; \
+		echo $$! > tmp/harness-monitor.pid; \
+		HARNESS_MONITORED=1; MONITOR_LIVE=1; \
+	}; \
+	add_pass() { \
+		printf '%s\n' "$$1" >> "$$MONITOR_PASSES"; \
+		start_monitor; \
+	}; \
+	end_pass() { \
+		[ -f tmp/harness-monitor.pid ] || return 0; \
+		printf '{"t":"pass-end","id":"%s"}\n' "$$1" >> "$$MONITOR_PASSES"; \
+	}; \
+	monitor_note() { \
+		[ -f tmp/harness-monitor.pid ] || return 0; \
+		printf '{"t":"note","text":"%s"}\n' "$$1" >> "$$MONITOR_PASSES"; \
+	}; \
+	stop_monitor() { \
+		if [ -f tmp/harness-monitor.pid ]; then \
+			MPID=$$(cat tmp/harness-monitor.pid); \
+			kill -TERM $$MPID 2>/dev/null; \
+			wait $$MPID 2>/dev/null || true; \
+			rm -f tmp/harness-monitor.pid; \
+		fi; \
+		MONITOR_LIVE=0; \
+	}; \
 	if [ "$(COMPAT)" = "both" ]; then \
 		mkdir -p tmp; \
-		$(ECHO) "$(CYAN)COMPAT=both: running harness with compat OFF then ON (sub-runs forced CI=1 to skip the interactive viewer)...$(NC)"; \
+		say "$(CYAN)COMPAT=both: running harness with compat OFF then ON (sub-runs forced CI=1 to skip the interactive viewer)...$(NC)"; \
 		for mode in off on; do \
-			$(ECHO) "$(CYAN)=== Harness run: compat $$mode ===$(NC)"; \
+			say "$(CYAN)=== Harness run: compat $$mode ===$(NC)"; \
 			$(MAKE) run-provider-harness-test COMPAT=$$mode CI=1; \
 			RC=$$?; \
 			mv -f tmp/newman-report.json "tmp/newman-report-compat-$$mode.json" 2>/dev/null || true; \
 			mv -f tmp/newman-report.html "tmp/newman-report-compat-$$mode.html" 2>/dev/null || true; \
 			mv -f tmp/harness-failures.md "tmp/harness-failures-compat-$$mode.md" 2>/dev/null || true; \
-			if [ "$$RC" -ne 0 ]; then $(ECHO) "$(RED)compat $$mode run failed (exit $$RC)$(NC)"; BOTH_RC=$$RC; fi; \
+			if [ "$$RC" -ne 0 ]; then say "$(RED)compat $$mode run failed (exit $$RC)$(NC)"; BOTH_RC=$$RC; fi; \
 		done; \
-		$(ECHO) "$(GREEN)COMPAT=both complete. Reports: tmp/newman-report-compat-{off,on}.{json,html}, tmp/harness-failures-compat-{off,on}.md$(NC)"; \
+		say "$(GREEN)COMPAT=both complete. Reports: tmp/newman-report-compat-{off,on}.{json,html}, tmp/harness-failures-compat-{off,on}.md$(NC)"; \
 		exit $${BOTH_RC:-0}; \
 	fi; \
 	$(EXPOSE_ENV); \
@@ -1875,26 +2207,54 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	BASE_URL_VAL="$(or $(BASE_URL),http://localhost:8080)"; \
 	APP_DIR_VAL="$(or $(APP_DIR),tests/integrations/python)"; \
 	VIEWER_PORT_VAL="$(or $(VIEWER_PORT),8090)"; \
-	DBVERIFY_REPORTER=""; DBVERIFY_ARGS=""; DBVERIFY_READY=0; \
-	if [ "$(DB_VERIFY)" != "0" ]; then \
-		if [ -d tests/e2e/api/node_modules ] && npm --prefix tests/e2e/api ls --depth=0 >/dev/null 2>&1; then \
-			DBVERIFY_READY=1; \
+	: "Measured per-request cost, used to size the shard grid and to fill each shard (see"; \
+	: "lib/shard-cost.mjs). tmp/ first because it is refreshed by every run and so tracks the"; \
+	: "collection as it changes; the committed baseline is the fallback that makes a fresh"; \
+	: "checkout and CI balanced on their FIRST sweep rather than on their second."; \
+	TIMINGS_FILE=""; \
+	for cand in "$(or $(HARNESS_TIMINGS),tmp/harness-timings.json)" tests/e2e/api/collections/harness-timings.json; do \
+		if [ -s "$$cand" ]; then TIMINGS_FILE="$$cand"; break; fi; \
+	done; \
+	DBVERIFY_REPORTER=""; DBVERIFY_ARGS=""; DBVERIFY_READY=0; E2E_DEPS_READY=0; \
+	if [ -d tests/e2e/api/node_modules ] && npm --prefix tests/e2e/api ls --depth=0 >/dev/null 2>&1; then \
+		E2E_DEPS_READY=1; \
+	else \
+		say "$(YELLOW)Installing e2e reporter deps (dbverify, token-parity)...$(NC)"; \
+		if (cd tests/e2e/api && run_quiet npm install --silent); then \
+			E2E_DEPS_READY=1; \
 		else \
-			$(ECHO) "$(YELLOW)Installing dbverify reporter deps...$(NC)"; \
-			if (cd tests/e2e/api && npm install --silent); then \
-				DBVERIFY_READY=1; \
-			else \
-				$(ECHO) "$(YELLOW)dbverify dep install failed; cost checks disabled for this run (set DB_VERIFY=0 to silence)$(NC)"; \
-			fi; \
+			say "$(YELLOW)e2e reporter dep install failed; dbverify cost checks and the token-parity reporter are disabled for this run$(NC)"; \
 		fi; \
-		if [ "$$DBVERIFY_READY" = "1" ]; then \
-			export NODE_PATH="$(CURDIR)/tests/e2e/api/node_modules$${NODE_PATH:+:$$NODE_PATH}"; \
-			DBVERIFY_REPORTER=",dbverify"; \
-			LOGS_DB_VAL="$${BIFROST_LOGS_DB_URL:-sqlite://$(CURDIR)/$$APP_DIR_VAL/logs.db}"; \
-			export BIFROST_LOGS_DB_URL="$$LOGS_DB_VAL"; \
-			DBVERIFY_ARGS="--reporter-dbverify-config $$APP_DIR_VAL/config.json"; \
-			$(ECHO) "$(CYAN)dbverify reporter enabled (logs DB: $$LOGS_DB_VAL). Set DB_VERIFY=0 to disable.$(NC)"; \
+	fi; \
+	if [ "$$E2E_DEPS_READY" = "1" ]; then \
+		export NODE_PATH="$(CURDIR)/tests/e2e/api/node_modules$${NODE_PATH:+:$$NODE_PATH}"; \
+	fi; \
+	if [ "$(DB_VERIFY)" != "0" ] && [ "$$E2E_DEPS_READY" = "1" ]; then \
+		DBVERIFY_READY=1; \
+		DBVERIFY_REPORTER=",dbverify"; \
+		LOGS_DB_VAL="$${BIFROST_LOGS_DB_URL:-sqlite://$(CURDIR)/$$APP_DIR_VAL/logs.db}"; \
+		export BIFROST_LOGS_DB_URL="$$LOGS_DB_VAL"; \
+		DBVERIFY_ARGS="--reporter-dbverify-config $$APP_DIR_VAL/config.json"; \
+		say "$(CYAN)dbverify reporter enabled (logs DB: $$LOGS_DB_VAL). Set DB_VERIFY=0 to disable.$(NC)"; \
+	fi; \
+	TOKEN_PARITY_REPORTER=""; \
+	CACHE_PARITY_REPORTER=""; \
+	if [ "$$E2E_DEPS_READY" = "1" ]; then \
+		TOKEN_PARITY_REPORTER=",token-parity"; \
+		CACHE_PARITY_REPORTER=",cache-parity"; \
+	fi; \
+	rm -f tmp/harness-token-parity-*.json tmp/harness-cache-parity-*.json tmp/harness-token-parity.md tmp/harness-cache-parity.md; \
+	cp tests/e2e/api/runners/lib/newman-merge.jq tmp/newman-merge.jq; \
+	if command -v gcloud > /dev/null 2>&1; then \
+		VERTEX_ACCESS_TOKEN_VAL="$$(gcloud auth print-access-token 2>/dev/null)"; \
+		if [ -n "$$VERTEX_ACCESS_TOKEN_VAL" ]; then \
+			say "$(CYAN)Vertex direct-call access token minted via gcloud (expires in ~1h).$(NC)"; \
+		else \
+			say "$(YELLOW)gcloud present but 'gcloud auth print-access-token' failed - Vertex direct-provider parity cells will 401 (run 'gcloud auth login' to fix).$(NC)"; \
 		fi; \
+	else \
+		VERTEX_ACCESS_TOKEN_VAL=""; \
+		say "$(YELLOW)gcloud not found - Vertex direct-provider parity cells will 401 (install the gcloud CLI and auth to enable them).$(NC)"; \
 	fi; \
 	STARTED_BY_US=0; \
 	cleanup() { \
@@ -1910,7 +2270,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		fi; \
 		if [ "$$STARTED_BY_US" = "1" ] && [ -f tmp/bifrost-dev.pid ]; then \
 			BPID=$$(cat tmp/bifrost-dev.pid); \
-			$(ECHO) "$(YELLOW)Stopping Bifrost (pid $$BPID) - we started it...$(NC)"; \
+			say "$(YELLOW)Stopping Bifrost (pid $$BPID) - we started it...$(NC)"; \
 			kill $$BPID 2>/dev/null; \
 			pkill -P $$BPID 2>/dev/null; \
 			rm -f tmp/bifrost-dev.pid; \
@@ -1920,14 +2280,14 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		if [ -f tmp/harness-viewer.pid ]; then \
 			OLD=$$(cat tmp/harness-viewer.pid); \
 			if kill -0 $$OLD 2>/dev/null; then \
-				$(ECHO) "$(YELLOW)Killing orphaned viewer pid $$OLD from a prior run...$(NC)"; \
+				say "$(YELLOW)Killing orphaned viewer pid $$OLD from a prior run...$(NC)"; \
 				kill $$OLD 2>/dev/null; sleep 1; \
 			fi; \
 			rm -f tmp/harness-viewer.pid; \
 		fi; \
 		pkill -f "tests/e2e/api/runners/harness-viewer.mjs" 2>/dev/null || true; \
 		if command -v lsof > /dev/null 2>&1 && lsof -ti tcp:$$VIEWER_PORT_VAL > /dev/null 2>&1; then \
-			$(ECHO) "$(YELLOW)Port $$VIEWER_PORT_VAL still in use - freeing it...$(NC)"; \
+			say "$(YELLOW)Port $$VIEWER_PORT_VAL still in use - freeing it...$(NC)"; \
 			lsof -ti tcp:$$VIEWER_PORT_VAL | xargs kill 2>/dev/null || true; \
 			sleep 1; \
 		fi; \
@@ -1936,165 +2296,207 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	PICKED_FEATURES=""; \
 	if [ -t 0 ] && [ -t 1 ] && [ -z "$$CI" ] && [ -z "$(CI)" ] \
 	   && [ -z "$(PROVIDER)" ] && [ -z "$(FEATURE)" ] && [ -z "$(FOLDER)" ] \
-	   && [ -z "$(RERUN_FAILED)" ]; then \
+	   && [ -z "$(RERUN_FAILED)" ] && [ -z "$(SMOKE)" ]; then \
 		$(USE_NODE); \
 		PICKED_FEATURES=$$(node tests/e2e/api/runners/pick-features.mjs); \
 		PICK_RC=$$?; \
 		case $$PICK_RC in \
 			0) ;; \
-			1) $(ECHO) "$(YELLOW)Cancelled.$(NC)"; exit 1 ;; \
+			1) say "$(YELLOW)Cancelled.$(NC)"; exit 1 ;; \
 			2) ;; \
 			*) exit $$PICK_RC ;; \
 		esac; \
 		if [ -n "$$PICKED_FEATURES" ]; then \
-			$(ECHO) "$(GREEN)Modalities: $$PICKED_FEATURES$(NC)"; \
+			say "$(GREEN)Modalities: $$PICKED_FEATURES$(NC)"; \
 		else \
-			$(ECHO) "$(GREEN)Modalities: all (no filter)$(NC)"; \
+			say "$(GREEN)Modalities: all (no filter)$(NC)"; \
 		fi; \
 	fi; \
 	if curl -fsS --max-time 2 "$$BASE_URL_VAL/health" > /dev/null 2>&1; then \
-		$(ECHO) "$(GREEN)Bifrost already running at $$BASE_URL_VAL$(NC)"; \
+		say "$(GREEN)Bifrost already running at $$BASE_URL_VAL$(NC)"; \
 	else \
-		$(ECHO) "$(YELLOW)Bifrost not running - launching 'make dev' (APP_DIR=$$APP_DIR_VAL) in background...$(NC)"; \
+		say "$(YELLOW)Bifrost not running - launching 'make dev' (APP_DIR=$$APP_DIR_VAL) in background...$(NC)"; \
 		$(MAKE) dev APP_DIR="$$APP_DIR_VAL" > tmp/bifrost-dev.log 2>&1 & \
 		echo $$! > tmp/bifrost-dev.pid; \
 		STARTED_BY_US=1; \
-		$(ECHO) "$(CYAN)Waiting for Bifrost /health to respond (up to 60s)...$(NC)"; \
+		say "$(CYAN)Waiting for Bifrost /health to respond (up to 60s)...$(NC)"; \
 		for i in $$(seq 1 30); do \
 			if curl -fsS --max-time 2 "$$BASE_URL_VAL/health" > /dev/null 2>&1; then \
-				$(ECHO) "$(GREEN)Bifrost is up$(NC)"; break; \
+				say "$(GREEN)Bifrost is up$(NC)"; break; \
 			fi; \
 			sleep 2; \
 		done; \
 		if ! curl -fsS --max-time 2 "$$BASE_URL_VAL/health" > /dev/null 2>&1; then \
-			$(ECHO) "$(RED)Bifrost did not become healthy. See tmp/bifrost-dev.log$(NC)"; \
+			say "$(RED)Bifrost did not become healthy. See tmp/bifrost-dev.log$(NC)"; \
 			exit 1; \
 		fi; \
 	fi; \
-	$(ECHO) "$(CYAN)Augmenting provider harness with generated streaming/thinking cases...$(NC)"; \
-	$(USE_NODE); node tests/e2e/api/runners/augment-provider-harness.mjs \
+	say "$(CYAN)Augmenting provider harness with generated streaming/thinking cases...$(NC)"; \
+	$(USE_NODE); run_quiet node tests/e2e/api/runners/augment-provider-harness.mjs \
 		--source tests/e2e/api/collections/provider-harness.json \
-		--out tmp/harness-augmented.json || { $(ECHO) "$(RED)Harness augmentation failed$(NC)"; exit 1; }; \
+		--out tmp/harness-augmented.json || { say "$(RED)Harness augmentation failed$(NC)"; exit 1; }; \
 	COLLECTION_FILE="tmp/harness-augmented.json"; \
+	: "SMOKE_MANIFEST alone carries smoke mode: it is both the truth test and the flag value."; \
+	: "Packing --smoke and the path into one scalar would leave field splitting as the only"; \
+	: "thing separating them, so a manifest path containing a space would arrive truncated."; \
+	SMOKE_MANIFEST=""; \
+	if [ -n "$(SMOKE)" ]; then \
+		case "$(SMOKE)" in \
+			1|true|TRUE|yes|YES|y|Y) SMOKE_MANIFEST="tests/e2e/api/collections/smoke-manifest.json" ;; \
+			*) SMOKE_MANIFEST="$(SMOKE)" ;; \
+		esac; \
+		if [ ! -f "$$SMOKE_MANIFEST" ]; then \
+			say "$(RED)SMOKE manifest not found: $$SMOKE_MANIFEST$(NC)"; exit 1; \
+		fi; \
+		say "$(CYAN)Smoke mode: selecting the curated set in $$SMOKE_MANIFEST.$(NC)"; \
+	fi; \
+	DEFERRED_KEYS="cache-parity"; \
+	MAIN_FEATURES=""; CACHE_PASS=0; SKIP_MAIN=0; PICK_SAW_DEFERRED=0; \
+	for k in $$(printf '%s' "$$PICKED_FEATURES" | tr ',' ' '); do \
+		IS_DEFERRED=0; \
+		for d in $$DEFERRED_KEYS; do if [ "$$k" = "$$d" ]; then IS_DEFERRED=1; fi; done; \
+		if [ "$$IS_DEFERRED" = "1" ]; then PICK_SAW_DEFERRED=1; \
+		else MAIN_FEATURES="$${MAIN_FEATURES:+$$MAIN_FEATURES,}$$k"; fi; \
+	done; \
+	if [ -n "$$PICKED_FEATURES" ]; then \
+		CACHE_PASS=$$PICK_SAW_DEFERRED; \
+	elif [ -z "$(RERUN_FAILED)" ] && [ -z "$(FOLDER)" ] && [ -z "$(FEATURE)" ]; then \
+		CACHE_PASS=1; \
+	fi; \
+	if [ "$$CACHE_PASS" = "1" ] && [ -n "$$PICKED_FEATURES" ] && [ -z "$$MAIN_FEATURES" ]; then SKIP_MAIN=1; fi; \
+	FEATURE_TOKENS="$$(printf '%s' "$(FEATURE)" | tr 'A-Z,' 'a-z ')"; \
+	for d in $$DEFERRED_KEYS; do \
+		for t in $$FEATURE_TOKENS; do \
+			if [ "$$t" = "$$d" ] && [ -z "$(RERUN_FAILED)" ]; then CACHE_PASS=1; SKIP_MAIN=1; fi; \
+		done; \
+	done; \
+	: "SMOKE forces the deferred cache pass on. The default above turns CACHE_PASS on only when nothing"; \
+	: "is filtering the run, and SMOKE is a filter - so without this line a smoke run would carve the"; \
+	: "cache-parity rows out of the main pass via EXCLUDE_FLAG and then never replay them, silently"; \
+	: "dropping the third of the smoke set that exists to catch a dropped cache breakpoint."; \
+	if [ -n "$${SMOKE_MANIFEST:-}" ] && [ -z "$(RERUN_FAILED)" ]; then CACHE_PASS=1; SKIP_MAIN=0; fi; \
+	EXCLUDE_FLAG=""; \
+	if [ "$$CACHE_PASS" = "1" ]; then \
+		EXCLUDE_FLAG="--exclude-feature-any cache-parity"; \
+		say "$(CYAN)cache-parity deferred to a sequential pass after the main run (its rows match every provider fork, so running them in the parallel pass would repeat each request once per fork).$(NC)"; \
+	fi; \
 	FEATURE_ANY_FLAG=""; \
-	if [ -n "$$PICKED_FEATURES" ]; then FEATURE_ANY_FLAG="--feature-any $$PICKED_FEATURES"; fi; \
-	if [ -n "$(PROVIDER)" ] || [ -n "$(FEATURE)" ] || [ -n "$(RERUN_FAILED)" ] || [ -n "$$PICKED_FEATURES" ]; then \
-		$(ECHO) "$(CYAN)Filtering collection (provider=$(PROVIDER), feature=$(FEATURE), feature-any=$$PICKED_FEATURES, rerun-failed=$(RERUN_FAILED))...$(NC)"; \
-		$(USE_NODE); node tests/e2e/api/runners/filter-collection.mjs \
+	if [ -n "$$MAIN_FEATURES" ]; then FEATURE_ANY_FLAG="--feature-any $$MAIN_FEATURES"; fi; \
+	if [ "$$SKIP_MAIN" != "1" ] && { [ -n "$(PROVIDER)" ] || [ -n "$(FEATURE)" ] || [ -n "$(FOLDER)" ] || [ -n "$(RERUN_FAILED)" ] || [ -n "$$MAIN_FEATURES" ] || [ -n "$$EXCLUDE_FLAG" ] || [ -n "$$SMOKE_MANIFEST" ]; }; then \
+		say "$(CYAN)Filtering collection (provider=$(PROVIDER), feature=$(FEATURE), folder=$(FOLDER), feature-any=$$MAIN_FEATURES, exclude=$${EXCLUDE_FLAG:+cache-parity}, smoke=$${SMOKE_MANIFEST:--}, rerun-failed=$(RERUN_FAILED))...$(NC)"; \
+		$(USE_NODE); run_quiet node tests/e2e/api/runners/filter-collection.mjs \
 			--source "$$COLLECTION_FILE" \
 			--out tmp/harness-filtered.json \
 			$(if $(PROVIDER),--provider $(PROVIDER),) \
 			$(if $(FEATURE),--feature "$(FEATURE)",) \
+			$(if $(FOLDER),--folder "$(FOLDER)",) \
 			$$FEATURE_ANY_FLAG \
-			$(if $(RERUN_FAILED),--rerun-failed --report tmp/newman-report.json,) || { $(ECHO) "$(RED)Filter step failed$(NC)"; exit 1; }; \
+			$$EXCLUDE_FLAG \
+			$${SMOKE_MANIFEST:+--smoke "$$SMOKE_MANIFEST"} \
+			$(if $(RERUN_FAILED),--rerun-failed --report tmp/newman-report.json,) || { say "$(RED)Filter step failed$(NC)"; exit 1; }; \
 		COLLECTION_FILE="tmp/harness-filtered.json"; \
 	fi; \
-	$(ECHO) "$(YELLOW)Running newman against $$BASE_URL_VAL using $$COLLECTION_FILE...$(NC)"; \
+	say "$(YELLOW)Running newman against $$BASE_URL_VAL using $$COLLECTION_FILE...$(NC)"; \
 	set -o pipefail; \
 	$(USE_NODE); \
 	PARALLEL_VAL="$(or $(PARALLEL),1)"; \
-	if [ "$$PARALLEL_VAL" != "0" ] && [ -n "$$PARALLEL_VAL" ]; then \
-		$(ECHO) "$(CYAN)Parallel mode (default): forking one newman per provider (openai, anthropic, bedrock, gemini, vertex, azure, passthrough, openrouter). Set PARALLEL=0 to disable.$(NC)"; \
-		rm -f tmp/newman-report-*.json tmp/newman-cli-*.log tmp/parallel-pids tmp/parallel-status; \
+	if [ "$$SKIP_MAIN" = "1" ]; then \
+		say "$(CYAN)cache-parity was the only selection - skipping the main pass and going straight to the sequential cache pass.$(NC)"; \
+		printf '%s' '{"collection":{},"environment":{},"run":{"executions":[],"failures":[],"stats":{"iterations":{"total":1,"pending":0,"failed":0},"items":{"total":0},"requests":{"total":0,"failed":0}},"timings":{}}}' > tmp/newman-report.json; \
+		: > tmp/newman-cli.log; \
+		NEWMAN_EXIT=0; \
+	elif [ "$$PARALLEL_VAL" != "0" ] && [ -n "$$PARALLEL_VAL" ]; then \
+		say "$(CYAN)Parallel mode (default): forking one newman per provider (openai, anthropic, bedrock, gemini, vertex, azure, passthrough, openrouter) x modality class x sub-shard, slowest class first. Set PARALLEL=0 to disable, SUBSHARDS=0 to drop the sub-shard axis, CLASS_SHARDS=0 for one fork per provider.$(NC)"; \
+		: "harness-filtered-*.json is cleaned here too, not just the reports. The monitor derives"; \
+		: "each provider's denominator by summing the leaves of every shard collection it finds in"; \
+		: "tmp/, so a previous run with a wider FEATURE/FOLDER scope leaves shard files this run"; \
+		: "never launches: their rows join the total, the sweep reads larger than it is, and the ETA"; \
+		: "never converges. The 'filesRead < launched' latch cannot catch it - extra files raise"; \
+		: "filesRead rather than lower it. The unsharded tmp/harness-filtered.json is deliberately"; \
+		: "NOT matched by this glob (it has no '-' after 'filtered'): it was written above as"; \
+		: "COLLECTION_FILE and every shard below filters FROM it."; \
+		rm -f tmp/newman-report-*.json tmp/newman-cli-*.log tmp/parallel-pids tmp/parallel-status tmp/parallel-exit-* tmp/harness-filtered-*.json; \
 		: > tmp/parallel-pids; \
 		: > tmp/parallel-status; \
-		PROVIDERS="openai anthropic bedrock gemini vertex azure passthrough openrouter"; \
+		PROVIDERS="$(HARNESS_PROVIDERS)"; \
 		if [ -n "$(PROVIDER)" ]; then PROVIDERS="$(PROVIDER)"; fi; \
-		LAUNCHED=0; \
-		for p in $$PROVIDERS; do \
-			if ! node tests/e2e/api/runners/filter-collection.mjs \
-				--source "$$COLLECTION_FILE" \
-				--out "tmp/harness-filtered-$$p.json" \
-				--provider "$$p" \
-				$(if $(FEATURE),--feature "$(FEATURE)",) > /dev/null 2>&1; then \
-				$(ECHO) "$(YELLOW)[$$p] filter produced no items - skipping$(NC)"; \
-				continue; \
+		: "CLASS_SHARDS=0 collapses the class axis back to a single fork per provider. The empty"; \
+		: "string is the sentinel for 'do not pass --class', so the loop body stays one code path."; \
+		CLASSES="$(HARNESS_CLASSES)"; \
+		if [ "$(CLASS_SHARDS)" = "0" ]; then CLASSES="-"; fi; \
+		: "Sub-shard count for a (provider, class) cell. Prefers the measured plan in $$SHARD_PLAN,"; \
+		: "and falls back to the hand-written HARNESS_SUBSHARDS 'class=n' list; 1 when unlisted."; \
+		: "Returns 1 for the '-' class too - CLASS_SHARDS=0 collapses both axes, not just the first."; \
+		: ""; \
+		: "The plan is per PROVIDER as well as per class, which the static table cannot express and"; \
+		: "which is where most of the imbalance lived: 'reasoning' is one number, but openai spends"; \
+		: "~30 minutes there against embeddings' seconds, so any single count is wrong for one of"; \
+		: "them. An absent or empty plan file means no timings were available, and the static table"; \
+		: "stands - see filter-collection.mjs --plan, which writes nothing rather than a grid of 1s."; \
+		subshards_for() { \
+			SS_P="$$1"; SS_C="$$2"; SS_N=1; \
+			if [ "$(SUBSHARDS)" != "0" ] && [ "$$SS_C" != "-" ]; then \
+				SS_N=""; \
+				: "Braced default so the function is safe under 'set -u' both here (SHARD_PLAN is"; \
+				: "set just above the launch loop) and in shard-split.test.mjs, which extracts this"; \
+				: "block and runs it standalone to prove the test cannot pass against stale logic."; \
+				if [ -s "$${SHARD_PLAN:-}" ]; then \
+					SS_N="$$(awk -v p="$$SS_P" -v c="$$SS_C" '$$1==p && $$2==c {print $$3; exit}' "$$SHARD_PLAN")"; \
+				fi; \
+				if [ -z "$$SS_N" ]; then \
+					SS_N=1; \
+					for kv in $(HARNESS_SUBSHARDS); do \
+						case "$$kv" in "$$SS_C="*) SS_N="$${kv#*=}" ;; esac; \
+					done; \
+				fi; \
 			fi; \
-			( \
-				newman run "tmp/harness-filtered-$$p.json" \
-					--env-var "baseUrl=$$BASE_URL_VAL" \
-					$(if $(filter on true 1 yes YES y Y,$(COMPAT)),--env-var "compat=true",) \
-					$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_PREVIEW)),--env-var "include_preview=1",) \
-					$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_SKIP)),--env-var "include_skip=1",) \
-					$${BEDROCK_GUARDRAIL_IDENTIFIER:+--env-var "bedrockGuardrailIdentifier=$$BEDROCK_GUARDRAIL_IDENTIFIER"} \
-					$${BEDROCK_GUARDRAIL_VERSION:+--env-var "bedrockGuardrailVersion=$$BEDROCK_GUARDRAIL_VERSION"} \
-					$${VERTEX_GCS_BUCKET:+--env-var "vertexGcsBucket=$$VERTEX_GCS_BUCKET"} \
-					$${VERTEX_GCS_PREFIX:+--env-var "vertexGcsPrefix=$$VERTEX_GCS_PREFIX"} \
-					$(if $(ENV_FILE),--environment $(ENV_FILE),) \
-					$(if $(FOLDER),--folder "$(FOLDER)",) \
-					--reporters cli,json$$DBVERIFY_REPORTER $$DBVERIFY_ARGS \
-					--reporter-json-export "tmp/newman-report-$$p.json" 2>&1 | sed "s/^/[$$p] /" \
-			) > "tmp/newman-cli-$$p.log" 2>&1 & \
-			BG_PID=$$!; \
-			LAUNCHED=$$((LAUNCHED+1)); \
-			echo "$$BG_PID:$$p" >> tmp/parallel-pids; \
-			$(ECHO) "$(GREEN)[$$p] launched (pid $$BG_PID)$(NC)"; \
-		done; \
-		if [ "$$LAUNCHED" -eq 0 ]; then \
-			$(ECHO) "$(RED)No provider runs were launched. Check PROVIDER/FEATURE/FOLDER filters.$(NC)"; \
-			exit 1; \
-		fi; \
-		if [ -t 1 ] && [ -z "$$CI" ] && [ -z "$(CI)" ]; then \
-			$(USE_NODE); node tests/e2e/api/runners/harness-monitor.mjs \
-				--mode parallel \
-				--providers "$$PROVIDERS" \
-				--tmp-dir tmp \
-				--status-file tmp/parallel-status \
-				--launched $$LAUNCHED \
-				< /dev/null > /dev/tty 2>&1 & \
-			echo $$! > tmp/harness-monitor.pid; \
-		fi; \
-		PFAILED=0; \
-		while read pidp; do \
-			pid="$${pidp%%:*}"; \
-			p="$${pidp#*:}"; \
-			if wait "$$pid"; then \
-				echo "$$p:pass" >> tmp/parallel-status; \
-				if [ ! -f tmp/harness-monitor.pid ]; then $(ECHO) "$(GREEN)[$$p] passed$(NC)"; fi; \
+			printf '%s' "$$SS_N"; \
+		}; \
+		JOBS_CAP="$(or $(HARNESS_JOBS),100)"; \
+		say "$(CYAN)Shard concurrency cap: $$JOBS_CAP (HARNESS_JOBS).$(NC)"; \
+		: "Size the provider x class grid from measured per-request cost before launching it."; \
+		: "One planner invocation for the whole grid rather than one per cell: sizing a cell means"; \
+		: "running the same predicate stack that selects it, and doing that ~80 times would parse"; \
+		: "the 20MB collection ~80 times. Writes nothing when no timing table exists, which is the"; \
+		: "signal subshards_for reads as 'keep the static HARNESS_SUBSHARDS table'."; \
+		SHARD_PLAN="tmp/harness-shard-plan.txt"; \
+		rm -f "$$SHARD_PLAN"; \
+		if [ -n "$$TIMINGS_FILE" ] && [ "$(SUBSHARDS)" != "0" ]; then \
+			if node tests/e2e/api/runners/filter-collection.mjs \
+				--source "$$COLLECTION_FILE" --plan \
+				--providers "$$PROVIDERS" --classes "$$CLASSES" \
+				--timings "$$TIMINGS_FILE" \
+				--target "$(or $(HARNESS_SHARD_TARGET),150)" \
+				$(if $(FEATURE),--feature "$(FEATURE)",) \
+				$(if $(FOLDER),--folder "$(FOLDER)",) \
+				> "$$SHARD_PLAN" 2>> "$$QUIET_LOG"; then \
+				say "$(CYAN)Shard plan sized from $$TIMINGS_FILE -> $$SHARD_PLAN ($$(awk '{s+=$$3} END{print s+0}' "$$SHARD_PLAN") shards across $$(awk 'END{print NR+0}' "$$SHARD_PLAN") cells, $(or $(HARNESS_SHARD_TARGET),150)s target).$(NC)"; \
 			else \
-				echo "$$p:fail" >> tmp/parallel-status; \
-				if [ ! -f tmp/harness-monitor.pid ]; then $(ECHO) "$(RED)[$$p] failed$(NC)"; fi; \
-				PFAILED=$$((PFAILED+1)); \
+				: "A planner that failed leaves a partial file, and a partial plan is worse than"; \
+				: "none: the cells it did emit would be measured while the rest silently fell back."; \
+				rm -f "$$SHARD_PLAN"; \
+				say "$(YELLOW)Shard planner failed - falling back to the static HARNESS_SUBSHARDS table (see $$QUIET_LOG)$(NC)"; \
 			fi; \
-			if [ ! -f tmp/harness-monitor.pid ]; then tail -n 20 "tmp/newman-cli-$$p.log" 2>/dev/null; fi; \
-		done < tmp/parallel-pids; \
-		if [ -f tmp/harness-monitor.pid ]; then \
-			MPID=$$(cat tmp/harness-monitor.pid); \
-			kill -TERM $$MPID 2>/dev/null; \
-			wait $$MPID 2>/dev/null || true; \
-			rm -f tmp/harness-monitor.pid; \
-		fi; \
-		$(ECHO) "$(CYAN)Merging per-provider reports into tmp/newman-report.json...$(NC)"; \
-		if command -v jq >/dev/null 2>&1 && ls tmp/newman-report-*.json >/dev/null 2>&1; then \
-			jq -s 'def failed: (((.assertions // []) | any(.error?)) or ((.response.code // 0) == 0) or ((.response.code // 0) >= 400) or (.response | not)); def trimstream: if (.response.stream.type? == "Buffer" and ((.response.stream.data // []) | length) > 20000) then (.response.stream.data = .response.stream.data[:20000] | .response.stream.truncated = true) else . end; def sanitize: trimstream; {collection: (.[0].collection // {}), environment: (.[0].environment // {}), run: {executions: [.[].run.executions[]? | sanitize], failures: [.[].run.failures[]?], stats: {iterations: {total: 1, pending: 0, failed: 0}, items: {total: ([.[].run.stats.items.total // 0] | add)}, requests: {total: ([.[].run.stats.requests.total // 0] | add), failed: ([.[].run.stats.requests.failed // 0] | add)}}, timings: (.[0].run.timings // {})}}' tmp/newman-report-*.json > tmp/newman-report.json || $(ECHO) "$(YELLOW)Report merge failed; per-provider reports remain at tmp/newman-report-*.json$(NC)"; \
-			cat tmp/newman-cli-*.log > tmp/newman-cli.log 2>/dev/null || true; \
 		else \
-			$(ECHO) "$(YELLOW)jq not found or no reports produced; skipping merge. See tmp/newman-report-*.json$(NC)"; \
+			say "$(YELLOW)No timing table yet - using the static HARNESS_SUBSHARDS table. It is written at the end of this run, so the next sweep balances by measured cost.$(NC)"; \
 		fi; \
-		$(ECHO) "$(CYAN)Parallel summary:$(NC)"; \
-		while read sp; do \
-			pname="$${sp%%:*}"; \
-			pstat="$${sp#*:}"; \
-			if [ "$$pstat" = "pass" ]; then \
-				$(ECHO) "  $(GREEN)✓ $$pname$(NC)"; \
-			else \
-				$(ECHO) "  $(RED)✗ $$pname$(NC)"; \
-			fi; \
-		done < tmp/parallel-status; \
-		NEWMAN_EXIT=$$PFAILED; \
-	else \
-		SEQ_PROVIDERS="$(PROVIDER)"; \
-		if [ -z "$$SEQ_PROVIDERS" ]; then SEQ_PROVIDERS="openai anthropic bedrock gemini vertex azure passthrough openrouter"; fi; \
-		if [ -t 1 ] && [ -z "$$CI" ] && [ -z "$(CI)" ]; then \
-			: > tmp/newman-cli.log; \
-			$(USE_NODE); node tests/e2e/api/runners/harness-monitor.mjs \
-				--mode sequential \
-				--providers "$$SEQ_PROVIDERS" \
-				--tmp-dir tmp \
-				--log tmp/newman-cli.log \
-				< /dev/null > /dev/tty 2>&1 & \
-			echo $$! > tmp/harness-monitor.pid; \
-			newman run "$$COLLECTION_FILE" \
+		: "One newman invocation, called from two places: the main launch loop and the 429 retry"; \
+		: "pass. Factored out so the retry cannot drift from the main run - the two must send the"; \
+		: "same env vars and reporters or the retry would exercise a different configuration than"; \
+		: "the failure it is meant to clear. Args: <shard> <collection> <report-out> <provider>."; \
+		: "Runs in the foreground and returns the PIPELINE status (pipefail is set above), so the"; \
+		: "caller can record it; backgrounding stays at the call site so pids remain trackable."; \
+		: "Running SHARD jobs, excluding the monitor. start_monitor backgrounds the monitor into"; \
+		: "this same shell, so a plain 'jobs -pr | wc -l' counts it as a shard. At the default cap"; \
+		: "that is only an off-by-one, but with a low HARNESS_JOBS the count would sit at the cap"; \
+		: "with only the monitor running and 'wait -n' would block on a process that never exits."; \
+		shard_jobs() { \
+			SJ_MON="$$(cat tmp/harness-monitor.pid 2>/dev/null)"; \
+			jobs -pr | grep -v -x -F "$${SJ_MON:-__none__}" | wc -l | tr -d ' '; \
+		}; \
+		newman_shard() { \
+			NS_SHARD="$$1"; NS_COLLECTION="$$2"; NS_REPORT="$$3"; NS_PROV="$$4"; \
+			newman run "$$NS_COLLECTION" \
 				--env-var "baseUrl=$$BASE_URL_VAL" \
 				$(if $(filter on true 1 yes YES y Y,$(COMPAT)),--env-var "compat=true",) \
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_PREVIEW)),--env-var "include_preview=1",) \
@@ -2103,63 +2505,349 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				$${BEDROCK_GUARDRAIL_VERSION:+--env-var "bedrockGuardrailVersion=$$BEDROCK_GUARDRAIL_VERSION"} \
 				$${VERTEX_GCS_BUCKET:+--env-var "vertexGcsBucket=$$VERTEX_GCS_BUCKET"} \
 				$${VERTEX_GCS_PREFIX:+--env-var "vertexGcsPrefix=$$VERTEX_GCS_PREFIX"} \
+				$${OPENAI_API_KEY:+--env-var "openaiKey=$$OPENAI_API_KEY"} \
+				$${ANTHROPIC_API_KEY:+--env-var "anthropicKey=$$ANTHROPIC_API_KEY"} \
+				$${GEMINI_API_KEY:+--env-var "genaiKey=$$GEMINI_API_KEY"} \
+				$${AWS_ACCESS_KEY_ID:+--env-var "bedrockDirectAccessKeyId=$$AWS_ACCESS_KEY_ID"} \
+				$${AWS_SECRET_ACCESS_KEY:+--env-var "bedrockDirectSecretAccessKey=$$AWS_SECRET_ACCESS_KEY"} \
+				$${AWS_REGION:+--env-var "bedrockDirectRegion=$$AWS_REGION"} \
+				$${VERTEX_PROJECT_ID:+--env-var "vertexProject=$$VERTEX_PROJECT_ID"} \
+				$${GOOGLE_LOCATION:+--env-var "vertexLocation=$$GOOGLE_LOCATION"} \
+				$${VERTEX_ACCESS_TOKEN_VAL:+--env-var "vertexAccessToken=$$VERTEX_ACCESS_TOKEN_VAL"} \
 				$(if $(ENV_FILE),--environment $(ENV_FILE),) \
 				$(if $(FOLDER),--folder "$(FOLDER)",) \
-				--reporters cli,json,htmlextra$$DBVERIFY_REPORTER $$DBVERIFY_ARGS \
+				--reporters cli,json$$DBVERIFY_REPORTER$$TOKEN_PARITY_REPORTER $$DBVERIFY_ARGS \
+				$${TOKEN_PARITY_REPORTER:+--reporter-token-parity-out "tmp/harness-token-parity-$$NS_SHARD.json"} \
+				--reporter-json-export "$$NS_REPORT" 2>&1 | sed "s/^/[$$NS_PROV] /"; \
+		}; \
+		LAUNCHED=0; \
+		: "A shard whose filter step fails never reaches tmp/parallel-pids, so the verdict loop"; \
+		: "below cannot see it and PFAILED alone would report the run green with that slice never"; \
+		: "run. Counted separately and folded into NEWMAN_EXIT so a skipped shard fails the run."; \
+		FILTER_FAILED=0; \
+		for p in $$PROVIDERS; do \
+		for c in $$CLASSES; do \
+		SUB_N="$$(subshards_for "$$p" "$$c")"; \
+		SUB_K=0; \
+		: "SUB_K is bumped at the TOP of the body, not the bottom: the body below uses 'continue'"; \
+		: "for a failed filter and for an empty shard, and a bottom increment would be skipped by"; \
+		: "both - leaving SUB_K stuck and this while loop spinning on the same sub-shard forever."; \
+		while [ "$$SUB_K" -lt "$$SUB_N" ]; do \
+			SUB_K=$$((SUB_K+1)); \
+			if [ "$$c" = "-" ]; then SHARD="$$p"; CLASS_FLAG=""; else SHARD="$$p--$$c"; CLASS_FLAG="--class $$c"; fi; \
+			: "The -s<k> suffix stays inside the '<provider>--<rest>' shape every consumer parses:"; \
+			: "the retry pass takes the provider as $${rs%%--*}, and harness-monitor.mjs matches"; \
+			: "shard files by the 'harness-filtered-<provider>--' prefix and detects retry logs by a"; \
+			: "trailing -retry<n>. A single-sub-shard class keeps its old unsuffixed name, so the"; \
+			: "common case produces byte-identical filenames to before this axis existed."; \
+			SHARD_FLAG=""; \
+			if [ "$$SUB_N" -gt 1 ]; then SHARD="$$SHARD-s$$SUB_K"; SHARD_FLAG="--shard $$SUB_K/$$SUB_N"; fi; \
+			: "--timings makes the slice balance measured cost instead of row count. Every"; \
+			: "sub-shard of a cell recomputes the whole assignment from the same table and keeps"; \
+			: "only its own slice, so they must all be passed the same file or the slices stop"; \
+			: "being a partition - rows would land in two shards and in none."; \
+			if ! node tests/e2e/api/runners/filter-collection.mjs \
+				--source "$$COLLECTION_FILE" \
+				--out "tmp/harness-filtered-$$SHARD.json" \
+				--provider "$$p" \
+				$$CLASS_FLAG \
+				$$SHARD_FLAG \
+				$${TIMINGS_FILE:+--timings "$$TIMINGS_FILE"} \
+				$(if $(FEATURE),--feature "$(FEATURE)",) \
+				$(if $(FOLDER),--folder "$(FOLDER)",) >> "$$QUIET_LOG" 2>&1; then \
+				say "$(RED)[$$SHARD] filter step failed - skipping (see $$QUIET_LOG)$(NC)"; \
+				FILTER_FAILED=$$((FILTER_FAILED+1)); \
+				continue; \
+			fi; \
+			P_ITEM_COUNT=$$(grep -c '"request":' "tmp/harness-filtered-$$SHARD.json" 2>/dev/null); \
+			P_ITEM_COUNT=$${P_ITEM_COUNT:-0}; \
+			if [ "$$P_ITEM_COUNT" -eq 0 ]; then \
+				rm -f "tmp/harness-filtered-$$SHARD.json"; \
+				continue; \
+			fi; \
+			: "Block until a slot frees. 'wait -n' reaps one arbitrary child, which is why shard"; \
+			: "exit codes are recorded by the subshell into tmp/parallel-exit-<shard> instead of"; \
+			: "being collected later with 'wait <pid>' - that pid may already have been reaped here."; \
+			while [ "$$(shard_jobs)" -ge "$$JOBS_CAP" ]; do wait -n 2>/dev/null || true; done; \
+			( \
+				newman_shard "$$SHARD" "tmp/harness-filtered-$$SHARD.json" "tmp/newman-report-$$SHARD.json" "$$p"; \
+				echo "$$?" > "tmp/parallel-exit-$$SHARD"; \
+			) > "tmp/newman-cli-$$SHARD.log" 2>&1 & \
+			BG_PID=$$!; \
+			LAUNCHED=$$((LAUNCHED+1)); \
+			echo "$$BG_PID:$$SHARD" >> tmp/parallel-pids; \
+			say "$(GREEN)[$$SHARD] launched (pid $$BG_PID, $$P_ITEM_COUNT requests)$(NC)"; \
+		done; \
+		done; \
+		done; \
+		if [ "$$LAUNCHED" -eq 0 ]; then \
+			say "$(RED)No provider runs were launched. Check PROVIDER/FEATURE/FOLDER filters.$(NC)"; \
+			exit 1; \
+		fi; \
+		add_pass "$$(printf '{"t":"pass","id":"main","mode":"parallel","statusFile":"tmp/parallel-status","launched":%s}' "$$LAUNCHED")"; \
+		: "Drain the shards, then read verdicts from the exit files rather than from wait's status:"; \
+		: "the cap loop above already reaped an unknown subset with 'wait -n', so a status here is"; \
+		: "not trustworthy - hence '|| true' and the exit files."; \
+		: ""; \
+		: "MUST wait on the recorded pids, never a bare 'wait'. start_monitor backgrounds the"; \
+		: "monitor into THIS shell, so a bare wait blocks on it too - and the monitor only exits"; \
+		: "once tmp/parallel-status has 'launched' lines, which the loop below writes after this"; \
+		: "point. That is a deadlock: every shard finishes, the status file stays empty, and the"; \
+		: "run hangs forever reprinting a frozen heartbeat."; \
+		while read pidp; do wait "$${pidp%%:*}" 2>/dev/null || true; done < tmp/parallel-pids; \
+		: "Transient-failure retry pass, covering 429 plus the overload codes 503 and 529 - see"; \
+		: "RETRYABLE_CODES in lib/rate-limit-retry.mjs for why those three and not the other 5xx."; \
+		: "Running ~80 shards at once against one set of keys makes rate limiting an"; \
+		: "expected outcome rather than an exotic one, and analyze-failures.mjs already classifies a"; \
+		: "429 as 'Backoff/retry; not a harness bug' - which is the tell that the run should do the"; \
+		: "backoff itself. Only the 429 ITEMS are replayed (--rerun-rate-limited), never the whole"; \
+		: "shard: replaying an assertion failure would burn quota re-confirming a real defect."; \
+		: "RETRY_429=0 disables. Reports land as newman-report-<shard>-retry<n>.json and are merged"; \
+		: "LAST so the successful attempt supersedes its own 429 (see lib/newman-merge.jq)."; \
+		RETRY_MAX="$(or $(RETRY_429),3)"; \
+		RETRY_ATTEMPT=1; \
+		while [ "$$RETRY_MAX" != "0" ] && [ "$$RETRY_ATTEMPT" -le "$$RETRY_MAX" ]; do \
+			RETRY_SHARDS=""; RETRY_WAIT=0; \
+			while read pidp; do \
+				rs="$${pidp#*:}"; \
+				[ "$$(cat "tmp/parallel-exit-$$rs" 2>/dev/null || echo 1)" = "0" ] && continue; \
+				: "Judge from the shard's LATEST attempt, not its original report. The original keeps"; \
+				: "its 429s forever, so reading it would re-queue a shard whose rows already recovered"; \
+				: "- a shard that also holds a real defect can never clear its verdict, and would"; \
+				: "otherwise replay the same recovered rows once per allowed attempt for nothing."; \
+				RS_LAST="$$(ls -1 tmp/newman-report-$$rs-retry*.json 2>/dev/null | sort -V | tail -1)"; \
+				RS_SRC="$${RS_LAST:-tmp/newman-report-$$rs.json}"; \
+				W="$$(node tests/e2e/api/runners/rate-limit-backoff.mjs --report "$$RS_SRC" --attempt "$$RETRY_ATTEMPT" 2>/dev/null || echo 0)"; \
+				[ "$${W:-0}" -gt 0 ] 2>/dev/null || continue; \
+				RETRY_SHARDS="$$RETRY_SHARDS $$rs"; \
+				[ "$$W" -gt "$$RETRY_WAIT" ] && RETRY_WAIT="$$W"; \
+			done < tmp/parallel-pids; \
+			[ -z "$$RETRY_SHARDS" ] && break; \
+			say "$(YELLOW)429 retry $$RETRY_ATTEMPT/$$RETRY_MAX: waiting $${RETRY_WAIT}s, then replaying rate-limited rows in:$$RETRY_SHARDS$(NC)"; \
+			monitor_note "429 retry $$RETRY_ATTEMPT: sleeping $${RETRY_WAIT}s"; \
+			sleep "$$RETRY_WAIT"; \
+			RETRY_PIDS=""; \
+			for rs in $$RETRY_SHARDS; do \
+				rp="$${rs%%--*}"; \
+				RETRY_COLL="tmp/harness-filtered-$$rs-retry$$RETRY_ATTEMPT.json"; \
+				RS_LAST="$$(ls -1 tmp/newman-report-$$rs-retry*.json 2>/dev/null | sort -V | tail -1)"; \
+				RS_SRC="$${RS_LAST:-tmp/newman-report-$$rs.json}"; \
+				: "Selects from the latest attempt too, so attempt N replays only the rows STILL"; \
+				: "rate-limited rather than every row that was ever throttled."; \
+				if ! node tests/e2e/api/runners/filter-collection.mjs \
+					--source "tmp/harness-filtered-$$rs.json" \
+					--out "$$RETRY_COLL" \
+					--rerun-rate-limited --report "$$RS_SRC" > /dev/null 2>&1; then \
+					say "$(YELLOW)[$$rs] retry filter failed - keeping the original verdict$(NC)"; \
+					continue; \
+				fi; \
+				[ "$$(grep -c '"request":' "$$RETRY_COLL" 2>/dev/null || echo 0)" -eq 0 ] && continue; \
+				while [ "$$(shard_jobs)" -ge "$$JOBS_CAP" ]; do wait -n 2>/dev/null || true; done; \
+				( \
+					newman_shard "$$rs-retry$$RETRY_ATTEMPT" "$$RETRY_COLL" "tmp/newman-report-$$rs-retry$$RETRY_ATTEMPT.json" "$$rp"; \
+					RC=$$?; \
+					: "Clear the shard only when the retry passed AND every original failure was retryable."; \
+					: "A shard that also failed an assertion stays failed however well the retry went,"; \
+					: "otherwise a real defect sitting beside a 429 would be erased by the backoff."; \
+					if [ "$$RC" = "0" ] && [ "$$(node tests/e2e/api/runners/rate-limit-backoff.mjs --report "tmp/newman-report-$$rs.json" --query only-rate-limited 2>/dev/null || echo 0)" = "1" ]; then \
+						echo 0 > "tmp/parallel-exit-$$rs"; \
+					fi; \
+				) > "tmp/newman-cli-$$rs-retry$$RETRY_ATTEMPT.log" 2>&1 & \
+				RETRY_PIDS="$$RETRY_PIDS $$!"; \
+			done; \
+			: "Same reason as the main drain: a bare wait would block on the backgrounded monitor."; \
+			for rpid in $$RETRY_PIDS; do wait "$$rpid" 2>/dev/null || true; done; \
+			RETRY_ATTEMPT=$$((RETRY_ATTEMPT+1)); \
+		done; \
+		PFAILED=0; \
+		while read pidp; do \
+			p="$${pidp#*:}"; \
+			SHARD_RC="$$(cat "tmp/parallel-exit-$$p" 2>/dev/null || echo 1)"; \
+			if [ "$$SHARD_RC" = "0" ]; then \
+				echo "$$p:pass" >> tmp/parallel-status; \
+				PVERDICT="$(GREEN)[$$p] passed$(NC)"; \
+			else \
+				echo "$$p:fail" >> tmp/parallel-status; \
+				PVERDICT="$(RED)[$$p] failed$(NC)"; \
+				PFAILED=$$((PFAILED+1)); \
+			fi; \
+			if [ ! -f tmp/harness-monitor.pid ]; then \
+				say "$$PVERDICT"; \
+				tail -n 20 "tmp/newman-cli-$$p.log" 2>/dev/null; \
+			fi; \
+		done < tmp/parallel-pids; \
+		end_pass main; \
+		monitor_note "Merging per-provider reports"; \
+		say "$(CYAN)Merging per-provider reports into tmp/newman-report.json...$(NC)"; \
+		if command -v jq >/dev/null 2>&1 && ls tmp/newman-report-*.json >/dev/null 2>&1; then \
+			: "Order is load-bearing, so the files are listed explicitly instead of by glob: the merge"; \
+			: "keeps the LAST occurrence of each item id, and a glob sorts newman-report-<s>-retry1.json"; \
+			: "BEFORE newman-report-<s>.json ('-' is 0x2D, '.' is 0x2E) - the stale 429 would overwrite"; \
+			: "its own successful retry. Main reports first, then retries in attempt order."; \
+			MERGE_MAIN="$$(ls tmp/newman-report-*.json 2>/dev/null | grep -v -e '-retry[0-9]*\.json$$' | sort)"; \
+			MERGE_RETRY="$$(ls tmp/newman-report-*-retry*.json 2>/dev/null | sort -V)"; \
+			jq -s -f tmp/newman-merge.jq $$MERGE_MAIN $$MERGE_RETRY > tmp/newman-report.json || say "$(YELLOW)Report merge failed; per-provider reports remain at tmp/newman-report-*.json$(NC)"; \
+			rm -f tmp/.newman-report.slim.json; \
+			cat tmp/newman-cli-*.log > tmp/newman-cli.log 2>/dev/null || true; \
+		else \
+			say "$(YELLOW)jq not found or no reports produced; skipping merge. See tmp/newman-report-*.json$(NC)"; \
+		fi; \
+		if [ "$$HARNESS_MONITORED" != "1" ]; then \
+			say "$(CYAN)Parallel summary:$(NC)"; \
+			while read sp; do \
+				pname="$${sp%%:*}"; \
+				pstat="$${sp#*:}"; \
+				if [ "$$pstat" = "pass" ]; then \
+					say "  $(GREEN)✓ $$pname$(NC)"; \
+				else \
+					say "  $(RED)✗ $$pname$(NC)"; \
+				fi; \
+			done < tmp/parallel-status; \
+		fi; \
+		if [ "$$FILTER_FAILED" -gt 0 ]; then \
+			say "$(RED)$$FILTER_FAILED shard(s) skipped - their filter step failed, so those requests never ran. See $$QUIET_LOG$(NC)"; \
+		fi; \
+		NEWMAN_EXIT=$$((PFAILED+FILTER_FAILED)); \
+	else \
+		SEQ_PROVIDERS="$(or $(PROVIDER),$(HARNESS_PROVIDERS))"; \
+		: > tmp/newman-cli.log; \
+		add_pass "$$(printf '{"t":"pass","id":"main","mode":"sequential","log":"tmp/newman-cli.log","collection":"%s"}' "$$COLLECTION_FILE")"; \
+		newman run "$$COLLECTION_FILE" \
+				--env-var "baseUrl=$$BASE_URL_VAL" \
+				$(if $(filter on true 1 yes YES y Y,$(COMPAT)),--env-var "compat=true",) \
+				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_PREVIEW)),--env-var "include_preview=1",) \
+				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_SKIP)),--env-var "include_skip=1",) \
+				$${BEDROCK_GUARDRAIL_IDENTIFIER:+--env-var "bedrockGuardrailIdentifier=$$BEDROCK_GUARDRAIL_IDENTIFIER"} \
+				$${BEDROCK_GUARDRAIL_VERSION:+--env-var "bedrockGuardrailVersion=$$BEDROCK_GUARDRAIL_VERSION"} \
+				$${VERTEX_GCS_BUCKET:+--env-var "vertexGcsBucket=$$VERTEX_GCS_BUCKET"} \
+				$${VERTEX_GCS_PREFIX:+--env-var "vertexGcsPrefix=$$VERTEX_GCS_PREFIX"} \
+				$${OPENAI_API_KEY:+--env-var "openaiKey=$$OPENAI_API_KEY"} \
+				$${ANTHROPIC_API_KEY:+--env-var "anthropicKey=$$ANTHROPIC_API_KEY"} \
+				$${GEMINI_API_KEY:+--env-var "genaiKey=$$GEMINI_API_KEY"} \
+				$${AWS_ACCESS_KEY_ID:+--env-var "bedrockDirectAccessKeyId=$$AWS_ACCESS_KEY_ID"} \
+				$${AWS_SECRET_ACCESS_KEY:+--env-var "bedrockDirectSecretAccessKey=$$AWS_SECRET_ACCESS_KEY"} \
+				$${AWS_REGION:+--env-var "bedrockDirectRegion=$$AWS_REGION"} \
+				$${VERTEX_PROJECT_ID:+--env-var "vertexProject=$$VERTEX_PROJECT_ID"} \
+				$${GOOGLE_LOCATION:+--env-var "vertexLocation=$$GOOGLE_LOCATION"} \
+				$${VERTEX_ACCESS_TOKEN_VAL:+--env-var "vertexAccessToken=$$VERTEX_ACCESS_TOKEN_VAL"} \
+				$(if $(ENV_FILE),--environment $(ENV_FILE),) \
+				$(if $(FOLDER),--folder "$(FOLDER)",) \
+				--reporters cli,json,htmlextra$$DBVERIFY_REPORTER$$TOKEN_PARITY_REPORTER $$DBVERIFY_ARGS \
+				$${TOKEN_PARITY_REPORTER:+--reporter-token-parity-out "tmp/harness-token-parity-sequential.json"} \
 				--reporter-json-export tmp/newman-report.json \
 				--reporter-htmlextra-export tmp/newman-report.html \
 				--reporter-htmlextra-title "Bifrost Provider Harness" \
 				--reporter-htmlextra-darkTheme > tmp/newman-cli.log 2>&1; \
-			NEWMAN_EXIT=$$?; \
-			if [ -f tmp/harness-monitor.pid ]; then \
-				MPID=$$(cat tmp/harness-monitor.pid); \
-				kill -TERM $$MPID 2>/dev/null; \
-				wait $$MPID 2>/dev/null || true; \
-				rm -f tmp/harness-monitor.pid; \
-			fi; \
-		else \
-			newman run "$$COLLECTION_FILE" \
+		NEWMAN_EXIT=$$?; \
+		end_pass main; \
+		if [ "$$HARNESS_MONITORED" != "1" ] && [ "$$HARNESS_QUIET" != "1" ]; then cat tmp/newman-cli.log; fi; \
+		if command -v jq >/dev/null 2>&1 && [ -f tmp/newman-report.json ]; then \
+			say "$(CYAN)Sanitizing tmp/newman-report.json (newman embeds the whole parent folder in every failure)...$(NC)"; \
+			jq -s -f tmp/newman-merge.jq tmp/newman-report.json > tmp/.newman-report-sanitized.json \
+				&& mv -f tmp/.newman-report-sanitized.json tmp/newman-report.json \
+				&& rm -f tmp/.newman-report.slim.json \
+				|| { rm -f tmp/.newman-report-sanitized.json; say "$(YELLOW)Report sanitize failed; tmp/newman-report.json left as-is (may exceed the viewer's 512MB parse limit).$(NC)"; }; \
+		fi; \
+	fi; \
+	if [ "$$CACHE_PASS" = "1" ]; then \
+		say "$(CYAN)Cache parity pass (sequential, single newman - these rows match every provider fork)...$(NC)"; \
+		rm -f tmp/harness-cache-filtered.json; \
+		$(USE_NODE); run_quiet node tests/e2e/api/runners/filter-collection.mjs \
+			--source tmp/harness-augmented.json \
+			--out tmp/harness-cache-filtered.json \
+			--feature-any cache-parity \
+			$(if $(FEATURE),--feature "$(FEATURE)",) \
+			$(if $(FOLDER),--folder "$(FOLDER)",) \
+			$${SMOKE_MANIFEST:+--smoke "$$SMOKE_MANIFEST"} \
+			$(if $(PROVIDER),--provider $(PROVIDER),) || { say "$(RED)Cache parity filter step failed$(NC)"; }; \
+		if [ -f tmp/harness-cache-filtered.json ]; then \
+			CACHE_PROVIDERS="$(or $(PROVIDER),$(HARNESS_PROVIDERS))"; \
+			: > tmp/newman-cli-cache-parity.log; \
+			add_pass '{"t":"pass","id":"cache-parity","mode":"sequential","log":"tmp/newman-cli-cache-parity.log","collection":"tmp/harness-cache-filtered.json"}'; \
+			newman run tmp/harness-cache-filtered.json \
 				--env-var "baseUrl=$$BASE_URL_VAL" \
 				$(if $(filter on true 1 yes YES y Y,$(COMPAT)),--env-var "compat=true",) \
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_PREVIEW)),--env-var "include_preview=1",) \
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_SKIP)),--env-var "include_skip=1",) \
-				$${BEDROCK_GUARDRAIL_IDENTIFIER:+--env-var "bedrockGuardrailIdentifier=$$BEDROCK_GUARDRAIL_IDENTIFIER"} \
-				$${BEDROCK_GUARDRAIL_VERSION:+--env-var "bedrockGuardrailVersion=$$BEDROCK_GUARDRAIL_VERSION"} \
-				$${VERTEX_GCS_BUCKET:+--env-var "vertexGcsBucket=$$VERTEX_GCS_BUCKET"} \
-				$${VERTEX_GCS_PREFIX:+--env-var "vertexGcsPrefix=$$VERTEX_GCS_PREFIX"} \
+				$${OPENAI_API_KEY:+--env-var "openaiKey=$$OPENAI_API_KEY"} \
+				$${ANTHROPIC_API_KEY:+--env-var "anthropicKey=$$ANTHROPIC_API_KEY"} \
+				$${GEMINI_API_KEY:+--env-var "genaiKey=$$GEMINI_API_KEY"} \
+				$${AWS_ACCESS_KEY_ID:+--env-var "bedrockDirectAccessKeyId=$$AWS_ACCESS_KEY_ID"} \
+				$${AWS_SECRET_ACCESS_KEY:+--env-var "bedrockDirectSecretAccessKey=$$AWS_SECRET_ACCESS_KEY"} \
+				$${AWS_REGION:+--env-var "bedrockDirectRegion=$$AWS_REGION"} \
+				$${VERTEX_PROJECT_ID:+--env-var "vertexProject=$$VERTEX_PROJECT_ID"} \
+				$${GOOGLE_LOCATION:+--env-var "vertexLocation=$$GOOGLE_LOCATION"} \
+				$${VERTEX_ACCESS_TOKEN_VAL:+--env-var "vertexAccessToken=$$VERTEX_ACCESS_TOKEN_VAL"} \
 				$(if $(ENV_FILE),--environment $(ENV_FILE),) \
-				$(if $(FOLDER),--folder "$(FOLDER)",) \
-				--reporters cli,json,htmlextra$$DBVERIFY_REPORTER $$DBVERIFY_ARGS \
-				--reporter-json-export tmp/newman-report.json \
-				--reporter-htmlextra-export tmp/newman-report.html \
-				--reporter-htmlextra-title "Bifrost Provider Harness" \
-				--reporter-htmlextra-darkTheme 2>&1 | tee tmp/newman-cli.log; \
-			NEWMAN_EXIT=$$?; \
+				--reporters cli,json$$CACHE_PARITY_REPORTER \
+				$${CACHE_PARITY_REPORTER:+--reporter-cache-parity-out "tmp/harness-cache-parity-pass.json"} \
+				--reporter-json-export tmp/newman-report-cache-parity.json > tmp/newman-cli-cache-parity.log 2>&1; \
+			CACHE_EXIT=$$?; \
+			end_pass cache-parity; \
+			: "end_pass above is load-bearing, not tidiness: under PARALLEL=0 the main"; \
+			: "pass tails tmp/newman-cli.log, and the append below would otherwise be"; \
+			: "replayed into the counters - every cache row counted a second time."; \
+			cat tmp/newman-cli-cache-parity.log >> tmp/newman-cli.log 2>/dev/null || true; \
+			if [ "$$HARNESS_MONITORED" != "1" ] && [ "$$HARNESS_QUIET" != "1" ]; then cat tmp/newman-cli-cache-parity.log; fi; \
+			if [ "$$CACHE_EXIT" -ne 0 ]; then NEWMAN_EXIT=$$((NEWMAN_EXIT+1)); fi; \
+			if command -v jq >/dev/null 2>&1 && [ -f tmp/newman-report-cache-parity.json ]; then \
+				jq -s -f tmp/newman-merge.jq tmp/newman-report.json tmp/newman-report-cache-parity.json > tmp/newman-report-combined.json \
+					&& mv tmp/newman-report-combined.json tmp/newman-report.json \
+					|| say "$(YELLOW)Cache pass report merge failed; it remains at tmp/newman-report-cache-parity.json$(NC)"; \
+			fi; \
 		fi; \
 	fi; \
-	$(ECHO) "$(GREEN)Newman finished. Reports: tmp/newman-report.{json,html} + tmp/newman-cli.log$(NC)"; \
+	stop_monitor; \
+	: "The single teardown for the whole run: one alt-screen exit, one persistent"; \
+	: "table snapshot, one \$$GITHUB_STEP_SUMMARY block. Everything after this point"; \
+	: "prints normally to a restored main screen."; \
+	say "$(GREEN)Newman finished. Reports: tmp/newman-report.{json,html} + tmp/newman-cli.log$(NC)"; \
 	STREAM_CANCEL_EXIT=0; \
 	if [ -z "$(SKIP_STREAM_CANCEL)" ] && [ -z "$(RERUN_FAILED)" ] && [ "$(PROVIDER)" != "passthrough" ] && { [ -z "$(FOLDER)" ] || printf '%s' "$(FOLDER)" | grep -qi 'stream'; }; then \
-		$(ECHO) "$(CYAN)Running stream cancellation probes...$(NC)"; \
+		say "$(CYAN)Running stream cancellation probes...$(NC)"; \
 		$(USE_NODE); node tests/e2e/api/runners/run-stream-cancellation.mjs \
 			--base-url "$$BASE_URL_VAL" \
 			$(if $(PROVIDER),--provider "$(PROVIDER)",) \
-			--out tmp/stream-cancel-report.json 2>&1 | tee tmp/stream-cancel-cli.log; \
+			--out tmp/stream-cancel-report.json > tmp/stream-cancel-cli.log 2>&1; \
 		STREAM_CANCEL_EXIT=$$?; \
+		if [ "$$HARNESS_QUIET" != "1" ]; then cat tmp/stream-cancel-cli.log; fi; \
 	else \
-		$(ECHO) "$(YELLOW)Skipping stream cancellation probes (SKIP_STREAM_CANCEL/RERUN_FAILED/FOLDER filter).$(NC)"; \
+		say "$(YELLOW)Skipping stream cancellation probes (SKIP_STREAM_CANCEL/RERUN_FAILED/FOLDER filter).$(NC)"; \
 	fi; \
-	$(ECHO) "$(CYAN)Analyzing failures...$(NC)"; \
-	$(USE_NODE); node tests/e2e/api/runners/analyze-failures.mjs \
+	: "Refresh the timing table from this run's reports so the NEXT sweep sizes and fills its"; \
+	: "shards from what actually happened. Merges onto the existing table rather than replacing"; \
+	: "it, so a scoped run (PROVIDER=..., FEATURE=...) refines its own rows without erasing the"; \
+	: "providers it never ran. Never fails the target: a sweep that already produced its results"; \
+	: "must not go red because a cache file could not be refreshed."; \
+	$(USE_NODE); run_quiet node tests/e2e/api/runners/build-harness-timings.mjs \
+		--dir tmp --out "$(or $(HARNESS_TIMINGS),tmp/harness-timings.json)" || true; \
+	say "$(CYAN)Analyzing failures...$(NC)"; \
+	$(USE_NODE); run_quiet node tests/e2e/api/runners/analyze-failures.mjs \
 		--report tmp/newman-report.json \
 		--bifrost-log tmp/bifrost-dev.log \
 		--out tmp/harness-failures.md || true; \
-	$(ECHO) "$(GREEN)Failure breakdown: tmp/harness-failures.md$(NC)"; \
+	say "$(GREEN)Failure breakdown: tmp/harness-failures.md$(NC)"; \
+	if ls tmp/harness-token-parity-*.json >/dev/null 2>&1; then \
+		say "$(CYAN)Rendering token parity report...$(NC)"; \
+		$(USE_NODE); run_quiet node tests/e2e/api/runners/render-token-parity-report.mjs \
+			--glob "tmp/harness-token-parity-*.json" \
+			--out tmp/harness-token-parity.md \
+			--html tmp/newman-report.html || true; \
+		say "$(GREEN)Token parity report: tmp/harness-token-parity.md (also injected into tmp/newman-report.html when present - sequential mode / PARALLEL=0 only)$(NC)"; \
+	fi; \
+	if ls tmp/harness-cache-parity-*.json >/dev/null 2>&1; then \
+		say "$(CYAN)Rendering cache parity report...$(NC)"; \
+		$(USE_NODE); run_quiet node tests/e2e/api/runners/render-cache-parity-report.mjs \
+			--glob "tmp/harness-cache-parity-*.json" \
+			--out tmp/harness-cache-parity.md \
+			--html tmp/newman-report.html || true; \
+		say "$(GREEN)Cache parity report: tmp/harness-cache-parity.md$(NC)"; \
+	fi; \
 	if [ -n "$(CI)" ] || [ -n "$$CI" ]; then \
-		$(ECHO) "$(CYAN)CI mode - skipping interactive viewer. Upload tmp/newman-report.html, tmp/harness-failures.md, and tmp/bifrost-dev.log as workflow artifacts.$(NC)"; \
+		say "$(CYAN)CI mode - skipping interactive viewer. Upload tmp/newman-report.html, tmp/harness-failures.md, and tmp/bifrost-dev.log as workflow artifacts.$(NC)"; \
 	else \
 		preempt_viewer_port; \
-		$(ECHO) "$(CYAN)Launching interactive viewer on http://localhost:$$VIEWER_PORT_VAL (Bifrost stays up for resend)...$(NC)"; \
+		say "$(CYAN)Launching interactive viewer on http://localhost:$$VIEWER_PORT_VAL (Bifrost stays up for resend)...$(NC)"; \
 		$(USE_NODE); node tests/e2e/api/runners/harness-viewer.mjs --report tmp/newman-report.json --port $$VIEWER_PORT_VAL & \
 		VIEWER_PID=$$!; \
 		echo $$VIEWER_PID > tmp/harness-viewer.pid; \
@@ -2167,9 +2855,9 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		VIEWER_EXIT=$$?; \
 		rm -f tmp/harness-viewer.pid; \
 		if [ $$VIEWER_EXIT -ne 0 ]; then \
-			$(ECHO) "$(RED)Viewer exited with code $$VIEWER_EXIT (see message above).$(NC)"; \
+			say "$(RED)Viewer exited with code $$VIEWER_EXIT (see message above).$(NC)"; \
 		else \
-			$(ECHO) "$(GREEN)Viewer closed.$(NC)"; \
+			say "$(GREEN)Viewer closed.$(NC)"; \
 		fi; \
 	fi; \
 	if [ "$$NEWMAN_EXIT" -ne 0 ]; then exit $$NEWMAN_EXIT; fi; \

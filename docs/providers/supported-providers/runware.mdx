@@ -1,12 +1,12 @@
 ---
 title: "Runware"
-description: "Runware API conversion guide - text-to-image, image editing, and text/image-to-video generation"
+description: "Runware API conversion guide - text-to-image, image editing, text/image-to-video, 3D generation, and raw task passthrough"
 icon: "/media/runware-nav.svg"
 ---
 
 ## Overview
 
-Runware exposes a single synchronous endpoint (`https://api.runware.ai/v1`) that accepts an **array of tasks**. Bifrost wraps each request in this array envelope and maps the unified image and video schemas onto Runware's `imageInference` and `videoInference` task types. Image tasks return synchronously; video tasks are submitted asynchronously and polled to completion.
+Runware exposes a single endpoint (`https://api.runware.ai/v1`) that accepts an **array of tasks**, where a `taskType` field selects the operation (image, video, 3D, upscale, and more). Bifrost wraps each request in this array envelope and maps its unified image and video schemas onto Runware's `imageInference` and `videoInference` task types. Image tasks return synchronously; video and 3D tasks are submitted asynchronously and polled to completion.
 
 ### Supported Operations
 
@@ -17,9 +17,15 @@ Runware exposes a single synchronous endpoint (`https://api.runware.ai/v1`) that
 | Video Generation | ✅ | `videoInference` (async) |
 | Video Retrieve | ✅ | `getResponse` |
 | Video Download | ✅ | via Retrieve + URL download |
+| 3D Model Generation | ✅ | `3dInference` (async, via `/videos`) |
+| Passthrough (any task type) | ✅ | raw, via `/runware_passthrough` |
 | Image Variation | ❌ | - |
 | Image / Image Edit (stream) | ❌ | - |
 | Video Delete / List / Remix | ❌ | - |
+
+<Note>
+Runware returns an exact per-task **cost** when a request sets `includeCost: true`. Bifrost surfaces this as the provider-reported cost and uses it verbatim - see [Cost tracking](#6-cost-tracking).
+</Note>
 
 ---
 
@@ -124,7 +130,11 @@ Video tasks are submitted with `deliveryMethod: async` and return a queued job. 
 | `size` | string | ❌ | `width` / `height` | `WxH` (default `1920x1080`) |
 | `seconds` | string | ❌ | `duration` | Duration in seconds |
 
-**Extra Params**: provider-native fields flow through `extra_params`.
+**Extra Params**: provider-native fields flow through `extra_params`. The `size` defaults (width/height) are applied only for the `videoInference` task type. You can also override `taskType` via `extra_params` (default `videoInference`) to drive other async task types on the same endpoint - see [3D Model Generation](#4-3d-model-generation).
+
+<Note>
+To pass Runware-native fields (e.g. `taskType`, `settings`, `includeCost`) through `/videos`, send the header `x-bf-passthrough-extra-params: true`. Without it, only the mapped parameters above are forwarded.
+</Note>
 
 **Response**: [`BifrostVideoGenerationResponse`](https://github.com/maximhq/bifrost/blob/main/core/schemas/videos.go) with `id`, `status`, `videos[]`.
 
@@ -142,6 +152,87 @@ Video tasks are submitted with `deliveryMethod: async` and return a queued job. 
 <Note>
 Video Delete, List, and Remix are not supported by Runware.
 </Note>
+
+---
+
+# 4. 3D Model Generation
+
+Runware's 3D models (e.g. TRELLIS, Tripo, Hunyuan 3D) run as the `3dInference` task type on the same async submit-then-poll lifecycle as video. Drive it through `POST /v1/videos` by setting `taskType: "3dInference"` in `extra_params`. The finished model is returned as a `.glb` under `videos[]` with `content_type: model/gltf-binary`.
+
+<Note>
+Requires the `x-bf-passthrough-extra-params: true` header so Runware-native fields (`taskType`, `settings`, `includeCost`, ...) are forwarded.
+</Note>
+
+**Text-to-3D** works directly. The `prompt` is mapped to Runware's `positivePrompt`:
+
+```bash
+# 1. Submit (returns a queued job with an id)
+curl -X POST http://localhost:8080/v1/videos \
+  -H "Content-Type: application/json" \
+  -H "x-bf-passthrough-extra-params: true" \
+  -d '{
+    "model": "runware/tripo:v3.1@0",
+    "prompt": "a ceramic teapot",
+    "taskType": "3dInference",
+    "includeCost": true,
+    "settings": { "geometryQuality": "detailed", "texture": true, "pbr": true }
+  }'
+
+# 2. Poll until status is completed; the .glb URL appears under videos[]
+curl http://localhost:8080/v1/videos/<id-from-step-1>
+```
+
+A completed response looks like:
+
+```json
+{
+  "status": "completed",
+  "videos": [
+    { "type": "url", "url": "https://im.runware.ai/.../model.glb", "content_type": "model/gltf-binary" }
+  ],
+  "usage": { "cost": { "total_cost": 0.2 } }
+}
+```
+
+<Warning>
+For image-to-3D, use the [passthrough route](#5-passthrough) instead, where you control the raw request body.
+</Warning>
+
+---
+
+# 5. Passthrough
+
+The passthrough route forwards a **raw Runware task array** to `https://api.runware.ai/v1` and returns the untouched response, unlocking any task type Bifrost does not model natively (upscale, background removal, image-to-3D, ...). Bifrost still injects the provider key, strips client auth, and logs the call.
+
+- **Endpoint:** `POST /runware_passthrough/v1`
+- **Body:** a raw Runware task array (exactly what you would send to Runware directly)
+- **Auth:** use your Bifrost key; Bifrost injects the real Runware key from its pool
+
+<Note>
+For anything slower than quick image inference, submit with `deliveryMethod: "async"` and poll with a `getResponse` task. A synchronous task that outruns the connection window returns an upstream `504 failedTaskTimeout`. This is Runware's sync limit, not a passthrough error.
+</Note>
+
+```bash
+# Submit an async upscale task
+curl -X POST http://localhost:8080/runware_passthrough/v1 \
+  -H "Authorization: Bearer <your-bifrost-key>" \
+  -H "Content-Type: application/json" \
+  -d '[{
+    "taskType": "upscale",
+    "taskUUID": "11111111-1111-1111-1111-111111111111",
+    "deliveryMethod": "async",
+    "inputImage": "https://im.runware.ai/.../input.jpg",
+    "model": "runware:501@1",
+    "upscaleFactor": 2,
+    "includeCost": true
+  }]'
+
+# Poll with a getResponse task
+curl -X POST http://localhost:8080/runware_passthrough/v1 \
+  -H "Authorization: Bearer <your-bifrost-key>" \
+  -H "Content-Type: application/json" \
+  -d '[{ "taskType": "getResponse", "taskUUID": "11111111-1111-1111-1111-111111111111" }]'
+```
 
 ---
 

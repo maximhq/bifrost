@@ -98,6 +98,10 @@ type chTableOpts struct {
 	skipIndexes []string // full "INDEX ..." clauses
 }
 
+type clickHouseSchemaStore interface {
+	EnsureClickHouseTable(ctx context.Context, model any, table, partitionBy, orderBy, ttl string, skipIndexes []string) error
+}
+
 // clickhouseCreateTable derives the column list from the GORM model, appends the
 // ReplacingMergeTree version column (`ver`, defaulted to now64() so every INSERT
 // is auto-versioned), and runs an idempotent CREATE TABLE IF NOT EXISTS.
@@ -134,6 +138,32 @@ func clickhouseCreateTable(ctx context.Context, db *gorm.DB, model any, opts chT
 	b.WriteString("SETTINGS index_granularity = 8192")
 
 	return db.WithContext(ctx).Exec(b.String()).Error
+}
+
+// EnsureClickHouseTable creates an extension-owned table and reconciles model
+// columns while preserving the configured cluster and replication settings.
+func (s *ClickHouseLogStore) EnsureClickHouseTable(ctx context.Context, model any, table, partitionBy, orderBy, ttl string, skipIndexes []string) error {
+	opts := chTableOpts{
+		table:       table,
+		partitionBy: partitionBy,
+		orderBy:     orderBy,
+		ttl:         ttl,
+		skipIndexes: skipIndexes,
+	}
+	if err := clickhouseCreateTable(ctx, s.db, model, opts, s.cluster); err != nil {
+		return fmt.Errorf("clickhouse: create extension table %s: %w", opts.table, err)
+	}
+	return clickhouseReconcileColumns(ctx, s.db, model, opts.table, s.cluster, s.logger)
+}
+
+// EnsureClickHouseTable delegates extension-table schema management to the
+// ClickHouse logstore wrapped by hybrid object storage.
+func (h *HybridLogStore) EnsureClickHouseTable(ctx context.Context, model any, table, partitionBy, orderBy, ttl string, skipIndexes []string) error {
+	schemaStore, ok := h.inner.(clickHouseSchemaStore)
+	if !ok {
+		return fmt.Errorf("logstore does not support ClickHouse extension tables")
+	}
+	return schemaStore.EnsureClickHouseTable(ctx, model, table, partitionBy, orderBy, ttl, skipIndexes)
 }
 
 // clickhouseExistingColumns returns the set of column names already present on a
@@ -267,12 +297,30 @@ func migrationClickHouseAsyncJobsTable(ctx context.Context, db *gorm.DB, cluster
 	return clickhouseReconcileColumns(ctx, db, &AsyncJob{}, "async_jobs", cluster, logger)
 }
 
+// migrationClickHouseWebhookDeliveriesTable creates the webhook_deliveries
+// table and reconciles it with the WebhookDelivery struct. Delivery history
+// is insert-only metadata, so it follows the logs retention setting for its
+// TTL backstop; DeleteExpiredWebhookDeliveries handles normal expiry from
+// each row's expires_at.
+func migrationClickHouseWebhookDeliveriesTable(ctx context.Context, db *gorm.DB, cluster string, retentionDays int, logger schemas.Logger) error {
+	logger.Info("[logstore] clickhouse: creating table webhook_deliveries")
+	if err := clickhouseCreateTable(ctx, db, &WebhookDelivery{}, chTableOpts{
+		table:   "webhook_deliveries",
+		orderBy: "id",
+		ttl:     chLogsTTL(retentionDays),
+	}, cluster); err != nil {
+		return fmt.Errorf("clickhouse: create webhook_deliveries table: %w", err)
+	}
+	return clickhouseReconcileColumns(ctx, db, &WebhookDelivery{}, "webhook_deliveries", cluster, logger)
+}
+
 // clickhouseMigrationSteps lists the per-table migrations in execution order,
 // mirroring logstoreMigrationSteps for the SQL stores.
 var clickhouseMigrationSteps = []clickhouseMigrationStep{
 	migrationClickHouseLogsTable,
 	migrationClickHouseMCPToolLogsTable,
 	migrationClickHouseAsyncJobsTable,
+	migrationClickHouseWebhookDeliveriesTable,
 }
 
 // triggerClickHouseMigrations runs all registered ClickHouse table migrations

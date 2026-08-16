@@ -34,7 +34,7 @@ If only transports changes, only transports bumps.
 ## Usage
 
 ```
-/changelog-writer                    # Interactive — prompts for everything
+/changelog-writer                    # Interactive - prompts for everything
 /changelog-writer <transport-ver>    # Pre-set transport version (e.g., v1.5.0)
 ```
 
@@ -51,56 +51,90 @@ echo "transports: $(cat transports/version)"
 for d in plugins/*/; do echo "$(basename $d): $(cat ${d}version)"; done
 ```
 
-Read the latest changelog file to understand the previous release state:
+To understand the previous release state, use the latest released tags (do NOT use docs/changelogs file mtimes - that directory also holds helm-, cli-, edge-, ent-, and prerelease files):
 
 ```bash
-# Find the latest docs changelog to determine the last released version
-ls -1t docs/changelogs/*.mdx | head -1
+for prefix in core framework transports; do
+  git tag -l "$prefix/v*" --sort=-v:refname | head -1
+done
 ```
 
-Then read that file to know the previous versions of all modules.
+If a docs changelog for that transport version exists (`docs/changelogs/v<version>.mdx`), read it to know the previous versions of all modules.
 
 ### Step 2: Identify Changes Since Last Release
 
-Use git log to find commits since the last release tag or since the last changelog was written:
+**The base for change detection is always determined per module from git - never from docs/changelogs filenames or file mtimes.** (docs/changelogs contains helm-, cli-, edge-, ent-, and prerelease mdx files, so "newest mdx" does not identify the last release.)
+
+For each module, resolve the base commit in this priority order:
 
 ```bash
-# Get the transport version from the latest changelog (it matches the release version)
-LAST_VERSION=$(ls -1t docs/changelogs/*.mdx | head -1 | sed 's/.*\/v/v/' | sed 's/.mdx//')
-echo "Last release: $LAST_VERSION"
+# 1. Latest released tag for the module, by version sort (NOT mtime, NOT alphabetical):
+TAG=$(git tag -l "core/v*" --sort=-v:refname | head -1)   # framework/v*, transports/v*, plugins tags likewise
 
-# Check if a git tag exists
-git tag -l "$LAST_VERSION" "v*"
-
-# Get commits since last release
-# If tag exists:
-git log ${LAST_VERSION}..HEAD --oneline --no-merges
-
-# If no tag, use date-based or commit-based approach:
-# Find the commit that added the last changelog
-git log --oneline --all -- "docs/changelogs/$(ls -1t docs/changelogs/*.mdx | head -1 | xargs basename)" | head -1
+# 2. Module tags may be cut on release branches. If the tag is not an ancestor
+#    of HEAD, fall back to the last commit that modified the module's version
+#    file on the current branch:
+if git merge-base --is-ancestor "$TAG" HEAD; then
+  BASE=$TAG
+else
+  BASE=$(git log -1 --format=%H -- core/version)
+fi
+echo "core base: $BASE"
 ```
 
-For each module, identify which files changed:
+Then apply the hard rule: **if `git diff ${BASE}..HEAD -- <module>/` is non-empty (ignoring only the module's own `changelog.md` and `version` files), that module MUST get a version bump.** No exceptions, no heuristics.
 
 ```bash
 # Changes in core
-git diff --name-only ${BASE}..HEAD -- core/
+git diff --name-only ${BASE}..HEAD -- core/ ':(exclude)core/changelog.md' ':(exclude)core/version'
 
 # Changes in framework
-git diff --name-only ${BASE}..HEAD -- framework/
+git diff --name-only ${BASE}..HEAD -- framework/ ':(exclude)framework/changelog.md' ':(exclude)framework/version'
 
 # Changes in each plugin
 for d in plugins/*/; do
-  CHANGES=$(git diff --name-only ${BASE}..HEAD -- "$d" | wc -l)
+  CHANGES=$(git diff --name-only ${BASE}..HEAD -- "$d" ":(exclude)${d}changelog.md" ":(exclude)${d}version" | wc -l)
   if [ "$CHANGES" -gt 0 ]; then
     echo "$(basename $d): $CHANGES files changed"
   fi
 done
 
 # Changes in transports
-git diff --name-only ${BASE}..HEAD -- transports/
+git diff --name-only ${BASE}..HEAD -- transports/ ':(exclude)transports/changelog.md' ':(exclude)transports/version'
 ```
+
+List the commits in the window for changelog writing:
+
+```bash
+git log ${BASE}..HEAD --oneline --no-merges -- <module>/
+```
+
+#### Detect Database Migrations and Reversibility
+
+Check whether `framework/configstore/migrations.go` changed in the release window - this is where every gorm-migrator DB migration for config/log stores is registered:
+
+```bash
+git diff ${BASE}..HEAD --name-only -- framework/configstore/migrations.go
+```
+
+If it changed, find the new migration entries added to the registry list (each is `{IDs: []string{"..."}, run: migrationXxx}`):
+
+```bash
+git diff ${BASE}..HEAD -- framework/configstore/migrations.go | grep '^+.*IDs:'
+```
+
+For each new migration, read its `migrationXxx` function and inspect the `Rollback:` closure inside its `migrator.Migration` - this codebase requires every migration to define one, and it is the authoritative signal for reversibility:
+
+- If `Rollback:` actually undoes the change (drops the added column/table/index it just created), the migration is **reversible**.
+- If `Rollback:` returns an error explaining why it can't safely revert (e.g. "dropping this column would permanently destroy saved state"), the migration is **non-reversible** - note the stated reason, it belongs in the changelog verbatim or paraphrased.
+
+```bash
+grep -n "^func migrationXxx" -A 30 framework/configstore/migrations.go | sed -n '/Rollback: func/,/^\t\t}/p'
+```
+
+Also check whether the migration only adds nullable columns/new tables (safe for a rolling deploy - older binaries ignore the new columns) versus drops/renames/backfills existing data (unsafe to run concurrently with an older binary during a rolling upgrade).
+
+Summarize findings for the user before writing the changelog - one line per new migration: name, reversible or not, and the one-line reason.
 
 ### Step 3: Classify Changes and Determine Bump Types
 
@@ -108,7 +142,7 @@ Present the identified changes to the user and ask what type of version bump eac
 
 **Always ask the user with AskUserQuestion what bump type to use for each module.**
 
-Ask for **every** module that will be bumped — both modules with code changes and modules with only cascade bumps. Use AskUserQuestion with up to 4 questions at a time (the tool's limit), batching in hierarchy order:
+Ask for **every** module that will be bumped - both modules with code changes and modules with only cascade bumps. Use AskUserQuestion with up to 4 questions at a time (the tool's limit), batching in hierarchy order:
 
 1. First batch: core, framework, and up to 2 plugins
 2. Continue with remaining plugins and transports
@@ -116,9 +150,9 @@ Ask for **every** module that will be bumped — both modules with code changes 
 For each module ask: "What type of version bump for **{module}**?"
 
 Options:
-- **patch** — Bug fixes, small improvements (0.0.X)
-- **minor** — New features, non-breaking changes (0.X.0)
-- **major** — Breaking changes (X.0.0)
+- **patch** - Bug fixes, small improvements (0.0.X)
+- **minor** - New features, non-breaking changes (0.X.0)
+- **major** - Breaking changes (X.0.0)
 
 **Note:** Minor bumps reset the patch version to 0 (e.g., `1.4.24` → `1.5.0`). Patch bumps only increment the last number (e.g., `1.4.24` → `1.4.25`).
 
@@ -188,7 +222,7 @@ gh api "repos/$REPO/pulls/<PR_NUMBER>" --jq '"\(.number) \(.user.login) \(.autho
 Use a markdown link to the contributor's GitHub profile: `[@username](https://github.com/username)`
 
 - In **transports/changelog.md** (enterprise-style): append `(thanks [@username](https://github.com/username)!)` to the description
-  - Example: `- **Logprobs JSON Tag** — Fixed logprobs JSON tag in BifrostResponseChoice (thanks [@contributor](https://github.com/contributor)!)`
+  - Example: `- **Logprobs JSON Tag** - Fixed logprobs JSON tag in BifrostResponseChoice (thanks [@contributor](https://github.com/contributor)!)`
 - In **per-module changelog.md** (flat-list): append `(thanks [@username](https://github.com/username)!)` to the entry
   - Example: `- fix: fixed logprobs JSON tag in BifrostResponseChoice (thanks [@contributor](https://github.com/contributor)!)`
 
@@ -223,7 +257,7 @@ gh api repos/maximhq/bifrost/issues/<ISSUE_NUMBER> --jq '"#\(.number) [\(.state)
 Render every closed issue as a markdown link in ascending issue-number order:
 
 ```markdown
-- [#3795](https://github.com/maximhq/bifrost/issues/3795) — MCP tools fail with Bedrock provider in v1.5.0
+- [#3795](https://github.com/maximhq/bifrost/issues/3795) - MCP tools fail with Bedrock provider in v1.5.0
 ```
 
 If an issue's title is generic or unhelpful (e.g. just `[Bug Report]`), read the issue body and write a short, specific description instead.
@@ -252,7 +286,7 @@ If only one upstream changed, mention just that one (e.g., `- chore: upgraded co
 - Each entry starts with `- ` followed by the type prefix and colon
 - Use `fix:`, `feat:`, `hotfix:`, or `chore:` prefixes
 - Breaking changes get a `<Note>` or `<Warning>` block indented under the entry
-- Keep entries concise — 1 line per change unless a breaking change note is needed
+- Keep entries concise - 1 line per change unless a breaking change note is needed
 
 #### transports/changelog.md (Enterprise-Style Format)
 
@@ -261,30 +295,36 @@ The transports changelog uses a categorized format with bold names. Write it usi
 ```markdown
 ## ✨ Features
 
-- **Feature Name** — Description of the feature
-- **Feature Name** — Description of the feature
+- **Feature Name** - Description of the feature
+- **Feature Name** - Description of the feature
 
 ## 🐞 Fixed
 
-- **Bug Name** — Description of what was fixed
-- **Bug Name** — Description of what was fixed
+- **Bug Name** - Description of what was fixed
+- **Bug Name** - Description of what was fixed
+
+## 🗄️ Database Migrations
+
+- **migration_id** - What it changes. Reversible: rolls back cleanly by dropping the added column/table. / Non-reversible: <reason from the Rollback closure>.
 
 ## 🐙 Closed GitHub Issues
 
-- [#1234](https://github.com/maximhq/bifrost/issues/1234) — Issue title
-- [#1235](https://github.com/maximhq/bifrost/issues/1235) — Issue title
+- [#1234](https://github.com/maximhq/bifrost/issues/1234) - Issue title
+- [#1235](https://github.com/maximhq/bifrost/issues/1235) - Issue title
 ```
 
 **Formatting rules for transports/changelog.md:**
 - Use `## ✨ Features` and `## 🐞 Fixed` section headers
-- Each entry uses **bold name** followed by em dash (—) and description
-- Keep descriptions concise — 1-2 lines max per bullet
+- Each entry uses **bold name** followed by a spaced hyphen ( - ) and description
+- **Never use em dashes (—) or en dashes (–)** anywhere in changelog output - not in transports/changelog.md, per-module changelog.md files, or docs MDX. Use a spaced hyphen ( - ), a colon, or a sentence break instead. This applies to every section, including issue titles copied from GitHub: rewrite em and en dashes in a copied title to a spaced hyphen. Leave ordinary hyphens alone - they are part of the words themselves (`tool-use`, `non-WAV`, `openai-go`), and rewriting them corrupts the title.
+- Keep descriptions concise - 1-2 lines max per bullet
 - Group related commits into a single bullet point
 - Include changes from ALL modules (transports is the top-level summary)
 - Breaking changes get a `<Warning>` or `<Note>` block indented under the entry
 - Omit sections that have no entries (e.g., if there are no features, skip the Features section)
-- If the release has only cascading bumps and no meaningful features or fixes, add a `## 🔧 Maintenance` section with an entry like: `- **Dependency Upgrades** — Bumped core to v1.5.0 and framework to v1.3.0 across all modules`
-- Add a `## 🐙 Closed GitHub Issues` section listing **every** issue closed in this release (see "Collect Closed GitHub Issues" below). Each entry MUST be a markdown link to the issue: `- [#NUMBER](https://github.com/maximhq/bifrost/issues/NUMBER) — Issue title`. Omit the section only if no issues were closed.
+- If the release has only cascading bumps and no meaningful features or fixes, add a `## 🔧 Maintenance` section with an entry like: `- **Dependency Upgrades** - Bumped core to v1.5.0 and framework to v1.3.0 across all modules`
+- Always include a `## 🗄️ Database Migrations` section (see "Detect Database Migrations and Reversibility" above) - unlike the other sections, this one is never omitted. If `framework/configstore/migrations.go` changed in the release window, add one bullet per new migration, named by its migration ID, stating what it changes, and explicitly saying **Reversible** or **Non-reversible** with the one-line reason pulled from the `Rollback:` closure. Non-reversible migrations should stand out - consider a `<Warning>` block for any that drop or transform existing data, since those are unsafe to roll back mid-deploy. If `migrations.go` did NOT change in the release window, still add the section with a single line: `- No new database migrations in this release.`
+- Add a `## 🐙 Closed GitHub Issues` section listing **every** issue closed in this release (see "Collect Closed GitHub Issues" above). Each entry MUST be a markdown link to the issue: `- [#NUMBER](https://github.com/maximhq/bifrost/issues/NUMBER) - Issue title`. Omit the section only if no issues were closed.
 
 ### Step 6: Update Version Files
 
@@ -297,7 +337,7 @@ echo "{new_version}" > transports/version
 echo "{new_version}" > plugins/{plugin}/version
 ```
 
-**Do NOT update go.mod files** — that is handled separately by the developer as part of the release process.
+**Do NOT update go.mod files** - that is handled separately by the developer as part of the release process.
 
 ### Step 7: Present Summary
 
@@ -382,8 +422,8 @@ bifrost/
 │   ├── changelog.md         # Enterprise-style format (✨ Features / 🐞 Fixed / 🐙 Closed GitHub Issues)
 │   └── go.mod
 └── docs/
-    ├── changelogs/          # ⚠️ DO NOT TOUCH — MDX files managed separately
-    └── docs.json            # ⚠️ DO NOT TOUCH — navigation managed separately
+    ├── changelogs/          # ⚠️ DO NOT TOUCH - MDX files managed separately
+    └── docs.json            # ⚠️ DO NOT TOUCH - navigation managed separately
 ```
 
 ## Plugin List (Alphabetical Order)

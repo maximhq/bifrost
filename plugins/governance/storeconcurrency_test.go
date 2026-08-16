@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -22,6 +24,22 @@ func newStandaloneStore(t *testing.T) *LocalGovernanceStore {
 		LastDBUsagesTokensRateLimits:   map[string]int64{},
 		LastDBUsagesRequestsRateLimits: map[string]int64{},
 	}
+}
+
+// TestGetVirtualKeyByID exercises the ID-keyed lookup directly without taking
+// the full governance snapshot path.
+func TestGetVirtualKeyByID(t *testing.T) {
+	store := newStandaloneStore(t)
+	vk := &configstoreTables.TableVirtualKey{ID: "vk-id", Name: "test", Value: *schemas.NewSecretVar("sk-bf-test")}
+	store.storeVirtualKey(vk.Value.GetValue(), vk)
+
+	got, found := store.GetVirtualKeyByID(context.Background(), vk.ID)
+	require.True(t, found)
+	assert.Same(t, vk, got)
+
+	got, found = store.GetVirtualKeyByID(context.Background(), "missing")
+	assert.False(t, found)
+	assert.Nil(t, got)
 }
 
 // TestBumpBudgetUsage_NoLostIncrements proves the CAS retry loop in
@@ -94,13 +112,18 @@ func TestBumpRateLimitUsage_NoLostIncrements(t *testing.T) {
 func TestResetBudgetAt_ConcurrentResettersCollapse(t *testing.T) {
 	store := newStandaloneStore(t)
 	budgetID := "reset-collapse"
-	old := buildBudget(budgetID, 1000, "1h")
-	old.LastReset = time.Now().Add(-2 * time.Hour)
-	old.CurrentUsage = 999
-	store.budgets.Store(budgetID, old)
-
 	const goroutines = 128
-	newLastReset := time.Now()
+	// Exactly one window between the grant anchor and the reset target, so the
+	// derived remaining count is unambiguous: 5 granted minus 1 window closed.
+	newLastReset := time.Now().Truncate(time.Second)
+	grantAnchor := newLastReset.Add(-time.Hour)
+
+	old := buildBudget(budgetID, 1000, "1h")
+	old.CreatedAt = grantAnchor
+	old.LastReset = grantAnchor
+	old.CurrentUsage = 999
+	require.NoError(t, old.SetOverrideAt(25, configstoreTables.BudgetOverrideModeCycles, 5, grantAnchor))
+	store.budgets.Store(budgetID, old)
 
 	var successes atomic.Int64
 	var wg sync.WaitGroup
@@ -120,4 +143,66 @@ func TestResetBudgetAt_ConcurrentResettersCollapse(t *testing.T) {
 	require.NotNil(t, final)
 	assert.Equal(t, 0.0, final.CurrentUsage)
 	assert.True(t, final.LastReset.Equal(newLastReset))
+	assert.Equal(t, 4, final.OverrideCyclesRemaining, "the single winning reset should consume exactly one override cycle")
+}
+
+// TestAdoptCalendarAlignmentInMemoryPreservesConcurrentSpend pins that adopting a
+// budget onto the calendar grid keeps whatever usage landed while the switch was
+// in flight.
+//
+// Adoption cannot read usage, then write it back: a request bumping the same
+// budget between those two steps would have its spend silently dropped. The CAS
+// loop has to carry the usage it observed at swap time, which is what this test
+// forces by bumping usage from another goroutine during the adoption.
+func TestAdoptCalendarAlignmentInMemoryPreservesConcurrentSpend(t *testing.T) {
+	ctx := context.Background()
+	store := newStandaloneStore(t)
+	now := time.Date(2026, time.February, 5, 12, 0, 0, 0, time.UTC)
+	monthStart := time.Date(2026, time.February, 1, 0, 0, 0, 0, time.UTC)
+
+	budget := &configstoreTables.TableBudget{
+		ID:                "adopt-live-budget",
+		MaxLimit:          1000,
+		CurrentUsage:      0,
+		ResetDuration:     "1M",
+		IsCalendarAligned: true,
+		CreatedAt:         time.Date(2026, time.January, 10, 9, 0, 0, 0, time.UTC),
+		LastReset:         time.Date(2026, time.January, 10, 9, 0, 0, 0, time.UTC),
+	}
+	store.budgets.Store(budget.ID, budget)
+
+	// Usage is bumped by direct CAS rather than through BumpBudgetUsage, which
+	// consults the real clock: a January window is long overdue against it, so the
+	// request path would reset the budget onto the current real month and the fixed
+	// `now` below could no longer move it. The property under test is that the
+	// adoption CAS carries whatever usage it observed, and a plain increment races
+	// it just as well without dragging real time into the fixture.
+	const bumps = 50
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < bumps; i++ {
+			for {
+				raw, ok := store.budgets.Load(budget.ID)
+				require.True(t, ok)
+				current := raw.(*configstoreTables.TableBudget)
+				clone := *current
+				clone.CurrentUsage++
+				if store.budgets.CompareAndSwap(budget.ID, raw, &clone) {
+					break
+				}
+			}
+		}
+	}()
+	adopted := store.AdoptCalendarAlignmentInMemory(ctx, budget.ID, now)
+	wg.Wait()
+
+	assert.True(t, adopted, "a window opened before the boundary must be adopted")
+
+	live := store.LoadBudget(ctx, budget.ID)
+	require.NotNil(t, live)
+	assert.True(t, live.LastReset.Equal(monthStart), "the window is re-anchored on the boundary")
+	assert.Equal(t, float64(bumps), live.CurrentUsage,
+		"every concurrent bump survived: adoption changed the boundary, not the accounting")
 }

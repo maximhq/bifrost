@@ -3,11 +3,14 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { Label } from "@/components/ui/label";
 import { ModelMultiselect } from "@/components/ui/modelMultiselect";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
+import BudgetUsageResetDialog from "@/components/ui/budgetUsageResetDialog";
+import { useBudgetUsageResetPrompt } from "@/hooks/useBudgetUsageResetPrompt";
 import MultiBudgetLines from "@/components/ui/multibudgets";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { resetDurationOptions } from "@/lib/constants/governance";
+import { budgetSignature } from "@/lib/utils/governance";
 import { RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { getModelLimitScope, getModelLimitScopes } from "@/lib/registries/modelLimitScopes";
@@ -48,6 +51,7 @@ const formSchema = z
 					id: z.string().optional(),
 					max_limit: z.number().nonnegative().optional(),
 					reset_duration: z.string().optional(),
+					reset_config: z.object({ quarter_start_month: z.number().int().min(1).max(12).optional() }).optional(),
 				}),
 			)
 			.optional(),
@@ -80,6 +84,8 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 
 	const { data: providersData } = useGetProvidersQuery();
 	const [createModelConfig, { isLoading: isCreating }] = useCreateModelConfigMutation();
+	// Defers the save until the operator says whether to clear accumulated spend.
+	const resetPrompt = useBudgetUsageResetPrompt<FormData>();
 	const [updateModelConfig, { isLoading: isUpdating }] = useUpdateModelConfigMutation();
 	const [getModels] = useLazyGetModelsQuery();
 	const isLoading = isCreating || isUpdating;
@@ -119,6 +125,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 				id: b.id,
 				max_limit: b.max_limit,
 				reset_duration: b.reset_duration,
+				reset_config: b.reset_config,
 			})),
 			tokenMaxLimit: modelConfig?.rate_limit?.token_max_limit ?? undefined,
 			tokenResetDuration: modelConfig?.rate_limit?.token_reset_duration || "1h",
@@ -152,6 +159,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 					id: b.id,
 					max_limit: b.max_limit,
 					reset_duration: b.reset_duration,
+					reset_config: b.reset_config,
 				})),
 				tokenMaxLimit: modelConfig.rate_limit?.token_max_limit ?? undefined,
 				tokenResetDuration: modelConfig.rate_limit?.token_reset_duration || "1h",
@@ -161,12 +169,39 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 		}
 	}, [modelConfig, form]);
 
+	// A budget config change on an existing limit is when clearing accumulated
+	// spend becomes a meaningful choice; creating one has no usage to reset.
+	// Compared without ids on purpose: form rows carry none while persisted rows do,
+	// so including them would report a change on every save. The shared signature
+	// folds in the fiscal quarter, which a limit-and-duration comparison misses -
+	// moving Q1 from April to July reschedules the reset without touching either.
+	const budgetsChanged = (data: FormData) => {
+		if (!isEditing || !modelConfig) return false;
+		const next = (data.budgets ?? [])
+			.filter((b) => b.max_limit !== undefined && b.max_limit !== null)
+			.map((b) => ({ max_limit: b.max_limit, reset_duration: b.reset_duration, reset_config: b.reset_config }));
+		const current = (modelConfig.budgets ?? []).map((b) => ({
+			max_limit: b.max_limit ?? undefined,
+			reset_duration: b.reset_duration,
+			reset_config: b.reset_config,
+		}));
+		return budgetSignature(next) !== budgetSignature(current);
+	};
+
 	const onSubmit = async (data: FormData) => {
 		if (!canSubmit) {
 			toast.error("You don't have permission to perform this action");
 			return;
 		}
 
+		if (budgetsChanged(data)) {
+			resetPrompt.ask(data);
+			return;
+		}
+		await saveModelLimit(data, false);
+	};
+
+	const saveModelLimit = async (data: FormData, resetBudgetUsage: boolean) => {
 		if (!hasAnyLimit) {
 			form.setError("root", { message: "At least one budget or rate limit is required" });
 			return;
@@ -179,7 +214,12 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 			// reconciled server-side; an empty array removes all budgets.
 			const budgetsPayload = (data.budgets ?? [])
 				.filter((b) => b.max_limit !== undefined && b.max_limit !== null)
-				.map((b) => ({ id: b.id, max_limit: b.max_limit as number, reset_duration: b.reset_duration || "1M" }));
+				.map((b) => ({
+					id: b.id,
+					max_limit: b.max_limit as number,
+					reset_duration: b.reset_duration || "1M",
+					reset_config: b.reset_config,
+				}));
 
 			if (isEditing && modelConfig) {
 				const hadRateLimit = !!modelConfig.rate_limit;
@@ -214,9 +254,11 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 						provider: provider,
 						budgets: budgetsPayload,
 						rate_limit: rateLimitPayload,
+						// Only sent when the operator explicitly chose to clear spend.
+						reset_budget_usage: resetBudgetUsage || undefined,
 					},
 				}).unwrap();
-				toast.success("Model limit updated successfully");
+				toast.success("Limit updated successfully");
 			} else {
 				await createModelConfig({
 					model_name: data.modelName,
@@ -241,7 +283,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 								}
 							: undefined,
 				}).unwrap();
-				toast.success("Model limit created successfully");
+				toast.success("Limit created successfully");
 			}
 
 			onSave();
@@ -262,16 +304,16 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 				}}
 				data-testid="model-limit-sheet"
 			>
-				<SheetHeader className="flex flex-col items-start p-0 px-8 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10">
-					<SheetTitle>{isEditing ? "Edit Model Limit" : "Create Model Limit"}</SheetTitle>
+				<SheetHeader className="flex flex-col items-start p-0 px-4 py-4 md:px-8" headerClassName="mb-0 sticky -top-4 bg-card z-10">
+					<SheetTitle>{isEditing ? "Edit Limit" : "Create Limit"}</SheetTitle>
 					<SheetDescription>
-						{isEditing ? "Update budget and rate limit configuration." : "Set up budget and rate limits for a model."}
+						{isEditing ? "Update budget and rate limit configuration." : "Set up budget and rate limits for a scope."}
 					</SheetDescription>
 				</SheetHeader>
 
 				<Form {...form}>
 					<form onSubmit={form.handleSubmit(onSubmit)} className="flex h-full flex-col gap-6">
-						<div className="grow space-y-4 px-8">
+						<div className="grow space-y-4 px-4 md:px-8">
 							{/* Provider */}
 							<FormField
 								control={form.control}
@@ -431,6 +473,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 										id: b.id,
 										max_limit: b.max_limit,
 										reset_duration: b.reset_duration ?? "1M",
+										reset_config: b.reset_config,
 									}))}
 									onChange={(lines) => form.setValue("budgets", lines, { shouldDirty: true })}
 								/>
@@ -490,7 +533,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 									<DottedSeparator />
 									<div className="space-y-3">
 										<Label className="text-sm font-medium">Current Usage</Label>
-										<div className="bg-muted/50 grid grid-cols-2 gap-4 rounded-lg p-4">
+										<div className="bg-muted/50 grid grid-cols-1 gap-4 rounded-lg p-4 md:grid-cols-2">
 											{(modelConfig?.budgets ?? []).map((b) => (
 												<div key={b.id} className="space-y-1">
 													<p className="text-muted-foreground text-xs">Budget ({b.reset_duration})</p>
@@ -524,7 +567,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 						</div>
 
 						{/* Footer */}
-						<div className="bg-card sticky bottom-0 shrink-0 border-t px-8 py-4">
+						<div className="bg-card sticky bottom-0 shrink-0 border-t px-4 py-4 md:px-8">
 							<div className="flex items-center justify-end gap-3">
 								{!canSubmit && <p className="text-destructive text-sm">You don't have permission to perform this action</p>}
 								<Button type="button" variant="outline" onClick={handleClose}>
@@ -537,6 +580,13 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 						</div>
 					</form>
 				</Form>
+				<BudgetUsageResetDialog
+					data-testid="model-limit-budget-reset-dialog"
+					ownerLabel="limit"
+					open={resetPrompt.isOpen}
+					onOpenChange={resetPrompt.setOpen}
+					onChoice={(resetUsage) => resetPrompt.resolve((data) => saveModelLimit(data, resetUsage))}
+				/>
 			</SheetContent>
 		</Sheet>
 	);

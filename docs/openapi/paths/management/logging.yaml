@@ -852,6 +852,27 @@ _histogram-parameters:
     schema:
       type: string
 
+_ranking-parameters:
+  limit:
+    name: limit
+    in: query
+    description: |
+      Maximum number of ranked rows to return. Defaults to 100. Ignored when
+      `all=true`.
+    schema:
+      type: integer
+      minimum: 1
+      default: 100
+  all:
+    name: all
+    in: query
+    description: |
+      When true, returns every ranked entity with no row cap. Intended for
+      exports (CSV / PDF), which must not be truncated.
+    schema:
+      type: boolean
+      default: false
+
 logs-recalculate-cost:
   post:
     operationId: recalculateLogCosts
@@ -1302,6 +1323,8 @@ logs-rankings:
       - $ref: '#/_histogram-parameters/parent_request_id'
       - $ref: '#/_histogram-parameters/metadata_key'
       - $ref: '#/_histogram-parameters/content_search'
+      - $ref: '#/_ranking-parameters/limit'
+      - $ref: '#/_ranking-parameters/all'
     security:
       - ManagementBearerAuth: []
     responses:
@@ -1374,6 +1397,8 @@ logs-dashboard:
         description: Comma-separated list of MCP server labels to filter the MCP section by
         schema:
           type: string
+      - $ref: '#/_ranking-parameters/limit'
+      - $ref: '#/_ranking-parameters/all'
     security:
       - ManagementBearerAuth: []
     responses:

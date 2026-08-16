@@ -10,6 +10,7 @@ import (
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
@@ -26,8 +27,21 @@ const (
 	AnthropicFilesAPIBetaHeader = "files-api-2025-04-14"
 	// AnthropicStructuredOutputsBetaHeader is required for strict tool validation and output_format.
 	AnthropicStructuredOutputsBetaHeader = "structured-outputs-2025-11-13"
-	// AnthropicAdvancedToolUseBetaHeader is required for defer_loading, input_examples, and allowed_callers.
+	// AnthropicAdvancedToolUseBetaHeader now gates only allowed_callers (programmatic
+	// tool calling) — see AnthropicToolSearchBetaHeader below for defer_loading, which
+	// used to be part of this bundle but is gated by its own beta as of current docs.
+	// https://platform.claude.com/docs/en/build-with-claude/overview ("Programmatic tool calling" row)
 	AnthropicAdvancedToolUseBetaHeader = "advanced-tool-use-2025-11-20"
+	// AnthropicToolSearchBetaHeader is required for tool.defer_loading and the
+	// tool_search_tool_* server tool. Available on the Claude API, Vertex AI,
+	// Azure AI Foundry, and Claude in Amazon Bedrock (Mantle) — but NOT on classic
+	// Amazon Bedrock's Converse API, which Bifrost's Bedrock provider always uses
+	// for tool-bearing requests. AWS's own docs restrict this feature to the
+	// InvokeModel/InvokeModelWithResponseStream APIs, never Converse:
+	// https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-anthropic-claude-messages-tool-use.html
+	// https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool
+	// Do not gate this on AdvancedToolUse, and do not add a bundle fallback for Bedrock.
+	AnthropicToolSearchBetaHeader = "tool-search-tool-2025-10-19"
 	// AnthropicToolExamplesBetaHeader is required for tool.input_examples as a
 	// standalone feature (Bedrock supports this narrow header without the full
 	// advanced-tool-use-2025-11-20 bundle).
@@ -66,6 +80,26 @@ const (
 	// on custom tools (streams input_json_delta before full args are determined).
 	// Per Table 20: GA on Anthropic/Bedrock/Vertex, Beta on Azure.
 	AnthropicEagerInputStreamingBetaHeader = "fine-grained-tool-streaming-2025-05-14"
+	// AnthropicServerSideFallbackBetaHeader is required for the native "fallbacks"
+	// request field (server-side refusal fallback). Anthropic API only.
+	AnthropicServerSideFallbackBetaHeader = "server-side-fallback-2026-06-01"
+	// AnthropicServerSideFallbackDefaultBetaHeader is the superset header required for
+	// the fallbacks:"default" form (Opus 5 default fallback routing); it also accepts
+	// the explicit-list form. Shares the server-side-fallback- prefix for dedup/filter.
+	AnthropicServerSideFallbackDefaultBetaHeader = "server-side-fallback-2026-07-01"
+	// AnthropicFallbackCreditBetaHeader is required to receive fallback_credit_token
+	// on a refusal and to redeem it on the retry. Unlike server-side fallback this is
+	// supported on every Anthropic-family surface — but AWS ships it under its own date.
+	AnthropicFallbackCreditBetaHeader = "fallback-credit-2026-06-01"
+	// AnthropicFallbackCreditBetaHeaderAWS is the same feature's header on the
+	// AWS-operated surfaces (Bedrock Converse and Bedrock Mantle), which are a
+	// release behind the Claude API. See betaHeaderProviderVersion in utils.go.
+	AnthropicFallbackCreditBetaHeaderAWS = "fallback-credit-2026-06-09"
+	// AnthropicMidConversationToolChangesBetaHeader enables tool_addition / tool_removal
+	// blocks inside mid_conv_system messages, so tools can be offered/withdrawn mid-turn
+	// while the tools array (and the cached prefix) stays fixed. Native Anthropic surface
+	// (Claude API direct + Claude in Amazon Bedrock via Mantle); Bedrock is Opus 5 only.
+	AnthropicMidConversationToolChangesBetaHeader = "mid-conversation-tool-changes-2026-07-01"
 
 	// AnthropicComputerUseBetaHeader is required for computer use (version-specific).
 	// computer_20251124 (Opus 4.6, Sonnet 4.6, Opus 4.5) uses the newer beta header.
@@ -77,6 +111,7 @@ const (
 	// Use these with strings.HasPrefix when filtering headers per provider,
 	// so that future date bumps (e.g. structured-outputs-2025-12-15) are still matched.
 	AnthropicAdvancedToolUseBetaHeaderPrefix     = "advanced-tool-use-"
+	AnthropicToolSearchBetaHeaderPrefix          = "tool-search-tool-"
 	AnthropicToolExamplesBetaHeaderPrefix        = "tool-examples-"
 	AnthropicStructuredOutputsBetaHeaderPrefix   = "structured-outputs-"
 	AnthropicPromptCachingScopeBetaHeaderPrefix  = "prompt-caching-scope-"
@@ -92,6 +127,10 @@ const (
 	AnthropicContextManagementBetaHeaderPrefix   = "context-management-"
 	AnthropicCompactionBetaHeaderPrefix          = "compact-"
 	AnthropicAdvisorBetaHeaderPrefix             = "advisor-tool-"
+	AnthropicServerSideFallbackBetaHeaderPrefix  = "server-side-fallback-"
+	AnthropicFallbackCreditBetaHeaderPrefix      = "fallback-credit-"
+	// Mid-conversation tool changes (Opus 5).
+	AnthropicMidConversationToolChangesBetaHeaderPrefix = "mid-conversation-tool-changes-"
 )
 
 // ProviderFeatureSupport defines which Anthropic features a given provider supports.
@@ -109,6 +148,9 @@ const (
 //	     https://platform.claude.com/docs/en/agents-and-tools/mcp-connector
 //	Advisor-excl = Advisor tool Claude-API-only:
 //	     https://platform.claude.com/docs/en/agents-and-tools/tool-use/advisor-tool
+//	SO-mantle-excl = Structured outputs unsupported on the bedrock-mantle
+//	     Messages API, per the "Supported APIs or features" table:
+//	     https://docs.aws.amazon.com/bedrock/latest/userguide/structured-output.html
 type ProviderFeatureSupport struct {
 	WebSearch              bool // web_search server tool (cite: A)
 	WebSearchNova          bool // web_search via nova_grounding — Bedrock Responses path only, not Chat/Converse
@@ -120,9 +162,9 @@ type ProviderFeatureSupport struct {
 	Bash                   bool // bash client tool (cite: A, B-header)
 	Memory                 bool // memory client tool — on Bedrock bundled under context-management-2025-06-27 (cite: A, B-header)
 	TextEditor             bool // text_editor client tool (cite: A)
-	ToolSearch             bool // tool_search server tool — tool-search-tool-2025-10-19 (cite: A, B-header)
+	ToolSearch             bool // tool_search server tool + tool.defer_loading — tool-search-tool-2025-10-19 (cite: A). NOT supported on classic Amazon Bedrock: AWS restricts this to InvokeModel/InvokeModelWithResponseStream, never Converse, which is the only API Bifrost's Bedrock provider uses for tool-bearing requests.
 	MCP                    bool // MCP connector — explicit "not supported on Bedrock/Vertex" (cite: MCP-excl)
-	AdvancedToolUse        bool // advanced-tool-use-2025-11-20 bundle: defer_loading + input_examples + allowed_callers (cite: A)
+	AdvancedToolUse        bool // advanced-tool-use-2025-11-20 bundle: allowed_callers only as of current docs — defer_loading now has its own beta, see ToolSearch (cite: A)
 	InputExamples          bool // tool.input_examples standalone — tool-examples-2025-10-29. Bedrock supports this independently of the AdvancedToolUse bundle (cite: B-header). On Anthropic / Azure the bundle implicitly covers it.
 	StructuredOutputs      bool // strict tool validation / output_format (cite: A)
 	PromptCachingScope     bool // cache_control.scope — prompt-caching-scope-2026-01-05 (cite: A)
@@ -144,6 +186,9 @@ type ProviderFeatureSupport struct {
 	ImageGeneration        bool // image_generation server tool (OpenAI-only)
 	ServiceTier            bool // service_tier request field — strip when false (Vertex uses headers instead)
 	Diagnostics            bool // diagnostics request field — cache diagnostics (cache-diagnosis-2026-04-07 beta, diagnostics.previous_message_id). Claude API only per docs ("not supported on Amazon Bedrock or Vertex AI"); stripped elsewhere fail-closed. Azure rejects it.
+	ServerSideFallback     bool // native "fallbacks" request field — server-side-fallback-2026-06-01. Claude API only per docs ("not available on Amazon Bedrock, Google Cloud, or Microsoft Foundry").
+	FallbackCredit         bool // fallback_credit_token request field + stop_details credit fields — fallback-credit-2026-06-01 (AWS surfaces: -2026-06-09). Documented on the Claude API, Amazon Bedrock, Google Cloud and Microsoft Foundry, i.e. the inverse of ServerSideFallback.
+	MidConvToolChanges     bool // tool_addition/tool_removal blocks — mid-conversation-tool-changes-2026-07-01. Native Anthropic surface (Claude API + Bedrock Mantle); Bedrock is Opus 5 only, enforced upstream.
 }
 
 // ProviderFeatures maps each provider to its supported Anthropic features.
@@ -161,8 +206,11 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		InterleavedThinking: true, Skills: true, ContainerBasic: true, Context1M: true,
 		FastMode: true, RedactThinking: true, TaskBudgets: true,
 		InferenceGeo: true, EagerInputStreaming: true, AdvisorTool: true,
-		ServiceTier: true,
-		Diagnostics: true, // cache-diagnosis-2026-04-07 — Claude API only; only this provider keeps diagnostics.previous_message_id.
+		ServiceTier:        true,
+		Diagnostics:        true, // cache-diagnosis-2026-04-07 — Claude API only; only this provider keeps diagnostics.previous_message_id.
+		ServerSideFallback: true, // server-side-fallback-2026-06-01 — Claude API only.
+		FallbackCredit:     true, // fallback-credit-2026-06-01.
+		MidConvToolChanges: true, // mid-conversation-tool-changes-2026-07-01.
 	},
 	// Google Vertex AI — cite: A (overview table) and V-platform.
 	// Notably NOT supported: MCP (MCP-excl), Skills/container.skills,
@@ -191,15 +239,20 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		InterleavedThinking:    true, // V-platform confirms; fails on non-allowlisted 4-series
 		Context1M:              true,
 		EagerInputStreaming:    true, // fine-grained-tool-streaming GA per A
+		FallbackCredit:         true, // fallback credit is documented on Google Cloud
 	},
 	// AWS Bedrock — cite: A + B-header (definitive beta-header list).
 	// Notably NOT supported per docs: MCP, Skills, FilesAPI, WebFetch,
 	// WebSearch, CodeExecution, FastMode, TaskBudgets, AdvisorTool,
-	// InferenceGeo, RedactThinking, AdvancedToolUse (full), PromptCachingScope.
+	// InferenceGeo, RedactThinking, AdvancedToolUse (full), PromptCachingScope,
+	// ToolSearch (tool-search-tool-2025-10-19 is InvokeModel/InvokeModelWithResponseStream
+	// only per AWS's own docs; Bifrost's Bedrock provider always dispatches
+	// tool-bearing requests via Converse, so this can never work end-to-end —
+	// see the ToolSearch field comment above for citations).
 	schemas.Bedrock: {
 		WebSearchNova: true, // nova_grounding — Responses path only
 		CodeExecNova:  true, // nova_code_interpreter — Responses path only
-		ComputerUse:   true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
+		ComputerUse:   true, Bash: true, Memory: true, TextEditor: true,
 		ContainerBasic:         true,
 		StructuredOutputs:      true, // documented on Bedrock per A overview matrix
 		Compaction:             true, // compact-2026-01-12 per B-header
@@ -212,12 +265,20 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		// AdvancedToolUse intentionally OFF on Bedrock. The bundle header
 		// (advanced-tool-use-2025-11-20) is not listed in B-header; only the
 		// narrow tool-examples-2025-10-29 header is, gated via InputExamples above.
-		ServiceTier: true, // Bedrock handles service_tier via its own typed conversion
+		ServiceTier:    true, // Bedrock handles service_tier via its own typed conversion
+		FallbackCredit: true, // fallback-credit-2026-06-09 (AWS date) per the Bedrock userguide
 	},
 	// Bedrock Mantle — same AWS-hosted Claude models as Bedrock, reached through
 	// the native Anthropic Messages surface (/anthropic/v1/messages) instead of
 	// Converse. Feature support is a property of the model+cloud, so this mirrors
-	// schemas.Bedrock — with one deliberate exception: the *Nova flags below.
+	// schemas.Bedrock, with the *Nova flags below as the deliberate exception.
+	//
+	// ServerSideFallback stays OFF here. Mantle is "Claude in Amazon Bedrock", which
+	// documents server-side fallback under "Features not supported"; the surface that
+	// does support it is "Claude Platform on AWS"
+	// (aws-external-anthropic.{region}.api.aws), a separate Anthropic-operated
+	// endpoint Bifrost does not implement. FallbackCredit is a different feature and
+	// is supported here — see AnthropicFallbackCreditBetaHeaderAWS for the date skew.
 	//
 	// WebSearchNova / CodeExecNova are intentionally OFF here. They exist only to
 	// keep web_search / code_interpreter tools so the Bedrock Converse/Responses
@@ -227,10 +288,17 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 	// code_interpreter tool that the endpoint rejects. Mantle's native surface
 	// does not support the Anthropic web_search / code_execution server tools
 	// either, so both stay false (no WebSearch / CodeExecution).
+	//
+	// StructuredOutputs is OFF (cite: SO-mantle-excl). AWS marks the whole
+	// feature unsupported on this endpoint — both output_config.format (which is
+	// why ToAnthropicChat/ResponsesRequest route this provider through the
+	// synthetic bf_so_* tool) and strict tool use, which 400s with
+	// "tools.0.custom.strict: Extra inputs are not permitted". Structured
+	// outputs on AWS require Converse/InvokeModel on bedrock-runtime, i.e.
+	// schemas.Bedrock, which keeps the flag on.
 	schemas.BedrockMantle: {
 		ComputerUse: true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
 		ContainerBasic:         true,
-		StructuredOutputs:      true,
 		Compaction:             true,
 		ContextEditing:         true,
 		ContextManagementField: true,
@@ -239,6 +307,8 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		EagerInputStreaming:    true,
 		InputExamples:          true,
 		ServiceTier:            true,
+		FallbackCredit:         true, // fallback-credit-2026-06-09 (AWS date) per the Bedrock userguide
+		MidConvToolChanges:     true, // mid-conversation-tool-changes-2026-07-01 — Opus 5 on Bedrock, enforced upstream.
 	},
 	// Microsoft Azure AI Foundry — cite: A (most features azureAiBeta) +
 	// Az-platform ("supports most of Claude's features"). Excluded per
@@ -255,7 +325,23 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		RedactThinking:      true,
 		EagerInputStreaming: true,
 		// FastMode, InferenceGeo, AdvisorTool, TaskBudgets — not documented on Az-platform; leave off.
-		ServiceTier: true,
+		ServiceTier:    true,
+		FallbackCredit: true, // fallback credit is documented on Microsoft Foundry
+	},
+	schemas.DeepSeek: {
+		WebSearch:              true,
+		WebSearchDynamic:       true,
+		ContainerBasic:         true,
+		ContextManagementField: true,
+		Compaction:             true,
+		ContextEditing:         true,
+		PromptCachingScope:     true,
+		AdvancedToolUse:        true,
+		InputExamples:          true,
+		EagerInputStreaming:    true,
+		StructuredOutputs:      true,
+		InterleavedThinking:    true,
+		ServiceTier:            true,
 	},
 }
 
@@ -396,15 +482,145 @@ type AnthropicMessageRequest struct {
 	ContextManagement *ContextManagement     `json:"context_management,omitempty"`
 	Container         *AnthropicContainer    `json:"container,omitempty"`   // string id OR object with skills[]; skills require skills-2025-10-02 beta
 	Diagnostics       *AnthropicDiagnostics  `json:"diagnostics,omitempty"` // cache diagnostics opt-in; requires cache-diagnosis-2026-04-07 beta (Anthropic API only)
+	// FallbackCreditToken redeems the credit minted by a prior refusal, repricing
+	// the retry's cache writes. Requires the fallback-credit beta header, and is
+	// rejected on count_tokens.
+	FallbackCreditToken *string `json:"fallback_credit_token,omitempty"`
 
 	// Extra params for advanced use cases
 	ExtraParams map[string]interface{} `json:"-"`
 
-	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
-	Fallbacks []string `json:"fallbacks,omitempty"`
+	// Fallbacks is the overloaded request-level "fallbacks" field, either an array of
+	// entries (Bifrost "provider/model" strings and/or native {"model": ...} objects)
+	// or the bare string preset "default" (Opus 5 default fallback routing). See
+	// AnthropicFallbacks, which models both shapes behind one type.
+	Fallbacks *AnthropicFallbacks `json:"fallbacks,omitempty"`
 
 	// Internal field to track whether to strip scope from cache control blocks (for Vertex + prompt caching scope)
 	stripCacheControlScope bool `json:"-"`
+}
+
+// AnthropicNativeFallback is one entry of Anthropic's native server-side fallback
+// list (beta server-side-fallback-2026-06-01): a model to retry the request on when
+// the primary model refuses, with optional per-attempt max_tokens/thinking overrides.
+// Every field except Model overrides the corresponding request-level value for
+// that attempt only. Carried verbatim: the per-attempt gates (e.g. whether the
+// fallback model supports fast mode or the effort parameter) belong to Anthropic,
+// which validates the request against every named model up front.
+type AnthropicNativeFallback struct {
+	Model        string                 `json:"model"`
+	MaxTokens    *int                   `json:"max_tokens,omitempty"`
+	Thinking     *AnthropicThinking     `json:"thinking,omitempty"`
+	OutputConfig *AnthropicOutputConfig `json:"output_config,omitempty"`
+	Speed        *string                `json:"speed,omitempty"` // "standard" | "fast"
+}
+
+// AnthropicFallbackEntry is one entry of the overloaded request-level "fallbacks"
+// field, which carries two unrelated features that share the same wire key,
+// disambiguated by element shape:
+//   - a JSON string ("provider/model") is a Bifrost cross-provider fallback;
+//   - a JSON object ({"model": ...}) is an Anthropic native server-side fallback.
+//
+// Exactly one field is set after unmarshalling.
+type AnthropicFallbackEntry struct {
+	BifrostModel string                   // set when the entry is a "provider/model" string
+	Native       *AnthropicNativeFallback // set when the entry is a native {"model": ...} object
+}
+
+// UnmarshalJSON dispatches on the first non-space byte: '"' → Bifrost string,
+// '{' → Anthropic native object.
+func (e *AnthropicFallbackEntry) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return fmt.Errorf("empty fallback entry")
+	}
+	switch trimmed[0] {
+	case '"':
+		return sonic.Unmarshal(trimmed, &e.BifrostModel)
+	case '{':
+		var native AnthropicNativeFallback
+		if err := sonic.Unmarshal(trimmed, &native); err != nil {
+			return err
+		}
+		e.Native = &native
+		return nil
+	default:
+		return fmt.Errorf("fallback entry must be a string or object, got: %s", trimmed)
+	}
+}
+
+// MarshalJSON re-emits whichever form is set.
+func (e AnthropicFallbackEntry) MarshalJSON() ([]byte, error) {
+	if e.Native != nil {
+		return sonic.Marshal(e.Native)
+	}
+	return sonic.Marshal(e.BifrostModel)
+}
+
+// AnthropicFallbacks models the overloaded request-level "fallbacks" field, which is
+// either an array of entries (AnthropicFallbackEntry) or a bare string preset —
+// currently only "default" (Opus 5 default fallback routing, which needs the superset
+// server-side-fallback-2026-07-01 beta header). Exactly one form is set; the custom
+// (Un)MarshalJSON lets it sit in the request struct and (de)serialize natively,
+// dispatching on wire shape the same way AnthropicFallbackEntry does per element.
+type AnthropicFallbacks struct {
+	Entries []AnthropicFallbackEntry // the array form
+	Preset  string                   // the bare-string form, e.g. "default"
+}
+
+// UnmarshalJSON dispatches on shape: a JSON string is a preset, an array is entries.
+func (f *AnthropicFallbacks) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		return nil
+	}
+	if trimmed[0] == '"' {
+		return sonic.Unmarshal(trimmed, &f.Preset)
+	}
+	return sonic.Unmarshal(trimmed, &f.Entries)
+}
+
+// MarshalJSON re-emits whichever form is set (preset wins if both are somehow set).
+func (f AnthropicFallbacks) MarshalJSON() ([]byte, error) {
+	if f.Preset != "" {
+		return sonic.Marshal(f.Preset)
+	}
+	return sonic.Marshal(f.Entries)
+}
+
+// bifrostFallbackModels returns the Bifrost cross-provider fallback "provider/model" strings.
+func (req *AnthropicMessageRequest) bifrostFallbackModels() []string {
+	var out []string
+	if req.Fallbacks == nil {
+		return out
+	}
+	for _, f := range req.Fallbacks.Entries {
+		if f.Native == nil && f.BifrostModel != "" {
+			out = append(out, f.BifrostModel)
+		}
+	}
+	return out
+}
+
+// nativeFallbacks returns the Anthropic native server-side fallback entries.
+func (req *AnthropicMessageRequest) nativeFallbacks() []AnthropicNativeFallback {
+	var out []AnthropicNativeFallback
+	if req.Fallbacks == nil {
+		return out
+	}
+	for _, f := range req.Fallbacks.Entries {
+		if f.Native != nil {
+			out = append(out, *f.Native)
+		}
+	}
+	return out
+}
+
+// fallbacksDefaultRouting reports whether the request uses the fallbacks:"default"
+// form (Opus 5 default fallback routing), which needs the superset
+// server-side-fallback-2026-07-01 beta header rather than -2026-06-01.
+func (req *AnthropicMessageRequest) fallbacksDefaultRouting() bool {
+	return req.Fallbacks != nil && req.Fallbacks.Preset == "default"
 }
 
 // SetStripCacheControlScope sets the stripCacheControlScope flag
@@ -659,31 +875,32 @@ func (req *AnthropicMessageRequest) IsStreamingRequested() bool {
 
 // Known fields for AnthropicMessageRequest
 var anthropicMessageRequestKnownFields = map[string]bool{
-	"model":              true,
-	"max_tokens":         true,
-	"messages":           true,
-	"metadata":           true,
-	"system":             true,
-	"cache_control":      true,
-	"temperature":        true,
-	"top_p":              true,
-	"top_k":              true,
-	"stop_sequences":     true,
-	"stream":             true,
-	"tools":              true,
-	"tool_choice":        true,
-	"mcp_servers":        true,
-	"thinking":           true,
-	"output_format":      true,
-	"output_config":      true,
-	"speed":              true,
-	"service_tier":       true,
-	"inference_geo":      true,
-	"context_management": true,
-	"container":          true,
-	"diagnostics":        true,
-	"extra_params":       true,
-	"fallbacks":          true,
+	"model":                 true,
+	"max_tokens":            true,
+	"messages":              true,
+	"metadata":              true,
+	"system":                true,
+	"cache_control":         true,
+	"temperature":           true,
+	"top_p":                 true,
+	"top_k":                 true,
+	"stop_sequences":        true,
+	"stream":                true,
+	"tools":                 true,
+	"tool_choice":           true,
+	"mcp_servers":           true,
+	"thinking":              true,
+	"output_format":         true,
+	"output_config":         true,
+	"speed":                 true,
+	"service_tier":          true,
+	"inference_geo":         true,
+	"context_management":    true,
+	"container":             true,
+	"diagnostics":           true,
+	"fallback_credit_token": true,
+	"extra_params":          true,
+	"fallbacks":             true,
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for AnthropicMessageRequest.
@@ -703,30 +920,7 @@ func (req *AnthropicMessageRequest) UnmarshalJSON(data []byte) error {
 		return err
 	}
 
-	// Parse JSON to extract unknown fields
-	var rawData map[string]json.RawMessage
-	if err := sonic.Unmarshal(data, &rawData); err != nil {
-		return err
-	}
-
-	// Initialize ExtraParams if not already initialized
-	if req.ExtraParams == nil {
-		req.ExtraParams = make(map[string]interface{})
-	}
-
-	// Extract unknown fields, preserving nested key ordering for prompt caching.
-	// Store as json.RawMessage (compacted) instead of parsing into map[string]interface{}
-	// which would destroy key order on re-serialization.
-	for key, value := range rawData {
-		if !anthropicMessageRequestKnownFields[key] {
-			var buf bytes.Buffer
-			if err := json.Compact(&buf, value); err == nil {
-				req.ExtraParams[key] = json.RawMessage(buf.Bytes())
-			} else {
-				req.ExtraParams[key] = json.RawMessage(value)
-			}
-		}
-	}
+	extractAnthropicMessageRequestUnknownFields(data, req)
 
 	// Compact known json.RawMessage fields for deterministic cache keys
 	if len(req.OutputFormat) > 0 {
@@ -743,6 +937,28 @@ func (req *AnthropicMessageRequest) UnmarshalJSON(data []byte) error {
 	}
 
 	return nil
+}
+
+// extractAnthropicMessageRequestUnknownFields scans only the top-level object,
+// avoiding a second decode and RawMessage copy for every known request field.
+func extractAnthropicMessageRequestUnknownFields(data []byte, req *AnthropicMessageRequest) {
+	gjson.ParseBytes(data).ForEach(func(key, value gjson.Result) bool {
+		keyString := key.String()
+		if anthropicMessageRequestKnownFields[keyString] {
+			return true
+		}
+
+		if req.ExtraParams == nil {
+			req.ExtraParams = make(map[string]interface{})
+		}
+		var buf bytes.Buffer
+		if err := json.Compact(&buf, []byte(value.Raw)); err == nil {
+			req.ExtraParams[keyString] = json.RawMessage(buf.Bytes())
+		} else {
+			req.ExtraParams[keyString] = json.RawMessage(value.Raw)
+		}
+		return true
+	})
 }
 
 // MarshalJSON implements custom JSON marshalling for AnthropicMessageRequest.
@@ -936,6 +1152,7 @@ const (
 	AnthropicContentBlockTypeThinking                          AnthropicContentBlockType = "thinking"
 	AnthropicContentBlockTypeRedactedThinking                  AnthropicContentBlockType = "redacted_thinking"
 	AnthropicContentBlockTypeCompaction                        AnthropicContentBlockType = "compaction"
+	AnthropicContentBlockTypeFallback                          AnthropicContentBlockType = "fallback" // server-side fallback boundary marker (server-side-fallback-2026-06-01)
 
 	// code_execution inner result-content discriminators (the "content" object on
 	// a *_code_execution_tool_result block; ContentObj.Type carries these).
@@ -1039,6 +1256,44 @@ type AnthropicContentBlock struct {
 
 	// web_fetch_tool_result / web_fetch_result inner retrieval timestamp
 	RetrievedAt *string `json:"retrieved_at,omitempty"`
+
+	// fallback block — the model boundary at a server-side fallback handoff
+	From    *AnthropicFallbackModel   `json:"from,omitempty"`    // declining model
+	To      *AnthropicFallbackModel   `json:"to,omitempty"`      // model that continues
+	Trigger *AnthropicFallbackTrigger `json:"trigger,omitempty"` // why the handoff happened
+}
+
+// AnthropicFallbackModel is the {model} object on a fallback content block's from/to fields.
+type AnthropicFallbackModel struct {
+	Model string `json:"model"`
+}
+
+// AnthropicFallbackTrigger is the {type, category} object on a fallback content
+// block, naming why the declining model handed off. Category mirrors
+// AnthropicStopDetails.Category ("cyber", "bio", ...) and is absent when the
+// decline maps to no named category. Undocumented on the fallbacks page but
+// present on live responses.
+type AnthropicFallbackTrigger struct {
+	Type     string  `json:"type"`
+	Category *string `json:"category,omitempty"`
+}
+
+// AnthropicStopDetails explains a "refusal" stop_reason. Category and Explanation
+// are null when the refusal maps to no named category; RecommendedModel names a
+// model to retry directly when a fallback attempt was skipped (rate limit/overload).
+type AnthropicStopDetails struct {
+	Type             string  `json:"type"`
+	Category         *string `json:"category,omitempty"`
+	Explanation      *string `json:"explanation,omitempty"`
+	RecommendedModel *string `json:"recommended_model,omitempty"`
+	// FallbackCreditToken is the one-time credit redeemable on a manual retry
+	// (fallback-credit beta). Null when no credit was minted for this refusal.
+	FallbackCreditToken *string `json:"fallback_credit_token,omitempty"`
+	// FallbackHasPrefillClaim selects the retry body shape: true means append an
+	// assistant message echoing the refused content, false means resend unchanged.
+	// Absent (not false) on AWS/Google/Microsoft while the field rolls out, which
+	// callers must read as "unknown" and try the append shape first.
+	FallbackHasPrefillClaim *bool `json:"fallback_has_prefill_claim,omitempty"`
 }
 
 // AnthropicSource represents image or document source in Anthropic format.
@@ -1583,6 +1838,7 @@ type AnthropicMessageResponse struct {
 	Content      []AnthropicContentBlock `json:"content"`
 	Model        string                  `json:"model"`
 	StopReason   AnthropicStopReason     `json:"stop_reason,omitempty"`
+	StopDetails  *AnthropicStopDetails   `json:"stop_details,omitempty"` // refusal detail; null for every stop_reason other than "refusal"
 	StopSequence *string                 `json:"stop_sequence,omitempty"`
 	Usage        *AnthropicUsage         `json:"usage,omitempty"`
 	// Container is the code-execution sandbox container, present on responses that
@@ -1609,18 +1865,67 @@ type AnthropicTextResponse struct {
 
 // AnthropicUsage represents usage information in Anthropic format
 type AnthropicUsage struct {
-	Type *string `json:"type,omitempty"`
+	Type  *string `json:"type,omitempty"`
+	Model *string `json:"model,omitempty"` // model that produced this (iteration) attempt; sent on usage.iterations[] for server-side fallback
 	// Unlike OpenAI models, Anthropic (claude) models separately track cache creation and cache read tokens, and its not included in the input_tokens field.
-	InputTokens              int                          `json:"input_tokens"`
-	CacheCreationInputTokens int                          `json:"cache_creation_input_tokens"`
-	CacheReadInputTokens     int                          `json:"cache_read_input_tokens"`
-	CacheCreation            AnthropicUsageCacheCreation  `json:"cache_creation"`
-	OutputTokens             int                          `json:"output_tokens"`
-	ServerToolUse            *AnthropicServerToolUseUsage `json:"server_tool_use,omitempty"` // Server tool use statistics (e.g., web search)
-	ServiceTier              *string                      `json:"service_tier,omitempty"`    // "standard", "priority", or "batch"
-	Speed                    *string                      `json:"speed,omitempty"`           // "fast" or "standard" — which speed was actually served (fast mode research preview)
-	InferenceGeo             *string                      `json:"inference_geo,omitempty"`   // the geographic region for inference processing. If not specified, the workspace's default_inference_geo is used.
-	Iterations               []AnthropicUsage             `json:"iterations,omitempty"`      // Iterations statistics
+	InputTokens              int                           `json:"input_tokens"`
+	CacheCreationInputTokens int                           `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int                           `json:"cache_read_input_tokens"`
+	CacheCreation            AnthropicUsageCacheCreation   `json:"cache_creation"`
+	OutputTokens             int                           `json:"output_tokens"`
+	OutputTokensDetails      *AnthropicOutputTokensDetails `json:"output_tokens_details,omitempty"` // Breakdown of output_tokens (extended thinking). Absent on non-thinking responses.
+	ServerToolUse            *AnthropicServerToolUseUsage  `json:"server_tool_use,omitempty"`       // Server tool use statistics (e.g., web search)
+	ServiceTier              *string                       `json:"service_tier,omitempty"`          // "standard", "priority", or "batch"
+	Speed                    *string                       `json:"speed,omitempty"`                 // "fast" or "standard" — which speed was actually served (fast mode research preview)
+	InferenceGeo             *string                       `json:"inference_geo,omitempty"`         // the geographic region for inference processing. If not specified, the workspace's default_inference_geo is used.
+	Iterations               []AnthropicUsage              `json:"iterations,omitempty"`            // Iterations statistics
+}
+
+// AnthropicOutputTokensDetails breaks down output_tokens for extended-thinking responses.
+//
+// ThinkingTokens is a SUBSET of AnthropicUsage.OutputTokens, never additive: Anthropic
+// documents it as "always <= output_tokens", with output_tokens remaining the inclusive,
+// authoritative total used for billing. Do not add it to OutputTokens — non-reasoning
+// output is OutputTokens - ThinkingTokens.
+//
+// Note this is the opposite convention from the input side of the same object, where
+// InputTokens excludes the cache counters and must be summed with them.
+//
+// Observability-grade, not billing-grade: Anthropic computes it by re-tokenizing the raw
+// reasoning text, so it may differ from the model's exact generation count by a few tokens.
+// It reflects raw reasoning, not the shorter visible summary.
+type AnthropicOutputTokensDetails struct {
+	ThinkingTokens int `json:"thinking_tokens"`
+}
+
+// AnthropicUsageIterationTypeFallbackMessage marks the usage.iterations entry for
+// the attempt that actually served the response after a server-side fallback
+// handoff. Declining attempts appear as ordinary "message" entries.
+const AnthropicUsageIterationTypeFallbackMessage = "fallback_message"
+
+// ServerSideFallbackModel returns the model named by the fallback_message entry in
+// usage.iterations — the attempt whose token counts the top-level usage mirrors,
+// and therefore the model those tokens must be priced against. Returns nil on
+// every ordinary response, which carries no iterations at all.
+//
+// Matched on entry type rather than position: the docs put the serving attempt
+// last, but keying on the type says what we mean and survives a shape change.
+func (u *AnthropicUsage) ServerSideFallbackModel() *string {
+	if u == nil {
+		return nil
+	}
+	var served *string
+	for i := range u.Iterations {
+		it := u.Iterations[i]
+		if it.Type == nil || *it.Type != AnthropicUsageIterationTypeFallbackMessage {
+			continue
+		}
+		if it.Model != nil && *it.Model != "" {
+			m := *it.Model
+			served = &m
+		}
+	}
+	return served
 }
 
 // AnthropicServerToolUseUsage represents server tool use statistics in usage
@@ -1679,8 +1984,9 @@ type AnthropicStreamDelta struct {
 	PartialJSON  *string                  `json:"partial_json,omitempty"`
 	Thinking     *string                  `json:"thinking,omitempty"`
 	Signature    *string                  `json:"signature,omitempty"`
-	Citation     *AnthropicTextCitation   `json:"citation,omitempty"`    // For citations_delta
-	StopReason   *AnthropicStopReason     `json:"stop_reason,omitempty"` // only not present in "message_start" events
+	Citation     *AnthropicTextCitation   `json:"citation,omitempty"`     // For citations_delta
+	StopReason   *AnthropicStopReason     `json:"stop_reason,omitempty"`  // only not present in "message_start" events
+	StopDetails  *AnthropicStopDetails    `json:"stop_details,omitempty"` // refusal detail on the final message_delta; null unless stop_reason is "refusal"
 	StopSequence *string                  `json:"stop_sequence"`
 	// Container is the code-execution sandbox container, surfaced on the final
 	// message_delta of a response that used the code execution tool.

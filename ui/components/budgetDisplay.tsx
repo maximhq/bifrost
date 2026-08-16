@@ -1,13 +1,13 @@
 import { Progress } from "@/components/ui/progress";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { resetDurationLabels, supportsCalendarAlignment } from "@/lib/constants/governance";
+import { fiscalQuarterNote, resetDurationLabels, supportsCalendarAlignment } from "@/lib/constants/governance";
 import { Budget } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
-import { formatCurrency } from "@/lib/utils/governance";
+import { formatCurrency, getEffectiveBudgetLimit, hasActiveBudgetOverride } from "@/lib/utils/governance";
 
 interface BudgetDisplayProps {
 	budgets: Budget[] | null | undefined;
-	/** When true, alignable durations (day/week/month/year) get a "(calendar)" suffix. */
+	/** When true, alignable durations (day/week/month/quarter/year) get a "(calendar)" suffix. */
 	calendarAligned?: boolean;
 }
 
@@ -30,8 +30,10 @@ export function BudgetDisplay({ budgets, calendarAligned }: BudgetDisplayProps) 
 	return (
 		<div className="min-w-[160px] space-y-2.5">
 			{budgets.map((b, idx) => {
-				const pct = b.max_limit > 0 ? Math.min((b.current_usage / b.max_limit) * 100, 100) : 0;
-				const isExhausted = b.max_limit > 0 && b.current_usage >= b.max_limit;
+				const effectiveMaxLimit = getEffectiveBudgetLimit(b);
+				const hasOverride = hasActiveBudgetOverride(b);
+				const pct = effectiveMaxLimit > 0 ? Math.min((b.current_usage / effectiveMaxLimit) * 100, 100) : 0;
+				const isExhausted = effectiveMaxLimit > 0 && b.current_usage >= effectiveMaxLimit;
 				const barClass = isExhausted ? "[&>div]:bg-red-500/70" : pct > 80 ? "[&>div]:bg-amber-500/70" : "[&>div]:bg-emerald-500/70";
 
 				return (
@@ -39,18 +41,32 @@ export function BudgetDisplay({ budgets, calendarAligned }: BudgetDisplayProps) 
 						<TooltipTrigger asChild>
 							<div className="space-y-1.5">
 								<div className="flex items-center justify-between gap-4">
-									<span className="font-medium">{formatCurrency(b.max_limit)}</span>
-									<span className="text-muted-foreground text-xs">{formatResetDuration(b.reset_duration, calendarAligned)}</span>
+									<span className="font-medium">
+										{formatCurrency(effectiveMaxLimit)}
+										{hasOverride ? <span className="text-muted-foreground ml-1 text-[10px]">override</span> : null}
+									</span>
+									<span className="text-muted-foreground text-xs">
+										{formatResetDuration(b.reset_duration, calendarAligned)}
+										{fiscalQuarterNote(b.reset_duration, b.reset_config)}
+									</span>
 								</div>
 								<Progress value={pct} className={cn("bg-muted/70 dark:bg-muted/30 h-1.5", barClass)} />
 							</div>
 						</TooltipTrigger>
 						<TooltipContent>
 							<p className="font-medium">
-								{formatCurrency(b.current_usage)} / {formatCurrency(b.max_limit)}
+								{formatCurrency(b.current_usage)} / {formatCurrency(effectiveMaxLimit)}
 							</p>
+							{hasOverride ? (
+								<p className="text-primary-foreground/80 text-xs">
+									Base {formatCurrency(b.max_limit)} + {formatCurrency(b.override_amount ?? 0)} override
+								</p>
+							) : null}
 							{b.reset_duration ? (
-								<p className="text-primary-foreground/80 text-xs">Resets {formatResetDuration(b.reset_duration, calendarAligned)}</p>
+								<p className="text-primary-foreground/80 text-xs">
+								Resets {formatResetDuration(b.reset_duration, calendarAligned)}
+								{fiscalQuarterNote(b.reset_duration, b.reset_config)}
+							</p>
 							) : null}
 						</TooltipContent>
 					</Tooltip>

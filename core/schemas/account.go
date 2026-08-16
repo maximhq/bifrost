@@ -141,6 +141,7 @@ type Key struct {
 	SGLKeyConfig           *SGLKeyConfig           `json:"sgl_key_config,omitempty"`            // SGLang-specific key configuration
 	Enabled                *bool                   `json:"enabled,omitempty"`                   // Whether the key is active (default:true)
 	UseForBatchAPI         *bool                   `json:"use_for_batch_api,omitempty"`         // Whether this key can be used for batch API operations (default:false for new keys, migrated keys default to true)
+	UseAnthropicEndpoints  *bool                   `json:"use_anthropic_endpoints,omitempty"`   // Whether to use anthropic endpoints for this key
 	ConfigHash             string                  `json:"config_hash,omitempty"`               // Hash of config.json version, used for change detection
 	Status                 KeyStatusType           `json:"status,omitempty"`                    // Status of key
 	Description            string                  `json:"description,omitempty"`               // Description of key
@@ -229,7 +230,8 @@ type AliasConfig struct {
 	// top-level (rather than inside each provider sub-config) so the flat "project_id"
 	// JSON key does not collide between embedded sub-configs — Go/sonic silently drop
 	// a field name shared by multiple same-depth anonymous structs.
-	ProjectID *SecretVar `json:"project_id,omitempty"`
+	ProjectID             *SecretVar `json:"project_id,omitempty"`
+	UseAnthropicEndpoints *bool      `json:"use_anthropic_endpoints,omitempty"` // Whether to use anthropic endpoints for this alias
 
 	*AzureAliasCfg
 	*VertexAliasCfg
@@ -247,6 +249,7 @@ func (ac AliasConfig) isLegacyShape() bool {
 		ac.Description == "" &&
 		ac.Region == nil &&
 		ac.ProjectID == nil &&
+		ac.UseAnthropicEndpoints == nil &&
 		ac.AzureAliasCfg == nil &&
 		ac.VertexAliasCfg == nil &&
 		ac.BedrockAliasCfg == nil &&
@@ -457,6 +460,20 @@ func ResolveCanonicalModel(ctx *BifrostContext, fallbackModel string) string {
 		}
 	}
 	return fallbackModel
+}
+
+// ResolveBaseProvider returns the built-in provider that actually served this
+// attempt. Custom providers surface their own key (e.g. "my-openai") wherever a
+// ModelProvider is reported, so provider-family gating must resolve through the
+// base type Bifrost records on the context. Falls back to provider when the
+// context carries none (direct converter calls, tests).
+func ResolveBaseProvider(ctx *BifrostContext, provider ModelProvider) ModelProvider {
+	if ctx != nil {
+		if base, ok := ctx.Value(BifrostContextKeyBaseProviderType).(ModelProvider); ok && base != "" {
+			return base
+		}
+	}
+	return provider
 }
 
 // IsAnthropicModelFamily reports whether the current attempt resolves to the
@@ -681,6 +698,43 @@ type BatchS3Config struct {
 	Buckets []S3BucketConfig `json:"buckets,omitempty"` // List of S3 bucket configurations
 }
 
+// BedrockEndpoints overrides the host Bifrost dials for each AWS endpoint service, so Bedrock
+// traffic can be routed through interface VPC endpoints (AWS PrivateLink) when private DNS is
+// not in effect. Each value is the endpoint's DNS name as listed in the VPC console, e.g.
+// "vpce-0abc123-x1y2z3.bedrock-runtime.eu-west-2.vpce.amazonaws.com". The endpoint ID alone is
+// not enough: AWS appends a random string to it that cannot be derived. Zonal names and custom
+// Route 53 aliases for the endpoint work here too. Region stays required either way, since it
+// sets the SigV4 credential scope independently of which host is dialled.
+//
+// S3 is the exception to the naming shape: its endpoint DNS is a wildcard whose leading label
+// selects the API surface, so the value must carry the literal "bucket." prefix. Bifrost prepends
+// the bucket name to whatever is set here, matching the virtual-hosted URL the AWS SDKs build.
+// An S3 Gateway endpoint needs no value at all — it routes via the route table under the public
+// S3 hostname and has no DNS name to configure.
+type BedrockEndpoints struct {
+	Runtime      *SecretVar `json:"runtime,omitempty"`       // com.amazonaws.{region}.bedrock-runtime — all inference
+	ControlPlane *SecretVar `json:"control_plane,omitempty"` // com.amazonaws.{region}.bedrock — model listing, batch jobs
+	Mantle       *SecretVar `json:"mantle,omitempty"`        // com.amazonaws.{region}.bedrock-mantle — mantle-routed models
+	AgentRuntime *SecretVar `json:"agent_runtime,omitempty"` // com.amazonaws.{region}.bedrock-agent-runtime — rerank
+	S3           *SecretVar `json:"s3,omitempty"`            // com.amazonaws.{region}.s3 — batch file I/O, "bucket."-prefixed
+}
+
+// NormalizeEndpointHost returns a configured endpoint value as a bare host, or "" when unset.
+// A value may be pasted with a scheme or a trailing path; both are stripped so callers can slot
+// the result straight into a URL template.
+func NormalizeEndpointHost(v *SecretVar) string {
+	if v == nil {
+		return ""
+	}
+	host := strings.TrimSpace(v.GetValue())
+	host = strings.TrimPrefix(host, "https://")
+	host = strings.TrimPrefix(host, "http://")
+	if i := strings.IndexByte(host, '/'); i >= 0 {
+		host = host[:i]
+	}
+	return host
+}
+
 // BedrockKeyConfig represents the AWS Bedrock-specific configuration.
 // It contains AWS-specific settings required for authentication and service access.
 type BedrockKeyConfig struct {
@@ -694,6 +748,10 @@ type BedrockKeyConfig struct {
 	ExternalID      *SecretVar `json:"external_id,omitempty"`
 	RoleSessionName *SecretVar `json:"session_name,omitempty"`
 
+	// BatchRoleARN is the service role passed to Bedrock batch jobs for S3 access.
+	// When set, it takes priority over any role_arn sent in the request.
+	BatchRoleARN *SecretVar `json:"batch_role_arn,omitempty"`
+
 	// ProjectID scopes the Bedrock Mantle sub-surface (OpenAI-compatible gpt-*/Gemma routing and the
 	// mantle catalog merge in ListModels) to a specific Bedrock project via the "OpenAI-Project"
 	// header. When empty, AWS routes to the account's default project. It has no effect on the
@@ -701,6 +759,9 @@ type BedrockKeyConfig struct {
 	ProjectID *SecretVar `json:"project_id,omitempty"`
 
 	BatchS3Config *BatchS3Config `json:"batch_s3_config,omitempty"` // S3 bucket configuration for batch operations
+
+	// Endpoints routes each AWS endpoint service through an interface VPC endpoint. See BedrockEndpoints.
+	Endpoints *BedrockEndpoints `json:"endpoints,omitempty"`
 }
 
 // NOTE: To use Bedrock IAM role authentication, set both AccessKey and SecretKey to empty strings.
@@ -726,6 +787,9 @@ type BedrockMantleKeyConfig struct {
 	// header on the native-Anthropic (Claude) surface. When empty, AWS routes to the account's
 	// default project.
 	ProjectID *SecretVar `json:"project_id,omitempty"`
+
+	// Endpoints routes each AWS endpoint service through an interface VPC endpoint. See BedrockEndpoints.
+	Endpoints *BedrockEndpoints `json:"endpoints,omitempty"`
 }
 
 // NOTE: To use Bedrock Mantle IAM role authentication, set both AccessKey and SecretKey to empty

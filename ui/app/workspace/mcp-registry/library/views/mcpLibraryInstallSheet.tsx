@@ -42,6 +42,15 @@ function buildTLSConfigPayload(tls: MCPTLSConfig | undefined): MCPTLSConfig | un
 	return { insecure_skip_verify: tls.insecure_skip_verify, ca_cert_pem: hasCACert ? tls.ca_cert_pem : undefined };
 }
 
+function isValidOAuthResourceURI(value: string): boolean {
+	try {
+		const parsed = new URL(value);
+		return parsed.protocol !== "" && parsed.hash === "";
+	} catch {
+		return false;
+	}
+}
+
 /**
  * Sanitize a catalog server name into a valid MCP client name. The backend
  * only allows [a-zA-Z0-9_] and disallows a leading digit, so we slugify by
@@ -104,6 +113,8 @@ function authLabel(authType?: MCPAuthType | string): string {
 			return "Per-user OAuth";
 		case "per_user_headers":
 			return "User headers";
+		case "token_exchange":
+			return "Token exchange";
 		default:
 			return "No auth";
 	}
@@ -119,6 +130,8 @@ function authHelpText(authType?: MCPAuthType | string): string {
 			return "Create the MCP client, then authorize the first user OAuth connection.";
 		case "per_user_headers":
 			return "Declare the header names each caller must supply, then verify a sample set on install.";
+		case "token_exchange":
+			return "Set the identity-provider audience for this server; each caller's identity token is exchanged automatically.";
 		default:
 			return "No credentials are required for this catalog entry.";
 	}
@@ -130,6 +143,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 	const [createMCPClient] = useCreateMCPClientMutation();
 	const [isLoading, setIsLoading] = useState(false);
 	const [scopesText, setScopesText] = useState("");
+	const [resourceText, setResourceText] = useState("");
 	const [envVars, setEnvVars] = useState<Record<string, string>>({});
 	const [oauthFlow, setOauthFlow] = useState<{
 		authorizeUrl: string;
@@ -206,6 +220,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 		if (!open) return;
 		reset(defaultValues);
 		setScopesText("");
+		setResourceText("");
 		setEnvVars(initialEnvVars);
 		setOauthFlow(null);
 		setHeadersFlow(null);
@@ -254,6 +269,14 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 			if (data.oauth_config?.registration_url && !/^https?:\/\/.+$/.test(data.oauth_config.registration_url)) {
 				setError("oauth_config.registration_url", {
 					message: "Registration URL must start with http:// or https://",
+				});
+				hasErrors = true;
+			}
+			if (resourceText.trim() && !isValidOAuthResourceURI(resourceText.trim())) {
+				toast({
+					title: "Invalid resource URI",
+					description: "OAuth resource must be an absolute URI without a fragment.",
+					variant: "destructive",
 				});
 				hasErrors = true;
 			}
@@ -306,6 +329,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 							registration_url: data.oauth_config?.registration_url || undefined,
 							scopes: scopesText.trim() ? parseArrayFromText(scopesText) : undefined,
 							server_url: connectionUrl || undefined,
+							resource: resourceText.trim() || undefined,
 						}
 					: undefined,
 			headers:
@@ -368,14 +392,14 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 	return (
 		<Sheet open={open} onOpenChange={(sheetOpen) => !sheetOpen && !oauthFlow && !headersFlow && onClose()}>
 			<SheetContent className="flex w-full flex-col overflow-x-hidden p-0 pt-4 sm:max-w-2xl">
-				<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 sticky px-8 -top-4 bg-card z-10">
+				<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 sticky px-4 md:px-8 -top-4 bg-card z-10">
 					<SheetTitle>Install MCP server</SheetTitle>
 					<SheetDescription>Confirm the catalog configuration before adding this server to Bifrost.</SheetDescription>
 				</SheetHeader>
 
 				<Form {...form}>
 					<form onSubmit={handleSubmit(onSubmit)} className="flex min-h-0 flex-1 flex-col">
-						<div className="flex-1 space-y-6 px-8 pt-5 pb-6">
+						<div className="flex-1 space-y-6 px-4 pt-5 pb-6 md:px-8">
 							<section className="border-b pb-5">
 								<div className="bg-muted/10 flex items-start gap-3 rounded-sm border p-3">
 									<div className="bg-background flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-sm border">
@@ -739,6 +763,15 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 														data-testid="library-oauth-scopes-input"
 													/>
 												</div>
+												<div className="space-y-2">
+													<Label>Resource</Label>
+													<Input
+														value={resourceText}
+														onChange={(event) => setResourceText(event.target.value)}
+														placeholder="https://provider.example.com/mcp or urn:example:mcp"
+														data-testid="library-oauth-resource-input"
+													/>
+												</div>
 											</AccordionContent>
 										</AccordionItem>
 									</Accordion>
@@ -807,7 +840,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 							</section>
 						</div>
 
-						<div className="border-border bg-card sticky bottom-0 z-10 border-t px-8 py-4">
+						<div className="border-border bg-card sticky bottom-0 z-10 border-t px-4 py-4 md:px-8">
 							<div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
 								<p className="text-muted-foreground text-sm">
 									{isOauth
@@ -902,8 +935,10 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 						setHeadersFlow(null);
 						setError("name", { message: error });
 					}}
-					payload={headersFlow.payload}
 					perUserHeaderKeys={perUserHeaderKeys}
+					submitHandler={async (values) => {
+						await createMCPClient({ ...headersFlow.payload, user_headers: values }).unwrap();
+					}}
 				/>
 			)}
 		</Sheet>

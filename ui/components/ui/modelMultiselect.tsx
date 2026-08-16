@@ -20,6 +20,8 @@ interface ModelMultiselectPropsBase {
 	loadModelsOnEmptyProvider?: boolean | "base_models";
 	/** Prepends an "Allow All Models" option (value: "*") to the dropdown */
 	allowAllOption?: boolean;
+	/** Hides the search icon rendered inside the control */
+	hideSearchIcon?: boolean;
 	/** id for the search input (accessibility) */
 	inputId?: string;
 	/** id of element that labels this control (accessibility) */
@@ -80,8 +82,9 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 	} = props;
 	const isSingleSelect = props.isSingleSelect === true;
 
-	const [getModels, { data: modelsData, isLoading }] = useLazyGetModelsQuery();
-	const [getBaseModels, { data: baseModelsData, isLoading: isLoadingBaseModels }] = useLazyGetBaseModelsQuery();
+	const [getModels, { data: modelsData, isFetching, isError }] = useLazyGetModelsQuery();
+	const [getBaseModels, { data: baseModelsData, isFetching: isFetchingBaseModels, isError: isBaseModelsError }] =
+		useLazyGetBaseModelsQuery();
 	const [inputValue, setInputValue] = useState("");
 	const inputValueRef = useRef("");
 
@@ -254,11 +257,16 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 	}, [modelsData, baseModelsData, shouldUseBaseModels, allowAllOption]);
 
 	const shouldBeDisabled = disabled || (!provider && !shouldLoadOnEmpty);
+	const modelsQueryEnabled = !!provider || shouldLoadOnEmpty;
+	const activeIsFetching = shouldUseBaseModels ? isFetchingBaseModels : modelsQueryEnabled ? isFetching : false;
+	const activeIsError = shouldUseBaseModels ? isBaseModelsError : modelsQueryEnabled ? isError : false;
+	const modelLoadError = !activeIsFetching && activeIsError;
 
 	return (
 		<AsyncMultiSelect<ModelOption>
 			isSingleSelect={isSingleSelect}
 			hideSelectedOptions
+			hideSearchIcon={props.hideSearchIcon}
 			inputId={props.inputId}
 			ariaLabelledBy={props.ariaLabelledBy}
 			data-testid={props["data-testid"]}
@@ -270,7 +278,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 			dynamicOptionCreation={true}
 			createOptionText={"Press enter to add new model"}
 			defaultOptions={defaultOptions.length > 0 ? defaultOptions : ([] as Option<ModelOption>[])}
-			isLoading={shouldUseBaseModels ? isLoadingBaseModels : isLoading}
+			isLoading={activeIsFetching}
 			placeholder={placeholder}
 			disabled={shouldBeDisabled}
 			className={cn("!min-h-9 w-full", className)}
@@ -284,8 +292,16 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 			menuListClassName="mx-1"
 			inputValue={inputValue}
 			onInputChange={handleInputChange}
-			noResultsFoundPlaceholder="No models found"
-			emptyResultPlaceholder={provider || shouldLoadOnEmpty ? "Start typing to search models..." : "Please select a provider first"}
+			noResultsFoundPlaceholder={modelLoadError ? "Couldn’t load models." : "No matching models."}
+			emptyResultPlaceholder={
+				modelLoadError
+					? "Couldn’t load models."
+					: provider
+						? "No models available for this provider."
+						: shouldLoadOnEmpty
+							? "No models available."
+							: "Select a provider first."
+			}
 			views={{
 				dropdownIndicator: isSingleSelect ? undefined : () => <></>,
 				singleValue: isSingleSelect
@@ -327,7 +343,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 						>
 							<span className={cn("grow truncate text-sm", isDeprecated && "text-muted-foreground")}>{optionProps.data.label}</span>
 							{isDeprecated && (
-								<span className="text-muted-foreground border-border shrink-0 rounded-sm border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide">
+								<span className="text-muted-foreground border-border shrink-0 rounded-sm border px-1.5 py-0.5 text-[10px] font-medium tracking-wide uppercase">
 									Deprecated
 								</span>
 							)}

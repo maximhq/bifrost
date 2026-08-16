@@ -6,6 +6,7 @@ type BifrostPassthroughRequest struct {
 	Method      string
 	Path        string // stripped path, e.g. "/v1/fine-tuning/jobs"
 	RawQuery    string // raw query string, no "?"
+	UpstreamURL string // optional base URL override for host-backed passthrough routes
 	Body        []byte
 	SafeHeaders map[string]string // client headers, auth already stripped
 }
@@ -39,6 +40,11 @@ type BifrostPassthroughUsage struct {
 	// e.g. "container-1g", or "container" when no memory limit is reported. Maps to
 	// costInput.containerIdentifierString for the flat per-session fee.
 	ContainerIdentifier string
+
+	// Cost is a provider-reported exact price for the passthrough call. When set, it wins over
+	// datasheet estimation (there is often no datasheet rate for raw passthrough task types).
+	// Used by providers whose responses include their own cost, e.g. Runware's per-task `cost`.
+	Cost *BifrostCost
 }
 
 type BifrostPassthroughResponse struct {

@@ -3,6 +3,7 @@ import { formatCurrencyNumber } from "@/lib/utils/numbers";
 import { memo, useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import {
+	computeDisplaySeries,
 	formatCost,
 	formatFullTimestamp,
 	formatTimestamp,
@@ -10,7 +11,6 @@ import {
 	OTHER_SERIES_COLOR,
 	OTHER_SERIES_KEY,
 	OTHER_SERIES_LABEL,
-	pickTopSeries,
 } from "../../utils/chartUtils";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
@@ -79,9 +79,8 @@ function CostChartImpl({ data, chartType, startTime, endTime, selectedModel }: C
 		let models: string[];
 		let hasOther = false;
 		if (selectedModel === "all") {
-			const top = pickTopSeries(data.buckets, data.models, (b, m) => b.by_model?.[m] ?? 0);
-			hasOther = top.length < data.models.length;
-			models = hasOther ? [...top, OTHER_SERIES_KEY] : top;
+			models = computeDisplaySeries(data.buckets, data.models, (b, m) => b.by_model?.[m] ?? 0);
+			hasOther = models[models.length - 1] === OTHER_SERIES_KEY;
 		} else {
 			models = [selectedModel];
 		}

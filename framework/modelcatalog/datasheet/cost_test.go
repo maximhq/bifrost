@@ -1712,6 +1712,148 @@ func TestCalculateCost_SemanticCacheHitNoEmbeddingInfo(t *testing.T) {
 	assert.Equal(t, 0.0, cost)
 }
 
+// TestCalculateCostAddsGuardrailJudgeCost verifies judge cost is additive to the main request.
+func TestCalculateCostAddsGuardrailJudgeCost(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o", "openai", "chat"): {
+			Model: "gpt-4o", Provider: "openai", Mode: "chat",
+			InputCostPerToken: bifrost.Ptr(0.000001), OutputCostPerToken: bifrost.Ptr(0.000002),
+		},
+		makeKey("claude-judge", "anthropic", "chat"): {
+			Model: "claude-judge", Provider: "anthropic", Mode: "chat",
+			InputCostPerToken: bifrost.Ptr(0.000003), OutputCostPerToken: bifrost.Ptr(0.000004),
+		},
+	})
+	resp := makeChatResponse(schemas.OpenAI, "gpt-4o", &schemas.BifrostLLMUsage{
+		PromptTokens:     100,
+		CompletionTokens: 50,
+		TotalTokens:      150,
+	})
+	resp.GetExtraFields().GuardrailDebug = &schemas.BifrostGuardrailDebug{
+		JudgeCalls: []schemas.BifrostGuardrailJudgeCall{{
+			JudgeProvider:    schemas.Anthropic,
+			JudgeModel:       "claude-judge",
+			PromptTokens:     20,
+			CompletionTokens: 5,
+			TotalTokens:      25,
+		}},
+	}
+
+	// Main: 100*0.000001 + 50*0.000002 = 0.0002.
+	// Judge: 20*0.000003 + 5*0.000004 = 0.00008.
+	assert.InDelta(t, 0.00028, s.CalculateCost(resp, nil), 1e-12)
+}
+
+// TestCalculateGuardrailCostPreservesUsageDetails verifies cache-aware judge pricing uses detailed usage.
+func TestCalculateGuardrailCostPreservesUsageDetails(t *testing.T) {
+	pricing := chatPricing(0.00001, 0)
+	pricing.Model = "gpt-judge"
+	pricing.Provider = "openai"
+	pricing.Mode = "chat"
+	pricing.CacheReadInputTokenCost = bifrost.Ptr(0.000001)
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-judge", "openai", "chat"): pricing,
+	})
+
+	cost := s.CalculateGuardrailCost(&schemas.BifrostGuardrailDebug{
+		JudgeCalls: []schemas.BifrostGuardrailJudgeCall{{
+			JudgeProvider: schemas.OpenAI,
+			JudgeModel:    "gpt-judge",
+			PromptTokens:  10,
+			PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+				CachedReadTokens: 8,
+			},
+			TotalTokens: 10,
+		}},
+	}, nil)
+
+	// Two uncached tokens at $10/M plus eight cached reads at $1/M.
+	assert.InDelta(t, 0.000028, cost, 1e-12)
+}
+
+// TestCalculateCostDirectCacheHitStillBillsGuardrail verifies cache hits do not hide judge spend.
+func TestCalculateCostDirectCacheHitStillBillsGuardrail(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o-mini", "openai", "chat"): {
+			Model: "gpt-4o-mini", Provider: "openai", Mode: "chat",
+			InputCostPerToken: bifrost.Ptr(0.000001), OutputCostPerToken: bifrost.Ptr(0.000002),
+		},
+	})
+	hitType := "direct"
+	resp := makeChatResponse(schemas.OpenAI, "cached-model", nil)
+	resp.GetExtraFields().CacheDebug = &schemas.BifrostCacheDebug{CacheHit: true, HitType: &hitType}
+	resp.GetExtraFields().GuardrailDebug = &schemas.BifrostGuardrailDebug{
+		JudgeCalls: []schemas.BifrostGuardrailJudgeCall{{
+			JudgeProvider:    schemas.OpenAI,
+			JudgeModel:       "gpt-4o-mini",
+			PromptTokens:     10,
+			CompletionTokens: 5,
+			TotalTokens:      15,
+		}},
+	}
+
+	assert.InDelta(t, 0.00002, s.CalculateCost(resp, nil), 1e-12)
+}
+
+// TestCalculateGuardrailCostUsesJudgeProviderWithoutCallerSelectedKey verifies
+// judge pricing retains virtual-key attribution while excluding the caller's
+// selected provider key from scoped override matching.
+func TestCalculateGuardrailCostUsesJudgeProviderWithoutCallerSelectedKey(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("claude-judge", "anthropic", "chat"): {
+			Model:              "claude-judge",
+			Provider:           "anthropic",
+			Mode:               "chat",
+			InputCostPerToken:  bifrost.Ptr(1.0),
+			OutputCostPerToken: bifrost.Ptr(0.0),
+		},
+	})
+
+	virtualKeyID := "vk-caller"
+	callerSelectedKeyID := "openai-key"
+	judgeProviderID := "anthropic"
+	require.NoError(t, s.SetOverrides([]configstoreTables.TablePricingOverride{
+		{
+			ID:               "judge-vk-provider",
+			ScopeKind:        string(ScopeKindVirtualKeyProvider),
+			VirtualKeyID:     &virtualKeyID,
+			ProviderID:       &judgeProviderID,
+			MatchType:        string(MatchTypeExact),
+			Pattern:          "claude-judge",
+			RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
+			PricingPatchJSON: `{"input_cost_per_token":3}`,
+		},
+		{
+			ID:               "caller-vk-provider-key",
+			ScopeKind:        string(ScopeKindVirtualKeyProviderKey),
+			VirtualKeyID:     &virtualKeyID,
+			ProviderID:       &judgeProviderID,
+			ProviderKeyID:    &callerSelectedKeyID,
+			MatchType:        string(MatchTypeExact),
+			Pattern:          "claude-judge",
+			RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
+			PricingPatchJSON: `{"input_cost_per_token":99}`,
+		},
+	}))
+
+	cost := s.CalculateGuardrailCost(&schemas.BifrostGuardrailDebug{
+		JudgeCalls: []schemas.BifrostGuardrailJudgeCall{{
+			JudgeProvider: schemas.Anthropic,
+			JudgeModel:    "claude-judge",
+			PromptTokens:  10,
+			TotalTokens:   10,
+		}},
+	}, &LookupScopes{
+		VirtualKeyID:  virtualKeyID,
+		SelectedKeyID: callerSelectedKeyID,
+		Provider:      "openai",
+	})
+
+	// The virtual-key + Anthropic override applies (10 * 3). Reusing the
+	// caller's selected key would instead select the 99/token override.
+	assert.InDelta(t, 30.0, cost, 1e-12)
+}
+
 // =========================================================================
 // 11. CalculateCost integration — end-to-end
 // =========================================================================
@@ -1737,6 +1879,100 @@ func TestCalculateCost_ProviderComputedCostPassthrough(t *testing.T) {
 
 	cost := s.CalculateCost(resp, nil)
 	assert.Equal(t, 0.99, cost)
+}
+
+// Image usage hangs off imageUsage, never input.usage, so it needs its own
+// provider-cost short circuit. xAI reports cost_in_usd_ticks, normalized into
+// Cost by the provider before billing sees it.
+func TestCalculateCost_ImageProviderComputedCostPassthrough(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("grok-imagine-image-quality", "xai", "image_generation"): {
+			Model: "grok-imagine-image-quality", Provider: "xai", Mode: "image_generation",
+			OutputCostPerImage: bifrost.Ptr(0.5), // deliberately unlike the reported cost
+		},
+	})
+
+	usage := &schemas.ImageUsage{CostInUsdTicks: bifrost.Ptr(int64(200000000))}
+	usage.NormalizeProviderCost()
+
+	resp := makeImageResponse(schemas.XAI, "grok-imagine-image-quality", usage)
+	resp.ImageGenerationResponse.Data = []schemas.ImageData{{URL: "https://imgen.x.ai/x.jpeg"}}
+
+	assert.Equal(t, 0.02, s.CalculateCost(resp, nil))
+}
+
+// Video/3D provider-reported cost hangs off VideoGenerationResponse.Usage.Cost. Runware reports an
+// exact per-task price (and 3D has no datasheet rate), so the reported cost must win verbatim.
+func TestCalculateCost_VideoProviderComputedCostPassthrough(t *testing.T) {
+	s := testStoreWithPricing(nil) // no datasheet entry on purpose — 3D has no rate
+
+	resp := &schemas.BifrostResponse{
+		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+			Usage: &schemas.VideoUsage{Cost: &schemas.BifrostCost{TotalCost: 0.5}},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.VideoGenerationRequest,
+				RoutingInfo: routingInfoFor(schemas.Runware, "tripo:v3.1@0"),
+			},
+		},
+	}
+
+	assert.Equal(t, 0.5, s.CalculateCost(resp, nil))
+}
+
+// Passthrough responses can carry a provider-reported cost (e.g. Runware's per-task cost read from
+// the raw body). It must win verbatim, with no datasheet entry required.
+func TestCalculateCost_PassthroughProviderComputedCost(t *testing.T) {
+	s := testStoreWithPricing(nil) // no datasheet entry — raw passthrough has no rate
+
+	resp := &schemas.BifrostResponse{
+		PassthroughResponse: &schemas.BifrostPassthroughResponse{
+			PassthroughUsage: &schemas.BifrostPassthroughUsage{Cost: &schemas.BifrostCost{TotalCost: 0.5}},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:     schemas.PassthroughRequest,
+				PassthroughPath: "/v1",
+				RoutingInfo:     routingInfoFor(schemas.Runware, "tripo:v3.1@0"),
+			},
+		},
+	}
+
+	assert.Equal(t, 0.5, s.CalculateCost(resp, nil))
+}
+
+// passthroughUsageToCostInput must not mutate the caller's usage when attaching a provider-reported
+// cost — the cost path is read-only (mirrors the DeepCopy invariant in extractCostInput). Without
+// the defensive copy, assigning Cost would write back onto the shared response's LLMUsage.
+func TestPassthroughUsageToCostInput_DoesNotMutateSourceUsage(t *testing.T) {
+	su := &schemas.BifrostPassthroughUsage{
+		LLMUsage: &schemas.BifrostLLMUsage{PromptTokens: 100},
+		Cost:     &schemas.BifrostCost{TotalCost: 0.5},
+	}
+
+	input := passthroughUsageToCostInput(su)
+
+	// The returned input carries the provider-reported cost...
+	require.NotNil(t, input.usage)
+	require.NotNil(t, input.usage.Cost)
+	assert.Equal(t, 0.5, input.usage.Cost.TotalCost)
+	// ...but the caller's source usage must be left untouched.
+	assert.Nil(t, su.LLMUsage.Cost, "passthroughUsageToCostInput must not mutate su.LLMUsage")
+}
+
+// Without a reported cost the datasheet still prices the request.
+func TestCalculateCost_ImageFallsBackToDatasheetWithoutReportedCost(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("grok-imagine-image-quality", "xai", "image_generation"): {
+			Model: "grok-imagine-image-quality", Provider: "xai", Mode: "image_generation",
+			OutputCostPerImage: bifrost.Ptr(0.5),
+		},
+	})
+
+	usage := &schemas.ImageUsage{}
+	usage.NormalizeProviderCost()
+
+	resp := makeImageResponse(schemas.XAI, "grok-imagine-image-quality", usage)
+	resp.ImageGenerationResponse.Data = []schemas.ImageData{{URL: "https://imgen.x.ai/x.jpeg"}}
+
+	assert.Equal(t, 0.5, s.CalculateCost(resp, nil))
 }
 
 func TestCalculateCost_NoUsageData(t *testing.T) {
@@ -1769,6 +2005,29 @@ func TestCalculateCost_ChatCompletion_GPT4o(t *testing.T) {
 	cost := s.CalculateCost(resp, nil)
 	// 10000*0.000005 + 2000*0.000015 = 0.05 + 0.03 = 0.08
 	assert.InDelta(t, 0.08, cost, 1e-12)
+}
+
+// TestCalculateCost_ChatCompletion_CostPerRequest verifies the flat per-request
+// fee is billed once, additive on top of the usual token-based cost.
+func TestCalculateCost_ChatCompletion_CostPerRequest(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o", "openai", "chat"): {
+			Model: "gpt-4o", Provider: "openai", Mode: "chat",
+			InputCostPerToken:  bifrost.Ptr(0.000005),
+			OutputCostPerToken: bifrost.Ptr(0.000015),
+			CostPerRequest:     bifrost.Ptr(0.01),
+		},
+	})
+
+	resp := makeChatResponse(schemas.OpenAI, "gpt-4o", &schemas.BifrostLLMUsage{
+		PromptTokens:     10000,
+		CompletionTokens: 2000,
+		TotalTokens:      12000,
+	})
+
+	cost := s.CalculateCost(resp, nil)
+	// 10000*0.000005 + 2000*0.000015 + 0.01 (flat) = 0.08 + 0.01 = 0.09
+	assert.InDelta(t, 0.09, cost, 1e-12)
 }
 
 func TestCalculateCost_ChatCompletion_Claude35Sonnet_WithCache(t *testing.T) {
@@ -1921,6 +2180,31 @@ func TestGetPricing_DirectLookup(t *testing.T) {
 	assert.Equal(t, 0.000005, derefF(p.InputCostPerToken))
 }
 
+func TestCalculateCost_TogetherAliasUsesTogetherAIPricingWithCache(t *testing.T) {
+	const model = "zai-org/GLM-5.2"
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(model, "together_ai", "chat"): {
+			Model:                   model,
+			Provider:                "together_ai",
+			Mode:                    "chat",
+			InputCostPerToken:       bifrost.Ptr(1.40 / 1_000_000),
+			CacheReadInputTokenCost: bifrost.Ptr(0.26 / 1_000_000),
+			OutputCostPerToken:      bifrost.Ptr(4.40 / 1_000_000),
+		},
+	})
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     36_807_862,
+		CompletionTokens: 54_932,
+		TotalTokens:      36_862_794,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			CachedReadTokens: 33_829_760,
+		},
+	}
+
+	cost := s.CalculateCost(makeChatResponse("together", model, usage), nil)
+	assert.InDelta(t, 13.2067812, cost, 1e-9)
+}
+
 func TestGetPricing_GeminiFallsBackToVertex(t *testing.T) {
 	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gemini-2.0-flash", "vertex", "chat"): {
@@ -2044,6 +2328,72 @@ func TestGetPricing_RealtimeFallsBackToChat(t *testing.T) {
 	})
 	p := s.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "gpt-4o"}, schemas.RealtimeRequest, LookupScopes{Provider: "openai"})
 	assert.Equal(t, 0.000005, derefF(p.InputCostPerToken))
+}
+
+func TestGetPricing_ChatFallsBackToResponses(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o", "openai", "responses"): chatPricing(0.000005, 0.000015),
+	})
+	p := s.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "gpt-4o"}, schemas.ChatCompletionRequest, LookupScopes{Provider: "openai"})
+	require.NotNil(t, p)
+	assert.Equal(t, 0.000005, derefF(p.InputCostPerToken))
+}
+
+func TestGetPricing_ChatStreamFallsBackToResponses(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o", "openai", "responses"): chatPricing(0.000005, 0.000015),
+	})
+	p := s.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "gpt-4o"}, schemas.ChatCompletionStreamRequest, LookupScopes{Provider: "openai"})
+	require.NotNil(t, p)
+	assert.Equal(t, 0.000005, derefF(p.InputCostPerToken))
+}
+
+func TestGetPricing_BedrockMantleChatStreamFallsBackToBedrockResponses(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("openai.gpt-5.5", "bedrock", "responses"): chatPricing(0.0000055, 0.000033),
+	})
+	// The datasheet files openai.gpt-5.5 as responses-only, but bedrock serves it
+	// over chat completions too: bedrock_mantle folds onto bedrock, chat mode
+	// misses, and the responses row is used.
+	p := s.resolvePricing(schemas.RoutingInfo{Provider: "bedrock_mantle", Model: "openai.gpt-5.5"}, schemas.ChatCompletionStreamRequest, LookupScopes{Provider: "bedrock_mantle"})
+	require.NotNil(t, p)
+	assert.Equal(t, 0.0000055, derefF(p.InputCostPerToken))
+	assert.Equal(t, 0.000033, derefF(p.OutputCostPerToken))
+}
+
+func TestGetPricing_BedrockChatAddsOpenAIPrefixThenFallsBackToResponses(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("openai.gpt-5.5", "bedrock", "responses"): chatPricing(0.0000055, 0.000033),
+	})
+	// Bare model name + chat request: the openai. prefix retry fires, then the
+	// prefixed key falls back to responses mode.
+	p := s.resolvePricing(schemas.RoutingInfo{Provider: "bedrock", Model: "gpt-5.5"}, schemas.ChatCompletionRequest, LookupScopes{Provider: "bedrock"})
+	require.NotNil(t, p)
+	assert.Equal(t, 0.0000055, derefF(p.InputCostPerToken))
+}
+
+func TestGetPricing_ExactModeWinsOverFallback(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o", "openai", "chat"):      chatPricing(0.000005, 0.000015),
+		makeKey("gpt-4o", "openai", "responses"): chatPricing(0.000009, 0.000036),
+	})
+	chat := s.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "gpt-4o"}, schemas.ChatCompletionRequest, LookupScopes{Provider: "openai"})
+	require.NotNil(t, chat)
+	assert.Equal(t, 0.000005, derefF(chat.InputCostPerToken))
+
+	responses := s.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "gpt-4o"}, schemas.ResponsesRequest, LookupScopes{Provider: "openai"})
+	require.NotNil(t, responses)
+	assert.Equal(t, 0.000009, derefF(responses.InputCostPerToken))
+}
+
+func TestGetPricing_GeminiChatFallsBackToVertexResponses(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gemini-2.0-flash", "vertex", "responses"): chatPricing(0.0000001, 0.0000004),
+	})
+	// gemini provider + chat request → try vertex + chat → try vertex + responses
+	p := s.resolvePricing(schemas.RoutingInfo{Provider: "gemini", Model: "gemini-2.0-flash"}, schemas.ChatCompletionRequest, LookupScopes{Provider: "gemini"})
+	require.NotNil(t, p)
+	assert.Equal(t, 0.0000001, derefF(p.InputCostPerToken))
 }
 
 func TestGetPricing_GeminiResponsesFallsBackToVertexChat(t *testing.T) {
@@ -3602,4 +3952,159 @@ func TestTieredCacheCreationRate_PriorityWinsOver200kBand(t *testing.T) {
 	assert.Equal(t, 0.000005, tieredCacheCreationInputTokenRate(&p, 250000, serviceTier{isPriority: true}))
 	// Non-priority at the same size still uses the standard >200k rate.
 	assert.Equal(t, 0.000002, tieredCacheCreationInputTokenRate(&p, 250000, serviceTier{}))
+}
+
+// ---------------------------------------------------------------------------
+// Anthropic server-side fallback: price the model that actually served
+// ---------------------------------------------------------------------------
+
+// seedFallbackPricing loads the real published Fable 5 / Opus 4.8 rates. Fable 5
+// is exactly 2x Opus 4.8 on both input and output, which is what makes pricing a
+// fallback-served turn against the requested model a clean doubling.
+func seedFallbackPricing(s *Store) {
+	s.pricingData[makeKey("claude-fable-5", "anthropic", "responses")] = configstoreTables.TableModelPricing{
+		Model: "claude-fable-5", Provider: "anthropic", Mode: "responses",
+		InputCostPerToken:  bifrost.Ptr(10.0 / 1_000_000),
+		OutputCostPerToken: bifrost.Ptr(50.0 / 1_000_000),
+	}
+	s.pricingData[makeKey("claude-opus-4-8", "anthropic", "responses")] = configstoreTables.TableModelPricing{
+		Model: "claude-opus-4-8", Provider: "anthropic", Mode: "responses",
+		InputCostPerToken:  bifrost.Ptr(5.0 / 1_000_000),
+		OutputCostPerToken: bifrost.Ptr(25.0 / 1_000_000),
+	}
+}
+
+// fallbackResponse mirrors a real server-side-fallback payload: the caller asked
+// for claude-fable-5, claude-opus-4-8 served, and the top-level usage mirrors the
+// serving attempt.
+func fallbackResponse(servingModel *string, in, out int) *schemas.BifrostResponse {
+	return &schemas.BifrostResponse{
+		ResponsesResponse: &schemas.BifrostResponsesResponse{
+			Model: "claude-opus-4-8",
+			Usage: &schemas.ResponsesResponseUsage{InputTokens: in, OutputTokens: out},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ResponsesRequest,
+				RoutingInfo: schemas.RoutingInfo{
+					Provider:                schemas.Anthropic,
+					Model:                   "claude-fable-5",
+					ServerSideFallbackModel: servingModel,
+				},
+			},
+		},
+	}
+}
+
+func TestCalculateCost_ServerSideFallback_PricesServingModel(t *testing.T) {
+	s := newTestStore()
+	seedFallbackPricing(s)
+
+	// Real payload: 31 in / 257 out, served by Opus after Fable declined.
+	// Before the fix this returned the Fable figure, which is exactly double.
+	resp := fallbackResponse(bifrost.Ptr("claude-opus-4-8"), 31, 257)
+	assert.InDelta(t, 31*(5.0/1_000_000)+257*(25.0/1_000_000), s.CalculateCost(resp, nil), 1e-12,
+		"expected Opus 4.8 rates (the serving model), not Fable 5")
+}
+
+// No handoff — the overwhelming majority of responses — must be untouched, even
+// though the response's own model field names a different model.
+func TestCalculateCost_NoServerSideFallback_UsesRoutingModel(t *testing.T) {
+	s := newTestStore()
+	seedFallbackPricing(s)
+
+	resp := fallbackResponse(nil, 31, 257)
+	assert.InDelta(t, 31*(10.0/1_000_000)+257*(50.0/1_000_000), s.CalculateCost(resp, nil), 1e-12,
+		"without a recorded handoff, pricing must stay on the requested model")
+}
+
+// An unpriceable serving model falls through the candidate chain to the
+// requested model rather than collapsing the cost to zero.
+func TestCalculateCost_ServerSideFallback_UnknownServingModelFallsThrough(t *testing.T) {
+	s := newTestStore()
+	seedFallbackPricing(s)
+
+	resp := fallbackResponse(bifrost.Ptr("claude-not-in-catalog"), 31, 257)
+	cost := s.CalculateCost(resp, nil)
+	assert.InDelta(t, 31*(10.0/1_000_000)+257*(50.0/1_000_000), cost, 1e-12)
+	assert.NotZero(t, cost, "an unknown serving model must not zero the cost")
+}
+
+// A key alias would otherwise win the lookup; the serving model outranks it.
+func TestCalculateCost_ServerSideFallback_OutranksKeyAlias(t *testing.T) {
+	s := newTestStore()
+	seedFallbackPricing(s)
+
+	resp := fallbackResponse(bifrost.Ptr("claude-opus-4-8"), 31, 257)
+	resp.ResponsesResponse.ExtraFields.RoutingInfo.Model = "my-fast-alias"
+	resp.ResponsesResponse.ExtraFields.RoutingInfo.ResolvedKeyAlias = &schemas.ResolvedKeyAlias{
+		ModelID:   "claude-fable-5",
+		ModelName: bifrost.Ptr("claude-fable-5"),
+	}
+
+	assert.InDelta(t, 31*(5.0/1_000_000)+257*(25.0/1_000_000), s.CalculateCost(resp, nil), 1e-12,
+		"the alias must not outrank the model that actually served")
+}
+
+// Overrides follow the serving model, so a negotiated rate for the model that
+// actually ran is the one that applies.
+func TestCalculateCost_ServerSideFallback_OverridesKeyOnServingModel(t *testing.T) {
+	s := newTestStore()
+	seedFallbackPricing(s)
+	providerID := "anthropic"
+	require.NoError(t, s.SetOverrides([]configstoreTables.TablePricingOverride{{
+		ID:               "opus-negotiated-rate",
+		ScopeKind:        string(ScopeKindProvider),
+		ProviderID:       &providerID,
+		MatchType:        string(MatchTypeExact),
+		Pattern:          "claude-opus-4-8",
+		RequestTypes:     []schemas.RequestType{schemas.ResponsesRequest},
+		PricingPatchJSON: `{"input_cost_per_token":0.000001,"output_cost_per_token":0.000002}`,
+	}}))
+
+	resp := fallbackResponse(bifrost.Ptr("claude-opus-4-8"), 31, 257)
+	assert.InDelta(t, 31*0.000001+257*0.000002, s.CalculateCost(resp, nil), 1e-12,
+		"an override for the serving model must apply to a fallback-served turn")
+}
+
+// Streaming is billed through CalculateCostForUsage, which receives only
+// (usage, provider, requestedModel) and never sees RoutingInfo. A live
+// fallback-served stream (38 in / 345 out, served by Opus after Fable declined)
+// was reported at $0.01763 — exactly the Fable figure, i.e. double.
+func TestCalculateCostForUsage_ServerSideFallback_PricesServingModel(t *testing.T) {
+	s := newTestStore()
+	seedFallbackPricing(s)
+
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:            38,
+		CompletionTokens:        345,
+		TotalTokens:             383,
+		ServerSideFallbackModel: bifrost.Ptr("claude-opus-4-8"),
+	}
+	got := s.CalculateCostForUsage(usage, schemas.Anthropic, "claude-fable-5", schemas.ResponsesRequest, nil)
+	assert.InDelta(t, 38*(5.0/1_000_000)+345*(25.0/1_000_000), got, 1e-12,
+		"expected Opus 4.8 rates for a fallback-served stream")
+	assert.InDelta(t, 0.008815, got, 1e-6, "expected the Opus figure, not the $0.01763 Fable one")
+}
+
+// Sticky-routed stream: a single fallback_message iteration, 38 in / 320 out,
+// reported live at $0.01638 (Fable). Should be $0.00819.
+func TestCalculateCostForUsage_ServerSideFallback_StickyStream(t *testing.T) {
+	s := newTestStore()
+	seedFallbackPricing(s)
+
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens: 38, CompletionTokens: 320, TotalTokens: 358,
+		ServerSideFallbackModel: bifrost.Ptr("claude-opus-4-8"),
+	}
+	assert.InDelta(t, 0.00819,
+		s.CalculateCostForUsage(usage, schemas.Anthropic, "claude-fable-5", schemas.ResponsesRequest, nil), 1e-6)
+}
+
+// No handoff: the bare-usage path must keep pricing the requested model.
+func TestCalculateCostForUsage_NoServerSideFallback_Unchanged(t *testing.T) {
+	s := newTestStore()
+	seedFallbackPricing(s)
+
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 38, CompletionTokens: 345, TotalTokens: 383}
+	assert.InDelta(t, 38*(10.0/1_000_000)+345*(50.0/1_000_000),
+		s.CalculateCostForUsage(usage, schemas.Anthropic, "claude-fable-5", schemas.ResponsesRequest, nil), 1e-12)
 }

@@ -4,18 +4,22 @@ package logstore
 // Postgres (raw path, no matviews), and ClickHouse, runs every LogStore
 // interface method on all three, and asserts that the non-reference backends
 // return results equal to Postgres (the reference). This is the executable
-// form of "every backend is 100% compatible": all 60 interface methods are
-// exercised - reads, writes, mutations, async jobs, and deletes - including
+// form of "every backend is 100% compatible": every interface method is
+// exercised - reads, writes, mutations, async jobs, webhook deliveries, and
+// deletes - including
 // every dialect branch in rdb.go (metadata JSON, cache-hit extraction,
 // histogram bucket math, routing-engine matching, distinct queries) and the
 // DAC queryscope path.
 //
 // The Postgres store is built bare (no ensureMatViews), so matViewsReady stays
 // false and Postgres deterministically takes the same raw-table path the
-// matviews approximate. Known, deliberate divergences are NOT asserted here:
-// multi-value team_ids array matching and team/BU dimension fan-out
-// (postgres-only features; fixtures carry scalar ids only - the fan-out's
-// attributed-totals metadata is excluded from the contract), ILIKE
+// matviews approximate. Team / customer / business-unit dimension fan-out IS
+// part of the contract (the fixtures carry array-only and scalar-only hierarchy
+// rows for all three, and every backend has its own fan-out SQL, so a
+// column-mapping or dialect-SQL defect in any one of them fails here). Known,
+// deliberate divergences are NOT
+// asserted here: multi-value team_ids array *filtering* (postgres-only; the
+// other backends match the scalar column), ILIKE
 // case-insensitivity (fixtures use exact case), FTS-vs-LIKE content search
 // semantics (the fixture term matches under all three), and inc_number
 // (Postgres-assigned; NULL elsewhere - excluded from projections).
@@ -36,6 +40,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -62,6 +67,7 @@ func parityBackends(t *testing.T) map[string]LogStore {
 	dropAllManagedMatViews(db)
 	require.NoError(t, db.Exec("DROP TABLE IF EXISTS mcp_tool_logs CASCADE").Error)
 	require.NoError(t, db.Exec("DROP TABLE IF EXISTS async_jobs CASCADE").Error)
+	require.NoError(t, db.Exec("DROP TABLE IF EXISTS webhook_deliveries CASCADE").Error)
 	require.NoError(t, db.Exec("DROP TABLE IF EXISTS logs CASCADE").Error)
 	require.NoError(t, db.Exec("CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)").Error)
 	require.NoError(t, db.Exec("DELETE FROM migrations").Error)
@@ -99,6 +105,11 @@ type parityLogSpec struct {
 	customerID   *string
 	buID         *string
 	userID       *string
+	// JSON-array hierarchy columns (enterprise user/AP path). Set without the
+	// scalar ids to exercise the dimension fan-out on every backend.
+	teamIDs, teamNames         *string
+	customerIDs, customerNames *string
+	buIDs, buNames             *string
 	cost         *float64
 	latency      *float64
 	tokens       [3]int // prompt, completion, total
@@ -131,6 +142,12 @@ func (s parityLogSpec) toLog(base time.Time) *Log {
 		CustomerID:            s.customerID,
 		BusinessUnitID:        s.buID,
 		UserID:                s.userID,
+		TeamIDs:               s.teamIDs,
+		TeamNames:             s.teamNames,
+		CustomerIDs:           s.customerIDs,
+		CustomerNames:         s.customerNames,
+		BusinessUnitIDs:       s.buIDs,
+		BusinessUnitNames:     s.buNames,
 		Cost:                  s.cost,
 		Latency:               s.latency,
 		PromptTokens:          s.tokens[0],
@@ -188,6 +205,24 @@ func paritySpecs() []parityLogSpec {
 		{id: "p10", offsetSec: 10, object: "chat.completion", provider: "openai", model: "gpt-4o", status: "success",
 			cost: f64PtrP(2.0), latency: f64PtrP(110), tokens: [3]int{80, 40, 120},
 			nodeID: strPtrP("pnode"), budgetIDs: strPtrP(`["bud1","bud2"]`), rateLimitIDs: strPtrP(`["rl1"]`)},
+		// Enterprise user/AP path: the hierarchy lives in the JSON arrays and the
+		// scalar ids stay NULL, so the dimension readers must fan out. p11 spans
+		// two teams / two customers, p12 a single one, and p13 carries a scalar
+		// id with no array (the fan-out's fallback branch). Every dialect's
+		// fan-out SQL is exercised here.
+		{id: "p11", offsetSec: 15, object: "chat.completion", provider: "openai", model: "gpt-4o", status: "success",
+			userID: strPtrP("u5"), cost: f64PtrP(4.0), latency: f64PtrP(140), tokens: [3]int{60, 30, 90},
+			teamIDs: strPtrP(`["t4","t5"]`), teamNames: strPtrP(`["Team Four","Team Five"]`),
+			customerIDs: strPtrP(`["c3","c4"]`), customerNames: strPtrP(`["Cust Three","Cust Four"]`),
+			buIDs: strPtrP(`["b3","b4"]`), buNames: strPtrP(`["BU Three","BU Four"]`)},
+		{id: "p12", offsetSec: 14, object: "chat.completion", provider: "anthropic", model: "claude-3", status: "success",
+			userID: strPtrP("u5"), cost: f64PtrP(0.25), latency: f64PtrP(160), tokens: [3]int{20, 10, 30},
+			teamIDs: strPtrP(`["t4"]`), teamNames: strPtrP(`["Team Four"]`),
+			customerIDs: strPtrP(`["c3"]`), customerNames: strPtrP(`["Cust Three"]`),
+			buIDs: strPtrP(`["b3"]`), buNames: strPtrP(`["BU Three"]`)},
+		{id: "p13", offsetSec: 13, object: "chat.completion", provider: "openai", model: "gpt-4o-mini", status: "success",
+			teamID: strPtrP("t4"), customerID: strPtrP("c3"), buID: strPtrP("b3"), userID: strPtrP("u6"),
+			cost: f64PtrP(0.1), latency: f64PtrP(35), tokens: [3]int{5, 5, 10}},
 	}
 }
 
@@ -249,11 +284,13 @@ func canonicalizeOrder(key string, v any) any {
 			tv[i] = canonicalizeOrder("", tv[i])
 		}
 		if key == "rankings" {
-			keys := make([]string, len(tv))
-			for i, e := range tv {
-				keys[i] = canonicalEntryKey(e)
-			}
-			sort.SliceStable(tv, func(i, j int) bool { return keys[i] < keys[j] })
+			// Compute the key from the live element: a precomputed key slice
+			// would not be permuted alongside tv by SliceStable's swapper, so
+			// after the first swap the comparator would read stale keys and
+			// the final order would depend on the raw SQL row order.
+			sort.SliceStable(tv, func(i, j int) bool {
+				return canonicalEntryKey(tv[i]) < canonicalEntryKey(tv[j])
+			})
 		}
 		return tv
 	default:
@@ -427,6 +464,27 @@ func asyncJobProjection(j *AsyncJob) map[string]any {
 	return out
 }
 
+func webhookDeliveryProjection(d *WebhookDelivery) map[string]any {
+	out := map[string]any{
+		"id": d.ID, "webhook_id": d.WebhookID, "endpoint_id": d.EndpointID,
+		"async_job_id": d.AsyncJobID, "event": d.Event, "attempt_no": d.AttemptNo,
+		"outcome": d.Outcome, "status_code": d.StatusCode, "error": d.Error,
+		"created_ms": d.CreatedAt.UnixMilli(),
+	}
+	if d.ExpiresAt != nil {
+		out["expires_ms"] = d.ExpiresAt.UnixMilli()
+	}
+	return out
+}
+
+func webhookDeliverySearchProjection(r *WebhookDeliverySearchResult) any {
+	deliveries := make([]map[string]any, 0, len(r.Deliveries))
+	for _, d := range r.Deliveries {
+		deliveries = append(deliveries, webhookDeliveryProjection(&d))
+	}
+	return map[string]any{"total": r.Pagination.TotalCount, "deliveries": deliveries}
+}
+
 // remainingLogIDs lists surviving log ids - the post-state assertion used
 // after every destructive operation.
 func remainingLogIDs(ctx context.Context, s LogStore) (any, error) {
@@ -574,6 +632,12 @@ func TestLogStoreParity(t *testing.T) {
 		"provider_latency": func(ctx context.Context, s LogStore) (any, error) {
 			return s.GetProviderLatencyHistogram(ctx, window, 60)
 		},
+		"throughput": func(ctx context.Context, s LogStore) (any, error) {
+			return s.GetThroughputHistogram(ctx, window, 60)
+		},
+		"provider_throughput": func(ctx context.Context, s LogStore) (any, error) {
+			return s.GetProviderThroughputHistogram(ctx, window, 60)
+		},
 		"dimension_cost": func(ctx context.Context, s LogStore) (any, error) {
 			return s.GetDimensionCostHistogram(ctx, window, 60, DimensionProvider)
 		},
@@ -582,6 +646,21 @@ func TestLogStoreParity(t *testing.T) {
 		},
 		"dimension_latency": func(ctx context.Context, s LogStore) (any, error) {
 			return s.GetDimensionLatencyHistogram(ctx, window, 60, DimensionProvider)
+		},
+		// The fan-out dimensions: the fixtures carry both array-only and
+		// scalar-only hierarchy rows, so each backend's fan-out SQL and its
+		// scalar fallback must agree.
+		"dimension_cost_team": func(ctx context.Context, s LogStore) (any, error) {
+			return s.GetDimensionCostHistogram(ctx, window, 60, DimensionTeam)
+		},
+		"dimension_tokens_customer": func(ctx context.Context, s LogStore) (any, error) {
+			return s.GetDimensionTokenHistogram(ctx, window, 60, DimensionCustomer)
+		},
+		"dimension_latency_team": func(ctx context.Context, s LogStore) (any, error) {
+			return s.GetDimensionLatencyHistogram(ctx, window, 60, DimensionTeam)
+		},
+		"dimension_cost_business_unit": func(ctx context.Context, s LogStore) (any, error) {
+			return s.GetDimensionCostHistogram(ctx, window, 60, DimensionBusinessUnit)
 		},
 		// Filter on the same column the SELECT aliases (SUM(cost) AS cost):
 		// without prefer_column_name_to_alias=1 ClickHouse resolves the WHERE
@@ -617,19 +696,20 @@ func TestLogStoreParity(t *testing.T) {
 			return s.GetDimensionRankings(ctx, window, RankingDimensionVirtualKey)
 		})
 	})
-	t.Run("Rankings/dimension_team", func(t *testing.T) {
-		// Fixtures carry scalar team_id only, so the Postgres fan-out's scalar
-		// fallback and the other backends' plain group-by must agree on the
-		// rankings. TotalActual/AttributedRequests are documented as
-		// fan-out-only (Postgres) metadata and excluded from the contract.
-		assertParity(t, stores, 1e-6, func(ctx context.Context, s LogStore) (any, error) {
-			r, err := s.GetDimensionRankings(ctx, window, RankingDimensionTeam)
-			if err != nil {
-				return nil, err
-			}
-			return map[string]any{"rankings": r.Rankings, "dimension": r.Dimension}, nil
+	// The fixtures carry both scalar-only and array-only hierarchy rows, so these
+	// exercise each backend's fan-out SQL and its scalar fallback — including the
+	// attributed-vs-actual totals, which every dialect must now agree on.
+	for name, dim := range map[string]RankingDimension{
+		"dimension_team":          RankingDimensionTeam,
+		"dimension_customer":      RankingDimensionCustomer,
+		"dimension_business_unit": RankingDimensionBusinessUnit,
+	} {
+		t.Run("Rankings/"+name, func(t *testing.T) {
+			assertParity(t, stores, 1e-6, func(ctx context.Context, s LogStore) (any, error) {
+				return s.GetDimensionRankings(ctx, window, dim)
+			})
 		})
-	})
+	}
 
 	t.Run("Distinct", func(t *testing.T) {
 		sorted := func(v []string, err error) (any, error) {
@@ -1030,6 +1110,70 @@ func TestLogStoreParity(t *testing.T) {
 		// Expired cleanup removes j2 with the same count everywhere.
 		assertParity(t, stores, 1e-6, func(ctx context.Context, s LogStore) (any, error) {
 			return s.DeleteExpiredAsyncJobs(ctx)
+		})
+	})
+
+	// --- Phase: webhook deliveries ---
+
+	t.Run("WebhookDeliveries", func(t *testing.T) {
+		mkDelivery := func(id, webhookID, endpointID string, attemptNo int, outcome WebhookDeliveryOutcome, statusCode int, errMsg string, createdOffset time.Duration, expires *time.Time) *WebhookDelivery {
+			return &WebhookDelivery{
+				ID: id, WebhookID: webhookID, EndpointID: endpointID, AsyncJobID: "j1",
+				Event: tables.WebhookEventAsyncJobCompleted, AttemptNo: attemptNo,
+				Outcome: outcome, StatusCode: statusCode, Error: errMsg,
+				CreatedAt: base.Add(createdOffset), ExpiresAt: expires,
+			}
+		}
+		runOnAll(t, stores, func(ctx context.Context, s LogStore) error {
+			// wd1/wd2 are two attempts of the same delivery on one endpoint;
+			// wd3 belongs to another endpoint and expired ten minutes ago.
+			if err := s.CreateWebhookDelivery(ctx, mkDelivery("wd1", "wh1", "wh-ep-1", 1, WebhookDeliveryOutcomeRetryableFailure, 503, "upstream unavailable", -2*time.Minute, nil)); err != nil {
+				return err
+			}
+			if err := s.CreateWebhookDelivery(ctx, mkDelivery("wd2", "wh1", "wh-ep-1", 2, WebhookDeliveryOutcomeDelivered, 200, "", -time.Minute, nil)); err != nil {
+				return err
+			}
+			return s.CreateWebhookDelivery(ctx, mkDelivery("wd3", "wh2", "wh-ep-2", 1, WebhookDeliveryOutcomeExhausted, 500, "gave up", -time.Hour, timePtrP(base.Add(-10*time.Minute))))
+		})
+
+		assertParity(t, stores, 1e-6, func(ctx context.Context, s LogStore) (any, error) {
+			d, err := s.FindWebhookDeliveryByID(ctx, "wd1")
+			if err != nil {
+				return nil, err
+			}
+			return webhookDeliveryProjection(d), nil
+		})
+		for name, s := range stores {
+			_, err := s.FindWebhookDeliveryByID(ctx, "missing-delivery")
+			assert.ErrorIs(t, err, ErrNotFound, name)
+		}
+
+		// Endpoint-scoped history pages newest-first on every backend.
+		assertParity(t, stores, 1e-6, func(ctx context.Context, s LogStore) (any, error) {
+			res, err := s.SearchWebhookDeliveries(ctx, "wh-ep-1", PaginationOptions{Limit: 10})
+			if err != nil {
+				return nil, err
+			}
+			return webhookDeliverySearchProjection(res), nil
+		})
+		assertParity(t, stores, 1e-6, func(ctx context.Context, s LogStore) (any, error) {
+			res, err := s.SearchWebhookDeliveries(ctx, "wh-ep-1", PaginationOptions{Limit: 1, Offset: 1})
+			if err != nil {
+				return nil, err
+			}
+			return webhookDeliverySearchProjection(res), nil
+		})
+
+		// Expired cleanup removes wd3 with the same count everywhere.
+		assertParity(t, stores, 1e-6, func(ctx context.Context, s LogStore) (any, error) {
+			return s.DeleteExpiredWebhookDeliveries(ctx)
+		})
+		assertParity(t, stores, 1e-6, func(ctx context.Context, s LogStore) (any, error) {
+			res, err := s.SearchWebhookDeliveries(ctx, "wh-ep-2", PaginationOptions{Limit: 10})
+			if err != nil {
+				return nil, err
+			}
+			return webhookDeliverySearchProjection(res), nil
 		})
 	})
 

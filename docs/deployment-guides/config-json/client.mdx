@@ -33,11 +33,19 @@ A larger pool reduces latency spikes under burst load at the cost of higher base
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `enable_logging` | boolean | - | Log all LLM requests and responses |
-| `disable_content_logging` | boolean | `false` | Strip message content from logs (keeps metadata only) |
+| `disable_content_logging` | boolean | `false` | Strip message content from the **Bifrost log store** (keeps metadata only) |
+| `retain_content_in_object_storage` | boolean | `false` | When content logging is disabled, offload the full content to object storage as hidden instead of dropping it. Never served back through the UI or API. Requires object storage on the logs store. See [Content Logging](/features/observability/content-logging#retaining-content-in-object-storage) |
+| `allow_per_request_content_storage_override` | boolean | `false` | Allow individual requests to override content storage via the `x-bf-disable-content-logging` header or its context key, and to opt in to raw-byte persistence via `x-bf-store-raw-request-response`. When `false`, the global `disable_content_logging` setting is authoritative and per-request overrides are ignored. See [Request Options](/providers/request-options#disable-content-logging-per-request) |
 | `log_retention_days` | integer | `365` | Days to retain log entries in the store |
 | `logging_headers` | array of strings | `[]` | HTTP request headers to capture in log metadata |
 
 Set `disable_content_logging: true` for HIPAA / PCI compliance workloads where message content must not be persisted.
+
+<Warning>
+**This setting does not apply to observability connectors.** Each connector (BigQuery, Kafka, Pub/Sub, OpenTelemetry, Datadog) has its **own** `disable_content_logging` flag that defaults to `false` and is read independently of this one. Setting the client flag alone still exports full message content to every configured connector.
+
+For a compliance workload where content must not leave the deployment, set `disable_content_logging: true` **on every configured connector as well**. See [Content Logging](/features/observability/content-logging) for how the layers compose, and for `retain_content_in_object_storage`, which keeps content in your storage bucket while hiding it from the UI and API.
+</Warning>
 
 ```json
 {

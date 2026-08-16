@@ -1,0 +1,260 @@
+---
+title: "Alert Rules"
+description: "Define CEL-based alert rules in Bifrost Enterprise - scope them to virtual keys, teams, or customers, optionally target a specific budget, and send triggers to channels."
+icon: "gavel"
+keywords: ["alert rules", "cel", "conditions", "thresholds", "scope", "cooldown"]
+---
+
+## Overview
+
+An **alert rule** defines a CEL expression over governance metrics and the channels to notify when that expression evaluates to `true`. Rules are scoped to a governance entity (virtual key, team, or customer) and can optionally target a specific budget.
+
+## Anatomy of a rule
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `name` | string | Human-readable rule name. |
+| `scope_type` | string | One of `virtual_key`, `team`, `customer`. |
+| `scope_id` | string | The ID of the scoped entity. Required. |
+| `cel_expression` | string | The CEL expression evaluated against governance metrics. Must evaluate to a boolean. |
+| `channel_ids` | array | One or more [channel](/enterprise/alerting/alert-channels) IDs to notify. |
+| `target_type` | string | Optional. Set to `"budget"` to target a specific budget. |
+| `target_id` | string | The ID of the target budget. Only valid when `target_type` is `"budget"`. |
+| `description` | string | Optional description of the rule. |
+| `enabled` | boolean | Whether the rule is active. Default `true`. |
+| `cooldown_milliseconds` | integer | Minimum milliseconds between notifications for the same rule, scope, and target. Must be a multiple of 1000 (whole seconds). API only; `config.json` uses `cooldown_seconds`. |
+
+---
+
+## CEL expressions
+
+Rules use [CEL](https://github.com/google/cel-spec) expressions evaluated against the [CEL variables](/enterprise/alerting/overview#cel-variables) populated from governance snapshots. Commonly used operators include `==`, `!=`, `>`, `<`, `>=`, and `<=`, combined using `&&` (and) and `||` (or). The engine accepts any expression from the standard CEL function library as long as it evaluates to a boolean, including arithmetic, ternary (`?:`), `in`, and string functions like `.contains()`.
+
+<Note>
+The [Web UI](#creating-a-rule) condition builder only exposes six fields — `budget_usage_percent`, `budget_spent`, `rate_limit_request_usage_percent`, `rate_limit_token_usage_percent`, `request_usage`, and `token_usage` — with a fixed set of comparison operators. For the `budget_limit`/`request_limit`/`token_limit` variables, `scope_type`/`scope_id`/`target_type`/`target_id`, or any expression the builder doesn't support, write the `cel_expression` directly via the [API](#creating-a-rule) or [config.json](#configjson).
+</Note>
+
+### Budget examples
+
+```python
+# Alert when any budget in the scope reaches 80% or more
+budget_usage_percent >= 80.0
+```
+
+```python
+# Alert when absolute spend crosses a threshold
+budget_spent > 1000.0
+```
+
+```python
+# Alert when a specific budget exceeds 50% AND spending is above $100
+budget_usage_percent > 50.0 && budget_spent > 100.0
+```
+
+### Rate limit examples
+
+```python
+# Alert when request rate limit usage reaches 80%
+rate_limit_request_usage_percent >= 80.0
+```
+
+```python
+# Alert when either request or token rate limit usage is above 90%
+rate_limit_request_usage_percent >= 90.0 || rate_limit_token_usage_percent >= 90.0
+```
+
+```python
+# Alert on absolute request count
+request_usage > 10000
+```
+
+### Compound examples
+
+```python
+# Alert on high budget usage AND high request volume
+budget_usage_percent > 80.0 && request_usage > 10000
+```
+
+```python
+# Alert on budget exhaustion OR rate limit exhaustion
+budget_usage_percent >= 100.0 || rate_limit_token_usage_percent >= 100.0
+```
+
+---
+
+## Scopes
+
+Rules must specify a scope type and a scope ID. The following scopes are supported:
+
+| Scope | Description |
+| --- | --- |
+| `virtual_key` | A virtual key. |
+| `team` | A team. |
+| `customer` | A customer. |
+
+The scope ID must be non-empty and identify an existing governance entity. The API validates that the referenced entity exists before creating or updating a rule.
+
+---
+
+## Budget targeting
+
+By default, a rule evaluates its CEL expression against every budget belonging to its scope. You can narrow evaluation to a specific budget by setting `target_type` to `"budget"` and `target_id` to the ID of the budget.
+
+| Behavior | `target_type` | `target_id` |
+| --- | --- | --- |
+| Evaluate all budgets in scope | Not set (or `null`) | Not set (or `null`) |
+| Evaluate a specific budget | `"budget"` | The budget's ID |
+
+When a target is set, only metrics for that specific budget are used. The budget usage percentage, absolute spend, and limit reflect that budget alone. Rate limit variables are still populated from the scope's active rate limits.
+
+---
+
+## Cooldowns
+
+The cooldown prevents alert storms by suppressing repeat notifications after a rule fires. The cooldown window is measured from the latest successful send for the same rule, scope, and target. Live checks use Bifrost's shared key-value store; alert history is the durable source used to rebuild that state after startup or leadership changes.
+
+- Default cooldown is 60 seconds. Set to `0` to disable suppression (every match produces a notification).
+- The API accepts `cooldown_milliseconds`, which must be a whole-second value (multiple of 1000).
+- `config.json` accepts `cooldown_seconds`, which is an integer in seconds.
+
+Channels can add their own [per-channel cooldown](/enterprise/alerting/alert-channels#cooldowns) on top of the rule cooldown.
+
+---
+
+## Creating a rule
+
+<Tabs group="setup-method">
+<Tab title="Web UI">
+
+Open **Alerting** in the Bifrost dashboard, go to the **Rules** tab, and click **Add Rule**.
+
+<Frame>
+  <img src="/media/alerting/alerting-rules-list.png" alt="Alert Rules list showing rule name, scope, and condition columns" />
+</Frame>
+
+1. Enter a **Rule Name** and optional **Description**.
+2. Choose a **Scope Type** and select the **Scope** entity (Virtual Key, Team, or Customer).
+3. Set **Evaluate On** to `Any Budget`, or choose a specific budget to target it directly.
+4. Select one or more **Channels** to notify.
+
+<Frame>
+  <img src="/media/alerting/alerting-create-rule.png" alt="Create Alert Rule dialog showing name, scope type, evaluate on, and channel fields" />
+</Frame>
+
+5. Build the **Condition** with the rule builder - add individual conditions or nested rule groups, and combine them with `AND` / `OR`. The field dropdown offers six metrics: **Budget Used %**, **Budget Spent ($)**, **Request Limit Used %**, **Token Limit Used %**, **Request Usage**, and **Token Usage**. For absolute limits (`budget_limit`, `request_limit`, `token_limit`) or other CEL expressions the builder doesn't expose, use the [API](#creating-a-rule) or [config.json](#configjson) tab instead.
+
+<Frame>
+  <img src="/media/alerting/alerting-create-rule-condition.png" alt="Alert rule condition builder with AND/OR operators and Add Rule / Add Rule Group controls" />
+</Frame>
+
+6. Optionally set a **Cooldown**.
+7. Click **Create Rule**.
+
+</Tab>
+<Tab title="API">
+
+All endpoints are under `/api/alerting/`.
+
+| Method | Endpoint | Description |
+| --- | --- | --- |
+| `GET` | `/rules` | List all rules. |
+| `GET` | `/rules/{id}` | Get a rule by ID. |
+| `POST` | `/rules` | Create a rule. |
+| `PUT` | `/rules/{id}` | Update a rule. |
+| `DELETE` | `/rules/{id}` | Delete a rule. |
+
+Creating a rule validates that the name is set, the scope type is valid, the scope ID is non-empty, the referenced scope entity exists, the CEL expression compiles to a boolean, and at least one channel is attached.
+
+```bash
+curl -X POST https://your-bifrost-gateway/api/alerting/rules \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Budget at 80%",
+    "scope_type": "virtual_key",
+    "scope_id": "vk-123",
+    "cel_expression": "budget_usage_percent >= 80.0",
+    "channel_ids": ["slack-prod"],
+    "cooldown_milliseconds": 300000
+  }'
+```
+
+To target a specific budget:
+
+```bash
+curl -X POST https://your-bifrost-gateway/api/alerting/rules \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Budget A at 90%",
+    "scope_type": "virtual_key",
+    "scope_id": "vk-123",
+    "target_type": "budget",
+    "target_id": "budget-a",
+    "cel_expression": "budget_usage_percent >= 90.0",
+    "channel_ids": ["slack-prod"],
+    "cooldown_milliseconds": 300000
+  }'
+```
+
+</Tab>
+<Tab title="config.json">
+<span id="configjson"></span>
+
+Rules and channels can be declared statically in the `alerting` section of `config.json`. Changes are reconciled on gateway reload.
+
+```json
+{
+  "alerting": {
+    "rules": [
+      {
+        "id": "budget-80-percent",
+        "name": "Budget at 80%",
+        "description": "Alert when any budget exceeds 80%",
+        "enabled": true,
+        "scope_type": "virtual_key",
+        "scope_id": "vk-123",
+        "cel_expression": "budget_usage_percent >= 80.0",
+        "channel_ids": ["slack-prod"],
+        "cooldown_seconds": 300
+      },
+      {
+        "id": "rate-limit-alert",
+        "name": "Request rate limit at 80%",
+        "enabled": true,
+        "scope_type": "team",
+        "scope_id": "team-456",
+        "cel_expression": "rate_limit_request_usage_percent >= 80.0",
+        "channel_ids": ["slack-prod", "generic-webhook"]
+      },
+      {
+        "id": "specific-budget-alert",
+        "name": "Budget A at 90%",
+        "enabled": true,
+        "scope_type": "virtual_key",
+        "scope_id": "vk-123",
+        "target_type": "budget",
+        "target_id": "budget-a",
+        "cel_expression": "budget_usage_percent >= 90.0",
+        "channel_ids": ["pagerduty-critical"]
+      }
+    ]
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Alert Channels" icon="megaphone" href="/enterprise/alerting/alert-channels">
+    Configure the destinations a rule notifies.
+  </Card>
+  <Card title="Alert History" icon="clock-rotate-left" href="/enterprise/alerting/alert-history">
+    Review which rules fired and why.
+  </Card>
+</CardGroup>

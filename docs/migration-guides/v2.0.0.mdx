@@ -1,0 +1,104 @@
+---
+title: "Migrating to v2.0.0"
+description: "Breaking changes and migration instructions for the v2.0.0 release"
+---
+
+v2.0.0 hardens custom plugin loading against server-side request forgery (SSRF) and closes a path that let an unauthenticated caller register a custom native plugin when dashboard auth is disabled or unconfigured. This page covers the two breaking changes introduced by that hardening, starting in `2.0.0-prerelease3`, and how to migrate.
+
+<Note>
+**Running Bifrost Enterprise?** This page covers the OSS behavior only. See the [Enterprise v2.0.0 Migration Guide](/enterprise/migration-guides/v2.0.0) for how these changes interact with SCIM-based authentication.
+</Note>
+
+---
+
+## Breaking Change 1: Custom Plugin Downloads Are Now SSRF-Protected
+
+Starting in `2.0.0-prerelease3`, downloading a custom plugin binary (a `path` pointing at an http(s) URL) is hardened against server-side request forgery.
+
+**What changed:** plugin downloads no longer succeed if the URL resolves to a loopback, private (RFC 1918), CGNAT, link-local, or otherwise non-public address.
+
+<Note>
+**This applies to plugins defined in `config.json` too, not just ones added through the admin API.** Every custom plugin path is re-verified on every server restart, regardless of whether it was configured via `config.json` or `POST`/`PUT /api/plugins`: there is no config-file exemption from the SSRF check.
+</Note>
+
+**Who is affected:** deployments hosting a custom plugin `.so` on an internal artifact server, `localhost`, or any other private-network URL.
+
+**How to fix it:** add the internal host to the new deploy-time allowlist, `server.plugin_download_private_allowlist` in `config.json`. Entries can be hostnames, IP addresses, or CIDR ranges.
+
+**Before** (breaks after upgrading to `2.0.0-prerelease3` - the plugin's `path` resolves to a private-network host, so `DownloadPlugin` now refuses it):
+```json
+{
+  "plugins": [
+    {
+      "name": "internal-audit-plugin",
+      "enabled": true,
+      "path": "http://artifactory.internal.corp/plugins/audit.so"
+    }
+  ],
+  "server": {}
+}
+```
+
+**After** (same plugin `path`; the allowlist entry is the only change):
+```json
+{
+  "plugins": [
+    {
+      "name": "internal-audit-plugin",
+      "enabled": true,
+      "path": "http://artifactory.internal.corp/plugins/audit.so"
+    }
+  ],
+  "server": {
+    "plugin_download_private_allowlist": ["artifactory.internal.corp"]
+  }
+}
+```
+
+<Note>
+This setting is deploy-time only: it is read from `config.json`/environment at server startup and cannot be changed through the plugin admin API. An invalid entry (not a valid hostname, IP, or CIDR) fails server startup with an error naming the entry.
+</Note>
+
+Alternatively, mount the `.so` file into the container/host and reference it by local file path instead of a URL; local paths are unaffected by this change.
+
+<Note>
+**Custom LLM providers are not affected.** This hardening applies only to downloading native plugin (`.so`) binaries via `framework/plugins`. Custom providers (an LLM endpoint registered with a custom `base_url`, e.g. a self-hosted or OpenAI-compatible server) use a separate, unmodified mechanism (the existing per-provider `allow_private_network` setting) and are untouched by this change or by `server.plugin_download_private_allowlist`.
+</Note>
+
+---
+
+## Breaking Change 2: Custom Plugin Creation and Update Now Requires Admin Authentication
+
+Starting in `2.0.0-prerelease3`, creating or updating a custom-path plugin requires genuine admin authentication: it is no longer allowed through on a request that only passed because dashboard auth is disabled or unconfigured. Any of Bifrost's supported admin authentication methods (Basic auth or a dashboard session) satisfies this; no particular method is required.
+
+**What changed:** `POST /api/plugins` and `PUT /api/plugins/{name}` now reject a request that sets a custom `path` if the caller reached the endpoint only because dashboard auth is disabled or unconfigured.
+
+**Who is affected:** deployments that run with dashboard auth disabled or unconfigured and manage custom-path plugins through the admin API in that mode.
+
+**How to fix it:** enable and configure dashboard auth, then authenticate as admin (Basic auth or a dashboard session, either is sufficient) before creating or updating a plugin with a custom `path`.
+
+<Note>
+**Only adding or updating a custom (path-based) plugin requires admin login.** The auth check only runs when `path` is set on a non-built-in plugin: built-in plugins, and any plugin management that doesn't touch `path`, are unaffected.
+</Note>
+
+<Note>
+**Plugins defined directly in `config.json` are not affected by this specific check.** This auth requirement only runs inside the `POST /api/plugins` / `PUT /api/plugins/{name}` HTTP handlers. A plugin listed in `config.json`'s `plugins` array loads at server startup through a completely separate code path (`loadCustomPlugins`) that never calls those handlers: it loads the same way regardless of your dashboard auth configuration. (It is still subject to Breaking Change 1's SSRF check above if its `path` is a URL.)
+</Note>
+
+---
+
+## Migration Checklist
+
+<Steps>
+<Step title="Check for internally-hosted custom plugins">
+Look at every entry in `config.json`'s `plugins` list (or the equivalent admin-API-managed plugin configs) for a `path` that is an `http://` or `https://` URL pointing at a private, loopback, or otherwise internal address.
+</Step>
+
+<Step title="Allowlist internal plugin hosts, or switch to a local file path">
+For any internal URL found above, add the host (or its CIDR) to `server.plugin_download_private_allowlist` in `config.json`, or mount the binary locally and use a file path instead.
+</Step>
+
+<Step title="Confirm dashboard auth is configured before creating a custom-path plugin">
+If dashboard auth is disabled or unconfigured, `POST /api/plugins` and `PUT /api/plugins/{name}` will now reject any request that sets a custom `path`. Enable dashboard authentication first if you need to register a plugin with a custom binary path.
+</Step>
+</Steps>

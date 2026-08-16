@@ -1,3 +1,4 @@
+import { CustomerSelector } from "@/components/entitySelectors/customerSelector";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -8,19 +9,22 @@ import {
 	AlertDialogHeader,
 	AlertDialogTitle,
 } from "@/components/ui/alertDialog";
+import { CopyableId } from "@/components/copyableId";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { resetDurationOptions, supportsCalendarAlignment } from "@/lib/constants/governance";
+import BudgetUsageResetDialog from "@/components/ui/budgetUsageResetDialog";
+import { useBudgetUsageResetPrompt } from "@/hooks/useBudgetUsageResetPrompt";
+import QuarterStartSelect from "@/components/ui/quarterStartSelect";
+import { budgetResetDurationOptions, resetDurationOptions, supportsCalendarAlignment } from "@/lib/constants/governance";
 import { getErrorMessage, useCreateTeamMutation, useUpdateTeamMutation } from "@/lib/store";
-import { CreateTeamRequest, Customer, Team, UpdateTeamRequest } from "@/lib/types/governance";
-import { formatCurrency } from "@/lib/utils/governance";
+import { CreateTeamRequest, Team, UpdateTeamRequest } from "@/lib/types/governance";
+import { budgetSignature, formatCurrency } from "@/lib/utils/governance";
 import { Validator } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { formatDistanceToNow } from "date-fns";
@@ -31,7 +35,6 @@ import { v4 as uuid } from "uuid";
 
 interface TeamSheetProps {
 	team?: Team | null;
-	customers: Customer[];
 	onSave: () => void;
 	onCancel: () => void;
 }
@@ -45,6 +48,8 @@ interface TeamBudgetRow {
 	id: string;
 	maxLimit: number | undefined;
 	resetDuration: string;
+	/** Fiscal quarter definition; only meaningful when resetDuration is quarterly. */
+	resetConfig?: { quarter_start_month?: number };
 }
 
 interface TeamFormData {
@@ -72,6 +77,7 @@ const createInitialState = (team?: Team | null): Omit<TeamFormData, "isDirty"> =
 				id: b.id,
 				maxLimit: b.max_limit,
 				resetDuration: b.reset_duration,
+				resetConfig: b.reset_config,
 			})) ?? [],
 		// Rate Limit
 		tokenMaxLimit: team?.rate_limit?.token_max_limit ?? undefined,
@@ -82,7 +88,7 @@ const createInitialState = (team?: Team | null): Omit<TeamFormData, "isDirty"> =
 	};
 };
 
-export default function TeamSheet({ team, customers, onSave, onCancel }: TeamSheetProps) {
+export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 	const isEditing = !!team;
 	const [initialState, setInitialState] = useState<Omit<TeamFormData, "isDirty">>(createInitialState(team));
 	const [formData, setFormData] = useState<TeamFormData>({
@@ -111,6 +117,10 @@ export default function TeamSheet({ team, customers, onSave, onCancel }: TeamShe
 	// Team-wide calendar-align toggle: confirmation only fires on the off→on
 	// transition for an existing team (mirrors the VK sheet behavior).
 	const [showCalendarAlignWarning, setShowCalendarAlignWarning] = useState(false);
+	// Defers the save until the operator says whether to clear accumulated spend.
+	// The payload is a marker rather than the form data: this sheet keeps its own
+	// formData state, which the save reads directly.
+	const resetPrompt = useBudgetUsageResetPrompt<boolean>();
 
 	const updateBudgetRow = (idx: number, patch: Partial<TeamBudgetRow>) => {
 		setFormData((prev) => {
@@ -226,6 +236,26 @@ export default function TeamSheet({ team, customers, onSave, onCancel }: TeamShe
 		setFormData((prev) => ({ ...prev, [field]: value }));
 	};
 
+	// Whether this save changes budget configuration on an existing team, which is
+	// when clearing accumulated spend is a meaningful choice. Creating a team has
+	// no usage to reset, and a save that leaves budgets alone should not ask.
+	// Compared without ids on purpose: form rows carry none while persisted rows do,
+	// so including them would report a change on every save. The shared signature
+	// folds in the fiscal quarter, which a limit-and-duration comparison misses -
+	// moving Q1 from April to July reschedules the reset without touching either.
+	const budgetsChanged = () => {
+		if (!isEditing || !team) return false;
+		const next = formData.budgets
+			.filter((r) => r.maxLimit !== undefined && r.maxLimit !== null)
+			.map((r) => ({ max_limit: r.maxLimit, reset_duration: r.resetDuration, reset_config: r.resetConfig }));
+		const current = (team.budgets ?? []).map((b) => ({
+			max_limit: b.max_limit ?? undefined,
+			reset_duration: b.reset_duration,
+			reset_config: b.reset_config,
+		}));
+		return budgetSignature(next) !== budgetSignature(current);
+	};
+
 	const handleSubmit = async (e: React.FormEvent) => {
 		e.preventDefault();
 
@@ -234,6 +264,14 @@ export default function TeamSheet({ team, customers, onSave, onCancel }: TeamShe
 			return;
 		}
 
+		if (budgetsChanged()) {
+			resetPrompt.ask(true);
+			return;
+		}
+		await saveTeam(false);
+	};
+
+	const saveTeam = async (resetBudgetUsage: boolean) => {
 		// Serialize budget rows whose max_limit was filled in — rows left blank
 		// are silently dropped (the backend treats the slice as authoritative).
 		const submittableBudgets = formData.budgets
@@ -241,6 +279,8 @@ export default function TeamSheet({ team, customers, onSave, onCancel }: TeamShe
 			.map((r) => ({
 				max_limit: r.maxLimit as number,
 				reset_duration: r.resetDuration,
+				// Only quarterly windows may carry a quarter definition; the API rejects it elsewhere.
+				reset_config: r.resetDuration.endsWith("Q") ? r.resetConfig : undefined,
 			}));
 
 		try {
@@ -253,6 +293,8 @@ export default function TeamSheet({ team, customers, onSave, onCancel }: TeamShe
 					budgets: submittableBudgets,
 					// Team-wide setting that governs both team budgets and the team rate limit.
 					calendar_aligned: formData.calendarAligned,
+					// Only sent when the operator explicitly chose to clear spend.
+					reset_budget_usage: resetBudgetUsage || undefined,
 				};
 
 				// Detect rate limit changes using had/has pattern
@@ -320,15 +362,18 @@ export default function TeamSheet({ team, customers, onSave, onCancel }: TeamShe
 				onInteractOutside={(e) => e.preventDefault()}
 				onEscapeKeyDown={() => onCancel()}
 			>
-				<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-8">
-					<SheetTitle className="flex items-center gap-2">{isEditing ? "Edit Team" : "Create Team"}</SheetTitle>
+				<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-4 md:px-8">
+					<SheetTitle className="flex items-center gap-2">
+						{isEditing ? "Edit Team" : "Create Team"}
+						{team?.id && <CopyableId id={team.id} entityLabel="Team" />}
+					</SheetTitle>
 					<SheetDescription>
 						{isEditing ? "Update the team information and settings." : "Create a new team to organize users and manage shared resources."}
 					</SheetDescription>
 				</SheetHeader>
 
 				<form onSubmit={handleSubmit} className="flex h-full flex-col gap-6">
-					<div className="grow space-y-6 px-8">
+					<div className="grow space-y-6 px-4 md:px-8">
 						{/* Basic Information */}
 						<div className="flex flex-col gap-6">
 							<div className="space-y-2">
@@ -344,31 +389,40 @@ export default function TeamSheet({ team, customers, onSave, onCancel }: TeamShe
 								{nameError && <p className="text-destructive text-sm">{nameError}</p>}
 							</div>
 
-							{/* Customer Assignment */}
-							{customers?.length > 0 && (
-								<div className="space-y-2">
-									<Label htmlFor="customer">Customer (optional)</Label>
-									<Select
-										value={formData.customerId || "__none__"}
-										onValueChange={(value) => updateField("customerId", value === "__none__" ? "" : value)}
-									>
-										<SelectTrigger id="customer" className="w-full" data-testid="team-customer-select-trigger">
-											<SelectValue placeholder="Select a customer" />
-										</SelectTrigger>
-										<SelectContent>
-											<SelectItem value="__none__" data-testid="team-customer-option-none">
-												None
-											</SelectItem>
-											{customers.map((customer) => (
-												<SelectItem key={customer.id} value={customer.id} data-testid={`team-customer-option-${customer.id}`}>
-													{customer.name}
-												</SelectItem>
-											))}
-										</SelectContent>
-									</Select>
-									<p className="text-muted-foreground text-sm">Assign to a customer or leave independent.</p>
+							{/* Customer Assignment — searchable/paginated, so the sheet never
+							    depends on the caller having fetched every customer up front. */}
+							<div className="space-y-2">
+								<Label htmlFor="customer">Customer (optional)</Label>
+								<div className="flex items-center gap-2" data-testid="team-customer-selector">
+									<CustomerSelector
+										value={formData.customerId}
+										onChange={(value) => updateField("customerId", value)}
+										// The team row embeds its customer, so an existing assignment
+										// renders a name instead of a raw UUID before any fetch.
+										fallbackOption={
+											team?.customer_id
+												? {
+														value: team.customer_id,
+														label: team.customer?.name ?? team.customer_id,
+													}
+												: null
+										}
+										className="min-w-0 flex-1"
+									/>
+									{formData.customerId && (
+										<Button
+											type="button"
+											variant="ghost"
+											size="sm"
+											onClick={() => updateField("customerId", "")}
+											data-testid="team-customer-clear-btn"
+										>
+											Clear
+										</Button>
+									)}
 								</div>
-							)}
+								<p className="text-muted-foreground text-sm">Assign to a customer or leave independent.</p>
+							</div>
 						</div>
 
 						{/* Multi-budget configuration: one row per budget, each keyed by reset_duration */}
@@ -393,12 +447,18 @@ export default function TeamSheet({ team, customers, onSave, onCancel }: TeamShe
 										<div className="flex-1">
 											<NumberAndSelect
 												id={`budgetMaxLimit-${idx}`}
-												label={`Budget #${idx + 1} — Maximum Spend (USD)`}
+												label={`Budget #${idx + 1}: Maximum Spend (USD)`}
 												value={row.maxLimit}
 												selectValue={row.resetDuration}
 												onChangeNumber={(value) => updateBudgetRow(idx, { maxLimit: value })}
-												onChangeSelect={(value) => updateBudgetRow(idx, { resetDuration: value })}
-												options={resetDurationOptions}
+												onChangeSelect={(value) =>
+													updateBudgetRow(idx, {
+														resetDuration: value,
+														// Drop a stale definition when leaving a quarterly window.
+														resetConfig: value.endsWith("Q") ? row.resetConfig : undefined,
+													})
+												}
+												options={budgetResetDurationOptions}
 												dataTestId={`budget-max-limit-input-${idx}`}
 											/>
 										</div>
@@ -411,6 +471,13 @@ export default function TeamSheet({ team, customers, onSave, onCancel }: TeamShe
 											Remove
 										</button>
 									</div>
+									{row.resetDuration.endsWith("Q") && (
+										<QuarterStartSelect
+											data-testid={`team-budget-quarter-config-${idx}`}
+											value={row.resetConfig?.quarter_start_month}
+											onChange={(month) => updateBudgetRow(idx, { resetConfig: { quarter_start_month: month } })}
+										/>
+									)}
 								</div>
 							))}
 						</div>
@@ -457,7 +524,7 @@ export default function TeamSheet({ team, customers, onSave, onCancel }: TeamShe
 											Align to calendar cycle
 										</Label>
 										<p className="text-muted-foreground text-xs">
-											Reset budgets and rate limits at the start of each period (e.g. 1st of month) instead of rolling from creation date.
+											Reset budgets and rate limits at the start of each period (e.g. 1st of month) instead of rolling from creation date. Quarterly budgets always align to fiscal quarter starts.
 											Applies to durations of a day or longer.
 										</p>
 									</div>
@@ -497,6 +564,13 @@ export default function TeamSheet({ team, customers, onSave, onCancel }: TeamShe
 								</AlertDialogFooter>
 							</AlertDialogContent>
 						</AlertDialog>
+						<BudgetUsageResetDialog
+							data-testid="team-budget-reset-dialog"
+							ownerLabel="team"
+							open={resetPrompt.isOpen}
+							onOpenChange={resetPrompt.setOpen}
+							onChoice={(resetUsage) => resetPrompt.resolve(() => saveTeam(resetUsage))}
+						/>
 
 						{/* Current Usage Section (only shown when editing with existing limits) */}
 						{isEditing && ((team?.budgets && team.budgets.length > 0) || team?.rate_limit) && (
@@ -580,7 +654,7 @@ export default function TeamSheet({ team, customers, onSave, onCancel }: TeamShe
 						)}
 					</div>
 
-					<div className="border-border bg-card sticky bottom-0 z-10 border-t px-8 py-4">
+					<div className="border-border bg-card sticky bottom-0 z-10 border-t px-4 py-4 md:px-8">
 						<div className="flex justify-end gap-2">
 							<Button type="button" variant="outline" onClick={onCancel} disabled={loading}>
 								Cancel

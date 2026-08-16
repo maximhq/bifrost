@@ -125,7 +125,7 @@ export const TagInput = React.forwardRef<HTMLInputElement, TagInputProps>(
 							type="button"
 							data-testid={expandButtonTestId}
 							onClick={() => setTagsExpanded(true)}
-							className="text-muted-foreground/70 hover:text-foreground/90 group-hover:text-muted-foreground/85 flex w-full cursor-pointer items-center justify-center py-2.5 text-xs font-medium transition-colors absolute top-4"
+							className="text-muted-foreground/70 hover:text-foreground/90 group-hover:text-muted-foreground/85 absolute top-4 flex w-full cursor-pointer items-center justify-center py-2.5 text-xs font-medium transition-colors"
 						>
 							Show {hiddenTagCount} more
 						</button>

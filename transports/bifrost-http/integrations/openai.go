@@ -834,6 +834,23 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				return nil, errors.New("invalid responses retrieve request")
 			},
 			ResponsesResponseConverter: openAIResponsesWireConverter,
+			StreamConfig: &StreamConfig{
+				ResponsesStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
+					if resp.ExtraFields.Provider == schemas.OpenAI {
+						if resp.ExtraFields.RawResponse != nil {
+							return string(resp.Type), resp.ExtraFields.RawResponse, nil
+						}
+					}
+					converted := resp.WithDefaults()
+					if converted == nil {
+						return "", nil, nil
+					}
+					return string(resp.Type), converted, nil
+				},
+				ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+					return err
+				},
+			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
 			},
@@ -2491,6 +2508,13 @@ func extractResponsesLifecycleFromPath(_ lib.HandlerStore) PreRequestCallback {
 				}
 				r.IncludeObfuscation = &b
 			}
+			if raw := ctx.QueryArgs().Peek("stream"); len(raw) > 0 {
+				b, err := strconv.ParseBool(string(raw))
+				if err != nil {
+					return fmt.Errorf("stream must be a boolean")
+				}
+				r.Stream = &b
+			}
 		case *schemas.BifrostResponsesDeleteRequest:
 			r.ResponseID = idStr
 			r.Provider = provider
@@ -3305,6 +3329,10 @@ func parseTranscriptionMultipartRequest(ctx *fasthttp.RequestCtx, req interface{
 		return err
 	}
 	transcriptionReq.File = fileData
+	// Carry the part's filename so the outbound request preserves the container
+	// format; without it the provider falls back to magic-byte sniffing, which
+	// mislabels non-sniffable containers (e.g. m4a/mp4) as audio.mp3.
+	transcriptionReq.Filename = fileHeader.Filename
 
 	// Extract optional parameters
 	if languageValues := form.Value["language"]; len(languageValues) > 0 && languageValues[0] != "" {

@@ -773,6 +773,52 @@ func TestAuthMiddleware_WhitelistedRoutes(t *testing.T) {
 	}
 }
 
+// TestAuthMiddleware_APIMiddleware_DevPrefixDoesNotMatchDevices guards against the
+// prefix-matching bug where the "/api/dev" whitelist prefix (intended for the dev pprof
+// routes under "/api/dev/pprof") also matched "/api/devices", silently bypassing auth on
+// the edge-control devices route. With the trailing-slash fix, "/api/dev/pprof" must still
+// bypass auth while "/api/devices" must NOT.
+func TestAuthMiddleware_APIMiddleware_DevPrefixDoesNotMatchDevices(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	am := &AuthMiddleware{}
+	am.UpdateAuthConfig(&configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar("hashedpassword"),
+		IsEnabled:     true,
+	})
+
+	cases := []struct {
+		name           string
+		uri            string
+		wantNextCalled bool // true => route is whitelisted (auth bypassed)
+	}{
+		{name: "dev pprof is whitelisted", uri: "/api/dev/pprof", wantNextCalled: true},
+		{name: "dev pprof subpath is whitelisted", uri: "/api/dev/pprof/goroutines", wantNextCalled: true},
+		{name: "devices is NOT whitelisted", uri: "/api/devices?limit=25&offset=0", wantNextCalled: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetRequestURI(tc.uri)
+
+			nextCalled := false
+			next := func(ctx *fasthttp.RequestCtx) { nextCalled = true }
+
+			am.APIMiddleware()(next)(ctx)
+
+			if nextCalled != tc.wantNextCalled {
+				t.Fatalf("route %q: nextCalled = %v, want %v (status %d)", tc.uri, nextCalled, tc.wantNextCalled, ctx.Response.StatusCode())
+			}
+			// A non-whitelisted route with no credentials must be rejected, not passed through.
+			if !tc.wantNextCalled && ctx.Response.StatusCode() != fasthttp.StatusUnauthorized {
+				t.Fatalf("route %q: expected 401 for unauthenticated non-whitelisted route, got %d", tc.uri, ctx.Response.StatusCode())
+			}
+		})
+	}
+}
+
 func TestAuthMiddleware_InferenceMiddleware_RealtimeTransportBypassesAuth(t *testing.T) {
 	SetLogger(&mockLogger{})
 
@@ -930,6 +976,70 @@ func TestAuthMiddleware_UpdateAuthConfig_NilToEnabled(t *testing.T) {
 	}
 	if ctx2.Response.StatusCode() != fasthttp.StatusUnauthorized {
 		t.Errorf("Expected status code %d, got %d", fasthttp.StatusUnauthorized, ctx2.Response.StatusCode())
+	}
+}
+
+// TestAuthMiddleware_BootstrapToken_NoAdminNoToken tests that CheckBootstrapToken fails
+// closed when no admin account exists yet and no setup token was configured at boot (e.g.
+// the operator hasn't set setup_token / BIFROST_SETUP_TOKEN) — the very first admin account
+// cannot be created until the operator configures one.
+func TestAuthMiddleware_BootstrapToken_NoAdminNoToken(t *testing.T) {
+	am := &AuthMiddleware{}
+
+	if am.CheckBootstrapToken("") {
+		t.Error("CheckBootstrapToken should reject when no admin exists and no setup token is configured")
+	}
+	if am.CheckBootstrapToken("anything") {
+		t.Error("CheckBootstrapToken should reject when no admin exists and no setup token is configured")
+	}
+}
+
+// TestAuthMiddleware_BootstrapToken_AdminExists tests that CheckBootstrapToken allows any
+// value through once an admin account already exists, regardless of bootstrapToken state.
+func TestAuthMiddleware_BootstrapToken_AdminExists(t *testing.T) {
+	am := &AuthMiddleware{}
+	am.UpdateAuthConfig(&configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar("password"),
+		IsEnabled:     true,
+	})
+
+	if !am.CheckBootstrapToken("") {
+		t.Error("CheckBootstrapToken should allow through once an admin account exists")
+	}
+	if !am.CheckBootstrapToken("anything") {
+		t.Error("CheckBootstrapToken should allow through once an admin account exists")
+	}
+}
+
+// TestAuthMiddleware_BootstrapToken_ValidatesAndClears tests that once a bootstrap token is
+// set (simulating InitAuthMiddleware booting with a configured setup token and no admin
+// account yet), only the exact token validates, and creating the admin account — which sets
+// authConfig, mirroring BifrostHTTPServer.UpdateAuthConfig — permanently reopens the gate.
+func TestAuthMiddleware_BootstrapToken_ValidatesAndClears(t *testing.T) {
+	am := &AuthMiddleware{}
+	token := "test-bootstrap-token"
+	am.bootstrapToken.Store(&token)
+
+	if am.CheckBootstrapToken("") {
+		t.Error("CheckBootstrapToken should reject an empty token once a bootstrap token is set")
+	}
+	if am.CheckBootstrapToken("wrong-token") {
+		t.Error("CheckBootstrapToken should reject a mismatched token")
+	}
+	if !am.CheckBootstrapToken(token) {
+		t.Error("CheckBootstrapToken should accept the exact bootstrap token")
+	}
+
+	am.UpdateAuthConfig(&configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar("password"),
+		IsEnabled:     true,
+	})
+	am.ClearBootstrapToken()
+
+	if !am.CheckBootstrapToken("wrong-token") {
+		t.Error("CheckBootstrapToken should allow anything through once an admin account exists")
 	}
 }
 

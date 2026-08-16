@@ -40,6 +40,7 @@ End-to-end API tests for the Bifrost API using Postman collections and [Newman](
 |------|-------------|
 | `provider_config/` | Per-provider Postman env `.json` files (`bifrost-v1-openai.postman_environment.json`, etc.). Reused across all collections. |
 | `provider-capabilities.json` | Provider capability matrix: per-provider map of booleans (e.g. `chat_completions: true`, `embedding: false`) for batch, file, container, embedding, speech, transcription, image. Derived from `core/providers/*/provider.go` NewUnsupportedOperationError. Used by integration collections to skip unsupported requests when run with all providers. |
+| `collections/smoke-manifest.json` | Curated ~100-request smoke selection for `make smoke-provider-harness-test` (see [Provider Harness Smoke Set](#provider-harness-smoke-set)). Hand-maintained; guarded offline by `runners/lib/smoke-manifest.test.mjs`. |
 | `fixtures/` | Sample files for multipart requests: `sample.mp3`, `sample.jsonl`, `sample.txt` |
 | `setup-plugin.sh` | Builds the hello-world plugin for API Management plugin tests. Run automatically by API Management and all-integration runners. |
 | `setup-mcp.sh` | Starts the test MCP server (`examples/mcps/http-no-ping-server`) on http://localhost:3001/ so Add/Update/Delete MCP Client tests can pass. Run automatically by API Management and all-integration runners. |
@@ -88,6 +89,55 @@ From this directory (`tests/e2e/api`):
 ./runners/run-newman-inference-tests.sh --html --verbose
 ```
 
+### Provider Harness Smoke Set
+
+The full provider harness runs ~1900 requests after augmentation. For a
+pre-release or pre-merge check, run the curated smoke set instead:
+
+```bash
+make smoke-provider-harness-test                       # ~100 requests, all 8 providers
+make run-provider-harness-test SMOKE=1                 # identical
+make run-provider-harness-test SMOKE=1 PROVIDER=bedrock  # smoke set, one fork
+make run-provider-harness-test SMOKE=path/to/other.json  # a different manifest
+```
+
+The selection lives in `collections/smoke-manifest.json`, grouped into five
+pillars, each with an `intent` saying what it buys:
+
+| Pillar | Picks | Covers |
+|---|---:|---|
+| `cache-parity` | 32 | Round 34 direct-vs-Bifrost cache anchor, Round 35 cross-provider matrix, content-block `cache_control` / `cachePoint`, OpenRouter pass-through |
+| `reasoning-tools-interleave` | 24 | Folder 46's three-turn reasoning × tool-call chains, plus chat→responses tool replay |
+| `reasoning` | 19 | Redacted thinking, encrypted reasoning item-id round-trips, thought-signature replay, fail-soft |
+| `cross-cut-baseline` | 16 | One cell per endpoint shape and modality, including the azure and passthrough forks |
+| `costing-guards` | 9 | Cost/usage recording (dbverify) and provider egress streaming/truncation guards |
+
+Three things about the manifest are load-bearing:
+
+- **Rows are matched by `(folder, name)` against the *augmented* collection**,
+  not against `provider-harness.json`. The cache-parity rows are generated at
+  augment time by `runners/lib/midconv-system-cache-parity.mjs` and
+  `crossprovider-cache-matrix.mjs`, so they exist nowhere in the source
+  collection and cannot be tagged in place the way `[PREVIEW]` / `[SKIP]` rows
+  are. The folder is required, not decorative: criss-cross rows are named after
+  their model, so a bare `gemini/gemini-2.5-flash` matches 25 requests.
+- **`SMOKE` forces the deferred cache-parity pass on.** That pass normally runs
+  only for a completely unfiltered sweep, and `SMOKE` is a filter — without the
+  override the cache rows would be carved out of the parallel pass and never
+  replayed. `RERUN_FAILED=1` still wins, because its selection comes from the
+  main pass's report.
+- **`make test-harness-runner-lib` guards the manifest offline.**
+  `runners/lib/smoke-manifest.test.mjs` runs the real augment step and resolves
+  every entry, so a renamed or moved request fails there instead of silently
+  shrinking the smoke set. It also asserts cache write/read pairs stay balanced,
+  every provider fork has something to run, and each three-turn interleave chain
+  keeps all three turns (turn 1 sets the collection variables; turns 2 and 3
+  replay them).
+
+Selecting a request pulls in its chained-variable producers automatically, and a
+row claimed by two provider partitions runs once per fork — both the same as in a
+full sweep, so the effective request count can exceed the manifest's 100.
+
 ### Routing Harness Ledger
 
 Harness days are journaled in `routing/ledger-YYYY-MM-DD.md` (gitignored, one
@@ -96,6 +146,42 @@ open-divergences snapshot, per-suite scenario tables (setup / expected /
 actual, with ✅ / ⚠️ recalibrated / 🐞 bug-found markers), the day's run
 results, and day notes. Append to the current day's file during a session;
 never rewrite past days.
+
+### Management API coverage
+
+`bifrost-api-management.postman_collection.json` is the OSS management surface:
+every `/api/*` route the OSS binary serves, plus `/health` and `/metrics`.
+Enterprise-only routes (RBAC, access profiles, audit logs, business units,
+circuit breaker, MCP tool groups, vault) are **not** here — they 404 on an OSS
+server and live in `bifrost-enterprise/tests/e2e/api/enterprise-management.postman_collection.json`,
+which the enterprise runner merges on top of this base.
+
+Two request styles coexist, and the difference is load-bearing:
+
+- **Lifecycle requests** create a resource, assert on it, and tear it down. The
+  collection-level script requires a 2xx, so these only belong to routes that
+  succeed deterministically against a local gateway.
+- **Requests suffixed `(Coverage Probe)`** pass on a 2xx or on any 4xx/5xx — but
+  not on a 3xx, and not on a response the gate rejects for other reasons. Use
+  that suffix only when the outcome depends on deployment shape rather than on
+  correctness — an unconfigured vault, a missing background job runner, a webhook
+  receiver that is deliberately not listening.
+
+The collection-level gate also whitelists a handful of named requests that carry
+no `(Coverage Probe)` suffix, because their non-2xx outcome is itself the
+expected result. Keep this list in sync when adding to it:
+
+- `Get … (Before Create)` requests may answer 404 — the resource does not exist yet.
+- `Add / Reconnect / Update / Delete MCP Client` may answer 404 when the client
+  was never added.
+- Plugin requests may answer 404 with a "plugin not found"/"failed to load"
+  message (the `.so` is not built), or 403 with "requires genuine admin
+  authentication" in the unauthenticated pass.
+- `Clear Cache by Cache ID / by Key (Coverage Probe)` may answer 405 — the routes
+  are not implemented yet.
+
+Resource names are stamped with `Date.now()` so the collection can run twice in
+one invocation (the runner replays it with dashboard auth enabled).
 
 ### API Management Extensions
 

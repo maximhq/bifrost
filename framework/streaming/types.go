@@ -35,7 +35,9 @@ type AccumulatedData struct {
 	ToolCalls             []schemas.ChatAssistantMessageToolCall
 	ErrorDetails          *schemas.BifrostError
 	TokenUsage            *schemas.BifrostLLMUsage
+	ServiceTier           *schemas.BifrostServiceTier
 	CacheDebug            *schemas.BifrostCacheDebug
+	GuardrailDebug        *schemas.BifrostGuardrailDebug
 	Cost                  *float64
 	AudioOutput           *schemas.BifrostSpeechResponse
 	TranscriptionOutput   *schemas.BifrostTranscriptionResponse
@@ -79,7 +81,9 @@ type ChatStreamChunk struct {
 	FinishReason       *string                                // If this is the final chunk
 	LogProbs           *schemas.BifrostLogProbs               // LogProbs if available
 	TokenUsage         *schemas.BifrostLLMUsage               // Token usage if available
+	ServiceTier        *schemas.BifrostServiceTier            // Served OpenAI tier if available
 	SemanticCacheDebug *schemas.BifrostCacheDebug             // Semantic cache debug if available
+	GuardrailDebug     *schemas.BifrostGuardrailDebug         // Guardrail debug if available
 	Cost               *float64                               // Cost in dollars from pricing plugin
 	ErrorDetails       *schemas.BifrostError                  // Error if any
 	ChunkIndex         int                                    // Index of the chunk in the stream
@@ -92,7 +96,9 @@ type ResponsesStreamChunk struct {
 	StreamResponse     *schemas.BifrostResponsesStreamResponse // The actual stream response
 	FinishReason       *string                                 // If this is the final chunk
 	TokenUsage         *schemas.BifrostLLMUsage                // Token usage if available
+	ServiceTier        *schemas.BifrostServiceTier             // Served OpenAI tier if available
 	SemanticCacheDebug *schemas.BifrostCacheDebug              // Semantic cache debug if available
+	GuardrailDebug     *schemas.BifrostGuardrailDebug          // Guardrail debug if available
 	Cost               *float64                                // Cost in dollars from pricing plugin
 	ErrorDetails       *schemas.BifrostError                   // Error if any
 	ChunkIndex         int                                     // Index of the chunk in the stream
@@ -164,16 +170,17 @@ type StreamAccumulator struct {
 	// gatePendingTerminal is set when an isFinal or isHardErr chunk arrived
 	// while Paused. The flusher consumes this flag after Resume drains the
 	// buffer and transitions the gate to Ended.
-	gatePendingTerminal bool
-	gateSeq             int                              // monotonic, bumped on every GateSend
-	gateReplayBuf       []*schemas.BifrostStreamChunk    // wire-format chunks captured while paused
-	gateReplayBufBytes  int64                            // sum of MarshalJSON sizes of chunks in gateReplayBuf; capped by gateReplayBufMaxBytes
-	gateCond            *sync.Cond                       // wakes flusher on Resume / End / append-while-active
-	gateEndError        *schemas.BifrostError            // delivered as terminal chunk if EndStream(err) was called with non-nil
-	gateFlusherCh       chan *schemas.BifrostStreamChunk // captured on first GateSend; reused by flusher
-	gateFlusherCtx      *schemas.BifrostContext          // captured on first GateSend
-	gateFlusherOn       bool                             // flusher goroutine running
-	gateFlusherDone     chan struct{}                    // closed when the most recent flusher exits; nil when no flusher has ever started
+	gatePendingTerminal     bool
+	gateSeq                 int                              // monotonic, bumped on every GateSend
+	gateReplayBuf           []*schemas.BifrostStreamChunk    // wire-format chunks captured while paused
+	gateReplayBufBytes      int64                            // sum of MarshalJSON sizes of chunks in gateReplayBuf; capped by gateReplayBufMaxBytes
+	gateReplayEventInterval time.Duration                    // delay between buffered events after paced resume is armed
+	gateCond                *sync.Cond                       // wakes flusher on Resume / End / append-while-active
+	gateEndError            *schemas.BifrostError            // delivered as terminal chunk if EndStream(err) was called with non-nil
+	gateFlusherCh           chan *schemas.BifrostStreamChunk // captured on first GateSend; reused by flusher
+	gateFlusherCtx          *schemas.BifrostContext          // captured on first GateSend
+	gateFlusherOn           bool                             // flusher goroutine running
+	gateFlusherDone         chan struct{}                    // closed when the most recent flusher exits; nil when no flusher has ever started
 	// gatePendingCleanup is set by cleanupStreamAccumulator when the caller
 	// requested teardown but the gate is still busy (flusher running or
 	// Paused). The flusher's exit defer checks this flag and re-runs cleanup
@@ -357,6 +364,9 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		if p.Data.CacheDebug != nil {
 			resp.TextCompletionResponse.ExtraFields.CacheDebug = p.Data.CacheDebug
 		}
+		if p.Data.GuardrailDebug != nil {
+			resp.TextCompletionResponse.ExtraFields.GuardrailDebug = p.Data.GuardrailDebug
+		}
 	case StreamTypeChat:
 		var message *schemas.ChatMessage
 		if p.Data.OutputMessage != nil {
@@ -409,6 +419,9 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		if p.Data.CacheDebug != nil {
 			resp.ChatResponse.ExtraFields.CacheDebug = p.Data.CacheDebug
 		}
+		if p.Data.GuardrailDebug != nil {
+			resp.ChatResponse.ExtraFields.GuardrailDebug = p.Data.GuardrailDebug
+		}
 	case StreamTypeResponses:
 		responsesResp := &schemas.BifrostResponsesResponse{}
 
@@ -434,6 +447,9 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		if p.Data.CacheDebug != nil {
 			responsesResp.ExtraFields.CacheDebug = p.Data.CacheDebug
 		}
+		if p.Data.GuardrailDebug != nil {
+			responsesResp.ExtraFields.GuardrailDebug = p.Data.GuardrailDebug
+		}
 		resp.ResponsesResponse = responsesResp
 	case StreamTypeAudio:
 		speechResp := p.Data.AudioOutput
@@ -457,6 +473,9 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		if p.Data.CacheDebug != nil {
 			resp.SpeechResponse.ExtraFields.CacheDebug = p.Data.CacheDebug
 		}
+		if p.Data.GuardrailDebug != nil {
+			resp.SpeechResponse.ExtraFields.GuardrailDebug = p.Data.GuardrailDebug
+		}
 	case StreamTypeTranscription:
 		transcriptionResp := p.Data.TranscriptionOutput
 		if transcriptionResp == nil {
@@ -478,6 +497,9 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		}
 		if p.Data.CacheDebug != nil {
 			resp.TranscriptionResponse.ExtraFields.CacheDebug = p.Data.CacheDebug
+		}
+		if p.Data.GuardrailDebug != nil {
+			resp.TranscriptionResponse.ExtraFields.GuardrailDebug = p.Data.GuardrailDebug
 		}
 	case StreamTypeImage:
 		imageResp := p.Data.ImageGenerationOutput
@@ -512,6 +534,9 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		}
 		if p.Data.CacheDebug != nil {
 			resp.ImageGenerationResponse.ExtraFields.CacheDebug = p.Data.CacheDebug
+		}
+		if p.Data.GuardrailDebug != nil {
+			resp.ImageGenerationResponse.ExtraFields.GuardrailDebug = p.Data.GuardrailDebug
 		}
 
 	}

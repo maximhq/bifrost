@@ -124,11 +124,17 @@ clients:
         in: query
         description: |
           Comma-separated runtime connection states to include (OR semantics),
-          resolved against live engine state. `connected` matches clients the engine
-          currently reports as connected; `disconnected` matches everything else.
+          resolved against live engine state. Only `healthy` and
+          `unstable` are meaningful filter values: `healthy` matches
+          clients the engine currently reports as healthy; `unstable`
+          matches everything else (error, pending states, needs_reauth,
+          disabled, not present in the engine). Selecting both, or neither,
+          applies no state filter. Note the response-only needs_reauth
+          projection on per-user clients happens after filtering, so such
+          clients still match `healthy`.
         schema:
           type: string
-          example: connected
+          example: healthy
       - name: all_virtual_keys
         in: query
         description: When true, include clients that are open to all virtual keys (allow_on_all_virtual_keys). ORs with virtual_keys.
@@ -169,7 +175,10 @@ client:
     summary: Add MCP client
     description: |
       Adds a new MCP client with the specified configuration.
-      Note: tool_pricing is not available when creating a new client as tools are fetched after client creation.
+      Note: tool_pricing is not available when creating a new client; tool
+      pricing can only be set once the tool list is known. For shared-connection
+      clients tools are fetched after client creation; for per-user auth types
+      they are discovered during the create/verify flow itself.
     tags:
       - MCP
     requestBody:
@@ -182,11 +191,18 @@ client:
       - ManagementBearerAuth: []
     responses:
       '200':
-        description: MCP client added successfully
+        description: |
+          MCP client added successfully. For auth_type "oauth" and
+          "per_user_oauth" the client is not created yet — the response is the
+          pending_oauth variant carrying authorize_url plus status_url /
+          complete_url / next_steps hints; the client is created when the flow
+          is completed via complete_url.
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/SuccessResponse'
+              oneOf:
+                - $ref: '../../schemas/management/common.yaml#/SuccessResponse'
+                - $ref: '../../schemas/management/oauth.yaml#/OAuthFlowInitiation'
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
@@ -197,8 +213,13 @@ client-by-id:
     operationId: editMCPClient
     summary: Edit MCP client
     description: |
-      Updates an existing MCP client's configuration.
+      Updates an existing MCP client's configuration. All fields are optional
+      (PATCH semantics); connection_type, auth_type, connection_string,
+      stdio_config, and oauth_config_id are immutable after creation.
       Unlike client creation, tool_pricing can be included to set per-tool execution costs since tools are already fetched.
+      For OAuth-based clients, providing oauth_config rotates the stored OAuth
+      configuration in place and flips every bound token to needs_reauth when
+      a field actually changes (see MCPClientUpdateRequest.oauth_config).
       Optionally provide vk_configs to manage which virtual keys have access to this MCP server and with which tools. When provided, this fully replaces all existing VK assignments in a single atomic transaction.
       Set disabled: true to shut down the client's connection and workers without removing it. Set disabled: false to reconnect a previously disabled client.
     tags:
@@ -261,7 +282,13 @@ client-reconnect:
   post:
     operationId: reconnectMCPClient
     summary: Reconnect MCP client
-    description: Reconnects an MCP client that is in an error or disconnected state.
+    description: |
+      Reconnects an MCP client that is in an error or unstable state.
+      Not applicable (400) to any per-call client — a shared client running
+      per-call (needs_session_stickiness false/omitted) as well as any
+      per-user auth type — since none of them hold a shared upstream
+      connection to re-establish. Also not applicable to clients in
+      pending_verification state — complete the admin verification instead.
     tags:
       - MCP
     parameters:
@@ -290,10 +317,87 @@ client-complete-oauth:
     operationId: completeMCPClientOAuth
     summary: Complete MCP client OAuth flow
     description: |
-      Completes the OAuth flow for an MCP client after the user has authorized the request.
-      This endpoint should be called after the OAuth provider redirects back to the callback endpoint
-      and the OAuth token has been stored. It retrieves the pending MCP client configuration and
-      establishes the connection with the OAuth-provided credentials.
+      Completes an OAuth flow for an MCP client after the admin has authorized
+      the request upstream. Call it once the flow's status_url reports
+      "authorized". It serves every admin-side OAuth completion with one
+      endpoint:
+
+      - Create-time and config.json-bootstrap flows: retrieves the pending MCP
+        client configuration and establishes the connection with the
+        OAuth-provided credentials (per_user_oauth clients instead verify with
+        the admin token, discover tools, and retain the token as the admin
+        discovery credential).
+      - Reauthorize flows (started via POST /api/mcp/client/{id}/reauthorize):
+        for shared "oauth" clients, reconnects the client with the fresh
+        credential; for per_user_oauth clients, verifies the fresh admin token
+        upstream, re-discovers tools, and promotes it to the retained admin
+        discovery credential.
+
+      Replays are rejected with 409: hitting the endpoint again after the flow
+      already completed (no pending configuration and no freshly-written
+      token) returns "OAuth flow has already been completed". A shared
+      "oauth" reauthorize is also rejected with 409 if its flow never
+      actually resolved via a real callback — e.g. the upstream authorization
+      server rejected the request outright before ever redirecting back —
+      returning "Authorization has not completed yet". This is detected via
+      the flow's own row rather than the client's overall OAuth status,
+      which never regresses once a client has been authorized once and so
+      can't distinguish a stale prior authorization from a fresh one.
+    tags:
+      - MCP
+      - OAuth
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: |
+          The oauth_config_id of the flow being completed (as returned in the
+          initiation response's oauth_config_id / complete_url), not the MCP
+          client ID.
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: MCP client connected (or re-authorized) successfully with OAuth
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/SuccessResponse'
+      '400':
+        description: OAuth flow not authorized yet, or the OAuth config does not belong to an OAuth-based MCP client
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: OAuth config not found, or no MCP client is linked to this OAuth flow
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '409':
+        description: |
+          Either "OAuth flow has already been completed for this MCP client"
+          (replay), or "Authorization has not completed yet: the browser
+          flow may still be open, or the upstream provider rejected it
+          before redirecting back" (a shared "oauth" reauthorize whose flow
+          never actually resolved via a callback).
+        $ref: '../../openapi.yaml#/components/responses/Conflict'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+client-initiate-verification:
+  post:
+    operationId: initiateMCPClientVerification
+    summary: Initiate verification for a pending MCP client
+    description: |
+      Starts the one-time admin OAuth authorization for an MCP client sitting
+      in pending_verification state (declared via config.json with auth_type
+      "oauth" or "per_user_oauth"). Runs OAuth metadata discovery (RFC 8414)
+      and dynamic client registration (RFC 7591) against the client's
+      connection_string when the declared oauth_config omits those fields,
+      creates a fresh OAuth flow, and returns the authorization URL.
+
+      Complete the flow like a create-time OAuth flow: open authorize_url in a
+      browser, poll status_url until "authorized", then POST complete_url.
+      Safe to call again if a previous attempt expired or was abandoned — each
+      call starts a fresh flow.
     tags:
       - MCP
       - OAuth
@@ -308,17 +412,224 @@ client-complete-oauth:
       - ManagementBearerAuth: []
     responses:
       '200':
-        description: MCP client connected successfully with OAuth
+        description: OAuth flow initiated
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/SuccessResponse'
+              $ref: '../../schemas/management/oauth.yaml#/OAuthFlowInitiation'
       '400':
-        description: OAuth not authorized yet or MCP client not found in pending OAuth clients
+        description: Client is not in pending_verification state, is not an OAuth-based auth type, has no pending bootstrap configuration, or has no connection_string
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '404':
-        description: MCP client not found in pending OAuth clients or OAuth config not found
         $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+client-reauthorize:
+  post:
+    operationId: reauthorizeMCPClient
+    summary: Reauthorize an MCP client
+    description: |
+      Redoes the OAuth consent flow for an already-authorized OAuth-based MCP
+      client, without delete-and-recreate. The flow always runs against the
+      credentials currently stored on the client's OAuth config.
+
+      - auth_type "oauth": serves both a standalone admin-triggered reauth
+        (e.g. the upstream provider revoked the credential and the client sits
+        in needs_reauth) and the follow-up to rotating oauth_config via
+        PUT /api/mcp/client/{id} (which cascades every bound token to
+        needs_reauth).
+      - auth_type "per_user_oauth": repairs the retained admin discovery
+        credential used for periodic tool-list refresh. Only allowed while
+        that credential actually sits in needs_reauth (409 otherwise);
+        end-user credentials are untouched either way.
+
+      Complete the returned flow like any other admin OAuth flow: open
+      authorize_url in a browser, poll status_url until "authorized", then
+      POST complete_url.
+    tags:
+      - MCP
+      - OAuth
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: MCP client ID
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Reauthorization flow initiated
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/oauth.yaml#/OAuthFlowInitiation'
+      '400':
+        description: Client is not an OAuth-based auth type (oauth, per_user_oauth), or has never completed initial OAuth authorization (use initiate-verification instead)
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: MCP client not found
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '409':
+        description: The admin discovery credential for this per_user_oauth client does not need repair or does not exist
+        $ref: '../../openapi.yaml#/components/responses/Conflict'
+      '503':
+        description: OAuth provider not configured
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+client-verify-headers:
+  post:
+    operationId: verifyMCPClientHeaders
+    summary: Verify a pending per-user-headers MCP client
+    description: |
+      Completes the admin verification for an MCP client with auth_type
+      "per_user_headers". The admin supplies sample values for every declared
+      per_user_header_keys entry; Bifrost opens an upstream connection with
+      them, discovers the tool list, persists it, and transitions the client
+      to connected. The sample values are retained as the admin discovery
+      credential the periodic tool syncer uses to refresh the tool list; each
+      end-user still submits their own values at runtime. Synchronous; no
+      browser flow.
+
+      Serves two situations: the one-time bootstrap verification for a client
+      sitting in pending_verification (declared via config.json), and a
+      voluntary refresh of an already-verified client's retained admin
+      discovery credential — resubmitting sample values always re-runs
+      verification and upserts the credential back to active, whether or not
+      it currently needs repair (mirrors POST /reauthorize for OAuth-based
+      clients).
+    tags:
+      - MCP
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: MCP client ID
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [user_headers]
+            properties:
+              user_headers:
+                type: object
+                additionalProperties:
+                  type: string
+                description: |
+                  Sample value for every header name declared in the client's
+                  per_user_header_keys. Used for the verification connection,
+                  then retained as the admin discovery credential for periodic
+                  tool-list refresh. Never used for end-user traffic and never
+                  surfaced on /api/mcp/sessions.
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Client verified; tools discovered and client connected
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  enum: [success]
+                message:
+                  type: string
+                tools_count:
+                  type: integer
+                  description: Number of tools discovered during verification
+      '400':
+        description: Client is not auth_type "per_user_headers", has no per_user_header_keys declared, or user_headers is missing required keys
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '422':
+        description: Upstream verification failed with the supplied header values
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+client-verify-exchange:
+  post:
+    operationId: verifyMCPClientExchange
+    summary: Verify a pending or repair a needs_reauth token_exchange MCP client
+    description: |
+      Completes admin verification for an MCP client with auth_type
+      "token_exchange". No request body: the subject of the exchange is
+      always the signed-in admin's own identity-provider token (from an SSO
+      session or an identity-authenticated bearer request) — there is no
+      manual token input. Bifrost exchanges it exactly like a real caller's
+      token would be exchanged, opens an upstream connection with the result,
+      discovers the tool list, persists it, and transitions the client to
+      connected. The exchanged token (and any refresh token the identity
+      provider issued alongside it) is retained as the admin discovery
+      credential the periodic tool syncer uses to refresh the tool list;
+      end-user tool calls always exchange the caller's own token instead.
+      Synchronous; no browser flow.
+
+      Serves two situations: the one-time bootstrap verification for a client
+      sitting in pending_verification, and a voluntary refresh of an
+      already-verified client's retained admin discovery credential —
+      resubmitting always re-runs verification and retains a fresh
+      credential, whether or not it currently needs repair (mirrors POST
+      /reauthorize for OAuth-based clients).
+    tags:
+      - MCP
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: MCP client ID
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Client verified; tools discovered and client connected
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  enum: [success]
+                message:
+                  type: string
+                tools_count:
+                  type: integer
+                  description: Number of tools discovered during verification
+      '400':
+        description: |
+          Client is not auth_type "token_exchange", token exchange is
+          unavailable (no identity-provider integration configured), or the
+          request carries no identity-provider token to exchange (sign in
+          with your identity provider and retry)
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '422':
+        description: The identity provider rejected the exchange, or the upstream verification connection failed
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
@@ -328,12 +639,15 @@ sessions:
   get:
     summary: List MCP sessions
     description: |
-      Returns every per-user MCP authentication artifact visible to the caller —
+      Returns every per-user MCP authentication artifact visible to the caller:
       OAuth tokens, header credentials, and pending submission / consent flows.
 
       Row visibility is scoped to the caller's identity (Virtual Key, signed-in
       user, or asserted session ID). Server-level `headers` / `oauth` clients
       are not surfaced here; their credentials live on the MCP client config.
+      Admin discovery credentials (the retained bootstrap credential Bifrost
+      uses for periodic tool-list refresh on per-user clients) never appear
+      here either; only user-, vk-, and session-keyed rows are listed.
 
       When both a credential and a pending flow exist for the same
       `(identity, mcp_client)` binding, the credential is returned and the

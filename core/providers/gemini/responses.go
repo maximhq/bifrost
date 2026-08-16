@@ -5,13 +5,40 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// thoughtSignatureFromEncryptedContent converts a Responses-API
+// encrypted_content value into the raw bytes Part.ThoughtSignature expects.
+//
+// The decode is required, not cosmetic. encrypted_content is already a base64
+// STRING, while ThoughtSignature is a []byte that Part.MarshalJSON base64s on
+// the way out -- so assigning []byte(encryptedContent) directly ships
+// base64(base64(signature)) and Gemini cannot verify it. The non-streaming
+// converters always decoded first; the streaming one did not, which meant the
+// two paths silently disagreed about the encoding for the same conversation.
+//
+// Returns nil when there is nothing usable, so callers can skip the part
+// entirely rather than emit an empty signature: a malformed value is dropped
+// rather than corrupted onwards.
+func thoughtSignatureFromEncryptedContent(encryptedContent *string) []byte {
+	if encryptedContent == nil || *encryptedContent == "" {
+		return nil
+	}
+	decoded, err := base64.StdEncoding.DecodeString(*encryptedContent)
+	if err != nil || len(decoded) == 0 {
+		return nil
+	}
+	return decoded
+}
 
 func (request *GeminiGenerationRequest) ToBifrostResponsesRequest(ctx *schemas.BifrostContext) *schemas.BifrostResponsesRequest {
 	if request == nil {
@@ -54,8 +81,26 @@ func (request *GeminiGenerationRequest) ToBifrostResponsesRequest(ctx *schemas.B
 		params.Tools = convertGeminiToolsToResponsesTools(request.Tools)
 	}
 
-	if request.ToolConfig != nil && request.ToolConfig.FunctionCallingConfig != nil {
-		params.ToolChoice = convertGeminiToolConfigToToolChoice(request.ToolConfig)
+	if request.ToolConfig != nil {
+		if request.ToolConfig.FunctionCallingConfig != nil {
+			params.ToolChoice = convertGeminiToolConfigToToolChoice(request.ToolConfig)
+		}
+		params.IncludeServerSideToolInvocations = request.ToolConfig.IncludeServerSideToolInvocations
+
+		// Search localization rides on the web_search tool, the only tool it applies to.
+		if retrieval := request.ToolConfig.RetrievalConfig; retrieval != nil && retrieval.LatLng != nil {
+			for i := range params.Tools {
+				webSearch := params.Tools[i].ResponsesToolWebSearch
+				if params.Tools[i].Type != schemas.ResponsesToolTypeWebSearch || webSearch == nil {
+					continue
+				}
+				if webSearch.UserLocation == nil {
+					webSearch.UserLocation = &schemas.ResponsesToolWebSearchUserLocation{}
+				}
+				webSearch.UserLocation.Latitude = retrieval.LatLng.Latitude
+				webSearch.UserLocation.Longitude = retrieval.LatLng.Longitude
+			}
+		}
 	}
 
 	if request.SafetySettings != nil {
@@ -105,9 +150,10 @@ func ToGeminiResponsesRequestWithImageURLSchemes(ctx *schemas.BifrostContext, bi
 			return nil, err
 		}
 		geminiReq.ExtraParams = bifrostReq.Params.ExtraParams
+		includeServerSideToolInvocations := bifrostReq.Params.IncludeServerSideToolInvocations != nil && *bifrostReq.Params.IncludeServerSideToolInvocations
 		// Handle tool-related parameters
 		if len(bifrostReq.Params.Tools) > 0 {
-			geminiReq.Tools, err = convertResponsesToolsToGemini(bifrostReq.Params.Tools)
+			geminiReq.Tools, err = convertResponsesToolsToGemini(bifrostReq.Params.Tools, includeServerSideToolInvocations, bifrostReq.Provider, bifrostReq.Model)
 			if err != nil {
 				return nil, err
 			}
@@ -127,6 +173,40 @@ func ToGeminiResponsesRequestWithImageURLSchemes(ctx *schemas.BifrostContext, bi
 					geminiReq.ToolConfig = convertResponsesToolChoiceToGemini(bifrostReq.Params.ToolChoice)
 				}
 			}
+
+			// Rebuild search localization from the web_search tool that carried it, but
+			// only when that tool survived conversion — localization without a search
+			// tool is meaningless and Gemini rejects it.
+			hasGoogleSearch := false
+			for _, tool := range geminiReq.Tools {
+				if tool.GoogleSearch != nil {
+					hasGoogleSearch = true
+					break
+				}
+			}
+			for _, tool := range bifrostReq.Params.Tools {
+				webSearch := tool.ResponsesToolWebSearch
+				if !hasGoogleSearch || tool.Type != schemas.ResponsesToolTypeWebSearch || webSearch == nil || webSearch.UserLocation == nil {
+					continue
+				}
+				if webSearch.UserLocation.Latitude == nil && webSearch.UserLocation.Longitude == nil {
+					continue
+				}
+				if geminiReq.ToolConfig == nil {
+					geminiReq.ToolConfig = &ToolConfig{}
+				}
+				geminiReq.ToolConfig.RetrievalConfig = &RetrievalConfig{
+					LatLng: &LatLng{
+						Latitude:  webSearch.UserLocation.Latitude,
+						Longitude: webSearch.UserLocation.Longitude,
+					},
+				}
+				break
+			}
+		}
+
+		if includeServerSideToolInvocations {
+			applyServerSideToolInvocations(geminiReq)
 		}
 
 		if bifrostReq.Params.ServiceTier != nil {
@@ -191,6 +271,9 @@ func (response *GenerateContentResponse) ToResponsesBifrostResponsesResponse() *
 
 	// Convert usage information
 	bifrostResp.Usage = ConvertGeminiUsageMetadataToResponsesUsage(response.UsageMetadata)
+	if len(response.Candidates) > 0 && response.Candidates[0] != nil {
+		applyGeminiSearchQueryResponsesUsage(bifrostResp.Usage, response.Candidates[0].GroundingMetadata, response.ModelVersion)
+	}
 
 	if response.UsageMetadata != nil {
 		if t := mapGeminiTrafficTypeToBifrost(response.UsageMetadata.TrafficType); t != nil {
@@ -231,9 +314,51 @@ func (response *GenerateContentResponse) ToResponsesBifrostResponsesResponse() *
 		if len(outputMessages) > 0 {
 			bifrostResp.Output = outputMessages
 		}
+
+		// safetyRatings, avgLogprobs, and the native responseId have no field in Bifrost's
+		// OpenAI-shaped Responses schema. Preserve them here so ToGeminiResponsesResponse
+		// can restore them on the GenAI generateContent egress path.
+		extraFields := map[string]interface{}{}
+		if response.ResponseID != "" {
+			extraFields["responseId"] = response.ResponseID
+		}
+		if len(candidate.SafetyRatings) > 0 {
+			extraFields["safetyRatings"] = candidate.SafetyRatings
+		}
+		if candidate.AvgLogprobs != 0 {
+			extraFields["avgLogprobs"] = candidate.AvgLogprobs
+		}
+		// Server-side tool parts have no lossless home in Bifrost's OpenAI-shaped schema
+		// (the web_search_call item keeps the queries, but not the raw tool response or the
+		// thoughtSignature Gemini requires back on replay). Carry them verbatim so the
+		// native GenAI response can be reproduced exactly.
+		if parts := serverSideToolParts(candidate); len(parts) > 0 {
+			extraFields["serverSideToolParts"] = parts
+		}
+		if len(extraFields) > 0 {
+			bifrostResp.ProviderExtraFields = extraFields
+		}
 	}
 
 	return bifrostResp
+}
+
+// thoughtTextParts renders a reasoning item's summary as Gemini thought parts.
+//
+// Gemini's thinking guide requires thought blocks to be resent unmodified, so
+// wherever a reasoning item's signature is taken its text has to travel with it.
+func thoughtTextParts(reasoning *schemas.ResponsesReasoning) []*Part {
+	if reasoning == nil {
+		return nil
+	}
+	var parts []*Part
+	for _, summaryBlock := range reasoning.Summary {
+		if summaryBlock.Text == "" {
+			continue
+		}
+		parts = append(parts, &Part{Text: summaryBlock.Text, Thought: true})
+	}
+	return parts
 }
 
 func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *GenerateContentResponse {
@@ -253,6 +378,21 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 	// Set creation time
 	if bifrostResp.CreatedAt > 0 {
 		geminiResp.CreateTime = time.Unix(int64(bifrostResp.CreatedAt), 0)
+	}
+
+	// Server-side tool parts (toolCall/toolResponse) preserved verbatim at parse time.
+	// They are replayed ahead of the generated content, reproducing Gemini's own ordering,
+	// and they already carry their thoughtSignatures -- so the reasoning items derived from
+	// those same signatures must not emit duplicate signature-only parts below.
+	var preservedToolParts []*Part
+	preservedToolSignatures := map[string]bool{}
+	if bifrostResp.ProviderExtraFields != nil {
+		preservedToolParts = extractServerSideToolParts(bifrostResp.ProviderExtraFields["serverSideToolParts"])
+		for _, part := range preservedToolParts {
+			if len(part.ThoughtSignature) > 0 {
+				preservedToolSignatures[base64.StdEncoding.EncodeToString(part.ThoughtSignature)] = true
+			}
+		}
 	}
 
 	// Convert output messages to candidates
@@ -362,6 +502,8 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 
 				// Extract thought signature from CallID if present
 				var thoughtSignature []byte
+				// Thought text belonging to a reasoning item consumed for its signature below.
+				var consumedThoughtText []*Part
 				if msg.ResponsesToolMessage.CallID != nil {
 					callID := *msg.ResponsesToolMessage.CallID
 					// Check if the ID contains a thought signature (format: "ToolName_ts_base64signature")
@@ -396,12 +538,23 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 								part.ThoughtSignature = decodedSig
 								// Mark this reasoning message as consumed
 								consumedIndices[i+1] = true
+								// Consuming it takes its signature; its TEXT has
+								// to come along or the block reaches Gemini
+								// modified, which the thinking guide forbids
+								// ("You should NOT remove or modify thought
+								// blocks from the history"). Carried here rather
+								// than by leaving the message unconsumed,
+								// because the normal reasoning branch below also
+								// emits a signature-only part - that path would
+								// send the same signature twice.
+								consumedThoughtText = thoughtTextParts(nextMsg.ResponsesReasoning)
 							}
 						}
 					}
 				}
 
 				currentParts = append(currentParts, part)
+				currentParts = append(currentParts, consumedThoughtText...)
 			}
 
 			// Handle function responses (function call outputs)
@@ -456,8 +609,8 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 					}
 				}
 				if msg.ResponsesReasoning.EncryptedContent != nil {
-					decodedSig, err := base64.StdEncoding.DecodeString(*msg.ResponsesReasoning.EncryptedContent)
-					if err == nil {
+					decodedSig := thoughtSignatureFromEncryptedContent(msg.ResponsesReasoning.EncryptedContent)
+					if decodedSig != nil && !preservedToolSignatures[base64.StdEncoding.EncodeToString(decodedSig)] {
 						currentParts = append(currentParts, &Part{
 							ThoughtSignature: decodedSig,
 						})
@@ -467,6 +620,9 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 		}
 
 		// Add the last candidate if we have parts
+		if len(preservedToolParts) > 0 {
+			currentParts = append(append([]*Part{}, preservedToolParts...), currentParts...)
+		}
 		if len(currentParts) > 0 {
 			candidate := &Candidate{
 				Index: int32(len(candidates)),
@@ -480,10 +636,13 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 			if bifrostResp.StopReason != nil {
 				candidate.FinishReason = ConvertBifrostFinishReasonToGemini(*bifrostResp.StopReason)
 			} else if bifrostResp.IncompleteDetails != nil {
+				// Match the schema's incomplete-reason vocabulary; a literal
+				// "max_tokens" never occurs here, so truncations reported OTHER
+				// instead of MAX_TOKENS (issue #5978).
 				switch bifrostResp.IncompleteDetails.Reason {
-				case "max_tokens":
+				case schemas.ResponsesResponseIncompleteReasonMaxOutputTokens:
 					candidate.FinishReason = FinishReasonMaxTokens
-				case "content_filter":
+				case schemas.ResponsesResponseIncompleteReasonContentFilter:
 					candidate.FinishReason = FinishReasonSafety
 				default:
 					candidate.FinishReason = FinishReasonOther
@@ -497,10 +656,29 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 				candidate.GroundingMetadata = buildGroundingMetadataFromWebSearch(lastWebSearchCall, webSearchAnnotations, lastRenderedContent)
 			}
 
+			// Restore safetyRatings/avgLogprobs preserved by ToResponsesBifrostResponsesResponse
+			// (they have no field in Bifrost's OpenAI-shaped Responses schema).
+			if bifrostResp.ProviderExtraFields != nil {
+				if ratings := extractGeminiSafetyRatings(bifrostResp.ProviderExtraFields["safetyRatings"]); ratings != nil {
+					candidate.SafetyRatings = ratings
+				}
+				if avgLogprobs, ok := extractGeminiAvgLogprobs(bifrostResp.ProviderExtraFields["avgLogprobs"]); ok {
+					candidate.AvgLogprobs = avgLogprobs
+				}
+			}
+
 			candidates = append(candidates, candidate)
 		}
 
 		geminiResp.Candidates = candidates
+	}
+
+	// Restore the native provider responseId (rather than the synthesized resp_... internal ID)
+	// when this response originated from a Gemini/Vertex candidate that carried one.
+	if bifrostResp.ProviderExtraFields != nil {
+		if responseID, ok := bifrostResp.ProviderExtraFields["responseId"].(string); ok && responseID != "" {
+			geminiResp.ResponseID = responseID
+		}
 	}
 
 	// Convert usage metadata
@@ -519,6 +697,49 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 	}
 
 	return geminiResp
+}
+
+// extractGeminiSafetyRatings recovers []*SafetyRating from ProviderExtraFields["safetyRatings"].
+// Handles both the in-memory pointer (normal non-streaming path) and a JSON-decoded
+// []interface{}/map form (e.g. if the response was round-tripped through JSON).
+func extractGeminiSafetyRatings(v interface{}) []*SafetyRating {
+	if v == nil {
+		return nil
+	}
+	if ratings, ok := v.([]*SafetyRating); ok {
+		return ratings
+	}
+	b, err := sonic.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	var ratings []*SafetyRating
+	if err := sonic.Unmarshal(b, &ratings); err != nil {
+		return nil
+	}
+	return ratings
+}
+
+// extractGeminiAvgLogprobs recovers a float64 from ProviderExtraFields["avgLogprobs"].
+func extractGeminiAvgLogprobs(v interface{}) (float64, bool) {
+	switch val := v.(type) {
+	case nil:
+		return 0, false
+	case float64:
+		return val, true
+	case float32:
+		return float64(val), true
+	default:
+		b, err := sonic.Marshal(v)
+		if err != nil {
+			return 0, false
+		}
+		var f float64
+		if err := sonic.Unmarshal(b, &f); err != nil {
+			return 0, false
+		}
+		return f, true
+	}
 }
 
 // BifrostToGeminiStreamState tracks state when converting Bifrost streams to Gemini format
@@ -721,10 +942,15 @@ func ToGeminiResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 		// Already handled via deltas, skip
 		return nil
 	case schemas.ResponsesStreamResponseTypeOutputItemAdded:
-		if bifrostResp.Item != nil && bifrostResp.Item.ResponsesReasoning != nil && bifrostResp.Item.EncryptedContent != nil {
-			candidate.Content.Parts = append(candidate.Content.Parts, &Part{
-				ThoughtSignature: []byte(*bifrostResp.Item.ResponsesReasoning.EncryptedContent),
-			})
+		if bifrostResp.Item != nil && bifrostResp.Item.ResponsesReasoning != nil {
+			// A server-side toolCall/toolResponse part travels whole on the item. Re-emit it
+			// verbatim: it already carries the same thoughtSignature the reasoning item
+			// encodes, so emitting both would hand the client the signature twice.
+			if native := nativePartsFromItem(bifrostResp.Item); len(native) > 0 {
+				candidate.Content.Parts = append(candidate.Content.Parts, native...)
+			} else if sig := thoughtSignatureFromEncryptedContent(bifrostResp.Item.ResponsesReasoning.EncryptedContent); sig != nil {
+				candidate.Content.Parts = append(candidate.Content.Parts, &Part{ThoughtSignature: sig})
+			}
 		}
 		// Track function call metadata for later use in FunctionCallArgumentsDone
 		if bifrostResp.Item != nil && bifrostResp.Item.Type != nil &&
@@ -741,7 +967,9 @@ func ToGeminiResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 				state.ToolCallIDs[outputIndex] = *bifrostResp.Item.ResponsesToolMessage.CallID
 			}
 		}
-		return nil
+		// Fall through to the emptiness check below rather than returning unconditionally:
+		// this case builds reasoning/native parts above, and returning nil here discarded
+		// them, so thoughtSignatures never reached a /genai SSE client at all.
 
 	case schemas.ResponsesStreamResponseTypeOutputItemDone:
 		return nil
@@ -791,6 +1019,20 @@ func ToGeminiResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 			// Attach grounding metadata if we buffered web search data
 			if state.HasWebSearch && state.WebSearchCall != nil {
 				candidate.GroundingMetadata = buildGroundingMetadataFromWebSearch(state.WebSearchCall, state.Annotations, state.RenderedContent)
+			}
+
+			// Restore safetyRatings/avgLogprobs/responseId preserved by closeGeminiOpenItems
+			// (they have no field in Bifrost's OpenAI-shaped Responses schema).
+			if bifrostResp.Response.ProviderExtraFields != nil {
+				if ratings := extractGeminiSafetyRatings(bifrostResp.Response.ProviderExtraFields["safetyRatings"]); ratings != nil {
+					candidate.SafetyRatings = ratings
+				}
+				if avgLogprobs, ok := extractGeminiAvgLogprobs(bifrostResp.Response.ProviderExtraFields["avgLogprobs"]); ok {
+					candidate.AvgLogprobs = avgLogprobs
+				}
+				if responseID, ok := bifrostResp.Response.ProviderExtraFields["responseId"].(string); ok && responseID != "" {
+					streamResp.ResponseID = responseID
+				}
 			}
 		}
 
@@ -855,6 +1097,12 @@ type GeminiResponsesStreamState struct {
 	CreatedAt  int     // Timestamp for consistency
 	ResponseID *string // Gemini's responseId
 
+	// Candidate metadata that only arrives on the terminal chunk (alongside finishReason).
+	// Preserved here so closeGeminiOpenItems can stash them onto the response.completed
+	// event's ProviderExtraFields for the reverse (Bifrost -> Gemini) conversion to restore.
+	SafetyRatings []*SafetyRating
+	AvgLogprobs   float64
+
 	// Content tracking
 	HasStartedText     bool            // Whether we've started text content
 	HasStartedToolCall bool            // Whether we've started a tool call
@@ -862,6 +1110,21 @@ type GeminiResponsesStreamState struct {
 
 	// Web search tracking
 	HasEmittedWebSearch bool // Whether web_search_call events have been emitted
+	// Server-side searches reported by the model itself via toolCall/toolResponse parts,
+	// one entry per round in the order the model ran them. Recorded as they stream in and
+	// emitted as one web_search_call item each at finish, so the model's own call IDs and
+	// per-round queries win over the grounding-derived ones without emitting a search twice.
+	// A model may search several times in a single response, so this cannot collapse to a
+	// single call ID -- the non-streaming converter keys its items the same way.
+	ServerSearchRounds []GeminiServerSearchRound
+}
+
+// GeminiServerSearchRound is one server-side search the model reported running, identified
+// by the tool call ID Gemini assigned it.
+type GeminiServerSearchRound struct {
+	CallID       string
+	Queries      []string
+	ImageQueries []string
 }
 
 // geminiResponsesStreamStatePool provides a pool for Gemini responses stream state objects.
@@ -928,6 +1191,8 @@ func (state *GeminiResponsesStreamState) flush() {
 	state.MessageID = nil
 	state.Model = nil
 	state.ResponseID = nil
+	state.SafetyRatings = nil
+	state.AvgLogprobs = 0
 	state.CreatedAt = int(time.Now().Unix())
 	state.HasEmittedCreated = false
 	state.HasEmittedCompleted = false
@@ -936,6 +1201,7 @@ func (state *GeminiResponsesStreamState) flush() {
 	state.HasStartedText = false
 	state.HasStartedToolCall = false
 	state.HasEmittedWebSearch = false
+	state.ServerSearchRounds = nil
 	state.TextBuffer.Reset()
 }
 
@@ -1026,12 +1292,21 @@ func (response *GenerateContentResponse) ToBifrostResponsesStream(sequenceNumber
 			}
 		}
 
+		// safetyRatings/avgLogprobs only arrive on the terminal chunk, alongside finishReason.
+		if len(candidate.SafetyRatings) > 0 {
+			state.SafetyRatings = candidate.SafetyRatings
+		}
+		if candidate.AvgLogprobs != 0 {
+			state.AvgLogprobs = candidate.AvgLogprobs
+		}
+
 		// Check for finish reason (indicates end of generation)
 		// Only close if we've actually started emitting content (text, tool calls, etc.)
 		// This prevents emitting response.completed for empty chunks with just finishReason
 		if candidate.FinishReason != "" && len(state.ItemIDs) > 0 {
-			// Check for grounding metadata (web search results)
-			if candidate.GroundingMetadata != nil && !state.HasEmittedWebSearch {
+			// Check for grounding metadata (web search results), or a server-side search the
+			// model reported itself via toolCall parts.
+			if (candidate.GroundingMetadata != nil || len(state.ServerSearchRounds) > 0) && !state.HasEmittedWebSearch {
 				// Emit web search events before closing
 				webSearchResponses := emitWebSearchFromGroundingMetadata(
 					candidate.GroundingMetadata,
@@ -1065,6 +1340,26 @@ func processGeminiPart(part *Part, state *GeminiResponsesStreamState, sequenceNu
 	case part.FunctionCall != nil:
 		// Function call
 		responses = append(responses, processGeminiFunctionCallPart(part, state, sequenceNumber)...)
+
+	case part.ToolCall != nil:
+		// Server-side tool invocation. The search events are emitted at finish, where
+		// grounding metadata supplies the sources, so only record the round here. Each call
+		// is kept separately -- a model that searches twice must produce two items, not one
+		// merged one. The part also carries a thoughtSignature, which still has to reach
+		// the client.
+		if isSearchToolType(part.ToolCall.ToolType) {
+			queries := toolCallSearchQueries(part.ToolCall)
+			round := GeminiServerSearchRound{CallID: part.ToolCall.ID, Queries: queries}
+			if strings.EqualFold(part.ToolCall.ToolType, "GOOGLE_SEARCH_IMAGE") {
+				round.ImageQueries = queries
+			}
+			state.ServerSearchRounds = append(state.ServerSearchRounds, round)
+		}
+		responses = append(responses, processGeminiThoughtSignaturePart(part, state, sequenceNumber)...)
+
+	case part.ToolResponse != nil:
+		// Result of a server-side call; carries no data Bifrost models beyond its signature.
+		responses = append(responses, processGeminiThoughtSignaturePart(part, state, sequenceNumber)...)
 
 	case part.ThoughtSignature != nil:
 		// Encrypted reasoning content (thoughtSignature)
@@ -1267,6 +1562,12 @@ func processGeminiThoughtSignaturePart(part *Part, state *GeminiResponsesStreamS
 	// Convert thoughtSignature to string
 	thoughtSig := base64.StdEncoding.EncodeToString(part.ThoughtSignature)
 
+	// A server-side toolCall/toolResponse part reaches here for its signature, but the
+	// part itself has no lossless home in the canonical schema. Carry it verbatim so the
+	// native GenAI stream can re-emit it instead of a bare signature-only part -- riding
+	// on this item keeps it in Gemini's original part order.
+	nativeParts := nativePartPayload(part)
+
 	// Emit output_item.added for reasoning with encrypted content
 	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 		Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
@@ -1281,6 +1582,7 @@ func processGeminiThoughtSignaturePart(part *Part, state *GeminiResponsesStreamS
 				Summary:          []schemas.ResponsesReasoningSummary{},
 				EncryptedContent: &thoughtSig,
 			},
+			ProviderNativeParts: nativeParts,
 		},
 	})
 
@@ -1300,10 +1602,37 @@ func processGeminiThoughtSignaturePart(part *Part, state *GeminiResponsesStreamS
 				Summary:          []schemas.ResponsesReasoningSummary{},
 				EncryptedContent: &thoughtSig,
 			},
+			ProviderNativeParts: nativeParts,
 		},
 	})
 
 	return responses
+}
+
+// nativePartPayload serializes a server-side tool part so a native-surface integration can
+// replay it byte-for-byte. Returns nil for parts the canonical schema already represents
+// losslessly, so only toolCall/toolResponse pay the marshal cost.
+func nativePartPayload(part *Part) json.RawMessage {
+	if part == nil || (part.ToolCall == nil && part.ToolResponse == nil) {
+		return nil
+	}
+	encoded, err := sonic.Marshal([]*Part{part})
+	if err != nil {
+		return nil
+	}
+	return json.RawMessage(encoded)
+}
+
+// nativePartsFromItem recovers the parts stashed by nativePartPayload.
+func nativePartsFromItem(item *schemas.ResponsesMessage) []*Part {
+	if item == nil || len(item.ProviderNativeParts) == 0 {
+		return nil
+	}
+	var parts []*Part
+	if err := sonic.Unmarshal(item.ProviderNativeParts, &parts); err != nil {
+		return nil
+	}
+	return parts
 }
 
 // processGeminiFunctionCallPart handles function call parts
@@ -1875,6 +2204,9 @@ func closeGeminiOpenItems(state *GeminiResponsesStreamState, groundingMetadata *
 
 	// Emit response.completed with usage
 	bifrostUsage := ConvertGeminiUsageMetadataToResponsesUsage(usage)
+	if state.Model != nil {
+		applyGeminiSearchQueryResponsesUsage(bifrostUsage, groundingMetadata, *state.Model)
+	}
 
 	completedResp := &schemas.BifrostResponsesResponse{
 		ID:        state.MessageID,
@@ -1903,6 +2235,23 @@ func closeGeminiOpenItems(state *GeminiResponsesStreamState, groundingMetadata *
 			failedStatus := "failed"
 			completedResp.Status = &failedStatus
 		}
+	}
+
+	// safetyRatings, avgLogprobs, and the native responseId have no field in Bifrost's
+	// OpenAI-shaped Responses schema. Preserve them here so ToGeminiResponsesStreamResponse
+	// can restore them on the GenAI streamGenerateContent egress path.
+	extraFields := map[string]interface{}{}
+	if state.ResponseID != nil && *state.ResponseID != "" {
+		extraFields["responseId"] = *state.ResponseID
+	}
+	if len(state.SafetyRatings) > 0 {
+		extraFields["safetyRatings"] = state.SafetyRatings
+	}
+	if state.AvgLogprobs != 0 {
+		extraFields["avgLogprobs"] = state.AvgLogprobs
+	}
+	if len(extraFields) > 0 {
+		completedResp.ProviderExtraFields = extraFields
 	}
 
 	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
@@ -2313,11 +2662,20 @@ func convertGeminiFileDataToContentBlock(fileData *FileData) *schemas.ResponsesM
 	return block
 }
 
+// OpenAI's search_content_types values, which carry Gemini's googleSearch.searchTypes.
+// Gemini's webSearch returns text results, so it maps to "text".
+const (
+	geminiSearchContentTypeText  = "text"
+	geminiSearchContentTypeImage = "image"
+)
+
 func convertGeminiToolsToResponsesTools(tools []Tool) []schemas.ResponsesTool {
 	var responsesTools []schemas.ResponsesTool
 
 	for _, tool := range tools {
-		// you cant use function declarations and google search together
+		// A single tools[] entry may legitimately carry both kinds (Gemini 3+). Convert
+		// everything it holds; convertResponsesToolsToGemini decides what survives on the
+		// way back out to the provider.
 		if tool.GoogleSearch != nil {
 			responsesTool := schemas.ResponsesTool{
 				Type: schemas.ResponsesToolTypeWebSearch,
@@ -2335,8 +2693,19 @@ func convertGeminiToolsToResponsesTools(tools []Tool) []schemas.ResponsesTool {
 				}
 				responsesTool.ResponsesToolWebSearch.Filters = filters
 			}
+			if searchTypes := tool.GoogleSearch.SearchTypes; searchTypes != nil {
+				var contentTypes []string
+				if searchTypes.WebSearch != nil {
+					contentTypes = append(contentTypes, geminiSearchContentTypeText)
+				}
+				if searchTypes.ImageSearch != nil {
+					contentTypes = append(contentTypes, geminiSearchContentTypeImage)
+				}
+				responsesTool.ResponsesToolWebSearch.SearchContentTypes = contentTypes
+			}
 			responsesTools = append(responsesTools, responsesTool)
-		} else if len(tool.FunctionDeclarations) > 0 {
+		}
+		if len(tool.FunctionDeclarations) > 0 {
 			for _, fn := range tool.FunctionDeclarations {
 				responsesTool := schemas.ResponsesTool{
 					Type:                  schemas.ResponsesToolTypeFunction,
@@ -2372,33 +2741,211 @@ func convertGeminiToolConfigToToolChoice(toolConfig *ToolConfig) *schemas.Respon
 		return nil
 	}
 
-	toolChoice := &schemas.ResponsesToolChoiceStruct{
-		Type: schemas.ResponsesToolChoiceTypeFunction,
-	}
+	// Type must describe the KIND of choice. It was hardcoded to "function", which tells every
+	// downstream converter "a specific function is being forced" and makes them demand a name -
+	// so AUTO, NONE and a nameless ANY all produced
+	// "Missing required parameter: 'tool_choice.name'". Mode and Type are also mutually
+	// exclusive downstream: emitting both on a forced function yields
+	// "Unknown parameter: 'tool_choice.mode'". See toolconfigforcedchoice_test.go.
+	toolChoice := &schemas.ResponsesToolChoiceStruct{}
+	names := toolConfig.FunctionCallingConfig.AllowedFunctionNames
 
 	switch toolConfig.FunctionCallingConfig.Mode {
-	case FunctionCallingConfigModeAuto:
-		toolChoice.Mode = schemas.Ptr("auto")
 	case FunctionCallingConfigModeAny:
 		toolChoice.Mode = schemas.Ptr("required")
+		toolChoice.Type = schemas.ResponsesToolChoiceTypeRequired
 	case FunctionCallingConfigModeNone:
 		toolChoice.Mode = schemas.Ptr("none")
+		toolChoice.Type = schemas.ResponsesToolChoiceTypeNone
+	case FunctionCallingConfigModeAuto:
+		toolChoice.Mode = schemas.Ptr("auto")
+		toolChoice.Type = schemas.ResponsesToolChoiceTypeAuto
 	default:
 		toolChoice.Mode = schemas.Ptr("auto")
+		toolChoice.Type = schemas.ResponsesToolChoiceTypeAuto
 	}
 
-	if toolConfig.FunctionCallingConfig.AllowedFunctionNames != nil {
-		for _, functionName := range toolConfig.FunctionCallingConfig.AllowedFunctionNames {
+	if names != nil {
+		for _, functionName := range names {
 			toolChoice.Tools = append(toolChoice.Tools, schemas.ResponsesToolChoiceAllowedToolDef{
 				Type: string(schemas.ResponsesToolTypeFunction),
 				Name: schemas.Ptr(functionName),
 			})
 		}
+		// Under ANY the names compel a call; under AUTO they only restrict what MAY be called,
+		// so only ANY narrows the type away from a bare mode.
+		if toolConfig.FunctionCallingConfig.Mode == FunctionCallingConfigModeAny {
+			toolChoice.Type = schemas.ResponsesToolChoiceTypeAllowedTools
+		}
+	}
+
+	// Mode ANY with exactly one allowed name is Gemini's spelling of "you must call this
+	// function", which is a named forced choice rather than an allowed-tools list. Mode is
+	// cleared here because a forced function carries a name instead of a mode.
+	if toolConfig.FunctionCallingConfig.Mode == FunctionCallingConfigModeAny && len(names) == 1 {
+		toolChoice.Type = schemas.ResponsesToolChoiceTypeFunction
+		toolChoice.Name = schemas.Ptr(names[0])
+		// A forced function carries a name instead of a mode, and instead of an allowed-tools
+		// list: sending both yields "Unknown parameter: 'tool_choice.tools'".
+		toolChoice.Mode = nil
+		toolChoice.Tools = nil
 	}
 
 	return &schemas.ResponsesToolChoice{
 		ResponsesToolChoiceStruct: toolChoice,
 	}
+}
+
+// serverSideToolParts returns the candidate's toolCall/toolResponse parts verbatim.
+func serverSideToolParts(candidate *Candidate) []*Part {
+	if candidate == nil || candidate.Content == nil {
+		return nil
+	}
+	var parts []*Part
+	for _, part := range candidate.Content.Parts {
+		if part != nil && (part.ToolCall != nil || part.ToolResponse != nil) {
+			parts = append(parts, part)
+		}
+	}
+	return parts
+}
+
+// extractServerSideToolParts recovers the parts stashed by serverSideToolParts. Handles both
+// the in-memory pointers (normal path) and the JSON-decoded form, matching how the other
+// ProviderExtraFields values are read back.
+func extractServerSideToolParts(v any) []*Part {
+	if v == nil {
+		return nil
+	}
+	if parts, ok := v.([]*Part); ok {
+		return parts
+	}
+	b, err := sonic.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	var parts []*Part
+	if err := sonic.Unmarshal(b, &parts); err != nil {
+		return nil
+	}
+	return parts
+}
+
+// firstSearchCallIndex returns the lowest message index among the server-side search calls,
+// i.e. the item grounding metadata should be merged onto.
+func firstSearchCallIndex(byID map[string]int) (int, bool) {
+	first, found := 0, false
+	for _, idx := range byID {
+		if !found || idx < first {
+			first, found = idx, true
+		}
+	}
+	return first, found
+}
+
+// reasoningFromThoughtSignature builds the encrypted-reasoning item for a part that carries
+// a thoughtSignature. Server-side toolCall/toolResponse parts carry one too, and Gemini
+// requires signatures back on replay, so they must not be lost just because the part matched
+// a more specific case than the thoughtSignature one.
+func reasoningFromThoughtSignature(part *Part) (schemas.ResponsesMessage, bool) {
+	if part == nil || len(part.ThoughtSignature) == 0 {
+		return schemas.ResponsesMessage{}, false
+	}
+	thoughtSig := base64.StdEncoding.EncodeToString(part.ThoughtSignature)
+	return schemas.ResponsesMessage{
+		Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+		ResponsesReasoning: &schemas.ResponsesReasoning{
+			Summary:          []schemas.ResponsesReasoningSummary{},
+			EncryptedContent: &thoughtSig,
+		},
+	}, true
+}
+
+// toolCallSearchQueries extracts Google Search's queries from a server-side tool call's args
+// ({"queries": ["...", ...]}). Returns nil when the shape is anything else.
+func toolCallSearchQueries(call *ToolCall) []string {
+	if call == nil || call.Args == nil {
+		return nil
+	}
+	raw, ok := call.Args["queries"].([]any)
+	if !ok {
+		return nil
+	}
+	queries := make([]string, 0, len(raw))
+	for _, q := range raw {
+		if s, ok := q.(string); ok && s != "" {
+			queries = append(queries, s)
+		}
+	}
+	if len(queries) == 0 {
+		return nil
+	}
+	return queries
+}
+
+// newWebSearchActionFromToolCall maps a server-side Google Search invocation onto the neutral
+// web_search_call action. Sources are not available here — they arrive in groundingMetadata
+// and are merged onto this item afterwards.
+func newWebSearchActionFromToolCall(call *ToolCall) *schemas.ResponsesWebSearchToolCallAction {
+	action := &schemas.ResponsesWebSearchToolCallAction{Type: "search"}
+	queries := toolCallSearchQueries(call)
+	if len(queries) > 0 {
+		action.Queries = queries
+		action.Query = schemas.Ptr(queries[0])
+	}
+	if call != nil && strings.EqualFold(call.ToolType, "GOOGLE_SEARCH_IMAGE") {
+		action.ImageQueries = queries
+	}
+	return action
+}
+
+// textBlockOf returns the text content block of messages[idx], or nil when idx is
+// out of range or the message carries no text block.
+func textBlockOf(messages []schemas.ResponsesMessage, idx int) *schemas.ResponsesOutputMessageContentText {
+	if idx < 0 || idx >= len(messages) || messages[idx].Content == nil {
+		return nil
+	}
+	for i := range messages[idx].Content.ContentBlocks {
+		block := &messages[idx].Content.ContentBlocks[i]
+		if block.Type == schemas.ResponsesOutputMessageContentTypeText && block.ResponsesOutputMessageContentText != nil {
+			return block.ResponsesOutputMessageContentText
+		}
+	}
+	return nil
+}
+
+// groundingChunkSource converts a grounding chunk to a neutral search source. Image chunks
+// attribute to the containing page, as Google's display terms require, and carry the asset
+// URL alongside. Reports false for chunk types that expose no citable URL.
+func groundingChunkSource(chunk *GroundingChunk) (schemas.ResponsesWebSearchToolCallActionSearchSource, bool) {
+	if chunk == nil {
+		return schemas.ResponsesWebSearchToolCallActionSearchSource{}, false
+	}
+	source := schemas.ResponsesWebSearchToolCallActionSearchSource{Type: "url"}
+
+	switch {
+	case chunk.Web != nil && chunk.Web.URI != "":
+		source.URL = chunk.Web.URI
+		if chunk.Web.Title != "" {
+			source.Title = schemas.Ptr(chunk.Web.Title)
+		}
+	case chunk.Image != nil && chunk.Image.SourceURI != "":
+		source.URL = chunk.Image.SourceURI
+		if chunk.Image.Title != "" {
+			source.Title = schemas.Ptr(chunk.Image.Title)
+		}
+		if chunk.Image.ImageURI != "" {
+			source.ImageURL = schemas.Ptr(chunk.Image.ImageURI)
+		}
+		if chunk.Image.Domain != "" {
+			source.Domain = schemas.Ptr(chunk.Image.Domain)
+		}
+	default:
+		return source, false
+	}
+
+	return source, true
 }
 
 // Helper functions for Responses conversion
@@ -2411,23 +2958,53 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 			continue
 		}
 
+		// Index into messages of this candidate's first text message; grounding
+		// annotations are attached to it once all parts have been converted.
+		textMessageIdx := -1
+
+		// Index from server-side tool-call ID to the web_search_call item it opened.
+		searchCallIndexByID := map[string]int{}
+
 		for _, part := range candidate.Content.Parts {
 			// Handle different types of parts
 			switch {
 			case part.Thought:
-				// Thinking/reasoning message
-				if part.Text != "" {
+				// Thinking/reasoning message.
+				//
+				// The signature has to come across with the text. Gemini 3 puts
+				// thoughtSignature on the thought part itself, and requires it back
+				// on replay -- there is a dedicated finish reason for its absence
+				// (FinishReasonMissingThoughtSignature). Reading only part.Text
+				// dropped it on the floor, so a client could never send it back.
+				//
+				// Emitted even when the text is empty: a signature-only thought
+				// part is a real Gemini shape, and skipping it loses the one field
+				// the next turn actually needs.
+				if part.Text != "" || len(part.ThoughtSignature) > 0 {
+					text := part.Text
 					msg := schemas.ResponsesMessage{
 						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
 						Content: &schemas.ResponsesMessageContent{
 							ContentBlocks: []schemas.ResponsesMessageContentBlock{
 								{
 									Type: schemas.ResponsesOutputMessageContentTypeReasoning,
-									Text: &part.Text,
+									Text: &text,
 								},
 							},
 						},
 						Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+					}
+					if len(part.ThoughtSignature) > 0 {
+						// Stored base64-encoded, which is the form
+						// encrypted_content carries on the wire and the form
+						// thoughtSignatureFromEncryptedContent decodes on the way
+						// back out -- so the round trip is symmetric by construction.
+						encoded := base64.StdEncoding.EncodeToString(part.ThoughtSignature)
+						msg.ResponsesReasoning = &schemas.ResponsesReasoning{
+							Summary:          []schemas.ResponsesReasoningSummary{},
+							EncryptedContent: &encoded,
+						}
+						msg.Content.ContentBlocks[0].Signature = &encoded
 					}
 					messages = append(messages, msg)
 				}
@@ -2458,6 +3035,9 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 					msg.Content.ContentBlocks[len(msg.Content.ContentBlocks)-1].Signature = &thoughtSig
 				}
 				messages = append(messages, msg)
+				if textMessageIdx < 0 {
+					textMessageIdx = len(messages) - 1
+				}
 
 			case part.FunctionCall != nil:
 				// Function call message
@@ -2632,6 +3212,39 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 					Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
 				}
 				messages = append(messages, msg)
+			case part.ToolCall != nil:
+				// Server-side tool invocation (Google executed it; we only report it).
+				// The part also carries a thoughtSignature, so keep emitting the reasoning
+				// item the thoughtSignature case below would have produced.
+				if msg, ok := reasoningFromThoughtSignature(part); ok {
+					messages = append(messages, msg)
+				}
+				if !isSearchToolType(part.ToolCall.ToolType) {
+					// Unmapped built-in tool: preserved verbatim on the native path above,
+					// but Bifrost has no neutral item type for it.
+					break
+				}
+				searchCallIndexByID[part.ToolCall.ID] = len(messages)
+				messages = append(messages, schemas.ResponsesMessage{
+					ID:     schemas.Ptr(part.ToolCall.ID),
+					Type:   schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall),
+					Status: schemas.Ptr("in_progress"),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						Action: &schemas.ResponsesToolMessageActionStruct{
+							ResponsesWebSearchToolCallAction: newWebSearchActionFromToolCall(part.ToolCall),
+						},
+					},
+				})
+
+			case part.ToolResponse != nil:
+				// Result of a server-side ToolCall — completes the item its ID opened.
+				if msg, ok := reasoningFromThoughtSignature(part); ok {
+					messages = append(messages, msg)
+				}
+				if idx, ok := searchCallIndexByID[part.ToolResponse.ID]; ok && idx < len(messages) {
+					messages[idx].Status = schemas.Ptr("completed")
+				}
+
 			case part.ThoughtSignature != nil:
 				// Handle thought signature
 				thoughtSig := base64.StdEncoding.EncodeToString(part.ThoughtSignature)
@@ -2664,15 +3277,14 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 			if len(candidate.GroundingMetadata.WebSearchQueries) > 0 {
 				webSearchmessage.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction.Query = schemas.Ptr(candidate.GroundingMetadata.WebSearchQueries[0])
 			}
+			if len(candidate.GroundingMetadata.ImageSearchQueries) > 0 {
+				webSearchmessage.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction.ImageQueries = candidate.GroundingMetadata.ImageSearchQueries
+			}
 
 			sources := []schemas.ResponsesWebSearchToolCallActionSearchSource{}
-			for _, source := range candidate.GroundingMetadata.GroundingChunks {
-				if source.Web != nil {
-					sources = append(sources, schemas.ResponsesWebSearchToolCallActionSearchSource{
-						Type:  "url",
-						Title: schemas.Ptr(source.Web.Title),
-						URL:   source.Web.URI,
-					})
+			for _, chunk := range candidate.GroundingMetadata.GroundingChunks {
+				if source, ok := groundingChunkSource(chunk); ok {
+					sources = append(sources, source)
 				}
 			}
 
@@ -2680,55 +3292,82 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 				webSearchmessage.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction.Sources = sources
 			}
 
-			messages = append(messages, webSearchmessage)
+			// When the model reported the search itself via server-side toolCall parts, that
+			// item is authoritative — it carries the real call ID. Merge grounding's richer
+			// data (sources, and any queries the call did not spell out) onto it rather than
+			// emitting a second web_search_call for the same search.
+			if idx, ok := firstSearchCallIndex(searchCallIndexByID); ok && idx < len(messages) {
+				if existing := messages[idx].ResponsesToolMessage; existing != nil && existing.Action != nil {
+					if action := existing.Action.ResponsesWebSearchToolCallAction; action != nil {
+						if len(sources) > 0 {
+							action.Sources = sources
+						}
+						if len(action.Queries) == 0 {
+							action.Queries = candidate.GroundingMetadata.WebSearchQueries
+							if len(action.Queries) > 0 {
+								action.Query = schemas.Ptr(action.Queries[0])
+							}
+						}
+						if len(action.ImageQueries) == 0 {
+							action.ImageQueries = candidate.GroundingMetadata.ImageSearchQueries
+						}
+					}
+				}
+			} else {
+				messages = append(messages, webSearchmessage)
+			}
 
 			// create a annotations message for grounding supports
 			if len(candidate.GroundingMetadata.GroundingSupports) > 0 {
 				annotations := []schemas.ResponsesOutputMessageContentTextAnnotation{}
 				for _, support := range candidate.GroundingMetadata.GroundingSupports {
-					if support.Segment != nil {
+					if support.Segment == nil {
+						continue
+					}
+					// One annotation per (support, chunk) pair so multi-source segments keep every source.
+					for _, chunkIdx := range support.GroundingChunkIndices {
+						if chunkIdx < 0 || int(chunkIdx) >= len(candidate.GroundingMetadata.GroundingChunks) {
+							continue
+						}
+						source, ok := groundingChunkSource(candidate.GroundingMetadata.GroundingChunks[chunkIdx])
+						if !ok {
+							continue
+						}
 						annotation := schemas.ResponsesOutputMessageContentTextAnnotation{
 							Type:       "url_citation",
 							Text:       schemas.Ptr(support.Segment.Text),
 							StartIndex: schemas.Ptr(int(support.Segment.StartIndex)),
 							EndIndex:   schemas.Ptr(int(support.Segment.EndIndex)),
+							URL:        schemas.Ptr(source.URL),
 						}
-
-						// Look up URL from grounding chunks
-						if len(support.GroundingChunkIndices) > 0 {
-							chunkIdx := support.GroundingChunkIndices[0]
-							if chunkIdx >= 0 && int(chunkIdx) < len(candidate.GroundingMetadata.GroundingChunks) {
-								chunk := candidate.GroundingMetadata.GroundingChunks[chunkIdx]
-								if chunk.Web != nil {
-									annotation.URL = schemas.Ptr(chunk.Web.URI)
-									if chunk.Web.Title != "" {
-										annotation.Title = schemas.Ptr(chunk.Web.Title)
-									}
-								}
-							}
-						}
-
-						if annotation.URL != nil {
-							annotations = append(annotations, annotation)
-						}
+						annotation.Title = source.Title
+						annotations = append(annotations, annotation)
 					}
 				}
-				annotationsMessage := schemas.ResponsesMessage{
-					Type:   schemas.Ptr(schemas.ResponsesMessageTypeMessage),
-					Status: schemas.Ptr("completed"),
-					Content: &schemas.ResponsesMessageContent{
-						ContentBlocks: []schemas.ResponsesMessageContentBlock{
-							{
-								Type: schemas.ResponsesOutputMessageContentTypeText,
-								Text: schemas.Ptr(""),
-								ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
-									Annotations: annotations,
+				// Attach to the candidate's text block: segment offsets index into that text,
+				// and it is where the streaming path puts them. Only when the candidate
+				// produced no text (offsets would reference nothing) fall back to a
+				// standalone message so the citations are not dropped.
+				if block := textBlockOf(messages, textMessageIdx); block != nil {
+					block.Annotations = append(block.Annotations, annotations...)
+				} else if len(annotations) > 0 {
+					messages = append(messages, schemas.ResponsesMessage{
+						Type:   schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Status: schemas.Ptr("completed"),
+						Content: &schemas.ResponsesMessageContent{
+							ContentBlocks: []schemas.ResponsesMessageContentBlock{
+								{
+									Type: schemas.ResponsesOutputMessageContentTypeText,
+									Text: schemas.Ptr(""),
+									ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+										LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+										Annotations: annotations,
+									},
 								},
 							},
 						},
-					},
+					})
 				}
-				messages = append(messages, annotationsMessage)
 			}
 
 			// Emit rendered content if present
@@ -2757,20 +3396,24 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 }
 
 // convertTextConfigToGenerationConfig converts ResponsesTextConfig to Gemini's GenerationConfig fields
-func convertTextConfigToGenerationConfig(textConfig *schemas.ResponsesTextConfig, config *GenerationConfig) {
+func convertTextConfigToGenerationConfig(textConfig *schemas.ResponsesTextConfig, config *GenerationConfig) error {
 	if textConfig == nil || config == nil {
-		return
+		return nil
 	}
 
 	if textConfig.Format == nil {
-		return
+		return nil
 	}
 
 	switch textConfig.Format.Type {
 	case "json_schema":
 		config.ResponseMIMEType = "application/json"
 		if textConfig.Format.JSONSchema != nil {
-			if schema := reconstructSchemaFromJSONSchema(textConfig.Format.JSONSchema); schema != nil {
+			schema, err := reconstructSchemaFromJSONSchema(textConfig.Format.JSONSchema)
+			if err != nil {
+				return err
+			}
+			if schema != nil {
 				config.ResponseJSONSchema = schema
 			}
 			// no schema, mime type remains as is
@@ -2782,63 +3425,69 @@ func convertTextConfigToGenerationConfig(textConfig *schemas.ResponsesTextConfig
 	case "text":
 		config.ResponseMIMEType = "text/plain"
 	}
+	return nil
 }
 
 // reconstructSchemaFromJSONSchema rebuilds a schema map from ResponsesTextConfigFormatJSONSchema
-func reconstructSchemaFromJSONSchema(jsonSchema *schemas.ResponsesTextConfigFormatJSONSchema) interface{} {
-	var schema map[string]interface{}
+func reconstructSchemaFromJSONSchema(jsonSchema *schemas.ResponsesTextConfigFormatJSONSchema) (interface{}, error) {
+	composite, acceptAll, err := jsonSchema.CompositeSchema()
+	if err != nil {
+		return nil, err
+	}
+	if composite != nil {
+		// Composite object schema: use it directly. Normalize via the
+		// OrderedMap-aware path so the client's key order survives end-to-end.
+		return normalizeSchemaValueForGemini(composite), nil
+	}
+	if acceptAll {
+		// Boolean schema `true` accepts any value. responseSchema must be a
+		// Schema object, so the widest representable form is an unconstrained
+		// object.
+		return map[string]interface{}{"type": "object"}, nil
+	}
 
-	if jsonSchema.Schema != nil {
-		// If Schema field is set, use it directly
-		schemaMap, ok := (*jsonSchema.Schema).(map[string]interface{})
-		if !ok {
-			return *jsonSchema.Schema
-		}
-		schema = schemaMap
-	} else {
-		// New format: Schema is spread across individual fields
-		schema = make(map[string]interface{})
+	// New format: Schema is spread across individual fields
+	schema := make(map[string]interface{})
 
-		if jsonSchema.Defs != nil {
-			schema["$defs"] = *jsonSchema.Defs
-		}
+	if jsonSchema.Defs != nil {
+		schema["$defs"] = *jsonSchema.Defs
+	}
 
-		if jsonSchema.Type != nil {
-			schema["type"] = *jsonSchema.Type
-		}
+	if jsonSchema.Type != nil {
+		schema["type"] = *jsonSchema.Type
+	}
 
-		if jsonSchema.Properties != nil {
-			schema["properties"] = *jsonSchema.Properties
-		}
+	if jsonSchema.Properties != nil {
+		schema["properties"] = *jsonSchema.Properties
+	}
 
-		if len(jsonSchema.Required) > 0 {
-			schema["required"] = jsonSchema.Required
-		}
+	if len(jsonSchema.Required) > 0 {
+		schema["required"] = jsonSchema.Required
+	}
 
-		if jsonSchema.Description != nil {
-			schema["description"] = *jsonSchema.Description
-		}
+	if jsonSchema.Description != nil {
+		schema["description"] = *jsonSchema.Description
+	}
 
-		if jsonSchema.AdditionalProperties != nil {
-			schema["additionalProperties"] = *jsonSchema.AdditionalProperties
-		}
+	if jsonSchema.AdditionalProperties != nil {
+		schema["additionalProperties"] = *jsonSchema.AdditionalProperties
+	}
 
-		if jsonSchema.Name != nil {
-			schema["title"] = *jsonSchema.Name
-		}
+	if jsonSchema.Name != nil {
+		schema["title"] = *jsonSchema.Name
+	}
 
-		if len(jsonSchema.PropertyOrdering) > 0 {
-			schema["propertyOrdering"] = jsonSchema.PropertyOrdering
-		}
+	if len(jsonSchema.PropertyOrdering) > 0 {
+		schema["propertyOrdering"] = jsonSchema.PropertyOrdering
+	}
 
-		// Return nil if no fields were populated
-		if len(schema) == 0 {
-			return nil
-		}
+	// Return nil if no fields were populated
+	if len(schema) == 0 {
+		return nil, nil
 	}
 
 	// Normalize the schema for Gemini compatibility (handle union types, etc.)
-	return normalizeSchemaForGemini(schema)
+	return normalizeSchemaForGemini(schema), nil
 }
 
 // convertParamsToGenerationConfigResponses converts ChatParameters to GenerationConfig for Responses
@@ -2909,7 +3558,9 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 		}
 	}
 	if params.Text != nil {
-		convertTextConfigToGenerationConfig(params.Text, &config)
+		if err := convertTextConfigToGenerationConfig(params.Text, &config); err != nil {
+			return config, err
+		}
 	}
 
 	if params.ExtraParams != nil {
@@ -2937,28 +3588,83 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 				config.StopSequences = val
 			}
 		}
+		if mediaResolution, ok := params.ExtraParams["media_resolution"]; ok {
+			delete(params.ExtraParams, "media_resolution")
+			if val, success := schemas.SafeExtractString(mediaResolution); success {
+				config.MediaResolution = val
+			}
+		}
 
 	}
 
 	return config, nil
 }
 
-// convertResponsesToolsToGemini converts Responses tools to Gemini tools
-func convertResponsesToolsToGemini(tools []schemas.ResponsesTool) ([]Tool, error) {
-	geminiTool := Tool{}
+// modelSupportsToolCombination reports whether a model can accept built-in tools (Google
+// Search) and function declarations in the same request. Tool combination arrived with
+// Gemini 3; 2.x and older reject the mix with
+// "Multiple tools are supported only when they are all search tools".
+//
+// Unknown or non-Gemini model names return false on purpose. Guessing "capable" costs a
+// hard 400, guessing "not capable" costs only the built-in tool, so the safe default is to
+// drop rather than to send.
+func modelSupportsToolCombination(model string) bool {
+	name := strings.ToLower(model)
+	// Strip a provider prefix ("vertex/gemini-3.6-flash") and any publisher path.
+	if idx := strings.LastIndex(name, "/"); idx != -1 {
+		name = name[idx+1:]
+	}
+	const prefix = "gemini-"
+	if !strings.HasPrefix(name, prefix) {
+		return false
+	}
+	// Read the leading major version: "3-flash-preview" -> 3, "2.5-pro" -> 2.
+	rest := name[len(prefix):]
+	end := 0
+	for end < len(rest) && rest[end] >= '0' && rest[end] <= '9' {
+		end++
+	}
+	if end == 0 {
+		return false
+	}
+	major, err := strconv.Atoi(rest[:end])
+	if err != nil {
+		return false
+	}
+	return major >= 3
+}
 
-	hasWebSearchTool := false
+// convertResponsesToolsToGemini converts Responses tools to Gemini tools.
+// The Gemini Developer API rejects function declarations sent alongside Google Search
+// unless includeServerSideToolInvocations opts into tool combination mode, so without it
+// one of the two has to go. Function declarations win: they carry the caller's (or the MCP
+// gateway's) tools, which the model cannot invoke at all if they never reach the wire,
+// whereas losing Google Search only costs grounding.
+//
+// Vertex AI accepts the combination without the flag, but only on models that support tool
+// combination at all — Gemini 3 and newer. Sending both kinds to an older Vertex model is
+// rejected outright with "Multiple tools are supported only when they are all search tools",
+// so the drop still applies there: a degraded answer beats a 400.
+func convertResponsesToolsToGemini(tools []schemas.ResponsesTool, includeServerSideToolInvocations bool, provider schemas.ModelProvider, model string) ([]Tool, error) {
+	var functionDeclarations []*FunctionDeclaration
+	var googleSearch *GoogleSearch
+
+	allowsMixedTools := includeServerSideToolInvocations ||
+		(provider == schemas.Vertex && modelSupportsToolCombination(model))
+
+	hasFunctionTool := false
 
 	for _, tool := range tools {
-		if tool.Type == schemas.ResponsesToolTypeWebSearch {
-			hasWebSearchTool = true
+		if tool.Type == schemas.ResponsesToolTypeFunction && tool.ResponsesToolFunction != nil && tool.Name != nil {
+			hasFunctionTool = true
 			break
 		}
 	}
 
+	dropGoogleSearch := hasFunctionTool && !allowsMixedTools
+
 	for _, tool := range tools {
-		// you cant use function declarations and google search together
-		if tool.Type == schemas.ResponsesToolTypeFunction && !hasWebSearchTool {
+		if tool.Type == schemas.ResponsesToolTypeFunction {
 			// Extract function information from ResponsesExtendedTool
 			if tool.ResponsesToolFunction != nil {
 				if tool.Name != nil && tool.ResponsesToolFunction != nil {
@@ -2978,30 +3684,52 @@ func convertResponsesToolsToGemini(tools []schemas.ResponsesTool) ([]Tool, error
 						}
 						funcDecl.ParametersJSONSchema = json.RawMessage(raw)
 					}
-					geminiTool.FunctionDeclarations = append(geminiTool.FunctionDeclarations, funcDecl)
+					functionDeclarations = append(functionDeclarations, funcDecl)
 				}
 			}
 		}
-		if tool.Type == schemas.ResponsesToolTypeWebSearch {
-			geminiTool.GoogleSearch = &GoogleSearch{}
+		if tool.Type == schemas.ResponsesToolTypeWebSearch && !dropGoogleSearch {
+			googleSearch = &GoogleSearch{}
 			if tool.ResponsesToolWebSearch != nil && tool.ResponsesToolWebSearch.Filters != nil {
 				if tool.ResponsesToolWebSearch.Filters.TimeRangeFilter != nil {
-					geminiTool.GoogleSearch.TimeRangeFilter = &Interval{
+					googleSearch.TimeRangeFilter = &Interval{
 						StartTime: tool.ResponsesToolWebSearch.Filters.TimeRangeFilter.StartTime,
 						EndTime:   tool.ResponsesToolWebSearch.Filters.TimeRangeFilter.EndTime,
 					}
 				}
 				if len(tool.ResponsesToolWebSearch.Filters.BlockedDomains) > 0 {
-					geminiTool.GoogleSearch.ExcludeDomains = tool.ResponsesToolWebSearch.Filters.BlockedDomains
+					googleSearch.ExcludeDomains = tool.ResponsesToolWebSearch.Filters.BlockedDomains
+				}
+			}
+			if tool.ResponsesToolWebSearch != nil && len(tool.ResponsesToolWebSearch.SearchContentTypes) > 0 {
+				searchTypes := &SearchTypes{}
+				for _, contentType := range tool.ResponsesToolWebSearch.SearchContentTypes {
+					switch contentType {
+					case geminiSearchContentTypeText:
+						searchTypes.WebSearch = &WebSearch{}
+					case geminiSearchContentTypeImage:
+						searchTypes.ImageSearch = &ImageSearch{}
+					}
+				}
+				if searchTypes.WebSearch != nil || searchTypes.ImageSearch != nil {
+					googleSearch.SearchTypes = searchTypes
 				}
 			}
 		}
 	}
 
-	if len(geminiTool.FunctionDeclarations) > 0 || geminiTool.GoogleSearch != nil {
-		return []Tool{geminiTool}, nil
+	// One Tool entry per tool type, matching Google's documented tool-combination shape.
+	var geminiTools []Tool
+	if len(functionDeclarations) > 0 {
+		geminiTools = append(geminiTools, Tool{FunctionDeclarations: functionDeclarations})
 	}
-	return []Tool{}, nil
+	if googleSearch != nil {
+		geminiTools = append(geminiTools, Tool{GoogleSearch: googleSearch})
+	}
+	if len(geminiTools) == 0 {
+		return []Tool{}, nil
+	}
+	return geminiTools, nil
 }
 
 // convertResponsesToolChoiceToGemini converts Responses tool choice to Gemini tool config
@@ -3023,11 +3751,24 @@ func convertResponsesToolChoiceToGemini(toolChoice *schemas.ResponsesToolChoice)
 			}
 		}
 
+		// Name and Tools describe the SAME allowed set - Name is the forced single function,
+		// Tools the allowed list - and a forced choice legitimately carries both (allowed set
+		// {X}, forced X). Appending them blindly duplicated the name, so collect through a seen
+		// set and keep first-seen order.
+		seen := make(map[string]struct{}, len(ext.Tools)+1)
+		appendAllowed := func(name string) {
+			if _, dup := seen[name]; dup {
+				return
+			}
+			seen[name] = struct{}{}
+			funcConfig.AllowedFunctionNames = append(funcConfig.AllowedFunctionNames, name)
+		}
+
 		if ext.Name != nil {
 			if ext.Mode == nil {
 				funcConfig.Mode = FunctionCallingConfigModeAny
 			}
-			funcConfig.AllowedFunctionNames = []string{*ext.Name}
+			appendAllowed(*ext.Name)
 		}
 
 		if len(ext.Tools) > 0 {
@@ -3036,7 +3777,7 @@ func convertResponsesToolChoiceToGemini(toolChoice *schemas.ResponsesToolChoice)
 			}
 			for _, tool := range ext.Tools {
 				if tool.Name != nil {
-					funcConfig.AllowedFunctionNames = append(funcConfig.AllowedFunctionNames, *tool.Name)
+					appendAllowed(*tool.Name)
 				}
 			}
 		}
@@ -3121,8 +3862,45 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 	var pendingFunctionResponseParts []*Part
 
 	for i, msg := range messages {
-		// Skip standalone reasoning messages (they're handled as part of function calls)
+		// Standalone reasoning messages carry the model's thought blocks. Their
+		// SIGNATURE is picked up by the look-ahead on the preceding function
+		// call, so only the text is emitted here - sending the signature again
+		// would put the same value on the wire twice.
+		//
+		// Skipping these outright, as this did, meant reasoning text never
+		// reached Gemini on this path at all. The thinking guide is explicit
+		// that history must keep its thought blocks intact ("You MUST always
+		// resend all thought blocks exactly as they were received from the
+		// model", https://ai.google.dev/gemini-api/docs/thinking), and a block
+		// stripped to its signature is not the block that was received.
+		//
+		// A reasoning message with no text still has nothing to add here, so it
+		// keeps being skipped.
 		if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeReasoning && msg.ResponsesReasoning != nil {
+			parts := thoughtTextParts(msg.ResponsesReasoning)
+
+			// The signature is carried by the PRECEDING function call's
+			// look-ahead - but only when there is one. A standalone signed
+			// reasoning item with no function call before it had nothing
+			// carrying its signature, so it was lost outright. Mirroring the
+			// look-ahead's own positional rule here is what keeps the value on
+			// the wire exactly once: emitted when nothing consumed it, omitted
+			// when the look-ahead already did.
+			consumedByLookAhead := i > 0 &&
+				messages[i-1].Type != nil &&
+				*messages[i-1].Type == schemas.ResponsesMessageTypeFunctionCall
+			if !consumedByLookAhead {
+				if sig := thoughtSignatureFromEncryptedContent(msg.ResponsesReasoning.EncryptedContent); sig != nil {
+					parts = append(parts, &Part{ThoughtSignature: sig})
+				}
+			}
+
+			if len(parts) > 0 {
+				contents = append(contents, Content{
+					Parts: parts,
+					Role:  "model",
+				})
+			}
 			continue
 		}
 
@@ -3453,6 +4231,12 @@ func convertContentBlockToGeminiPart(block schemas.ResponsesMessageContentBlock,
 			}
 		}
 
+	case schemas.ResponsesOutputMessageContentTypeFallback:
+		// Anthropic-specific server-side fallback boundary marker. Unlike compaction it
+		// carries no user content (only from/to model names), so drop it rather than
+		// rendering it as text.
+		return nil, nil
+
 	case schemas.ResponsesInputMessageContentBlockTypeImage:
 		if block.ResponsesInputMessageContentBlockImage != nil && block.ResponsesInputMessageContentBlockImage.ImageURL != nil {
 			imageURL := *block.ResponsesInputMessageContentBlockImage.ImageURL
@@ -3528,10 +4312,13 @@ func convertContentBlockToGeminiPart(block schemas.ResponsesMessageContentBlock,
 
 			// Handle FileURL (URI-based file)
 			if fileBlock.FileURL != nil {
-				// Only set MIMEType when the caller provided one
+				// Prefer the caller's MIMEType; otherwise take whatever the URI itself states.
+				// Vertex rejects a fileData with no mimeType outright - see mimeTypeFromURI.
 				fileData := &FileData{FileURI: *fileBlock.FileURL}
 				if fileBlock.FileType != nil {
 					fileData.MIMEType = *fileBlock.FileType
+				} else {
+					fileData.MIMEType = mimeTypeFromURI(*fileBlock.FileURL)
 				}
 				return &Part{FileData: fileData}, nil
 			}
@@ -3592,6 +4379,9 @@ func buildGroundingMetadataFromWebSearch(webSearchCall *schemas.ResponsesMessage
 	} else if action.Query != nil {
 		groundingMetadata.WebSearchQueries = []string{*action.Query}
 	}
+	if len(action.ImageQueries) > 0 {
+		groundingMetadata.ImageSearchQueries = action.ImageQueries
+	}
 
 	// Extract grounding chunks from sources
 	var groundingChunks []*GroundingChunk
@@ -3607,11 +4397,22 @@ func buildGroundingMetadataFromWebSearch(webSearchCall *schemas.ResponsesMessage
 			title = *source.Title
 		}
 
-		chunk := &GroundingChunk{
-			Web: &GroundingChunkWeb{
+		// An asset URL marks the source as an image-search hit; URL stays the containing page.
+		chunk := &GroundingChunk{}
+		if source.ImageURL != nil && *source.ImageURL != "" {
+			chunk.Image = &GroundingChunkImage{
+				SourceURI: source.URL,
+				ImageURI:  *source.ImageURL,
+				Title:     title,
+			}
+			if source.Domain != nil {
+				chunk.Image.Domain = *source.Domain
+			}
+		} else {
+			chunk.Web = &GroundingChunkWeb{
 				URI:   source.URL,
 				Title: title,
-			},
+			}
 		}
 		groundingChunks = append(groundingChunks, chunk)
 		urlToIndexMap[source.URL] = int32(len(groundingChunks) - 1)
@@ -3621,41 +4422,56 @@ func buildGroundingMetadataFromWebSearch(webSearchCall *schemas.ResponsesMessage
 		groundingMetadata.GroundingChunks = groundingChunks
 	}
 
-	// Convert annotations to grounding supports
+	// Convert annotations to grounding supports. Annotations carry one entry per
+	// (support, chunk) pair, so regroup by segment to restore multi-source supports.
 	var groundingSupports []*GroundingSupport
+	supportBySegment := make(map[string]*GroundingSupport)
 	for _, annotation := range annotations {
 		if annotation.Type != "url_citation" {
 			continue
 		}
 
-		support := &GroundingSupport{
-			Segment: &Segment{},
-		}
+		segment := &Segment{}
 
 		// Set segment text
 		if annotation.Text != nil {
-			support.Segment.Text = *annotation.Text
+			segment.Text = *annotation.Text
 		}
 
 		// Set segment indices
 		if annotation.StartIndex != nil {
-			support.Segment.StartIndex = int32(*annotation.StartIndex)
+			segment.StartIndex = int32(*annotation.StartIndex)
 		}
 		if annotation.EndIndex != nil {
-			support.Segment.EndIndex = int32(*annotation.EndIndex)
+			segment.EndIndex = int32(*annotation.EndIndex)
 		}
 
 		// Map annotation URL to chunk indices
+		var chunkIndices []int32
 		if annotation.URL != nil {
 			if chunkIdx, exists := urlToIndexMap[*annotation.URL]; exists {
-				support.GroundingChunkIndices = []int32{chunkIdx}
+				chunkIndices = []int32{chunkIdx}
 			}
 		}
 
 		// Only add support if we have valid segment or chunk indices
-		if support.Segment.Text != "" || len(support.GroundingChunkIndices) > 0 {
-			groundingSupports = append(groundingSupports, support)
+		if segment.Text == "" && len(chunkIndices) == 0 {
+			continue
 		}
+
+		key := fmt.Sprintf("%d|%d|%s", segment.StartIndex, segment.EndIndex, segment.Text)
+		if support, exists := supportBySegment[key]; exists {
+			for _, chunkIdx := range chunkIndices {
+				if !slices.Contains(support.GroundingChunkIndices, chunkIdx) {
+					support.GroundingChunkIndices = append(support.GroundingChunkIndices, chunkIdx)
+				}
+			}
+			continue
+		}
+
+		support := &GroundingSupport{Segment: segment, GroundingChunkIndices: chunkIndices}
+		supportBySegment[key] = support
+		groundingSupports = append(groundingSupports, support)
 	}
 
 	if len(groundingSupports) > 0 {
@@ -3663,7 +4479,8 @@ func buildGroundingMetadataFromWebSearch(webSearchCall *schemas.ResponsesMessage
 	}
 
 	// Return nil if no meaningful data was extracted
-	if len(groundingMetadata.WebSearchQueries) == 0 && len(groundingMetadata.GroundingChunks) == 0 {
+	if len(groundingMetadata.WebSearchQueries) == 0 && len(groundingMetadata.ImageSearchQueries) == 0 &&
+		len(groundingMetadata.GroundingChunks) == 0 {
 		return nil
 	}
 
@@ -3678,106 +4495,129 @@ func emitWebSearchFromGroundingMetadata(
 ) []*schemas.BifrostResponsesStreamResponse {
 	var responses []*schemas.BifrostResponsesStreamResponse
 
-	if metadata == nil || len(metadata.WebSearchQueries) == 0 {
+	// A server-side toolCall is enough to emit an item even when grounding metadata is
+	// absent or query-less: the model told us it searched.
+	hasGroundingQueries := metadata != nil && (len(metadata.WebSearchQueries) > 0 || len(metadata.ImageSearchQueries) > 0)
+	if !hasGroundingQueries && len(state.ServerSearchRounds) == 0 {
 		return responses
 	}
 
-	outputIndex := state.nextOutputIndex()
-	itemID := state.generateItemID("ws", outputIndex)
-	state.ItemIDs[outputIndex] = itemID
-
-	// Build web search action
-	action := &schemas.ResponsesWebSearchToolCallAction{
-		Type:    "search",
-		Queries: metadata.WebSearchQueries,
-	}
-	if len(metadata.WebSearchQueries) > 0 {
-		action.Query = &metadata.WebSearchQueries[0]
-	}
-
-	// Convert groundingChunks to sources
+	// Convert groundingChunks to sources. Grounding reports them for the response as a
+	// whole rather than per round, so they attach to the first item -- mirroring how
+	// convertGeminiCandidatesToResponsesOutput merges them onto the first search call.
 	var sources []schemas.ResponsesWebSearchToolCallActionSearchSource
-	for _, chunk := range metadata.GroundingChunks {
-		if chunk.Web != nil && chunk.Web.URI != "" {
-			source := schemas.ResponsesWebSearchToolCallActionSearchSource{
-				Type: "url",
-				URL:  chunk.Web.URI,
+	if metadata != nil {
+		for _, chunk := range metadata.GroundingChunks {
+			if source, ok := groundingChunkSource(chunk); ok {
+				sources = append(sources, source)
 			}
-			if chunk.Web.Title != "" {
-				source.Title = &chunk.Web.Title
-			} else {
-				source.Title = &chunk.Web.URI // Fallback to URI
-			}
-			sources = append(sources, source)
 		}
 	}
-	action.Sources = sources
 
-	// 1. output_item.added (web_search_call, in_progress)
-	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-		Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
-		SequenceNumber: sequenceNumber + len(responses),
-		OutputIndex:    &outputIndex,
-		Item: &schemas.ResponsesMessage{
-			ID:     &itemID,
-			Type:   schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall),
-			Status: schemas.Ptr("in_progress"),
-			ResponsesToolMessage: &schemas.ResponsesToolMessage{
-				Action: &schemas.ResponsesToolMessageActionStruct{
-					ResponsesWebSearchToolCallAction: &schemas.ResponsesWebSearchToolCallAction{
-						Type: "search",
+	// One item per server-side round, in the order the model ran them. With no rounds
+	// reported, grounding metadata alone still yields the single legacy item.
+	rounds := state.ServerSearchRounds
+	if len(rounds) == 0 {
+		rounds = []GeminiServerSearchRound{{}}
+	}
+
+	for i, round := range rounds {
+		outputIndex := state.nextOutputIndex()
+		// Prefer the model's own tool-call ID so the item is traceable back to Gemini's call.
+		itemID := round.CallID
+		if itemID == "" {
+			itemID = state.generateItemID("ws", outputIndex)
+		}
+		state.ItemIDs[outputIndex] = itemID
+
+		// Queries reported by the server-side call take precedence. Grounding fills in only
+		// what the call did not spell out, and only for the first item -- its query list
+		// covers the whole response, so replaying it per round would attribute another
+		// round's queries to this one.
+		action := &schemas.ResponsesWebSearchToolCallAction{
+			Type:         "search",
+			Queries:      round.Queries,
+			ImageQueries: round.ImageQueries,
+		}
+		if i == 0 && metadata != nil {
+			if len(action.Queries) == 0 {
+				action.Queries = metadata.WebSearchQueries
+			}
+			if len(action.ImageQueries) == 0 {
+				action.ImageQueries = metadata.ImageSearchQueries
+			}
+			action.Sources = sources
+		}
+		if len(action.Queries) > 0 {
+			action.Query = &action.Queries[0]
+		}
+
+		// 1. output_item.added (web_search_call, in_progress)
+		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+			SequenceNumber: sequenceNumber + len(responses),
+			OutputIndex:    &outputIndex,
+			Item: &schemas.ResponsesMessage{
+				ID:     &itemID,
+				Type:   schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall),
+				Status: schemas.Ptr("in_progress"),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					Action: &schemas.ResponsesToolMessageActionStruct{
+						ResponsesWebSearchToolCallAction: &schemas.ResponsesWebSearchToolCallAction{
+							Type: "search",
+						},
 					},
 				},
 			},
-		},
-	})
+		})
 
-	// 2. web_search_call.in_progress
-	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-		Type:           schemas.ResponsesStreamResponseTypeWebSearchCallInProgress,
-		SequenceNumber: sequenceNumber + len(responses),
-		OutputIndex:    &outputIndex,
-		ItemID:         &itemID,
-	})
+		// 2. web_search_call.in_progress
+		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeWebSearchCallInProgress,
+			SequenceNumber: sequenceNumber + len(responses),
+			OutputIndex:    &outputIndex,
+			ItemID:         &itemID,
+		})
 
-	// 3. web_search_call.searching
-	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-		Type:           schemas.ResponsesStreamResponseTypeWebSearchCallSearching,
-		SequenceNumber: sequenceNumber + len(responses),
-		OutputIndex:    &outputIndex,
-		ItemID:         &itemID,
-	})
+		// 3. web_search_call.searching
+		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeWebSearchCallSearching,
+			SequenceNumber: sequenceNumber + len(responses),
+			OutputIndex:    &outputIndex,
+			ItemID:         &itemID,
+		})
 
-	// 4. web_search_call.completed
-	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-		Type:           schemas.ResponsesStreamResponseTypeWebSearchCallCompleted,
-		SequenceNumber: sequenceNumber + len(responses),
-		OutputIndex:    &outputIndex,
-		ItemID:         &itemID,
-	})
+		// 4. web_search_call.completed
+		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeWebSearchCallCompleted,
+			SequenceNumber: sequenceNumber + len(responses),
+			OutputIndex:    &outputIndex,
+			ItemID:         &itemID,
+		})
 
-	// 5. output_item.done (with full action including sources)
-	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-		Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
-		SequenceNumber: sequenceNumber + len(responses),
-		OutputIndex:    &outputIndex,
-		ItemID:         &itemID,
-		Item: &schemas.ResponsesMessage{
-			ID:     &itemID,
-			Type:   schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall),
-			Status: schemas.Ptr("completed"),
-			ResponsesToolMessage: &schemas.ResponsesToolMessage{
-				Action: &schemas.ResponsesToolMessageActionStruct{
-					ResponsesWebSearchToolCallAction: action,
+		// 5. output_item.done (with full action including sources)
+		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+			SequenceNumber: sequenceNumber + len(responses),
+			OutputIndex:    &outputIndex,
+			ItemID:         &itemID,
+			Item: &schemas.ResponsesMessage{
+				ID:     &itemID,
+				Type:   schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall),
+				Status: schemas.Ptr("completed"),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					Action: &schemas.ResponsesToolMessageActionStruct{
+						ResponsesWebSearchToolCallAction: action,
+					},
 				},
 			},
-		},
-	})
+		})
+	}
 
 	state.HasEmittedWebSearch = true
 
 	// Emit rendered content if present
-	if metadata.SearchEntryPoint != nil && metadata.SearchEntryPoint.RenderedContent != "" {
+	if metadata != nil && metadata.SearchEntryPoint != nil && metadata.SearchEntryPoint.RenderedContent != "" {
 		renderedIndex := state.nextOutputIndex()
 		renderedItemID := state.generateItemID("rc", renderedIndex)
 		state.ItemIDs[renderedIndex] = renderedItemID
@@ -3804,12 +4644,29 @@ func emitWebSearchFromGroundingMetadata(
 			},
 		})
 
-		// output_item.done for rendered content
+		// output_item.done for rendered content. It must repeat the item: output_item.done
+		// carries the completed item, and consumers that rebuild Gemini's searchEntryPoint
+		// read the rendered content off this event.
 		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 			Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
 			SequenceNumber: sequenceNumber + len(responses),
 			OutputIndex:    &renderedIndex,
 			ItemID:         &renderedItemID,
+			Item: &schemas.ResponsesMessage{
+				ID:     &renderedItemID,
+				Type:   schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Status: schemas.Ptr("completed"),
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{
+							Type: schemas.ResponsesOutputMessageContentTypeRenderedContent,
+							ResponsesOutputMessageContentRenderedContent: &schemas.ResponsesOutputMessageContentRenderedContent{
+								RenderedContent: metadata.SearchEntryPoint.RenderedContent,
+							},
+						},
+					},
+				},
+			},
 		})
 	}
 
@@ -3837,46 +4694,39 @@ func emitAnnotationsFromGroundingSupports(
 			continue
 		}
 
-		annotation := schemas.ResponsesOutputMessageContentTextAnnotation{
-			Type: "url_citation",
-		}
-
-		// Set text and indices
-		if support.Segment.Text != "" {
-			annotation.Text = &support.Segment.Text
-		}
-		annotation.StartIndex = schemas.Ptr(int(support.Segment.StartIndex))
-		annotation.EndIndex = schemas.Ptr(int(support.Segment.EndIndex))
-
-		// Find URL and title from chunk indices
-		if len(support.GroundingChunkIndices) > 0 {
-			chunkIdx := support.GroundingChunkIndices[0]
-			if int(chunkIdx) < len(metadata.GroundingChunks) {
-				chunk := metadata.GroundingChunks[chunkIdx]
-				if chunk.Web != nil {
-					annotation.URL = &chunk.Web.URI
-					if chunk.Web.Title != "" {
-						annotation.Title = &chunk.Web.Title
-					}
-				}
+		// One annotation per (support, chunk) pair so multi-source segments keep every source.
+		for _, chunkIdx := range support.GroundingChunkIndices {
+			if chunkIdx < 0 || int(chunkIdx) >= len(metadata.GroundingChunks) {
+				continue
 			}
-		}
+			source, ok := groundingChunkSource(metadata.GroundingChunks[chunkIdx])
+			if !ok {
+				continue
+			}
 
-		if annotation.URL == nil {
-			continue
-		}
+			annotation := schemas.ResponsesOutputMessageContentTextAnnotation{
+				Type: "url_citation",
+				URL:  &source.URL,
+			}
+			if support.Segment.Text != "" {
+				annotation.Text = &support.Segment.Text
+			}
+			annotation.StartIndex = schemas.Ptr(int(support.Segment.StartIndex))
+			annotation.EndIndex = schemas.Ptr(int(support.Segment.EndIndex))
+			annotation.Title = source.Title
 
-		// Emit annotation.added event
-		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-			Type:            schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded,
-			SequenceNumber:  sequenceNumber + len(responses),
-			OutputIndex:     &state.TextOutputIndex,
-			ItemID:          &itemID,
-			ContentIndex:    schemas.Ptr(0),
-			Annotation:      &annotation,
-			AnnotationIndex: &emmitedIndex,
-		})
-		emmitedIndex++
+			// Emit annotation.added event
+			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+				Type:            schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded,
+				SequenceNumber:  sequenceNumber + len(responses),
+				OutputIndex:     &state.TextOutputIndex,
+				ItemID:          &itemID,
+				ContentIndex:    schemas.Ptr(0),
+				Annotation:      &annotation,
+				AnnotationIndex: schemas.Ptr(emmitedIndex),
+			})
+			emmitedIndex++
+		}
 	}
 
 	return responses

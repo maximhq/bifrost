@@ -296,6 +296,11 @@ export interface VideoCreateError {
 	message?: string;
 }
 
+export interface ContentFilterInfo {
+	filtered_count?: number;
+	reasons?: string[];
+}
+
 export interface VideoObject {
 	id: string;
 	object: string;
@@ -307,7 +312,7 @@ export interface VideoObject {
 	progress?: number;
 	prompt: string;
 	remixed_from_video_id?: string;
-	seconds: number;
+	seconds?: string;
 	size: string;
 	error?: VideoCreateError;
 	url?: string;
@@ -331,9 +336,10 @@ export interface BifrostVideoGenerationOutput {
 	progress?: number;
 	prompt?: string;
 	remixed_from_video_id?: string;
-	seconds?: number;
+	seconds?: string;
 	size?: string;
 	status?: string;
+	content_filter?: ContentFilterInfo;
 }
 
 export interface BifrostVideoDownloadOutput {
@@ -440,6 +446,25 @@ export interface CacheDebug {
 	similarity?: number;
 }
 
+export interface GuardrailJudgeCall {
+	phase?: string;
+	rule_id?: number;
+	rule_name?: string;
+	guardrail_name?: string;
+	guardrail_provider?: string;
+	action?: string;
+	reason?: string;
+	judge_provider?: string;
+	judge_model?: string;
+	prompt_tokens?: number;
+	completion_tokens?: number;
+	total_tokens?: number;
+}
+
+export interface GuardrailDebug {
+	judge_calls?: GuardrailJudgeCall[];
+}
+
 // Error types
 export interface ErrorField {
 	type?: string;
@@ -497,6 +522,11 @@ export interface KeyAttemptRecord {
 	fail_reason?: string | null; // null/undefined on the final (successful or last) attempt
 }
 
+export interface RedactionMapping {
+	input?: Record<string, string>;
+	output?: Record<string, string>;
+}
+
 export interface LogEntry {
 	id: string;
 	object: string; // text.completion, chat.completion, embedding, audio.speech, audio.transcription
@@ -507,6 +537,10 @@ export interface LogEntry {
 	alias?: string; // Set when model was resolved via alias mapping; the original name the caller used
 	canonical_model_name?: string; // Canonical model name configured on the resolved alias, when set
 	alias_model_family?: string; // Model family configured on the resolved alias, when set
+	// Model that actually produced the response when the provider swapped models inside a
+	// single call (Anthropic server-side fallback). Distinct from fallback_index, which
+	// counts Bifrost's own cross-provider failover attempts.
+	server_side_fallback_model?: string;
 	number_of_retries: number;
 	fallback_index: number;
 	attempt_trail?: KeyAttemptRecord[]; // Per-attempt key selection history
@@ -568,7 +602,8 @@ export interface LogEntry {
 	latency?: number;
 	token_usage?: LLMUsage;
 	cache_debug?: CacheDebug;
-	cost?: number; // Cost in dollars (total cost of the request - includes cache lookup cost)
+	guardrail_debug?: GuardrailDebug;
+	cost?: number; // Cost in dollars (total cost of the request - includes cache lookup cost and also guardrail judge calls)
 	status: string; // "success", "error", "processing", or "cancelled"
 	stop_reason?: string; // Why the model stopped: "stop", "length", "content_filter", "tool_calls", etc.
 	error_details?: BifrostError;
@@ -576,16 +611,25 @@ export interface LogEntry {
 	created_at: string; // ISO string format from Go time.Time - when the log was first created
 	raw_request?: string; // Raw provider request
 	raw_response?: string; // Raw provider response
+	content_hidden?: boolean; // true when content logging was disabled for this request, so no content is served back
 	is_large_payload_request?: boolean; // true if request used large payload streaming
 	is_large_payload_response?: boolean; // true if response used large payload streaming
 	passthrough_request_body?: string; // Raw passthrough request body (UTF-8)
 	passthrough_response_body?: string; // Raw passthrough response body (UTF-8)
 	metadata?: Record<string, string>; // JSON metadata (e.g., isAsyncRequest)
-	redaction_mapping?: {
-		input?: Record<string, string>;
-		output?: Record<string, string>;
-	}; // Phase-scoped placeholder-to-original mappings, present only when caller has Logs:Reveal
+	redaction_mapping?: RedactionMapping; // Phase-scoped placeholder-to-original mappings, present only when caller has Logs:Reveal
+	user_agent?: string; // Raw HTTP User-Agent of the calling client
+	app?: string; // Backend-detected client app
+	// Aggregates over this log's fallback children (rows whose parent_request_id
+	// equals this log's id). Present only on roots_only list responses.
+	child_count?: number;
+	children_cost?: number;
+	children_tokens?: number;
 }
+
+// A log row as rendered by the logs table. __chainChild marks rows injected
+// below an expanded parent in the grouped view; it never comes from the API.
+export type DisplayLogEntry = LogEntry & { __chainChild?: boolean };
 
 export interface LogFilters {
 	providers?: string[];
@@ -614,6 +658,8 @@ export interface LogFilters {
 	team_ids?: string[];
 	customer_ids?: string[];
 	business_unit_ids?: string[];
+	apps?: string[]; // Backend-detected client apps
+	user_agents?: string[]; // Raw User-Agent strings; kept for backward compatibility/debug filtering
 }
 
 export interface Pagination {
@@ -630,6 +676,8 @@ export interface LogStats {
 	user_facing_total_requests: number;
 	average_latency: number;
 	total_tokens: number;
+	prompt_tokens: number;
+	completion_tokens: number;
 	total_cost: number;
 	cache_hit_rate_total_requests?: number | null;
 	direct_cache_hits?: number | null;
@@ -779,6 +827,38 @@ export interface ProviderLatencyHistogramResponse {
 	providers: string[];
 }
 
+// Throughput (tokens/sec) histogram types
+// tokens_per_second is the aggregate rate for the bucket: total completion tokens
+// divided by total generation latency in seconds.
+export interface ThroughputHistogramBucket {
+	timestamp: string;
+	tokens_per_second: number;
+	total_completion_tokens: number;
+	total_requests: number;
+}
+
+export interface ThroughputHistogramResponse {
+	buckets: ThroughputHistogramBucket[];
+	bucket_size_seconds: number;
+}
+
+export interface ProviderThroughputStats {
+	tokens_per_second: number;
+	total_completion_tokens: number;
+	total_requests: number;
+}
+
+export interface ProviderThroughputHistogramBucket {
+	timestamp: string;
+	by_provider: Record<string, ProviderThroughputStats>;
+}
+
+export interface ProviderThroughputHistogramResponse {
+	buckets: ProviderThroughputHistogramBucket[];
+	bucket_size_seconds: number;
+	providers: string[];
+}
+
 export interface LogsResponse {
 	logs: LogEntry[];
 	pagination: Pagination;
@@ -802,10 +882,13 @@ export interface RecalculateCostProgress {
 }
 
 // RecalcJobStatus is the status of a background cost-recalculation job, returned by
-// POST /api/logs/recalculate-cost (202/409) and GET /api/logs/recalculate-cost/status.
+// POST /api/logs/recalculate-cost (202/409), POST /api/logs/recalculate-cost/cancel
+// and GET /api/logs/recalculate-cost/status.
 export interface RecalcJobStatus {
 	id?: string;
-	status: "idle" | "pending" | "running" | "completed" | "failed";
+	// "cancelled" is terminal like completed/failed: the job was stopped on request,
+	// and the counters describe the work it committed before stopping.
+	status: "idle" | "pending" | "running" | "completed" | "failed" | "cancelled";
 	total: number;
 	processed: number;
 	updated: number;
@@ -1098,8 +1181,12 @@ export interface MCPToolLogEntry {
 	cost?: number; // Cost in dollars (per execution cost)
 	status: string; // "processing", "success", or "error"
 	metadata?: Record<string, string>;
+	plugin_logs?: string; // JSON string of plugin execution logs grouped by plugin name
+	redaction_mapping?: RedactionMapping; // Present on detail responses only when the caller has Logs:Reveal
 	created_at: string; // ISO string format
 	virtual_key?: VirtualKey;
+	user_agent?: string; // Raw HTTP User-Agent of the calling client
+	app?: string; // Backend-detected client app
 }
 
 // MCP Tool Log Filters
@@ -1115,6 +1202,8 @@ export interface MCPToolLogFilters {
 	min_latency?: number;
 	max_latency?: number;
 	content_search?: string;
+	apps?: string[]; // Backend-detected client apps
+	user_agents?: string[]; // Raw User-Agent strings; kept for backward compatibility/debug filtering
 }
 
 // MCP Tool Log Statistics
@@ -1136,6 +1225,8 @@ export interface MCPToolLogsResponse {
 export interface MCPToolLogFilterData {
 	tool_names: string[];
 	server_labels: string[];
+	apps: string[];
+	user_agents: string[];
 	virtual_keys: VirtualKey[];
 }
 
@@ -1188,6 +1279,7 @@ export interface ModelRankingTrend {
 	tokens_trend: number;
 	cost_trend: number;
 	latency_trend: number;
+	throughput_trend: number;
 }
 
 export interface ModelRankingEntry {
@@ -1200,6 +1292,7 @@ export interface ModelRankingEntry {
 	total_tokens: number;
 	total_cost: number;
 	avg_latency: number;
+	throughput: number; // tokens/sec
 	trend: ModelRankingTrend;
 }
 
@@ -1226,7 +1319,7 @@ export interface UserRankingsResponse {
 	rankings: UserRankingEntry[];
 }
 
-export type RankingDimension = "team" | "customer" | "business_unit" | "user" | "virtual_key";
+export type RankingDimension = "team" | "customer" | "business_unit" | "user" | "app" | "user_agent" | "virtual_key";
 
 export interface DimensionRankingTrend {
 	has_previous_period: boolean;

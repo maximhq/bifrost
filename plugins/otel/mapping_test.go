@@ -10,51 +10,42 @@ import (
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 )
 
-// contentAttrKeysWant is the canonical set of content-bearing attribute keys — the
-// "Input/Output Attributes" block in core/schemas/trace.go. Every pass-through connector
-// must strip exactly these when content logging is disabled; this local copy is the drift
-// mirror. When core adds a content attribute, TestIsContentAttributeCoversCanonicalSet
-// fails here until isContentAttribute (and this list) are updated in lockstep.
-//
-// NOTE: OTEL's isContentAttribute intentionally strips a *superset* — it also drops tool
-// definitions/arguments/results (see converter.go). This list is only the canonical content
-// floor that every connector shares; the tool keys are asserted separately below.
+// contentAttrKeysWant is the set of content-bearing attribute keys the OTEL exporter must
+// strip when content logging is disabled. The exporter delegates to schemas.IsContentAttribute
+// so there is no local list to drift; this fixture asserts the classification the exporter
+// depends on, including the keys a hand-maintained mirror previously missed
+// (prompt, instructions, reasoning).
 var contentAttrKeysWant = []string{
 	schemas.AttrInputText,
 	schemas.AttrInputMessages,
 	schemas.AttrInputSpeech,
 	schemas.AttrInputEmbedding,
 	schemas.AttrOutputMessages,
+	schemas.AttrPrompt,
+	schemas.AttrInstructions,
+	schemas.AttrRespReasoningText,
+	schemas.AttrTools, schemas.AttrRespTools,
+	schemas.AttrToolName, schemas.AttrToolCallID,
+	schemas.AttrToolCallArguments, schemas.AttrToolCallResult, schemas.AttrToolType,
+	schemas.AttrToolChoiceType, schemas.AttrToolChoiceName,
+	schemas.AttrRespToolChoiceType, schemas.AttrRespToolChoiceName,
 }
 
-// TestIsContentAttributeCoversCanonicalSet is the A5 drift guard: every canonical content
-// key must be classified as content (and thus stripped) by isContentAttribute, and a
-// representative non-content metadata key must not be. If core introduces a new content
-// attribute without OTEL learning to strip it, this fails.
+// TestIsContentAttributeCoversCanonicalSet is the A5 drift guard: every content key must be
+// classified as content (and thus stripped) on export, and representative metadata keys must
+// not be. The exporter shares core's classifier, so a new content attribute in core is stripped
+// by OTEL automatically; this test pins the keys that must never regress to metadata.
 func TestIsContentAttributeCoversCanonicalSet(t *testing.T) {
 	for _, key := range contentAttrKeysWant {
-		if !isContentAttribute(key) {
-			t.Errorf("isContentAttribute(%q) = false, want true — canonical content key not stripped", key)
-		}
-	}
-
-	// The tool superset OTEL additionally strips must also be classified as content.
-	for _, key := range []string{
-		schemas.AttrTools, schemas.AttrRespTools,
-		schemas.AttrToolName, schemas.AttrToolCallID,
-		schemas.AttrToolCallArguments, schemas.AttrToolCallResult, schemas.AttrToolType,
-		schemas.AttrToolChoiceType, schemas.AttrToolChoiceName,
-		schemas.AttrRespToolChoiceType, schemas.AttrRespToolChoiceName,
-	} {
-		if !isContentAttribute(key) {
-			t.Errorf("isContentAttribute(%q) = false, want true — OTEL tool-content key not stripped", key)
+		if !schemas.IsContentAttribute(key) {
+			t.Errorf("IsContentAttribute(%q) = false, want true — content key not stripped on export", key)
 		}
 	}
 
 	// Metadata must survive.
 	for _, key := range []string{schemas.AttrRequestModel, schemas.AttrProviderName, schemas.AttrTotalTokens} {
-		if isContentAttribute(key) {
-			t.Errorf("isContentAttribute(%q) = true, want false — metadata must not be stripped as content", key)
+		if schemas.IsContentAttribute(key) {
+			t.Errorf("IsContentAttribute(%q) = true, want false — metadata must not be stripped as content", key)
 		}
 	}
 }

@@ -161,7 +161,7 @@ func PopulateContextAttributes(
 	teamID, teamName string,
 	customerID, customerName string,
 	businessUnitID, businessUnitName string,
-	userID, userName string,
+	userID, userName, userEmail string,
 	numberOfRetries, fallbackIndex int,
 ) {
 	// Each AttrXxx (gen_ai.*) emission below is LEGACY namespace pollution: a
@@ -213,6 +213,9 @@ func PopulateContextAttributes(
 	}
 	if userName != "" {
 		attrs[schemas.AttrBifrostUserName] = userName
+	}
+	if userEmail != "" {
+		attrs[schemas.AttrBifrostUserEmail] = userEmail
 	}
 	attrs[schemas.AttrNumberOfRetries] = numberOfRetries // legacy: gen_ai.* placement of bifrost-internal attr
 	attrs[schemas.AttrFallbackIndex] = fallbackIndex     // legacy: gen_ai.* placement of bifrost-internal attr

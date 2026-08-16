@@ -358,6 +358,45 @@ func validateConfig(t *testing.T, schema *jsonschema.Schema, configJSON string) 
 	return schema.Validate(v)
 }
 
+// TestSchemaGuardrailRuleTarget verifies explicit MCP targets without breaking legacy LLM rules.
+func TestSchemaGuardrailRuleTarget(t *testing.T) {
+	compiled := compileSchema(t)
+
+	tests := []struct {
+		name      string
+		target    string
+		wantError bool
+	}{
+		{name: "explicit MCP target is valid", target: `,"target":"mcp"`},
+		{name: "omitted target remains valid", target: ""},
+		{name: "unknown target is rejected", target: `,"target":"agent"`, wantError: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := fmt.Sprintf(`{
+				"guardrails_config": {
+					"guardrail_rules": [{
+						"id": 1,
+						"name": "MCP rule",
+						"enabled": true,
+						"cel_expression": "true",
+						"apply_to": "input"%s
+					}]
+				}
+			}`, tt.target)
+
+			err := validateConfig(t, compiled, config)
+			if tt.wantError && err == nil {
+				t.Fatal("config should be invalid")
+			}
+			if !tt.wantError && err != nil {
+				t.Fatalf("config should be valid, got: %v", err)
+			}
+		})
+	}
+}
+
 func TestSchemaSCIMConfigValidation(t *testing.T) {
 	compiled := compileSchema(t)
 
@@ -404,6 +443,77 @@ func TestSchemaSCIMConfigValidation(t *testing.T) {
 						"realm": "bifrost-prod",
 						"clientId": "bifrost",
 						"clientSecret": "env.KEYCLOAK_CLIENT_SECRET"
+					}
+				}
+			}`,
+		},
+		{
+			name:      "enabled generic with empty config is invalid",
+			config:    `{"scim_config":{"enabled":true,"provider":"generic","config":{}}}`,
+			wantError: true,
+		},
+		{
+			name:      "enabled zitadel with empty config is invalid",
+			config:    `{"scim_config":{"enabled":true,"provider":"zitadel","config":{}}}`,
+			wantError: true,
+		},
+		{
+			name:   "enabled zitadel with required config is valid",
+			config: `{"scim_config":{"enabled":true,"provider":"zitadel","config":{"domain":"acme.zitadel.cloud","clientId":"bifrost"}}}`,
+		},
+		{
+			name:      "enabled google with empty config is invalid",
+			config:    `{"scim_config":{"enabled":true,"provider":"google","config":{}}}`,
+			wantError: true,
+		},
+		{
+			name:   "enabled google with required config is valid",
+			config: `{"scim_config":{"enabled":true,"provider":"google","config":{"domain":"company.com","clientId":"bifrost"}}}`,
+		},
+		{
+			name:      "enabled google with credentialMode env but no serviceAccountEnvVar is invalid",
+			config:    `{"scim_config":{"enabled":true,"provider":"google","config":{"domain":"company.com","clientId":"bifrost","credentialMode":"env"}}}`,
+			wantError: true,
+		},
+		{
+			name:      "enabled sailpoint with empty config is invalid",
+			config:    `{"scim_config":{"enabled":true,"provider":"sailpoint","config":{}}}`,
+			wantError: true,
+		},
+		{
+			name:   "enabled sailpoint with required config is valid",
+			config: `{"scim_config":{"enabled":true,"provider":"sailpoint","config":{"product":"isc","tenant":"acme"}}}`,
+		},
+		{
+			name:      "unknown provider is rejected",
+			config:    `{"scim_config":{"enabled":true,"provider":"pingfederate","config":{}}}`,
+			wantError: true,
+		},
+		{
+			name: "enabled generic with required config is valid",
+			config: `{
+				"scim_config": {
+					"enabled": true,
+					"provider": "generic",
+					"config": {
+						"issuerUrl": "https://idp.company.com",
+						"clientId": "bifrost"
+					}
+				}
+			}`,
+		},
+		{
+			name: "enabled generic with claim SCIM attributes is valid",
+			config: `{
+				"scim_config": {
+					"enabled": true,
+					"provider": "generic",
+					"config": {
+						"issuerUrl": "https://idp.company.com",
+						"clientId": "bifrost",
+						"claimScimAttributes": {
+							"department": {"attributeType": "user", "attributeValue": "department"}
+						}
 					}
 				}
 			}`,
@@ -737,7 +847,9 @@ func TestSchemaMCPClientConfigFields(t *testing.T) {
 		"is_code_mode_client",
 		"connection_string",
 		"auth_type",
-		"oauth_config_id",
+		// config.json declares OAuth inline via `oauth_config`; the
+		// `oauth_config_id` FK is assigned server-side and is not settable here.
+		"oauth_config",
 		"headers",
 		"tools_to_execute",
 		"tools_to_auto_execute",
@@ -959,4 +1071,174 @@ func TestSchemaBedrockKeyConfigSTSFields(t *testing.T) {
 			t.Error("bedrock config with unknown fields should fail schema validation (additionalProperties: false)")
 		}
 	})
+}
+
+// TestSchemaLiveModelsSyncInterval pins the 0-or->=60 contract on
+// framework.pricing.live_models_sync_interval. This schema is the source of
+// truth users author against, so it has to reject the same values the config
+// API rejects (ConfigHandler.updateConfig) and the file resolver silently
+// clamps (ResolveFrameworkPricingConfig). A bare "minimum": 0 accepted 1-59
+// and left the user with a config that validated and then behaved as 60.
+func TestSchemaLiveModelsSyncInterval(t *testing.T) {
+	compiled := compileSchema(t)
+
+	tests := []struct {
+		name      string
+		value     string
+		wantError bool
+	}{
+		{name: "zero disables the background refresh", value: "0"},
+		{name: "the minimum enabled interval is accepted", value: "60"},
+		{name: "the default is accepted", value: "3600"},
+		{name: "below the minimum but above zero is rejected", value: "59", wantError: true},
+		{name: "one second is rejected", value: "1", wantError: true},
+		{name: "negative is rejected", value: "-1", wantError: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := `{"framework":{"pricing":{"live_models_sync_interval":` + tt.value + `}}}`
+			err := validateConfig(t, compiled, config)
+			if tt.wantError && err == nil {
+				t.Errorf("live_models_sync_interval=%s should be rejected, got no error", tt.value)
+			}
+			if !tt.wantError && err != nil {
+				t.Errorf("live_models_sync_interval=%s should be valid, got: %v", tt.value, err)
+			}
+		})
+	}
+}
+
+// TestSchemaBudgetQuarterStartMonth pins the schema to the value range the Go
+// layer actually accepts. BudgetResetConfig.QuarterStartMonth is a plain int, so
+// an omitted quarter_start_month and an explicit 0 are indistinguishable after
+// unmarshal - validateBudget therefore has to treat 0 as "unset", and the schema
+// has to let that value through or config.json rejects a value the runtime
+// documents as valid and handles correctly.
+func TestSchemaBudgetQuarterStartMonth(t *testing.T) {
+	compiled := compileSchema(t)
+
+	budgetConfig := func(resetConfig string) string {
+		return `{
+			"governance": {
+				"budgets": [{
+					"id": "b-1",
+					"max_limit": 100,
+					"reset_duration": "1Q",
+					"reset_config": ` + resetConfig + `
+				}]
+			}
+		}`
+	}
+
+	t.Run("explicit zero is accepted as the unset value", func(t *testing.T) {
+		if err := validateConfig(t, compiled, budgetConfig(`{"quarter_start_month": 0}`)); err != nil {
+			t.Errorf("quarter_start_month 0 is documented as January and accepted by validateBudget, so the schema must accept it, got: %v", err)
+		}
+	})
+
+	t.Run("an omitted quarter start is accepted", func(t *testing.T) {
+		if err := validateConfig(t, compiled, budgetConfig(`{}`)); err != nil {
+			t.Errorf("an empty reset_config should be valid, got: %v", err)
+		}
+	})
+
+	t.Run("the 1-12 range still validates", func(t *testing.T) {
+		for _, month := range []int{1, 4, 7, 10, 12} {
+			cfg := budgetConfig(fmt.Sprintf(`{"quarter_start_month": %d}`, month))
+			if err := validateConfig(t, compiled, cfg); err != nil {
+				t.Errorf("quarter_start_month %d should be valid, got: %v", month, err)
+			}
+		}
+	})
+
+	t.Run("out of range months are still rejected", func(t *testing.T) {
+		for _, month := range []int{-1, 13} {
+			cfg := budgetConfig(fmt.Sprintf(`{"quarter_start_month": %d}`, month))
+			if err := validateConfig(t, compiled, cfg); err == nil {
+				t.Errorf("quarter_start_month %d is outside 1-12 and must be rejected", month)
+			}
+		}
+	})
+
+	// $defs/budget_line is a second copy of the same shape, reached through
+	// customers, access profiles and provider configs. A budget written there
+	// deserializes into the same Go struct, so the two copies have to agree on
+	// which values they accept.
+	t.Run("the budget_line copy accepts the same range", func(t *testing.T) {
+		lineConfig := func(month string) string {
+			return `{
+				"governance": {
+					"customers": [{
+						"id": "c-1",
+						"name": "Acme",
+						"budgets": [{
+							"id": "b-1",
+							"max_limit": 100,
+							"reset_duration": "1Q",
+							"reset_config": {"quarter_start_month": ` + month + `}
+						}]
+					}]
+				}
+			}`
+		}
+
+		if err := validateConfig(t, compiled, lineConfig("0")); err != nil {
+			t.Errorf("quarter_start_month 0 must be accepted here exactly as it is under governance.budgets, got: %v", err)
+		}
+		if err := validateConfig(t, compiled, lineConfig("4")); err != nil {
+			t.Errorf("quarter_start_month 4 should be valid, got: %v", err)
+		}
+		if err := validateConfig(t, compiled, lineConfig("13")); err == nil {
+			t.Error("quarter_start_month 13 is outside 1-12 and must be rejected")
+		}
+	})
+}
+
+// TestSchemaResetConfigRequiresQuarterlyDuration pins the quarterly-only rule the
+// reset_config description already states. validateResetConfig rejects a quarter
+// definition on any non-quarterly duration, so without this constraint a
+// config.json passes schema validation and only fails later at reconciliation -
+// the slowest possible place to learn the file is wrong.
+func TestSchemaResetConfigRequiresQuarterlyDuration(t *testing.T) {
+	compiled := compileSchema(t)
+
+	// governance.budgets and $defs/budget_line are separate copies of the same
+	// shape, so both need the constraint and both are checked here.
+	scopes := map[string]func(string) string{
+		"governance.budgets": func(budget string) string {
+			return `{"governance": {"budgets": [` + budget + `]}}`
+		},
+		"$defs/budget_line via customers": func(budget string) string {
+			return `{"governance": {"customers": [{"id": "c-1", "name": "Acme", "budgets": [` + budget + `]}]}}`
+		},
+	}
+
+	for name, wrap := range scopes {
+		t.Run(name, func(t *testing.T) {
+			quarterly := `{"id": "b-1", "max_limit": 100, "reset_duration": "1Q", "reset_config": {"quarter_start_month": 4}}`
+			if err := validateConfig(t, compiled, wrap(quarterly)); err != nil {
+				t.Errorf("reset_config on a 1Q budget must stay valid, got: %v", err)
+			}
+
+			for _, duration := range []string{"1M", "1h", "1Y"} {
+				cfg := wrap(`{"id": "b-1", "max_limit": 100, "reset_duration": "` + duration + `", "reset_config": {"quarter_start_month": 4}}`)
+				if err := validateConfig(t, compiled, cfg); err == nil {
+					t.Errorf("reset_config with reset_duration %q must be rejected: validateResetConfig refuses it at reconciliation", duration)
+				}
+			}
+
+			// A quarter definition with no duration at all is the same mistake with
+			// the evidence missing, so it has to be rejected too.
+			orphan := wrap(`{"id": "b-1", "max_limit": 100, "reset_config": {"quarter_start_month": 4}}`)
+			if err := validateConfig(t, compiled, orphan); err == nil {
+				t.Error("reset_config with no reset_duration must be rejected")
+			}
+
+			// Budgets without a quarter definition are unaffected by the constraint.
+			plain := wrap(`{"id": "b-1", "max_limit": 100, "reset_duration": "1M"}`)
+			if err := validateConfig(t, compiled, plain); err != nil {
+				t.Errorf("a budget with no reset_config must stay valid on any duration, got: %v", err)
+			}
+		})
+	}
 }
