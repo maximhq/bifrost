@@ -584,6 +584,111 @@ func TestStripUnsupportedFieldsFromRawBody_ProviderEffort(t *testing.T) {
 	}
 }
 
+// TestResolveAnthropicMountProfile pins the host→profile mapping used for
+// custom providers (base_provider_type: anthropic). The reported bug's live
+// configuration was exactly this: a custom provider named "zai-anthropic"
+// pointed at https://api.z.ai/api/anthropic, which must get Zhipu's capability
+// profile, not Anthropic's model gates.
+func TestResolveAnthropicMountProfile(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		baseURL string
+		want    schemas.ModelProvider
+	}{
+		{"https://api.z.ai/api/anthropic", schemas.Zhipu},
+		{"https://api.z.ai/api/coding/paas/v4", schemas.Zhipu},
+		{"https://open.bigmodel.cn/api/anthropic", schemas.Zhipu},
+		{"https://dashscope-intl.aliyuncs.com/apps/anthropic", schemas.Alibaba},
+		{"https://ws-abc123.ap-southeast-1.maas.aliyuncs.com/apps/anthropic", schemas.Alibaba},
+		{"https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic", schemas.Alibaba},
+		{"https://api.moonshot.ai/anthropic", schemas.Kimi},
+		{"https://api.moonshot.cn/anthropic", schemas.Kimi},
+		{"https://api.kimi.com/coding", schemas.Kimi},
+		{"https://api.anthropic.com", schemas.Anthropic},
+		{"https://my-proxy.internal/anthropic", schemas.Anthropic},
+		{"", schemas.Anthropic},
+	}
+	for _, tc := range cases {
+		t.Run(tc.baseURL, func(t *testing.T) {
+			assert.Equal(t, tc.want, ResolveAnthropicMountProfile(tc.baseURL))
+		})
+	}
+}
+
+// TestAnthropicProvider_ConversionProviderAndNormalization covers the custom
+// provider wiring: the build config and the request's Provider both resolve to
+// the mount profile, while the stock provider and custom-anthropic providers
+// are untouched.
+func TestAnthropicProvider_ConversionProviderAndNormalization(t *testing.T) {
+	t.Parallel()
+
+	custom := &AnthropicProvider{
+		customProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Anthropic},
+		networkConfig:        schemas.NetworkConfig{BaseURL: "https://api.z.ai/api/anthropic"},
+	}
+	assert.Equal(t, schemas.Zhipu, custom.conversionProvider())
+
+	// Request carrying the custom provider's own name is re-tagged to the
+	// resolved profile (shallow copy — the caller's request is never mutated).
+	req := &schemas.BifrostChatRequest{Provider: schemas.ModelProvider("zai-anthropic"), Model: "glm-5.3"}
+	normalized := custom.normalizeChatRequestForConversion(req)
+	assert.Equal(t, schemas.Zhipu, normalized.Provider)
+	assert.Equal(t, schemas.ModelProvider("zai-anthropic"), req.Provider, "caller's request must not be mutated")
+
+	respReq := &schemas.BifrostResponsesRequest{Provider: schemas.ModelProvider("zai-anthropic"), Model: "glm-5.3"}
+	normalizedResp := custom.normalizeResponsesRequestForConversion(respReq)
+	assert.Equal(t, schemas.Zhipu, normalizedResp.Provider)
+
+	// Stock provider: no normalization, profile stays Anthropic.
+	stock := &AnthropicProvider{}
+	assert.Equal(t, schemas.Anthropic, stock.conversionProvider())
+	assert.Same(t, req, stock.normalizeChatRequestForConversion(req))
+
+	// Custom provider pointed at Anthropic itself: no normalization (existing
+	// behavior preserved bit-for-bit).
+	customAnthropic := &AnthropicProvider{
+		customProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Anthropic},
+		networkConfig:        schemas.NetworkConfig{BaseURL: "https://api.anthropic.com"},
+	}
+	assert.Equal(t, schemas.Anthropic, customAnthropic.conversionProvider())
+	assert.Same(t, req, customAnthropic.normalizeChatRequestForConversion(req))
+
+	// Kimi-host custom provider resolves to the Kimi profile.
+	customKimi := &AnthropicProvider{
+		customProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Anthropic},
+		networkConfig:        schemas.NetworkConfig{BaseURL: "https://api.kimi.com/coding"},
+	}
+	assert.Equal(t, schemas.Kimi, customKimi.conversionProvider())
+}
+
+// TestCustomProviderZaiMount_EffortAndThinkingRoundTrip is the end-to-end pin
+// for the reported configuration: a request normalized through a
+// "zai-anthropic"-style custom provider profile emits effort + thinking exactly
+// like the built-in zhipu mount.
+func TestCustomProviderZaiMount_EffortAndThinkingRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	custom := &AnthropicProvider{
+		customProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Anthropic},
+		networkConfig:        schemas.NetworkConfig{BaseURL: "https://api.z.ai/api/anthropic"},
+	}
+
+	ctx := providerEffortTestCtx(t)
+	bifrostReq := anthropicInbound("glm-5.3", schemas.Ptr("max"), nil).ToBifrostResponsesRequest(ctx)
+	require.NotNil(t, bifrostReq)
+	bifrostReq.Provider = schemas.ModelProvider("zai-anthropic") // what routing assigns
+
+	normalized := custom.normalizeResponsesRequestForConversion(bifrostReq)
+	out := toAnthropicResponsesBuilt(t, ctx, normalized)
+
+	require.NotNil(t, out.OutputConfig, "output_config was dropped on the custom z.ai mount")
+	require.NotNil(t, out.OutputConfig.Effort)
+	assert.Equal(t, "max", *out.OutputConfig.Effort)
+	require.NotNil(t, out.Thinking, "GLM-5.3 requires an explicit thinking field on z.ai's mount")
+	assert.Equal(t, "enabled", out.Thinking.Type)
+}
+
 // TestStripUnsupportedFieldsFromRawBody_ZhipuForcedThinking covers the raw-path
 // thinking rewrite/synthesis for GLM-5.3, and its GLM-5.2 control.
 func TestStripUnsupportedFieldsFromRawBody_ZhipuForcedThinking(t *testing.T) {

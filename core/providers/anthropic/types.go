@@ -360,8 +360,12 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 	// for GLM-5.2 and above; out-of-scale values are mapped server-side per
 	// https://docs.z.ai/guides/capabilities/thinking (verified 2026-08-16; live ZCode
 	// traffic shows thinking{budget_tokens} + output_config{effort} coexisting).
+	// InterleavedThinking is on because z.ai accepts the interleaved-thinking beta
+	// header Claude Code sends against this mount (docs/research 04 §7.4) — it only
+	// gates header passthrough, GLM serves interleaved thinking natively.
 	schemas.Zhipu: {
-		OutputConfigEffort: true,
+		OutputConfigEffort:  true,
+		InterleavedThinking: true,
 	},
 	// Alibaba — Model Studio's /apps/anthropic mount documents output_config.effort
 	// for qwen3.8-max (xhigh/medium/low; max,high→xhigh), hosted glm-5.2 and
