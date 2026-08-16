@@ -24,6 +24,7 @@ type IntegrationHandler struct {
 func NewIntegrationHandler(client *bifrost.Bifrost, handlerStore lib.HandlerStore, wsResponses *WSResponsesHandler, wsRealtime *WSRealtimeHandler, webrtcRealtime *WebRTCRealtimeHandler, realtimeClientSecrets *RealtimeClientSecretsHandler) *IntegrationHandler {
 	// Initialize all available integration routers
 	extensions := []integrations.ExtensionRouter{
+		integrations.NewHumeRouter(client, handlerStore, logger),
 		integrations.NewOpenAIRouter(client, handlerStore, logger),
 		integrations.NewAnthropicRouter(client, handlerStore, logger),
 		integrations.NewGenAIRouter(client, handlerStore, logger),

@@ -28,6 +28,42 @@
       },
       "required": ["read_buffer_size"]
     },
+    "hume": {
+      "type": "object",
+      "description": "Configuration for the Hume EVI custom language model SSE adapter. Changes require a restart.",
+      "properties": {
+        "default_model": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S",
+          "description": "Bifrost provider/model string or model-catalog-resolvable name used when Hume omits its custom language model identifier."
+        },
+        "prosody_prompt": {
+          "type": "object",
+          "description": "Controls optional conversion of Hume vocal-expression confidence scores into prompt text.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false
+            },
+            "scope": {
+              "type": "string",
+              "enum": ["latest_user", "all_user_messages"],
+              "default": "latest_user",
+              "description": "Select only the latest scored user message or every scored user message."
+            },
+            "max_emotions": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 3,
+              "description": "Maximum number of highest-confidence expressions to inject per selected message. Zero includes all scores."
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
     "version": {
       "type": "integer",
       "description": "Controls how empty arrays in allow-list fields (models, allowed_models, key_ids, tools_to_execute) are interpreted. Omit or set to 2 for v1.5.0+ semantics: empty = deny all, [\"*\"] = allow all. Set to 1 to restore v1.4.x semantics: empty = allow all.",

@@ -28,6 +28,7 @@ var availableIntegrations = []string{
 	"bedrock",
 	"pydantic",
 	"cohere",
+	"hume",
 }
 
 // newBifrostErrorWithCode is like newBifrostError but sets an explicit HTTP status code.
