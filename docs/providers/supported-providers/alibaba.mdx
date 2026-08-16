@@ -121,6 +121,12 @@ The setting can be configured per key, and overridden per model alias:
 
 If neither is set, requests fall back to the OpenAI-compatible endpoints.
 
+**Parameter surface on the Anthropic mount** (verified against the vendor docs 2026-08-16):
+
+- `output_config.effort` is forwarded for **qwen3.8-max** (`xhigh`/`medium`/`low`; `max`,`high`→`xhigh`), **hosted glm-5.2+**, and **deepseek-v4-pro/flash** (`high`/`max`; `low`,`medium`→`high`, `xhigh`→`max`) — Model Studio maps out-of-enum values server-side, so any Bifrost effort value is passed through verbatim. For all other models the field is stripped.
+- `thinking: {"type": "enabled"|"disabled", "budget_tokens": N}`, `output_config.format` (JSON Schema structured output), `cache_control` (ephemeral prompt caching), image/video content blocks, `tools`, `tool_choice` (`auto`/`any`/`none`/`tool`), `top_p`, `top_k`, `stop_sequences`, and `metadata.user_id` pass through. Note the mount's `temperature` range is **[0, 2)** and its `max_tokens` semantics differ per model family (qwen3.8-max and deepseek-v4-* count reply + chain-of-thought together).
+- Anthropic-only extensions (`speed`, `inference_geo`, `service_tier`, `container`, `mcp_servers`, `context_management`, `output_config.task_budget`) are stripped — the mount does not accept them.
+
 <Tabs>
 <Tab title="Web UI">
 

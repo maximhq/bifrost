@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/bytedance/sonic"
@@ -250,8 +251,11 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 	// output_config.effort — model-gated per
 	// https://platform.claude.com/docs/en/build-with-claude/effort. Models
 	// outside the supported set return: "This model does not support the
-	// effort parameter."
-	if req.OutputConfig != nil && req.OutputConfig.Effort != nil && !caps.SupportsNativeEffort(DefaultSupportsNativeEffort(caps.Model())) {
+	// effort parameter." Provider-aware via SupportsProviderEffort: mounts that
+	// document the field as a vendor extension (z.ai, Model Studio) keep it for
+	// their documented families, and the fallback carries the datasheet-driven
+	// native-effort gate for everything else.
+	if req.OutputConfig != nil && req.OutputConfig.Effort != nil && !SupportsProviderEffort(provider, model) {
 		req.OutputConfig.Effort = nil
 		if req.OutputConfig.Format == nil && req.OutputConfig.TaskBudget == nil {
 			req.OutputConfig = nil
@@ -300,6 +304,31 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 		if RejectsDisabledThinking(model, effort) {
 			req.Thinking.Type = "adaptive"
 			req.Thinking.BudgetTokens = nil
+		}
+	}
+	// Forced-thinking GLM models on z.ai's mount (GLM-5.3+, GLM-4.7, GLM-4.5V):
+	// thinking cannot be disabled — GLM-5.3+ 400s ("This model always engages in
+	// thinking and cannot be disabled") and the mount treats an absent thinking
+	// field as disabled. Rewrite disabled → enabled with the minimum budget (the
+	// closest legal shape to the caller's "cheap" intent).
+	if provider == schemas.Zhipu && req.Thinking != nil && req.Thinking.Type == "disabled" &&
+		ZhipuForcedThinkingModel(model) {
+		req.Thinking = &AnthropicThinking{
+			Type:         "enabled",
+			BudgetTokens: schemas.Ptr(MinimumReasoningMaxTokens),
+		}
+	}
+	// GLM-5.3+ requires the thinking field outright on this mount (absent =
+	// disabled = 1210 error), so synthesize it. Budget precedence: effort-derived
+	// (the caller's output_config.effort) > minimum.
+	if provider == schemas.Zhipu && req.Thinking == nil && ZhipuRequiresThinkingModel(model) {
+		var effort *string
+		if req.OutputConfig != nil {
+			effort = req.OutputConfig.Effort
+		}
+		req.Thinking = &AnthropicThinking{
+			Type:         "enabled",
+			BudgetTokens: schemas.Ptr(zhipuThinkingBudget(effort, req.MaxTokens)),
 		}
 	}
 	if req.InferenceGeo != nil && !caps.SupportsInferenceGeo(features.InferenceGeo) {
@@ -619,9 +648,10 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 
 	// output_config.effort — model-gated per
 	// https://platform.claude.com/docs/en/build-with-claude/effort.
-	// Mirrors the typed path; same cleanup of an empty parent.
+	// Mirrors the typed path; same cleanup of an empty parent. Provider-aware
+	// via SupportsProviderEffort (z.ai / Model Studio extension families).
 	if providerUtils.JSONFieldExists(jsonBody, "output_config.effort") &&
-		!caps.SupportsNativeEffort(DefaultSupportsNativeEffort(caps.Model())) {
+		!SupportsProviderEffort(provider, model) {
 		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "output_config.effort")
 		if err != nil {
 			return nil, fmt.Errorf("strip raw output_config.effort: %w", err)
@@ -678,6 +708,42 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 				if err != nil {
 					return nil, fmt.Errorf("strip raw thinking.budget_tokens: %w", err)
 				}
+			}
+		}
+	}
+
+	// Forced-thinking GLM models on z.ai's mount — mirrors the typed path in
+	// stripUnsupportedAnthropicFields: thinking cannot be disabled (GLM-5.3+
+	// 400s), so disabled is rewritten to enabled with the minimum budget, and
+	// on GLM-5.3+ (which requires the field outright — absent = disabled =
+	// 1210 error) a missing thinking field is synthesized, budget derived from
+	// output_config.effort when present.
+	if provider == schemas.Zhipu {
+		thinkingType := providerUtils.GetJSONField(jsonBody, "thinking.type").String()
+		switch {
+		case thinkingType == "disabled" && ZhipuForcedThinkingModel(model):
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, "thinking.type", "enabled")
+			if err != nil {
+				return nil, fmt.Errorf("rewrite raw thinking.type on forced-thinking GLM: %w", err)
+			}
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, "thinking.budget_tokens", MinimumReasoningMaxTokens)
+			if err != nil {
+				return nil, fmt.Errorf("set raw thinking.budget_tokens on forced-thinking GLM: %w", err)
+			}
+		case thinkingType == "" && ZhipuRequiresThinkingModel(model):
+			var effort *string
+			if e := providerUtils.GetJSONField(jsonBody, "output_config.effort"); e.Exists() {
+				v := e.String()
+				effort = &v
+			}
+			maxTokens := int(providerUtils.GetJSONField(jsonBody, "max_tokens").Int())
+			thinking := map[string]interface{}{
+				"type":          "enabled",
+				"budget_tokens": zhipuThinkingBudget(effort, maxTokens),
+			}
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, "thinking", thinking)
+			if err != nil {
+				return nil, fmt.Errorf("synthesize raw thinking on GLM-5.3+: %w", err)
 			}
 		}
 	}
@@ -1060,6 +1126,121 @@ func DefaultSupportsNativeEffort(model string) bool {
 		return strings.Contains(m, "4-6") || strings.Contains(m, "4.6")
 	}
 	return false
+}
+
+// glm5Minor returns the GLM-5.x minor revision of a (lowercased) model name,
+// or -1 when the model is not a glm-5.<digit>... shape. Covers Coding Plan
+// aliases (glm-5.2[1m]) via the leading-digit parse. Mirrors the helper of the
+// same name in core/providers/openai/utils.go — keep the two in lockstep.
+func glm5Minor(modelLower string) int {
+	rest, ok := strings.CutPrefix(modelLower, "glm-5.")
+	if !ok {
+		return -1
+	}
+	digits := 0
+	for digits < len(rest) && rest[digits] >= '0' && rest[digits] <= '9' {
+		digits++
+	}
+	if digits == 0 {
+		return -1
+	}
+	minor, err := strconv.Atoi(rest[:digits])
+	if err != nil {
+		return -1
+	}
+	return minor
+}
+
+// bareModelName lowercases model and strips any provider/routing prefix so the
+// vendor model predicates below match the same strings the upstream sees.
+func bareModelName(model string) string {
+	m := strings.ToLower(model)
+	if i := strings.LastIndex(m, "/"); i >= 0 {
+		m = m[i+1:]
+	}
+	return m
+}
+
+// ZhipuForcedThinkingModel reports whether a GLM model cannot disable thinking
+// on z.ai: GLM-5.3+ errors on thinking.type:"disabled" ("GLM-5.3 no longer
+// supports disabling thinking"), and GLM-4.7 / GLM-4.5V are forced-thinking
+// (disabled is not honored).
+//
+// Source: https://docs.z.ai/guides/capabilities/thinking (verified 2026-08-16)
+func ZhipuForcedThinkingModel(model string) bool {
+	m := bareModelName(model)
+	if glm5Minor(m) >= 3 {
+		return true
+	}
+	return strings.HasPrefix(m, "glm-4.7") || strings.HasPrefix(m, "glm-4.5v")
+}
+
+// ZhipuRequiresThinkingModel reports whether a GLM model requires an explicit
+// thinking:{type:"enabled"} field on z.ai's Anthropic mount: the mount treats an
+// absent thinking field as disabled, and GLM-5.3+ answers that with a 1210
+// error ("This model always engages in thinking and cannot be disabled") —
+// verified live 2026-08-16 (no-thinking and effort-only requests both 400).
+// GLM-4.7 tolerates an absent field (Claude Code's default traffic against the
+// mount carries none), so the requirement starts at 5.3.
+func ZhipuRequiresThinkingModel(model string) bool {
+	return glm5Minor(bareModelName(model)) >= 3
+}
+
+// zhipuThinkingBudget picks the budget_tokens value for a thinking field the
+// gateway rewrites or synthesizes on z.ai's mount: the caller's effort derives
+// one when present, otherwise the minimum — the closest legal shape to "think
+// as little as possible" when the caller gave no reasoning signal.
+func zhipuThinkingBudget(effort *string, maxTokens int) int {
+	budget := MinimumReasoningMaxTokens
+	if effort != nil {
+		if derived, err := providerUtils.GetBudgetTokensFromReasoningEffort(*effort, MinimumReasoningMaxTokens, maxTokens); err == nil {
+			budget = derived
+		}
+	}
+	if maxTokens > 1 && budget >= maxTokens {
+		budget = maxTokens - 1
+	}
+	return budget
+}
+
+// providerSupportsEffortModel scopes output_config.effort to the model families
+// each non-Anthropic vendor documents on its Anthropic-compatible mount. It only
+// runs for providers whose ProviderFeatures entry sets OutputConfigEffort.
+//
+//   - Zhipu: z.ai documents reasoning_effort for "GLM-5.2 and above"; on the
+//     Coding Plan Anthropic mount out-of-scale values are mapped server-side
+//     (GLM-5.3: none/minimal/low→low, medium/high→high, xhigh/max→max), so any
+//     Bifrost effort value is safe to forward verbatim.
+//   - Alibaba: Model Studio documents effort for qwen3.8-max (xhigh/medium/low;
+//     max,high→xhigh), hosted glm-5.2+ and deepseek-v4-pro/flash (high/max;
+//     low,medium→high, xhigh→max). Same server-side mapping, same verbatim rule.
+//
+// Cites: Z/Q on the OutputConfigEffort flag (types.go), verified 2026-08-16.
+func providerSupportsEffortModel(provider schemas.ModelProvider, model string) bool {
+	m := bareModelName(model)
+	switch provider {
+	case schemas.Zhipu:
+		return glm5Minor(m) >= 2
+	case schemas.Alibaba:
+		return strings.HasPrefix(m, "qwen3.8-max") ||
+			glm5Minor(m) >= 2 ||
+			strings.HasPrefix(m, "deepseek-v4-pro") ||
+			strings.HasPrefix(m, "deepseek-v4-flash")
+	default:
+		return true
+	}
+}
+
+// SupportsProviderEffort is the provider-aware form of SupportsEffortParameter.
+// Anthropic-family providers keep the model-gated Anthropic behavior; providers
+// whose mount documents the field as a vendor extension (OutputConfigEffort
+// flag) accept it for the vendor-documented model families instead.
+func SupportsProviderEffort(provider schemas.ModelProvider, model string) bool {
+	if features, ok := ProviderFeatures[provider]; ok && features.OutputConfigEffort {
+		return providerSupportsEffortModel(provider, model)
+	}
+	caps := schemas.ResolveModelCaps(provider, model)
+	return caps.SupportsNativeEffort(DefaultSupportsNativeEffort(caps.Model()))
 }
 
 // appendToSystemContent merges newContent into existing.

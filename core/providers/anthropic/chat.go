@@ -694,6 +694,13 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 						Type:         "enabled",
 						BudgetTokens: schemas.Ptr(budgetTokens),
 					}
+					// Vendor extension mounts (z.ai, Model Studio) accept
+					// thinking.budget_tokens and output_config.effort together —
+					// preserve a co-present effort instead of discarding it.
+					if reasoningParams.Effort != nil && *reasoningParams.Effort != "none" &&
+						SupportsProviderEffort(bifrostReq.Provider, capModel) {
+						setEffortOnOutputConfig(anthropicReq, MapBifrostEffortToAnthropic(*reasoningParams.Effort))
+					}
 				}
 			} else if reasoningParams.Effort != nil && *reasoningParams.Effort != "none" {
 				effort := MapBifrostEffortToAnthropic(*reasoningParams.Effort)
@@ -701,8 +708,11 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					// Opus 4.6+ and Opus 4.7+: adaptive thinking + native effort
 					anthropicReq.Thinking = &AnthropicThinking{Type: "adaptive"}
 					setEffortOnOutputConfig(anthropicReq, effort)
-				} else if SupportsNativeEffort(caps) {
-					// Opus 4.5: native effort + budget_tokens thinking
+				} else if SupportsNativeEffort(caps) || SupportsProviderEffort(bifrostReq.Provider, capModel) {
+					// Opus 4.5: native effort + budget_tokens thinking.
+					// Vendor extension mounts (z.ai GLM-5.2+, Model Studio
+					// qwen3.8/glm-5.2/deepseek-v4): same shape — the upstream maps
+					// the effort value server-side.
 					setEffortOnOutputConfig(anthropicReq, effort)
 					budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(effort, MinimumReasoningMaxTokens, anthropicReq.MaxTokens)
 					if err != nil {
@@ -727,7 +737,9 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 				// Fable/Mythos reject thinking:{type:"disabled"} with a 400 —
 				// adaptive thinking is always on and cannot be disabled. Omit
 				// the thinking param entirely for that family; all other models
-				// take the explicit disabled path.
+				// take the explicit disabled path. (Forced-thinking GLM models
+				// get rewritten to enabled downstream in
+				// stripUnsupportedAnthropicFields.)
 				anthropicReq.Thinking = &AnthropicThinking{
 					Type: "disabled",
 				}
