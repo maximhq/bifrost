@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -121,7 +122,7 @@ func TestCreateHandler_DisabledLargePayloadModeAlwaysParsesRequest(t *testing.T)
 		},
 	}
 
-	router := NewGenericRouter(nil, handlerStore, nil, nil, nil)
+	router := NewGenericRouter(nil, handlerStore, nil, nil, bifrost.NewNoOpLogger())
 	router.SetLargePayloadHook(func(_ *fasthttp.RequestCtx, _ *schemas.BifrostContext, _ RouteConfigType) (bool, error) {
 		hookCalls++
 		return true, nil

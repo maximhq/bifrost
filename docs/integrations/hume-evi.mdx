@@ -70,7 +70,7 @@ The Hume routes use the same authentication and governance middleware as other i
 
 ## Prosody-aware prompting
 
-Hume attaches timestamps and expression confidence scores to messages. Bifrost exposes these values to Go LLM plugins through `BifrostChatRequest.HumeMetadata` without forwarding the metadata fields directly to providers.
+Hume attaches timestamps and expression confidence scores to messages. Bifrost exposes these values to Go LLM plugins as typed `HumeChatRequestMetadata` in `BifrostChatRequest.IntegrationMetadata` without forwarding the metadata fields directly to providers. Plugins can retrieve it with `schemas.GetChatIntegrationMetadata[*schemas.HumeChatRequestMetadata](request.ChatRequest)`.
 
 When prompt injection is enabled, Bifrost adds a stable system instruction and appends deterministic `<hume_vocal_expression>` JSON to selected user messages. Scores are sorted by confidence, labels break ties, and values are rounded to three decimal places. The instruction tells the model that scores describe perceived vocal expression—not verified internal feelings—and should be used subtly.
 

@@ -28,6 +28,7 @@ var integrationTypeToDefaultProvider = map[string]schemas.ModelProvider{
 	"genai":     schemas.Gemini,
 	"bedrock":   schemas.Bedrock,
 	"cohere":    schemas.Cohere,
+	"hume":      schemas.OpenAI,
 }
 
 // Plugin resolves the default provider for unprefixed model strings using the model catalog.

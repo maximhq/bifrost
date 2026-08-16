@@ -18,13 +18,25 @@ type BifrostChatRequest struct {
 	Params         *ChatParameters `json:"params,omitempty"`
 	Fallbacks      []Fallback      `json:"fallbacks,omitempty"`
 	RawRequestBody []byte          `json:"-"` // set bifrost-use-raw-request-body to true in ctx to use the raw request body. Bifrost will directly send this to the downstream provider.
-	// HumeMetadata carries request-only metadata supplied by Hume EVI's custom
-	// language model protocol. LLM plugins may inspect it, but it must never be
-	// serialized to an upstream provider.
-	HumeMetadata *HumeChatRequestMetadata `json:"-"`
+	// IntegrationMetadata carries request-only metadata supplied by an inbound
+	// integration. LLM plugins may inspect typed values stored here, but providers
+	// must never serialize them to an upstream API.
+	IntegrationMetadata any `json:"-"`
 }
 
-// HumeChatRequestMetadata contains Hume EVI metadata associated with a chat request.
+// GetChatIntegrationMetadata returns typed request metadata supplied by an inbound
+// integration. The boolean is false when the request is nil or stores another type.
+func GetChatIntegrationMetadata[T any](request *BifrostChatRequest) (T, bool) {
+	var zero T
+	if request == nil {
+		return zero, false
+	}
+	metadata, ok := request.IntegrationMetadata.(T)
+	return metadata, ok
+}
+
+// HumeChatRequestMetadata is the typed IntegrationMetadata value supplied by the
+// Hume EVI adapter.
 // The metadata is read-only by convention once the request enters the plugin pipeline.
 type HumeChatRequestMetadata struct {
 	CustomSessionID string                      `json:"custom_session_id"`
