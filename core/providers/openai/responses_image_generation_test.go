@@ -72,10 +72,12 @@ func TestResponsesImageGenerationStreamingProviderIntegration(t *testing.T) {
 		`data: {"type":"response.image_generation_call.generating","sequence_number":2,"item":{"type":"image_generation_call","id":"ig_stream","status":"generating","action":"generate"}}` + "\n\n" +
 		"event: response.image_generation_call.partial_image\n" +
 		`data: {"type":"response.image_generation_call.partial_image","sequence_number":3,"item_id":"ig_stream","partial_image_b64":"aGk=","partial_image_index":0}` + "\n\n" +
-		"event: response.image_generation_call.completed\n" +
-		`data: {"type":"response.image_generation_call.completed","sequence_number":4,"item":{"type":"image_generation_call","id":"ig_stream","status":"completed","action":"generate","result":"aGVsbG8="}}` + "\n\n" +
+		// OpenAI's live stream returns the final base64 image in output_item.done,
+		// rather than emitting a response.image_generation_call.completed event.
+		"event: response.output_item.done\n" +
+		`data: {"type":"response.output_item.done","sequence_number":4,"item":{"type":"image_generation_call","id":"ig_stream","status":"generating","action":"generate","result":"aGVsbG8="}}` + "\n\n" +
 		"event: response.completed\n" +
-		`data: {"type":"response.completed","sequence_number":5,"response":{"id":"resp_stream","object":"response","status":"completed","output":[{"type":"image_generation_call","id":"ig_stream","status":"completed","action":"generate","result":"aGVsbG8="}]}}` + "\n\n"
+		`data: {"type":"response.completed","sequence_number":5,"response":{"id":"resp_stream","object":"response","status":"completed","output":[{"type":"image_generation_call","id":"ig_stream","status":"generating","action":"generate","result":"aGVsbG8="}]}}` + "\n\n"
 
 	server := completeSSEServer(t, streamBody)
 	defer server.Close()
@@ -87,7 +89,7 @@ func TestResponsesImageGenerationStreamingProviderIntegration(t *testing.T) {
 		schemas.ResponsesStreamResponseTypeImageGenerationCallInProgress:   false,
 		schemas.ResponsesStreamResponseTypeImageGenerationCallGenerating:   false,
 		schemas.ResponsesStreamResponseTypeImageGenerationCallPartialImage: false,
-		schemas.ResponsesStreamResponseTypeImageGenerationCallCompleted:    false,
+		schemas.ResponsesStreamResponseTypeOutputItemDone:                  false,
 	}
 	var completed *schemas.BifrostResponsesStreamResponse
 	for _, chunk := range collectChunks(t, stream) {
@@ -101,13 +103,16 @@ func TestResponsesImageGenerationStreamingProviderIntegration(t *testing.T) {
 		}
 		if response.Type == schemas.ResponsesStreamResponseTypeImageGenerationCallInProgress ||
 			response.Type == schemas.ResponsesStreamResponseTypeImageGenerationCallGenerating ||
-			response.Type == schemas.ResponsesStreamResponseTypeImageGenerationCallCompleted {
+			response.Type == schemas.ResponsesStreamResponseTypeOutputItemDone {
 			require.NotNil(t, response.Item)
 			require.NotNil(t, response.Item.Action)
 			require.NotNil(t, response.Item.Action.ResponsesImageGenerationToolCallAction)
 			encodedEvent, err := json.Marshal(response)
 			require.NoError(t, err)
 			require.Contains(t, string(encodedEvent), `"action":"generate"`)
+			if response.Type == schemas.ResponsesStreamResponseTypeOutputItemDone {
+				require.Equal(t, "aGVsbG8=", response.Item.ResponsesImageGenerationCall.Result)
+			}
 		}
 		if response.Type == schemas.ResponsesStreamResponseTypeCompleted {
 			completed = response
