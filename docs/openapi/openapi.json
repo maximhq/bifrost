@@ -188,6 +188,10 @@
     {
       "name": "Webhooks",
       "description": "Webhook endpoint management and signed async-job delivery history"
+    },
+    {
+      "name": "Notifications",
+      "description": "Role-targeted dashboard notifications, delivered over the dashboard WebSocket"
     }
   ],
   "paths": {
@@ -79207,6 +79211,151 @@
           }
         ]
       }
+    },
+    "/api/notifications": {
+      "get": {
+        "operationId": "listNotifications",
+        "summary": "List dashboard notifications",
+        "description": "Returns notifications the caller is entitled to see, newest first.\nNotifications addressed to `all` are visible to everyone; those addressed\nto `roles` are only returned when the caller holds one of the listed\nroles. A local admin sees every notification.\n\nRead and dismissed state is not stored server-side, so every caller sees\nthe full page regardless of what they have already opened.\n",
+        "tags": [
+          "Notifications"
+        ],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Notifications per page. Values above the server page size of 50 are\nclamped down to it.\n",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "The `next_cursor` from a previous response.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of notifications",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ]
+      },
+      "post": {
+        "operationId": "createNotification",
+        "summary": "Publish a dashboard notification",
+        "description": "Persists a notification and pushes it over the dashboard WebSocket to\nevery connected client the audience covers.\n\nAdministrators only. Reading is open to any authenticated user because a\ncaller only ever receives rows their role already entitles them to, but a\nsingle publish reaches every dashboard user on the deployment, so it is\nrestricted to the local admin. On a deployment with dashboard auth\ndisabled every request is treated as local admin.\n\nNotifications expire 30 days after creation and are pruned hourly.\n",
+        "tags": [
+          "Notifications"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NotificationInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Notification published and broadcast",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Notification"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated, but not permitted to perform this action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -79297,6 +79446,16 @@
       },
       "Unauthorized": {
         "description": "Unauthorized — missing or invalid credentials",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/BifrostError"
+            }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "Forbidden — authenticated, but not permitted to perform this action",
         "content": {
           "application/json": {
             "schema": {
@@ -99654,6 +99813,144 @@
           "status": {
             "type": "string",
             "example": "success"
+          }
+        }
+      },
+      "NotificationSeverity": {
+        "type": "string",
+        "description": "Visual weight the dashboard gives the notification.",
+        "enum": [
+          "info",
+          "success",
+          "warning",
+          "error"
+        ]
+      },
+      "NotificationAudience": {
+        "type": "string",
+        "description": "Who the notification reaches. `all` is every dashboard user; `roles` limits\nit to the listed RBAC roles, enforced on both the list endpoint and the\nWebSocket fan-out.\n",
+        "enum": [
+          "all",
+          "roles"
+        ]
+      },
+      "NotificationInput": {
+        "type": "object",
+        "description": "A notification to publish. IDs and both timestamps are assigned by the\nserver and cannot be supplied.\n",
+        "required": [
+          "audience",
+          "severity",
+          "title",
+          "message"
+        ],
+        "properties": {
+          "audience": {
+            "$ref": "#/components/schemas/NotificationAudience"
+          },
+          "role_ids": {
+            "type": "array",
+            "description": "Required when `audience` is `roles`, and must be empty otherwise.\nDuplicates are removed and the list is sorted before it is stored.\n",
+            "items": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          },
+          "severity": {
+            "$ref": "#/components/schemas/NotificationSeverity"
+          },
+          "title": {
+            "type": "string",
+            "description": "Trimmed before validation.",
+            "minLength": 1,
+            "maxLength": 160
+          },
+          "message": {
+            "type": "string",
+            "description": "Trimmed before validation.",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "action_label": {
+            "type": "string",
+            "description": "Label for the notification's action. Must be supplied together with\n`action_path`, or not at all.\n"
+          },
+          "action_path": {
+            "type": "string",
+            "description": "Dashboard-internal absolute path the action opens, for example\n`/workspace/providers`. Absolute URLs, host-relative `//` paths, and\nanything not starting with `/` are rejected, so a notification cannot\nbe used to send users off-site.\n",
+            "pattern": "^/(?!/).*"
+          }
+        }
+      },
+      "Notification": {
+        "type": "object",
+        "description": "A persisted dashboard notification.",
+        "required": [
+          "id",
+          "audience",
+          "severity",
+          "title",
+          "message",
+          "created_at",
+          "expires_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "audience": {
+            "$ref": "#/components/schemas/NotificationAudience"
+          },
+          "role_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          "severity": {
+            "$ref": "#/components/schemas/NotificationSeverity"
+          },
+          "title": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "action_label": {
+            "type": "string"
+          },
+          "action_path": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Always 30 days after `created_at`. Expired rows are pruned hourly and\nare not returned once pruned.\n"
+          }
+        }
+      },
+      "NotificationList": {
+        "type": "object",
+        "description": "A page of notifications, newest first, already filtered to what the caller's\nrole may see.\n",
+        "required": [
+          "notifications"
+        ],
+        "properties": {
+          "notifications": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Notification"
+            }
+          },
+          "next_cursor": {
+            "type": "string",
+            "description": "Opaque cursor for the next page. Absent when there are no further\nresults. Pass it back as the `cursor` query parameter.\n"
           }
         }
       }

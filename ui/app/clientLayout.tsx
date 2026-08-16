@@ -9,6 +9,7 @@ import TrialExpiryBanner from "@/components/trialExpiryBanner";
 import { Button } from "@/components/ui/button";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { useStoreSync } from "@/hooks/useStoreSync";
+import { useNotificationSync } from "@/hooks/useNotificationSync";
 import { TopbarProvider } from "@/lib/contexts/topbarContext";
 import { WebSocketProvider } from "@/hooks/useWebSocket";
 import { getErrorMessage, ReduxProvider, useGetCoreConfigQuery, useIsAuthEnabledQuery } from "@/lib/store";
@@ -35,6 +36,7 @@ const DevProfiler = () => (
 
 function StoreSyncInitializer() {
 	useStoreSync();
+	useNotificationSync();
 	return null;
 }
 
