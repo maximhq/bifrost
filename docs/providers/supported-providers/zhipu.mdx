@@ -119,6 +119,13 @@ The setting can be configured per key, and overridden per model alias:
 
 If neither is set, requests fall back to Zhipu's OpenAI-compatible endpoints.
 
+**Parameter surface on the Anthropic mount** (verified against the vendor docs and live upstream behavior 2026-08-16):
+
+- `output_config.effort` is forwarded for **GLM-5.2 and later** — z.ai accepts the field on this mount and maps out-of-scale values server-side (GLM-5.3: `none`/`minimal`/`low`→`low`, `medium`/`high`→`high`, `xhigh`/`max`→`max`), so any Bifrost effort value is passed through verbatim. For older models (glm-5/5.1/4.7/4.6) the field is stripped.
+- **The mount treats an absent `thinking` field as disabled.** GLM-5.3+ rejects that with a 1210 error ("This model always engages in thinking and cannot be disabled"), so for GLM-5.3+ a `thinking: {"type": "enabled"}` is always sent — synthesized when missing (budget derived from `output_config.effort`, else the minimum), and `thinking.type: "disabled"` is rewritten to `enabled` with the minimum budget (the model thinks regardless — there is no off mode). GLM-4.7 is forced-thinking too (`disabled` is rewritten), but tolerates an absent field.
+- `thinking: {"type": "enabled", "budget_tokens": N}`, `metadata.user_id`, `system`/message `cache_control`, `tools`, `tool_choice`, `stop_sequences`, `top_p`, and `top_k` pass through.
+- Anthropic-only extensions (`speed`, `inference_geo`, `service_tier`, `container`, `mcp_servers`, `context_management`, `output_config.task_budget`) are stripped — the mount does not accept them.
+
 <Tabs>
 <Tab title="Web UI">
 

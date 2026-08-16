@@ -124,6 +124,8 @@ If neither is set, requests fall back to Kimi's OpenAI-compatible endpoints.
 Kimi's Anthropic-compatible contract is not officially specified. Empirically it accepts the standard Messages fields and streams the usual SSE events, but **temperature is rescaled upstream (`real = request × 0.6`)**, and the 1M-context variant of the flagship is addressed as `kimi-k3[1m]` on this mount.
 </Note>
 
+**Parameter surface on the Anthropic mount** (verified against the vendor docs and live upstream behavior 2026-08-16): the mount documents **no effort equivalent** — K3's `reasoning_effort` is an OpenAI-mount field — so `output_config.effort` is stripped (the mount tolerates unknown fields rather than 400ing, but they are no-ops). `thinking: {"type": "enabled"|"disabled"}` is honored — including `disabled`, which returns a plain non-thinking answer; multi-turn tool loops with thinking on require full `reasoning_content` replay (MoonshotAI/Kimi-K2#129). `metadata.user_id` is tolerated. Anthropic-only extensions (`speed`, `inference_geo`, `service_tier`, `container`, `mcp_servers`, `context_management`, `output_config.task_budget`, `output_config.format`) are stripped.
+
 <Tabs>
 <Tab title="Web UI">
 

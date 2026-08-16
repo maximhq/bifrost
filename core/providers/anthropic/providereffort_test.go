@@ -1,0 +1,618 @@
+package anthropic
+
+import (
+	"context"
+	"testing"
+
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// Regression coverage for output_config.effort on non-Anthropic
+// Anthropic-compatible mounts, verified against vendor docs 2026-08-16:
+//
+//   - z.ai Coding Plan Anthropic mount (schemas.Zhipu): output_config.effort is a
+//     documented extension for GLM-5.2+; out-of-scale values are mapped
+//     server-side (GLM-5.3: none/minimal/low→low, medium/high→high,
+//     xhigh/max→max). thinking.type:"disabled" 400s on GLM-5.3+ and is ignored
+//     on forced-thinking GLM-4.7, so the field is omitted instead.
+//     Source: https://docs.z.ai/guides/capabilities/thinking
+//   - Alibaba Cloud Model Studio /apps/anthropic (schemas.Alibaba):
+//     output_config.effort documented for qwen3.8-max (xhigh/medium/low;
+//     max,high→xhigh), hosted glm-5.2 and deepseek-v4-pro/flash (high/max;
+//     low,medium→high, xhigh→max). Vendor maps out-of-enum values server-side.
+//     Source: https://www.alibabacloud.com/help/en/model-studio/anthropic-api-messages
+//   - Kimi /anthropic (schemas.Kimi): unofficial empirical contract
+//     (MoonshotAI/Kimi-K2#129) — no effort equivalent documented, so effort
+//     keeps being stripped rather than forwarded as an unknown field.
+//
+// The reported bug: an Anthropic-protocol client sending
+// {"output_config":{"effort":"max"}} with no thinking parameter had the effort
+// silently discarded on the zhipu mount because every gate was keyed on
+// Anthropic's own model list.
+
+func providerEffortTestCtx(t *testing.T) *schemas.BifrostContext {
+	t.Helper()
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	t.Cleanup(cancel)
+	return ctx
+}
+
+// anthropicInbound builds the Messages API shape an Anthropic-protocol client
+// (opencode / Claude Code style) sends, then normalizes it the way the inbound
+// integration does.
+func anthropicInbound(model string, effort *string, thinking *AnthropicThinking) *AnthropicMessageRequest {
+	req := &AnthropicMessageRequest{
+		Model:     model,
+		MaxTokens: 128000,
+		Messages: []AnthropicMessage{{
+			Role:    AnthropicMessageRoleUser,
+			Content: AnthropicContent{ContentStr: schemas.Ptr("What is 1+1?")},
+		}},
+		Thinking: thinking,
+	}
+	if effort != nil {
+		req.OutputConfig = &AnthropicOutputConfig{Effort: effort}
+	}
+	return req
+}
+
+func TestSupportsProviderEffort(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		provider schemas.ModelProvider
+		model    string
+		want     bool
+	}{
+		// Zhipu: GLM-5.2+ only (z.ai documents reasoning_effort for "GLM-5.2 and above").
+		{schemas.Zhipu, "glm-5.3", true},
+		{schemas.Zhipu, "GLM-5.3", true},
+		{schemas.Zhipu, "glm-5.2", true},
+		{schemas.Zhipu, "glm-5.2[1m]", true},
+		{schemas.Zhipu, "glm-5", false},
+		{schemas.Zhipu, "glm-5.1", false},
+		{schemas.Zhipu, "glm-4.7", false},
+		{schemas.Zhipu, "glm-4.6v", false},
+		// Alibaba: qwen3.8-max / hosted glm-5.2+ / deepseek-v4 only.
+		{schemas.Alibaba, "qwen3.8-max", true},
+		{schemas.Alibaba, "qwen3.8-max-preview", true},
+		{schemas.Alibaba, "glm-5.2", true},
+		{schemas.Alibaba, "deepseek-v4-pro", true},
+		{schemas.Alibaba, "deepseek-v4-flash", true},
+		{schemas.Alibaba, "deepseek-v4-flash-0731", true},
+		{schemas.Alibaba, "qwen3.7-plus", false},
+		{schemas.Alibaba, "qwen3-max", false},
+		{schemas.Alibaba, "glm-5.1", false},
+		{schemas.Alibaba, "MiniMax-M2.5", false},
+		// Kimi: no effort equivalent on the /anthropic mount.
+		{schemas.Kimi, "kimi-k3", false},
+		{schemas.Kimi, "kimi-k2.6", false},
+		// Anthropic falls back to the model gate unchanged.
+		{schemas.Anthropic, "claude-opus-4-6", true},
+		{schemas.Anthropic, "claude-sonnet-4-5", false},
+		{schemas.Anthropic, "claude-haiku-4-5", false},
+		// Unknown provider: model gate only (safe default, unchanged behavior).
+		{schemas.ModelProvider("unknown-vendor"), "claude-opus-4-6", true},
+		{schemas.ModelProvider("unknown-vendor"), "glm-5.3", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(string(tc.provider)+"/"+tc.model, func(t *testing.T) {
+			assert.Equal(t, tc.want, SupportsProviderEffort(tc.provider, tc.model),
+				"SupportsProviderEffort(%s, %s)", tc.provider, tc.model)
+		})
+	}
+}
+
+func TestZhipuForcedThinkingModel(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		model string
+		want  bool
+	}{
+		{"glm-5.3", true},
+		{"GLM-5.3", true},
+		{"glm-5.3[1m]", true},
+		{"glm-5.4", true},
+		{"glm-4.7", true},
+		{"glm-4.7-flash", true},
+		{"glm-4.5v", true},
+		{"glm-5.2", false},
+		{"glm-5.2[1m]", false},
+		{"glm-5", false},
+		{"glm-4.6", false},
+		{"qwen3.8-max", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			assert.Equal(t, tc.want, ZhipuForcedThinkingModel(tc.model))
+		})
+	}
+}
+
+func TestZhipuRequiresThinkingModel(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		model string
+		want  bool
+	}{
+		{"glm-5.3", true},
+		{"glm-5.3[1m]", true},
+		{"glm-5.4", true},
+		// GLM-4.7 tolerates an absent thinking field (Claude Code's default
+		// traffic against the mount carries none), so it is NOT here.
+		{"glm-4.7", false},
+		{"glm-4.5v", false},
+		{"glm-5.2", false},
+		{"glm-5", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			assert.Equal(t, tc.want, ZhipuRequiresThinkingModel(tc.model))
+		})
+	}
+}
+
+// toAnthropicResponsesBuilt mirrors the builder flow: convert, then run the
+// strip pass the builder applies (ToAnthropicResponsesRequest does not strip
+// internally; BuildAnthropicResponsesRequestBody does).
+func toAnthropicResponsesBuilt(t *testing.T, ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostResponsesRequest) *AnthropicMessageRequest {
+	t.Helper()
+	out, err := ToAnthropicResponsesRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	stripUnsupportedAnthropicFields(out, bifrostReq.Provider, out.Model)
+	return out
+}
+
+// TestZhipuAnthropicMount_EffortOnlyRoundTrip is the direct regression for the
+// reported bug: an Anthropic-protocol client sending output_config.effort with
+// no thinking parameter must see the effort reach the z.ai upstream verbatim.
+// GLM-5.3 also requires the thinking field outright on this mount (absent =
+// disabled = 1210 error, verified live 2026-08-16), so a thinking:{enabled} is
+// synthesized with the budget derived from the caller's effort.
+func TestZhipuAnthropicMount_EffortOnlyRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	for _, effort := range []string{"max", "high", "low"} {
+		t.Run(effort, func(t *testing.T) {
+			ctx := providerEffortTestCtx(t)
+			bifrostReq := anthropicInbound("glm-5.3", schemas.Ptr(effort), nil).ToBifrostResponsesRequest(ctx)
+			require.NotNil(t, bifrostReq)
+			bifrostReq.Provider = schemas.Zhipu
+
+			out := toAnthropicResponsesBuilt(t, ctx, bifrostReq)
+
+			require.NotNil(t, out.OutputConfig, "output_config was dropped on the zhipu mount")
+			require.NotNil(t, out.OutputConfig.Effort)
+			assert.Equal(t, effort, *out.OutputConfig.Effort, "effort must reach z.ai verbatim (Coding Plan maps server-side)")
+			require.NotNil(t, out.Thinking, "GLM-5.3 rejects requests with no thinking field on this mount")
+			assert.Equal(t, "enabled", out.Thinking.Type)
+			require.NotNil(t, out.Thinking.BudgetTokens)
+			assert.Positive(t, *out.Thinking.BudgetTokens)
+		})
+	}
+}
+
+// TestZhipuAnthropicMount_CoPresentBudgetAndEffortRoundTrip pins the ZCode-proven
+// wire shape: thinking{budget_tokens} and output_config{effort} coexist.
+func TestZhipuAnthropicMount_CoPresentBudgetAndEffortRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	ctx := providerEffortTestCtx(t)
+	budget := 32000
+	bifrostReq := anthropicInbound("glm-5.3", schemas.Ptr("max"), &AnthropicThinking{
+		Type:         "enabled",
+		BudgetTokens: &budget,
+	}).ToBifrostResponsesRequest(ctx)
+	require.NotNil(t, bifrostReq)
+	bifrostReq.Provider = schemas.Zhipu
+
+	out := toAnthropicResponsesBuilt(t, ctx, bifrostReq)
+
+	require.NotNil(t, out.Thinking)
+	assert.Equal(t, "enabled", out.Thinking.Type)
+	require.NotNil(t, out.Thinking.BudgetTokens)
+	assert.Equal(t, 32000, *out.Thinking.BudgetTokens)
+	require.NotNil(t, out.OutputConfig)
+	require.NotNil(t, out.OutputConfig.Effort)
+	assert.Equal(t, "max", *out.OutputConfig.Effort)
+}
+
+// TestZhipuAnthropicMount_NoReasoningSignalSynthesizesThinking covers a plain
+// request (no effort, no thinking) against GLM-5.3: the mount treats an absent
+// thinking field as disabled and 400s, so the strip pass synthesizes
+// thinking:{enabled} with the minimum budget.
+func TestZhipuAnthropicMount_NoReasoningSignalSynthesizesThinking(t *testing.T) {
+	t.Parallel()
+
+	ctx := providerEffortTestCtx(t)
+	bifrostReq := anthropicInbound("glm-5.3", nil, nil).ToBifrostResponsesRequest(ctx)
+	require.NotNil(t, bifrostReq)
+	bifrostReq.Provider = schemas.Zhipu
+
+	out := toAnthropicResponsesBuilt(t, ctx, bifrostReq)
+
+	require.NotNil(t, out.Thinking, "GLM-5.3 requires an explicit thinking field on z.ai's mount")
+	assert.Equal(t, "enabled", out.Thinking.Type)
+	require.NotNil(t, out.Thinking.BudgetTokens)
+	assert.Equal(t, MinimumReasoningMaxTokens, *out.Thinking.BudgetTokens)
+}
+
+// TestZhipuAnthropicMount_EffortDroppedBelowGLM52 pins the documented model
+// scope: GLM-5/5.1/4.7 do not accept effort, so it is stripped (budget thinking
+// still carries the intent) rather than risking an upstream 400.
+func TestZhipuAnthropicMount_EffortDroppedBelowGLM52(t *testing.T) {
+	t.Parallel()
+
+	for _, model := range []string{"glm-5", "glm-5.1", "glm-4.7"} {
+		t.Run(model, func(t *testing.T) {
+			ctx := providerEffortTestCtx(t)
+			bifrostReq := anthropicInbound(model, schemas.Ptr("max"), nil).ToBifrostResponsesRequest(ctx)
+			bifrostReq.Provider = schemas.Zhipu
+
+			out := toAnthropicResponsesBuilt(t, ctx, bifrostReq)
+
+			if out.OutputConfig != nil {
+				assert.Nil(t, out.OutputConfig.Effort, "%s does not accept output_config.effort", model)
+			}
+			// GLM-4.7 tolerates an absent thinking field, and glm-5/5.1 allow
+			// disabled — none of them require a synthesized thinking field.
+			assert.Nil(t, out.Thinking)
+		})
+	}
+}
+
+// TestAlibabaAnthropicMount_EffortRoundTrip covers the Model Studio families
+// with documented effort support; the vendor maps out-of-enum values itself,
+// so the value must pass through verbatim.
+func TestAlibabaAnthropicMount_EffortRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	supported := []struct{ model, effort string }{
+		{"qwen3.8-max", "high"},
+		{"qwen3.8-max", "max"}, // vendor maps max→xhigh; passthrough is intentional
+		{"glm-5.2", "max"},
+		{"glm-5.2", "low"}, // vendor maps low→high
+		{"deepseek-v4-pro", "max"},
+		{"deepseek-v4-flash-0731", "xhigh"}, // vendor maps xhigh→max
+	}
+	for _, tc := range supported {
+		t.Run(tc.model+"/"+tc.effort, func(t *testing.T) {
+			ctx := providerEffortTestCtx(t)
+			bifrostReq := anthropicInbound(tc.model, schemas.Ptr(tc.effort), nil).ToBifrostResponsesRequest(ctx)
+			bifrostReq.Provider = schemas.Alibaba
+
+			out := toAnthropicResponsesBuilt(t, ctx, bifrostReq)
+
+			require.NotNil(t, out.OutputConfig, "output_config was dropped on the alibaba mount")
+			require.NotNil(t, out.OutputConfig.Effort)
+			assert.Equal(t, tc.effort, *out.OutputConfig.Effort)
+			// Alibaba treats an absent thinking field as the model default, so
+			// nothing is synthesized here.
+			assert.Nil(t, out.Thinking)
+		})
+	}
+
+	// Families without documented effort support keep the strip behavior.
+	for _, model := range []string{"qwen3.7-plus", "qwen3-max", "glm-5.1"} {
+		t.Run(model+"-stripped", func(t *testing.T) {
+			ctx := providerEffortTestCtx(t)
+			bifrostReq := anthropicInbound(model, schemas.Ptr("max"), nil).ToBifrostResponsesRequest(ctx)
+			bifrostReq.Provider = schemas.Alibaba
+
+			out := toAnthropicResponsesBuilt(t, ctx, bifrostReq)
+
+			if out.OutputConfig != nil {
+				assert.Nil(t, out.OutputConfig.Effort, "%s has no documented effort support on Model Studio", model)
+			}
+		})
+	}
+}
+
+// TestKimiAnthropicMount_EffortStripped pins the fail-closed behavior: Kimi's
+// /anthropic mount documents no effort equivalent (MoonshotAI/Kimi-K2#129), so
+// the field is stripped rather than forwarded as an unknown field. Thinking is
+// NOT synthesized to compensate — an Anthropic-protocol caller who omitted
+// thinking gets the model's own default (k2.6 defaults thinking on), matching
+// the don't-invent-thinking rule the Anthropic provider follows.
+func TestKimiAnthropicMount_EffortStripped(t *testing.T) {
+	t.Parallel()
+
+	ctx := providerEffortTestCtx(t)
+	bifrostReq := anthropicInbound("kimi-k2.6", schemas.Ptr("max"), nil).ToBifrostResponsesRequest(ctx)
+	bifrostReq.Provider = schemas.Kimi
+
+	out := toAnthropicResponsesBuilt(t, ctx, bifrostReq)
+
+	if out.OutputConfig != nil {
+		assert.Nil(t, out.OutputConfig.Effort, "kimi's /anthropic mount has no effort equivalent; the field must not be forwarded")
+	}
+	assert.Nil(t, out.Thinking, "caller sent no thinking parameter; Bifrost must not invent one")
+}
+
+// TestZhipuAnthropicMount_DisabledThinkingRewritten covers the GLM-5.3 quirk:
+// z.ai 400s on thinking.type:"disabled" for forced-thinking models ("This model
+// always engages in thinking and cannot be disabled"), so it is rewritten to
+// enabled with the minimum budget — the closest legal shape to the caller's
+// "think as little as possible" intent.
+func TestZhipuAnthropicMount_DisabledThinkingRewritten(t *testing.T) {
+	t.Parallel()
+
+	ctx := providerEffortTestCtx(t)
+	bifrostReq := anthropicInbound("glm-5.3", nil, &AnthropicThinking{Type: "disabled"}).ToBifrostResponsesRequest(ctx)
+	bifrostReq.Provider = schemas.Zhipu
+
+	out := toAnthropicResponsesBuilt(t, ctx, bifrostReq)
+
+	require.NotNil(t, out.Thinking, "GLM-5.3 rejects thinking.type:\"disabled\"; it must be rewritten, not forwarded")
+	assert.Equal(t, "enabled", out.Thinking.Type)
+	require.NotNil(t, out.Thinking.BudgetTokens)
+	assert.Equal(t, MinimumReasoningMaxTokens, *out.Thinking.BudgetTokens)
+}
+
+// TestZhipuAnthropicMount_DisabledThinkingPreservedOnGLM52 is the control:
+// GLM-5.2 supports disabling thinking, so the field passes through.
+func TestZhipuAnthropicMount_DisabledThinkingPreservedOnGLM52(t *testing.T) {
+	t.Parallel()
+
+	ctx := providerEffortTestCtx(t)
+	bifrostReq := anthropicInbound("glm-5.2", nil, &AnthropicThinking{Type: "disabled"}).ToBifrostResponsesRequest(ctx)
+	bifrostReq.Provider = schemas.Zhipu
+
+	out := toAnthropicResponsesBuilt(t, ctx, bifrostReq)
+
+	require.NotNil(t, out.Thinking)
+	assert.Equal(t, "disabled", out.Thinking.Type)
+}
+
+// TestZhipuChatPath_EffortEmitsOutputConfig covers the OpenAI-dialect inbound
+// (reasoning_effort) on the zhipu Anthropic mount: effort lands on
+// output_config.effort and thinking is synthesized from it (the vendor requires
+// thinking enabled for effort to take effect).
+func TestZhipuChatPath_EffortEmitsOutputConfig(t *testing.T) {
+	t.Parallel()
+
+	effort := "max"
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Zhipu,
+		Model:    "glm-5.3",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("What is 1+1?")}},
+		},
+		Params: &schemas.ChatParameters{
+			MaxCompletionTokens: schemas.Ptr(128000),
+			Reasoning:           &schemas.ChatReasoning{Effort: &effort},
+		},
+	}
+
+	out, err := ToAnthropicChatRequest(providerEffortTestCtx(t), bifrostReq)
+	require.NoError(t, err)
+
+	require.NotNil(t, out.OutputConfig, "chat-path effort was dropped on the zhipu mount")
+	require.NotNil(t, out.OutputConfig.Effort)
+	assert.Equal(t, "max", *out.OutputConfig.Effort)
+	require.NotNil(t, out.Thinking)
+	assert.Equal(t, "enabled", out.Thinking.Type)
+	require.NotNil(t, out.Thinking.BudgetTokens)
+}
+
+// TestKimiChatPath_EffortStaysBudgetOnly is the chat-path control: kimi keeps
+// the budget-only shape.
+func TestKimiChatPath_EffortStaysBudgetOnly(t *testing.T) {
+	t.Parallel()
+
+	effort := "high"
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Kimi,
+		Model:    "kimi-k2.6",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("What is 1+1?")}},
+		},
+		Params: &schemas.ChatParameters{
+			MaxCompletionTokens: schemas.Ptr(8192),
+			Reasoning:           &schemas.ChatReasoning{Effort: &effort},
+		},
+	}
+
+	out, err := ToAnthropicChatRequest(providerEffortTestCtx(t), bifrostReq)
+	require.NoError(t, err)
+
+	if out.OutputConfig != nil {
+		assert.Nil(t, out.OutputConfig.Effort)
+	}
+	require.NotNil(t, out.Thinking)
+	assert.Equal(t, "enabled", out.Thinking.Type)
+}
+
+// TestZhipuChatPath_DisabledThinkingRewrittenOnGLM53 pins the chat-path half
+// of the forced-thinking rewrite (the chat converter strips internally).
+func TestZhipuChatPath_DisabledThinkingRewrittenOnGLM53(t *testing.T) {
+	t.Parallel()
+
+	none := "none"
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Zhipu,
+		Model:    "glm-5.3",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("What is 1+1?")}},
+		},
+		Params: &schemas.ChatParameters{
+			MaxCompletionTokens: schemas.Ptr(8192),
+			Reasoning:           &schemas.ChatReasoning{Effort: &none},
+		},
+	}
+
+	out, err := ToAnthropicChatRequest(providerEffortTestCtx(t), bifrostReq)
+	require.NoError(t, err)
+
+	require.NotNil(t, out.Thinking, "GLM-5.3 cannot disable thinking; it must be rewritten to enabled")
+	assert.Equal(t, "enabled", out.Thinking.Type)
+	require.NotNil(t, out.Thinking.BudgetTokens)
+	assert.Equal(t, MinimumReasoningMaxTokens, *out.Thinking.BudgetTokens)
+}
+
+// TestStripUnsupportedAnthropicFields_ProviderEffort covers the typed strip
+// gate: effort survives for the documented vendor families and is removed
+// everywhere else, with Anthropic's own model gate unchanged.
+func TestStripUnsupportedAnthropicFields_ProviderEffort(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		kept     bool
+	}{
+		{"zhipu glm-5.3 keeps", schemas.Zhipu, "glm-5.3", true},
+		{"zhipu glm-5.2[1m] keeps", schemas.Zhipu, "glm-5.2[1m]", true},
+		{"zhipu glm-4.7 strips", schemas.Zhipu, "glm-4.7", false},
+		{"alibaba qwen3.8 keeps", schemas.Alibaba, "qwen3.8-max", true},
+		{"alibaba deepseek keeps", schemas.Alibaba, "deepseek-v4-pro", true},
+		{"alibaba qwen3.7 strips", schemas.Alibaba, "qwen3.7-plus", false},
+		{"kimi strips", schemas.Kimi, "kimi-k3", false},
+		{"anthropic haiku strips", schemas.Anthropic, "claude-haiku-4-5", false},
+		{"anthropic opus keeps", schemas.Anthropic, "claude-opus-4-6", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &AnthropicMessageRequest{
+				Model:        tc.model,
+				MaxTokens:    4096,
+				OutputConfig: &AnthropicOutputConfig{Effort: schemas.Ptr("max")},
+			}
+			stripUnsupportedAnthropicFields(req, tc.provider, tc.model)
+			if tc.kept {
+				require.NotNil(t, req.OutputConfig, "output_config was stripped for %s/%s", tc.provider, tc.model)
+				require.NotNil(t, req.OutputConfig.Effort)
+			} else if req.OutputConfig != nil {
+				assert.Nil(t, req.OutputConfig.Effort)
+			}
+		})
+	}
+}
+
+// TestStripUnsupportedAnthropicFields_ZhipuForcedThinking covers the typed
+// thinking rewrite/synthesis for forced-thinking GLM models.
+func TestStripUnsupportedAnthropicFields_ZhipuForcedThinking(t *testing.T) {
+	t.Parallel()
+
+	// disabled → rewritten to enabled + minimum budget on GLM-5.3.
+	req := &AnthropicMessageRequest{
+		Model:     "glm-5.3",
+		MaxTokens: 4096,
+		Thinking:  &AnthropicThinking{Type: "disabled"},
+	}
+	stripUnsupportedAnthropicFields(req, schemas.Zhipu, "glm-5.3")
+	require.NotNil(t, req.Thinking, "thinking.type:\"disabled\" must be rewritten for GLM-5.3, not forwarded")
+	assert.Equal(t, "enabled", req.Thinking.Type)
+	require.NotNil(t, req.Thinking.BudgetTokens)
+	assert.Equal(t, MinimumReasoningMaxTokens, *req.Thinking.BudgetTokens)
+
+	// Same rewrite on GLM-4.7 (forced-thinking but tolerant of an absent field).
+	req47 := &AnthropicMessageRequest{
+		Model:     "glm-4.7",
+		MaxTokens: 4096,
+		Thinking:  &AnthropicThinking{Type: "disabled"},
+	}
+	stripUnsupportedAnthropicFields(req47, schemas.Zhipu, "glm-4.7")
+	require.NotNil(t, req47.Thinking)
+	assert.Equal(t, "enabled", req47.Thinking.Type)
+
+	// GLM-5.2 keeps disabled (control).
+	req52 := &AnthropicMessageRequest{
+		Model:     "glm-5.2",
+		MaxTokens: 4096,
+		Thinking:  &AnthropicThinking{Type: "disabled"},
+	}
+	stripUnsupportedAnthropicFields(req52, schemas.Zhipu, "glm-5.2")
+	require.NotNil(t, req52.Thinking, "GLM-5.2 accepts thinking.type:\"disabled\"")
+	assert.Equal(t, "disabled", req52.Thinking.Type)
+
+	// Absent thinking → synthesized on GLM-5.3, budget derived from effort.
+	reqSynth := &AnthropicMessageRequest{
+		Model:        "glm-5.3",
+		MaxTokens:    128000,
+		OutputConfig: &AnthropicOutputConfig{Effort: schemas.Ptr("max")},
+	}
+	stripUnsupportedAnthropicFields(reqSynth, schemas.Zhipu, "glm-5.3")
+	require.NotNil(t, reqSynth.Thinking, "GLM-5.3 requires an explicit thinking field")
+	assert.Equal(t, "enabled", reqSynth.Thinking.Type)
+	require.NotNil(t, reqSynth.Thinking.BudgetTokens)
+	assert.Greater(t, *reqSynth.Thinking.BudgetTokens, MinimumReasoningMaxTokens, "effort=max should derive a large budget")
+
+	// Absent thinking stays absent on GLM-5.2 (control).
+	req52Absent := &AnthropicMessageRequest{Model: "glm-5.2", MaxTokens: 4096}
+	stripUnsupportedAnthropicFields(req52Absent, schemas.Zhipu, "glm-5.2")
+	assert.Nil(t, req52Absent.Thinking)
+}
+
+// TestStripUnsupportedFieldsFromRawBody_ProviderEffort is the raw-passthrough
+// counterpart: same provider/model matrix against the JSON body bytes.
+func TestStripUnsupportedFieldsFromRawBody_ProviderEffort(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		kept     bool
+	}{
+		{"zhipu glm-5.3 keeps", schemas.Zhipu, "glm-5.3", true},
+		{"alibaba qwen3.8 keeps", schemas.Alibaba, "qwen3.8-max", true},
+		{"alibaba qwen3-max strips", schemas.Alibaba, "qwen3-max", false},
+		{"kimi strips", schemas.Kimi, "kimi-k2.6", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{"model":"` + tc.model + `","max_tokens":4096,"messages":[{"role":"user","content":"hi"}],"output_config":{"effort":"max"}}`)
+			out, err := StripUnsupportedFieldsFromRawBody(body, tc.provider, tc.model)
+			require.NoError(t, err)
+			got := providerUtils.GetJSONField(out, "output_config.effort")
+			if tc.kept {
+				require.True(t, got.Exists(), "raw output_config.effort was stripped for %s/%s", tc.provider, tc.model)
+				assert.Equal(t, "max", got.String())
+			} else {
+				assert.False(t, got.Exists(), "raw output_config.effort must be stripped for %s/%s", tc.provider, tc.model)
+			}
+		})
+	}
+}
+
+// TestStripUnsupportedFieldsFromRawBody_ZhipuForcedThinking covers the raw-path
+// thinking rewrite/synthesis for GLM-5.3, and its GLM-5.2 control.
+func TestStripUnsupportedFieldsFromRawBody_ZhipuForcedThinking(t *testing.T) {
+	t.Parallel()
+
+	// disabled → rewritten to enabled + minimum budget.
+	body53 := []byte(`{"model":"glm-5.3","max_tokens":4096,"messages":[{"role":"user","content":"hi"}],"thinking":{"type":"disabled"}}`)
+	out, err := StripUnsupportedFieldsFromRawBody(body53, schemas.Zhipu, "glm-5.3")
+	require.NoError(t, err)
+	assert.Equal(t, "enabled", providerUtils.GetJSONField(out, "thinking.type").String(), "thinking must be rewritten for GLM-5.3 on the raw path")
+	assert.Equal(t, int64(MinimumReasoningMaxTokens), providerUtils.GetJSONField(out, "thinking.budget_tokens").Int())
+
+	// Absent thinking → synthesized; budget derived from output_config.effort.
+	bodySynth := []byte(`{"model":"glm-5.3","max_tokens":128000,"messages":[{"role":"user","content":"hi"}],"output_config":{"effort":"max"}}`)
+	outSynth, err := StripUnsupportedFieldsFromRawBody(bodySynth, schemas.Zhipu, "glm-5.3")
+	require.NoError(t, err)
+	assert.Equal(t, "enabled", providerUtils.GetJSONField(outSynth, "thinking.type").String(), "GLM-5.3 requires an explicit thinking field")
+	assert.Greater(t, providerUtils.GetJSONField(outSynth, "thinking.budget_tokens").Int(), int64(MinimumReasoningMaxTokens), "effort=max should derive a large budget")
+	assert.Equal(t, "max", providerUtils.GetJSONField(outSynth, "output_config.effort").String(), "effort survives alongside the synthesized thinking")
+
+	// GLM-5.2 keeps disabled (control).
+	body52 := []byte(`{"model":"glm-5.2","max_tokens":4096,"messages":[{"role":"user","content":"hi"}],"thinking":{"type":"disabled"}}`)
+	out52, err := StripUnsupportedFieldsFromRawBody(body52, schemas.Zhipu, "glm-5.2")
+	require.NoError(t, err)
+	assert.Equal(t, "disabled", providerUtils.GetJSONField(out52, "thinking.type").String(), "GLM-5.2 accepts thinking.type:\"disabled\"")
+
+	// GLM-5.2 absent thinking stays absent (control).
+	body52Absent := []byte(`{"model":"glm-5.2","max_tokens":4096,"messages":[{"role":"user","content":"hi"}]}`)
+	out52Absent, err := StripUnsupportedFieldsFromRawBody(body52Absent, schemas.Zhipu, "glm-5.2")
+	require.NoError(t, err)
+	assert.False(t, providerUtils.JSONFieldExists(out52Absent, "thinking"))
+}

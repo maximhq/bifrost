@@ -4068,14 +4068,23 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 						Type:         "enabled",
 						BudgetTokens: schemas.Ptr(budgetTokens),
 					}
+					// Vendor extension mounts (z.ai, Model Studio) accept
+					// thinking.budget_tokens and output_config.effort together —
+					// preserve a co-present effort instead of discarding it.
+					if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" &&
+						SupportsProviderEffort(bifrostReq.Provider, capModel) {
+						setEffortOnOutputConfig(anthropicReq, MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort))
+					}
 				}
 			} else if native, ok := anthropicNativeEffortFrom(ctx); ok && native.ThinkingOmitted {
 				// The caller sent output_config.effort and no thinking parameter.
 				// Forward exactly that: the effort alone, with thinking left absent so
 				// the model applies its own default. Synthesizing thinking here would
 				// turn it on against the caller's request on every model that defaults
-				// it off (Opus 4.6/4.7/4.8, Sonnet 4.6).
-				if caps.SupportsNativeEffort(DefaultSupportsNativeEffort(caps.Model())) {
+				// it off (Opus 4.6/4.7/4.8, Sonnet 4.6). Provider-aware via
+				// SupportsProviderEffort: vendor mounts (z.ai, Model Studio) keep the
+				// field for their documented families too.
+				if SupportsProviderEffort(bifrostReq.Provider, capModel) {
 					setEffortOnOutputConfig(anthropicReq, MapBifrostEffortToAnthropic(native.Effort))
 				}
 			} else {
@@ -4087,8 +4096,11 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 							// Opus 4.6+ and Opus 4.7+: adaptive thinking + native effort
 							anthropicReq.Thinking = &AnthropicThinking{Type: "adaptive"}
 							setEffortOnOutputConfig(anthropicReq, effort)
-						} else if SupportsNativeEffort(caps) {
-							// Opus 4.5: native effort + budget_tokens thinking
+						} else if SupportsNativeEffort(caps) || SupportsProviderEffort(bifrostReq.Provider, capModel) {
+							// Opus 4.5: native effort + budget_tokens thinking.
+							// Vendor extension mounts (z.ai GLM-5.2+, Model Studio
+							// qwen3.8/glm-5.2/deepseek-v4): same shape — the upstream
+							// maps the effort value server-side.
 							setEffortOnOutputConfig(anthropicReq, effort)
 							budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(effort, MinimumReasoningMaxTokens, anthropicReq.MaxTokens)
 							if err != nil {
@@ -4114,7 +4126,9 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 							// Fable/Mythos reject thinking:{type:"disabled"} with a 400 —
 							// adaptive thinking is always on and cannot be disabled. Omit
 							// the thinking param entirely for that family; all other
-							// models take the explicit disabled path.
+							// models take the explicit disabled path. (Forced-thinking
+							// GLM models get rewritten to enabled downstream in
+							// stripUnsupportedAnthropicFields.)
 							anthropicReq.Thinking = &AnthropicThinking{
 								Type: "disabled",
 							}
@@ -4125,7 +4139,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 						// The neutral params collapsed the caller's effort into "none"
 						// to signal reasoning-off, so restore it from what they sent.
 						if native, ok := anthropicNativeEffortFrom(ctx); ok && native.Effort != "" &&
-							caps.SupportsNativeEffort(DefaultSupportsNativeEffort(caps.Model())) {
+							SupportsProviderEffort(bifrostReq.Provider, capModel) {
 							setEffortOnOutputConfig(anthropicReq, MapBifrostEffortToAnthropic(native.Effort))
 						}
 					}
