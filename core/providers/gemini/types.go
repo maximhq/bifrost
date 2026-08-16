@@ -1579,6 +1579,81 @@ type Content struct {
 	Role string `json:"role,omitempty"`
 }
 
+// ToolCall is a server-side tool invocation the model made on its own, reported back when
+// toolConfig.includeServerSideToolInvocations is enabled. Unlike FunctionCall — which the
+// caller is expected to execute and answer — this call was already executed by Google, and
+// its result arrives in a sibling ToolResponse part carrying the same ID.
+//
+// ToolType names the built-in tool (e.g. "GOOGLE_SEARCH_WEB"); Args is that tool's
+// invocation payload, whose shape varies per tool (Google Search uses {"queries": [...]}),
+// so it stays an untyped map rather than a per-tool struct.
+type ToolCall struct {
+	// The built-in tool that was invoked, e.g. "GOOGLE_SEARCH_WEB".
+	ToolType string `json:"toolType,omitempty"`
+	// Tool-specific invocation arguments.
+	Args map[string]any `json:"args,omitempty"`
+	// Correlates this call with its ToolResponse.
+	ID string `json:"id,omitempty"`
+}
+
+// UnmarshalJSON accepts both camelCase (Google's REST wire format) and snake_case, which the
+// google-genai SDKs emit when these parts are replayed back in a follow-up request.
+func (t *ToolCall) UnmarshalJSON(data []byte) error {
+	type Alias ToolCall
+	aux := struct {
+		*Alias
+		ToolTypeSnake string `json:"tool_type,omitempty"`
+	}{Alias: (*Alias)(t)}
+	if err := sonic.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	if t.ToolType == "" && aux.ToolTypeSnake != "" {
+		t.ToolType = aux.ToolTypeSnake
+	}
+	return nil
+}
+
+// ToolResponse is the result of a server-side ToolCall, paired to it by ID. Response holds
+// the tool's raw output, whose shape is tool-specific (Google Search returns rendered
+// search-suggestion HTML), so it stays an untyped map.
+type ToolResponse struct {
+	// The built-in tool that produced this result, e.g. "GOOGLE_SEARCH_WEB".
+	ToolType string `json:"toolType,omitempty"`
+	// Tool-specific result payload.
+	Response map[string]any `json:"response,omitempty"`
+	// Correlates this result with its ToolCall.
+	ID string `json:"id,omitempty"`
+}
+
+// UnmarshalJSON accepts both camelCase and snake_case, matching ToolCall.
+func (t *ToolResponse) UnmarshalJSON(data []byte) error {
+	type Alias ToolResponse
+	aux := struct {
+		*Alias
+		ToolTypeSnake string `json:"tool_type,omitempty"`
+	}{Alias: (*Alias)(t)}
+	if err := sonic.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	if t.ToolType == "" && aux.ToolTypeSnake != "" {
+		t.ToolType = aux.ToolTypeSnake
+	}
+	return nil
+}
+
+// geminiServerSideSearchToolTypes are the ToolCall.ToolType values that represent a Google
+// Search invocation, and so map onto Bifrost's web_search_call item. Other tool types are
+// preserved verbatim on the native path but are not mapped.
+var geminiServerSideSearchToolTypes = map[string]bool{
+	"GOOGLE_SEARCH_WEB":   true,
+	"GOOGLE_SEARCH_IMAGE": true,
+}
+
+// isSearchToolType reports whether a server-side tool type is a Google Search variant.
+func isSearchToolType(toolType string) bool {
+	return geminiServerSideSearchToolTypes[strings.ToUpper(toolType)]
+}
+
 // Part is a datatype containing media content.
 // Exactly one field within a Part should be set, representing the specific type
 // of content being conveyed. Using multiple fields within the same `Part`
@@ -1605,6 +1680,11 @@ type Part struct {
 	// the [FunctionDeclaration.Name] and a structured JSON object containing any output
 	// from the function call. It is used as context to the model.
 	FunctionResponse *FunctionResponse `json:"functionResponse,omitempty"`
+	// Optional. A server-side tool invocation the model performed itself (Google Search and
+	// other built-in tools), surfaced when includeServerSideToolInvocations is enabled.
+	ToolCall *ToolCall `json:"toolCall,omitempty"`
+	// Optional. The result of a server-side ToolCall, paired to it by ID.
+	ToolResponse *ToolResponse `json:"toolResponse,omitempty"`
 	// Optional. Text part (can be code).
 	Text string `json:"text,omitempty"`
 }
@@ -1623,6 +1703,8 @@ func (p Part) MarshalJSON() ([]byte, error) {
 		ExecutableCode      *ExecutableCode      `json:"executableCode,omitempty"`
 		FunctionCall        *FunctionCall        `json:"functionCall,omitempty"`
 		FunctionResponse    *FunctionResponse    `json:"functionResponse,omitempty"`
+		ToolCall            *ToolCall            `json:"toolCall,omitempty"`
+		ToolResponse        *ToolResponse        `json:"toolResponse,omitempty"`
 		Text                string               `json:"text,omitempty"`
 	}
 
@@ -1635,6 +1717,8 @@ func (p Part) MarshalJSON() ([]byte, error) {
 		ExecutableCode:      p.ExecutableCode,
 		FunctionCall:        p.FunctionCall,
 		FunctionResponse:    p.FunctionResponse,
+		ToolCall:            p.ToolCall,
+		ToolResponse:        p.ToolResponse,
 		Text:                p.Text,
 	}
 
@@ -1662,6 +1746,8 @@ func (p *Part) UnmarshalJSON(data []byte) error {
 		ExecutableCode      *ExecutableCode      `json:"executableCode,omitempty"`
 		FunctionCall        *FunctionCall        `json:"functionCall,omitempty"`
 		FunctionResponse    *FunctionResponse    `json:"functionResponse,omitempty"`
+		ToolCall            *ToolCall            `json:"toolCall,omitempty"`
+		ToolResponse        *ToolResponse        `json:"toolResponse,omitempty"`
 		Text                string               `json:"text,omitempty"`
 		// snake_case fallbacks: the google-genai SDK serializes FunctionResponsePart
 		// (nested inside functionResponse.parts) with snake_case keys, unlike top-level parts.
@@ -1686,6 +1772,8 @@ func (p *Part) UnmarshalJSON(data []byte) error {
 	}
 	p.CodeExecutionResult = aux.CodeExecutionResult
 	p.ExecutableCode = aux.ExecutableCode
+	p.ToolCall = aux.ToolCall
+	p.ToolResponse = aux.ToolResponse
 	p.FunctionCall = aux.FunctionCall
 	p.FunctionResponse = aux.FunctionResponse
 	p.Text = aux.Text

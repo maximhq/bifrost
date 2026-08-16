@@ -380,14 +380,14 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 	return (
 		<Sheet open={open} onOpenChange={(open) => !open && !oauthFlow && onClose()}>
 			<SheetContent className="flex w-full flex-col gap-4 overflow-x-hidden p-0 pt-4">
-				<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-4 md:px-8">
+				<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-8">
 					<SheetTitle>New MCP Server</SheetTitle>
 					<SheetDescription>Configure and connect to a new Model Context Protocol server.</SheetDescription>
 				</SheetHeader>
 
 				<Form {...methods}>
 					<form onSubmit={handleSubmit(onSubmit)} className="flex h-full flex-col gap-6">
-						<div className="grow space-y-4 px-4 md:px-8">
+						<div className="grow space-y-4 px-8">
 							{/* Name */}
 							<FormField
 								control={control}
@@ -979,7 +979,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 						</div>
 
 						{/* Form Footer */}
-						<div className="bg-card sticky bottom-0 z-10 flex justify-end gap-2 border-t px-4 py-4 md:px-8">
+						<div className="bg-card sticky bottom-0 z-10 flex justify-end gap-2 border-t px-8 py-4">
 							<Button type="button" variant="outline" onClick={onClose} disabled={isLoading} data-testid="cancel-client-btn">
 								Cancel
 							</Button>

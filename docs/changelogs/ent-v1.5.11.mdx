@@ -1,63 +1,56 @@
 ---
-title: "v1.5.10"
-description: "v1.5.10 changelog - 2026-08-12"
+title: "v1.5.11"
+description: "v1.5.11 changelog - 2026-08-14"
 ---
 
-<Update label="Bifrost Enterprise" description="v1.5.10">
+<Update label="Bifrost Enterprise" description="v1.5.11">
 
 
 ## Changelog
 
-This release rebases Bifrost Enterprise on OSS transports `v1.6.10`. It completes quarterly (fiscal) budget support end to end, carrying the fiscal quarter definition through access profiles and propagating operator budget resets and calendar-alignment switches across every cluster node. It also hardens SCIM: deprovisioning now cascades to virtual keys, access profiles, budgets and rate limits, and directory previews for large Google Workspace tenants return quickly instead of paging the whole directory.
+This release rebases Bifrost Enterprise on OSS transports `v1.6.11`. The main work is a rewrite of cluster usage sync that sends only changed governance entries instead of full snapshots, quarterly budget support carried end to end through the enterprise UI and business unit APIs, and SCIM provenance protection so an OIDC login or token refresh can no longer overwrite roles that SCIM owns.
 
 ## ✨ Features
 
-- **Fiscal Quarter Definition Through Access Profiles** - The budget reset config (fiscal quarter start month) is now copied into every budget built from an access profile, both top-level and per-provider, so a quarterly budget on a non-January fiscal year windows correctly instead of falling back to the calendar year. Budget introspection exposes the resolved quarter start month.
-- **Cluster-Wide Budget Reset Propagation** - An operator budget usage reset is now gossiped to every node for all owner types (virtual key, team, customer, model limits and provider governance), so in-memory counters on peer nodes clear at the same time as the database row.
-- **Cluster-Wide Calendar Alignment Adoption** - Switching a budget or rate limit to calendar alignment is propagated through two new gossip keys, and each node re-anchors the affected budgets and rate limits in memory instead of waiting for a restart.
-- **Enforcement For Unmanaged Virtual Keys** - Virtual keys assigned directly to a user but not managed by an access profile now have their own budget and rate limits enforced in the pre-request hook, returning `402` on an exhausted budget and `429` on an exhausted rate limit. Access-profile-managed keys keep their existing enforcement path.
-- **Per-Model Budget Override Manager** - The user detail sheet groups a provider's own budget with its per-model budgets in one dialog, so operators can see and override provider and model limits together instead of one flat list.
-- **SCIM-Signal Login Admission** - A SCIM-provisioned user whose OIDC token carries no role claim is now admitted at login when persisted SCIM signals (group membership and provisioned role) justify the role, instead of being rejected for a missing claim.
-- **Bounded Google Directory Previews** - Interactive SCIM user previews for Google Workspace stop paging as soon as the preview limit is reached and report an unknown total (`-1`). Connection verification still pages the full directory when an accurate count is required. Group-member fetching is parallelized with bounded worker pools and retries with jittered backoff that honours `Retry-After`.
-- **Virtual Key Creation On Reprovisioning** - Reprovisioning a user who has an access profile now creates the virtual key if it is missing, instead of leaving the user without a usable key.
+- **Incremental Cluster Usage Sync** - Governance usage now gossips changed entries every 5 seconds, a lightweight heartbeat every 10 seconds, and a full repair snapshot every 30 seconds, instead of a complete snapshot on every tick. Internal cluster gzip compression is removed, remote budget and rate-limit totals are precomputed into an immutable snapshot so the request path does a direct id lookup, and a new `governance_usage_v2` message keeps rolling upgrades safe because older nodes ignore it and still receive the legacy full snapshot. [Docs](https://docs.getbifrost.ai/enterprise/clustering)
+- **Quarterly Budgets Across the Enterprise UI** - `reset_config` (the fiscal quarter start month) is now propagated through every budget create, edit, duplicate, and save flow for access profiles, teams, customers, and users. The `1Q` duration renders as "Quarterly" with a fiscal quarter note next to it, and the dirty-state check includes `quarter_start_month` so changing the start month is detected as an unsaved edit.
+- **Role Filter and Real Sorting on the Users List** - The users table gains a Role filter populated from the RBAC roles endpoint, plus a "No role" option. Name and email sorting now actually works: `sort_by` and `sort_order` are URL-backed, allowlisted at the handler, and applied in SQL, and roleless users are grouped last in both directions so SQLite and Postgres agree. [Docs](https://docs.getbifrost.ai/enterprise/rbac)
+- **Keycloak Department and Title Mapping** - `convertKeycloakUser` now promotes the `department` and `title` custom attributes (including the `job_title` and `jobTitle` variants) into the dedicated provisioned-user fields, so attribute-to-team, attribute-to-role, and attribute-to-business-unit mappings apply during SCIM import instead of being silently dropped. [Docs](https://docs.getbifrost.ai/enterprise/user-provisioning)
+- **Gray Swan Sees the Original Request** - Guardrail evaluations forward the original Chat or Responses request JSON to the monitor API instead of rebuilding it from extracted text. Multi-part content arrays, images and files, native Responses tool shapes, and fields such as `name` and the developer role survive intact, per-turn batches are sliced from a cached snapshot without re-parsing or re-fetching media, and the raw body size cap is removed. [Docs](https://docs.getbifrost.ai/enterprise/guardrails)
 
 ## 🌎 Open Source Features
 
-- **Quarterly Budget Windows** - Budgets support a quarterly reset period with a configurable fiscal start month, so a fiscal year that does not begin in January windows correctly.
-- **Per-Model Budgets and Rate Limits** - Virtual key provider configs accept budgets and rate limits scoped to individual models, surfaced in the UI through a unified budget override manager that groups provider and model budgets together.
-- **Budget Usage Reset Coverage** - The reset budget usage flow now covers teams, customers, model limits and provider governance, not just virtual keys.
-- **Fiscal Quarter UI** - The governance UI exposes the quarterly period with fiscal-quarter advanced settings, and provider cards show a model budget count in the header summary.
+- **URL Sources Inlined for AWS-Hosted Claude** - URL-sourced images and documents are fetched and inlined on the native Anthropic path, because Bedrock Mantle rejects `{"source":{"type":"url"}}`. Fetches use the SSRF-safe dialer with a size cap, and a failed fetch aborts the request instead of silently dropping the attachment. [Docs](https://docs.getbifrost.ai/providers/supported-providers/bedrock)
+- **Quarterly Budgets for Customers** - The customer entity and virtual key provider configs now accept quarterly budgets, so a customer budget can reset on a quarter boundary rather than only monthly or weekly.
+- **Fiscal Year Start in Budget Labels** - Budget labels surface the configured fiscal year start through a new `fiscalQuarterNote` helper, and the quarter start selector is relaid out as a horizontal label and preview row.
+- **Configurable Entity Selector Width** - The entity selector accepts a `contentClassName`, so a caller can widen or constrain its dropdown instead of being pinned to the default width.
 
 ## 🐞 Fixed
 
-- **Usage Re-Seeded On Access Profile Reload** - An access-profile reload no longer re-seeds usage onto budgets the node already tracks, so live counters are not overwritten with stale values.
-- **Budget Overrides Lost On Re-Sync** - Operator-set per-model budget overrides now survive a usage-preserving re-sync, and the override handler resolves a per-model budget to the enforced governance row instead of a non-enforced one.
-- **SCIM Deprovision Left Orphans** - Deprovisioning a SCIM user now cascades to their virtual keys, access profile assignment, budgets and rate limits through a shared `CascadeDeleteUser` path, which the API delete route also uses.
-- **IdP Role Removals Bypassed Cascade** - `SyncAllUserRoles` routes users removed at the IdP through the deprovision cascade instead of a raw user delete.
-- **Token Refresh Deprovisioned SCIM Users** - Users owned by SCIM push are skipped in the token-refresh decommission check, so a refresh no longer deprovisions a user the IdP still owns.
-- **Stale Roles Kept After Mapping Miss** - `ExtractRoles` returns an authoritative empty slice when attribute mappings are configured but nothing matches, so previously granted roles are cleared instead of retained.
-- **Attributes Missing After Refresh** - `department`, `title` and mapped metadata attributes are backfilled into claims at token-refresh time for Entra and Auth0 attribute mappings.
-- **Calendar Alignment Semantics** - Enabling calendar alignment preserves the currently open window and applies from the next period, instead of truncating the window in flight.
-- **Together Pricing Lookup** - Fixed the pricing provider lookup for Together so model costs resolve correctly.
-- **Encrypted Reasoning Verification** - Patched encrypted reasoning content that providers rejected as unverifiable.
-- **Gemini Reasoning Replay** - Standalone Gemini reasoning messages are no longer skipped when converting Responses history to Gemini contents, and a consumed reasoning item's thought text is carried alongside the signature the preceding function call took from it.
-- **Bedrock Reasoning Blocks** - Bedrock no longer receives a reasoning block with an absent text key, the replayed signature attaches to the first reasoning summary block, and signature-only replay blocks serialize to a shape Bifrost can decode.
-- **Cohere Encrypted Reasoning** - Encrypted reasoning is emitted alongside the summary rather than instead of it, and the marker is parsed back into `EncryptedContent` on ingress so it no longer reaches clients as visible reasoning text.
-- **Replayed Reasoning Dropped** - Messages carrying a non-nil but empty ContentBlocks list no longer drop replayed reasoning in the Anthropic, Bedrock and Cohere converters.
+- **SCIM Roles Overwritten by OIDC Login or Refresh** - Role and team sync from token claims is now skipped for SCIM-managed users on both the login and token refresh paths, and the `source=scim` profile marker is re-stamped before the OAuth upsert overwrites the parsed profile. Truncated or stale claims can no longer downgrade a role that SCIM owns. Provenance checks fail closed, so an error in the check skips the sync.
+- **Claims Not Enriched on Token Refresh** - The refresh path now enriches claims from the provider, so claims that arrive through the provider API rather than directly in the token are no longer missing after a refresh.
+- **Keycloak Auth Cookie Used the Wrong Token** - Keycloak is added to the id-token providers in `ChooseAuthCookieToken`, matching how Keycloak populates both the access token and the id token.
+- **Fiscal Quarter Start Lost on Business Unit Budgets** - `ResetConfig` is now assigned on the budget create path, the budget update path, and the create-during-update path. It was omitted from all three, so a fiscal quarter start was silently dropped on every save. The update path assigns it unconditionally, so clearing the quarter start is respected too.
+- **User-Scoped Model Configs Survived User Deletion** - `CascadeDeleteUser` now removes every `scope=user` model config and its owned budgets, rate limits, and alert rules, and clears the access-profile materialization tracking rows. These rows are keyed by user id rather than being foreign-key children, so nothing else in the cascade reached them and a restored user with the same id inherited stale rows.
+- **gRPC Peer Connection Falsely Stuck** - The dial loop read the channel state twice per iteration, so a peer that became ready in between made `WaitForStateChange` wait for a change away from ready and triggered needless reconnects. State is now read once per iteration, idle channels are explicitly connected, and a bounded probe RPC reports the real transport failure (connection refused, TLS handshake failure, mesh rejection) instead of only the channel state.
+- **WebSocket Writes After Disconnect** - A broadcast racing a client disconnect could panic on a nil connection or deliver to an unrelated client's socket, because fasthttp recycles the hijacked connection as soon as the upgrade handler returns. Clients now carry an explicit closed flag, and close blocks until in-flight writes finish.
+- **Realtime Heartbeat Panic on Disconnect** - `stopHeartbeat` waits for the heartbeat goroutine to exit before the upgrade handler returns. A ping already inside `WriteMessage` dereferenced a recycled connection, and with no recover on that path the panic took down the process.
+- **Stop Sequences Dropped for Nova and Titan** - Bedrock's Converse camelCase `stopSequences` now maps to the neutral `stop` parameter alongside Anthropic's `stop_sequences`. 81 catalog rows were losing `stop`, so those models ran to `end_turn` instead of stopping.
+- **Reasoning Replay Rejected on Chat-Shaped Requests** - `/v1/chat/completions` and `/v1/messages` carry replayed reasoning on `reasoning_details`, but the fail-soft strip only handled Responses-shaped items. A router that switched models mid-conversation returned an invalid `signature` error instead of retrying without the signature.
+- **Thinking Signatures on Responses Content Blocks** - Signatures are stripped from content blocks, not only from `encrypted_content` on the reasoning item, and only reasoning items are dropped when nothing survives, so an ordinary message keeps its own content.
+- **Reasoning Content Rejected by OpenAI and Azure Models** - `reasoning.content` is no longer sent to non-gpt-oss reasoning models, which cap that array at zero entries and reject a populated one. Replayed Anthropic thinking blocks were hitting this; `summary` and `encrypted_content` already carry everything those models accept.
+- **Reasoning Effort Cleared for Current Grok Models** - The rule substring-matched "grok-3-mini", so `grok-4.5`, `grok-4.6`, and `grok-4.20-multi-agent` silently lost `reasoning_effort` and answered at the wrong depth, cost, and latency. It is now an exact-match deny-list that normalizes routing prefixes, `-latest`, and xAI's 4-digit date suffixes.
+- **xhigh Reasoning Effort Downgraded for Grok** - The shared OpenAI-dialect normalizer downgraded `xhigh` to `high` before the xAI compat pass ran. `grok-4.5` still downgrades on purpose, matching xAI's documented upstream coercion.
+- **Empty Structured-Output Streams** - `content_part.added`, `output_text.delta`, `output_text.done`, and `content_part.done` are emitted when a tool-based structured-output call is reassembled on the Responses streaming path. Only `output_item.added` and `done` were emitted, so consumers reading incremental events saw no text while tokens were billed. Affects Vertex, Bedrock Mantle, and Azure Claude.
+- **HTTP 529 Rotating Credentials** - Anthropic's `overloaded_error` is treated as a transient server error and retried with backoff on the same key, since it reflects capacity across all callers rather than anything about the credential.
 
 ## 🗄️ Database Migrations
 
-- **add_budget_reset_config_column** (OSS transports) - Adds the nullable `reset_config_json` column to `governance_budgets` to hold a budget's fiscal-quarter definition. It is additive with no backfill, so it is safe during a rolling deploy: older binaries ignore the column and a NULL value reads back as the January default. **Non-reversible**: dropping the column would permanently delete every budget's fiscal-quarter definition and silently re-window those budgets onto the calendar year. Take a backup of `governance_budgets` before upgrading if you need a path back to the previous release.
-
-No new enterprise-repo migrations in this release.
-
-## 🐙 Closed OSS Issues
-
-- [#4851](https://github.com/maximhq/bifrost/issues/4851) - v1.6.2 and v1.6.3 governance rate-limit reset causes high CPU in BumpRateLimitUsage/updateRateLimitReferences
+No new database migrations in this release, in either the OSS transports layer or the enterprise repo.
 
 ## 📀 Base OSS version
 
-`transports/v1.6.10`
+`transports/v1.6.11`
 
 ## 🔌 If you are compiling plugin against this release - use following deps
 
@@ -80,7 +73,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.50.6
 	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.42.2
 	github.com/aws/aws-sdk-go-v2/service/sts v1.41.10
-	github.com/bytedance/sonic v1.15.1
+	github.com/bytedance/sonic v1.15.2
 	github.com/coreos/go-oidc/v3 v3.12.0
 	github.com/fasthttp/router v1.5.4
 	github.com/golang-jwt/jwt/v5 v5.3.1
@@ -93,12 +86,12 @@ require (
 	github.com/hashicorp/vault/api v1.23.0
 	github.com/klauspost/compress v1.18.6
 	github.com/maximhq/bifrost/core v1.7.10
-	github.com/maximhq/bifrost/framework v1.5.8
-	github.com/maximhq/bifrost/plugins/governance v1.6.12
-	github.com/maximhq/bifrost/plugins/logging v1.6.8
-	github.com/maximhq/bifrost/plugins/prompts v1.0.35
-	github.com/maximhq/bifrost/plugins/semanticcache v1.5.35
-	github.com/maximhq/bifrost/transports v1.6.10
+	github.com/maximhq/bifrost/framework v1.5.10
+	github.com/maximhq/bifrost/plugins/governance v1.6.14
+	github.com/maximhq/bifrost/plugins/logging v1.6.10
+	github.com/maximhq/bifrost/plugins/prompts v1.0.37
+	github.com/maximhq/bifrost/plugins/semanticcache v1.5.37
+	github.com/maximhq/bifrost/transports v1.6.11
 	github.com/nakabonne/tstorage v0.3.6
 	github.com/segmentio/kafka-go v0.4.47
 	github.com/stretchr/testify v1.11.1
@@ -107,9 +100,9 @@ require (
 	github.com/valyala/fasthttp v1.71.0
 	github.com/zricethezav/gitleaks/v8 v8.30.1
 	go.etcd.io/etcd/client/v3 v3.6.6
-	golang.org/x/crypto v0.52.0
+	golang.org/x/crypto v0.53.0
 	golang.org/x/oauth2 v0.36.0
-	golang.org/x/sync v0.20.0
+	golang.org/x/sync v0.21.0
 	google.golang.org/api v0.282.0
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260523011958-0a33c5d7ca68
 	google.golang.org/grpc v1.82.1
@@ -311,12 +304,12 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-runewidth v0.0.15 // indirect
 	github.com/mattn/go-sqlite3 v1.14.32 // indirect
-	github.com/maximhq/bifrost/plugins/compat v0.1.34 // indirect
-	github.com/maximhq/bifrost/plugins/maxim v1.6.35 // indirect
-	github.com/maximhq/bifrost/plugins/mocker v1.5.35 // indirect
-	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.0.16 // indirect
-	github.com/maximhq/bifrost/plugins/otel v1.4.7 // indirect
-	github.com/maximhq/bifrost/plugins/telemetry v1.5.35 // indirect
+	github.com/maximhq/bifrost/plugins/compat v0.1.36 // indirect
+	github.com/maximhq/bifrost/plugins/maxim v1.6.37 // indirect
+	github.com/maximhq/bifrost/plugins/mocker v1.5.37 // indirect
+	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.0.18 // indirect
+	github.com/maximhq/bifrost/plugins/otel v1.4.9 // indirect
+	github.com/maximhq/bifrost/plugins/telemetry v1.5.37 // indirect
 	github.com/maximhq/maxim-go v0.2.1 // indirect
 	github.com/mholt/archives v0.1.2 // indirect
 	github.com/miekg/dns v1.1.68 // indirect
@@ -463,14 +456,14 @@ require (
 	go4.org v0.0.0-20230225012048-214862532bf5 // indirect
 	golang.org/x/arch v0.23.0 // indirect
 	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
-	golang.org/x/mod v0.35.0 // indirect
-	golang.org/x/net v0.55.0 // indirect
-	golang.org/x/sys v0.45.0 // indirect
-	golang.org/x/telemetry v0.0.0-20260409153401-be6f6cb8b1fa // indirect
-	golang.org/x/term v0.43.0 // indirect
-	golang.org/x/text v0.37.0 // indirect
+	golang.org/x/mod v0.37.0 // indirect
+	golang.org/x/net v0.56.0 // indirect
+	golang.org/x/sys v0.46.0 // indirect
+	golang.org/x/telemetry v0.0.0-20260625142307-59b4966ccb57 // indirect
+	golang.org/x/term v0.44.0 // indirect
+	golang.org/x/text v0.39.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
-	golang.org/x/tools v0.44.0 // indirect
+	golang.org/x/tools v0.47.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
 	google.golang.org/genproto v0.0.0-20260319201613-d00831a3d3e7 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260414002931-afd174a4e478 // indirect

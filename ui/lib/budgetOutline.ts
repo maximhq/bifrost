@@ -3,9 +3,13 @@
 // compact mono budget labels, allocation-bar math, and the neutral swatch ramp
 // consistent across every screen that renders a provider config.
 
+import { fiscalQuarterNote } from "./constants/governance";
+
 export interface BudgetLineLike {
 	max_limit?: number | null;
 	reset_duration?: string;
+	// Fiscal quarter definition; only meaningful when reset_duration is "1Q".
+	reset_config?: { quarter_start_month?: number };
 }
 
 // Short, mono-friendly period suffixes (e.g. "$20/wk"). Falls back to the raw
@@ -49,10 +53,14 @@ export function money(value: number | null | undefined): string {
 // Returns `fallback` when empty.
 export function budgetLinesLabel(budgets: BudgetLineLike[] | undefined, fallback = "No budget"): string {
 	if (!budgets || budgets.length === 0) return fallback;
-	return [...budgets]
+	const label = [...budgets]
 		.sort((a, b) => periodRank(a.reset_duration) - periodRank(b.reset_duration))
 		.map((b) => `${money(b.max_limit)}/${shortPeriod(b.reset_duration)}`)
 		.join(" · ");
+	// A group has at most one quarterly line (duplicate periods are blocked), so a
+	// single trailing fiscal-start note is unambiguous. Empty for a January start.
+	const quarterly = budgets.find((b) => b.reset_duration?.endsWith("Q"));
+	return label + fiscalQuarterNote(quarterly?.reset_duration, quarterly?.reset_config);
 }
 
 // True when two or more budget lines share the same reset period. A budget

@@ -1,7 +1,7 @@
 import { CopyableId } from "@/components/copyableId";
 import { Label } from "@/components/ui/label";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { resetDurationLabels } from "@/lib/constants/governance";
+import { fiscalQuarterNote, resetDurationLabels } from "@/lib/constants/governance";
 import { Customer } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
 import { formatCompactNumber } from "@/lib/utils/numbers";
@@ -32,7 +32,17 @@ function DetailCard({ title, children, contentClassName }: { title: string; chil
 	);
 }
 
-function BudgetLineBar({ current, max, resetDuration }: { current: number; max: number; resetDuration?: string }) {
+function BudgetLineBar({
+	current,
+	max,
+	resetDuration,
+	resetConfig,
+}: {
+	current: number;
+	max: number;
+	resetDuration?: string;
+	resetConfig?: { quarter_start_month?: number };
+}) {
 	const pct = max > 0 ? Math.min((current / max) * 100, 100) : 0;
 	const isOver80 = pct >= 80;
 	const isOver100 = pct >= 100;
@@ -40,7 +50,10 @@ function BudgetLineBar({ current, max, resetDuration }: { current: number; max: 
 		<div className="space-y-1.5">
 			<div className="flex items-center justify-between text-xs">
 				<span className="font-medium" />
-				<span className="text-muted-foreground">{formatResetDuration(resetDuration)}</span>
+				<span className="text-muted-foreground">
+					{formatResetDuration(resetDuration)}
+					{fiscalQuarterNote(resetDuration, resetConfig)}
+				</span>
 			</div>
 			<div className="bg-muted h-1.5 w-full overflow-hidden rounded-full">
 				<div
@@ -124,7 +137,13 @@ export function CustomerDetailSheet({ customer, open, onOpenChange }: Props) {
 									{[...budgets]
 										.sort((a, b) => (b.max_limit || 0) - (a.max_limit || 0))
 										.map((b) => (
-											<BudgetLineBar key={b.id} current={b.current_usage} max={b.max_limit} resetDuration={b.reset_duration} />
+											<BudgetLineBar
+											key={b.id}
+											current={b.current_usage}
+											max={b.max_limit}
+											resetDuration={b.reset_duration}
+											resetConfig={b.reset_config}
+										/>
 										))}
 								</div>
 							) : (
