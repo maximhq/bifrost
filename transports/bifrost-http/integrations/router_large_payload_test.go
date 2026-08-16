@@ -93,6 +93,51 @@ func TestCreateHandler_UsesRequestParserWhenNotInLargePayloadMode(t *testing.T) 
 	assert.Equal(t, 1, parserCalls)
 }
 
+func TestCreateHandler_DisabledLargePayloadModeAlwaysParsesRequest(t *testing.T) {
+	handlerStore := &mockHandlerStore{}
+	hookCalls := 0
+	parserCalls := 0
+
+	route := RouteConfig{
+		Type:                    RouteConfigTypeHume,
+		Path:                    "/hume/v1/chat/completions",
+		Method:                  fasthttp.MethodPost,
+		DisableLargePayloadMode: true,
+		GetHTTPRequestType: func(_ *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.ChatCompletionRequest
+		},
+		GetRequestTypeInstance: func(context.Context) interface{} {
+			return &struct{}{}
+		},
+		RequestParser: func(_ *fasthttp.RequestCtx, _ interface{}) error {
+			parserCalls++
+			return nil
+		},
+		RequestConverter: func(_ *schemas.BifrostContext, _ interface{}) (*schemas.BifrostRequest, error) {
+			return nil, errors.New("stop after parse phase")
+		},
+		ErrorConverter: func(_ *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+			return err
+		},
+	}
+
+	router := NewGenericRouter(nil, handlerStore, nil, nil, nil)
+	router.SetLargePayloadHook(func(_ *fasthttp.RequestCtx, _ *schemas.BifrostContext, _ RouteConfigType) (bool, error) {
+		hookCalls++
+		return true, nil
+	})
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.SetBodyString(`{"model":"openai/gpt-4o","messages":[]}`)
+	ctx.SetUserValue(schemas.BifrostContextKeyHTTPRequestType, schemas.ChatCompletionRequest)
+
+	router.createHandler(route)(ctx)
+
+	assert.Equal(t, 0, hookCalls)
+	assert.Equal(t, 1, parserCalls)
+}
+
 // ============================================================================
 // resolveLargePayloadMetadata tests
 // ============================================================================

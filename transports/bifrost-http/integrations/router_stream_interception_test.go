@@ -2,6 +2,7 @@ package integrations
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -196,5 +197,42 @@ func Test_handleStreamingPlainInterceptionErrorKeepsFlatFormat(t *testing.T) {
 
 	assert.Contains(t, body, "event: error\ndata: ")
 	assert.Contains(t, body, `{"error":"failed to intercept chunk with plugin test-plugin: plugin exploded"}`)
+	assert.True(t, cancelCalled)
+}
+
+func Test_handleStreamingConverterErrorEmitsSanitizedErrorAndTerminates(t *testing.T) {
+	var convertedError *schemas.BifrostError
+	config := RouteConfig{
+		Type: RouteConfigTypeOpenAI,
+		StreamConfig: &StreamConfig{
+			ChatStreamResponseConverter: func(_ *schemas.BifrostContext, _ *schemas.BifrostChatResponse) (string, interface{}, error) {
+				return "", nil, errors.New("converter internals must not leak")
+			},
+			ErrorConverter: func(_ *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+				convertedError = err
+				return map[string]interface{}{"error": map[string]string{"message": err.Error.Message}}
+			},
+		},
+	}
+
+	stream := make(chan *schemas.BifrostStreamChunk, 2)
+	stream <- &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{}}
+	stream <- &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{}}
+	close(stream)
+
+	router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, bifrost.NewNoOpLogger())
+	ctx := &fasthttp.RequestCtx{}
+	cancelCalled := false
+	router.handleStreaming(ctx, nil, config, stream, func() {
+		cancelCalled = true
+	})
+
+	body, err := io.ReadAll(ctx.Response.BodyStream())
+	require.NoError(t, err)
+	require.NotNil(t, convertedError)
+	assert.Equal(t, lib.ClientSafeInternalErrorMessage, convertedError.Error.Message)
+	assert.Contains(t, string(body), lib.ClientSafeInternalErrorMessage)
+	assert.NotContains(t, string(body), "converter internals")
+	assert.NotContains(t, string(body), "[DONE]")
 	assert.True(t, cancelCalled)
 }

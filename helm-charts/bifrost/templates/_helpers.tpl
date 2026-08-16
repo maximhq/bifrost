@@ -214,6 +214,30 @@ false
 {{- if .Values.bifrost.setupToken }}
 {{- $_ := set $config "setup_token" .Values.bifrost.setupToken }}
 {{- end }}
+{{- if .Values.bifrost.hume }}
+{{- $hume := dict }}
+{{- if .Values.bifrost.hume.defaultModel }}
+{{- $_ := set $hume "default_model" .Values.bifrost.hume.defaultModel }}
+{{- end }}
+{{- if .Values.bifrost.hume.prosodyPrompt }}
+{{- $prosodyPrompt := dict }}
+{{- if hasKey .Values.bifrost.hume.prosodyPrompt "enabled" }}
+{{- $_ := set $prosodyPrompt "enabled" .Values.bifrost.hume.prosodyPrompt.enabled }}
+{{- end }}
+{{- if .Values.bifrost.hume.prosodyPrompt.scope }}
+{{- $_ := set $prosodyPrompt "scope" .Values.bifrost.hume.prosodyPrompt.scope }}
+{{- end }}
+{{- if hasKey .Values.bifrost.hume.prosodyPrompt "maxEmotions" }}
+{{- $_ := set $prosodyPrompt "max_emotions" .Values.bifrost.hume.prosodyPrompt.maxEmotions }}
+{{- end }}
+{{- if $prosodyPrompt }}
+{{- $_ := set $hume "prosody_prompt" $prosodyPrompt }}
+{{- end }}
+{{- end }}
+{{- if $hume }}
+{{- $_ := set $config "hume" $hume }}
+{{- end }}
+{{- end }}
 {{- if .Values.bifrost.client }}
 {{- $client := dict }}
 {{- if hasKey .Values.bifrost.client "dropExcessRequests" }}

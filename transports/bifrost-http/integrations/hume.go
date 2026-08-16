@@ -173,10 +173,11 @@ func CreateHumeRouteConfigs(config *lib.HumeConfig) []RouteConfig {
 	routes := make([]RouteConfig, 0, 2)
 	for _, path := range []string{"/hume/v1/chat/completions", "/hume/chat/completions"} {
 		routes = append(routes, RouteConfig{
-			Type:        RouteConfigTypeHume,
-			Path:        path,
-			Method:      fasthttp.MethodPost,
-			PreCallback: humePreCallback(config),
+			Type:                    RouteConfigTypeHume,
+			Path:                    path,
+			Method:                  fasthttp.MethodPost,
+			DisableLargePayloadMode: true,
+			PreCallback:             humePreCallback(config),
 			GetHTTPRequestType: func(_ *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.ChatCompletionRequest
 			},
@@ -200,9 +201,7 @@ func CreateHumeRouteConfigs(config *lib.HumeConfig) []RouteConfig {
 			ErrorConverter: humeErrorConverter,
 			StreamConfig: &StreamConfig{
 				ChatStreamResponseConverter: humeChatStreamResponseConverter,
-				ErrorConverter: func(_ *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-					return humeErrorConverter(nil, err)
-				},
+				ErrorConverter:              humeErrorConverter,
 			},
 		})
 	}
@@ -289,8 +288,10 @@ func injectHumeProsody(messages []schemas.ChatMessage, metadata map[int]schemas.
 		}
 	} else {
 		for i := len(messages) - 1; i >= 0; i-- {
-			if tag := humeProsodyTag(messages[i], metadata, i, config.MaxEmotions); tag != "" {
-				selected[i] = tag
+			if messages[i].Role == schemas.ChatMessageRoleUser {
+				if tag := humeProsodyTag(messages[i], metadata, i, config.MaxEmotions); tag != "" {
+					selected[i] = tag
+				}
 				break
 			}
 		}
@@ -405,6 +406,17 @@ func humeChatStreamResponseConverter(ctx *schemas.BifrostContext, resp *schemas.
 				Refusal:   delta.Refusal,
 				ToolCalls: toHumeToolCalls(delta.ToolCalls),
 			}
+		} else if choice.ChatNonStreamResponseChoice != nil && choice.ChatNonStreamResponseChoice.Message != nil {
+			message := choice.ChatNonStreamResponseChoice.Message
+			if message.Role != "" {
+				role := string(message.Role)
+				converted.Delta.Role = &role
+			}
+			converted.Delta.Content = humeMessageText(message.Content)
+			if message.ChatAssistantMessage != nil {
+				converted.Delta.Refusal = message.Refusal
+				converted.Delta.ToolCalls = toHumeToolCalls(message.ToolCalls)
+			}
 		}
 		choices = append(choices, converted)
 	}
@@ -425,6 +437,26 @@ func humeChatStreamResponseConverter(ctx *schemas.BifrostContext, resp *schemas.
 		}
 	}
 	return "", chunk, nil
+}
+
+func humeMessageText(content *schemas.ChatMessageContent) *string {
+	if content == nil {
+		return nil
+	}
+	if content.ContentStr != nil {
+		return content.ContentStr
+	}
+	var text strings.Builder
+	for _, block := range content.ContentBlocks {
+		if block.Type == schemas.ChatContentBlockTypeText && block.Text != nil {
+			text.WriteString(*block.Text)
+		}
+	}
+	if text.Len() == 0 {
+		return nil
+	}
+	value := text.String()
+	return &value
 }
 
 func toHumeToolCalls(toolCalls []schemas.ChatAssistantMessageToolCall) []humeToolCall {

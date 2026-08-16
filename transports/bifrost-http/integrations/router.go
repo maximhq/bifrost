@@ -447,6 +447,7 @@ type RouteConfig struct {
 	Type                                   RouteConfigType                        // Type of the route
 	Path                                   string                                 // HTTP path pattern (e.g., "/openai/v1/chat/completions")
 	Method                                 string                                 // HTTP method (POST, GET, PUT, DELETE)
+	DisableLargePayloadMode                bool                                   // Force adapters that transform every request/response to stay on the parsed conversion path
 	GetHTTPRequestType                     HTTPRequestTypeGetter                  // Function to get the HTTP request type from the context (SHOULD NOT BE NIL)
 	GetRequestTypeInstance                 func(ctx context.Context) interface{}  // Factory function to create request instance (SHOULD NOT BE NIL)
 	RequestParser                          RequestParser                          // Optional: custom request parsing (e.g., multipart/form-data)
@@ -718,7 +719,7 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 		if method != fasthttp.MethodGet && method != fasthttp.MethodHead {
 			// Hook executes before JSON parsing so large requests can remain streaming.
 			isLargePayload := false
-			if g.largePayloadHook != nil {
+			if g.largePayloadHook != nil && !config.DisableLargePayloadMode {
 				var err error
 				isLargePayload, err = g.largePayloadHook(ctx, bifrostCtx, config.Type)
 				if err != nil {
@@ -2960,9 +2961,12 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 				}
 
 				if err != nil {
-					// Log conversion error but continue processing
 					g.logger.Warn("Failed to convert streaming response: %v", err)
-					continue
+					sendConvertedStreamError(newBifrostErrorWithCode(nil, lib.ClientSafeInternalErrorMessage, fasthttp.StatusInternalServerError))
+					cancel()
+					for range streamChan {
+					}
+					return
 				}
 
 				// Handle Bedrock Event Stream format
