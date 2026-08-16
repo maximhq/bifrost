@@ -438,6 +438,7 @@ const (
 	RouteConfigTypeGenAI     RouteConfigType = "genai"
 	RouteConfigTypeBedrock   RouteConfigType = "bedrock"
 	RouteConfigTypeCohere    RouteConfigType = "cohere"
+	RouteConfigTypeHume      RouteConfigType = "hume"
 )
 
 // RouteConfig defines the configuration for a single route in an integration.

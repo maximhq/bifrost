@@ -1,0 +1,141 @@
+---
+title: "Hume EVI"
+description: "Use Bifrost as a custom language model for Hume's Empathic Voice Interface."
+icon: "waveform"
+---
+
+## Overview
+
+Bifrost can serve as a [custom language model](https://dev.hume.ai/docs/speech-to-speech-evi/guides/custom-language-model) for Hume's Empathic Voice Interface (EVI). Hume sends conversation history and vocal-expression measurements to Bifrost, and Bifrost streams an OpenAI-compatible response from any configured provider.
+
+The Hume adapter uses the normal Bifrost inference pipeline, including virtual keys, governance, routing, fallbacks, plugins, logging, and observability.
+
+**Recommended endpoint:** `https://<YOUR-BIFROST-HOST>/hume/v1/chat/completions`
+
+<Note>
+The endpoint must be reachable from Hume over public HTTPS. The legacy Hume custom-language-model WebSocket protocol is not supported.
+</Note>
+
+## Configure Bifrost
+
+The Hume routes are always registered. Configuration is optional unless Hume will omit its custom language model identifier.
+
+```json
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "hume": {
+    "default_model": "openai/gpt-4o-mini",
+    "prosody_prompt": {
+      "enabled": false,
+      "scope": "latest_user",
+      "max_emotions": 3
+    }
+  }
+}
+```
+
+| Field | Default | Behavior |
+| --- | --- | --- |
+| `default_model` | None | Used only when Hume does not send a custom language model identifier. It may be a `provider/model` string or a name resolvable by the model catalog. |
+| `prosody_prompt.enabled` | `false` | Adds Hume vocal-expression confidence scores to selected user messages. Typed metadata remains available to Go LLM plugins even when disabled. |
+| `prosody_prompt.scope` | `latest_user` | Selects `latest_user` or `all_user_messages`. |
+| `prosody_prompt.max_emotions` | `3` | Includes the highest-confidence scores. Set to `0` to include every score. |
+
+Restart Bifrost after changing these settings.
+
+## Configure Hume
+
+In the Hume Platform:
+
+1. Create or edit an EVI configuration.
+2. Select **Custom language model**.
+3. Set the URL to `https://<YOUR-BIFROST-HOST>/hume/v1/chat/completions`.
+4. Set **Custom language model identifier** to the Bifrost model you want, such as `anthropic/claude-sonnet-4-5`. You may leave it empty when `hume.default_model` is configured.
+5. Attach any Hume function tools needed by the conversation.
+
+The identifier supplied by Hume takes precedence over `hume.default_model`. If both are absent, Bifrost returns HTTP 400.
+
+## Authentication
+
+Hume sends `language_model_api_key` as an `Authorization: Bearer` header. Use a Bifrost virtual key and enable inference authentication for production deployments.
+
+```json
+{
+  "type": "session_settings",
+  "language_model_api_key": "<YOUR-BIFROST-VIRTUAL-KEY>"
+}
+```
+
+The Hume routes use the same authentication and governance middleware as other inference routes. They do not add a separate shared-secret mechanism.
+
+## Prosody-aware prompting
+
+Hume attaches timestamps and expression confidence scores to messages. Bifrost exposes these values to Go LLM plugins through `BifrostChatRequest.HumeMetadata` without forwarding the metadata fields directly to providers.
+
+When prompt injection is enabled, Bifrost adds a stable system instruction and appends deterministic `<hume_vocal_expression>` JSON to selected user messages. Scores are sorted by confidence, labels break ties, and values are rounded to three decimal places. The instruction tells the model that scores describe perceived vocal expression—not verified internal feelings—and should be used subtly.
+
+Choose the scope based on latency, token usage, and provider prompt caching:
+
+| Scope | Token cost | Prefix-cache behavior |
+| --- | --- | --- |
+| `latest_user` | Lowest | The tagged message changes as the conversation advances, so prior transformed history is not byte-stable and prefix-cache reuse may decrease. |
+| `all_user_messages` | Higher | Earlier tagged messages remain deterministic across turns, improving prefix stability when Hume resends unchanged scores. |
+
+Keeping injection disabled preserves Hume's original text history and lets an LLM plugin apply a custom policy using the typed metadata.
+
+## Session IDs
+
+If Hume sends `custom_session_id` as a query parameter, Bifrost validates and echoes it. Otherwise Bifrost generates a UUID. Every streamed chat chunk carries the resolved ID as `system_fingerprint`, allowing Hume to remember it and include it on later turns.
+
+Bifrost always replaces an upstream provider's `system_fingerprint`; provider fingerprints can never overwrite the Hume session ID. Session IDs are not persisted by the adapter.
+
+## Function tools
+
+Hume custom language models use the OpenAI function-calling format. Bifrost preserves Hume's tool definitions, tool choice, assistant tool-call deltas, and tool-result history. The adapter disables parallel tool calls because Hume currently accepts one function call at a time.
+
+Hume remains responsible for executing Hume-configured tools. Bifrost MCP tools continue to follow the existing MCP configuration and execution pipeline.
+
+## Verify the endpoint
+
+Use the OpenAI Python SDK to verify parsing, SSE framing, and session handling before connecting the endpoint to Hume:
+
+```python
+import asyncio
+from openai import AsyncOpenAI
+
+client = AsyncOpenAI(
+    base_url="https://<YOUR-BIFROST-HOST>/hume/v1",
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>",
+    default_query={"custom_session_id": "hume-test-123"},
+)
+
+async def main():
+    stream = await client.chat.completions.create(
+        model="openai/gpt-4o-mini",
+        messages=[],
+        stream=True,
+        extra_body={
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Hello, how are you?",
+                    "time": {"begin": 0, "end": 1000},
+                    "models": {
+                        "prosody": {
+                            "scores": {"Interest": 0.82, "Joy": 0.41}
+                        }
+                    },
+                }
+            ]
+        },
+    )
+
+    async for chunk in stream:
+        print(chunk.system_fingerprint, chunk.choices)
+
+asyncio.run(main())
+```
+
+The response must use `Content-Type: text/event-stream`, stream `data:` events incrementally, report `hume-test-123` as `system_fingerprint`, and finish with `data: [DONE]`.
+
+Finally, configure the public endpoint in Hume and start a call in the EVI Playground. Confirm that text begins streaming without waiting for the full model response, the conversation resumes with the same custom session ID, and any configured function tool produces a single valid tool call.

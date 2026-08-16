@@ -18,6 +18,30 @@ type BifrostChatRequest struct {
 	Params         *ChatParameters `json:"params,omitempty"`
 	Fallbacks      []Fallback      `json:"fallbacks,omitempty"`
 	RawRequestBody []byte          `json:"-"` // set bifrost-use-raw-request-body to true in ctx to use the raw request body. Bifrost will directly send this to the downstream provider.
+	// HumeMetadata carries request-only metadata supplied by Hume EVI's custom
+	// language model protocol. LLM plugins may inspect it, but it must never be
+	// serialized to an upstream provider.
+	HumeMetadata *HumeChatRequestMetadata `json:"-"`
+}
+
+// HumeChatRequestMetadata contains Hume EVI metadata associated with a chat request.
+// The metadata is read-only by convention once the request enters the plugin pipeline.
+type HumeChatRequestMetadata struct {
+	CustomSessionID string                      `json:"custom_session_id"`
+	Messages        map[int]HumeMessageMetadata `json:"messages,omitempty"`
+}
+
+// HumeMessageMetadata contains Hume metadata for one entry in BifrostChatRequest.Input.
+// Its key in HumeChatRequestMetadata.Messages is the corresponding message index.
+type HumeMessageMetadata struct {
+	Time          *HumeMessageTime   `json:"time,omitempty"`
+	ProsodyScores map[string]float64 `json:"prosody_scores,omitempty"`
+}
+
+// HumeMessageTime identifies the start and end of a Hume message in milliseconds.
+type HumeMessageTime struct {
+	Begin *float64 `json:"begin,omitempty"`
+	End   *float64 `json:"end,omitempty"`
 }
 
 // GetRawRequestBody returns the raw request body

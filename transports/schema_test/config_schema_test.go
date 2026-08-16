@@ -358,6 +358,34 @@ func validateConfig(t *testing.T, schema *jsonschema.Schema, configJSON string) 
 	return schema.Validate(v)
 }
 
+func TestSchemaHumeConfig(t *testing.T) {
+	compiled := compileSchema(t)
+
+	valid := []string{
+		`{"hume":{}}`,
+		`{"hume":{"default_model":"openai/gpt-4o-mini"}}`,
+		`{"hume":{"prosody_prompt":{"enabled":true,"scope":"latest_user","max_emotions":3}}}`,
+		`{"hume":{"prosody_prompt":{"enabled":true,"scope":"all_user_messages","max_emotions":0}}}`,
+	}
+	for _, configJSON := range valid {
+		if err := validateConfig(t, compiled, configJSON); err != nil {
+			t.Errorf("valid Hume config %s failed validation: %v", configJSON, err)
+		}
+	}
+
+	invalid := []string{
+		`{"hume":{"default_model":"   "}}`,
+		`{"hume":{"prosody_prompt":{"scope":"unknown"}}}`,
+		`{"hume":{"prosody_prompt":{"max_emotions":-1}}}`,
+		`{"hume":{"unknown":true}}`,
+	}
+	for _, configJSON := range invalid {
+		if err := validateConfig(t, compiled, configJSON); err == nil {
+			t.Errorf("invalid Hume config %s passed validation", configJSON)
+		}
+	}
+}
+
 // TestSchemaGuardrailRuleTarget verifies explicit MCP targets without breaking legacy LLM rules.
 func TestSchemaGuardrailRuleTarget(t *testing.T) {
 	compiled := compileSchema(t)

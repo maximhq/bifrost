@@ -79,6 +79,15 @@ func RunSimpleChatTest(t *testing.T, client *bifrost.Bifrost, ctx context.Contex
 					MaxCompletionTokens: bifrost.Ptr(150),
 				},
 				Fallbacks: testConfig.Fallbacks,
+				// Request-only integration metadata must remain available to plugins
+				// without leaking into any provider's wire payload.
+				HumeMetadata: &schemas.HumeChatRequestMetadata{
+					CustomSessionID: "provider-harness-session",
+					Messages: map[int]schemas.HumeMessageMetadata{0: {
+						Time:          &schemas.HumeMessageTime{Begin: schemas.Ptr(0.0), End: schemas.Ptr(1000.0)},
+						ProsodyScores: map[string]float64{"Interest": 0.9},
+					}},
+				},
 			}
 			response, err := client.ChatCompletionRequest(bfCtx, chatReq)
 			if err != nil {

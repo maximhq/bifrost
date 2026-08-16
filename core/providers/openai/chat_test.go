@@ -969,6 +969,35 @@ func TestToOpenAIChatRequest_AnnotationsNotInWirePayload(t *testing.T) {
 	}
 }
 
+func TestToOpenAIChatRequest_HumeMetadataDoesNotAffectWirePayload(t *testing.T) {
+	baseRequest := &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}},
+		},
+	}
+	requestWithMetadata := *baseRequest
+	requestWithMetadata.HumeMetadata = &schemas.HumeChatRequestMetadata{
+		CustomSessionID: "session-123",
+		Messages: map[int]schemas.HumeMessageMetadata{
+			0: {
+				Time: &schemas.HumeMessageTime{Begin: schemas.Ptr(100.0), End: schemas.Ptr(450.0)},
+				ProsodyScores: map[string]float64{
+					"Calmness": 0.91,
+				},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	withoutMetadata, err := providerUtils.MarshalSorted(ToOpenAIChatRequest(ctx, baseRequest))
+	require.NoError(t, err)
+	withMetadata, err := providerUtils.MarshalSorted(ToOpenAIChatRequest(ctx, &requestWithMetadata))
+	require.NoError(t, err)
+	require.Equal(t, string(withoutMetadata), string(withMetadata))
+}
+
 func TestApplyXAICompatibility(t *testing.T) {
 	tests := []struct {
 		name     string
