@@ -127,6 +127,53 @@ func (provider *AnthropicProvider) GetProviderKey() schemas.ModelProvider {
 	return providerUtils.GetProviderName(schemas.Anthropic, provider.customProviderConfig)
 }
 
+// conversionProvider returns the capability profile used for request conversion
+// and feature gating. The stock provider keeps schemas.Anthropic; custom
+// providers (base_provider_type: anthropic) resolve theirs from the configured
+// base URL host (see ResolveAnthropicMountProfile), so a "zai-anthropic" mount
+// pointed at api.z.ai gets Zhipu's profile — output_config.effort passthrough
+// and GLM forced-thinking handling — instead of Anthropic's own model gates.
+func (provider *AnthropicProvider) conversionProvider() schemas.ModelProvider {
+	if provider.customProviderConfig == nil {
+		return schemas.Anthropic
+	}
+	return ResolveAnthropicMountProfile(provider.networkConfig.BaseURL)
+}
+
+// normalizeChatRequestForConversion returns the request unchanged unless the
+// resolved mount profile differs from schemas.Anthropic — then it returns a
+// shallow copy with Provider set to the profile so converter-level gates (which
+// key on bifrostReq.Provider) see the same profile the builder strips with.
+// The caller's request is never mutated. Mirrors Mistral's
+// normalizeChatRequestForConversion.
+func (provider *AnthropicProvider) normalizeChatRequestForConversion(request *schemas.BifrostChatRequest) *schemas.BifrostChatRequest {
+	if request == nil {
+		return request
+	}
+	profile := provider.conversionProvider()
+	if profile == schemas.Anthropic || request.Provider == profile {
+		return request
+	}
+	normalized := *request
+	normalized.Provider = profile
+	return &normalized
+}
+
+// normalizeResponsesRequestForConversion is the Responses-API analogue of
+// normalizeChatRequestForConversion.
+func (provider *AnthropicProvider) normalizeResponsesRequestForConversion(request *schemas.BifrostResponsesRequest) *schemas.BifrostResponsesRequest {
+	if request == nil {
+		return request
+	}
+	profile := provider.conversionProvider()
+	if profile == schemas.Anthropic || request.Provider == profile {
+		return request
+	}
+	normalized := *request
+	normalized.Provider = profile
+	return &normalized
+}
+
 // buildRequestURL constructs the full request URL using the provider's configuration.
 func (provider *AnthropicProvider) buildRequestURL(ctx *schemas.BifrostContext, defaultPath string, requestType schemas.RequestType) string {
 	path, isCompleteURL := providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, requestType)
@@ -482,9 +529,9 @@ func (provider *AnthropicProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 		ctx,
 		provider.client,
 		provider.buildRequestURL(ctx, "/v1/messages", schemas.ChatCompletionRequest),
-		request,
+		provider.normalizeChatRequestForConversion(request),
 		AnthropicRequestBuildConfig{
-			Provider:                  schemas.Anthropic,
+			Provider:                  provider.conversionProvider(),
 			IsStreaming:               false,
 			BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
 			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
@@ -573,8 +620,8 @@ func (provider *AnthropicProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 		return nil, err
 	}
 
-	jsonData, bifrostErr := BuildAnthropicChatRequestBody(ctx, request, AnthropicRequestBuildConfig{
-		Provider:                  schemas.Anthropic,
+	jsonData, bifrostErr := BuildAnthropicChatRequestBody(ctx, provider.normalizeChatRequestForConversion(request), AnthropicRequestBuildConfig{
+		Provider:                  provider.conversionProvider(),
 		IsStreaming:               true,
 		ShouldSendBackRawRequest:  provider.sendBackRawRequest,
 		ShouldSendBackRawResponse: provider.sendBackRawResponse,
@@ -1266,9 +1313,9 @@ func (provider *AnthropicProvider) Responses(ctx *schemas.BifrostContext, key sc
 		ctx,
 		provider.client,
 		provider.buildRequestURL(ctx, "/v1/messages", schemas.ResponsesRequest),
-		request,
+		provider.normalizeResponsesRequestForConversion(request),
 		AnthropicRequestBuildConfig{
-			Provider:                  schemas.Anthropic,
+			Provider:                  provider.conversionProvider(),
 			IsStreaming:               false,
 			BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
 			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
@@ -1357,8 +1404,8 @@ func (provider *AnthropicProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 		return nil, err
 	}
 
-	jsonBody, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
-		Provider:                  schemas.Anthropic,
+	jsonBody, err := BuildAnthropicResponsesRequestBody(ctx, provider.normalizeResponsesRequestForConversion(request), AnthropicRequestBuildConfig{
+		Provider:                  provider.conversionProvider(),
 		IsStreaming:               true,
 		ShouldSendBackRawRequest:  provider.sendBackRawRequest,
 		ShouldSendBackRawResponse: provider.sendBackRawResponse,

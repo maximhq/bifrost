@@ -1243,6 +1243,32 @@ func SupportsProviderEffort(provider schemas.ModelProvider, model string) bool {
 	return caps.SupportsNativeEffort(DefaultSupportsNativeEffort(caps.Model()))
 }
 
+// ResolveAnthropicMountProfile maps well-known third-party Anthropic-compatible
+// hosts to the provider whose capability profile applies. Custom providers
+// (base_provider_type: anthropic) can point at any Anthropic-shaped mount, and
+// gating everything on schemas.Anthropic applies Anthropic's own model rules to
+// vendors whose mounts differ: z.ai accepts output_config.effort (and requires
+// thinking on GLM-5.3+), Model Studio accepts it on specific families, Kimi's
+// mount takes neither. Host-matched (not URL-parsed) so scheme-less base URLs
+// and workspace-dedicated hosts ({WorkspaceId}.{region}.maas.aliyuncs.com)
+// resolve the same way.
+//
+// Verified 2026-08-16 against vendor docs and live upstream behavior; see
+// docs/research 02 §8.4, 03 §6.3, 04 §7.4.
+func ResolveAnthropicMountProfile(baseURL string) schemas.ModelProvider {
+	u := strings.ToLower(baseURL)
+	switch {
+	case strings.Contains(u, "api.z.ai"), strings.Contains(u, "open.bigmodel.cn"):
+		return schemas.Zhipu
+	case strings.Contains(u, "aliyuncs.com"):
+		return schemas.Alibaba
+	case strings.Contains(u, "api.moonshot.ai"), strings.Contains(u, "api.moonshot.cn"), strings.Contains(u, "api.kimi.com"):
+		return schemas.Kimi
+	default:
+		return schemas.Anthropic
+	}
+}
+
 // appendToSystemContent merges newContent into existing.
 // If existing is nil the new content is returned as-is (preserving ContentStr
 // vs ContentBlocks wire format). When both sides are non-empty both are
