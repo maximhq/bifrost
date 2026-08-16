@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"math/rand"
 	"net"
 	"net/http"
 	"net/textproto"
@@ -2242,11 +2241,19 @@ func NewConfigurationError(message string) *schemas.BifrostError {
 // NewBifrostOperationError creates a standardized error for bifrost operation errors.
 // This helper reduces code duplication across providers that have bifrost operation errors.
 func NewBifrostOperationError(message string, err error) *schemas.BifrostError {
-	if errors.Is(err, ErrResponseBodyTooLarge) {
+	if errors.Is(err, ErrResponseBodyTooLarge) || errors.Is(err, fasthttp.ErrBodyTooLarge) {
 		message = schemas.ErrProviderResponseTooLarge
+	}
+	var statusCode *int
+	if message == schemas.ErrProviderResponseTooLarge {
+		// The gateway rejected an upstream response, so surface a provider-side
+		// bad-gateway error rather than the generic 500 used for internal failures.
+		status := http.StatusBadGateway
+		statusCode = &status
 	}
 	return &schemas.BifrostError{
 		IsBifrostError: true,
+		StatusCode:     statusCode,
 		Error: &schemas.ErrorField{
 			Message: message,
 			Error:   err,

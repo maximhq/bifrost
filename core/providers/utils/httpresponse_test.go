@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/valyala/fasthttp"
 )
 
 func TestReadHTTPResponseBody_EnforcesKnownContentLength(t *testing.T) {
@@ -54,6 +56,26 @@ func TestReadHTTPResponseBody_AllowsExactLimitAndUnlimited(t *testing.T) {
 			}
 			if string(body) != "12345" {
 				t.Fatalf("body = %q, want 12345", body)
+			}
+		})
+	}
+}
+
+func TestNewBifrostOperationError_ResponseBodyTooLargeSetsBadGateway(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{name: "net/http bounded reader", err: ErrResponseBodyTooLarge},
+		{name: "fasthttp unary client", err: fasthttp.ErrBodyTooLarge},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := NewBifrostOperationError("error reading response", tc.err)
+			if err.StatusCode == nil || *err.StatusCode != http.StatusBadGateway {
+				t.Fatalf("StatusCode = %v, want %d", err.StatusCode, http.StatusBadGateway)
+			}
+			if err.Error == nil || err.Error.Message != "provider response body exceeds configured maximum size" {
+				t.Fatalf("error message = %#v, want response-size error", err.Error)
 			}
 		})
 	}
