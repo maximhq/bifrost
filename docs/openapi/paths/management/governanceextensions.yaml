@@ -1,0 +1,416 @@
+virtual-key-users:
+  get:
+    operationId: listVirtualKeyUsers
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: List users attached to a virtual key
+    tags: [Virtual Keys, Users]
+    parameters:
+      - name: vk_id
+        in: path
+        required: true
+        schema: { type: string }
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Attached users
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [users, count]
+              properties:
+                users:
+                  type: array
+                  items:
+                    $ref: '../../schemas/management/users.yaml#/UserObject'
+                count: { type: integer }
+  post:
+    operationId: attachVirtualKeyUsers
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Attach users to a virtual key
+    tags: [Virtual Keys, Users]
+    parameters:
+      - name: vk_id
+        in: path
+        required: true
+        schema: { type: string }
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [user_ids]
+            properties:
+              user_ids:
+                type: array
+                items: { type: string }
+              preserve_usage: { type: boolean, default: false }
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Users attached
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/MessageResponse'
+
+virtual-key-user:
+  delete:
+    operationId: detachVirtualKeyUser
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Detach a user from a virtual key
+    tags: [Virtual Keys, Users]
+    parameters:
+      - name: vk_id
+        in: path
+        required: true
+        schema: { type: string }
+      - name: user_id
+        in: path
+        required: true
+        schema: { type: string }
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: User detached
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/MessageResponse'
+
+user-virtual-keys:
+  get:
+    operationId: listUserVirtualKeys
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: List virtual keys available to a user
+    tags: [Users, Virtual Keys]
+    parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema: { type: string }
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: User virtual keys
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                virtual_keys:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: true
+
+team-customers:
+  get:
+    operationId: listTeamCustomers
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: List customers attached to a team
+    tags: [Teams, Customers]
+    parameters:
+      - name: team_id
+        in: path
+        required: true
+        schema: { type: string }
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Attached customers
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                customers:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id: { type: string }
+                      name: { type: string }
+  post:
+    operationId: attachTeamCustomer
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Attach a customer to a team
+    tags: [Teams, Customers]
+    parameters:
+      - name: team_id
+        in: path
+        required: true
+        schema: { type: string }
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [customer_id]
+            properties:
+              customer_id: { type: string }
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Customer attached
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/MessageResponse'
+
+team-customer:
+  delete:
+    operationId: detachTeamCustomer
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Detach a customer from a team
+    tags: [Teams, Customers]
+    parameters:
+      - name: team_id
+        in: path
+        required: true
+        schema: { type: string }
+      - name: customer_id
+        in: path
+        required: true
+        schema: { type: string }
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Customer detached
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/MessageResponse'
+
+customer-teams:
+  get:
+    operationId: listCustomerTeams
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: List teams attached to a customer
+    tags: [Customers, Teams]
+    parameters:
+      - name: customer_id
+        in: path
+        required: true
+        schema: { type: string }
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Attached teams
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                teams:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id: { type: string }
+                      name: { type: string }
+
+business-unit-customers:
+  get:
+    operationId: listBusinessUnitCustomers
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: List customers attached to a business unit
+    tags: [Business Units, Customers]
+    parameters:
+      - name: business_unit_id
+        in: path
+        required: true
+        schema: { type: string }
+      - name: limit
+        in: query
+        schema: { type: integer, minimum: 1, maximum: 100 }
+      - name: offset
+        in: query
+        schema: { type: integer, minimum: 0, default: 0 }
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Attached customers
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                customers:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id: { type: string }
+                      name: { type: string }
+                count: { type: integer }
+                total_count: { type: integer }
+                limit: { type: integer }
+                offset: { type: integer }
+  post:
+    operationId: attachBusinessUnitCustomer
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Attach customers to a business unit
+    tags: [Business Units, Customers]
+    parameters:
+      - name: business_unit_id
+        in: path
+        required: true
+        schema: { type: string }
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              customer_id: { type: string }
+              customer_ids:
+                type: array
+                items: { type: string }
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Customers attached
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/MessageResponse'
+
+business-unit-customer:
+  delete:
+    operationId: detachBusinessUnitCustomer
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Detach a customer from a business unit
+    tags: [Business Units, Customers]
+    parameters:
+      - name: business_unit_id
+        in: path
+        required: true
+        schema: { type: string }
+      - name: customer_id
+        in: path
+        required: true
+        schema: { type: string }
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Customer detached
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/MessageResponse'
+
+customer-business-units:
+  get:
+    operationId: listCustomerBusinessUnits
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: List business units attached to a customer
+    tags: [Customers, Business Units]
+    parameters:
+      - name: customer_id
+        in: path
+        required: true
+        schema: { type: string }
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Attached business units
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                business_units:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id: { type: string }
+                      name: { type: string }

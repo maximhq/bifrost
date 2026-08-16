@@ -8,9 +8,12 @@ import {
 	AlertDialogHeader,
 	AlertDialogTitle,
 } from "@/components/ui/alertDialog";
+import { CopyableId } from "@/components/copyableId";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import BudgetUsageResetDialog from "@/components/ui/budgetUsageResetDialog";
+import { useBudgetUsageResetPrompt } from "@/hooks/useBudgetUsageResetPrompt";
 import MultiBudgetLines, { BudgetLineEntry } from "@/components/ui/multibudgets";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -50,6 +53,7 @@ const createInitialState = (customer?: Customer | null): Omit<CustomerFormData, 
 			id: b.id,
 			max_limit: b.max_limit,
 			reset_duration: b.reset_duration,
+			reset_config: b.reset_config,
 		})),
 		tokenMaxLimit: customer?.rate_limit?.token_max_limit ?? undefined,
 		tokenResetDuration: customer?.rate_limit?.token_reset_duration || "1h",
@@ -69,6 +73,8 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 	const [nameError, setNameError] = useState<string | null>(null);
 
 	const [showCalendarAlignWarning, setShowCalendarAlignWarning] = useState(false);
+	// Defers the save until the operator says whether to clear accumulated spend.
+	const resetPrompt = useBudgetUsageResetPrompt<boolean>();
 
 	const hasCreateAccess = useRbac(RbacResource.Customers, RbacOperation.Create);
 	const hasUpdateAccess = useRbac(RbacResource.Customers, RbacOperation.Update);
@@ -187,6 +193,19 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 		setFormData((prev) => ({ ...prev, [field]: value }));
 	};
 
+	// A budget config change on an existing customer is when clearing accumulated
+	// spend becomes a meaningful choice; creating one has no usage to reset.
+	const budgetsChanged = () => {
+		if (!isEditing || !customer) return false;
+		const signature = (rows: { max_limit?: number | null; reset_duration?: string; reset_config?: { quarter_start_month?: number } }[]) =>
+			[...rows]
+				.map((r) => `${r.max_limit ?? ""}:${r.reset_duration ?? ""}:${r.reset_config?.quarter_start_month ?? ""}`)
+				.sort()
+				.join("|");
+		const next = formData.budgets.filter((b) => b.max_limit !== undefined && b.max_limit !== null);
+		return signature(next) !== signature(customer.budgets ?? []);
+	};
+
 	const handleSubmit = async (e: React.FormEvent) => {
 		e.preventDefault();
 
@@ -195,9 +214,17 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 			return;
 		}
 
+		if (budgetsChanged()) {
+			resetPrompt.ask(true);
+			return;
+		}
+		await saveCustomer(false);
+	};
+
+	const saveCustomer = async (resetBudgetUsage: boolean) => {
 		const budgetRequests: CreateBudgetRequest[] = formData.budgets
 			.filter((b) => b.max_limit !== undefined && b.max_limit !== null)
-			.map((b) => ({ id: b.id, max_limit: b.max_limit!, reset_duration: b.reset_duration }));
+			.map((b) => ({ id: b.id, max_limit: b.max_limit!, reset_duration: b.reset_duration, reset_config: b.reset_config }));
 
 		try {
 			if (isEditing && customer) {
@@ -205,6 +232,8 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 					name: formData.name,
 					calendar_aligned: formData.calendarAligned,
 					budgets: budgetRequests,
+					// Only sent when the operator explicitly chose to clear spend.
+					reset_budget_usage: resetBudgetUsage || undefined,
 				};
 
 				const hadRateLimit = !!customer.rate_limit;
@@ -273,8 +302,11 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
 			<SheetContent className="max-w-[900px] p-0 pt-4 sm:max-w-2xl" data-testid="customer-dialog-content">
-				<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-8">
-					<SheetTitle className="flex items-center gap-2">{isEditing ? "Edit Customer" : "Create Customer"}</SheetTitle>
+				<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-4 md:px-8">
+					<SheetTitle className="flex items-center gap-2">
+						{isEditing ? "Edit Customer" : "Create Customer"}
+						{customer?.id && <CopyableId id={customer.id} entityLabel="Customer" />}
+					</SheetTitle>
 					<SheetDescription>
 						{isEditing
 							? "Update the customer information and settings."
@@ -283,7 +315,7 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 				</SheetHeader>
 
 				<form onSubmit={handleSubmit} className="flex flex-1 flex-col">
-					<div className="flex-1 px-8 py-4">
+					<div className="flex-1 px-4 py-4 md:px-8">
 						<div className="space-y-6">
 							<div className="space-y-4">
 								<div className="space-y-2">
@@ -306,7 +338,6 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 								label="Budget Limits"
 								lines={formData.budgets}
 								onChange={(lines) => updateField("budgets", lines)}
-								options={resetDurationOptions}
 							/>
 
 							<NumberAndSelect
@@ -336,7 +367,7 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 											Align to calendar cycle
 										</Label>
 										<p className="text-muted-foreground text-xs">
-											Reset budgets and rate limits at the start of each period (e.g. 1st of month) instead of rolling from creation date.
+											Reset budgets and rate limits at the start of each period (e.g. 1st of month) instead of rolling from creation date. Quarterly budgets always align to fiscal quarter starts.
 											Applies to durations of a day or longer.
 										</p>
 									</div>
@@ -374,10 +405,17 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 									</AlertDialogFooter>
 								</AlertDialogContent>
 							</AlertDialog>
+							<BudgetUsageResetDialog
+								data-testid="customer-budget-reset-dialog"
+								ownerLabel="customer"
+								open={resetPrompt.isOpen}
+								onOpenChange={resetPrompt.setOpen}
+								onChoice={(resetUsage) => resetPrompt.resolve(() => saveCustomer(resetUsage))}
+							/>
 						</div>
 					</div>
 
-					<SheetFooter className="bg-card sticky bottom-0 flex-row justify-end gap-2 border-t px-6 py-4">
+					<SheetFooter className="bg-card sticky bottom-0 flex-row justify-end gap-2 border-t px-4 py-4 md:px-6">
 						<Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={loading}>
 							Cancel
 						</Button>

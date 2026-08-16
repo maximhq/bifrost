@@ -28,6 +28,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/cespare/xxhash/v2"
+	ws "github.com/fasthttp/websocket"
 	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
@@ -103,6 +104,92 @@ func StripThoughtSignature(callID string) string {
 	return callID
 }
 
+// ReasoningItemIDMarker prefixes an OpenAI-issued reasoning item id onto the
+// payload it's smuggled inside -- an Anthropic thinking block's signature, or a
+// redacted_thinking block's data -- so the id survives a round trip through
+// Anthropic's wire format. Anthropic's thinking/redacted_thinking content blocks
+// have no id field (id is valid only on tool_use/server_tool_use/mcp_tool_use),
+// but OpenAI cryptographically binds encrypted_content to the id it was issued
+// with and rejects a replay whose id doesn't match. Without this, the id is
+// dropped on the way to the client and a fresh random one is minted when the
+// client echoes the block back, producing a fake-id/real-ciphertext pair that
+// OpenAI rejects with "Encrypted content item_id did not match the target item id."
+//
+// A fixed prefix marker (checked at byte offset 0), not an infix separator like
+// ThoughtSignatureSeparator, is deliberate: encrypted_content/signature payloads
+// are long opaque blobs, so an infix search has a small but nonzero chance of
+// matching inside genuine Anthropic-issued data. A false positive there would
+// corrupt a real signature/data value forwarded to Anthropic's own API
+// (Anthropic-to-Anthropic or Anthropic-to-Bedrock-Anthropic replay), not just a
+// benign same-provider replay, so the extra collision-safety matters more here.
+const ReasoningItemIDMarker = "brid_"
+
+// ReasoningItemIDSeparator delimits the embedded id from the real payload that
+// follows it: "<ReasoningItemIDMarker><id><ReasoningItemIDSeparator><payload>".
+const ReasoningItemIDSeparator = ":"
+
+// ShouldEmbedReasoningItemID reports whether provider/model represents a genuine
+// OpenAI-issued reasoning response that needs EmbedReasoningItemID's id-smuggling
+// treatment. True unconditionally only for the literal OpenAI provider, which by
+// definition only ever serves OpenAI models. Azure, Bedrock Mantle, and Vertex
+// each also route real OpenAI models (Azure AI Foundry, Bedrock Mantle, and
+// Vertex Model Garden all host OpenAI's gpt-oss alongside third-party model
+// families -- Llama/Mistral/DeepSeek on Azure, Claude on Bedrock Mantle,
+// Gemini/Claude on Vertex), so for all three the check additionally requires the
+// resolved model itself to be OpenAI-family -- stamping a Bifrost-synthetic id
+// onto a non-OpenAI reasoning item's signature/data would mark data that never
+// needed it and was never bound to any id in the first place.
+//
+// provider is matched after schemas.ResolveBaseProvider, so a custom provider
+// (which reports its own key, e.g. "my-openai") is gated by the built-in
+// provider it wraps. A custom provider on base type OpenAI therefore qualifies
+// unconditionally like native OpenAI: OpenAI-compatible endpoints are commonly
+// configured with deployment-style model names that no OpenAI-family check would
+// match, and embedding stays a no-op anyway unless the upstream issued a real
+// reasoning item id for EmbedReasoningItemID to carry.
+func ShouldEmbedReasoningItemID(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string) bool {
+	switch schemas.ResolveBaseProvider(ctx, provider) {
+	case schemas.OpenAI:
+		return true
+	case schemas.Azure, schemas.BedrockMantle, schemas.Vertex:
+		return schemas.IsOpenAIModel(model)
+	default:
+		return false
+	}
+}
+
+// EmbedReasoningItemID prepends id onto payload so it survives a round trip
+// through a wire format with no field to carry it. Returns payload unchanged if
+// id is nil or empty: there is nothing worth preserving, and this keeps the
+// function a no-op for reasoning content that never had a real upstream id
+// (e.g. content converted from a Chat Completions reasoning bridge).
+func EmbedReasoningItemID(id *string, payload string) string {
+	if id == nil || *id == "" {
+		return payload
+	}
+	return ReasoningItemIDMarker + *id + ReasoningItemIDSeparator + payload
+}
+
+// ExtractReasoningItemID reverses EmbedReasoningItemID. Returns the embedded id
+// and the original payload with ok=true if payload carries the marker; otherwise
+// returns (nil, payload, false) unchanged -- notably including the case where
+// payload is a genuine Anthropic-issued signature/data value, which is never
+// marked this way, so real signatures/data pass through byte-for-byte untouched.
+func ExtractReasoningItemID(payload string) (id *string, rest string, ok bool) {
+	if !strings.HasPrefix(payload, ReasoningItemIDMarker) {
+		return nil, payload, false
+	}
+	body := strings.TrimPrefix(payload, ReasoningItemIDMarker)
+	extracted, remaining, found := strings.Cut(body, ReasoningItemIDSeparator)
+	if !found || extracted == "" {
+		// Malformed marker (shouldn't happen -- we always write the separator,
+		// and EmbedReasoningItemID never embeds an empty id).
+		// Treat conservatively as unmarked rather than guessing.
+		return nil, payload, false
+	}
+	return &extracted, remaining, true
+}
+
 // sortedAPI is a sonic encoder/decoder that sorts map keys during marshaling.
 // This ensures deterministic JSON output for map[string]interface{} values,
 // which is critical for LLM prompt caching (e.g., Anthropic cache keying).
@@ -124,6 +211,12 @@ func SetJSONField(data []byte, path string, value interface{}) ([]byte, error) {
 	return sjson.SetBytes(data, path, value)
 }
 
+// SetRawJSONField sets a field in JSON bytes to an already-encoded JSON document,
+// inserting it verbatim instead of re-marshaling it.
+func SetRawJSONField(data []byte, path string, value []byte) ([]byte, error) {
+	return sjson.SetRawBytes(data, path, value)
+}
+
 // DeleteJSONField deletes a field from JSON bytes without disturbing other fields' ordering.
 // Uses in-place byte manipulation for minimal allocations and preserves nested structure.
 func DeleteJSONField(data []byte, path string) ([]byte, error) {
@@ -138,6 +231,39 @@ func JSONFieldExists(data []byte, path string) bool {
 // GetJSONField retrieves a field value from JSON bytes without parsing the entire document.
 func GetJSONField(data []byte, path string) gjson.Result {
 	return gjson.GetBytes(data, path)
+}
+
+// GetJSONSubtree extracts a JSON sub-tree as raw bytes by gjson path, without parsing the
+// entire document. Returns nil if the path does not exist. The returned slice is a copy
+// of the matched sub-tree bytes — safe to retain after the input is mutated or released.
+func GetJSONSubtree(data []byte, path string) []byte {
+	res := gjson.GetBytes(data, path)
+	if !res.Exists() {
+		return nil
+	}
+	raw := res.Raw
+	if raw == "" {
+		return nil
+	}
+	out := make([]byte, len(raw))
+	copy(out, raw)
+	return out
+}
+
+// UnmarshalOrdered decodes JSON bytes into a *schemas.OrderedMap, preserving the key order
+// of the source document. Use this in preference to sonic.Unmarshal into a map[string]any
+// whenever the caller cares about field order (e.g., LLM prompt-cache keying or property
+// ordering surfaced to users).
+//
+// Note: the decoder under the hood is encoding/json (not sonic), because token-by-token
+// decoding is required to preserve key order. Outer dispatch goes through sonic, which
+// invokes OrderedMap's custom UnmarshalJSON.
+func UnmarshalOrdered(data []byte) (*schemas.OrderedMap, error) {
+	om := schemas.NewOrderedMap()
+	if err := sonic.Unmarshal(data, om); err != nil {
+		return nil, err
+	}
+	return om, nil
 }
 
 // logger is the global logger for the provider utils (thread-safe via atomic.Pointer).
@@ -215,6 +341,8 @@ func makeRequestWithDoFunc(ctx context.Context, do func() error) (time.Duration,
 		// Context was cancelled (e.g., deadline exceeded or manual cancellation).
 		// Calculate latency even for cancelled requests.
 		latency := time.Since(startTime)
+		// Socket wait is upstream even when it ends in cancellation.
+		schemas.AddUpstreamLatency(ctx, latency)
 		// Return a wait function that blocks until the background goroutine finishes.
 		// The caller MUST invoke this (via defer) before releasing req/resp to avoid
 		// a data race with the still-running goroutine.
@@ -248,6 +376,8 @@ func makeRequestWithDoFunc(ctx context.Context, do func() error) (time.Duration,
 		// The do() call completed.
 		// Calculate latency for both successful and failed requests.
 		latency := time.Since(startTime)
+		// Single accumulation point for every unary provider call.
+		schemas.AddUpstreamLatency(ctx, latency)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				return latency, &schemas.BifrostError{
@@ -299,6 +429,64 @@ func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 func MakeRequestWithContextFollowRedirects(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response, maxRedirects int) (time.Duration, *schemas.BifrostError, func()) {
 	latency, bifrostErr, wait := makeRequestWithDoFunc(ctx, func() error { return client.DoRedirects(req, resp, maxRedirects) })
 	return latency, bifrostErr, wait
+}
+
+// DoStreamingRequest performs the initial client.Do for a streaming request and
+// records the wait as upstream latency.
+//
+// Streaming cannot use MakeRequestWithContext: for a streamed response fasthttp
+// returns as soon as the headers arrive, and the body is consumed lazily
+// afterwards. So this measures time-to-first-byte only — the generation window
+// is measured separately, inside idleTimeoutReader.Read. Both are needed;
+// counting only one attributes the other to Bifrost.
+//
+// Returns client.Do's error untouched so callers keep their own error
+// classification and latency bookkeeping.
+func DoStreamingRequest(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) error {
+	startTime := time.Now()
+	err := client.Do(req, resp)
+	schemas.AddUpstreamLatency(ctx, time.Since(startTime))
+	return err
+}
+
+// upstreamTimingBody wraps a response body so time blocked reading it counts as
+// upstream latency. net/http's client.Do returns at response headers; the body
+// still streams from the provider's socket, and an untimed io.ReadAll would
+// misattribute that wait to Bifrost overhead.
+type upstreamTimingBody struct {
+	inner io.ReadCloser
+	ctx   context.Context
+}
+
+func (b *upstreamTimingBody) Read(p []byte) (int, error) {
+	start := time.Now()
+	n, err := b.inner.Read(p)
+	schemas.AddUpstreamLatency(b.ctx, time.Since(start))
+	return n, err
+}
+
+func (b *upstreamTimingBody) Close() error { return b.inner.Close() }
+
+// DoHTTPRequest performs a net/http request and records the wait as upstream
+// latency. Used by the paths that don't go through fasthttp — Bedrock, which
+// builds and signs its own requests, and the media fetcher.
+//
+// The duration is attributed via req.Context() rather than an explicit ctx
+// parameter, so callers that no longer hold the context (Bedrock's
+// executeBedrockRequest) need no signature change. Every such request is built
+// with http.NewRequestWithContext, so the accumulator is always reachable.
+//
+// client.Do covers headers only, so the returned body is wrapped to time the
+// reads that drain it. Streamed responses consumed through NewIdleTimeoutReader
+// are unwrapped there — the idle reader does its own per-chunk timing.
+func DoHTTPRequest(client *http.Client, req *http.Request) (*http.Response, error) {
+	startTime := time.Now()
+	resp, err := client.Do(req)
+	schemas.AddUpstreamLatency(req.Context(), time.Since(startTime))
+	if err == nil && resp != nil && resp.Body != nil {
+		resp.Body = &upstreamTimingBody{inner: resp.Body, ctx: req.Context()}
+	}
+	return resp, err
 }
 
 // Deprecated: ConfigureRetry is now handled internally by ConfigureDialer.
@@ -507,6 +695,64 @@ func ConfigureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 	}
 
 	return client
+}
+
+// ConfigureWebSocketProxy sets up a proxy for a WebSocket dialer based on the provided configuration.
+// It supports HTTP, SOCKS5, and environment-based proxy configurations, mirroring ConfigureProxy above.
+// Unlike ConfigureProxy (which fails fast by swapping in an always-erroring fasthttp.DialFunc on a
+// client that's built once and reused silently), this returns an error directly: callers resolve proxy
+// configuration fresh on every dial, so a returned error surfaces immediately instead of on first use.
+//
+// ws.Dialer.Proxy dispatches on the resolved proxy URL's scheme internally (HTTP CONNECT tunneling for
+// "http", golang.org/x/net/proxy.FromURL — which handles "socks5" — for everything else), so unlike the
+// fasthttp path there is no need for separate HTTP vs SOCKS5 dialer constructors.
+func ConfigureWebSocketProxy(dialer *ws.Dialer, proxyConfig *schemas.ProxyConfig) (*ws.Dialer, error) {
+	if proxyConfig == nil {
+		return dialer, nil
+	}
+
+	switch proxyConfig.Type {
+	case schemas.NoProxy:
+		return dialer, nil
+	case schemas.HTTPProxy, schemas.Socks5Proxy:
+		if proxyConfig.URL != nil && proxyConfig.URL.IsFromSecret() && proxyConfig.URL.GetValue() == "" {
+			return nil, fmt.Errorf("invalid proxy configuration: %s references %q but it resolved to an empty value", "proxy.url", proxyConfig.URL.GetRawRef())
+		}
+		proxyURLValue := proxyConfig.URL.GetValue()
+		if proxyURLValue == "" {
+			getLogger().Warn("Warning: proxy URL is required for setting up WebSocket proxy")
+			return dialer, nil
+		}
+		parsedURL, err := url.Parse(proxyURLValue)
+		if err != nil {
+			return nil, fmt.Errorf("invalid proxy configuration: invalid proxy URL: %w", err)
+		}
+		proxyUsername := proxyConfig.Username.GetValue()
+		proxyPassword := proxyConfig.Password.GetValue()
+		if proxyUsername != "" && proxyPassword != "" {
+			parsedURL.User = url.UserPassword(proxyUsername, proxyPassword)
+		}
+		dialer.Proxy = http.ProxyURL(parsedURL)
+	case schemas.EnvProxy:
+		dialer.Proxy = http.ProxyFromEnvironment
+	default:
+		return nil, fmt.Errorf("invalid proxy configuration: unsupported proxy type: %s", proxyConfig.Type)
+	}
+
+	if proxyConfig.CACertPEM != nil && proxyConfig.CACertPEM.IsFromSecret() && proxyConfig.CACertPEM.GetValue() == "" {
+		return nil, fmt.Errorf("invalid proxy configuration: %s references %q but it resolved to an empty value", "proxy.ca_cert_pem", proxyConfig.CACertPEM.GetRawRef())
+	}
+	proxyCACertPEM := proxyConfig.CACertPEM.GetValue()
+	if proxyCACertPEM != "" {
+		tlsConfig, err := createTLSConfigWithCA(proxyCACertPEM)
+		if err != nil {
+			return nil, fmt.Errorf("invalid proxy configuration: invalid proxy CA certificate: %w", err)
+		} else {
+			dialer.TLSClientConfig = tlsConfig
+		}
+	}
+
+	return dialer, nil
 }
 
 // createTLSConfigWithCA creates a TLS configuration with a custom CA certificate
@@ -744,6 +990,50 @@ func SetExtraHeaders(ctx context.Context, req *fasthttp.Request, extraHeaders ma
 				} else {
 					req.Header.Add(k, v)
 				}
+			}
+		}
+	}
+}
+
+// internalHeaderPrefix marks Bifrost's own request headers (x-bf-vk and friends). They carry
+// gateway credentials and must never be forwarded to a provider.
+const internalHeaderPrefix = "x-bf-"
+
+// SetPassthroughHeaders applies the caller's raw request headers captured for Anthropic OAuth
+// passthrough, where the caller's token is the upstream credential. ONLY the Anthropic provider
+// may call this: every other provider authenticates with its own configured credentials, so
+// forwarding these would leak x-bf-* upstream and, on Bedrock, break SigV4 when a hop rewrites
+// x-forwarded-for. Hop-by-hop headers are dropped by filterHeaders, x-bf-* never leaves the gateway.
+func SetPassthroughHeaders(ctx context.Context, req *fasthttp.Request, provider schemas.ModelProvider, skipHeaders []string) {
+	// Gate on the provider here rather than at the call sites: the Anthropic request handlers
+	// are shared with azure, vertex, bedrockmantle, vllm, sgl, deepseek and fireworks, so a
+	// call-site check would silently forward the caller's credential to all of them.
+	if provider != schemas.Anthropic {
+		return
+	}
+	headers, ok := (ctx).Value(schemas.BifrostContextKeyPassthroughHeaders).(map[string][]string)
+	if !ok {
+		return
+	}
+	for k, values := range filterHeaders(headers) {
+		lower := strings.ToLower(k)
+		if strings.HasPrefix(lower, internalHeaderPrefix) {
+			continue
+		}
+		// Bifrost owns the body it sends, so it owns Content-Type. Dropping it here keeps a
+		// caller value from overriding the JSON content type no matter where callers invoke
+		// this relative to their own SetContentType.
+		if lower == "content-type" {
+			continue
+		}
+		if skipHeaders != nil && slices.Contains(skipHeaders, lower) {
+			continue
+		}
+		for i, v := range values {
+			if i == 0 {
+				req.Header.Set(k, v)
+			} else {
+				req.Header.Add(k, v)
 			}
 		}
 	}
@@ -1917,6 +2207,24 @@ func NewBifrostTimeoutError(message string, err error) *schemas.BifrostError {
 	}
 }
 
+// NewBifrostBadRequestError creates a standardized error for client-input validation
+// failures surfaced during request conversion (e.g. an unsatisfiable reasoning/thinking
+// + max_tokens combination). Sets StatusCode to 400, distinguishing these from
+// NewBifrostOperationError's genuinely-internal conversion failures, which the HTTP
+// layer defaults to 500 when StatusCode is unset.
+func NewBifrostBadRequestError(message string) *schemas.BifrostError {
+	statusCode := 400
+	errorType := "invalid_request_error"
+	return &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     &statusCode,
+		Error: &schemas.ErrorField{
+			Message: message,
+			Type:    &errorType,
+		},
+	}
+}
+
 // NewBifrostUpstreamConnectionError creates a standardized error for upstream
 // connectivity failures where Bifrost successfully dispatched to the provider
 // but the provider failed to return a response body (DNS lookup failure,
@@ -2459,6 +2767,14 @@ func NewIdleTimeoutReader(reader io.Reader, bodyStream io.Reader, timeout time.D
 	if timeout <= 0 {
 		timeout = DefaultStreamIdleTimeout
 	}
+	// A body wrapped by DoHTTPRequest times its own reads; unwrap so the
+	// per-chunk timing in Read below isn't counted twice.
+	if tb, ok := reader.(*upstreamTimingBody); ok {
+		reader = tb.inner
+	}
+	if tb, ok := bodyStream.(*upstreamTimingBody); ok {
+		bodyStream = tb.inner
+	}
 	r := &idleTimeoutReader{
 		ctx:        ctx,
 		reader:     reader,
@@ -2543,7 +2859,11 @@ func (r *idleTimeoutReader) Read(p []byte) (n int, err error) {
 	if r.connectionClosed() {
 		return 0, r.closedReadError()
 	}
+	readStart := time.Now()
 	n, err = r.reader.Read(p)
+	if r.ctx != nil {
+		schemas.AddUpstreamLatency(r.ctx, time.Since(readStart))
+	}
 	if n > 0 {
 		r.timer.Reset(r.timeout)
 	}
@@ -2732,6 +3052,44 @@ func ProcessAndSendError(
 	GateSendChunk(ctx, streamResponse, responseChan)
 }
 
+// SendStreamTruncatedError surfaces an upstream stream that ended without a
+// terminal marker (no "data: [DONE]", no finish_reason / completion event) as a
+// client-visible error instead of letting the caller synthesize a clean final
+// chunk. A dying upstream typically closes the connection on a chunk boundary,
+// which fasthttp reports as a plain io.EOF — indistinguishable at the transport
+// layer from a properly terminated body — so truncation can only be detected
+// semantically, by the absence of a terminal marker.
+//
+// The error is deliberately built as a retryable upstream connection failure
+// (502, IsBifrostError=false): when nothing has been forwarded yet this becomes
+// the stream's first chunk, so CheckFirstStreamChunkForError converts it into a
+// synchronous error and executeRequestWithRetries can retry or fall back. An
+// IsBifrostError=true error would break that retry loop instead (see #4496).
+func SendStreamTruncatedError(
+	ctx *schemas.BifrostContext,
+	postHookRunner schemas.PostHookRunner,
+	responseChan chan *schemas.BifrostStreamChunk,
+	logger schemas.Logger,
+	postHookSpanFinalizer func(context.Context),
+	jsonBody []byte,
+) {
+	if logger != nil {
+		logger.Warn("Stream ended without a terminal marker; treating as truncated upstream stream")
+	}
+
+	truncatedErr := NewBifrostUpstreamConnectionError(schemas.ErrProviderStreamTruncated, io.ErrUnexpectedEOF)
+
+	if ShouldSendBackRawRequest(ctx, false) && len(jsonBody) > 0 {
+		truncatedErr.ExtraFields.RawRequest = compactRawJSON(jsonBody)
+	}
+
+	// Bill for tokens the provider already produced before the stream died.
+	attachBilledUsageFromContext(ctx, truncatedErr)
+
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	ProcessAndSendBifrostError(ctx, postHookRunner, truncatedErr, responseChan, logger, postHookSpanFinalizer)
+}
+
 // CreateBifrostTextCompletionChunkResponse creates a bifrost text completion chunk response.
 func CreateBifrostTextCompletionChunkResponse(
 	id string,
@@ -2740,12 +3098,14 @@ func CreateBifrostTextCompletionChunkResponse(
 	currentChunkIndex int,
 	requestType schemas.RequestType,
 	model string,
+	created int,
 ) *schemas.BifrostTextCompletionResponse {
 	response := &schemas.BifrostTextCompletionResponse{
-		ID:     id,
-		Model:  model,
-		Object: "text_completion",
-		Usage:  usage,
+		ID:      id,
+		Model:   model,
+		Created: created,
+		Object:  "text_completion",
+		Usage:   usage,
 		Choices: []schemas.BifrostResponseChoice{
 			{
 				FinishReason:                 finishReason,
@@ -3251,6 +3611,10 @@ func completeDeferredSpan(ctx *schemas.BifrostContext, result *schemas.BifrostRe
 		return
 	}
 
+	// Stamp now the stream has drained; the handler returned long ago. Before the
+	// guard below so it still runs when there is no deferred span.
+	ctx.StampUpstreamLatency()
+
 	// Get the deferred span handle from TraceStore using trace ID
 	handle := tracer.GetDeferredSpanHandle(traceID)
 	if handle == nil {
@@ -3285,6 +3649,9 @@ func completeDeferredSpan(ctx *schemas.BifrostContext, result *schemas.BifrostRe
 	} else if result != nil {
 		// Fall back to final chunk if no accumulated data (shouldn't happen normally)
 		tracer.PopulateLLMResponseAttributes(ctx, handle, result, err)
+	} else if err != nil {
+		// Stream failed before the first chunk — still stamp error attributes.
+		tracer.PopulateLLMResponseAttributes(ctx, handle, nil, err)
 	}
 
 	// Finalize aggregated post-hook spans before ending the LLM span

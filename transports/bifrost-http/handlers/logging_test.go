@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,11 +10,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/maximhq/bifrost/framework/sidekiq"
 	loggingplugin "github.com/maximhq/bifrost/plugins/logging"
+	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 	"gorm.io/gorm"
 )
@@ -45,6 +48,139 @@ func TestShouldUseFilterDataCacheRejectsScopedContext(t *testing.T) {
 	})
 	if shouldUseFilterDataCache(ctx, "") {
 		t.Fatal("expected scoped request to bypass filterdata cache")
+	}
+}
+
+// TestGetMCPLogByIDRedactionMapping verifies raw mappings stay hidden and only resolver-approved mappings are returned.
+func TestGetMCPLogByIDRedactionMapping(t *testing.T) {
+	SetLogger(&mockLogger{})
+	revealed := &schemas.RedactionMapsByPhase{
+		Input: map[string]string{"EMAIL-1": "revealed@example.com"},
+	}
+	tests := []struct {
+		name        string
+		resolver    *staticMCPLogRedactionResolver
+		wantMapping bool
+		wantCalls   int
+	}{
+		{name: "no resolver"},
+		{name: "authorized mapping", resolver: &staticMCPLogRedactionResolver{mapping: revealed}, wantMapping: true, wantCalls: 1},
+		{name: "resolver error", resolver: &staticMCPLogRedactionResolver{err: errors.New("decode failed")}, wantCalls: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manager := &dashboardLogManager{mcpLog: &logstore.MCPToolLog{
+				ID:               "mcp-1",
+				RedactionMapping: `plain:{"input":{"EMAIL-1":"private@example.com"}}`,
+			}}
+			handler := &LoggingHandler{logManager: manager}
+			if tt.resolver != nil {
+				handler.SetMCPLogRedactionMappingResolver(tt.resolver)
+			}
+			ctx := &fasthttp.RequestCtx{}
+			ctx.SetUserValue("id", "mcp-1")
+
+			handler.getMCPLogByID(ctx)
+
+			if ctx.Response.StatusCode() != fasthttp.StatusOK {
+				t.Fatalf("status = %d, want %d", ctx.Response.StatusCode(), fasthttp.StatusOK)
+			}
+			var response struct {
+				RedactionMapping *schemas.RedactionMapsByPhase `json:"redaction_mapping"`
+			}
+			if err := json.Unmarshal(ctx.Response.Body(), &response); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if bytes.Contains(ctx.Response.Body(), []byte("private@example.com")) {
+				t.Fatalf("raw persisted mapping leaked in response: %s", ctx.Response.Body())
+			}
+			if tt.wantMapping != (response.RedactionMapping != nil) {
+				t.Fatalf("redaction mapping present = %t, want %t", response.RedactionMapping != nil, tt.wantMapping)
+			}
+			if tt.wantMapping && response.RedactionMapping.Input["EMAIL-1"] != "revealed@example.com" {
+				t.Fatalf("revealed mapping = %#v", response.RedactionMapping)
+			}
+			if tt.resolver != nil && tt.resolver.calls != tt.wantCalls {
+				t.Fatalf("resolver calls = %d, want %d", tt.resolver.calls, tt.wantCalls)
+			}
+		})
+	}
+}
+
+// TestShouldCacheFilterDimensions_NarrowsToRawScans verifies the cache is spent
+// only where it saves real work. Matview-backed dimensions are indexed lookups
+// and a cache entry serves exactly one caller, so they are not worth caching;
+// metadata_keys still hits the raw logs table and is.
+func TestShouldCacheFilterDimensions_NarrowsToRawScans(t *testing.T) {
+	pg := &LoggingHandler{config: &lib.Config{
+		LogsStoreConfig: &logstore.Config{Type: logstore.LogStoreTypePostgres},
+	}}
+
+	cases := []struct {
+		name string
+		dims []string
+		want bool
+	}{
+		{"single matview dimension", []string{filterDimUsers}, false},
+		{"several matview dimensions", []string{filterDimUsers, filterDimTeams, filterDimModels}, false},
+		{"metadata keys alone", []string{filterDimMetadataKeys}, true},
+		{"metadata keys mixed in", []string{filterDimUsers, filterDimMetadataKeys}, true},
+		{"default all dimensions", allFilterDimensions, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := pg.shouldCacheFilterDimensions(tc.dims); got != tc.want {
+				t.Fatalf("shouldCacheFilterDimensions(%v) = %v, want %v", tc.dims, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestShouldCacheFilterDimensions_NonPostgresCachesEverything verifies stores
+// without matviews keep the original behaviour: there every dimension is a raw
+// 30-day DISTINCT, so none of them should lose the cache.
+func TestShouldCacheFilterDimensions_NonPostgresCachesEverything(t *testing.T) {
+	for _, h := range []*LoggingHandler{
+		{config: &lib.Config{LogsStoreConfig: &logstore.Config{Type: logstore.LogStoreTypeSQLite}}},
+		{config: &lib.Config{}}, // no logs-store config: fail safe, keep caching
+		{},                      // no config at all
+	} {
+		if !h.shouldCacheFilterDimensions([]string{filterDimUsers}) {
+			t.Fatal("stores without matviews must keep caching every dimension")
+		}
+	}
+}
+
+// TestFilterDataCacheIdentity_PartitionsPerCaller is the regression for
+// cross-user leakage through the filterdata cache. Filter dropdowns are
+// row-visibility-scoped, but the scope is resolved below the handler, so the
+// cache cannot detect it — two callers must therefore never share a key.
+func TestFilterDataCacheIdentity_PartitionsPerCaller(t *testing.T) {
+	withUser := func(userID string, roleID uint) *fasthttp.RequestCtx {
+		ctx := &fasthttp.RequestCtx{}
+		if userID != "" {
+			ctx.SetUserValue(schemas.BifrostContextKeyUserID, userID)
+			ctx.SetUserValue(schemas.BifrostContextKeyUserRoleID, roleID)
+		}
+		return ctx
+	}
+
+	alice := filterDataCacheIdentity(withUser("alice", 2))
+	bob := filterDataCacheIdentity(withUser("bob", 2))
+	if alice == bob {
+		t.Fatalf("distinct users must not share a cache partition, both got %q", alice)
+	}
+
+	// A role change flips visibility, so it must miss the cache immediately
+	// rather than serve the old scope for the remainder of the TTL.
+	if promoted := filterDataCacheIdentity(withUser("alice", 1)); promoted == alice {
+		t.Fatalf("role change must repartition the cache, both got %q", alice)
+	}
+
+	// Unauthenticated / local-admin requests keep the single shared partition.
+	if anon := filterDataCacheIdentity(withUser("", 0)); anon != "anon" {
+		t.Fatalf("identity-less request should use the shared partition, got %q", anon)
 	}
 }
 
@@ -224,6 +360,124 @@ func TestRecalculateLogCostsRejectsDuplicateJob(t *testing.T) {
 	}
 }
 
+func TestCancelRecalculateCost(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	// newHandler wires a handler over a store seeded with one recalculation job.
+	newHandler := func(job *tables.TableSidekiqJob) (*LoggingHandler, *fakeSidekiqStore) {
+		store := newFakeSidekiqStore()
+		if job != nil {
+			store.jobs[job.ID] = job
+			if !tables.IsSidekiqTerminalStatus(job.Status) {
+				store.inFlight = job
+			}
+		}
+		h := &LoggingHandler{logManager: &dashboardLogManager{}}
+		h.SetSidekiqBackend(sidekiq.New(store, &mockLogger{}, 1, ""), store)
+		return h, store
+	}
+
+	call := func(h *LoggingHandler, uri string) *fasthttp.RequestCtx {
+		var req fasthttp.Request
+		req.Header.SetMethod(fasthttp.MethodPost)
+		req.SetRequestURI(uri)
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Init(&req, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}, nil)
+		h.cancelRecalculateCost(ctx)
+		return ctx
+	}
+
+	runningJob := func() *tables.TableSidekiqJob {
+		return &tables.TableSidekiqJob{
+			ID:       "job-1",
+			Kind:     loggingplugin.CostRecalcJobKind,
+			Status:   tables.SidekiqStatusRunning,
+			Metadata: `{"total":10,"processed":4,"updated":3,"skipped":1}`,
+		}
+	}
+
+	t.Run("cancels the in-flight job when no id is given", func(t *testing.T) {
+		h, store := newHandler(runningJob())
+		ctx := call(h, "/api/logs/recalculate-cost/cancel")
+
+		if got := ctx.Response.StatusCode(); got != fasthttp.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", got, ctx.Response.Body())
+		}
+		if got := store.jobs["job-1"].Status; got != tables.SidekiqStatusCancelled {
+			t.Fatalf("job status = %q, want cancelled", got)
+		}
+		var body recalcJobStatus
+		if err := json.Unmarshal(ctx.Response.Body(), &body); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if body.Status != tables.SidekiqStatusCancelled {
+			t.Fatalf("response status = %q, want cancelled", body.Status)
+		}
+		// The counters committed before the stop must survive for the UI to report.
+		if body.Updated != 3 || body.Skipped != 1 || body.Processed != 4 {
+			t.Fatalf("partial progress lost: %+v", body)
+		}
+	})
+
+	t.Run("cancels the job named by id", func(t *testing.T) {
+		h, store := newHandler(runningJob())
+		ctx := call(h, "/api/logs/recalculate-cost/cancel?id=job-1")
+
+		if got := ctx.Response.StatusCode(); got != fasthttp.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", got, ctx.Response.Body())
+		}
+		if got := store.jobs["job-1"].Status; got != tables.SidekiqStatusCancelled {
+			t.Fatalf("job status = %q, want cancelled", got)
+		}
+	})
+
+	t.Run("an already-terminal job is returned unchanged", func(t *testing.T) {
+		done := runningJob()
+		done.Status = tables.SidekiqStatusCompleted
+		h, store := newHandler(done)
+		ctx := call(h, "/api/logs/recalculate-cost/cancel?id=job-1")
+
+		if got := ctx.Response.StatusCode(); got != fasthttp.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", got, ctx.Response.Body())
+		}
+		if got := store.jobs["job-1"].Status; got != tables.SidekiqStatusCompleted {
+			t.Fatalf("a completed job must not be rewritten, got %q", got)
+		}
+	})
+
+	t.Run("refuses to cancel a job of another kind", func(t *testing.T) {
+		other := runningJob()
+		other.Kind = "some_other_job"
+		h, store := newHandler(other)
+		ctx := call(h, "/api/logs/recalculate-cost/cancel?id=job-1")
+
+		if got := ctx.Response.StatusCode(); got != fasthttp.StatusBadRequest {
+			t.Fatalf("expected 400, got %d: %s", got, ctx.Response.Body())
+		}
+		if got := store.jobs["job-1"].Status; got != tables.SidekiqStatusRunning {
+			t.Fatalf("unrelated job must be untouched, got %q", got)
+		}
+	})
+
+	t.Run("404 when there is nothing to cancel", func(t *testing.T) {
+		h, _ := newHandler(nil)
+		ctx := call(h, "/api/logs/recalculate-cost/cancel")
+
+		if got := ctx.Response.StatusCode(); got != fasthttp.StatusNotFound {
+			t.Fatalf("expected 404, got %d: %s", got, ctx.Response.Body())
+		}
+	})
+
+	t.Run("503 when the background runner is not wired", func(t *testing.T) {
+		h := &LoggingHandler{logManager: &dashboardLogManager{}}
+		ctx := call(h, "/api/logs/recalculate-cost/cancel")
+
+		if got := ctx.Response.StatusCode(); got != fasthttp.StatusServiceUnavailable {
+			t.Fatalf("expected 503, got %d: %s", got, ctx.Response.Body())
+		}
+	})
+}
+
 // fakeSidekiqStore implements both sidekiq.Store (for the runner) and
 // handlers.SidekiqJobStore (for the endpoints), backed by an in-memory map.
 type fakeSidekiqStore struct {
@@ -275,6 +529,9 @@ func (s *fakeSidekiqStore) GetInFlightSidekiqJobByKind(ctx context.Context, kind
 func (s *fakeSidekiqStore) ClaimSidekiqJob(ctx context.Context, id, runnerID string, staleBefore time.Time) (bool, error) {
 	return true, nil
 }
+func (s *fakeSidekiqStore) ClaimPartitionedSidekiqJob(ctx context.Context, id, runnerID string, staleBefore time.Time, partitioningKey string, createdAt time.Time) (bool, error) {
+	return true, nil
+}
 func (s *fakeSidekiqStore) HeartbeatSidekiqJob(ctx context.Context, id, runnerID string) (bool, error) {
 	return true, nil
 }
@@ -290,9 +547,31 @@ func (s *fakeSidekiqStore) FailSidekiqJob(ctx context.Context, id, runnerID, met
 func (s *fakeSidekiqStore) ListClaimableSidekiqJobs(ctx context.Context, staleBefore time.Time) ([]tables.TableSidekiqJob, error) {
 	return nil, nil
 }
+func (s *fakeSidekiqStore) CancelSidekiqJob(ctx context.Context, id string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	job, ok := s.jobs[id]
+	if !ok || tables.IsSidekiqTerminalStatus(job.Status) {
+		return false, nil
+	}
+	job.Status = tables.SidekiqStatusCancelled
+	if s.inFlight != nil && s.inFlight.ID == id {
+		s.inFlight = nil
+	}
+	return true, nil
+}
+func (s *fakeSidekiqStore) FinalizeCancelledSidekiqJob(ctx context.Context, id, runnerID, metadata string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if job, ok := s.jobs[id]; ok && job.Status == tables.SidekiqStatusCancelled && metadata != "" {
+		job.Metadata = metadata
+	}
+	return nil
+}
 
 type dashboardLogManager struct {
 	failStats              bool
+	mcpLog                 *logstore.MCPToolLog
 	lastLLMFilters         logstore.SearchFilters
 	lastMCPFilters         logstore.MCPToolLogSearchFilters
 	lastRecalculateFilters logstore.SearchFilters
@@ -341,6 +620,12 @@ func (m *dashboardLogManager) GetProviderTokenHistogram(ctx context.Context, fil
 }
 func (m *dashboardLogManager) GetProviderLatencyHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderLatencyHistogramResult, error) {
 	return &logstore.ProviderLatencyHistogramResult{}, nil
+}
+func (m *dashboardLogManager) GetThroughputHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ThroughputHistogramResult, error) {
+	return &logstore.ThroughputHistogramResult{}, nil
+}
+func (m *dashboardLogManager) GetProviderThroughputHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderThroughputHistogramResult, error) {
+	return &logstore.ProviderThroughputHistogramResult{}, nil
 }
 func (m *dashboardLogManager) GetModelRankings(ctx context.Context, filters *logstore.SearchFilters) (*logstore.ModelRankingResult, error) {
 	return &logstore.ModelRankingResult{}, nil
@@ -415,7 +700,11 @@ func (m *dashboardLogManager) RunCostRecalcJob(ctx context.Context, metaJSON str
 	return metaJSON, nil
 }
 func (m *dashboardLogManager) GetMCPToolLog(ctx context.Context, id string) (*logstore.MCPToolLog, error) {
-	return nil, nil
+	if m.mcpLog == nil {
+		return nil, nil
+	}
+	entry := *m.mcpLog
+	return &entry, nil
 }
 func (m *dashboardLogManager) SearchMCPToolLogs(ctx context.Context, filters *logstore.MCPToolLogSearchFilters, pagination *logstore.PaginationOptions) (*logstore.MCPToolLogSearchResult, error) {
 	return nil, nil
@@ -442,4 +731,50 @@ func (m *dashboardLogManager) GetMCPCostHistogram(ctx context.Context, filters l
 func (m *dashboardLogManager) GetMCPTopTools(ctx context.Context, filters logstore.MCPToolLogSearchFilters, limit int) (*logstore.MCPTopToolsResult, error) {
 	return &logstore.MCPTopToolsResult{}, nil
 }
+
 func (m *dashboardLogManager) DeleteMCPToolLogs(ctx context.Context, ids []string) error { return nil }
+
+// staticMCPLogRedactionResolver records calls and returns a configured reveal result.
+type staticMCPLogRedactionResolver struct {
+	mapping *schemas.RedactionMapsByPhase
+	err     error
+	calls   int
+}
+
+// ResolveMCPLogRedactionMapping returns the configured test result.
+func (r *staticMCPLogRedactionResolver) ResolveMCPLogRedactionMapping(_ *fasthttp.RequestCtx, _ *logstore.MCPToolLog) (*schemas.RedactionMapsByPhase, error) {
+	r.calls++
+	return r.mapping, r.err
+}
+
+func (m *dashboardLogManager) CreateUserAgentMapping(ctx context.Context, mapping *logstore.UserAgentMapping) (*logstore.UserAgentMapping, error) {
+	return nil, nil
+}
+
+func (m *dashboardLogManager) DeleteUserAgentMapping(ctx context.Context, id string) error {
+	return nil
+}
+
+func (m *dashboardLogManager) UpdateUserAgentMapping(ctx context.Context, id string, mapping *logstore.UserAgentMapping) (*logstore.UserAgentMapping, error) {
+	return nil, nil
+}
+
+func (m *dashboardLogManager) ListUserAgentMappings(ctx context.Context) ([]logstore.UserAgentMapping, error) {
+	return nil, nil
+}
+
+func (m *dashboardLogManager) GetAvailableUserAgents(ctx context.Context, _ int, _ string) ([]string, error) {
+	return nil, nil
+}
+
+func (m *dashboardLogManager) GetAvailableApps(ctx context.Context, _ int, _ string) ([]string, error) {
+	return nil, nil
+}
+
+func (m *dashboardLogManager) GetAvailableMCPApps(ctx context.Context, _ int, _ string) ([]string, error) {
+	return nil, nil
+}
+
+func (m *dashboardLogManager) GetAvailableMCPUserAgents(ctx context.Context, _ int, _ string) ([]string, error) {
+	return nil, nil
+}

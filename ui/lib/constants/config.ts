@@ -2,17 +2,27 @@ import { BaseProvider, ConcurrencyAndBufferSize, NetworkConfig } from "@/lib/typ
 import { ProviderName } from "./logs";
 
 /**
- * Parse a date string in YYYY-MM-DD format with strict validation.
- * Returns null if the string is empty, malformed, or represents an invalid date.
+ * Parse a trial expiry string with strict validation.
+ * Accepts either a bare date (YYYY-MM-DD) or a full RFC3339 timestamp
+ * (YYYY-MM-DDTHH:mm:ssZ) — the Docker build injects the latter, since the Go
+ * side needs an RFC3339 value. Only the calendar date is significant for the
+ * banner, so any time component is ignored and the date is taken at local
+ * midnight. Returns null if the string is empty, malformed, or represents an
+ * invalid date.
  */
 function parseTrialExpiry(dateStr: string | undefined): Date | null {
 	if (!dateStr || !dateStr.trim()) return null;
 
-	// Strict format check: YYYY-MM-DD
-	const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
-	if (!dateRegex.test(dateStr)) return null;
+	// Accept YYYY-MM-DD optionally followed by a time component (e.g. the
+	// RFC3339 "T00:00:00Z" suffix), and capture just the date part.
+	const dateRegex = /^(\d{4})-(\d{2})-(\d{2})(?:[T ].*)?$/;
+	const match = dateRegex.exec(dateStr.trim());
+	if (!match) return null;
 
-	const [year, month, day] = dateStr.split("-").map(Number);
+	const [, yearStr, monthStr, dayStr] = match;
+	const year = Number(yearStr);
+	const month = Number(monthStr);
+	const day = Number(dayStr);
 	const date = new Date(year, month - 1, day);
 
 	// Validate the date components match (catches invalid dates like 2024-02-30)
@@ -55,6 +65,7 @@ export const ModelPlaceholders = {
 	runware: "e.g. runware:100@1, runware:101@1",
 	fireworks: "e.g. accounts/fireworks/models/deepseek-v3p2",
 	sarvam: "e.g. sarvam-30b, sarvam-105b",
+	wafer: "e.g. glm-5.2, kimi-k2.6",
 };
 
 export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
@@ -87,6 +98,7 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	vllm: false,
 	fireworks: true,
 	sarvam: true,
+	wafer: true,
 };
 
 export const DefaultNetworkConfig = {
@@ -98,6 +110,7 @@ export const DefaultNetworkConfig = {
 	insecure_skip_verify: false,
 	ca_cert_pem: { value: "", ref: "" },
 	stream_idle_timeout_in_seconds: 120,
+	keep_alive_timeout_in_seconds: 30,
 	max_conns_per_host: 5000,
 	enforce_http2: false,
 	allow_private_network: false,
@@ -109,11 +122,26 @@ export const DefaultPerformanceConfig = {
 } satisfies ConcurrencyAndBufferSize;
 
 export const MCP_STATUS_COLORS: Record<string, string> = {
-	connected: "bg-green-100 text-green-800",
+	healthy: "bg-green-100 text-green-800",
 	error: "bg-red-100 text-red-800",
-	disconnected: "bg-gray-100 text-gray-800",
-	pending_tools: "bg-yellow-100 text-yellow-800",
+	// Amber, not red/gray: Bifrost's own connection check most recently
+	// failed, but this is purely informational — nothing is gated on it, and
+	// it self-heals on the next successful check. Same mild treatment as
+	// pending_verification, deliberately distinct from needs_reauth's red
+	// ("action required").
+	unstable: "bg-yellow-100 text-yellow-800",
+	pending_verification: "bg-yellow-100 text-yellow-800",
 	disabled: "bg-orange-100 text-orange-800",
+	// Same red as `error`: the client's credential has died and it can't be
+	// used until a human reauthorizes it, mirroring the "destructive" treatment
+	// this status already gets on the MCP sessions table.
+	needs_reauth: "bg-red-100 text-red-800",
+	// Distinct blue/purple, not amber/red: unlike unstable, this isn't "one
+	// instance's check currently failing" — it's "instances disagree with
+	// each other about the state," which needs its own visual signal to
+	// prompt a look at the per-instance breakdown rather than being read as
+	// just another flavor of unhealthy.
+	degraded: "bg-blue-100 text-blue-800",
 };
 
 // Mapping of what IS supported by each base provider

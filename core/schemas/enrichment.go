@@ -78,6 +78,7 @@ var EnrichmentDims = []EnrichmentDim{
 	//     BigQuery columns and span attributes, never as metric labels/tags. ---
 	{Name: "user_id", SpanAttr: AttrBifrostUserID},
 	{Name: "user_name", SpanAttr: AttrBifrostUserName},
+	{Name: "user_email", SpanAttr: AttrBifrostUserEmail},
 	{Name: "team_ids", SpanAttr: AttrBifrostTeamIDs, Multi: true},
 	{Name: "team_names", SpanAttr: AttrBifrostTeamNames, Multi: true},
 	{Name: "customer_ids", SpanAttr: AttrBifrostCustomerIDs, Multi: true},

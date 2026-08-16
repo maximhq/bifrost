@@ -54,7 +54,7 @@ export default function ModelCatalogTable({
 	return (
 		<div className="space-y-6">
 			{/* Summary Cards */}
-			<div className="grid grid-cols-4 gap-4">
+			<div className="grid grid-cols-1 gap-4 md:grid-cols-4">
 				{summaryCards.map((card) => (
 					<Card key={card.label} className="py-4 shadow-none">
 						<CardContent className="px-4">

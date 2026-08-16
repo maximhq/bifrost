@@ -25,6 +25,14 @@ func setUpdatedAt(t *testing.T, store *RDBConfigStore, id string, ts time.Time) 
 		Where("id = ?", id).Update("updated_at", ts).Error)
 }
 
+// setCreatedAt forces a job's created_at so FIFO ordering can be exercised
+// deterministically without relying on insert-time clock resolution.
+func setCreatedAt(t *testing.T, store *RDBConfigStore, id string, ts time.Time) {
+	t.Helper()
+	require.NoError(t, store.DB().Model(&tables.TableSidekiqJob{}).
+		Where("id = ?", id).Update("created_at", ts).Error)
+}
+
 func getJob(t *testing.T, store *RDBConfigStore, id string) *tables.TableSidekiqJob {
 	t.Helper()
 	job, err := store.GetSidekiqJob(context.Background(), id)
@@ -250,6 +258,117 @@ func TestFailSidekiqJob(t *testing.T) {
 	require.NotNil(t, got.CompletedAt)
 }
 
+func TestCancelSidekiqJob(t *testing.T) {
+	store := setupSidekiqTestStore(t)
+	ctx := context.Background()
+
+	t.Run("pending job is cancelled before it ever runs", func(t *testing.T) {
+		require.NoError(t, store.CreateSidekiqJob(ctx, &tables.TableSidekiqJob{ID: "p1", Kind: "k"}))
+
+		cancelled, err := store.CancelSidekiqJob(ctx, "p1")
+		require.NoError(t, err)
+		assert.True(t, cancelled)
+
+		got := getJob(t, store, "p1")
+		assert.Equal(t, tables.SidekiqStatusCancelled, got.Status)
+		require.NotNil(t, got.CompletedAt)
+	})
+
+	t.Run("running job is cancelled regardless of owner", func(t *testing.T) {
+		require.NoError(t, store.CreateSidekiqJob(ctx, &tables.TableSidekiqJob{ID: "r1", Kind: "k"}))
+		_, err := store.ClaimSidekiqJob(ctx, "r1", "owner-A", time.Now().Add(-time.Minute))
+		require.NoError(t, err)
+
+		// The cancel arrives on a node that does not own the job — it must still apply.
+		cancelled, err := store.CancelSidekiqJob(ctx, "r1")
+		require.NoError(t, err)
+		assert.True(t, cancelled)
+		assert.Equal(t, tables.SidekiqStatusCancelled, getJob(t, store, "r1").Status)
+
+		// The owner learns of it through its heartbeat, which is fenced on running.
+		alive, err := store.HeartbeatSidekiqJob(ctx, "r1", "owner-A")
+		require.NoError(t, err)
+		assert.False(t, alive, "heartbeat must report lost ownership so the owner stops")
+	})
+
+	t.Run("cancelled job is neither claimable nor reapable", func(t *testing.T) {
+		require.NoError(t, store.CreateSidekiqJob(ctx, &tables.TableSidekiqJob{ID: "c1", Kind: "k"}))
+		_, err := store.ClaimSidekiqJob(ctx, "c1", "owner-A", time.Now().Add(-time.Minute))
+		require.NoError(t, err)
+		_, err = store.CancelSidekiqJob(ctx, "c1")
+		require.NoError(t, err)
+		setUpdatedAt(t, store, "c1", time.Now().Add(-30*time.Minute))
+
+		claimable, err := store.ListClaimableSidekiqJobs(ctx, time.Now().Add(-15*time.Minute))
+		require.NoError(t, err)
+		for _, j := range claimable {
+			assert.NotEqual(t, "c1", j.ID, "a cancelled job must not be re-claimed")
+		}
+
+		reaped, err := store.MarkStaleSidekiqJobsFailed(ctx, time.Now().Add(-15*time.Minute))
+		require.NoError(t, err)
+		assert.Zero(t, reaped, "a cancelled job must not be reaped as stale")
+		assert.Equal(t, tables.SidekiqStatusCancelled, getJob(t, store, "c1").Status)
+
+		inFlight, err := store.GetInFlightSidekiqJobByKind(ctx, "k")
+		require.NoError(t, err)
+		if inFlight != nil {
+			assert.NotEqual(t, "c1", inFlight.ID, "a cancelled job must not count as in-flight")
+		}
+	})
+
+	t.Run("terminal and unknown jobs are no-ops", func(t *testing.T) {
+		require.NoError(t, store.CreateSidekiqJob(ctx, &tables.TableSidekiqJob{ID: "d1", Kind: "k"}))
+		_, err := store.ClaimSidekiqJob(ctx, "d1", "owner-A", time.Now().Add(-time.Minute))
+		require.NoError(t, err)
+		require.NoError(t, store.CompleteSidekiqJob(ctx, "d1", "owner-A", `{"done":true}`))
+
+		cancelled, err := store.CancelSidekiqJob(ctx, "d1")
+		require.NoError(t, err)
+		assert.False(t, cancelled, "completing wins a race against a cancel click")
+		assert.Equal(t, tables.SidekiqStatusCompleted, getJob(t, store, "d1").Status)
+
+		cancelled, err = store.CancelSidekiqJob(ctx, "does-not-exist")
+		require.NoError(t, err)
+		assert.False(t, cancelled)
+	})
+}
+
+func TestFinalizeCancelledSidekiqJob(t *testing.T) {
+	store := setupSidekiqTestStore(t)
+	ctx := context.Background()
+
+	newCancelledJob := func(t *testing.T, id string) {
+		t.Helper()
+		require.NoError(t, store.CreateSidekiqJob(ctx, &tables.TableSidekiqJob{ID: id, Kind: "k", Metadata: `{"processed":3}`}))
+		_, err := store.ClaimSidekiqJob(ctx, id, "owner-A", time.Now().Add(-time.Minute))
+		require.NoError(t, err)
+		_, err = store.CancelSidekiqJob(ctx, id)
+		require.NoError(t, err)
+	}
+
+	t.Run("stores the partial progress without disturbing the status", func(t *testing.T) {
+		newCancelledJob(t, "f1")
+		require.NoError(t, store.FinalizeCancelledSidekiqJob(ctx, "f1", "owner-A", `{"processed":9}`))
+
+		got := getJob(t, store, "f1")
+		assert.Equal(t, `{"processed":9}`, got.Metadata)
+		assert.Equal(t, tables.SidekiqStatusCancelled, got.Status, "finalizing must not change the status")
+	})
+
+	t.Run("empty metadata leaves the last checkpoint alone", func(t *testing.T) {
+		newCancelledJob(t, "f2")
+		require.NoError(t, store.FinalizeCancelledSidekiqJob(ctx, "f2", "owner-A", ""))
+		assert.Equal(t, `{"processed":3}`, getJob(t, store, "f2").Metadata)
+	})
+
+	t.Run("a non-owner cannot write counters", func(t *testing.T) {
+		newCancelledJob(t, "f3")
+		require.NoError(t, store.FinalizeCancelledSidekiqJob(ctx, "f3", "owner-B", `{"processed":99}`))
+		assert.Equal(t, `{"processed":3}`, getJob(t, store, "f3").Metadata, "fenced on runner_id")
+	})
+}
+
 func TestFailSidekiqJobEmptyMetadataPreservesExisting(t *testing.T) {
 	store := setupSidekiqTestStore(t)
 	ctx := context.Background()
@@ -440,4 +559,99 @@ func TestMarkStaleSidekiqJobsFailed(t *testing.T) {
 	assert.NotEmpty(t, getJob(t, store, "stale").LastError)
 	assert.Equal(t, tables.SidekiqStatusRunning, getJob(t, store, "fresh").Status)
 	assert.Equal(t, tables.SidekiqStatusPending, getJob(t, store, "pending").Status)
+}
+
+// TestClaimPartitionedSidekiqJobFIFOAndExclusion verifies that jobs sharing a
+// partitioning key run one-at-a-time in FIFO order, while a distinct key runs in
+// parallel: the newer job cannot claim before the older pending one; while the
+// older runs the newer stays blocked; only once the older completes does the
+// newer claim.
+func TestClaimPartitionedSidekiqJobFIFOAndExclusion(t *testing.T) {
+	store := setupSidekiqTestStore(t)
+	ctx := context.Background()
+	const runner = "node-1"
+	stale := time.Now().Add(-30 * time.Second) // fresh running jobs block
+
+	require.NoError(t, store.CreateSidekiqJob(ctx, &tables.TableSidekiqJob{ID: "j1", Kind: "sync", PartitioningKey: "g"}))
+	require.NoError(t, store.CreateSidekiqJob(ctx, &tables.TableSidekiqJob{ID: "j2", Kind: "sync", PartitioningKey: "g"}))
+	base := time.Now().Add(-time.Hour)
+	setCreatedAt(t, store, "j1", base)
+	setCreatedAt(t, store, "j2", base.Add(time.Minute)) // j2 strictly newer
+
+	j1, j2 := getJob(t, store, "j1"), getJob(t, store, "j2")
+
+	// Newer job must not jump the queue while the older is still pending (FIFO).
+	claimed, err := store.ClaimPartitionedSidekiqJob(ctx, "j2", runner, stale, "g", j2.CreatedAt)
+	require.NoError(t, err)
+	assert.False(t, claimed, "newer job claimed before older pending job")
+
+	// Oldest pending job claims.
+	claimed, err = store.ClaimPartitionedSidekiqJob(ctx, "j1", runner, stale, "g", j1.CreatedAt)
+	require.NoError(t, err)
+	assert.True(t, claimed, "oldest pending job should claim")
+
+	// Newer job stays blocked while the older one runs (mutual exclusion).
+	claimed, err = store.ClaimPartitionedSidekiqJob(ctx, "j2", runner, stale, "g", j2.CreatedAt)
+	require.NoError(t, err)
+	assert.False(t, claimed, "job claimed while same-key job running")
+
+	// A distinct key runs in parallel.
+	require.NoError(t, store.CreateSidekiqJob(ctx, &tables.TableSidekiqJob{ID: "k1", Kind: "sync", PartitioningKey: "h"}))
+	k1 := getJob(t, store, "k1")
+	claimed, err = store.ClaimPartitionedSidekiqJob(ctx, "k1", runner, stale, "h", k1.CreatedAt)
+	require.NoError(t, err)
+	assert.True(t, claimed, "distinct partitioning key should run in parallel")
+
+	// Once the predecessor completes, the next in line claims.
+	require.NoError(t, store.CompleteSidekiqJob(ctx, "j1", runner, "{}"))
+	claimed, err = store.ClaimPartitionedSidekiqJob(ctx, "j2", runner, stale, "g", j2.CreatedAt)
+	require.NoError(t, err)
+	assert.True(t, claimed, "next-in-line should claim after predecessor completes")
+}
+
+// TestClaimPartitionedSidekiqJobSelfNotBlockedByPrecisionSkew: a claim timestamp
+// newer than the persisted created_at (the eager-spawn nanosecond-vs-truncated
+// skew) must not make the sole pending job block itself in the FIFO subquery.
+func TestClaimPartitionedSidekiqJobSelfNotBlockedByPrecisionSkew(t *testing.T) {
+	store := setupSidekiqTestStore(t)
+	ctx := context.Background()
+	const runner = "node-1"
+	stale := time.Now().Add(-30 * time.Second)
+
+	require.NoError(t, store.CreateSidekiqJob(ctx, &tables.TableSidekiqJob{ID: "j1", Kind: "sync", PartitioningKey: "g"}))
+	persisted := time.Now().Add(-time.Hour)
+	setCreatedAt(t, store, "j1", persisted)
+
+	// Claim with a timestamp strictly newer than the persisted value, as the
+	// truncation-losing eager spawn would; the only pending job must still claim.
+	claimed, err := store.ClaimPartitionedSidekiqJob(ctx, "j1", runner, stale, "g", persisted.Add(time.Microsecond))
+	require.NoError(t, err)
+	assert.True(t, claimed, "sole pending job must not block itself on a newer claim timestamp")
+}
+
+// TestClaimPartitionedSidekiqJobStaleRunnerDoesNotBlock verifies a dead owner's
+// stale running job does not deadlock its key: a newer job becomes claimable once
+// the running one is past the stale horizon.
+func TestClaimPartitionedSidekiqJobStaleRunnerDoesNotBlock(t *testing.T) {
+	store := setupSidekiqTestStore(t)
+	ctx := context.Background()
+	const runner = "node-1"
+
+	require.NoError(t, store.CreateSidekiqJob(ctx, &tables.TableSidekiqJob{ID: "j1", Kind: "sync", PartitioningKey: "g"}))
+	require.NoError(t, store.CreateSidekiqJob(ctx, &tables.TableSidekiqJob{ID: "j2", Kind: "sync", PartitioningKey: "g"}))
+	base := time.Now().Add(-time.Hour)
+	setCreatedAt(t, store, "j1", base)
+	setCreatedAt(t, store, "j2", base.Add(time.Minute))
+
+	stale := time.Now().Add(-30 * time.Second)
+	claimed, err := store.ClaimPartitionedSidekiqJob(ctx, "j1", runner, stale, "g", getJob(t, store, "j1").CreatedAt)
+	require.NoError(t, err)
+	require.True(t, claimed)
+
+	// Simulate a dead owner: push j1's heartbeat before the stale horizon.
+	setUpdatedAt(t, store, "j1", time.Now().Add(-2*time.Minute))
+
+	claimed, err = store.ClaimPartitionedSidekiqJob(ctx, "j2", runner, stale, "g", getJob(t, store, "j2").CreatedAt)
+	require.NoError(t, err)
+	assert.True(t, claimed, "stale (dead-owner) running job must not block its key")
 }

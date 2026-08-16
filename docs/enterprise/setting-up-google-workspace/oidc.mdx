@@ -222,10 +222,12 @@ Use the sections below the claim list to map Google claim values to Bifrost role
 
 **Attribute-to-Role Mappings**
 
-Map a claim value to a Bifrost role.
+Map a claim value to a Bifrost role. All matching rules are evaluated. If several rules match, Bifrost picks one using your chosen resolution strategy:
 
-- All matching rules are evaluated - if multiple rules match, the role with the highest permissions is assigned
-- If no rule matches, the user is not assigned a role and login is denied
+- **The role with the most permissions** (default)
+- **The first matching role, by list order** (drag rows to set priority)
+
+If no rule matches, no role is assigned and login is denied.
 
 **Attribute-to-Team Mappings**
 

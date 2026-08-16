@@ -3,6 +3,9 @@
  * Create/Edit form for routing rules
  */
 
+import { CustomerSelector } from "@/components/entitySelectors/customerSelector";
+import { TeamSelector } from "@/components/entitySelectors/teamSelector";
+import { VirtualKeySelector } from "@/components/entitySelectors/virtualKeySelector";
 import { Button } from "@/components/ui/button";
 import { ComboboxSelect } from "@/components/ui/combobox";
 import { Input } from "@/components/ui/input";
@@ -15,8 +18,8 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { getProviderLabel } from "@/lib/constants/logs";
+import { getUserPicker } from "@/lib/registries/userPicker";
 import { getErrorMessage } from "@/lib/store";
-import { useGetCustomersQuery, useGetTeamsQuery, useGetVirtualKeysQuery } from "@/lib/store/apis/governanceApi";
 import { useGetAllKeysQuery, useGetProvidersQuery } from "@/lib/store/apis/providersApi";
 import { useCreateRoutingRuleMutation, useGetRoutingRulesQuery, useUpdateRoutingRuleMutation } from "@/lib/store/apis/routingRulesApi";
 import {
@@ -28,13 +31,15 @@ import {
 	RoutingTargetFormData,
 } from "@/lib/types/routingRules";
 import { validateRateLimitAndBudgetRules, validateRoutingRules } from "@/lib/utils/celConverterRouting";
-import { normalizeRoutingRuleGroupQuery } from "@/lib/utils/routingRuleGroupQuery";
+import { isValidRuleGroupType, normalizeRoutingRuleGroupQuery } from "@/lib/utils/routingRuleGroupQuery";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Plus, Trash2, X } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { RuleGroupType } from "react-querybuilder";
 import { toast } from "sonner";
+// Side-effect import: registers the enterprise user picker (no-op in OSS builds).
+import "@enterprise/lib/registrations/userPicker";
 
 interface RoutingRuleDialogProps {
 	open: boolean;
@@ -47,6 +52,24 @@ const defaultQuery: RuleGroupType = {
 	combinator: "and",
 	rules: [],
 };
+
+type ConditionMode = "builder" | "cel";
+
+/**
+ * Decides which conditions editor a rule opens in. Rules authored outside the visual
+ * builder (e.g. via the API) have a CEL expression but no usable `query`; those open in
+ * CEL mode so the expression stays visible and editable instead of being silently cleared.
+ */
+function initialConditionMode(rule?: RoutingRule | null): ConditionMode {
+	if (!rule) {
+		return "builder";
+	}
+	const hasQuery = isValidRuleGroupType(rule.query) && (rule.query.rules?.length ?? 0) > 0;
+	if (hasQuery) {
+		return "builder";
+	}
+	return rule.cel_expression?.trim() ? "cel" : "builder";
+}
 
 // Lazy-load CEL builder (heavy dependency tree).
 const CELRuleBuilderLazy = lazy(() =>
@@ -65,16 +88,16 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 	const rules = rulesData?.rules || [];
 	const { data: providersData = [] } = useGetProvidersQuery();
 	const { data: allKeysData = [] } = useGetAllKeysQuery();
-	const { data: vksData = { virtual_keys: [] } } = useGetVirtualKeysQuery();
-	const { data: teamsData = { teams: [], count: 0, total_count: 0, limit: 0, offset: 0 } } = useGetTeamsQuery();
-	const { data: customersData = { customers: [] } } = useGetCustomersQuery();
 	const [createRoutingRule, { isLoading: isCreating }] = useCreateRoutingRuleMutation();
 	const [updateRoutingRule, { isLoading: isUpdating }] = useUpdateRoutingRuleMutation();
 
 	// State for targets and query (managed outside react-hook-form for complex nested structures)
 	const [targets, setTargets] = useState<RoutingTargetFormData[]>([{ ...DEFAULT_ROUTING_TARGET }]);
 	const [query, setQuery] = useState<RuleGroupType>(defaultQuery);
+	const [conditionMode, setConditionMode] = useState<ConditionMode>("builder");
 	const [builderKey, setBuilderKey] = useState(0);
+	// Server-side CEL compile error, surfaced inline under the CEL editor instead of a toast.
+	const [celError, setCelError] = useState<string | null>(null);
 
 	const {
 		register,
@@ -96,6 +119,10 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 	const chainRule = watch("chain_rule");
 	const scope = watch("scope");
 	const scopeId = watch("scope_id");
+
+	// Registered by the downstream build at module load; undefined in builds
+	// without a user directory, which hides the "User" scope option.
+	const UserPicker = getUserPicker();
 	const fallbacks = watch("fallbacks");
 
 	// Get available providers from configured providers, plus any provider already
@@ -143,12 +170,16 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 			}
 			// Only react-querybuilder-shaped queries are valid; config may store other JSON under `query`.
 			setQuery(normalizeRoutingRuleGroupQuery(editingRule.query));
+			setConditionMode(initialConditionMode(editingRule));
 			setBuilderKey((prev) => prev + 1);
+			setCelError(null);
 		} else {
 			reset();
 			setTargets([{ ...DEFAULT_ROUTING_TARGET }]);
 			setQuery(defaultQuery);
+			setConditionMode("builder");
 			setBuilderKey((prev) => prev + 1);
+			setCelError(null);
 		}
 	}, [editingRule, open, setValue, reset]);
 
@@ -156,9 +187,16 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 		(expression: string, newQuery: RuleGroupType) => {
 			setValue("cel_expression", expression);
 			setQuery(newQuery);
+			// Editing the expression clears a stale server-side CEL error.
+			setCelError(null);
 		},
 		[setValue],
 	);
+
+	const handleModeChange = useCallback((mode: ConditionMode) => {
+		setConditionMode(mode);
+		setCelError(null);
+	}, []);
 
 	const addTarget = () => {
 		const remaining = 1 - targets.reduce((sum, t) => sum + (t.weight || 0), 0);
@@ -176,9 +214,13 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 	const totalWeight = targets.reduce((sum, t) => sum + (t.weight || 0), 0);
 
 	const onSubmit = (data: RoutingRuleFormData) => {
+		setCelError(null);
+
 		// Validate scope_id is required when scope is not global
 		if (data.scope !== "global" && !data.scope_id?.trim()) {
-			toast.error(`${data.scope === "team" ? "Team" : data.scope === "customer" ? "Customer" : "Virtual Key"} is required`);
+			toast.error(
+				`${data.scope === "team" ? "Team" : data.scope === "customer" ? "Customer" : data.scope === "user" ? "User" : "Virtual Key"} is required`,
+			);
 			return;
 		}
 
@@ -198,18 +240,22 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 			return;
 		}
 
-		// Validate regex patterns in routing rules
-		const regexErrors = validateRoutingRules(query);
-		if (regexErrors.length > 0) {
-			toast.error(`Invalid regex pattern:\n${regexErrors.join("\n")}`);
-			return;
-		}
+		// Builder-only validation: these inspect the visual query, which does not exist in
+		// raw-CEL mode. In CEL mode the expression is validated server-side on save instead.
+		if (conditionMode === "builder") {
+			// Validate regex patterns in routing rules
+			const regexErrors = validateRoutingRules(query);
+			if (regexErrors.length > 0) {
+				toast.error(`Invalid regex pattern:\n${regexErrors.join("\n")}`);
+				return;
+			}
 
-		// Validate rate limit and budget rules
-		const rateLimitErrors = validateRateLimitAndBudgetRules(query);
-		if (rateLimitErrors.length > 0) {
-			toast.error(`Invalid rule configuration:\n${rateLimitErrors.join("\n")}`);
-			return;
+			// Validate rate limit and budget rules
+			const rateLimitErrors = validateRateLimitAndBudgetRules(query);
+			if (rateLimitErrors.length > 0) {
+				toast.error(`Invalid rule configuration:\n${rateLimitErrors.join("\n")}`);
+				return;
+			}
 		}
 
 		// Filter out incomplete fallbacks (empty provider)
@@ -251,12 +297,21 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 				reset();
 				setTargets([{ ...DEFAULT_ROUTING_TARGET }]);
 				setQuery(defaultQuery);
+				setConditionMode("builder");
 				setBuilderKey((prev) => prev + 1);
+				setCelError(null);
 				onOpenChange(false);
 				onSuccess?.();
 			})
 			.catch((error: any) => {
-				toast.error(getErrorMessage(error));
+				const message = getErrorMessage(error);
+				// A malformed CEL expression is a field-level problem — show it beneath the CEL
+				// editor rather than in a toast (which turns a syntax error into a jarring popup).
+				if (conditionMode === "cel" && /cel expression/i.test(message)) {
+					setCelError(message);
+					return;
+				}
+				toast.error(message);
 			});
 	};
 
@@ -264,14 +319,16 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 		reset();
 		setTargets([{ ...DEFAULT_ROUTING_TARGET }]);
 		setQuery(defaultQuery);
+		setConditionMode("builder");
 		setBuilderKey((prev) => prev + 1);
+		setCelError(null);
 		onOpenChange(false);
 	};
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
 			<SheetContent className="flex w-full min-w-1/2 flex-col gap-4 overflow-x-hidden p-0 pt-4">
-				<SheetHeader className="flex flex-col items-start px-8 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10">
+				<SheetHeader className="flex flex-col items-start px-4 py-4 md:px-8" headerClassName="mb-0 sticky -top-4 bg-card z-10">
 					<SheetTitle>{isEditing ? "Edit Routing Rule" : "Create New Routing Rule"}</SheetTitle>
 					<SheetDescription>
 						{isEditing ? "Update the routing rule configuration" : "Create a new CEL-based routing rule for intelligent request routing"}
@@ -279,7 +336,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 				</SheetHeader>
 
 				<form onSubmit={handleSubmit(onSubmit)} className="flex grow flex-col">
-					<div className="flex grow flex-col gap-6 px-8 pb-6">
+					<div className="flex grow flex-col gap-6 px-4 pb-6 md:px-8">
 						{/* Rule Name */}
 						<div className="space-y-3">
 							<Label htmlFor="name">
@@ -314,7 +371,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 								<Label htmlFor="chain_rule">Chain Rule</Label>
 								<p className="text-muted-foreground text-sm">
 									After this rule matches, re-evaluate routing rules using the resolved provider/model as the new context. Useful for
-									composing rules — e.g. normalize a model alias first, then route based on the canonical name.
+									composing rules, e.g. normalize a model alias first, then route based on the canonical name.
 								</p>
 							</div>
 							<Switch
@@ -326,7 +383,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 						</div>
 
 						{/* Scope and Priority - Side by Side */}
-						<div className="grid grid-cols-2 gap-4">
+						<div className="grid grid-cols-1 gap-4 md:grid-cols-2">
 							<div className="space-y-3">
 								<Label htmlFor="scope">Scope</Label>
 								<Select
@@ -346,6 +403,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 												{scopeOption.label}
 											</SelectItem>
 										))}
+										{(UserPicker || scope === "user") && <SelectItem value="user">User</SelectItem>}
 									</SelectContent>
 								</Select>
 							</div>
@@ -374,42 +432,30 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 						{scope !== "global" && (
 							<div className="space-y-2">
 								<Label htmlFor="scope_id">
-									{scope === "team" ? "Team" : scope === "customer" ? "Customer" : "Virtual Key"} <span className="text-red-500">*</span>
+									{scope === "team" ? "Team" : scope === "customer" ? "Customer" : scope === "user" ? "User" : "Virtual Key"}{" "}
+									<span className="text-red-500">*</span>
 								</Label>
-								{scope === "team" && teamsData.teams.length > 0 && (
-									<ComboboxSelect
-										options={teamsData.teams.map((team) => ({ label: team.name, value: team.id }))}
-										value={scopeId || null}
-										onValueChange={(value) => setValue("scope_id", value ?? "")}
-										placeholder="Select a team..."
-										noPortal
-									/>
-								)}
-								{scope === "customer" && customersData.customers.length > 0 && (
-									<ComboboxSelect
-										options={customersData.customers.map((customer) => ({ label: customer.name, value: customer.id }))}
-										value={scopeId || null}
-										onValueChange={(value) => setValue("scope_id", value ?? "")}
-										placeholder="Select a customer..."
-										noPortal
-									/>
-								)}
-								{scope === "virtual_key" && vksData.virtual_keys.length > 0 && (
-									<ComboboxSelect
-										options={vksData.virtual_keys.map((vk) => ({ label: vk.name, value: vk.id }))}
-										value={scopeId || null}
-										onValueChange={(value) => setValue("scope_id", value ?? "")}
-										placeholder="Select a virtual key..."
-										noPortal
-									/>
-								)}
-								{((scope === "team" && teamsData.teams.length === 0) ||
-									(scope === "customer" && customersData.customers.length === 0) ||
-									(scope === "virtual_key" && vksData.virtual_keys.length === 0)) && (
-									<p className="text-muted-foreground text-sm">
-										No {scope === "team" ? "teams" : scope === "customer" ? "customers" : "virtual keys"} available
-									</p>
-								)}
+								{/* A rule stores only its scope_id, so there is no name to seed
+								    these with — each selector resolves its own selection. */}
+								{scope === "team" && <TeamSelector value={scopeId || ""} onChange={(value) => setValue("scope_id", value)} />}
+								{scope === "customer" && <CustomerSelector value={scopeId || ""} onChange={(value) => setValue("scope_id", value)} />}
+								{scope === "virtual_key" && <VirtualKeySelector value={scopeId || ""} onChange={(value) => setValue("scope_id", value)} />}
+								{scope === "user" &&
+									(UserPicker ? (
+										<UserPicker value={scopeId || ""} onChange={(value) => setValue("scope_id", value)} />
+									) : (
+										// No user directory in this build: keep a plain input so
+										// existing user-scoped rules remain editable.
+										<Input
+											id="scope_id"
+											data-testid="routing-rule-scope-user-input"
+											placeholder="Governance user ID"
+											value={scopeId || ""}
+											onChange={(e) => setValue("scope_id", e.target.value)}
+										/>
+									))}
+								{/* Teams, customers and virtual keys are all searched lazily inside their
+								    selectors, each of which surfaces its own empty state. */}
 								{errors.scope_id && <p className="text-destructive text-sm">{errors.scope_id.message}</p>}
 							</div>
 						)}
@@ -429,6 +475,11 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 								providers={availableProviders}
 								models={[]}
 								allowCustomModels={true}
+								allowCelMode={true}
+								initialMode={conditionMode}
+								initialCel={editingRule?.cel_expression ?? ""}
+								onModeChange={handleModeChange}
+								celError={celError}
 							/>
 						</div>
 
@@ -515,7 +566,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 										// Parse provider/model from fallback string
 										const parts = fallback.split("/");
 										const fbProvider = parts[0] || "";
-										const fbModel = parts[1] || "";
+										const fbModel = parts.slice(1).join("/");
 
 										const handleProviderChange = (newProvider: string) => {
 											const model = fbModel || "";
@@ -580,7 +631,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 						</div>
 					</div>
 					{/* Action Buttons */}
-					<div className="bg-card sticky bottom-0 flex justify-end gap-3 border-t px-8 py-4">
+					<div className="bg-card sticky bottom-0 flex justify-end gap-3 border-t px-4 py-4 md:px-8">
 						<Button type="button" variant="outline" onClick={handleCancel} disabled={isLoading}>
 							Cancel
 						</Button>
@@ -646,7 +697,7 @@ function TargetRow({ target, index, providerOptions, allKeys, showRemove, onUpda
 				</div>
 			</div>
 
-			<div className="grid grid-cols-2 gap-3">
+			<div className="grid grid-cols-1 gap-3 md:grid-cols-2">
 				<div className="space-y-1.5">
 					<Label id={`routing-target-${index}-provider-label`} className="text-xs">
 						Provider
@@ -723,7 +774,7 @@ function TargetRow({ target, index, providerOptions, allKeys, showRemove, onUpda
 			{target.provider && (availableKeys.length > 0 || target.key_id) && (
 				<div className="space-y-1.5">
 					<Label id={`routing-target-${index}-apikey-label`} className="text-xs">
-						API Key <span className="text-muted-foreground">(optional — leave unset for load-balanced selection)</span>
+						API Key <span className="text-muted-foreground">(optional; leave unset for load-balanced selection)</span>
 					</Label>
 					<div className="flex gap-1.5">
 						<Select value={target.key_id || ""} onValueChange={(value) => onUpdate(index, "key_id", value)}>

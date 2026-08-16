@@ -46,6 +46,19 @@ type LocalGovernanceStore struct {
 	LastDBUsagesRequestsRateLimits   map[string]int64   // Map for last DB usages for rate limits requests
 	LastDBUsagesTokensRateLimits     map[string]int64   // Map for last DB usages for rate limits tokens
 
+	// budgetResetGens counts how many times each budget's in-memory usage has been
+	// zeroed. A dump snapshots budgets by pointer and writes them several
+	// transactions later; a reset installs a fresh pointer and deliberately leaves
+	// LastReset alone, so neither the snapshot nor the last_reset guard can tell
+	// that the usage about to be persisted has since been cleared. LastReset cannot
+	// carry this signal: an operator reset leaves it equal, and equal has to keep
+	// meaning "persist this row" or steady-state usage would stop saving.
+	//
+	// Counts resets only, never usage writes, so a budget under traffic still dumps
+	// every cycle. Guarded by LastDBUsagesBudgetsMu, which every reset already holds
+	// to clear the matching baseline, so this adds no new lock.
+	budgetResetGens map[string]uint64
+
 	// CEL caching layer for routing rules
 	compiledRoutingPrograms sync.Map // string -> cel.Program (key: ruleID -> compiled CEL program)
 	routingCELEnv           *cel.Env // Singleton CEL environment reused for all compilations
@@ -109,6 +122,7 @@ type BudgetAndRateLimitStatus struct {
 type GovernanceStore interface {
 	GetGovernanceData(ctx context.Context) *GovernanceData
 	GetVirtualKey(ctx context.Context, vkValue string) (*configstoreTables.TableVirtualKey, bool)
+	GetVirtualKeyByID(ctx context.Context, vkID string) (*configstoreTables.TableVirtualKey, bool)
 	// Budget crud.
 	// UpsertBudgetConfig preserves in-memory CurrentUsage/LastReset on replacement —
 	// use it for every config publish (fresh load or admin edit) so a concurrent
@@ -147,6 +161,16 @@ type GovernanceStore interface {
 	// In-memory reset checks (return items that need DB sync)
 	ResetExpiredRateLimitsInMemory(ctx context.Context, refreshReferences bool, rateLimitIDs ...string) []*configstoreTables.TableRateLimit
 	ResetExpiredBudgetsInMemory(ctx context.Context, refreshReferences bool, budgetIDs ...string) []*configstoreTables.TableBudget
+	// ResetBudgetUsageInMemory clears one budget's usage on operator request,
+	// leaving its reset boundary untouched.
+	ResetBudgetUsageInMemory(ctx context.Context, budgetID string) (*configstoreTables.TableBudget, bool)
+	// AdoptCalendarAlignmentInMemory re-anchors a budget onto the calendar boundary
+	// it has just been told to follow, preserving its usage. Reports whether the
+	// boundary moved.
+	AdoptCalendarAlignmentInMemory(ctx context.Context, budgetID string, now time.Time) bool
+	// AdoptRateLimitCalendarAlignmentInMemory is the rate-limit counterpart,
+	// applying the rule to the token and request counters independently.
+	AdoptRateLimitCalendarAlignmentInMemory(ctx context.Context, rateLimitID string, now time.Time) bool
 	// DB sync for expired items
 	ResetExpiredRateLimits(ctx context.Context, resetRateLimits []*configstoreTables.TableRateLimit) error
 	ResetExpiredBudgets(ctx context.Context, resetBudgets []*configstoreTables.TableBudget) error
@@ -277,6 +301,27 @@ func (gs *LocalGovernanceStore) LoadBudget(ctx context.Context, budgetID string)
 	return nil
 }
 
+// storeBudget publishes a budget into the shared budgets map after re-deriving its
+// finite-override lifecycle from the immutable grant.
+//
+// Every path that installs a budget funnels through here, which is what makes the
+// derived override count safe. It is a pure function of (OverrideAnchorReset,
+// OverrideCyclesTotal, LastReset), so deriving it at the moment of storage means no
+// caller can install a stale count by accident: a config reload replaying a persisted
+// row, an admin edit, access-profile propagation and the initial load from the database
+// all converge on the same answer. It also means a restarting node recomputes the count
+// rather than trusting whatever was last persisted.
+//
+// Callers stay responsible for preserving CurrentUsage and LastReset, since LastReset
+// is what decides which window the derivation is relative to.
+func (gs *LocalGovernanceStore) storeBudget(budgetID string, budget *configstoreTables.TableBudget) {
+	if budget == nil {
+		return
+	}
+	budget.RefreshOverrideCyclesRemaining()
+	gs.budgets.Store(budgetID, budget)
+}
+
 // UpsertBudgetConfig publishes a budget config under budgetID, preserving the
 // in-memory CurrentUsage and LastReset from any prior snapshot so a concurrent
 // BumpBudgetUsage or ResetBudgetAt is never clobbered by a config replacement.
@@ -288,6 +333,16 @@ func (gs *LocalGovernanceStore) LoadBudget(ctx context.Context, budgetID string)
 // a budget — whether fresh load or config replacement — should funnel through
 // here so counters are never clobbered by an admin edit racing with a usage
 // increment.
+//
+// The override grant (OverrideAmount / OverrideMode / OverrideCyclesTotal /
+// OverrideAnchorReset) is taken from the incoming config, which is safe because a
+// grant is immutable for its life: a reload carrying a stale row replays the same
+// values, and RefreshOverrideCyclesRemaining then re-derives the spent count from
+// the preserved LastReset. That is what stops a reload from handing back a cycle
+// the reset path already spent. Previously the mutable remaining count came
+// straight from the incoming config while LastReset stayed advanced, so the
+// window's cycle could never be spent again and the override outlived its grant
+// by a different amount on every node.
 func (gs *LocalGovernanceStore) UpsertBudgetConfig(ctx context.Context, budgetID string, config *configstoreTables.TableBudget) {
 	if config == nil {
 		return
@@ -295,19 +350,31 @@ func (gs *LocalGovernanceStore) UpsertBudgetConfig(ctx context.Context, budgetID
 	for {
 		raw, exists := gs.budgets.Load(budgetID)
 		if !exists {
-			if _, loaded := gs.budgets.LoadOrStore(budgetID, config); !loaded {
+			// Publish a copy, never the caller's struct. Storing config directly would
+			// mutate it in place via the refresh and then alias it as the live map
+			// entry, so any later caller-side write would race BumpBudgetUsage's
+			// clone-and-CAS. Callers legitimately pass a pointer into a slice they keep
+			// using (BulkLoadUserAccessProfiles passes &p.Budgets[j]), so the copy has
+			// to happen here rather than relying on every caller to make one.
+			fresh := *config
+			fresh.RefreshOverrideCyclesRemaining()
+			if _, loaded := gs.budgets.LoadOrStore(budgetID, &fresh); !loaded {
 				return
 			}
 			continue
 		}
 		old, ok := raw.(*configstoreTables.TableBudget)
 		if !ok || old == nil {
-			gs.budgets.Store(budgetID, config)
+			// Same reasoning as the not-exists branch above: storeBudget refreshes and
+			// stores what it is given, so hand it a copy.
+			replacement := *config
+			gs.storeBudget(budgetID, &replacement)
 			return
 		}
 		merged := *config
 		merged.CurrentUsage = old.CurrentUsage
 		merged.LastReset = old.LastReset
+		merged.RefreshOverrideCyclesRemaining()
 		if gs.budgets.CompareAndSwap(budgetID, raw, &merged) {
 			return
 		}
@@ -320,6 +387,8 @@ func (gs *LocalGovernanceStore) DeleteBudget(ctx context.Context, budgetID strin
 	// Clean up LastDB baselines so the gossip delta doesn't carry stale entries.
 	gs.LastDBUsagesBudgetsMu.Lock()
 	delete(gs.LastDBUsagesBudgets, budgetID)
+	// A dump holding this budget in an earlier snapshot must not resurrect its row.
+	gs.markBudgetResetLocked(budgetID)
 	gs.LastDBUsagesBudgetsMu.Unlock()
 }
 
@@ -332,6 +401,60 @@ func (gs *LocalGovernanceStore) SetBudgetDBBaseline(budgetID string, currentUsag
 	gs.LastDBUsagesBudgetsMu.Lock()
 	gs.LastDBUsagesBudgets[budgetID] = currentUsage
 	gs.LastDBUsagesBudgetsMu.Unlock()
+}
+
+// markBudgetResetLocked records that a budget's in-memory usage was cleared, so a
+// dump that snapshotted the pre-reset value can recognise its row as stale.
+//
+// The caller must already hold LastDBUsagesBudgetsMu for writing. Every reset site
+// does, because clearing the gossip baseline and invalidating in-flight dumps are
+// the same event and must not be observable half-done.
+func (gs *LocalGovernanceStore) markBudgetResetLocked(budgetID string) {
+	if gs.budgetResetGens == nil {
+		gs.budgetResetGens = make(map[string]uint64)
+	}
+	gs.budgetResetGens[budgetID]++
+}
+
+// budgetResetGensSnapshot copies the current reset generations. A dump takes this
+// alongside its budget snapshot and re-compares before writing.
+func (gs *LocalGovernanceStore) budgetResetGensSnapshot() map[string]uint64 {
+	gs.LastDBUsagesBudgetsMu.RLock()
+	defer gs.LastDBUsagesBudgetsMu.RUnlock()
+	gens := make(map[string]uint64, len(gs.budgetResetGens))
+	for budgetID, gen := range gs.budgetResetGens {
+		gens[budgetID] = gen
+	}
+	return gens
+}
+
+// keepUnresetRows returns the rows of a dump batch whose budget has not been reset
+// since snapshot was taken. A row that has been reset carries the usage the reset
+// cleared, so writing it would put that number straight back.
+//
+// Dropping is safe and self-correcting: the post-reset usage is already in memory,
+// so the next dump cycle persists it a few seconds later. Re-checked per batch
+// rather than once per dump because batches are separated by database round trips,
+// which is time enough for a reset to land between them.
+func (gs *LocalGovernanceStore) keepUnresetRows(batch []budgetDumpRow, snapshot map[string]uint64) []budgetDumpRow {
+	gs.LastDBUsagesBudgetsMu.RLock()
+	defer gs.LastDBUsagesBudgetsMu.RUnlock()
+	stale := 0
+	for _, row := range batch {
+		if gs.budgetResetGens[row.ID] != snapshot[row.ID] {
+			stale++
+		}
+	}
+	if stale == 0 {
+		return batch
+	}
+	kept := make([]budgetDumpRow, 0, len(batch)-stale)
+	for _, row := range batch {
+		if gs.budgetResetGens[row.ID] == snapshot[row.ID] {
+			kept = append(kept, row)
+		}
+	}
+	return kept
 }
 
 // LoadRateLimit loads a rate limit by its ID from the local store.
@@ -445,11 +568,21 @@ func (gs *LocalGovernanceStore) BumpBudgetUsage(ctx context.Context, budgetID st
 			// resetExpiredBudgetFromSnapshot so DB delta folding stays
 			// consistent. Only the reset hook (DB persistence of LastReset)
 			// is skipped on the request path.
+			//
+			// budgetResetTarget returns a window boundary, so applying it makes
+			// the next evaluation return nil and this branch is unreachable for
+			// any valid duration. It survives purely as a termination guard.
+			//
+			// Skipping the hook is safe for the override lifecycle: the remaining
+			// count is derived from the grant and LastReset, so nothing needs
+			// persisting here beyond LastReset itself, which the next dump writes.
 			gs.logger.Error("budget %s reset target not converging after %d resets; applying inline reset to avoid request-path spin", budgetID, resetAttempts)
 			clone.CurrentUsage = 0
 			clone.LastReset = *target
+			clone.RefreshOverrideCyclesRemaining()
 			gs.LastDBUsagesBudgetsMu.Lock()
 			gs.LastDBUsagesBudgets[budgetID] = 0
+			gs.markBudgetResetLocked(budgetID)
 			gs.LastDBUsagesBudgetsMu.Unlock()
 		}
 		clone.CurrentUsage += cost
@@ -574,6 +707,7 @@ func (gs *LocalGovernanceStore) ResetBudgetAt(ctx context.Context, budgetID stri
 		clone := *old
 		clone.CurrentUsage = 0
 		clone.LastReset = newLastReset
+		clone.RefreshOverrideCyclesRemaining()
 		if gs.budgets.CompareAndSwap(budgetID, raw, &clone) {
 			return &clone, true
 		}
@@ -615,6 +749,73 @@ func (gs *LocalGovernanceStore) ResetRateLimitAt(ctx context.Context, rateLimitI
 		}
 		if !didReset {
 			return nil, false
+		}
+		if gs.rateLimits.CompareAndSwap(rateLimitID, raw, &clone) {
+			return &clone, true
+		}
+	}
+}
+
+// RebaseBudget atomically installs a cluster-authoritative usage value and, when
+// newLastReset is non-nil, raises LastReset toward it. Returns the rebased
+// snapshot and true when the swap landed; (nil, false) when the budget is absent.
+//
+// LastReset is never moved backward. A leader state sync that arrives after this
+// node already crossed a boundary must not reopen the window it closed: with
+// boundaries deterministic, the leader is publishing a value this node already
+// holds, so a backward move could only ever un-spend an override cycle. The
+// derived override count is refreshed inside the same clone, so remaining and
+// LastReset can never be observed out of step.
+//
+// Callers applying remote state must funnel through here rather than mutating the
+// pointer returned by GetGovernanceData, which is a live entry in the budgets
+// sync.Map: writing through it races BumpBudgetUsage's clone-and-CAS and can drop
+// a concurrent usage increment.
+func (gs *LocalGovernanceStore) RebaseBudget(ctx context.Context, budgetID string, newUsage float64, newLastReset *time.Time) (*configstoreTables.TableBudget, bool) {
+	for {
+		raw, exists := gs.budgets.Load(budgetID)
+		if !exists || raw == nil {
+			return nil, false
+		}
+		old, ok := raw.(*configstoreTables.TableBudget)
+		if !ok || old == nil {
+			return nil, false
+		}
+		clone := *old
+		clone.CurrentUsage = newUsage
+		if newLastReset != nil && clone.LastReset.Before(*newLastReset) {
+			clone.LastReset = *newLastReset
+		}
+		clone.RefreshOverrideCyclesRemaining()
+		if gs.budgets.CompareAndSwap(budgetID, raw, &clone) {
+			return &clone, true
+		}
+	}
+}
+
+// RebaseRateLimit atomically installs cluster-authoritative token and request
+// usage values and raises each dimension's LastReset toward the supplied target
+// when it is non-nil and strictly newer. Each dimension is rebased independently,
+// and neither boundary is ever moved backward. Same contract and rationale as
+// RebaseBudget. Returns the rebased snapshot and true when the swap landed.
+func (gs *LocalGovernanceStore) RebaseRateLimit(ctx context.Context, rateLimitID string, newTokens, newRequests int64, tokenLastReset, requestLastReset *time.Time) (*configstoreTables.TableRateLimit, bool) {
+	for {
+		raw, exists := gs.rateLimits.Load(rateLimitID)
+		if !exists || raw == nil {
+			return nil, false
+		}
+		old, ok := raw.(*configstoreTables.TableRateLimit)
+		if !ok || old == nil {
+			return nil, false
+		}
+		clone := *old
+		clone.TokenCurrentUsage = newTokens
+		clone.RequestCurrentUsage = newRequests
+		if tokenLastReset != nil && clone.TokenLastReset.Before(*tokenLastReset) {
+			clone.TokenLastReset = *tokenLastReset
+		}
+		if requestLastReset != nil && clone.RequestLastReset.Before(*requestLastReset) {
+			clone.RequestLastReset = *requestLastReset
 		}
 		if gs.rateLimits.CompareAndSwap(rateLimitID, raw, &clone) {
 			return &clone, true
@@ -1053,29 +1254,37 @@ func (gs *LocalGovernanceStore) CheckRateLimit(ctx context.Context, entityWiseRa
 // The idea is to keep this as a common method for checking all budgets. The entire business logic resides in here
 func (gs *LocalGovernanceStore) CheckBudget(ctx context.Context, entityWiseBudgets EntityWiseBudgets, baselines map[string]float64) (Decision, error) {
 	// Check each budget in hierarchy order using in-memory data
+	now := time.Now()
 	for entity, budgets := range entityWiseBudgets {
-		for _, budget := range budgets { // Check if budget needs reset (in-memory check)
-			if budget.ResetDuration != "" {
-				if duration, err := configstoreTables.ParseDuration(budget.ResetDuration); err == nil {
-					if time.Since(budget.LastReset) >= duration {
-						// Budget expired but hasn't been reset yet - treat as reset
-						// Note: actual reset will happen in post-hook via AtomicBudgetUpdate
-						gs.logger.Debug("LocalStore CheckBudget: Budget %s (%s) expired, skipping check", budget.ID, entity)
-						continue // Skip budget check for expired budgets
-					}
-				}
+		for _, budget := range budgets {
+			// Whether the window has closed must be decided by exactly the same
+			// predicate the reset path uses. Open-coding it here previously
+			// disagreed with budgetResetTarget in two ways: it ignored
+			// IsCalendarAligned, so a calendar-aligned budget was judged on a
+			// rolling clock for enforcement while resetting on the calendar; and
+			// it had no non-positive-duration guard, so because time.Since is
+			// always at least zero such a budget skipped enforcement forever,
+			// which is unlimited spend.
+			//
+			// An expired-but-unswept budget is skipped rather than denied: the
+			// reset lands on the next sweep or in the post-request usage bump,
+			// and skipping errs permissive for at most one ticker interval.
+			if gs.budgetResetTarget(budget, now) != nil {
+				gs.logger.Debug("LocalStore CheckBudget: Budget %s (%s) expired, skipping check", budget.ID, entity)
+				continue
 			}
 			baseline, exists := baselines[budget.ID]
 			if !exists {
 				baseline = 0
 			}
+			effectiveMaxLimit := budget.EffectiveMaxLimit()
 			gs.logger.Debug("LocalStore CheckBudget: Checking %s budget %s: local=%.4f, remote=%.4f, total=%.4f, limit=%.4f",
-				entity, budget.ID, budget.CurrentUsage, baseline, budget.CurrentUsage+baseline, budget.MaxLimit)
+				entity, budget.ID, budget.CurrentUsage, baseline, budget.CurrentUsage+baseline, effectiveMaxLimit)
 			// Check if current usage (local + remote baseline) exceeds budget limit
-			if budget.CurrentUsage+baseline >= budget.MaxLimit {
+			if budget.CurrentUsage+baseline >= effectiveMaxLimit {
 				gs.logger.Debug("LocalStore CheckBudget: Budget %s EXCEEDED", budget.ID)
 				return DecisionBudgetExceeded, fmt.Errorf("%s budget exceeded: %.4f >= %.4f dollars",
-					entity, budget.CurrentUsage+baseline, budget.MaxLimit)
+					entity, budget.CurrentUsage+baseline, effectiveMaxLimit)
 			}
 		}
 	}
@@ -1833,32 +2042,44 @@ func (gs *LocalGovernanceStore) UpdateUserRateLimitUsageInMemory(ctx context.Con
 	return nil
 }
 
-// budgetResetTarget returns the LastReset value to write when budget is expired.
+// budgetResetTarget returns the LastReset value to write when budget is expired,
+// or nil when the current window is still open.
+//
+// The returned value is always a window boundary from TableBudget.WindowStart,
+// never the caller's wall clock. That distinction is the whole point: a boundary
+// is a pure function of the persisted row, so every node in a cluster writes the
+// identical value and the LastReset guards in ResetBudgetAt and in the reset SQL
+// collapse duplicate work instead of each node advancing to its own timestamp.
+// Stamping now() instead makes LastReset a function of ticker phase, which then
+// becomes the origin of that node's next window, so the phase error compounds
+// every cycle. LastReset is only ever read here to decide whether to write; it
+// never influences what gets written.
+//
+// A gap of many windows collapses to a single reset at the current boundary
+// rather than replaying one reset per elapsed window, and applying the returned
+// target makes an immediate re-evaluation return nil, so a target can never be
+// perpetually due (issue #4851 class).
 func (gs *LocalGovernanceStore) budgetResetTarget(budget *configstoreTables.TableBudget, now time.Time) *time.Time {
 	if budget == nil || budget.ResetDuration == "" {
 		return nil
 	}
 	// Sub-day durations have no calendar boundary; see rateLimitResetTarget.
-	if budget.IsCalendarAligned && configstoreTables.IsCalendarAlignableDuration(budget.ResetDuration) {
-		currentPeriodStart := configstoreTables.GetCalendarPeriodStart(budget.ResetDuration, now)
-		if currentPeriodStart.After(budget.LastReset) {
-			return &currentPeriodStart
+	// WindowStart applies the same guard, so validation here exists purely to
+	// surface a misconfigured duration in the logs.
+	if !budget.IsCalendarAligned || !configstoreTables.IsCalendarAlignableDuration(budget.ResetDuration) {
+		duration, err := configstoreTables.ParseDuration(budget.ResetDuration)
+		if err != nil {
+			gs.logger.Error("invalid budget reset duration %s: %v", budget.ResetDuration, err)
+			return nil
 		}
-		return nil
+		if duration <= 0 {
+			gs.logger.Error("non-positive budget reset duration %s: budget will not auto-reset", budget.ResetDuration)
+			return nil
+		}
 	}
-	duration, err := configstoreTables.ParseDuration(budget.ResetDuration)
-	if err != nil {
-		gs.logger.Error("invalid budget reset duration %s: %v", budget.ResetDuration, err)
-		return nil
-	}
-	// A non-positive duration would be perpetually due, spinning BumpBudgetUsage
-	// forever (issue #4851 class); treat it as invalid, same as unparseable.
-	if duration <= 0 {
-		gs.logger.Error("non-positive budget reset duration %s: budget will not auto-reset", budget.ResetDuration)
-		return nil
-	}
-	if now.Sub(budget.LastReset) >= duration {
-		return &now
+	target := budget.WindowStart(now)
+	if target.After(budget.LastReset) {
+		return &target
 	}
 	return nil
 }
@@ -1878,9 +2099,102 @@ func (gs *LocalGovernanceStore) resetExpiredBudgetFromSnapshot(ctx context.Conte
 	oldUsage := budget.CurrentUsage
 	gs.LastDBUsagesBudgetsMu.Lock()
 	gs.LastDBUsagesBudgets[resetBudget.ID] = 0
+	gs.markBudgetResetLocked(resetBudget.ID)
 	gs.LastDBUsagesBudgetsMu.Unlock()
 	gs.logger.Debug(fmt.Sprintf("Reset budget %s (was %.2f, reset to 0)", resetBudget.ID, oldUsage))
 	return resetBudget
+}
+
+// ResetBudgetUsageInMemory clears one budget's usage on operator request, without
+// moving its reset boundary.
+//
+// This is the deliberate counterpart to resetExpiredBudgetFromSnapshot above. That
+// one is driven by a window closing, so it advances LastReset; this one is driven
+// by a person choosing "reset usage", where the window has not closed and the
+// boundary must stay exactly where it is. Every persistence path guards LastReset
+// forward-only, so a boundary move here would be refused anyway.
+//
+// Clearing the LastDBUsages baseline is not optional. The dump path writes the
+// difference between in-memory usage and that baseline, and in a cluster each
+// node contributes CurrentUsage - LastDBUsage to the shared total. Leaving the
+// old baseline behind would re-add the spend that was just cleared, or drive the
+// contribution negative.
+//
+// Returns the reset snapshot and true, or (nil, false) when the budget is unknown.
+func (gs *LocalGovernanceStore) ResetBudgetUsageInMemory(ctx context.Context, budgetID string) (*configstoreTables.TableBudget, bool) {
+	reset, ok := gs.RebaseBudget(ctx, budgetID, 0, nil)
+	if !ok {
+		return nil, false
+	}
+	gs.LastDBUsagesBudgetsMu.Lock()
+	gs.LastDBUsagesBudgets[budgetID] = 0
+	gs.markBudgetResetLocked(budgetID)
+	gs.LastDBUsagesBudgetsMu.Unlock()
+	gs.logger.Debug(fmt.Sprintf("Reset budget %s usage on operator request (boundary unchanged at %s)", budgetID, reset.LastReset))
+	return reset, true
+}
+
+// AdoptCalendarAlignmentInMemory re-anchors a budget onto the calendar grid when
+// its owner has just switched alignment on, and reports whether it moved.
+//
+// Called on the false-to-true transition only. Without it the switch is
+// destructive: budgetResetTarget resets whenever WindowStart(now) is after
+// LastReset, so a window that opened before the current boundary is instantly due
+// and the next sweep clears its usage. See TableBudget.AdoptCalendarAlignment.
+//
+// The usage carried into the swap is the one observed inside the CAS loop, not a
+// value read beforehand: a request bumping this budget between a read and the
+// write would otherwise have its spend dropped. No reset generation is bumped
+// here - nothing was reset, so an in-flight dump's rows are still accurate.
+func (gs *LocalGovernanceStore) AdoptCalendarAlignmentInMemory(ctx context.Context, budgetID string, now time.Time) bool {
+	for {
+		raw, exists := gs.budgets.Load(budgetID)
+		if !exists || raw == nil {
+			return false
+		}
+		old, ok := raw.(*configstoreTables.TableBudget)
+		if !ok || old == nil {
+			return false
+		}
+		clone := *old
+		// The owner's flag has already been applied upstream, but the in-memory
+		// copy predates it, so stamp it here or adoption declines its own work.
+		clone.IsCalendarAligned = true
+		if !clone.AdoptCalendarAlignment(now) {
+			return false
+		}
+		clone.RefreshOverrideCyclesRemaining()
+		if gs.budgets.CompareAndSwap(budgetID, raw, &clone) {
+			gs.logger.Debug(fmt.Sprintf("Adopted budget %s onto its calendar boundary %s (usage %.2f preserved)",
+				budgetID, clone.LastReset, clone.CurrentUsage))
+			return true
+		}
+	}
+}
+
+// AdoptRateLimitCalendarAlignmentInMemory is the rate-limit counterpart, applying
+// the same switch-over rule to the token and request counters independently.
+func (gs *LocalGovernanceStore) AdoptRateLimitCalendarAlignmentInMemory(ctx context.Context, rateLimitID string, now time.Time) bool {
+	for {
+		raw, exists := gs.rateLimits.Load(rateLimitID)
+		if !exists || raw == nil {
+			return false
+		}
+		old, ok := raw.(*configstoreTables.TableRateLimit)
+		if !ok || old == nil {
+			return false
+		}
+		clone := *old
+		clone.IsCalendarAligned = true
+		if !clone.AdoptCalendarAlignment(now) {
+			return false
+		}
+		if gs.rateLimits.CompareAndSwap(rateLimitID, raw, &clone) {
+			gs.logger.Debug(fmt.Sprintf("Adopted rate limit %s onto its calendar boundaries (token %s, request %s)",
+				rateLimitID, clone.TokenLastReset, clone.RequestLastReset))
+			return true
+		}
+	}
 }
 
 // ResetExpiredBudgetsInMemory checks and resets budgets that have exceeded their reset duration.
@@ -1924,17 +2238,25 @@ func (gs *LocalGovernanceStore) ResetExpiredBudgetsInMemory(ctx context.Context,
 }
 
 // rateLimitResetTarget returns the LastReset value to write when a rate-limit counter is expired.
-// Calendar alignment only applies to durations with a calendar boundary (d/w/M/Y);
+// Calendar alignment only applies to durations with a calendar boundary (d/w/M/Q/Y);
 // sub-day durations fall back to rolling-window semantics even when the owner is
 // calendar-aligned, mirroring the handler-side snap logic. Without this guard
 // GetCalendarPeriodStart returns now for sub-day durations, making the reset
 // target perpetually due and spinning BumpRateLimitUsage forever (issue #4851).
-func (gs *LocalGovernanceStore) rateLimitResetTarget(resetDuration *string, calendarAligned bool, lastReset time.Time, now time.Time) *time.Time {
+//
+// Rate limits carry no quarter definition - quarters are configured per budget -
+// so the quarter start is not applicable here and plain calendar quarters apply.
+// The returned value is a window boundary anchored on the rate limit's
+// CreatedAt, never the caller's wall clock, so every cluster node computes the
+// same instant from the same persisted row. See budgetResetTarget for why that
+// matters; the two must stay in step because a rate limit and a budget on the
+// same owner are expected to roll over together.
+func (gs *LocalGovernanceStore) rateLimitResetTarget(resetDuration *string, calendarAligned bool, anchor, lastReset time.Time, now time.Time) *time.Time {
 	if resetDuration == nil {
 		return nil
 	}
 	if calendarAligned && configstoreTables.IsCalendarAlignableDuration(*resetDuration) {
-		period := configstoreTables.GetCalendarPeriodStart(*resetDuration, now)
+		period := configstoreTables.GetCalendarPeriodStart(*resetDuration, now, configstoreTables.QuarterStartNotApplicable)
 		if period.After(lastReset) {
 			return &period
 		}
@@ -1951,19 +2273,27 @@ func (gs *LocalGovernanceStore) rateLimitResetTarget(resetDuration *string, cale
 		gs.logger.Error("non-positive rate limit reset duration %s: counter will not auto-reset", *resetDuration)
 		return nil
 	}
-	if now.Sub(lastReset) >= duration {
-		return &now
+	if anchor.IsZero() {
+		anchor = lastReset
+	}
+	target := configstoreTables.RollingWindowStart(anchor, duration, now)
+	if target.After(lastReset) {
+		return &target
 	}
 	return nil
 }
 
 // rateLimitResetTargets returns reset targets for the token and request counters.
+// Both dimensions share the rate limit's CreatedAt as their lattice anchor, so
+// they stay phase-locked to each other as well as across nodes.
 func (gs *LocalGovernanceStore) rateLimitResetTargets(rateLimit *configstoreTables.TableRateLimit, now time.Time) (*time.Time, *time.Time) {
 	if rateLimit == nil {
 		return nil, nil
 	}
 	calendarAligned := rateLimit.IsCalendarAligned
-	return gs.rateLimitResetTarget(rateLimit.TokenResetDuration, calendarAligned, rateLimit.TokenLastReset, now), gs.rateLimitResetTarget(rateLimit.RequestResetDuration, calendarAligned, rateLimit.RequestLastReset, now)
+	anchor := rateLimit.CreatedAt
+	return gs.rateLimitResetTarget(rateLimit.TokenResetDuration, calendarAligned, anchor, rateLimit.TokenLastReset, now),
+		gs.rateLimitResetTarget(rateLimit.RequestResetDuration, calendarAligned, anchor, rateLimit.RequestLastReset, now)
 }
 
 // resetExpiredRateLimitFromSnapshot applies the local side effects for an expired rate-limit snapshot.
@@ -2033,26 +2363,41 @@ func (gs *LocalGovernanceStore) ResetExpiredRateLimitsInMemory(ctx context.Conte
 
 // ResetExpiredBudgets checks and resets budgets that have exceeded their reset duration in database
 func (gs *LocalGovernanceStore) ResetExpiredBudgets(ctx context.Context, resetBudgets []*configstoreTables.TableBudget) error {
-	// Persist to database if any resets occurred using direct UPDATE to avoid overwriting config fields
-	if len(resetBudgets) > 0 && gs.configStore != nil {
-		if err := gs.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
-			for _, budget := range resetBudgets {
-				// Direct UPDATE only resets current_usage and last_reset
-				// This prevents overwriting max_limit or reset_duration that may have been changed by other nodes/requests
-				result := tx.WithContext(ctx).
-					Session(&gorm.Session{SkipHooks: true}).
-					Model(&configstoreTables.TableBudget{}).
-					Where("id = ?", budget.ID).
-					Updates(map[string]interface{}{
-						"current_usage": budget.CurrentUsage,
-						"last_reset":    budget.LastReset,
-					})
+	// Persist to database if any resets occurred using direct UPDATE to avoid
+	// overwriting config fields. Both statements share the strict "<" guard so a
+	// snapshot that lost the override race cannot advance last_reset on its own.
+	if gs.configStore == nil {
+		return nil
+	}
+	rows := make([]budgetDumpRow, 0, len(resetBudgets))
+	for _, budget := range resetBudgets {
+		if budget == nil {
+			continue
+		}
+		rows = append(rows, budgetDumpRow{
+			ID:                      budget.ID,
+			CurrentUsage:            budget.CurrentUsage,
+			LastReset:               budget.LastReset,
+			OverrideAmount:          budget.OverrideAmount,
+			OverrideMode:            budget.OverrideMode,
+			OverrideCyclesRemaining: budget.OverrideCyclesRemaining,
+			OverrideCyclesTotal:     budget.OverrideCyclesTotal,
+			OverrideAnchorReset:     budget.OverrideAnchorReset,
+		})
+	}
+	// Stable ID order keeps concurrent writers taking row locks in the same
+	// sequence, which is what keeps them deadlock-free rather than merely lucky.
+	sort.Slice(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
 
-				if result.Error != nil {
-					return fmt.Errorf("failed to reset budget %s: %w", budget.ID, result.Error)
-				}
-			}
-			return nil
+	// Chunked so row locks are released between batches instead of being held
+	// for every reset row at once, and so each batch costs one round trip
+	// rather than two per row. A batch that fails leaves earlier batches
+	// committed, which is safe: every write is guarded and monotonic, so the
+	// next sweep re-applies whatever did not land.
+	for start := 0; start < len(rows); start += dumpBatchSize {
+		end := min(start+dumpBatchSize, len(rows))
+		if err := gs.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+			return gs.writeBudgetBatch(ctx, tx, rows[start:end], "<")
 		}); err != nil {
 			return fmt.Errorf("failed to persist budget resets to database: %w", err)
 		}
@@ -2063,40 +2408,276 @@ func (gs *LocalGovernanceStore) ResetExpiredBudgets(ctx context.Context, resetBu
 
 // ResetExpiredRateLimits performs background reset of expired rate limits for both provider-level and VK-level in database
 func (gs *LocalGovernanceStore) ResetExpiredRateLimits(ctx context.Context, resetRateLimits []*configstoreTables.TableRateLimit) error {
-	if len(resetRateLimits) > 0 && gs.configStore != nil {
-		if err := gs.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
-			for _, rateLimit := range resetRateLimits {
-				// Build update map with only the fields that were reset
-				updates := make(map[string]interface{})
-
-				// Check which fields were reset by comparing with current values
-				if rateLimit.TokenCurrentUsage == 0 && rateLimit.TokenResetDuration != nil {
-					updates["token_current_usage"] = 0
-					updates["token_last_reset"] = rateLimit.TokenLastReset
-				}
-				if rateLimit.RequestCurrentUsage == 0 && rateLimit.RequestResetDuration != nil {
-					updates["request_current_usage"] = 0
-					updates["request_last_reset"] = rateLimit.RequestLastReset
-				}
-
-				if len(updates) > 0 {
-					// Direct UPDATE only resets usage and last_reset fields
-					// This prevents overwriting max_limit or reset_duration that may have been changed by other nodes/requests
-					result := tx.WithContext(ctx).
-						Session(&gorm.Session{SkipHooks: true}).
-						Model(&configstoreTables.TableRateLimit{}).
-						Where("id = ?", rateLimit.ID).
-						Updates(updates)
-
-					if result.Error != nil {
-						return fmt.Errorf("failed to reset rate limit %s: %w", rateLimit.ID, result.Error)
-					}
-				}
-			}
-			return nil
-		}); err != nil {
-			return fmt.Errorf("failed to persist rate limit resets to database: %w", err)
+	if gs.configStore == nil {
+		return nil
+	}
+	// Token and request counters expire independently, so the batches are built
+	// per dimension. A rate limit with no duration configured for a dimension
+	// contributes nothing to that dimension's batch.
+	var tokenRows, requestRows []rateLimitBoundaryRow
+	for _, rateLimit := range resetRateLimits {
+		if rateLimit == nil {
+			continue
 		}
+		if rateLimit.TokenResetDuration != nil {
+			tokenRows = append(tokenRows, rateLimitBoundaryRow{ID: rateLimit.ID, Boundary: rateLimit.TokenLastReset})
+		}
+		if rateLimit.RequestResetDuration != nil {
+			requestRows = append(requestRows, rateLimitBoundaryRow{ID: rateLimit.ID, Boundary: rateLimit.RequestLastReset})
+		}
+	}
+	// Stable ID order within each dimension, and a fixed dimension order, so
+	// concurrent writers acquire row locks in the same sequence.
+	sort.Slice(tokenRows, func(i, j int) bool { return tokenRows[i].ID < tokenRows[j].ID })
+	sort.Slice(requestRows, func(i, j int) bool { return requestRows[i].ID < requestRows[j].ID })
+
+	dimensions := []struct {
+		usageColumn    string
+		boundaryColumn string
+		rows           []rateLimitBoundaryRow
+	}{
+		{"token_current_usage", "token_last_reset", tokenRows},
+		{"request_current_usage", "request_last_reset", requestRows},
+	}
+	for _, dimension := range dimensions {
+		for start := 0; start < len(dimension.rows); start += dumpBatchSize {
+			end := min(start+dumpBatchSize, len(dimension.rows))
+			batch := dimension.rows[start:end]
+			if err := gs.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+				return gs.resetRateLimitDimensionBatch(ctx, tx, dimension.usageColumn, dimension.boundaryColumn, batch)
+			}); err != nil {
+				return fmt.Errorf("failed to persist rate limit resets to database: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+// dumpBatchSize bounds both how many rows one batched UPDATE folds together and
+// how many rows a single dump transaction covers.
+//
+// The dump used to issue one statement per row inside one transaction spanning
+// the whole table. That cost a network round trip per row, which is invisible
+// against a local database and ruinous when the leader and the database sit in
+// different regions, and it held every row lock until the sweep committed, so an
+// interactive virtual key save could block for the length of the entire sweep.
+// Batching collapses the round trips; chunking bounds how long any row stays
+// locked.
+const dumpBatchSize = 500
+
+// rateLimitDumpRow is one rate limit's persisted counter state for a dump write.
+type rateLimitDumpRow struct {
+	ID                  string
+	TokenCurrentUsage   int64
+	TokenLastReset      time.Time
+	RequestCurrentUsage int64
+	RequestLastReset    time.Time
+}
+
+// budgetDumpRow is one budget's persisted usage and override state for a dump write.
+type budgetDumpRow struct {
+	ID                      string
+	CurrentUsage            float64
+	LastReset               time.Time
+	OverrideAmount          float64
+	OverrideMode            configstoreTables.BudgetOverrideMode
+	OverrideCyclesRemaining int
+	OverrideCyclesTotal     int
+	OverrideAnchorReset     *time.Time
+}
+
+// isDumpDeadlock reports whether a dump error is a database deadlock. In a
+// multi-node setup that simply means another node wrote the same rows first;
+// this node's usage is still held in memory and in the gossip baselines, so the
+// next cycle persists it.
+func isDumpDeadlock(err error) bool {
+	errStr := err.Error()
+	return strings.Contains(errStr, "deadlock") ||
+		strings.Contains(errStr, "40P01") ||
+		strings.Contains(errStr, "1213")
+}
+
+// supportsBatchedDump reports whether the dialect supports the
+// UPDATE ... FROM (VALUES ...) form the batched writes use. Only PostgreSQL
+// does here; every other dialect takes the per-row fallback.
+func supportsBatchedDump(tx *gorm.DB) bool {
+	return tx.Dialector.Name() == "postgres"
+}
+
+// dumpRateLimitBatch persists one batch of rate-limit counters, as a single
+// multi-row statement on PostgreSQL and as per-row updates elsewhere.
+func (gs *LocalGovernanceStore) dumpRateLimitBatch(ctx context.Context, tx *gorm.DB, batch []rateLimitDumpRow) error {
+	if !supportsBatchedDump(tx) {
+		for _, row := range batch {
+			// Direct UPDATE only touches usage fields, so a concurrent config
+			// change to max_limit or reset_duration is never clobbered.
+			if err := tx.WithContext(ctx).
+				Session(&gorm.Session{SkipHooks: true}).
+				Model(&configstoreTables.TableRateLimit{}).
+				Where("id = ?", row.ID).
+				Updates(map[string]interface{}{
+					"token_current_usage":   row.TokenCurrentUsage,
+					"token_last_reset":      row.TokenLastReset,
+					"request_current_usage": row.RequestCurrentUsage,
+					"request_last_reset":    row.RequestLastReset,
+				}).Error; err != nil {
+				return fmt.Errorf("failed to dump rate limit %s: %w", row.ID, err)
+			}
+		}
+		return nil
+	}
+
+	var sb strings.Builder
+	args := make([]any, 0, len(batch)*5)
+	sb.WriteString("UPDATE " + configstoreTables.TableRateLimit{}.TableName() + " AS t SET " +
+		"token_current_usage = v.tcu, token_last_reset = v.tlr, " +
+		"request_current_usage = v.rcu, request_last_reset = v.rlr FROM (VALUES ")
+	for i, row := range batch {
+		if i > 0 {
+			sb.WriteString(",")
+		}
+		sb.WriteString("(?::varchar,?::bigint,?::timestamptz,?::bigint,?::timestamptz)")
+		args = append(args, row.ID, row.TokenCurrentUsage, row.TokenLastReset, row.RequestCurrentUsage, row.RequestLastReset)
+	}
+	sb.WriteString(") AS v(id, tcu, tlr, rcu, rlr) WHERE t.id = v.id")
+	if err := tx.WithContext(ctx).Exec(sb.String(), args...).Error; err != nil {
+		return fmt.Errorf("failed to dump %d rate limits: %w", len(batch), err)
+	}
+	return nil
+}
+
+// writeBudgetBatch persists one batch of budget override state and usage counters.
+//
+// The override write runs first and is guarded on a strictly older last_reset,
+// exactly as the per-row path was: it must only fire when this node performed a
+// reset the database has not seen. The usage write advances last_reset and so
+// would close that guard if it ran first.
+//
+// usageGuard is the comparison the usage write comes under and differs by
+// caller. The dump passes "<=" because in steady state the persisted boundary
+// equals the in-memory one, and "<" would match zero rows so usage would never
+// persist at all. The reset path passes "<" so that its two statements share one
+// guard: a snapshot that lost the override race must not advance last_reset on
+// its own, which is exactly the split that lets a window's override cycle go
+// unspent.
+func (gs *LocalGovernanceStore) writeBudgetBatch(ctx context.Context, tx *gorm.DB, batch []budgetDumpRow, usageGuard string) error {
+	if !supportsBatchedDump(tx) {
+		for _, row := range batch {
+			if err := tx.WithContext(ctx).
+				Session(&gorm.Session{SkipHooks: true}).
+				Model(&configstoreTables.TableBudget{}).
+				Where("id = ? AND last_reset < ?", row.ID, row.LastReset).
+				Updates(map[string]interface{}{
+					"override_amount":           row.OverrideAmount,
+					"override_mode":             row.OverrideMode,
+					"override_cycles_remaining": row.OverrideCyclesRemaining,
+					"override_cycles_total":     row.OverrideCyclesTotal,
+					"override_anchor_reset":     row.OverrideAnchorReset,
+				}).Error; err != nil {
+				return fmt.Errorf("failed to update budget override lifecycle %s: %w", row.ID, err)
+			}
+			if err := tx.WithContext(ctx).
+				Session(&gorm.Session{SkipHooks: true}).
+				Model(&configstoreTables.TableBudget{}).
+				Where("id = ? AND last_reset "+usageGuard+" ?", row.ID, row.LastReset).
+				Updates(map[string]interface{}{
+					"current_usage": row.CurrentUsage,
+					"last_reset":    row.LastReset,
+				}).Error; err != nil {
+				return fmt.Errorf("failed to update budget %s: %w", row.ID, err)
+			}
+		}
+		return nil
+	}
+
+	table := configstoreTables.TableBudget{}.TableName()
+
+	var overrideSQL strings.Builder
+	overrideArgs := make([]any, 0, len(batch)*7)
+	overrideSQL.WriteString("UPDATE " + table + " AS t SET " +
+		"override_amount = v.oa, override_mode = v.om, override_cycles_remaining = v.ocr, " +
+		"override_cycles_total = v.oct, override_anchor_reset = v.oar FROM (VALUES ")
+	for i, row := range batch {
+		if i > 0 {
+			overrideSQL.WriteString(",")
+		}
+		overrideSQL.WriteString("(?::varchar,?::double precision,?::varchar,?::integer,?::integer,?::timestamptz,?::timestamptz)")
+		overrideArgs = append(overrideArgs, row.ID, row.OverrideAmount, string(row.OverrideMode),
+			row.OverrideCyclesRemaining, row.OverrideCyclesTotal, row.OverrideAnchorReset, row.LastReset)
+	}
+	overrideSQL.WriteString(") AS v(id, oa, om, ocr, oct, oar, lr) WHERE t.id = v.id AND t.last_reset < v.lr")
+	if err := tx.WithContext(ctx).Exec(overrideSQL.String(), overrideArgs...).Error; err != nil {
+		return fmt.Errorf("failed to update budget override lifecycle for %d budgets: %w", len(batch), err)
+	}
+
+	var usageSQL strings.Builder
+	usageArgs := make([]any, 0, len(batch)*3)
+	usageSQL.WriteString("UPDATE " + table + " AS t SET current_usage = v.cu, last_reset = v.lr FROM (VALUES ")
+	for i, row := range batch {
+		if i > 0 {
+			usageSQL.WriteString(",")
+		}
+		usageSQL.WriteString("(?::varchar,?::double precision,?::timestamptz)")
+		usageArgs = append(usageArgs, row.ID, row.CurrentUsage, row.LastReset)
+	}
+	usageSQL.WriteString(") AS v(id, cu, lr) WHERE t.id = v.id AND t.last_reset " + usageGuard + " v.lr")
+	if err := tx.WithContext(ctx).Exec(usageSQL.String(), usageArgs...).Error; err != nil {
+		return fmt.Errorf("failed to update %d budgets: %w", len(batch), err)
+	}
+	return nil
+}
+
+// rateLimitBoundaryRow is one rate limit's new boundary for a single counter
+// dimension. Token and request counters expire independently, so a reset batch
+// is built per dimension rather than per row.
+type rateLimitBoundaryRow struct {
+	ID       string
+	Boundary time.Time
+}
+
+// resetRateLimitDimensionBatch zeroes one counter dimension for a batch of rate
+// limits and advances its boundary column.
+//
+// The guard is the boundary column rather than a test of whether the in-memory
+// counter is still zero: under sustained traffic a request bumps the counter
+// back above zero between the in-memory reset and this write, which used to drop
+// the whole field pair including the boundary. A dimension that was not reset in
+// this sweep is a no-op because its in-memory boundary already equals the
+// persisted one.
+func (gs *LocalGovernanceStore) resetRateLimitDimensionBatch(ctx context.Context, tx *gorm.DB, usageColumn, boundaryColumn string, batch []rateLimitBoundaryRow) error {
+	if len(batch) == 0 {
+		return nil
+	}
+	if !supportsBatchedDump(tx) {
+		for _, row := range batch {
+			if err := tx.WithContext(ctx).
+				Session(&gorm.Session{SkipHooks: true}).
+				Model(&configstoreTables.TableRateLimit{}).
+				Where("id = ? AND "+boundaryColumn+" < ?", row.ID, row.Boundary).
+				Updates(map[string]interface{}{
+					usageColumn:    0,
+					boundaryColumn: row.Boundary,
+				}).Error; err != nil {
+				return fmt.Errorf("failed to reset rate limit %s %s: %w", row.ID, boundaryColumn, err)
+			}
+		}
+		return nil
+	}
+
+	var sb strings.Builder
+	args := make([]any, 0, len(batch)*2)
+	sb.WriteString("UPDATE " + configstoreTables.TableRateLimit{}.TableName() + " AS t SET " +
+		usageColumn + " = 0, " + boundaryColumn + " = v.b FROM (VALUES ")
+	for i, row := range batch {
+		if i > 0 {
+			sb.WriteString(",")
+		}
+		sb.WriteString("(?::varchar,?::timestamptz)")
+		args = append(args, row.ID, row.Boundary)
+	}
+	sb.WriteString(") AS v(id, b) WHERE t.id = v.id AND t." + boundaryColumn + " < v.b")
+	if err := tx.WithContext(ctx).Exec(sb.String(), args...).Error; err != nil {
+		return fmt.Errorf("failed to reset %s for %d rate limits: %w", boundaryColumn, len(batch), err)
 	}
 	return nil
 }
@@ -2117,20 +2698,13 @@ func (gs *LocalGovernanceStore) DumpRateLimits(ctx context.Context, tokenBaselin
 	// This covers rate limits from every source: virtual keys, model configs,
 	// providers, teams, customers, AND access profiles — whose IDs were
 	// previously missing, causing AP rate-limit usage to never reach the DB.
-	type rateLimitUpdate struct {
-		ID                  string
-		TokenCurrentUsage   int64
-		TokenLastReset      time.Time
-		RequestCurrentUsage int64
-		RequestLastReset    time.Time
-	}
-	var rateLimitUpdates []rateLimitUpdate
+	var rateLimitUpdates []rateLimitDumpRow
 	gs.rateLimits.Range(func(key, value interface{}) bool {
 		rateLimit, ok := value.(*configstoreTables.TableRateLimit)
 		if !ok || rateLimit == nil {
 			return true
 		}
-		update := rateLimitUpdate{
+		update := rateLimitDumpRow{
 			ID:                  rateLimit.ID,
 			TokenCurrentUsage:   rateLimit.TokenCurrentUsage,
 			TokenLastReset:      rateLimit.TokenLastReset,
@@ -2150,40 +2724,22 @@ func (gs *LocalGovernanceStore) DumpRateLimits(ctx context.Context, tokenBaselin
 		return rateLimitUpdates[i].ID < rateLimitUpdates[j].ID
 	})
 
-	// Save all updated rate limits to database using direct UPDATE to avoid overwriting config fields
-	if len(rateLimitUpdates) > 0 && gs.configStore != nil {
+	// Save all updated rate limits to database using direct UPDATE to avoid overwriting config fields.
+	// Written in batches so row locks are released between chunks rather than
+	// held for the whole sweep, and so each chunk costs one round trip instead
+	// of one per row.
+	for start := 0; start < len(rateLimitUpdates); start += dumpBatchSize {
+		end := min(start+dumpBatchSize, len(rateLimitUpdates))
+		batch := rateLimitUpdates[start:end]
 		if err := gs.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
-			for _, update := range rateLimitUpdates {
-				// Direct UPDATE only updates usage fields
-				// This prevents overwriting max_limit or reset_duration that may have been changed by other nodes/requests
-				result := tx.WithContext(ctx).
-					Session(&gorm.Session{SkipHooks: true}).
-					Model(&configstoreTables.TableRateLimit{}).
-					Where("id = ?", update.ID).
-					Updates(map[string]interface{}{
-						"token_current_usage":   update.TokenCurrentUsage,
-						"token_last_reset":      update.TokenLastReset,
-						"request_current_usage": update.RequestCurrentUsage,
-						"request_last_reset":    update.RequestLastReset,
-					})
-
-				if result.Error != nil {
-					return fmt.Errorf("failed to dump rate limit %s: %w", update.ID, result.Error)
-				}
-			}
-			return nil
+			return gs.dumpRateLimitBatch(ctx, tx, batch)
 		}); err != nil {
-			// Check if error is a deadlock (SQLSTATE 40P01 for PostgreSQL, 1213 for MySQL)
-			errStr := err.Error()
-			isDeadlock := strings.Contains(errStr, "deadlock") ||
-				strings.Contains(errStr, "40P01") ||
-				strings.Contains(errStr, "1213")
-
-			if isDeadlock {
-				// Deadlock means another node is updating the same rows - this is fine!
-				// Our usage data will be synced via gossip and written in the next dump cycle
-				gs.logger.Debug("Rate limit dump encountered deadlock (another node is updating) - will retry next cycle")
-				return nil // Not a real error in multi-node setup
+			if isDumpDeadlock(err) {
+				// Another node wrote these rows first. Our usage is still in
+				// memory and in the gossip baselines, so skip this chunk and let
+				// the next cycle persist it.
+				gs.logger.Debug("Rate limit dump chunk encountered deadlock (another node is updating) - will retry next cycle")
+				continue
 			}
 			return fmt.Errorf("failed to dump rate limits to database: %w", err)
 		}
@@ -2191,15 +2747,30 @@ func (gs *LocalGovernanceStore) DumpRateLimits(ctx context.Context, tokenBaselin
 	return nil
 }
 
-// DumpBudgets dumps all budgets to the database
+// DumpBudgets dumps all budgets to the database.
+//
+// Split into a snapshot and a write so the gap between them is expressible in a
+// test: that gap is where an operator reset can land, and the reset generations
+// taken here are what let the write recognise a row cleared underneath it.
 func (gs *LocalGovernanceStore) DumpBudgets(ctx context.Context, baselines map[string]float64) error {
 	if gs.configStore == nil {
 		return nil
 	}
+	rows, gens := gs.snapshotBudgetRows(baselines)
+	return gs.writeBudgetRows(ctx, rows, gens)
+}
+
+// snapshotBudgetRows captures every budget's current usage as dump rows, together
+// with the reset generation each row was read at.
+func (gs *LocalGovernanceStore) snapshotBudgetRows(baselines map[string]float64) ([]budgetDumpRow, map[string]uint64) {
 	// This is to prevent nil pointer dereference
 	if baselines == nil {
 		baselines = map[string]float64{}
 	}
+	// Read the generations first. Taking them before the budgets means a reset that
+	// races this snapshot is either fully visible in both, or shows up as a bumped
+	// generation later; it can never look unchanged while the usage read was stale.
+	gens := gs.budgetResetGensSnapshot()
 	budgets := make(map[string]*configstoreTables.TableBudget)
 	gs.budgets.Range(func(key, value interface{}) bool {
 		// Type-safe conversion
@@ -2211,51 +2782,54 @@ func (gs *LocalGovernanceStore) DumpBudgets(ctx context.Context, baselines map[s
 		}
 		return true // continue iteration
 	})
-	if len(budgets) > 0 && gs.configStore != nil {
-		budgetIDs := make([]string, 0, len(budgets))
-		for id := range budgets {
-			budgetIDs = append(budgetIDs, id)
+	rows := make([]budgetDumpRow, 0, len(budgets))
+	for _, budget := range budgets {
+		// Fold this node's view of remote usage in before writing so every node
+		// persists the same cluster-wide total.
+		newUsage := budget.CurrentUsage
+		if baseline, exists := baselines[budget.ID]; exists {
+			newUsage += baseline
 		}
-		sort.Strings(budgetIDs)
+		rows = append(rows, budgetDumpRow{
+			ID:                      budget.ID,
+			CurrentUsage:            newUsage,
+			LastReset:               budget.LastReset,
+			OverrideAmount:          budget.OverrideAmount,
+			OverrideMode:            budget.OverrideMode,
+			OverrideCyclesRemaining: budget.OverrideCyclesRemaining,
+			OverrideCyclesTotal:     budget.OverrideCyclesTotal,
+			OverrideAnchorReset:     budget.OverrideAnchorReset,
+		})
+	}
+	// Stable ID order keeps concurrent dumpers taking row locks in the same
+	// sequence, which is what keeps them deadlock-free rather than merely lucky.
+	sort.Slice(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
+	return rows, gens
+}
+
+// writeBudgetRows persists a snapshot taken by snapshotBudgetRows.
+func (gs *LocalGovernanceStore) writeBudgetRows(ctx context.Context, rows []budgetDumpRow, gens map[string]uint64) error {
+	if gs.configStore == nil {
+		return nil
+	}
+	// Written in batches so row locks are released between chunks rather than
+	// held for the whole sweep, and so each chunk costs one round trip instead
+	// of two per row.
+	for start := 0; start < len(rows); start += dumpBatchSize {
+		end := min(start+dumpBatchSize, len(rows))
+		batch := gs.keepUnresetRows(rows[start:end], gens)
+		if len(batch) == 0 {
+			continue
+		}
 		if err := gs.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
-			// Update each budget atomically using direct UPDATE to avoid deadlocks
-			// (SELECT + Save pattern causes deadlocks when multiple instances run concurrently)
-			for _, budgetID := range budgetIDs {
-				inMemoryBudget := budgets[budgetID]
-				// Calculate the new usage value
-				newUsage := inMemoryBudget.CurrentUsage
-				if baseline, exists := baselines[inMemoryBudget.ID]; exists {
-					newUsage += baseline
-				}
-
-				// Direct UPDATE avoids read-then-write lock escalation that causes deadlocks
-				// Use Session with SkipHooks to avoid triggering BeforeSave hook validation
-				result := tx.WithContext(ctx).
-					Session(&gorm.Session{SkipHooks: true}).
-					Model(&configstoreTables.TableBudget{}).
-					Where("id = ?", inMemoryBudget.ID).
-					Updates(map[string]interface{}{
-						"current_usage": newUsage,
-						"last_reset":    inMemoryBudget.LastReset,
-					})
-
-				if result.Error != nil {
-					return fmt.Errorf("failed to update budget %s: %w", inMemoryBudget.ID, result.Error)
-				}
-			}
-			return nil
+			return gs.writeBudgetBatch(ctx, tx, batch, "<=")
 		}); err != nil {
-			// Check if error is a deadlock (SQLSTATE 40P01 for PostgreSQL, 1213 for MySQL)
-			errStr := err.Error()
-			isDeadlock := strings.Contains(errStr, "deadlock") ||
-				strings.Contains(errStr, "40P01") ||
-				strings.Contains(errStr, "1213")
-
-			if isDeadlock {
-				// Deadlock means another node is updating the same rows - this is fine!
-				// Our usage data will be synced via gossip and written in the next dump cycle
-				gs.logger.Debug("Budget dump encountered deadlock (another node is updating) - will retry next cycle")
-				return nil // Not a real error in multi-node setup
+			if isDumpDeadlock(err) {
+				// Another node wrote these rows first. Our usage is still in
+				// memory and in the gossip baselines, so skip this chunk and let
+				// the next cycle persist it.
+				gs.logger.Debug("Budget dump chunk encountered deadlock (another node is updating) - will retry next cycle")
+				continue
 			}
 			return fmt.Errorf("failed to dump budgets to database: %w", err)
 		}
@@ -2498,7 +3072,7 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 	// Build budgets map
 	for i := range budgets {
 		budget := &budgets[i]
-		gs.budgets.Store(budget.ID, budget)
+		gs.storeBudget(budget.ID, budget)
 	}
 
 	// Build rate limits map
@@ -2526,7 +3100,7 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 		// Mirrors how VK/team budgets are stamped from their owner.
 		for j := range mc.Budgets {
 			mc.Budgets[j].IsCalendarAligned = mc.CalendarAligned
-			gs.budgets.Store(mc.Budgets[j].ID, &mc.Budgets[j])
+			gs.storeBudget(mc.Budgets[j].ID, &mc.Budgets[j])
 		}
 		if mc.RateLimit != nil {
 			mc.RateLimit.IsCalendarAligned = mc.CalendarAligned
@@ -2559,7 +3133,7 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 		customer := &customers[i]
 		for j := range customer.Budgets {
 			customer.Budgets[j].IsCalendarAligned = customer.CalendarAligned
-			gs.budgets.Store(customer.Budgets[j].ID, &customer.Budgets[j])
+			gs.storeBudget(customer.Budgets[j].ID, &customer.Budgets[j])
 		}
 		if customer.RateLimitID != nil {
 			if raw, ok := gs.rateLimits.Load(*customer.RateLimitID); ok {
@@ -2982,7 +3556,7 @@ func (gs *LocalGovernanceStore) CreateVirtualKeyInMemory(ctx context.Context, vk
 	// Store budgets
 	for i := range clone.Budgets {
 		clone.Budgets[i].IsCalendarAligned = clone.CalendarAligned
-		gs.budgets.Store(clone.Budgets[i].ID, &clone.Budgets[i])
+		gs.storeBudget(clone.Budgets[i].ID, &clone.Budgets[i])
 	}
 
 	// Create associated rate limit if exists
@@ -2997,7 +3571,7 @@ func (gs *LocalGovernanceStore) CreateVirtualKeyInMemory(ctx context.Context, vk
 			pc := &clone.ProviderConfigs[i]
 			for j := range pc.Budgets {
 				pc.Budgets[j].IsCalendarAligned = clone.CalendarAligned
-				gs.budgets.Store(pc.Budgets[j].ID, &pc.Budgets[j])
+				gs.storeBudget(pc.Budgets[j].ID, &pc.Budgets[j])
 			}
 			if pc.RateLimit != nil {
 				pc.RateLimit.IsCalendarAligned = clone.CalendarAligned
@@ -3068,7 +3642,7 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk
 				}
 			}
 			clone.Budgets[i].IsCalendarAligned = clone.CalendarAligned
-			gs.budgets.Store(clone.Budgets[i].ID, &clone.Budgets[i])
+			gs.storeBudget(clone.Budgets[i].ID, &clone.Budgets[i])
 		}
 		// Delete removed multi-budgets
 		for _, oldBudget := range existingVK.Budgets {
@@ -3155,7 +3729,7 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk
 						}
 					}
 					b.IsCalendarAligned = clone.CalendarAligned
-					gs.budgets.Store(b.ID, b)
+					gs.storeBudget(b.ID, b)
 				}
 				// Delete removed multi-budgets for this provider config
 				if existingPC, exists := existingProviderConfigs[pc.ID]; exists {
@@ -3280,7 +3854,7 @@ func (gs *LocalGovernanceStore) CreateTeamInMemory(ctx context.Context, team *co
 	for i := range clone.Budgets {
 		clone.Budgets[i].IsCalendarAligned = clone.CalendarAligned
 		b := clone.Budgets[i]
-		gs.budgets.Store(b.ID, &b)
+		gs.storeBudget(b.ID, &b)
 	}
 
 	// Create associated rate limit if exists
@@ -3327,7 +3901,7 @@ func (gs *LocalGovernanceStore) UpdateTeamInMemory(ctx context.Context, team *co
 				}
 			}
 			b.IsCalendarAligned = clone.CalendarAligned
-			gs.budgets.Store(b.ID, b)
+			gs.storeBudget(b.ID, b)
 		}
 		for id := range existingBudgetIDs {
 			if _, stillThere := nextBudgetIDs[id]; !stillThere {
@@ -3411,7 +3985,7 @@ func (gs *LocalGovernanceStore) CreateCustomerInMemory(ctx context.Context, cust
 	clone := *customer
 	for i := range clone.Budgets {
 		clone.Budgets[i].IsCalendarAligned = clone.CalendarAligned
-		gs.budgets.Store(clone.Budgets[i].ID, &clone.Budgets[i])
+		gs.storeBudget(clone.Budgets[i].ID, &clone.Budgets[i])
 	}
 	if clone.RateLimit != nil {
 		clone.RateLimit.IsCalendarAligned = clone.CalendarAligned
@@ -3445,7 +4019,7 @@ func (gs *LocalGovernanceStore) UpdateCustomerInMemory(ctx context.Context, cust
 					b.LastReset = existingBudget.LastReset
 				}
 			}
-			gs.budgets.Store(b.ID, b)
+			gs.storeBudget(b.ID, b)
 			newBudgetIDs[b.ID] = true
 		}
 		for _, existing := range existingCustomer.Budgets {
@@ -3584,7 +4158,7 @@ func (gs *LocalGovernanceStore) UpdateModelConfigInMemory(ctx context.Context, m
 				b.LastReset = eb.LastReset
 			}
 		}
-		gs.budgets.Store(b.ID, b)
+		gs.storeBudget(b.ID, b)
 	}
 
 	// Store associated rate limit if exists, preserving existing in-memory usage and
@@ -3693,7 +4267,7 @@ func (gs *LocalGovernanceStore) UpdateProviderInMemory(ctx context.Context, prov
 				clone.Budget.CurrentUsage = eb.CurrentUsage
 			}
 		}
-		gs.budgets.Store(clone.Budget.ID, clone.Budget)
+		gs.storeBudget(clone.Budget.ID, clone.Budget)
 	}
 
 	// Store associated rate limit if exists, preserving existing in-memory usage
@@ -4126,8 +4700,8 @@ func (gs *LocalGovernanceStore) GetBudgetAndRateLimitStatus(ctx context.Context,
 		for bi := range modelConfig.Budgets {
 			if budgetValue, ok := gs.budgets.Load(modelConfig.Budgets[bi].ID); ok && budgetValue != nil {
 				if budget, ok := budgetValue.(*configstoreTables.TableBudget); ok && budget != nil {
-					if budget.MaxLimit > 0 {
-						budgetPercent := float64(budget.CurrentUsage+budgetBaselines[budget.ID]) / budget.MaxLimit * 100
+					if effectiveMaxLimit := budget.EffectiveMaxLimit(); effectiveMaxLimit > 0 {
+						budgetPercent := float64(budget.CurrentUsage+budgetBaselines[budget.ID]) / effectiveMaxLimit * 100
 						if budgetPercent > result.BudgetPercentUsed {
 							result.BudgetPercentUsed = budgetPercent
 						}
@@ -4185,8 +4759,8 @@ func (gs *LocalGovernanceStore) GetBudgetAndRateLimitStatus(ctx context.Context,
 			if providerTable.BudgetID != nil {
 				if budgetValue, ok := gs.budgets.Load(*providerTable.BudgetID); ok && budgetValue != nil {
 					if budget, ok := budgetValue.(*configstoreTables.TableBudget); ok && budget != nil {
-						if budget.MaxLimit > 0 {
-							budgetPercent := float64(budget.CurrentUsage+budgetBaselines[budget.ID]) / budget.MaxLimit * 100
+						if effectiveMaxLimit := budget.EffectiveMaxLimit(); effectiveMaxLimit > 0 {
+							budgetPercent := float64(budget.CurrentUsage+budgetBaselines[budget.ID]) / effectiveMaxLimit * 100
 							if budgetPercent > result.BudgetPercentUsed {
 								result.BudgetPercentUsed = budgetPercent
 							}
@@ -4229,8 +4803,8 @@ func (gs *LocalGovernanceStore) GetBudgetAndRateLimitStatus(ctx context.Context,
 					for _, b := range pc.Budgets {
 						if budgetValue, ok := gs.budgets.Load(b.ID); ok && budgetValue != nil {
 							if budget, ok := budgetValue.(*configstoreTables.TableBudget); ok && budget != nil {
-								if budget.MaxLimit > 0 {
-									budgetPercent := float64(budget.CurrentUsage+budgetBaselines[budget.ID]) / budget.MaxLimit * 100
+								if effectiveMaxLimit := budget.EffectiveMaxLimit(); effectiveMaxLimit > 0 {
+									budgetPercent := float64(budget.CurrentUsage+budgetBaselines[budget.ID]) / effectiveMaxLimit * 100
 									if budgetPercent > result.BudgetPercentUsed {
 										result.BudgetPercentUsed = budgetPercent
 									}

@@ -20,10 +20,11 @@
     "@langchain/core": "1.1.39",
     "@langchain/google-genai": "2.1.26",
     "@langchain/openai": "1.4.4",
+    "@smithy/node-http-handler": "4.7.4",
     "langsmith": "0.6.0",
     "openai": "6.15.0",
     "yaml": "2.9.0",
-    "zod": "3.25.0"
+    "zod": "3.25.76"
   },
   "devDependencies": {
     "@types/node": "22.10.0",
@@ -38,12 +39,15 @@
   },
   "overrides": {
     "ast-v8-to-istanbul": "1.0.0",
-    "js-yaml": "4.2.0",
+    "brace-expansion@1": "1.1.18",
+    "brace-expansion@2": "2.1.4",
+    "js-yaml": "4.3.1",
+    "nanoid": "3.3.17",
     "rollup": "4.60.4",
     "esbuild": "0.28.1",
     "vite": "6.4.3"
   },
   "engines": {
-    "node": ">=25.0.0"
+    "node": ">=22.0.0"
   }
 }

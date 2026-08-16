@@ -20,7 +20,24 @@ Budget:
       description: Maximum budget in dollars
     reset_duration:
       type: string
-      description: Reset duration (e.g., "30s", "5m", "1h", "1d", "1w", "1M")
+      description: Reset duration (e.g., "30s", "5m", "1h", "1d", "1w", "1M", "1Q")
+    reset_config:
+      type: object
+      description: >
+        Window settings the reset duration cannot express. Only valid when reset_duration is
+        quarterly (`1Q`); the API rejects it on any other window.
+      properties:
+        quarter_start_month:
+          type: integer
+          minimum: 1
+          maximum: 12
+          description: >
+            First month of Q1 as 1-12, so a fiscal year opening in April (4) gives
+            Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat
+            every three months, so only the value modulo 3 changes the reset dates: January, April,
+            July and October all reset on calendar quarters and differ only in which quarter is
+            labelled Q1.
+      additionalProperties: false
     calendar_aligned:
       type: boolean
       description: When true, resets align to calendar period boundaries in UTC (not rolling from last reset)
@@ -30,6 +47,29 @@ Budget:
       format: date-time
     current_usage:
       type: number
+    override_amount:
+      type: number
+      description: Additional spend added on top of `max_limit` while the override is active. Omitted when no override is set.
+    override_mode:
+      type: string
+      description: |
+        How long the override stays active. `cycles` keeps it active for a finite number of
+        reset windows; `forever` keeps it active until it is removed. Omitted when no override is set.
+      enum:
+        - cycles
+        - forever
+    override_cycles_remaining:
+      type: integer
+      description: |
+        Reset windows the override is still valid for, including the current one. Positive only
+        for `cycles` mode; recomputed from the original grant on every reset, never decremented in place.
+    override_cycles_total:
+      type: integer
+      description: Number of reset windows the current `cycles` override was granted for. Immutable for the life of the grant.
+    override_anchor_reset:
+      type: string
+      format: date-time
+      description: Reset-window boundary at which the current `cycles` override was granted. Immutable for the life of the grant.
     team_id:
       type: string
       description: Team that owns this budget, when the budget is team-scoped
@@ -105,15 +145,32 @@ CreateBudgetRequest:
       type: number
     reset_duration:
       type: string
+    reset_config:
+      type: object
+      description: >
+        Window settings the reset duration cannot express. Only valid when reset_duration is
+        quarterly (`1Q`); the API rejects it on any other window.
+      properties:
+        quarter_start_month:
+          type: integer
+          minimum: 1
+          maximum: 12
+          description: >
+            First month of Q1 as 1-12, so a fiscal year opening in April (4) gives
+            Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat
+            every three months, so only the value modulo 3 changes the reset dates: January, April,
+            July and October all reset on calendar quarters and differ only in which quarter is
+            labelled Q1.
+      additionalProperties: false
     calendar_aligned:
       type: boolean
       default: false
       description: >
         When true, usage resets at the start of each calendar period in UTC instead of on a rolling window
-        from last reset. Only valid with reset durations that use day, week, month, or year suffixes
-        (`d`, `w`, `M`, `Y`). For example `1d` resets at midnight UTC; `1w` at Monday 00:00 UTC;
-        `1M` on the first day of each month; `1Y` on January 1. Sub-day durations (e.g. `1h`) cannot use
-        calendar alignment.
+        from last reset. Only valid with reset durations that use day, week, month, quarter, or year
+        suffixes (`d`, `w`, `M`, `Q`, `Y`). For example `1d` resets at midnight UTC; `1w` at Monday 00:00
+        UTC; `1M` on the first day of each month; `1Q` on the first day of the fiscal quarter; `1Y` on
+        January 1. Sub-day durations (e.g. `1h`) cannot use calendar alignment.
 
 UpdateBudgetRequest:
   type: object
@@ -123,13 +180,75 @@ UpdateBudgetRequest:
       type: number
     reset_duration:
       type: string
+    reset_config:
+      type: object
+      description: >
+        Window settings the reset duration cannot express. Only valid when reset_duration is
+        quarterly (`1Q`); the API rejects it on any other window.
+      properties:
+        quarter_start_month:
+          type: integer
+          minimum: 1
+          maximum: 12
+          description: >
+            First month of Q1 as 1-12, so a fiscal year opening in April (4) gives
+            Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat
+            every three months, so only the value modulo 3 changes the reset dates: January, April,
+            July and October all reset on calendar quarters and differ only in which quarter is
+            labelled Q1.
+      additionalProperties: false
     calendar_aligned:
       type: [boolean, 'null']
       description: >
         Set to true or false to enable or disable calendar-aligned resets. Only valid with reset durations
-        that use day, week, month, or year suffixes (`d`, `w`, `M`, `Y`); sub-day durations (e.g. `1h`,
-        `30m`) are invalid with calendar alignment and the API rejects that combination. When enabling on
-        an existing budget, current usage is reset to zero and last_reset snaps to the current period start.
+        that use day, week, month, quarter, or year suffixes (`d`, `w`, `M`, `Q`, `Y`); sub-day durations
+        (e.g. `1h`, `30m`) are invalid with calendar alignment and the API rejects that combination. When
+        enabling on an existing budget, alignment takes effect from the next period: the current window
+        keeps its start and its accumulated usage, and the first aligned reset happens at the next
+        boundary. Changing quarter_start_month on a calendar-aligned quarterly budget does not move
+        last_reset directly; the new definition shifts where the current window starts, so the budget
+        converges onto the new fiscal boundary on the next reset tick.
+
+BudgetOverrideRequest:
+  type: object
+  description: |
+    Replaces the active override on one budget. The override is additive: it does not change the
+    budget's `max_limit`, `current_usage`, or reset schedule. Sending this request against a budget
+    that already has an override replaces that override entirely.
+  required:
+    - amount
+    - mode
+  properties:
+    amount:
+      type: number
+      description: Additional spend in dollars added on top of `max_limit` while the override is active. Must be greater than 0 and finite.
+    mode:
+      type: string
+      description: |
+        `cycles` keeps the override active for `cycles` reset windows starting with the current one.
+        `forever` keeps it active until it is removed with a DELETE.
+      enum:
+        - cycles
+        - forever
+    cycles:
+      type: integer
+      description: |
+        Number of reset windows the override stays active for, counting the current window as the first.
+        Required and must be greater than 0 when `mode` is `cycles`; must be omitted or 0 when `mode` is `forever`.
+      minimum: 1
+
+BudgetOverrideResponse:
+  type: object
+  description: The persisted budget and the additive limit now in force.
+  required:
+    - budget
+    - effective_max_limit
+  properties:
+    budget:
+      $ref: '#/Budget'
+    effective_max_limit:
+      type: number
+      description: '`max_limit` plus `override_amount` while an override is active; equal to `max_limit` otherwise.'
 
 CreateRateLimitRequest:
   type: object
@@ -444,7 +563,10 @@ UpdateVirtualKeyRequest:
       type: boolean
     reset_budget_usage:
       type: boolean
-      description: When true, resets usage for virtual-key and provider-config budget records reconciled by this update.
+      description: >
+        When true, zeroes current usage on the budgets reconciled by this update. The reset window is
+        left alone: last_reset only ever advances, and never as a side effect of a configuration write,
+        so the current window keeps its existing start and end.
     expires_at:
       type: string
       description: RFC3339 timestamp to set a new expiry (must be in the future), empty string to clear an existing expiry, omitted to leave it unchanged.
@@ -606,12 +728,13 @@ Team:
       type: string
     customer_id:
       type: string
-    budget_id:
-      type: string
     customer:
       $ref: '#/Customer'
-    budget:
-      $ref: '#/Budget'
+    budgets:
+      type: array
+      description: Budgets owned by this team
+      items:
+        $ref: '#/Budget'
     virtual_keys:
       type: [array, 'null']
       description: >
@@ -648,8 +771,11 @@ CreateTeamRequest:
       type: string
     customer_id:
       type: string
-    budget:
-      $ref: '#/CreateBudgetRequest'
+    budgets:
+      type: array
+      description: Budgets to create for this team; reset durations must be unique
+      items:
+        $ref: '#/CreateBudgetRequest'
 
 UpdateTeamRequest:
   type: object
@@ -659,8 +785,17 @@ UpdateTeamRequest:
       type: string
     customer_id:
       type: string
-    budget:
-      $ref: '#/UpdateBudgetRequest'
+    budgets:
+      type: array
+      description: Replacement set of budgets for this team; reset durations must be unique
+      items:
+        $ref: '#/CreateBudgetRequest'
+    reset_budget_usage:
+      type: boolean
+      description: >
+        When true, zeroes current usage on the budgets reconciled by this update. The reset window is
+        left alone: last_reset only ever advances, and never as a side effect of a configuration write,
+        so the current window keeps its existing start and end.
 
 ListTeamsResponse:
   type: object
@@ -699,9 +834,17 @@ Customer:
       items:
         $ref: '#/Team'
     virtual_keys:
-      type: array
+      type: [array, 'null']
+      description: >
+        Virtual keys owned by this customer. Omitted or returned as null by the paginated
+        list endpoint (`GET /api/governance/customers` with `limit`/`offset`/`search`),
+        which reports `virtual_key_count` instead; use the single-customer endpoint to
+        retrieve the keys themselves.
       items:
         $ref: '#/VirtualKey'
+    virtual_key_count:
+      type: integer
+      description: Number of virtual keys owned by this customer. Always populated.
     config_hash:
       type: string
     created_at:
@@ -730,6 +873,12 @@ UpdateCustomerRequest:
       type: string
     budget:
       $ref: '#/UpdateBudgetRequest'
+    reset_budget_usage:
+      type: boolean
+      description: >
+        When true, zeroes current usage on the budgets reconciled by this update. The reset window is
+        left alone: last_reset only ever advances, and never as a side effect of a configuration write,
+        so the current window keeps its existing start and end.
 
 ListCustomersResponse:
   type: object
@@ -827,6 +976,8 @@ BusinessUnitListItem:
       type: string
     team_count:
       type: integer
+    customer_count:
+      type: integer
     created_at:
       type: string
       format: date-time
@@ -839,19 +990,22 @@ ListBusinessUnitsResponse:
   description: Paginated list of business units
   required:
     - business_units
-    - total
-    - page
+    - count
+    - total_count
     - limit
+    - offset
   properties:
     business_units:
       type: array
       items:
         $ref: '#/BusinessUnitListItem'
-    total:
+    count:
       type: integer
-    page:
+    total_count:
       type: integer
     limit:
+      type: integer
+    offset:
       type: integer
 
 BusinessUnitDetailResponse:
@@ -907,9 +1061,10 @@ BusinessUnitTeamsResponse:
   description: Paginated list of teams assigned to a business unit
   required:
     - teams
-    - total
-    - page
+    - count
+    - total_count
     - limit
+    - offset
   properties:
     teams:
       type: array
@@ -920,11 +1075,13 @@ BusinessUnitTeamsResponse:
             type: string
           name:
             type: string
-    total:
+    count:
       type: integer
-    page:
+    total_count:
       type: integer
     limit:
+      type: integer
+    offset:
       type: integer
 
 CreateBusinessUnitGovernanceRequest:
@@ -1384,6 +1541,12 @@ UpdateModelConfigRequest:
     rate_limit:
       $ref: '#/UpdateRateLimitRequest'
       description: Rate limit configuration
+    reset_budget_usage:
+      type: boolean
+      description: >
+        When true, zeroes current usage on the budgets reconciled by this update. The reset window is
+        left alone: last_reset only ever advances, and never as a side effect of a configuration write,
+        so the current window keeps its existing start and end.
 
 # Provider Governance
 
@@ -1459,8 +1622,32 @@ UpdateProviderGovernanceRequest:
       type: boolean
       nullable: true
       description: When true, all budgets reset at clean calendar boundaries. Omit to leave unchanged.
+    reset_budget_usage:
+      type: boolean
+      description: >
+        When true, zeroes current usage on the budgets reconciled by this update. The reset window is
+        left alone: last_reset only ever advances, and never as a side effect of a configuration write,
+        so the current window keeps its existing start and end.
 
 # Pricing Overrides
+
+PricingOverrideScopeKind:
+  type: string
+  description: >
+    Scope that determines which requests a pricing override applies to. The
+    virtual_key* family is checked before the user* family during cost
+    resolution, which is checked before the provider/global scopes; within a
+    family, more identifiers present means a more specific match.
+  enum:
+    - global
+    - provider
+    - provider_key
+    - virtual_key
+    - virtual_key_provider
+    - virtual_key_provider_key
+    - user
+    - user_provider
+    - user_provider_key
 
 PricingOverrideRequestType:
   type: string
@@ -1485,9 +1672,11 @@ PricingOverrideRequestType:
 PricingPatch:
   type: object
   description: >
-    Pricing fields to override. Only non-zero/non-null fields are applied.
-    All values are cost per unit in USD.
+    Pricing fields to override. All non-null fields are applied.
+    Usage-based values are costs per unit in USD. cost_per_request is a flat
+    fee in USD applied once per billed request.
   properties:
+    # Costs - Text
     input_cost_per_token:
       type: number
       minimum: 0
@@ -1506,21 +1695,72 @@ PricingPatch:
     output_cost_per_token_priority:
       type: number
       minimum: 0
+    input_cost_per_token_flex:
+      type: number
+      minimum: 0
+    output_cost_per_token_flex:
+      type: number
+      minimum: 0
+    input_cost_per_token_fast:
+      type: number
+      minimum: 0
+      description: Fast mode (Anthropic research preview). Flat rate across the full context window - no 128k/200k/272k tiering.
+    output_cost_per_token_fast:
+      type: number
+      minimum: 0
+      description: Fast mode (Anthropic research preview). Flat rate across the full context window - no 128k/200k/272k tiering.
     input_cost_per_character:
       type: number
       minimum: 0
+    # Costs - 128k Tier
     input_cost_per_token_above_128k_tokens:
+      type: number
+      minimum: 0
+    input_cost_per_image_above_128k_tokens:
+      type: number
+      minimum: 0
+    input_cost_per_video_per_second_above_128k_tokens:
+      type: number
+      minimum: 0
+    input_cost_per_audio_per_second_above_128k_tokens:
       type: number
       minimum: 0
     output_cost_per_token_above_128k_tokens:
       type: number
       minimum: 0
+    # Costs - 200k Tier
     input_cost_per_token_above_200k_tokens:
+      type: number
+      minimum: 0
+    input_cost_per_token_above_200k_tokens_priority:
       type: number
       minimum: 0
     output_cost_per_token_above_200k_tokens:
       type: number
       minimum: 0
+    output_cost_per_token_above_200k_tokens_priority:
+      type: number
+      minimum: 0
+    # Costs - 272k Tier
+    input_cost_per_token_above_272k_tokens:
+      type: number
+      minimum: 0
+    input_cost_per_token_above_272k_tokens_priority:
+      type: number
+      minimum: 0
+    input_cost_per_token_flex_above_272k_tokens:
+      type: number
+      minimum: 0
+    output_cost_per_token_above_272k_tokens:
+      type: number
+      minimum: 0
+    output_cost_per_token_above_272k_tokens_priority:
+      type: number
+      minimum: 0
+    output_cost_per_token_flex_above_272k_tokens:
+      type: number
+      minimum: 0
+    # Costs - Cache
     cache_creation_input_token_cost:
       type: number
       minimum: 0
@@ -1533,31 +1773,92 @@ PricingPatch:
     cache_read_input_token_cost_above_200k_tokens:
       type: number
       minimum: 0
-    cache_read_input_token_cost_priority:
+    cache_read_input_token_cost_above_200k_tokens_priority:
       type: number
       minimum: 0
-    cache_read_input_image_token_cost:
+    cache_creation_input_token_cost_above_1hr:
+      type: number
+      minimum: 0
+    cache_creation_input_token_cost_above_1hr_above_200k_tokens:
       type: number
       minimum: 0
     cache_creation_input_audio_token_cost:
       type: number
       minimum: 0
-    input_cost_per_image:
+    cache_read_input_token_cost_priority:
       type: number
       minimum: 0
-    output_cost_per_image:
+    cache_read_input_token_cost_flex:
+      type: number
+      minimum: 0
+    cache_read_input_image_token_cost:
+      type: number
+      minimum: 0
+    cache_read_input_token_cost_above_272k_tokens:
+      type: number
+      minimum: 0
+    cache_read_input_token_cost_above_272k_tokens_priority:
+      type: number
+      minimum: 0
+    cache_read_input_token_cost_flex_above_272k_tokens:
+      type: number
+      minimum: 0
+    cache_creation_input_token_cost_above_272k_tokens:
+      type: number
+      minimum: 0
+    cache_creation_input_token_cost_flex:
+      type: number
+      minimum: 0
+    cache_creation_input_token_cost_flex_above_272k_tokens:
+      type: number
+      minimum: 0
+    cache_creation_input_token_cost_priority:
+      type: number
+      minimum: 0
+    cache_creation_input_token_cost_fast:
+      type: number
+      minimum: 0
+      description: Fast mode (Anthropic) cache rate - flat across the full context window, no tiering.
+    cache_creation_input_token_cost_above_1hr_fast:
+      type: number
+      minimum: 0
+      description: Fast mode (Anthropic) cache rate - flat across the full context window, no tiering.
+    cache_read_input_token_cost_fast:
+      type: number
+      minimum: 0
+      description: Fast mode (Anthropic) cache rate - flat across the full context window, no tiering.
+    # Costs - Image
+    input_cost_per_image:
       type: number
       minimum: 0
     input_cost_per_pixel:
       type: number
       minimum: 0
+    output_cost_per_image:
+      type: number
+      minimum: 0
     output_cost_per_pixel:
       type: number
       minimum: 0
-    input_cost_per_image_token:
+    output_cost_per_image_premium_image:
       type: number
       minimum: 0
-    output_cost_per_image_token:
+    output_cost_per_image_above_512_and_512_pixels:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_512_and_512_pixels_and_premium_image:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_1024_and_1024_pixels:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_1024_and_1024_pixels_and_premium_image:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_2048_and_2048_pixels:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_4096_and_4096_pixels:
       type: number
       minimum: 0
     output_cost_per_image_low_quality:
@@ -1572,25 +1873,14 @@ PricingPatch:
     output_cost_per_image_auto_quality:
       type: number
       minimum: 0
-    output_cost_per_image_premium_image:
+    input_cost_per_image_token:
       type: number
       minimum: 0
-    output_cost_per_image_above_512_and_512_pixels:
+    output_cost_per_image_token:
       type: number
       minimum: 0
-    output_cost_per_image_above_1024_and_1024_pixels:
-      type: number
-      minimum: 0
-    output_cost_per_image_above_2048_and_2048_pixels:
-      type: number
-      minimum: 0
-    output_cost_per_image_above_4096_and_4096_pixels:
-      type: number
-      minimum: 0
+    # Costs - Audio/Video
     input_cost_per_audio_token:
-      type: number
-      minimum: 0
-    output_cost_per_audio_token:
       type: number
       minimum: 0
     input_cost_per_audio_per_second:
@@ -1602,16 +1892,35 @@ PricingPatch:
     input_cost_per_video_per_second:
       type: number
       minimum: 0
+    output_cost_per_audio_token:
+      type: number
+      minimum: 0
     output_cost_per_video_per_second:
       type: number
       minimum: 0
     output_cost_per_second:
       type: number
       minimum: 0
+    # Costs - Other
     search_context_cost_per_query:
       type: number
       minimum: 0
     code_interpreter_cost_per_session:
+      type: number
+      minimum: 0
+    inference_geo_us_multiplier:
+      type: number
+      minimum: 0
+      description: Anthropic data-residency multiplier applied when usage.inference_geo == "us".
+    cost_per_request:
+      type: number
+      minimum: 0
+      description: Flat fee added once per billed request, on top of any usage-based cost.
+    # Costs - OCR
+    ocr_cost_per_page:
+      type: number
+      minimum: 0
+    annotation_cost_per_page:
       type: number
       minimum: 0
 
@@ -1626,24 +1935,19 @@ PricingOverride:
       type: string
       description: Human-readable label
     scope_kind:
-      type: string
-      enum:
-        - global
-        - provider
-        - provider_key
-        - virtual_key
-        - virtual_key_provider
-        - virtual_key_provider_key
-      description: Scope that determines which requests this override applies to
+      $ref: '#/PricingOverrideScopeKind'
+    user_id:
+      type: [string, 'null']
+      description: Required for user* scopes
     virtual_key_id:
       type: [string, 'null']
       description: Required for virtual_key* scopes
     provider_id:
       type: [string, 'null']
-      description: Required for provider and virtual_key_provider scopes
+      description: Required for provider, virtual_key_provider, and user_provider scopes
     provider_key_id:
       type: [string, 'null']
-      description: Required for provider_key and virtual_key_provider_key scopes
+      description: Required for provider_key, virtual_key_provider_key, and user_provider_key scopes
     match_type:
       type: string
       enum:
@@ -1689,23 +1993,19 @@ CreatePricingOverrideRequest:
       type: string
       description: Human-readable label
     scope_kind:
+      $ref: '#/PricingOverrideScopeKind'
+    user_id:
       type: string
-      enum:
-        - global
-        - provider
-        - provider_key
-        - virtual_key
-        - virtual_key_provider
-        - virtual_key_provider_key
+      description: Required for user* scopes
     virtual_key_id:
       type: string
       description: Required for virtual_key* scopes
     provider_id:
       type: string
-      description: Required for provider and virtual_key_provider scopes
+      description: Required for provider, virtual_key_provider, and user_provider scopes
     provider_key_id:
       type: string
-      description: Required for provider_key and virtual_key_provider_key scopes
+      description: Required for provider_key, virtual_key_provider_key, and user_provider_key scopes
     match_type:
       type: string
       enum:
@@ -1734,23 +2034,19 @@ UpdatePricingOverrideRequest:
       type: string
       description: Human-readable label
     scope_kind:
+      $ref: '#/PricingOverrideScopeKind'
+    user_id:
       type: string
-      enum:
-        - global
-        - provider
-        - provider_key
-        - virtual_key
-        - virtual_key_provider
-        - virtual_key_provider_key
+      description: Required for user* scopes
     virtual_key_id:
       type: string
       description: Required for virtual_key* scopes
     provider_id:
       type: string
-      description: Required for provider and virtual_key_provider scopes
+      description: Required for provider, virtual_key_provider, and user_provider scopes
     provider_key_id:
       type: string
-      description: Required for provider_key and virtual_key_provider_key scopes
+      description: Required for provider_key, virtual_key_provider_key, and user_provider_key scopes
     match_type:
       type: string
       enum:
@@ -1778,6 +2074,11 @@ PricingOverrideResponse:
 
 ListPricingOverridesResponse:
   type: object
+  description: >
+    When `limit`, `offset`, or `search` is supplied, `count` reflects the
+    returned page while `total_count` reflects the full matching set.
+    Otherwise (backward-compatible, non-paginated path) `total_count` equals
+    `count` and `limit`/`offset` describe the full unpaged result.
   properties:
     pricing_overrides:
       type: array
@@ -1785,7 +2086,16 @@ ListPricingOverridesResponse:
         $ref: '#/PricingOverride'
     count:
       type: integer
-      description: Total number of overrides returned
+      description: Number of overrides in this response
+    total_count:
+      type: integer
+      description: Total number of overrides matching the filters
+    limit:
+      type: integer
+      description: Page size used for this response
+    offset:
+      type: integer
+      description: Offset used for this response
 
 # Complexity Tier Boundaries
 

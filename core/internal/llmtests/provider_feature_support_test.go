@@ -1003,6 +1003,21 @@ func TestProviderFeatureMapCompleteness(t *testing.T) {
 			assert.True(t, features.StructuredOutputs, "Bedrock should support StructuredOutputs")
 			assert.True(t, features.Compaction, "Bedrock should support Compaction")
 			assert.True(t, features.ComputerUse, "Bedrock should support ComputerUse")
+			// ToolSearch is a SERVER-side tool, not a client-side one, so it does
+			// not belong in the blanket group below. AWS restricts server-side
+			// tool search to InvokeModel/InvokeModelWithResponseStream and never
+			// exposes it on Converse, which is the only API Bifrost's Bedrock
+			// provider uses for tool-bearing requests — so it can never work
+			// end-to-end here. Cite: "On Amazon Bedrock, server-side tool search
+			// is available only through the InvokeModel API, not the Converse
+			// API." (platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool)
+			assert.False(t, features.ToolSearch, "Bedrock should NOT support ToolSearch (Converse cannot run it)")
+		}
+
+		// ToolSearch is server-side and gated per provider: available on the
+		// Claude API, Vertex and Azure, but not on classic Bedrock (see above).
+		if provider != schemas.Bedrock {
+			assert.True(t, features.ToolSearch, "%s should support ToolSearch", provider)
 		}
 
 		// All providers should support client-side tools
@@ -1010,7 +1025,6 @@ func TestProviderFeatureMapCompleteness(t *testing.T) {
 		assert.True(t, features.Bash, "%s should support Bash", provider)
 		assert.True(t, features.Memory, "%s should support Memory", provider)
 		assert.True(t, features.TextEditor, "%s should support TextEditor", provider)
-		assert.True(t, features.ToolSearch, "%s should support ToolSearch", provider)
 	}
 }
 

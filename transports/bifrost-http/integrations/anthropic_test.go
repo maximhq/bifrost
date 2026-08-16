@@ -2,10 +2,12 @@ package integrations
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
 )
 
 // TestMustConvertInPassthrough pins the passthrough routing decision that fixes
@@ -137,5 +139,117 @@ func TestAnthropicContainerUploadSurvivesNormalization(t *testing.T) {
 	}
 	if *containerFileID != fileID {
 		t.Errorf("file_id = %q, want %q", *containerFileID, fileID)
+	}
+}
+
+// TestCheckAnthropicPassthrough_OutputConfigEscapeHatch verifies that a Claude Code
+// request carrying a raw output_config.format is forced off the raw-passthrough path
+// (UseRawRequestBody=false) for every provider whose native Anthropic endpoint rejects
+// that field (Vertex, Bedrock Mantle, Azure), so the field gets converted/stripped
+// downstream instead of being forwarded verbatim. Anthropic itself supports the field
+// natively and must stay on the raw path.
+func TestCheckAnthropicPassthrough_OutputConfigEscapeHatch(t *testing.T) {
+	cases := []struct {
+		name       string
+		model      string
+		wantRawOff bool
+	}{
+		{"vertex", "vertex/claude-haiku-4-5", true},
+		{"bedrock_mantle", "bedrock_mantle/claude-haiku-4-5", true},
+		{"azure", "azure/claude-haiku-4-5", true},
+		{"anthropic", "anthropic/claude-haiku-4-5", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reqCtx := &fasthttp.RequestCtx{}
+			reqCtx.Request.Header.SetMethod(fasthttp.MethodPost)
+			reqCtx.Request.Header.Set("user-agent", "claude-code/1.0")
+			reqCtx.Request.Header.Set("x-api-key", "sk-ant-test")
+
+			bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+
+			req := &anthropic.AnthropicMessageRequest{
+				Model:     tc.model,
+				MaxTokens: 1024,
+				OutputConfig: &anthropic.AnthropicOutputConfig{
+					Format: []byte(`{"type":"json_schema","json_schema":{"name":"my_schema"}}`),
+				},
+			}
+
+			if err := checkAnthropicPassthrough(reqCtx, bifrostCtx, req); err != nil {
+				t.Fatalf("checkAnthropicPassthrough: %v", err)
+			}
+
+			useRaw, _ := bifrostCtx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool)
+			if tc.wantRawOff && useRaw {
+				t.Errorf("expected UseRawRequestBody=false for %s (output_config.format unsupported natively), got true", tc.model)
+			}
+			if !tc.wantRawOff && !useRaw {
+				t.Errorf("expected UseRawRequestBody to stay true for %s, got false", tc.model)
+			}
+		})
+	}
+}
+
+// TestCheckAnthropicPassthrough_OAuthHeaderRouting locks in the split that stopped Bifrost
+// leaking x-bf-vk upstream and breaking Bedrock's SigV4. In OAuth mode the caller's raw
+// headers must land ONLY in the Anthropic-only passthrough key; BifrostContextKeyExtraHeaders
+// is read by every provider, so anything placed there reaches Bedrock/Vertex/Azure too.
+func TestCheckAnthropicPassthrough_OAuthHeaderRouting(t *testing.T) {
+	reqCtx := &fasthttp.RequestCtx{}
+	reqCtx.Request.Header.SetMethod(fasthttp.MethodPost)
+	reqCtx.Request.Header.Set("user-agent", "claude-code/1.0")
+	// OAuth mode: an sk-ant-oat bearer and no x-api-key.
+	reqCtx.Request.Header.Set("Authorization", "Bearer sk-ant-oat01-caller-token")
+	reqCtx.Request.Header.Set("anthropic-beta", "interleaved-thinking-2025-05-14")
+	reqCtx.Request.Header.Set("x-bf-vk", "sk-bf-must-not-leak")
+	reqCtx.Request.Header.Set("x-forwarded-for", "10.30.10.147")
+	reqCtx.Request.Header.Set("x-claude-code-session-id", "sess-1")
+
+	bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	// Whatever x-bf-eh-* already put in ExtraHeaders must survive: the OAuth branch used to
+	// overwrite this key wholesale, silently dropping caller-requested forwarded headers.
+	bifrostCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
+		"my-custom-header": {"kept"},
+	})
+
+	req := &anthropic.AnthropicMessageRequest{Model: "claude-opus-4-8", MaxTokens: 1024}
+	if err := checkAnthropicPassthrough(reqCtx, bifrostCtx, req); err != nil {
+		t.Fatalf("checkAnthropicPassthrough: %v", err)
+	}
+
+	// The transport must be able to write the reserved key (restricted writes gate plugins,
+	// not the transport). If this is empty, OAuth passthrough is dead.
+	passthrough, ok := bifrostCtx.Value(schemas.BifrostContextKeyPassthroughHeaders).(map[string][]string)
+	if !ok || len(passthrough) == 0 {
+		t.Fatalf("passthrough headers were not set — OAuth would lose the caller's credential")
+	}
+	// fasthttp canonicalizes header names, so look up case-insensitively (the product code
+	// does the same via strings.ToLower / EqualFold at every check).
+	lookup := func(m map[string][]string, name string) []string {
+		for k, v := range m {
+			if strings.EqualFold(k, name) {
+				return v
+			}
+		}
+		return nil
+	}
+	if got := lookup(passthrough, "authorization"); len(got) == 0 || got[0] != "Bearer sk-ant-oat01-caller-token" {
+		t.Errorf("caller OAuth token missing from passthrough set: %v", got)
+	}
+
+	extra, _ := bifrostCtx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
+	// x-bf-eh-* survives.
+	if got := lookup(extra, "my-custom-header"); len(got) == 0 || got[0] != "kept" {
+		t.Errorf("x-bf-eh-* header was clobbered: %v", extra)
+	}
+	// Nothing the caller sent may sit in the every-provider key.
+	for _, leaked := range []string{"authorization", "x-bf-vk", "x-forwarded-for", "x-claude-code-session-id"} {
+		if lookup(extra, leaked) != nil {
+			t.Errorf("%q reached BifrostContextKeyExtraHeaders — every provider forwards that key", leaked)
+		}
 	}
 }

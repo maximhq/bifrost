@@ -1,0 +1,90 @@
+---
+title: "Deploy Bifrost"
+description: "Choose where to run Bifrost and follow the deployment path for that platform"
+icon: "server"
+---
+
+Bifrost runs as a long-running Linux container. To deploy it, choose a container platform, decide where Bifrost will store its configuration and logs, provide its secrets, and expose its HTTP port.
+
+Start with [Bifrost Deployment Requirements](/deployment-guides/runtime-contract) to understand the image, storage, database, ports, health checks, and scaling behavior. Then use the guide for your platform.
+
+## Deployment support matrix
+
+| Platform | Guide | Typical deployment |
+|---|---|---|
+| Kubernetes | [Helm](/deployment-guides/helm) | Deploy the official chart to any compatible Kubernetes cluster |
+| Amazon EKS | [EKS](/deployment-guides/platforms/eks) | Deploy the Helm chart to an existing EKS cluster |
+| Google Kubernetes Engine | [GKE](/deployment-guides/platforms/gke) | Deploy the Helm chart to an existing GKE cluster |
+| Azure Kubernetes Service | [AKS](/deployment-guides/platforms/aks) | Deploy the Helm chart to an existing AKS cluster |
+| Amazon ECS | [ECS](/deployment-guides/ecs) | Run the Bifrost image as an ECS service |
+| Google Cloud Run | [Cloud Run](/deployment-guides/platforms/cloud-run) | Run one Bifrost service with PostgreSQL-backed storage |
+| Render | [Render](/deployment-guides/platforms/render) | Run one web service with a persistent disk or PostgreSQL |
+| Railway | [Railway](/deployment-guides/platforms/railway) | Run one service with a volume or PostgreSQL |
+| Fly.io | [Fly.io](/deployment-guides/fly) | Run one Machine with a Fly Volume or PostgreSQL |
+| Terraform | [Terraform module](/deployment-guides/k8s) | Create a supported cloud or Kubernetes deployment from code |
+| Docker or a VM | [Docker setup](/quickstart/gateway/setting-up#docker) | Run the image directly with a mounted data directory |
+
+The Kubernetes guides begin with an existing cluster. If you need to create a cluster, each page links to the cloud provider's setup documentation before continuing with the Bifrost installation.
+
+## Choose where Bifrost stores data
+
+Bifrost stores provider configuration, encrypted credentials, application settings, and request logs. Choose one of these storage models before deploying:
+
+| Deployment | Storage setup |
+|---|---|
+| One OSS Bifrost instance using SQLite | SQLite in a persistent `/app/data` directory |
+| One instance using PostgreSQL for both stores | A reachable PostgreSQL 16 or later database; no persistent Bifrost `/app/data` volume |
+| Several OSS instances | The same file-only `config.json` and secrets on every instance; use PostgreSQL for shared logs when logging is enabled |
+| Bifrost Enterprise | PostgreSQL 16 or later for both the configuration store and log store |
+
+When using PostgreSQL, Bifrost requires version 16 or later. It can be an existing database, a self-managed server, or a managed database such as Amazon RDS, Google Cloud SQL, Azure Database for PostgreSQL, Render Postgres, or Railway Postgres. Use whichever service fits your infrastructure and connect Bifrost using the host, port, database name, username, password, and TLS mode.
+
+When both `config_store` and `logs_store` use PostgreSQL, Bifrost does not use SQLite and does not need persistent storage mounted at `/app/data`. The application directory and `config.json` must still be available to the running container.
+
+<Warning>
+Bifrost Enterprise does not support SQLite. Configure both Enterprise stores with PostgreSQL 16 or later. SQLite is available only for OSS deployments and belongs to one Bifrost process; do not mount the same SQLite database into several containers. OSS instances using a shared PostgreSQL configuration store also do not automatically update each other's in-memory configuration; use the [OSS multinode setup](/deployment-guides/how-to/multinode) or Enterprise clustering.
+</Warning>
+
+## Prepare configuration and secrets
+
+Every deployment needs:
+
+- A versioned Bifrost image.
+- An application directory at `/app/data`; persist it only for an OSS deployment whose configuration store or log store uses SQLite.
+- A stable encryption key when persisted credentials are encrypted.
+- Credentials for the LLM providers and integrations you configure.
+- Database connection values when using PostgreSQL.
+- Network access to the database, model providers, MCP servers, and observability endpoints in your configuration.
+
+Kubernetes users normally place these values in Helm values and Kubernetes Secrets. Hosted-container users normally supply them as environment variables and secret values. See [Bifrost Deployment Requirements](/deployment-guides/runtime-contract#configuration-and-secrets) for the exact names and defaults.
+
+## Expose Bifrost
+
+Bifrost listens for HTTP traffic on port `8080` by default and provides `GET /health` on the same port. You can place it behind any ingress, gateway, reverse proxy, or load balancer that:
+
+- Routes traffic to the Bifrost HTTP port.
+- Forwards streaming responses without buffering them.
+- Allows long-lived requests.
+- Supports WebSocket upgrades when you use the Realtime or WebSocket APIs.
+- Preserves the host and forwarded-protocol headers when TLS terminates at the proxy.
+
+The platform guides show one example for exposing the service. You can replace that example with another compatible implementation.
+
+## Deploy and verify
+
+The installation sequence is the same on every platform:
+
+1. Create or select the container service or Kubernetes cluster.
+2. Create the Bifrost encryption key and provider secrets.
+3. For OSS with SQLite, prepare persistent `/app/data` storage. For PostgreSQL-only storage, including every Enterprise deployment, prepare the database connection instead.
+4. Supply the image, configuration, secrets, and database connection to Bifrost.
+5. Expose the Bifrost HTTP port to its intended clients.
+6. Start the service and wait for `/health` to return `200`.
+7. Send one non-streaming request and one streaming request through the same endpoint your applications will use.
+8. Replace or restart the container and confirm that the selected storage preserves the configuration.
+
+```bash
+curl --fail --show-error "https://<BIFROST_HOST>/health"
+```
+
+Before serving production traffic, complete the [deployment verification checklist](/deployment-guides/runtime-contract#verify-the-deployment). For Enterprise deployments with several replicas, continue with [Cluster Mode and HA](/deployment-guides/helm/cluster). For deployments spanning clusters or regions, see [Enterprise clustering](/enterprise/clustering).

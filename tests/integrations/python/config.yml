@@ -88,11 +88,11 @@ providers:
     file_content: "gpt-4o"
 
   xai:
-    chat: "grok-4-0709"
-    vision: "grok-2-vision-1212"
-    tools: "grok-4-0709"
-    streaming: "grok-4-0709"
-    thinking: "grok-3-mini"
+    chat: "grok-4.5"
+    vision: "grok-4.5"
+    tools: "grok-4.5"
+    streaming: "grok-4.5"
+    thinking: "grok-4.5"
     
   anthropic:
     chat: "claude-sonnet-4-5-20250929"
@@ -123,7 +123,7 @@ providers:
     vision: "gemini-3-flash-preview"
     tools: "gemini-3-flash-preview"
     file: "gemini-2.5-flash"
-    thinking: "gemini-3-pro-preview"
+    thinking: "gemini-3.5-flash"
     speech: "gemini-2.5-flash-preview-tts"
     transcription: "gemini-2.5-flash"
     embeddings: "gemini-embedding-001"
@@ -154,9 +154,9 @@ providers:
   
   vertex:
     chat: "gemini-2.5-flash"
-    vision: "claude-sonnet-4-5"
+    vision: "gemini-2.5-flash"
     tools: "gemini-2.5-flash"
-    file: "claude-sonnet-4-5"
+    file: "gemini-2.5-flash"
     thinking: "gemini-2.5-pro"
     embeddings: "gemini-embedding-001"
     image_generation: "imagen-4.0-generate-001"
@@ -198,7 +198,7 @@ providers:
     file_list: "anthropic.claude-3-5-sonnet-20240620-v1:0"
     file_delete: "anthropic.claude-3-5-sonnet-20240620-v1:0"
     file_content: "anthropic.claude-3-5-sonnet-20240620-v1:0"
-    count_tokens: "us.anthropic.claude-3-7-sonnet-20250219-v1:0"
+    count_tokens: "global.anthropic.claude-sonnet-4-20250514-v1:0"
     alternatives:
       - "anthropic.claude-3-opus-20240229-v1:0"
     
@@ -218,7 +218,17 @@ providers:
   
   nebius:
     image_generation: "black-forest-labs/flux-schnell"
-  
+
+  deepseek:
+    chat: "deepseek-v4-flash"
+    tools: "deepseek-v4-flash"
+    streaming: "deepseek-v4-flash"
+    thinking: "deepseek-v4-pro"
+    text_completion: "deepseek-v4-flash"
+    count_tokens: "deepseek-v4-flash"
+    alternatives:
+      - "deepseek-v4-pro"
+
   replicate:
     video: "openai/sora-2-pro"
 
@@ -242,6 +252,7 @@ provider_api_keys:
   azure: "AZURE_API_KEY"
   replicate: "REPLICATE_API_KEY"
   runway: "RUNWAY_API_KEY"
+  deepseek: "DEEPSEEK_API_KEY"
 
 # Provider test scenarios - which tests each provider supports
 provider_scenarios:
@@ -588,6 +599,45 @@ provider_scenarios:
   runway:
     video_generation: false # disabled for now because of long running operations
 
+  deepseek:
+    simple_chat: true
+    multi_turn_conversation: true
+    streaming: true
+    tool_calls: true
+    multiple_tool_calls: true
+    end2end_tool_calling: true
+    automatic_function_calling: true
+    image_url: false  # DeepSeek models are text-only
+    image_base64: false
+    file_input: false
+    multiple_images: false
+    speech_synthesis: false
+    speech_synthesis_streaming: false
+    transcription: false
+    transcription_streaming: false
+    embeddings: false  # provider returns unsupported-operation
+    thinking: true
+    prompt_caching: true  # DeepSeek context caching is automatic
+    list_models: true
+    responses: true  # routed through /chat/completions by default; DeepSeek's Anthropic-compatible endpoint only when use_anthropic_endpoints is set
+    responses_image: false
+    text_completion: true  # FIM completion (beta)
+    langchain_structured_output: true
+    pydantic_structured_output: true
+    pydanticai_streaming: true
+    batch_file_upload: false
+    batch_create: false
+    batch_list: false
+    batch_retrieve: false
+    batch_cancel: false
+    batch_inline: false  # DeepSeek does not support batch API
+    file_upload: false  # DeepSeek does not support Files API
+    file_list: false
+    file_retrieve: false
+    file_delete: false
+    file_content: false
+    count_tokens: true
+
 # Scenario to capability mapping
 # Maps test scenario names to their corresponding capability types
 scenario_capabilities:
@@ -636,7 +686,6 @@ scenario_capabilities:
   file_retrieve: "file_retrieve"  # Uses file_retrieve model directly
   file_delete: "file_delete"  # Uses file_delete model directly
   file_content: "file_content"  # Uses file_content model directly
-  count_tokens: "chat"
   video_generation: "video"
   context_caching: "chat"  # Gemini Caches API (passthrough)
 

@@ -18,7 +18,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { resetDurationLabels } from "@/lib/constants/governance";
 import { getErrorMessage, useDeleteCustomerMutation } from "@/lib/store";
-import { Customer, Team, VirtualKey } from "@/lib/types/governance";
+import { Customer, Team } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/governance";
 import { CustomerDetailSheet } from "@enterprise/components/user-groups/sheets/customerDetailSheet";
@@ -117,7 +117,6 @@ interface CustomersTableProps {
 	customers: Customer[];
 	totalCount: number;
 	teams: Team[];
-	virtualKeys: VirtualKey[];
 	search: string;
 	debouncedSearch: string;
 	onSearchChange: (value: string) => void;
@@ -131,7 +130,6 @@ export default function CustomersTable({
 	customers,
 	totalCount,
 	teams,
-	virtualKeys,
 	search,
 	debouncedSearch,
 	onSearchChange,
@@ -181,10 +179,6 @@ export default function CustomersTable({
 		return teams.filter((team) => team.customer_id === customerId);
 	};
 
-	const getVirtualKeysForCustomer = (customerId: string) => {
-		return virtualKeys.filter((vk) => vk.customer_id === customerId);
-	};
-
 	const hasActiveFilters = debouncedSearch;
 
 	// True empty state: no customers at all (not just filtered to zero)
@@ -229,7 +223,7 @@ export default function CustomersTable({
 				/>
 
 				<div className="flex grow flex-col">
-					<div className="mb-4 flex items-center justify-between">
+					<div className="mb-4 flex flex-wrap items-center justify-between gap-2">
 						<div>
 							<h2 className="text-lg font-semibold">Customers</h2>
 							<p className="text-muted-foreground text-sm">Manage customer accounts with their own teams, budgets, and access controls.</p>
@@ -276,7 +270,7 @@ export default function CustomersTable({
 								) : (
 									customers.map((customer) => {
 										const customerTeams = getTeamsForCustomer(customer.id);
-										const vks = getVirtualKeysForCustomer(customer.id);
+										const vkCount = customer.virtual_key_count ?? 0;
 
 										// Budget calculations (most-exhausted budget drives the row highlight)
 										const budgets = customer.budgets ?? [];
@@ -470,17 +464,10 @@ export default function CustomersTable({
 													)}
 												</TableCell>
 												<TableCell>
-													{vks?.length > 0 ? (
-														<div className="flex items-center gap-2">
-															<Tooltip>
-																<TooltipTrigger>
-																	<Badge variant="outline" className="text-xs">
-																		{vks.length} {vks.length === 1 ? "key" : "keys"}
-																	</Badge>
-																</TooltipTrigger>
-																<TooltipContent>{vks.map((vk) => vk.name).join(", ")}</TooltipContent>
-															</Tooltip>
-														</div>
+													{vkCount > 0 ? (
+														<Badge variant="outline" className="text-xs">
+															{vkCount} {vkCount === 1 ? "key" : "keys"}
+														</Badge>
 													) : (
 														<span className="text-muted-foreground text-sm">-</span>
 													)}

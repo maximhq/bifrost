@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -30,6 +29,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/storage/filesystem"
 	"github.com/go-git/go-git/v5/storage/memory"
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
@@ -59,43 +59,13 @@ func CheckGitAvailability() bool {
 const maxSkillGitRepoSize = 500 * 1024 * 1024 // 500 MB
 
 // skillURLClient is a dedicated HTTP client for fetching URL-sourced skill content.
-// Uses a custom transport that blocks connections to private/loopback IPs to prevent SSRF.
+// Uses an SSRF-safe transport that blocks connections to non-public IPs, so an
+// admin-configured source_url cannot point at internal infrastructure.
 var skillURLClient = &http.Client{
 	Timeout: 15 * time.Second,
 	Transport: &http.Transport{
-		DialContext: ssrfSafeDialContext,
+		DialContext: network.SSRFSafeDialContext(10 * time.Second),
 	},
-}
-
-// ssrfSafeDialContext wraps the default dialer to reject connections to private,
-// loopback, and link-local IP addresses. This prevents SSRF attacks where an
-// admin-configured source_url points to internal infrastructure.
-func ssrfSafeDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		return nil, fmt.Errorf("invalid address %s: %w", addr, err)
-	}
-
-	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
-	if err != nil {
-		return nil, fmt.Errorf("DNS lookup failed for %s: %w", host, err)
-	}
-
-	for _, ip := range ips {
-		if isPrivateIP(ip.IP) {
-			return nil, fmt.Errorf("blocked connection to private/loopback IP %s (host: %s)", ip.IP, host)
-		}
-	}
-
-	// All IPs are public; dial one of the already-resolved IPs directly to
-	// prevent DNS rebinding attacks where a second resolution returns a
-	// different (private) IP.
-	return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, net.JoinHostPort(ips[0].IP.String(), port))
-}
-
-// isPrivateIP returns true for loopback, private, link-local, unspecified, and multicast addresses.
-func isPrivateIP(ip net.IP) bool {
-	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast()
 }
 
 // fetchURLSafe fetches content from a URL with SSRF protection, timeout, and size cap.
@@ -1351,6 +1321,10 @@ func buildSkillFilePath(skillName string, file *tables.TableSkillFile) string {
 	return path.Join(skillName, file.Path)
 }
 
+// lookupSkillByPathParamTimeout bounds the DB lookup in lookupSkillByPathParam. It must
+// never be derived from the request's *fasthttp.RequestCtx (see that function's comment).
+const lookupSkillByPathParamTimeout = 10 * time.Second
+
 // lookupSkillByPathParam extracts the skill-name path parameter and fetches the skill.
 func (h *SkillsServingHandler) lookupSkillByPathParam(ctx *fasthttp.RequestCtx) (*tables.TableSkill, bool) {
 	name, ok := decodeStringPathParam(ctx, "skill-name", "skill name")
@@ -1358,7 +1332,20 @@ func (h *SkillsServingHandler) lookupSkillByPathParam(ctx *fasthttp.RequestCtx) 
 		return nil, false
 	}
 
-	skill, err := h.store.GetSkillByName(ctx, name)
+	// Must not pass ctx (a *fasthttp.RequestCtx) directly as the context.Context here: its
+	// Done() returns a server-wide channel (fasthttp.Server.done), closed only on server
+	// shutdown -- not per-request (fasthttp's own documented tradeoff, since allocating a
+	// channel per request is expensive). GetSkillByName's nested Preload("Files")/
+	// Preload("Files.Blob") queries make database/sql spawn an internal cancellation-watcher
+	// goroutine per query whenever ctx.Done() != nil, and that goroutine reads
+	// RequestCtx.s.done unsynchronized against Server.Shutdown()'s write of s.done = nil --
+	// a data race confirmed under -race. Deriving from context.Background() instead (as
+	// allSkillsZipDownload/genericZipDownload already do for their streaming bodies) avoids
+	// ever handing the raw RequestCtx to anything that watches Done() asynchronously.
+	lookupCtx, cancel := context.WithTimeout(context.Background(), lookupSkillByPathParamTimeout)
+	defer cancel()
+
+	skill, err := h.store.GetSkillByName(lookupCtx, name)
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("skill %q not found", name))

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -281,6 +282,9 @@ func (r *GeminiGenerationRequest) convertGenerationConfigToResponsesParameters()
 	if config.MaxOutputTokens > 0 {
 		params.MaxOutputTokens = schemas.Ptr(int(config.MaxOutputTokens))
 	}
+	if config.MediaResolution != "" {
+		params.ExtraParams["media_resolution"] = config.MediaResolution
+	}
 	if config.ThinkingConfig != nil {
 		params.Reasoning = &schemas.ResponsesParametersReasoning{}
 		if strings.Contains(r.Model, "openai") {
@@ -553,6 +557,12 @@ func convertSchemaToOrderedMap(schema *Schema) *schemas.OrderedMap {
 	}
 	if schema.MaxItems != nil {
 		result.Set("maxItems", *schema.MaxItems)
+	}
+	if schema.MinProperties != nil {
+		result.Set("minProperties", *schema.MinProperties)
+	}
+	if schema.MaxProperties != nil {
+		result.Set("maxProperties", *schema.MaxProperties)
 	}
 	if schema.Minimum != nil {
 		result.Set("minimum", *schema.Minimum)
@@ -1788,6 +1798,75 @@ func convertToolChoiceToToolConfig(toolChoice *schemas.ChatToolChoice) *ToolConf
 	return config
 }
 
+// countGeminiSearchQueries returns the number of billable Google Search units for a
+// grounded response, or nil when the response was not grounded. Gemini 3+ is billed per
+// search query the model executed; Gemini 2.5 and older are billed per grounded prompt
+// however many queries ran. Empty queries are not billable and duplicates count once.
+func countGeminiSearchQueries(metadata *GroundingMetadata, model string) *int {
+	if metadata == nil {
+		return nil
+	}
+	unique := make(map[string]struct{}, len(metadata.WebSearchQueries))
+	for _, query := range metadata.WebSearchQueries {
+		if trimmed := strings.TrimSpace(query); trimmed != "" {
+			unique[trimmed] = struct{}{}
+		}
+	}
+	if len(unique) == 0 {
+		return nil
+	}
+	if !isGemini3Plus(model) {
+		return new(1)
+	}
+	return new(len(unique))
+}
+
+// applyGeminiSearchQueryChatUsage records billable Google Search units on chat usage so
+// CalculateCost can charge the per-query search fee.
+func applyGeminiSearchQueryChatUsage(usage *schemas.BifrostLLMUsage, metadata *GroundingMetadata, model string) {
+	count := countGeminiSearchQueries(metadata, model)
+	if usage == nil || count == nil {
+		return
+	}
+	if usage.CompletionTokensDetails == nil {
+		usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
+	}
+	usage.CompletionTokensDetails.NumSearchQueries = count
+}
+
+// applyGeminiSearchQueryResponsesUsage is the Responses-shaped counterpart of
+// applyGeminiSearchQueryChatUsage.
+func applyGeminiSearchQueryResponsesUsage(usage *schemas.ResponsesResponseUsage, metadata *GroundingMetadata, model string) {
+	count := countGeminiSearchQueries(metadata, model)
+	if usage == nil || count == nil {
+		return
+	}
+	if usage.OutputTokensDetails == nil {
+		usage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{}
+	}
+	usage.OutputTokensDetails.NumSearchQueries = count
+}
+
+// applyServerSideToolInvocations opts the request into Gemini's tool combination mode,
+// which is what lets built-in tools (Google Search) run in the same turn as function
+// declarations. Gemini rejects AUTO in this mode, so an existing AUTO (or unset, which
+// the server treats as AUTO) is promoted to VALIDATED. A functionCallingConfig is never
+// synthesized here — Gemini rejects one without function declarations.
+func applyServerSideToolInvocations(req *GeminiGenerationRequest) {
+	if req == nil {
+		return
+	}
+	if req.ToolConfig == nil {
+		req.ToolConfig = &ToolConfig{}
+	}
+	req.ToolConfig.IncludeServerSideToolInvocations = schemas.Ptr(true)
+	if fc := req.ToolConfig.FunctionCallingConfig; fc != nil {
+		if fc.Mode == FunctionCallingConfigModeAuto || fc.Mode == "" {
+			fc.Mode = FunctionCallingConfigModeValidated
+		}
+	}
+}
+
 // addSpeechConfigToGenerationConfig adds speech configuration to the generation config
 func addSpeechConfigToGenerationConfig(config *GenerationConfig, voiceConfig *schemas.SpeechVoiceInput) {
 	speechConfig := SpeechConfig{}
@@ -1981,10 +2060,14 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage, allowedImage
 					} else if block.File != nil {
 						// Handle file blocks - use FileURL if available (uploaded file)
 						if block.File.FileURL != nil && *block.File.FileURL != "" {
-							// Only set MIMEType when the caller actually provided one
+							// Prefer the caller's MIMEType; otherwise take whatever the URI itself
+							// states. Vertex rejects a fileData with no mimeType outright, and the
+							// OpenAI dialect has no field to carry one - see mimeTypeFromURI.
 							fileData := &FileData{FileURI: *block.File.FileURL}
 							if block.File.FileType != nil {
 								fileData.MIMEType = *block.File.FileType
+							} else {
+								fileData.MIMEType = mimeTypeFromURI(*block.File.FileURL)
 							}
 							parts = append(parts, &Part{FileData: fileData})
 						} else if block.File.FileData != nil {
@@ -2286,8 +2369,8 @@ func buildJSONSchemaFromMap(schemaMap map[string]interface{}) *schemas.Responses
 	}
 
 	// Extract properties
-	if properties, ok := normalizedSchemaMap["properties"].(map[string]interface{}); ok {
-		jsonSchema.Properties = &properties
+	if properties, ok := schemas.SafeExtractOrderedMap(normalizedSchemaMap["properties"]); ok {
+		jsonSchema.Properties = properties
 	}
 
 	// Extract required fields
@@ -2331,13 +2414,13 @@ func buildJSONSchemaFromMap(schemaMap map[string]interface{}) *schemas.Responses
 	}
 
 	// Extract $defs (JSON Schema draft 2019-09+)
-	if defs, ok := normalizedSchemaMap["$defs"].(map[string]interface{}); ok {
-		jsonSchema.Defs = &defs
+	if defs, ok := schemas.SafeExtractOrderedMap(normalizedSchemaMap["$defs"]); ok {
+		jsonSchema.Defs = defs
 	}
 
 	// Extract definitions (legacy JSON Schema draft-07)
-	if definitions, ok := normalizedSchemaMap["definitions"].(map[string]interface{}); ok {
-		jsonSchema.Definitions = &definitions
+	if definitions, ok := schemas.SafeExtractOrderedMap(normalizedSchemaMap["definitions"]); ok {
+		jsonSchema.Definitions = definitions
 	}
 
 	// Extract $ref
@@ -2346,8 +2429,8 @@ func buildJSONSchemaFromMap(schemaMap map[string]interface{}) *schemas.Responses
 	}
 
 	// Extract items (array element schema)
-	if items, ok := normalizedSchemaMap["items"].(map[string]interface{}); ok {
-		jsonSchema.Items = &items
+	if items, ok := schemas.SafeExtractOrderedMap(normalizedSchemaMap["items"]); ok {
+		jsonSchema.Items = items
 	}
 
 	// Extract minItems
@@ -2362,10 +2445,10 @@ func buildJSONSchemaFromMap(schemaMap map[string]interface{}) *schemas.Responses
 
 	// Extract anyOf
 	if anyOf, ok := normalizedSchemaMap["anyOf"].([]interface{}); ok {
-		anyOfMaps := make([]map[string]any, 0, len(anyOf))
+		anyOfMaps := make([]schemas.OrderedMap, 0, len(anyOf))
 		for _, item := range anyOf {
-			if m, ok := item.(map[string]interface{}); ok {
-				anyOfMaps = append(anyOfMaps, m)
+			if om, ok := schemas.SafeExtractOrderedMap(item); ok {
+				anyOfMaps = append(anyOfMaps, *om)
 			}
 		}
 		if len(anyOfMaps) > 0 {
@@ -2375,10 +2458,10 @@ func buildJSONSchemaFromMap(schemaMap map[string]interface{}) *schemas.Responses
 
 	// Extract oneOf
 	if oneOf, ok := normalizedSchemaMap["oneOf"].([]interface{}); ok {
-		oneOfMaps := make([]map[string]any, 0, len(oneOf))
+		oneOfMaps := make([]schemas.OrderedMap, 0, len(oneOf))
 		for _, item := range oneOf {
-			if m, ok := item.(map[string]interface{}); ok {
-				oneOfMaps = append(oneOfMaps, m)
+			if om, ok := schemas.SafeExtractOrderedMap(item); ok {
+				oneOfMaps = append(oneOfMaps, *om)
 			}
 		}
 		if len(oneOfMaps) > 0 {
@@ -2388,10 +2471,10 @@ func buildJSONSchemaFromMap(schemaMap map[string]interface{}) *schemas.Responses
 
 	// Extract allOf
 	if allOf, ok := normalizedSchemaMap["allOf"].([]interface{}); ok {
-		allOfMaps := make([]map[string]any, 0, len(allOf))
+		allOfMaps := make([]schemas.OrderedMap, 0, len(allOf))
 		for _, item := range allOf {
-			if m, ok := item.(map[string]interface{}); ok {
-				allOfMaps = append(allOfMaps, m)
+			if om, ok := schemas.SafeExtractOrderedMap(item); ok {
+				allOfMaps = append(allOfMaps, *om)
 			}
 		}
 		if len(allOfMaps) > 0 {
@@ -2481,11 +2564,20 @@ func buildOpenAIResponseFormat(responseJsonSchema interface{}, responseSchema *S
 
 	// Try to use responseJsonSchema first
 	if responseJsonSchema != nil {
-		// Use responseJsonSchema directly if it's a map
-		var ok bool
-		schemaMap, ok = responseJsonSchema.(map[string]interface{})
-		if !ok {
-			// If not a map, fall back to json_object mode
+		// The schema may be a plain map or an order-preserving OrderedMap
+		// (e.g. when extracted from a Responses request).
+		switch tv := responseJsonSchema.(type) {
+		case map[string]interface{}:
+			schemaMap = tv
+		case *schemas.OrderedMap:
+			if tv != nil {
+				schemaMap = tv.ToMap() // shallow: nested OrderedMap values keep their order
+			}
+		case schemas.OrderedMap:
+			schemaMap = tv.ToMap()
+		}
+		if schemaMap == nil {
+			// Unsupported shape - fall back to json_object mode
 			return &schemas.ResponsesTextConfig{
 				Format: &schemas.ResponsesTextConfigFormat{
 					Type: "json_object",
@@ -2639,55 +2731,112 @@ func normalizeSchemaForGemini(schema map[string]interface{}) map[string]interfac
 	}
 
 	// Recursively normalize properties
-	if properties, ok := schema["properties"].(map[string]interface{}); ok {
+	switch properties := schema["properties"].(type) {
+	case map[string]interface{}:
 		newProps := make(map[string]interface{})
 		for key, prop := range properties {
-			if propMap, ok := prop.(map[string]interface{}); ok {
-				newProps[key] = normalizeSchemaForGemini(propMap)
-			} else {
-				newProps[key] = prop
-			}
+			newProps[key] = normalizeSchemaValueForGemini(prop)
 		}
+		normalized["properties"] = newProps
+	case *schemas.OrderedMap:
+		newProps := schemas.NewOrderedMapWithCapacity(properties.Len())
+		properties.Range(func(key string, prop interface{}) bool {
+			newProps.Set(key, normalizeSchemaValueForGemini(prop))
+			return true
+		})
+		normalized["properties"] = newProps
+	case schemas.OrderedMap:
+		newProps := schemas.NewOrderedMapWithCapacity(properties.Len())
+		properties.Range(func(key string, prop interface{}) bool {
+			newProps.Set(key, normalizeSchemaValueForGemini(prop))
+			return true
+		})
 		normalized["properties"] = newProps
 	}
 
 	// Recursively normalize items (for arrays)
-	if items, ok := schema["items"].(map[string]interface{}); ok {
-		normalized["items"] = normalizeSchemaForGemini(items)
+	switch schema["items"].(type) {
+	case map[string]interface{}, *schemas.OrderedMap, schemas.OrderedMap:
+		normalized["items"] = normalizeSchemaValueForGemini(schema["items"])
 	}
 
-	// Recursively normalize anyOf
-	if anyOf, ok := schema["anyOf"].([]interface{}); ok {
-		newAnyOf := make([]interface{}, 0, len(anyOf))
-		for _, item := range anyOf {
-			if itemMap, ok := item.(map[string]interface{}); ok {
-				newAnyOf = append(newAnyOf, normalizeSchemaForGemini(itemMap))
-			} else {
-				newAnyOf = append(newAnyOf, item)
-			}
+	// Recursively normalize composition fields (anyOf, oneOf, allOf), which may
+	// be []interface{} (JSON-decoded) or []schemas.OrderedMap (typed struct fields).
+	for _, key := range []string{"anyOf", "oneOf", "allOf"} {
+		switch schema[key].(type) {
+		case []interface{}, []schemas.OrderedMap:
+			normalized[key] = normalizeSchemaValueForGemini(schema[key])
 		}
-		normalized["anyOf"] = newAnyOf
-	}
-
-	// Recursively normalize oneOf
-	if oneOf, ok := schema["oneOf"].([]interface{}); ok {
-		newOneOf := make([]interface{}, 0, len(oneOf))
-		for _, item := range oneOf {
-			if itemMap, ok := item.(map[string]interface{}); ok {
-				newOneOf = append(newOneOf, normalizeSchemaForGemini(itemMap))
-			} else {
-				newOneOf = append(newOneOf, item)
-			}
-		}
-		normalized["oneOf"] = newOneOf
 	}
 
 	return normalized
 }
 
-// extractSchemaMapFromResponseFormat extracts the JSON schema map from OpenAI's response_format structure
-// This returns the raw schema map to be used with ResponseJSONSchema
-func extractSchemaMapFromResponseFormat(responseFormat *interface{}) map[string]interface{} {
+// normalizeSchemaValueForGemini applies normalizeSchemaForGemini to a schema
+// value that may be a plain map or an order-preserving OrderedMap; other values
+// pass through unchanged.
+func normalizeSchemaValueForGemini(v interface{}) interface{} {
+	switch tv := v.(type) {
+	case []interface{}:
+		out := make([]interface{}, len(tv))
+		for i, item := range tv {
+			out[i] = normalizeSchemaValueForGemini(item)
+		}
+		return out
+	case []schemas.OrderedMap:
+		out := make([]schemas.OrderedMap, len(tv))
+		for i := range tv {
+			if normalized := normalizeOrderedSchemaForGemini(&tv[i]); normalized != nil {
+				out[i] = *normalized
+			} else {
+				out[i] = tv[i]
+			}
+		}
+		return out
+	case map[string]interface{}:
+		return normalizeSchemaForGemini(tv)
+	case *schemas.OrderedMap:
+		return normalizeOrderedSchemaForGemini(tv)
+	case schemas.OrderedMap:
+		if normalized := normalizeOrderedSchemaForGemini(&tv); normalized != nil {
+			return *normalized
+		}
+		return tv
+	}
+	return v
+}
+
+// normalizeOrderedSchemaForGemini runs normalizeSchemaForGemini over an
+// OrderedMap schema while preserving the original key order. Keys added by
+// normalization (e.g. anyOf replacing a union type) are appended after the
+// original keys in sorted order for determinism.
+func normalizeOrderedSchemaForGemini(om *schemas.OrderedMap) *schemas.OrderedMap {
+	if om == nil {
+		return nil
+	}
+	normalized := normalizeSchemaForGemini(om.ToMap())
+	out := schemas.NewOrderedMapWithCapacity(om.Len())
+	for _, key := range om.Keys() {
+		if value, ok := normalized[key]; ok {
+			out.Set(key, value)
+			delete(normalized, key)
+		}
+	}
+	added := make([]string, 0, len(normalized))
+	for key := range normalized {
+		added = append(added, key)
+	}
+	sort.Strings(added)
+	for _, key := range added {
+		out.Set(key, normalized[key])
+	}
+	return out
+}
+
+// extractSchemaMapFromResponseFormat extracts the JSON schema from OpenAI's response_format
+// structure. The schema may be a plain map or an order-preserving OrderedMap (e.g. when built
+// from a Responses request); the result is used with ResponseJSONSchema.
+func extractSchemaMapFromResponseFormat(responseFormat *interface{}) interface{} {
 	formatMap, ok := (*responseFormat).(map[string]interface{})
 	if !ok {
 		return nil
@@ -2708,13 +2857,12 @@ func extractSchemaMapFromResponseFormat(responseFormat *interface{}) map[string]
 		return nil
 	}
 
-	schemaMap, ok := schemaObj.(map[string]interface{})
-	if !ok {
-		return nil
+	switch schemaObj.(type) {
+	case map[string]interface{}, *schemas.OrderedMap, schemas.OrderedMap:
+		// Normalize the schema for Gemini compatibility
+		return normalizeSchemaValueForGemini(schemaObj)
 	}
-
-	// Normalize the schema for Gemini compatibility
-	return normalizeSchemaForGemini(schemaMap)
+	return nil
 }
 
 // extractFunctionResponseOutput extracts the output text from a FunctionResponse.
@@ -2854,4 +3002,68 @@ func ConvertGeminiLogprobsResultToBifrost(result *LogprobsResult) *schemas.Bifro
 		}
 	}
 	return &schemas.BifrostLogProbs{Content: content}
+}
+
+// mimeTypeFromURI returns the IANA MIME type a URI's own file extension declares, or "" when the
+// URI does not state one.
+//
+// Vertex rejects a fileData part that carries no mimeType ("Unable to submit request because it
+// has an empty mimeType parameter in fileData"), while the Gemini API infers it. The OpenAI
+// dialect has no field for a file's type, so a PDF referenced by URL through /openai reached
+// Vertex typeless and 400'd - with a body byte-identical to the one gemini accepted.
+//
+// Deliberately NOT a default. Bifrost previously stamped every typeless fileData as
+// application/pdf, which sent a lie upstream for non-PDF content; filedata_mime_test.go pins that
+// bug shut. Reading an extension the caller already wrote is not the same as inventing a type, so
+// an extensionless URI - notably the Files API form https://.../v1beta/files/abc - still yields "".
+//
+// The table is explicit rather than mime.TypeByExtension because that consults the host's
+// /etc/mime.types and appends charset parameters, making the wire format depend on the machine
+// Bifrost happens to run on.
+var uriExtensionMIMETypes = map[string]string{
+	".pdf":  "application/pdf",
+	".txt":  "text/plain",
+	".csv":  "text/csv",
+	".md":   "text/markdown",
+	".html": "text/html",
+	".json": "application/json",
+	".xml":  "application/xml",
+	".png":  "image/png",
+	".jpg":  "image/jpeg",
+	".jpeg": "image/jpeg",
+	".webp": "image/webp",
+	".gif":  "image/gif",
+	".heic": "image/heic",
+	".heif": "image/heif",
+	".mp3":  "audio/mpeg",
+	".wav":  "audio/wav",
+	".ogg":  "audio/ogg",
+	".flac": "audio/flac",
+	".aac":  "audio/aac",
+	".mp4":  "video/mp4",
+	".mov":  "video/quicktime",
+	".webm": "video/webm",
+	".avi":  "video/x-msvideo",
+	".mpeg": "video/mpeg",
+}
+
+func mimeTypeFromURI(uri string) string {
+	if uri == "" {
+		return ""
+	}
+	// Strip query and fragment first: "report.pdf?sig=abc" must still resolve, and a "." inside a
+	// query value must not be mistaken for the extension.
+	if i := strings.IndexAny(uri, "?#"); i >= 0 {
+		uri = uri[:i]
+	}
+	// Only the LAST path segment can carry the extension. Without this, a versioned directory such
+	// as "/v1.2/files/abc" would look like an ".2/files/abc" extension.
+	if i := strings.LastIndex(uri, "/"); i >= 0 {
+		uri = uri[i+1:]
+	}
+	dot := strings.LastIndex(uri, ".")
+	if dot < 0 {
+		return ""
+	}
+	return uriExtensionMIMETypes[strings.ToLower(uri[dot:])]
 }

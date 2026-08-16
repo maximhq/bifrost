@@ -9,7 +9,7 @@ import { baseRoutingFields } from "@/lib/config/celFieldsRouting";
 import { getOperatorLabel } from "@/lib/config/celOperatorsRouting";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { getProviderLabel } from "@/lib/constants/logs";
-import { useGetCustomersQuery, useGetTeamsQuery, useGetVirtualKeysQuery } from "@/lib/store/apis/governanceApi";
+import { useGetCustomerQuery, useGetTeamQuery, useGetVirtualKeyQuery } from "@/lib/store/apis/governanceApi";
 import { RoutingRule } from "@/lib/types/routingRules";
 import { getScopeLabel } from "@/lib/utils/labels";
 import { formatDistanceToNow } from "date-fns";
@@ -40,24 +40,27 @@ function formatRuleValue(value: any): string {
 	return String(value ?? "");
 }
 
+// Resolves a rule's scope_id to a display name. Each scope fetches only the one
+// entity it needs — the rule points at a single id, so pulling the full list to
+// find one name is wasted payload.
 function useScopeName(scope: string, scopeId?: string): string | undefined {
-	const { data: teamsData } = useGetTeamsQuery(undefined, {
+	const { data: teamData } = useGetTeamQuery(scopeId as string, {
 		skip: scope !== "team" || !scopeId,
 	});
-	const { data: customersData } = useGetCustomersQuery(undefined, {
+	const { data: customerData } = useGetCustomerQuery(scopeId as string, {
 		skip: scope !== "customer" || !scopeId,
 	});
-	const { data: vksData } = useGetVirtualKeysQuery(undefined, {
+	const { data: vkData } = useGetVirtualKeyQuery(scopeId as string, {
 		skip: scope !== "virtual_key" || !scopeId,
 	});
 
 	return useMemo(() => {
 		if (!scopeId) return undefined;
-		if (scope === "team") return teamsData?.teams?.find((t) => t.id === scopeId)?.name;
-		if (scope === "customer") return customersData?.customers?.find((c) => c.id === scopeId)?.name;
-		if (scope === "virtual_key") return vksData?.virtual_keys?.find((v) => v.id === scopeId)?.name;
+		if (scope === "team") return teamData?.team?.name;
+		if (scope === "customer") return customerData?.customer?.name;
+		if (scope === "virtual_key") return vkData?.virtual_key?.name;
 		return undefined;
-	}, [scope, scopeId, teamsData, customersData, vksData]);
+	}, [scope, scopeId, teamData, customerData, vkData]);
 }
 
 // ─── copy button ─────────────────────────────────────────────────────────────
@@ -252,6 +255,9 @@ export function RoutingRuleInfoSheet({ rule, open, onOpenChange, onNavigate, has
 	const targets = rule?.targets ?? [];
 	const fallbacks = rule?.fallbacks ?? [];
 	const hasQuery = rule?.query && (rule.query.rules?.length ?? 0) > 0;
+	// A rule can carry a CEL expression without a visual query (e.g. authored via the API).
+	// Only claim "matches all requests" when neither is present; otherwise the CEL section speaks for itself.
+	const hasCel = !!rule?.cel_expression?.trim();
 	const scopeName = useScopeName(rule?.scope ?? "global", rule?.scope_id);
 
 	const { prev: prevKeys, next: nextKeys } = useSheetNavigation({
@@ -263,7 +269,7 @@ export function RoutingRuleInfoSheet({ rule, open, onOpenChange, onNavigate, has
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="flex w-full flex-col overflow-x-hidden p-8 sm:max-w-2xl" data-testid="routing-rule-info">
+			<SheetContent className="flex w-full flex-col overflow-x-hidden p-4 sm:max-w-2xl md:p-8" data-testid="routing-rule-info">
 				{rule && (
 					<>
 						<SheetHeader className="flex flex-row items-start justify-between gap-1 p-0">
@@ -297,19 +303,19 @@ export function RoutingRuleInfoSheet({ rule, open, onOpenChange, onNavigate, has
 							/>
 						</SheetHeader>
 
-						<div className="-mx-8 space-y-6 overflow-y-auto px-8 pb-8">
+						<div className="-mx-4 space-y-6 overflow-y-auto px-4 pb-8 md:-mx-8 md:px-8">
 							{/* Overview */}
 							<div className="space-y-3">
 								<h3 className="text-sm font-semibold">Overview</h3>
 								<div className="grid gap-3">
-									<div className="grid grid-cols-3 items-center gap-4">
+									<div className="grid grid-cols-1 items-center gap-4 md:grid-cols-3">
 										<span className="text-muted-foreground text-sm">Scope</span>
 										<div className="col-span-2 flex items-center gap-1.5">
 											<Badge variant="secondary">{getScopeLabel(rule.scope)}</Badge>
 											{scopeName && <span className="text-sm">{scopeName}</span>}
 										</div>
 									</div>
-									<div className="grid grid-cols-3 items-center gap-4">
+									<div className="grid grid-cols-1 items-center gap-4 md:grid-cols-3">
 										<span className="text-muted-foreground text-sm">Priority</span>
 										<div className="col-span-2">
 											<span className="bg-primary text-primary-foreground inline-block rounded px-2.5 py-0.5 text-xs font-medium">
@@ -325,7 +331,13 @@ export function RoutingRuleInfoSheet({ rule, open, onOpenChange, onNavigate, has
 							{/* Conditions */}
 							<div className="space-y-3">
 								<h3 className="text-sm font-semibold">Conditions</h3>
-								{hasQuery ? <ConditionGroup group={rule.query!} /> : <p className="text-muted-foreground text-sm">Matches all requests</p>}
+								{hasQuery ? (
+									<ConditionGroup group={rule.query!} />
+								) : hasCel ? (
+									<p className="text-muted-foreground text-sm">Defined as a CEL expression below</p>
+								) : (
+									<p className="text-muted-foreground text-sm">Matches all requests</p>
+								)}
 
 								{/* CEL expression */}
 								<div className="space-y-1.5">
@@ -370,7 +382,7 @@ export function RoutingRuleInfoSheet({ rule, open, onOpenChange, onNavigate, has
 							<DottedSeparator />
 
 							{/* Timestamps */}
-							<div className="grid grid-cols-2 gap-4">
+							<div className="grid grid-cols-1 gap-4 md:grid-cols-2">
 								<div>
 									<p className="text-muted-foreground mb-1 text-xs font-medium tracking-wider uppercase">Created</p>
 									<span className="text-sm">

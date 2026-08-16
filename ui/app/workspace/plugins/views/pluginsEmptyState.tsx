@@ -19,7 +19,7 @@ export function PluginsEmptyState({ onCreateClick, canCreate = true }: PluginsEm
 			</div>
 			<div className="flex flex-col gap-1">
 				<h1 className="text-muted-foreground text-xl font-medium">Custom plugins extend Bifrost with your own business logic</h1>
-				<div className="text-muted-foreground mx-auto mt-2 max-w-[600px] text-sm font-normal">
+				<div className="text-muted-foreground mx-auto mt-2 w-full max-w-[600px] text-sm font-normal">
 					Build and deploy plugins for custom integrations, workflow automation, and AI governance.
 				</div>
 				<div className="mx-auto mt-6 flex flex-row flex-wrap items-center justify-center gap-2">

@@ -1,6 +1,7 @@
 package logging
 
 import (
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -386,6 +387,7 @@ func estimateLogEntrySize(log *logstore.Log) int {
 		len(log.PassthroughResponseBody) +
 		len(log.ContentSummary) +
 		len(log.CacheDebug) +
+		len(log.GuardrailDebug) +
 		len(log.RoutingEngineLogs)
 	// Baseline for fixed-width columns and struct overhead
 	return n + 512
@@ -397,7 +399,7 @@ func estimateMCPToolLogEntrySize(log *logstore.MCPToolLog) int {
 	if log == nil {
 		return 0
 	}
-	return len(log.Arguments) + len(log.Result) + len(log.ErrorDetails) + len(log.Metadata) + 512
+	return len(log.Arguments) + len(log.Result) + len(log.ErrorDetails) + len(log.Metadata) + len(log.PluginLogs) + 512
 }
 
 // buildStaleMCPToolLogEntry converts a pending MCP processing row into a
@@ -443,6 +445,8 @@ func buildInitialLogEntry(pending *PendingLogData) *logstore.Log {
 	if len(pending.RoutingEnginesUsed) > 0 {
 		entry.RoutingEnginesUsed = pending.RoutingEnginesUsed
 	}
+	applyUserAgent(entry, pending.InitialData.UserAgent)
+	applyApp(entry, pending.InitialData.App)
 	return entry
 }
 
@@ -478,7 +482,49 @@ func buildCompleteLogEntryFromPending(pending *PendingLogData) *logstore.Log {
 	if len(pending.RoutingEnginesUsed) > 0 {
 		entry.RoutingEnginesUsed = pending.RoutingEnginesUsed
 	}
+	applyUserAgent(entry, pending.InitialData.UserAgent)
+	applyApp(entry, pending.InitialData.App)
 	return entry
+}
+
+// User-Agent and App map to fixed-width DB columns (varchar(512) / varchar(128)).
+// User-Agent is an untrusted, unbounded client header, so clamp both before
+// persisting to avoid an insert that fails (and silently drops the log) when a
+// client sends an oversized header.
+const (
+	maxPersistedUserAgentLen = 512
+	maxPersistedAppLen       = 128
+)
+
+// clampString truncates s to at most max bytes. The columns are sized in
+// characters but ASCII User-Agent headers make bytes a safe lower bound. A raw
+// byte-slice truncation can split a multi-byte UTF-8 rune, so ToValidUTF8
+// strips the dangling partial rune to keep the result valid UTF-8 for the
+// varchar insert.
+func clampString(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return strings.ToValidUTF8(s[:max], "")
+}
+
+func applyUserAgent(entry *logstore.Log, userAgent string) {
+	if userAgent == "" {
+		return
+	}
+	entry.UserAgent = new(clampString(userAgent, maxPersistedUserAgentLen))
+	if entry.App == nil {
+		if app := schemas.DetectAppFromUserAgent(userAgent); app != "" {
+			entry.App = new(clampString(app, maxPersistedAppLen))
+		}
+	}
+}
+
+func applyApp(entry *logstore.Log, app string) {
+	if app == "" {
+		return
+	}
+	entry.App = new(clampString(app, maxPersistedAppLen))
 }
 
 // applyModelAlias sets entry.Model to resolvedModel (falling back to requestedModel if empty)

@@ -11,7 +11,7 @@ import (
 )
 
 // CalculateCost calculates the cost of a Bifrost response.
-// It handles all request types, cache debug billing, and tiered pricing.
+// It handles all request types, cache and guardrail billing, and tiered pricing.
 // If scopes is nil, an empty LookupScopes is used; global and provider-scoped
 // overrides may still apply since the provider is derived from the response.
 func (s *Store) CalculateCost(result *schemas.BifrostResponse, scopes *LookupScopes) float64 {
@@ -24,13 +24,22 @@ func (s *Store) CalculateCost(result *schemas.BifrostResponse, scopes *LookupSco
 		lookupScopes = *scopes
 	}
 
+	extraFields := result.GetExtraFields()
+
 	// Handle semantic cache billing
-	cacheDebug := result.GetExtraFields().CacheDebug
+	cacheDebug := extraFields.CacheDebug
+	var requestCost float64
 	if cacheDebug != nil {
-		return s.calculateCostWithCache(result, cacheDebug, lookupScopes)
+		requestCost = s.calculateCostWithCache(result, cacheDebug, lookupScopes)
+	} else {
+		requestCost = s.calculateBaseCost(result, lookupScopes)
 	}
 
-	return s.calculateBaseCost(result, lookupScopes)
+	// Handle guardrail judge-call billing
+	if extraFields.GuardrailDebug == nil {
+		return requestCost
+	}
+	return requestCost + s.CalculateGuardrailCost(extraFields.GuardrailDebug, &lookupScopes)
 }
 
 // CalculateCostForUsage computes the dollar cost from a bare usage object plus
@@ -62,9 +71,64 @@ func (s *Store) CalculateCostForUsage(usage *schemas.BifrostLLMUsage, provider s
 
 	return s.computeCostFromInput(
 		input,
-		schemas.RoutingInfo{Provider: provider, Model: model},
+		schemas.RoutingInfo{
+			Provider:                provider,
+			Model:                   model,
+			ServerSideFallbackModel: usage.ServerSideFallbackModel,
+		},
 		normalizeStreamRequestType(requestType),
 		lookupScopes,
+	)
+}
+
+// CalculateGuardrailCost computes judge cost when no parent response is available.
+//
+// CalculateCost uses this for normal responses. Logging also calls it directly
+// for input guardrail blocks, where the main provider call never produced a
+// BifrostResponse.
+func (s *Store) CalculateGuardrailCost(debug *schemas.BifrostGuardrailDebug, scopes *LookupScopes) float64 {
+	if debug == nil || len(debug.JudgeCalls) == 0 {
+		return 0
+	}
+
+	var total float64
+	for _, call := range debug.JudgeCalls {
+		total += s.computeGuardrailJudgeCost(call, scopes)
+	}
+	return total
+}
+
+// computeGuardrailJudgeCost computes one internal judge chat-completion cost.
+func (s *Store) computeGuardrailJudgeCost(call schemas.BifrostGuardrailJudgeCall, scopes *LookupScopes) float64 {
+	if call.JudgeProvider == "" || call.JudgeModel == "" {
+		return 0
+	}
+
+	// Price the judge call using its own provider/model. Keep virtual-key
+	// attribution for the caller, but do not reuse the main request's selected
+	// provider key: the judge may use a different configured key.
+	judgeScopes := LookupScopes{Provider: string(call.JudgeProvider)}
+	if scopes != nil {
+		judgeScopes.VirtualKeyID = scopes.VirtualKeyID
+	}
+
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:            call.PromptTokens,
+		PromptTokensDetails:     call.PromptTokensDetails,
+		CompletionTokens:        call.CompletionTokens,
+		CompletionTokensDetails: call.CompletionTokensDetails,
+		TotalTokens:             call.TotalTokens,
+	}
+	requestType := call.JudgeRequestType
+	if requestType == "" {
+		requestType = schemas.ChatCompletionRequest
+	}
+	return s.CalculateCostForUsage(
+		usage,
+		call.JudgeProvider,
+		call.JudgeModel,
+		requestType,
+		&judgeScopes,
 	)
 }
 
@@ -109,6 +173,15 @@ func (s *Store) computeCacheEmbeddingCost(cacheDebug *schemas.BifrostCacheDebug,
 	return float64(*cacheDebug.InputTokens) * tieredInputRate(pricing, *cacheDebug.InputTokens, serviceTier{})
 }
 
+// CalculateCacheEmbeddingCost computes the semantic-cache embedding lookup cost.
+func (s *Store) CalculateCacheEmbeddingCost(cacheDebug *schemas.BifrostCacheDebug, scopes *LookupScopes) float64 {
+	var lookupScopes LookupScopes
+	if scopes != nil {
+		lookupScopes = *scopes
+	}
+	return s.computeCacheEmbeddingCost(cacheDebug, lookupScopes)
+}
+
 // computeContainerCreationCost returns the cost for creating a container from an already-resolved pricing entry.
 func computeContainerCreationCost(pricing *configstoreTables.TableModelPricing) float64 {
 	if pricing == nil || pricing.CodeInterpreterCostPerSession == nil {
@@ -149,6 +222,10 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 	if input.usage != nil && input.usage.Cost != nil && input.usage.Cost.TotalCost > 0 {
 		return input.usage.Cost.TotalCost
 	}
+	// Image responses carry usage on imageUsage, never on input.usage.
+	if input.imageUsage != nil && input.imageUsage.Cost != nil && input.imageUsage.Cost.TotalCost > 0 {
+		return input.imageUsage.Cost.TotalCost
+	}
 
 	// If no usage data at all, nothing to price
 	if input.usage == nil && input.audioSeconds == nil && input.audioTokenDetails == nil && input.imageUsage == nil && input.videoSeconds == nil && input.audioTextInputChars == 0 && input.ocrProcessedPages == nil && input.containerIdentifierString == "" {
@@ -163,7 +240,58 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 		requestType = normalizeStreamRequestType(requestType)
 	}
 
+	// Azure Model Router bills a flat per-input-token surcharge on top of the
+	// real cost of whatever underlying model Azure actually routed to. The
+	// response's own model field carries that real model, distinct from the
+	// "model-router" deployment name on RoutingInfo.Model.
+	if result.PassthroughResponse == nil && routingInfo.Provider == schemas.Azure && schemas.IsAzureModelRouter(routingInfo.Model) &&
+		(requestType == schemas.TextCompletionRequest || requestType == schemas.ChatCompletionRequest || requestType == schemas.ResponsesRequest) {
+		return s.calculateAzureModelRouterCost(result, input, routingInfo, requestType, scopes)
+	}
+
 	return s.computeCostFromInput(input, routingInfo, requestType, scopes)
+}
+
+// calculateAzureModelRouterCost bills the Model Router deployment's own
+// pricing row (the flat per-input-token surcharge) plus the real cost of the
+// model it actually routed to, looked up fresh under the served model name so
+// regular per-token/tiered pricing applies to it exactly as if it had been
+// called directly.
+func (s *Store) calculateAzureModelRouterCost(result *schemas.BifrostResponse, input costInput, routingInfo schemas.RoutingInfo, requestType schemas.RequestType, scopes LookupScopes) float64 {
+	pricingRequestType := requestType
+	if pricingRequestType == schemas.TextCompletionRequest {
+		pricingRequestType = schemas.ChatCompletionRequest
+	}
+
+	cost := s.computeCostFromInput(input, routingInfo, pricingRequestType, scopes)
+
+	if servedModel := azureModelRouterServedModel(result); servedModel != "" && servedModel != routingInfo.Model {
+		underlyingRoutingInfo := schemas.RoutingInfo{
+			Provider: routingInfo.Provider,
+			Model:    servedModel,
+		}
+		cost += s.computeCostFromInput(input, underlyingRoutingInfo, pricingRequestType, scopes)
+	}
+
+	return cost
+}
+
+// azureModelRouterServedModel reads the model Azure Model Router actually
+// routed to off the response body's own model field separate from the "model-router"
+// deployment name carried on RoutingInfo.Model.
+func azureModelRouterServedModel(result *schemas.BifrostResponse) string {
+	switch {
+	case result.ChatResponse != nil:
+		return result.ChatResponse.Model
+	case result.ResponsesResponse != nil:
+		return result.ResponsesResponse.Model
+	case result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.Response != nil:
+		return result.ResponsesStreamResponse.Response.Model
+	case result.TextCompletionResponse != nil:
+		return result.TextCompletionResponse.Model
+	default:
+		return ""
+	}
 }
 
 // computeCostFromInput resolves pricing for the given routing info + request
@@ -190,28 +318,36 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 	}
 
 	// Route to the appropriate compute function
+	var cost float64
 	switch requestType {
 	case schemas.ChatCompletionRequest, schemas.TextCompletionRequest, schemas.ResponsesRequest, schemas.RealtimeRequest, schemas.CompactionRequest:
-		return computeTextCost(pricing, input.usage, input.tier)
+		cost = computeTextCost(pricing, input.usage, input.tier)
 	case schemas.EmbeddingRequest:
-		return computeEmbeddingCost(pricing, input.usage, input.tier)
+		cost = computeEmbeddingCost(pricing, input.usage, input.tier)
 	case schemas.RerankRequest:
-		return computeRerankCost(pricing, input.usage, input.tier)
+		cost = computeRerankCost(pricing, input.usage, input.tier)
 	case schemas.SpeechRequest:
-		return computeSpeechCost(pricing, input.usage, input.audioSeconds, input.audioTextInputChars, input.tier)
+		cost = computeSpeechCost(pricing, input.usage, input.audioSeconds, input.audioTextInputChars, input.tier)
 	case schemas.TranscriptionRequest:
-		return computeTranscriptionCost(pricing, input.usage, input.audioSeconds, input.audioTokenDetails, input.tier)
+		cost = computeTranscriptionCost(pricing, input.usage, input.audioSeconds, input.audioTokenDetails, input.tier)
 	case schemas.ImageGenerationRequest, schemas.ImageEditRequest, schemas.ImageVariationRequest:
-		return computeImageCost(pricing, input.imageUsage, input.imageSize, input.imageQuality, input.tier)
+		cost = computeImageCost(pricing, input.imageUsage, input.imageSize, input.imageQuality, input.tier)
 	case schemas.VideoGenerationRequest, schemas.VideoRemixRequest:
-		return computeVideoCost(pricing, input.usage, input.videoSeconds, input.tier)
+		cost = computeVideoCost(pricing, input.usage, input.videoSeconds, input.tier)
 	case schemas.OCRRequest:
-		return computeOCRCost(pricing, input.ocrProcessedPages, input.ocrIsAnnotated)
+		cost = computeOCRCost(pricing, input.ocrProcessedPages, input.ocrIsAnnotated)
 	case schemas.ContainerCreateRequest:
-		return computeContainerCreationCost(pricing)
+		cost = computeContainerCreationCost(pricing)
 	default:
 		return 0
 	}
+
+	// Flat per-request surcharge, billed once on top of usage-based cost
+	// whenever the resolved pricing row carries one.
+	if pricing.CostPerRequest != nil {
+		cost += *pricing.CostPerRequest
+	}
+	return cost
 }
 
 // ---------------------------------------------------------------------------
@@ -291,6 +427,12 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 		}
 		input.imageSize = result.ImageGenerationStreamResponse.Size
 		input.imageQuality = result.ImageGenerationStreamResponse.Quality
+
+	case result.VideoGenerationResponse != nil && result.VideoGenerationResponse.Usage != nil && result.VideoGenerationResponse.Usage.Cost != nil:
+		// Provider-reported cost (e.g. Runware's per-task cost). Routed through input.usage.Cost so
+		// the provider-cost short-circuit in computeCost uses it verbatim; covers task types (3D,
+		// etc.) that have no datasheet rate.
+		input.usage = &schemas.BifrostLLMUsage{Cost: result.VideoGenerationResponse.Usage.Cost}
 
 	case result.VideoGenerationResponse != nil && result.VideoGenerationResponse.Seconds != nil:
 		seconds, err := strconv.Atoi(*result.VideoGenerationResponse.Seconds)
@@ -1132,10 +1274,13 @@ func populateOutputImageCount(imageUsage *schemas.ImageUsage, dataLen int) {
 // resolvePricing resolves the pricing entry for a request directly from the
 // RoutingInfo populated on the response/error by core.bifrost at request time.
 //
-// Lookup precedence — AliasModelName → AliasModelID → ModelName. Each
-// non-empty candidate is tried against the base catalog in order; the first
-// hit wins.
+// Lookup precedence — ServerSideFallbackModel → AliasModelName → AliasModelID →
+// ModelName. Each non-empty candidate is tried against the base catalog in
+// order; the first hit wins.
 //
+//   - ServerSideFallbackModel is the model that produced the response when the
+//     provider swapped models inside one call (Anthropic server-side fallback).
+//     Ranked first: the tokens being priced are its own. Nil on ordinary responses.
 //   - AliasModelName (RoutingInfo.ResolvedKeyAlias.ModelName) is the canonical
 //     model name the admin tagged on the matched alias. Catches the
 //     opaque-deployment-ID case where the wire model wouldn't hit the catalog
@@ -1145,11 +1290,15 @@ func populateOutputImageCount(imageUsage *schemas.ImageUsage, dataLen int) {
 //   - ModelName (RoutingInfo.Model) is the model string the caller sent — the
 //     alias key when an alias matched, or the raw user input when none did.
 //
-// Overrides are applied keyed by the wire model (AliasModelID when an alias
-// matched, otherwise ModelName) so per-deployment override pricing stays
-// addressable in either flow.
+// Overrides are applied keyed by the wire model (ServerSideFallbackModel when the
+// provider handed off mid-call, else AliasModelID when an alias matched, otherwise
+// ModelName) so per-deployment override pricing stays addressable in either flow.
+// A fallback-served turn keys on the serving model so base rates and overrides
+// agree: an override negotiated for the model that actually ran is the one that
+// applies.
 func (s *Store) resolvePricing(routingInfo schemas.RoutingInfo, requestType schemas.RequestType, scopes LookupScopes) *configstoreTables.TableModelPricing {
 	provider := string(routingInfo.Provider)
+	catalogProvider := normalizeProvider(provider)
 	var aliasModelID, aliasModelName string
 	if rka := routingInfo.ResolvedKeyAlias; rka != nil {
 		aliasModelID = rka.ModelID
@@ -1157,7 +1306,14 @@ func (s *Store) resolvePricing(routingInfo schemas.RoutingInfo, requestType sche
 			aliasModelName = *rka.ModelName
 		}
 	}
-	overrideKey := aliasModelID
+	var serverSideFallbackModel string
+	if routingInfo.ServerSideFallbackModel != nil {
+		serverSideFallbackModel = *routingInfo.ServerSideFallbackModel
+	}
+	overrideKey := serverSideFallbackModel
+	if overrideKey == "" {
+		overrideKey = aliasModelID
+	}
 	if overrideKey == "" {
 		overrideKey = routingInfo.Model
 	}
@@ -1167,11 +1323,11 @@ func (s *Store) resolvePricing(routingInfo schemas.RoutingInfo, requestType sche
 		scopes.Provider = provider
 	}
 
-	for _, candidate := range []string{aliasModelName, aliasModelID, routingInfo.Model} {
+	for _, candidate := range []string{serverSideFallbackModel, aliasModelName, aliasModelID, routingInfo.Model} {
 		if candidate == "" {
 			continue
 		}
-		base, exists := s.getBasePricing(candidate, provider, requestType)
+		base, exists := s.getBasePricing(candidate, catalogProvider, requestType)
 		if exists && base != nil {
 			result, _ := s.applyPricingOverrides(overrideKey, requestType, *base, scopes)
 			return &result
@@ -1193,11 +1349,11 @@ func (s *Store) resolvePricing(routingInfo schemas.RoutingInfo, requestType sche
 // getBasePricing looks up catalog pricing for the given model, provider, and request type.
 // It applies a provider-specific fallback chain when an exact match is not found:
 //
-//   - Gemini: retries under the "vertex" provider, then falls back to chat mode for Responses requests.
-//   - Vertex: strips the "provider/model" prefix and retries, then falls back to chat mode for Responses requests.
-//   - Bedrock: prepends the vendor namespace ("anthropic.", "openai.", "google.", "xai.") inferred from the model family, then falls back to chat mode for Responses requests.
+//   - Gemini: retries under the "vertex" provider, then falls back to the counterpart chat/responses mode.
+//   - Vertex: strips the "provider/model" prefix and retries, then falls back to the counterpart chat/responses mode.
+//   - Bedrock: prepends the vendor namespace ("anthropic.", "openai.", "google.", "xai.") inferred from the model family, then falls back to the counterpart chat/responses mode.
 //   - Bedrock Mantle: folded onto the "bedrock" provider up front (datasheet rows for all Bedrock variants are stored there), so it shares every Bedrock fallback.
-//   - All providers: for Responses/ResponsesStream requests, retries the lookup in chat mode.
+//   - All providers: chat and responses requests retry in each other's mode, since a model served over both APIs often has a datasheet row under only one of them.
 //   - All providers: for ImageEdit/ImageVariation requests, retries the lookup in image-generation mode.
 //
 // The method acquires a read lock for the duration of the lookup.
@@ -1215,6 +1371,7 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 	defer s.mu.RUnlock()
 
 	mode := normalizeRequestType(requestType)
+	fallbackMode, hasFallbackMode := chatResponsesFallbackMode(requestType)
 
 	// Datasheet rows for all Bedrock variants are stored under the "bedrock"
 	// provider (normalizeProvider folds bedrock_* onto "bedrock"), so
@@ -1236,10 +1393,10 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 			return &pricing, true
 		}
 
-		// Lookup in chat if responses not found
-		if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest || requestType == schemas.WebSocketResponsesRequest || requestType == schemas.RealtimeRequest || requestType == schemas.CompactionRequest {
-			s.logger.Debug("secondary lookup failed, trying vertex provider for the same model in chat completion")
-			pricing, ok = s.pricingData[makeKey(model, "vertex", normalizeRequestType(schemas.ChatCompletionRequest))]
+		// Lookup in the counterpart chat/responses mode if this model's row is filed under the other one
+		if hasFallbackMode {
+			s.logger.Debug("secondary lookup failed, trying vertex provider for the same model in %s mode", fallbackMode)
+			pricing, ok = s.pricingData[makeKey(model, "vertex", fallbackMode)]
 			if ok {
 				return &pricing, true
 			}
@@ -1256,10 +1413,10 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 				return &pricing, true
 			}
 
-			// Lookup in chat if responses not found
-			if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest || requestType == schemas.WebSocketResponsesRequest || requestType == schemas.RealtimeRequest || requestType == schemas.CompactionRequest {
-				s.logger.Debug("secondary lookup failed, trying vertex provider for the same model in chat completion")
-				pricing, ok = s.pricingData[makeKey(modelWithoutProvider, "vertex", normalizeRequestType(schemas.ChatCompletionRequest))]
+			// Lookup in the counterpart chat/responses mode if this model's row is filed under the other one
+			if hasFallbackMode {
+				s.logger.Debug("secondary lookup failed, trying vertex provider for the same model in %s mode", fallbackMode)
+				pricing, ok = s.pricingData[makeKey(modelWithoutProvider, "vertex", fallbackMode)]
 				if ok {
 					return &pricing, true
 				}
@@ -1290,10 +1447,10 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 				return &pricing, true
 			}
 
-			// Lookup in chat if responses not found
-			if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest || requestType == schemas.WebSocketResponsesRequest || requestType == schemas.RealtimeRequest || requestType == schemas.CompactionRequest {
-				s.logger.Debug("secondary lookup failed, trying chat provider for the same model in chat completion")
-				pricing, ok = s.pricingData[makeKey(vendorPrefix+model, provider, normalizeRequestType(schemas.ChatCompletionRequest))]
+			// Lookup in the counterpart chat/responses mode if this model's row is filed under the other one
+			if hasFallbackMode {
+				s.logger.Debug("secondary lookup failed, trying the same prefixed model in %s mode", fallbackMode)
+				pricing, ok = s.pricingData[makeKey(vendorPrefix+model, provider, fallbackMode)]
 				if ok {
 					return &pricing, true
 				}
@@ -1301,10 +1458,10 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 		}
 	}
 
-	// Lookup in chat if responses/compaction not found
-	if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest || requestType == schemas.WebSocketResponsesRequest || requestType == schemas.RealtimeRequest || requestType == schemas.CompactionRequest {
-		s.logger.Debug("primary lookup failed, trying chat provider for the same model in chat completion")
-		pricing, ok = s.pricingData[makeKey(model, provider, normalizeRequestType(schemas.ChatCompletionRequest))]
+	// Lookup in the counterpart chat/responses mode if this model's row is filed under the other one
+	if hasFallbackMode {
+		s.logger.Debug("primary lookup failed, trying the same model in %s mode", fallbackMode)
+		pricing, ok = s.pricingData[makeKey(model, provider, fallbackMode)]
 		if ok {
 			return &pricing, true
 		}
@@ -1491,6 +1648,19 @@ func passthroughUsageToCostInput(su *schemas.BifrostPassthroughUsage) costInput 
 	}
 	if su.ContainerIdentifier != "" {
 		input.containerIdentifierString = su.ContainerIdentifier
+	}
+	// Provider-reported exact cost wins over datasheet estimation; attach it to usage.Cost so the
+	// provider-cost short-circuit in computeCost returns it verbatim. input.usage may alias the
+	// caller's su.LLMUsage, so copy before assigning Cost to preserve the pure-read invariant (see
+	// the DeepCopy in the ImageGenerationResponse branch above).
+	if su.Cost != nil {
+		if input.usage == nil {
+			input.usage = &schemas.BifrostLLMUsage{Cost: su.Cost}
+		} else {
+			usageCopy := *input.usage
+			usageCopy.Cost = su.Cost
+			input.usage = &usageCopy
+		}
 	}
 	return input
 }

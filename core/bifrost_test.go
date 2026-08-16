@@ -621,7 +621,9 @@ func TestHandleProviderRequest_OCROperationNotAllowed(t *testing.T) {
 // Test that transientServerStatusCodes are properly defined.
 // These are upstream-side failures unrelated to the credential — the same key is retried.
 func TestTransientServerStatusCodes(t *testing.T) {
-	expected := []int{500, 502, 503, 504}
+	// 529 is Anthropic's overloaded_error: capacity-wide, not credential-bound, so the
+	// same key is retried with backoff rather than rotated away.
+	expected := []int{500, 502, 503, 504, 529}
 	for _, code := range expected {
 		if !transientServerStatusCodes[code] {
 			t.Errorf("status code %d should be in transientServerStatusCodes", code)
@@ -638,6 +640,63 @@ func TestTransientServerStatusCodes(t *testing.T) {
 	}
 }
 
+// TestExecuteRequestWithRetries_529RetriesSameKeyWithoutRotation pins the behavior behind the
+// map entry above. TestTransientServerStatusCodes only proves 529 is *classified* as transient;
+// this proves executeRequestWithRetries acts on that classification — retry on the same key,
+// with no rotation — which is the part that would actually regress.
+//
+// 529 is Anthropic's overloaded_error: "the API experiences high traffic across all users"
+// (platform.claude.com/docs/en/api/errors). It says nothing about this credential, so rotating
+// would burn every key in the pool on a condition none of them can avoid.
+func TestExecuteRequestWithRetries_529RetriesSameKeyWithoutRotation(t *testing.T) {
+	config := createTestConfig(2, 0, 0)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	logger := NewDefaultLogger(schemas.LogLevelError)
+
+	keyA := schemas.Key{ID: "key-a", Name: "Key A", Value: *schemas.NewSecretVar("sk-a"), Weight: 1}
+	keyB := schemas.Key{ID: "key-b", Name: "Key B", Value: *schemas.NewSecretVar("sk-b"), Weight: 1}
+
+	// Rotation-capable provider: it hands out key-b the moment key-a is marked used or dead.
+	// A nil keyProvider would make this test vacuous — the rotation path is what's under test.
+	keyProvider := func(usedKeyIDs, deadKeyIDs map[string]bool) (schemas.Key, error) {
+		if usedKeyIDs[keyA.ID] || deadKeyIDs[keyA.ID] {
+			return keyB, nil
+		}
+		return keyA, nil
+	}
+
+	var seenKeyIDs []string
+	callCount := 0
+	handler := func(k schemas.Key) (string, *schemas.BifrostError) {
+		seenKeyIDs = append(seenKeyIDs, k.ID)
+		callCount++
+		if callCount == 1 {
+			return "", createBifrostError("overloaded_error", Ptr(529), Ptr("overloaded_error"), false)
+		}
+		return "recovered", nil
+	}
+
+	result, err := executeRequestWithRetries(ctx, config, handler, keyProvider,
+		schemas.ChatCompletionRequest, schemas.Anthropic, "claude-sonnet-4-5", nil, logger)
+
+	if err != nil {
+		t.Fatalf("expected 529 to be retried to success, got error: %v", err)
+	}
+	if result != "recovered" {
+		t.Errorf("expected 'recovered', got %q", result)
+	}
+	if len(seenKeyIDs) != 2 {
+		t.Fatalf("expected 2 attempts (529 then success), got %d: %v", len(seenKeyIDs), seenKeyIDs)
+	}
+	for i, id := range seenKeyIDs {
+		if id != keyA.ID {
+			t.Errorf("attempt %d used %s, expected the same key %s throughout (sequence: %v); "+
+				"529 is capacity-wide and must not rotate credentials", i+1, id, keyA.ID, seenKeyIDs)
+		}
+	}
+}
+
 // Test that perKeyFailureStatusCodes are properly defined.
 // These are credential/account-bound failures — rotate to the next key instead of retrying
 // the same one.
@@ -650,7 +709,9 @@ func TestPerKeyFailureStatusCodes(t *testing.T) {
 	}
 
 	// Request-bound 4xx, success codes, and transient-server 5xx must not trigger rotation.
-	notPerKey := []int{200, 201, 400, 404, 422, 500, 502, 503, 504}
+	// 529 included: an overloaded provider is not this key's fault, so burning the other
+	// keys on it would just multiply the failures.
+	notPerKey := []int{200, 201, 400, 404, 422, 500, 502, 503, 504, 529}
 	for _, code := range notPerKey {
 		if perKeyFailureStatusCodes[code] {
 			t.Errorf("status code %d should not be in perKeyFailureStatusCodes", code)
@@ -3023,5 +3084,58 @@ func TestReleaseChannelMessage_ClearsPooledReferences_Streaming(t *testing.T) {
 	case <-streamCh:
 		t.Error("pooled response stream channel should be drained before Put")
 	default:
+	}
+}
+
+// TestExecuteRequestWithRetries_EmptyStreamReturnsClosedChannel pins the public
+// streaming contract for zero-chunk streams: when the provider's channel closes
+// before the first chunk, the caller must receive a NON-nil, closed channel with
+// a nil error — not (nil, nil). A nil channel with a nil error makes integrators
+// that range/receive on the result block forever, since a receive from a nil
+// channel never returns.
+func TestExecuteRequestWithRetries_EmptyStreamReturnsClosedChannel(t *testing.T) {
+	config := createTestConfig(1, 10*time.Millisecond, 100*time.Millisecond)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	logger := NewDefaultLogger(schemas.LogLevelError)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+
+	handler := func(_ schemas.Key) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+		ch := make(chan *schemas.BifrostStreamChunk)
+		close(ch) // provider stream ends before emitting any chunk
+		return ch, nil
+	}
+
+	stream, err := executeRequestWithRetries(
+		ctx,
+		config,
+		handler,
+		nil,
+		schemas.ChatCompletionStreamRequest,
+		schemas.OpenAI,
+		"gpt-4",
+		nil,
+		logger,
+	)
+
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	if stream == nil {
+		t.Fatal("Expected non-nil closed channel for an empty stream; a nil channel with a nil error hangs consumers on a nil-channel receive")
+	}
+	select {
+	case _, ok := <-stream:
+		if ok {
+			t.Error("Expected zero chunks from an empty stream")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Receive on the returned channel blocked; expected a closed channel")
+	}
+	count := 0
+	for range stream {
+		count++
+	}
+	if count != 0 {
+		t.Errorf("Expected range over empty stream to yield 0 chunks, got %d", count)
 	}
 }

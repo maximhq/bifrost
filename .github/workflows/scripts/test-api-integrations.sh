@@ -71,12 +71,22 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "🎨 Building UI..."
-(cd "$REPO_ROOT" && make build-ui)
+# CI's build-gateway job supplies the binary as an artifact; only build it here
+# when running locally (or if CI ever drops that job).
+if [ "${SKIP_GATEWAY_BUILD:-0}" = "1" ]; then
+  if [ ! -x "$BIFROST_BINARY" ]; then
+    echo "❌ SKIP_GATEWAY_BUILD=1 but no executable binary at $BIFROST_BINARY" >&2
+    exit 1
+  fi
+  echo "⏭️  Using prebuilt bifrost-http binary at $BIFROST_BINARY"
+else
+  echo "🎨 Building UI..."
+  (cd "$REPO_ROOT" && make build-ui)
 
-echo "🔨 Building bifrost-http binary..."
-mkdir -p "$BIN_DIR"
-(cd "$REPO_ROOT/transports/bifrost-http" && go build -o "$BIFROST_BINARY" .)
+  echo "🔨 Building bifrost-http binary..."
+  mkdir -p "$BIN_DIR"
+  (cd "$REPO_ROOT/transports/bifrost-http" && go build -o "$BIFROST_BINARY" .)
+fi
 
 echo "🐳 Starting Docker services (PostgreSQL + dependencies)..."
 docker compose -f "$COMPOSE_FILE" up -d

@@ -34,7 +34,21 @@ type ModelsManager interface {
 	OnKeyAdded(ctx context.Context, provider schemas.ModelProvider, key schemas.Key) error
 	OnKeyUpdated(ctx context.Context, provider schemas.ModelProvider, key schemas.Key) error
 	OnKeyDeleted(ctx context.Context, provider schemas.ModelProvider, keyID string) error
+	// RefreshLiveModelsForKey re-fetches list-models for a single key on
+	// demand. Returns ErrRefreshInProgress when the provider is already being
+	// refreshed.
+	RefreshLiveModelsForKey(ctx context.Context, provider schemas.ModelProvider, keyID string) error
+	// RefreshLiveModelsForAllKeys re-fetches list-models across every enabled
+	// key of the provider on demand. Returns ErrRefreshInProgress when the
+	// provider is already being refreshed.
+	RefreshLiveModelsForAllKeys(ctx context.Context, provider schemas.ModelProvider) error
 }
+
+// ErrRefreshInProgress is returned by the on-demand model refresh entrypoints
+// when a refresh for the same provider is already running. Repeated presses of
+// the UI refresh button collapse into the in-flight pass rather than each
+// spawning their own (enabled keys x 2) burst of upstream calls.
+var ErrRefreshInProgress = errors.New("model refresh already in progress for this provider")
 
 // ModelPricingAttributesEntry is the wire shape for PUT /api/models/catalog.
 // (model, provider) is the natural key on governance_model_pricing.
@@ -135,6 +149,11 @@ func (h *ProviderHandler) RegisterRoutes(r *router.Router, middlewares ...schema
 	r.PUT("/api/providers/{provider}/keys/{key_id}", lib.ChainMiddlewares(h.updateProviderKey, middlewares...))
 	r.DELETE("/api/providers/{provider}", lib.ChainMiddlewares(h.deleteProvider, middlewares...))
 	r.DELETE("/api/providers/{provider}/keys/{key_id}", lib.ChainMiddlewares(h.deleteProviderKey, middlewares...))
+	// On-demand model discovery. The catalog otherwise refreshes on the
+	// configured live_models_sync_interval, so these let an operator pick up a
+	// newly served model (or re-check a failing key) without waiting.
+	r.POST("/api/providers/{provider}/refresh-models", lib.ChainMiddlewares(h.refreshProviderModels, middlewares...))
+	r.POST("/api/providers/{provider}/keys/{key_id}/refresh-models", lib.ChainMiddlewares(h.refreshProviderKeyModels, middlewares...))
 	r.GET("/api/keys", lib.ChainMiddlewares(h.listKeys, middlewares...))
 	r.GET("/api/models", lib.ChainMiddlewares(h.listModels, middlewares...))
 	r.GET("/api/models/details", lib.ChainMiddlewares(h.listModelDetails, middlewares...))
@@ -649,12 +668,55 @@ type ModelDetailsResponse struct {
 	IsDeprecated         bool                  `json:"is_deprecated,omitempty"`
 	AdditionalAttributes map[string]string     `json:"additional_attributes,omitempty"`
 	AccessibleByKeys     []string              `json:"accessible_by_keys,omitempty"`
+
+	// OverriddenPricing carries the post-override value of each cost field the
+	// UI displays, and only for fields the applied override actually changes —
+	// the client strikes through exactly the fields present here. Nil when no
+	// global/provider-scoped override applies.
+	OverriddenPricing *ModelOverriddenPricing `json:"overridden_pricing,omitempty"`
+	// AppliedOverrideID identifies which override produced OverriddenPricing.
+	AppliedOverrideID string `json:"applied_override_id,omitempty"`
+	// PricingOverrideIDs lists every override matching this model, including
+	// virtual-key/user/provider-key scoped ones that do NOT affect
+	// OverriddenPricing and are shown informationally. Resolve against
+	// ListModelDetailsResponse.PricingOverrides.
+	PricingOverrideIDs []string `json:"pricing_override_ids,omitempty"`
+}
+
+// ModelOverriddenPricing carries the post-override value of each displayed
+// cost field. A field is non-nil only when the applied override changes it.
+type ModelOverriddenPricing struct {
+	InputCostPerToken  *float64 `json:"input_cost_per_token,omitempty"`
+	OutputCostPerToken *float64 `json:"output_cost_per_token,omitempty"`
+	CacheWriteCost     *float64 `json:"cache_creation_input_token_cost,omitempty"`
+	CacheReadCost      *float64 `json:"cache_read_input_token_cost,omitempty"`
+}
+
+// ModelPricingOverrideSummary describes one pricing override referenced by a
+// model row.
+type ModelPricingOverrideSummary struct {
+	ID            string                      `json:"id"`
+	Name          string                      `json:"name"`
+	ScopeKind     modelcatalog.ScopeKind      `json:"scope_kind"`
+	UserID        *string                     `json:"user_id,omitempty"`
+	VirtualKeyID  *string                     `json:"virtual_key_id,omitempty"`
+	ProviderID    *string                     `json:"provider_id,omitempty"`
+	ProviderKeyID *string                     `json:"provider_key_id,omitempty"`
+	MatchType     modelcatalog.MatchType      `json:"match_type"`
+	Pattern       string                      `json:"pattern"`
+	RequestTypes  []schemas.RequestType       `json:"request_types,omitempty"`
+	Patch         modelcatalog.PricingOptions `json:"patch"`
 }
 
 // ListModelDetailsResponse represents the response for listing detailed models.
 type ListModelDetailsResponse struct {
 	Models []ModelDetailsResponse `json:"models"`
 	Total  int                    `json:"total"`
+	// PricingOverrides indexes every override referenced by any row, keyed by
+	// ID. Deduplicated here rather than inlined per row: a single global
+	// wildcard override would otherwise be serialized once for every model on
+	// the page.
+	PricingOverrides map[string]ModelPricingOverrideSummary `json:"pricing_overrides,omitempty"`
 }
 
 type modelListQuery struct {
@@ -749,6 +811,7 @@ func (h *ProviderHandler) listModelDetails(ctx *fasthttp.RequestCtx) {
 	}
 
 	responseModels := make([]ModelDetailsResponse, 0, len(allModels))
+	overrideIndex := map[string]ModelPricingOverrideSummary{}
 	for _, model := range allModels {
 		details := ModelDetailsResponse{
 			Name:     model.Name,
@@ -757,7 +820,8 @@ func (h *ProviderHandler) listModelDetails(ctx *fasthttp.RequestCtx) {
 		if len(model.AccessibleByKeys) > 0 {
 			details.AccessibleByKeys = model.AccessibleByKeys
 		}
-		if capabilities := modelCatalog.GetModelCapabilityEntryForModel(model.Name, model.Provider); capabilities != nil {
+		capabilities := modelCatalog.GetModelCapabilityEntryForModel(model.Name, model.Provider)
+		if capabilities != nil {
 			details.ContextLength = capabilities.ContextLength
 			details.MaxInputTokens = capabilities.MaxInputTokens
 			details.MaxOutputTokens = capabilities.MaxOutputTokens
@@ -769,13 +833,98 @@ func (h *ProviderHandler) listModelDetails(ctx *fasthttp.RequestCtx) {
 			details.IsDeprecated = capabilities.IsDeprecated
 			details.AdditionalAttributes = capabilities.AdditionalAttributes
 		}
+
+		// Resolve overrides against the mode the displayed base row came from
+		// (usually chat, but embedding/responses for those models) so an
+		// override scoped to a different mode never strikes this row's price.
+		mode := defaultCatalogPricingMode
+		if capabilities != nil && capabilities.Mode != "" {
+			mode = capabilities.Mode
+		}
+		overrides := modelCatalog.GetCatalogPricingOverrides(model.Name, model.Provider, mode)
+		if len(overrides.Matching) > 0 {
+			details.PricingOverrideIDs = make([]string, 0, len(overrides.Matching))
+			for _, o := range overrides.Matching {
+				details.PricingOverrideIDs = append(details.PricingOverrideIDs, o.ID)
+				if _, seen := overrideIndex[o.ID]; !seen {
+					overrideIndex[o.ID] = toPricingOverrideSummary(o)
+				}
+			}
+		}
+		if overrides.AppliedPatch != nil {
+			if overridden := buildOverriddenPricing(capabilities, overrides.AppliedPatch); overridden != nil {
+				details.OverriddenPricing = overridden
+				details.AppliedOverrideID = overrides.AppliedID
+			}
+		}
+
 		responseModels = append(responseModels, details)
 	}
 
-	SendJSON(ctx, ListModelDetailsResponse{
+	response := ListModelDetailsResponse{
 		Models: responseModels,
 		Total:  total,
-	})
+	}
+	if len(overrideIndex) > 0 {
+		response.PricingOverrides = overrideIndex
+	}
+	SendJSON(ctx, response)
+}
+
+// defaultCatalogPricingMode is the pricing mode used to resolve overrides for
+// a catalog row with no base pricing entry to read a mode from.
+const defaultCatalogPricingMode = "chat"
+
+// changedCost returns patched only when it differs from base, so the UI never
+// strikes a price through with the identical number.
+func changedCost(base, patched *float64) *float64 {
+	if patched == nil {
+		return nil
+	}
+	if base != nil && *base == *patched {
+		return nil
+	}
+	return patched
+}
+
+// buildOverriddenPricing projects the four displayed costs through the applied
+// patch. base may be nil (an override priced a model absent from the catalog).
+// Returns nil when the patch changes none of the displayed fields.
+func buildOverriddenPricing(base *modelcatalog.PricingEntry, patch *modelcatalog.PricingOptions) *ModelOverriddenPricing {
+	if patch == nil {
+		return nil
+	}
+	var baseOptions modelcatalog.PricingOptions
+	if base != nil {
+		baseOptions = base.Options
+	}
+	overridden := ModelOverriddenPricing{
+		InputCostPerToken:  changedCost(baseOptions.InputCostPerToken, patch.InputCostPerToken),
+		OutputCostPerToken: changedCost(baseOptions.OutputCostPerToken, patch.OutputCostPerToken),
+		CacheWriteCost:     changedCost(baseOptions.CacheCreationInputTokenCost, patch.CacheCreationInputTokenCost),
+		CacheReadCost:      changedCost(baseOptions.CacheReadInputTokenCost, patch.CacheReadInputTokenCost),
+	}
+	if overridden.InputCostPerToken == nil && overridden.OutputCostPerToken == nil &&
+		overridden.CacheWriteCost == nil && overridden.CacheReadCost == nil {
+		return nil
+	}
+	return &overridden
+}
+
+func toPricingOverrideSummary(o modelcatalog.PricingOverride) ModelPricingOverrideSummary {
+	return ModelPricingOverrideSummary{
+		ID:            o.ID,
+		Name:          o.Name,
+		ScopeKind:     o.ScopeKind,
+		UserID:        o.UserID,
+		VirtualKeyID:  o.VirtualKeyID,
+		ProviderID:    o.ProviderID,
+		ProviderKeyID: o.ProviderKeyID,
+		MatchType:     o.MatchType,
+		Pattern:       o.Pattern,
+		RequestTypes:  o.RequestTypes,
+		Patch:         o.Options,
+	}
 }
 
 func (h *ProviderHandler) isModelDeprecated(model string, provider schemas.ModelProvider) bool {
@@ -984,7 +1133,20 @@ func (h *ProviderHandler) getModelParameters(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	params, err := h.dbStore.GetModelParametersByModel(ctx, modelParam)
+	// Prefer catalog-aware resolution so provider-qualified IDs from
+	// /v1/models ("openai/gpt-5.5", "openrouter/openai/gpt-5.5") and bare
+	// aliases resolve to the datasheet's stored key instead of 404ing on an
+	// exact-match miss.
+	var params *tables.TableModelParameters
+	var err error
+	if h.inMemoryStore != nil && h.inMemoryStore.ModelCatalog != nil {
+		params, err = h.inMemoryStore.ModelCatalog.ResolveModelParameters(ctx, modelParam)
+	} else {
+		params, err = h.dbStore.GetModelParametersByModel(ctx, modelParam)
+	}
+	if err == nil && params == nil {
+		err = configstore.ErrNotFound
+	}
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("no parameters found for model %s", modelParam))

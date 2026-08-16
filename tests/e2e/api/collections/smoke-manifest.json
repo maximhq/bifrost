@@ -1,0 +1,437 @@
+{
+  "$schema_note": "Curated smoke selection for `make run-provider-harness-test SMOKE=1`. Rows are matched by (folder, name) against the AUGMENTED collection (tmp/harness-augmented.json), because the cache-parity rows are generated at augment time and do not exist in provider-harness.json. `folder` is the immediate parent folder and is REQUIRED, not advisory: the criss-cross rows are named after their model, so a bare name like `gemini/gemini-2.5-flash` matches 25 requests. Selecting a request pulls in its chained-variable producers automatically (filter-collection.mjs expandWithProducers), so the effective request count can exceed the count here. Rows claimed by more than one provider partition run once per fork, same as in a full sweep.",
+  "budget": 100,
+  "total_selected": 100,
+  "pillars": [
+    {
+      "key": "cache-parity",
+      "intent": "Prompt-cache read/write parity. Round 34 is the direct-vs-Bifrost anchor (a Bifrost leg reading materially less than the direct leg on identical bytes means a dropped breakpoint); Round 35 is one model per provider; folders 41 and 13 cover content-block cache_control / cachePoint placement. These rows match every provider fork, so the harness replays them in one sequential pass after the parallel run.",
+      "requests": [
+        {
+          "folder": "Cross-Cut Round 34: Mid-Conversation System Cache-Anchor Parity (generated)",
+          "name": "Cache anchor: control / direct round 1 (write)"
+        },
+        {
+          "folder": "Cross-Cut Round 34: Mid-Conversation System Cache-Anchor Parity (generated)",
+          "name": "Cache anchor: control / direct round 2 (read)"
+        },
+        {
+          "folder": "Cross-Cut Round 34: Mid-Conversation System Cache-Anchor Parity (generated)",
+          "name": "Cache anchor: control / bifrost_messages round 1 (write)"
+        },
+        {
+          "folder": "Cross-Cut Round 34: Mid-Conversation System Cache-Anchor Parity (generated)",
+          "name": "Cache anchor: control / bifrost_messages round 2 (read)"
+        },
+        {
+          "folder": "Cross-Cut Round 34: Mid-Conversation System Cache-Anchor Parity (generated)",
+          "name": "Cache anchor: control / bifrost_responses round 1 (write)"
+        },
+        {
+          "folder": "Cross-Cut Round 34: Mid-Conversation System Cache-Anchor Parity (generated)",
+          "name": "Cache anchor: control / bifrost_responses round 2 (read)"
+        },
+        {
+          "folder": "Cross-Cut Round 34: Mid-Conversation System Cache-Anchor Parity (generated)",
+          "name": "Cache anchor: midconv / direct round 1 (write)"
+        },
+        {
+          "folder": "Cross-Cut Round 34: Mid-Conversation System Cache-Anchor Parity (generated)",
+          "name": "Cache anchor: midconv / direct round 2 (read)"
+        },
+        {
+          "folder": "Cross-Cut Round 34: Mid-Conversation System Cache-Anchor Parity (generated)",
+          "name": "Cache anchor: midconv / bifrost_messages round 1 (write)"
+        },
+        {
+          "folder": "Cross-Cut Round 34: Mid-Conversation System Cache-Anchor Parity (generated)",
+          "name": "Cache anchor: midconv / bifrost_messages round 2 (read)"
+        },
+        {
+          "folder": "Cross-Cut Round 34: Mid-Conversation System Cache-Anchor Parity (generated)",
+          "name": "Cache anchor: midconv / bifrost_responses round 1 (write)"
+        },
+        {
+          "folder": "Cross-Cut Round 34: Mid-Conversation System Cache-Anchor Parity (generated)",
+          "name": "Cache anchor: midconv / bifrost_responses round 2 (read)"
+        },
+        {
+          "folder": "Cross-Cut Round 35: Cross-Provider Prompt-Cache Matrix (generated)",
+          "name": "Cache matrix: anthropic/claude-opus-5 / control round 1 (write)"
+        },
+        {
+          "folder": "Cross-Cut Round 35: Cross-Provider Prompt-Cache Matrix (generated)",
+          "name": "Cache matrix: anthropic/claude-opus-5 / control round 2 (read)"
+        },
+        {
+          "folder": "Cross-Cut Round 35: Cross-Provider Prompt-Cache Matrix (generated)",
+          "name": "Cache matrix: bedrock/global.anthropic.claude-opus-4-8 / control round 1 (write)"
+        },
+        {
+          "folder": "Cross-Cut Round 35: Cross-Provider Prompt-Cache Matrix (generated)",
+          "name": "Cache matrix: bedrock/global.anthropic.claude-opus-4-8 / control round 2 (read)"
+        },
+        {
+          "folder": "Cross-Cut Round 35: Cross-Provider Prompt-Cache Matrix (generated)",
+          "name": "Cache matrix: vertex/claude-opus-4-8 / control round 1 (write)"
+        },
+        {
+          "folder": "Cross-Cut Round 35: Cross-Provider Prompt-Cache Matrix (generated)",
+          "name": "Cache matrix: vertex/claude-opus-4-8 / control round 2 (read)"
+        },
+        {
+          "folder": "Cross-Cut Round 35: Cross-Provider Prompt-Cache Matrix (generated)",
+          "name": "Cache matrix: azure/claude-haiku-4-5 / control round 1 (write)"
+        },
+        {
+          "folder": "Cross-Cut Round 35: Cross-Provider Prompt-Cache Matrix (generated)",
+          "name": "Cache matrix: azure/claude-haiku-4-5 / control round 2 (read)"
+        },
+        {
+          "folder": "Cross-Cut Round 35: Cross-Provider Prompt-Cache Matrix (generated)",
+          "name": "Cache matrix: bedrock_mantle/anthropic.claude-opus-4-8 / control round 1 (write)"
+        },
+        {
+          "folder": "Cross-Cut Round 35: Cross-Provider Prompt-Cache Matrix (generated)",
+          "name": "Cache matrix: bedrock_mantle/anthropic.claude-opus-4-8 / control round 2 (read)"
+        },
+        {
+          "folder": "Cross-Cut Round 35: Cross-Provider Prompt-Cache Matrix (generated)",
+          "name": "Cache matrix: openai/gpt-5.6 / control round 1"
+        },
+        {
+          "folder": "Cross-Cut Round 35: Cross-Provider Prompt-Cache Matrix (generated)",
+          "name": "Cache matrix: openai/gpt-5.6 / control round 2"
+        },
+        {
+          "folder": "Cross-Cut Round 35: Cross-Provider Prompt-Cache Matrix (generated)",
+          "name": "Cache matrix: openai/gpt-5.6 / control round 3"
+        },
+        {
+          "folder": "Cross-Cut Round 35: Cross-Provider Prompt-Cache Matrix (generated)",
+          "name": "Cache matrix: openai/gpt-5.6 / control round 4 (verdict)"
+        },
+        {
+          "folder": "41. Cross-Provider Content-Block Cache Control & cachePoint (#5629)",
+          "name": "Bedrock converse: cachePoint on a plain message content block creates a cache entry (Haiku 4.5, turn 1)"
+        },
+        {
+          "folder": "41. Cross-Provider Content-Block Cache Control & cachePoint (#5629)",
+          "name": "Bedrock converse: cachePoint on a plain message content block reads from cache (Haiku 4.5, turn 2)"
+        },
+        {
+          "folder": "41. Cross-Provider Content-Block Cache Control & cachePoint (#5629)",
+          "name": "Anthropic native: cache_control on a plain message content block creates a cache entry (Haiku 4.5, turn 1)"
+        },
+        {
+          "folder": "41. Cross-Provider Content-Block Cache Control & cachePoint (#5629)",
+          "name": "Anthropic native: cache_control on a plain message content block reads from cache (Haiku 4.5, turn 2)"
+        },
+        {
+          "folder": "13. OpenRouter Prompt Caching (cache_control)",
+          "name": "OpenRouter Anthropic Claude: cache_control on system block"
+        },
+        {
+          "folder": "13. OpenRouter Prompt Caching (cache_control)",
+          "name": "OpenRouter Google Gemini Flash: cache_control on system block"
+        }
+      ]
+    },
+    {
+      "key": "reasoning-tools-interleave",
+      "intent": "Three-turn conversations that interleave reasoning with tool calls, plus the chat-to-responses tool replay. This is the flow a single-turn reasoning replay cannot cover: a thinking/reasoning block that must survive two tool round-trips.",
+      "requests": [
+        {
+          "folder": "46. Reasoning × Tool-Call Multi-Turn Interleave (criss-cross)",
+          "name": "claude-opus-4-7 /anthropic/v1/messages turn 1: thinking block + tool_use captured"
+        },
+        {
+          "folder": "46. Reasoning × Tool-Call Multi-Turn Interleave (criss-cross)",
+          "name": "claude-opus-4-7 /anthropic/v1/messages turn 2: signed thinking replayed across a tool result"
+        },
+        {
+          "folder": "46. Reasoning × Tool-Call Multi-Turn Interleave (criss-cross)",
+          "name": "claude-opus-4-7 /anthropic/v1/messages turn 3: full interleaved history replays cleanly"
+        },
+        {
+          "folder": "46. Reasoning × Tool-Call Multi-Turn Interleave (criss-cross)",
+          "name": "anthropic/claude-opus-4-7 /v1/chat/completions turn 1: thinking + tool_calls captured"
+        },
+        {
+          "folder": "46. Reasoning × Tool-Call Multi-Turn Interleave (criss-cross)",
+          "name": "anthropic/claude-opus-4-7 /v1/chat/completions turn 2: thinking replayed across a tool result"
+        },
+        {
+          "folder": "46. Reasoning × Tool-Call Multi-Turn Interleave (criss-cross)",
+          "name": "anthropic/claude-opus-4-7 /v1/chat/completions turn 3: full interleaved history replays cleanly"
+        },
+        {
+          "folder": "46. Reasoning × Tool-Call Multi-Turn Interleave (criss-cross)",
+          "name": "bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0 /v1/chat/completions turn 1: thinking + tool_calls captured"
+        },
+        {
+          "folder": "46. Reasoning × Tool-Call Multi-Turn Interleave (criss-cross)",
+          "name": "bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0 /v1/chat/completions turn 2: thinking replayed across a tool result"
+        },
+        {
+          "folder": "46. Reasoning × Tool-Call Multi-Turn Interleave (criss-cross)",
+          "name": "bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0 /v1/chat/completions turn 3: full interleaved history replays cleanly"
+        },
+        {
+          "folder": "46. Reasoning × Tool-Call Multi-Turn Interleave (criss-cross)",
+          "name": "vertex/claude-opus-4-7 /v1/chat/completions turn 1: thinking + tool_calls captured"
+        },
+        {
+          "folder": "46. Reasoning × Tool-Call Multi-Turn Interleave (criss-cross)",
+          "name": "vertex/claude-opus-4-7 /v1/chat/completions turn 2: thinking replayed across a tool result"
+        },
+        {
+          "folder": "46. Reasoning × Tool-Call Multi-Turn Interleave (criss-cross)",
+          "name": "vertex/claude-opus-4-7 /v1/chat/completions turn 3: full interleaved history replays cleanly"
+        },
+        {
+          "folder": "46. Reasoning × Tool-Call Multi-Turn Interleave (criss-cross)",
+          "name": "openai/gpt-5 /v1/responses turn 1: reasoning + tool call captured"
+        },
+        {
+          "folder": "46. Reasoning × Tool-Call Multi-Turn Interleave (criss-cross)",
+          "name": "openai/gpt-5 /v1/responses turn 2: reasoning replayed across a tool result"
+        },
+        {
+          "folder": "46. Reasoning × Tool-Call Multi-Turn Interleave (criss-cross)",
+          "name": "openai/gpt-5 /v1/responses turn 3: full interleaved history replays cleanly"
+        },
+        {
+          "folder": "46. Reasoning × Tool-Call Multi-Turn Interleave (criss-cross)",
+          "name": "gemini/gemini-2.5-flash /v1/responses turn 1: reasoning + tool call captured"
+        },
+        {
+          "folder": "46. Reasoning × Tool-Call Multi-Turn Interleave (criss-cross)",
+          "name": "gemini/gemini-2.5-flash /v1/responses turn 2: reasoning replayed across a tool result"
+        },
+        {
+          "folder": "46. Reasoning × Tool-Call Multi-Turn Interleave (criss-cross)",
+          "name": "gemini/gemini-2.5-flash /v1/responses turn 3: full interleaved history replays cleanly"
+        },
+        {
+          "folder": "46. Reasoning × Tool-Call Multi-Turn Interleave (criss-cross)",
+          "name": "anthropic/claude-sonnet-4-5 /openai/v1/responses turn 1: reasoning + tool call captured"
+        },
+        {
+          "folder": "46. Reasoning × Tool-Call Multi-Turn Interleave (criss-cross)",
+          "name": "anthropic/claude-sonnet-4-5 /openai/v1/responses turn 2: reasoning replayed across a tool result"
+        },
+        {
+          "folder": "46. Reasoning × Tool-Call Multi-Turn Interleave (criss-cross)",
+          "name": "anthropic/claude-sonnet-4-5 /openai/v1/responses turn 3: full interleaved history replays cleanly"
+        },
+        {
+          "folder": "19. Chat-to-Responses Tool Replay (#5101 / PR #5102)",
+          "name": "openai/gpt-4o-mini compat chat->responses: replayed tool call accepted (non-streaming) - #5101"
+        },
+        {
+          "folder": "19. Chat-to-Responses Tool Replay (#5101 / PR #5102)",
+          "name": "openai/gpt-4o-mini compat chat->responses: replayed tool call accepted (streaming) - #5101"
+        },
+        {
+          "folder": "19. Chat-to-Responses Tool Replay (#5101 / PR #5102)",
+          "name": "openai/gpt-4o-mini native /v1/responses: role-bearing function_call input item accepted - #5101"
+        }
+      ]
+    },
+    {
+      "key": "reasoning",
+      "intent": "Reasoning block handling on its own: redacted thinking, encrypted reasoning item-id round-trips across surfaces, thought-signature replay, and fail-soft degradation on payloads Bifrost cannot verify.",
+      "requests": [
+        {
+          "folder": "20. Anthropic Redacted Thinking Round-Trip (#5093 / PR #5094)",
+          "name": "anthropic/claude-sonnet-4-5 /v1/responses streaming carries redacted_thinking as encrypted reasoning items - #5093"
+        },
+        {
+          "folder": "20. Anthropic Redacted Thinking Round-Trip (#5093 / PR #5094)",
+          "name": "anthropic/claude-sonnet-4-5 /v1/responses non-streaming preserves redacted_thinking + captures replay input - #5093"
+        },
+        {
+          "folder": "20. Anthropic Redacted Thinking Round-Trip (#5093 / PR #5094)",
+          "name": "anthropic/claude-sonnet-4-5 /v1/responses replay of redacted_thinking accepted on tool-use continuation - #5093"
+        },
+        {
+          "folder": "38. OpenAI Encrypted Reasoning Item ID Round-Trip via Anthropic Surface (#5186 / PR #5192)",
+          "name": "openai/gpt-5 /anthropic/v1/messages streaming carries encrypted reasoning as redacted_thinking block - #5186"
+        },
+        {
+          "folder": "38. OpenAI Encrypted Reasoning Item ID Round-Trip via Anthropic Surface (#5186 / PR #5192)",
+          "name": "openai/gpt-5 /anthropic/v1/messages non-streaming preserves encrypted reasoning + captures replay content - #5186"
+        },
+        {
+          "folder": "38. OpenAI Encrypted Reasoning Item ID Round-Trip via Anthropic Surface (#5186 / PR #5192)",
+          "name": "openai/gpt-5 /anthropic/v1/messages replay of encrypted reasoning accepted (no item_id mismatch) - #5186"
+        },
+        {
+          "folder": "42. Cohere Encrypted Reasoning Round-Trip (PR #5982)",
+          "name": "cohere/command-a-reasoning /v1/responses returns reasoning + captures replay input - PR #5982"
+        },
+        {
+          "folder": "42. Cohere Encrypted Reasoning Round-Trip (PR #5982)",
+          "name": "cohere/command-a-reasoning /v1/responses replay preserves encrypted reasoning - PR #5982"
+        },
+        {
+          "folder": "43. Gemini Reasoning Signature Replay (PR #5982)",
+          "name": "gemini/gemini-2.5-flash /v1/responses reasoning + tool call captures replay input - PR #5982"
+        },
+        {
+          "folder": "43. Gemini Reasoning Signature Replay (PR #5982)",
+          "name": "gemini/gemini-2.5-flash /v1/responses replay preserves thought signature - PR #5982"
+        },
+        {
+          "folder": "44. Encrypted Reasoning Fail-Soft (unverifiable payload degrades instead of 400)",
+          "name": "anthropic/claude-haiku-4-5 /openai/v1/responses unverifiable encrypted reasoning degrades - failsoft"
+        },
+        {
+          "folder": "44. Encrypted Reasoning Fail-Soft (unverifiable payload degrades instead of 400)",
+          "name": "anthropic/claude-haiku-4-5 /openai/v1/responses streaming unverifiable encrypted reasoning degrades - failsoft"
+        },
+        {
+          "folder": "44. Encrypted Reasoning Fail-Soft (unverifiable payload degrades instead of 400)",
+          "name": "openai/gpt-5-mini /openai/v1/responses unverifiable encrypted reasoning degrades - failsoft"
+        },
+        {
+          "folder": "39. Reasoning/Thinking Multi-Turn Replay — Criss-Cross Expansion",
+          "name": "anthropic/claude-sonnet-4-5 /openai/v1/responses (drop-in) reasoning single-turn + capture"
+        },
+        {
+          "folder": "39. Reasoning/Thinking Multi-Turn Replay — Criss-Cross Expansion",
+          "name": "anthropic/claude-sonnet-4-5 /openai/v1/responses (drop-in) reasoning replay accepted without corruption"
+        },
+        {
+          "folder": "39. Reasoning/Thinking Multi-Turn Replay — Criss-Cross Expansion",
+          "name": "anthropic/claude-sonnet-4-5 /openai/v1/responses (drop-in) reasoning streaming"
+        },
+        {
+          "folder": "39. Reasoning/Thinking Multi-Turn Replay — Criss-Cross Expansion",
+          "name": "anthropic/claude-opus-4-7 native /v1/chat/completions thinking capture - #4943"
+        },
+        {
+          "folder": "39. Reasoning/Thinking Multi-Turn Replay — Criss-Cross Expansion",
+          "name": "anthropic/claude-opus-4-7 native /v1/chat/completions reasoning_details replay accepted - #4943"
+        },
+        {
+          "folder": "8.6.4 Reasoning / thinking × providers",
+          "name": "8.6.4.A native chat → openai/o3-mini (reasoning_effort)"
+        }
+      ]
+    },
+    {
+      "key": "cross-cut-baseline",
+      "intent": "One cell per endpoint shape and modality so a smoke run still notices if plain chat, streaming, embeddings, tool calling, vision, or structured output breaks outright.",
+      "requests": [
+        {
+          "folder": "8.1.B Native /v1/responses (Responses shape × all providers)",
+          "name": "openai/gpt-5"
+        },
+        {
+          "folder": "8.1.B Native /v1/responses (Responses shape × all providers)",
+          "name": "openai/gpt-4o-mini"
+        },
+        {
+          "folder": "8.1.B Native /v1/responses (Responses shape × all providers)",
+          "name": "anthropic/claude-opus-4-7"
+        },
+        {
+          "folder": "8.1.B Native /v1/responses (Responses shape × all providers)",
+          "name": "azure/gpt-4o-mini"
+        },
+        {
+          "folder": "9. Passthrough (catch-all forwarding)",
+          "name": "POST /openai_passthrough/v1/chat/completions"
+        },
+        {
+          "folder": "9. Passthrough (catch-all forwarding)",
+          "name": "POST /openai_passthrough/v1/responses"
+        },
+        {
+          "folder": "8.2.A Native /v1/chat/completions streaming × all providers",
+          "name": "openai/gpt-4o-mini"
+        },
+        {
+          "folder": "8.2.A Native /v1/chat/completions streaming × all providers",
+          "name": "anthropic/claude-haiku-4-5"
+        },
+        {
+          "folder": "8.2.A Native /v1/chat/completions streaming × all providers",
+          "name": "gemini/gemini-2.5-flash"
+        },
+        {
+          "folder": "8.3.H Native /v1/embeddings × all providers",
+          "name": "openai/text-embedding-3-small"
+        },
+        {
+          "folder": "8.3.H Native /v1/embeddings × all providers",
+          "name": "gemini/gemini-embedding-001"
+        },
+        {
+          "folder": "8.6.1 Tool calling × endpoint shapes × providers",
+          "name": "8.6.1.A native chat → openai/gpt-4o-mini"
+        },
+        {
+          "folder": "8.6.1 Tool calling × endpoint shapes × providers",
+          "name": "8.6.1.A native chat → deepseek/deepseek-v4-flash"
+        },
+        {
+          "folder": "8.6.2 Vision (image input) × endpoint shapes × providers",
+          "name": "8.6.2.A native chat → openai/gpt-4o-mini"
+        },
+        {
+          "folder": "8.6.3 JSON / structured output × providers",
+          "name": "openai/gpt-4o-mini"
+        },
+        {
+          "folder": "8.6.3 JSON / structured output × providers",
+          "name": "anthropic/claude-haiku-4-5"
+        }
+      ]
+    },
+    {
+      "key": "costing-guards",
+      "intent": "Cost and usage recording (verified against the logs DB by the dbverify reporter) plus the provider egress streaming/truncation guards.",
+      "requests": [
+        {
+          "folder": "15. Costing — Failed/Cancelled Requests",
+          "name": "[Costing] Streaming chat cancelled mid-flight records cost"
+        },
+        {
+          "folder": "16. Accounting (cost recording across providers)",
+          "name": "[Accounting] openai non-streaming records cost"
+        },
+        {
+          "folder": "16. Accounting (cost recording across providers)",
+          "name": "[Accounting] openai streaming records cost"
+        },
+        {
+          "folder": "16. Accounting (cost recording across providers)",
+          "name": "[Accounting] anthropic non-streaming records cost"
+        },
+        {
+          "folder": "16. Accounting (cost recording across providers)",
+          "name": "[Accounting] anthropic streaming records cost"
+        },
+        {
+          "folder": "17. Provider Egress Streaming/Truncation Guards (#4923 / #4932 / #4680)",
+          "name": "Bedrock converse-stream (forced tool) closes the tool_use block - #4923"
+        },
+        {
+          "folder": "17. Provider Egress Streaming/Truncation Guards (#4923 / #4932 / #4680)",
+          "name": "Anthropic normalized web_fetch streaming has contiguous content_block indices - #4932"
+        },
+        {
+          "folder": "21. Responses Stream Usage Persistence (#4846 / PR #4899)",
+          "name": "[Accounting] openai/gpt-4o-mini responses streaming records usage - #4846"
+        },
+        {
+          "folder": "21. Responses Stream Usage Persistence (#4846 / PR #4899)",
+          "name": "[Accounting] anthropic/claude-haiku-4-5 responses streaming records usage - #4846"
+        }
+      ]
+    }
+  ]
+}

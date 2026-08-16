@@ -187,6 +187,9 @@ type Options struct {
 	SearchContextCostPerQuery     *float64 `json:"search_context_cost_per_query,omitempty"`
 	CodeInterpreterCostPerSession *float64 `json:"code_interpreter_cost_per_session,omitempty"`
 	InferenceGeoUSMultiplier      *float64 `json:"inference_geo_us_multiplier,omitempty"`
+	// CostPerRequest is a flat fee added once per billed request, on top of
+	// whatever usage-based cost the request otherwise computes to.
+	CostPerRequest *float64 `json:"cost_per_request,omitempty"`
 
 	// Costs - OCR
 	OCRCostPerPage        *float64 `json:"ocr_cost_per_page,omitempty"`
@@ -196,17 +199,18 @@ type Options struct {
 // LookupScopes carries the runtime identifiers used to resolve scoped pricing
 // overrides during cost calculation.
 type LookupScopes struct {
+	UserID        string
 	VirtualKeyID  string
 	SelectedKeyID string
 	Provider      string
 }
 
 // LookupScopesFromContext builds a LookupScopes from a BifrostContext. Reads
-// the governance virtual key ID (not the raw VK token) and the selected key
-// ID. provider should be the provider name string (e.g. "openai"); pass "" if
-// unavailable. Returns nil only when ctx is nil. An empty scopes value is
-// still returned when all fields are empty so global-scope overrides remain
-// evaluable.
+// the governance virtual key ID (not the raw VK token), the selected key ID,
+// and the resolved calling user ID. provider should be the provider name
+// string (e.g. "openai"); pass "" if unavailable. Returns nil only when ctx
+// is nil. An empty scopes value is still returned when all fields are empty
+// so global-scope overrides remain evaluable.
 //
 // NOT SAFE in a goroutine — reads from ctx which is cancelled when the
 // request ends. Call synchronously in PostHooks and pass the result by value
@@ -215,9 +219,11 @@ func LookupScopesFromContext(ctx *schemas.BifrostContext, provider string) *Look
 	if ctx == nil {
 		return nil
 	}
+	userID, _ := ctx.Value(schemas.BifrostContextKeyUserID).(string)
 	virtualKeyID, _ := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string)
 	selectedKeyID, _ := ctx.Value(schemas.BifrostContextKeySelectedKeyID).(string)
 	return &LookupScopes{
+		UserID:        userID,
 		VirtualKeyID:  virtualKeyID,
 		SelectedKeyID: selectedKeyID,
 		Provider:      provider,
@@ -234,6 +240,13 @@ const (
 	ScopeKindVirtualKey            ScopeKind = "virtual_key"
 	ScopeKindVirtualKeyProvider    ScopeKind = "virtual_key_provider"
 	ScopeKindVirtualKeyProviderKey ScopeKind = "virtual_key_provider_key"
+	// The user scope family targets the resolved calling user. It ranks
+	// below the virtual-key family and above the provider scopes during
+	// resolution: virtual-key pricing is checked first, then the user's.
+	// Within the family, more identifiers = more specific.
+	ScopeKindUser            ScopeKind = "user"
+	ScopeKindUserProvider    ScopeKind = "user_provider"
+	ScopeKindUserProviderKey ScopeKind = "user_provider_key"
 )
 
 // MatchType controls how an override pattern is matched against model names.
@@ -250,6 +263,7 @@ type Override struct {
 	ID            string                `json:"id"`
 	Name          string                `json:"name"`
 	ScopeKind     ScopeKind             `json:"scope_kind"`
+	UserID        *string               `json:"user_id,omitempty"`
 	VirtualKeyID  *string               `json:"virtual_key_id,omitempty"`
 	ProviderID    *string               `json:"provider_id,omitempty"`
 	ProviderKeyID *string               `json:"provider_key_id,omitempty"`
@@ -293,6 +307,7 @@ type costInput struct {
 type customPricingEntry struct {
 	id            string
 	scopeKind     ScopeKind
+	userID        string
 	virtualKeyID  string
 	providerID    string
 	providerKeyID string
@@ -337,10 +352,12 @@ func makeKey(model, provider, mode string) string {
 	return model + "|" + provider + "|" + mode
 }
 
-// normalizeProvider folds upstream-datasheet provider name variants
-// (vertex_ai, google-vertex, etc.) onto bifrost's canonical provider names.
+// normalizeProvider folds equivalent provider identifiers onto the canonical
+// provider name used by the pricing catalog.
 func normalizeProvider(p string) string {
 	switch {
+	case p == "together":
+		return "together_ai"
 	case strings.Contains(p, "vertex_ai") || p == "google-vertex":
 		return string(schemas.Vertex)
 	case strings.Contains(p, "bedrock"):
@@ -386,6 +403,22 @@ func normalizeRequestType(reqType schemas.RequestType) string {
 		return "container_create"
 	}
 	return "unknown"
+}
+
+// chatResponsesFallbackMode returns the counterpart pricing mode for request
+// types that providers serve over both the chat-completions and the responses
+// API. Many models carry a datasheet row under only one of the two modes (e.g.
+// bedrock's openai.gpt-5.5 ships as responses-only), so a lookup that misses in
+// its own mode retries under the counterpart rather than pricing at zero.
+// Returns false for request types with no such counterpart.
+func chatResponsesFallbackMode(reqType schemas.RequestType) (string, bool) {
+	switch reqType {
+	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest, schemas.RealtimeRequest, schemas.CompactionRequest:
+		return normalizeRequestType(schemas.ChatCompletionRequest), true
+	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
+		return normalizeRequestType(schemas.ResponsesRequest), true
+	}
+	return "", false
 }
 
 // normalizeStreamRequestType maps a stream variant to its non-stream base type.
@@ -467,7 +500,11 @@ func extractSupportedParams(parsed *modelParametersParseResult) []string {
 		case "web_search":
 			addParam("web_search_options") // chat-path param
 			addParam("web_search")         // responses-path server tool
-		case "stop_sequences":
+		// Anthropic rows spell it stop_sequences; Bedrock's Nova/Titan rows carry the
+		// Converse camelCase stopSequences. Both mean the neutral "stop" parameter that
+		// compat's dropUnsupportedParams gates on — without the camelCase spelling those
+		// 81 models silently lose stop, and the provider runs to end_turn instead.
+		case "stop_sequences", "stopSequences":
 			addParam("stop")
 		case "promptTools", "image_detail", "stream":
 			// skip — not top-level request parameters
@@ -648,6 +685,7 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 		SearchContextCostPerQuery:     entry.SearchContextCostPerQuery,
 		CodeInterpreterCostPerSession: entry.CodeInterpreterCostPerSession,
 		InferenceGeoUSMultiplier:      entry.InferenceGeoUSMultiplier,
+		CostPerRequest:                entry.CostPerRequest,
 
 		OCRCostPerPage:        entry.OCRCostPerPage,
 		AnnotationCostPerPage: entry.AnnotationCostPerPage,
@@ -736,6 +774,7 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		SearchContextCostPerQuery:     pricing.SearchContextCostPerQuery,
 		CodeInterpreterCostPerSession: pricing.CodeInterpreterCostPerSession,
 		InferenceGeoUSMultiplier:      pricing.InferenceGeoUSMultiplier,
+		CostPerRequest:                pricing.CostPerRequest,
 
 		OCRCostPerPage:        pricing.OCRCostPerPage,
 		AnnotationCostPerPage: pricing.AnnotationCostPerPage,
@@ -764,6 +803,7 @@ func convertTableOverride(override *configstoreTables.TablePricingOverride) (Ove
 		ID:            override.ID,
 		Name:          override.Name,
 		ScopeKind:     ScopeKind(override.ScopeKind),
+		UserID:        override.UserID,
 		VirtualKeyID:  override.VirtualKeyID,
 		ProviderID:    override.ProviderID,
 		ProviderKeyID: override.ProviderKeyID,

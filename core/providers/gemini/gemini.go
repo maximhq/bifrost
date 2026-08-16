@@ -68,7 +68,7 @@ func NewGeminiProvider(config *schemas.ProviderConfig, logger schemas.Logger) *G
 		ReadTimeout:         requestTimeout,
 		WriteTimeout:        requestTimeout,
 		MaxConnsPerHost:     config.NetworkConfig.MaxConnsPerHost,
-		MaxIdleConnDuration: 30 * time.Second,
+		MaxIdleConnDuration: time.Second * time.Duration(config.NetworkConfig.KeepAliveTimeoutInSeconds),
 		MaxConnWaitTimeout:  requestTimeout,
 		MaxConnDuration:     time.Second * time.Duration(schemas.DefaultMaxConnDurationInSeconds),
 		ConnPoolStrategy:    fasthttp.FIFO,
@@ -429,7 +429,7 @@ func HandleGeminiChatCompletionStream(
 
 	startTime := time.Now()
 	// Make the request — caller is responsible for passing a streaming-configured client.
-	doErr := client.Do(req, resp)
+	doErr := providerUtils.DoStreamingRequest(ctx, client, req, resp)
 	latency := time.Since(startTime)
 	if doErr != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -560,14 +560,7 @@ func HandleGeminiChatCompletionStream(
 			if err != nil {
 				if strings.Contains(err.Error(), "gemini api error") {
 					// Handle API error
-					bifrostErr := &schemas.BifrostError{
-						Type:           schemas.Ptr("gemini_api_error"),
-						IsBifrostError: false,
-						Error: &schemas.ErrorField{
-							Message: err.Error(),
-							Error:   err,
-						},
-					}
+					bifrostErr := toGeminiStreamBifrostError(err)
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
 					return
@@ -941,7 +934,7 @@ func HandleGeminiResponsesStream(
 
 	startTime := time.Now()
 	// Make the request — caller is responsible for passing a streaming-configured client.
-	doErr := client.Do(req, resp)
+	doErr := providerUtils.DoStreamingRequest(ctx, client, req, resp)
 	latency := time.Since(startTime)
 	if doErr != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -1080,14 +1073,7 @@ func HandleGeminiResponsesStream(
 			if err != nil {
 				if strings.Contains(err.Error(), "gemini api error") {
 					// Handle API error
-					bifrostErr := &schemas.BifrostError{
-						Type:           schemas.Ptr("gemini_api_error"),
-						IsBifrostError: false,
-						Error: &schemas.ErrorField{
-							Message: err.Error(),
-							Error:   err,
-						},
-					}
+					bifrostErr := toGeminiStreamBifrostError(err)
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse), responseChan, logger, postHookSpanFinalizer)
 					return
@@ -1266,7 +1252,7 @@ func (provider *GeminiProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		providerUtils.MaterializeStreamErrorBody(ctx, resp)
-		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		provider.logger.Debug(fmt.Sprintf("error from %s provider: status %d", providerName, resp.StatusCode()))
 		parsedErr := providerUtils.EnrichError(ctx, parseGeminiError(resp), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		wait()
 		fasthttp.ReleaseResponse(resp)
@@ -1440,7 +1426,7 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 
 	startTime := time.Now()
 	// Make the request
-	err := provider.streamingClient.Do(req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, provider.streamingClient, req, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -1545,14 +1531,7 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 			if err != nil {
 				if strings.Contains(err.Error(), "gemini api error") {
 					// Handle API error
-					bifrostErr := &schemas.BifrostError{
-						Type:           schemas.Ptr("gemini_api_error"),
-						IsBifrostError: false,
-						Error: &schemas.ErrorField{
-							Message: err.Error(),
-							Error:   err,
-						},
-					}
+					bifrostErr := toGeminiStreamBifrostError(err)
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger, postHookSpanFinalizer)
 					return
@@ -1735,7 +1714,7 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 
 	startTime := time.Now()
 	// Make the request
-	err := provider.streamingClient.Do(req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, provider.streamingClient, req, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -1839,14 +1818,7 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 			geminiResponse, err := processGeminiStreamChunk(jsonData)
 			if err != nil {
 				if strings.Contains(err.Error(), "gemini api error") {
-					bifrostErr := &schemas.BifrostError{
-						Type:           schemas.Ptr("gemini_api_error"),
-						IsBifrostError: false,
-						Error: &schemas.ErrorField{
-							Message: err.Error(),
-							Error:   err,
-						},
-					}
+					bifrostErr := toGeminiStreamBifrostError(err)
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger, postHookSpanFinalizer)
 					return
@@ -2443,8 +2415,7 @@ func (provider *GeminiProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 			return nil, bifrostErr
 		}
 		if resp.StatusCode() != fasthttp.StatusOK {
-			// log full error
-			provider.logger.Error("failed to download video: " + string(resp.Body()))
+			provider.logger.Error("failed to download video: status %d", resp.StatusCode())
 			return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(
 				fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()),
 				nil,
@@ -3128,6 +3099,10 @@ func (provider *GeminiProvider) BatchDelete(ctx *schemas.BifrostContext, keys []
 func processGeminiStreamChunk(jsonData []byte) (*GenerateContentResponse, error) {
 	// Error chunks are rare; avoid a second decode in the common path.
 	if bytes.Contains(jsonData, []byte(`"error"`)) {
+		var errorResp GeminiGenerationError
+		if err := sonic.Unmarshal(jsonData, &errorResp); err == nil && errorResp.Error != nil {
+			return nil, &GeminiStreamAPIError{Err: errorResp.Error}
+		}
 		var errorCheck map[string]interface{}
 		if err := sonic.Unmarshal(jsonData, &errorCheck); err == nil {
 			if errValue, hasError := errorCheck["error"]; hasError {
@@ -3923,6 +3898,13 @@ func (provider *GeminiProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		isLargePayload = true
 	}
 
+	if strings.TrimSpace(request.Model) == "" {
+		return nil, providerUtils.NewBifrostOperationError("model is required for Gemini count tokens request", fmt.Errorf("missing model"))
+	}
+
+	// Determine native model name (e.g., parse any provider prefix)
+	_, model := schemas.ParseModelString(request.Model, schemas.Gemini)
+
 	var (
 		jsonData   []byte
 		bifrostErr *schemas.BifrostError
@@ -3941,24 +3923,13 @@ func (provider *GeminiProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		}
 
 		jsonData = normalizeRawGenerateContentBody(ctx, jsonData)
-
-		// Use sjson to delete fields directly from JSON bytes, preserving key ordering
-		jsonData, _ = providerUtils.DeleteJSONField(jsonData, "toolConfig")
-		jsonData, _ = providerUtils.DeleteJSONField(jsonData, "generationConfig")
-		jsonData, _ = providerUtils.DeleteJSONField(jsonData, "systemInstruction")
+		jsonData = wrapGeminiCountTokensBody(jsonData, model)
 	}
 
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
-
-	if strings.TrimSpace(request.Model) == "" {
-		return nil, providerUtils.NewBifrostOperationError("model is required for Gemini count tokens request", fmt.Errorf("missing model"))
-	}
-
-	// Determine native model name (e.g., parse any provider prefix)
-	_, model := schemas.ParseModelString(request.Model, schemas.Gemini)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	path := fmt.Sprintf("/models/%s:countTokens", model)
@@ -4110,7 +4081,16 @@ func (provider *GeminiProvider) Passthrough(
 
 	fasthttpReq.SetBody(req.Body)
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, fasthttpReq, resp)
+	var latency time.Duration
+	var bifrostErr *schemas.BifrostError
+	var wait func()
+	// Google redirects file downloads to /download/v1beta, and only Bifrost holds
+	// the API key that the redirect target requires — so follow it here.
+	if req.Method == http.MethodGet && strings.Contains(req.Path, ":download") {
+		latency, bifrostErr, wait = providerUtils.MakeRequestWithContextFollowRedirects(ctx, provider.client, fasthttpReq, resp, 5)
+	} else {
+		latency, bifrostErr, wait = providerUtils.MakeRequestWithContext(ctx, provider.client, fasthttpReq, resp)
+	}
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -4186,7 +4166,7 @@ func (provider *GeminiProvider) PassthroughStream(
 	fasthttpReq.SetBody(req.Body)
 
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.streamingClient, resp)
-	err := activeClient.Do(fasthttpReq, resp)
+	err := providerUtils.DoStreamingRequest(ctx, activeClient, fasthttpReq, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		providerUtils.ReleaseStreamingResponse(ctx, resp)

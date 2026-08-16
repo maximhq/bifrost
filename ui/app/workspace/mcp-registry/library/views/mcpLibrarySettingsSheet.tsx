@@ -102,13 +102,13 @@ export function MCPLibrarySettingsSheet({ open, onClose }: MCPLibrarySettingsShe
 	return (
 		<Sheet open={open} onOpenChange={(sheetOpen) => !sheetOpen && onClose()}>
 			<SheetContent className="flex w-full flex-col overflow-x-hidden px-0">
-				<SheetHeader className="flex flex-col items-start px-7 pt-8">
+				<SheetHeader className="flex flex-col items-start px-4 pt-8 md:px-7">
 					<SheetTitle>MCP Library Settings</SheetTitle>
 					<SheetDescription>Configure the sync source and interval for the MCP server catalog.</SheetDescription>
 				</SheetHeader>
 
 				<form onSubmit={handleSubmit(onSubmit)} className="flex min-h-0 flex-1 flex-col">
-					<div className="flex-1 space-y-4 overflow-y-auto px-8">
+					<div className="flex-1 space-y-4 overflow-y-auto px-4 md:px-8">
 						<div className="space-y-2 rounded-sm border p-4">
 							<div className="space-y-0.5">
 								<Label htmlFor="mcp-library-url">Library Sync URL</Label>
@@ -145,7 +145,7 @@ export function MCPLibrarySettingsSheet({ open, onClose }: MCPLibrarySettingsShe
 						</div>
 					</div>
 
-					<div className="dark:bg-card border-border border-t bg-white px-8 py-4">
+					<div className="dark:bg-card border-border border-t bg-white px-4 py-4 md:px-8">
 						<div className="flex justify-end gap-2">
 							<Button
 								variant="outline"

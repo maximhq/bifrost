@@ -28,7 +28,7 @@ bifrost:
         provider_config_ids: [2007]
       - id: 1002
         name: "input-managed-guardrails"
-        description: "Input moderation via Azure + Bedrock + GraySwan"
+        description: "Input moderation via Azure + Bedrock + Gray Swan"
         enabled: true
         cel_expression: "headers[\"test\"] == \"test\""
         query:

@@ -3,7 +3,7 @@
  * Thin wrapper around the reusable CELRuleBuilder with routing-specific config
  */
 
-import { CELRuleBuilder as BaseCELRuleBuilder } from "@/components/ui/custom/celBuilder";
+import { CELBuilderMode, CELRuleBuilder as BaseCELRuleBuilder } from "@/components/ui/custom/celBuilder";
 import { getRoutingFields } from "@/lib/config/celFieldsRouting";
 import { celOperatorsRouting } from "@/lib/config/celOperatorsRouting";
 import { convertRuleGroupToCEL, validateRegexPattern } from "@/lib/utils/celConverterRouting";
@@ -17,6 +17,11 @@ interface CELRuleBuilderProps {
 	models?: string[];
 	allowCustomModels?: boolean;
 	isLoading?: boolean;
+	allowCelMode?: boolean;
+	initialMode?: CELBuilderMode;
+	initialCel?: string;
+	onModeChange?: (mode: CELBuilderMode) => void;
+	celError?: string | null;
 }
 
 export function CELRuleBuilder({
@@ -26,6 +31,11 @@ export function CELRuleBuilder({
 	models = [],
 	isLoading = false,
 	allowCustomModels = false,
+	allowCelMode = false,
+	initialMode = "builder",
+	initialCel = "",
+	onModeChange,
+	celError = null,
 }: CELRuleBuilderProps) {
 	const fields = useMemo(() => getRoutingFields(providers, models), [providers, models]);
 
@@ -39,6 +49,11 @@ export function CELRuleBuilder({
 			convertToCEL={convertRuleGroupToCEL}
 			validateRegex={validateRegexPattern}
 			builderContext={{ allowCustomModels }}
+			allowCelMode={allowCelMode}
+			initialMode={initialMode}
+			initialCel={initialCel}
+			onModeChange={onModeChange}
+			celError={celError}
 		/>
 	);
 }

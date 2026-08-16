@@ -29,6 +29,7 @@ Sources:
 - [x] Tool choice forced (`tool_choice: "required"`)
 - [x] Structured output (`response_format: json_schema`)
 - [x] Reasoning effort (`reasoning_effort: "high"` for gpt-5/o3)
+- [x] Reasoning effort forwarded to xAI (grok-4.5 / grok-4.6 / grok-4.20-multi-agent) — folder 50
 - [ ] **Tool choice: specific function** (`tool_choice: { type: "function", function: { name: "x" } }`)
 - [ ] **Parallel tool calls** (`parallel_tool_calls: true/false`)
 - [ ] **Response format JSON object** (`response_format: { type: "json_object" }`)
@@ -181,7 +182,7 @@ Sources:
 - [x] Tool config (`toolConfig: { tools: [{ toolSpec: { name, inputSchema } }] }`)
 - [ ] **Streaming** (`POST /model/{modelId}/converse-stream`)
 - [ ] **Vision** (`content: [{ image: { format, source: { bytes } } }]`)
-- [ ] **Document input** (`content: [{ document: { format, name, source: { bytes } } }]`)
+- [~] **Document input** (`content: [{ document: { format, name, source: { bytes } } }]`) — the converter into this block is covered by folder 42 (#5472: OpenAI `type:"file"` / Responses `input_file` document uploads via `/v1/chat/completions` and `/v1/responses`, xlsx/docx/csv/pdf/txt + `file_url`). A native Converse-shaped `document` block posted directly at `/bedrock/model/{id}/converse` is still uncovered.
 - [ ] **Video input** (`content: [{ video: { format, source } }]`)
 - [ ] **Tool result** (`content: [{ toolResult: { toolUseId, content, status } }]`)
 - [ ] **Stop sequences** (`inferenceConfig: { stopSequences: [...] }`)
@@ -196,8 +197,9 @@ Sources:
 
 ### InvokeModel API (`POST /model/{modelId}/invoke`)
 
-- [ ] **Direct invoke** with provider-native body (Anthropic shape, Cohere shape, etc.)
-- [ ] **Invoke streaming** (`POST /model/{modelId}/invoke-with-response-stream`)
+- [x] **Direct invoke** with Anthropic-native provider body, incl. image/tool_use/tool_result content blocks — folder 37 (#5560)
+- [ ] **Direct invoke** with Cohere-native provider body
+- [x] **Invoke streaming** (`POST /model/{modelId}/invoke-with-response-stream`) — folder 36 (#5629), folder 37 (#5560)
 - [ ] **Async invocation jobs** (`POST /model-invocation-job` + list + get + stop)
 
 ### Cross-region inference profiles
@@ -258,7 +260,7 @@ Sources:
 - [ ] **URL context** (`tools: [{ urlContext: {} }]`)
 - [ ] **Live API** (websocket-based bidirectional streaming)
 - [ ] **Function responses** (`role: "function"` parts with `functionResponse`)
-- [ ] **Thinking response signature** (return `thoughtSignature` to continue thinking across turns)
+- [x] **Thinking response signature** (return `thoughtSignature` to continue thinking across turns): folder `49.` replays a captured server-side tool turn (toolCall/toolResponse + thoughtSignature) in `contents`; Gemini validates signatures upstream, so a 2xx pins the round-trip
 
 ### Other endpoints
 
@@ -367,6 +369,9 @@ These exercise Bifrost's translation layer between provider shapes — every che
 - [~] **Tool choice forced cross-cut** (OpenAI + Bedrock + Vertex Claude via Cross-Cut Round 4; **Anthropic + Gemini + Azure still missing**)
 - [ ] **Computer use via cross-model** (`anthropic/claude-...` with computer_2025x tools - verifies Bifrost's translation; currently only tested via /anthropic drop-in and `vertex/claude-opus-4-7` preview at L1279)
 - [~] **Extended/adaptive thinking via cross-model** (Anthropic enabled + Bedrock enabled/adaptive + Vertex Claude enabled/adaptive covered; **anthropic-direct adaptive Opus 4.7 still missing**)
+- [x] **OpenAI Responses reasoning item id/encrypted_content round-trip via Anthropic drop-in** (`/anthropic/v1/messages` → openai/gpt-5: turn-1 `redacted_thinking` block replayed on turn 2 without OpenAI's item-id mismatch 400 — pins #5186; folder 38)
+- [~] **Reasoning/thinking multi-turn replay across the criss-cross matrix** (folder 39: OpenAI-shaped request → Anthropic model reverse direction, plus native-chat Anthropic-origin `reasoning_details` replay per #4943 previously uncovered by the harness; Gemini `thoughtSignature` replay (distinct smuggling mechanism from the OpenAI/Anthropic encrypted_content envelope, #5186 — deserves its own replay-matrix folder) and Azure-hosted-reasoning-model coverage still open)
+- [ ] **Native `/v1/chat/completions` `reasoning_details` id-loss for OpenAI-origin encrypted reasoning** (same bug *class* as #5186 but a separate code path: `core/schemas/mux.go` `ToChatMessages` never populates `ChatReasoningDetails.ID` on egress, and `ToResponsesMessages` mints a fresh `rs_` id on replay regardless, unaffected by the `/anthropic` surface fix. No tracked issue yet — file one before adding a harness case; a currently-red case with no owner/fix-in-flight breaks this collection's regression-pin convention.)
 - [x] **Prompt caching via cross-model** (Anthropic + Bedrock 1h + Vertex Claude 1h covered)
 - [~] **System message cross-cut** (Vertex Claude added in Round 4; Azure added in Round 4; **other providers were already implicit via cross-cut entries** - if explicit test needed, file a ticket)
 - [~] **Multi-turn conversation cross-cut** (Vertex Claude added in Round 4; remaining providers still cross-cut-implicit only)
@@ -392,7 +397,7 @@ should be re-tested through passthrough since the translation layer is bypassed.
 - [ ] **OpenAI passthrough w/ web_search**
 - [ ] **OpenAI passthrough w/ code_interpreter**
 - [ ] **Anthropic passthrough w/ computer_use** (verify auth header strip + beta header injection)
-- [ ] **Anthropic passthrough w/ extended thinking**
+- [~] **Anthropic passthrough w/ extended thinking** (folder 51 sends `thinking: { type: "enabled", budget_tokens }` through `/anthropic/v1/messages` and pins the encrypted-reasoning fail-soft's raw rewrite against Anthropic's "latest assistant message cannot be modified" rule — PR #6110; a fresh non-replay request asserting a `thinking` block comes back through passthrough, and the streaming variant, are still open)
 - [ ] **Anthropic passthrough w/ prompt caching**
 - [ ] **Anthropic passthrough w/ web_search_20260209**
 - [ ] **GenAI passthrough w/ googleSearch**

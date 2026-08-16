@@ -318,6 +318,17 @@ func (h *PluginsHandler) createPlugin(ctx *fasthttp.RequestCtx) {
 	if isBuiltin && request.Path != nil {
 		request.Path = nil
 	}
+	// A custom plugin path is native code (.so) that gets dlopen()'d, running its init()
+	// in-process - that's intentional admin functionality, but only for a caller who
+	// actually authenticated, never for a request let through because dashboard auth is
+	// unconfigured/disabled. Refuse before any DB write so an unauthenticated caller can't
+	// even persist an attacker-controlled path for a later authenticated action to load.
+	if !isBuiltin && request.Path != nil {
+		if bypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool); bypassed {
+			SendError(ctx, fasthttp.StatusForbidden, "Creating a custom plugin with a path requires genuine admin authentication; dashboard auth is currently disabled or unconfigured. Enable dashboard authentication first.")
+			return
+		}
+	}
 	// Normalize before DB write so SecretVar fields are stored as plain strings.
 	normalizedConfig, err := h.normalizePluginConfig(request.Name, request.Config)
 	if err != nil {
@@ -444,6 +455,15 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 	// Built-in plugins should not have a path
 	if isBuiltin && request.Path != nil {
 		request.Path = nil
+	}
+	// See the matching check in createPlugin: a custom plugin path is native code that
+	// gets dlopen()'d in-process, so setting or changing one requires genuine
+	// authentication even while the rest of the management API stays open.
+	if !isBuiltin && request.Path != nil {
+		if bypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool); bypassed {
+			SendError(ctx, fasthttp.StatusForbidden, "Setting a custom plugin path requires genuine admin authentication; dashboard auth is currently disabled or unconfigured. Enable dashboard authentication first.")
+			return
+		}
 	}
 	// Merge incoming config over the existing DB config so fields unknown to the
 	// calling form (e.g. plugin_span_filter set by a separate UI sheet) are not wiped.
@@ -628,15 +648,23 @@ func restoreRedactedValue(incoming, existing any) any {
 	}
 }
 
-// isSecretVarObject returns true if m has the shape of a serialised SecretVar.
+// isSecretVarObject returns true if m has the shape of a serialised SecretVar: a string
+// "value" plus, optionally, only SecretVar keys. Plain-text SecretVars marshal as
+// {"value": "..."} alone (ref/type are omitempty), so value-only objects must match too —
+// e.g. the Kafka SASL credentials round-tripped by the UI after a redacted GET.
 func isSecretVarObject(m map[string]any) bool {
-	_, hasValue := m["value"]
-	_, hasSecretRef := m["ref"]
-	_, hasType := m["type"]
-	// shipped backward compat: env_var/from_env
-	_, hasEnvVar := m["env_var"]
-	_, hasFromEnv := m["from_env"]
-	return hasValue && ((hasSecretRef && hasType) || (hasEnvVar && hasFromEnv))
+	if _, ok := m["value"].(string); !ok {
+		return false
+	}
+	for k := range m {
+		switch k {
+		// "env_var"/"from_env" are shipped backward compat for "ref"/"type".
+		case "value", "ref", "type", "env_var", "from_env":
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // marshalSecretVarObject serialises a SecretVar-shaped map back to the JSON string that

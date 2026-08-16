@@ -1,0 +1,44 @@
+name: Workflow Lint
+
+# Guards on the workflow definitions themselves. These run on pull requests because
+# that is the only point they CAN run: release-pipeline.yml triggers on push to main,
+# so a job added there with a broken egress allowlist would first execute during a
+# real release, with the release riding on it.
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/**"
+
+permissions:
+  contents: read
+
+jobs:
+  check-egress-allowlist:
+    name: Egress allowlist covers apt usage
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            files.pythonhosted.org:443
+            github.com:443
+            pypi.org:443
+            release-assets.githubusercontent.com:443
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # PyYAML only - deliberately no apt-get here, so this job needs no Ubuntu
+      # mirror access and stays outside the very rule it enforces.
+      - name: Install PyYAML
+        run: python3 -m pip install --user --disable-pip-version-check pyyaml
+
+      - name: Check egress allowlists
+        run: ./.github/workflows/scripts/check-egress-allowlist.sh
+
+      - name: Check version-format guard
+        run: ./.github/workflows/scripts/version-format.test.sh
