@@ -18,11 +18,12 @@ import (
 // config from the base.
 func TestBuildStreamingClient_ZerosReadWriteTimeout(t *testing.T) {
 	base := &fasthttp.Client{
-		ReadTimeout:        30 * time.Second,
-		WriteTimeout:       30 * time.Second,
-		MaxConnDuration:    5 * time.Minute,
-		MaxConnWaitTimeout: 15 * time.Second,
-		MaxConnsPerHost:    123,
+		ReadTimeout:         30 * time.Second,
+		WriteTimeout:        30 * time.Second,
+		MaxConnDuration:     5 * time.Minute,
+		MaxConnWaitTimeout:  15 * time.Second,
+		MaxConnsPerHost:     123,
+		MaxResponseBodySize: 1024,
 	}
 	ConfigureDialer(base, false)
 
@@ -39,6 +40,9 @@ func TestBuildStreamingClient_ZerosReadWriteTimeout(t *testing.T) {
 	}
 	if !stream.StreamResponseBody {
 		t.Error("StreamResponseBody: got false, want true")
+	}
+	if stream.MaxResponseBodySize != 0 {
+		t.Errorf("MaxResponseBodySize: got %d, want 0 for streaming", stream.MaxResponseBodySize)
 	}
 	if stream.MaxConnWaitTimeout != base.MaxConnWaitTimeout {
 		t.Errorf("MaxConnWaitTimeout should be preserved: got %v, want %v",
@@ -65,6 +69,17 @@ func TestBuildStreamingClient_BaseUnchanged(t *testing.T) {
 	}
 	if base.MaxConnDuration != 5*time.Minute {
 		t.Errorf("base MaxConnDuration mutated: got %v, want 5m", base.MaxConnDuration)
+	}
+}
+
+func TestBuildStreamingClient_ClearsUnaryResponseLimit(t *testing.T) {
+	base := &fasthttp.Client{MaxResponseBodySize: 1024}
+	stream := BuildStreamingClient(base)
+	if stream.MaxResponseBodySize != 0 {
+		t.Fatalf("MaxResponseBodySize: got %d, want 0", stream.MaxResponseBodySize)
+	}
+	if base.MaxResponseBodySize != 1024 {
+		t.Fatalf("base MaxResponseBodySize mutated: got %d, want 1024", base.MaxResponseBodySize)
 	}
 }
 

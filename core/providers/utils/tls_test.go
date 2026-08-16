@@ -68,6 +68,33 @@ func TestConfigureTLS_ReturnsUnchangedWhenNeitherSet(t *testing.T) {
 	}
 }
 
+func TestConfigureTLS_AppliesMaxResponseBodySize(t *testing.T) {
+	client := &fasthttp.Client{}
+	ConfigureTLS(client, schemas.NetworkConfig{MaxResponseBodySize: 4096}, testLogger{})
+
+	if client.MaxResponseBodySize != 4096 {
+		t.Fatalf("MaxResponseBodySize: got %d, want 4096", client.MaxResponseBodySize)
+	}
+}
+
+func TestConfigureTLS_ZeroClearsMaxResponseBodySize(t *testing.T) {
+	client := &fasthttp.Client{MaxResponseBodySize: 4096}
+	ConfigureTLS(client, schemas.NetworkConfig{}, testLogger{})
+
+	if client.MaxResponseBodySize != 0 {
+		t.Fatalf("MaxResponseBodySize: got %d, want 0 for unlimited config", client.MaxResponseBodySize)
+	}
+}
+
+func TestConfigureTLS_NegativeMaxResponseBodySizeFailsClosed(t *testing.T) {
+	client := &fasthttp.Client{}
+	ConfigureTLS(client, schemas.NetworkConfig{MaxResponseBodySize: -1}, testLogger{})
+
+	if client.MaxResponseBodySize != 1 {
+		t.Fatalf("MaxResponseBodySize: got %d, want fail-closed limit of 1", client.MaxResponseBodySize)
+	}
+}
+
 func TestConfigureTLS_SetsInsecureSkipVerify(t *testing.T) {
 	client := &fasthttp.Client{}
 	logger := testLogger{}
