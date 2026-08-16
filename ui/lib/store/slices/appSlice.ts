@@ -1,4 +1,30 @@
-import { createSlice, PayloadAction } from "@reduxjs/toolkit";
+import { createSelector, createSlice, PayloadAction } from "@reduxjs/toolkit";
+import type { Notification } from "@/lib/types/notifications";
+
+/** How many notifications the tray keeps in memory, matching the API page size. */
+const MAX_NOTIFICATIONS = 50;
+
+/**
+ * Newest first. Do not compare created_at as strings: Go marshals RFC3339 with
+ * trailing zeros in the fractional second stripped, so within the same second
+ * "…:00.5Z" and "…:00Z" order by "." vs "Z" rather than by time.
+ */
+function byNewestFirst(a: Notification, b: Notification) {
+	return Date.parse(b.created_at) - Date.parse(a.created_at);
+}
+
+/**
+ * The server prunes expired rows hourly, so a tray that is open across the
+ * boundary can still be holding rows the API would no longer return. Expiry is
+ * applied on every write, and pruneExpiredNotifications keeps a long-lived tab
+ * converging. Doing it in the reducer rather than the selector is deliberate:
+ * createSelector memoises on its inputs and would never recompute as the clock
+ * moves.
+ */
+function isLive(notification: Notification, now: number) {
+	const expiresAt = Date.parse(notification.expires_at);
+	return Number.isNaN(expiresAt) || expiresAt > now;
+}
 
 // Define the shape of our app state
 export interface AppState {
@@ -17,15 +43,12 @@ export interface AppState {
 		email?: string;
 	} | null;
 
-	// Global notifications/toasts
-	notifications: {
-		id: string;
-		type: "success" | "error" | "warning" | "info";
-		title: string;
-		message: string;
-		timestamp: number;
-		read: boolean;
-	}[];
+	notifications: Notification[];
+	notificationPreferences: {
+		scope: string | null;
+		readIds: string[];
+		dismissedIds: string[];
+	};
 
 	// Application settings
 	settings: {
@@ -67,6 +90,7 @@ const initialState: AppState = {
 	isOnline: true,
 	currentUser: null,
 	notifications: [],
+	notificationPreferences: { scope: null, readIds: [], dismissedIds: [] },
 	settings: {
 		autoRefresh: false,
 		refreshInterval: 30,
@@ -116,40 +140,64 @@ const appSlice = createSlice({
 		},
 
 		// Notification Actions
-		addNotification: (state, action: PayloadAction<Omit<AppState["notifications"][0], "id" | "timestamp" | "read">>) => {
-			const notification = {
-				...action.payload,
-				id: Date.now().toString(),
-				timestamp: Date.now(),
-				read: false,
-			};
-			state.notifications.unshift(notification);
+		setNotifications: (state, action: PayloadAction<Notification[]>) => {
+			const now = Date.now();
+			const byID = new Map(state.notifications.map((notification) => [notification.id, notification]));
+			action.payload.forEach((notification) => byID.set(notification.id, notification));
+			state.notifications = Array.from(byID.values())
+				.filter((notification) => isLive(notification, now))
+				.sort(byNewestFirst)
+				.slice(0, MAX_NOTIFICATIONS);
+		},
 
-			// Keep only last 50 notifications
-			if (state.notifications.length > 50) {
-				state.notifications = state.notifications.slice(0, 50);
+		addNotification: (state, action: PayloadAction<Notification>) => {
+			const now = Date.now();
+			state.notifications = [action.payload, ...state.notifications.filter((notification) => notification.id !== action.payload.id)]
+				.filter((notification) => isLive(notification, now))
+				.sort(byNewestFirst)
+				.slice(0, MAX_NOTIFICATIONS);
+		},
+
+		/** Drops rows whose expires_at has passed. Dispatched on a timer by useNotificationSync. */
+		pruneExpiredNotifications: (state) => {
+			const now = Date.now();
+			const live = state.notifications.filter((notification) => isLive(notification, now));
+			// Only reassign on an actual change, so the periodic tick does not
+			// invalidate every notification selector on a quiet deployment.
+			if (live.length !== state.notifications.length) {
+				state.notifications = live;
 			}
 		},
 
+		hydrateNotificationPreferences: (state, action: PayloadAction<{ scope: string; readIds: string[]; dismissedIds: string[] }>) => {
+			if (state.notificationPreferences.scope !== action.payload.scope) {
+				state.notifications = [];
+			}
+			state.notificationPreferences = action.payload;
+		},
+
 		markNotificationRead: (state, action: PayloadAction<string>) => {
-			const notification = state.notifications.find((n) => n.id === action.payload);
-			if (notification) {
-				notification.read = true;
+			if (!state.notificationPreferences.readIds.includes(action.payload)) {
+				state.notificationPreferences.readIds.push(action.payload);
 			}
 		},
 
 		removeNotification: (state, action: PayloadAction<string>) => {
-			state.notifications = state.notifications.filter((n) => n.id !== action.payload);
+			if (!state.notificationPreferences.dismissedIds.includes(action.payload)) {
+				state.notificationPreferences.dismissedIds.push(action.payload);
+			}
 		},
 
 		clearAllNotifications: (state) => {
-			state.notifications = [];
+			state.notificationPreferences.dismissedIds = Array.from(
+				new Set([...state.notificationPreferences.dismissedIds, ...state.notifications.map((notification) => notification.id)]),
+			);
 		},
 
 		markAllNotificationsRead: (state) => {
-			state.notifications.forEach((notification) => {
-				notification.read = true;
-			});
+			state.notificationPreferences.readIds = Array.from(
+				new Set([...state.notificationPreferences.readIds, ...state.notifications.map((notification) => notification.id)]),
+			);
 		},
 
 		// Settings Actions
@@ -188,6 +236,9 @@ export const {
 
 	// Notification Actions
 	addNotification,
+	setNotifications,
+	pruneExpiredNotifications,
+	hydrateNotificationPreferences,
 	markNotificationRead,
 	removeNotification,
 	clearAllNotifications,
@@ -217,7 +268,17 @@ export const selectIsInitializing = (state: { app: AppState }) => state.app.isIn
 export const selectIsOnline = (state: { app: AppState }) => state.app.isOnline;
 export const selectCurrentUser = (state: { app: AppState }) => state.app.currentUser;
 export const selectNotifications = (state: { app: AppState }) => state.app.notifications;
-export const selectUnreadNotificationsCount = (state: { app: AppState }) => state.app.notifications.filter((n) => !n.read).length;
+const selectReadNotificationIds = (state: { app: AppState }) => state.app.notificationPreferences.readIds;
+const selectDismissedNotificationIds = (state: { app: AppState }) => state.app.notificationPreferences.dismissedIds;
+export const selectVisibleNotifications = createSelector(
+	[selectNotifications, selectDismissedNotificationIds],
+	(notifications, dismissedIds) => notifications.filter((notification) => !dismissedIds.includes(notification.id)),
+);
+export const selectUnreadNotificationsCount = createSelector(
+	[selectVisibleNotifications, selectReadNotificationIds],
+	(notifications, readIds) => notifications.filter((notification) => !readIds.includes(notification.id)).length,
+);
+export const selectNotificationPreferences = (state: { app: AppState }) => state.app.notificationPreferences;
 export const selectSettings = (state: { app: AppState }) => state.app.settings;
 export const selectGlobalError = (state: { app: AppState }) => state.app.globalError;
 export const selectFeatures = (state: { app: AppState }) => state.app.features;

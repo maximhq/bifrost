@@ -468,6 +468,22 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_needs_session_stickiness_column"}, run: migrationAddNeedsSessionStickinessColumn},
 	{IDs: []string{"add_bedrock_endpoints_columns"}, run: migrationAddBedrockEndpointsColumns},
 	{IDs: []string{"add_cost_per_request_pricing_column"}, run: migrationAddCostPerRequestPricingColumn},
+	{IDs: []string{"add_notifications_table"}, run: migrationAddNotificationsTable},
+}
+
+func migrationAddNotificationsTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_notifications_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).AutoMigrate(&tables.TableNotification{})
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).Migrator().DropTable(&tables.TableNotification{})
+		},
+	})
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
