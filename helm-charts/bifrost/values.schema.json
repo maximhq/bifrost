@@ -336,6 +336,41 @@
           },
           "additionalProperties": false
         },
+        "hume": {
+          "type": "object",
+          "description": "Configuration for the Hume EVI custom language model SSE adapter.",
+          "properties": {
+            "defaultModel": {
+              "type": "string",
+              "pattern": "^$|.*\\S.*",
+              "description": "Bifrost provider/model string or model-catalog-resolvable name used when Hume omits its custom language model identifier. An empty string leaves the fallback unset."
+            },
+            "prosodyPrompt": {
+              "type": "object",
+              "description": "Controls optional conversion of Hume vocal-expression confidence scores into prompt text.",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": false
+                },
+                "scope": {
+                  "type": "string",
+                  "enum": ["latest_user", "all_user_messages"],
+                  "default": "latest_user",
+                  "description": "Select only the latest user message (when it has scores) or every scored user message."
+                },
+                "maxEmotions": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "default": 3,
+                  "description": "Maximum number of highest-confidence expressions to inject per selected message. Zero includes all scores."
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
         "authConfig": {
           "$ref": "#/$defs/authConfig"
         },

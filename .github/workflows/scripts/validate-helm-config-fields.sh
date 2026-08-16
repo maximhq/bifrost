@@ -150,6 +150,12 @@ image:
   tag: v1.0.0
 bifrost:
   encryptionKey: "my-secret-passphrase"
+  hume:
+    defaultModel: "openai/gpt-4o-mini"
+    prosodyPrompt:
+      enabled: true
+      scope: "all_user_messages"
+      maxEmotions: 0
   client:
     dropExcessRequests: true
     initialPoolSize: 500
@@ -191,6 +197,10 @@ VALS
 render_config "$TMPDIR/values-client.yaml"
 assert_field_value 'schema field' '.$schema' '"https://www.getbifrost.ai/schema"'
 assert_field_value 'encryption_key' '.encryption_key' '"my-secret-passphrase"'
+assert_field_value 'hume.default_model' '.hume.default_model' '"openai/gpt-4o-mini"'
+assert_field_value 'hume.prosody_prompt.enabled' '.hume.prosody_prompt.enabled' 'true'
+assert_field_value 'hume.prosody_prompt.scope' '.hume.prosody_prompt.scope' '"all_user_messages"'
+assert_field_value 'hume.prosody_prompt.max_emotions' '.hume.prosody_prompt.max_emotions' '0'
 assert_field_value 'client.drop_excess_requests' '.client.drop_excess_requests' 'true'
 assert_field_value 'client.initial_pool_size' '.client.initial_pool_size' '500'
 assert_field 'client.allowed_origins' '.client.allowed_origins'

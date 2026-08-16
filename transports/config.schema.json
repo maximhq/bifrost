@@ -50,7 +50,7 @@
               "type": "string",
               "enum": ["latest_user", "all_user_messages"],
               "default": "latest_user",
-              "description": "Select only the latest scored user message or every scored user message."
+              "description": "Select only the latest user message (when it has scores) or every scored user message."
             },
             "max_emotions": {
               "type": "integer",

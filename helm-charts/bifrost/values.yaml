@@ -249,6 +249,19 @@ bifrost:
     name: ""
     key: "encryption-key"
 
+  # Hume EVI custom language model adapter configuration.
+  hume:
+    # Provider/model used when Hume omits its custom language model identifier.
+    defaultModel: ""
+    # Optionally expose Hume vocal-expression scores to the model as prompt text.
+    prosodyPrompt:
+      enabled: false
+      # latest_user tags only the most recent user message when it has scores.
+      # all_user_messages tags every user message that has scores.
+      scope: latest_user
+      # Zero includes all scores.
+      maxEmotions: 3
+
   # Authentication configuration (top-level)
   # This controls authentication for Bifrost API and dashboard
   authConfig:

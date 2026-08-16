@@ -205,6 +205,26 @@ func TestHumeProsodyPromptModesAndDeterminism(t *testing.T) {
 	assert.Contains(t, *allMessages[4].Content.ContentStr, "Sadness")
 }
 
+func TestHumeLatestUserProsodyDoesNotReuseOlderScores(t *testing.T) {
+	messages := []schemas.ChatMessage{
+		chatMessage(schemas.ChatMessageRoleUser, "older scored turn"),
+		chatMessage(schemas.ChatMessageRoleAssistant, "answer"),
+		chatMessage(schemas.ChatMessageRoleUser, "latest unscored turn"),
+	}
+	metadata := map[int]schemas.HumeMessageMetadata{
+		0: {ProsodyScores: map[string]float64{"Joy": 0.9}},
+	}
+	config := &lib.HumeProsodyPromptConfig{
+		Enabled: true,
+		Scope:   lib.HumeProsodyPromptScopeLatestUser,
+	}
+
+	converted, convertedMetadata := injectHumeProsody(messages, cloneHumeMetadata(metadata), config)
+
+	assert.Equal(t, messages, converted)
+	assert.Equal(t, metadata, convertedMetadata)
+}
+
 func TestHumeStreamConverterOverridesFingerprintAndSanitizesChunk(t *testing.T) {
 	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	bifrostCtx.SetValue(humeSessionContextKey{}, "hume-session")
@@ -256,6 +276,61 @@ func TestHumeStreamConverterOverridesFingerprintAndSanitizesChunk(t *testing.T) 
 	assert.NotContains(t, string(body), "provider-only reasoning")
 	assert.NotContains(t, string(body), "thought_signature")
 	assert.NotContains(t, string(body), "cost")
+}
+
+func TestHumeStreamConverterPreservesWrappedNonStreamMessage(t *testing.T) {
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostCtx.SetValue(humeSessionContextKey{}, "hume-session")
+	toolType := "function"
+	toolID := "call-1"
+	toolName := "lookup"
+	refusal := "cannot comply"
+	firstText := "hello "
+	secondText := "world"
+	resp := &schemas.BifrostChatResponse{
+		Choices: []schemas.BifrostResponseChoice{{
+			Index: 0,
+			ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{Message: &schemas.ChatMessage{
+				Role: schemas.ChatMessageRoleAssistant,
+				Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+					{Type: schemas.ChatContentBlockTypeText, Text: &firstText},
+					{Type: schemas.ChatContentBlockTypeText, Text: &secondText},
+				}},
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					Refusal: &refusal,
+					ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+						Index: 0,
+						Type:  &toolType,
+						ID:    &toolID,
+						Function: schemas.ChatAssistantMessageToolCallFunction{
+							Name:      &toolName,
+							Arguments: `{"query":"x"}`,
+						},
+					}},
+				},
+			}},
+		}},
+	}
+
+	_, converted, err := humeChatStreamResponseConverter(bifrostCtx, resp)
+	require.NoError(t, err)
+	chunk, ok := converted.(*humeStreamChunk)
+	require.True(t, ok)
+	require.Len(t, chunk.Choices, 1)
+	delta := chunk.Choices[0].Delta
+	require.NotNil(t, delta.Role)
+	assert.Equal(t, "assistant", *delta.Role)
+	require.NotNil(t, delta.Content)
+	assert.Equal(t, "hello world", *delta.Content)
+	assert.Equal(t, &refusal, delta.Refusal)
+	require.Len(t, delta.ToolCalls, 1)
+	assert.Equal(t, &toolID, delta.ToolCalls[0].ID)
+}
+
+func TestHumeRoutesDisableLargePayloadPassthrough(t *testing.T) {
+	for _, route := range CreateHumeRouteConfigs(lib.NewDefaultHumeConfig()) {
+		assert.True(t, route.DisableLargePayloadMode, route.Path)
+	}
 }
 
 func TestHumeRouteStreamsOpenAISSEAndDoneMarker(t *testing.T) {

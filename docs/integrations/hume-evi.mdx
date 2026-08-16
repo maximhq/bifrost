@@ -78,7 +78,7 @@ Choose the scope based on latency, token usage, and provider prompt caching:
 
 | Scope | Token cost | Prefix-cache behavior |
 | --- | --- | --- |
-| `latest_user` | Lowest | The tagged message changes as the conversation advances, so prior transformed history is not byte-stable and prefix-cache reuse may decrease. |
+| `latest_user` | Lowest | Only the most recent user message is eligible. If it has no scores, no older message is tagged. The tagged message changes as the conversation advances, so prior transformed history is not byte-stable and prefix-cache reuse may decrease. |
 | `all_user_messages` | Higher | Earlier tagged messages remain deterministic across turns, improving prefix stability when Hume resends unchanged scores. |
 
 Keeping injection disabled preserves Hume's original text history and lets an LLM plugin apply a custom policy using the typed metadata.
