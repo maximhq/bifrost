@@ -4058,6 +4058,11 @@
           "maximum": 10000,
           "description": "Maximum number of TCP connections per provider host. For HTTP/2 (e.g. Bedrock), each connection supports ~100 concurrent streams. Default: 5000."
         },
+        "max_response_body_size": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum provider response body size in bytes for ordinary non-streaming responses; 0 means unlimited."
+        },
         "beta_header_overrides": {
           "type": "object",
           "additionalProperties": {

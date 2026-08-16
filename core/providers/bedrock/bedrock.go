@@ -2924,8 +2924,12 @@ func (provider *BedrockProvider) FileDelete(ctx *schemas.BifrostContext, keys []
 
 		// S3 DELETE returns 204 No Content on success
 		if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
-			body, _ := providerUtils.ReadHTTPResponseBody(resp, provider.networkConfig.MaxResponseBodySize)
+			body, readErr := providerUtils.ReadHTTPResponseBody(resp, provider.networkConfig.MaxResponseBodySize)
 			resp.Body.Close()
+			if readErr != nil {
+				lastErr = providerUtils.NewBifrostOperationError("error reading S3 DELETE response", readErr)
+				continue
+			}
 			lastErr = providerUtils.NewProviderAPIError(fmt.Sprintf("S3 DELETE failed: %s", string(body)), nil, resp.StatusCode, nil, nil)
 			continue
 		}
@@ -3004,8 +3008,12 @@ func (provider *BedrockProvider) FileContent(ctx *schemas.BifrostContext, keys [
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			body, _ := providerUtils.ReadHTTPResponseBody(resp, provider.networkConfig.MaxResponseBodySize)
+			body, readErr := providerUtils.ReadHTTPResponseBody(resp, provider.networkConfig.MaxResponseBodySize)
 			resp.Body.Close()
+			if readErr != nil {
+				lastErr = providerUtils.NewBifrostOperationError("error reading S3 GET response", readErr)
+				continue
+			}
 			lastErr = providerUtils.NewProviderAPIError(fmt.Sprintf("S3 GET failed: %s", string(body)), nil, resp.StatusCode, nil, nil)
 			continue
 		}
