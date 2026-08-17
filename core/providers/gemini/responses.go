@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -447,15 +448,21 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 				}
 			}
 
-			// If we're starting a new candidate (role changed), save the previous one
-			if currentRole != "" && currentRole != role && len(currentParts) > 0 {
-				candidates = append(candidates, &Candidate{
-					Index: int32(len(candidates)),
-					Content: &Content{
-						Parts: currentParts,
-						Role:  currentRole,
-					},
-				})
+			// If we're starting a new candidate (role changed), save the previous one.
+			//
+			// The guard is applied to what SURVIVES the filter, not to the raw slice: a
+			// run of payload-free parts has a non-zero length but contributes nothing,
+			// so testing before filtering flushed a candidate whose content was empty.
+			if currentRole != "" && currentRole != role {
+				if flushed := dropEmptyGeminiParts(currentParts); len(flushed) > 0 {
+					candidates = append(candidates, &Candidate{
+						Index: int32(len(candidates)),
+						Content: &Content{
+							Parts: flushed,
+							Role:  currentRole,
+						},
+					})
+				}
 				currentParts = []*Part{}
 			}
 			currentRole = role
@@ -619,58 +626,70 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 			}
 		}
 
-		// Add the last candidate if we have parts
+		// Preserved server-side tool parts lead the FIRST candidate, not the terminal
+		// group. They are replayed ahead of the generated content precisely to reproduce
+		// Gemini's own ordering, so once a role change has already flushed a candidate,
+		// prepending them to the trailing group would file them behind content they are
+		// supposed to precede.
 		if len(preservedToolParts) > 0 {
-			currentParts = append(append([]*Part{}, preservedToolParts...), currentParts...)
-		}
-		if len(currentParts) > 0 {
-			candidate := &Candidate{
-				Index: int32(len(candidates)),
-				Content: &Content{
-					Parts: currentParts,
-					Role:  currentRole,
-				},
-			}
-
-			// Determine finish reason: prefer StopReason (Bifrost canonical), fall back to IncompleteDetails
-			if bifrostResp.StopReason != nil {
-				candidate.FinishReason = ConvertBifrostFinishReasonToGemini(*bifrostResp.StopReason)
-			} else if bifrostResp.IncompleteDetails != nil {
-				// Match the schema's incomplete-reason vocabulary; a literal
-				// "max_tokens" never occurs here, so truncations reported OTHER
-				// instead of MAX_TOKENS (issue #5978).
-				switch bifrostResp.IncompleteDetails.Reason {
-				case schemas.ResponsesResponseIncompleteReasonMaxOutputTokens:
-					candidate.FinishReason = FinishReasonMaxTokens
-				case schemas.ResponsesResponseIncompleteReasonContentFilter:
-					candidate.FinishReason = FinishReasonSafety
-				default:
-					candidate.FinishReason = FinishReasonOther
-				}
+			if len(candidates) > 0 && candidates[0].Content != nil {
+				candidates[0].Content.Parts = append(
+					append([]*Part{}, preservedToolParts...), candidates[0].Content.Parts...)
 			} else {
-				candidate.FinishReason = FinishReasonStop
+				currentParts = append(append([]*Part{}, preservedToolParts...), currentParts...)
 			}
+		}
 
-			// Attach grounding metadata if web search was used
-			if lastWebSearchCall != nil {
-				candidate.GroundingMetadata = buildGroundingMetadataFromWebSearch(lastWebSearchCall, webSearchAnnotations, lastRenderedContent)
+		// Built once, then either appended or merged. Building it is what attaches the
+		// finish reason, grounding metadata, safety ratings and avgLogprobs -- candidates
+		// flushed by the role-change branch above carry only Index and Content, so a path
+		// that skips this call drops all of that for the whole response. A grounded
+		// web-search turn whose trailing role group produces nothing would lose its
+		// groundingMetadata outright.
+		terminal := buildGeminiTerminalCandidate(
+			bifrostResp, currentParts, currentRole, len(candidates),
+			lastWebSearchCall, webSearchAnnotations, lastRenderedContent)
+
+		// Appending is right only while no candidate exists yet -- the contentless case
+		// this branch was written for, where something has to carry the finish reason.
+		// Once a role change has flushed one, an empty sibling would leave candidates[0]
+		// holding content with no finish reason and candidates[1] a finish reason with no
+		// content; a Gemini-shaped client reads candidates[0] and gets neither half whole.
+		// So the terminal candidate's metadata moves onto the candidate that has the
+		// content instead, rather than being appended or discarded.
+		if len(dropEmptyGeminiParts(currentParts)) == 0 && len(candidates) > 0 {
+			last := candidates[len(candidates)-1]
+			if last.FinishReason == "" {
+				last.FinishReason = terminal.FinishReason
 			}
-
-			// Restore safetyRatings/avgLogprobs preserved by ToResponsesBifrostResponsesResponse
-			// (they have no field in Bifrost's OpenAI-shaped Responses schema).
-			if bifrostResp.ProviderExtraFields != nil {
-				if ratings := extractGeminiSafetyRatings(bifrostResp.ProviderExtraFields["safetyRatings"]); ratings != nil {
-					candidate.SafetyRatings = ratings
-				}
-				if avgLogprobs, ok := extractGeminiAvgLogprobs(bifrostResp.ProviderExtraFields["avgLogprobs"]); ok {
-					candidate.AvgLogprobs = avgLogprobs
-				}
+			if last.GroundingMetadata == nil {
+				last.GroundingMetadata = terminal.GroundingMetadata
 			}
-
-			candidates = append(candidates, candidate)
+			if last.SafetyRatings == nil {
+				last.SafetyRatings = terminal.SafetyRatings
+			}
+			if last.AvgLogprobs == 0 {
+				last.AvgLogprobs = terminal.AvgLogprobs
+			}
+		} else {
+			candidates = append(candidates, terminal)
 		}
 
 		geminiResp.Candidates = candidates
+	} else {
+		// No output items at all: a thinking model can spend its whole budget before
+		// emitting a visible token. That is a successful 200 with an empty answer, and
+		// it still needs a candidate to carry the finish reason.
+		//
+		// preservedToolParts is carried here for the same reason the loop branch
+		// prepends it: those parts were kept verbatim at parse time so the turn can be
+		// replayed losslessly, signatures included, and they are read before the loop
+		// so they exist independently of whether any output item does. A turn whose
+		// only act was a server-side tool call, cut short before it wrote anything
+		// visible, has preserved parts and an empty Output at the same time.
+		geminiResp.Candidates = []*Candidate{
+			buildGeminiTerminalCandidate(bifrostResp, preservedToolParts, "", 0, nil, nil, nil),
+		}
 	}
 
 	// Restore the native provider responseId (rather than the synthesized resp_... internal ID)
@@ -697,6 +716,110 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 	}
 
 	return geminiResp
+}
+
+// dropEmptyGeminiParts removes parts that carry no payload. Every Part field is
+// omitempty, so such a part marshals to exactly `{}` -- never a valid answer, and it
+// masks a contentless response by making the parts slice look non-empty. The harness
+// observed one on the wire (a transcription request for an unintelligible tone came
+// back as parts:[{}]), so this filters at the point the candidate is assembled,
+// covering both a part this package built and one relayed from upstream.
+//
+// Emptiness is defined as "equal to the zero Part" rather than as a field checklist,
+// so a Part gaining a new field does not silently start being discarded.
+func dropEmptyGeminiParts(parts []*Part) []*Part {
+	kept := parts[:0:0]
+	for _, part := range parts {
+		if part == nil {
+			continue
+		}
+		// The comparison is against a zero Part with the signature normalised, not
+		// against the raw value: a zero-length ThoughtSignature is not DeepEqual to a
+		// nil one, yet Part.MarshalJSON writes the signature through a string alias
+		// with omitempty, so an empty slice base64-encodes to "" and the key vanishes.
+		// Judging on struct equality alone therefore kept a part that reaches the wire
+		// as exactly the `{}` this filter exists to remove.
+		probe := *part
+		if len(probe.ThoughtSignature) == 0 {
+			probe.ThoughtSignature = nil
+		}
+		if reflect.DeepEqual(probe, Part{}) {
+			continue
+		}
+		kept = append(kept, part)
+	}
+	return kept
+}
+
+// buildGeminiTerminalCandidate assembles the final candidate of a generateContent
+// response: the accumulated parts plus the response-level finish reason, grounding
+// metadata, and the safety/logprob fields preserved on the way in.
+//
+// It is called even when parts is empty. A thinking model that spends its whole
+// output budget before emitting a visible token returns MAX_TOKENS with reasoning
+// tokens billed and nothing to show, which is a successful 200 with an empty answer
+// rather than a malformed one. Because GenerateContentResponse.Candidates is tagged
+// omitempty, dropping that candidate does not emit "candidates":[] -- it emits a
+// body with no candidates key at all, leaving a lone usageMetadata object that every
+// Gemini-shaped client dereferences blind. This is the generateContent twin of the
+// null-Choices hazard TestContentlessCandidateStillYieldsAChoice pins for chat.
+func buildGeminiTerminalCandidate(
+	bifrostResp *schemas.BifrostResponsesResponse,
+	parts []*Part,
+	role string,
+	index int,
+	lastWebSearchCall *schemas.ResponsesMessage,
+	webSearchAnnotations []schemas.ResponsesOutputMessageContentTextAnnotation,
+	lastRenderedContent *string,
+) *Candidate {
+	if role == "" {
+		role = string(RoleModel)
+	}
+
+	candidate := &Candidate{
+		Index: int32(index),
+		Content: &Content{
+			Parts: dropEmptyGeminiParts(parts),
+			Role:  role,
+		},
+	}
+
+	// Determine finish reason: prefer StopReason (Bifrost canonical), fall back to IncompleteDetails
+	if bifrostResp.StopReason != nil {
+		candidate.FinishReason = ConvertBifrostFinishReasonToGemini(*bifrostResp.StopReason)
+	} else if bifrostResp.IncompleteDetails != nil {
+		// Match the schema's incomplete-reason vocabulary; a literal
+		// "max_tokens" never occurs here, so truncations reported OTHER
+		// instead of MAX_TOKENS (issue #5978).
+		switch bifrostResp.IncompleteDetails.Reason {
+		case schemas.ResponsesResponseIncompleteReasonMaxOutputTokens:
+			candidate.FinishReason = FinishReasonMaxTokens
+		case schemas.ResponsesResponseIncompleteReasonContentFilter:
+			candidate.FinishReason = FinishReasonSafety
+		default:
+			candidate.FinishReason = FinishReasonOther
+		}
+	} else {
+		candidate.FinishReason = FinishReasonStop
+	}
+
+	// Attach grounding metadata if web search was used
+	if lastWebSearchCall != nil {
+		candidate.GroundingMetadata = buildGroundingMetadataFromWebSearch(lastWebSearchCall, webSearchAnnotations, lastRenderedContent)
+	}
+
+	// Restore safetyRatings/avgLogprobs preserved by ToResponsesBifrostResponsesResponse
+	// (they have no field in Bifrost's OpenAI-shaped Responses schema).
+	if bifrostResp.ProviderExtraFields != nil {
+		if ratings := extractGeminiSafetyRatings(bifrostResp.ProviderExtraFields["safetyRatings"]); ratings != nil {
+			candidate.SafetyRatings = ratings
+		}
+		if avgLogprobs, ok := extractGeminiAvgLogprobs(bifrostResp.ProviderExtraFields["avgLogprobs"]); ok {
+			candidate.AvgLogprobs = avgLogprobs
+		}
+	}
+
+	return candidate
 }
 
 // extractGeminiSafetyRatings recovers []*SafetyRating from ProviderExtraFields["safetyRatings"].
