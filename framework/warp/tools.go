@@ -60,6 +60,10 @@ var Now = func() time.Time { return time.Now().UTC() }
 // is the decision point for whether Warp can see something new.
 type ToolDeps struct {
 	logManager LogReader
+	// scope is the caller's default slice of traffic. It narrows a question that
+	// named no scope of its own; it is not an access control, which queryscope
+	// already applies inside the store.
+	scope Scope
 }
 
 // Tool pairs a model-facing declaration with its executor.
@@ -255,10 +259,20 @@ func boolArg(args map[string]any, key string) bool {
 	return value
 }
 
-// filterArg parses the shared filter object every flow accepts.
-func filterArg(args map[string]any, now time.Time) (*logstore.SearchFilters, error) {
+// filterArg parses the shared filter object every flow accepts and applies
+// the caller's default scope.
+//
+// Every flow goes through here, which is what makes the default impossible to
+// forget: a tool added later gets the scoping by construction rather than by
+// its author remembering to ask for it.
+func filterArg(args map[string]any, now time.Time, scope Scope) (*logstore.SearchFilters, error) {
 	raw, _ := args["filters"].(map[string]any)
-	return parseFilters(raw, now)
+	filters, err := parseFilters(raw, now)
+	if err != nil {
+		return nil, err
+	}
+	applyScope(filters, scope)
+	return filters, nil
 }
 
 // boundToolResult serializes a result and enforces the byte budget.
@@ -413,6 +427,7 @@ func buildTools() []Tool {
 		queryVirtualKeysTool(),
 		queryModelsTool(),
 		describeFilterSpaceTool(),
+		describeScopeTool(),
 	}
 }
 
