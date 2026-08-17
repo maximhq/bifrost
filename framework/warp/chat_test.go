@@ -151,3 +151,32 @@ func TestWarpCanChatRequiresLogReader(t *testing.T) {
 	require.True(t, NewService(nil, WithLogReader(&fakeLogReader{}), WithChatFunc((&scriptedModel{}).respond)).CanChat())
 	require.False(t, NewService(nil).CanChat())
 }
+
+// The done frame carries the thread id, so a client that started a new thread
+// learns what to send next without a second request. The buffered response
+// carries the same id.
+func TestWarpRunTurnStampsConversationIDOnDone(t *testing.T) {
+	store := newMemoryConversations()
+	model := &scriptedModel{turns: []*schemas.BifrostChatResponse{textTurn("42 requests.")}}
+	service := NewService(nil,
+		WithConfigStore(&recordingStore{row: &tables.TableWarpConfig{
+			ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o",
+		}}),
+		WithLogReader(&fakeLogReader{}),
+		WithChatFunc(model.respond),
+		WithConversationStore(store),
+	)
+	turn, err := service.NewTurn(context.Background(), &ChatRequest{Messages: []ChatMessage{{Role: "user", Content: "how many?"}}}, 64)
+	require.NoError(t, err)
+
+	var doneID string
+	response := service.RunTurn(ownerCtx("u1"), turn, func(event Event) bool {
+		if event.Type == EventDone {
+			doneID = event.ConversationID
+		}
+		return true
+	})
+	require.NotEmpty(t, doneID)
+	require.Equal(t, doneID, response.ConversationID)
+	require.Len(t, store.threads[doneID].Messages, 2)
+}
