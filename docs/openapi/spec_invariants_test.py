@@ -18,6 +18,7 @@ import yaml
 
 
 HERE = Path(__file__).resolve().parent
+REPO_ROOT = HERE.parent.parent
 ENTRY = HERE / "openapi.yaml"
 PATHS_DIR = HERE / "paths" / "management"
 
@@ -422,6 +423,92 @@ def test_warp_credential_contract_is_current():
 
     assert not problems, "Warp credential contract drift:\n    " + "\n    ".join(problems)
 
+
+def test_warp_chat_response_contract_is_current():
+    """WarpChatResponse mirrors warp.ChatResponse: usage is BifrostLLMUsage, not a bare
+    object, and error.code is the closed set the agent actually emits. The chat route is
+    always registered and reports its unavailability as a 503 carrying a machine-readable
+    reason, so that and the 413 for oversized conversations are the contract a generated
+    client has to handle - and a 404 must not reappear."""
+    import json
+
+    schema_source = load(HERE / "schemas" / "management" / "warp.yaml")
+    path_source = load(HERE / "paths" / "management" / "warp.yaml")
+    bundle = json.loads((HERE / "openapi.json").read_text(encoding="utf-8"))
+    problems = []
+
+    # The codes the agent emits, read from the Go source rather than restated here:
+    # a constant that stops being emitted must not linger in the published enum.
+    agent = (REPO_ROOT / "framework" / "warp" / "agent.go").read_text(encoding="utf-8")
+    constants = dict(re.findall(r'(Err[A-Za-z]+)\s+=\s+"([a-z_]+)"', agent))
+    emitted = sorted({
+        constants[name]
+        for name in re.findall(r"Code:\s+(Err[A-Za-z]+)", agent)
+        if name in constants
+    })
+    if not emitted:
+        problems.append("could not read any emitted error codes from framework/warp/agent.go")
+
+    response = schema_source["WarpChatResponse"]["properties"]
+    usage = response["usage"]
+    # Either a direct $ref, or allOf[$ref] - the latter is how OpenAPI 3.0 keeps a
+    # description alongside a referenced schema.
+    refs = [usage["$ref"]] if "$ref" in usage else [
+        entry["$ref"] for entry in (usage.get("allOf") or []) if "$ref" in entry
+    ]
+    if not refs:
+        problems.append(
+            "schemas/management/warp.yaml WarpChatResponse.usage is a bare object; "
+            "reference BifrostLLMUsage so clients get typed token fields"
+        )
+    elif not any("usage.yaml#/BifrostLLMUsage" in ref for ref in refs):
+        problems.append(f"WarpChatResponse.usage references {refs}, not BifrostLLMUsage")
+
+    error = response["error"]
+    declared = sorted(((error.get("properties") or {}).get("code") or {}).get("enum") or [])
+    if declared != emitted:
+        problems.append(
+            f"WarpChatResponse.error.code enum is {declared}, but the agent emits {emitted}"
+        )
+    if sorted(error.get("required") or []) != ["code", "message"]:
+        problems.append("WarpChatResponse.error must require both code and message")
+
+    # The bundle has to carry the resolved usage properties, not an empty object.
+    # Looked up defensively: `check` only catches AssertionError, so a KeyError
+    # here would abort the whole invariant script instead of reporting the very
+    # drift this test exists to report.
+    bundled = (bundle.get("components") or {}).get("schemas") or {}
+    if "WarpChatResponse" not in bundled:
+        problems.append("openapi.json does not define WarpChatResponse")
+    else:
+        bundled_usage = (bundled["WarpChatResponse"].get("properties") or {}).get("usage")
+        if bundled_usage is None:
+            problems.append("openapi.json WarpChatResponse has no usage property")
+        elif not (bundled_usage.get("properties") or bundled_usage.get("allOf") or bundled_usage.get("$ref")):
+            problems.append("openapi.json WarpChatResponse.usage resolved to an untyped object")
+
+    chat_responses = (((path_source.get("warp-chat") or {}).get("post") or {}).get("responses") or {})
+    if not chat_responses:
+        problems.append("paths/management/warp.yaml declares no warp-chat responses")
+    for status in ("503", "413"):
+        if status not in chat_responses:
+            problems.append(f"paths/management/warp.yaml warp-chat does not declare {status}")
+    # The route is registered unconditionally, so a deployment that cannot answer
+    # says so in a 503 body the dashboard branches on. A documented 404 would
+    # send a generated client looking for a route that always exists.
+    if "404" in chat_responses:
+        problems.append(
+            "warp-chat documents a 404, but the route is always registered; "
+            "an unusable deployment answers 503 with a WarpUnavailable reason"
+        )
+    unavailable = chat_responses.get("503") or {}
+    if "WarpUnavailable" not in json.dumps(unavailable.get("content") or {}):
+        problems.append("warp-chat 503 must return WarpUnavailable so the reason is machine-readable")
+    if "413" in chat_responses and "content" not in chat_responses["413"]:
+        problems.append("warp-chat 413 returns a JSON error body but documents no schema")
+
+    assert not problems, "Warp chat response contract drift:\n    " + "\n    ".join(problems)
+
 check("no path key has a null Path Item", test_no_null_path_items)
 check("no two paths collide after parameter normalization", test_no_duplicate_path_templates)
 check("every fragment openapi.yaml mounts exists", test_every_mounted_fragment_exists)
@@ -499,6 +586,7 @@ check("bulk rotate ids schema rejects empty arrays", test_bulk_rotate_ids_requir
 check("virtual key request contract uses budgets and provider-scoped key_ids", test_virtual_key_request_contract_is_current)
 check("warp credential contract uses api_key_id with no secret field", test_warp_credential_contract_is_current)
 check("warp config input models the enabled contract", test_warp_config_input_models_the_enabled_contract)
+check("warp chat response contract matches the agent", test_warp_chat_response_contract_is_current)
 check("every operation declares its own security", test_every_operation_declares_security)
 
 print(f"\n{passed} passed, {failed} failed")
