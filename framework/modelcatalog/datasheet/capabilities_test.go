@@ -1,6 +1,7 @@
 package datasheet
 
 import (
+	"encoding/json"
 	"slices"
 	"testing"
 
@@ -298,5 +299,26 @@ func TestExtractSupportedParams_WebSearchAbsent(t *testing.T) {
 		if slices.Contains(got, unexpected) {
 			t.Errorf("expected supported params to omit %q, got %v", unexpected, got)
 		}
+	}
+}
+
+func TestExtractSupportedParams_OutputTokenLimits(t *testing.T) {
+	for _, raw := range []string{
+		`{"max_tokens":128000}`,
+		`{"max_output_tokens":128000}`,
+	} {
+		t.Run(raw, func(t *testing.T) {
+			var parsed modelParametersParseResult
+			if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+				t.Fatalf("unmarshal model parameters: %v", err)
+			}
+
+			got := extractSupportedParams(&parsed)
+			for _, want := range []string{"max_tokens", "max_completion_tokens", "max_output_tokens"} {
+				if !slices.Contains(got, want) {
+					t.Errorf("expected supported params to contain %q, got %v", want, got)
+				}
+			}
+		})
 	}
 }
