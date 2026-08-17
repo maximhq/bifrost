@@ -1,0 +1,68 @@
+# Odin Agent API
+
+odin-config:
+  get:
+    operationId: getOdinConfig
+    summary: Read Odin configuration
+    description: |
+      Returns Odin's settings for the settings page. The stored provider
+      credential is never included — only `api_key_set`, reporting whether one
+      exists.
+
+      A deployment that has never configured Odin gets `200` with
+      `configured: false` and the default values, not a `404`. The settings page
+      needs to render its empty form, and a `404` would make "never set up"
+      indistinguishable from "this build has no Odin route".
+    tags:
+      - Odin
+    responses:
+      '200':
+        description: Odin configuration
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/odin.yaml#/OdinConfig'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+    security:
+      - ManagementBearerAuth: []
+  put:
+    operationId: updateOdinConfig
+    summary: Update Odin configuration
+    description: |
+      Writes Odin's settings. **Administrators only.**
+
+      RBAC in this transport is enterprise-only and path-based, so the floor is
+      enforced in the handler: a single write plants a credential that the
+      server then uses to make outbound calls, which is not something an
+      ordinary dashboard user should be able to do. Non-admin callers get `403`.
+
+      Omitting `api_key` leaves the stored credential unchanged; sending an
+      empty string clears it. See the schema for why the two are distinct.
+    tags:
+      - Odin
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/odin.yaml#/OdinConfigInput'
+    responses:
+      '200':
+        description: The updated configuration, with the credential redacted
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/odin.yaml#/OdinConfig'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '403':
+        description: Caller is not an administrator
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+    security:
+      - ManagementBearerAuth: []

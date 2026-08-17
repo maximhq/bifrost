@@ -150,6 +150,8 @@ tags:
     description: Webhook endpoint management and signed async-job delivery history
   - name: Notifications
     description: Role-targeted dashboard notifications, delivered over the dashboard WebSocket
+  - name: Odin
+    description: Configuration for Odin, the dashboard agent that answers questions about the deployment's own telemetry
 
 paths:
   # ==================== Unified Inference API ====================
@@ -1235,6 +1237,10 @@ paths:
   /api/notifications:
     $ref: "./paths/management/notifications.yaml#/notifications"
 
+  # Odin
+  /api/odin/config:
+    $ref: "./paths/management/odin.yaml#/odin-config"
+
 components:
   securitySchemes:
     BearerAuth:
@@ -1897,3 +1903,11 @@ components:
       $ref: "./schemas/management/notifications.yaml#/Notification"
     NotificationList:
       $ref: "./schemas/management/notifications.yaml#/NotificationList"
+
+    # Odin
+    OdinConfig:
+      $ref: "./schemas/management/odin.yaml#/OdinConfig"
+    OdinConfigInput:
+      $ref: "./schemas/management/odin.yaml#/OdinConfigInput"
+    OdinUnavailable:
+      $ref: "./schemas/management/odin.yaml#/OdinUnavailable"

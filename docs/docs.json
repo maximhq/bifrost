@@ -1455,6 +1455,14 @@
                   "GET /api/notifications",
                   "POST /api/notifications"
                 ]
+              },
+              {
+                "group": "Odin",
+                "expanded": false,
+                "pages": [
+                  "GET /api/odin/config",
+                  "PUT /api/odin/config"
+                ]
               }
             ]
           },
