@@ -486,6 +486,22 @@ export const createColumns = (
 
 	const attributionColumns: ColumnDef<LogEntry>[] = [
 		{
+			id: "service_tier",
+			header: "Service Tier",
+			size: 130,
+			cell: ({ row }) => {
+				const tier = row.original.service_tier;
+				if (!tier) {
+					return <div className="font-mono text-xs">-</div>;
+				}
+				return (
+					<Badge variant="outline" className="font-mono text-[11px] py-0.5 px-1.5 uppercase">
+						{tier}
+					</Badge>
+				);
+			},
+		},
+		{
 			id: "virtual_key",
 			header: "Virtual Key",
 			size: 170,
