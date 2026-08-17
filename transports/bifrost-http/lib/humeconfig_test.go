@@ -90,6 +90,38 @@ func TestConfigDataRejectsUnknownHumeProperties(t *testing.T) {
 	}
 }
 
+func TestConfigDataRejectsNullHumeObjects(t *testing.T) {
+	tests := []struct {
+		name       string
+		configJSON string
+		wantError  string
+	}{
+		{
+			name:       "Hume section",
+			configJSON: `{"hume":null}`,
+			wantError:  "hume configuration must be an object, not null",
+		},
+		{
+			name:       "prosody prompt",
+			configJSON: `{"hume":{"default_model":"openai/gpt-4o-mini","prosody_prompt":null}}`,
+			wantError:  "hume.prosody_prompt must be an object, not null",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var config ConfigData
+			err := json.Unmarshal([]byte(test.configJSON), &config)
+			if err == nil {
+				t.Fatalf("Unmarshal() error = nil, want %q", test.wantError)
+			}
+			if !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("Unmarshal() error = %q, want %q", err, test.wantError)
+			}
+		})
+	}
+}
+
 func TestConfigDataUnmarshalsHumeConfig(t *testing.T) {
 	var config ConfigData
 	if err := json.Unmarshal([]byte(`{

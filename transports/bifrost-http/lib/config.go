@@ -537,6 +537,16 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 	cd.FeatureFlags = temp.FeatureFlags
 	cd.Hume = nil
 	if len(temp.Hume) > 0 {
+		if bytes.Equal(bytes.TrimSpace(temp.Hume), []byte("null")) {
+			return errors.New("hume configuration must be an object, not null")
+		}
+		var rawHumeFields map[string]json.RawMessage
+		if err := json.Unmarshal(temp.Hume, &rawHumeFields); err != nil {
+			return fmt.Errorf("failed to unmarshal Hume config: %w", err)
+		}
+		if rawProsodyPrompt, ok := rawHumeFields["prosody_prompt"]; ok && bytes.Equal(bytes.TrimSpace(rawProsodyPrompt), []byte("null")) {
+			return errors.New("hume.prosody_prompt must be an object, not null")
+		}
 		decoder := json.NewDecoder(bytes.NewReader(temp.Hume))
 		decoder.DisallowUnknownFields()
 		if err := decoder.Decode(&cd.Hume); err != nil {

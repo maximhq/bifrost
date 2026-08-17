@@ -368,33 +368,30 @@ func TestHumeStreamConverterPreservesWrappedNonStreamMessage(t *testing.T) {
 	assert.Equal(t, &secondToolID, delta.ToolCalls[1].ID)
 }
 
+func TestHumeNonStreamToolCallsAllowMaximumUint16Index(t *testing.T) {
+	toolCalls, err := toHumeNonStreamToolCalls(make([]schemas.ChatAssistantMessageToolCall, 1<<16))
+	require.NoError(t, err)
+	require.Len(t, toolCalls, 1<<16)
+	assert.Equal(t, uint16(65_535), toolCalls[len(toolCalls)-1].Index)
+}
+
 func TestHumeStreamConverterRejectsNonStreamToolCallIndexOverflow(t *testing.T) {
 	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	bifrostCtx.SetValue(humeSessionContextKey{}, "hume-session")
 
-	for _, test := range []struct {
-		name  string
-		count int
-	}{
-		{name: "65536 tool calls", count: 65_536},
-		{name: "65537 tool calls", count: 65_537},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			resp := &schemas.BifrostChatResponse{
-				Choices: []schemas.BifrostResponseChoice{{
-					ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{Message: &schemas.ChatMessage{
-						ChatAssistantMessage: &schemas.ChatAssistantMessage{
-							ToolCalls: make([]schemas.ChatAssistantMessageToolCall, test.count),
-						},
-					}},
-				}},
-			}
-
-			_, converted, err := humeChatStreamResponseConverter(bifrostCtx, resp)
-			require.EqualError(t, err, "hume non-stream response cannot contain 65536 or more tool calls")
-			assert.Nil(t, converted)
-		})
+	resp := &schemas.BifrostChatResponse{
+		Choices: []schemas.BifrostResponseChoice{{
+			ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{Message: &schemas.ChatMessage{
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					ToolCalls: make([]schemas.ChatAssistantMessageToolCall, 65_537),
+				},
+			}},
+		}},
 	}
+
+	_, converted, err := humeChatStreamResponseConverter(bifrostCtx, resp)
+	require.EqualError(t, err, "hume non-stream response cannot contain more than 65536 tool calls")
+	assert.Nil(t, converted)
 }
 
 func TestHumeRoutesDisableLargePayloadPassthrough(t *testing.T) {

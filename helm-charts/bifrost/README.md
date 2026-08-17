@@ -10,7 +10,7 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 
 ### Upcoming
 
-- Added `bifrost.hume` configuration for the Hume EVI custom-language-model adapter. `defaultModel` supplies the provider/model when Hume omits its identifier, while `prosodyPrompt` controls optional vocal-expression prompt injection. Renders into top-level `hume` configuration.
+- Added `bifrost.hume` configuration for the Hume EVI custom-language-model adapter. When the section is present, `defaultModel` is required and supplies the provider/model when Hume omits its identifier; `prosodyPrompt` controls optional vocal-expression prompt injection. Renders into top-level `hume` configuration.
 
 ### 2.1.35
 
@@ -799,7 +799,7 @@ vectorStore:
 
 | Parameter                                  | Description                                                                                     | Default          |
 | ------------------------------------------ | ----------------------------------------------------------------------------------------------- | ---------------- |
-| `bifrost.hume.defaultModel`                | Optional provider/model or catalog-resolvable name used when Hume omits its model identifier    | Unset            |
+| `bifrost.hume.defaultModel`                | Required when `bifrost.hume` exists; used when Hume omits its model identifier                   | Unset            |
 | `bifrost.hume.prosodyPrompt.enabled`       | Add Hume vocal-expression confidence scores to selected user messages                           | `false`          |
 | `bifrost.hume.prosodyPrompt.scope`         | Select the latest scored user message or all scored user messages                               | `latest_user`    |
 | `bifrost.hume.prosodyPrompt.maxEmotions`   | Maximum expressions injected per selected message; `0` includes every expression                | `3`              |
