@@ -469,6 +469,72 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_bedrock_endpoints_columns"}, run: migrationAddBedrockEndpointsColumns},
 	{IDs: []string{"add_cost_per_request_pricing_column"}, run: migrationAddCostPerRequestPricingColumn},
 	{IDs: []string{"add_notifications_table"}, run: migrationAddNotificationsTable},
+	{IDs: []string{"add_odin_config_table"}, run: migrationAddOdinConfigTable},
+	{IDs: []string{"add_odin_api_key_id_column"}, run: migrationAddOdinAPIKeyIDColumn},
+}
+
+// migrationAddOdinAPIKeyIDColumn reshapes odin_config from storing a secret to
+// storing a reference to one of the provider's existing keys.
+//
+// This is a separate step rather than an edit to the migration above because
+// applied migration IDs are recorded and never re-run: any database that already
+// created the table keeps the old columns forever, and a write naming the new
+// one fails with a SQL error the API can only report as a 500.
+func migrationAddOdinAPIKeyIDColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_odin_api_key_id_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// AutoMigrate adds api_key_id; it never drops, so the retired columns
+			// are handled separately below.
+			if err := tx.AutoMigrate(&tables.TableOdinConfig{}); err != nil {
+				return fmt.Errorf("failed to add odin api_key_id column: %w", err)
+			}
+			for _, column := range []string{"api_key", "encryption_status"} {
+				if !tx.Migrator().HasColumn(&tables.TableOdinConfig{}, column) {
+					continue
+				}
+				// Blank the value before attempting the drop, and treat this as the
+				// step that actually matters. api_key held a credential, and GORM's
+				// SQLite driver returns nil from DropColumn without dropping
+				// anything - so a drop-only migration would leave the secret at rest
+				// while reporting success. Clearing it works on every dialect.
+				if err := tx.Exec(fmt.Sprintf("UPDATE %s SET %s = NULL",
+					quoteSQLiteIdentifier(tables.TableOdinConfig{}.TableName()),
+					quoteSQLiteIdentifier(column))).Error; err != nil {
+					return fmt.Errorf("failed to clear odin %s column: %w", column, err)
+				}
+				// Then drop it where the dialect can. A failure here is not fatal:
+				// the column is already empty, and an unused nullable column is
+				// cosmetic.
+				if err := dropColumnIfExists(tx, logger, &tables.TableOdinConfig{}, column); err != nil {
+					logger.Warn("[configstore] could not drop retired odin column %s (cleared instead): %v", column, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableOdinConfig{}, "api_key_id")
+		},
+	})
+}
+
+func migrationAddOdinConfigTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_odin_config_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).AutoMigrate(&tables.TableOdinConfig{})
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).Migrator().DropTable(&tables.TableOdinConfig{})
+		},
+	})
 }
 
 func migrationAddNotificationsTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {

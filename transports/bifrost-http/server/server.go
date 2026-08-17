@@ -224,6 +224,7 @@ type BifrostHTTPServer struct {
 
 	WebSocketHandler    *handlers.WebSocketHandler
 	NotificationService *handlers.NotificationService
+	OdinService         *handlers.OdinService
 	MCPServerHandler    *handlers.MCPServerHandler
 	devPprofHandler     *handlers.DevPprofHandler
 	IntegrationHandler  *handlers.IntegrationHandler
@@ -2111,6 +2112,9 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		s.Config.NotificationPublisher = s.NotificationService.Publish
 		s.NotificationService.Start(s.Ctx)
 	}
+	if s.OdinService == nil {
+		s.OdinService = handlers.NewOdinService(s.Config.ConfigStore)
+	}
 	// Start WebSocket heartbeat
 	s.WebSocketHandler.StartHeartbeat()
 	// Adding telemetry middleware
@@ -2183,6 +2187,9 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	}
 	if s.NotificationService != nil {
 		s.NotificationService.RegisterRoutes(s.Router, middlewares...)
+	}
+	if s.OdinService != nil {
+		s.OdinService.RegisterRoutes(s.Router, middlewares...)
 	}
 	// Register dev pprof handler only in dev mode
 	if handlers.IsDevMode() {
@@ -2376,6 +2383,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	s.NotificationService = handlers.NewNotificationService(s.Config.ConfigStore, s.WebSocketHandler)
 	s.Config.NotificationPublisher = s.NotificationService.Publish
 	s.NotificationService.Start(s.Ctx)
+	s.OdinService = handlers.NewOdinService(s.Config.ConfigStore)
 	// Initializing plugin loader. Allowlist entries are validated now - a malformed entry
 	// fails server startup rather than silently no-oping, since this is security-relaxing
 	// config for SSRF protection on custom plugin downloads.
