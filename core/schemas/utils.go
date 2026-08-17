@@ -698,6 +698,14 @@ func SafeExtractOrderedMap(value interface{}) (*OrderedMap, bool) {
 		return nil, false
 	case OrderedMap:
 		return &v, true
+	case json.RawMessage:
+		// Schemas forwarded verbatim are carried as raw JSON; decode on demand,
+		// preserving the key order of the document.
+		decoded := NewOrderedMap()
+		if err := decoded.UnmarshalJSON(v); err != nil {
+			return nil, false
+		}
+		return decoded, true
 	}
 	return nil, false
 }

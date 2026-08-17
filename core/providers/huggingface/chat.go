@@ -6,7 +6,6 @@ import (
 
 	"github.com/bytedance/sonic"
 
-	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -88,16 +87,11 @@ func ToHuggingFaceChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) 
 		// Handle response format (direct type assertion to avoid marshal→unmarshal round-trip)
 		if params.ResponseFormat != nil {
 			var hfRF *HuggingFaceResponseFormat
-			if rfMap, ok := (*params.ResponseFormat).(map[string]interface{}); ok {
-				hfRF = &HuggingFaceResponseFormat{}
-				if t, ok := rfMap["type"].(string); ok {
-					hfRF.Type = t
-				}
-				if jsVal, ok := rfMap["json_schema"]; ok {
-					jsBytes, err := providerUtils.MarshalSorted(jsVal)
-					if err != nil {
-						return nil, fmt.Errorf("failed to marshal json_schema: %w", err)
-					}
+			if rf, ok := schemas.ParseChatResponseFormat(params.ResponseFormat); ok {
+				hfRF = &HuggingFaceResponseFormat{Type: rf.Type}
+				// HuggingFaceJSONSchema keeps the schema as raw JSON, so decoding
+				// the wrapper carries the client's schema bytes through untouched.
+				if jsBytes := rf.RawJSONSchema(); len(jsBytes) > 0 {
 					var hfSchema HuggingFaceJSONSchema
 					if err := sonic.Unmarshal(jsBytes, &hfSchema); err != nil {
 						return nil, fmt.Errorf("failed to unmarshal json_schema: %w", err)

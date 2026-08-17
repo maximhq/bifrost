@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -600,6 +602,133 @@ type ResponsesTextConfigFormatJSONSchema struct {
 	Nullable         *bool       `json:"nullable,omitempty"`         // Nullable indicator (OpenAPI 3.0 style)
 	Enum             []string    `json:"enum,omitempty"`             // Enum values
 	PropertyOrdering []string    `json:"propertyOrdering,omitempty"` // Ordering of properties, specific to Gemini
+
+	// keyOrder records the order in which the schema object's own keys arrived,
+	// so re-encoding does not reshuffle them into struct declaration order.
+	// Providers generate output in schema key order (see the type doc), and a
+	// schema that reads type/title/description before properties must keep
+	// reading that way after a round-trip through this struct.
+	keyOrder []string
+}
+
+// UnmarshalJSON decodes the schema and remembers its key order.
+func (s *ResponsesTextConfigFormatJSONSchema) UnmarshalJSON(data []byte) error {
+	type Alias ResponsesTextConfigFormatJSONSchema
+	var aux Alias
+	if err := Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	*s = ResponsesTextConfigFormatJSONSchema(aux)
+	s.keyOrder = jsonObjectKeyOrder(data)
+	return nil
+}
+
+// MarshalJSON encodes the schema, restoring the key order it was decoded with.
+// Keys added after decoding (or all keys, for a schema built in Go) follow in
+// struct declaration order.
+func (s ResponsesTextConfigFormatJSONSchema) MarshalJSON() ([]byte, error) {
+	type Alias ResponsesTextConfigFormatJSONSchema
+	raw, err := MarshalSorted(Alias(s))
+	if err != nil {
+		return nil, err
+	}
+	return reorderJSONObjectKeys(raw, s.keyOrder), nil
+}
+
+// KeyOrder returns the schema object's key order as decoded, or nil when the
+// schema was built in Go rather than decoded from JSON.
+func (s *ResponsesTextConfigFormatJSONSchema) KeyOrder() []string {
+	if s == nil || len(s.keyOrder) == 0 {
+		return nil
+	}
+	out := make([]string, len(s.keyOrder))
+	copy(out, s.keyOrder)
+	return out
+}
+
+// SetKeyOrder records the key order to re-encode this schema with. Used when a
+// schema crosses APIs (chat response_format <-> responses text.format) and the
+// order has to be carried over from the source representation.
+func (s *ResponsesTextConfigFormatJSONSchema) SetKeyOrder(order []string) {
+	if s == nil {
+		return
+	}
+	if len(order) == 0 {
+		s.keyOrder = nil
+		return
+	}
+	s.keyOrder = append([]string(nil), order...)
+}
+
+// jsonObjectKeyOrder returns the top-level keys of a JSON object in document order.
+func jsonObjectKeyOrder(data []byte) []string {
+	parsed := gjson.ParseBytes(data)
+	if !parsed.IsObject() {
+		return nil
+	}
+	keys := make([]string, 0, 8)
+	parsed.ForEach(func(key, _ gjson.Result) bool {
+		keys = append(keys, key.String())
+		return true
+	})
+	if len(keys) == 0 {
+		return nil
+	}
+	return keys
+}
+
+// reorderJSONObjectKeys rewrites a JSON object so the keys listed in order come
+// first, in that order; any remaining keys keep their existing relative order.
+// Values are copied verbatim, so nested ordering is untouched.
+func reorderJSONObjectKeys(raw []byte, order []string) []byte {
+	if len(order) == 0 {
+		return raw
+	}
+	parsed := gjson.ParseBytes(raw)
+	if !parsed.IsObject() {
+		return raw
+	}
+
+	type jsonPair struct{ key, value string }
+	pairs := make([]jsonPair, 0, 8)
+	index := make(map[string]int, 8)
+	parsed.ForEach(func(key, value gjson.Result) bool {
+		keyRaw := key.Raw
+		if len(keyRaw) == 0 || keyRaw[0] != '"' {
+			keyRaw = strconv.Quote(key.String())
+		}
+		index[key.String()] = len(pairs)
+		pairs = append(pairs, jsonPair{key: keyRaw, value: value.Raw})
+		return true
+	})
+	if len(pairs) == 0 {
+		return raw
+	}
+
+	written := make([]bool, len(pairs))
+	var buf bytes.Buffer
+	buf.WriteByte('{')
+	writePair := func(p jsonPair) {
+		if buf.Len() > 1 {
+			buf.WriteByte(',')
+		}
+		buf.WriteString(p.key)
+		buf.WriteByte(':')
+		buf.WriteString(p.value)
+	}
+	for _, key := range order {
+		if i, ok := index[key]; ok && !written[i] {
+			written[i] = true
+			writePair(pairs[i])
+		}
+	}
+	for i, p := range pairs {
+		if !written[i] {
+			writePair(p)
+		}
+	}
+	buf.WriteByte('}')
+	return buf.Bytes()
 }
 
 // JSONSchemaOrBool holds a JSON Schema value that is either a boolean schema
@@ -684,6 +813,7 @@ func (s *ResponsesTextConfigFormatJSONSchema) CompositeSchema() (*OrderedMap, bo
 // JSONSchemaFromMap builds a ResponsesTextConfigFormatJSONSchema from a raw interface{}
 func JSONSchemaFromMap(v interface{}) *ResponsesTextConfigFormatJSONSchema {
 	var m map[string]interface{}
+	var keyOrder []string
 	switch src := v.(type) {
 	case map[string]interface{}:
 		m = src
@@ -692,12 +822,28 @@ func JSONSchemaFromMap(v interface{}) *ResponsesTextConfigFormatJSONSchema {
 			return nil
 		}
 		m = src.ToMap() // shallow: nested *OrderedMap values keep their order
+		keyOrder = src.Keys()
 	case OrderedMap:
 		m = src.ToMap()
+		keyOrder = src.Keys()
+	case json.RawMessage:
+		decoded := NewOrderedMap()
+		if err := decoded.UnmarshalJSON(src); err != nil {
+			return nil
+		}
+		m = decoded.ToMap()
+		keyOrder = decoded.Keys()
+	case []byte:
+		decoded := NewOrderedMap()
+		if err := decoded.UnmarshalJSON(src); err != nil {
+			return nil
+		}
+		m = decoded.ToMap()
+		keyOrder = decoded.Keys()
 	default:
 		return nil
 	}
-	s := &ResponsesTextConfigFormatJSONSchema{}
+	s := &ResponsesTextConfigFormatJSONSchema{keyOrder: keyOrder}
 	if t, ok := m["type"].(string); ok {
 		s.Type = Ptr(t)
 	}
@@ -819,6 +965,52 @@ func JSONSchemaFromMap(v interface{}) *ResponsesTextConfigFormatJSONSchema {
 	return s
 }
 
+// RawSchemaJSON returns the schema body as JSON bytes, with the key order this
+// schema was decoded with. Prefer it over ToMap when the result is headed
+// straight back out to a provider: it avoids rebuilding a Go map only to
+// re-encode it, and it keeps numeric literals as written.
+//
+// `name` and `strict` are dropped: they are wrapper fields that OpenAI carries
+// beside the schema, not JSON Schema keywords, which is also why ToMap omits them.
+func (s *ResponsesTextConfigFormatJSONSchema) RawSchemaJSON() json.RawMessage {
+	if s == nil {
+		return nil
+	}
+
+	// A composite schema is already a self-contained schema object.
+	if s.Schema != nil {
+		if s.Schema.SchemaMap != nil {
+			encoded, err := MarshalSorted(s.Schema.SchemaMap)
+			if err != nil {
+				return nil
+			}
+			return encoded
+		}
+		if s.Schema.SchemaBool != nil {
+			if *s.Schema.SchemaBool {
+				return json.RawMessage("true")
+			}
+			return json.RawMessage("false")
+		}
+	}
+
+	// Decomposed form: the struct's own encoding already restores key order.
+	encoded, err := MarshalSorted(s)
+	if err != nil {
+		return nil
+	}
+	for _, key := range []string{"name", "strict", "schema"} {
+		encoded, err = sjson.DeleteBytes(encoded, key)
+		if err != nil {
+			return nil
+		}
+	}
+	if len(gjson.ParseBytes(encoded).Map()) == 0 {
+		return nil
+	}
+	return encoded
+}
+
 // ToMap reconstructs the raw schema map from a ResponsesTextConfigFormatJSONSchema.
 func (s *ResponsesTextConfigFormatJSONSchema) ToMap() interface{} {
 	if s == nil {
@@ -912,7 +1104,43 @@ func (s *ResponsesTextConfigFormatJSONSchema) ToMap() interface{} {
 	if len(m) == 0 {
 		return nil
 	}
-	return m
+	// Hand back an order-preserving map: the caller usually re-encodes this into
+	// a provider payload, and the model reads the schema in key order.
+	return orderedMapWithKeyOrder(m, s.keyOrder)
+}
+
+// orderedMapWithKeyOrder converts a plain map into an OrderedMap, emitting the
+// keys named in order first (in that order) and any remaining keys after them,
+// alphabetically. Only this map's own key sequence is decided here: values are
+// carried over by reference, so nested schemas keep the order they already have.
+// (OrderedMap.SortKeys is deliberately not used - it recurses into nested
+// *OrderedMap values and sorts them in place, which would reorder the caller's
+// `properties` as a side effect.)
+func orderedMapWithKeyOrder(m map[string]interface{}, order []string) *OrderedMap {
+	if m == nil {
+		return nil
+	}
+	om := NewOrderedMapWithCapacity(len(m))
+	for _, key := range order {
+		if value, ok := m[key]; ok {
+			om.Set(key, value)
+		}
+	}
+	if om.Len() == len(m) {
+		return om
+	}
+
+	remaining := make([]string, 0, len(m)-om.Len())
+	for key := range m {
+		if _, taken := om.Get(key); !taken {
+			remaining = append(remaining, key)
+		}
+	}
+	sort.Strings(remaining)
+	for _, key := range remaining {
+		om.Set(key, m[key])
+	}
+	return om
 }
 
 type ResponsesResponseConversation struct {
