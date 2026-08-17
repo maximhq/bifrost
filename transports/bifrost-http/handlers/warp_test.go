@@ -11,6 +11,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/maximhq/bifrost/framework/warp"
+	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 	"gorm.io/gorm"
@@ -189,4 +190,25 @@ func TestWarpChatRouteIsRegisteredWithoutALogReader(t *testing.T) {
 	require.NoError(t, sonic.Unmarshal(ctx.Response.Body(), &body))
 	require.Equal(t, schemas.WarpUnavailableNoLogStore, body.Reason,
 		"the dashboard hides the launcher on this reason, so it must be reported accurately")
+}
+
+// A heartbeat has to be a complete SSE block, not a bare comment line.
+//
+// SendEvent terminates every Warp frame with "\n\n", and the browser splitter
+// looks for exactly that boundary. A heartbeat ending in a single "\n" has no
+// boundary, so the client holds it in its carry buffer until the next real
+// event arrives - on an idle turn the keep-alive that exists to prove the
+// connection is alive is the one thing the reader cannot see.
+func TestWarpHeartbeatIsADelimitedSSEBlock(t *testing.T) {
+	reader := lib.NewSSEStreamReader()
+	go func() {
+		warpHeartbeat(reader)()
+		reader.Done()
+	}()
+
+	buf := make([]byte, 4096)
+	n, err := reader.Read(buf)
+	require.NoError(t, err)
+	require.Equal(t, ": heartbeat\n\n", string(buf[:n]),
+		"the heartbeat must carry its own frame boundary")
 }
