@@ -742,7 +742,7 @@ export default function LogsPage() {
 					<LogsFilterSidebar filters={filters} onFiltersChange={setFilters} />
 
 					{/* Main Content */}
-					<div className="bg-card flex min-w-0 flex-1 flex-col gap-2 overflow-hidden rounded-l-md p-4 pb-2">
+					<div className="bg-card flex min-w-0 flex-1 flex-col gap-2 overflow-hidden rounded-md border border-gray-200 p-4 pb-2 dark:border-zinc-800">
 						<div className="shrink-0">
 							<LogsHeaderView
 								filters={filters}

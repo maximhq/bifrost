@@ -1,6 +1,8 @@
 import OdinComposer from "@/components/odin/odinComposer";
 import { OdinMessage, OdinStreamingMessage } from "@/components/odin/odinMessage";
 import { useOdinStream } from "@/components/odin/useOdinStream";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { OdinIcon } from "@/components/ui/icons";
 import { ScrollArea } from "@/components/ui/scrollArea";
 import { useOdin, type OdinTurn } from "@/lib/contexts/odinContext";
@@ -50,6 +52,12 @@ export default function OdinPanel() {
 	if (!odin) return null;
 
 	const isConfigured = config?.configured ?? false;
+	// "Turned off" and "never set up" both report configured:false, but they are
+	// different situations with different fixes. Telling someone who has already
+	// filled the form in that Odin "isn't set up yet" sends them back to a page
+	// that looks complete, and the one control that actually matters goes
+	// unnoticed.
+	const isDisabledButComplete = !!config && !config.enabled && !!config.provider && !!config.model;
 
 	const ask = (question: string) => {
 		const history = odin.turns;
@@ -67,6 +75,11 @@ export default function OdinPanel() {
 				<div className="flex min-w-0 items-center gap-2">
 					<OdinIcon className="text-muted-foreground size-4 shrink-0" />
 					<h2 className="truncate text-sm font-semibold">Odin</h2>
+					{/* Odin answers questions people will act on, so its maturity belongs
+					    next to its name rather than buried in a tooltip. */}
+					<Badge variant="secondary" className="shrink-0 text-[10px]">
+						ALPHA
+					</Badge>
 				</div>
 				<div className="flex shrink-0 items-center gap-1">
 					{odin.turns.length > 0 && (
@@ -102,23 +115,26 @@ export default function OdinPanel() {
 					<span className="bg-muted text-muted-foreground flex size-9 items-center justify-center rounded-full">
 						<OdinIcon className="size-4" />
 					</span>
-					<p className="text-sm font-medium">Odin isn&apos;t set up yet</p>
-					<p className="text-muted-foreground text-xs">Choose a model for Odin to run on.</p>
-					<Link
-						to="/workspace/config/odin"
-						className="text-primary mt-1 text-sm font-medium hover:underline"
-						data-testid="odin-configure-link"
-					>
-						Configure Odin
-					</Link>
+					<p className="text-sm font-medium">{isDisabledButComplete ? "Odin is turned off" : "Odin isn't set up yet"}</p>
+					<p className="text-muted-foreground text-xs">
+						{isDisabledButComplete ? "Switch Enable Odin on to start asking questions." : "Choose a model for Odin to run on."}
+					</p>
+					<Button asChild size="sm" className="mt-1" data-testid="odin-configure-link">
+						<Link to="/workspace/config/odin">{isDisabledButComplete ? "Open Odin settings" : "Configure Odin"}</Link>
+					</Button>
 				</div>
 			) : (
 				<>
-					<ScrollArea className="min-h-0 flex-1">
-						<div className="space-y-4 p-4">
+					{/* no-table flips the Radix viewport's inner wrapper from display:table
+						    back to block. As a table it sizes to its widest child, so one wide
+						    markdown table stretches the whole transcript, eats the padding and
+						    pushes every line of prose past the right edge. globals.css already
+						    carries this rule for the dashboard's scroll area. */}
+					<ScrollArea className="min-h-0 flex-1" viewportClassName="no-table">
+						<div className="min-w-0 space-y-4 p-4">
 							{odin.turns.length === 0 && !isStreaming ? (
 								<div className="space-y-3 pt-6" data-testid="odin-empty-state">
-									<p className="text-sm font-medium">Ask about your gateway data</p>
+									<p className="text-sm font-medium">Ask about your Bifrost data</p>
 									<div className="space-y-1.5">
 										{STARTERS.map((starter) => (
 											<button
@@ -140,7 +156,7 @@ export default function OdinPanel() {
 						</div>
 					</ScrollArea>
 
-					<OdinComposer isStreaming={isStreaming} onSend={ask} onStop={stop} />
+					<OdinComposer isStreaming={isStreaming} provider={config?.provider} model={config?.model} onSend={ask} onStop={stop} />
 				</>
 			)}
 		</div>

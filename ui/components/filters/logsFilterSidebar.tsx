@@ -77,7 +77,7 @@ export function LogsFilterSidebar({ filters, onFiltersChange }: LogsSidebarProps
 				onClick={toggleCollapsed}
 				variant="outline"
 				size="sm"
-				className="group md:bg-card md:hover:bg-card md:dark:bg-card md:dark:hover:bg-card fixed top-2 right-4 z-30 flex h-8 w-8 shrink-0 flex-row items-center justify-center gap-0 rounded-md p-0 shadow-lg md:static md:h-full md:w-10 md:flex-col md:justify-start md:gap-3 md:rounded-l-none md:rounded-r-md md:border-0 md:py-4 md:shadow-none md:hover:text-current md:active:scale-100"
+				className="group md:bg-card md:hover:bg-card md:dark:bg-card md:dark:hover:bg-card fixed top-2 right-4 z-30 flex h-8 w-8 shrink-0 flex-row items-center justify-center gap-0 rounded-md border-gray-200 p-0 shadow-lg md:static md:h-full md:w-10 md:flex-col md:justify-start md:gap-3 md:rounded-md md:border md:py-4 md:shadow-none md:hover:text-current md:active:scale-100 dark:border-zinc-800"
 				title="Show filters"
 				aria-label="Show filters"
 			>
@@ -94,7 +94,7 @@ export function LogsFilterSidebar({ filters, onFiltersChange }: LogsSidebarProps
 	}
 
 	return (
-		<div className="bg-card fixed inset-y-2 left-2 z-40 flex h-auto w-[calc(100vw-1rem)] max-w-72 shrink-0 flex-col rounded-md border shadow-xl md:static md:h-full md:w-64 md:max-w-none md:rounded-l-none md:rounded-r-md md:border-0 md:shadow-none">
+		<div className="bg-card fixed inset-y-2 left-2 z-40 flex h-auto w-[calc(100vw-1rem)] max-w-72 shrink-0 flex-col rounded-md border border-gray-200 shadow-xl md:static md:h-full md:w-64 md:max-w-none md:rounded-md md:border md:shadow-none dark:border-zinc-800">
 			{/* Header */}
 			<div className="flex h-11 items-center justify-between border-b pr-2 pl-5">
 				<span className="text-sm font-semibold">Filters</span>
