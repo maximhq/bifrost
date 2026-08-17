@@ -38,6 +38,15 @@ const (
 	// MaxHistogramBuckets rejects a range/bucket combination that would
 	// produce more series points than are useful to reason over.
 	MaxHistogramBuckets = 200
+	// LargeResultThreshold is where "list the rows" stops being a sensible
+	// answer and aggregates take over. Set well under what would overflow a tool
+	// result even at the row cap, so the model is redirected before it wastes a
+	// call rather than after.
+	LargeResultThreshold = 500
+	// CoarseBuckets is what a per-provider series is reduced to. A dozen
+	// points carry the shape of a trend; the rest is detail nobody reads out of
+	// a JSON blob.
+	CoarseBuckets = 12
 
 	// LogContentChars bounds prompt/response text when a question genuinely
 	// needs it. Long enough to judge what a request was doing, short enough that
@@ -413,6 +422,26 @@ func bucketSize(filters *logstore.SearchFilters) (int64, error) {
 	return bucket, nil
 }
 
+// coarseBucketSize widens the bucket so a per-provider series stays small.
+//
+// The dashboard's bucket size is sized for a chart with hundreds of pixels. The
+// same series serialized as JSON, repeated once per provider, comfortably
+// exceeds the tool-result budget - and an over-budget result is discarded, so
+// the model retries, which is how one question turned into four identical
+// queries in the logs.
+func coarseBucketSize(filters *logstore.SearchFilters) (int64, error) {
+	if filters.StartTime == nil || filters.EndTime == nil {
+		return logstore.DefaultBucketSize(filters.StartTime, filters.EndTime), nil
+	}
+	span := filters.EndTime.Sub(*filters.StartTime).Seconds()
+	if span <= 0 {
+		return 0, fmt.Errorf("the time range is empty")
+	}
+	// Aim for CoarseBuckets points, never finer than the dashboard would use.
+	coarse := int64(span / CoarseBuckets)
+	return max(coarse, logstore.DefaultBucketSize(filters.StartTime, filters.EndTime)), nil
+}
+
 // buildTools returns the tools available for a request.
 //
 // It takes the deps rather than closing over a handler so the set can be built
@@ -421,6 +450,7 @@ func bucketSize(filters *logstore.SearchFilters) (int64, error) {
 func buildTools() []Tool {
 	return []Tool{
 		queryLogsTool(),
+		countLogsTool(),
 		getLogDetailTool(),
 		queryMetricsTool(),
 		queryUsersTool(),
@@ -428,23 +458,24 @@ func buildTools() []Tool {
 		queryModelsTool(),
 		describeFilterSpaceTool(),
 		describeScopeTool(),
+		askUserToolDef(),
 	}
 }
 
-// chatTools converts the tool set into provider-facing declarations.
-func chatTools(tools []Tool) ([]schemas.ChatTool, error) {
-	declared := make([]schemas.ChatTool, 0, len(tools))
+// ChatTools converts the tool set into provider-facing declarations.
+func responsesTools(tools []Tool) ([]schemas.ResponsesTool, error) {
+	declared := make([]schemas.ResponsesTool, 0, len(tools))
 	for _, tool := range tools {
 		var parameters schemas.ToolFunctionParameters
 		if err := sonic.UnmarshalString(tool.schemaJSON, &parameters); err != nil {
 			return nil, fmt.Errorf("warp tool %s has an invalid schema: %w", tool.name, err)
 		}
-		declared = append(declared, schemas.ChatTool{
-			Type: schemas.ChatToolTypeFunction,
-			Function: &schemas.ChatToolFunction{
-				Name:        tool.name,
-				Description: &[]string{tool.description}[0],
-				Parameters:  &parameters,
+		declared = append(declared, schemas.ResponsesTool{
+			Type:        schemas.ResponsesToolTypeFunction,
+			Name:        new(tool.name),
+			Description: new(tool.description),
+			ResponsesToolFunction: &schemas.ResponsesToolFunction{
+				Parameters: &parameters,
 			},
 		})
 	}

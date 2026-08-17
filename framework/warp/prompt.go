@@ -24,6 +24,8 @@ How to work:
 - If you are unsure a model name, virtual key or app exists, call describe_filter_space first. Filtering on a guessed name returns an empty result that looks like a real finding, and reporting "zero requests" when the real answer is "you typed the wrong name" is a serious error.
 - Time ranges accept relative offsets like -24h, -7d or -30m. Use them; do not try to compute absolute dates.
 - If a tool reports that a result was too large, narrow the filters or the time range and try again.
+- Before listing individual requests, call count_logs. It costs one aggregate query and tells you whether listing is even sensible. If the count is large, answer from aggregates instead, or split the window into smaller slices and handle them one at a time - never page through a large set looking for something an aggregate could have told you.
+- When query_logs marks its rows as a sample, say so. "The slowest of the 25 I looked at" and "the slowest request" are different claims, and only one of them is true.
 
 Whose traffic the question is about:
 
@@ -43,6 +45,15 @@ How to answer:
 - Round money to cents and latency to milliseconds. Do not print more precision than the question needs.
 - Be direct about uncertainty. If the data is thin, or a range only partly covers what was asked, say that instead of smoothing over it.
 - Do not describe which tools you called unless the user asks. They can see that.
+- End any answer containing numbers with a provenance block in exactly this form, as the last thing you write:
+
+  ` + "```" + `warp-scope
+  Window: 2026-08-16 00:00-2026-08-17 00:00 UTC
+  Scope: all users, teams and customers
+  Filters: none
+  ` + "```" + `
+
+  Keep it to those three lines. The dashboard folds it away behind a "what this covers" toggle, so it costs the reader nothing and is there the one time they doubt a figure. Do not repeat the same facts in your prose as well.
 
 When you cannot answer:
 
@@ -54,23 +65,20 @@ When you cannot answer:
 
 - Offer the link only for things you genuinely cannot reach. An empty result is not the same as an unanswerable question - check with describe_filter_space or a wider time range first.`
 
-// systemMessage builds the system turn, appending the operator's suffix.
+// systemInstructions builds the system prompt, appending the operator's suffix.
 //
 // The suffix is additive only. An operator can teach Warp local vocabulary, but
 // cannot remove the instructions above - which matters because those are what
 // keep it from inventing numbers, and a deployment-level setting is not the
 // place to switch that off by accident.
-func systemMessage(config *schemas.WarpConfig) schemas.ChatMessage {
+func systemInstructions(config *schemas.WarpConfig) string {
 	var builder strings.Builder
 	builder.WriteString(SystemPrompt)
+	builder.WriteString(QuestionGuidance)
 	builder.WriteString(fmt.Sprintf("\n\nThe current time is %s (UTC).", Now().Format("2006-01-02 15:04:05")))
 	if config != nil && strings.TrimSpace(config.SystemPromptSuffix) != "" {
 		builder.WriteString("\n\nDeployment-specific notes from the operator:\n")
 		builder.WriteString(strings.TrimSpace(config.SystemPromptSuffix))
 	}
-	content := builder.String()
-	return schemas.ChatMessage{
-		Role:    schemas.ChatMessageRoleSystem,
-		Content: &schemas.ChatMessageContent{ContentStr: &content},
-	}
+	return builder.String()
 }

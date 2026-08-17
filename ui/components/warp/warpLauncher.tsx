@@ -53,7 +53,7 @@ export default function WarpLauncher() {
 						warp.isOpen ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
 					)}
 				>
-					<WarpIcon className="size-4" />
+					<WarpIcon className="size-5" />
 				</button>
 			</TooltipTrigger>
 			<TooltipContent sideOffset={8}>
