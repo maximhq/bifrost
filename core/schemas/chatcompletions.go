@@ -459,6 +459,13 @@ type ChatTool struct {
 	MCPServerName string                           `json:"mcp_server_name,omitempty"`
 	DefaultConfig *ChatMCPToolsetConfig            `json:"default_config,omitempty"`
 	Configs       map[string]*ChatMCPToolsetConfig `json:"configs,omitempty"`
+
+	// serialized caches this tool's MarshalJSON output. Set only for immutable,
+	// shared tools (MCP catalog entries precomputed once per refresh via
+	// EnsureSerialized) so logging/marshal reuse the bytes instead of re-running
+	// the full tool marshal per request. nil for client-supplied tools, which
+	// marshal normally. Unexported so it never appears in JSON.
+	serialized []byte
 }
 
 // normalizeShape clears fields that don't belong to the ChatTool's active
@@ -513,10 +520,37 @@ func (t *ChatTool) clearServerToolVariantFields() {
 // dispatch on the top-level Type/Name shape — could misinterpret or
 // silently forward the stray fields.
 func (t ChatTool) MarshalJSON() ([]byte, error) {
+	if len(t.serialized) > 0 {
+		return t.serialized, nil
+	}
 	normalized := t
 	normalized.normalizeShape()
 	type Alias ChatTool
 	return MarshalSorted((*Alias)(&normalized))
+}
+
+// EnsureSerialized precomputes and caches this tool's MarshalJSON output so later
+// marshals (logging especially) reuse the bytes. Call ONLY on immutable, shared
+// tools (e.g. MCP catalog entries at refresh time) — a later mutation would leave
+// the cache stale. Idempotent; a no-op once cached.
+func (t *ChatTool) EnsureSerialized() error {
+	if len(t.serialized) > 0 {
+		return nil
+	}
+	b, err := t.MarshalJSON()
+	if err != nil {
+		return err
+	}
+	t.serialized = b
+	return nil
+}
+
+// InvalidateSerialized drops the cached MarshalJSON bytes so the next
+// EnsureSerialized (or MarshalJSON) recomputes them. Call after mutating any
+// field that changes the wire output (e.g. Function.Name); otherwise the stale
+// cache keeps emitting the old bytes.
+func (t *ChatTool) InvalidateSerialized() {
+	t.serialized = nil
 }
 
 // UnmarshalJSON tolerantly decodes whatever JSON shape arrives, then

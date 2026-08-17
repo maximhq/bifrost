@@ -494,6 +494,7 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 		// Persisted tools for per-user auth types survive restarts in ExecutionConfig.
 		if m.credStore.RequiresPerCallConnection(config) && len(config.DiscoveredTools) > 0 {
 			for toolName, tool := range config.DiscoveredTools {
+				_ = tool.EnsureSerialized() // cache serialized JSON at the source (see precomputeToolSerialization)
 				clientState.ToolMap[toolName] = tool
 			}
 			clientState.ToolNameMapping = config.DiscoveredToolNameMapping
@@ -625,6 +626,7 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 			// admin-test time and never hold a persistent client.Conn.
 			if len(config.DiscoveredTools) > 0 {
 				for toolName, tool := range config.DiscoveredTools {
+					_ = tool.EnsureSerialized() // cache serialized JSON at the source (see precomputeToolSerialization)
 					client.ToolMap[toolName] = tool
 				}
 				client.ToolNameMapping = config.DiscoveredToolNameMapping
@@ -1441,11 +1443,15 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 				fn := *tool.Function
 				fn.Name = newToolName
 				tool.Function = &fn
+				// The copied cache still holds the old-name bytes; drop it so the
+				// precomputeToolSerialization below re-serializes with newToolName.
+				tool.InvalidateSerialized()
 			}
 			newToolMap[newToolName] = tool
 		}
 
 		// Replace the old ToolMap with the new one
+		precomputeToolSerialization(newToolMap)
 		client.ToolMap = newToolMap
 
 		// Also update the client Name field
@@ -1794,6 +1800,7 @@ func (m *MCPManager) RegisterTool(name, description string, toolFunction MCPTool
 	// Store tool definition with prefixed name for consistency with external tools
 	// Update the tool schema to use the prefixed name
 	toolSchema.Function.Name = prefixedToolName
+	_ = toolSchema.EnsureSerialized() // cache serialized JSON after the final name is set
 	internalClient.ToolMap[prefixedToolName] = toolSchema
 
 	return nil
@@ -2211,6 +2218,7 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 	// Replace the tool set wholesale (the entry may still hold the previous
 	// connection's tools on the make-before-break path) and store the tool
 	// name mapping for execution (sanitized_name -> original_mcp_name).
+	precomputeToolSerialization(tools)
 	client.ToolMap = tools
 	client.ToolNameMapping = toolNameMapping
 

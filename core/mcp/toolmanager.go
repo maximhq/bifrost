@@ -223,6 +223,20 @@ func (m *ToolsManager) GetCodeModeDependencies() *CodeModeDependencies {
 }
 
 // GetAvailableTools returns the available tools for the given context.
+// precomputeToolSerialization eagerly caches each tool's serialized JSON so that
+// per-request logging/marshal reuse the bytes instead of re-running the full tool
+// marshal every request. Call it at every ToolMap-populate site; the stored tools
+// are immutable, so the cache stays valid until the next refresh replaces them.
+// Best-effort: a tool whose marshal fails is left uncached and marshals normally.
+func precomputeToolSerialization(tools map[string]schemas.ChatTool) {
+	for name, tool := range tools {
+		if err := tool.EnsureSerialized(); err != nil {
+			continue
+		}
+		tools[name] = tool
+	}
+}
+
 func (m *ToolsManager) GetAvailableTools(ctx *schemas.BifrostContext) []schemas.ChatTool {
 	availableToolsPerClient := m.clientManager.GetToolPerClient(ctx)
 	// Flatten tools from all clients into a single slice, avoiding duplicates
