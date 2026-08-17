@@ -14,7 +14,7 @@ func (provider *OpenAIProvider) SupportsWebSocketMode() bool {
 // WebSocketResponsesURL returns the WebSocket URL for the OpenAI Responses API.
 // Converts the HTTP base URL to a WSS URL: https://api.openai.com -> wss://api.openai.com/v1/responses
 func (provider *OpenAIProvider) WebSocketResponsesURL(key schemas.Key) string {
-	base := provider.networkConfig.BaseURL
+	base := provider.resolveBaseURLForKey(key)
 	base = strings.Replace(base, "https://", "wss://", 1)
 	base = strings.Replace(base, "http://", "ws://", 1)
 	return base + "/v1/responses"
