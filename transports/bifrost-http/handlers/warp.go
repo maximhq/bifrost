@@ -8,6 +8,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/warp"
+	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -19,9 +20,29 @@ type WarpHandler struct {
 	service *warp.Service
 }
 
-// NewWarpHandler builds the handler and the service behind it.
-func NewWarpHandler(store configstore.ConfigStore, logger schemas.Logger) *WarpHandler {
-	return &WarpHandler{service: warp.NewService(store, warp.WithLogger(logger))}
+// NewWarpLogReader adapts a log manager to what Warp reads through. Exported so
+// the server can rebind it when the logging plugin is reloaded.
+func NewWarpLogReader(manager logging.LogManager) warp.LogReader {
+	if manager == nil {
+		return nil
+	}
+	return warpLogReader{manager}
+}
+
+// NewWarpHandler builds the handler and the service behind it. A nil logManager
+// is a supported deployment (logging disabled): Warp then serves only its
+// configuration routes, because its tools would have nothing to read.
+func NewWarpHandler(store configstore.ConfigStore, logManager logging.LogManager, logger schemas.Logger) *WarpHandler {
+	opts := []warp.Option{warp.WithLogger(logger)}
+	if logManager != nil {
+		opts = append(opts, warp.WithLogReader(warpLogReader{logManager}))
+	}
+	return &WarpHandler{service: warp.NewService(store, opts...)}
+}
+
+// Shutdown releases the service's model client.
+func (h *WarpHandler) Shutdown() {
+	h.service.Shutdown()
 }
 
 // Service exposes the underlying service to in-process callers.
@@ -36,6 +57,16 @@ func (h *WarpHandler) Service() *warp.Service {
 func (h *WarpHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	r.GET("/api/warp/config", lib.ChainMiddlewares(h.getConfig, middlewares...))
 	r.PUT("/api/warp/config", lib.ChainMiddlewares(h.putConfig, middlewares...))
+
+	// Registered unconditionally, and 503 while Warp cannot answer.
+	//
+	// This runs once, at startup. Gating the route on CanChat() meant a
+	// deployment that turned logging on afterwards kept answering 405 for the
+	// life of the process, with nothing to say the feature had become available.
+	// The 503 body carries a machine-readable reason, which is what keeps
+	// "present but unusable" distinguishable from "absent" - the concern the
+	// gate was there for in the first place.
+	r.POST("/api/warp/chat", lib.ChainMiddlewares(h.chat, middlewares...))
 }
 
 // getConfig serves the settings page. It is safe for any authenticated caller

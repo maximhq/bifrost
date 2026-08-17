@@ -21,6 +21,9 @@ type WarpStore interface {
 	UpsertWarpConfig(ctx context.Context, config *tables.TableWarpConfig) error
 }
 
+// GetWarpConfig reads the singleton Warp row. A missing row returns (nil, nil):
+// most deployments never turn Warp on, so absence is an ordinary state that
+// callers should not have to distinguish from a failure at every call site.
 func (s *RDBConfigStore) GetWarpConfig(ctx context.Context) (*tables.TableWarpConfig, error) {
 	var config tables.TableWarpConfig
 	err := s.DB().WithContext(ctx).First(&config, tables.WarpConfigRowID).Error
@@ -33,6 +36,9 @@ func (s *RDBConfigStore) GetWarpConfig(ctx context.Context) (*tables.TableWarpCo
 	return &config, nil
 }
 
+// UpsertWarpConfig writes the singleton Warp row, pinning the primary key so a
+// caller that left ID unset cannot insert a second, autoincremented row that
+// GetWarpConfig would never find.
 func (s *RDBConfigStore) UpsertWarpConfig(ctx context.Context, config *tables.TableWarpConfig) error {
 	// Pin the ID rather than trusting the caller: the table is a singleton by
 	// contract, and a caller that passed 0 would otherwise have GORM insert a
