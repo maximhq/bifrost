@@ -14,6 +14,7 @@ export * from "./mcpPerUserHeadersApi";
 export * from "./mcpSessionsApi";
 export * from "./notificationsApi";
 export * from "./oauth2ConsentApi";
+export * from "./warpApi";
 export * from "./oauth2SessionsApi";
 export * from "./pluginsApi";
 export * from "./providersApi";
