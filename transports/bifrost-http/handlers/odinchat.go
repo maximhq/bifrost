@@ -3,9 +3,11 @@ package handlers
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -110,7 +112,18 @@ func (s *OdinService) chat(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	chatFunc := s.chatFuncFor(ctx, config)
+	// The thread id is settled before the first model call rather than after the
+	// last one, because it travels upstream as a logging header. Odin's own
+	// traffic is logged like any other request, and without the id on the way out
+	// there is nothing to group those rows by afterwards - a thread's five model
+	// calls would sit in the log table as five unrelated requests.
+	conversationID := strings.TrimSpace(request.ConversationID)
+	isNewConversation := conversationID == ""
+	if isNewConversation {
+		conversationID = uuid.NewString()
+	}
+
+	chatFunc := s.chatFuncFor(ctx, config, conversationID)
 	if chatFunc == nil {
 		s.sendOdinUnavailable(ctx, schemas.OdinUnavailableNotConfigured, "Odin has no model client available.")
 		return
@@ -124,6 +137,7 @@ func (s *OdinService) chat(ctx *fasthttp.RequestCtx) {
 
 	agent := &odinAgent{
 		chat:  chatFunc,
+		cost:  s.costFuncFor(config),
 		tools: buildOdinTools(),
 		// The scope is read off the snapshotted context, same as the row-level
 		// queryscope, so it is a fact about who asked rather than anything the
@@ -138,14 +152,14 @@ func (s *OdinService) chat(ctx *fasthttp.RequestCtx) {
 
 	if request.Stream != nil && !*request.Stream {
 		defer cancel()
-		s.chatBuffered(ctx, agent, agentCtx, messages, request.ConversationID, question)
+		s.chatBuffered(ctx, agent, agentCtx, messages, conversationID, isNewConversation, question)
 		return
 	}
-	s.chatStreaming(ctx, agent, agentCtx, cancel, messages, request.ConversationID, question)
+	s.chatStreaming(ctx, agent, agentCtx, cancel, messages, conversationID, isNewConversation, question)
 }
 
 // chatBuffered drains the event channel and returns one JSON body.
-func (s *OdinService) chatBuffered(ctx *fasthttp.RequestCtx, agent *odinAgent, agentCtx context.Context, messages []schemas.ChatMessage, conversationID, question string) {
+func (s *OdinService) chatBuffered(ctx *fasthttp.RequestCtx, agent *odinAgent, agentCtx context.Context, messages []schemas.ResponsesMessage, conversationID string, isNewConversation bool, question string) {
 	events := make(chan odinEvent, 16)
 	go agent.run(agentCtx, messages, events)
 
@@ -171,12 +185,12 @@ func (s *OdinService) chatBuffered(ctx *fasthttp.RequestCtx, agent *odinAgent, a
 		}
 	}
 	response.Answer = string(answer)
-	response.ConversationID = s.recordOdinTurn(agentCtx, conversationID, question, response)
+	response.ConversationID = s.recordOdinTurn(agentCtx, conversationID, isNewConversation, question, response)
 	SendJSON(ctx, response)
 }
 
 // chatStreaming formats each event as an SSE frame.
-func (s *OdinService) chatStreaming(ctx *fasthttp.RequestCtx, agent *odinAgent, agentCtx context.Context, cancel context.CancelFunc, messages []schemas.ChatMessage, conversationID, question string) {
+func (s *OdinService) chatStreaming(ctx *fasthttp.RequestCtx, agent *odinAgent, agentCtx context.Context, cancel context.CancelFunc, messages []schemas.ResponsesMessage, conversationID string, isNewConversation bool, question string) {
 	ctx.Response.Header.Set("Content-Type", "text/event-stream")
 	ctx.Response.Header.Set("Cache-Control", "no-cache")
 	ctx.Response.Header.Set("Connection", "keep-alive")
@@ -224,7 +238,8 @@ func (s *OdinService) chatStreaming(ctx *fasthttp.RequestCtx, agent *odinAgent, 
 				// The id is stamped onto the done frame, so a client that started a
 				// new thread learns what to send next without a second request.
 				turn.Answer = string(answer)
-				event.ConversationID = s.recordOdinTurn(agentCtx, conversationID, question, turn)
+				turn.Usage = event.Usage
+				event.ConversationID = s.recordOdinTurn(agentCtx, conversationID, isNewConversation, question, turn)
 			}
 
 			payload, err := sonic.Marshal(event)
@@ -251,7 +266,7 @@ func (s *OdinService) sendOdinUnavailable(ctx *fasthttp.RequestCtx, reason schem
 }
 
 // odinConversation validates and converts the client's history.
-func odinConversation(messages []odinChatMessage) ([]schemas.ChatMessage, error) {
+func odinConversation(messages []odinChatMessage) ([]schemas.ResponsesMessage, error) {
 	if len(messages) == 0 {
 		return nil, errOdinEmptyConversation
 	}
@@ -261,17 +276,35 @@ func odinConversation(messages []odinChatMessage) ([]schemas.ChatMessage, error)
 		// it is worse than dropping the middle.
 		messages = append(messages[:1], messages[len(messages)-(odinMaxHistoryMessages-1):]...)
 	}
-	converted := make([]schemas.ChatMessage, 0, len(messages))
+	converted := make([]schemas.ResponsesMessage, 0, len(messages))
+	itemType := schemas.ResponsesMessageTypeMessage
 	for _, message := range messages {
-		role := schemas.ChatMessageRole(message.Role)
-		if role != schemas.ChatMessageRoleUser && role != schemas.ChatMessageRoleAssistant {
+		role := schemas.ResponsesMessageRoleType(message.Role)
+		if role != schemas.ResponsesInputMessageRoleUser && role != schemas.ResponsesInputMessageRoleAssistant {
 			return nil, errOdinBadRole
 		}
 		content := message.Content
-		converted = append(converted, schemas.ChatMessage{
-			Role:    role,
-			Content: &schemas.ChatMessageContent{ContentStr: &content},
+		// An empty turn is dropped, not replayed. A turn that failed is recorded
+		// with an error and no text, so the client sends it back as an assistant
+		// message with empty content - and Anthropic rejects that outright:
+		// "messages: text content blocks must be non-empty". One failed turn would
+		// otherwise poison the whole thread, with every retry failing on the
+		// previous failure rather than on anything the retry itself did.
+		//
+		// Dropping rather than erroring is deliberate: an empty turn carries no
+		// information, so there is nothing to tell the caller about and nothing
+		// lost by leaving it out.
+		if strings.TrimSpace(content) == "" {
+			continue
+		}
+		converted = append(converted, schemas.ResponsesMessage{
+			Type:    &itemType,
+			Role:    &role,
+			Content: &schemas.ResponsesMessageContent{ContentStr: &content},
 		})
+	}
+	if len(converted) == 0 {
+		return nil, errOdinEmptyConversation
 	}
 	return converted, nil
 }

@@ -1,5 +1,6 @@
 import OdinComposer from "@/components/odin/odinComposer";
 import { OdinMessage, OdinStreamingMessage } from "@/components/odin/odinMessage";
+import OdinQuestionCard from "@/components/odin/odinQuestion";
 import { useOdinStream } from "@/components/odin/useOdinStream";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -8,8 +9,9 @@ import { ScrollArea } from "@/components/ui/scrollArea";
 import { useOdin, type OdinTurn } from "@/lib/contexts/odinContext";
 import { useGetOdinConfigQuery } from "@/lib/store/apis/odinApi";
 import { Link } from "@tanstack/react-router";
-import { SquarePen, X } from "lucide-react";
-import { useCallback, useEffect, useRef } from "react";
+import { useOdinAutoScroll } from "@/components/odin/useOdinAutoScroll";
+import { ArrowDown, SquarePen, X } from "lucide-react";
+import { useCallback } from "react";
 
 /** Starter questions, shown on an empty conversation. */
 const STARTERS = [
@@ -36,18 +38,11 @@ export default function OdinPanel() {
 		[appendTurn],
 	);
 
-	const { streamingText, streamingToolCalls, isStreaming, send, stop } = useOdinStream({ onTurnComplete });
+	const { streamingText, streamingToolCalls, isStreaming, question, clearQuestion, send, stop, resetConversation } = useOdinStream({
+		onTurnComplete,
+	});
 
-	// Auto-scroll via a sentinel at the foot of the transcript rather than a ref
-	// on the scroll viewport: the shared ScrollArea does not expose its viewport
-	// node, and adding a prop to it would put a component every page uses into
-	// this diff for one panel's benefit.
-	const bottomRef = useRef<HTMLDivElement>(null);
-	useEffect(() => {
-		// Keyed on the streamed text so it follows the answer as it grows, not just
-		// when a turn completes.
-		bottomRef.current?.scrollIntoView({ block: "end" });
-	}, [odin?.turns.length, streamingText, streamingToolCalls.length]);
+	const { containerRef, contentRef, isPinned, scrollToBottom } = useOdinAutoScroll();
 
 	if (!odin) return null;
 
@@ -59,10 +54,23 @@ export default function OdinPanel() {
 	// unnoticed.
 	const isDisabledButComplete = !!config && !config.enabled && !!config.provider && !!config.model;
 
-	const ask = (question: string) => {
+	const ask = (text: string, label?: string) => {
 		const history = odin.turns;
-		odin.appendTurn({ role: "user", content: question });
-		void send(history, question);
+		// Carrying the question onto the user's turn is what makes a bare "-7d" in
+		// the transcript legible later: on its own it reads as a non sequitur.
+		odin.appendTurn({
+			role: "user",
+			content: text,
+			// Odin receives the hint; the transcript shows what was actually chosen.
+			displayContent: label,
+			answeredQuestion: question?.question,
+		});
+		clearQuestion();
+		// Your own message always gets shown. Following is a mode the reader can
+		// leave by scrolling up, but submitting a question is them asking to be
+		// brought back - without this the message they just typed lands off-screen.
+		scrollToBottom();
+		void send(history, text);
 	};
 
 	return (
@@ -73,7 +81,11 @@ export default function OdinPanel() {
 			    title across the divider. */}
 			<header className="flex h-13 shrink-0 items-center justify-between gap-2 border-b px-4">
 				<div className="flex min-w-0 items-center gap-2">
-					<OdinIcon className="text-muted-foreground size-4 shrink-0" />
+					{/* -mt-0.5 because the glyph's optical centre sits below its box
+					    centre - the helmet's wings reach the top edge while the chin
+					    stops short - so a box centred against the title still reads low
+					    beside it. */}
+					<OdinIcon className="text-muted-foreground -mt-0.5 size-5 shrink-0" />
 					<h2 className="truncate text-sm font-semibold">Odin</h2>
 					{/* Odin answers questions people will act on, so its maturity belongs
 					    next to its name rather than buried in a tooltip. */}
@@ -89,6 +101,9 @@ export default function OdinPanel() {
 							data-testid="odin-new-chat-btn"
 							onClick={() => {
 								stop();
+								// Dropping the thread id as well as the transcript, or the next
+								// question would be filed under the chat that was just cleared.
+								resetConversation();
 								odin.clear();
 							}}
 							className="text-muted-foreground hover:bg-accent hover:text-accent-foreground flex size-7 cursor-pointer items-center justify-center rounded-md transition-colors"
@@ -113,7 +128,7 @@ export default function OdinPanel() {
 				// at the fix rather than hiding or showing a bare error.
 				<div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-6 text-center" data-testid="odin-unconfigured">
 					<span className="bg-muted text-muted-foreground flex size-9 items-center justify-center rounded-full">
-						<OdinIcon className="size-4" />
+						<OdinIcon className="size-5" />
 					</span>
 					<p className="text-sm font-medium">{isDisabledButComplete ? "Odin is turned off" : "Odin isn't set up yet"}</p>
 					<p className="text-muted-foreground text-xs">
@@ -124,40 +139,115 @@ export default function OdinPanel() {
 					</Button>
 				</div>
 			) : (
-				<>
+				// The composer floats over the transcript rather than sitting in the
+				// column beside it. Stacked, it needed a strip of its own above the
+				// text, and that strip is dead space in the one place the panel can
+				// least afford it. Overlaid, the transcript runs the full height and
+				// the last line slides under frosted glass instead of stopping at a
+				// hard edge.
+				<div className="relative flex min-h-0 flex-1 flex-col">
 					{/* no-table flips the Radix viewport's inner wrapper from display:table
 						    back to block. As a table it sizes to its widest child, so one wide
 						    markdown table stretches the whole transcript, eats the padding and
 						    pushes every line of prose past the right edge. globals.css already
 						    carries this rule for the dashboard's scroll area. */}
-					<ScrollArea className="min-h-0 flex-1" viewportClassName="no-table">
-						<div className="min-w-0 space-y-4 p-4">
-							{odin.turns.length === 0 && !isStreaming ? (
-								<div className="space-y-3 pt-6" data-testid="odin-empty-state">
-									<p className="text-sm font-medium">Ask about your Bifrost data</p>
-									<div className="space-y-1.5">
-										{STARTERS.map((starter) => (
-											<button
-												key={starter}
-												type="button"
-												onClick={() => ask(starter)}
-												className="hover:bg-accent text-muted-foreground hover:text-foreground w-full cursor-pointer rounded-md border px-3 py-2 text-left text-xs transition-colors"
-											>
-												{starter}
-											</button>
-										))}
+					<div className="relative min-h-0 flex-1" ref={containerRef}>
+						<ScrollArea className="h-full" viewportClassName="no-table">
+							{/* space-y-5 between turns, while the assistant block keeps its own
+							    space-y-2 internally - so tool rows stay tight against the answer
+							    they belong to and exchanges separate from each other. Uniform
+							    spacing makes a question and its answer look as unrelated as two
+							    different questions. */}
+							{/* pb-28 reserves roughly the composer's height, so the last answer
+							    can still be scrolled clear of the glass. Without it the final
+							    line is permanently half-covered, which is the failure mode of
+							    every floating composer. */}
+							<div className="min-w-0 space-y-5 p-4 pb-28" ref={contentRef}>
+								{odin.turns.length === 0 && !isStreaming ? (
+									<div className="space-y-3 pt-6" data-testid="odin-empty-state">
+										<p className="text-sm font-medium">Ask about your Bifrost data</p>
+										<div className="space-y-1.5">
+											{STARTERS.map((starter) => (
+												<button
+													key={starter}
+													type="button"
+													onClick={() => ask(starter)}
+													className="hover:bg-accent text-muted-foreground hover:text-foreground w-full cursor-pointer rounded-md border px-3 py-2 text-left text-xs transition-colors"
+												>
+													{starter}
+												</button>
+											))}
+										</div>
 									</div>
-								</div>
-							) : (
-								odin.turns.map((turn, index) => <OdinMessage key={index} turn={turn} />)
-							)}
-							{isStreaming && <OdinStreamingMessage text={streamingText} toolCalls={streamingToolCalls} isStreaming={isStreaming} />}
-							<div ref={bottomRef} />
-						</div>
-					</ScrollArea>
+								) : (
+									odin.turns.map((turn, index) => <OdinMessage key={index} turn={turn} isLatest={index === odin.turns.length - 1} />)
+								)}
+								{isStreaming && <OdinStreamingMessage text={streamingText} toolCalls={streamingToolCalls} isStreaming={isStreaming} />}
+							</div>
+						</ScrollArea>
 
-					<OdinComposer isStreaming={isStreaming} provider={config?.provider} model={config?.model} onSend={ask} onStop={stop} />
-				</>
+						{/* Only offered once following has stopped. A jump-to-bottom button
+							    that is always there is noise, and one that appears while the
+							    transcript is already pinned suggests something is missing when
+							    nothing is. */}
+						{!isPinned && (
+							<Button
+								type="button"
+								size="icon"
+								variant="secondary"
+								onClick={scrollToBottom}
+								aria-label="Jump to latest"
+								data-testid="odin-jump-to-latest"
+								className="absolute bottom-32 left-1/2 size-7 -translate-x-1/2 rounded-full shadow-md"
+							>
+								<ArrowDown className="size-3.5" />
+							</Button>
+						)}
+					</div>
+
+					{/* No fill of its own. --background is a shade off --card, so painting
+						    it here drew a grey band across the panel's white surface - the
+						    seam this was meant to remove, just moved. The composer's own card
+						    is the only thing that should read as a surface; the strip around
+						    it stays transparent so the transcript runs under it unbroken.
+						    The wrapper carries no padding either - each child brings its own,
+						    so an absent question card costs nothing. */}
+					<div className="absolute inset-x-0 bottom-0">
+						{/* The question sits on top of the composer, not inside the scrolling
+						    transcript: it is about what you are going to say next, so it stays
+						    put while you scroll back to read the answer that prompted it. */}
+						{question && !isStreaming && (
+							<div className="px-3 pt-3 pb-2">
+								<OdinQuestionCard
+									question={question}
+									onAnswer={ask}
+									onSkip={() => {
+										// Skipping is a real answer. Saying so lets Odin proceed on its
+										// own judgement and state what it assumed, rather than asking
+										// the same thing again.
+										ask("Use your best judgement and say what you assumed.");
+									}}
+								/>
+							</div>
+						)}
+						<OdinComposer
+							isStreaming={isStreaming}
+							attached={!!question && !isStreaming}
+							onCommand={(command) => {
+								if (command.id === "clear") {
+									stop();
+									clearQuestion();
+									resetConversation();
+									odin.clear();
+								}
+							}}
+							provider={config?.provider}
+							model={config?.model}
+							onSend={ask}
+							onStop={stop}
+						/>
+					</div>
+				</div>
 			)}
 		</div>
 	);
