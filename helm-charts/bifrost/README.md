@@ -8,6 +8,10 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 
 ## Changelog
 
+### Upcoming
+
+- Added `bifrost.hume` configuration for the Hume EVI custom-language-model adapter. `defaultModel` supplies the provider/model when Hume omits its identifier, while `prosodyPrompt` controls optional vocal-expression prompt injection. Renders into top-level `hume` configuration.
+
 ### 2.1.35
 
 - Added `bifrost.plugins.otel.config.traces_enabled` (and `profiles[*].traces_enabled`, default `true`) — set `false` for a metrics-only profile where no traces are sent and `collector_url` is not required. Renders into `traces_enabled`.
@@ -790,6 +794,15 @@ vectorStore:
 | `bifrost.logLevel`      | Log level                         | `info`    |
 | `bifrost.logStyle`      | Log format: `json` or `text`      | `json`    |
 | `bifrost.encryptionKey` | Encryption key for sensitive data | `""`      |
+
+### Hume EVI Configuration
+
+| Parameter                                  | Description                                                                                     | Default          |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------------- | ---------------- |
+| `bifrost.hume.defaultModel`                | Optional provider/model or catalog-resolvable name used when Hume omits its model identifier    | Unset            |
+| `bifrost.hume.prosodyPrompt.enabled`       | Add Hume vocal-expression confidence scores to selected user messages                           | `false`          |
+| `bifrost.hume.prosodyPrompt.scope`         | Select the latest scored user message or all scored user messages                               | `latest_user`    |
+| `bifrost.hume.prosodyPrompt.maxEmotions`   | Maximum expressions injected per selected message; `0` includes every expression                | `3`              |
 
 ### Provider Configuration
 

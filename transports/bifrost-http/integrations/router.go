@@ -400,7 +400,11 @@ type HTTPRequestTypeGetter func(ctx *fasthttp.RequestCtx) schemas.RequestType
 // ShortCircuit is a function that determines if the request should be short-circuited.
 type ShortCircuit func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) (bool, error)
 
-// StreamConfig defines streaming-specific configuration for an integration
+// StreamConfig defines streaming-specific configuration for an integration.
+// A response converter returns ("", nil, nil) to skip a chunk. Any non-nil
+// converter error is fatal: the router emits a sanitized integration-specific
+// error event, cancels the upstream request, drains its channel, and terminates
+// the stream for every integration.
 //
 // SSE FORMAT BEHAVIOR:
 //

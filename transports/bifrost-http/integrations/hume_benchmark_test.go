@@ -4,10 +4,34 @@ import (
 	"context"
 	"testing"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
 var humeStreamBenchmarkSink interface{}
+var humeRequestBenchmarkSink HumeChatRequest
+
+func BenchmarkHumeChatRequestUnmarshal(b *testing.B) {
+	raw := []byte(`{
+		"model":"openai/gpt-4o-mini",
+		"stream":true,
+		"messages":[
+			{"role":"system","content":"Be concise."},
+			{"role":"user","content":"How is the weather?","time":{"begin":10.5,"end":900},"models":{"prosody":{"scores":{"Joy":0.2,"Interest":0.9,"Calmness":0.6}}}},
+			{"role":"assistant","content":"Let me check."}
+		],
+		"tools":[{"type":"function","function":{"name":"weather","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}}]
+	}`)
+
+	b.ReportAllocs()
+	for range b.N {
+		var request HumeChatRequest
+		if err := sonic.Unmarshal(raw, &request); err != nil {
+			b.Fatal(err)
+		}
+		humeRequestBenchmarkSink = request
+	}
+}
 
 func BenchmarkHumeChatStreamResponseConverter(b *testing.B) {
 	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
