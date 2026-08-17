@@ -1020,8 +1020,6 @@ type OpenAIListModelsResponse struct {
 
 // UnmarshalJSON accepts both response shapes used by OpenAI-compatible APIs.
 func (response *OpenAIListModelsResponse) UnmarshalJSON(data []byte) error {
-	type responseAlias OpenAIListModelsResponse
-
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) == 0 {
 		return errors.New("empty OpenAI list models response")
@@ -1029,11 +1027,22 @@ func (response *OpenAIListModelsResponse) UnmarshalJSON(data []byte) error {
 
 	switch trimmed[0] {
 	case '{':
-		var object responseAlias
+		var object struct {
+			Object string          `json:"object"`
+			Data   json.RawMessage `json:"data"`
+		}
 		if err := sonic.Unmarshal(data, &object); err != nil {
 			return err
 		}
-		*response = OpenAIListModelsResponse(object)
+		modelData := bytes.TrimSpace(object.Data)
+		if len(modelData) == 0 || modelData[0] != '[' {
+			return errors.New("invalid OpenAI list models response: data must be an array")
+		}
+		var models []OpenAIModel
+		if err := sonic.Unmarshal(modelData, &models); err != nil {
+			return err
+		}
+		*response = OpenAIListModelsResponse{Object: object.Object, Data: models}
 		return nil
 	case '[':
 		var models []OpenAIModel

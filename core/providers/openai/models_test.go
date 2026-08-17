@@ -67,7 +67,15 @@ func TestOpenAIListModelsResponseUnmarshalJSON(t *testing.T) {
 func TestOpenAIListModelsResponseUnmarshalJSONRejectsInvalidShapes(t *testing.T) {
 	t.Parallel()
 
-	for _, body := range []string{`"invalid"`, `123`, `null`} {
+	for _, body := range []string{
+		`"invalid"`,
+		`123`,
+		`null`,
+		`{}`,
+		`{"error":{"message":"provider error"}}`,
+		`{"data":null}`,
+		`{"data":{}}`,
+	} {
 		var response OpenAIListModelsResponse
 		err := sonic.Unmarshal([]byte(body), &response)
 		require.Error(t, err, "body: %s", body)
