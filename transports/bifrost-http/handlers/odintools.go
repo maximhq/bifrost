@@ -61,6 +61,10 @@ var odinNow = func() time.Time { return time.Now().UTC() }
 // is the decision point for whether Odin can see something new.
 type odinToolDeps struct {
 	logManager logging.LogManager
+	// scope is the caller's default slice of traffic. It narrows a question that
+	// named no scope of its own; it is not an access control, which queryscope
+	// already applies inside the store.
+	scope odinScope
 }
 
 // odinTool pairs a model-facing declaration with its executor.
@@ -256,10 +260,20 @@ func odinBoolArg(args map[string]any, key string) bool {
 	return value
 }
 
-// odinFilterArg parses the shared filter object every flow accepts.
-func odinFilterArg(args map[string]any, now time.Time) (*logstore.SearchFilters, error) {
+// odinFilterArg parses the shared filter object every flow accepts and applies
+// the caller's default scope.
+//
+// Every flow goes through here, which is what makes the default impossible to
+// forget: a tool added later gets the scoping by construction rather than by
+// its author remembering to ask for it.
+func odinFilterArg(args map[string]any, now time.Time, scope odinScope) (*logstore.SearchFilters, error) {
 	raw, _ := args["filters"].(map[string]any)
-	return parseOdinFilters(raw, now)
+	filters, err := parseOdinFilters(raw, now)
+	if err != nil {
+		return nil, err
+	}
+	applyOdinScope(filters, scope)
+	return filters, nil
 }
 
 // boundOdinToolResult serializes a result and enforces the byte budget.
@@ -422,6 +436,7 @@ func buildOdinTools() []odinTool {
 		odinQueryVirtualKeysTool(),
 		odinQueryModelsTool(),
 		odinDescribeFilterSpaceTool(),
+		odinDescribeScopeTool(),
 	}
 }
 

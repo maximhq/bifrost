@@ -116,18 +116,22 @@ func (s *OdinService) chat(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	agent := &odinAgent{
-		chat:          chatFunc,
-		tools:         buildOdinTools(),
-		deps:          &odinToolDeps{logManager: s.logManager},
-		config:        config,
-		maxIterations: config.EffectiveMaxIterations(),
-	}
-
 	// The whole loop gets iterations x per-call timeout. Anything slower is hung,
 	// not slow, and holding the connection open past that helps nobody.
-	budget := time.Duration(agent.maxIterations*config.EffectiveRequestTimeoutSeconds()) * time.Second
+	maxIterations := config.EffectiveMaxIterations()
+	budget := time.Duration(maxIterations*config.EffectiveRequestTimeoutSeconds()) * time.Second
 	agentCtx, cancel := snapshotOdinContext(ctx, budget)
+
+	agent := &odinAgent{
+		chat:  chatFunc,
+		tools: buildOdinTools(),
+		// The scope is read off the snapshotted context, same as the row-level
+		// queryscope, so it is a fact about who asked rather than anything the
+		// request body could claim.
+		deps:          &odinToolDeps{logManager: s.logManager, scope: odinScopeFromContext(agentCtx)},
+		config:        config,
+		maxIterations: maxIterations,
+	}
 
 	// The question is the last turn; history is everything before it.
 	question := request.Messages[len(request.Messages)-1].Content
