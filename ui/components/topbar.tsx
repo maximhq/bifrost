@@ -1,5 +1,6 @@
 import { ThemeToggle } from "@/components/themeToggle";
 import NotificationCenter from "@/components/notificationCenter";
+import OdinLauncher from "@/components/odin/odinLauncher";
 import { deriveTitleFromPathname, TOPBAR_MENU_SIDE_OFFSET } from "@/components/topbar.utils";
 import {
 	DropdownMenu,
@@ -195,6 +196,10 @@ export default function Topbar() {
 					)}
 				</DropdownMenuContent>
 			</DropdownMenu>
+
+			{/* Rightmost control. Same size-8 box as its neighbours so the row keeps
+			    its rhythm; it renders nothing outside an OdinProvider. */}
+			<OdinLauncher />
 		</header>
 	);
 }
