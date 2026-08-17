@@ -12,13 +12,15 @@ import {
 } from "@/components/ui/dropdownMenu";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
-import { useDescriptionSlotRef, useTopbarTitle } from "@/lib/contexts/topbarContext";
+import { useDescriptionSlotRef, useMobileFilterSlotRef, useTopbarTitle } from "@/lib/contexts/topbarContext";
+import { useBranding } from "@/lib/hooks/useBranding";
 import { useGetCoreConfigQuery, useLogoutMutation } from "@/lib/store";
 import type { UserInfo } from "@enterprise/lib/store/utils/tokenManager";
 import { getUserInfo } from "@enterprise/lib/store/utils/tokenManager";
 import { BooksIcon, DiscordLogoIcon, GithubLogoIcon } from "@phosphor-icons/react";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 import { BugIcon, ChevronDown, LogOut, Menu, User } from "lucide-react";
+import { useTheme } from "next-themes";
 import { useEffect, useMemo, useState } from "react";
 
 // External links that used to live in the sidebar footer icon row. They now
@@ -84,9 +86,12 @@ function usePageTitle() {
 export default function Topbar() {
 	const title = usePageTitle();
 	const setDescriptionSlot = useDescriptionSlotRef();
+	const setMobileFilterSlot = useMobileFilterSlotRef();
 	const navigate = useNavigate();
 	const [logout] = useLogoutMutation();
 	const { data: coreConfig } = useGetCoreConfigQuery({});
+	const { resolvedTheme } = useTheme();
+	const { logoSrc, logoAlt } = useBranding(resolvedTheme === "dark");
 
 	// Enterprise SCIM/OAuth stashes the profile in localStorage. Read it after
 	// mount so SSR/first paint doesn't diverge from the hydrated tree.
@@ -119,16 +124,18 @@ export default function Topbar() {
 		<header className="flex h-13 w-full shrink-0 items-center gap-2 px-3 pt-1 md:pr-4 md:pl-2" data-testid="topbar-container-root">
 			<div className="flex min-w-0 flex-1 items-center gap-2">
 				<SidebarTrigger className="shrink-0 md:hidden" />
+				<img className="h-[22px] w-auto max-w-[120px] object-contain md:hidden" src={logoSrc} alt={logoAlt} width={70} height={70} />
 				{/* text-lg font-semibold is the existing in-page <h1> scale, so hoisting
 				    the title here doesn't visually demote it. */}
-				<h1 className="truncate text-lg font-semibold">{title}</h1>
+				<h1 className="hidden truncate text-lg font-semibold md:block">{title}</h1>
 				{/* Anchor for <PageTitle>'s description popover. Pages portal into
 				    this node, so the topbar never has to know their content. */}
-				<span ref={setDescriptionSlot} className="flex shrink-0 items-center" />
+				<span ref={setDescriptionSlot} className="hidden shrink-0 items-center md:flex" />
 			</div>
 
 			{/* Theme stays a first-class topbar control rather than a menu entry —
 			    it's a display preference, not an account action. */}
+			<span ref={setMobileFilterSlot} className="flex shrink-0 items-center md:hidden" />
 			<NotificationCenter />
 			<ThemeToggle />
 
@@ -139,16 +146,17 @@ export default function Topbar() {
 							type="button"
 							data-testid="topbar-user-pill"
 							aria-label="Account menu"
-							className="border-border bg-card/60 text-foreground hover:bg-accent hover:text-accent-foreground flex h-8 max-w-[140px] min-w-0 cursor-pointer items-center gap-1.5 rounded-full border py-0 pr-2 pl-1 transition-colors sm:max-w-[220px]"
+							className="text-muted-foreground hover:bg-accent hover:text-accent-foreground md:border-border md:bg-card/60 md:text-foreground flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-md transition-colors md:h-8 md:w-auto md:max-w-[220px] md:min-w-0 md:gap-1.5 md:rounded-full md:border md:py-0 md:pr-2 md:pl-1"
 						>
-							<span className="bg-muted text-muted-foreground flex size-6 shrink-0 items-center justify-center rounded-full">
+							<span className="bg-muted text-muted-foreground hidden size-6 shrink-0 items-center justify-center rounded-full md:flex">
 								<User className="size-3.5" strokeWidth={2} />
 							</span>
+							<User className="size-4 md:hidden" strokeWidth={2} />
 							{/* min-w-0 + truncate is what keeps a 200-character display
 							    name from stretching the pill and pushing the page title
 							    out of the topbar. */}
-							<span className="min-w-0 truncate text-sm font-medium">{displayName}</span>
-							<ChevronDown className="text-muted-foreground size-3.5 shrink-0" strokeWidth={2} />
+							<span className="hidden min-w-0 truncate text-sm font-medium md:block">{displayName}</span>
+							<ChevronDown className="text-muted-foreground hidden size-3.5 shrink-0 md:block" strokeWidth={2} />
 						</button>
 					) : (
 						<button

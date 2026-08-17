@@ -1,3 +1,4 @@
+import { FilterSidebarTrigger } from "@/components/filters/filterSidebarTrigger";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -6,7 +7,7 @@ import { ScrollArea } from "@/components/ui/scrollArea";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useGetVirtualKeysQuery } from "@/lib/store";
 import { cn } from "@/lib/utils";
-import { ChevronDown, Filter, LoaderCircle, PanelLeftClose, PanelLeftOpen, RotateCcw, Search } from "lucide-react";
+import { ChevronDown, LoaderCircle, PanelLeftClose, RotateCcw, Search } from "lucide-react";
 import { type Ref, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const COLLAPSE_STORAGE_KEY = "mcp-clients-filter-sidebar-collapsed";
@@ -131,25 +132,7 @@ export function MCPClientsFilterSidebar({ filters, onFiltersChange }: SidebarPro
 
 	if (collapsed) {
 		return (
-			<Button
-				type="button"
-				onClick={toggleCollapsed}
-				variant="outline"
-				size="sm"
-				className="group md:bg-card md:hover:bg-card md:dark:bg-card md:dark:hover:bg-card fixed top-2 right-4 z-30 flex h-8 w-8 shrink-0 flex-row items-center justify-center gap-0 rounded-md p-0 shadow-lg md:static md:h-full md:w-10 md:flex-col md:justify-start md:gap-3 md:rounded-l-none md:rounded-r-md md:border-0 md:py-4 md:shadow-none md:hover:text-current md:active:scale-100"
-				title="Show filters"
-				aria-label="Show filters"
-				data-testid="mcpClientsFilterSidebar-toggle-show"
-			>
-				<Filter className="text-muted-foreground group-hover:text-foreground size-4 transition-colors md:hidden" />
-				<PanelLeftOpen className="text-muted-foreground group-hover:text-foreground hidden size-4 transition-colors md:block" />
-				<span className="hidden rotate-180 select-none [writing-mode:vertical-rl] md:block">Filters</span>
-				{activeFilterCount > 0 && (
-					<span className="bg-primary text-primary-foreground md:bg-primary/10 md:text-primary absolute -top-1 -right-1 flex size-5 items-center justify-center rounded-full text-[10px] font-medium md:static md:size-6 md:text-xs">
-						{activeFilterCount}
-					</span>
-				)}
-			</Button>
+			<FilterSidebarTrigger activeFilterCount={activeFilterCount} onClick={toggleCollapsed} testId="mcpClientsFilterSidebar-toggle-show" />
 		);
 	}
 
