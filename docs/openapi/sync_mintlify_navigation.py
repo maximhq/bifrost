@@ -50,6 +50,7 @@ SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "Integrations",
         (
             "OpenAI Integration",
+            "Hume Integration",
             "Anthropic Integration",
             "GenAI Integration",
             "Bedrock Integration",

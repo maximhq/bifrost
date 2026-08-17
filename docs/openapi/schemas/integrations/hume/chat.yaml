@@ -1,0 +1,245 @@
+# Hume EVI Custom Language Model schemas
+
+HumeChatRequest:
+  type: object
+  required:
+    - messages
+  description: |
+    OpenAI-compatible chat completion request sent by Hume EVI. Hume may add
+    timing and prosody metadata to each message. The model identifier is optional
+    when `hume.default_model` is configured in Bifrost.
+  properties:
+    model:
+      type: string
+      description: |
+        Bifrost provider/model identifier or model-catalog-resolvable name. An
+        empty or omitted value falls back to `hume.default_model`.
+    messages:
+      type: array
+      items:
+        $ref: '#/HumeMessage'
+      description: Conversation history with optional Hume timing and prosody metadata.
+    stream:
+      type: boolean
+      const: true
+      default: true
+      description: May be omitted; Bifrost forces streaming. Explicit `false` is rejected.
+    max_tokens:
+      type: integer
+      description: Maximum tokens to generate (legacy; prefer `max_completion_tokens`).
+    max_completion_tokens:
+      type: integer
+      description: Maximum tokens to generate.
+    temperature:
+      type: number
+      minimum: 0
+      maximum: 2
+    top_p:
+      type: number
+    frequency_penalty:
+      type: number
+      minimum: -2
+      maximum: 2
+    presence_penalty:
+      type: number
+      minimum: -2
+      maximum: 2
+    logit_bias:
+      type: object
+      additionalProperties:
+        type: number
+    logprobs:
+      type: boolean
+    top_logprobs:
+      type: integer
+    n:
+      type: integer
+      const: 1
+      default: 1
+      description: Hume consumes exactly one completion branch.
+    stop:
+      oneOf:
+        - type: string
+        - type: array
+          items:
+            type: string
+    seed:
+      type: integer
+    user:
+      type: string
+    tools:
+      type: array
+      items:
+        $ref: '../../inference/chat.yaml#/ChatTool'
+    tool_choice:
+      $ref: '../../inference/chat.yaml#/ChatToolChoice'
+    parallel_tool_calls:
+      type: boolean
+      description: Forced to `false` by Bifrost whenever tools are present.
+    response_format:
+      type: object
+      description: Provider response-format configuration.
+    reasoning_effort:
+      type: string
+      enum: [none, minimal, low, medium, high, xhigh]
+    service_tier:
+      type: string
+    stream_options:
+      $ref: '../../inference/chat.yaml#/ChatStreamOptions'
+    fallbacks:
+      type: array
+      items:
+        type: string
+      description: Bifrost fallback model identifiers.
+
+HumeMessage:
+  type: object
+  required:
+    - role
+  properties:
+    role:
+      type: string
+      enum: [system, user, assistant, tool, developer]
+    name:
+      type: string
+    content:
+      oneOf:
+        - $ref: '../../inference/chat.yaml#/ChatMessageContent'
+        - type: 'null'
+    tool_call_id:
+      type: string
+      description: Tool call identifier for tool-result messages.
+    refusal:
+      type: string
+    reasoning:
+      type: string
+    annotations:
+      type: array
+      items:
+        $ref: '../../inference/chat.yaml#/ChatAssistantMessageAnnotation'
+    tool_calls:
+      type: array
+      items:
+        $ref: '../../inference/chat.yaml#/ChatAssistantMessageToolCall'
+    time:
+      $ref: '#/HumeMessageTime'
+    models:
+      $ref: '#/HumeMessageModels'
+
+HumeMessageTime:
+  type: object
+  description: Message timing in milliseconds.
+  properties:
+    begin:
+      type: number
+    end:
+      type: number
+
+HumeMessageModels:
+  type: object
+  properties:
+    prosody:
+      $ref: '#/HumeProsodyModel'
+
+HumeProsodyModel:
+  type: object
+  properties:
+    scores:
+      type: object
+      additionalProperties:
+        type: number
+      description: Vocal-expression labels mapped to confidence scores.
+
+HumeChatStreamChunk:
+  type: object
+  required:
+    - id
+    - choices
+    - created
+    - model
+    - object
+    - system_fingerprint
+  description: |
+    One OpenAI-compatible JSON chunk carried in an SSE `data:` event. Bifrost
+    removes provider-only fields and always replaces `system_fingerprint` with
+    the resolved Hume custom session ID. The stream terminates with
+    `data: [DONE]`.
+  properties:
+    id:
+      type: string
+    choices:
+      type: array
+      items:
+        $ref: '#/HumeStreamChoice'
+    created:
+      type: integer
+    model:
+      type: string
+    object:
+      type: string
+      const: chat.completion.chunk
+    system_fingerprint:
+      type: string
+      description: Resolved `custom_session_id`, never the upstream provider fingerprint.
+    usage:
+      $ref: '#/HumeUsage'
+
+HumeStreamChoice:
+  type: object
+  required:
+    - index
+    - delta
+  properties:
+    index:
+      type: integer
+    delta:
+      $ref: '#/HumeStreamDelta'
+    finish_reason:
+      type:
+        - string
+        - 'null'
+
+HumeStreamDelta:
+  type: object
+  properties:
+    role:
+      type: string
+    content:
+      type: string
+    refusal:
+      type: string
+    tool_calls:
+      type: array
+      items:
+        $ref: '#/HumeToolCall'
+
+HumeToolCall:
+  type: object
+  required:
+    - index
+    - function
+  properties:
+    index:
+      type: integer
+      minimum: 0
+      maximum: 65535
+    type:
+      type: string
+    id:
+      type: string
+    function:
+      $ref: '../../inference/chat.yaml#/ChatAssistantMessageToolCallFunction'
+
+HumeUsage:
+  type: object
+  required:
+    - prompt_tokens
+    - completion_tokens
+    - total_tokens
+  properties:
+    prompt_tokens:
+      type: integer
+    completion_tokens:
+      type: integer
+    total_tokens:
+      type: integer

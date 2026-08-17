@@ -1037,6 +1037,14 @@
                 ]
               },
               {
+                "group": "Hume Integration",
+                "expanded": false,
+                "pages": [
+                  "POST /hume/v1/chat/completions",
+                  "POST /hume/chat/completions"
+                ]
+              },
+              {
                 "group": "Anthropic Integration",
                 "expanded": false,
                 "pages": [
