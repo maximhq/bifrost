@@ -151,6 +151,8 @@ const (
 //	SO-mantle-excl = Structured outputs unsupported on the bedrock-mantle
 //	     Messages API, per the "Supported APIs or features" table:
 //	     https://docs.aws.amazon.com/bedrock/latest/userguide/structured-output.html
+//	MidConv = Mid-conversation system messages:
+//	     https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages
 type ProviderFeatureSupport struct {
 	WebSearch              bool // web_search server tool (cite: A)
 	WebSearchNova          bool // web_search via nova_grounding — Bedrock Responses path only, not Chat/Converse
@@ -188,6 +190,7 @@ type ProviderFeatureSupport struct {
 	Diagnostics            bool // diagnostics request field — cache diagnostics (cache-diagnosis-2026-04-07 beta, diagnostics.previous_message_id). Claude API only per docs ("not supported on Amazon Bedrock or Vertex AI"); stripped elsewhere fail-closed. Azure rejects it.
 	ServerSideFallback     bool // native "fallbacks" request field — server-side-fallback-2026-06-01. Claude API only per docs ("not available on Amazon Bedrock, Google Cloud, or Microsoft Foundry").
 	FallbackCredit         bool // fallback_credit_token request field + stop_details credit fields — fallback-credit-2026-06-01 (AWS surfaces: -2026-06-09). Documented on the Claude API, Amazon Bedrock, Google Cloud and Microsoft Foundry, i.e. the inverse of ServerSideFallback.
+	MidConvSystem          bool // role:"system" inside messages — enabled only on Bifrost transports backed by the documented Claude Messages surfaces: Claude API, Vertex, and Bedrock Mantle (cite: MidConv).
 	MidConvToolChanges     bool // tool_addition/tool_removal blocks — mid-conversation-tool-changes-2026-07-01. Native Anthropic surface (Claude API + Bedrock Mantle); Bedrock is Opus 5 only, enforced upstream.
 }
 
@@ -210,6 +213,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		Diagnostics:        true, // cache-diagnosis-2026-04-07 — Claude API only; only this provider keeps diagnostics.previous_message_id.
 		ServerSideFallback: true, // server-side-fallback-2026-06-01 — Claude API only.
 		FallbackCredit:     true, // fallback-credit-2026-06-01.
+		MidConvSystem:      true, // GA on the Claude API for the documented model allowlist.
 		MidConvToolChanges: true, // mid-conversation-tool-changes-2026-07-01.
 	},
 	// Google Vertex AI — cite: A (overview table) and V-platform.
@@ -240,6 +244,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		Context1M:              true,
 		EagerInputStreaming:    true, // fine-grained-tool-streaming GA per A
 		FallbackCredit:         true, // fallback credit is documented on Google Cloud
+		MidConvSystem:          true, // GA on Google Cloud for the documented model allowlist.
 	},
 	// AWS Bedrock — cite: A + B-header (definitive beta-header list).
 	// Notably NOT supported per docs: MCP, Skills, FilesAPI, WebFetch,
@@ -308,6 +313,7 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		InputExamples:          true,
 		ServiceTier:            true,
 		FallbackCredit:         true, // fallback-credit-2026-06-09 (AWS date) per the Bedrock userguide
+		MidConvSystem:          true, // modern /anthropic/v1/messages surface; the legacy Bedrock provider retains its existing Converse compatibility behavior.
 		MidConvToolChanges:     true, // mid-conversation-tool-changes-2026-07-01 — Opus 5 on Bedrock, enforced upstream.
 	},
 	// Microsoft Azure AI Foundry — cite: A (most features azureAiBeta) +

@@ -11,6 +11,8 @@ package anthropic
 //   F) No top-level system, mid-conv only, unsupported
 //   G) Multiple mid-conv system messages, supported
 //   H) Multiple mid-conv system messages, unsupported
+//   I) Consecutive native system section, supported
+//   J) System section after an assistant server-tool result, supported
 //
 // "Supported" means provider=Anthropic + model=claude-opus-4-8 (SupportsMidConversationSystem=true).
 
@@ -337,6 +339,60 @@ func TestRoundTrip_G_MultipleMidConv_Supported(t *testing.T) {
 		t.Errorf("mid1 (legal placement, forwarded) = %v, want [\"Mid1.\"]", got)
 	}
 	assertInlined(t, outMsgs, outSystem, "Mid2.")
+}
+
+func TestRoundTrip_I_ConsecutiveMidConvSection_Supported(t *testing.T) {
+	messages := []AnthropicMessage{
+		anthMsg(AnthropicMessageRoleUser, "Q1"),
+		anthMsg(AnthropicMessageRoleSystem, "Mid1."),
+		anthMsg(AnthropicMessageRoleSystem, "Mid2."),
+		anthMsg(AnthropicMessageRoleAssistant, "A1"),
+	}
+
+	outMsgs, outSystem := roundTrip(t, messages, nil, schemas.Anthropic, "claude-opus-4-8")
+	if outSystem != nil {
+		t.Fatalf("system = %v, want nil", textBlocks(outSystem))
+	}
+	if want := "user,system,system,assistant"; roleSeq(outMsgs) != want {
+		t.Fatalf("role seq = %q, want %q", roleSeq(outMsgs), want)
+	}
+}
+
+func TestRoundTrip_J_MidConvAfterServerToolResult_Supported(t *testing.T) {
+	serverToolID := "srvtoolu_1"
+	serverToolName := "web_search"
+	messages := []AnthropicMessage{
+		anthMsg(AnthropicMessageRoleUser, "Find the latest result"),
+		{
+			Role: AnthropicMessageRoleAssistant,
+			Content: AnthropicContent{ContentBlocks: []AnthropicContentBlock{
+				{
+					Type:  AnthropicContentBlockTypeServerToolUse,
+					ID:    &serverToolID,
+					Name:  &serverToolName,
+					Input: []byte(`{"query":"test"}`),
+				},
+				{
+					Type:      AnthropicContentBlockTypeWebSearchToolResult,
+					ToolUseID: &serverToolID,
+					Content:   &AnthropicContent{ContentBlocks: []AnthropicContentBlock{}},
+				},
+			}},
+		},
+		anthMsg(AnthropicMessageRoleSystem, "Use the retrieved evidence."),
+	}
+
+	outMsgs, outSystem := roundTrip(t, messages, nil, schemas.Anthropic, "claude-opus-4-8")
+	if outSystem != nil {
+		t.Fatalf("system = %v, want nil", textBlocks(outSystem))
+	}
+	if want := "user,assistant,system"; roleSeq(outMsgs) != want {
+		t.Fatalf("role seq = %q, want %q", roleSeq(outMsgs), want)
+	}
+	blocks := outMsgs[1].Content.ContentBlocks
+	if len(blocks) != 2 || blocks[0].Type != AnthropicContentBlockTypeServerToolUse || blocks[1].Type != AnthropicContentBlockTypeWebSearchToolResult {
+		t.Fatalf("assistant blocks = %#v, want server_tool_use followed by web_search_tool_result", blocks)
+	}
 }
 
 // --- H: multiple mid-conv system messages, unsupported ----------------------
