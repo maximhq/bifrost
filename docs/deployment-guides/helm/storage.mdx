@@ -344,13 +344,13 @@ storage:
       host: "clickhouse.default.svc.cluster.local"
       database: bifrost
       managedReplication: true
-      engine: REPLICATED_MERGETREE
+      tableEngine: REPLICATED_MERGETREE
 ```
 
 Do not set `cluster` in managed mode. For unmanaged replicated tables,
 `cluster` is required as a deployment-safety check, but table DDL must be
 applied to each replica by an external migration mechanism because Bifrost does
-not send `ON CLUSTER` for replicated engines. With `engine: MergeTree`, a
+not send `ON CLUSTER` for replicated engines. With `tableEngine: MergeTree`, a
 configured `cluster` does send `ON CLUSTER` to create missing tables and
 columns on every member.
 

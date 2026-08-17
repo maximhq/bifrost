@@ -1528,7 +1528,7 @@ storage:
     #   secure: false         # Enable TLS
     #   dialTimeout: 10000    # Connection dial timeout in milliseconds
     #   # Set false only when external replication automation manages table DDL on every replica.
-    #   engine: "MergeTree"       # Options: MergeTree, REPLICATED_MERGETREE
+    #   tableEngine: "MergeTree"  # Options: MergeTree, REPLICATED_MERGETREE
     #   cluster: ""               # Required for unmanaged REPLICATED_MERGETREE; applies ON CLUSTER only with MergeTree
     # Async writer queue and batch tuning. Omitted fields use Bifrost defaults.
     # writer:

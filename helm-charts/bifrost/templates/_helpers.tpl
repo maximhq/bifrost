@@ -934,14 +934,14 @@ false
 {{- with $ch.dialTimeout }}{{- $_ := set $chConfig "dial_timeout" (. | int) }}{{- end }}
 {{- $chManaged := true }}
 {{- if hasKey $ch "managedReplication" }}{{- $chManaged = $ch.managedReplication }}{{- end }}
+{{- $chTableEngine := $ch.tableEngine | default "" }}
+{{- if eq $chTableEngine "MergeTree" }}{{- $chManaged = false }}{{- end }}
 {{- $_ := set $chConfig "managed_replication" $chManaged }}
-{{- with $ch.engine }}{{- $_ := set $chConfig "engine" . }}{{- end }}
+{{- if $chTableEngine }}{{- $_ := set $chConfig "table_engine" $chTableEngine }}{{- end }}
 {{- with $ch.cluster }}{{- $_ := set $chConfig "cluster" . }}{{- end }}
-{{- $chEngine := $ch.engine | default "" }}
 {{- if and $chManaged $ch.cluster }}{{- fail "ERROR: storage.logsStore.clickhouse.cluster must be empty when managedReplication is true." }}{{- end }}
-{{- if and $chEngine (ne $chEngine "MergeTree") (ne $chEngine "REPLICATED_MERGETREE") }}{{- fail "ERROR: storage.logsStore.clickhouse.engine must be MergeTree or REPLICATED_MERGETREE." }}{{- end }}
-{{- if and $chManaged (eq $chEngine "MergeTree") }}{{- fail "ERROR: storage.logsStore.clickhouse.engine must be REPLICATED_MERGETREE when managedReplication is true." }}{{- end }}
-{{- if and (eq $chEngine "REPLICATED_MERGETREE") (not $chManaged) (not $ch.cluster) }}{{- fail "ERROR: storage.logsStore.clickhouse.cluster is required when engine is REPLICATED_MERGETREE and managedReplication is false." }}{{- end }}
+{{- if and $chTableEngine (ne $chTableEngine "MergeTree") (ne $chTableEngine "REPLICATED_MERGETREE") }}{{- fail "ERROR: storage.logsStore.clickhouse.tableEngine must be MergeTree or REPLICATED_MERGETREE." }}{{- end }}
+{{- if and (eq $chTableEngine "REPLICATED_MERGETREE") (not $chManaged) (not $ch.cluster) }}{{- fail "ERROR: storage.logsStore.clickhouse.cluster is required when tableEngine is REPLICATED_MERGETREE and managedReplication is false." }}{{- end }}
 {{- $clickhouseLogsStore := dict "enabled" true "type" "clickhouse" "config" $chConfig }}
 {{- if .Values.storage.logsStore.writer }}
 {{- $writer := dict }}

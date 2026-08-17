@@ -2012,7 +2012,7 @@
                     "type": "boolean",
                     "description": "Use a ClickHouse Replicated database to distribute DDL. Emits ReplicatedReplacingMergeTree(ver) without ON CLUSTER or explicit Keeper arguments"
                   },
-                  "engine": {
+                  "table_engine": {
                     "type": "string",
                     "enum": ["MergeTree", "REPLICATED_MERGETREE"],
                     "description": "Table replication mode. REPLICATED_MERGETREE requires cluster unless managed_replication is true"

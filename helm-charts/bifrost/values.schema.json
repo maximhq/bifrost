@@ -4374,7 +4374,7 @@
                   "default": true,
                   "description": "Use a ClickHouse Replicated database to distribute DDL without ON CLUSTER or explicit Keeper arguments"
                 },
-                "engine": {
+                "tableEngine": {
                   "type": "string",
                   "enum": ["MergeTree", "REPLICATED_MERGETREE"],
                   "description": "REPLICATED_MERGETREE requires cluster unless managedReplication is true"

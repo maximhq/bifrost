@@ -142,18 +142,18 @@ without `ON CLUSTER` or an explicit Keeper path.
       "host": "env.CLICKHOUSE_HOST",
       "database": "bifrost",
       "managed_replication": true,
-      "engine": "REPLICATED_MERGETREE"
+      "table_engine": "REPLICATED_MERGETREE"
     }
   }
 }
 ```
 
-`managed_replication` and `engine` can also be supplied as
-`CLICKHOUSE_MANAGED_REPLICATION` and `CLICKHOUSE_ENGINE`. Do not set `cluster`
+`managed_replication` and `table_engine` can also be supplied as
+`CLICKHOUSE_MANAGED_REPLICATION` and `CLICKHOUSE_TABLE_ENGINE`. Do not set `cluster`
 in managed mode. For unmanaged `REPLICATED_MERGETREE`, `cluster` is required as
 a deployment-safety check, but Bifrost does not emit `ON CLUSTER`; create the
 table on each replica through your migration process. With an explicit
-non-replicated `"engine": "MergeTree"`, a configured `cluster` does emit
+non-replicated `"table_engine": "MergeTree"`, a configured `cluster` does emit
 `ON CLUSTER` so every member receives the table definition.
 
 </Tab>

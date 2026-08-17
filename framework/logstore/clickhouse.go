@@ -42,9 +42,9 @@ type ClickHouseConfig struct {
 	// ManagedReplication uses ClickHouse's Replicated database engine to
 	// distribute DDL. When omitted, CLICKHOUSE_MANAGED_REPLICATION is used.
 	ManagedReplication *bool `json:"managed_replication,omitempty"`
-	// Engine is MergeTree or REPLICATED_MERGETREE. When empty,
-	// CLICKHOUSE_ENGINE is used; cluster-only legacy config remains replicated.
-	Engine string `json:"engine,omitempty"`
+	// TableEngine is MergeTree or REPLICATED_MERGETREE. When empty,
+	// CLICKHOUSE_TABLE_ENGINE is used; cluster-only legacy config remains replicated.
+	TableEngine string `json:"table_engine,omitempty"`
 }
 
 type clickHouseTableEngine string
@@ -94,9 +94,9 @@ func (config *ClickHouseConfig) ddlConfig() (clickHouseDDLConfig, error) {
 		managedReplication = parsed
 	}
 
-	rawEngine := strings.TrimSpace(config.Engine)
+	rawEngine := strings.TrimSpace(config.TableEngine)
 	if rawEngine == "" {
-		rawEngine = strings.TrimSpace(os.Getenv("CLICKHOUSE_ENGINE"))
+		rawEngine = strings.TrimSpace(os.Getenv("CLICKHOUSE_TABLE_ENGINE"))
 	}
 	engine := clickHouseEngineMergeTree
 	switch strings.ToUpper(strings.ReplaceAll(rawEngine, "-", "_")) {
@@ -110,17 +110,19 @@ func (config *ClickHouseConfig) ddlConfig() (clickHouseDDLConfig, error) {
 	case "REPLICATED_MERGETREE", "REPLICATEDMERGETREE":
 		engine = clickHouseEngineReplicatedMergeTree
 	default:
-		return clickHouseDDLConfig{}, fmt.Errorf("clickhouse: engine must be MergeTree or REPLICATED_MERGETREE, got %q", rawEngine)
+		return clickHouseDDLConfig{}, fmt.Errorf("clickhouse: table_engine must be MergeTree or REPLICATED_MERGETREE, got %q", rawEngine)
 	}
 
+	// MergeTree is not replicated at the table-engine layer, so the managed
+	// database-replication flag has no effect for this explicit table mode.
+	if engine == clickHouseEngineMergeTree {
+		managedReplication = false
+	}
 	if managedReplication && cluster != "" {
 		return clickHouseDDLConfig{}, fmt.Errorf("clickhouse: cluster must be empty when managed_replication is true")
 	}
-	if managedReplication && engine != clickHouseEngineReplicatedMergeTree {
-		return clickHouseDDLConfig{}, fmt.Errorf("clickhouse: engine must be REPLICATED_MERGETREE when managed_replication is true")
-	}
 	if engine == clickHouseEngineReplicatedMergeTree && !managedReplication && cluster == "" {
-		return clickHouseDDLConfig{}, fmt.Errorf("clickhouse: cluster is required when engine is REPLICATED_MERGETREE and managed_replication is false")
+		return clickHouseDDLConfig{}, fmt.Errorf("clickhouse: cluster is required when table_engine is REPLICATED_MERGETREE and managed_replication is false")
 	}
 	return clickHouseDDLConfig{cluster: cluster, engine: engine, managedReplication: managedReplication}, nil
 }

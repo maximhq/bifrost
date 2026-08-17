@@ -50,20 +50,20 @@ func TestClickHouseDDLConfig(t *testing.T) {
 	}{
 		{name: "local defaults", wantEngine: clickHouseEngineMergeTree},
 		{name: "legacy cluster config remains replicated", config: ClickHouseConfig{Cluster: "cluster-a"}, wantEngine: clickHouseEngineReplicatedMergeTree},
-		{name: "managed replicated config", config: ClickHouseConfig{ManagedReplication: &trueValue, Engine: "REPLICATED_MERGETREE"}, wantEngine: clickHouseEngineReplicatedMergeTree, wantManaged: true},
-		{name: "environment defaults", env: map[string]string{"CLICKHOUSE_MANAGED_REPLICATION": "true", "CLICKHOUSE_ENGINE": "REPLICATED_MERGETREE"}, wantEngine: clickHouseEngineReplicatedMergeTree, wantManaged: true},
+		{name: "managed replicated config", config: ClickHouseConfig{ManagedReplication: &trueValue, TableEngine: "REPLICATED_MERGETREE"}, wantEngine: clickHouseEngineReplicatedMergeTree, wantManaged: true},
+		{name: "environment defaults", env: map[string]string{"CLICKHOUSE_MANAGED_REPLICATION": "true", "CLICKHOUSE_TABLE_ENGINE": "REPLICATED_MERGETREE"}, wantEngine: clickHouseEngineReplicatedMergeTree, wantManaged: true},
 		{name: "managed replication rejects cluster", config: ClickHouseConfig{Cluster: "cluster-a", ManagedReplication: &trueValue}, wantErr: "cluster must be empty"},
-		{name: "managed replication requires replicated engine", config: ClickHouseConfig{ManagedReplication: &trueValue, Engine: "MergeTree"}, wantErr: "engine must be REPLICATED_MERGETREE"},
-		{name: "non replicated cluster is allowed", config: ClickHouseConfig{Cluster: "cluster-a", Engine: "MergeTree"}, wantEngine: clickHouseEngineMergeTree},
-		{name: "unmanaged replicated engine requires cluster", config: ClickHouseConfig{Engine: "REPLICATED_MERGETREE"}, wantErr: "cluster is required"},
-		{name: "unknown engine rejected", config: ClickHouseConfig{Engine: "SharedMergeTree"}, wantErr: "engine must be"},
+		{name: "managed replication is ignored for MergeTree", config: ClickHouseConfig{Cluster: "cluster-a", ManagedReplication: &trueValue, TableEngine: "MergeTree"}, wantEngine: clickHouseEngineMergeTree},
+		{name: "non replicated cluster is allowed", config: ClickHouseConfig{Cluster: "cluster-a", TableEngine: "MergeTree"}, wantEngine: clickHouseEngineMergeTree},
+		{name: "unmanaged replicated engine requires cluster", config: ClickHouseConfig{TableEngine: "REPLICATED_MERGETREE"}, wantErr: "cluster is required"},
+		{name: "unknown table engine rejected", config: ClickHouseConfig{TableEngine: "SharedMergeTree"}, wantErr: "table_engine must be"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv("CLICKHOUSE_CLUSTER", "")
 			t.Setenv("CLICKHOUSE_MANAGED_REPLICATION", "")
-			t.Setenv("CLICKHOUSE_ENGINE", "")
+			t.Setenv("CLICKHOUSE_TABLE_ENGINE", "")
 			for key, value := range tt.env {
 				t.Setenv(key, value)
 			}
