@@ -1228,6 +1228,10 @@ func (m *MockConfigStore) DeleteSession(ctx context.Context, token string) error
 	return nil
 }
 
+func (m *MockConfigStore) DeleteOrphanedSessions(ctx context.Context, olderThan time.Duration) (int64, error) {
+	return 0, nil
+}
+
 // Temp token
 func (m *MockConfigStore) CreateTempToken(ctx context.Context, token *tables.TempToken, tx ...*gorm.DB) error {
 	return nil

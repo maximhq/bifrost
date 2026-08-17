@@ -34,9 +34,18 @@ var testMigrationLogger = bifrost.NewDefaultLogger(schemas.LogLevelInfo)
 // others' tables and rows.
 const pgTestSchema = "configstore_test"
 
-// postgresDSN matches the postgres service in tests/docker-compose.yml and
-// framework/docker-compose.yml.
-const postgresDSN = "host=localhost user=bifrost password=bifrost_password dbname=bifrost port=5432 sslmode=disable search_path=" + pgTestSchema
+// defaultPostgresDSN matches the postgres service in tests/docker-compose.yml
+// and framework/docker-compose.yml.
+const defaultPostgresDSN = "host=localhost user=bifrost password=bifrost_password dbname=bifrost port=5432 sslmode=disable search_path=" + pgTestSchema
+
+// postgresDSN can be redirected to an isolated Postgres instance for an
+// integration-test run without changing the default local test setup.
+var postgresDSN = func() string {
+	if dsn := os.Getenv("BIFROST_TEST_POSTGRES_DSN"); dsn != "" {
+		return dsn
+	}
+	return defaultPostgresDSN
+}()
 
 // namedDB pairs a backend name with its GORM connection for use in subtests.
 type namedDB struct {
