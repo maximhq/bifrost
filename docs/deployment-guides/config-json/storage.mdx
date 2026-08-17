@@ -125,6 +125,39 @@ Use `password_command` for short-lived database credentials such as AWS RDS IAM 
 
 </Tab>
 
+<Tab title="ClickHouse">
+
+### ClickHouse Replicated Database
+
+For a native ClickHouse `ENGINE = Replicated` database, let ClickHouse manage
+DDL replication. Bifrost creates `ReplicatedReplacingMergeTree(ver)` tables
+without `ON CLUSTER` or an explicit Keeper path.
+
+```json
+{
+  "logs_store": {
+    "enabled": true,
+    "type": "clickhouse",
+    "config": {
+      "host": "env.CLICKHOUSE_HOST",
+      "database": "bifrost",
+      "managed_replication": true,
+      "engine": "REPLICATED_MERGETREE"
+    }
+  }
+}
+```
+
+`managed_replication` and `engine` can also be supplied as
+`CLICKHOUSE_MANAGED_REPLICATION` and `CLICKHOUSE_ENGINE`. Do not set `cluster`
+in managed mode. For unmanaged `REPLICATED_MERGETREE`, `cluster` is required as
+a deployment-safety check, but Bifrost does not emit `ON CLUSTER`; create the
+table on each replica through your migration process. With an explicit
+non-replicated `"engine": "MergeTree"`, a configured `cluster` does emit
+`ON CLUSTER` so every member receives the table definition.
+
+</Tab>
+
 <Tab title="Disabled">
 
 ### Disabled (file-only mode)

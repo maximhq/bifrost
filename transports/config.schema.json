@@ -2006,7 +2006,16 @@
                   },
                   "cluster": {
                     "type": "string",
-                    "description": "Optional cluster name; when set, DDL runs ON CLUSTER with replicated table engines"
+                    "description": "Required deployment-safety cluster name for unmanaged REPLICATED_MERGETREE tables. For an explicitly selected MergeTree engine, Bifrost uses ON CLUSTER to create tables on every member. Must be empty when managed_replication is true"
+                  },
+                  "managed_replication": {
+                    "type": "boolean",
+                    "description": "Use a ClickHouse Replicated database to distribute DDL. Emits ReplicatedReplacingMergeTree(ver) without ON CLUSTER or explicit Keeper arguments"
+                  },
+                  "engine": {
+                    "type": "string",
+                    "enum": ["MergeTree", "REPLICATED_MERGETREE"],
+                    "description": "Table replication mode. REPLICATED_MERGETREE requires cluster unless managed_replication is true"
                   }
                 },
                 "required": ["host"],

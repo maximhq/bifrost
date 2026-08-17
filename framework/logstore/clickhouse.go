@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,9 +36,93 @@ type ClickHouseConfig struct {
 	// DialTimeout is the connection dial timeout in milliseconds (JSON config
 	// duration fields are integer milliseconds). 0 means the 10s default.
 	DialTimeout int `json:"dial_timeout,omitempty"`
-	// Cluster, when set, makes DDL run as `ON CLUSTER <name>` against
-	// ReplicatedReplacingMergeTree engines. Empty means single-node.
+	// Cluster is required for unmanaged replicated tables and optionally
+	// broadcasts non-replicated MergeTree DDL with ON CLUSTER.
 	Cluster string `json:"cluster,omitempty"`
+	// ManagedReplication uses ClickHouse's Replicated database engine to
+	// distribute DDL. When omitted, CLICKHOUSE_MANAGED_REPLICATION is used.
+	ManagedReplication *bool `json:"managed_replication,omitempty"`
+	// Engine is MergeTree or REPLICATED_MERGETREE. When empty,
+	// CLICKHOUSE_ENGINE is used; cluster-only legacy config remains replicated.
+	Engine string `json:"engine,omitempty"`
+}
+
+type clickHouseTableEngine string
+
+const (
+	clickHouseEngineMergeTree           clickHouseTableEngine = "MergeTree"
+	clickHouseEngineReplicatedMergeTree clickHouseTableEngine = "REPLICATED_MERGETREE"
+)
+
+type clickHouseDDLConfig struct {
+	cluster            string
+	engine             clickHouseTableEngine
+	managedReplication bool
+}
+
+func (c clickHouseDDLConfig) tableEngine(table string) string {
+	if c.engine == clickHouseEngineReplicatedMergeTree {
+		if c.managedReplication {
+			return "ReplicatedReplacingMergeTree(ver)"
+		}
+		return fmt.Sprintf("ReplicatedReplacingMergeTree('/clickhouse/tables/{shard}/%s', '{replica}', ver)", table)
+	}
+	return "ReplacingMergeTree(ver)"
+}
+
+func (c clickHouseDDLConfig) onClusterClause() string {
+	if c.engine != clickHouseEngineMergeTree || c.cluster == "" {
+		return ""
+	}
+	return fmt.Sprintf(" ON CLUSTER `%s`", chEscapeIdentifier(c.cluster))
+}
+
+func (config *ClickHouseConfig) ddlConfig() (clickHouseDDLConfig, error) {
+	cluster := strings.TrimSpace(config.Cluster)
+	if cluster == "" {
+		cluster = strings.TrimSpace(os.Getenv("CLICKHOUSE_CLUSTER"))
+	}
+
+	managedReplication := false
+	if config.ManagedReplication != nil {
+		managedReplication = *config.ManagedReplication
+	} else if raw, ok := os.LookupEnv("CLICKHOUSE_MANAGED_REPLICATION"); ok && strings.TrimSpace(raw) != "" {
+		parsed, err := strconv.ParseBool(strings.TrimSpace(raw))
+		if err != nil {
+			return clickHouseDDLConfig{}, fmt.Errorf("clickhouse: CLICKHOUSE_MANAGED_REPLICATION must be true or false: %w", err)
+		}
+		managedReplication = parsed
+	}
+
+	rawEngine := strings.TrimSpace(config.Engine)
+	if rawEngine == "" {
+		rawEngine = strings.TrimSpace(os.Getenv("CLICKHOUSE_ENGINE"))
+	}
+	engine := clickHouseEngineMergeTree
+	switch strings.ToUpper(strings.ReplaceAll(rawEngine, "-", "_")) {
+	case "":
+		// Existing cluster-only configurations used replicated tables.
+		if managedReplication || cluster != "" {
+			engine = clickHouseEngineReplicatedMergeTree
+		}
+	case "MERGETREE", "MERGE_TREE":
+		engine = clickHouseEngineMergeTree
+	case "REPLICATED_MERGETREE", "REPLICATEDMERGETREE":
+		engine = clickHouseEngineReplicatedMergeTree
+	default:
+		return clickHouseDDLConfig{}, fmt.Errorf("clickhouse: engine must be MergeTree or REPLICATED_MERGETREE, got %q", rawEngine)
+	}
+
+	if managedReplication && cluster != "" {
+		return clickHouseDDLConfig{}, fmt.Errorf("clickhouse: cluster must be empty when managed_replication is true")
+	}
+	if managedReplication && engine != clickHouseEngineReplicatedMergeTree {
+		return clickHouseDDLConfig{}, fmt.Errorf("clickhouse: engine must be REPLICATED_MERGETREE when managed_replication is true")
+	}
+	if engine == clickHouseEngineReplicatedMergeTree && !managedReplication && cluster == "" {
+		return clickHouseDDLConfig{}, fmt.Errorf("clickhouse: cluster is required when engine is REPLICATED_MERGETREE and managed_replication is false")
+	}
+	return clickHouseDDLConfig{cluster: cluster, engine: engine, managedReplication: managedReplication}, nil
 }
 
 const (
@@ -148,6 +234,10 @@ func buildClickHouseDSN(config *ClickHouseConfig) (string, error) {
 // the table TTL; values < 1 leave TTL unset (the LogsCleaner still prunes via
 // DeleteLogsBatch).
 func newClickHouseLogStore(ctx context.Context, config *ClickHouseConfig, retentionDays int, logger schemas.Logger) (LogStore, error) {
+	ddlConfig, err := config.ddlConfig()
+	if err != nil {
+		return nil, err
+	}
 	dsn, err := buildClickHouseDSN(config)
 	if err != nil {
 		return nil, err
@@ -182,7 +272,7 @@ func newClickHouseLogStore(ctx context.Context, config *ClickHouseConfig, retent
 	}
 
 	logger.Info("logstore: running clickhouse schema migrations")
-	if err := triggerClickHouseMigrations(ctx, db, config.Cluster, retentionDays, logger); err != nil {
+	if err := triggerClickHouseMigrations(ctx, db, ddlConfig, retentionDays, logger); err != nil {
 		logger.Error("logstore: clickhouse schema migrations failed: %v", err)
 		return nil, err
 	}
@@ -191,6 +281,6 @@ func newClickHouseLogStore(ctx context.Context, config *ClickHouseConfig, retent
 	constructed = true
 	return &ClickHouseLogStore{
 		RDBLogStore: &RDBLogStore{db: db, logger: logger},
-		cluster:     config.Cluster,
+		ddlConfig:   ddlConfig,
 	}, nil
 }
