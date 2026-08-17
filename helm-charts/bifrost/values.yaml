@@ -679,6 +679,9 @@ bifrost:
         #     headers: {}             # Sent to both endpoints (supports env.VAR_NAME prefix)
         #     trace_headers: {}       # Sent only to the trace endpoint, on top of headers (same key overrides)
         #     metrics_headers: {}     # Sent only to the metrics endpoint, on top of headers (e.g. a Databricks table name)
+        #     logs_enabled: false     # Export GenAI events (one OTLP log record per LLM call) correlated with the spans
+        #     logs_endpoint: ""       # Required when logs_enabled; e.g., http://otel-collector:4318/v1/logs (HTTP) or otel-collector:4317 (gRPC)
+        #     logs_disable_content_logging: false # Drop message content from exported logs only (independent of disable_content_logging, which gates spans)
         #     tls_ca_cert: ""         # Path to TLS CA certificate file
         #     insecure: true          # Skip TLS verification (ignored if tls_ca_cert is set)
         #     disable_content_logging: false
@@ -701,6 +704,13 @@ bifrost:
         metrics_enabled: false
         metrics_endpoint: "" # e.g., http://otel-collector:4318/v1/metrics (HTTP) or otel-collector:4317 (gRPC)
         metrics_push_interval: 15 # Push interval in seconds (1-300)
+        # Log export of GenAI events: one OTLP log record per LLM call, correlated with the
+        # exported trace via trace_id/span_id. logs_endpoint is required when enabled.
+        logs_enabled: false
+        logs_endpoint: "" # e.g., http://otel-collector:4318/v1/logs (HTTP) or otel-collector:4317 (gRPC)
+        # Drop message content from exported logs only. Independent of disable_content_logging below,
+        # which gates the same content on exported spans.
+        # logs_disable_content_logging: false
         # Custom headers sent to both the trace and metrics endpoints (supports env.VAR_NAME prefix)
         headers: {}
         # Extra headers sent only to the trace endpoint, on top of headers (same key overrides)
