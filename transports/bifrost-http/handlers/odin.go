@@ -10,6 +10,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -35,34 +36,55 @@ type OdinService struct {
 	// client owns Odin's dedicated Bifrost instance. Tests replace chatOverride
 	// instead, so the agent loop can be driven by a scripted model.
 	client *odinClient
+	// catalog prices Odin's own usage. Nil is supported: the panel then reports
+	// tokens without a cost, rather than reporting a cost of zero.
+	catalog *modelcatalog.ModelCatalog
 	// chatOverride, when set, replaces the real inference path. Test seam only.
 	chatOverride odinChatFunc
 }
 
 // NewOdinService builds the Odin service. A nil logManager is a supported
 // deployment (logging disabled): Odin then serves only its configuration routes,
-// because its tools would have nothing to read.
-func NewOdinService(store configstore.ConfigStore, logManager logging.LogManager, logger schemas.Logger) *OdinService {
+// because its tools would have nothing to read. A nil catalog is likewise
+// supported and simply leaves Odin's own spend unpriced.
+func NewOdinService(store configstore.ConfigStore, logManager logging.LogManager, catalog *modelcatalog.ModelCatalog, logger schemas.Logger) *OdinService {
 	odinStore, _ := store.(configstore.OdinStore)
 	conversationStore, _ := store.(configstore.OdinConversationStore)
-	service := &OdinService{store: odinStore, conversations: conversationStore, logManager: logManager}
+	service := &OdinService{store: odinStore, conversations: conversationStore, logManager: logManager, catalog: catalog}
 	if logManager != nil {
 		service.client = newOdinClient(logger)
 	}
 	return service
 }
 
+// costFuncFor prices usage against the model Odin is configured to run on.
+//
+// Odin's client is plugin-free, so nothing upstream computes a cost for it. This
+// is the compensating control named in odinclient.go: Odin's spend is invisible
+// to the gateway's budgets, so it has to be visible in the panel instead.
+func (s *OdinService) costFuncFor(config *schemas.OdinConfig) odinCostFunc {
+	if s.catalog == nil {
+		return nil
+	}
+	// Priced against the configured model, not the qualified provider/model form
+	// sent upstream: the catalog keys on the bare name, and a "openai/gpt-5.5"
+	// lookup misses and silently prices the turn at zero.
+	return func(usage *schemas.BifrostLLMUsage) float64 {
+		return s.catalog.CalculateCostForUsage(usage, config.Provider, config.Model, schemas.ChatCompletionRequest, nil)
+	}
+}
+
 // chatFuncFor resolves the inference function for a request. Config is read per
 // request rather than captured at construction, so a settings change takes
 // effect without a restart.
-func (s *OdinService) chatFuncFor(ctx context.Context, config *schemas.OdinConfig) odinChatFunc {
+func (s *OdinService) chatFuncFor(ctx context.Context, config *schemas.OdinConfig, conversationID string) odinChatFunc {
 	if s.chatOverride != nil {
 		return s.chatOverride
 	}
 	if s.client == nil {
 		return nil
 	}
-	return s.client.chat(ctx, config)
+	return s.client.chat(ctx, config, conversationID)
 }
 
 // Shutdown releases Odin's model client.

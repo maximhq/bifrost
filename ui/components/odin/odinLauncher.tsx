@@ -54,7 +54,7 @@ export default function OdinLauncher() {
 						odin.isOpen ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
 					)}
 				>
-					<OdinIcon className="size-4" />
+					<OdinIcon className="size-5" />
 				</button>
 			</TooltipTrigger>
 			<TooltipContent sideOffset={TOPBAR_MENU_SIDE_OFFSET}>

@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -27,14 +28,52 @@ import (
 // own spend does not appear in the gateway's logs. The usage figure on the done
 // event is the compensating control.
 
+// odinTransportProvider is the provider Odin speaks on the wire, which is not
+// the provider that ends up serving the request.
+//
+// The two are separate on purpose. Odin's base URL points at this Bifrost's
+// OpenAI-compatible mount, and a provider implementation builds its own path
+// from that base: the Anthropic one asks for /v1/messages, which under /openai
+// is not a route at all and comes back as "Method Not Allowed". Speaking OpenAI
+// to the compatibility layer and naming the real provider in the model string is
+// what lets Odin run on Anthropic, Bedrock or Vertex without needing a wire
+// format per provider.
+//
+// The consequence to know: a base URL pointed somewhere other than this Bifrost
+// has to be OpenAI-compatible. Every provider Bifrost fronts is reachable
+// through the default, so this only binds someone who has deliberately pointed
+// Odin elsewhere.
+func odinTransportProvider() schemas.ModelProvider {
+	return schemas.OpenAI
+}
+
+// odinModelForRequest returns the model name to send upstream.
+//
+// With the default base URL Odin talks to this Bifrost, which routes on the
+// model name alone - so a bare "gpt-5.5" gets whichever provider Bifrost picks
+// for it, and Odin's configured provider is silently ignored. Sending
+// "provider/model" pins it, which is the difference between Odin's traffic
+// landing on the provider that was chosen for it and landing wherever the
+// deployment's routing happens to send that model name.
+//
+// A model that already carries a prefix is left alone, so an operator who typed
+// the qualified form gets exactly what they typed.
+func odinModelForRequest(config *schemas.OdinConfig) string {
+	if config.Provider == "" || strings.Contains(config.Model, "/") {
+		return config.Model
+	}
+	return string(config.Provider) + "/" + config.Model
+}
+
 // odinAccount is the minimal Account implementation over the stored Odin config.
 type odinAccount struct {
 	config *schemas.OdinConfig
 }
 
-// GetConfiguredProviders reports the single provider Odin is configured to use.
+// GetConfiguredProviders reports the wire protocol Odin speaks, not the provider
+// that serves the request - see odinTransportProvider.
 func (a *odinAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
-	return []schemas.ModelProvider{a.config.Provider}, nil
+	return []schemas.ModelProvider{odinTransportProvider()}, nil
 }
 
 // GetKeysForProvider returns Odin's one key. The whitelist is "*" because the
@@ -100,10 +139,40 @@ func odinConfigSignature(config *schemas.OdinConfig) string {
 	return fmt.Sprintf("%s|%s|%s|%s|%d", config.Provider, config.Model, config.BaseURL, config.APIKeyID, config.EffectiveRequestTimeoutSeconds())
 }
 
+// odinConversationHeader labels Odin's own upstream calls with the thread they
+// belong to.
+//
+// The x-bf-lh- prefix is the logging plugin's own convention: everything after
+// it becomes a metadata key on the log row, filterable through
+// SearchFilters.MetadataFilters. With the default base URL Odin talks to this
+// Bifrost, so its research calls are logged like any other traffic - and a
+// question that took five model calls would otherwise land as five unrelated
+// rows with nothing tying them together.
+const odinConversationHeader = "x-bf-lh-odin-conversation-id"
+
+// odinSessionHeader binds a thread's calls to one provider key.
+//
+// x-bf-session-id is Bifrost's session-stickiness header: requests carrying the
+// same value reuse the same key from the pool. A conversation is exactly the
+// unit that wants that - prompt caches, rate-limit buckets and any per-key state
+// are all keyed on the credential, so a thread that hops keys between turns
+// throws that away and pays full price for context it already sent.
+const odinSessionHeader = "x-bf-session-id"
+
+// odinUserAgent labels Odin's traffic so the logs can tell it apart.
+//
+// Bifrost derives a log row's app from the User-Agent, so this is what turns
+// Odin's own calls into a named client in the Logs view instead of an anonymous
+// share of "API". It matters more here than for a normal integration: Odin reads
+// the same table it writes to, so being able to see - and filter out - its own
+// traffic is what keeps its answers about the deployment rather than about
+// itself. Matched by schemas.Odin.
+const odinUserAgent = "bifrost-odin/1"
+
 // chat resolves (building if needed) the instance for this config and runs one
 // completion against it.
-func (c *odinClient) chat(ctx context.Context, config *schemas.OdinConfig) odinChatFunc {
-	return func(ctx context.Context, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+func (c *odinClient) chat(ctx context.Context, config *schemas.OdinConfig, conversationID string) odinChatFunc {
+	return func(ctx context.Context, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 		instance, err := c.instanceFor(ctx, config)
 		if err != nil {
 			return nil, &schemas.BifrostError{
@@ -114,7 +183,16 @@ func (c *odinClient) chat(ctx context.Context, config *schemas.OdinConfig) odinC
 		// snapshot preserved travels with the inference call too.
 		bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(ctx)
 		defer cancel()
-		return instance.ChatCompletionRequest(bifrostCtx, req)
+		if conversationID != "" {
+			// Both headers carry the same value for different ends: one groups the
+			// thread's rows in the log table, the other keeps it on one key.
+			bifrostCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
+				odinConversationHeader: {conversationID},
+				odinSessionHeader:      {conversationID},
+				"User-Agent":           {odinUserAgent},
+			})
+		}
+		return instance.ResponsesRequest(bifrostCtx, req)
 	}
 }
 

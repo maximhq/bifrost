@@ -53,6 +53,7 @@ import {
 } from "lucide-react";
 
 import { OdinIcon } from "@/components/ui/icons";
+import { cn } from "@/lib/utils";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
 	Sidebar,
@@ -500,6 +501,25 @@ const compareVersions = (v1: string, v2: string): number => {
 	}
 	return 0;
 };
+
+/**
+ * Odin's mark, sized above the settings nav's default.
+ *
+ * The nav sizes every sub-item icon at h-3.5. Odin's is a filled glyph among
+ * lucide's stroked ones, and a filled shape reads smaller at the same box
+ * because its weight sits in the middle rather than on the outline, so it needs
+ * to render larger to match them.
+ *
+ * It is scaled rather than resized, and that is the whole point. A bigger box
+ * moves two things at once: the icon's left edge shifts out of the column its
+ * neighbours share, and every pixel of extra width pushes the label right, so
+ * "Odin" no longer starts where "Security" and "API Keys" do. A transform
+ * changes none of that - layout still sees h-3.5, so the row stays on the grid
+ * while the mark alone grows.
+ */
+function OdinNavIcon({ className, ...props }: React.SVGProps<SVGSVGElement>) {
+	return <OdinIcon className={cn(className, "scale-125")} {...props} />;
+}
 
 export default function AppSidebar() {
 	const pathname = useLocation({ select: (l) => l.pathname });
@@ -1023,7 +1043,7 @@ export default function AppSidebar() {
 					{
 						title: "Odin",
 						url: "/workspace/config/odin",
-						icon: OdinIcon,
+						icon: OdinNavIcon,
 						description: "Odin agent configuration",
 						hasAccess: hasSettingsAccess,
 					},

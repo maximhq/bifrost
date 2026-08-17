@@ -87,3 +87,26 @@ func TestMatchUserAgent(t *testing.T) {
 		})
 	}
 }
+
+// Odin must be detected as itself, not as a generic API client. It reaches the
+// gateway over fasthttp, so without an earlier matcher the APIClient identifier
+// claims it and its traffic disappears into everyone else's.
+func TestDetectAppFromUserAgentIdentifiesOdin(t *testing.T) {
+	if got := DetectAppFromUserAgent("bifrost-odin/1"); got != "Odin" {
+		t.Errorf("DetectAppFromUserAgent(bifrost-odin/1) = %q, want Odin", got)
+	}
+	if got := AppKeyFromName("Odin"); got != "odin" {
+		t.Errorf("AppKeyFromName(Odin) = %q, want odin", got)
+	}
+}
+
+// The identifier is prefixed rather than a bare "odin" because matching is by
+// substring: an unrelated client whose User-Agent happens to contain the word
+// must not be relabelled.
+func TestOdinIdentifierDoesNotClaimUnrelatedAgents(t *testing.T) {
+	for _, ua := range []string{"melodin/2.0", "odin-unrelated-client/3", "Mozilla/5.0 (odin)"} {
+		if got := DetectAppFromUserAgent(ua); got == "Odin" {
+			t.Errorf("DetectAppFromUserAgent(%q) = Odin, want anything else", ua)
+		}
+	}
+}

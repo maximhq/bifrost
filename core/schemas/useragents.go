@@ -18,6 +18,11 @@ var (
 	ClaudeCLI = UserAgentIdentifiers{"claude-cli", "claude-code", "claude-vscode"}
 	// APIClient identifies generic programmatic API clients.
 	APIClient = UserAgentIdentifiers{"fasthttp"}
+	// Odin identifies the dashboard's own data agent talking to this gateway.
+	// Deliberately prefixed rather than a bare "odin": the identifiers are matched
+	// as substrings, and a four-letter word appears inside plenty of unrelated
+	// User-Agent strings.
+	Odin = UserAgentIdentifiers{"bifrost-odin"}
 	// CodexCLI identifies requests from Codex CLI clients.
 	CodexCLI = UserAgentIdentifiers{"codex-cli", "codex-tui"}
 	// CodexDesktop identifies requests from the Codex desktop app.
@@ -71,6 +76,9 @@ var UserAgentAppMatchers = []UserAgentAppMatcher{
 	{App: "Claude Chat Web", Identifiers: ClaudeChatWeb},
 	{App: "Claude Desktop", Identifiers: ClaudeDesktop},
 	{App: "Claude Code", Identifiers: ClaudeCLI},
+	// Ahead of API: Odin reaches the gateway over fasthttp, so the generic
+	// matcher would otherwise claim it first and label it a plain API client.
+	{App: "Odin", Identifiers: Odin},
 	{App: "API", Identifiers: APIClient},
 	{App: "Codex CLI", Identifiers: CodexCLI},
 	{App: "Codex Desktop", Identifiers: CodexDesktop},

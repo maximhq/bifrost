@@ -170,7 +170,13 @@ func odinConversationDetail(row *tables.TableOdinConversation) schemas.OdinConve
 // returns an error to the caller: history is a convenience, and failing a
 // perfectly good answer because it could not be filed would trade the thing
 // someone asked for against the thing they did not.
-func (s *OdinService) persistOdinTurn(ctx context.Context, conversationID, question string, answer schemas.OdinStoredMessage) string {
+//
+// isNew, rather than an empty id, decides whether the thread row gets created.
+// The id is now minted before the first model call so it can ride upstream as a
+// logging header, which means it is never empty by the time it reaches here -
+// and inferring "new" from emptiness would silently stop creating threads
+// altogether, leaving every message orphaned.
+func (s *OdinService) persistOdinTurn(ctx context.Context, conversationID string, isNew bool, question string, answer schemas.OdinStoredMessage) string {
 	if s.conversations == nil {
 		return ""
 	}
@@ -179,6 +185,9 @@ func (s *OdinService) persistOdinTurn(ctx context.Context, conversationID, quest
 
 	if conversationID == "" {
 		conversationID = uuid.NewString()
+		isNew = true
+	}
+	if isNew {
 		if err := s.conversations.CreateOdinConversation(ctx, &tables.TableOdinConversation{
 			ID:        conversationID,
 			OwnerID:   owner,
@@ -222,7 +231,7 @@ func (s *OdinService) persistOdinTurn(ctx context.Context, conversationID, quest
 // streaming and buffered paths file identically. A turn with no answer and no
 // error is not recorded: an aborted request that produced nothing would
 // otherwise leave an empty thread in the list.
-func (s *OdinService) recordOdinTurn(ctx context.Context, conversationID, question string, turn odinChatResponse) string {
+func (s *OdinService) recordOdinTurn(ctx context.Context, conversationID string, isNew bool, question string, turn odinChatResponse) string {
 	if s.conversations == nil || question == "" {
 		return conversationID
 	}
@@ -245,7 +254,7 @@ func (s *OdinService) recordOdinTurn(ctx context.Context, conversationID, questi
 	// inheriting one that would refuse the write.
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	if saved := s.persistOdinTurn(writeCtx, conversationID, question, stored); saved != "" {
+	if saved := s.persistOdinTurn(writeCtx, conversationID, isNew, question, stored); saved != "" {
 		return saved
 	}
 	return conversationID

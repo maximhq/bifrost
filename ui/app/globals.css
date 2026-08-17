@@ -302,6 +302,43 @@ body {
 	padding-inline: 0.5rem;
 }
 
+/* Shimmer for in-flight work. A sweeping highlight over the label reads as
+   "this is happening" without a spinner competing with the text beside it, and
+   it says what is happening rather than only that something is. */
+@keyframes odin-shimmer {
+	0% {
+		background-position: 150% 0;
+	}
+	100% {
+		background-position: -50% 0;
+	}
+}
+
+.odin-shimmer {
+	background: linear-gradient(
+		90deg,
+		var(--color-muted-foreground) 0%,
+		var(--color-muted-foreground) 35%,
+		var(--color-foreground) 50%,
+		var(--color-muted-foreground) 65%,
+		var(--color-muted-foreground) 100%
+	);
+	background-size: 200% 100%;
+	-webkit-background-clip: text;
+	background-clip: text;
+	color: transparent;
+	animation: odin-shimmer 1.6s linear infinite;
+}
+
+/* Respect a reduced-motion preference: the label still reads, it just stops
+   moving. */
+@media (prefers-reduced-motion: reduce) {
+	.odin-shimmer {
+		animation: none;
+		color: var(--color-muted-foreground);
+	}
+}
+
 [data-radix-scroll-area-viewport].no-table > div {
 	display: block !important;
 }
@@ -463,4 +500,33 @@ div.content-container:has(.no-border-parent) #trial-notification-banner {
 	left: auto !important;
 	right: 0 !important;
 	transform: translate(35%, -35%) !important;
+}
+/* A turn arriving in the Odin transcript.
+
+   It rises rather than fades alone: the transcript grows downward, so a message
+   that enters travelling the same way reads as having been added to a list,
+   where a pure fade reads as something that was always there and is only now
+   being revealed. The distance is deliberately small - 6px is enough to register
+   as motion without turning every message into an event. */
+@keyframes odin-message-in {
+	from {
+		opacity: 0;
+		transform: translateY(6px);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
+}
+
+.odin-message-in {
+	animation: odin-message-in 180ms ease-out;
+}
+
+/* Reduced motion keeps the message, drops the travel. Vestibular triggers come
+   from movement, not from opacity, so the fade is safe to keep. */
+@media (prefers-reduced-motion: reduce) {
+	.odin-message-in {
+		animation: none;
+	}
 }
