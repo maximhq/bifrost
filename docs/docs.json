@@ -1461,7 +1461,8 @@
                 "expanded": false,
                 "pages": [
                   "GET /api/odin/config",
-                  "PUT /api/odin/config"
+                  "PUT /api/odin/config",
+                  "POST /api/odin/chat"
                 ]
               }
             ]
