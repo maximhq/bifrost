@@ -663,9 +663,9 @@
                 },
                 "mcpLibrarySyncInterval": {
                   "type": "integer",
-                  "description": "MCP library sync interval in seconds. Default is 24 hours. Minimum is 3600 seconds (1 hour).",
+                  "description": "MCP library sync interval in seconds. Set to 0 to disable background catalog syncing entirely (air-gapped deployments with no local catalog file). Default is 24 hours; minimum when enabled is 3600 seconds (1 hour).",
                   "default": 86400,
-                  "minimum": 3600
+                  "anyOf": [{ "const": 0 }, { "minimum": 3600 }]
                 },
                 "liveModelsSyncInterval": {
                   "type": "integer",
