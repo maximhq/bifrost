@@ -29,6 +29,10 @@ type TableWarpConfig struct {
 
 	MaxIterations         int `gorm:"default:0" json:"max_iterations,omitempty"`
 	RequestTimeoutSeconds int `gorm:"default:0" json:"request_timeout_seconds,omitempty"`
+	// HistoryRetentionDays expires saved chats. Zero means the default; see
+	// schemas.WarpDefaultHistoryRetentionDays for why this is not the log
+	// store's retention setting.
+	HistoryRetentionDays int `gorm:"default:0" json:"history_retention_days,omitempty"`
 
 	SystemPromptSuffix *string `gorm:"type:text" json:"system_prompt_suffix,omitempty"`
 

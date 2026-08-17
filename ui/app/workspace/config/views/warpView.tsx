@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { ModelMultiselect } from "@/components/ui/modelMultiselect";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { buildWarpConfigPayload, requireFiniteNumber, validateWarpBaseURL } from "./warpView.utils";
+import { buildWarpConfigPayload, requireFiniteNumber, validateWarpBaseURL, validateWarpRetentionDays } from "./warpView.utils";
 import { Link } from "@tanstack/react-router";
 import { ArrowRight, TriangleAlert } from "lucide-react";
 import { getProviderLabel } from "@/lib/constants/logs";
@@ -29,6 +29,7 @@ interface WarpFormData {
 	api_key_id: string;
 	max_iterations: number;
 	request_timeout_seconds: number;
+	history_retention_days: number;
 	system_prompt_suffix: string;
 }
 
@@ -56,6 +57,7 @@ const EMPTY_FORM: WarpFormData = {
 	api_key_id: "",
 	max_iterations: 8,
 	request_timeout_seconds: 120,
+	history_retention_days: 30,
 	system_prompt_suffix: "",
 };
 
@@ -134,6 +136,7 @@ export default function WarpView() {
 			api_key_id: config.api_key_id ?? "",
 			max_iterations: config.max_iterations,
 			request_timeout_seconds: config.request_timeout_seconds,
+			history_retention_days: config.history_retention_days,
 			system_prompt_suffix: config.system_prompt_suffix ?? "",
 		});
 	}, [config, reset]);
@@ -148,6 +151,7 @@ export default function WarpView() {
 			formValues.api_key_id !== (config.api_key_id ?? "") ||
 			formValues.max_iterations !== config.max_iterations ||
 			formValues.request_timeout_seconds !== config.request_timeout_seconds ||
+			formValues.history_retention_days !== config.history_retention_days ||
 			formValues.system_prompt_suffix !== (config.system_prompt_suffix ?? "")
 		);
 	}, [config, formValues, isDirty]);
@@ -432,6 +436,29 @@ export default function WarpView() {
 								disabled={!hasSettingsUpdateAccess}
 							/>
 							{errors.request_timeout_seconds && <p className="text-destructive text-sm">{errors.request_timeout_seconds.message}</p>}
+						</div>
+
+						<div className="space-y-2 rounded-sm border p-4">
+							<div className="space-y-0.5">
+								<Label htmlFor="warp-history-retention">Chat History Retention (days)</Label>
+								<p className="text-muted-foreground text-sm">
+									How long a saved chat is kept after its last message. Set 0 to use the default of 30 days. This is separate from log
+									retention: chats hold what people typed, so how long to keep them is a different decision from how long to keep request
+									telemetry.
+								</p>
+							</div>
+							<Input
+								id="warp-history-retention"
+								type="number"
+								data-testid="warp-history-retention-input"
+								className={errors.history_retention_days ? "border-destructive" : ""}
+								// Like every other Warp input: a value that cannot be saved
+								// must not be editable, or the disabled Save button reads as
+								// a bug rather than missing access.
+								disabled={!hasSettingsUpdateAccess}
+								{...register("history_retention_days", { valueAsNumber: true, validate: validateWarpRetentionDays })}
+							/>
+							{errors.history_retention_days && <p className="text-destructive text-sm">{errors.history_retention_days.message}</p>}
 						</div>
 
 						<div className="space-y-2 rounded-sm border p-4">
