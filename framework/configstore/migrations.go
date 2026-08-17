@@ -471,6 +471,23 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_notifications_table"}, run: migrationAddNotificationsTable},
 	{IDs: []string{"add_odin_config_table"}, run: migrationAddOdinConfigTable},
 	{IDs: []string{"add_odin_api_key_id_column"}, run: migrationAddOdinAPIKeyIDColumn},
+	{IDs: []string{"add_odin_conversation_tables"}, run: migrationAddOdinConversationTables},
+}
+
+// migrationAddOdinConversationTables creates Odin's saved-chat storage.
+func migrationAddOdinConversationTables(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_odin_conversation_tables"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).AutoMigrate(&tables.TableOdinConversation{}, &tables.TableOdinMessage{})
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).Migrator().DropTable(&tables.TableOdinMessage{}, &tables.TableOdinConversation{})
+		},
+	})
 }
 
 // migrationAddOdinAPIKeyIDColumn reshapes odin_config from storing a secret to

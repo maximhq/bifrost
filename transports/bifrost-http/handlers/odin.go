@@ -25,6 +25,9 @@ var ErrOdinUnavailable = errors.New("odin is not configured")
 // read — see RegisterRoutes.
 type OdinService struct {
 	store configstore.OdinStore
+	// conversations is nil when the config store does not implement history.
+	// The chat endpoint still works; it just does not file anything.
+	conversations configstore.OdinConversationStore
 	// logManager is nil on deployments with no logging plugin. Odin's tools have
 	// nothing to read there, so the chat route is not registered at all rather
 	// than registered and always failing.
@@ -41,7 +44,8 @@ type OdinService struct {
 // because its tools would have nothing to read.
 func NewOdinService(store configstore.ConfigStore, logManager logging.LogManager, logger schemas.Logger) *OdinService {
 	odinStore, _ := store.(configstore.OdinStore)
-	service := &OdinService{store: odinStore, logManager: logManager}
+	conversationStore, _ := store.(configstore.OdinConversationStore)
+	service := &OdinService{store: odinStore, conversations: conversationStore, logManager: logManager}
 	if logManager != nil {
 		service.client = newOdinClient(logger)
 	}
@@ -82,6 +86,16 @@ func (s *OdinService) RegisterRoutes(r *router.Router, middlewares ...schemas.Bi
 	// after a user has typed a question.
 	if s.logManager != nil && (s.client != nil || s.chatOverride != nil) {
 		r.POST("/api/odin/chat", lib.ChainMiddlewares(s.chat, middlewares...))
+	}
+
+	// History rides on the same middleware chain. Every route resolves its owner
+	// from the request context, so an unauthenticated deployment shares one
+	// history and an authenticated one gives each person their own, with no
+	// second code path between them.
+	if s.conversations != nil {
+		r.GET("/api/odin/conversations", lib.ChainMiddlewares(s.listConversations, middlewares...))
+		r.GET("/api/odin/conversations/{id}", lib.ChainMiddlewares(s.getConversation, middlewares...))
+		r.DELETE("/api/odin/conversations/{id}", lib.ChainMiddlewares(s.deleteConversation, middlewares...))
 	}
 }
 
