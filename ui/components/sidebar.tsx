@@ -285,14 +285,15 @@ const SidebarItemView = ({
 
 	const isHighlighted = !hasSubItems && highlightedUrl === item.url;
 
-	const buttonClassName = `group/nav-item relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${isHighlighted
-		? "bg-sidebar-accent text-accent-foreground border-primary/20"
-		: isActive || isAnySubItemActive
-			? "bg-sidebar-accent text-primary border-primary/20"
-			: item.hasAccess
-				? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
-				: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-		} `;
+	const buttonClassName = `group/nav-item relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${
+		isHighlighted
+			? "bg-sidebar-accent text-accent-foreground border-primary/20"
+			: isActive || isAnySubItemActive
+				? "bg-sidebar-accent text-primary border-primary/20"
+				: item.hasAccess
+					? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
+					: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+	} `;
 
 	const innerContent = (
 		<div className="flex w-full items-center justify-between">
@@ -443,14 +444,15 @@ const SidebarItemView = ({
 						const isSubItemActive = subItem.queryParam ? pathname === subItem.url : isRouteMatch(subItem.url);
 						const isSubItemHighlighted = highlightedUrl ? subItemHref.startsWith(highlightedUrl) : false;
 						const SubItemIcon = subItem.icon;
-						const subItemClassName = `h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${isSubItemHighlighted
-							? "bg-sidebar-accent text-accent-foreground"
-							: isSubItemActive
-								? "bg-sidebar-accent text-primary font-medium"
-								: subItem.hasAccess === false
-									? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-									: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
-							}`;
+						const subItemClassName = `h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${
+							isSubItemHighlighted
+								? "bg-sidebar-accent text-accent-foreground"
+								: isSubItemActive
+									? "bg-sidebar-accent text-primary font-medium"
+									: subItem.hasAccess === false
+										? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+										: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
+						}`;
 						const subInner = (
 							<div className="flex w-full items-center gap-2">
 								{SubItemIcon && <SubItemIcon className={`h-3.5 w-3.5 ${isSubItemActive ? "text-primary" : "text-muted-foreground"}`} />}
@@ -539,7 +541,7 @@ export default function AppSidebar() {
 	// Wrapper that accepts arbitrary string URLs (TanStack Router's `to` is
 	// strictly typed, but our sidebar items come from a runtime config).
 	const navigate = useCallback((url: string) => tsNavigate({ to: url as string }), [tsNavigate]);
-	const { state: sidebarState, toggleSidebar } = useSidebar();
+	const { state: sidebarState, isMobile, toggleSidebar } = useSidebar();
 	const [mounted, setMounted] = useState(false);
 	const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
 	const [areCardsEmpty, setAreCardsEmpty] = useState(false);
@@ -994,21 +996,21 @@ export default function AppSidebar() {
 			},
 			...(isDbConnected
 				? [
-					{
-						title: "Prompt Repository",
-						url: "/workspace/prompt-repo",
-						icon: FolderGit,
-						description: "Prompt repository",
-						hasAccess: hasPromptRepositoryAccess,
-					},
-					{
-						title: "Skills Repository",
-						url: "/workspace/skills-repo",
-						icon: BookOpenText,
-						description: "Skills repository",
-						hasAccess: hasSkillsRepositoryAccess,
-					},
-				]
+						{
+							title: "Prompt Repository",
+							url: "/workspace/prompt-repo",
+							icon: FolderGit,
+							description: "Prompt repository",
+							hasAccess: hasPromptRepositoryAccess,
+						},
+						{
+							title: "Skills Repository",
+							url: "/workspace/skills-repo",
+							icon: BookOpenText,
+							description: "Skills repository",
+							hasAccess: hasSkillsRepositoryAccess,
+						},
+					]
 				: []),
 			{
 				title: "Evals",
@@ -1055,14 +1057,14 @@ export default function AppSidebar() {
 					},
 					...(IS_ENTERPRISE
 						? [
-							{
-								title: "Proxy",
-								url: "/workspace/config/proxy",
-								icon: Globe,
-								description: "Proxy configuration",
-								hasAccess: hasSettingsAccess,
-							},
-						]
+								{
+									title: "Proxy",
+									url: "/workspace/config/proxy",
+									icon: Globe,
+									description: "Proxy configuration",
+									hasAccess: hasSettingsAccess,
+								},
+							]
 						: []),
 					{
 						title: "API Keys",
@@ -1087,21 +1089,21 @@ export default function AppSidebar() {
 					},
 					...(IS_ENTERPRISE
 						? [
-							{
-								title: "Branding",
-								url: "/workspace/config/branding",
-								icon: Palette,
-								description: "Custom logo and icon",
-								hasAccess: hasSettingsAccess,
-							},
-							{
-								title: "License Info",
-								url: "/workspace/config/license",
-								icon: BadgeInfo,
-								description: "Enterprise license information",
-								hasAccess: hasSettingsAccess,
-							},
-						]
+								{
+									title: "Branding",
+									url: "/workspace/config/branding",
+									icon: Palette,
+									description: "Custom logo and icon",
+									hasAccess: hasSettingsAccess,
+								},
+								{
+									title: "License Info",
+									url: "/workspace/config/license",
+									icon: BadgeInfo,
+									description: "Enterprise license information",
+									hasAccess: hasSettingsAccess,
+								},
+							]
 						: []),
 				],
 			},
@@ -1465,7 +1467,7 @@ export default function AppSidebar() {
 	// The promo card stack is hidden via CSS when collapsed (icon rail), so it
 	// shouldn't reserve vertical space there — otherwise the nav icon list
 	// gets squeezed into a shorter scroll area for a card nobody can see.
-	const hasPromoCards = promoCards.length > 0 && !areCardsEmpty && sidebarState !== "collapsed";
+	const hasPromoCards = promoCards.length > 0 && !areCardsEmpty && (isMobile || sidebarState !== "collapsed");
 	// When cards are present: 13rem (header 3rem + bottom section ~10rem)
 	// When no cards: 8rem (header 3rem + bottom section without cards ~5rem)
 	const sidebarGroupHeight = hasPromoCards ? "h-[calc(100vh-13rem)]" : "h-[calc(100vh-8rem)]";
@@ -1525,13 +1527,7 @@ export default function AppSidebar() {
 						{/* max-w caps an unusually wide uploaded logo so it cannot push the
 						    collapse button out of the header; object-contain preserves its
 						    aspect ratio within that box. */}
-						<img
-							className="h-[22px] w-auto max-w-[150px] object-contain"
-							src={logoSrc}
-							alt={logoAlt}
-							width={70}
-							height={70}
-						/>
+						<img className="h-[22px] w-auto max-w-[150px] object-contain" src={logoSrc} alt={logoAlt} width={70} height={70} />
 					</Link>
 					<button
 						onClick={toggleSidebar}
@@ -1548,14 +1544,7 @@ export default function AppSidebar() {
 					className="hidden w-full cursor-pointer flex-col items-center gap-2 py-2 group-data-[collapsible=icon]:flex"
 					onClick={toggleSidebar}
 				>
-					<img
-						className="h-[22px] w-auto object-contain"
-						src={iconSrc}
-						alt={logoAlt}
-						width={22}
-						height={22}
-						style={{ width: 18 }}
-					/>
+					<img className="h-[22px] w-auto object-contain" src={iconSrc} alt={logoAlt} width={22} height={22} style={{ width: 18 }} />
 				</div>
 			</SidebarHeader>
 			{envLabel && (
@@ -1616,7 +1605,7 @@ export default function AppSidebar() {
 										onToggle={() => toggleItem(item.title)}
 										pathname={pathname}
 										search={search}
-										isSidebarCollapsed={sidebarState === "collapsed"}
+										isSidebarCollapsed={!isMobile && sidebarState === "collapsed"}
 										expandSidebar={() => toggleSidebar()}
 										highlightedUrl={highlightedUrl}
 									/>

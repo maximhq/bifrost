@@ -220,7 +220,7 @@ export default function TeamsTable({
 				{showTeamSheet && <TeamSheet team={editingTeam} onSave={handleTeamSaved} onCancel={onDialogClose} />}
 
 				<div className="flex grow flex-col overflow-y-auto">
-					<div className="mb-4 flex items-center justify-between">
+					<div className="mb-4 flex flex-wrap items-center justify-between gap-2">
 						<div>
 							<h2 className="text-lg font-semibold">Teams</h2>
 							<p className="text-muted-foreground text-sm">Organize users into teams with shared budgets and access controls.</p>

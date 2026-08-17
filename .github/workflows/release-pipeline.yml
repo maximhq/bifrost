@@ -276,18 +276,20 @@ jobs:
   # collection touches must be allowed below.
   test-core:
     needs: [check-skip, detect-changes]
-    # Gated on bifrost-http too, not just core: the provider harness this job
-    # runs builds and drives a bifrost-http binary, and bifrost-http-prep accepts
-    # a skipped test-core, so a bifrost-http-only release would otherwise ship
-    # without any provider-harness validation. Matches test-cli-harness.
+    # Gated on core alone. The provider harness only exercises core's provider
+    # code paths, so a release that does not ship a new core has nothing here to
+    # validate and should not pay the ~90 minute critical path for it.
+    #
+    # This deliberately means a bifrost-http-only release runs no provider
+    # harness. Every downstream release job already accepts
+    # `needs.test-core.result == 'skipped'`, so the release still proceeds; the
+    # transport keeps its own coverage through test-bifrost-http,
+    # test-api-integrations and test-migrations. Matches test-cli-harness.
     if: |
       needs.check-skip.outputs.should-skip != 'true' &&
       needs.check-skip.outputs.skip-tests != 'true' &&
       needs.check-skip.outputs.skip-core-test != 'true' &&
-      (
-        needs.detect-changes.outputs.core-needs-release == 'true' ||
-        needs.detect-changes.outputs.bifrost-http-needs-release == 'true'
-      )
+      needs.detect-changes.outputs.core-needs-release == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
@@ -729,13 +731,13 @@ jobs:
   # version twice while reporting three-version coverage.
   resolve-cli-versions:
     needs: [check-skip, detect-changes]
+    # Must track test-cli-harness's gate exactly - this job exists only to build
+    # that matrix, so running it when the harness is skipped resolves versions
+    # nothing consumes.
     if: |
       needs.check-skip.outputs.should-skip != 'true' &&
       needs.check-skip.outputs.skip-tests != 'true' &&
-      (
-        needs.detect-changes.outputs.core-needs-release == 'true' ||
-        needs.detect-changes.outputs.bifrost-http-needs-release == 'true'
-      )
+      needs.detect-changes.outputs.core-needs-release == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -806,13 +808,14 @@ jobs:
   # tmp/cli-harness-<cli>.log and uploaded with the reports below.
   test-cli-harness:
     needs: [check-skip, detect-changes, resolve-cli-versions, build-gateway]
+    # Gated on core alone, matching test-core. What this harness actually covers
+    # is core's request/response conversion per wire format, so a release with no
+    # new core has nothing here to regress. Downstream release jobs already
+    # accept `needs.test-cli-harness.result == 'skipped'`.
     if: |
       needs.check-skip.outputs.should-skip != 'true' &&
       needs.check-skip.outputs.skip-tests != 'true' &&
-      (
-        needs.detect-changes.outputs.core-needs-release == 'true' ||
-        needs.detect-changes.outputs.bifrost-http-needs-release == 'true'
-      )
+      needs.detect-changes.outputs.core-needs-release == 'true'
     strategy:
       fail-fast: false
       matrix:

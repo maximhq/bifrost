@@ -17,7 +17,7 @@ export default function ProxyPage() {
 	}
 
 	return (
-		<div className="mx-auto flex w-full max-w-7xl no-padding-parent p-4">
+		<div className="no-padding-parent mx-auto flex w-full max-w-7xl p-4">
 			<ProxyView />
 		</div>
 	);

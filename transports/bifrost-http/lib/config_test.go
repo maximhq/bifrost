@@ -17989,20 +17989,25 @@ var excludedGoFields = map[string]map[string]bool{
 		"tool_sync_interval": true, // Internal
 	},
 	"schemas.MCPClientConfig": {
-		"client_id":             true, // Internal ID
-		"state":                 true, // Runtime state
-		"is_code_mode_client":   true, // Internal
-		"auth_type":             true, // Internal
-		"oauth_config_id":       true, // Internal
-		"oauth_client_id":       true, // Response-only: populated on GET from oauth config, not stored
-		"oauth_client_secret":   true, // Response-only: populated on GET from oauth config, not stored
-		"is_ping_available":     true, // Runtime state
-		"tool_sync_interval":    true, // Internal
-		"tool_pricing":          true, // Internal
-		"tools_to_auto_execute": true, // Internal
-		"tools_to_execute":      true, // Moved to VK MCP config
-		"connection_string":     true, // Use specific config types instead
-		"headers":               true, // Internal
+		"client_id":              true, // Internal ID
+		"state":                  true, // Runtime state
+		"is_code_mode_client":    true, // Internal
+		"auth_type":              true, // Internal
+		"oauth_config_id":        true, // Internal
+		"oauth_client_id":        true, // Response-only: populated on GET from oauth config, not stored
+		"oauth_client_secret":    true, // Response-only: populated on GET from oauth config, not stored
+		"oauth_authorize_url":    true, // Response-only: populated on GET from oauth config, not stored
+		"oauth_token_url":        true, // Response-only: populated on GET from oauth config, not stored
+		"oauth_registration_url": true, // Response-only: populated on GET from oauth config, not stored
+		"oauth_scopes":           true, // Response-only: populated on GET from oauth config, not stored
+		"oauth_resource":         true, // Response-only: populated on GET from oauth config, not stored
+		"is_ping_available":      true, // Runtime state
+		"tool_sync_interval":     true, // Internal
+		"tool_pricing":           true, // Internal
+		"tools_to_auto_execute":  true, // Internal
+		"tools_to_execute":       true, // Moved to VK MCP config
+		"connection_string":      true, // Use specific config types instead
+		"headers":                true, // Internal
 	},
 	"schemas.MCPToolManagerConfig": {
 		"code_mode_binding_level": true, // Internal

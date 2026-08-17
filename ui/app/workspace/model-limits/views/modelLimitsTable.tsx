@@ -259,7 +259,7 @@ export default function ModelLimitsTable({
 			</AlertDialog>
 
 			<div className="flex flex-col overflow-y-auto">
-				<div className="mb-4 flex items-center justify-between">
+				<div className="mb-4 flex flex-wrap items-center justify-between gap-2">
 					<div>
 						<h1 className="text-lg font-semibold">Budgets &amp; Limits</h1>
 						<p className="text-muted-foreground text-sm">
@@ -350,9 +350,7 @@ export default function ModelLimitsTable({
 							{modelConfigs.length === 0 ? (
 								<TableRow>
 									<TableCell colSpan={7} className="h-24 text-center">
-										<span className="text-muted-foreground text-sm">
-											{isLoading ? "Loading limits..." : "No matching limits found."}
-										</span>
+										<span className="text-muted-foreground text-sm">{isLoading ? "Loading limits..." : "No matching limits found."}</span>
 									</TableCell>
 								</TableRow>
 							) : (

@@ -11,12 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { getProviderLabel, RequestTypeLabels } from "@/lib/constants/logs";
-import {
-	getErrorMessage,
-	useCreatePricingOverrideMutation,
-	useGetProvidersQuery,
-	useUpdatePricingOverrideMutation,
-} from "@/lib/store";
+import { getErrorMessage, useCreatePricingOverrideMutation, useGetProvidersQuery, useUpdatePricingOverrideMutation } from "@/lib/store";
 import { useGetAllKeysQuery } from "@/lib/store/apis/providersApi";
 import { getUserPicker } from "@/lib/registries/userPicker";
 import { ModelProvider, RequestType } from "@/lib/types/config";
@@ -359,8 +354,8 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 				providerKeyID: scopeLock.providerKeyID ?? "",
 				scopeRoot:
 					scopeLock.scopeKind === "virtual_key" ||
-						scopeLock.scopeKind === "virtual_key_provider" ||
-						scopeLock.scopeKind === "virtual_key_provider_key"
+					scopeLock.scopeKind === "virtual_key_provider" ||
+					scopeLock.scopeKind === "virtual_key_provider_key"
 						? "virtual_key"
 						: scopeLock.scopeKind === "user" || scopeLock.scopeKind === "user_provider" || scopeLock.scopeKind === "user_provider_key"
 							? "user"
@@ -594,13 +589,13 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 	return (
 		<Sheet open={open} onOpenChange={(o) => (o ? onOpenChange(true) : handleCloseDrawer())}>
 			<SheetContent side="right" className="dark:bg-card flex w-full flex-col overflow-x-hidden bg-white p-0 pt-4 sm:max-w-2xl">
-				<SheetHeader className="flex flex-col items-start px-8 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10">
+				<SheetHeader className="flex flex-col items-start px-4 py-4 md:px-8" headerClassName="mb-0 sticky -top-4 bg-card z-10">
 					<SheetTitle className="">{editingOverride ? "Edit Pricing Override" : "Create Pricing Override"}</SheetTitle>
 				</SheetHeader>
 
 				<Form {...methods}>
 					<form onSubmit={handleSubmit(onSubmit)} className="flex min-h-0 flex-1 flex-col">
-						<div className="flex-1 space-y-6 px-8 pb-4">
+						<div className="flex-1 space-y-6 px-4 pb-4 md:px-8">
 							<div className="space-y-4">
 								<FormField
 									control={control}
@@ -735,7 +730,7 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 											/>
 										)}
 
-										<div className="grid grid-cols-2 gap-2">
+										<div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
 											<FormField
 												control={control}
 												name="providerID"
@@ -998,7 +993,7 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 							</div>
 						</div>
 
-						<div className="bg-card sticky bottom-0 flex justify-end gap-3 border-t px-7 py-4">
+						<div className="bg-card sticky bottom-0 flex justify-end gap-3 border-t px-4 py-4 md:px-7">
 							<Button
 								data-testid="pricing-override-cancel-btn"
 								type="button"

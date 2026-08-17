@@ -5,11 +5,12 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scrollArea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { TruncatedLabel } from "@/components/ui/truncatedLabel";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { RequestTypeLabels, RequestTypes, RoutingEngineUsedLabels, Statuses } from "@/lib/constants/logs";
 import { useGetAvailableFilterDataQuery, useGetProvidersQuery } from "@/lib/store";
 import type { LogFilters } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
-import { ChevronDown, LoaderCircle, PanelLeftClose, PanelLeftOpen, Plus, RotateCcw, Search } from "lucide-react";
+import { ChevronDown, Filter, LoaderCircle, PanelLeftClose, PanelLeftOpen, Plus, RotateCcw, Search } from "lucide-react";
 import { Ref, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const COLLAPSE_STORAGE_KEY = "logs-filter-sidebar-collapsed";
@@ -24,14 +25,19 @@ interface LogsSidebarProps {
 }
 
 export function LogsFilterSidebar({ filters, onFiltersChange }: LogsSidebarProps) {
+	const isMobile = useIsMobile();
 	const [collapsed, setCollapsed] = useState(false);
 
 	// Load persisted collapsed state on mount
 	useEffect(() => {
 		if (typeof window === "undefined") return;
+		if (isMobile) {
+			setCollapsed(true);
+			return;
+		}
 		const stored = window.localStorage.getItem(COLLAPSE_STORAGE_KEY);
-		if (stored === "true") setCollapsed(true);
-	}, []);
+		setCollapsed(stored === "true");
+	}, [isMobile]);
 
 	const toggleCollapsed = useCallback(() => {
 		setCollapsed((prev) => {
@@ -66,26 +72,29 @@ export function LogsFilterSidebar({ filters, onFiltersChange }: LogsSidebarProps
 	// Collapsed: thin rail with vertical "Filters" label — whole rail is clickable to expand
 	if (collapsed) {
 		return (
-			<button
+			<Button
 				type="button"
 				onClick={toggleCollapsed}
-				className="bg-card group flex h-full w-10 shrink-0 cursor-pointer flex-col items-center gap-3 rounded-r-md py-4 text-sm font-medium"
+				variant="outline"
+				size="sm"
+				className="group md:bg-card md:hover:bg-card md:dark:bg-card md:dark:hover:bg-card fixed top-2 right-4 z-30 flex h-8 w-8 shrink-0 flex-row items-center justify-center gap-0 rounded-md p-0 shadow-lg md:static md:h-full md:w-10 md:flex-col md:justify-start md:gap-3 md:rounded-l-none md:rounded-r-md md:border-0 md:py-4 md:shadow-none md:hover:text-current md:active:scale-100"
 				title="Show filters"
 				aria-label="Show filters"
 			>
-				<PanelLeftOpen className="text-muted-foreground group-hover:text-foreground size-4 transition-colors" />
-				<span className="rotate-180 select-none [writing-mode:vertical-rl]">Filters</span>
+				<Filter className="text-muted-foreground group-hover:text-foreground size-4 transition-colors md:hidden" />
+				<PanelLeftOpen className="text-muted-foreground group-hover:text-foreground hidden size-4 transition-colors md:block" />
+				<span className="hidden rotate-180 select-none [writing-mode:vertical-rl] md:block">Filters</span>
 				{activeFilterCount > 0 && (
-					<span className="bg-primary/10 text-primary flex size-6 items-center justify-center rounded-full text-xs font-medium">
+					<span className="bg-primary text-primary-foreground md:bg-primary/10 md:text-primary absolute -top-1 -right-1 flex size-5 items-center justify-center rounded-full text-[10px] font-medium md:static md:size-6 md:text-xs">
 						{activeFilterCount}
 					</span>
 				)}
-			</button>
+			</Button>
 		);
 	}
 
 	return (
-		<div className="bg-card flex h-full w-64 shrink-0 flex-col rounded-r-md">
+		<div className="bg-card fixed inset-y-2 left-2 z-40 flex h-auto w-[calc(100vw-1rem)] max-w-72 shrink-0 flex-col rounded-md border shadow-xl md:static md:h-full md:w-64 md:max-w-none md:rounded-l-none md:rounded-r-md md:border-0 md:shadow-none">
 			{/* Header */}
 			<div className="flex h-11 items-center justify-between border-b pr-2 pl-5">
 				<span className="text-sm font-semibold">Filters</span>
@@ -332,7 +341,14 @@ function SearchableCheckboxList({
 					onCheckedChange={() => onToggle(item.key)}
 					testId={
 						testIdPrefix
-							? `${testIdPrefix}-checkbox-${normalizeTestIdKey ? item.key.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") : item.key}`
+							? `${testIdPrefix}-checkbox-${
+									normalizeTestIdKey
+										? item.key
+												.toLowerCase()
+												.replace(/[^a-z0-9]+/g, "-")
+												.replace(/^-+|-+$/g, "")
+										: item.key
+								}`
 							: undefined
 					}
 				/>
@@ -448,7 +464,10 @@ function AppFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentPro
 		isLoading,
 	} = useGetAvailableFilterDataQuery({ dimensions: ["apps"] }, { skip: !opened && !hasActive });
 	const availableApps = useMemo(() => (filterData?.apps as string[] | undefined) || [], [filterData]);
-	const items = useMemo(() => [...new Set([...availableApps, ...(filters.apps || [])])].sort().map((name) => ({ key: name, label: name })), [availableApps, filters.apps]);
+	const items = useMemo(
+		() => [...new Set([...availableApps, ...(filters.apps || [])])].sort().map((name) => ({ key: name, label: name })),
+		[availableApps, filters.apps],
+	);
 
 	if (!isUninitialized && !isLoading && availableApps.length === 0 && !hasActive && !opened) return null;
 

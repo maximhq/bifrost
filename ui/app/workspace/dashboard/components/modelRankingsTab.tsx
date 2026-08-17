@@ -212,7 +212,7 @@ function TopModelsChart({
 			<div className="py-2">
 				{/* Ranked model legend */}
 				{modelTotals.length > 0 && (
-					<div className="mt-3 grid grid-cols-2 gap-x-8 gap-y-1.5 px-2 pb-1">
+					<div className="mt-3 grid grid-cols-1 gap-x-8 gap-y-1.5 px-2 pb-1 sm:grid-cols-2">
 						{modelTotals.map((m, idx) => (
 							<div key={m.model} className="flex items-center gap-2 text-sm">
 								<span className="text-muted-foreground w-4 text-right text-xs">{idx + 1}.</span>

@@ -4,25 +4,11 @@
 // page passes in the current page slice plus filter/revoke state.
 
 import { Button } from "@/components/ui/button";
-import {
-	Table,
-	TableBody,
-	TableCell,
-	TableHead,
-	TableHeader,
-	TableRow,
-} from "@/components/ui/table";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import type { OAuth2GrantRow } from "@/lib/store/apis/oauth2SessionsApi";
-import {
-	ChevronLeft,
-	ChevronRight,
-	Fingerprint,
-	Info,
-	KeyRound,
-	UserRound,
-} from "lucide-react";
+import { ChevronLeft, ChevronRight, Fingerprint, Info, KeyRound, UserRound } from "lucide-react";
 import GrantActions from "./grantActions";
 
 interface GrantsTableProps {
@@ -84,9 +70,7 @@ export default function GrantsTable({
 							<TableRow>
 								<TableCell colSpan={6} className="h-24 text-center">
 									{hasActiveFilters ? (
-										<div className="text-muted-foreground text-sm">
-											No grants match these filters.
-										</div>
+										<div className="text-muted-foreground text-sm">No grants match these filters.</div>
 									) : (
 										<EmptyGrantsState />
 									)}
@@ -95,23 +79,17 @@ export default function GrantsTable({
 						) : (
 							rows.map((row) => (
 								<TableRow key={row.id} className="group">
-									<TableCell className="font-medium">
-										{row.client_name || row.client_id}
-									</TableCell>
+									<TableCell className="font-medium">{row.client_name || row.client_id}</TableCell>
 									<TableCell>
 										<BindingCell row={row} />
 									</TableCell>
 									<TableCell className="text-muted-foreground text-sm">
 										<AccessTokenExpiry row={row} />
 									</TableCell>
-									<TableCell className="text-muted-foreground text-sm">
-										{formatRelativePast(row.created_at)}
-									</TableCell>
-									<TableCell className="text-muted-foreground text-sm">
-										{formatRelativePast(row.last_used_at || row.created_at)}
-									</TableCell>
+									<TableCell className="text-muted-foreground text-sm">{formatRelativePast(row.created_at)}</TableCell>
+									<TableCell className="text-muted-foreground text-sm">{formatRelativePast(row.last_used_at || row.created_at)}</TableCell>
 									<TableCell
-										className={`relative group-hover:bg-muted dark:bg-card dark:group-hover:bg-muted sticky right-0 z-10 bg-white text-right ${PIN_SHADOW_RIGHT}`}
+										className={`group-hover:bg-muted dark:bg-card dark:group-hover:bg-muted relative sticky right-0 z-10 bg-white text-right ${PIN_SHADOW_RIGHT}`}
 									>
 										<GrantActions
 											row={row}
@@ -130,7 +108,8 @@ export default function GrantsTable({
 			{totalCount > 0 && (
 				<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
 					<div className="text-muted-foreground flex items-center gap-2">
-						{(offset + 1).toLocaleString()}-{Math.min(offset + pageSize, totalCount).toLocaleString()} of {totalCount.toLocaleString()} entries
+						{(offset + 1).toLocaleString()}-{Math.min(offset + pageSize, totalCount).toLocaleString()} of {totalCount.toLocaleString()}{" "}
+						entries
 					</div>
 
 					<div className="flex items-center gap-2">
@@ -232,8 +211,8 @@ function EmptyGrantsState() {
 	return (
 		<div className="flex flex-col items-center gap-3 py-4">
 			<p className="text-muted-foreground text-sm">
-				No grants yet. Grants appear here when an MCP client connects via the OAuth
-				consent flow. (Authentication Mode needs to be set to "oauth" or "both" for grants to be issued.)
+				No grants yet. Grants appear here when an MCP client connects via the OAuth consent flow. (Authentication Mode needs to be set to
+				"oauth" or "both" for grants to be issued.)
 			</p>
 		</div>
 	);

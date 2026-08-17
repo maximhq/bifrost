@@ -674,7 +674,7 @@ export default function VirtualKeysTable({
 					<div className="space-y-4">
 						<div className="space-y-2">
 							<Label className="text-sm">Export scope</Label>
-							<div className="grid grid-cols-2 gap-2" data-testid="vk-export-scope">
+							<div className="grid grid-cols-1 gap-2 sm:grid-cols-2" data-testid="vk-export-scope">
 								<button
 									type="button"
 									onClick={() => setExportScope("current_page")}
@@ -785,12 +785,12 @@ export default function VirtualKeysTable({
 			</AlertDialog>
 
 			<div className="flex min-h-0 w-full grow flex-col overflow-hidden">
-				<div className="mb-4 flex shrink-0 items-center justify-between">
+				<div className="mb-4 flex shrink-0 flex-wrap items-center justify-between gap-2">
 					<div>
 						<h2 className="text-lg font-semibold">Virtual Keys</h2>
 						<p className="text-muted-foreground text-sm">Manage virtual keys, their permissions, budgets, and rate limits.</p>
 					</div>
-					<div className="flex items-center gap-2">
+					<div className="flex flex-wrap items-center gap-2">
 						{selectedCount > 0 && (
 							<Button
 								variant="outline"
@@ -814,8 +814,8 @@ export default function VirtualKeysTable({
 				</div>
 
 				{/* Toolbar: Search + Filters */}
-				<div className="mb-4 flex shrink-0 items-center gap-3">
-					<div className="relative max-w-sm flex-1">
+				<div className="mb-4 flex shrink-0 flex-wrap items-center gap-3">
+					<div className="relative w-full max-w-sm flex-1 basis-full sm:basis-auto">
 						<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 						<Input
 							aria-label="Search virtual keys by name"
@@ -828,13 +828,13 @@ export default function VirtualKeysTable({
 					</div>
 					{/* Both filters search server-side and resolve their own label for a
 					    value restored from the URL, so the page fetches no entity lists. */}
-					<div className="flex items-center gap-1" data-testid="vk-customer-filter">
+					<div className="flex w-full items-center gap-1 sm:w-auto" data-testid="vk-customer-filter">
 						<CustomerSelector
 							value={customerFilter}
 							onChange={onCustomerFilterChange}
 							placeholder="All Customers"
 							triggerClassName="h-9"
-							className="w-[250px]"
+							className="w-full sm:w-[250px]"
 						/>
 						<FilterClearButton
 							show={!!customerFilter}
@@ -844,13 +844,13 @@ export default function VirtualKeysTable({
 						/>
 					</div>
 					{customerFilter && teamFilter && <span className="text-muted-foreground text-xs font-medium">or</span>}
-					<div className="flex items-center gap-1" data-testid="vk-team-filter">
+					<div className="flex w-full items-center gap-1 sm:w-auto" data-testid="vk-team-filter">
 						<TeamSelector
 							value={teamFilter}
 							onChange={onTeamFilterChange}
 							placeholder="All Teams"
 							triggerClassName="h-9"
-							className="w-[250px]"
+							className="w-full sm:w-[250px]"
 						/>
 						<FilterClearButton
 							show={!!teamFilter}
@@ -863,13 +863,13 @@ export default function VirtualKeysTable({
 						<span className="text-muted-foreground text-xs font-medium">or</span>
 					)}
 					{UserPicker && (
-						<div className="flex items-center gap-1" data-testid="vk-user-filter">
+						<div className="flex w-full items-center gap-1 sm:w-auto" data-testid="vk-user-filter">
 							<UserPicker
 								value={userFilter}
 								onChange={onUserFilterChange}
 								placeholder="All Users"
 								triggerClassName="h-9"
-								className="w-[250px]"
+								className="w-full sm:w-[250px]"
 							/>
 							<FilterClearButton
 								show={!!userFilter}
