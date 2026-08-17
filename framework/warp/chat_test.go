@@ -56,12 +56,14 @@ func TestWarpFoldRecordsTerminalError(t *testing.T) {
 // streamed frames folded back together must describe the same turn.
 func TestWarpRunTurnBufferedAndStreamedAgree(t *testing.T) {
 	turns := func() *scriptedModel {
-		return &scriptedModel{turns: []*schemas.BifrostChatResponse{
-			toolTurn("call-1", "query_metrics", `{"filters":{},"metrics":["summary"]}`),
-			textTurn("42 requests."),
+		return &scriptedModel{turns: []*schemas.BifrostResponsesResponse{
+			ToolTurn("call-1", "query_metrics", `{"filters":{},"metrics":["summary"]}`),
+			TextTurn("42 requests."),
 		}}
 	}
-	request := &ChatRequest{Messages: []ChatMessage{{Role: "user", Content: "how many?"}}}
+	// Same thread on both sides: a new turn mints a fresh id, which would
+	// otherwise be the one field the two responses legitimately differ on.
+	request := &ChatRequest{ConversationID: "thread-1", Messages: []ChatMessage{{Role: "user", Content: "how many?"}}}
 
 	buffered := chatService(turns(), &fakeLogReader{})
 	turn, err := buffered.NewTurn(context.Background(), request, 64)
@@ -90,12 +92,12 @@ func TestWarpRunTurnBufferedAndStreamedAgree(t *testing.T) {
 // the refusal lands; what matters is that the cancellation reaches the model
 // call in flight and that no call starts after it.
 func TestWarpRunTurnStopsWhenSinkRefuses(t *testing.T) {
-	scripted := &scriptedModel{turns: []*schemas.BifrostChatResponse{
-		toolTurn("loop", "query_metrics", `{"filters":{},"metrics":["summary"]}`),
+	scripted := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{
+		ToolTurn("loop", "query_metrics", `{"filters":{},"metrics":["summary"]}`),
 	}}
 	var calls atomic.Int32
 	released := make(chan struct{})
-	blocking := func(ctx context.Context, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	blocking := func(ctx context.Context, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 		if calls.Add(1) == 1 {
 			return scripted.respond(ctx, req)
 		}
@@ -157,7 +159,7 @@ func TestWarpCanChatRequiresLogReader(t *testing.T) {
 // carries the same id.
 func TestWarpRunTurnStampsConversationIDOnDone(t *testing.T) {
 	store := newMemoryConversations()
-	model := &scriptedModel{turns: []*schemas.BifrostChatResponse{textTurn("42 requests.")}}
+	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{TextTurn("42 requests.")}}
 	service := NewService(nil,
 		WithConfigStore(&recordingStore{row: &tables.TableWarpConfig{
 			ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o",

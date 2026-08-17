@@ -125,7 +125,7 @@ func TestWarpFlowsReportScope(t *testing.T) {
 
 // The prompt has to actually carry the rules, or the mechanism is inert.
 func TestWarpSystemPromptExplainsScoping(t *testing.T) {
-	content := *systemMessage(&schemas.WarpConfig{}).Content.ContentStr
+	content := systemInstructions(&schemas.WarpConfig{})
 	require.Contains(t, content, "describe_scope")
 	require.Contains(t, content, "their own traffic is the default")
 	require.Contains(t, content, "Ask which team, customer or business unit is meant")

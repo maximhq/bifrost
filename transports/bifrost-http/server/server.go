@@ -2373,7 +2373,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	if s.WarpHandler != nil {
 		s.WarpHandler.Shutdown()
 	}
-	s.WarpHandler = handlers.NewWarpHandler(s.Config.ConfigStore, warpLogManager, logger)
+	s.WarpHandler = handlers.NewWarpHandler(s.Config.ConfigStore, warpLogManager, s.Config.ModelCatalog, logger)
 	// Start WebSocket heartbeat
 	s.WebSocketHandler.StartHeartbeat()
 	// Adding telemetry middleware
@@ -2676,7 +2676,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	s.NotificationService.Start(s.Ctx)
 	// Bootstrap runs before plugins load, so Warp gets its config routes here and
 	// its chat route later in RegisterAPIRoutes once the log manager is known.
-	s.WarpHandler = handlers.NewWarpHandler(s.Config.ConfigStore, nil, logger)
+	s.WarpHandler = handlers.NewWarpHandler(s.Config.ConfigStore, nil, s.Config.ModelCatalog, logger)
 	// Initializing plugin loader. Allowlist entries are validated now - a malformed entry
 	// fails server startup rather than silently no-oping, since this is security-relaxing
 	// config for SSRF protection on custom plugin downloads.

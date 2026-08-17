@@ -1,4 +1,4 @@
-import { parseWarpFrame, splitWarpFrames, type WarpEvent } from "@/components/warp/warpStream.utils";
+import { parseWarpFrame, splitWarpFrames, type WarpEvent, type WarpQuestion, type WarpUsage } from "@/components/warp/warpStream.utils";
 import type { WarpTurn, WarpTurnToolCall } from "@/lib/contexts/warpContext";
 import { getApiBaseUrl } from "@/lib/utils/port";
 import { useCallback, useRef, useState } from "react";
@@ -16,8 +16,13 @@ interface UseWarpStreamResult {
 	isStreaming: boolean;
 	/** Terminal error for the in-flight turn, if it failed. */
 	error: string | null;
+	/** Set when Warp ended its turn by asking something. */
+	question: WarpQuestion | null;
+	clearQuestion: () => void;
 	send: (history: WarpTurn[], question: string) => Promise<void>;
 	stop: () => void;
+	/** Forgets the current thread, so the next question opens a new one. */
+	resetConversation: () => void;
 }
 
 /**
@@ -33,7 +38,17 @@ export function useWarpStream({ onTurnComplete }: UseWarpStreamOptions): UseWarp
 	const [streamingToolCalls, setStreamingToolCalls] = useState<WarpTurnToolCall[]>([]);
 	const [isStreaming, setIsStreaming] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	const [question, setQuestion] = useState<WarpQuestion | null>(null);
 	const abortRef = useRef<AbortController | null>(null);
+	// The thread every message in this chat belongs to. A ref rather than state
+	// because nothing renders from it and the next send has to read it
+	// synchronously - a state setter would still be pending, and the follow-up
+	// question would open a second thread.
+	//
+	// It also travels upstream as a log label, so the model calls behind one
+	// conversation can be grouped in the LLM Logs view instead of appearing as
+	// unrelated requests.
+	const conversationRef = useRef<string>("");
 
 	const stop = useCallback(() => {
 		abortRef.current?.abort();
@@ -49,6 +64,7 @@ export function useWarpStream({ onTurnComplete }: UseWarpStreamOptions): UseWarp
 			setStreamingText("");
 			setStreamingToolCalls([]);
 			setError(null);
+			setQuestion(null);
 			setIsStreaming(true);
 
 			// Accumulated locally as well as in state: the state setters are async,
@@ -56,6 +72,8 @@ export function useWarpStream({ onTurnComplete }: UseWarpStreamOptions): UseWarp
 			let text = "";
 			let toolCalls: WarpTurnToolCall[] = [];
 			let terminalError: string | null = null;
+			let posed: WarpQuestion | null = null;
+			let usage: WarpUsage | undefined;
 
 			const applyEvent = (event: WarpEvent) => {
 				switch (event.type) {
@@ -69,9 +87,21 @@ export function useWarpStream({ onTurnComplete }: UseWarpStreamOptions): UseWarp
 						break;
 					case "tool_call_end":
 						toolCalls = toolCalls.map((call) =>
-							call.id === event.tool_id ? { ...call, durationMs: event.duration_ms, failed: event.failed } : call,
+							call.id === event.tool_id ? { ...call, durationMs: event.duration_ms, failed: event.failed, error: event.tool_error } : call,
 						);
 						setStreamingToolCalls(toolCalls);
+						break;
+					case "done":
+						usage = event.usage;
+						// The server mints the id when a thread is new, so this is the only
+						// place the client learns it.
+						if (event.conversation_id) conversationRef.current = event.conversation_id;
+						break;
+					case "question":
+						// The turn ends here; the answer goes back as an ordinary next
+						// message, so nothing needs to stay open waiting.
+						posed = event.question ?? null;
+						setQuestion(posed);
 						break;
 					case "error":
 						// An error frame is terminal on the server side and never followed
@@ -90,7 +120,18 @@ export function useWarpStream({ onTurnComplete }: UseWarpStreamOptions): UseWarp
 					headers: { "Content-Type": "application/json" },
 					signal: controller.signal,
 					body: JSON.stringify({
-						messages: [...history.map((turn) => ({ role: turn.role, content: turn.content })), { role: "user", content: question }],
+						// Failed turns are kept in the transcript so the error card stays
+						// visible, but they carry no text - and replaying an empty
+						// assistant message is what Anthropic rejects with "text content
+						// blocks must be non-empty". The server drops these too; filtering
+						// here keeps them out of the request body in the first place.
+						messages: [
+							...history.filter((turn) => turn.content.trim() !== "").map((turn) => ({ role: turn.role, content: turn.content })),
+							{ role: "user", content: question },
+						],
+						// Omitted on the first message of a chat, which is what tells the
+						// server to open a thread rather than append to one.
+						conversation_id: conversationRef.current || undefined,
 						stream: true,
 					}),
 				});
@@ -137,6 +178,10 @@ export function useWarpStream({ onTurnComplete }: UseWarpStreamOptions): UseWarp
 					content: text,
 					toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
 					error: terminalError ?? undefined,
+					// Recorded on the turn so a reopened thread shows the question that
+					// was asked, not just the gap where an answer would be.
+					question: posed ?? undefined,
+					usage,
 				});
 				setStreamingText("");
 				setStreamingToolCalls([]);
@@ -145,5 +190,11 @@ export function useWarpStream({ onTurnComplete }: UseWarpStreamOptions): UseWarp
 		[onTurnComplete, stop],
 	);
 
-	return { streamingText, streamingToolCalls, isStreaming, error, send, stop };
+	const clearQuestion = useCallback(() => setQuestion(null), []);
+
+	const resetConversation = useCallback(() => {
+		conversationRef.current = "";
+	}, []);
+
+	return { streamingText, streamingToolCalls, isStreaming, error, question, clearQuestion, send, stop, resetConversation };
 }
