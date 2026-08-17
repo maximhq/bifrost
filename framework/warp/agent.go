@@ -87,11 +87,11 @@ type Agent struct {
 
 // NewAgent assembles an agent for one request. Config is read per request rather
 // than captured once, so a settings change takes effect without a restart.
-func NewAgent(chat ChatFunc, logs LogReader, config *schemas.WarpConfig) *Agent {
+func NewAgent(chat ChatFunc, logs LogReader, scope Scope, config *schemas.WarpConfig) *Agent {
 	return &Agent{
 		chat:          chat,
 		tools:         buildTools(),
-		deps:          &ToolDeps{logManager: logs},
+		deps:          &ToolDeps{logManager: logs, scope: scope},
 		config:        config,
 		maxIterations: config.EffectiveMaxIterations(),
 	}
