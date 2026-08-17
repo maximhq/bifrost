@@ -1266,6 +1266,8 @@ paths:
   # Warp
   /api/warp/config:
     $ref: "./paths/management/warp.yaml#/warp-config"
+  /api/warp/chat:
+    $ref: "./paths/management/warp.yaml#/warp-chat"
 
 components:
   securitySchemes:
@@ -1943,3 +1945,7 @@ components:
       $ref: "./schemas/management/warp.yaml#/WarpConfigInput"
     WarpUnavailable:
       $ref: "./schemas/management/warp.yaml#/WarpUnavailable"
+    WarpChatRequest:
+      $ref: "./schemas/management/warp.yaml#/WarpChatRequest"
+    WarpChatResponse:
+      $ref: "./schemas/management/warp.yaml#/WarpChatResponse"

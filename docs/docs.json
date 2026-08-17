@@ -1312,7 +1312,8 @@
                 "expanded": false,
                 "pages": [
                   "GET /api/warp/config",
-                  "PUT /api/warp/config"
+                  "PUT /api/warp/config",
+                  "POST /api/warp/chat"
                 ]
               }
             ]
