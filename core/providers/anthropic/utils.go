@@ -2263,8 +2263,8 @@ func convertChatResponseFormatToTool(ctx *schemas.BifrostContext, params *schema
 		return nil
 	}
 
-	// ResponseFormat is stored as interface{}, need to parse it
-	responseFormatMap, ok := (*params.ResponseFormat).(map[string]interface{})
+	// ResponseFormat is stored as interface{} (map or order-preserving OrderedMap).
+	responseFormatMap, ok := schemas.ExtractResponseFormatMap(params.ResponseFormat)
 	if !ok {
 		return nil
 	}

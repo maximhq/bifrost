@@ -120,7 +120,6 @@ func TestParseImageVariationFormDataBodyFromRequest_OrdersMetadataBeforeFile(t *
 	)
 }
 
-
 // TestPayloadOrdering_ResponsesTextFormatJSONSchema guards against JSON-schema
 // key reordering on the Responses passthrough path. Structured-output generation
 // is sensitive to the literal property order of `text.format.schema`: OpenAI
@@ -153,6 +152,40 @@ func TestPayloadOrdering_ResponsesTextFormatJSONSchema(t *testing.T) {
 	goldenSchema := `{"additionalProperties":false,"properties":{"parts":{"type":"array","items":{"anyOf":[{"$ref":"#/$defs/TextPart"},{"$ref":"#/$defs/WebCitation"}]}}},"required":["parts"],"type":"object","$defs":{"TextPart":{"type":"object","properties":{"type":{"const":"text"},"text":{"type":"string"}},"required":["type","text"],"additionalProperties":false},"WebCitation":{"type":"object","properties":{"type":{"const":"cite:web"},"url":{"type":"string"}},"required":["type","url"],"additionalProperties":false}}}`
 	assert.Contains(t, string(marshaled), `"schema":`+goldenSchema,
 		"nested schema key order changed — if intentional, update the golden string")
+
+	// Determinism: repeated marshals must produce identical bytes
+	for i := 0; i < 100; i++ {
+		iter, err := providerUtils.MarshalSorted(&req)
+		require.NoError(t, err)
+		assert.Equal(t, string(marshaled), string(iter), "non-deterministic marshal on iteration %d", i)
+	}
+}
+
+// TestPayloadOrdering_ChatResponseFormatJSONSchema is the Chat Completions analogue
+// of TestPayloadOrdering_ResponsesTextFormatJSONSchema. Structured-output generation
+// is sensitive to the literal property order of response_format.json_schema.schema:
+// OpenAI models fill fields / pick union branches following schema key order, so
+// decoding the schema into a plain Go map and re-marshaling it sorted (alphabetized)
+// measurably degrades output quality. ChatParameters.UnmarshalJSON decodes
+// response_format into an OrderedMap so the client's key order round-trips verbatim.
+func TestPayloadOrdering_ChatResponseFormatJSONSchema(t *testing.T) {
+	// Deliberately non-alphabetical key order everywhere: "type" precedes
+	// "text"/"url"/"items"/"properties" etc. — alphabetical sorting would reorder them.
+	schemaJSON := `{"type":"object","properties":{"parts":{"type":"array","items":{"anyOf":[{"$ref":"#/$defs/TextPart"},{"$ref":"#/$defs/WebCitation"}]}}},"required":["parts"],"additionalProperties":false,"$defs":{"TextPart":{"type":"object","properties":{"type":{"const":"text"},"text":{"type":"string"}},"required":["type","text"],"additionalProperties":false},"WebCitation":{"type":"object","properties":{"type":{"const":"cite:web"},"url":{"type":"string"}},"required":["type","url"],"additionalProperties":false}}}`
+	responseFormatJSON := `{"type":"json_schema","json_schema":{"name":"final_output","strict":true,"schema":` + schemaJSON + `}}`
+	rawBody := `{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"response_format":` + responseFormatJSON + `}`
+
+	var req OpenAIChatRequest
+	require.NoError(t, sonic.Unmarshal([]byte(rawBody), &req), "decode request")
+	require.NotNil(t, req.ResponseFormat)
+
+	marshaled, err := providerUtils.MarshalSorted(&req)
+	require.NoError(t, err)
+
+	// response_format and every nested object must keep the client's original
+	// (non-alphabetical) key order — no field is sorted or dropped.
+	assert.Contains(t, string(marshaled), `"response_format":`+responseFormatJSON,
+		"response_format key order changed — if intentional, update the golden string")
 
 	// Determinism: repeated marshals must produce identical bytes
 	for i := 0; i < 100; i++ {

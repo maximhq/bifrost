@@ -88,7 +88,7 @@ func ToHuggingFaceChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) 
 		// Handle response format (direct type assertion to avoid marshal→unmarshal round-trip)
 		if params.ResponseFormat != nil {
 			var hfRF *HuggingFaceResponseFormat
-			if rfMap, ok := (*params.ResponseFormat).(map[string]interface{}); ok {
+			if rfMap, ok := schemas.ExtractResponseFormatMap(params.ResponseFormat); ok {
 				hfRF = &HuggingFaceResponseFormat{}
 				if t, ok := rfMap["type"].(string); ok {
 					hfRF.Type = t

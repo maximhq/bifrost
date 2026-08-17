@@ -702,6 +702,41 @@ func SafeExtractOrderedMap(value interface{}) (*OrderedMap, bool) {
 	return nil, false
 }
 
+// ExtractResponseFormatMap normalizes a chat response_format value into a plain,
+// deeply-converted map[string]interface{} for providers that translate it into a
+// native structured-output format by reading fields (e.g. "type", "json_schema").
+//
+// response_format is decoded as an order-preserving *OrderedMap (see
+// ChatParameters.UnmarshalJSON) so that OpenAI-family providers can forward it
+// verbatim and keep the client's schema key order on the wire. Providers that
+// instead rebuild a native format don't care about key order, so this helper
+// accepts either an *OrderedMap or a plain map and always returns a plain map
+// (nested objects included). Returns (nil, false) when absent or not an object.
+func ExtractResponseFormatMap(responseFormat *interface{}) (map[string]interface{}, bool) {
+	if responseFormat == nil || *responseFormat == nil {
+		return nil, false
+	}
+	if m, ok := (*responseFormat).(map[string]interface{}); ok {
+		return m, true
+	}
+	om, ok := SafeExtractOrderedMap(*responseFormat)
+	if !ok {
+		return nil, false
+	}
+	// Round-trip through JSON to deeply convert nested *OrderedMap values into
+	// plain maps, so downstream nested type assertions (e.g. rfMap["json_schema"]
+	// .(map[string]interface{})) keep working. Key order is irrelevant here.
+	data, err := om.MarshalJSON()
+	if err != nil {
+		return nil, false
+	}
+	var m map[string]interface{}
+	if err := Unmarshal(data, &m); err != nil {
+		return nil, false
+	}
+	return m, true
+}
+
 // GET DEEP COPY UNTIL
 
 func DeepCopy(in interface{}) interface{} {

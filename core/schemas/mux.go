@@ -1149,7 +1149,7 @@ func (cr *BifrostChatRequest) ToResponsesRequest() *BifrostResponsesRequest {
 		}
 
 		if cr.Params.ResponseFormat != nil {
-			if rfMap, ok := (*cr.Params.ResponseFormat).(map[string]interface{}); ok {
+			if rfMap, ok := ExtractResponseFormatMap(cr.Params.ResponseFormat); ok {
 				if fmtType, ok := rfMap["type"].(string); ok {
 					if brr.Params.Text == nil {
 						brr.Params.Text = &ResponsesTextConfig{}

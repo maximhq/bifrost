@@ -238,8 +238,8 @@ func convertResponseFormatToCohere(responseFormat *interface{}) *CohereResponseF
 		return nil
 	}
 
-	// Try to extract as map
-	formatMap, ok := (*responseFormat).(map[string]interface{})
+	// Try to extract as map (response_format may be a map or an OrderedMap)
+	formatMap, ok := schemas.ExtractResponseFormatMap(responseFormat)
 	if !ok {
 		return nil
 	}

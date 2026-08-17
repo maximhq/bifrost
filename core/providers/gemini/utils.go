@@ -1254,7 +1254,7 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 	}
 	// Handle response_format to response_schema conversion
 	if params.ResponseFormat != nil {
-		formatMap, ok := (*params.ResponseFormat).(map[string]interface{})
+		formatMap, ok := schemas.ExtractResponseFormatMap(params.ResponseFormat)
 		if ok {
 			formatType, typeOk := formatMap["type"].(string)
 			if typeOk {
@@ -2837,7 +2837,7 @@ func normalizeOrderedSchemaForGemini(om *schemas.OrderedMap) *schemas.OrderedMap
 // structure. The schema may be a plain map or an order-preserving OrderedMap (e.g. when built
 // from a Responses request); the result is used with ResponseJSONSchema.
 func extractSchemaMapFromResponseFormat(responseFormat *interface{}) interface{} {
-	formatMap, ok := (*responseFormat).(map[string]interface{})
+	formatMap, ok := schemas.ExtractResponseFormatMap(responseFormat)
 	if !ok {
 		return nil
 	}

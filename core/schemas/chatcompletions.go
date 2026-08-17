@@ -297,6 +297,32 @@ func (cp *ChatParameters) UnmarshalJSON(data []byte) error {
 			cp.Reasoning.Display = aux.ReasoningDisplay
 		}
 	}
+
+	// Preserve the client's response_format key order for structured outputs.
+	// The alias decode above lands response_format in a plain map[string]interface{},
+	// whose key order is lost (and would later be alphabetized by the sorted
+	// marshaller). Re-decode the raw response_format bytes into an OrderedMap so the
+	// schema's property order survives to the provider. Structured-output generation
+	// is order-sensitive: OpenAI follows the literal key order of the schema, so
+	// reordering it degrades output quality. This mirrors how the Responses API
+	// handles text.format.schema. Providers that translate response_format into a
+	// native format read it via ExtractResponseFormatMap, which accepts either shape.
+	if cp.ResponseFormat != nil {
+		var rawWrap struct {
+			ResponseFormat json.RawMessage `json:"response_format"`
+		}
+		if err := Unmarshal(data, &rawWrap); err == nil {
+			raw := bytes.TrimSpace(rawWrap.ResponseFormat)
+			if len(raw) > 0 && !bytes.Equal(raw, []byte("null")) {
+				om := NewOrderedMap()
+				if err := om.UnmarshalJSON(raw); err == nil {
+					var v interface{} = om
+					cp.ResponseFormat = &v
+				}
+			}
+		}
+	}
+
 	// ExtraParams etc. are already handled by the alias
 	return nil
 }
