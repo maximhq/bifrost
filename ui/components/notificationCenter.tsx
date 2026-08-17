@@ -1,3 +1,7 @@
+import { isNotificationsUnavailable, shouldHideNotificationTrigger } from "@/components/notificationCenter.utils";
+import { TOPBAR_MENU_SIDE_OFFSET } from "@/components/topbar.utils";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { ScrollArea } from "@/components/ui/scrollArea";
 import {
 	clearAllNotifications,
 	markAllNotificationsRead,
@@ -12,13 +16,10 @@ import {
 } from "@/lib/store";
 import type { NotificationSeverity } from "@/lib/types/notifications";
 import { cn } from "@/lib/utils";
-import { isNotificationsUnavailable } from "@/components/notificationCenter.utils";
-import { TOPBAR_MENU_SIDE_OFFSET } from "@/components/topbar.utils";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { ScrollArea } from "@/components/ui/scrollArea";
-import { formatDistanceToNow } from "date-fns";
 import { useNavigate } from "@tanstack/react-router";
+import { formatDistanceToNow } from "date-fns";
 import { Check, CheckCircle2, CircleAlert, Inbox, Info, RefreshCw, TriangleAlert, X } from "lucide-react";
+import { useState } from "react";
 
 const severityStyles: Record<NotificationSeverity, string> = {
 	info: "bg-blue-500/10 text-blue-600 dark:text-blue-400",
@@ -37,6 +38,7 @@ const severityIcons = {
 export default function NotificationCenter() {
 	const dispatch = useAppDispatch();
 	const navigate = useNavigate();
+	const [open, setOpen] = useState(false);
 	const notifications = useAppSelector(selectVisibleNotifications);
 	const unreadCount = useAppSelector(selectUnreadNotificationsCount);
 	const { readIds } = useAppSelector(selectNotificationPreferences);
@@ -47,16 +49,17 @@ export default function NotificationCenter() {
 		if (actionPath) navigate({ to: actionPath });
 	};
 
-	// The service answers 503 when no config store is configured, which is a
-	// supported deployment (lib.Config leaves ConfigStore nil when the store is
-	// disabled). There is nothing to retry there and never will be for the life
-	// of the process, so drop the trigger entirely rather than parking a
-	// permanent error panel in the topbar. Transient failures still get the
-	// in-tray retry below.
+	// 503 means no config store is configured — a supported deployment that will
+	// never recover, so drop the trigger instead of parking a permanent error in
+	// the topbar. Transient failures still get the in-tray retry below.
 	if (isNotificationsUnavailable(error)) return null;
 
+	// Hide the trigger until there is something to open. A failed load is the one
+	// empty state that stays visible — see shouldHideNotificationTrigger.
+	if (shouldHideNotificationTrigger({ open, isLoading, isError, count: notifications.length })) return null;
+
 	return (
-		<Popover>
+		<Popover open={open} onOpenChange={setOpen}>
 			<PopoverTrigger asChild>
 				<button
 					type="button"
@@ -143,7 +146,10 @@ export default function NotificationCenter() {
 									<div
 										key={notification.id}
 										data-testid={`notification-item-${notification.id}`}
-										className={cn("group relative flex transition-colors", isRead ? "hover:bg-accent/60" : "bg-accent/25 hover:bg-accent/60")}
+										className={cn(
+											"group relative flex transition-colors",
+											isRead ? "hover:bg-accent/60" : "bg-accent/25 hover:bg-accent/60",
+										)}
 									>
 										<button
 											type="button"
