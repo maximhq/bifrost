@@ -72,7 +72,7 @@ func toolTurn(id, name, arguments string) *schemas.BifrostChatResponse {
 
 // newTestAgent wires an agent around a scripted model and a fake store.
 func newTestAgent(model *scriptedModel, fake *fakeLogReader, maxIterations int) *Agent {
-	agent := NewAgent(model.respond, fake, &schemas.WarpConfig{
+	agent := NewAgent(model.respond, fake, Scope{}, &schemas.WarpConfig{
 		Enabled: true, Provider: schemas.OpenAI, Model: "gpt-4o",
 	})
 	agent.maxIterations = maxIterations
