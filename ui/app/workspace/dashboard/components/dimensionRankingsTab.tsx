@@ -80,7 +80,8 @@ function TopDimensionChart({
 			title={`Top ${dimensionLabel}s`}
 			loading={loading}
 			testId={`${testIdPrefix}-top-chart`}
-			className="z-[1] h-full"
+			className="z-[1]"
+			autoHeight
 			totalLabel={attributed && actualTotal === null ? "Total Requests (attributed)" : "Total Requests"}
 			total={
 				actualTotal !== null ? (

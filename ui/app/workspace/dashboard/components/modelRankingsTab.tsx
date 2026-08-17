@@ -156,7 +156,8 @@ function TopModelsChart({
 			title="Top Models"
 			loading={loadingModels}
 			testId="dashboard-rankings-top-models"
-			className="z-[1] h-full"
+			className="z-[1]"
+			autoHeight
 			totalLabel="Total"
 			total={grandTotal !== null ? <NumberFlow value={grandTotal} format={COMPACT_NUMBER_FORMAT} /> : undefined}
 			totalTooltip={grandTotal !== null ? grandTotal.toLocaleString("en-US") : undefined}

@@ -733,7 +733,7 @@ export default function LogsPage() {
 	);
 
 	return (
-		<div className="dark:bg-card no-padding-parent no-border-parent h-[calc(100vh_-_16px)]">
+		<div className="dark:bg-card no-padding-parent no-border-parent h-[calc(var(--app-content-viewport)_-_16px)]">
 			{showEmptyState ? (
 				<EmptyState error={error ?? (logsError ? getErrorMessage(logsError as Parameters<typeof getErrorMessage>[0]) : null)} />
 			) : (

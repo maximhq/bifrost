@@ -1,3 +1,4 @@
+import { FilterSidebarTrigger } from "@/components/filters/filterSidebarTrigger";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -7,7 +8,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useGetMCPLibraryFilterDataQuery } from "@/lib/store";
 import { cn } from "@/lib/utils";
-import { ChevronDown, Filter, PanelLeftClose, PanelLeftOpen, RotateCcw, Search } from "lucide-react";
+import { ChevronDown, PanelLeftClose, RotateCcw, Search } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 const COLLAPSE_STORAGE_KEY = "mcp-library-filter-sidebar-collapsed";
@@ -75,25 +76,7 @@ export function MCPLibraryFilterSidebar({ filters, onFiltersChange }: SidebarPro
 
 	if (collapsed) {
 		return (
-			<Button
-				type="button"
-				onClick={toggleCollapsed}
-				variant="outline"
-				size="sm"
-				className="group fixed top-2 right-4 z-30 flex h-8 w-8 shrink-0 flex-row items-center justify-center gap-0 rounded-md p-0 shadow-lg md:static md:h-full md:w-10 md:flex-col md:justify-start md:gap-3 md:rounded-l-none md:rounded-r-md md:border-0 md:py-4 md:shadow-none md:hover:text-current md:active:scale-100"
-				title="Show filters"
-				aria-label="Show filters"
-				data-testid="mcpLibraryFilterSidebar-toggle-show"
-			>
-				<Filter className="text-muted-foreground group-hover:text-foreground size-4 transition-colors md:hidden" />
-				<PanelLeftOpen className="text-muted-foreground group-hover:text-foreground hidden size-4 transition-colors md:block" />
-				<span className="hidden rotate-180 select-none [writing-mode:vertical-rl] md:block">Filters</span>
-				{activeFilterCount > 0 && (
-					<span className="bg-primary text-primary-foreground md:bg-primary/10 md:text-primary absolute -top-1 -right-1 flex size-5 items-center justify-center rounded-full text-[10px] font-medium md:static md:size-6 md:text-xs">
-						{activeFilterCount}
-					</span>
-				)}
-			</Button>
+			<FilterSidebarTrigger activeFilterCount={activeFilterCount} onClick={toggleCollapsed} testId="mcpLibraryFilterSidebar-toggle-show" />
 		);
 	}
 
