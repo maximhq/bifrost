@@ -254,15 +254,42 @@ func conversationDetailFromRow(row *logstore.WarpConversation) schemas.WarpConve
 // and buffered transports file identically. A turn with no answer and no error
 // is not recorded: an aborted request that produced nothing would otherwise
 // leave an empty thread in the list.
+// persistedConversationID is the id to hand back when nothing was written.
+//
+// For a thread that already exists, that is its own id: it is still there. For a
+// new one there is no row behind the generated id, and returning it told the
+// client a thread existed - the next request then sends it as an existing
+// conversation, so the create is skipped and the append has nothing to attach
+// to. An empty id means "start one next time", which is the truth.
+func persistedConversationID(turn *Turn) string {
+	if turn.IsNew {
+		return ""
+	}
+	return turn.ConversationID
+}
+
 func (s *Service) recordTurn(ctx context.Context, turn *Turn, response ChatResponse) string {
-	if s.conversations == nil || turn.question == "" {
+	// No history feature at all: the id is the client's own token, nothing will
+	// ever be created for it, and blanking it would drop the thread the client is
+	// tracking for no gain.
+	if s.conversations == nil {
 		return turn.ConversationID
 	}
-	if response.Answer == "" && response.Error == nil {
-		return turn.ConversationID
+	if turn.question == "" {
+		return persistedConversationID(turn)
+	}
+	// A question counts as an outcome. Warp ending a turn by asking is a real
+	// exchange the person can come back to; skipping it left the thread
+	// uncreated, so reopening showed the question asked and no sign of a reply,
+	// and the answer typed next arrived as the opening line of an empty thread.
+	if response.Answer == "" && response.Error == nil && response.Question == nil {
+		return persistedConversationID(turn)
 	}
 
 	stored := schemas.WarpStoredMessage{Role: "assistant", Content: response.Answer}
+	if stored.Content == "" && response.Question != nil {
+		stored.Content = storedQuestionText(response.Question)
+	}
 	if response.Error != nil {
 		stored.Error = response.Error.Message
 	}
@@ -280,7 +307,23 @@ func (s *Service) recordTurn(ctx context.Context, turn *Turn, response ChatRespo
 	// Only ever report an id that was actually filed. Falling back to the
 	// caller's own id handed the client a thread its owner-scoped endpoint
 	// cannot fetch - the exchange looks saved, and is not.
-	return s.persistTurn(writeCtx, turn.ConversationID, turn.questionRole, turn.question, stored)
+	return s.persistTurn(writeCtx, turn.ConversationID, turn.IsNew, turn.questionRole, turn.question, stored)
+}
+
+// storedQuestionText renders a clarifying question for the transcript.
+//
+// The options are included because they are what the person actually chose
+// from: a reopened thread showing only the question, with the shortcuts gone,
+// reads as a vaguer exchange than the one that happened.
+func storedQuestionText(question *Question) string {
+	if question == nil {
+		return ""
+	}
+	text := question.Question
+	for _, option := range question.Options {
+		text += "\n- " + option.Label
+	}
+	return text
 }
 
 // persistTurn saves one exchange, creating the thread on the first turn.
@@ -289,7 +332,13 @@ func (s *Service) recordTurn(ctx context.Context, turn *Turn, response ChatRespo
 // returns an error to the caller: history is a convenience, and failing a
 // perfectly good answer because it could not be filed would trade the thing
 // someone asked for against the thing they did not.
-func (s *Service) persistTurn(ctx context.Context, conversationID, questionRole, question string, answer schemas.WarpStoredMessage) string {
+//
+// isNew, rather than an empty id, decides whether the thread row gets created.
+// The id is minted before the first model call so it can ride upstream as a
+// logging header, which means it is never empty by the time it reaches here -
+// and inferring "new" from emptiness would silently stop creating threads
+// altogether, leaving every message orphaned.
+func (s *Service) persistTurn(ctx context.Context, conversationID string, isNew bool, questionRole, question string, answer schemas.WarpStoredMessage) string {
 	if s.conversations == nil {
 		return ""
 	}
@@ -308,6 +357,9 @@ func (s *Service) persistTurn(ctx context.Context, conversationID, questionRole,
 	createdHere := false
 	if conversationID == "" {
 		conversationID = uuid.NewString()
+		isNew = true
+	}
+	if isNew {
 		if err := s.conversations.CreateWarpConversation(ctx, &logstore.WarpConversation{
 			ID:        conversationID,
 			OwnerID:   owner,
