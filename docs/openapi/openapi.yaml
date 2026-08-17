@@ -152,6 +152,8 @@ tags:
     description: Webhook endpoint management and signed async-job delivery history
   - name: Notifications
     description: Role-targeted dashboard notifications, delivered over the dashboard WebSocket
+  - name: Warp
+    description: Configuration for Warp, the dashboard agent that answers questions about the deployment's own telemetry
 
 paths:
   # ==================== Unified Inference API ====================
@@ -1261,6 +1263,10 @@ paths:
   /api/notifications:
     $ref: "./paths/management/notifications.yaml#/notifications"
 
+  # Warp
+  /api/warp/config:
+    $ref: "./paths/management/warp.yaml#/warp-config"
+
 components:
   securitySchemes:
     BearerAuth:
@@ -1929,3 +1935,11 @@ components:
       $ref: "./schemas/management/notifications.yaml#/Notification"
     NotificationList:
       $ref: "./schemas/management/notifications.yaml#/NotificationList"
+
+    # Warp
+    WarpConfig:
+      $ref: "./schemas/management/warp.yaml#/WarpConfig"
+    WarpConfigInput:
+      $ref: "./schemas/management/warp.yaml#/WarpConfigInput"
+    WarpUnavailable:
+      $ref: "./schemas/management/warp.yaml#/WarpUnavailable"

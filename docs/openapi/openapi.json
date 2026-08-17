@@ -196,6 +196,10 @@
     {
       "name": "Notifications",
       "description": "Role-targeted dashboard notifications, delivered over the dashboard WebSocket"
+    },
+    {
+      "name": "Warp",
+      "description": "Configuration for Warp, the dashboard agent that answers questions about the deployment's own telemetry"
     }
   ],
   "paths": {
@@ -79322,6 +79326,121 @@
           }
         ]
       }
+    },
+    "/api/warp/config": {
+      "get": {
+        "operationId": "getWarpConfig",
+        "summary": "Read Warp configuration",
+        "description": "Returns Warp's settings for the settings page. The stored provider\ncredential is never included — only `api_key_set`, reporting whether one\nexists.\n\nA deployment that has never configured Warp gets `200` with\n`configured: false` and the default values, not a `404`. The settings page\nneeds to render its empty form, and a `404` would make \"never set up\"\nindistinguishable from \"this build has no Warp route\".\n",
+        "tags": [
+          "Warp"
+        ],
+        "responses": {
+          "200": {
+            "description": "Warp configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WarpConfig"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ]
+      },
+      "put": {
+        "operationId": "updateWarpConfig",
+        "summary": "Update Warp configuration",
+        "description": "Writes Warp's settings. **Administrators only.**\n\nRBAC in this transport is enterprise-only and path-based, so the floor is\nenforced in the handler: a single write plants a credential that the\nserver then uses to make outbound calls, which is not something an\nordinary dashboard user should be able to do. Non-admin callers get `403`.\n\nOmitting `api_key` leaves the stored credential unchanged; sending an\nempty string clears it. See the schema for why the two are distinct.\n",
+        "tags": [
+          "Warp"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WarpConfigInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The updated configuration, with the credential redacted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WarpConfig"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an administrator"
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -98568,6 +98687,123 @@
             "description": "Opaque cursor for the next page. Absent when there are no further\nresults. Pass it back as the `cursor` query parameter.\n"
           }
         }
+      },
+      "WarpConfig": {
+        "type": "object",
+        "description": "Warp's deployment-wide settings, as returned by the read API.\n\nThe stored provider credential is never included. `api_key_set` reports\nwhether one exists so the settings form can render \"configured\" instead of\nan empty field, but the value itself never leaves the server: a dashboard\nsession is a weaker credential than the provider key it would reveal.\n",
+        "properties": {
+          "configured": {
+            "type": "boolean",
+            "description": "Whether Warp has everything it needs to answer a question — enabled,\nwith a provider and a model. A credential is deliberately not part of\nthis test, since a provider reached over a trusted network through\n`base_url` legitimately needs none.\n"
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether the operator has switched Warp on."
+          },
+          "provider": {
+            "type": "string",
+            "description": "The model provider that runs the agent loop, e.g. `openai`.",
+            "example": "openai"
+          },
+          "model": {
+            "type": "string",
+            "example": "gpt-4o"
+          },
+          "base_url": {
+            "type": "string",
+            "description": "Where Warp reaches its model. Defaults to this Bifrost's own origin, so\nWarp runs through the deployment's own gateway and reuses the provider\ncredentials already configured here. Point it elsewhere only to call a\nprovider directly.\n",
+            "example": "https://bifrost.internal.example.com"
+          },
+          "api_key_id": {
+            "type": "string",
+            "description": "Which of the provider's configured keys Warp uses. A reference, not a\ncredential, so it round-trips in the clear - there is nothing here worth\nredacting. Empty when the provider needs no key.\n"
+          },
+          "max_iterations": {
+            "type": "integer",
+            "description": "How many times Warp may call tools and feed the results back before it\nmust answer with what it has. Resolved value, so a row that never set\none reports the default rather than zero.\n",
+            "minimum": 1,
+            "maximum": 20,
+            "default": 8
+          },
+          "request_timeout_seconds": {
+            "type": "integer",
+            "description": "Bound on a single upstream call. Resolved value.",
+            "default": 120
+          },
+          "system_prompt_suffix": {
+            "type": "string",
+            "description": "Appended to Warp's built-in system prompt. Additive only: an operator\ncan teach Warp local naming conventions, but cannot remove the tool-use\nand scoping instructions the built-in prompt establishes.\n"
+          }
+        },
+        "required": [
+          "configured",
+          "enabled",
+          "provider",
+          "model",
+          "max_iterations",
+          "request_timeout_seconds"
+        ]
+      },
+      "WarpConfigInput": {
+        "type": "object",
+        "description": "The write body. Only a config that claims to be usable has to be complete:\nwhen `enabled` is false, `provider` and `model` may be empty, so an operator\ncan fill the form in over more than one sitting.\n",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false
+          },
+          "provider": {
+            "type": "string",
+            "description": "Required when `enabled` is true.",
+            "example": "openai"
+          },
+          "model": {
+            "type": "string",
+            "description": "Required when `enabled` is true.",
+            "example": "gpt-4o"
+          },
+          "base_url": {
+            "type": "string"
+          },
+          "api_key_id": {
+            "type": "string",
+            "description": "Which of the provider's configured keys Warp should use. Empty is valid\nand common: with the default `base_url` Warp reaches its model through\nthis Bifrost, and a provider on a trusted network or using ambient\ncredentials needs no key at all.\n"
+          },
+          "max_iterations": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 20,
+            "description": "Zero means \"use the default\"."
+          },
+          "request_timeout_seconds": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Zero means \"use the default\"."
+          },
+          "system_prompt_suffix": {
+            "type": "string"
+          }
+        }
+      },
+      "WarpUnavailable": {
+        "type": "object",
+        "description": "The 503 body. `reason` exists because the two causes need opposite\ntreatment in the dashboard: an unconfigured Warp is fixable by the operator\nand must stay visible with a link to its settings, while a deployment with\nno log store has nothing for Warp to read and no in-panel remedy. Without a\nmachine-readable field the client would have to pattern-match the message,\nwhich breaks silently the first time it is reworded.\n",
+        "properties": {
+          "reason": {
+            "type": "string",
+            "enum": [
+              "not_configured",
+              "no_log_store"
+            ]
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason",
+          "message"
+        ]
       }
     }
   }

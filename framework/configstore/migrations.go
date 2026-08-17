@@ -490,6 +490,8 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_mcp_client_endpoint_slug"}, run: migrationAddMCPClientEndpointSlug},
 	{IDs: []string{"add_allow_all_providers_to_virtual_key"}, run: migrationAddAllowAllProvidersToVirtualKey},
 	{IDs: []string{"backfill_vk_allow_all_providers_hash"}, run: migrationBackfillVirtualKeyAllowAllProvidersHash},
+	{IDs: []string{"add_warp_config_table"}, run: migrationAddWarpConfigTable},
+	{IDs: []string{"add_warp_api_key_id_column"}, run: migrationAddWarpAPIKeyIDColumn},
 }
 
 // videoResolutionPricingColumns are the resolution-banded video output rate columns.
@@ -694,6 +696,70 @@ func migrationAddBatchJobsAttributionColumns(ctx context.Context, db *gorm.DB, l
 		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
 	}
 	return nil
+}
+
+// migrationAddWarpAPIKeyIDColumn reshapes warp_config from storing a secret to
+// storing a reference to one of the provider's existing keys.
+//
+// This is a separate step rather than an edit to the migration above because
+// applied migration IDs are recorded and never re-run: any database that already
+// created the table keeps the old columns forever, and a write naming the new
+// one fails with a SQL error the API can only report as a 500.
+func migrationAddWarpAPIKeyIDColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_warp_api_key_id_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// AutoMigrate adds api_key_id; it never drops, so the retired columns
+			// are handled separately below.
+			if err := tx.AutoMigrate(&tables.TableWarpConfig{}); err != nil {
+				return fmt.Errorf("failed to add warp api_key_id column: %w", err)
+			}
+			for _, column := range []string{"api_key", "encryption_status"} {
+				if !tx.Migrator().HasColumn(&tables.TableWarpConfig{}, column) {
+					continue
+				}
+				// Blank the value before attempting the drop, and treat this as the
+				// step that actually matters. api_key held a credential, and GORM's
+				// SQLite driver returns nil from DropColumn without dropping
+				// anything - so a drop-only migration would leave the secret at rest
+				// while reporting success. Clearing it works on every dialect.
+				if err := tx.Exec(fmt.Sprintf("UPDATE %s SET %s = NULL",
+					quoteSQLiteIdentifier(tables.TableWarpConfig{}.TableName()),
+					quoteSQLiteIdentifier(column))).Error; err != nil {
+					return fmt.Errorf("failed to clear warp %s column: %w", column, err)
+				}
+				// Then drop it where the dialect can. A failure here is not fatal:
+				// the column is already empty, and an unused nullable column is
+				// cosmetic.
+				if err := dropColumnIfExists(tx, logger, &tables.TableWarpConfig{}, column); err != nil {
+					logger.Warn("[configstore] could not drop retired warp column %s (cleared instead): %v", column, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableWarpConfig{}, "api_key_id")
+		},
+	})
+}
+
+func migrationAddWarpConfigTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_warp_config_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).AutoMigrate(&tables.TableWarpConfig{})
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).Migrator().DropTable(&tables.TableWarpConfig{})
+		},
+	})
 }
 
 func migrationAddNotificationsTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
