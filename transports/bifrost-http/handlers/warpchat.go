@@ -130,7 +130,7 @@ func (h *WarpHandler) chatStreaming(ctx *fasthttp.RequestCtx, agentCtx context.C
 		// disconnects are only detected when a write fails, and a slow upstream
 		// turn can leave minutes with no frames to send - long enough for a closed
 		// tab to go unnoticed while the request keeps spending tokens.
-		heartbeatDone, heartbeatExited := lib.StartSSEHeartbeat(lib.DefaultSSEHeartbeatInterval, reader.SendHeartbeat, cancel)
+		heartbeatDone, heartbeatExited := lib.StartSSEHeartbeat(lib.DefaultSSEHeartbeatInterval, warpHeartbeat(reader), cancel)
 		defer func() {
 			// Must run before reader.Done(): closing the event channel while the
 			// heartbeat goroutine could still be mid-send panics.
@@ -149,6 +149,18 @@ func (h *WarpHandler) chatStreaming(ctx *fasthttp.RequestCtx, agentCtx context.C
 			return reader.SendEvent(string(event.Type), payload)
 		})
 	}()
+}
+
+// warpHeartbeat frames Warp's keep-alive as a self-contained comment block.
+//
+// Delimited, not the bare comment line the default sends. Every Warp frame ends
+// in "\n\n" and the browser splitter looks for exactly that boundary, so a
+// heartbeat ending in a single "\n" is held in the client's carry buffer until
+// the next real event arrives. On an idle turn - the only time a heartbeat
+// matters - that is precisely when no next event is coming, so the keep-alive
+// proving the connection is alive is the one thing the reader cannot see.
+func warpHeartbeat(reader *lib.SSEStreamReader) func() bool {
+	return func() bool { return reader.SendHeartbeatWithFraming(lib.SSEHeartbeatDelimitedCommentBlock) }
 }
 
 // sendUnavailable answers 503 with a machine-readable reason. The dashboard
