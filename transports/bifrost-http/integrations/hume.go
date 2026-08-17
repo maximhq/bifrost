@@ -13,7 +13,6 @@ import (
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/openai"
-	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -40,10 +39,22 @@ type humeConfigProvider interface {
 // HumeChatRequest preserves the OpenAI chat request while separately retaining
 // Hume's per-message timing and prosody metadata.
 type HumeChatRequest struct {
-	OpenAIRequest   openai.OpenAIChatRequest
-	Fallbacks       []string `json:"fallbacks,omitempty"`
+	openai.OpenAIChatRequest
 	messageMetadata map[int]schemas.HumeMessageMetadata
 	customSessionID string
+}
+
+type humeMessageMetadataEnvelope struct {
+	Messages []humeMessageMetadataWire `json:"messages"`
+}
+
+type humeMessageMetadataWire struct {
+	Time   *schemas.HumeMessageTime `json:"time,omitempty"`
+	Models *struct {
+		Prosody *struct {
+			Scores map[string]float64 `json:"scores,omitempty"`
+		} `json:"prosody,omitempty"`
+	} `json:"models,omitempty"`
 }
 
 // UnmarshalJSON parses both OpenAI chat fields and Hume's message annotations.
@@ -59,45 +70,32 @@ func (r *HumeChatRequest) UnmarshalJSON(data []byte) error {
 	}
 
 	*r = HumeChatRequest{
-		OpenAIRequest:   openAIRequest,
-		Fallbacks:       openAIRequest.Fallbacks,
-		messageMetadata: metadata,
+		OpenAIChatRequest: openAIRequest,
+		messageMetadata:   metadata,
 	}
 	return nil
 }
 
 func parseHumeMessageMetadata(data []byte) (map[int]schemas.HumeMessageMetadata, error) {
-	messages := providerUtils.GetJSONField(data, "messages").Array()
-	metadata := make(map[int]schemas.HumeMessageMetadata, len(messages))
-	for i, message := range messages {
-		var item schemas.HumeMessageMetadata
-		if timeNode := message.Get("time"); timeNode.Exists() && timeNode.Raw != "null" {
-			messageTime := &schemas.HumeMessageTime{}
-			if err := sonic.UnmarshalString(timeNode.Raw, messageTime); err != nil {
-				return nil, fmt.Errorf("failed to parse Hume message %d time: %w", i, err)
-			}
-			item.Time = messageTime
-		}
-		if scoresNode := message.Get("models.prosody.scores"); scoresNode.Exists() && scoresNode.Raw != "null" {
-			if err := sonic.UnmarshalString(scoresNode.Raw, &item.ProsodyScores); err != nil {
-				return nil, fmt.Errorf("failed to parse Hume message %d prosody scores: %w", i, err)
-			}
+	var envelope humeMessageMetadataEnvelope
+	if err := sonic.Unmarshal(data, &envelope); err != nil {
+		return nil, fmt.Errorf("failed to parse Hume message metadata: %w", err)
+	}
+
+	var metadata map[int]schemas.HumeMessageMetadata
+	for i, message := range envelope.Messages {
+		item := schemas.HumeMessageMetadata{Time: message.Time}
+		if message.Models != nil && message.Models.Prosody != nil {
+			item.ProsodyScores = message.Models.Prosody.Scores
 		}
 		if item.Time != nil || len(item.ProsodyScores) > 0 {
+			if metadata == nil {
+				metadata = make(map[int]schemas.HumeMessageMetadata)
+			}
 			metadata[i] = item
 		}
 	}
 	return metadata, nil
-}
-
-// IsStreamingRequested implements StreamingRequest.
-func (r *HumeChatRequest) IsStreamingRequested() bool {
-	return r != nil && r.OpenAIRequest.IsStreamingRequested()
-}
-
-// SetExtraParams implements RequestWithSettableExtraParams.
-func (r *HumeChatRequest) SetExtraParams(params map[string]interface{}) {
-	r.OpenAIRequest.SetExtraParams(params)
 }
 
 type humeStreamChunk struct {
@@ -147,11 +145,9 @@ type humePromptScore struct {
 
 // NewHumeRouter creates the dedicated Hume EVI custom language model router.
 func NewHumeRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *HumeRouter {
-	config := lib.NewDefaultHumeConfig()
+	var config *lib.HumeConfig
 	if provider, ok := handlerStore.(humeConfigProvider); ok {
-		if configured := provider.GetHumeConfig(); configured != nil {
-			config = configured
-		}
+		config = provider.GetHumeConfig()
 	}
 	return &HumeRouter{
 		GenericRouter: NewGenericRouter(client, handlerStore, CreateHumeRouteConfigs(config), nil, logger),
@@ -182,7 +178,7 @@ func CreateHumeRouteConfigs(config *lib.HumeConfig) []RouteConfig {
 				if !ok {
 					return nil, errors.New("invalid Hume chat request type")
 				}
-				chatRequest := humeRequest.OpenAIRequest.ToBifrostChatRequest(ctx)
+				chatRequest := humeRequest.ToBifrostChatRequest(ctx)
 				metadata := humeRequest.messageMetadata
 				chatRequest.Input, metadata = injectHumeProsody(chatRequest.Input, metadata, config.ProsodyPrompt)
 				chatRequest.IntegrationMetadata = &schemas.HumeChatRequestMetadata{
@@ -195,6 +191,7 @@ func CreateHumeRouteConfigs(config *lib.HumeConfig) []RouteConfig {
 			StreamConfig: &StreamConfig{
 				ChatStreamResponseConverter: humeChatStreamResponseConverter,
 				ErrorConverter:              humeErrorConverter,
+				FatalConverterErrors:        true,
 			},
 		})
 	}
@@ -207,7 +204,7 @@ func humePreCallback(config *lib.HumeConfig) PreRequestCallback {
 		if !ok {
 			return errors.New("invalid Hume chat request type")
 		}
-		openAIRequest := &humeRequest.OpenAIRequest
+		openAIRequest := &humeRequest.OpenAIChatRequest
 		if openAIRequest.Stream != nil && !*openAIRequest.Stream {
 			return errors.New("Hume custom language model requests must use streaming")
 		}
@@ -218,10 +215,6 @@ func humePreCallback(config *lib.HumeConfig) PreRequestCallback {
 			return errors.New("Hume custom language model requests must request exactly one completion")
 		}
 		openAIRequest.N = schemas.Ptr(1)
-		if len(openAIRequest.Tools) > 0 {
-			openAIRequest.ParallelToolCalls = schemas.Ptr(false)
-		}
-
 		openAIRequest.Model = strings.TrimSpace(openAIRequest.Model)
 		if openAIRequest.Model == "" {
 			openAIRequest.Model = config.DefaultModel
@@ -374,11 +367,15 @@ func humeChatStreamResponseConverter(ctx *schemas.BifrostContext, resp *schemas.
 		}
 		if choice.ChatStreamResponseChoice != nil && choice.ChatStreamResponseChoice.Delta != nil {
 			delta := choice.ChatStreamResponseChoice.Delta
+			toolCalls, err := toHumeToolCalls(delta.ToolCalls)
+			if err != nil {
+				return "", nil, err
+			}
 			converted.Delta = humeStreamDelta{
 				Role:      delta.Role,
 				Content:   delta.Content,
 				Refusal:   delta.Refusal,
-				ToolCalls: toHumeToolCalls(delta.ToolCalls),
+				ToolCalls: toolCalls,
 			}
 		} else if choice.ChatNonStreamResponseChoice != nil && choice.ChatNonStreamResponseChoice.Message != nil {
 			message := choice.ChatNonStreamResponseChoice.Message
@@ -437,9 +434,12 @@ func humeMessageText(content *schemas.ChatMessageContent) *string {
 	return &value
 }
 
-func toHumeToolCalls(toolCalls []schemas.ChatAssistantMessageToolCall) []humeToolCall {
+func toHumeToolCalls(toolCalls []schemas.ChatAssistantMessageToolCall) ([]humeToolCall, error) {
 	if len(toolCalls) == 0 {
-		return nil
+		return nil, nil
+	}
+	if len(toolCalls) > 1 || toolCalls[0].Index != 0 {
+		return nil, errors.New("Hume responses cannot contain parallel tool calls")
 	}
 	converted := make([]humeToolCall, len(toolCalls))
 	for i, toolCall := range toolCalls {
@@ -450,18 +450,23 @@ func toHumeToolCalls(toolCalls []schemas.ChatAssistantMessageToolCall) []humeToo
 			Function: toolCall.Function,
 		}
 	}
-	return converted
+	return converted, nil
 }
 
 func toHumeNonStreamToolCalls(toolCalls []schemas.ChatAssistantMessageToolCall) ([]humeToolCall, error) {
-	if len(toolCalls) > 1<<16 {
-		return nil, errors.New("hume non-stream response cannot contain more than 65536 tool calls")
+	if len(toolCalls) > 1 {
+		return nil, errors.New("Hume responses cannot contain parallel tool calls")
 	}
-	converted := toHumeToolCalls(toolCalls)
-	for i := range converted {
-		converted[i].Index = uint16(i)
+	if len(toolCalls) == 0 {
+		return nil, nil
 	}
-	return converted, nil
+	toolCall := toolCalls[0]
+	return []humeToolCall{{
+		Index:    0,
+		Type:     toolCall.Type,
+		ID:       toolCall.ID,
+		Function: toolCall.Function,
+	}}, nil
 }
 
 func humeErrorConverter(_ *schemas.BifrostContext, err *schemas.BifrostError) interface{} {

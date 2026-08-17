@@ -81,6 +81,48 @@ func TestToAnthropicChatRequest_PreservesPropertyOrder(t *testing.T) {
 	}
 }
 
+func TestToAnthropicChatRequest_MapsParallelToolCalls(t *testing.T) {
+	for _, test := range []struct {
+		name                string
+		parallelToolCalls   bool
+		disableParallelTool bool
+	}{
+		{name: "disabled", parallelToolCalls: false, disableParallelTool: true},
+		{name: "enabled", parallelToolCalls: true, disableParallelTool: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			result, err := ToAnthropicChatRequest(ctx, &schemas.BifrostChatRequest{
+				Provider: schemas.Anthropic,
+				Model:    "claude-sonnet-4-5",
+				Input: []schemas.ChatMessage{{
+					Role:    schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("use the tool")},
+				}},
+				Params: &schemas.ChatParameters{
+					ParallelToolCalls: schemas.Ptr(test.parallelToolCalls),
+					Tools: []schemas.ChatTool{{
+						Type: schemas.ChatToolTypeFunction,
+						Function: &schemas.ChatToolFunction{
+							Name:       "lookup",
+							Parameters: &schemas.ToolFunctionParameters{Type: "object"},
+						},
+					}},
+				},
+			})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if result.ToolChoice == nil || result.ToolChoice.DisableParallelToolUse == nil {
+				t.Fatalf("expected Anthropic tool choice with disable_parallel_tool_use, got %#v", result.ToolChoice)
+			}
+			if *result.ToolChoice.DisableParallelToolUse != test.disableParallelTool {
+				t.Fatalf("expected disable_parallel_tool_use=%t, got %t", test.disableParallelTool, *result.ToolChoice.DisableParallelToolUse)
+			}
+		})
+	}
+}
+
 func TestToAnthropicChatRequest_OpenAICompatibleFileIDUsesFileSource(t *testing.T) {
 	body := `{
 		"model": "anthropic/claude-sonnet-4-5-20250929",

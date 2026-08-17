@@ -1,0 +1,1 @@
+- fix: enforce Hume EVI single-tool-call compatibility and map Anthropic parallel tool settings

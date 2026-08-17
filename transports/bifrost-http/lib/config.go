@@ -199,8 +199,7 @@ func (c *HumeConfig) CheckAndSetDefaults() error {
 		return errors.New("hume.default_model must contain at least one non-whitespace character")
 	}
 	if c.ProsodyPrompt == nil {
-		c.ProsodyPrompt = NewDefaultHumeConfig().ProsodyPrompt
-		return nil
+		c.ProsodyPrompt = &HumeProsodyPromptConfig{}
 	}
 	if c.ProsodyPrompt.Scope == "" {
 		c.ProsodyPrompt.Scope = HumeProsodyPromptScopeLatestUser

@@ -32,12 +32,12 @@ func TestHumeChatRequestParsesMetadataAndOpenAIFields(t *testing.T) {
 
 	var request HumeChatRequest
 	require.NoError(t, sonic.Unmarshal(raw, &request))
-	assert.Equal(t, "anthropic/claude-sonnet-4-5", request.OpenAIRequest.Model)
+	assert.Equal(t, "anthropic/claude-sonnet-4-5", request.Model)
 	assert.True(t, request.IsStreamingRequested())
-	require.Len(t, request.OpenAIRequest.Messages, 2)
-	require.NotNil(t, request.OpenAIRequest.Messages[1].OpenAIChatAssistantMessage)
-	require.Len(t, request.OpenAIRequest.Messages[1].ToolCalls, 1)
-	require.Len(t, request.OpenAIRequest.Tools, 1)
+	require.Len(t, request.Messages, 2)
+	require.NotNil(t, request.Messages[1].OpenAIChatAssistantMessage)
+	require.Len(t, request.Messages[1].ToolCalls, 1)
+	require.Len(t, request.Tools, 1)
 	assert.Equal(t, []string{"openai/gpt-4o-mini"}, request.Fallbacks)
 	require.Len(t, request.messageMetadata, 2)
 	require.NotNil(t, request.messageMetadata[0].Time.Begin)
@@ -49,6 +49,28 @@ func TestHumeChatRequestParsesMetadataAndOpenAIFields(t *testing.T) {
 	assert.Nil(t, request.messageMetadata[1].Time.Begin)
 	require.NotNil(t, request.messageMetadata[1].Time.End)
 	assert.Equal(t, 950.0, *request.messageMetadata[1].Time.End)
+}
+
+func TestHumeChatRequestUsesLastDuplicateMessagesFieldForContentAndMetadata(t *testing.T) {
+	request := parseHumeRequest(t, `{
+		"model":"openai/gpt-4o-mini",
+		"messages":[{"role":"user","content":"first","time":{"begin":1}}],
+		"messages":[{"role":"user","content":"second","time":{"begin":2}}]
+	}`)
+
+	require.Len(t, request.Messages, 1)
+	require.NotNil(t, request.Messages[0].Content)
+	require.NotNil(t, request.Messages[0].Content.ContentStr)
+	assert.Equal(t, "second", *request.Messages[0].Content.ContentStr)
+	require.Len(t, request.messageMetadata, 1)
+	require.NotNil(t, request.messageMetadata[0].Time)
+	require.NotNil(t, request.messageMetadata[0].Time.Begin)
+	assert.Equal(t, 2.0, *request.messageMetadata[0].Time.Begin)
+}
+
+func TestHumeChatRequestDoesNotAllocateMetadataMapWhenAbsent(t *testing.T) {
+	request := parseHumeRequest(t, `{"model":"openai/gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}`)
+	assert.Nil(t, request.messageMetadata)
 }
 
 func TestHumeChatRequestRejectsMalformedMetadata(t *testing.T) {
@@ -78,32 +100,31 @@ func TestHumePreCallbackModelSessionAndStreamingDefaults(t *testing.T) {
 	config := lib.NewDefaultHumeConfig()
 	config.DefaultModel = "openai/gpt-4o-mini"
 	request := &HumeChatRequest{}
-	request.OpenAIRequest.Tools = []schemas.ChatTool{{Type: schemas.ChatToolTypeFunction}}
+	request.Tools = []schemas.ChatTool{{Type: schemas.ChatToolTypeFunction}}
 	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	var httpCtx fasthttp.RequestCtx
 	httpCtx.Request.SetRequestURI("/hume/v1/chat/completions?custom_session_id=session-123")
 
 	require.NoError(t, humePreCallback(config)(&httpCtx, bifrostCtx, request))
-	assert.Equal(t, "openai/gpt-4o-mini", request.OpenAIRequest.Model)
-	require.NotNil(t, request.OpenAIRequest.Stream)
-	assert.True(t, *request.OpenAIRequest.Stream)
-	require.NotNil(t, request.OpenAIRequest.N)
-	assert.Equal(t, 1, *request.OpenAIRequest.N)
-	require.NotNil(t, request.OpenAIRequest.ParallelToolCalls)
-	assert.False(t, *request.OpenAIRequest.ParallelToolCalls)
+	assert.Equal(t, "openai/gpt-4o-mini", request.Model)
+	require.NotNil(t, request.Stream)
+	assert.True(t, *request.Stream)
+	require.NotNil(t, request.N)
+	assert.Equal(t, 1, *request.N)
+	assert.Nil(t, request.ParallelToolCalls, "core applies the constraint after MCP and plugin tool injection")
 	assert.Equal(t, "session-123", request.customSessionID)
 	assert.Equal(t, "session-123", bifrostCtx.Value(humeSessionContextKey{}))
 }
 
 func TestHumePreCallbackGeneratesSessionID(t *testing.T) {
-	request := &HumeChatRequest{OpenAIRequest: openAIRequestWithModel("openai/gpt-4o-mini")}
+	request := &HumeChatRequest{OpenAIChatRequest: openAIRequestWithModel("openai/gpt-4o-mini")}
 	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	var httpCtx fasthttp.RequestCtx
 	config := lib.NewDefaultHumeConfig()
 	config.DefaultModel = "anthropic/claude-sonnet-4-5"
 
 	require.NoError(t, humePreCallback(config)(&httpCtx, bifrostCtx, request))
-	assert.Equal(t, "openai/gpt-4o-mini", request.OpenAIRequest.Model)
+	assert.Equal(t, "openai/gpt-4o-mini", request.Model)
 	_, err := uuid.Parse(request.customSessionID)
 	require.NoError(t, err)
 	assert.Equal(t, request.customSessionID, bifrostCtx.Value(humeSessionContextKey{}))
@@ -122,13 +143,13 @@ func TestHumePreCallbackValidation(t *testing.T) {
 		{
 			name:     "explicit non-streaming request",
 			config:   &lib.HumeConfig{DefaultModel: "openai/gpt-4o-mini"},
-			request:  HumeChatRequest{OpenAIRequest: openAIRequestWithStream(&falseValue)},
+			request:  HumeChatRequest{OpenAIChatRequest: openAIRequestWithStream(&falseValue)},
 			contains: "must use streaming",
 		},
 		{
 			name:     "multiple completions",
 			config:   &lib.HumeConfig{DefaultModel: "openai/gpt-4o-mini"},
-			request:  HumeChatRequest{OpenAIRequest: openAIRequestWithN(&two)},
+			request:  HumeChatRequest{OpenAIChatRequest: openAIRequestWithN(&two)},
 			contains: "exactly one completion",
 		},
 		{
@@ -311,8 +332,6 @@ func TestHumeStreamConverterPreservesWrappedNonStreamMessage(t *testing.T) {
 	toolType := "function"
 	toolID := "call-1"
 	toolName := "lookup"
-	secondToolID := "call-2"
-	secondToolName := "search"
 	refusal := "cannot comply"
 	firstText := "hello "
 	secondText := "world"
@@ -327,24 +346,14 @@ func TestHumeStreamConverterPreservesWrappedNonStreamMessage(t *testing.T) {
 				}},
 				ChatAssistantMessage: &schemas.ChatAssistantMessage{
 					Refusal: &refusal,
-					ToolCalls: []schemas.ChatAssistantMessageToolCall{
-						{
-							Type: &toolType,
-							ID:   &toolID,
-							Function: schemas.ChatAssistantMessageToolCallFunction{
-								Name:      &toolName,
-								Arguments: `{"query":"x"}`,
-							},
+					ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+						Type: &toolType,
+						ID:   &toolID,
+						Function: schemas.ChatAssistantMessageToolCallFunction{
+							Name:      &toolName,
+							Arguments: `{"query":"x"}`,
 						},
-						{
-							Type: &toolType,
-							ID:   &secondToolID,
-							Function: schemas.ChatAssistantMessageToolCallFunction{
-								Name:      &secondToolName,
-								Arguments: `{"query":"y"}`,
-							},
-						},
-					},
+					}},
 				},
 			}},
 		}},
@@ -361,21 +370,12 @@ func TestHumeStreamConverterPreservesWrappedNonStreamMessage(t *testing.T) {
 	require.NotNil(t, delta.Content)
 	assert.Equal(t, "hello world", *delta.Content)
 	assert.Equal(t, &refusal, delta.Refusal)
-	require.Len(t, delta.ToolCalls, 2)
+	require.Len(t, delta.ToolCalls, 1)
 	assert.Equal(t, uint16(0), delta.ToolCalls[0].Index)
 	assert.Equal(t, &toolID, delta.ToolCalls[0].ID)
-	assert.Equal(t, uint16(1), delta.ToolCalls[1].Index)
-	assert.Equal(t, &secondToolID, delta.ToolCalls[1].ID)
 }
 
-func TestHumeNonStreamToolCallsAllowMaximumUint16Index(t *testing.T) {
-	toolCalls, err := toHumeNonStreamToolCalls(make([]schemas.ChatAssistantMessageToolCall, 1<<16))
-	require.NoError(t, err)
-	require.Len(t, toolCalls, 1<<16)
-	assert.Equal(t, uint16(65_535), toolCalls[len(toolCalls)-1].Index)
-}
-
-func TestHumeStreamConverterRejectsNonStreamToolCallIndexOverflow(t *testing.T) {
+func TestHumeStreamConverterRejectsParallelNonStreamToolCalls(t *testing.T) {
 	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	bifrostCtx.SetValue(humeSessionContextKey{}, "hume-session")
 
@@ -383,20 +383,36 @@ func TestHumeStreamConverterRejectsNonStreamToolCallIndexOverflow(t *testing.T) 
 		Choices: []schemas.BifrostResponseChoice{{
 			ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{Message: &schemas.ChatMessage{
 				ChatAssistantMessage: &schemas.ChatAssistantMessage{
-					ToolCalls: make([]schemas.ChatAssistantMessageToolCall, 65_537),
+					ToolCalls: make([]schemas.ChatAssistantMessageToolCall, 2),
 				},
 			}},
 		}},
 	}
 
 	_, converted, err := humeChatStreamResponseConverter(bifrostCtx, resp)
-	require.EqualError(t, err, "hume non-stream response cannot contain more than 65536 tool calls")
+	require.EqualError(t, err, "Hume responses cannot contain parallel tool calls")
+	assert.Nil(t, converted)
+}
+
+func TestHumeStreamConverterRejectsSecondStreamingToolCallIndex(t *testing.T) {
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostCtx.SetValue(humeSessionContextKey{}, "hume-session")
+	resp := &schemas.BifrostChatResponse{Choices: []schemas.BifrostResponseChoice{{
+		ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{Delta: &schemas.ChatStreamResponseChoiceDelta{
+			ToolCalls: []schemas.ChatAssistantMessageToolCall{{Index: 1}},
+		}},
+	}}}
+
+	_, converted, err := humeChatStreamResponseConverter(bifrostCtx, resp)
+	require.EqualError(t, err, "Hume responses cannot contain parallel tool calls")
 	assert.Nil(t, converted)
 }
 
 func TestHumeRoutesDisableLargePayloadPassthrough(t *testing.T) {
 	for _, route := range CreateHumeRouteConfigs(lib.NewDefaultHumeConfig()) {
 		assert.True(t, route.DisableLargePayloadMode, route.Path)
+		require.NotNil(t, route.StreamConfig)
+		assert.True(t, route.StreamConfig.FatalConverterErrors, route.Path)
 	}
 }
 
