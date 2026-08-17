@@ -18,6 +18,9 @@ import (
 // gain at this scale.
 type odinChatRequest struct {
 	Messages []odinChatMessage `json:"messages"`
+	// ConversationID continues an existing thread. Empty starts a new one, and
+	// the id of the thread that was created comes back on the done event.
+	ConversationID string `json:"conversation_id,omitempty"`
 	// Stream selects the transport, not the behaviour. Both paths run the same
 	// loop; only the sink differs.
 	Stream *bool `json:"stream,omitempty"`
@@ -30,12 +33,13 @@ type odinChatMessage struct {
 
 // odinChatResponse is the non-streaming body: the same events, assembled.
 type odinChatResponse struct {
-	Answer       string                   `json:"answer"`
-	ToolCalls    []odinChatToolCall       `json:"tool_calls"`
-	Iterations   int                      `json:"iterations"`
-	FinishReason string                   `json:"finish_reason,omitempty"`
-	Usage        *schemas.BifrostLLMUsage `json:"usage,omitempty"`
-	Error        *odinChatError           `json:"error,omitempty"`
+	Answer         string                   `json:"answer"`
+	ToolCalls      []odinChatToolCall       `json:"tool_calls"`
+	Iterations     int                      `json:"iterations"`
+	ConversationID string                   `json:"conversation_id,omitempty"`
+	FinishReason   string                   `json:"finish_reason,omitempty"`
+	Usage          *schemas.BifrostLLMUsage `json:"usage,omitempty"`
+	Error          *odinChatError           `json:"error,omitempty"`
 }
 
 type odinChatToolCall struct {
@@ -125,16 +129,19 @@ func (s *OdinService) chat(ctx *fasthttp.RequestCtx) {
 	budget := time.Duration(agent.maxIterations*config.EffectiveRequestTimeoutSeconds()) * time.Second
 	agentCtx, cancel := snapshotOdinContext(ctx, budget)
 
+	// The question is the last turn; history is everything before it.
+	question := request.Messages[len(request.Messages)-1].Content
+
 	if request.Stream != nil && !*request.Stream {
 		defer cancel()
-		s.chatBuffered(ctx, agent, agentCtx, messages)
+		s.chatBuffered(ctx, agent, agentCtx, messages, request.ConversationID, question)
 		return
 	}
-	s.chatStreaming(ctx, agent, agentCtx, cancel, messages)
+	s.chatStreaming(ctx, agent, agentCtx, cancel, messages, request.ConversationID, question)
 }
 
 // chatBuffered drains the event channel and returns one JSON body.
-func (s *OdinService) chatBuffered(ctx *fasthttp.RequestCtx, agent *odinAgent, agentCtx context.Context, messages []schemas.ChatMessage) {
+func (s *OdinService) chatBuffered(ctx *fasthttp.RequestCtx, agent *odinAgent, agentCtx context.Context, messages []schemas.ChatMessage, conversationID, question string) {
 	events := make(chan odinEvent, 16)
 	go agent.run(agentCtx, messages, events)
 
@@ -160,11 +167,12 @@ func (s *OdinService) chatBuffered(ctx *fasthttp.RequestCtx, agent *odinAgent, a
 		}
 	}
 	response.Answer = string(answer)
+	response.ConversationID = s.recordOdinTurn(agentCtx, conversationID, question, response)
 	SendJSON(ctx, response)
 }
 
 // chatStreaming formats each event as an SSE frame.
-func (s *OdinService) chatStreaming(ctx *fasthttp.RequestCtx, agent *odinAgent, agentCtx context.Context, cancel context.CancelFunc, messages []schemas.ChatMessage) {
+func (s *OdinService) chatStreaming(ctx *fasthttp.RequestCtx, agent *odinAgent, agentCtx context.Context, cancel context.CancelFunc, messages []schemas.ChatMessage, conversationID, question string) {
 	ctx.Response.Header.Set("Content-Type", "text/event-stream")
 	ctx.Response.Header.Set("Cache-Control", "no-cache")
 	ctx.Response.Header.Set("Connection", "keep-alive")
@@ -189,14 +197,41 @@ func (s *OdinService) chatStreaming(ctx *fasthttp.RequestCtx, agent *odinAgent, 
 			reader.Done()
 		}()
 
+		// Accumulated so the finished turn can be filed once the stream ends. The
+		// SSE writer emits as it goes; history needs the whole answer.
+		turn := odinChatResponse{ToolCalls: []odinChatToolCall{}}
+		var answer []byte
+		pending := map[string]odinChatToolCall{}
+
 		for event := range events {
+			switch event.Type {
+			case odinEventDelta:
+				answer = append(answer, event.Delta...)
+			case odinEventToolCallStart:
+				pending[event.ToolID] = odinChatToolCall{Name: event.ToolName, Arguments: event.Arguments}
+			case odinEventToolCallEnd:
+				call := pending[event.ToolID]
+				call.Name, call.DurationMs, call.Failed = event.ToolName, event.DurationMs, event.Failed
+				turn.ToolCalls = append(turn.ToolCalls, call)
+				delete(pending, event.ToolID)
+			case odinEventError:
+				turn.Error = &odinChatError{Code: event.Code, Message: event.Message}
+			case odinEventDone:
+				// The id is stamped onto the done frame, so a client that started a
+				// new thread learns what to send next without a second request.
+				turn.Answer = string(answer)
+				event.ConversationID = s.recordOdinTurn(agentCtx, conversationID, question, turn)
+			}
+
 			payload, err := sonic.Marshal(event)
 			if err != nil {
 				continue
 			}
 			if !reader.SendEvent(string(event.Type), payload) {
 				// The client is gone. Cancelling stops the loop and, importantly,
-				// stops paying the provider for an answer nobody will read.
+				// stops paying the provider for an answer nobody will read. Anything
+				// already filed stays filed - a thread the reader never saw is still
+				// worth keeping.
 				cancel()
 				return
 			}

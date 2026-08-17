@@ -1,6 +1,9 @@
 package schemas
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Odin is the dashboard's question-answering agent. It reads the deployment's
 // own telemetry — logs, metrics, user and virtual-key usage, model performance —
@@ -121,4 +124,97 @@ const (
 type OdinUnavailableResponse struct {
 	Reason  OdinUnavailableReason `json:"reason"`
 	Message string                `json:"message"`
+}
+
+// Conversation history.
+//
+// A conversation is owned by whoever created it. On a deployment with
+// authentication that is the user id; without one there is no identity to scope
+// by, so every conversation shares a single owner and the history is common to
+// the deployment. Both cases use the same column and the same query - the only
+// difference is what OdinOwnerID resolves to - so there is no second code path
+// that could get the scoping wrong.
+const (
+	// OdinGlobalOwnerID owns conversations on deployments with no user identity.
+	//
+	// A sentinel rather than an empty string: empty reads as "not set yet" at
+	// every call site it passes through, and a scoping value that can be confused
+	// with a missing one is how conversations end up visible to the wrong person.
+	OdinGlobalOwnerID = "__global__"
+
+	// OdinMaxConversationsPerOwner caps stored conversations. Odin's history is a
+	// convenience, not a record of account: past this the oldest are pruned, so a
+	// deployment that never cleans up cannot grow the table without bound.
+	OdinMaxConversationsPerOwner = 100
+
+	// OdinConversationTitleChars bounds the generated title.
+	OdinConversationTitleChars = 80
+)
+
+// OdinConversation is one thread, without its messages.
+type OdinConversation struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	// MessageCount lets the list render without loading every transcript.
+	MessageCount int       `json:"message_count"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+// OdinConversationDetail is a conversation with its full transcript.
+type OdinConversationDetail struct {
+	OdinConversation
+	Messages []OdinStoredMessage `json:"messages"`
+}
+
+// OdinStoredMessage is one persisted turn.
+type OdinStoredMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+	// ToolCalls records what Odin queried, so a reopened thread shows the same
+	// provenance the live one did. Without it a restored answer looks like it
+	// came from nowhere.
+	ToolCalls []OdinStoredToolCall `json:"tool_calls,omitempty"`
+	Error     string               `json:"error,omitempty"`
+	CreatedAt time.Time            `json:"created_at"`
+}
+
+// OdinStoredToolCall is the persisted trace of one tool call.
+type OdinStoredToolCall struct {
+	Name       string `json:"name"`
+	DurationMs int64  `json:"duration_ms,omitempty"`
+	Failed     bool   `json:"failed,omitempty"`
+}
+
+// OdinConversationTitle derives a thread title from its opening question.
+//
+// The first question is used verbatim rather than asking a model to summarise
+// it: a title is worth nothing if generating it costs a round trip, and the
+// question someone typed is already the best short description of the thread.
+func OdinConversationTitle(question string) string {
+	title := strings.TrimSpace(question)
+	if title == "" {
+		return "New chat"
+	}
+	// Collapse whitespace so a pasted multi-line question does not become a
+	// multi-line row in the history list.
+	title = strings.Join(strings.Fields(title), " ")
+	if len(title) <= OdinConversationTitleChars {
+		return title
+	}
+	// Prefer a word boundary so the truncation does not cut mid-word.
+	trimmed := title[:OdinConversationTitleChars]
+	if space := strings.LastIndex(trimmed, " "); space > OdinConversationTitleChars/2 {
+		trimmed = trimmed[:space]
+	}
+	return trimmed + "..."
+}
+
+// OdinOwnerID resolves the owner for a caller, falling back to the shared owner
+// when the deployment has no user identity.
+func OdinOwnerID(userID string) string {
+	if strings.TrimSpace(userID) == "" {
+		return OdinGlobalOwnerID
+	}
+	return userID
 }
