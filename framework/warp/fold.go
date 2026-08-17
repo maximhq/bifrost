@@ -33,6 +33,17 @@ func (f *fold) apply(event Event) {
 	case EventDone:
 		f.sawDone = true
 		f.response.FinishReason, f.response.Iterations, f.response.Usage = event.FinishReason, event.Iterations, event.Usage
+		// A done frame that already carries the thread id (one replayed from a
+		// stream) keeps it, so a fold over frames equals the fold that made them.
+		if event.ConversationID != "" {
+			f.response.ConversationID = event.ConversationID
+		}
+	case EventQuestion:
+		// Folded like any other outcome. A question is how a turn can legitimately
+		// end without a delta, so dropping it here left the folded response
+		// indistinguishable from a turn that produced nothing - and history
+		// declines to file those.
+		f.response.Question = event.Question
 	case EventError:
 		f.response.Error = &ChatError{Code: event.Code, Message: event.Message}
 	}

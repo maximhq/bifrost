@@ -12,6 +12,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
 )
 
 var (
@@ -59,6 +60,9 @@ type Service struct {
 	cleanupOnce     sync.Once
 	cleanupStopOnce sync.Once
 	stopCleanup     chan struct{}
+	// catalog prices Warp's own usage. Nil is supported: the panel then reports
+	// tokens without a cost, rather than reporting a cost of zero.
+	catalog *modelcatalog.ModelCatalog
 }
 
 // Option configures a Service.
@@ -74,6 +78,13 @@ func WithLogger(logger schemas.Logger) Option {
 // model client. Without one, Warp serves configuration only.
 func WithLogReader(logs LogReader) Option {
 	return func(s *Service) { s.logs = logs }
+}
+
+// WithModelCatalog lets the service price its own spend. Warp's client is
+// plugin-free, so nothing upstream computes a cost for it; its spend is
+// invisible to the gateway's budgets and has to be visible in the panel instead.
+func WithModelCatalog(catalog *modelcatalog.ModelCatalog) Option {
+	return func(s *Service) { s.catalog = catalog }
 }
 
 // WithChatFunc replaces the real inference path. Test seam only: the agent loop
@@ -132,8 +143,10 @@ func (s *Service) CanChat() bool {
 	return s.logs != nil && (s.client != nil || s.chatOverride != nil)
 }
 
-// chatFuncFor resolves the inference function for a request.
-func (s *Service) chatFuncFor(ctx context.Context, config *schemas.WarpConfig) ChatFunc {
+// chatFuncFor resolves the inference function for a request. The conversation
+// id travels upstream as a logging header, so it is settled before the first
+// model call rather than after the last one.
+func (s *Service) chatFuncFor(ctx context.Context, config *schemas.WarpConfig, conversationID string) ChatFunc {
 	// Copied out under the read lock rather than used in place: SetLogReader
 	// writes s.client while requests are in flight, so reading it here unguarded
 	// is a race on a pointer another goroutine is assigning. Holding the lock
@@ -149,7 +162,25 @@ func (s *Service) chatFuncFor(ctx context.Context, config *schemas.WarpConfig) C
 	if client == nil {
 		return nil
 	}
-	return client.Chat(ctx, config)
+	return client.Chat(ctx, config, conversationID)
+}
+
+// costFuncFor prices usage against the model Warp is configured to run on.
+//
+// Priced against the configured model, not the qualified provider/model form
+// sent upstream: the catalog keys on the bare name, and a "openai/gpt-5.5"
+// lookup misses and silently prices the turn at zero.
+func (s *Service) costFuncFor(config *schemas.WarpConfig) CostFunc {
+	if s.catalog == nil {
+		return nil
+	}
+	return func(usage *schemas.BifrostLLMUsage) float64 {
+		// ResponsesRequest, because that is what the agent calls. The catalog
+		// keeps separate chat and responses rates and only falls back when the
+		// requested mode is absent, so naming the wrong one silently prices the
+		// turn off the other rate card.
+		return s.catalog.CalculateCostForUsage(usage, config.Provider, catalogModel(config.Model), schemas.ResponsesRequest, nil)
+	}
 }
 
 // Shutdown releases Warp's model client. Safe to call on a service that never

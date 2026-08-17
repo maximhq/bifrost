@@ -8,6 +8,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/warp"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -34,11 +35,13 @@ func NewWarpLogReader(manager logging.LogManager) warp.LogReader {
 //
 // A nil logManager is a supported deployment (logging disabled): Warp then
 // serves only its configuration routes, because its tools would have nothing to
-// read. logsStore is separate because the two answer different questions - the
-// manager is what Warp researches through, the store is where it files what was
-// said - and a deployment can have the store without the plugin.
-func NewWarpHandler(store configstore.ConfigStore, logManager logging.LogManager, logsStore logstore.LogStore, logger schemas.Logger) *WarpHandler {
-	opts := []warp.Option{warp.WithLogger(logger)}
+// read. A nil catalog is likewise supported and simply leaves Warp's own spend
+// unpriced. logsStore is separate from logManager because the two answer
+// different questions - the manager is what Warp researches through, the store
+// is where it files what was said - and a deployment can have the store without
+// the plugin.
+func NewWarpHandler(store configstore.ConfigStore, logManager logging.LogManager, logsStore logstore.LogStore, catalog *modelcatalog.ModelCatalog, logger schemas.Logger) *WarpHandler {
+	opts := []warp.Option{warp.WithLogger(logger), warp.WithModelCatalog(catalog)}
 	if logManager != nil {
 		opts = append(opts, warp.WithLogReader(warpLogReader{logManager}))
 	}
