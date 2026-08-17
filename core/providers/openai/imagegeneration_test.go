@@ -117,6 +117,7 @@ func TestResponsesImageGenerationStreamingProviderIntegration(t *testing.T) {
 			require.NoError(t, err)
 			require.Contains(t, string(encodedEvent), `"action":"generate"`)
 			if response.Type == schemas.ResponsesStreamResponseTypeOutputItemDone {
+				require.NotNil(t, response.Item.ResponsesImageGenerationCall)
 				require.Equal(t, "aGVsbG8=", response.Item.ResponsesImageGenerationCall.Result)
 			}
 		}
