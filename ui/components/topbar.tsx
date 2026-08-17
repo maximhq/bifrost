@@ -1,5 +1,6 @@
 import { ThemeToggle } from "@/components/themeToggle";
-import { deriveTitleFromPathname } from "@/components/topbar.utils";
+import NotificationCenter from "@/components/notificationCenter";
+import { deriveTitleFromPathname, TOPBAR_MENU_SIDE_OFFSET } from "@/components/topbar.utils";
 import {
 	DropdownMenu,
 	DropdownMenuContent,
@@ -128,6 +129,7 @@ export default function Topbar() {
 
 			{/* Theme stays a first-class topbar control rather than a menu entry —
 			    it's a display preference, not an account action. */}
+			<NotificationCenter />
 			<ThemeToggle />
 
 			<DropdownMenu>
@@ -160,7 +162,7 @@ export default function Topbar() {
 					)}
 				</DropdownMenuTrigger>
 
-				<DropdownMenuContent align="end" sideOffset={4} className="w-60">
+				<DropdownMenuContent align="end" sideOffset={TOPBAR_MENU_SIDE_OFFSET} className="w-60">
 					{showUserPill && (
 						<>
 							<DropdownMenuLabel className="flex min-w-0 flex-col gap-0.5 py-2">

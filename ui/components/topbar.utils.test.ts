@@ -30,4 +30,30 @@ describe("deriveTitleFromPathname", () => {
 		expect(deriveTitleFromPathname("/workspace/custom-pricing/overrides")).toBe("Overrides");
 		expect(deriveTitleFromPathname("/workspace/model-limits")).toBe("Model Limits");
 	});
+
+	it("uses the override table for routes the slug mislabels", () => {
+		expect(deriveTitleFromPathname("/workspace/routing-rules/tree")).toBe("Routing Tree");
+		expect(deriveTitleFromPathname("/workspace/scim")).toBe("User Provisioning");
+		expect(deriveTitleFromPathname("/workspace/providers")).toBe("Model Providers");
+		expect(deriveTitleFromPathname("/workspace/governance/rbac")).toBe("Roles & Permissions");
+	});
+
+	it("folds the parent into sub-item labels that mean nothing alone", () => {
+		expect(deriveTitleFromPathname("/workspace/alerting/rules")).toBe("Alert Rules");
+		expect(deriveTitleFromPathname("/workspace/guardrails/rules")).not.toBe("Alert Rules");
+		expect(deriveTitleFromPathname("/workspace/guardrails/configuration")).toBe("Guardrail Rules");
+		expect(deriveTitleFromPathname("/workspace/edge-control/inventory")).toBe("Edge Approvals");
+	});
+
+	it("matches an override through a trailing slash or query string", () => {
+		expect(deriveTitleFromPathname("/workspace/scim/")).toBe("User Provisioning");
+		expect(deriveTitleFromPathname("/workspace/scim?tab=mappings")).toBe("User Provisioning");
+	});
+
+	it("leaves a child route alone when only its parent is overridden", () => {
+		// /workspace/logs is "LLM Logs", but its child must not inherit that.
+		expect(deriveTitleFromPathname("/workspace/logs")).toBe("LLM Logs");
+		expect(deriveTitleFromPathname("/workspace/logs/connectors")).toBe("Log Connectors");
+		expect(deriveTitleFromPathname("/workspace/config/branding")).toBe("Branding");
+	});
 });
