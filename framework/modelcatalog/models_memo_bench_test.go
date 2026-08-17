@@ -56,12 +56,12 @@ func benchCatalog(tb testing.TB, nProviders, nModels int) (*ModelCatalog, []stri
 	kc := keyconfig.New(nil)
 	kc.Replace(kcSnapshot)
 	mc := &ModelCatalog{
-		datasheet:    ds,
-		live:         live.New(nil),
-		keyconf:      kc,
-		providerMemo: make(map[string]providerMemoEntry),
-		done:         make(chan struct{}),
+		datasheet: ds,
+		live:      live.New(nil),
+		keyconf:   kc,
+		done:      make(chan struct{}),
 	}
+	mc.initCaches()
 	return mc, models
 }
 
@@ -89,6 +89,9 @@ func BenchmarkProvidersForModel_Uncached(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		// computeProvidersForModel -> GetModelsForProvider, so flush modelsForProvider
+		// each iteration or it stays warm and this stops measuring the pre-cache path.
+		mc.modelsForProvider.Flush()
 		_ = mc.computeProvidersForModel(q[i%len(q)])
 	}
 }
@@ -103,6 +106,9 @@ func BenchmarkProvidersForModel_UncachedScale(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
+				// flush modelsForProvider each iteration so the compute path stays cold
+				// (computeProvidersForModel -> GetModelsForProvider is otherwise memoised).
+				mc.modelsForProvider.Flush()
 				_ = mc.computeProvidersForModel(q[i%len(q)])
 			}
 		})
@@ -133,10 +139,11 @@ func BenchmarkIsModelAllowed_Uncached(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		model := q[i%len(q)]
-		// bust the memo each iteration to simulate the pre-cache cost
-		mc.providerMemoMu.Lock()
-		clear(mc.providerMemo)
-		mc.providerMemoMu.Unlock()
+		// bust both memos each iteration to simulate the pre-cache cost:
+		// IsModelAllowedForProvider -> computeProvidersForModel -> GetModelsForProvider,
+		// so modelsForProvider must be flushed too or it stays warm after iteration 1.
+		mc.providersForModel.Flush()
+		mc.modelsForProvider.Flush()
 		_ = mc.IsModelAllowedForProvider(schemas.ModelProvider("provider00"), model, nil, unrestricted)
 	}
 }

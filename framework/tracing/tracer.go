@@ -837,7 +837,6 @@ func (t *Tracer) CompleteAndFlushTrace(traceID string) {
 		exportTrace.StampOverheadDuration()
 
 		var slots []*obsPluginSlot
-		dumpSpanTimings(exportTrace)
 		if loaded := t.obsPlugins.Load(); loaded != nil {
 			slots = *loaded
 		}
