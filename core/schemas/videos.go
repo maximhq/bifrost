@@ -31,7 +31,8 @@ type ContentFilterInfo struct {
 }
 
 type VideoOutput struct {
-	Type        VideoOutputType `json:"type"` // "url" | "base64"
+	ID          string          `json:"id,omitempty"` // provider-side asset identifier, when one is assigned
+	Type        VideoOutputType `json:"type"`         // "url" | "base64"
 	URL         *string         `json:"url,omitempty"`
 	Base64Data  *string         `json:"base64,omitempty"`
 	ContentType string          `json:"content_type"`
@@ -84,6 +85,7 @@ func (b *BifrostVideoGenerationRequest) GetExtraParams() map[string]interface{} 
 type VideoGenerationInput struct {
 	Prompt         string  `json:"prompt"`
 	InputReference *string `json:"input_reference,omitempty"` // Primary image for image-to-video (OpenAI-compatible)
+	VideoURI       *string `json:"video_uri,omitempty"`       // Source video for video-to-video and video tool tasks
 }
 
 type VideoGenerationParameters struct {
@@ -92,9 +94,13 @@ type VideoGenerationParameters struct {
 
 	NegativePrompt *string        `json:"negative_prompt,omitempty"`
 	Seed           *int           `json:"seed,omitempty"`
-	VideoURI       *string        `json:"video_uri,omitempty"` // for video to video generation
+	Type           *string        `json:"type,omitempty"` // operation selector, e.g. "3d", "upscale"
 	Audio          *bool          `json:"audio,omitempty"`
 	ExtraParams    map[string]any `json:"-"`
+
+	// Upscale operations (type "upscale"); mutually exclusive.
+	UpscaleFactor    *int `json:"upscale_factor,omitempty"`
+	TargetMegapixels *int `json:"target_megapixels,omitempty"`
 }
 
 // DefaultVideoDuration is the default video duration in seconds for Gemini/Vertex when not specified.

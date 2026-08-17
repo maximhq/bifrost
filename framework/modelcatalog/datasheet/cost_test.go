@@ -1919,6 +1919,25 @@ func TestCalculateCost_VideoProviderComputedCostPassthrough(t *testing.T) {
 	assert.Equal(t, 0.5, s.CalculateCost(resp, nil))
 }
 
+// The same payload polled back through a retrieve must not be billed: Runware echoes the task cost
+// on every getResponse once it has succeeded, so billing the retrieve would charge the job again
+// on each poll.
+func TestCalculateCost_VideoRetrieveIsNotBilled(t *testing.T) {
+	s := testStoreWithPricing(nil)
+
+	resp := &schemas.BifrostResponse{
+		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+			Usage: &schemas.VideoUsage{Cost: &schemas.BifrostCost{TotalCost: 0.5}},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.VideoRetrieveRequest,
+				RoutingInfo: routingInfoFor(schemas.Runware, "tripo:v3.1@0"),
+			},
+		},
+	}
+
+	assert.Zero(t, s.CalculateCost(resp, nil))
+}
+
 // Passthrough responses can carry a provider-reported cost (e.g. Runware's per-task cost read from
 // the raw body). It must win verbatim, with no datasheet entry required.
 func TestCalculateCost_PassthroughProviderComputedCost(t *testing.T) {
