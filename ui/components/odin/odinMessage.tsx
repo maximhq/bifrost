@@ -13,13 +13,22 @@ export function OdinMessage({ turn }: { turn: OdinTurn }) {
 	if (turn.role === "user") {
 		return (
 			<div className="flex justify-end" data-testid="odin-message-user">
-				<div className="bg-muted max-w-[85%] rounded-md px-3 py-2 text-sm whitespace-pre-wrap">{turn.content}</div>
+				{/* break-words so an unbroken token - a url, an id - wraps instead of
+			    widening the bubble past the panel. */}
+				<div className="bg-muted max-w-[85%] rounded-md px-3 py-2 text-sm break-words whitespace-pre-wrap">{turn.content}</div>
 			</div>
 		);
 	}
 
 	return (
-		<div className="space-y-2" data-testid="odin-message-assistant">
+		// min-w-0 so a wide child cannot stretch this row, and wide content is
+		// given its own horizontal scroller. A markdown table or a long code line
+		// is the one thing in a chat transcript with no natural width limit, and
+		// letting it set the row's width breaks the padding for every message.
+		<div
+			className="min-w-0 space-y-2 [&_pre]:overflow-x-auto [&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto"
+			data-testid="odin-message-assistant"
+		>
 			{turn.toolCalls && turn.toolCalls.length > 0 && <OdinToolCallList calls={turn.toolCalls} />}
 			{turn.content && (
 				<Suspense fallback={<div className="text-muted-foreground text-sm">{turn.content}</div>}>
@@ -48,7 +57,10 @@ export function OdinStreamingMessage({
 	isStreaming: boolean;
 }) {
 	return (
-		<div className="space-y-2" data-testid="odin-message-streaming">
+		<div
+			className="min-w-0 space-y-2 [&_pre]:overflow-x-auto [&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto"
+			data-testid="odin-message-streaming"
+		>
 			{toolCalls.length > 0 && <OdinToolCallList calls={toolCalls} />}
 			{text ? (
 				<Suspense fallback={<div className="text-muted-foreground text-sm">{text}</div>}>
