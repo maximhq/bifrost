@@ -265,6 +265,9 @@ Sends distributed traces and push-based metrics to any OTLP-compatible collector
 | `bifrost.plugins.otel.config.metrics_enabled` | Enable OTLP push-based metrics | `false` |
 | `bifrost.plugins.otel.config.metrics_endpoint` | OTLP metrics endpoint; required when `metrics_enabled` | `""` |
 | `bifrost.plugins.otel.config.metrics_push_interval` | Push interval in seconds | `15` |
+| `bifrost.plugins.otel.config.logs_enabled` | Export GenAI events as OTLP log records, one per LLM call | `false` |
+| `bifrost.plugins.otel.config.logs_endpoint` | OTLP logs endpoint (required when `logs_enabled`) | `""` |
+| `bifrost.plugins.otel.config.logs_disable_content_logging` | Drop message content from exported log records only | `false` |
 | `bifrost.plugins.otel.config.headers` | Custom headers sent to both the trace and metrics endpoints | `{}` |
 | `bifrost.plugins.otel.config.trace_headers` | Extra headers sent only to the trace endpoint, overlaid on `headers` | `{}` |
 | `bifrost.plugins.otel.config.metrics_headers` | Extra headers sent only to the metrics endpoint, overlaid on `headers` | `{}` |
@@ -289,6 +292,9 @@ bifrost:
         metrics_enabled: true
         metrics_endpoint: "otel-collector.observability.svc.cluster.local:4317"
         metrics_push_interval: 15
+        # GenAI events as OTLP logs, correlated with the exported spans
+        logs_enabled: true
+        logs_endpoint: "otel-collector.observability.svc.cluster.local:4317"
         headers:
           x-honeycomb-team: "env.HONEYCOMB_API_KEY"
 ```

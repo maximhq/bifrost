@@ -134,6 +134,9 @@ Exports distributed traces to any OTel-compatible collector (Jaeger, Zipkin, Tem
 | `config.metrics_enabled` | No | `false` | Enable push-based OTLP metrics export |
 | `config.metrics_endpoint` | Yes (if `metrics_enabled`) | - | OTLP metrics endpoint URL |
 | `config.metrics_push_interval` | No | `15` | Metrics push interval in seconds |
+| `config.logs_enabled` | No | `false` | Export GenAI events as OTLP log records, one per LLM call |
+| `config.logs_endpoint` | No | - | OTLP logs endpoint URL (required when `logs_enabled`) |
+| `config.logs_disable_content_logging` | No | `false` | Drop message content from exported log records only |
 | `config.headers` | No | - | Custom headers sent to both the trace and metrics endpoints (supports `env.` prefix) |
 | `config.trace_headers` | No | - | Extra headers sent only to the trace endpoint, overlaid on `headers` (supports `env.` prefix) |
 | `config.metrics_headers` | No | - | Extra headers sent only to the metrics endpoint, overlaid on `headers` (supports `env.` prefix) |
@@ -200,6 +203,28 @@ Exports distributed traces to any OTel-compatible collector (Jaeger, Zipkin, Tem
   ]
 }
 ```
+
+**With GenAI event (log) export:**
+
+```json
+{
+  "plugins": [
+    {
+      "name": "otel",
+      "enabled": true,
+      "config": {
+        "collector_url": "http://otel-collector:4318/v1/traces",
+        "trace_type": "genai_extension",
+        "protocol": "http",
+        "logs_enabled": true,
+        "logs_endpoint": "http://otel-collector:4318/v1/logs"
+      }
+    }
+  ]
+}
+```
+
+See [Log Export (GenAI Events)](/features/observability/otel#log-export-genai-events) for what each event carries.
 
 </Tab>
 
