@@ -1239,6 +1239,7 @@ func TestTriggerMigrations_FreshDB(t *testing.T) {
 		&tables.TableVirtualKeyProviderConfig{},
 		&tables.TableVirtualKeyMCPConfig{},
 		&tables.TableNotification{},
+		&tables.TableWarpConfig{},
 	}
 
 	migrator := db.Migrator()
@@ -3934,4 +3935,43 @@ func TestMigrationAddGithubCopilotConfigColumns_NonRollbackable(t *testing.T) {
 	require.NotNil(t, got.GithubCopilotKeyConfig)
 	assert.Equal(t, "-----BEGIN RSA PRIVATE KEY-----", got.GithubCopilotKeyConfig.PrivateKey.GetValue(),
 		"the private key must survive the refused rollback")
+}
+
+// TestMigrationAddWarpAPIKeyIDColumn_NonRollbackable pins that rolling Warp's
+// move to a key reference back is refused rather than performed. The forward
+// migration deliberately NULLs api_key - clearing the credential is the step
+// that matters, since GORM's SQLite driver reports a successful DropColumn
+// without dropping anything. A rollback therefore cannot reconstruct api_key,
+// so dropping api_key_id would leave Warp with neither a usable credential nor
+// the reference that replaced it. The rollback must fail loudly and leave the
+// column in place.
+func TestMigrationAddWarpAPIKeyIDColumn_NonRollbackable(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	require.NoError(t, db.AutoMigrate(&tables.TableWarpConfig{}))
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableWarpConfig{}, "api_key_id"))
+	require.False(t, db.Migrator().HasColumn(&tables.TableWarpConfig{}, "api_key_id"),
+		"precondition: the column must be absent to reproduce the upgrade path")
+
+	require.NoError(t, migrationAddWarpAPIKeyIDColumn(ctx, db, testMigrationLogger))
+	require.True(t, db.Migrator().HasColumn(&tables.TableWarpConfig{}, "api_key_id"),
+		"migration should have added api_key_id")
+
+	// A configured Warp row is exactly the state a rollback would strand: its
+	// api_key is already gone, so losing api_key_id too leaves no credential.
+	seed := &tables.TableWarpConfig{
+		ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o", APIKeyID: "key-abc",
+	}
+	require.NoError(t, db.Create(seed).Error)
+
+	err := rollbackWarpAPIKeyIDColumn(ctx, db, testMigrationLogger)
+	require.Error(t, err, "rollback must refuse: the forward migration destroyed the api_key it replaced")
+	assert.Contains(t, err.Error(), "non-rollbackable")
+	assert.True(t, db.Migrator().HasColumn(&tables.TableWarpConfig{}, "api_key_id"),
+		"a refused rollback must leave the column intact")
+
+	var got tables.TableWarpConfig
+	require.NoError(t, db.Where("id = ?", seed.ID).First(&got).Error)
+	assert.Equal(t, "key-abc", got.APIKeyID, "the surviving key reference must be untouched")
 }

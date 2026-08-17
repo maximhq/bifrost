@@ -317,15 +317,188 @@ def test_virtual_key_request_contract_is_current():
     assert not problems, "Virtual Key request contract drift:\n    " + "\n    ".join(problems)
 
 
+
+def test_warp_credential_contract_is_current():
+    """Warp's settings API carries `api_key_id`, a reference to a configured provider key.
+    There is no write-only `api_key` and no `api_key_set` presence flag, so no redaction
+    step and no omitted-versus-empty rule. `base_url` overrides the provider's default
+    endpoint; it does not default to this Bifrost's own origin. Guard the modular source
+    and the published bundle against prose that still describes the abandoned design."""
+    import json
+
+    schema_source = load(HERE / "schemas" / "management" / "warp.yaml")
+    schema_text = (HERE / "schemas" / "management" / "warp.yaml").read_text(encoding="utf-8")
+    path_text = (HERE / "paths" / "management" / "warp.yaml").read_text(encoding="utf-8")
+    bundle = json.loads((HERE / "openapi.json").read_text(encoding="utf-8"))
+    bundle_schemas = bundle["components"]["schemas"]
+    problems = []
+
+    # The retired design: a write-only secret, its presence flag, and the
+    # redaction and omitted-versus-empty rules that only a secret field needs.
+    retired = ("api_key_set", "credential redacted", "the credential redacted")
+
+    # One checker, used for the source fragments and for the bundle. The bundler
+    # only resolves refs - it validates no wording - so a bundled description can
+    # drift from the fragment it came from, and two separate checkers let the
+    # source side pass text the bundle side rejected.
+    def check_bundled(where, description):
+        if not description:
+            return
+        for phrase in retired:
+            if phrase in description:
+                problems.append(f"{where}: mentions retired `{phrase}`")
+        if re.search(r"`api_key`", description):
+            problems.append(f"{where}: documents a write-only `api_key` field")
+        if "Defaults to this Bifrost's own origin" in description:
+            problems.append(f"{where}: base_url claims it defaults to this Bifrost's origin")
+        # A redaction *claim*, not any mention of the word: the corrected text
+        # says "not a redacted credential", and flagging that would fail the
+        # contract for stating it correctly. Whitespace is collapsed first
+        # because YAML block folding puts newlines inside the phrase.
+        flat = " ".join(description.split())
+        if re.search(r"(?<!not a )redacted credential|credentials? (is|are) redacted|with the credential redacted", flat):
+            problems.append(f"{where}: claims redaction")
+
+    # One checker for the source text and the bundle, so the two cannot drift.
+    # The source loop used to reject only the three exact `retired` phrases, so
+    # wording like "credentials are redacted" passed here while check_bundled
+    # rejected it - and a source fragment that had not been rebundled yet was
+    # exactly the case this invariant exists to catch.
+    for where, blob in (
+        ("schemas/management/warp.yaml", schema_text),
+        ("paths/management/warp.yaml", path_text),
+    ):
+        check_bundled(where, blob)
+
+    for schema_name in ("WarpConfig", "WarpConfigInput"):
+        for where, schema in (
+            ("schemas/management/warp.yaml", schema_source[schema_name]),
+            ("openapi.json", bundle_schemas[schema_name]),
+        ):
+            properties = schema["properties"]
+            for legacy in ("api_key", "api_key_set"):
+                if legacy in properties:
+                    problems.append(f"{where} {schema_name}: unexpected {legacy} property")
+            if "api_key_id" not in properties:
+                problems.append(f"{where} {schema_name}: missing api_key_id")
+
+            descriptions = [schema.get("description") or ""]
+            descriptions += [
+                (prop.get("description") or "") for prop in properties.values()
+            ]
+            for description in descriptions:
+                for phrase in retired:
+                    if phrase in description:
+                        problems.append(
+                            f"{where} {schema_name}: description still mentions `{phrase}`"
+                        )
+                if "Defaults to this Bifrost's own origin" in description:
+                    problems.append(
+                        f"{where} {schema_name}: base_url description claims the wrong default"
+                    )
+
+    operations = bundle["paths"]["/api/warp/config"]
+    for method, operation in operations.items():
+        if not isinstance(operation, dict):
+            continue
+        check_bundled(f"openapi.json {method.upper()} /api/warp/config", operation.get("description"))
+        for status, response in (operation.get("responses") or {}).items():
+            if isinstance(response, dict):
+                check_bundled(
+                    f"openapi.json {method.upper()} /api/warp/config {status}", response.get("description")
+                )
+
+    # Schema descriptions land in the bundle too, and checking only the
+    # operation and response descriptions let a stale `components.schemas` entry
+    # keep the retired wording while this invariant passed. The property
+    # descriptions are where the credential model is actually spelled out.
+    for name, schema in (bundle.get("components", {}).get("schemas") or {}).items():
+        if not isinstance(schema, dict) or not name.startswith("Warp"):
+            continue
+        check_bundled(f"openapi.json components.schemas.{name}", schema.get("description"))
+        for prop, definition in (schema.get("properties") or {}).items():
+            if isinstance(definition, dict):
+                check_bundled(f"openapi.json components.schemas.{name}.{prop}", definition.get("description"))
+
+    assert not problems, "Warp credential contract drift:\n    " + "\n    ".join(problems)
+
 check("no path key has a null Path Item", test_no_null_path_items)
 check("no two paths collide after parameter normalization", test_no_duplicate_path_templates)
 check("every fragment openapi.yaml mounts exists", test_every_mounted_fragment_exists)
 check("no fragment is defined but never used", test_no_orphaned_fragments)
 check("no operationId is claimed by two mounted operations", test_duplicate_operation_ids)
+def test_warp_config_input_models_the_enabled_contract():
+    """ValidateConfigInput rejects an enabled config with no provider or model, so the
+    schema has to say so too. Leaving the fields merely optional means `{"enabled": true}`
+    validates against the published contract and then gets a 400 from the API - a generated
+    client would have checked the payload and still been wrong."""
+    import json
+
+    problems = []
+    for source, schema in (
+        ("warp.yaml", load(HERE / "schemas" / "management" / "warp.yaml")["WarpConfigInput"]),
+        ("openapi.json", json.loads((HERE / "openapi.json").read_text(encoding="utf-8"))["components"]["schemas"]["WarpConfigInput"]),
+    ):
+        condition = schema.get("if") or {}
+        enabled = (condition.get("properties") or {}).get("enabled") or {}
+        if enabled.get("const") is not True:
+            problems.append(f"{source}: WarpConfigInput has no `if enabled is true` condition")
+            continue
+        then = schema.get("then") or {}
+        required = set(then.get("required") or [])
+        then_properties = then.get("properties") or {}
+        for field in ("provider", "model"):
+            if field not in required:
+                problems.append(f"{source}: an enabled WarpConfigInput does not require `{field}`")
+            # `required` only checks presence; ValidateConfigInput trims and
+            # rejects the empty result, so both constraints have to be here or a
+            # client validates "   " and still gets a 400.
+            constraint = then_properties.get(field) or {}
+            if constraint.get("minLength") != 1:
+                problems.append(f"{source}: an enabled `{field}` has no minLength 1")
+            if not constraint.get("pattern"):
+                problems.append(f"{source}: an enabled `{field}` has no non-whitespace pattern")
+
+        # base_url is optional, but a non-empty one must be an absolute http(s)
+        # URL with no userinfo - the same rule ValidateConfigInput applies.
+        #
+        # Checked by behaviour, not just by presence: a pattern that exists but
+        # admits whitespace in the authority, or a dropped `format`, is exactly
+        # the drift a non-empty check cannot see.
+        base_url = (schema.get("properties") or {}).get("base_url") or {}
+        pattern = base_url.get("pattern")
+        if not pattern:
+            problems.append(f"{source}: base_url has no pattern constraining it to an absolute http(s) URL without userinfo")
+        else:
+            accepted = ("", "https://api.example.com", "http://localhost:8080", "https://a.com/v1")
+            rejected = (
+                "https://host name",  # whitespace in the authority
+                "https://tok@a.com",  # userinfo
+                "https://u:p@a.com",
+                "api.example.com",  # not absolute
+                "https://",  # scheme only
+                "ftp://a.com",  # wrong scheme
+            )
+            for value in accepted:
+                if not re.match(pattern, value):
+                    problems.append(f"{source}: base_url pattern rejects {value!r}, which the server accepts")
+            for value in rejected:
+                if re.match(pattern, value):
+                    problems.append(f"{source}: base_url pattern accepts {value!r}, which the server rejects")
+        # url.Parse also rejects a malformed percent escape such as "https://%",
+        # which a character-class pattern cannot express - format carries that.
+        if base_url.get("format") != "uri-reference":
+            problems.append(f"{source}: base_url has no `format: uri-reference`")
+
+    assert not problems, "Warp enabled-config contract:\n    " + "\n    ".join(problems)
+
+
 check("legacy aliases are mounted and their successors documented", test_legacy_aliases_mount_legacy_fragments)
 check("vk_rotation_cooldown bounds match config.schema.json", test_vk_rotation_cooldown_bounds_match_config_schema)
 check("bulk rotate ids schema rejects empty arrays", test_bulk_rotate_ids_requires_min_items)
 check("virtual key request contract uses budgets and provider-scoped key_ids", test_virtual_key_request_contract_is_current)
+check("warp credential contract uses api_key_id with no secret field", test_warp_credential_contract_is_current)
+check("warp config input models the enabled contract", test_warp_config_input_models_the_enabled_contract)
 check("every operation declares its own security", test_every_operation_declares_security)
 
 print(f"\n{passed} passed, {failed} failed")
