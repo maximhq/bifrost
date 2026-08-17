@@ -818,6 +818,164 @@
             ]
           },
           {
+            "group": "Inference",
+            "pages": [
+              {
+                "group": "Models",
+                "expanded": false,
+                "pages": ["GET /v1/models"]
+              },
+              {
+                "group": "Chat Completions",
+                "expanded": false,
+                "pages": ["POST /v1/chat/completions"]
+              },
+              {
+                "group": "Text Completions",
+                "expanded": false,
+                "pages": ["POST /v1/completions"]
+              },
+              {
+                "group": "Responses",
+                "expanded": false,
+                "pages": [
+                  "GET /v1/responses",
+                  "POST /v1/responses",
+                  "GET /v1/responses/{response_id}",
+                  "DELETE /v1/responses/{response_id}",
+                  "POST /v1/responses/{response_id}/cancel",
+                  "GET /v1/responses/{response_id}/input_items"
+                ]
+              },
+              {
+                "group": "OCR",
+                "expanded": false,
+                "pages": ["POST /v1/ocr"]
+              },
+              {
+                "group": "Rerank",
+                "expanded": false,
+                "pages": ["POST /v1/rerank"]
+              },
+              {
+                "group": "Embeddings",
+                "expanded": false,
+                "pages": ["POST /v1/embeddings"]
+              },
+              {
+                "group": "Audio",
+                "expanded": false,
+                "pages": ["POST /v1/audio/speech", "POST /v1/audio/transcriptions"]
+              },
+              {
+                "group": "Images",
+                "expanded": false,
+                "pages": [
+                  "POST /v1/images/generations",
+                  "POST /v1/images/edits",
+                  "POST /v1/images/variations"
+                ]
+              },
+              {
+                "group": "Videos",
+                "expanded": false,
+                "pages": [
+                  "GET /v1/videos",
+                  "POST /v1/videos",
+                  "GET /v1/videos/{video_id}",
+                  "DELETE /v1/videos/{video_id}",
+                  "GET /v1/videos/{video_id}/content",
+                  "POST /v1/videos/{video_id}/remix"
+                ]
+              },
+              {
+                "group": "Count Tokens",
+                "expanded": false,
+                "pages": ["POST /v1/responses/input_tokens"]
+              },
+              {
+                "group": "Compaction",
+                "expanded": false,
+                "pages": ["POST /v1/responses/compact"]
+              },
+              {
+                "group": "Batch",
+                "expanded": false,
+                "pages": [
+                  "GET /v1/batches",
+                  "POST /v1/batches",
+                  "GET /v1/batches/{batch_id}",
+                  "POST /v1/batches/{batch_id}/cancel",
+                  "GET /v1/batches/{batch_id}/results"
+                ]
+              },
+              {
+                "group": "Files",
+                "expanded": false,
+                "pages": [
+                  "GET /v1/files",
+                  "POST /v1/files",
+                  "GET /v1/files/{file_id}",
+                  "DELETE /v1/files/{file_id}",
+                  "GET /v1/files/{file_id}/content"
+                ]
+              },
+              {
+                "group": "Containers",
+                "expanded": false,
+                "pages": [
+                  "GET /v1/containers",
+                  "POST /v1/containers",
+                  "GET /v1/containers/{container_id}",
+                  "DELETE /v1/containers/{container_id}",
+                  "GET /v1/containers/{container_id}/files",
+                  "POST /v1/containers/{container_id}/files",
+                  "GET /v1/containers/{container_id}/files/{file_id}",
+                  "DELETE /v1/containers/{container_id}/files/{file_id}",
+                  "GET /v1/containers/{container_id}/files/{file_id}/content"
+                ]
+              },
+              {
+                "group": "Async Jobs",
+                "expanded": false,
+                "pages": [
+                  "POST /v1/async/chat/completions",
+                  "POST /v1/async/completions",
+                  "POST /v1/async/responses",
+                  "POST /v1/async/embeddings",
+                  "POST /v1/async/audio/speech",
+                  "POST /v1/async/audio/transcriptions",
+                  "POST /v1/async/images/generations",
+                  "POST /v1/async/images/edits",
+                  "POST /v1/async/images/variations",
+                  "GET /v1/async/chat/completions/{job_id}",
+                  "GET /v1/async/completions/{job_id}",
+                  "GET /v1/async/responses/{job_id}",
+                  "GET /v1/async/embeddings/{job_id}",
+                  "GET /v1/async/audio/speech/{job_id}",
+                  "GET /v1/async/audio/transcriptions/{job_id}",
+                  "GET /v1/async/images/generations/{job_id}",
+                  "GET /v1/async/images/edits/{job_id}",
+                  "GET /v1/async/images/variations/{job_id}",
+                  "POST /v1/async/rerank",
+                  "GET /v1/async/rerank/{job_id}",
+                  "POST /v1/async/ocr",
+                  "GET /v1/async/ocr/{job_id}"
+                ]
+              },
+              {
+                "group": "Realtime",
+                "expanded": false,
+                "pages": [
+                  "GET /v1/realtime",
+                  "POST /v1/realtime/calls",
+                  "POST /v1/realtime/client_secrets",
+                  "POST /v1/realtime/sessions"
+                ]
+              }
+            ]
+          },
+          {
             "group": "Integrations",
             "pages": [
               {

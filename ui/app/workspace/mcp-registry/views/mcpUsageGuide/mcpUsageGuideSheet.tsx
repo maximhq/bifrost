@@ -131,7 +131,7 @@ export function MCPUsageGuideSheet() {
 
 			<Sheet open={open} onOpenChange={setOpen}>
 				<SheetContent className="flex w-full flex-col overflow-y-auto p-0 pt-4 sm:max-w-2xl">
-					<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 sticky px-8 -top-4 bg-card z-10">
+					<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 sticky px-4 md:px-8 -top-4 bg-card z-10">
 						<div className="flex items-center gap-2">
 							<div>
 								<SheetTitle>Install Bifrost MCP</SheetTitle>
@@ -140,7 +140,7 @@ export function MCPUsageGuideSheet() {
 						</div>
 					</SheetHeader>
 
-					<div className="flex flex-col gap-6 px-8 py-4">
+					<div className="flex flex-col gap-6 px-4 py-4 md:px-8">
 						{/* ── Harness selector tabs ───────────────────────── */}
 						<section className="flex flex-col gap-2 transition-[border-color,background-color] duration-150 ease-out">
 							<div className="flex items-center gap-2 text-sm font-medium">

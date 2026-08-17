@@ -91,7 +91,10 @@ function Header({
 				<span className="text-primary text-sm font-medium">{title}</span>
 			</div>
 			{hasActionRow && (
-				<div className="flex h-7 w-full min-w-0 items-center justify-between gap-3" data-testid={testId ? `${testId}-actions` : undefined}>
+				<div
+					className="flex min-h-7 w-full min-w-0 flex-wrap items-center justify-between gap-2 sm:gap-3"
+					data-testid={testId ? `${testId}-actions` : undefined}
+				>
 					{hasTotal ? (
 						<div className="flex min-w-0 items-center gap-5">
 							<TotalChip total={total} totalLabel={totalLabel} totalTooltip={totalTooltip} testId={testId} />
@@ -132,7 +135,7 @@ export function ChartCard({
 }: ChartCardProps) {
 	if (loading) {
 		return (
-			<Card className={cn("min-w-0 rounded-sm p-2 shadow-none h-[330px]", className)} data-testid={testId}>
+			<Card className={cn("min-w-0 rounded-sm p-2 shadow-none h-[260px] sm:h-[330px]", className)} data-testid={testId}>
 				<Header
 					title={title}
 					controls={controls}
@@ -153,7 +156,7 @@ export function ChartCard({
 	}
 
 	return (
-		<Card className={cn("min-w-0 rounded-sm p-2 shadow-none h-[330px]", className)} data-testid={testId}>
+		<Card className={cn("min-w-0 rounded-sm p-2 shadow-none h-[260px] sm:h-[330px]", className)} data-testid={testId}>
 			<Header
 				title={title}
 				controls={controls}

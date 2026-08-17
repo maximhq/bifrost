@@ -39,15 +39,7 @@ const BOX_TINTS: Record<UiVariant, string> = {
 	warning: "border-amber-200/60 bg-amber-50/70 text-amber-800 dark:border-amber-800/40 dark:bg-amber-950/40 dark:text-amber-200",
 };
 
-export function InfoBox({
-	variant = "muted",
-	icon,
-	children,
-}: {
-	variant?: UiVariant;
-	icon: React.ReactNode;
-	children: React.ReactNode;
-}) {
+export function InfoBox({ variant = "muted", icon, children }: { variant?: UiVariant; icon: React.ReactNode; children: React.ReactNode }) {
 	return (
 		<div className={cn("flex gap-3 rounded-md border p-3.5 text-sm", BOX_TINTS[variant])}>
 			<span className="mt-0.5 shrink-0">{icon}</span>

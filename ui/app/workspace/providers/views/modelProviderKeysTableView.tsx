@@ -194,21 +194,23 @@ export default function ModelProviderKeysTableView({ provider, className, header
 				/>
 			)}
 			<CardHeader className="mb-4 px-0">
-				<CardTitle className="flex items-center justify-between">
+				<CardTitle className="flex flex-col items-stretch gap-3 md:flex-row md:items-center md:justify-between">
 					<div className="flex items-center gap-2">Configured {entityLabelPlural}</div>
-					<div className="flex items-center gap-2">
+					<div className="flex min-w-0 flex-wrap items-center gap-2">
 						{headerActions}
 						{hasUpdateProviderAccess ? (
 							<Tooltip>
 								<TooltipTrigger asChild>
 									<Button
 										variant="outline"
+										className="size-9 px-0 md:h-9 md:w-auto md:px-4"
 										disabled={isRefreshing}
 										data-testid="provider-refresh-models"
+										aria-label={isRefreshingProvider ? "Refreshing model list" : "Refresh model list"}
 										onClick={handleRefreshProviderModels}
 									>
 										<RefreshCwIcon className={cn("h-4 w-4", isRefreshingProvider && "animate-spin")} />
-										{isRefreshingProvider ? "Refreshing..." : "Refresh model list"}
+										<span className="hidden md:inline">{isRefreshingProvider ? "Refreshing..." : "Refresh model list"}</span>
 									</Button>
 								</TooltipTrigger>
 								<TooltipContent className="max-w-xs">
@@ -220,12 +222,14 @@ export default function ModelProviderKeysTableView({ provider, className, header
 							<Button
 								disabled={!hasUpdateProviderAccess}
 								data-testid="add-key-btn"
+								aria-label={`Add new ${entityLabel}`}
+								className="size-9 px-0 md:h-9 md:w-auto md:px-4"
 								onClick={() => {
 									handleAddKey();
 								}}
 							>
 								<PlusIcon className="h-4 w-4" />
-								Add new {entityLabel}
+								<span className="hidden md:inline">Add new {entityLabel}</span>
 							</Button>
 						) : null}
 					</div>

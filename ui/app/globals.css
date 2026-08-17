@@ -207,6 +207,18 @@
 	}
 }
 
+@keyframes update-progress {
+	0% {
+		transform: translateX(-110%);
+	}
+	50% {
+		transform: translateX(110%);
+	}
+	100% {
+		transform: translateX(310%);
+	}
+}
+
 @utility custom-scrollbar {
 	overflow: auto !important;
 	scrollbar-width: thin; /* Firefox */
@@ -300,8 +312,22 @@ div.content-container:has(.no-border-parent) {
 /* // trial-notification-banner style*/
 
 #trial-notification-banner {
-	width: calc(100% + 80px);
-	margin-left: -40px;
+	width: calc(100% + 32px);
+	margin-left: -16px;
+}
+
+@media (min-width: 768px) {
+	#trial-notification-banner {
+		width: 100%;
+		margin-left: 0;
+	}
+
+	@media (min-width: 48rem) {
+		#trial-notification-banner {
+			width: calc(100% + 80px);
+			margin-left: -40px;
+		}
+	}
 }
 
 div.content-container:has(.no-padding-parent) #trial-notification-banner {
