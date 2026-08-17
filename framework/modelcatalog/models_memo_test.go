@@ -1,7 +1,6 @@
 package modelcatalog
 
 import (
-	"fmt"
 	"slices"
 	"testing"
 
@@ -20,12 +19,12 @@ func TestProviderMemoInvalidatesOnWrite(t *testing.T) {
 		schemas.OpenAI: {{ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"gpt-4o"}}},
 	})
 	mc := &ModelCatalog{
-		datasheet:    datasheet.NewTestStore(map[string]string{"gpt-4o": "gpt-4o"}),
-		live:         live.New(nil),
-		keyconf:      kc,
-		providerMemo: make(map[string]providerMemoEntry),
-		done:         make(chan struct{}),
+		datasheet: datasheet.NewTestStore(map[string]string{"gpt-4o": "gpt-4o"}),
+		live:      live.New(nil),
+		keyconf:   kc,
+		done:      make(chan struct{}),
 	}
+	mc.initCaches()
 
 	// Prime the memo.
 	got := mc.GetProvidersForModel("gpt-4o")
@@ -57,59 +56,18 @@ func TestProviderMemoSkipsEmptyResults(t *testing.T) {
 		schemas.OpenAI: {{ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"gpt-4o"}}},
 	})
 	mc := &ModelCatalog{
-		datasheet:    datasheet.NewTestStore(map[string]string{"gpt-4o": "gpt-4o"}),
-		live:         live.New(nil),
-		keyconf:      kc,
-		providerMemo: make(map[string]providerMemoEntry),
-		done:         make(chan struct{}),
+		datasheet: datasheet.NewTestStore(map[string]string{"gpt-4o": "gpt-4o"}),
+		live:      live.New(nil),
+		keyconf:   kc,
+		done:      make(chan struct{}),
 	}
+	mc.initCaches()
 
 	if got := mc.GetProvidersForModel("junk-model-xyz"); len(got) != 0 {
 		t.Fatalf("expected no providers for junk model, got %v", got)
 	}
-	mc.providerMemoMu.RLock()
-	_, cached := mc.providerMemo["junk-model-xyz"]
-	mc.providerMemoMu.RUnlock()
-	if cached {
+	if _, cached := mc.providersForModel.Get("junk-model-xyz"); cached {
 		t.Fatalf("empty result was cached")
-	}
-}
-
-// TestProviderMemoBounded pins the overflow flush: inserting a new key into a
-// full memo must not grow it past providerMemoMaxEntries.
-func TestProviderMemoBounded(t *testing.T) {
-	kc := keyconfig.New(nil)
-	kc.Replace(map[schemas.ModelProvider][]schemas.Key{
-		schemas.OpenAI: {{ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"gpt-4o"}}},
-	})
-	mc := &ModelCatalog{
-		datasheet:    datasheet.NewTestStore(map[string]string{"gpt-4o": "gpt-4o"}),
-		live:         live.New(nil),
-		keyconf:      kc,
-		providerMemo: make(map[string]providerMemoEntry),
-		done:         make(chan struct{}),
-	}
-
-	// Fill to the cap with synthetic entries, then insert one real new model.
-	mc.providerMemoMu.Lock()
-	for i := 0; len(mc.providerMemo) < providerMemoMaxEntries; i++ {
-		mc.providerMemo[fmt.Sprintf("filler-%d", i)] = providerMemoEntry{}
-	}
-	mc.providerMemoMu.Unlock()
-
-	if got := mc.GetProvidersForModel("gpt-4o"); !slices.Contains(got, schemas.OpenAI) {
-		t.Fatalf("expected OpenAI, got %v", got)
-	}
-
-	mc.providerMemoMu.RLock()
-	size := len(mc.providerMemo)
-	_, cached := mc.providerMemo["gpt-4o"]
-	mc.providerMemoMu.RUnlock()
-	if size > providerMemoMaxEntries {
-		t.Fatalf("memo grew past cap: %d entries", size)
-	}
-	if !cached {
-		t.Fatalf("new model missing from memo after flush")
 	}
 }
 
@@ -122,12 +80,12 @@ func TestProviderMemoReturnsClone(t *testing.T) {
 		schemas.Anthropic: {{ID: "k2", Enabled: ptrBool(true), Models: schemas.WhiteList{"gpt-4o"}}},
 	})
 	mc := &ModelCatalog{
-		datasheet:    datasheet.NewTestStore(map[string]string{"gpt-4o": "gpt-4o"}),
-		live:         live.New(nil),
-		keyconf:      kc,
-		providerMemo: make(map[string]providerMemoEntry),
-		done:         make(chan struct{}),
+		datasheet: datasheet.NewTestStore(map[string]string{"gpt-4o": "gpt-4o"}),
+		live:      live.New(nil),
+		keyconf:   kc,
+		done:      make(chan struct{}),
 	}
+	mc.initCaches()
 
 	first := mc.GetProvidersForModel("gpt-4o")
 	if len(first) < 2 {
