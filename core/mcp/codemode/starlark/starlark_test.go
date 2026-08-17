@@ -10,6 +10,8 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	codemcp "github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 	"go.starlark.net/starlark"
@@ -19,6 +21,7 @@ import (
 type testClientManager struct {
 	clients map[string]*schemas.MCPClientState
 	tools   map[string][]schemas.ChatTool
+	conn    *client.Client
 }
 
 func (m *testClientManager) GetClientForTool(toolName string) *schemas.MCPClientState {
@@ -46,7 +49,7 @@ func (m *testClientManager) GetPluginPipeline() codemcp.PluginPipeline {
 
 func (m *testClientManager) ReleasePluginPipeline(pipeline codemcp.PluginPipeline) {}
 func (m *testClientManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schemas.MCPClientState) (*client.Client, func(), error) {
-	return nil, func() {}, nil
+	return m.conn, func() {}, nil
 }
 func (m *testClientManager) ReconnectClient(id string) error { return nil }
 
@@ -59,6 +62,130 @@ func (m *testClientManager) RunWithPluginPipeline(ctx *schemas.BifrostContext, r
 		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: err.Error()}}
 	}
 	return resp, nil
+}
+
+func TestNestedMCPToolResult(t *testing.T) {
+	t.Run("IsError text fails", func(t *testing.T) {
+		result := mcp.NewToolResultError("MCP error -32603: upstream failed")
+		value, err := nestedMCPToolResult(result, "fail")
+		if err == nil || err.Error() != "MCP error -32603: upstream failed" {
+			t.Fatalf("expected upstream error, got value=%v err=%v", value, err)
+		}
+	})
+
+	t.Run("identical prefixes collapse", func(t *testing.T) {
+		result := mcp.NewToolResultError("MCP error -32603:  MCP error -32603:\tupstream failed")
+		_, err := nestedMCPToolResult(result, "fail")
+		if err == nil || err.Error() != "MCP error -32603:\tupstream failed" {
+			t.Fatalf("unexpected normalized error: %v", err)
+		}
+	})
+
+	t.Run("distinct prefixes remain", func(t *testing.T) {
+		text := "MCP error -32603: MCP error +7: upstream failed"
+		result := mcp.NewToolResultError(text)
+		_, err := nestedMCPToolResult(result, "fail")
+		if err == nil || err.Error() != text {
+			t.Fatalf("distinct prefixes were rewritten: %v", err)
+		}
+	})
+
+	t.Run("empty error uses fallback without metadata", func(t *testing.T) {
+		result := &mcp.CallToolResult{
+			IsError:           true,
+			StructuredContent: map[string]interface{}{"secret": "do not expose"},
+		}
+		_, err := nestedMCPToolResult(result, "fail")
+		if err == nil || err.Error() != "MCP tool 'fail' returned an error without content" {
+			t.Fatalf("unexpected empty-result error: %v", err)
+		}
+		if strings.Contains(err.Error(), "do not expose") {
+			t.Fatalf("structured metadata leaked into error: %v", err)
+		}
+	})
+
+	t.Run("non-error remains successful", func(t *testing.T) {
+		value, err := nestedMCPToolResult(mcp.NewToolResultText("ok"), "succeed")
+		if err != nil || value != "ok" {
+			t.Fatalf("expected successful result, got value=%v err=%v", value, err)
+		}
+	})
+
+	t.Run("legacy Error prefix fails", func(t *testing.T) {
+		result := mcp.NewToolResultText("Error: legacy failure")
+		value, err := nestedMCPToolResult(result, "legacy")
+		if err == nil || err.Error() != "legacy failure" {
+			t.Fatalf("expected legacy error, got value=%v err=%v", value, err)
+		}
+	})
+}
+
+func TestHandleExecuteToolCodeReportsNestedMCPIsError(t *testing.T) {
+	mcpServer := server.NewMCPServer("nested-error-test", "1.0.0", server.WithToolCapabilities(true))
+	mcpServer.AddTool(mcp.NewTool("fail"), func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return mcp.NewToolResultError("nested execution failed"), nil
+	})
+
+	conn, err := client.NewInProcessClient(mcpServer)
+	if err != nil {
+		t.Fatalf("create in-process client: %v", err)
+	}
+	defer conn.Close()
+
+	_, err = conn.Initialize(context.Background(), mcp.InitializeRequest{Params: mcp.InitializeParams{
+		ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
+		Capabilities:    mcp.ClientCapabilities{},
+		ClientInfo:      mcp.Implementation{Name: "starlark-test", Version: "1.0.0"},
+	}})
+	if err != nil {
+		t.Fatalf("initialize in-process client: %v", err)
+	}
+
+	const clientName = "testServer"
+	mode := NewStarlarkCodeMode(&codemcp.CodeModeConfig{
+		BindingLevel:         schemas.CodeModeBindingLevelTool,
+		ToolExecutionTimeout: time.Second,
+	}, nil)
+	mode.clientManager = &testClientManager{
+		conn: conn,
+		clients: map[string]*schemas.MCPClientState{
+			clientName: {
+				Name: clientName,
+				ExecutionConfig: &schemas.MCPClientConfig{
+					Name:             clientName,
+					IsCodeModeClient: true,
+				},
+			},
+		},
+		tools: map[string][]schemas.ChatTool{
+			clientName: {{Function: &schemas.ChatToolFunction{Name: clientName + "-fail"}}},
+		},
+	}
+
+	msg, err := mode.handleExecuteToolCode(
+		schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		schemas.ChatAssistantMessageToolCall{
+			ID: schemas.Ptr("call-1"),
+			Function: schemas.ChatAssistantMessageToolCallFunction{
+				Name:      schemas.Ptr(codemcp.ToolTypeExecuteToolCode),
+				Arguments: `{"code":"result = testServer.fail()"}`,
+			},
+		},
+	)
+	if err == nil {
+		t.Fatalf("expected code-mode execution error, got message: %#v", msg)
+	}
+	if msg != nil {
+		t.Fatalf("failed code-mode execution returned a success message: %#v", msg)
+	}
+
+	content := err.Error()
+	if !strings.Contains(content, "Execution runtime error") || !strings.Contains(content, "nested execution failed") {
+		t.Fatalf("expected nested failure in outer error, got:\n%s", content)
+	}
+	if strings.Contains(content, "Execution completed successfully") {
+		t.Fatalf("nested failure was reported as success:\n%s", content)
+	}
 }
 
 func TestStarlarkToGo(t *testing.T) {

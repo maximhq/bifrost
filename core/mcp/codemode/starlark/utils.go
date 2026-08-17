@@ -261,8 +261,17 @@ func generatePythonErrorHints(errorMessage string, serverKeys []string) []string
 
 // extractTextFromMCPResponse extracts text content from an MCP tool response.
 func extractTextFromMCPResponse(toolResponse *mcp.CallToolResult, toolName string) string {
+	if content := extractContentFromMCPResponse(toolResponse); content != "" {
+		return content
+	}
+	return fmt.Sprintf("MCP tool '%s' executed successfully", toolName)
+}
+
+// extractContentFromMCPResponse flattens only the response content blocks. It deliberately
+// excludes top-level structured content and metadata, which should not be exposed in errors.
+func extractContentFromMCPResponse(toolResponse *mcp.CallToolResult) string {
 	if toolResponse == nil {
-		return fmt.Sprintf("MCP tool '%s' executed successfully", toolName)
+		return ""
 	}
 
 	var result strings.Builder
@@ -293,10 +302,7 @@ func extractTextFromMCPResponse(toolResponse *mcp.CallToolResult, toolName strin
 		}
 	}
 
-	if result.Len() > 0 {
-		return strings.TrimSpace(result.String())
-	}
-	return fmt.Sprintf("MCP tool '%s' executed successfully", toolName)
+	return strings.TrimSpace(result.String())
 }
 
 // createToolResponseMessage creates a tool response message with the execution result.

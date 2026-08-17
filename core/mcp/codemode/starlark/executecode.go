@@ -153,6 +153,10 @@ func (s *StarlarkCodeMode) handleExecuteToolCode(ctx *schemas.BifrostContext, to
 			strings.Join(result.Environment.ServerKeys, ", "),
 		)
 		s.logger.Debug("%s Error response formatted. Response length: %d chars", codemcp.CodeModeLogPrefix, len(responseText))
+		// Code-mode execution failures are tool failures, not successful text values. Returning
+		// the formatted diagnostic as an error lets the outer MCP bridge set IsError=true while
+		// preserving the sandbox kind, hints, print output, and server-key context for the agent.
+		return nil, fmt.Errorf("%s", responseText)
 	} else {
 		hasLogs := len(result.Logs) > 0
 		hasResult := result.Result != nil
@@ -546,11 +550,11 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 			return nil, fmt.Errorf("tool call failed for %s.%s: %v", clientName, effectiveToolName, callErr)
 		}
 
-		rawResult := extractTextFromMCPResponse(toolResponse, effectiveToolName)
-		if after, ok := strings.CutPrefix(rawResult, "Error: "); ok {
-			s.logger.Debug("%s Tool returned error result: %s.%s - %s", codemcp.CodeModeLogPrefix, clientName, effectiveToolName, after)
-			appendLog(fmt.Sprintf("[TOOL] %s.%s error result: %s", clientName, effectiveToolName, after))
-			return nil, fmt.Errorf("%s", after)
+		rawResult, resultErr := nestedMCPToolResult(toolResponse, effectiveToolName)
+		if resultErr != nil {
+			s.logger.Debug("%s Tool returned error result: %s.%s - %s", codemcp.CodeModeLogPrefix, clientName, effectiveToolName, resultErr)
+			appendLog(fmt.Sprintf("[TOOL] %s.%s error result: %s", clientName, effectiveToolName, resultErr))
+			return nil, resultErr
 		}
 
 		resultStr := formatResultForLog(rawResult)
@@ -596,4 +600,89 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 	}
 
 	return nil, fmt.Errorf("plugin post-hooks returned invalid response")
+}
+
+// nestedMCPToolResult converts a nested MCP result into either successful text or an
+// execution error. IsError is authoritative; the Error: prefix remains as a compatibility
+// fallback for older result producers that do not set IsError.
+func nestedMCPToolResult(toolResponse *mcp.CallToolResult, toolName string) (string, error) {
+	if toolResponse != nil && toolResponse.IsError {
+		errorText := extractContentFromMCPResponse(toolResponse)
+		if errorText == "" {
+			errorText = fmt.Sprintf("MCP tool '%s' returned an error without content", toolName)
+		}
+		return "", fmt.Errorf("%s", collapseRepeatedMCPErrorPrefixes(errorText))
+	}
+
+	rawResult := extractTextFromMCPResponse(toolResponse, toolName)
+	if after, ok := strings.CutPrefix(rawResult, "Error: "); ok {
+		return "", fmt.Errorf("%s", after)
+	}
+	return rawResult, nil
+}
+
+// collapseRepeatedMCPErrorPrefixes reduces a run of identical leading
+// "MCP error <signed integer>:" prefixes to one. Distinct adjacent prefixes are
+// preserved because they may describe separate proxy hops.
+func collapseRepeatedMCPErrorPrefixes(text string) string {
+	prefixStart := 0
+	for prefixStart < len(text) && isMCPErrorPrefixWhitespace(text[prefixStart]) {
+		prefixStart++
+	}
+
+	code, next, ok := parseMCPErrorPrefix(text, prefixStart)
+	if !ok {
+		return text
+	}
+
+	lastIdenticalStart := -1
+	for {
+		nextCode, nextEnd, nextOK := parseMCPErrorPrefix(text, next)
+		if !nextOK || nextCode != code {
+			break
+		}
+		lastIdenticalStart = next
+		next = nextEnd
+	}
+	if lastIdenticalStart < 0 {
+		return text
+	}
+
+	return text[:prefixStart] + text[lastIdenticalStart:]
+}
+
+func parseMCPErrorPrefix(text string, start int) (code string, end int, ok bool) {
+	const marker = "MCP error "
+	if start < 0 || start > len(text) || !strings.HasPrefix(text[start:], marker) {
+		return "", start, false
+	}
+
+	codeStart := start + len(marker)
+	cursor := codeStart
+	if cursor < len(text) && (text[cursor] == '+' || text[cursor] == '-') {
+		cursor++
+	}
+	digitStart := cursor
+	for cursor < len(text) && text[cursor] >= '0' && text[cursor] <= '9' {
+		cursor++
+	}
+	if cursor == digitStart || cursor >= len(text) || text[cursor] != ':' {
+		return "", start, false
+	}
+
+	code = text[codeStart:cursor]
+	cursor++
+	for cursor < len(text) && isMCPErrorPrefixWhitespace(text[cursor]) {
+		cursor++
+	}
+	return code, cursor, true
+}
+
+func isMCPErrorPrefixWhitespace(char byte) bool {
+	switch char {
+	case ' ', '\t', '\n', '\r', '\f':
+		return true
+	default:
+		return false
+	}
 }
