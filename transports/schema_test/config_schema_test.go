@@ -362,10 +362,9 @@ func TestSchemaHumeConfig(t *testing.T) {
 	compiled := compileSchema(t)
 
 	valid := []string{
-		`{"hume":{}}`,
 		`{"hume":{"default_model":"openai/gpt-4o-mini"}}`,
-		`{"hume":{"prosody_prompt":{"enabled":true,"scope":"latest_user","max_emotions":3}}}`,
-		`{"hume":{"prosody_prompt":{"enabled":true,"scope":"all_user_messages","max_emotions":0}}}`,
+		`{"hume":{"default_model":"openai/gpt-4o-mini","prosody_prompt":{"enabled":true,"scope":"latest_user","max_emotions":3}}}`,
+		`{"hume":{"default_model":"openai/gpt-4o-mini","prosody_prompt":{"enabled":true,"scope":"all_user_messages","max_emotions":0}}}`,
 	}
 	for _, configJSON := range valid {
 		if err := validateConfig(t, compiled, configJSON); err != nil {
@@ -374,10 +373,12 @@ func TestSchemaHumeConfig(t *testing.T) {
 	}
 
 	invalid := []string{
+		`{"hume":{}}`,
 		`{"hume":{"default_model":"   "}}`,
-		`{"hume":{"prosody_prompt":{"scope":"unknown"}}}`,
-		`{"hume":{"prosody_prompt":{"max_emotions":-1}}}`,
-		`{"hume":{"unknown":true}}`,
+		`{"hume":{"default_model":"openai/gpt-4o-mini","prosody_prompt":{"scope":"unknown"}}}`,
+		`{"hume":{"default_model":"openai/gpt-4o-mini","prosody_prompt":{"max_emotions":-1}}}`,
+		`{"hume":{"default_model":"openai/gpt-4o-mini","unknown":true}}`,
+		`{"hume":{"default_model":"openai/gpt-4o-mini","prosody_prompt":{"unknown":true}}}`,
 	}
 	for _, configJSON := range invalid {
 		if err := validateConfig(t, compiled, configJSON); err == nil {

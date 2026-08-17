@@ -15,7 +15,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/klauspost/compress v1.18.6
 	github.com/mark3labs/mcp-go v0.43.2
-	github.com/maximhq/bifrost/core v1.7.11
+	github.com/maximhq/bifrost/core v1.7.12-0.20260816184414-8dc2459b11c0
 	github.com/maximhq/bifrost/framework v1.5.9
 	github.com/maximhq/bifrost/plugins/compat v0.1.35
 	github.com/maximhq/bifrost/plugins/governance v1.6.13

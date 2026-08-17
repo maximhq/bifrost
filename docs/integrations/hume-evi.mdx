@@ -18,7 +18,7 @@ The endpoint must be reachable from Hume over public HTTPS. The legacy Hume cust
 
 ## Configure Bifrost
 
-The Hume routes are always registered. Configuration is optional unless Hume will omit its custom language model identifier.
+The Hume routes are always registered, so you may omit the `hume` section when Hume always sends a custom language model identifier. If you add the `hume` section—for example, to configure prosody prompting—you must set `default_model` to a non-empty model name.
 
 ```json
 {
@@ -36,7 +36,7 @@ The Hume routes are always registered. Configuration is optional unless Hume wil
 
 | Field | Default | Behavior |
 | --- | --- | --- |
-| `default_model` | None | Used only when Hume does not send a custom language model identifier. It may be a `provider/model` string or a name resolvable by the model catalog. |
+| `default_model` | Required | Required whenever the `hume` section exists and used when Hume does not send a custom language model identifier. It may be a `provider/model` string or a name resolvable by the model catalog. |
 | `prosody_prompt.enabled` | `false` | Adds Hume vocal-expression confidence scores to selected user messages. Typed metadata remains available to Go LLM plugins even when disabled. |
 | `prosody_prompt.scope` | `latest_user` | Selects `latest_user` or `all_user_messages`. |
 | `prosody_prompt.max_emotions` | `3` | Includes the highest-confidence scores. Set to `0` to include every score. |

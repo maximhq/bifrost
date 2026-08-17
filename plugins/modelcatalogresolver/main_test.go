@@ -1,6 +1,7 @@
 package modelcatalogresolver
 
 import (
+	"context"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -12,7 +13,7 @@ func TestResolveProviderFromCatalogPrefersOpenAIForHumeIntegration(t *testing.T)
 	catalog.UpsertLive(schemas.Azure, "azure-key", false, []string{"shared-model"})
 	catalog.UpsertLive(schemas.OpenAI, "openai-key", false, []string{"shared-model"})
 
-	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "hume")
 
 	provider, candidates := ResolveProviderFromCatalog(ctx, catalog, "shared-model")
