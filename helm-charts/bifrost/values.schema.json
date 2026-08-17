@@ -4372,7 +4372,7 @@
                 "managedReplication": {
                   "type": "boolean",
                   "default": true,
-                  "description": "Use a ClickHouse Replicated database to distribute DDL without ON CLUSTER or explicit Keeper arguments"
+                  "description": "Use a ClickHouse Replicated database to distribute DDL without ON CLUSTER or explicit Keeper arguments. Ignored when tableEngine is MergeTree."
                 },
                 "tableEngine": {
                   "type": "string",

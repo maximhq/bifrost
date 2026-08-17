@@ -43,7 +43,7 @@ type ClickHouseConfig struct {
 	// distribute DDL. When omitted, CLICKHOUSE_MANAGED_REPLICATION is used.
 	ManagedReplication *bool `json:"managed_replication,omitempty"`
 	// TableEngine is MergeTree or REPLICATED_MERGETREE. When empty,
-	// CLICKHOUSE_TABLE_ENGINE is used; cluster-only legacy config remains replicated.
+	// CLICKHOUSE_TABLE_ENGINE is used; the omitted value defaults to MergeTree.
 	TableEngine string `json:"table_engine,omitempty"`
 }
 
