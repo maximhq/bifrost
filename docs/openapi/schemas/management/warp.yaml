@@ -127,3 +127,82 @@ WarpUnavailable:
   required:
     - reason
     - message
+
+WarpChatRequest:
+  type: object
+  properties:
+    messages:
+      type: array
+      minItems: 1
+      description: |
+        The full conversation so far, oldest first. Roles must be `user` or
+        `assistant`; a client-supplied `system` turn is rejected, since it would
+        let a caller displace the instructions that keep Warp from inventing
+        numbers.
+
+        Long threads are trimmed server-side, always keeping the opening turn -
+        it usually carries the framing everything after it depends on.
+      items:
+        type: object
+        properties:
+          role:
+            type: string
+            enum: [user, assistant]
+          content:
+            type: string
+        required: [role, content]
+    stream:
+      type: boolean
+      default: true
+      description: |
+        Selects the transport, not the behaviour. `true` streams SSE frames;
+        `false` returns one JSON body. Both run the same loop.
+  required:
+    - messages
+
+WarpChatResponse:
+  type: object
+  description: The non-streaming body - the same events, assembled.
+  properties:
+    answer:
+      type: string
+    tool_calls:
+      type: array
+      description: |
+        What Warp queried, in order. The result payloads are deliberately
+        absent: the model consumed them, and echoing them would multiply the
+        response size for no reader benefit.
+      items:
+        type: object
+        properties:
+          name:
+            type: string
+          arguments:
+            type: string
+          duration_ms:
+            type: integer
+          failed:
+            type: boolean
+    iterations:
+      type: integer
+      description: How many model round trips the answer took.
+    finish_reason:
+      type: string
+    usage:
+      type: object
+      description: |
+        Token usage for the whole request. Warp runs on its own Bifrost instance
+        with no logging plugin - deliberately, so its calls do not pollute the
+        log table it reads - which means this is the only place its spend is
+        reported.
+    error:
+      type: object
+      description: |
+        Present when the request failed. `code` is one of `not_configured`,
+        `upstream_error`, `tool_error`, `max_iterations`, `timeout` or
+        `cancelled`.
+      properties:
+        code:
+          type: string
+        message:
+          type: string

@@ -14,6 +14,7 @@ import (
 
 // ---------------------------------------------------------------- flow 1: logs
 
+// queryLogsTool is flow 1: individual request logs, projected and row-capped.
 func queryLogsTool() Tool {
 	return Tool{
 		name: "query_logs",
@@ -68,6 +69,7 @@ func queryLogsTool() Tool {
 	}
 }
 
+// getLogDetailTool is the single-row drill-down behind flow 1, with a larger content budget than a list row can afford.
 func getLogDetailTool() Tool {
 	return Tool{
 		name:        "get_log_detail",
@@ -98,6 +100,7 @@ func getLogDetailTool() Tool {
 
 // ------------------------------------------------------------- flow 2: metrics
 
+// queryMetricsTool is flow 2: aggregates and time series. This is the cheap path and the one most questions should take.
 func queryMetricsTool() Tool {
 	return Tool{
 		name: "query_metrics",
@@ -224,6 +227,7 @@ func queryMetricsTool() Tool {
 
 // --------------------------------------------------------------- flow 3: users
 
+// queryUsersTool is flow 3: users ranked by usage.
 func queryUsersTool() Tool {
 	return Tool{
 		name: "query_user_usage",
@@ -245,6 +249,7 @@ func queryUsersTool() Tool {
 
 // -------------------------------------------------------- flow 4: virtual keys
 
+// queryVirtualKeysTool is flow 4: virtual keys ranked by usage.
 func queryVirtualKeysTool() Tool {
 	return Tool{
 		name: "query_virtual_key_usage",
@@ -284,6 +289,7 @@ func rankByDimension(ctx context.Context, deps *ToolDeps, args map[string]any, d
 
 // ------------------------------------------------ flow 5: providers and models
 
+// queryModelsTool is flow 5: model rankings and provider performance.
 func queryModelsTool() Tool {
 	return Tool{
 		name: "query_model_performance",
@@ -336,6 +342,10 @@ func queryModelsTool() Tool {
 
 // --------------------------------------------------------------- discovery
 
+// describeFilterSpaceTool lists the values that actually exist in this
+// deployment. It is the highest-leverage tool for answer quality: a guessed
+// model or key name returns an empty result that reads exactly like a real
+// finding of zero.
 func describeFilterSpaceTool() Tool {
 	return Tool{
 		name: "describe_filter_space",
