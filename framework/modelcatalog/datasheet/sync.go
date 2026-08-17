@@ -213,6 +213,7 @@ func (s *Store) loadPricingFromURL(ctx context.Context) (map[string]Entry, error
 	if err := json.Unmarshal(data, &pricingData); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal pricing data: %w", err)
 	}
+	fillAzureGPT56CacheCreation(pricingData)
 	if s.logger != nil {
 		s.logger.Debug("successfully downloaded and parsed %d pricing records", len(pricingData))
 	}
