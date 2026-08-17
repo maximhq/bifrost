@@ -188,8 +188,8 @@ function FullPage({
 function ConfigUnreachable({ isRetrying, onRetry }: { isRetrying: boolean; onRetry: () => void }) {
 	return (
 		<div className="h-base flex items-center justify-center p-4 sm:p-6" data-testid="config-unreachable">
-			<section className="bg-card w-full max-w-lg rounded-xl border p-6 shadow-sm sm:p-8" aria-labelledby="config-unreachable-title">
-				<div className="bg-muted text-muted-foreground flex size-11 items-center justify-center rounded-lg">
+			<section className="bg-card w-full max-w-lg rounded-sm border p-6 sm:p-8" aria-labelledby="config-unreachable-title">
+				<div className="bg-muted text-muted-foreground flex size-11 items-center justify-center rounded-sm">
 					<WifiOff className="size-5" aria-hidden="true" />
 				</div>
 				<h1 id="config-unreachable-title" className="text-foreground mt-5 text-xl font-semibold tracking-tight">
