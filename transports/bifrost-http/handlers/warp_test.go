@@ -3,13 +3,17 @@ package handlers
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/maximhq/bifrost/framework/warp"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
+	"gorm.io/gorm"
 )
 
 type recordingWarpStore struct {
@@ -97,4 +101,92 @@ func TestWarpConfigGetBodyShape(t *testing.T) {
 	require.Equal(t, "key-abc", body["api_key_id"])
 	require.Equal(t, float64(schemas.WarpDefaultMaxIterations), body["max_iterations"])
 	require.NotContains(t, body, "api_key")
+}
+
+// The agent runs after the handler returns and fasthttp has recycled the
+// request. A snapshot that drops the query scope silently widens every tool to
+// the whole deployment, so the copy is asserted rather than assumed.
+func TestWarpSnapshotCarriesQueryScope(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	applied := false
+	scope := queryscope.QueryScope(func(db *gorm.DB) *gorm.DB { applied = true; return db })
+	ctx.SetUserValue(schemas.BifrostContextKeyQueryScope, scope)
+	ctx.SetUserValue(schemas.BifrostContextKeyUserID, "u-1")
+
+	snapshot, cancel, err := snapshotWarpContext(ctx, time.Second)
+	require.NoError(t, err)
+	defer cancel()
+	carried := queryscope.FromContext(snapshot)
+	require.NotNil(t, carried)
+	carried(nil)
+	require.True(t, applied, "the snapshot must carry the request's own scope, not a fresh one")
+	require.Equal(t, "u-1", snapshot.Value(schemas.BifrostContextKeyUserID))
+}
+
+// A scope that was set on the request but cannot be carried over is the
+// dangerous case: queryscope.FromContext reads a missing scope as "no
+// restriction", so the agent would run unscoped over every tenant's prompts and
+// costs with no error and no log line. That must fail closed.
+//
+// An absent scope is different and must keep working: the key is set by the
+// enterprise wrapper, so an OSS deployment legitimately has none, and failing
+// closed there would disable Warp entirely.
+func TestWarpSnapshotFailsClosedOnUnusableScope(t *testing.T) {
+	t.Run("absent scope is allowed", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		snapshot, cancel, err := snapshotWarpContext(ctx, time.Second)
+		require.NoError(t, err, "an OSS deployment has no scope wrapper and must still work")
+		defer cancel()
+		require.Nil(t, queryscope.FromContext(snapshot))
+	})
+
+	t.Run("wrong type fails closed", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.SetUserValue(schemas.BifrostContextKeyQueryScope, "not-a-scope")
+		_, cancel, err := snapshotWarpContext(ctx, time.Second)
+		if cancel != nil {
+			defer cancel()
+		}
+		require.Error(t, err, "a scope that cannot be carried must not degrade to unrestricted")
+	})
+
+	t.Run("nil scope of the right type fails closed", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.SetUserValue(schemas.BifrostContextKeyQueryScope, queryscope.QueryScope(nil))
+		_, cancel, err := snapshotWarpContext(ctx, time.Second)
+		if cancel != nil {
+			defer cancel()
+		}
+		require.Error(t, err)
+	})
+}
+
+// The chat route must exist whether or not Warp can currently answer.
+//
+// RegisterRoutes runs once, at startup. Gating the route on CanChat() meant a
+// deployment that enabled logging afterwards - through /api/plugins, which
+// reloads plugins without re-registering routes - kept returning 405 for the
+// rest of the process's life, with nothing to indicate the feature had become
+// available. A registered route that answers 503 carries a machine-readable
+// reason the dashboard already branches on, so "present but unusable" and
+// "absent" stay distinguishable without making the state permanent.
+func TestWarpChatRouteIsRegisteredWithoutALogReader(t *testing.T) {
+	handler := newTestWarpHandler(&recordingWarpStore{})
+	require.False(t, handler.service.CanChat(), "precondition: no log reader, so Warp cannot answer")
+
+	router := router.New()
+	handler.RegisterRoutes(router)
+
+	ctx := adminCtx(`{"messages":[{"role":"user","content":"how much did we spend?"}]}`)
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.SetRequestURI("/api/warp/chat")
+	router.Handler(ctx)
+
+	require.Equal(t, fasthttp.StatusServiceUnavailable, ctx.Response.StatusCode(),
+		"the route must answer 503, not 405")
+
+	var body schemas.WarpUnavailableResponse
+	require.NoError(t, sonic.Unmarshal(ctx.Response.Body(), &body))
+	require.Equal(t, schemas.WarpUnavailableNoLogStore, body.Reason,
+		"the dashboard hides the launcher on this reason, so it must be reported accurately")
 }
