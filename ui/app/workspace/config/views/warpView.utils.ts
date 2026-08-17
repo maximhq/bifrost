@@ -20,6 +20,25 @@ export function requireFiniteNumber(value: unknown, message: string): true | str
 	return typeof value === "number" && Number.isFinite(value) ? true : message;
 }
 /**
+ * Days to keep saved chats.
+ *
+ * Zero is a supported value, not a missing one: the server reads 0 as "use the
+ * default" (`WarpDefaultHistoryRetentionDays`), which is exactly how a config
+ * that never set the field behaves. A `min: 1` rule made that documented value
+ * unreachable, so once an operator had typed a number they could not get back
+ * to default retention from the form at all.
+ *
+ * No upper bound: the per-owner conversation cap already limits the table, so
+ * how long a transcript stays readable is a policy choice with no ceiling.
+ */
+export function validateWarpRetentionDays(value: unknown): true | string {
+	if (typeof value !== "number" || !Number.isFinite(value)) return "A value is required";
+	if (!Number.isInteger(value)) return "Must be a whole number of days";
+	if (value < 0) return "Must be 0 or more days (0 keeps the default)";
+	return true;
+}
+
+/**
  * Validates the Base URL as it will actually be submitted.
  *
  * The inline rule checked the raw field while `buildWarpConfigPayload` trims it,
@@ -59,6 +78,7 @@ export interface WarpConfigPayloadFields {
 	api_key_id: string;
 	max_iterations: number;
 	request_timeout_seconds: number;
+	history_retention_days: number;
 	system_prompt_suffix: string;
 }
 
@@ -79,6 +99,7 @@ export function buildWarpConfigPayload(form: WarpConfigPayloadFields): WarpConfi
 		api_key_id: form.api_key_id.trim(),
 		max_iterations: form.max_iterations,
 		request_timeout_seconds: form.request_timeout_seconds,
+		history_retention_days: form.history_retention_days,
 		system_prompt_suffix: form.system_prompt_suffix,
 	};
 }

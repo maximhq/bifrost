@@ -7,6 +7,7 @@ import (
 	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/warp"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -29,15 +30,28 @@ func NewWarpLogReader(manager logging.LogManager) warp.LogReader {
 	return warpLogReader{manager}
 }
 
-// NewWarpHandler builds the handler and the service behind it. A nil logManager
-// is a supported deployment (logging disabled): Warp then serves only its
-// configuration routes, because its tools would have nothing to read.
-func NewWarpHandler(store configstore.ConfigStore, logManager logging.LogManager, logger schemas.Logger) *WarpHandler {
+// NewWarpHandler builds the handler and the service behind it.
+//
+// A nil logManager is a supported deployment (logging disabled): Warp then
+// serves only its configuration routes, because its tools would have nothing to
+// read. logsStore is separate because the two answer different questions - the
+// manager is what Warp researches through, the store is where it files what was
+// said - and a deployment can have the store without the plugin.
+func NewWarpHandler(store configstore.ConfigStore, logManager logging.LogManager, logsStore logstore.LogStore, logger schemas.Logger) *WarpHandler {
 	opts := []warp.Option{warp.WithLogger(logger)}
 	if logManager != nil {
 		opts = append(opts, warp.WithLogReader(warpLogReader{logManager}))
 	}
-	return &WarpHandler{service: warp.NewService(store, opts...)}
+	if logsStore != nil {
+		opts = append(opts, warp.WithConversationStore(logsStore))
+	}
+	service := warp.NewService(store, opts...)
+	// Retention runs on a timer rather than on write: what expires is age, so a
+	// deployment nobody has chatted on for a month is exactly where a
+	// write-triggered sweep would never fire. It is a no-op without a history
+	// store, and Shutdown stops it.
+	service.StartHistoryCleanup()
+	return &WarpHandler{service: service}
 }
 
 // Shutdown releases the service's model client.
@@ -67,6 +81,16 @@ func (h *WarpHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.Bi
 	// "present but unusable" distinguishable from "absent" - the concern the
 	// gate was there for in the first place.
 	r.POST("/api/warp/chat", lib.ChainMiddlewares(h.chat, middlewares...))
+
+	// History rides on the same middleware chain. Every route resolves its owner
+	// from the request context, so an unauthenticated deployment shares one
+	// history and an authenticated one gives each person their own, with no
+	// second code path between them.
+	if h.service.HasHistory() {
+		r.GET("/api/warp/conversations", lib.ChainMiddlewares(h.listConversations, middlewares...))
+		r.GET("/api/warp/conversations/{id}", lib.ChainMiddlewares(h.getConversation, middlewares...))
+		r.DELETE("/api/warp/conversations/{id}", lib.ChainMiddlewares(h.deleteConversation, middlewares...))
+	}
 }
 
 // getConfig serves the settings page. It is safe for any authenticated caller

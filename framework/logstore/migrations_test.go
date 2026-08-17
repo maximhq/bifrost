@@ -566,3 +566,65 @@ func TestMCPGovernanceSnapshotsMigrationIsRegistered(t *testing.T) {
 	}
 	t.Fatal("mcp_tool_logs_add_governance_snapshots is not registered in logstoreMigrationSteps")
 }
+
+// TestMigrationAddWarpConversationTables_NonRollbackable pins that rolling the
+// history tables back is refused while they hold anything. warp_conversations
+// and warp_messages are persistent user content - saved chats someone can
+// reopen - so dropping them is not a schema reversal, it is deleting the data.
+// An empty pair is still safe to drop, which keeps a failed upgrade reversible.
+func TestMigrationAddWarpConversationTables_NonRollbackable(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "migrations.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	require.NoError(t, migrationAddWarpConversationTables(ctx, db, testLogger{}))
+	require.True(t, db.Migrator().HasTable(&WarpConversation{}))
+	require.True(t, db.Migrator().HasTable(&WarpMessage{}))
+
+	// Empty: the rollback is a genuine reversal and must be allowed.
+	require.NoError(t, rollbackWarpConversationTables(db))
+	require.False(t, db.Migrator().HasTable(&WarpConversation{}),
+		"an empty history is safe to drop")
+
+	// Re-create via AutoMigrate, not the migration: migration ids are write-once,
+	// so a second run of the same id is recorded as already applied and does
+	// nothing. Then seed a saved conversation, so the drop would destroy content.
+	require.NoError(t, db.AutoMigrate(&WarpConversation{}, &WarpMessage{}))
+	require.NoError(t, db.Create(&WarpConversation{
+		ID: "c-1", OwnerID: "u-1", Title: "how much did we spend?",
+	}).Error)
+
+	err = rollbackWarpConversationTables(db)
+	require.Error(t, err, "rollback must refuse while saved conversations exist")
+	assert.Contains(t, err.Error(), "non-rollbackable")
+	assert.True(t, db.Migrator().HasTable(&WarpConversation{}),
+		"a refused rollback must leave the table intact")
+
+	var surviving int64
+	require.NoError(t, db.Model(&WarpConversation{}).Count(&surviving).Error)
+	assert.EqualValues(t, 1, surviving, "the saved conversation must survive")
+}
+
+// The cross-owner sweep needs an index it can actually use.
+//
+// DeleteWarpConversationsOlderThan filters on updated_at alone, and the
+// composite index leads with owner_id, so it cannot serve a bare range lookup -
+// the sweep scans the whole table every hour on a deployment where most rows
+// are not stale. AutoMigrate only creates the composite one, and the table
+// migration is write-once, so existing installs never get this without a
+// migration of its own.
+func TestMigrationAddWarpConversationsUpdatedAtIndex(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "migrations.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	require.NoError(t, migrationAddWarpConversationTables(ctx, db, testLogger{}))
+	require.NoError(t, migrationAddWarpConversationsUpdatedAtIndex(ctx, db, testLogger{}))
+	require.True(t, db.Migrator().HasIndex(&WarpConversation{}, "idx_warp_conversations_updated_at"),
+		"the retention sweep filters on updated_at alone and needs it leading")
+
+	// Idempotent: the helper runs on every boot and must not fail on an index
+	// that is already there.
+	require.NoError(t, migrationAddWarpConversationsUpdatedAtIndex(ctx, db, testLogger{}))
+	require.True(t, db.Migrator().HasIndex(&WarpConversation{}, "idx_warp_conversations_updated_at"))
+}

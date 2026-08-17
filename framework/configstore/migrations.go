@@ -496,6 +496,39 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_time_of_day_pricing_columns"}, run: migrationAddTimeOfDayPricingColumns},
 	{IDs: []string{"add_warp_config_table"}, run: migrationAddWarpConfigTable},
 	{IDs: []string{"add_warp_api_key_id_column"}, run: migrationAddWarpAPIKeyIDColumn},
+	{IDs: []string{"add_warp_history_retention_days_column"}, run: migrationAddWarpHistoryRetentionDaysColumn},
+}
+
+// migrationAddWarpHistoryRetentionDaysColumn adds Warp's own retention setting.
+//
+// A separate step rather than an edit to add_warp_config_table, for the reason
+// the api_key_id migration above spells out: applied ids are recorded and never
+// re-run, so a database that already created the table would keep the old
+// column list forever and every write naming the new one would fail.
+//
+// It arrives zero on existing rows, and zero means "not set" - resolved to
+// schemas.WarpDefaultHistoryRetentionDays on read. That indirection is the
+// whole safety property here: read literally, a fresh column would expire every
+// saved chat on the deployment the first time the sweep ran.
+func migrationAddWarpHistoryRetentionDaysColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_warp_history_retention_days_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			if err := tx.WithContext(ctx).AutoMigrate(&tables.TableWarpConfig{}); err != nil {
+				return fmt.Errorf("failed to add warp history_retention_days column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Reversible, unlike the api_key_id migration: this column replaced
+			// nothing and holds a number an operator can set again, so dropping it
+			// costs a preference rather than data.
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableWarpConfig{}, "history_retention_days")
+		},
+	})
 }
 
 // videoResolutionPricingColumns are the resolution-banded video output rate columns.

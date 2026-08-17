@@ -62,11 +62,12 @@ type Event struct {
 	Code    string `json:"code,omitempty"`
 	Message string `json:"message,omitempty"`
 	// Completion fields.
-	FinishReason string                   `json:"finish_reason,omitempty"`
-	Iterations   int                      `json:"iterations,omitempty"`
-	Usage        *schemas.BifrostLLMUsage `json:"usage,omitempty"`
-	Model        string                   `json:"model,omitempty"`
-	Provider     string                   `json:"provider,omitempty"`
+	ConversationID string                   `json:"conversation_id,omitempty"`
+	FinishReason   string                   `json:"finish_reason,omitempty"`
+	Iterations     int                      `json:"iterations,omitempty"`
+	Usage          *schemas.BifrostLLMUsage `json:"usage,omitempty"`
+	Model          string                   `json:"model,omitempty"`
+	Provider       string                   `json:"provider,omitempty"`
 }
 
 // ChatFunc is the loop's dependency on inference. It is a function rather

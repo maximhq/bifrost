@@ -192,3 +192,44 @@ func TestWarpValidateConfigInputAcceptsRegisteredCustomProvider(t *testing.T) {
 		require.NotContains(t, err.Error(), "unknown provider")
 	}
 }
+
+// History retention is Warp's own setting, deliberately not logs_store's. A
+// deployment that keeps 7 days of request telemetry has not thereby decided to
+// throw away somebody's saved chats after a week, and the reverse - keeping
+// logs for a year because chats are worth keeping that long - is the expensive
+// half of the same mistake.
+func TestWarpConfigViewResolvesHistoryRetentionDefault(t *testing.T) {
+	// Unconfigured: the form renders the default rather than a bare zero.
+	view, err := newTestService(&recordingStore{}).ConfigView(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, schemas.WarpDefaultHistoryRetentionDays, view.HistoryRetentionDays)
+
+	// Stored zero means "never set", which resolves to the same default: a row
+	// written before this setting existed must not read as "expire immediately".
+	view, err = newTestService(&recordingStore{row: &tables.TableWarpConfig{
+		ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o",
+	}}).ConfigView(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, schemas.WarpDefaultHistoryRetentionDays, view.HistoryRetentionDays)
+}
+
+func TestWarpSaveConfigRoundTripsHistoryRetention(t *testing.T) {
+	store := &recordingStore{}
+	view, err := newTestService(store).SaveConfig(context.Background(), &ConfigInput{
+		Enabled: true, Provider: "openai", Model: "gpt-4o", HistoryRetentionDays: 7,
+	})
+	require.NoError(t, err)
+	require.Len(t, store.upserted, 1)
+	require.Equal(t, 7, store.upserted[0].HistoryRetentionDays)
+	require.Equal(t, 7, view.HistoryRetentionDays)
+}
+
+// Negative is rejected rather than treated as "keep forever": a setting whose
+// sign silently changes its meaning is how an operator ends up with a retention
+// policy they did not choose.
+func TestWarpValidateConfigInputRejectsNegativeHistoryRetention(t *testing.T) {
+	err := ValidateConfigInput(&ConfigInput{
+		Enabled: true, Provider: "openai", Model: "gpt-4o", HistoryRetentionDays: -1,
+	})
+	require.ErrorIs(t, err, ErrInvalidConfig)
+}

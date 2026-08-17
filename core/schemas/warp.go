@@ -1,6 +1,10 @@
 package schemas
 
-import "time"
+import (
+	"strings"
+	"time"
+	"unicode/utf8"
+)
 
 // Warp is the dashboard's question-answering agent. It reads the deployment's
 // own telemetry — logs, metrics, user and virtual-key usage, model performance —
@@ -28,6 +32,16 @@ const (
 
 	// WarpDefaultRequestTimeoutSeconds bounds a single upstream call.
 	WarpDefaultRequestTimeoutSeconds = 120
+
+	// WarpDefaultHistoryRetentionDays is how long a saved chat is kept when the
+	// operator has not chosen.
+	//
+	// Thirty days, and deliberately not logs_store.retention_days. The two
+	// answer different questions: how long request telemetry is worth paying to
+	// store, and how long somebody's saved conversations should remain theirs to
+	// reopen. Tying them together means either transcripts vanish with a short
+	// log window or logs are kept for as long as anyone might want a chat back.
+	WarpDefaultHistoryRetentionDays = 30
 )
 
 // WarpConfig is the deployment's Warp settings. Exactly one row exists.
@@ -57,6 +71,14 @@ type WarpConfig struct {
 	// NetworkConfig, which is why it is stored rather than hardcoded: a local
 	// model behind BaseURL can be far slower than a hosted frontier model.
 	RequestTimeoutSeconds int `json:"request_timeout_seconds,omitempty"`
+	// HistoryRetentionDays is how long a saved chat is kept after its last turn.
+	// Zero means WarpDefaultHistoryRetentionDays.
+	//
+	// There is no ceiling. WarpMaxConversationsPerOwner already bounds how large
+	// the table can get, so this setting is about how long a transcript should
+	// remain readable, which is a policy question with no technically correct
+	// maximum.
+	HistoryRetentionDays int `json:"history_retention_days,omitempty"`
 	// SystemPromptSuffix is appended to Warp's built-in system prompt. It is
 	// additive only: operators can teach Warp about their naming conventions
 	// and cost model, but cannot remove the tool-use and scoping instructions
@@ -84,6 +106,19 @@ func (c *WarpConfig) EffectiveRequestTimeoutSeconds() int {
 		return WarpDefaultRequestTimeoutSeconds
 	}
 	return c.RequestTimeoutSeconds
+}
+
+// EffectiveHistoryRetentionDays resolves how long saved chats are kept,
+// substituting the default for an unset value.
+//
+// Zero has to mean "the default" rather than "expire everything": rows written
+// before this setting existed carry a zero, and reading that literally would
+// delete every saved chat on the deployment the first time the sweep ran.
+func (c *WarpConfig) EffectiveHistoryRetentionDays() int {
+	if c == nil || c.HistoryRetentionDays <= 0 {
+		return WarpDefaultHistoryRetentionDays
+	}
+	return c.HistoryRetentionDays
 }
 
 // IsConfigured reports whether Warp has enough settings to answer a question.
@@ -121,4 +156,116 @@ const (
 type WarpUnavailableResponse struct {
 	Reason  WarpUnavailableReason `json:"reason"`
 	Message string                `json:"message"`
+}
+
+// Conversation history.
+//
+// A conversation is owned by whoever created it. On a deployment with
+// authentication that is the user id; without one there is no identity to scope
+// by, so every conversation shares a single owner and the history is common to
+// the deployment. Both cases use the same column and the same query - the only
+// difference is what WarpOwnerID resolves to - so there is no second code path
+// that could get the scoping wrong.
+const (
+	// WarpUserOwnerPrefix namespaces every authenticated owner id, keeping the
+	// authenticated and unauthenticated key spaces disjoint by construction.
+	WarpUserOwnerPrefix = "user:"
+
+	// WarpGlobalOwnerID owns conversations on deployments with no user identity.
+	//
+	// A sentinel rather than an empty string: empty reads as "not set yet" at
+	// every call site it passes through, and a scoping value that can be confused
+	// with a missing one is how conversations end up visible to the wrong person.
+	WarpGlobalOwnerID = "__global__"
+
+	// WarpMaxConversationsPerOwner caps stored conversations. Warp's history is a
+	// convenience, not a record of account: past this the oldest are pruned, so a
+	// deployment that never cleans up cannot grow the table without bound.
+	WarpMaxConversationsPerOwner = 100
+
+	// WarpConversationTitleChars bounds the generated title.
+	WarpConversationTitleChars = 80
+)
+
+// WarpConversation is one thread, without its messages.
+type WarpConversation struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	// MessageCount lets the list render without loading every transcript.
+	MessageCount int       `json:"message_count"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+// WarpConversationDetail is a conversation with its full transcript.
+type WarpConversationDetail struct {
+	WarpConversation
+	Messages []WarpStoredMessage `json:"messages"`
+}
+
+// WarpStoredMessage is one persisted turn.
+type WarpStoredMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+	// ToolCalls records what Warp queried, so a reopened thread shows the same
+	// provenance the live one did. Without it a restored answer looks like it
+	// came from nowhere.
+	ToolCalls []WarpStoredToolCall `json:"tool_calls,omitempty"`
+	Error     string               `json:"error,omitempty"`
+	CreatedAt time.Time            `json:"created_at"`
+}
+
+// WarpStoredToolCall is the persisted trace of one tool call.
+type WarpStoredToolCall struct {
+	Name       string `json:"name"`
+	DurationMs int64  `json:"duration_ms,omitempty"`
+	Failed     bool   `json:"failed,omitempty"`
+}
+
+// WarpConversationTitle derives a thread title from its opening question.
+//
+// The first question is used verbatim rather than asking a model to summarise
+// it: a title is worth nothing if generating it costs a round trip, and the
+// question someone typed is already the best short description of the thread.
+func WarpConversationTitle(question string) string {
+	title := strings.TrimSpace(question)
+	if title == "" {
+		return "New chat"
+	}
+	// Collapse whitespace so a pasted multi-line question does not become a
+	// multi-line row in the history list.
+	title = strings.Join(strings.Fields(title), " ")
+	// Runes, not bytes. The bound is documented in characters, and slicing a
+	// byte offset splits a multi-byte rune - so a CJK or emoji question became
+	// mojibake in the history list.
+	if utf8.RuneCountInString(title) <= WarpConversationTitleChars {
+		return title
+	}
+	// The ellipsis is part of the budget, not an extra three characters on top.
+	runes := []rune(title)
+	trimmed := string(runes[:WarpConversationTitleChars-3])
+	// Prefer a word boundary so the truncation does not cut mid-word.
+	if space := strings.LastIndex(trimmed, " "); space > 0 && utf8.RuneCountInString(trimmed[:space]) > WarpConversationTitleChars/2 {
+		trimmed = trimmed[:space]
+	}
+	return trimmed + "..."
+}
+
+// WarpOwnerID resolves the owner for a caller, falling back to the shared owner
+// when the deployment has no user identity.
+func WarpOwnerID(userID string) string {
+	// Trimmed only to decide whether there is an id at all; the id itself is
+	// namespaced verbatim. A JWT subject is an opaque string where whitespace is
+	// significant, and injectJWTContext stores it unchanged - so folding " u-1 "
+	// onto "u-1" handed one authenticated caller another's saved conversations.
+	if strings.TrimSpace(userID) == "" {
+		return WarpGlobalOwnerID
+	}
+	// Every authenticated id is namespaced, not just the one that collides with
+	// the sentinel. Prefixing only the sentinel moves the collision rather than
+	// removing it: a caller whose real id is "user:__global__" would land on the
+	// same owner as the caller called "__global__". Prefixing unconditionally is
+	// injective, so distinct ids stay distinct and none of them can ever equal
+	// the unauthenticated bucket.
+	return WarpUserOwnerPrefix + userID
 }

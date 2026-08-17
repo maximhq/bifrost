@@ -1581,3 +1581,50 @@ func (h *HybridLogStore) SearchWebhookDeliveries(ctx context.Context, filters *W
 func (h *HybridLogStore) DeleteExpiredWebhookDeliveries(ctx context.Context) (int64, error) {
 	return h.inner.DeleteExpiredWebhookDeliveries(ctx)
 }
+
+// Warp conversation methods - delegated directly. Transcripts are stored whole
+// in the database and never offloaded: they are small, they are read as a unit
+// when a thread is reopened, and an object-store round trip per message would
+// make opening a saved chat slower than having asked the question again.
+
+// ListWarpConversations returns an owner's threads, most recent first.
+func (h *HybridLogStore) ListWarpConversations(ctx context.Context, ownerID string, limit int) ([]WarpConversation, error) {
+	return h.inner.ListWarpConversations(ctx, ownerID, limit)
+}
+
+// GetWarpConversation returns one thread with its messages in order.
+func (h *HybridLogStore) GetWarpConversation(ctx context.Context, ownerID, id string) (*WarpConversation, error) {
+	return h.inner.GetWarpConversation(ctx, ownerID, id)
+}
+
+// CreateWarpConversation starts a thread.
+func (h *HybridLogStore) CreateWarpConversation(ctx context.Context, conversation *WarpConversation) error {
+	return h.inner.CreateWarpConversation(ctx, conversation)
+}
+
+// AppendWarpMessages adds turns to a thread and bumps its updated time.
+func (h *HybridLogStore) AppendWarpMessages(ctx context.Context, ownerID, conversationID string, messages []WarpMessage) error {
+	return h.inner.AppendWarpMessages(ctx, ownerID, conversationID, messages)
+}
+
+// DeleteWarpConversation removes a thread and its messages.
+func (h *HybridLogStore) DeleteWarpConversation(ctx context.Context, ownerID, id string) error {
+	return h.inner.DeleteWarpConversation(ctx, ownerID, id)
+}
+
+// PruneWarpConversations drops an owner's oldest threads beyond keep.
+func (h *HybridLogStore) PruneWarpConversations(ctx context.Context, ownerID string, keep int) (int64, error) {
+	return h.inner.PruneWarpConversations(ctx, ownerID, keep)
+}
+
+// DeleteWarpConversationsOlderThan drops threads last touched before the cutoff,
+// across all owners, one bounded batch per call - callers loop until a call
+// returns zero.
+func (h *HybridLogStore) DeleteWarpConversationsOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
+	return h.inner.DeleteWarpConversationsOlderThan(ctx, cutoff)
+}
+
+// CountWarpMessages returns message counts for the given threads in one query.
+func (h *HybridLogStore) CountWarpMessages(ctx context.Context, conversationIDs []string) (map[string]int, error) {
+	return h.inner.CountWarpMessages(ctx, conversationIDs)
+}
