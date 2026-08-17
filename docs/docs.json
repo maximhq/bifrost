@@ -1289,6 +1289,14 @@
                   "GET /api/webhooks/{id}/deliveries",
                   "POST /api/webhooks/deliveries/{id}/redeliver"
                 ]
+              },
+              {
+                "group": "Notifications",
+                "expanded": false,
+                "pages": [
+                  "GET /api/notifications",
+                  "POST /api/notifications"
+                ]
               }
             ]
           },

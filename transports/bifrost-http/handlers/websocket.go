@@ -28,8 +28,11 @@ var errWebSocketClientClosed = errors.New("websocket client is closed")
 
 // WebSocketClient represents a connected WebSocket client with its own mutex
 type WebSocketClient struct {
-	conn *websocket.Conn
-	mu   sync.Mutex // Per-connection mutex for thread-safe writes
+	conn       *websocket.Conn
+	mu         sync.Mutex // Per-connection mutex for thread-safe writes
+	roleID     uint
+	hasRole    bool
+	localAdmin bool
 
 	// closed is set under mu once the connection's owning handler is done with
 	// it. It cannot be inferred from conn: fasthttp hands the upgrade handler a
@@ -146,6 +149,8 @@ func (h *WebSocketHandler) connectStream(ctx *fasthttp.RequestCtx) {
 		client := &WebSocketClient{
 			conn: ws,
 		}
+		client.roleID, client.hasRole = notificationRoleID(ctx)
+		client.localAdmin, _ = ctx.UserValue(schemas.IsLocalAdminContextKey).(bool)
 
 		// Register new client
 		h.mu.Lock()
@@ -313,6 +318,33 @@ func (h *WebSocketHandler) BroadcastEvent(eventType string, data interface{}) {
 	}
 
 	h.BroadcastMarshaledMessage(bytes)
+}
+
+// BroadcastNotification sends a dedicated notification event only to clients
+// whose authenticated role is part of the notification audience.
+func (h *WebSocketHandler) BroadcastNotification(notification *schemas.Notification) {
+	message := struct {
+		Type string                `json:"type"`
+		Data *schemas.Notification `json:"data"`
+	}{Type: "notification", Data: notification}
+	data, err := sonic.Marshal(message)
+	if err != nil {
+		logger.Error("failed to marshal notification: %v", err)
+		return
+	}
+	h.mu.RLock()
+	clients := make([]*WebSocketClient, 0, len(h.clients))
+	for _, client := range h.clients {
+		if client.localAdmin || notificationVisibleToRole(notification, client.roleID, client.hasRole) {
+			clients = append(clients, client)
+		}
+	}
+	h.mu.RUnlock()
+	for _, client := range clients {
+		if err := h.sendMessageSafely(client, websocket.TextMessage, data); err != nil && !errors.Is(err, errWebSocketClientClosed) {
+			logger.Error("failed to send notification to client: %v", err)
+		}
+	}
 }
 
 // BroadcastMarshaledMessage sends an adaptive routing update to all connected WebSocket clients
