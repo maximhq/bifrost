@@ -52,6 +52,7 @@ import {
 	Webhook,
 } from "lucide-react";
 
+import { OdinIcon } from "@/components/ui/icons";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
 	Sidebar,
@@ -1017,6 +1018,13 @@ export default function AppSidebar() {
 						url: "/workspace/config/security",
 						icon: ShieldCheck,
 						description: "Security settings",
+						hasAccess: hasSettingsAccess,
+					},
+					{
+						title: "Odin",
+						url: "/workspace/config/odin",
+						icon: OdinIcon,
+						description: "Odin agent configuration",
 						hasAccess: hasSettingsAccess,
 					},
 					...(IS_ENTERPRISE
