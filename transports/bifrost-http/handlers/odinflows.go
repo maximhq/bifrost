@@ -33,7 +33,7 @@ func odinQueryLogsTool() odinTool {
 }`,
 		execute: func(ctx context.Context, deps *odinToolDeps, args map[string]any) (any, error) {
 			now := odinNow()
-			filters, err := odinFilterArg(args, now)
+			filters, err := odinFilterArg(args, now, deps.scope)
 			if err != nil {
 				return nil, err
 			}
@@ -64,6 +64,7 @@ func odinQueryLogsTool() odinTool {
 				"rows":           rows,
 				"returned":       len(rows),
 				"total_matching": result.Pagination.TotalCount,
+				"scope":          odinScopeNote(filters, deps.scope),
 			}, nil
 		},
 	}
@@ -124,7 +125,7 @@ func odinQueryMetricsTool() odinTool {
 }`,
 		execute: func(ctx context.Context, deps *odinToolDeps, args map[string]any) (any, error) {
 			now := odinNow()
-			filters, err := odinFilterArg(args, now)
+			filters, err := odinFilterArg(args, now, deps.scope)
 			if err != nil {
 				return nil, err
 			}
@@ -141,6 +142,7 @@ func odinQueryMetricsTool() odinTool {
 			}
 
 			out := map[string]any{
+				"scope": odinScopeNote(filters, deps.scope),
 				"window": map[string]string{
 					"start": filters.StartTime.UTC().Format("2006-01-02T15:04:05Z"),
 					"end":   filters.EndTime.UTC().Format("2006-01-02T15:04:05Z"),
@@ -274,7 +276,7 @@ func odinQueryVirtualKeysTool() odinTool {
 // answer needs.
 func odinRankByDimension(ctx context.Context, deps *odinToolDeps, args map[string]any, dimension logstore.RankingDimension) (any, error) {
 	now := odinNow()
-	filters, err := odinFilterArg(args, now)
+	filters, err := odinFilterArg(args, now, deps.scope)
 	if err != nil {
 		return nil, err
 	}
@@ -284,7 +286,7 @@ func odinRankByDimension(ctx context.Context, deps *odinToolDeps, args map[strin
 	if err != nil {
 		return nil, fmt.Errorf("%s rankings failed: %w", dimension, err)
 	}
-	return result, nil
+	return map[string]any{"rankings": result, "scope": odinScopeNote(filters, deps.scope)}, nil
 }
 
 // ------------------------------------------------ flow 5: providers and models
@@ -306,7 +308,7 @@ func odinQueryModelsTool() odinTool {
 }`,
 		execute: func(ctx context.Context, deps *odinToolDeps, args map[string]any) (any, error) {
 			now := odinNow()
-			filters, err := odinFilterArg(args, now)
+			filters, err := odinFilterArg(args, now, deps.scope)
 			if err != nil {
 				return nil, err
 			}
@@ -317,7 +319,7 @@ func odinQueryModelsTool() odinTool {
 			if err != nil {
 				return nil, fmt.Errorf("model rankings failed: %w", err)
 			}
-			out := map[string]any{"models": rankings}
+			out := map[string]any{"models": rankings, "scope": odinScopeNote(filters, deps.scope)}
 
 			if odinBoolArg(args, "include_performance") {
 				bucket, err := odinBucketSize(filters)
