@@ -2,13 +2,17 @@ package lib
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
 func TestHumeConfigDefaults(t *testing.T) {
-	config := &HumeConfig{}
+	config := &HumeConfig{DefaultModel: " openai/gpt-4o-mini "}
 	if err := config.CheckAndSetDefaults(); err != nil {
 		t.Fatalf("CheckAndSetDefaults() error = %v", err)
+	}
+	if config.DefaultModel != "openai/gpt-4o-mini" {
+		t.Fatalf("DefaultModel = %q, want %q", config.DefaultModel, "openai/gpt-4o-mini")
 	}
 	if config.ProsodyPrompt == nil {
 		t.Fatal("ProsodyPrompt is nil")
@@ -26,7 +30,7 @@ func TestHumeConfigDefaults(t *testing.T) {
 
 func TestHumeConfigPreservesAllScoresSetting(t *testing.T) {
 	zero := 0
-	config := &HumeConfig{ProsodyPrompt: &HumeProsodyPromptConfig{
+	config := &HumeConfig{DefaultModel: "openai/gpt-4o-mini", ProsodyPrompt: &HumeProsodyPromptConfig{
 		Enabled:     true,
 		Scope:       HumeProsodyPromptScopeAllUserMessages,
 		MaxEmotions: &zero,
@@ -42,13 +46,47 @@ func TestHumeConfigPreservesAllScoresSetting(t *testing.T) {
 func TestHumeConfigValidation(t *testing.T) {
 	negative := -1
 	tests := []HumeConfig{
-		{ProsodyPrompt: &HumeProsodyPromptConfig{Scope: "invalid"}},
-		{ProsodyPrompt: &HumeProsodyPromptConfig{Scope: HumeProsodyPromptScopeLatestUser, MaxEmotions: &negative}},
+		{},
+		{DefaultModel: "   "},
+		{DefaultModel: "openai/gpt-4o-mini", ProsodyPrompt: &HumeProsodyPromptConfig{Scope: "invalid"}},
+		{DefaultModel: "openai/gpt-4o-mini", ProsodyPrompt: &HumeProsodyPromptConfig{Scope: HumeProsodyPromptScopeLatestUser, MaxEmotions: &negative}},
 	}
 	for i := range tests {
 		if err := tests[i].CheckAndSetDefaults(); err == nil {
 			t.Fatalf("test %d: CheckAndSetDefaults() error = nil", i)
 		}
+	}
+}
+
+func TestConfigDataRejectsUnknownHumeProperties(t *testing.T) {
+	tests := []struct {
+		name         string
+		configJSON   string
+		unknownField string
+	}{
+		{
+			name:         "top level",
+			configJSON:   `{"hume":{"default_model":"openai/gpt-4o-mini","defualt_model":"openai/gpt-4o"}}`,
+			unknownField: "defualt_model",
+		},
+		{
+			name:         "prosody prompt",
+			configJSON:   `{"hume":{"default_model":"openai/gpt-4o-mini","prosody_prompt":{"enabled":true,"max_emotion":3}}}`,
+			unknownField: "max_emotion",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var config ConfigData
+			err := json.Unmarshal([]byte(test.configJSON), &config)
+			if err == nil {
+				t.Fatalf("Unmarshal() error = nil, want unknown field %q", test.unknownField)
+			}
+			if !strings.Contains(err.Error(), `unknown field "`+test.unknownField+`"`) {
+				t.Fatalf("Unmarshal() error = %q, want unknown field %q", err, test.unknownField)
+			}
+		})
 	}
 }
 
