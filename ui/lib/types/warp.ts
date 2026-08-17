@@ -15,28 +15,23 @@ export interface WarpConfig {
 	provider: string;
 	model: string;
 	base_url?: string;
-	/** Whether a credential is stored. The value itself never leaves the server. */
-	api_key_set: boolean;
+	/**
+	 * Which of the provider's configured keys Warp uses. A reference, not a
+	 * credential, so it round-trips in the clear. Empty when none is needed.
+	 */
+	api_key_id?: string;
 	max_iterations: number;
 	request_timeout_seconds: number;
 	system_prompt_suffix?: string;
 }
 
-/**
- * The write body.
- *
- * `api_key` has three meaningful states and they must stay distinct: omit the
- * field to leave the stored credential untouched, send a string to replace it,
- * send an empty string to clear it. The form omits it unless the operator
- * actually types a replacement — otherwise every unrelated edit would wipe the
- * key, since the form has no value to send back.
- */
+/** The write body. Every field round-trips; nothing here is write-only. */
 export interface WarpConfigInput {
 	enabled: boolean;
 	provider: string;
 	model: string;
 	base_url?: string;
-	api_key?: string;
+	api_key_id?: string;
 	max_iterations?: number;
 	request_timeout_seconds?: number;
 	system_prompt_suffix?: string;
