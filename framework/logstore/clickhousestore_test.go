@@ -14,7 +14,9 @@ import (
 	"github.com/maximhq/bifrost/framework/objectstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 	gormschema "gorm.io/gorm/schema"
 )
 
@@ -1237,4 +1239,46 @@ func TestClickHouseHistograms(t *testing.T) {
 	modelRankings, err := store.GetModelRankings(ctx, SearchFilters{})
 	require.NoError(t, err)
 	require.NotNil(t, modelRankings)
+}
+
+// The Warp history tables reach ClickHouse as generated DDL, and a wrong column
+// list there only fails against a real server - which most runs do not have.
+//
+// The specific hazard is WarpConversation.Messages. It is a GORM association,
+// not a column, and emitting it would produce DDL ClickHouse rejects at startup
+// on every deployment that uses this store. This asserts the generated columns
+// directly so the mistake is caught here instead.
+func TestClickHouseWarpConversationDDLOmitsAssociations(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{
+		Logger: gormlogger.Default.LogMode(gormlogger.Silent),
+	})
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+
+	cols, err := clickhouseColumnDefs(db, &WarpConversation{})
+	require.NoError(t, err)
+	names := chColumnNames(cols)
+	assert.Equal(t, []string{"id", "owner_id", "title", "created_at", "updated_at"}, names)
+	assert.NotContains(t, names, "messages", "the transcript is an association, not a column")
+
+	cols, err = clickhouseColumnDefs(db, &WarpMessage{})
+	require.NoError(t, err)
+	assert.Equal(t,
+		[]string{"id", "conversation_id", "created_at", "position", "role", "content", "tool_calls_json", "error"},
+		chColumnNames(cols))
+}
+
+// chColumnNames pulls the identifiers out of generated column definitions.
+func chColumnNames(cols []string) []string {
+	names := make([]string, 0, len(cols))
+	for _, col := range cols {
+		name, _, found := strings.Cut(strings.TrimPrefix(col, "`"), "`")
+		if !found {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names
 }

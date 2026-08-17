@@ -22,6 +22,15 @@ export interface WarpConfig {
 	api_key_id?: string;
 	max_iterations: number;
 	request_timeout_seconds: number;
+	/**
+	 * How long a saved chat is kept after its last turn. Resolved value, so a
+	 * deployment that never set one reports the default rather than zero.
+	 *
+	 * Separate from the log store's retention on purpose: how long request
+	 * telemetry is worth keeping and how long someone's conversations stay
+	 * theirs to reopen are different questions.
+	 */
+	history_retention_days: number;
 	system_prompt_suffix?: string;
 }
 
@@ -34,6 +43,8 @@ export interface WarpConfigInput {
 	api_key_id?: string;
 	max_iterations?: number;
 	request_timeout_seconds?: number;
+	/** Zero means "use the default". There is no maximum. */
+	history_retention_days?: number;
 	system_prompt_suffix?: string;
 }
 

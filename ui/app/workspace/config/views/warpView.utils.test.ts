@@ -40,6 +40,7 @@ describe("buildWarpConfigPayload", () => {
 		api_key_id: "key-abc",
 		max_iterations: 8,
 		request_timeout_seconds: 120,
+		history_retention_days: 30,
 		system_prompt_suffix: "be brief",
 	};
 
@@ -63,6 +64,10 @@ describe("buildWarpConfigPayload", () => {
 	// a provider on a trusted network.
 	it("sends an empty reference when the operator cleared it", () => {
 		expect(buildWarpConfigPayload({ ...form, api_key_id: "" }).api_key_id).toBe("");
+	});
+
+	it("carries the retention setting", () => {
+		expect(buildWarpConfigPayload({ ...form, history_retention_days: 7 }).history_retention_days).toBe(7);
 	});
 
 	it("trims the free-text fields", () => {
