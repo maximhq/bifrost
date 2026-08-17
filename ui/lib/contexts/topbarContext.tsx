@@ -14,6 +14,9 @@ interface TopbarContextValue {
 	 */
 	descriptionSlot: HTMLElement | null;
 	setDescriptionSlot: Dispatch<SetStateAction<HTMLElement | null>>;
+	/** Mobile-only anchor for a page's collapsed filter-sidebar trigger. */
+	mobileFilterSlot: HTMLElement | null;
+	setMobileFilterSlot: Dispatch<SetStateAction<HTMLElement | null>>;
 }
 
 const TopbarContext = createContext<TopbarContextValue | null>(null);
@@ -21,9 +24,10 @@ const TopbarContext = createContext<TopbarContextValue | null>(null);
 export function TopbarProvider({ children }: { children: React.ReactNode }) {
 	const [titleEntry, setTitleEntry] = useState<TopbarTitleEntry>(EMPTY_TITLE_ENTRY);
 	const [descriptionSlot, setDescriptionSlot] = useState<HTMLElement | null>(null);
+	const [mobileFilterSlot, setMobileFilterSlot] = useState<HTMLElement | null>(null);
 	const value = useMemo(
-		() => ({ title: titleEntry.value, setTitleEntry, descriptionSlot, setDescriptionSlot }),
-		[titleEntry.value, descriptionSlot],
+		() => ({ title: titleEntry.value, setTitleEntry, descriptionSlot, setDescriptionSlot, mobileFilterSlot, setMobileFilterSlot }),
+		[titleEntry.value, descriptionSlot, mobileFilterSlot],
 	);
 	return <TopbarContext.Provider value={value}>{children}</TopbarContext.Provider>;
 }
@@ -41,6 +45,16 @@ export function useDescriptionSlotRef() {
 /** Read side for <PageTitle>, which portals its description into this node. */
 export function useDescriptionSlot(): HTMLElement | null {
 	return useContext(TopbarContext)?.descriptionSlot ?? null;
+}
+
+/** Registers the mobile filter-trigger anchor exposed by <Topbar>. */
+export function useMobileFilterSlotRef() {
+	return useContext(TopbarContext)?.setMobileFilterSlot;
+}
+
+/** Read side for filter sidebars, which portal their mobile trigger here. */
+export function useMobileFilterSlot(): HTMLElement | null {
+	return useContext(TopbarContext)?.mobileFilterSlot ?? null;
 }
 
 /**

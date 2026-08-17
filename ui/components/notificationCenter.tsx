@@ -78,7 +78,7 @@ export default function NotificationCenter() {
 						{unreadCount > 0 && (
 							<span
 								data-testid="topbar-notifications-badge"
-								className="bg-destructive text-destructive-foreground absolute -top-1.5 -right-2 flex min-w-4 items-center justify-center rounded-full px-1 text-[9px] leading-4 font-semibold"
+								className="absolute -top-1.5 -right-2 flex min-w-4 items-center justify-center rounded-full bg-red-600 px-1 text-[9px] leading-4 font-semibold text-white dark:bg-red-700"
 							>
 								{unreadCount > 99 ? "99+" : unreadCount}
 							</span>
