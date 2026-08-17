@@ -110,7 +110,9 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 				<div className="px-4 py-4 md:px-8">
 					<div className="w-full rounded-sm border">
 						<Tabs defaultValue={tabs[0]?.id} value={selectedTab} onValueChange={setSelectedTab}>
-							<div className="custom-scrollbar mb-4 w-full overflow-x-auto">
+							{/* TabsList collapses overflowing tabs into its own dropdown, so this
+							    no longer needs to scroll horizontally. */}
+							<div className="mb-4 w-full">
 								<TabsList className="h-10 w-max min-w-full justify-start rounded-tl-sm rounded-tr-sm rounded-br-none rounded-bl-none">
 									{tabs.map((tab) => (
 										<TabsTrigger

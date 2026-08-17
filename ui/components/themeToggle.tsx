@@ -1,12 +1,36 @@
-import { Moon, Sun } from "lucide-react";
+import { Check, Laptop, Moon, Sun } from "lucide-react";
 import { useTheme } from "next-themes";
 
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 
-export function ThemeToggle() {
-	const { setTheme } = useTheme();
+const THEMES = [
+	{ value: "light", label: "Light", icon: Sun },
+	{ value: "dark", label: "Dark", icon: Moon },
+	{ value: "system", label: "System", icon: Laptop },
+] as const;
 
+/**
+ * The theme choices as bare dropdown items, so they can be embedded in a larger
+ * menu (e.g. the topbar account menu) rather than only in their own popover.
+ */
+export function ThemeToggleItems() {
+	const { theme, setTheme } = useTheme();
+
+	return (
+		<>
+			{THEMES.map(({ value, label, icon: Icon }) => (
+				<DropdownMenuItem key={value} onClick={() => setTheme(value)} className="cursor-pointer">
+					<Icon className="size-4" strokeWidth={2} />
+					<span className="flex-1">{label}</span>
+					{theme === value && <Check className="text-muted-foreground size-3.5" strokeWidth={2.5} />}
+				</DropdownMenuItem>
+			))}
+		</>
+	);
+}
+
+export function ThemeToggle() {
 	return (
 		<DropdownMenu>
 			<DropdownMenuTrigger asChild>
@@ -21,9 +45,7 @@ export function ThemeToggle() {
 				</Button>
 			</DropdownMenuTrigger>
 			<DropdownMenuContent align="end">
-				<DropdownMenuItem onClick={() => setTheme("light")}>Light</DropdownMenuItem>
-				<DropdownMenuItem onClick={() => setTheme("dark")}>Dark</DropdownMenuItem>
-				<DropdownMenuItem onClick={() => setTheme("system")}>System</DropdownMenuItem>
+				<ThemeToggleItems />
 			</DropdownMenuContent>
 		</DropdownMenu>
 	);
