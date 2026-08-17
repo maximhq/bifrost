@@ -368,6 +368,35 @@ func TestHumeStreamConverterPreservesWrappedNonStreamMessage(t *testing.T) {
 	assert.Equal(t, &secondToolID, delta.ToolCalls[1].ID)
 }
 
+func TestHumeStreamConverterRejectsNonStreamToolCallIndexOverflow(t *testing.T) {
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostCtx.SetValue(humeSessionContextKey{}, "hume-session")
+
+	for _, test := range []struct {
+		name  string
+		count int
+	}{
+		{name: "65536 tool calls", count: 65_536},
+		{name: "65537 tool calls", count: 65_537},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			resp := &schemas.BifrostChatResponse{
+				Choices: []schemas.BifrostResponseChoice{{
+					ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{Message: &schemas.ChatMessage{
+						ChatAssistantMessage: &schemas.ChatAssistantMessage{
+							ToolCalls: make([]schemas.ChatAssistantMessageToolCall, test.count),
+						},
+					}},
+				}},
+			}
+
+			_, converted, err := humeChatStreamResponseConverter(bifrostCtx, resp)
+			require.EqualError(t, err, "hume non-stream response cannot contain 65536 or more tool calls")
+			assert.Nil(t, converted)
+		})
+	}
+}
+
 func TestHumeRoutesDisableLargePayloadPassthrough(t *testing.T) {
 	for _, route := range CreateHumeRouteConfigs(lib.NewDefaultHumeConfig()) {
 		assert.True(t, route.DisableLargePayloadMode, route.Path)

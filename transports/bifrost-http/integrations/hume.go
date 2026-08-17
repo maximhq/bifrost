@@ -389,7 +389,11 @@ func humeChatStreamResponseConverter(ctx *schemas.BifrostContext, resp *schemas.
 			converted.Delta.Content = humeMessageText(message.Content)
 			if message.ChatAssistantMessage != nil {
 				converted.Delta.Refusal = message.Refusal
-				converted.Delta.ToolCalls = toHumeNonStreamToolCalls(message.ToolCalls)
+				toolCalls, err := toHumeNonStreamToolCalls(message.ToolCalls)
+				if err != nil {
+					return "", nil, err
+				}
+				converted.Delta.ToolCalls = toolCalls
 			}
 		}
 		choices = append(choices, converted)
@@ -449,12 +453,15 @@ func toHumeToolCalls(toolCalls []schemas.ChatAssistantMessageToolCall) []humeToo
 	return converted
 }
 
-func toHumeNonStreamToolCalls(toolCalls []schemas.ChatAssistantMessageToolCall) []humeToolCall {
+func toHumeNonStreamToolCalls(toolCalls []schemas.ChatAssistantMessageToolCall) ([]humeToolCall, error) {
+	if len(toolCalls) >= 1<<16 {
+		return nil, errors.New("hume non-stream response cannot contain 65536 or more tool calls")
+	}
 	converted := toHumeToolCalls(toolCalls)
 	for i := range converted {
 		converted[i].Index = uint16(i)
 	}
-	return converted
+	return converted, nil
 }
 
 func humeErrorConverter(_ *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
