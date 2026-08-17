@@ -454,8 +454,8 @@ func toHumeToolCalls(toolCalls []schemas.ChatAssistantMessageToolCall) []humeToo
 }
 
 func toHumeNonStreamToolCalls(toolCalls []schemas.ChatAssistantMessageToolCall) ([]humeToolCall, error) {
-	if len(toolCalls) >= 1<<16 {
-		return nil, errors.New("hume non-stream response cannot contain 65536 or more tool calls")
+	if len(toolCalls) > 1<<16 {
+		return nil, errors.New("hume non-stream response cannot contain more than 65536 tool calls")
 	}
 	converted := toHumeToolCalls(toolCalls)
 	for i := range converted {

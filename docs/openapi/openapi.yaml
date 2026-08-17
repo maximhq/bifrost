@@ -22,6 +22,7 @@ info:
     ### Provider Integration APIs
     Native provider-format APIs for drop-in compatibility:
     - `/openai/*` - OpenAI-compatible API
+    - `/hume/*` - Hume EVI custom language model SSE API
     - `/anthropic/*` - Anthropic-compatible API
     - `/genai/*` - Google GenAI (Gemini) compatible API
     - `/bedrock/*` - AWS Bedrock compatible API
@@ -105,6 +106,8 @@ tags:
   # Provider Integrations
   - name: OpenAI Integration
     description: OpenAI-compatible API endpoints (/openai/*)
+  - name: Hume Integration
+    description: Hume EVI custom language model SSE endpoints (/hume/*)
   - name: Azure Integration
     description: Azure OpenAI integration endpoints
   - name: Anthropic Integration
@@ -380,6 +383,12 @@ paths:
     $ref: "./paths/integrations/openai/realtime.yaml#/realtime-client-secrets"
   /openai/v1/realtime/sessions:
     $ref: "./paths/integrations/openai/realtime.yaml#/realtime-sessions"
+
+  # ==================== Hume Integration ====================
+  /hume/v1/chat/completions:
+    $ref: "./paths/integrations/hume/chat.yaml#/chat-completions"
+  /hume/chat/completions:
+    $ref: "./paths/integrations/hume/chat.yaml#/chat-completions-unversioned"
 
   # ==================== Anthropic Integration ====================
   # Messages API
@@ -1253,7 +1262,7 @@ components:
       in: header
       name: x-bf-vk
       description: |
-        Bifrost Virtual Key for governance, routing, and access control. Supported on all inference endpoints (`/v1/*`, `/openai/*`, `/anthropic/*`, `/bedrock/*`, `/cohere/*`, `/genai/*`, `/langchain/*`, `/litellm/*`, `/pydanticai/*`, `/mcp`), not on management APIs (`/api/*`).
+        Bifrost Virtual Key for governance, routing, and access control. Supported on all inference endpoints (`/v1/*`, `/openai/*`, `/hume/*`, `/anthropic/*`, `/bedrock/*`, `/cohere/*`, `/genai/*`, `/langchain/*`, `/litellm/*`, `/pydanticai/*`, `/mcp`), not on management APIs (`/api/*`).
         Example: `sk-bf-*` prefixed keys.
     ApiKeyAuth:
       type: apiKey
@@ -1476,6 +1485,28 @@ components:
       $ref: "./schemas/integrations/openai/audio.yaml#/OpenAITranscriptionRequest"
     OpenAIListModelsResponse:
       $ref: "./schemas/integrations/openai/common.yaml#/OpenAIListModelsResponse"
+
+    # ==================== Hume Integration ====================
+    HumeChatRequest:
+      $ref: "./schemas/integrations/hume/chat.yaml#/HumeChatRequest"
+    HumeMessage:
+      $ref: "./schemas/integrations/hume/chat.yaml#/HumeMessage"
+    HumeMessageTime:
+      $ref: "./schemas/integrations/hume/chat.yaml#/HumeMessageTime"
+    HumeMessageModels:
+      $ref: "./schemas/integrations/hume/chat.yaml#/HumeMessageModels"
+    HumeProsodyModel:
+      $ref: "./schemas/integrations/hume/chat.yaml#/HumeProsodyModel"
+    HumeChatStreamChunk:
+      $ref: "./schemas/integrations/hume/chat.yaml#/HumeChatStreamChunk"
+    HumeStreamChoice:
+      $ref: "./schemas/integrations/hume/chat.yaml#/HumeStreamChoice"
+    HumeStreamDelta:
+      $ref: "./schemas/integrations/hume/chat.yaml#/HumeStreamDelta"
+    HumeToolCall:
+      $ref: "./schemas/integrations/hume/chat.yaml#/HumeToolCall"
+    HumeUsage:
+      $ref: "./schemas/integrations/hume/chat.yaml#/HumeUsage"
 
     # ==================== Anthropic Integration ====================
     AnthropicMessageRequest:

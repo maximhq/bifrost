@@ -1,0 +1,91 @@
+# Hume EVI Custom Language Model endpoints
+
+chat-completions:
+  post:
+    operationId: humeCreateChatCompletion
+    summary: Stream a Hume EVI chat completion
+    description: |
+      Serves as a Hume EVI custom language model using an OpenAI-compatible
+      request and Server-Sent Events response. Hume message timing and prosody
+      metadata are retained for plugins and are not forwarded directly to the
+      selected provider.
+
+      If `custom_session_id` is absent, Bifrost generates a UUID. Every response
+      chunk returns the resolved session ID in `system_fingerprint`, and the
+      stream ends with `data: [DONE]`.
+    tags:
+      - Hume Integration
+    parameters:
+      - name: custom_session_id
+        in: query
+        required: false
+        schema:
+          type: string
+        description: |
+          UTF-8 session identifier of at most 255 encoded bytes, echoed as
+          `system_fingerprint`. Bifrost generates a UUID when this parameter is
+          empty or omitted.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/hume/chat.yaml#/HumeChatRequest'
+    responses:
+      '200':
+        description: 'OpenAI-compatible SSE stream terminated by `data: [DONE]`.'
+        content:
+          text/event-stream:
+            schema:
+              $ref: '../../../schemas/integrations/hume/chat.yaml#/HumeChatStreamChunk'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+    security:
+      - BearerAuth: []
+      - BasicAuth: []
+      - VirtualKeyAuth: []
+      - ApiKeyAuth: []
+
+chat-completions-unversioned:
+  post:
+    operationId: humeCreateChatCompletionUnversioned
+    summary: Stream a Hume EVI chat completion (unversioned alias)
+    description: |
+      Unversioned alias of `POST /hume/v1/chat/completions`. It has the same
+      request validation, authentication, session handling, and SSE response.
+    tags:
+      - Hume Integration
+    parameters:
+      - name: custom_session_id
+        in: query
+        required: false
+        schema:
+          type: string
+        description: |
+          UTF-8 session identifier of at most 255 encoded bytes, echoed as
+          `system_fingerprint`. Bifrost generates a UUID when this parameter is
+          empty or omitted.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/hume/chat.yaml#/HumeChatRequest'
+    responses:
+      '200':
+        description: 'OpenAI-compatible SSE stream terminated by `data: [DONE]`.'
+        content:
+          text/event-stream:
+            schema:
+              $ref: '../../../schemas/integrations/hume/chat.yaml#/HumeChatStreamChunk'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+    security:
+      - BearerAuth: []
+      - BasicAuth: []
+      - VirtualKeyAuth: []
+      - ApiKeyAuth: []

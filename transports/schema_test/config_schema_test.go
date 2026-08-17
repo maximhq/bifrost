@@ -373,8 +373,10 @@ func TestSchemaHumeConfig(t *testing.T) {
 	}
 
 	invalid := []string{
+		`{"hume":null}`,
 		`{"hume":{}}`,
 		`{"hume":{"default_model":"   "}}`,
+		`{"hume":{"default_model":"openai/gpt-4o-mini","prosody_prompt":null}}`,
 		`{"hume":{"default_model":"openai/gpt-4o-mini","prosody_prompt":{"scope":"unknown"}}}`,
 		`{"hume":{"default_model":"openai/gpt-4o-mini","prosody_prompt":{"max_emotions":-1}}}`,
 		`{"hume":{"default_model":"openai/gpt-4o-mini","unknown":true}}`,

@@ -89,6 +89,15 @@ def test_no_duplicate_path_templates():
     assert not dupes, f"paths that collide after parameter normalization: {dupes}"
 
 
+def test_hume_routes_are_documented():
+    expected = {
+        "/hume/v1/chat/completions": "./paths/integrations/hume/chat.yaml#/chat-completions",
+        "/hume/chat/completions": "./paths/integrations/hume/chat.yaml#/chat-completions-unversioned",
+    }
+    actual = {route: (paths.get(route) or {}).get("$ref") for route in expected}
+    assert actual == expected, f"Hume route catalogue mismatch: {actual}"
+
+
 def resolve_pointer(document, tokens):
     """Walk already-unescaped pointer tokens, returning None when any step is absent."""
     node = document
@@ -177,6 +186,7 @@ def test_legacy_aliases_mount_legacy_fragments():
 
 check("no path key has a null Path Item", test_no_null_path_items)
 check("no two paths collide after parameter normalization", test_no_duplicate_path_templates)
+check("both Hume chat completion routes are documented", test_hume_routes_are_documented)
 check("every fragment openapi.yaml mounts exists", test_every_mounted_fragment_exists)
 check("no fragment is defined but never used", test_no_orphaned_fragments)
 check("no operationId is claimed by two mounted operations", test_duplicate_operation_ids)
