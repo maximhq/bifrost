@@ -101,10 +101,8 @@ func (config *ClickHouseConfig) ddlConfig() (clickHouseDDLConfig, error) {
 	engine := clickHouseEngineMergeTree
 	switch strings.ToUpper(strings.ReplaceAll(rawEngine, "-", "_")) {
 	case "":
-		// Existing cluster-only configurations used replicated tables.
-		if managedReplication || cluster != "" {
-			engine = clickHouseEngineReplicatedMergeTree
-		}
+		// MergeTree is the default table engine. Replicated table engines must
+		// be selected explicitly through table_engine.
 	case "MERGETREE", "MERGE_TREE":
 		engine = clickHouseEngineMergeTree
 	case "REPLICATED_MERGETREE", "REPLICATEDMERGETREE":

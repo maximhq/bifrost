@@ -49,10 +49,10 @@ func TestClickHouseDDLConfig(t *testing.T) {
 		wantErr     string
 	}{
 		{name: "local defaults", wantEngine: clickHouseEngineMergeTree},
-		{name: "legacy cluster config remains replicated", config: ClickHouseConfig{Cluster: "cluster-a"}, wantEngine: clickHouseEngineReplicatedMergeTree},
+		{name: "cluster config defaults to MergeTree", config: ClickHouseConfig{Cluster: "cluster-a"}, wantEngine: clickHouseEngineMergeTree},
 		{name: "managed replicated config", config: ClickHouseConfig{ManagedReplication: &trueValue, TableEngine: "REPLICATED_MERGETREE"}, wantEngine: clickHouseEngineReplicatedMergeTree, wantManaged: true},
 		{name: "environment defaults", env: map[string]string{"CLICKHOUSE_MANAGED_REPLICATION": "true", "CLICKHOUSE_TABLE_ENGINE": "REPLICATED_MERGETREE"}, wantEngine: clickHouseEngineReplicatedMergeTree, wantManaged: true},
-		{name: "managed replication rejects cluster", config: ClickHouseConfig{Cluster: "cluster-a", ManagedReplication: &trueValue}, wantErr: "cluster must be empty"},
+		{name: "managed replication rejects cluster for replicated table engine", config: ClickHouseConfig{Cluster: "cluster-a", ManagedReplication: &trueValue, TableEngine: "REPLICATED_MERGETREE"}, wantErr: "cluster must be empty"},
 		{name: "managed replication is ignored for MergeTree", config: ClickHouseConfig{Cluster: "cluster-a", ManagedReplication: &trueValue, TableEngine: "MergeTree"}, wantEngine: clickHouseEngineMergeTree},
 		{name: "non replicated cluster is allowed", config: ClickHouseConfig{Cluster: "cluster-a", TableEngine: "MergeTree"}, wantEngine: clickHouseEngineMergeTree},
 		{name: "unmanaged replicated engine requires cluster", config: ClickHouseConfig{TableEngine: "REPLICATED_MERGETREE"}, wantErr: "cluster is required"},

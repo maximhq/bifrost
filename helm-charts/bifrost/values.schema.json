@@ -4377,6 +4377,7 @@
                 "tableEngine": {
                   "type": "string",
                   "enum": ["MergeTree", "REPLICATED_MERGETREE"],
+                  "default": "MergeTree",
                   "description": "REPLICATED_MERGETREE requires cluster unless managedReplication is true"
                 }
               },

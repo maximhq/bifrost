@@ -350,7 +350,9 @@ storage:
 Do not set `cluster` in managed mode. For unmanaged replicated tables,
 `cluster` is required as a deployment-safety check, but table DDL must be
 applied to each replica by an external migration mechanism because Bifrost does
-not send `ON CLUSTER` for replicated engines. With `tableEngine: MergeTree`, a
+not send `ON CLUSTER` for replicated engines. `tableEngine` defaults to
+`MergeTree`; select `REPLICATED_MERGETREE` explicitly for managed mode. With
+`tableEngine: MergeTree`, a
 configured `cluster` does send `ON CLUSTER` to create missing tables and
 columns on every member.
 

@@ -934,7 +934,7 @@ false
 {{- with $ch.dialTimeout }}{{- $_ := set $chConfig "dial_timeout" (. | int) }}{{- end }}
 {{- $chManaged := true }}
 {{- if hasKey $ch "managedReplication" }}{{- $chManaged = $ch.managedReplication }}{{- end }}
-{{- $chTableEngine := $ch.tableEngine | default "" }}
+{{- $chTableEngine := $ch.tableEngine | default "MergeTree" }}
 {{- if eq $chTableEngine "MergeTree" }}{{- $chManaged = false }}{{- end }}
 {{- $_ := set $chConfig "managed_replication" $chManaged }}
 {{- if $chTableEngine }}{{- $_ := set $chConfig "table_engine" $chTableEngine }}{{- end }}

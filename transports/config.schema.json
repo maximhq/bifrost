@@ -2015,6 +2015,7 @@
                   "table_engine": {
                     "type": "string",
                     "enum": ["MergeTree", "REPLICATED_MERGETREE"],
+                    "default": "MergeTree",
                     "description": "Table replication mode. REPLICATED_MERGETREE requires cluster unless managed_replication is true"
                   }
                 },
