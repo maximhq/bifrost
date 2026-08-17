@@ -255,7 +255,7 @@ export default function MCPView() {
 	}, [bifrostConfig, localConfig, localValues, updateCoreConfig]);
 
 	return (
-		<div className="mx-auto w-full max-w-7xl space-y-4" data-testid="mcp-settings-view">
+		<div className="mx-auto w-full max-w-4xl space-y-4 px-4 py-6 md:px-0" data-testid="mcp-settings-view">
 			<div>
 				<h2 className="text-lg font-semibold tracking-tight">MCP Settings</h2>
 				<p className="text-muted-foreground text-sm">Configure MCP (Model Context Protocol) agent and tool settings.</p>

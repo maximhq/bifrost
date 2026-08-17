@@ -366,8 +366,10 @@ bifrost:
       # Sync interval in seconds (default: 86400 = 24 hours, minimum: 3600)
       pricingSyncInterval: 86400
       # Custom MCP server catalog URL (optional, leave empty to use the default Bifrost catalog)
+      # Accepts a file:// URL to load the catalog from local disk in air-gapped deployments
       # mcpLibraryUrl: ""
-      # MCP library sync interval in seconds (default: 86400 = 24 hours, minimum: 3600)
+      # MCP library sync interval in seconds
+      # (default: 86400 = 24 hours, minimum: 3600; set to 0 to disable catalog syncing)
       # mcpLibrarySyncInterval: 86400
       # How often each provider's model list is re-fetched in the background, in seconds
       # (default: 3600 = 1 hour, minimum: 60; set to 0 to disable background refresh)
