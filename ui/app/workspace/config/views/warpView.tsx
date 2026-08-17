@@ -1,15 +1,23 @@
 import PageTitle from "@/components/pageTitle";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ModelMultiselect } from "@/components/ui/modelMultiselect";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { buildWarpConfigPayload, requireFiniteNumber, validateWarpBaseURL } from "./warpView.utils";
+import { Link } from "@tanstack/react-router";
+import { ArrowRight, TriangleAlert } from "lucide-react";
+import { getProviderLabel } from "@/lib/constants/logs";
+import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { getErrorMessage } from "@/lib/store";
+import { useGetProviderKeysQuery, useGetProvidersQuery } from "@/lib/store/apis/providersApi";
 import { useGetWarpConfigQuery, useUpdateWarpConfigMutation } from "@/lib/store/apis/warpApi";
 import type { WarpConfigInput } from "@/lib/types/warp";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 
@@ -23,6 +31,22 @@ interface WarpFormData {
 	request_timeout_seconds: number;
 	system_prompt_suffix: string;
 }
+
+/**
+ * Warp talks to Bifrost itself by default.
+ *
+ * Pointing base_url at the current origin means Warp reaches its model through
+ * this deployment's own gateway, using the provider credentials already
+ * configured here. That is why the API key below is optional: for the default
+ * setup there is no second credential to supply.
+ */
+const defaultBaseUrl = () => (typeof window === "undefined" ? "" : window.location.origin);
+
+/**
+ * Sentinel for "any key". Radix rejects an empty-string SelectItem value, so the
+ * unpinned default needs a stand-in that never reaches the form or the API.
+ */
+const WARP_ANY_KEY = "__any__";
 
 const EMPTY_FORM: WarpFormData = {
 	enabled: false,
@@ -38,6 +62,13 @@ const EMPTY_FORM: WarpFormData = {
 export default function WarpView() {
 	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
 	const { data: config, isLoading: isLoadingConfig, isError: isConfigError } = useGetWarpConfigQuery();
+	const {
+		data: providersData,
+		isLoading: isProvidersLoading,
+		isError: isProvidersError,
+		refetch: refetchProviders,
+	} = useGetProvidersQuery();
+	const providers = useMemo(() => providersData ?? [], [providersData]);
 	const [updateWarpConfig, { isLoading }] = useUpdateWarpConfigMutation();
 
 	const {
@@ -52,13 +83,54 @@ export default function WarpView() {
 	const formValues = watch();
 	const enabled = watch("enabled");
 
+	// Memoized by the id, not rebuilt inline: watch() rerenders this component
+	// on every keystroke anywhere in the form, and ModelMultiselect refetches
+	// whenever the `keys` reference changes - so an inline array turned each
+	// unrelated edit into a models request for the same key.
+	const modelKeys = useMemo(() => (formValues.api_key_id ? [formValues.api_key_id] : undefined), [formValues.api_key_id]);
+
+	// The selects cannot carry react-hook-form validators the way the text inputs
+	// they replaced did, so completeness is checked here and surfaced on the save
+	// button. The server enforces the same rule; this only saves a round trip.
+	const missingRequired = enabled && (!formValues.provider || !formValues.model);
+
+	// Keys are provider-scoped, so the query waits for a provider. skipToken-style
+	// gating via `skip` keeps an unconfigured form from firing a request for "".
+	const {
+		// currentData, not data: RTK Query keeps the previous argument's result
+		// while it fetches the new one, so after switching provider the selector
+		// briefly offered the old provider's keys - and saving one stored an
+		// api_key_id that belongs to a different provider, which only fails later
+		// at key selection.
+		currentData: providerKeysData,
+		// isFetching, not isLoading: isLoading is only true when there is nothing
+		// cached at all, so it is false for exactly the refetch that matters here.
+		isFetching: isKeysLoading,
+		isError: isKeysError,
+		refetch: refetchKeys,
+	} = useGetProviderKeysQuery(formValues.provider, {
+		skip: !formValues.provider,
+	});
+	const providerKeys = useMemo(() => providerKeysData ?? [], [providerKeysData]);
+
+	// The three select-backed fields are written with setValue rather than spread
+	// from register(), so register them explicitly. Without this they sit outside
+	// react-hook-form's registry and whether they reach handleSubmit depends on
+	// internals - and a dropped provider saves an empty config that still reports
+	// success.
+	useEffect(() => {
+		register("provider");
+		register("model");
+		register("api_key_id");
+	}, [register]);
+
 	useEffect(() => {
 		if (!config) return;
 		reset({
 			enabled: config.enabled,
 			provider: config.provider ?? "",
 			model: config.model ?? "",
-			base_url: config.base_url ?? "",
+			base_url: config.base_url || defaultBaseUrl(),
 			api_key_id: config.api_key_id ?? "",
 			max_iterations: config.max_iterations,
 			request_timeout_seconds: config.request_timeout_seconds,
@@ -67,8 +139,7 @@ export default function WarpView() {
 	}, [config, reset]);
 
 	const hasChanges = useMemo(() => {
-		if (!config) return false;
-		if (!isDirty) return false;
+		if (!config || !isDirty) return false;
 		return (
 			formValues.enabled !== config.enabled ||
 			formValues.provider !== (config.provider ?? "") ||
@@ -118,44 +189,100 @@ export default function WarpView() {
 					</p>
 				) : (
 					<div className="space-y-4">
-						<div className="flex items-center justify-between rounded-sm border p-4">
-							<div className="space-y-0.5">
-								<Label htmlFor="warp-enabled">Enable Warp</Label>
-								<p className="text-muted-foreground text-sm">
-									Adds the Warp panel to the dashboard. Warp reads logs, metrics and usage data from Bifrost on behalf of whoever asks,
-									scoped to what that person is already allowed to see.
-								</p>
+						<div className="space-y-2 rounded-sm border p-4">
+							<div className="flex items-center justify-between gap-4">
+								<div className="space-y-0.5">
+									<Label htmlFor="warp-enabled">Enable Warp</Label>
+									<p className="text-muted-foreground text-sm">
+										Adds the Warp panel to the dashboard. Warp reads logs, metrics and usage data from Bifrost on behalf of whoever asks,
+										scoped to what that person is already allowed to see.
+									</p>
+								</div>
+								<Switch
+									id="warp-enabled"
+									size="md"
+									data-testid="warp-enabled-switch"
+									checked={formValues.enabled}
+									disabled={!hasSettingsUpdateAccess}
+									onCheckedChange={(checked) => setValue("enabled", checked, { shouldDirty: true })}
+								/>
 							</div>
-							<Switch
-								id="warp-enabled"
-								size="md"
-								data-testid="warp-enabled-switch"
-								checked={formValues.enabled}
-								disabled={!hasSettingsUpdateAccess}
-								onCheckedChange={(checked) => setValue("enabled", checked, { shouldDirty: true })}
-							/>
+							{/* A complete but switched-off config saves happily and then leaves the
+                  panel saying Warp is unavailable, with nothing on this page admitting
+                  why. Say it here, next to the switch that causes it. */}
+							{!formValues.enabled && !!formValues.provider && !!formValues.model && (
+								<p className="text-muted-foreground text-xs" data-testid="warp-disabled-hint">
+									Everything below is filled in, but Warp stays hidden until this is on.
+								</p>
+							)}
 						</div>
 
 						<div className="space-y-2 rounded-sm border p-4">
 							<div className="space-y-0.5">
 								<Label htmlFor="warp-provider">Provider</Label>
 								<p className="text-muted-foreground text-sm">
-									The model provider that runs Warp, for example <code className="text-xs">openai</code> or{" "}
-									<code className="text-xs">anthropic</code>.
+									Which of your configured providers runs Warp. Only providers already set up in Bifrost are listed, so Warp cannot be
+									pointed at one that does not exist.
 								</p>
 							</div>
-							<Input
-								id="warp-provider"
-								type="text"
-								placeholder="openai"
-								data-testid="warp-provider-input"
-								className={errors.provider ? "border-destructive" : ""}
-								{...register("provider", {
-									validate: (value) => !enabled || value.trim() !== "" || "Provider is required when Warp is enabled",
-								})}
+							<Select
+								value={formValues.provider}
+								onValueChange={(value) => {
+									setValue("provider", value, { shouldDirty: true });
+									// Model and key are both provider-scoped, so values carried over
+									// from the previous provider would be silently invalid.
+									setValue("model", "", { shouldDirty: true });
+									setValue("api_key_id", "", { shouldDirty: true });
+								}}
 								disabled={!hasSettingsUpdateAccess}
-							/>
-							{errors.provider && <p className="text-destructive text-sm">{errors.provider.message}</p>}
+							>
+								<SelectTrigger className="w-full" id="warp-provider" data-testid="warp-provider-select">
+									<SelectValue placeholder="Select provider" />
+								</SelectTrigger>
+								<SelectContent>
+									{providers
+										.filter((provider) => provider.name)
+										.map((provider) => (
+											<SelectItem key={provider.name} value={provider.name}>
+												<div className="flex items-center gap-2">
+													<RenderProviderIcon provider={provider.name as ProviderIconType} size="sm" className="h-4 w-4" />
+													<span>{getProviderLabel(provider.name)}</span>
+												</div>
+											</SelectItem>
+										))}
+								</SelectContent>
+							</Select>
+							{/* An empty dropdown reads as "this deployment has no providers",
+							    which is a different and much more alarming statement than
+							    "the list has not arrived yet". */}
+							{isProvidersLoading && <p className="text-muted-foreground text-xs">Loading providers...</p>}
+							{isProvidersError && (
+								<p className="text-destructive flex items-center gap-2 text-xs" role="alert">
+									Could not load providers.
+									<button type="button" onClick={() => refetchProviders()} className="underline" data-testid="warp-providers-retry">
+										Retry
+									</button>
+								</p>
+							)}
+							{/* A successful empty list is its own situation, distinct from
+							    loading and from a failed query. Without this the selector is
+							    simply blank, missingRequired blocks the save, and nothing on
+							    the page says the deployment has no providers yet or where to
+							    add one. Same treatment the complexity router uses. */}
+							{!isProvidersLoading && !isProvidersError && providers.length === 0 && (
+								<Alert variant="warning" data-testid="warp-no-providers">
+									<TriangleAlert className="h-4 w-4" />
+									<AlertDescription className="gap-2">
+										<span>No provider is configured yet. Warp needs one to run its model on.</span>
+										<Button asChild variant="outline" size="sm" data-testid="warp-add-provider-link">
+											<Link to="/workspace/providers">
+												Add a provider
+												<ArrowRight className="size-3.5" />
+											</Link>
+										</Button>
+									</AlertDescription>
+								</Alert>
+							)}
 						</div>
 
 						<div className="space-y-2 rounded-sm border p-4">
@@ -165,48 +292,88 @@ export default function WarpView() {
 									Warp reasons over query results and writes the answer, so a capable model pays for itself here.
 								</p>
 							</div>
-							<Input
-								id="warp-model"
-								type="text"
-								placeholder="gpt-4o"
-								data-testid="warp-model-input"
-								className={errors.model ? "border-destructive" : ""}
-								{...register("model", {
-									validate: (value) => !enabled || value.trim() !== "" || "Model is required when Warp is enabled",
-								})}
-								disabled={!hasSettingsUpdateAccess}
+							<ModelMultiselect
+								inputId="warp-model"
+								data-testid="warp-model-select"
+								isSingleSelect
+								provider={formValues.provider || undefined}
+								// Scoped to the pinned key, because /api/models filters by each
+								// key's model restrictions: without this the picker offered - and
+								// the form saved - models the pinned key cannot reach, and the
+								// first question failed at the provider. Unset for "Any key",
+								// which is Bifrost load-balancing across the whole pool.
+								keys={modelKeys}
+								value={formValues.model}
+								onChange={(model) => setValue("model", model, { shouldDirty: true })}
+								placeholder={formValues.provider ? "Search or type a model..." : "Select a provider first"}
+								disabled={!formValues.provider || !hasSettingsUpdateAccess}
 							/>
-							{errors.model && <p className="text-destructive text-sm">{errors.model.message}</p>}
 						</div>
 
 						<div className="space-y-2 rounded-sm border p-4">
 							<div className="space-y-0.5">
 								<Label htmlFor="warp-api-key-id">API Key</Label>
 								<p className="text-muted-foreground text-sm">
-									Names one of this deployment&apos;s configured provider keys. Warp reaches its model through this Bifrost, which resolves
-									the id against its own key pool, so no credential is stored here. Leave empty for a provider on a trusted network or one
-									using ambient credentials.
+									Warp holds no credential of its own - it reaches its model through Bifrost, which supplies the key. Leave this on Any key
+									to let Bifrost load-balance across the provider&apos;s pool, or pin one to isolate Warp&apos;s traffic to a single key.
 								</p>
 							</div>
-							{/* A plain round-tripping field. The old write-only input was built for
-							    a stored secret and had to guess between "unchanged", "replace" and
-							    "clear"; a reference needs none of that, and keeping the input empty
-							    meant an ordinary save sent no id and cleared the stored one. */}
-							<Input
-								id="warp-api-key-id"
-								autoComplete="off"
-								placeholder="key-id"
-								data-testid="warp-api-key-id-input"
-								disabled={!hasSettingsUpdateAccess}
-								{...register("api_key_id")}
-							/>
+							<Select
+								value={formValues.api_key_id || WARP_ANY_KEY}
+								onValueChange={(value) => {
+									setValue("api_key_id", value === WARP_ANY_KEY ? "" : value, { shouldDirty: true });
+									// Cleared rather than revalidated: the new key's model list is
+									// not loaded yet, so there is nothing to check against, and
+									// leaving the old value keeps a model the new key may not be
+									// allowed to use. An empty model is already a save-blocking
+									// validation error, so the operator is told rather than left
+									// with a silently wrong pin.
+									setValue("model", "", { shouldDirty: true });
+								}}
+								// Also disabled while this provider's keys are unknown, so a
+								// stale or empty list cannot be committed as a choice.
+								disabled={!formValues.provider || isKeysLoading || isKeysError || !hasSettingsUpdateAccess}
+							>
+								<SelectTrigger className="w-full" id="warp-api-key-id" data-testid="warp-api-key-select">
+									<SelectValue placeholder={formValues.provider ? "Any key" : "Select a provider first"} />
+								</SelectTrigger>
+								<SelectContent>
+									{/* Radix forbids an empty-string SelectItem value, so the unpinned
+									    default needs a sentinel, mapped back to "" before it reaches the
+									    form. Listing it first makes it the obvious default. */}
+									<SelectItem value={WARP_ANY_KEY}>Any key</SelectItem>
+									{providerKeys.map((providerKey) => (
+										<SelectItem key={providerKey.id} value={providerKey.id}>
+											{providerKey.name || providerKey.id}
+										</SelectItem>
+									))}
+								</SelectContent>
+							</Select>
+							{/* "No keys configured" is a statement of fact about the provider,
+							    so it must not be made while the query is still in flight or
+							    after it failed - both of those also produce an empty list. */}
+							{formValues.provider && isKeysLoading && <p className="text-muted-foreground text-xs">Loading keys...</p>}
+							{formValues.provider && isKeysError && (
+								<p className="text-destructive flex items-center gap-2 text-xs" role="alert">
+									Could not load this provider&apos;s keys.
+									<button type="button" onClick={() => refetchKeys()} className="underline" data-testid="warp-keys-retry">
+										Retry
+									</button>
+								</p>
+							)}
+							{formValues.provider && !isKeysLoading && !isKeysError && providerKeys.length === 0 && (
+								<p className="text-muted-foreground text-xs">
+									This provider has no keys configured, which is fine if it does not need one.
+								</p>
+							)}
 						</div>
 
 						<div className="space-y-2 rounded-sm border p-4">
 							<div className="space-y-0.5">
 								<Label htmlFor="warp-base-url">Base URL</Label>
 								<p className="text-muted-foreground text-sm">
-									Overrides the provider&apos;s default endpoint. Needed for self-hosted or proxied models; leave empty otherwise.
+									Defaults to this Bifrost, so Warp reaches its model through your own gateway and reuses the credentials already configured
+									here. Point it elsewhere only to call a provider directly.
 								</p>
 							</div>
 							<Input
@@ -287,8 +454,17 @@ export default function WarpView() {
 					</div>
 				)}
 
-				<div className="flex justify-end pt-2">
-					<Button type="submit" disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess} data-testid="warp-save-btn">
+				<div className="flex justify-end gap-3 pt-2">
+					{missingRequired && (
+						<p className="text-muted-foreground self-center text-xs" data-testid="warp-missing-required">
+							Choose a provider and model to enable Warp.
+						</p>
+					)}
+					<Button
+						type="submit"
+						disabled={!hasChanges || isLoading || missingRequired || !hasSettingsUpdateAccess}
+						data-testid="warp-save-btn"
+					>
 						{isLoading ? "Saving..." : "Save Changes"}
 					</Button>
 				</div>
