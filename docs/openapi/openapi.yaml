@@ -1240,6 +1240,8 @@ paths:
   # Odin
   /api/odin/config:
     $ref: "./paths/management/odin.yaml#/odin-config"
+  /api/odin/chat:
+    $ref: "./paths/management/odin.yaml#/odin-chat"
 
 components:
   securitySchemes:
@@ -1911,3 +1913,7 @@ components:
       $ref: "./schemas/management/odin.yaml#/OdinConfigInput"
     OdinUnavailable:
       $ref: "./schemas/management/odin.yaml#/OdinUnavailable"
+    OdinChatRequest:
+      $ref: "./schemas/management/odin.yaml#/OdinChatRequest"
+    OdinChatResponse:
+      $ref: "./schemas/management/odin.yaml#/OdinChatResponse"

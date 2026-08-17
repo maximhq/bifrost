@@ -203,6 +203,7 @@ func parseOdinTime(value any, now time.Time) (*time.Time, error) {
 	return &parsed, nil
 }
 
+// odinStringSlice reads a JSON array of strings, dropping empties. Returns nil when absent, so the filter field stays unset rather than becoming an empty IN clause.
 func odinStringSlice(value any) []string {
 	items, ok := value.([]any)
 	if !ok {
@@ -220,6 +221,7 @@ func odinStringSlice(value any) []string {
 	return result
 }
 
+// odinFloatPtr reads an optional JSON number into the pointer the filter expects.
 func odinFloatPtr(value any) *float64 {
 	number, ok := value.(float64)
 	if !ok {
@@ -228,6 +230,11 @@ func odinFloatPtr(value any) *float64 {
 	return &number
 }
 
+// odinIntArg reads a bounded integer argument.
+//
+// Values above max are clamped rather than rejected: the cap exists to protect
+// the context window, not to police the model, and failing the call would cost
+// an extra round trip to arrive at the number we would have used anyway.
 func odinIntArg(args map[string]any, key string, fallback, max int) int {
 	value, ok := args[key].(float64)
 	if !ok {
@@ -243,11 +250,13 @@ func odinIntArg(args map[string]any, key string, fallback, max int) int {
 	return min(result, max)
 }
 
+// odinBoolArg reads an optional boolean argument, defaulting to false.
 func odinBoolArg(args map[string]any, key string) bool {
 	value, _ := args[key].(bool)
 	return value
 }
 
+// odinFilterArg parses the shared filter object every flow accepts.
 func odinFilterArg(args map[string]any, now time.Time) (*logstore.SearchFilters, error) {
 	raw, _ := args["filters"].(map[string]any)
 	return parseOdinFilters(raw, now)
@@ -274,6 +283,7 @@ func boundOdinToolResult(result any) string {
 	)
 }
 
+// truncateOdinText caps a string and marks it, so the model can tell it is reading a fragment rather than the whole value.
 func truncateOdinText(text string, limit int) string {
 	if len(text) <= limit {
 		return text
@@ -301,6 +311,9 @@ type odinLogRow struct {
 	Content        string  `json:"content,omitempty"`
 }
 
+// projectOdinLog reduces a log row to the fields that answer operational
+// questions. The full row carries raw request and response bodies; returning
+// even a handful of those would exhaust the context window.
 func projectOdinLog(entry *logstore.Log, includeContent bool, contentLimit int) odinLogRow {
 	row := odinLogRow{
 		ID:        entry.ID,
@@ -327,6 +340,7 @@ func projectOdinLog(entry *logstore.Log, includeContent bool, contentLimit int) 
 	return row
 }
 
+// derefOdinFloat reads a *float64, treating nil as zero.
 func derefOdinFloat(value *float64) float64 {
 	if value == nil {
 		return 0
@@ -334,6 +348,7 @@ func derefOdinFloat(value *float64) float64 {
 	return *value
 }
 
+// derefOdinString reads a *string, treating nil as empty.
 func derefOdinString(value *string) string {
 	if value == nil {
 		return ""
@@ -430,6 +445,7 @@ func odinChatTools(tools []odinTool) ([]schemas.ChatTool, error) {
 	return declared, nil
 }
 
+// odinToolByName looks up a tool by the name the model used.
 func odinToolByName(tools []odinTool, name string) (*odinTool, bool) {
 	for i := range tools {
 		if tools[i].name == name {

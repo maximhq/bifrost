@@ -21,6 +21,9 @@ type OdinStore interface {
 	UpsertOdinConfig(ctx context.Context, config *tables.TableOdinConfig) error
 }
 
+// GetOdinConfig reads the singleton Odin row. A missing row returns (nil, nil):
+// most deployments never turn Odin on, so absence is an ordinary state that
+// callers should not have to distinguish from a failure at every call site.
 func (s *RDBConfigStore) GetOdinConfig(ctx context.Context) (*tables.TableOdinConfig, error) {
 	var config tables.TableOdinConfig
 	err := s.DB().WithContext(ctx).First(&config, tables.OdinConfigRowID).Error
@@ -33,6 +36,9 @@ func (s *RDBConfigStore) GetOdinConfig(ctx context.Context) (*tables.TableOdinCo
 	return &config, nil
 }
 
+// UpsertOdinConfig writes the singleton Odin row, pinning the primary key so a
+// caller that left ID unset cannot insert a second, autoincremented row that
+// GetOdinConfig would never find.
 func (s *RDBConfigStore) UpsertOdinConfig(ctx context.Context, config *tables.TableOdinConfig) error {
 	// Pin the ID rather than trusting the caller: the table is a singleton by
 	// contract, and a caller that passed 0 would otherwise have GORM insert a

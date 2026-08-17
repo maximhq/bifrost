@@ -14,6 +14,7 @@ import (
 
 // ---------------------------------------------------------------- flow 1: logs
 
+// odinQueryLogsTool is flow 1: individual request logs, projected and row-capped.
 func odinQueryLogsTool() odinTool {
 	return odinTool{
 		name: "query_logs",
@@ -68,6 +69,7 @@ func odinQueryLogsTool() odinTool {
 	}
 }
 
+// odinGetLogDetailTool is the single-row drill-down behind flow 1, with a larger content budget than a list row can afford.
 func odinGetLogDetailTool() odinTool {
 	return odinTool{
 		name:        "get_log_detail",
@@ -98,6 +100,7 @@ func odinGetLogDetailTool() odinTool {
 
 // ------------------------------------------------------------- flow 2: metrics
 
+// odinQueryMetricsTool is flow 2: aggregates and time series. This is the cheap path and the one most questions should take.
 func odinQueryMetricsTool() odinTool {
 	return odinTool{
 		name: "query_metrics",
@@ -224,6 +227,7 @@ func odinQueryMetricsTool() odinTool {
 
 // --------------------------------------------------------------- flow 3: users
 
+// odinQueryUsersTool is flow 3: users ranked by usage.
 func odinQueryUsersTool() odinTool {
 	return odinTool{
 		name: "query_user_usage",
@@ -245,6 +249,7 @@ func odinQueryUsersTool() odinTool {
 
 // -------------------------------------------------------- flow 4: virtual keys
 
+// odinQueryVirtualKeysTool is flow 4: virtual keys ranked by usage.
 func odinQueryVirtualKeysTool() odinTool {
 	return odinTool{
 		name: "query_virtual_key_usage",
@@ -284,6 +289,7 @@ func odinRankByDimension(ctx context.Context, deps *odinToolDeps, args map[strin
 
 // ------------------------------------------------ flow 5: providers and models
 
+// odinQueryModelsTool is flow 5: model rankings and provider performance.
 func odinQueryModelsTool() odinTool {
 	return odinTool{
 		name: "query_model_performance",
@@ -336,6 +342,10 @@ func odinQueryModelsTool() odinTool {
 
 // --------------------------------------------------------------- discovery
 
+// odinDescribeFilterSpaceTool lists the values that actually exist in this
+// deployment. It is the highest-leverage tool for answer quality: a guessed
+// model or key name returns an empty result that reads exactly like a real
+// finding of zero.
 func odinDescribeFilterSpaceTool() odinTool {
 	return odinTool{
 		name: "describe_filter_space",

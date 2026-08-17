@@ -10,6 +10,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -24,11 +25,47 @@ var ErrOdinUnavailable = errors.New("odin is not configured")
 // read — see RegisterRoutes.
 type OdinService struct {
 	store configstore.OdinStore
+	// logManager is nil on deployments with no logging plugin. Odin's tools have
+	// nothing to read there, so the chat route is not registered at all rather
+	// than registered and always failing.
+	logManager logging.LogManager
+	// client owns Odin's dedicated Bifrost instance. Tests replace chatOverride
+	// instead, so the agent loop can be driven by a scripted model.
+	client *odinClient
+	// chatOverride, when set, replaces the real inference path. Test seam only.
+	chatOverride odinChatFunc
 }
 
-func NewOdinService(store configstore.ConfigStore) *OdinService {
+// NewOdinService builds the Odin service. A nil logManager is a supported
+// deployment (logging disabled): Odin then serves only its configuration routes,
+// because its tools would have nothing to read.
+func NewOdinService(store configstore.ConfigStore, logManager logging.LogManager, logger schemas.Logger) *OdinService {
 	odinStore, _ := store.(configstore.OdinStore)
-	return &OdinService{store: odinStore}
+	service := &OdinService{store: odinStore, logManager: logManager}
+	if logManager != nil {
+		service.client = newOdinClient(logger)
+	}
+	return service
+}
+
+// chatFuncFor resolves the inference function for a request. Config is read per
+// request rather than captured at construction, so a settings change takes
+// effect without a restart.
+func (s *OdinService) chatFuncFor(ctx context.Context, config *schemas.OdinConfig) odinChatFunc {
+	if s.chatOverride != nil {
+		return s.chatOverride
+	}
+	if s.client == nil {
+		return nil
+	}
+	return s.client.chat(ctx, config)
+}
+
+// Shutdown releases Odin's model client.
+func (s *OdinService) Shutdown() {
+	if s.client != nil {
+		s.client.Shutdown()
+	}
 }
 
 // RegisterRoutes wires the configuration API. Every route goes through the
@@ -38,6 +75,14 @@ func NewOdinService(store configstore.ConfigStore) *OdinService {
 func (s *OdinService) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	r.GET("/api/odin/config", lib.ChainMiddlewares(s.getConfig, middlewares...))
 	r.PUT("/api/odin/config", lib.ChainMiddlewares(s.putConfig, middlewares...))
+
+	// The chat route exists only where Odin has data to read and a way to reach a
+	// model. A route that is registered but always 503s is worse than absent: it
+	// tells the dashboard the feature is present, and the failure only shows up
+	// after a user has typed a question.
+	if s.logManager != nil && (s.client != nil || s.chatOverride != nil) {
+		r.POST("/api/odin/chat", lib.ChainMiddlewares(s.chat, middlewares...))
+	}
 }
 
 // odinConfigResponse is what the settings page renders. It can be returned
@@ -70,6 +115,8 @@ type odinConfigRequest struct {
 	SystemPromptSuffix    string `json:"system_prompt_suffix,omitempty"`
 }
 
+// getConfig serves the settings page. It is safe for any authenticated caller
+// because the stored credential is never part of the response.
 func (s *OdinService) getConfig(ctx *fasthttp.RequestCtx) {
 	if s.store == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, ErrOdinUnavailable.Error())
@@ -95,6 +142,9 @@ func (s *OdinService) getConfig(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, odinConfigResponseFromRow(row))
 }
 
+// odinConfigResponseFromRow renders a stored row for the API, replacing the
+// credential with a presence flag and resolving defaults so the form never has
+// to show a zero where a default applies.
 func odinConfigResponseFromRow(row *tables.TableOdinConfig) odinConfigResponse {
 	config := odinConfigFromRow(row)
 	return odinConfigResponse{
@@ -129,6 +179,7 @@ func odinConfigFromRow(row *tables.TableOdinConfig) *schemas.OdinConfig {
 	return config
 }
 
+// derefString reads a *string, treating nil as empty.
 func derefString(value *string) string {
 	if value == nil {
 		return ""
@@ -185,6 +236,11 @@ func (s *OdinService) putConfig(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, odinConfigResponseFromRow(row))
 }
 
+// validateOdinConfigInput normalizes and checks a write.
+//
+// Completeness is only required when enabled is true: an operator saving a
+// half-filled form with the toggle off is drafting, and rejecting that would
+// make the form impossible to fill in across more than one sitting.
 func validateOdinConfigInput(input *odinConfigRequest) error {
 	input.Model = strings.TrimSpace(input.Model)
 	input.BaseURL = strings.TrimSpace(input.BaseURL)

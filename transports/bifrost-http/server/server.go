@@ -2112,9 +2112,21 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		s.Config.NotificationPublisher = s.NotificationService.Publish
 		s.NotificationService.Start(s.Ctx)
 	}
-	if s.OdinService == nil {
-		s.OdinService = handlers.NewOdinService(s.Config.ConfigStore)
+	// Rebuilt unconditionally rather than behind a nil check: Bootstrap constructs
+	// Odin before plugins load, so the instance it made has no log manager and
+	// would never register the chat route. This is the first point where the
+	// logging plugin is known, so this is where the real service is made.
+	//
+	// A nil log manager here is a supported deployment (logging disabled), not a
+	// failure - Odin then serves only its config routes.
+	var odinLogManager logging.LogManager
+	if loggerPlugin != nil {
+		odinLogManager = loggerPlugin.GetPluginLogManager()
 	}
+	if s.OdinService != nil {
+		s.OdinService.Shutdown()
+	}
+	s.OdinService = handlers.NewOdinService(s.Config.ConfigStore, odinLogManager, logger)
 	// Start WebSocket heartbeat
 	s.WebSocketHandler.StartHeartbeat()
 	// Adding telemetry middleware
@@ -2383,7 +2395,9 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	s.NotificationService = handlers.NewNotificationService(s.Config.ConfigStore, s.WebSocketHandler)
 	s.Config.NotificationPublisher = s.NotificationService.Publish
 	s.NotificationService.Start(s.Ctx)
-	s.OdinService = handlers.NewOdinService(s.Config.ConfigStore)
+	// Bootstrap runs before plugins load, so Odin gets its config routes here and
+	// its chat route later in RegisterAPIRoutes once the log manager is known.
+	s.OdinService = handlers.NewOdinService(s.Config.ConfigStore, nil, logger)
 	// Initializing plugin loader. Allowlist entries are validated now - a malformed entry
 	// fails server startup rather than silently no-oping, since this is security-relaxing
 	// config for SSRF protection on custom plugin downloads.
@@ -2769,6 +2783,11 @@ func (s *BifrostHTTPServer) Start() error {
 			logger.Info("shutting down bifrost client...")
 			s.Client.Shutdown()
 			logger.Info("bifrost client shutdown completed")
+			// Odin holds a second, dedicated Bifrost instance with its own worker
+			// pool, so it needs its own shutdown.
+			if s.OdinService != nil {
+				s.OdinService.Shutdown()
+			}
 			logger.Info("cleaning up storage engines...")
 			// Cleanup server-specific components
 			if s.LogsCleaner != nil {
