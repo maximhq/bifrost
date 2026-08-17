@@ -1,3 +1,4 @@
+import PageTitle from "@/components/pageTitle";
 import { BudgetDisplay } from "@/components/budgetDisplay";
 import { CustomerSelector } from "@/components/entitySelectors/customerSelector";
 import { TeamSelector } from "@/components/entitySelectors/teamSelector";
@@ -785,36 +786,9 @@ export default function VirtualKeysTable({
 			</AlertDialog>
 
 			<div className="flex min-h-0 w-full grow flex-col overflow-hidden">
-				<div className="mb-4 flex shrink-0 flex-wrap items-center justify-between gap-2">
-					<div>
-						<h2 className="text-lg font-semibold">Virtual Keys</h2>
-						<p className="text-muted-foreground text-sm">Manage virtual keys, their permissions, budgets, and rate limits.</p>
-					</div>
-					<div className="flex flex-wrap items-center gap-2">
-						{selectedCount > 0 && (
-							<Button
-								variant="outline"
-								onClick={() => setShowBulkRotateDialog(true)}
-								disabled={!hasUpdateAccess || isBulkRotating}
-								data-testid="vk-bulk-rotate-btn"
-							>
-								<RotateCcw className="h-4 w-4" />
-								Rotate selected ({selectedCount})
-							</Button>
-						)}
-						<Button variant="outline" onClick={openExportDialog} disabled={virtualKeys.length === 0} data-testid="vk-export-btn">
-							<Download className="h-4 w-4" />
-							Export CSV
-						</Button>
-						<Button onClick={handleAddVirtualKey} disabled={!hasCreateAccess} data-testid="create-vk-btn">
-							<Plus className="h-4 w-4" />
-							Add Virtual Key
-						</Button>
-					</div>
-				</div>
-
-				{/* Toolbar: Search + Filters */}
+				{/* Toolbar: Search + Filters + Actions */}
 				<div className="mb-4 flex shrink-0 flex-wrap items-center gap-3">
+					<PageTitle title="Virtual Keys">Manage virtual keys, their permissions, budgets, and rate limits.</PageTitle>
 					<div className="relative w-full max-w-sm flex-1 basis-full sm:basis-auto">
 						<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 						<Input
@@ -879,6 +853,28 @@ export default function VirtualKeysTable({
 							/>
 						</div>
 					)}
+
+					<div className="flex flex-wrap items-center gap-2 sm:ml-auto">
+						{selectedCount > 0 && (
+							<Button
+								variant="outline"
+								onClick={() => setShowBulkRotateDialog(true)}
+								disabled={!hasUpdateAccess || isBulkRotating}
+								data-testid="vk-bulk-rotate-btn"
+							>
+								<RotateCcw className="h-4 w-4" />
+								Rotate selected ({selectedCount})
+							</Button>
+						)}
+						<Button variant="outline" onClick={openExportDialog} disabled={virtualKeys.length === 0} data-testid="vk-export-btn">
+							<Download className="h-4 w-4" />
+							Export CSV
+						</Button>
+						<Button onClick={handleAddVirtualKey} disabled={!hasCreateAccess} data-testid="create-vk-btn">
+							<Plus className="h-4 w-4" />
+							Add Virtual Key
+						</Button>
+					</div>
 				</div>
 
 				<div className="mb-2 min-h-0 grow overflow-hidden rounded-sm border">
