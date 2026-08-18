@@ -57,19 +57,6 @@ type BudgetResolver struct {
 	governanceInMemoryStore InMemoryStore
 }
 
-// allLimitHolderKinds is every kind of holder whose limits this package enforces. A kind absent from
-// here is a kind nothing checks, so a new holder is wired up by adding it once.
-var allLimitHolderKinds = []grant.LimitHolderKind{
-	grant.LimitHolderProvider,
-	grant.LimitHolderModelConfig,
-	grant.LimitHolderUserModelConfig,
-	grant.LimitHolderVirtualKeyModelConfig,
-	grant.LimitHolderVirtualKeyProviderConfig,
-	grant.LimitHolderVirtualKey,
-	grant.LimitHolderTeam,
-	grant.LimitHolderCustomer,
-}
-
 // NewBudgetResolver creates a new budget-based governance resolver
 func NewBudgetResolver(store GovernanceStore, modelCatalog *modelcatalog.ModelCatalog, logger schemas.Logger, governanceInMemoryStore InMemoryStore) *BudgetResolver {
 	return &BudgetResolver{
@@ -155,24 +142,27 @@ func (r *BudgetResolver) evaluateAccess(ctx *schemas.BifrostContext, evaluationR
 // what kind of holder is paying, which is what lets a deployment add one by answering with a
 // different permit.
 func (r *BudgetResolver) evaluateLimits(ctx *schemas.BifrostContext, evaluationRequest *EvaluationRequest, limits schemas.Limits) *EvaluationResult {
-	kinds := enforcedLimitHolderKinds(ctx)
-	if len(kinds) == 0 {
+	if spendingChecksSkipped(ctx) {
 		return &EvaluationResult{
 			Decision: DecisionAllow,
 			Reason:   "Request allowed by governance policy (spending checks skipped)",
 		}
 	}
 
-	// One settled list rather than several sources combined in the right order. A caller that reaches
-	// the check without having settled the attempt's limits is still subject to the deployment's own,
+	// Everything the request answers to, with nothing filtered out. The limits were settled on the
+	// grant once the attempt's provider and model were known, and this reads that one list. A caller
+	// that reaches the check without having settled them is still subject to the deployment's own,
 	// so those are gathered here for it.
+	//
+	// No filtering by holder kind, which is what makes a holder this package has never heard of
+	// enforced by construction rather than by being registered somewhere. Which credential a request
+	// is governed as is settled before governance sees it, by whoever resolves its access.
 	var budgets, rateLimits []schemas.Limit
 	if limits != nil {
 		budgets, rateLimits = limits.Budgets(), limits.RateLimits()
 	} else {
 		budgets, rateLimits = r.store.ProviderAndModelLimits(ctx, nil, evaluationRequest.Provider, evaluationRequest.Model)
 	}
-	budgets, rateLimits = grant.LimitsFrom(budgets, kinds...), grant.LimitsFrom(rateLimits, kinds...)
 
 	// Rate limits before budgets, as they always have been: a rate limit refuses a request that
 	// would otherwise have been affordable, and reporting the cheaper refusal first keeps the
@@ -197,28 +187,24 @@ func (r *BudgetResolver) evaluateLimits(ctx *schemas.BifrostContext, evaluationR
 	}
 }
 
-// enforcedLimitHolderKinds lists the holder kinds this request is actually subject to, after the
-// skip flags its caller set.
+// untrackedHolderKinds are the kinds still billed when a caller has asked for the holder's usage not
+// to be counted: what the deployment imposes, and what the user who made the request answers to.
 //
-// Skipping is per holder kind rather than per call site. Read-only metadata calls skip spending
-// entirely; a user-authenticated request skips the presented key's own limits, because what it may
-// spend is the user's allowance and not the key's. Expressing both as "which kinds still apply"
-// keeps one check for every request instead of a flag threaded through a check per holder.
-func enforcedLimitHolderKinds(ctx *schemas.BifrostContext) []grant.LimitHolderKind {
-	if bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipBudgetAndRateLimits) {
-		return nil
-	}
-	if userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID); userID != "" {
-		kinds := make([]grant.LimitHolderKind, 0, len(allLimitHolderKinds))
-		for _, kind := range allLimitHolderKinds {
-			if kind == grant.LimitHolderVirtualKey || kind == grant.LimitHolderVirtualKeyProviderConfig {
-				continue
-			}
-			kinds = append(kinds, kind)
-		}
-		return kinds
-	}
-	return allLimitHolderKinds
+// This names what to keep rather than what to drop, because the set it names is closed and belongs
+// to this package, while what a holder funds is open: a kind nobody here has heard of is a holder's,
+// and leaving it out is exactly what the caller asked for. Note this filters only who gets billed,
+// never who gets checked: everything on the grant is enforced, so asking for usage not to be counted
+// cannot buy a request past a limit it could not otherwise afford.
+var untrackedHolderKinds = []grant.LimitHolderKind{
+	grant.LimitHolderProvider,
+	grant.LimitHolderModelConfig,
+	grant.LimitHolderUserModelConfig,
+}
+
+// spendingChecksSkipped reports whether this request was told not to be checked against anything it
+// answers to. Read-only metadata calls set it: they spend nothing, so there is nothing to afford.
+func spendingChecksSkipped(ctx *schemas.BifrostContext) bool {
+	return bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipBudgetAndRateLimits)
 }
 
 // denialReason is what the caller is told when a request is refused: what was refused, and, when

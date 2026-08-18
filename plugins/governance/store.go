@@ -166,6 +166,11 @@ type GovernanceStore interface {
 	// neither knows what kind of holder is paying.
 	CheckBudgets(ctx context.Context, limits []schemas.Limit, baselines map[string]float64) (Decision, error)
 	CheckRateLimits(ctx context.Context, limits []schemas.Limit, tokensBaselines map[string]int64, requestsBaselines map[string]int64) (Decision, error)
+	// ChargeBudgets bills a cost to the given budgets, and ChargeRateLimits counts a request against the
+	// given rate limits. What to charge is the caller's to have settled: these are handed the same list
+	// the checks were, so a request cannot be checked against one set and billed to another.
+	ChargeBudgets(ctx context.Context, limits []schemas.Limit, cost float64) error
+	ChargeRateLimits(ctx context.Context, limits []schemas.Limit, tokensUsed int64, shouldUpdateTokens bool, shouldUpdateRequests bool) error
 	// CheckProviderCandidateExclusion reports whether a load-balancing candidate can serve this
 	// request right now, answering with a Decision like the checks above. What to tell the caller
 	// about a refusal is the caller's to word: it is the one writing a routing log. Only spending
@@ -196,12 +201,8 @@ type GovernanceStore interface {
 	UpsertRateLimitConfig(ctx context.Context, rateLimitID string, config *configstoreTables.TableRateLimit)
 	DeleteRateLimit(ctx context.Context, rateLimitID string)
 	// In-memory usage updates (for VK-level)
-	UpdateVirtualKeyBudgetUsageInMemory(ctx context.Context, vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider, cost float64) error
-	UpdateVirtualKeyRateLimitUsageInMemory(ctx context.Context, vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider, tokensUsed int64, shouldUpdateTokens bool, shouldUpdateRequests bool) error
 	// In-memory usage updates for scoped model configs (mirror the global model updates).
 	// scope/scopeID identify the owning entity; an empty scope or scopeID is a no-op.
-	UpdateScopedModelBudgetUsageInMemory(ctx context.Context, scope, scopeID, model string, provider schemas.ModelProvider, cost float64) error
-	UpdateScopedModelRateLimitUsageInMemory(ctx context.Context, scope, scopeID, model string, provider schemas.ModelProvider, tokensUsed int64, shouldUpdateTokens bool, shouldUpdateRequests bool) error
 	// In-memory reset checks (return items that need DB sync)
 	ResetExpiredRateLimitsInMemory(ctx context.Context, refreshReferences bool, rateLimitIDs ...string) []*configstoreTables.TableRateLimit
 	ResetExpiredBudgetsInMemory(ctx context.Context, refreshReferences bool, budgetIDs ...string) []*configstoreTables.TableBudget
@@ -219,8 +220,6 @@ type GovernanceStore interface {
 	ResetExpiredRateLimits(ctx context.Context, resetRateLimits []*configstoreTables.TableRateLimit) error
 	ResetExpiredBudgets(ctx context.Context, resetBudgets []*configstoreTables.TableBudget) error
 	// Provider and model-level usage updates (combined)
-	UpdateProviderAndModelBudgetUsageInMemory(ctx context.Context, model string, provider schemas.ModelProvider, cost float64) error
-	UpdateProviderAndModelRateLimitUsageInMemory(ctx context.Context, model string, provider schemas.ModelProvider, tokensUsed int64, shouldUpdateTokens bool, shouldUpdateRequests bool) error
 	// Dump operations
 	DumpRateLimits(ctx context.Context, tokenBaselines map[string]int64, requestBaselines map[string]int64) error
 	DumpBudgets(ctx context.Context, baselines map[string]float64) error
@@ -241,8 +240,6 @@ type GovernanceStore interface {
 	UpdateUserGovernanceInMemory(ctx context.Context, userID string, budget *configstoreTables.TableBudget, rateLimit *configstoreTables.TableRateLimit)
 	DeleteUserGovernanceInMemory(ctx context.Context, userID string)
 	CreateUserNameInMemory(ctx context.Context, userID string, userName string)
-	UpdateUserBudgetUsageInMemory(ctx context.Context, userID string, cost float64) error
-	UpdateUserRateLimitUsageInMemory(ctx context.Context, userID string, tokensUsed int64, shouldUpdateTokens bool, shouldUpdateRequests bool) error
 	// Model config in-memory operations
 	UpdateModelConfigInMemory(ctx context.Context, mc *configstoreTables.TableModelConfig) *configstoreTables.TableModelConfig
 	DeleteModelConfigInMemory(ctx context.Context, mcID string)
@@ -252,12 +249,6 @@ type GovernanceStore interface {
 	DeleteProviderInMemory(ctx context.Context, providerName string)
 	// Budget and rate limit status queries for routing with baseline support
 	GetBudgetAndRateLimitStatus(ctx context.Context, model string, provider schemas.ModelProvider, vk *configstoreTables.TableVirtualKey, budgetBaselines map[string]float64, tokenBaselines map[string]int64, requestBaselines map[string]int64) *BudgetAndRateLimitStatus
-	// CollectApplicableGovernanceIDs returns every budget and rate-limit ID this node charges for the
-	// given access on the given (provider, model).
-	// The IDs are stamped on the log row so ghost-node reconciliation can re-attribute cost and tokens;
-	// missing any ID here means that usage vanishes from cluster baselines when the node ghosts.
-	// No access records only the deployment's own limits, which is the set charged in that case.
-	CollectApplicableGovernanceIDs(ctx context.Context, limits schemas.Limits, provider schemas.ModelProvider, model string) (budgetIDs []string, rateLimitIDs []string)
 	// CollectModelScopedGovernanceIDs returns the budget and rate-limit IDs owned by
 	// model configs matching (provider, model) across the global, user and virtual-key
 	// scopes. It takes the virtual key's ID rather than its value, so a caller settling
@@ -566,7 +557,7 @@ const maxRequestTimeResetAttempts = 3
 //
 // This is the serialisation point for every usage increment: callers MUST
 // funnel through this method (directly or via one of the higher-level
-// Update*BudgetUsageInMemory wrappers) rather than doing a plain
+// ChargeBudgets) rather than doing a plain
 // Load → clone → mutate → Store, which races.
 func (gs *LocalGovernanceStore) BumpBudgetUsage(ctx context.Context, budgetID string, cost float64) error {
 	resetAttempts := 0
@@ -1309,8 +1300,7 @@ func recordVirtualKeyIdentity(ctx *schemas.BifrostContext, virtualKey *configsto
 // room. A limit scoped to the model itself applies to every candidate serving it and is not asked
 // about here, since it cannot discriminate.
 func (gs *LocalGovernanceStore) CheckProviderCandidateExclusion(ctx *schemas.BifrostContext, access schemas.Access, candidate schemas.ProviderCandidate, model string) (Decision, error) {
-	kinds := enforcedLimitHolderKinds(ctx)
-	if len(kinds) == 0 {
+	if spendingChecksSkipped(ctx) {
 		return DecisionAllow, nil
 	}
 
@@ -1323,7 +1313,6 @@ func (gs *LocalGovernanceStore) CheckProviderCandidateExclusion(ctx *schemas.Bif
 			rateLimits = append(rateLimits, permitRateLimits...)
 		}
 	}
-	budgets, rateLimits = grant.LimitsFrom(budgets, kinds...), grant.LimitsFrom(rateLimits, kinds...)
 
 	if decision, err := gs.CheckRateLimits(ctx, rateLimits, nil, nil); err != nil || isRateLimitViolation(decision) {
 		return decision, err
@@ -2015,168 +2004,6 @@ func (gs *LocalGovernanceStore) GetCustomerName(ctx context.Context, customerID 
 		return ""
 	}
 	return customer.Name
-}
-
-// UpdateVirtualKeyBudgetUsageInMemory charges a request's cost to every budget the key's permit is
-// funded by.
-//
-// What it charges comes from the same two places the check reads (what funds the holder, and what
-// funds its use of this provider), so a budget cannot be enforced on a request and then not billed for
-// it, or billed and never enforced. It used to walk the key's hierarchy itself, which made the two
-// answers two implementations of one question.
-func (gs *LocalGovernanceStore) UpdateVirtualKeyBudgetUsageInMemory(ctx context.Context, vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider, cost float64) error {
-	if vk == nil {
-		return fmt.Errorf("virtual key cannot be nil")
-	}
-	permit := gs.permitForVirtualKey(ctx, vk)
-	heldBudgets, _ := gs.HolderLimits(ctx, permit)
-	providerBudgets, _ := gs.ProviderLimits(ctx, permit, provider)
-	budgetIDs := limitIDsOf(heldBudgets, providerBudgets)
-	for _, budgetID := range budgetIDs {
-		if err := gs.BumpBudgetUsage(ctx, budgetID, cost); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// UpdateProviderAndModelBudgetUsageInMemory performs atomic budget updates for both provider-level and model-level configs (in memory)
-func (gs *LocalGovernanceStore) UpdateProviderAndModelBudgetUsageInMemory(ctx context.Context, model string, provider schemas.ModelProvider, cost float64) error {
-	// 1. Update provider-level budget (if provider is set)
-	if provider != "" {
-		providerKey := string(provider)
-		if value, exists := gs.providers.Load(providerKey); exists && value != nil {
-			if providerTable, ok := value.(*configstoreTables.TableProvider); ok && providerTable != nil && providerTable.BudgetID != nil {
-				if err := gs.BumpBudgetUsage(ctx, *providerTable.BudgetID, cost); err != nil {
-					return err
-				}
-			}
-		}
-	}
-
-	// 2. Update global-scope model-level budgets across all four tiers (incl. the
-	// all-models "*:provider" tier that now carries provider-level governance).
-	var providerStr *string
-	if provider != "" {
-		p := string(provider)
-		providerStr = &p
-	}
-	for _, mc := range gs.collectModelConfigsFor(ctx, configstoreTables.ModelConfigScopeGlobal, "", model, providerStr) {
-		for i := range mc.Budgets {
-			if err := gs.BumpBudgetUsage(ctx, mc.Budgets[i].ID, cost); err != nil {
-				return err
-			}
-		}
-	}
-
-	return nil
-}
-
-// UpdateUserBudgetUsageInMemory updates user's budget usage in memory (enterprise-only)
-// Community build: silent no-op to avoid per-request error spam when a userID is set.
-func (gs *LocalGovernanceStore) UpdateUserBudgetUsageInMemory(ctx context.Context, userID string, cost float64) error {
-	return nil
-}
-
-// UpdateProviderAndModelRateLimitUsageInMemory updates rate limit counters for both provider-level and model-level rate limits.
-func (gs *LocalGovernanceStore) UpdateProviderAndModelRateLimitUsageInMemory(ctx context.Context, model string, provider schemas.ModelProvider, tokensUsed int64, shouldUpdateTokens bool, shouldUpdateRequests bool) error {
-	// 1. Update provider-level rate limit (if provider is set)
-	if provider != "" {
-		providerKey := string(provider)
-		if value, exists := gs.providers.Load(providerKey); exists && value != nil {
-			if providerTable, ok := value.(*configstoreTables.TableProvider); ok && providerTable != nil && providerTable.RateLimitID != nil {
-				if err := gs.BumpRateLimitUsage(ctx, *providerTable.RateLimitID, tokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
-					return err
-				}
-			}
-		}
-	}
-
-	// 2. Update global-scope model-level rate limits across all four tiers (incl. the
-	// all-models "*:provider" tier that now carries provider-level governance).
-	var providerStr *string
-	if provider != "" {
-		p := string(provider)
-		providerStr = &p
-	}
-	for _, mc := range gs.collectModelConfigsFor(ctx, configstoreTables.ModelConfigScopeGlobal, "", model, providerStr) {
-		if mc.RateLimitID == nil {
-			continue
-		}
-		if err := gs.BumpRateLimitUsage(ctx, *mc.RateLimitID, tokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// UpdateScopedModelBudgetUsageInMemory bumps budget usage for model configs scoped to the
-// given (scope, scopeID). Post-response counterpart to CheckScopedModelBudget — without it,
-// scoped budgets never increase and never trip. Empty scope/scopeID/model is a no-op.
-func (gs *LocalGovernanceStore) UpdateScopedModelBudgetUsageInMemory(ctx context.Context, scope, scopeID, model string, provider schemas.ModelProvider, cost float64) error {
-	if scope == "" || scopeID == "" {
-		return nil
-	}
-	var providerStr *string
-	if provider != "" {
-		p := string(provider)
-		providerStr = &p
-	}
-	for _, mc := range gs.collectModelConfigsFor(ctx, scope, scopeID, model, providerStr) {
-		for i := range mc.Budgets {
-			if err := gs.BumpBudgetUsage(ctx, mc.Budgets[i].ID, cost); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-// UpdateScopedModelRateLimitUsageInMemory bumps rate limit counters for model configs scoped
-// to the given (scope, scopeID). Post-response counterpart to CheckScopedModelRateLimit.
-func (gs *LocalGovernanceStore) UpdateScopedModelRateLimitUsageInMemory(ctx context.Context, scope, scopeID, model string, provider schemas.ModelProvider, tokensUsed int64, shouldUpdateTokens bool, shouldUpdateRequests bool) error {
-	if scope == "" || scopeID == "" {
-		return nil
-	}
-	var providerStr *string
-	if provider != "" {
-		p := string(provider)
-		providerStr = &p
-	}
-	for _, mc := range gs.collectModelConfigsFor(ctx, scope, scopeID, model, providerStr) {
-		if mc.RateLimitID == nil {
-			continue
-		}
-		if err := gs.BumpRateLimitUsage(ctx, *mc.RateLimitID, tokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// UpdateVirtualKeyRateLimitUsageInMemory counts a request against every rate limit the key's permit
-// answers to, read the same way as the budgets above.
-func (gs *LocalGovernanceStore) UpdateVirtualKeyRateLimitUsageInMemory(ctx context.Context, vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider, tokensUsed int64, shouldUpdateTokens bool, shouldUpdateRequests bool) error {
-	if vk == nil {
-		return fmt.Errorf("virtual key cannot be nil")
-	}
-	permit := gs.permitForVirtualKey(ctx, vk)
-	_, heldRateLimits := gs.HolderLimits(ctx, permit)
-	_, providerRateLimits := gs.ProviderLimits(ctx, permit, provider)
-	rateLimitIDs := limitIDsOf(heldRateLimits, providerRateLimits)
-	for _, rateLimitID := range rateLimitIDs {
-		if err := gs.BumpRateLimitUsage(ctx, rateLimitID, tokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// UpdateUserRateLimitUsageInMemory updates user's rate limit usage in memory (enterprise-only)
-// Community build: silent no-op to avoid per-request error spam when a userID is set.
-func (gs *LocalGovernanceStore) UpdateUserRateLimitUsageInMemory(ctx context.Context, userID string, tokensUsed int64, shouldUpdateTokens bool, shouldUpdateRequests bool) error {
-	return nil
 }
 
 // budgetResetTarget returns the LastReset value to write when budget is expired,
@@ -3300,33 +3127,6 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 	gs.LastDBUsagesRateLimitsRequestsMu.Unlock()
 }
 
-// CollectApplicableGovernanceIDs names every budget and rate limit a request counts against, for the
-// log entry that lets a recovering node replay the usage of requests it never saw.
-//
-// It reads the same resolved access the check reads, so the set recorded against a request is the set
-// that was enforced on it: the same list, not a second derivation of it. It
-// used to resolve the holder itself from the presented credential, which meant the co-payers a request
-// was charged to and the co-payers checked for it were two implementations of one question, free to
-// drift while a slow request was in flight.
-//
-// Nothing here asks what kind of holder is paying, so a deployment that answers with grants of its
-// own has them recorded without this path changing.
-//
-// No access means the holder's usage is not being charged, so none of its limits are recorded, only
-// the deployment's own, which are resolved here because there is no access to have settled them on.
-// That is exactly the set the tracker charges in the same case, which is the property that matters:
-// a co-payer recorded but never debited invents usage when a ghosted node's log is replayed, and one
-// debited but never recorded loses it.
-func (gs *LocalGovernanceStore) CollectApplicableGovernanceIDs(ctx context.Context, limits schemas.Limits, provider schemas.ModelProvider, model string) (budgetIDs []string, rateLimitIDs []string) {
-	var budgets, rateLimits []schemas.Limit
-	if limits != nil {
-		budgets, rateLimits = limits.Budgets(), limits.RateLimits()
-	} else {
-		budgets, rateLimits = gs.ProviderAndModelLimits(ctx, nil, provider, model)
-	}
-	return limitIDsOf(budgets), limitIDsOf(rateLimits)
-}
-
 // limitIDsOf names the limits of several lists as one deduplicated list of identifiers, in the order
 // first seen. A limit reached twice is one limit, and charging it twice for one request would bill
 // the same budget twice.
@@ -3348,17 +3148,17 @@ func limitIDsOf(lists ...[]schemas.Limit) []string {
 // CollectModelScopedGovernanceIDs returns only the model-config-owned IDs for a
 // (provider, model) pair, across the global, user and virtual-key scopes.
 //
-// It exists for delayed settlement. CollectApplicableGovernanceIDs is called while
-// the request is in flight, and a batch create carries no top-level model — each
-// input-file row names its own — so collectModelConfigsFor matches only the
-// all-models wildcards and never the exact-model configs. Those are precisely where
+// It exists for delayed settlement. A request's limits are settled while it is in
+// flight, and a batch create carries no top-level model (each input-file row names
+// its own), so collectModelConfigsFor matches only the all-models wildcards and
+// never the exact-model configs. Those are precisely where
 // a model-level budget lives (an access profile's per-model limits materialise as
 // user-scoped configs naming one model and provider), so batch spend never reached
 // them. Settlement does know the models, and calls this per model to charge what
 // the create-time collection could not see.
 //
 // Callers must subtract the IDs already charged for the request: the wildcard tiers
-// returned here overlap CollectApplicableGovernanceIDs by design, since both walk
+// returned here overlap what was settled at create time by design, since both walk
 // the same four tiers.
 func (gs *LocalGovernanceStore) CollectModelScopedGovernanceIDs(ctx context.Context, virtualKeyID string, userID string, provider schemas.ModelProvider, model string) (budgetIDs []string, rateLimitIDs []string) {
 	seenBudgets := map[string]bool{}
@@ -4789,6 +4589,28 @@ func (gs *LocalGovernanceStore) CheckRateLimits(ctx context.Context, limits []sc
 		return DecisionAllow, nil
 	}
 	return gs.CheckRateLimit(ctx, entityWise, tokensBaselines, requestsBaselines)
+}
+
+// ChargeBudgets bills a cost to every budget it is handed. The list is the one the check read, so a
+// request is billed to exactly what it was checked against.
+func (gs *LocalGovernanceStore) ChargeBudgets(ctx context.Context, limits []schemas.Limit, cost float64) error {
+	for _, budgetID := range limitIDsOf(limits) {
+		if err := gs.BumpBudgetUsage(ctx, budgetID, cost); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ChargeRateLimits counts a request against every rate limit it is handed, for the same reason as
+// ChargeBudgets.
+func (gs *LocalGovernanceStore) ChargeRateLimits(ctx context.Context, limits []schemas.Limit, tokensUsed int64, shouldUpdateTokens, shouldUpdateRequests bool) error {
+	for _, rateLimitID := range limitIDsOf(limits) {
+		if err := gs.BumpRateLimitUsage(ctx, rateLimitID, tokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // limitLabel names a limit's holder for the log lines and refusals the check emits. It is what the
