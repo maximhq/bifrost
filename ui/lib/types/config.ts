@@ -267,6 +267,7 @@ export interface NetworkConfig {
 	is_key_less?: boolean;
 	extra_headers?: Record<string, string>;
 	default_request_timeout_in_seconds: number;
+	connect_timeout_in_seconds?: number;
 	max_retries: number;
 	retry_backoff_initial: number; // Duration in milliseconds
 	retry_backoff_max: number; // Duration in milliseconds

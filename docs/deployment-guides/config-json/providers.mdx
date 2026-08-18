@@ -51,6 +51,7 @@ Per-provider `network_config` options (applies to all standard providers):
 | Field | Type | Description |
 |-------|------|-------------|
 | `default_request_timeout_in_seconds` | integer | Per-request timeout |
+| `connect_timeout_in_seconds` | integer | DNS + TCP dial timeout (default: 30). Bounds connection establishment separately from the request timeout so unreachable endpoints fail fast |
 | `max_retries` | integer | Retry attempts on transient errors |
 | `retry_backoff_initial` | integer | Initial backoff in milliseconds |
 | `retry_backoff_max` | integer | Maximum backoff in milliseconds |

@@ -417,6 +417,12 @@ export const networkConfigSchema = z
 			.number()
 			.min(1, "Timeout must be greater than 0 seconds")
 			.max(3600, "Timeout must be less than 3600 seconds"),
+		connect_timeout_in_seconds: z
+			.number()
+			.int("Connect timeout must be a whole number of seconds")
+			.min(1, "Connect timeout must be at least 1 second")
+			.max(3600, "Connect timeout must be at most 3600 seconds i.e. 60 minutes")
+			.optional(),
 		max_retries: z.number().min(0, "Max retries must be greater than 0").max(10, "Max retries must be less than 10"),
 		retry_backoff_initial: z.number().min(100),
 		retry_backoff_max: z.number().min(100),
@@ -473,6 +479,12 @@ export const networkFormConfigSchema = z
 			.number("Timeout must be a number")
 			.min(1, "Timeout must be greater than 0 seconds")
 			.max(172800, "Timeout must be less than 172800 seconds i.e. 48 hours"),
+		connect_timeout_in_seconds: z.coerce
+			.number("Connect timeout must be a number")
+			.int("Connect timeout must be a whole number of seconds")
+			.min(1, "Connect timeout must be at least 1 second")
+			.max(3600, "Connect timeout must be at most 3600 seconds i.e. 60 minutes")
+			.optional(),
 		max_retries: z.coerce
 			.number("Max retries must be a number")
 			.min(0, "Max retries must be greater than 0")

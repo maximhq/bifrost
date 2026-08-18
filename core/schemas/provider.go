@@ -14,6 +14,7 @@ const (
 	DefaultRetryBackoffInitial        = 500 * time.Millisecond
 	DefaultRetryBackoffMax            = 5 * time.Second
 	DefaultRequestTimeoutInSeconds    = 300
+	DefaultConnectTimeoutInSeconds    = 30 // DNS + TCP dial budget — separate from the request timeout so unreachable endpoints fail fast instead of hanging for the full request timeout
 	DefaultMaxConnDurationInSeconds   = 300 // 5 minutes — forces connection recycling to prevent stale connections from NAT/LB silent drops
 	DefaultBufferSize                 = 5000
 	DefaultConcurrency                = 1000
@@ -34,6 +35,7 @@ const (
 // Pre-defined errors for provider operations
 const (
 	ErrProviderRequestTimedOut      = "request timed out (default is 300 seconds). You can increase it by setting the default_request_timeout_in_seconds in the network_config or in UI - Providers > Provider Name > Network Config."
+	ErrProviderConnectTimedOut      = "could not connect to the provider endpoint before the connect timeout (default is 30 seconds) - the endpoint is likely unreachable, check the base_url. The timeout can be adjusted via connect_timeout_in_seconds in the network_config or in UI - Providers > Provider Name > Network Config."
 	ErrRequestCancelled             = "request cancelled by caller"
 	ErrRequestBodyConversion        = "failed to convert bifrost request to the expected provider request body"
 	ErrProviderRequestMarshal       = "failed to marshal request body to JSON"
@@ -62,6 +64,7 @@ type NetworkConfig struct {
 	BaseURL                        string            `json:"base_url,omitempty"`                       // Base URL for the provider (optional)
 	ExtraHeaders                   map[string]string `json:"extra_headers,omitempty"`                  // Additional headers to include in requests (optional)
 	DefaultRequestTimeoutInSeconds int               `json:"default_request_timeout_in_seconds"`       // Default timeout for requests
+	ConnectTimeoutInSeconds        int               `json:"connect_timeout_in_seconds,omitempty"`     // DNS + TCP dial timeout (0 = default 30s); keeps unreachable endpoints from consuming the full request timeout
 	MaxRetries                     int               `json:"max_retries"`                              // Maximum number of retries
 	RetryBackoffInitial            time.Duration     `json:"retry_backoff_initial"`                    // Initial backoff duration (stored as nanoseconds, JSON as milliseconds)
 	RetryBackoffMax                time.Duration     `json:"retry_backoff_max"`                        // Maximum backoff duration (stored as nanoseconds, JSON as milliseconds)
@@ -88,6 +91,7 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 		BaseURL                        string            `json:"base_url,omitempty"`
 		ExtraHeaders                   map[string]string `json:"extra_headers,omitempty"`
 		DefaultRequestTimeoutInSeconds int               `json:"default_request_timeout_in_seconds"`
+		ConnectTimeoutInSeconds        int               `json:"connect_timeout_in_seconds,omitempty"`
 		MaxRetries                     int               `json:"max_retries"`
 		RetryBackoffInitial            json.RawMessage   `json:"retry_backoff_initial"` // string ("500ms") or int (milliseconds)
 		RetryBackoffMax                json.RawMessage   `json:"retry_backoff_max"`     // string ("5s") or int (milliseconds)
@@ -111,6 +115,7 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 	nc.BaseURL = alias.BaseURL
 	nc.ExtraHeaders = alias.ExtraHeaders
 	nc.DefaultRequestTimeoutInSeconds = alias.DefaultRequestTimeoutInSeconds
+	nc.ConnectTimeoutInSeconds = alias.ConnectTimeoutInSeconds
 	nc.MaxRetries = alias.MaxRetries
 	nc.InsecureSkipVerify = alias.InsecureSkipVerify
 	nc.CACertPEM = alias.CACertPEM
@@ -183,6 +188,7 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 		BaseURL                        string            `json:"base_url,omitempty"`
 		ExtraHeaders                   map[string]string `json:"extra_headers,omitempty"`
 		DefaultRequestTimeoutInSeconds int               `json:"default_request_timeout_in_seconds"`
+		ConnectTimeoutInSeconds        int               `json:"connect_timeout_in_seconds,omitempty"`
 		MaxRetries                     int               `json:"max_retries"`
 		RetryBackoffInitial            int64             `json:"retry_backoff_initial"` // milliseconds in JSON
 		RetryBackoffMax                int64             `json:"retry_backoff_max"`     // milliseconds in JSON
@@ -201,6 +207,7 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 		BaseURL:                        nc.BaseURL,
 		ExtraHeaders:                   nc.ExtraHeaders,
 		DefaultRequestTimeoutInSeconds: nc.DefaultRequestTimeoutInSeconds,
+		ConnectTimeoutInSeconds:        nc.ConnectTimeoutInSeconds,
 		MaxRetries:                     nc.MaxRetries,
 		// Convert time.Duration (nanoseconds) to milliseconds
 		RetryBackoffInitial:        int64(nc.RetryBackoffInitial / time.Millisecond),
@@ -236,6 +243,7 @@ func (nc *NetworkConfig) Redacted() *NetworkConfig {
 // DefaultNetworkConfig is the default network configuration for provider connections.
 var DefaultNetworkConfig = NetworkConfig{
 	DefaultRequestTimeoutInSeconds: DefaultRequestTimeoutInSeconds,
+	ConnectTimeoutInSeconds:        DefaultConnectTimeoutInSeconds,
 	MaxRetries:                     DefaultMaxRetries,
 	RetryBackoffInitial:            DefaultRetryBackoffInitial,
 	RetryBackoffMax:                DefaultRetryBackoffMax,
@@ -576,6 +584,10 @@ func (config *ProviderConfig) CheckAndSetDefaults() {
 
 	if config.NetworkConfig.DefaultRequestTimeoutInSeconds <= 0 {
 		config.NetworkConfig.DefaultRequestTimeoutInSeconds = DefaultRequestTimeoutInSeconds
+	}
+
+	if config.NetworkConfig.ConnectTimeoutInSeconds <= 0 {
+		config.NetworkConfig.ConnectTimeoutInSeconds = DefaultConnectTimeoutInSeconds
 	}
 
 	if config.NetworkConfig.MaxRetries == 0 {

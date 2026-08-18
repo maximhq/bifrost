@@ -104,6 +104,7 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 export const DefaultNetworkConfig = {
 	base_url: "",
 	default_request_timeout_in_seconds: 300,
+	connect_timeout_in_seconds: 30,
 	max_retries: 0,
 	retry_backoff_initial: 1000,
 	retry_backoff_max: 10000,

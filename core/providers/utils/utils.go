@@ -390,6 +390,12 @@ func makeRequestWithDoFunc(ctx context.Context, do func() error) (time.Duration,
 					ExtraFields: schemas.BifrostErrorExtraFields{Latency: latency.Milliseconds()},
 				}, noop
 			}
+			// Connect (DNS/TCP dial) timeouts get their own message: telling the
+			// user to raise the request timeout is wrong advice when the endpoint
+			// never accepted a connection.
+			if errors.Is(err, ErrConnectTimeout) {
+				return latency, SetErrorLatency(NewBifrostTimeoutError(schemas.ErrProviderConnectTimedOut, err), latency), noop
+			}
 			// Check for timeout errors first before checking net.OpError to avoid misclassification.
 			if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 				return latency, SetErrorLatency(NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency), noop
@@ -509,11 +515,43 @@ func ConfigureRetry(client *fasthttp.Client) *fasthttp.Client {
 //   - Interval 5s: subsequent probes every 5s
 //   - Count 3: close after 3 failed probes
 //
+// ErrConnectTimeout marks dial failures caused by the connect timeout expiring
+// (DNS resolution or TCP dial), so error classification can point users at
+// connect_timeout_in_seconds / base_url instead of the request timeout.
+var ErrConnectTimeout = errors.New("connect timeout")
+
+// wrapConnectTimeout tags timeout-flavored dial/resolve errors with
+// ErrConnectTimeout; other errors pass through unchanged.
+func wrapConnectTimeout(err error, addr string) error {
+	if err == nil {
+		return nil
+	}
+	var netErr net.Error
+	if (errors.As(err, &netErr) && netErr.Timeout()) || errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("%w dialing %s: %s", ErrConnectTimeout, addr, err.Error())
+	}
+	return err
+}
+
 // Dead connections are detected within ~25s (10 + 5*3), before the 30s
 // MaxIdleConnDuration expires and the connection is reused.
-func ConfigureDialer(client *fasthttp.Client, allowPrivateNetwork bool) *fasthttp.Client {
+//
+// DNS resolution and TCP dial are bounded by networkConfig.ConnectTimeoutInSeconds
+// rather than the request timeout, so an unreachable endpoint (e.g. a misconfigured
+// base_url behind a packet-dropping firewall) fails fast instead of holding the
+// request for the full request timeout.
+func ConfigureDialer(client *fasthttp.Client, networkConfig schemas.NetworkConfig) *fasthttp.Client {
 	// Configure stale-connection retry policy
 	client.RetryIfErr = network.StaleConnectionRetryIfErr
+
+	allowPrivateNetwork := networkConfig.AllowPrivateNetwork
+	connectTimeout := time.Duration(networkConfig.ConnectTimeoutInSeconds) * time.Second
+	if connectTimeout <= 0 {
+		// Callers normally run CheckAndSetDefaults first; fall back to the
+		// pre-connect-timeout behavior (request timeout bounds the dial) for
+		// direct core users that construct the client without it.
+		connectTimeout = client.ReadTimeout
+	}
 
 	existingDial := client.Dial
 	existingDialTimeout := client.DialTimeout
@@ -535,7 +573,7 @@ func ConfigureDialer(client *fasthttp.Client, allowPrivateNetwork bool) *fasthtt
 			conn, err = existingDial(addr)
 		case existingDialTimeout != nil:
 			// Preserve dial-timeout behavior
-			conn, err = existingDialTimeout(addr, client.ReadTimeout)
+			conn, err = existingDialTimeout(addr, connectTimeout)
 		default:
 			// resolve DNS ourselves, reject private IPs, then dial
 			// the IP literal directly — closes the DNS rebinding window that exists
@@ -546,17 +584,17 @@ func ConfigureDialer(client *fasthttp.Client, allowPrivateNetwork bool) *fasthtt
 			}
 			// Bound DNS resolution with the same timeout that governs the TCP
 			resolveCtx := context.Background()
-			if client.ReadTimeout > 0 {
+			if connectTimeout > 0 {
 				var cancel context.CancelFunc
-				resolveCtx, cancel = context.WithTimeout(resolveCtx, client.ReadTimeout)
+				resolveCtx, cancel = context.WithTimeout(resolveCtx, connectTimeout)
 				defer cancel()
 			}
 			ips, resolveErr := net.DefaultResolver.LookupIP(resolveCtx, "ip", host)
 			if resolveErr != nil {
-				return nil, resolveErr
+				return nil, wrapConnectTimeout(resolveErr, addr)
 			}
 			dialer := &net.Dialer{
-				Timeout:         client.ReadTimeout,
+				Timeout:         connectTimeout,
 				KeepAliveConfig: keepAliveCfg,
 			}
 			var lastErr error
@@ -580,7 +618,7 @@ func ConfigureDialer(client *fasthttp.Client, allowPrivateNetwork bool) *fasthtt
 			}
 			if conn == nil {
 				if lastErr != nil {
-					return nil, lastErr
+					return nil, wrapConnectTimeout(lastErr, addr)
 				}
 				return nil, fmt.Errorf("no usable address resolved for %s", host)
 			}
@@ -1351,10 +1389,10 @@ func CloneFastHTTPClientConfig(base *fasthttp.Client) *fasthttp.Client {
 //
 // Per-chunk idle detection is enforced at the application layer via
 // NewIdleTimeoutReader (see GetStreamIdleTimeout / StreamIdleTimeoutInSeconds).
-// The initial TCP/TLS dial still honors the base client's ReadTimeout because
-// the Dial closure installed by ConfigureDialer reads client.ReadTimeout from
-// the base client pointer captured at ConfigureDialer call time — cloning copies
-// that closure verbatim, so zeroing the clone's ReadTimeout does not affect dial.
+// The initial DNS/TCP dial still honors the connect timeout because the Dial
+// closure installed by ConfigureDialer captured it at ConfigureDialer call
+// time — cloning copies that closure verbatim, so zeroing the clone's
+// ReadTimeout does not affect dial.
 func BuildStreamingClient(base *fasthttp.Client) *fasthttp.Client {
 	c := CloneFastHTTPClientConfig(base)
 	c.ReadTimeout = 0
