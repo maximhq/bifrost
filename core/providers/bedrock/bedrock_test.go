@@ -7256,3 +7256,255 @@ func TestReasoningConfigNoDoubleEmissionOnEgress(t *testing.T) {
 		})
 	}
 }
+
+// TestBedrockDocumentS3URIUsesS3Location pins that an s3:// document reference travels
+// to Converse as the s3Location union member rather than being downloaded by Bifrost.
+// DocumentSource is documented as bytes | content | s3Location | text, so the object
+// reference is a first-class source - inlining it would burn a round trip and put the
+// payload under the 25 MiB inline cap for nothing.
+func TestBedrockDocumentS3URIUsesS3Location(t *testing.T) {
+	t.Parallel()
+
+	const s3URI = "s3://my-bucket/reports/q4.pdf"
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	fileURL := s3URI
+	fileType := "application/pdf"
+
+	got, err := bedrock.ToBedrockChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+		Model: "anthropic.claude-sonnet-4-5-v1:0",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentBlocks: []schemas.ChatContentBlock{
+						{
+							Type: schemas.ChatContentBlockTypeFile,
+							File: &schemas.ChatInputFile{FileURL: &fileURL, FileType: &fileType},
+						},
+					},
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Len(t, got.Messages, 1)
+
+	// Converse pairs a document with a companion text block, so scan rather than index.
+	var doc *bedrock.BedrockDocumentSource
+	for _, block := range got.Messages[0].Content {
+		if block.Document != nil {
+			doc = block.Document
+			break
+		}
+	}
+	require.NotNil(t, doc, "expected a document block")
+	assert.Equal(t, "pdf", doc.Format)
+	require.NotNil(t, doc.Source)
+	require.NotNil(t, doc.Source.S3Location, "expected s3Location to carry the object reference")
+	assert.Equal(t, s3URI, doc.Source.S3Location.URI)
+	assert.Nil(t, doc.Source.Bytes, "expected union member bytes to be nil when s3Location is set")
+	assert.Nil(t, doc.Source.Text, "expected union member text to be nil when s3Location is set")
+}
+
+// TestBedrockDocumentS3URIResolvesFormatFromObjectExtension pins the promise the
+// error message already makes.
+//
+// A bare s3:// object reference is never downloaded, so there is no Content-Type to
+// read a format from and no bytes to sniff. That leaves the object key itself as the
+// only remaining signal -- and the refusal text says so out loud: "set file_type or
+// give the object a file extension". Naming the object correctly did nothing, so a
+// caller who followed the instruction got the same error back.
+//
+// bedrockImageFormatFromPath already resolves the image twin from the URL for exactly
+// this reason; documents had no equivalent.
+func TestBedrockDocumentS3URIResolvesFormatFromObjectExtension(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name   string
+		uri    string
+		format string
+	}{
+		{"pdf", "s3://my-bucket/reports/q4.pdf", "pdf"},
+		{"uppercase extension", "s3://my-bucket/reports/Q4.PDF", "pdf"},
+		{"csv", "s3://my-bucket/data/rows.csv", "csv"},
+		{"docx", "s3://my-bucket/docs/spec.docx", "docx"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			fileURL := tc.uri
+
+			got, err := bedrock.ToBedrockChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+				Model: "anthropic.claude-sonnet-4-5-v1:0",
+				Input: []schemas.ChatMessage{
+					{
+						Role: schemas.ChatMessageRoleUser,
+						Content: &schemas.ChatMessageContent{
+							ContentBlocks: []schemas.ChatContentBlock{
+								{
+									Type: schemas.ChatContentBlockTypeFile,
+									// No FileType and no Filename: the object key is the only signal.
+									File: &schemas.ChatInputFile{FileURL: &fileURL},
+								},
+							},
+						},
+					},
+				},
+			})
+			require.NoError(t, err, "the object extension is the documented fallback")
+			require.NotNil(t, got)
+			require.Len(t, got.Messages, 1)
+
+			var doc *bedrock.BedrockDocumentSource
+			for _, block := range got.Messages[0].Content {
+				if block.Document != nil {
+					doc = block.Document
+					break
+				}
+			}
+			require.NotNil(t, doc, "expected a document block")
+			assert.Equal(t, tc.format, doc.Format)
+			require.NotNil(t, doc.Source)
+			require.NotNil(t, doc.Source.S3Location)
+			assert.Equal(t, tc.uri, doc.Source.S3Location.URI)
+		})
+	}
+
+	// The Responses path keeps its own copy of the s3 branch, so the fallback has to
+	// exist in both. A fix applied to only one leaves the same misleading refusal on
+	// whichever route the caller happens to use.
+	t.Run("responses path resolves it too", func(t *testing.T) {
+		t.Parallel()
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		fileURL := "s3://my-bucket/reports/q4.pdf"
+
+		got, err := bedrock.ToBedrockResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+			Model: "anthropic.claude-sonnet-4-5-v1:0",
+			Input: []schemas.ResponsesMessage{
+				{
+					Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{
+						ContentBlocks: []schemas.ResponsesMessageContentBlock{
+							{
+								Type: schemas.ResponsesInputMessageContentBlockTypeFile,
+								ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{
+									FileURL: &fileURL,
+								},
+							},
+						},
+					},
+				},
+			},
+		})
+		require.NoError(t, err, "the object extension is the documented fallback on this path too")
+		require.NotNil(t, got)
+		require.NotEmpty(t, got.Messages)
+
+		var doc *bedrock.BedrockDocumentSource
+		for _, block := range got.Messages[0].Content {
+			if block.Document != nil {
+				doc = block.Document
+				break
+			}
+		}
+		require.NotNil(t, doc, "expected a document block")
+		assert.Equal(t, "pdf", doc.Format)
+		require.NotNil(t, doc.Source)
+		require.NotNil(t, doc.Source.S3Location)
+	})
+
+	// An object with no extension at all still has nothing to go on, so the refusal
+	// stands -- and its wording is now truthful rather than misleading.
+	t.Run("no extension still refuses", func(t *testing.T) {
+		t.Parallel()
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		fileURL := "s3://my-bucket/reports/q4"
+
+		_, err := bedrock.ToBedrockChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+			Model: "anthropic.claude-sonnet-4-5-v1:0",
+			Input: []schemas.ChatMessage{
+				{
+					Role: schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{
+						ContentBlocks: []schemas.ChatContentBlock{
+							{
+								Type: schemas.ChatContentBlockTypeFile,
+								File: &schemas.ChatInputFile{FileURL: &fileURL},
+							},
+						},
+					},
+				},
+			},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "cannot determine document format")
+	})
+}
+
+// TestBedrockImageS3URIUsesS3Location is the ImageSource twin. Note the format has to be
+// derived from the object's extension: nothing is fetched, so there is no Content-Type,
+// and Converse requires a format on every image block.
+func TestBedrockImageS3URIUsesS3Location(t *testing.T) {
+	t.Parallel()
+
+	const s3URI = "s3://my-bucket/screens/shot.png"
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	got, err := bedrock.ToBedrockChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+		Model: "anthropic.claude-sonnet-4-5-v1:0",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentBlocks: []schemas.ChatContentBlock{
+						{
+							Type:           schemas.ChatContentBlockTypeImage,
+							ImageURLStruct: &schemas.ChatInputImage{URL: s3URI},
+						},
+					},
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Len(t, got.Messages, 1)
+	require.Len(t, got.Messages[0].Content, 1)
+
+	img := got.Messages[0].Content[0].Image
+	require.NotNil(t, img, "expected an image block")
+	assert.Equal(t, "png", img.Format)
+	require.NotNil(t, img.Source.S3Location, "expected s3Location to carry the object reference")
+	assert.Equal(t, s3URI, img.Source.S3Location.URI)
+	assert.Nil(t, img.Source.Bytes, "expected union member bytes to be nil when s3Location is set")
+}
+
+// TestBedrockImageS3URIWithoutExtensionErrors: an extension-less s3:// object gives
+// Converse no way to know the image format, and Bifrost has no Content-Type to fall back
+// on. Failing here beats sending a format-less block and getting an opaque 400.
+func TestBedrockImageS3URIWithoutExtensionErrors(t *testing.T) {
+	t.Parallel()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	_, err := bedrock.ToBedrockChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+		Model: "anthropic.claude-sonnet-4-5-v1:0",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentBlocks: []schemas.ChatContentBlock{
+						{
+							Type:           schemas.ChatContentBlockTypeImage,
+							ImageURLStruct: &schemas.ChatInputImage{URL: "s3://my-bucket/screens/shot"},
+						},
+					},
+				},
+			},
+		},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot determine image format")
+}
