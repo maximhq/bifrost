@@ -1069,6 +1069,17 @@ export function LogDetailView({
 									</div>
 								}
 							/>
+							{log.service_tier && (
+								<LogEntryDetailsView
+									className="w-full"
+									label="Service Tier"
+									value={
+										<Badge variant="secondary" className="uppercase" data-testid="logdetails-service-tier">
+											{log.service_tier}
+										</Badge>
+									}
+								/>
+							)}
 							{log.stop_reason && (
 								<LogEntryDetailsView
 									className="w-full"
