@@ -1,10 +1,13 @@
 package utils
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -13,6 +16,156 @@ import (
 	"github.com/maximhq/bifrost/core/network"
 	"github.com/valyala/fasthttp"
 )
+
+type fakeHTTPIPResolver struct {
+	ips map[string][]net.IP
+}
+
+func (resolver *fakeHTTPIPResolver) LookupIP(_ context.Context, _, host string) ([]net.IP, error) {
+	if ips, ok := resolver.ips[host]; ok {
+		return ips, nil
+	}
+	return nil, fmt.Errorf("no such host: %s", host)
+}
+
+func stubHTTPDial(dialed *[]string) func(context.Context, string, string) (net.Conn, error) {
+	return func(_ context.Context, _, addr string) (net.Conn, error) {
+		*dialed = append(*dialed, addr)
+		client, server := net.Pipe()
+		_ = server.Close()
+		return client, nil
+	}
+}
+
+func TestHTTPPolicyDialContext_PrivatePolicy(t *testing.T) {
+	resolver := &fakeHTTPIPResolver{ips: map[string][]net.IP{
+		"internal.corp": {net.ParseIP("10.0.0.5")},
+	}}
+
+	var dialed []string
+	dialContext := httpPolicyDialContext(resolver, stubHTTPDial(&dialed), time.Second, false, nil)
+	_, err := dialContext(context.Background(), "tcp", "internal.corp:443")
+	var policyErr *DialPolicyError
+	if !errors.As(err, &policyErr) || policyErr.RetryableError() {
+		t.Fatalf("expected typed non-retryable policy error, got %v", err)
+	}
+	if len(dialed) != 0 {
+		t.Fatalf("blocked target was dialed: %v", dialed)
+	}
+
+	dialContext = httpPolicyDialContext(resolver, stubHTTPDial(&dialed), time.Second, true, nil)
+	conn, err := dialContext(context.Background(), "tcp", "internal.corp:443")
+	if err != nil {
+		t.Fatalf("expected private target with opt-in to dial: %v", err)
+	}
+	_ = conn.Close()
+}
+
+func TestConfigureHTTPTransportDialer_EndToEnd(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	transport := ConfigureHTTPTransportDialer(&http.Transport{}, time.Second, false)
+	client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+	streamingClient := BuildStreamingHTTPClient(client)
+	if streamingClient.Transport != transport {
+		t.Fatal("streaming client must share the guarded transport")
+	}
+
+	for name, currentClient := range map[string]*http.Client{"unary": client, "streaming": streamingClient} {
+		request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL, nil)
+		if err != nil {
+			t.Fatalf("%s client request: %v", name, err)
+		}
+		response, err := currentClient.Do(request)
+		if err != nil {
+			t.Fatalf("%s client: %v", name, err)
+		}
+		_ = response.Body.Close()
+	}
+}
+
+func TestHTTPPolicyDialContext_PrivateProxyDialAllowed(t *testing.T) {
+	resolver := &fakeHTTPIPResolver{ips: map[string][]net.IP{
+		"10.0.0.9":        {net.ParseIP("10.0.0.9")},
+		"10.0.0.5":        {net.ParseIP("10.0.0.5")},
+		"169.254.169.254": {net.ParseIP("169.254.169.254")},
+	}}
+	proxyURL, err := url.Parse("http://10.0.0.9:3128")
+	if err != nil {
+		t.Fatalf("parse proxy URL: %v", err)
+	}
+	proxy := http.ProxyURL(proxyURL)
+
+	var dialed []string
+	dialContext := httpPolicyDialContext(resolver, stubHTTPDial(&dialed), time.Second, false, proxy)
+	conn, err := dialContext(context.Background(), "tcp", "10.0.0.9:3128")
+	if err != nil {
+		t.Fatalf("private proxy hop should be dialable when allow_private_network is false: %v", err)
+	}
+	_ = conn.Close()
+	if len(dialed) != 1 || dialed[0] != "10.0.0.9:3128" {
+		t.Fatalf("expected proxy address to be dialed, got %v", dialed)
+	}
+
+	dialed = nil
+	_, err = dialContext(context.Background(), "tcp", "10.0.0.5:443")
+	var policyErr *DialPolicyError
+	if !errors.As(err, &policyErr) || !strings.Contains(err.Error(), "private IP") {
+		t.Fatalf("expected private destination to stay blocked, got %v", err)
+	}
+	if len(dialed) != 0 {
+		t.Fatalf("blocked private destination was dialed: %v", dialed)
+	}
+
+	_, err = dialContext(context.Background(), "tcp", "169.254.169.254:80")
+	if !errors.As(err, &policyErr) || !strings.Contains(err.Error(), "link-local IP") {
+		t.Fatalf("expected link-local destination to stay blocked, got %v", err)
+	}
+}
+
+func TestConfigureHTTPTransportDialer_ProxyDestinationPolicy(t *testing.T) {
+	proxyURL, err := url.Parse("http://10.0.0.9:3128")
+	if err != nil {
+		t.Fatalf("parse proxy URL: %v", err)
+	}
+
+	newClient := func() *http.Client {
+		transport := ConfigureHTTPTransportDialer(&http.Transport{
+			Proxy: http.ProxyURL(proxyURL),
+		}, 200*time.Millisecond, false)
+		return &http.Client{Transport: transport, Timeout: 500 * time.Millisecond}
+	}
+
+	t.Run("public dest via private proxy is not a policy error", func(t *testing.T) {
+		_, err := newClient().Get("http://192.0.2.1/")
+		if err == nil {
+			t.Fatal("expected dial to the missing proxy to fail")
+		}
+		var policyErr *DialPolicyError
+		if errors.As(err, &policyErr) {
+			t.Fatalf("public destination via private proxy should not be rejected by dial policy: %v", err)
+		}
+	})
+
+	t.Run("private dest stays blocked", func(t *testing.T) {
+		_, err := newClient().Get("http://10.1.2.3/")
+		var policyErr *DialPolicyError
+		if !errors.As(err, &policyErr) || !strings.Contains(err.Error(), "private IP") {
+			t.Fatalf("expected private destination policy error, got %v", err)
+		}
+	})
+
+	t.Run("link-local dest stays blocked", func(t *testing.T) {
+		_, err := newClient().Get("http://169.254.169.254/")
+		var policyErr *DialPolicyError
+		if !errors.As(err, &policyErr) || !strings.Contains(err.Error(), "link-local IP") {
+			t.Fatalf("expected link-local destination policy error, got %v", err)
+		}
+	})
+}
 
 // TestConfigureDialer_SetsRetryIfErr verifies that ConfigureDialer installs
 // the StaleConnectionRetryIfErr callback on the client.

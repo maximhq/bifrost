@@ -706,9 +706,8 @@ type BatchS3Config struct {
 // Route 53 aliases for the endpoint work here too. Region stays required either way, since it
 // sets the SigV4 credential scope independently of which host is dialled.
 //
-// S3 is the exception to the naming shape: its endpoint DNS is a wildcard whose leading label
-// selects the API surface, so the value must carry the literal "bucket." prefix. Bifrost prepends
-// the bucket name to whatever is set here, matching the virtual-hosted URL the AWS SDKs build.
+// S3 endpoint overrides use path-style addressing, so the configured host does not need a
+// "bucket." prefix. Bifrost appends the bucket name to the endpoint path.
 // An S3 Gateway endpoint needs no value at all — it routes via the route table under the public
 // S3 hostname and has no DNS name to configure.
 type BedrockEndpoints struct {
@@ -716,7 +715,8 @@ type BedrockEndpoints struct {
 	ControlPlane *SecretVar `json:"control_plane,omitempty"` // com.amazonaws.{region}.bedrock — model listing, batch jobs
 	Mantle       *SecretVar `json:"mantle,omitempty"`        // com.amazonaws.{region}.bedrock-mantle — mantle-routed models
 	AgentRuntime *SecretVar `json:"agent_runtime,omitempty"` // com.amazonaws.{region}.bedrock-agent-runtime — rerank
-	S3           *SecretVar `json:"s3,omitempty"`            // com.amazonaws.{region}.s3 — batch file I/O, "bucket."-prefixed
+	S3           *SecretVar `json:"s3,omitempty"`            // com.amazonaws.{region}.s3 — batch file I/O, path-style on override
+	DNSSuffix    string     `json:"dns_suffix,omitempty"`    // partition DNS suffix for regional defaults, e.g. c2s.ic.gov
 }
 
 // NormalizeEndpointHost returns a configured endpoint value as a bare host, or "" when unset.

@@ -10,6 +10,64 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+func TestValidateBedrockKeyEndpoints(t *testing.T) {
+	key := func(endpoints *schemas.BedrockEndpoints) schemas.Key {
+		return schemas.Key{BedrockKeyConfig: &schemas.BedrockKeyConfig{
+			Region:    schemas.NewSecretVar("us-east-1"),
+			Endpoints: endpoints,
+		}}
+	}
+	cases := []struct {
+		name         string
+		key          schemas.Key
+		allowPrivate bool
+		wantErr      string
+	}{
+		{"nil endpoints", key(nil), false, ""},
+		{"private host blocked", key(&schemas.BedrockEndpoints{Runtime: schemas.NewSecretVar("10.0.0.1")}), false, "endpoints.runtime"},
+		{"private host allowed", key(&schemas.BedrockEndpoints{Runtime: schemas.NewSecretVar("10.0.0.1")}), true, ""},
+		{"scheme and path normalized", key(&schemas.BedrockEndpoints{Runtime: schemas.NewSecretVar("https://127.0.0.1/path")}), false, ""},
+		{"query in host rejected", key(&schemas.BedrockEndpoints{Runtime: schemas.NewSecretVar("host.example?x=1")}), false, "query or fragment"},
+		{"localhost suffix rejected", key(&schemas.BedrockEndpoints{DNSSuffix: " svc.localhost "}), true, "endpoints.dns_suffix"},
+		{"invalid suffix rejected", key(&schemas.BedrockEndpoints{DNSSuffix: "bad suffix"}), true, "endpoints.dns_suffix"},
+		{"commercial suffix accepted without live DNS", key(&schemas.BedrockEndpoints{DNSSuffix: ".amazonaws.com."}), false, ""},
+		{"unresolvable synthesized hosts accepted", key(&schemas.BedrockEndpoints{DNSSuffix: "test.invalid"}), false, ""},
+		{"synthesized host syntax rejected", schemas.Key{BedrockKeyConfig: &schemas.BedrockKeyConfig{
+			Region:    schemas.NewSecretVar("bad region"),
+			Endpoints: &schemas.BedrockEndpoints{DNSSuffix: "amazonaws.com"},
+		}}, false, "synthesized host"},
+		{"explicit override still live-validated", key(&schemas.BedrockEndpoints{
+			DNSSuffix: "test.invalid",
+			Runtime:   schemas.NewSecretVar("no-such-host.invalid"),
+		}), false, "endpoints.runtime"},
+		{"all suffix hosts overridden", key(&schemas.BedrockEndpoints{
+			DNSSuffix:    "test.invalid",
+			Runtime:      schemas.NewSecretVar("127.0.0.1"),
+			ControlPlane: schemas.NewSecretVar("127.0.0.1"),
+			AgentRuntime: schemas.NewSecretVar("127.0.0.1"),
+			S3:           schemas.NewSecretVar("127.0.0.1"),
+		}), false, ""},
+		{"mantle private host blocked", schemas.Key{BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{
+			Region:    schemas.NewSecretVar("us-east-1"),
+			Endpoints: &schemas.BedrockEndpoints{Mantle: schemas.NewSecretVar("10.0.0.1")},
+		}}, false, "bedrock_mantle_key_config.endpoints.mantle"},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			err := validateBedrockKeyEndpoints(testCase.key, testCase.allowPrivate)
+			if testCase.wantErr == "" {
+				if err != nil {
+					t.Fatalf("expected no error, got %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), testCase.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", testCase.wantErr, err)
+			}
+		})
+	}
+}
+
 // TestMergeUpdatedKey_Value locks in the invariant that a masked key preview can
 // never be persisted as the real key value. The provider keys API renders keys
 // redacted on GET; when a client echoes that placeholder back on update, the

@@ -403,7 +403,9 @@ curl --location 'http://localhost:8080/api/providers' \
 
 <Note>
   For self-hosted providers like Ollama and SGL, `base_url` is required. For
-  standard providers, it's optional and overrides the default endpoint.
+  standard providers, it's optional and overrides the default endpoint. For AWS
+  Bedrock, `base_url` applies only to bedrock-runtime inference; model listing,
+  batch, Agent Runtime, S3, and Mantle use their service endpoints.
 </Note>
 
 ### Private Network Access

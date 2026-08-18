@@ -561,16 +561,8 @@ func ConfigureDialer(client *fasthttp.Client, allowPrivateNetwork bool) *fasthtt
 			}
 			var lastErr error
 			for _, ip := range ips {
-				// Unspecified (0.0.0.0, ::) and link-local (169.254.x.x, fe80::) are always blocked
-				if ip.IsUnspecified() {
-					return nil, fmt.Errorf("connection to unspecified IP %s is not allowed", ip)
-				}
-				if network.IsLinkLocal(ip) {
-					return nil, fmt.Errorf("connection to link-local IP %s is not allowed", ip)
-				}
-				// RFC 1918 blocked unless operator explicitly opted in; loopback always allowed
-				if !ip.IsLoopback() && !allowPrivateNetwork && network.IsPrivateIP(ip) {
-					return nil, fmt.Errorf("connection to private IP %s is not allowed", ip)
+				if policyErr := ipPolicyErr(ip, allowPrivateNetwork); policyErr != nil {
+					return nil, policyErr
 				}
 				conn, err = dialer.Dial("tcp", net.JoinHostPort(ip.String(), port))
 				if err == nil {
@@ -597,6 +589,165 @@ func ConfigureDialer(client *fasthttp.Client, allowPrivateNetwork bool) *fasthtt
 	}
 
 	return client
+}
+
+type ipResolver interface {
+	LookupIP(ctx context.Context, network, host string) ([]net.IP, error)
+}
+
+// DialPolicyError marks deterministic SSRF policy rejections as non-retryable.
+type DialPolicyError struct {
+	message string
+}
+
+func (e *DialPolicyError) Error() string {
+	return e.message
+}
+
+func (*DialPolicyError) RetryableError() bool {
+	return false
+}
+
+func ipPolicyErr(ip net.IP, allowPrivateNetwork bool) error {
+	if ip.IsUnspecified() {
+		return &DialPolicyError{message: fmt.Sprintf("connection to unspecified IP %s is not allowed", ip)}
+	}
+	if network.IsLinkLocal(ip) {
+		return &DialPolicyError{message: fmt.Sprintf("connection to link-local IP %s is not allowed", ip)}
+	}
+	if !ip.IsLoopback() && !allowPrivateNetwork && network.IsPrivateIP(ip) {
+		return &DialPolicyError{message: fmt.Sprintf("connection to private IP %s is not allowed", ip)}
+	}
+	return nil
+}
+
+// proxyProbeURL is a NO_PROXY-safe dummy target used only to ask a Proxy func
+// for its proxy hop. .invalid never matches a real destination.
+var proxyProbeURL = &url.URL{Scheme: "https", Host: "bifrost-proxy-probe.invalid"}
+
+func checkHostIPPolicy(ctx context.Context, resolver ipResolver, host string, allowPrivateNetwork bool) error {
+	ips, err := resolver.LookupIP(ctx, "ip", host)
+	if err != nil {
+		return err
+	}
+	if len(ips) == 0 {
+		return fmt.Errorf("no usable address resolved for %s", host)
+	}
+	for _, ip := range ips {
+		if err := ipPolicyErr(ip, allowPrivateNetwork); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func proxyCanonicalAddr(proxyURL *url.URL) string {
+	if proxyURL == nil {
+		return ""
+	}
+	port := proxyURL.Port()
+	if port == "" {
+		switch proxyURL.Scheme {
+		case "https":
+			port = "443"
+		case "socks5", "socks5h":
+			port = "1080"
+		default:
+			port = "80"
+		}
+	}
+	return net.JoinHostPort(proxyURL.Hostname(), port)
+}
+
+func isProxyDialAddr(addr string, proxy func(*http.Request) (*url.URL, error)) bool {
+	if proxy == nil {
+		return false
+	}
+	proxyURL, err := proxy(&http.Request{URL: proxyProbeURL})
+	if err != nil || proxyURL == nil {
+		return false
+	}
+	return proxyCanonicalAddr(proxyURL) == addr
+}
+
+func destinationPolicyProxy(inner func(*http.Request) (*url.URL, error), resolver ipResolver, allowPrivateNetwork bool) func(*http.Request) (*url.URL, error) {
+	return func(req *http.Request) (*url.URL, error) {
+		if req != nil && req.URL != nil {
+			if host := req.URL.Hostname(); host != "" {
+				if err := checkHostIPPolicy(req.Context(), resolver, host, allowPrivateNetwork); err != nil {
+					return nil, err
+				}
+			}
+		}
+		if inner == nil {
+			return nil, nil
+		}
+		return inner(req)
+	}
+}
+
+// ConfigureHTTPTransportDialer applies the provider SSRF policy at dial time.
+// Destination IPs are checked with ipPolicyErr; when Transport.Proxy is set
+// (Bedrock uses http.ProxyFromEnvironment), that policy is not applied to the
+// proxy hop itself so a private corporate proxy can still be dialed.
+func ConfigureHTTPTransportDialer(transport *http.Transport, dialTimeout time.Duration, allowPrivateNetwork bool) *http.Transport {
+	resolver := net.DefaultResolver
+	var innerProxy func(*http.Request) (*url.URL, error)
+	if transport.Proxy != nil {
+		innerProxy = transport.Proxy
+		transport.Proxy = destinationPolicyProxy(innerProxy, resolver, allowPrivateNetwork)
+	}
+	transport.DialContext = httpPolicyDialContext(resolver, nil, dialTimeout, allowPrivateNetwork, innerProxy)
+	return transport
+}
+
+func httpPolicyDialContext(resolver ipResolver, dial func(context.Context, string, string) (net.Conn, error), dialTimeout time.Duration, allowPrivateNetwork bool, proxy func(*http.Request) (*url.URL, error)) func(context.Context, string, string) (net.Conn, error) {
+	if dial == nil {
+		dialer := &net.Dialer{
+			Timeout: dialTimeout,
+			KeepAliveConfig: net.KeepAliveConfig{
+				Enable:   true,
+				Idle:     10 * time.Second,
+				Interval: 5 * time.Second,
+				Count:    3,
+			},
+		}
+		dial = dialer.DialContext
+	}
+	return func(ctx context.Context, networkName, addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, err
+		}
+		resolveCtx := ctx
+		if dialTimeout > 0 {
+			var cancel context.CancelFunc
+			resolveCtx, cancel = context.WithTimeout(ctx, dialTimeout)
+			defer cancel()
+		}
+		ips, err := resolver.LookupIP(resolveCtx, "ip", host)
+		if err != nil {
+			return nil, err
+		}
+		skipDialPolicy := isProxyDialAddr(addr, proxy)
+		var lastErr error
+		for _, ip := range ips {
+			if !skipDialPolicy {
+				if policyErr := ipPolicyErr(ip, allowPrivateNetwork); policyErr != nil {
+					return nil, policyErr
+				}
+			}
+			conn, dialErr := dial(ctx, networkName, net.JoinHostPort(ip.String(), port))
+			if dialErr == nil {
+				return conn, nil
+			}
+			lastErr = dialErr
+		}
+		if lastErr != nil {
+			return nil, lastErr
+		}
+		return nil, fmt.Errorf("no usable address resolved for %s", host)
+	}
 }
 
 // ConfigureProxy sets up a proxy for the fasthttp client based on the provided configuration.

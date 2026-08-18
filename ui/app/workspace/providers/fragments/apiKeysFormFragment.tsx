@@ -79,8 +79,8 @@ const BEDROCK_VPC_ENDPOINT_SERVICES = [
 	{
 		name: "s3",
 		label: "S3",
-		description: "Serves batch file I/O. Requires the bucket-prefixed endpoint name. A Gateway endpoint needs no value here.",
-		placeholder: "bucket.vpce-0abc123-x1y2z3.s3.us-east-1.vpce.amazonaws.com",
+		description: "Serves batch file I/O using path-style buckets. A Gateway endpoint needs no value here.",
+		placeholder: "vpce-0abc123-x1y2z3.s3.us-east-1.vpce.amazonaws.com",
 	},
 ];
 
@@ -129,6 +129,22 @@ function VPCEndpointsFormField({
 							)}
 						/>
 					))}
+					{services.some((service) => service.name !== "mantle") && (
+						<FormField
+							control={control}
+							name={`${configKey}.endpoints.dns_suffix`}
+							render={({ field }) => (
+								<FormItem>
+									<FormLabel>DNS Suffix</FormLabel>
+									<FormDescription>Overrides the partition suffix used for regional Bedrock, Agent Runtime, and S3 hosts.</FormDescription>
+									<FormControl>
+										<Input data-testid="apikey-bedrock-endpoint-dns-suffix-input" placeholder="c2s.ic.gov" {...field} />
+									</FormControl>
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
+					)}
 				</AccordionContent>
 			</AccordionItem>
 		</Accordion>

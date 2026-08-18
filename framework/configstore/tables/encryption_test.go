@@ -920,6 +920,7 @@ func TestTableKey_BedrockEndpoints_RoundTrip(t *testing.T) {
 
 	const runtimeHost = "vpce-0abc123-x1y2z3.bedrock-runtime.eu-west-2.vpce.amazonaws.com"
 	const mantleHost = "vpce-0abc123-x1y2z3.bedrock-mantle.eu-west-2.vpce.amazonaws.com"
+	const dnsSuffix = "c2s.ic.gov"
 
 	key := &TableKey{
 		Name:       "bedrock-vpce-key",
@@ -932,7 +933,8 @@ func TestTableKey_BedrockEndpoints_RoundTrip(t *testing.T) {
 			SecretKey: *schemas.NewSecretVar("wJalr-VPCE"),
 			Region:    schemas.NewSecretVar("eu-west-2"),
 			Endpoints: &schemas.BedrockEndpoints{
-				Runtime: schemas.NewSecretVar(runtimeHost),
+				Runtime:   schemas.NewSecretVar(runtimeHost),
+				DNSSuffix: dnsSuffix,
 			},
 		},
 		BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{
@@ -949,7 +951,16 @@ func TestTableKey_BedrockEndpoints_RoundTrip(t *testing.T) {
 
 	raw := rawRow(t, db, "config_keys", key.ID)
 	assert.Equal(t, "encrypted", raw["encryption_status"])
-	assert.NotContains(t, raw["bedrock_endpoints_json"], runtimeHost)
+	rawEndpoints, ok := raw["bedrock_endpoints_json"]
+	require.True(t, ok, "bedrock_endpoints_json column must be present")
+	switch value := rawEndpoints.(type) {
+	case string:
+		assert.NotContains(t, value, runtimeHost)
+	case []byte:
+		assert.NotContains(t, string(value), runtimeHost)
+	default:
+		t.Fatalf("bedrock_endpoints_json has unexpected type %T", rawEndpoints)
+	}
 	assert.NotContains(t, raw["bedrock_mantle_endpoints_json"], mantleHost)
 
 	var found TableKey
@@ -959,6 +970,7 @@ func TestTableKey_BedrockEndpoints_RoundTrip(t *testing.T) {
 	require.NotNil(t, found.BedrockKeyConfig.Endpoints)
 	require.NotNil(t, found.BedrockKeyConfig.Endpoints.Runtime)
 	assert.Equal(t, runtimeHost, found.BedrockKeyConfig.Endpoints.Runtime.GetValue())
+	assert.Equal(t, dnsSuffix, found.BedrockKeyConfig.Endpoints.DNSSuffix)
 	// Services the user left blank must stay unset so the public regional host is used.
 	assert.Nil(t, found.BedrockKeyConfig.Endpoints.ControlPlane)
 	assert.Nil(t, found.BedrockKeyConfig.Endpoints.S3)

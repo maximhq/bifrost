@@ -382,6 +382,8 @@ When only `region` is set, Bifrost inherits credentials from the AWS SDK default
 </Tab>
 </Tabs>
 
+**Custom endpoints:** set bare service hosts under `bedrock_key_config.endpoints` (`runtime`, `control_plane`, `agent_runtime`, `s3`, or `mantle`) for PrivateLink. Use `dns_suffix` for partition-wide regional host construction. Provider `network_config.base_url` applies only to Bedrock Runtime inference; standard `AWS_ENDPOINT_URL_*` and `AWS_ENDPOINT_URL` environment variables are also supported. Explicit S3 hosts use path-style buckets and do not need a `bucket.` prefix. See [AWS Bedrock custom endpoints](../../providers/supported-providers/bedrock#custom-endpoints).
+
 **Model aliases** (map logical names to Bedrock inference profile IDs):
 
 ```json

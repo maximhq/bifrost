@@ -467,6 +467,40 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
 
 ---
 
+## Custom Endpoints
+
+Bedrock supports per-key service hosts for PrivateLink, partition DNS suffixes, a runtime-only provider `base_url`, and the standard AWS endpoint environment variables.
+
+```json
+{
+  "network_config": {
+    "base_url": "https://runtime-gateway.example.com/bedrock",
+    "allow_private_network": true
+  },
+  "keys": [
+    {
+      "bedrock_key_config": {
+        "region": "us-iso-east-1",
+        "endpoints": {
+          "runtime": "vpce-0123456789.bedrock-runtime.us-iso-east-1.vpce.amazonaws.com",
+          "control_plane": "vpce-0123456789.bedrock.us-iso-east-1.vpce.amazonaws.com",
+          "agent_runtime": "vpce-0123456789.bedrock-agent-runtime.us-iso-east-1.vpce.amazonaws.com",
+          "s3": "vpce-0123456789.s3.us-iso-east-1.vpce.amazonaws.com",
+          "mantle": "vpce-0123456789.bedrock-mantle.us-iso-east-1.vpce.amazonaws.com",
+          "dns_suffix": "c2s.ic.gov"
+        }
+      }
+    }
+  ]
+}
+```
+
+Endpoint fields are bare hosts; pasted schemes and paths are removed. Explicit S3 overrides use path-style URLs (`https://{host}/{bucket}`), so do not add a `bucket.` prefix. `dns_suffix` keeps the default virtual-hosted S3 shape and rewrites the regional Runtime, Control Plane, Agent Runtime, and S3 hosts. Mantle remains under `api.aws`.
+
+Resolution order is: per-key service host, runtime-only `network_config.base_url`, service-specific `AWS_ENDPOINT_URL_*`, global `AWS_ENDPOINT_URL`, `dns_suffix`, then the commercial AWS default. Set `AWS_IGNORE_CONFIGURED_ENDPOINT_URLS=true` to ignore the AWS endpoint environment variables. Private endpoints also require `network_config.allow_private_network: true`.
+
+---
+
 ## Beta Headers
 
 For Claude models on Bedrock, Bifrost validates `anthropic-beta` headers and drops unsupported headers from the request.

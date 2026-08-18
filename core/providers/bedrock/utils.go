@@ -97,9 +97,9 @@ func awsPartitionForRegion(region string) string {
 }
 
 // resolveBedrockHost returns the host to dial for an AWS endpoint service: the configured VPC
-// endpoint override when set, otherwise the public regional host built from the region. The
-// returned value is a bare host, so callers keep ownership of the scheme and path — including
-// the bucket prefix S3's virtual-hosted URLs carry.
+// endpoint override when set, otherwise the public regional host built from the region (honoring
+// dns_suffix for non-mantle defaults). The returned value is a bare host; callers that need a
+// full URL should use endpointBase / s3BucketBase, which also apply BaseURL and env overrides.
 func resolveBedrockHost(endpoints *schemas.BedrockEndpoints, service bedrockService, region string) string {
 	if endpoints != nil {
 		var override *schemas.SecretVar
@@ -119,11 +119,17 @@ func resolveBedrockHost(endpoints *schemas.BedrockEndpoints, service bedrockServ
 			return host
 		}
 	}
-	// Mantle is the odd one out: its public host lives under api.aws, not amazonaws.com.
+	// Mantle is the odd one out: its public host lives under api.aws.
 	if service == bedrockServiceMantle {
 		return fmt.Sprintf("%s.%s.api.aws", service, region)
 	}
-	return fmt.Sprintf("%s.%s.amazonaws.com", service, region)
+	suffix := defaultBedrockDNSSuffix
+	if endpoints != nil {
+		if configured := strings.Trim(strings.TrimSpace(endpoints.DNSSuffix), "."); configured != "" {
+			suffix = configured
+		}
+	}
+	return fmt.Sprintf("%s.%s.%s", service, region, suffix)
 }
 
 // bedrockEndpoints returns the endpoint overrides on a key config, tolerating a nil config so

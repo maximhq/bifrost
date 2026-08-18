@@ -151,6 +151,32 @@ export const batchS3ConfigSchema = z.object({
 	buckets: z.array(s3BucketConfigSchema).optional(),
 });
 
+// Matches transports/bifrost-http/handlers/provider_keys.go (bedrockDNSSuffixRegex + localhost reject).
+const BEDROCK_DNS_SUFFIX_PATTERN = /^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$/;
+
+export const bedrockDNSSuffixSchema = z
+	.string()
+	.optional()
+	.superRefine((value, ctx) => {
+		if (value === undefined || value === "") {
+			return;
+		}
+		const suffix = value.trim().replace(/^\.+|\.+$/g, "");
+		if (suffix === "" || !BEDROCK_DNS_SUFFIX_PATTERN.test(suffix)) {
+			ctx.addIssue({
+				code: "custom",
+				message: "Enter a valid DNS suffix, for example amazonaws.com or c2s.ic.gov",
+			});
+			return;
+		}
+		if (suffix === "localhost" || suffix.endsWith(".localhost")) {
+			ctx.addIssue({
+				code: "custom",
+				message: "DNS suffix cannot use a loopback-reserved name such as localhost",
+			});
+		}
+	});
+
 // Interface VPC endpoint hosts, one per AWS endpoint service Bifrost dials for Bedrock.
 export const bedrockEndpointsSchema = z.object({
 	runtime: secretVarSchema.optional(),
@@ -158,6 +184,7 @@ export const bedrockEndpointsSchema = z.object({
 	mantle: secretVarSchema.optional(),
 	agent_runtime: secretVarSchema.optional(),
 	s3: secretVarSchema.optional(),
+	dns_suffix: bedrockDNSSuffixSchema,
 });
 
 // Bedrock key config schema
