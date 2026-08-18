@@ -5124,17 +5124,27 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	provider, model, fallbacks = req.GetRequestFields()
 	// Empty provider/model after PreRequestHook means no plugin
 	// could pick a provider for this model — the caller's input is unresolvable.
+	var primaryResult *schemas.BifrostResponse
+	var primaryErr *schemas.BifrostError
 	if err := validateRequestAfterPreRequestHooks(req); err != nil {
-		// Returning before tryRequest skips the downstream log drain, so flush
-		// any PreRequestHook-emitted plugin logs here.
-		flushPluginLogs(ctx)
 		err.PopulateExtraFields(req.RequestType, provider, model, model)
-		return nil, err
+		// Provider auto-resolution failure is only terminal when there is no
+		// configured fallback to route to: with a model present and fallbacks
+		// configured it counts as the primary attempt's failure, and the
+		// fallback loop below (which sets an explicit provider/model per
+		// attempt) still gets evaluated (#6188). A missing required model
+		// stays terminal either way.
+		if provider != "" || (isModelRequired(req.RequestType) && model == "") || len(fallbacks) == 0 {
+			// Returning before tryRequest skips the downstream log drain, so flush
+			// any PreRequestHook-emitted plugin logs here.
+			flushPluginLogs(ctx)
+			return nil, err
+		}
+		primaryErr = err
+	} else {
+		bifrost.logger.Debug(fmt.Sprintf("primary provider %s with model %s and %d fallbacks", provider, model, len(fallbacks)))
+		primaryResult, primaryErr = bifrost.tryRequest(ctx, req)
 	}
-
-	bifrost.logger.Debug(fmt.Sprintf("primary provider %s with model %s and %d fallbacks", provider, model, len(fallbacks)))
-
-	primaryResult, primaryErr := bifrost.tryRequest(ctx, req)
 	if primaryErr != nil {
 		if primaryErr.Error != nil {
 			bifrost.logger.Debug(fmt.Sprintf("primary provider %s with model %s returned error: %s", provider, model, primaryErr.Error.Message))
@@ -5257,17 +5267,25 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	provider, model, fallbacks = req.GetRequestFields()
 	// Empty provider after PreRequestHook means no plugin
 	// could pick a provider for this model — the caller's input is unresolvable.
+	var primaryResult chan *schemas.BifrostStreamChunk
+	var primaryErr *schemas.BifrostError
 	if err := validateRequestAfterPreRequestHooks(req); err != nil {
-		// Returning before tryStreamRequest skips the downstream log drain, so
-		// flush any PreRequestHook-emitted plugin logs here.
-		flushPluginLogs(ctx)
 		err.PopulateExtraFields(req.RequestType, provider, model, model)
-		return nil, err
+		// Mirror handleRequest: provider auto-resolution failure with a model
+		// present and fallbacks configured counts as the primary attempt's
+		// failure so the fallback loop below still runs (#6188). A missing
+		// required model stays terminal either way.
+		if provider != "" || (isModelRequired(req.RequestType) && model == "") || len(fallbacks) == 0 {
+			// Returning before tryStreamRequest skips the downstream log drain, so
+			// flush any PreRequestHook-emitted plugin logs here.
+			flushPluginLogs(ctx)
+			return nil, err
+		}
+		primaryErr = err
+	} else {
+		bifrost.logger.Debug(fmt.Sprintf("primary provider %s with model %s and %d fallbacks", provider, model, len(fallbacks)))
+		primaryResult, primaryErr = bifrost.tryStreamRequest(ctx, req)
 	}
-
-	bifrost.logger.Debug(fmt.Sprintf("primary provider %s with model %s and %d fallbacks", provider, model, len(fallbacks)))
-
-	primaryResult, primaryErr := bifrost.tryStreamRequest(ctx, req)
 	if primaryErr != nil {
 		if primaryErr.Error != nil {
 			bifrost.logger.Debug(fmt.Sprintf("primary provider %s with model %s returned error: %s", provider, model, primaryErr.Error.Message))
