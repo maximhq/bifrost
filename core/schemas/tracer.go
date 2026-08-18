@@ -23,6 +23,7 @@ type StreamAccumulatorResult struct {
 	OutputMessage         *ChatMessage                    // Accumulated output message
 	OutputMessages        []ResponsesMessage              // For responses API
 	TokenUsage            *BifrostLLMUsage                // Token usage
+	ServiceTier           *BifrostServiceTier             // Served tier ("priority"/"flex"/"default"); needs its own field because it lives on the response envelope, not on BifrostLLMUsage like Speed and InferenceGeo
 	Cost                  *float64                        // Cost in dollars
 	CacheDebug            *BifrostCacheDebug              // Semantic cache debug info if available
 	GuardrailDebug        *BifrostGuardrailDebug          // Guardrail debug info if available
