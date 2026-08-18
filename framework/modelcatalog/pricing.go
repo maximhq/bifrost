@@ -15,7 +15,7 @@ import (
 func (mc *ModelCatalog) GetModelCapabilityEntryForModel(model string, provider schemas.ModelProvider) *PricingEntry {
 	if alias, ok := mc.keyconf.ResolveAlias(provider, model); ok {
 		model = alias.Config.ModelID
-		if alias.Config.ModelName != nil {
+		if alias.Config.ModelName != nil && *alias.Config.ModelName != "" {
 			model = *alias.Config.ModelName
 		}
 	}

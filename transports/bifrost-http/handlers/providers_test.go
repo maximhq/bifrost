@@ -957,6 +957,20 @@ func TestListModelDetails_ResolvesCatalogPricing(t *testing.T) {
 			outputCost: 0.00000484,
 			cacheCost:  0.00000015,
 		},
+		{
+			name:     "Azure alias with empty model name",
+			provider: schemas.Azure,
+			model:    "glm-5-2-empty-name",
+			alias:    &schemas.AliasConfig{ModelID: azureGLM, ModelName: schemas.Ptr("")},
+			pricingJSON: `{"azure/FW-GLM-5.2": {
+				"provider": "azure", "mode": "chat",
+				"input_cost_per_token": 0.00000154, "output_cost_per_token": 0.00000484,
+				"cache_read_input_token_cost": 0.00000015
+			}}`,
+			inputCost:  0.00000154,
+			outputCost: 0.00000484,
+			cacheCost:  0.00000015,
+		},
 	}
 
 	for _, test := range tests {
