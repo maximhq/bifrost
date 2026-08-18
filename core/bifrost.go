@@ -516,6 +516,13 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 			continue
 		}
 
+		// Skip providers that disable list_models via allowed_requests
+		if config, err := bifrost.account.GetConfigForProvider(providerKey); err == nil && config != nil &&
+			config.CustomProviderConfig != nil &&
+			!config.CustomProviderConfig.IsOperationAllowed(schemas.ListModelsRequest) {
+			continue
+		}
+
 		wg.Add(1)
 		go func(providerKey schemas.ModelProvider) {
 			defer wg.Done()
