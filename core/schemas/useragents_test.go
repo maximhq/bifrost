@@ -25,6 +25,7 @@ func TestDetectAppFromUserAgent(t *testing.T) {
 		{name: "gemini", userAgent: "gemini-cli/1.0", want: "Gemini CLI"},
 		{name: "qwen", userAgent: "qwen-code/1.0", want: "Qwen Code"},
 		{name: "opencode", userAgent: "opencode/1.0", want: "OpenCode"},
+		{name: "opencode desktop and tui wire format", userAgent: "opencode/1.17.10 ai-sdk/provider-utils/3.0.20 runtime/bun/1.3.5", want: "OpenCode"},
 		{name: "windsurf", userAgent: "Windsurf/1.0", want: "Windsurf"},
 		{name: "kilo before cline", userAgent: "kilo-cline/1.0", want: "Kilo Code"},
 		{name: "roo before cline", userAgent: "roo-cline/1.0", want: "Roo Code"},
