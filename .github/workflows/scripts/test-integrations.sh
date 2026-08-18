@@ -3,7 +3,50 @@ set -euo pipefail
 
 # Test integration tests by building bifrost-http from source, starting it,
 # and running Python and TypeScript SDK integration tests
-# Usage: ./test-integrations.sh
+# Usage: ./test-integrations.sh [--parallel-files]
+
+PARALLEL_FILES=false
+case "${1:-}" in
+  "") ;;
+  --parallel-files) PARALLEL_FILES=true ;;
+  *)
+    echo "Usage: $0 [--parallel-files]" >&2
+    exit 2
+    ;;
+esac
+
+if [ "$#" -gt 1 ]; then
+  echo "Usage: $0 [--parallel-files]" >&2
+  exit 2
+fi
+
+# Ceiling on concurrently running test files in --parallel-files mode.
+#
+# Provider quotas, not runner CPU, are the binding constraint: every test file talks
+# to live provider APIs, so an unbounded fan-out over all Python and TypeScript files
+# hits per-account rate limits (and intermittent CI failures) long before it exhausts
+# the runner. vitest.config.ts caps the TypeScript suite at maxWorkers: 1 for exactly
+# that reason; handing each file to its own Vitest process bypasses that cap, so the
+# ceiling has to be reimposed here across both suites.
+#
+# Validated here, above the mktemp calls below, so a bad value cannot leak a temp
+# directory by exiting before `trap cleanup EXIT` is installed.
+TEST_MAX_PARALLEL="${INTEGRATION_TEST_MAX_PARALLEL:-4}"
+case "$TEST_MAX_PARALLEL" in
+  ''|*[!0-9]*|0)
+    echo "❌ INTEGRATION_TEST_MAX_PARALLEL must be a positive integer, got '$TEST_MAX_PARALLEL'" >&2
+    exit 2
+    ;;
+esac
+
+# wait_for_test_slot frees a slot with `wait -f -n -p`, and -p arrived in bash
+# 5.1. Checked explicitly so an older shell fails here with a readable message
+# instead of misbehaving inside the throttle. The script already needs 4.4+ for
+# `"${TEST_PIDS[@]}"` on an empty array under `set -u`.
+if [ "${BASH_VERSINFO[0]}" -lt 5 ] || { [ "${BASH_VERSINFO[0]}" -eq 5 ] && [ "${BASH_VERSINFO[1]}" -lt 1 ]; }; then
+  echo "❌ bash 5.1 or newer is required, got ${BASH_VERSION}" >&2
+  exit 2
+fi
 
 # Get the absolute path of the script directory
 if command -v readlink >/dev/null 2>&1 && readlink -f "$0" >/dev/null 2>&1; then
@@ -27,12 +70,38 @@ TEST_HOST="${HOST:-localhost}"
 BIFROST_PID=""
 TEST_FAILED=0
 LOG_FILE="$(mktemp /tmp/bifrost-integrations.XXXXXX.log)"
+TEST_LOG_DIR="$(mktemp -d /tmp/bifrost-integration-tests.XXXXXX)"
+TEST_PIDS=()
+TEST_STATUSES=()
+TEST_LABELS=()
+TEST_LOG_FILES=()
 
 # Cleanup function
 cleanup() {
   local exit_code=$?
   echo ""
   echo "🧹 Cleaning up..."
+
+  # Stop any test-file processes still running after cancellation or an
+  # unexpected script failure. The array is emptied after the normal wait.
+  #
+  # A negative PID targets the whole process group, not just the subshell that
+  # launch_test_file backgrounded. That distinction matters: the recorded PID's
+  # children are the uv/pytest/npm/vitest processes actually placing live provider
+  # calls and writing logs, and signalling the subshell alone leaves them running
+  # past cancellation. run_test_files_in_parallel enables monitor mode so each job
+  # leads its own group and this reaches the whole tree; the bare-PID fallback
+  # covers any caller that records a PID without that.
+  for test_pid in "${TEST_PIDS[@]}"; do
+    if [ -n "$test_pid" ]; then
+      kill -- -"$test_pid" 2>/dev/null || kill "$test_pid" 2>/dev/null || true
+    fi
+  done
+  for test_pid in "${TEST_PIDS[@]}"; do
+    if [ -n "$test_pid" ]; then
+      wait "$test_pid" 2>/dev/null || true
+    fi
+  done
   
   # Kill Bifrost server if running
   if [ -n "${BIFROST_PID:-}" ]; then
@@ -49,6 +118,11 @@ cleanup() {
 
   # :- guards both: cleanup is defined before either variable is assigned.
   rm -f "${LOG_FILE:-}" "${MCP_SERVER_LOG_FILE:-}" 2>/dev/null || true
+  if [ -n "${TEST_LOG_DIR:-}" ] && [ -d "$TEST_LOG_DIR" ]; then
+    # rm -rf, not rm -f *.log plus rmdir: a cancelled run can leave partially
+    # written files behind, and rmdir would fail with any of those still there.
+    rm -rf "$TEST_LOG_DIR" 2>/dev/null || true
+  fi
 
   exit $exit_code
 }
@@ -196,61 +270,258 @@ fi
 export BIFROST_BASE_URL="http://$TEST_HOST:$TEST_PORT"
 echo "   BIFROST_BASE_URL=$BIFROST_BASE_URL"
 
-# Step 3: Run Python integration tests
-echo ""
-echo "🐍 Running Python integration tests..."
-echo "="
+# Step 3: Prepare and run the SDK integration suites.
+PYTHON_TEST_DIR="$REPO_ROOT/tests/integrations/python"
+TYPESCRIPT_TEST_DIR="$REPO_ROOT/tests/integrations/typescript"
+PYTHON_TEST_COMMAND=()
 
-cd "$REPO_ROOT/tests/integrations/python"
+install_python_dependencies() {
+  echo ""
+  echo "🐍 Preparing Python integration tests..."
+  echo "="
+  cd "$PYTHON_TEST_DIR"
 
-# Check if uv is available
-if command -v uv >/dev/null 2>&1; then
-  echo "📦 Installing Python dependencies with uv..."
-  uv sync --frozen --quiet
-  
+  if command -v uv >/dev/null 2>&1; then
+    echo "📦 Installing Python dependencies with uv..."
+    uv sync --frozen --quiet
+    PYTHON_TEST_COMMAND=(uv run pytest)
+  else
+    echo "⚠️  uv not found, trying pip..."
+    if [ ! -d ".venv" ]; then
+      python3 -m venv .venv
+    fi
+    source .venv/bin/activate
+    pip install -q -e .
+    PYTHON_TEST_COMMAND=(pytest)
+  fi
+}
+
+install_typescript_dependencies() {
+  echo ""
+  echo "📘 Preparing TypeScript integration tests..."
+  echo "="
+  cd "$TYPESCRIPT_TEST_DIR"
+
+  if [ ! -d "node_modules" ]; then
+    echo "📦 Installing TypeScript dependencies with npm..."
+    npm ci
+  fi
+}
+
+run_python_tests() {
   echo ""
   echo "🏃 Running Python tests..."
-  if ! uv run pytest -v --tb=short; then
+  if ! (cd "$PYTHON_TEST_DIR" && "${PYTHON_TEST_COMMAND[@]}" -v --tb=short); then
     echo "⚠️  Python tests failed"
+    TEST_FAILED=1
+  fi
+}
+
+run_typescript_tests() {
+  echo ""
+  echo "🏃 Running TypeScript tests..."
+  if ! (cd "$TYPESCRIPT_TEST_DIR" && npm test); then
+    echo "⚠️  TypeScript tests failed"
+    TEST_FAILED=1
+  fi
+}
+
+launch_test_file() {
+  local working_directory="$1"
+  local label="$2"
+  shift 2
+
+  local index="${#TEST_PIDS[@]}"
+  local log_file="$TEST_LOG_DIR/$index.log"
+  echo "   Starting $label"
+  (
+    cd "$working_directory"
+    if "$@" > "$log_file" 2>&1; then
+      test_status=0
+      echo "   ✅ Finished $label"
+    else
+      test_status=$?
+      echo "   ❌ Finished $label (exit $test_status)"
+    fi
+    exit "$test_status"
+  ) &
+  TEST_PIDS+=("$!")
+  # Empty until something reaps this job. wait_for_test_slot fills it in when it
+  # frees the slot; run_test_files_in_parallel reads it back rather than waiting
+  # a second time, since a pid can only be waited on once.
+  TEST_STATUSES+=("")
+  TEST_LABELS+=("$label")
+  TEST_LOG_FILES+=("$log_file")
+}
+
+# Block until fewer than TEST_MAX_PARALLEL launched jobs are still running.
+#
+# Reaping is what frees a slot, so `wait` drives the count rather than a marker
+# each job writes for itself: a wrapper killed by a signal (the OOM killer, a
+# cancellation) never reaches its last line, and a marker-counting throttle would
+# then block until the workflow times out. `wait` still reports such a job, as
+# 128+signal.
+#
+# The pid list is passed explicitly. A bare `wait -n` takes any child, including
+# the Bifrost and MCP servers this script also backgrounds, which would free a
+# slot no test released and swallow the server's exit status. -f is required
+# because run_test_files_in_parallel enables monitor mode, where an unqualified
+# wait returns as soon as a job changes state instead of when it terminates.
+wait_for_test_slot() {
+  local index
+  local pid
+  local reclaimed
+  local running_pids
+  local completed_pid
+  local wait_status
+
+  while :; do
+    # Monitor mode reports a signal-killed job and then drops it from the job
+    # table, after which `wait` answers 127 for that pid forever - so the loop
+    # below can never account for it and its slot would stay burnt. Reclaim
+    # those here. A job bash can still account for, including one that has
+    # finished but not been reaped (a zombie), keeps answering kill -0, so this
+    # never takes a slot away from the `wait` below. The direct wait recovers
+    # the real status when bash still holds it, and 127 when it does not.
+    reclaimed=0
+    for index in "${!TEST_PIDS[@]}"; do
+      pid="${TEST_PIDS[$index]}"
+      if [ -n "$pid" ] && [ -z "${TEST_STATUSES[$index]}" ] && ! kill -0 "$pid" 2>/dev/null; then
+        if wait "$pid" 2>/dev/null; then
+          TEST_STATUSES[$index]=0
+        else
+          TEST_STATUSES[$index]=$?
+        fi
+        reclaimed=1
+      fi
+    done
+
+    running_pids=()
+    for index in "${!TEST_PIDS[@]}"; do
+      if [ -z "${TEST_STATUSES[$index]}" ]; then
+        running_pids+=("${TEST_PIDS[$index]}")
+      fi
+    done
+
+    if [ "${#running_pids[@]}" -lt "$TEST_MAX_PARALLEL" ]; then
+      return 0
+    fi
+
+    # -p unsets its variable before assigning, so :- is required under set -u.
+    # stderr is dropped because a pid the sweep above has not caught up with yet
+    # makes wait print "no such job" without that being an error here.
+    completed_pid=""
+    if wait -f -n -p completed_pid "${running_pids[@]}" 2>/dev/null; then
+      wait_status=0
+    else
+      wait_status=$?
+    fi
+
+    if [ -n "${completed_pid:-}" ]; then
+      for index in "${!TEST_PIDS[@]}"; do
+        if [ "${TEST_PIDS[$index]}" = "$completed_pid" ]; then
+          TEST_STATUSES[$index]="$wait_status"
+          break
+        fi
+      done
+    elif [ "$reclaimed" -eq 0 ]; then
+      # wait attributed nothing and the sweep found nothing: back off rather
+      # than spin.
+      sleep 1
+    fi
+  done
+}
+
+run_test_files_in_parallel() {
+  local python_test_files=()
+  local typescript_test_files=()
+  local test_file
+  local index
+  local test_status
+
+  shopt -s nullglob
+  python_test_files=("$PYTHON_TEST_DIR"/tests/test_*.py)
+  typescript_test_files=("$TYPESCRIPT_TEST_DIR"/tests/*.test.ts)
+  shopt -u nullglob
+
+  if [ "${#python_test_files[@]}" -eq 0 ] || [ "${#typescript_test_files[@]}" -eq 0 ]; then
+    echo "❌ Expected both Python and TypeScript integration test files" >&2
+    return 1
+  fi
+
+  echo ""
+  echo "🏃 Running ${#python_test_files[@]} Python and ${#typescript_test_files[@]} TypeScript test files,"
+  echo "   at most $TEST_MAX_PARALLEL at a time (INTEGRATION_TEST_MAX_PARALLEL)..."
+
+  # Monitor mode for the launch-and-wait window. Without it every `&` job lands in
+  # this script's own process group, and cleanup() cannot group-kill a test's
+  # uv/pytest/npm/vitest descendants on cancellation. Restored below so the rest of
+  # the script keeps the shell's default job-control behaviour.
+  set -m
+
+  for test_file in "${python_test_files[@]}"; do
+    wait_for_test_slot
+    launch_test_file \
+      "$PYTHON_TEST_DIR" \
+      "Python: $(basename "$test_file")" \
+      "${PYTHON_TEST_COMMAND[@]}" "$test_file" -v --tb=short
+  done
+
+  for test_file in "${typescript_test_files[@]}"; do
+    wait_for_test_slot
+    # Each Vitest process receives exactly one file. This intentionally bypasses
+    # vitest.config.ts's suite-wide maxWorkers: 1 while leaving local runs alone;
+    # TEST_MAX_PARALLEL reimposes an equivalent ceiling across both suites.
+    launch_test_file \
+      "$TYPESCRIPT_TEST_DIR" \
+      "TypeScript: $(basename "$test_file")" \
+      npm test -- "$test_file"
+  done
+
+  for index in "${!TEST_PIDS[@]}"; do
+    # Already reaped by the throttle: a pid can only be waited on once, and a
+    # second wait would report 127 rather than the job's real status.
+    if [ -n "${TEST_STATUSES[$index]}" ]; then
+      test_status="${TEST_STATUSES[$index]}"
+    elif wait "${TEST_PIDS[$index]}"; then
+      test_status=0
+    else
+      test_status=$?
+    fi
+    if [ "$test_status" -ne 0 ]; then
+      TEST_FAILED=1
+    fi
+    TEST_PIDS[$index]=""
+
+    echo ""
+    echo "----- ${TEST_LABELS[$index]} -----"
+    cat "${TEST_LOG_FILES[$index]}" || true
+    if [ "$test_status" -eq 0 ]; then
+      echo "✅ ${TEST_LABELS[$index]} passed"
+    else
+      echo "❌ ${TEST_LABELS[$index]} failed (exit $test_status)"
+    fi
+  done
+
+  set +m
+  TEST_PIDS=()
+}
+
+install_python_dependencies
+
+if [ "$PARALLEL_FILES" = true ]; then
+  # Install both dependency sets before launching every Python and TypeScript
+  # file together against the shared gateway.
+  install_typescript_dependencies
+  if ! run_test_files_in_parallel; then
     TEST_FAILED=1
   fi
 else
-  echo "⚠️  uv not found, trying pip..."
-  
-  # Create virtual environment if needed
-  if [ ! -d ".venv" ]; then
-    python3 -m venv .venv
-  fi
-  
-  source .venv/bin/activate
-  pip install -q -e .
-  
-  echo ""
-  echo "🏃 Running Python tests..."
-  if ! pytest -v --tb=short; then
-    echo "⚠️  Python tests failed"
-    TEST_FAILED=1
-  fi
-fi
-
-# Step 4: Run TypeScript integration tests
-echo ""
-echo "📘 Running TypeScript integration tests..."
-echo "="
-
-cd "$REPO_ROOT/tests/integrations/typescript"
-
-# Install dependencies if needed
-if [ ! -d "node_modules" ]; then
-  echo "📦 Installing TypeScript dependencies with npm..."
-  npm ci
-fi
-
-echo ""
-echo "🏃 Running TypeScript tests..."
-if ! npm test; then
-  echo "⚠️  TypeScript tests failed"
-  TEST_FAILED=1
+  # Preserve the original sequential behavior for local and reusable-workflow
+  # callers unless they explicitly opt into file-level parallelism.
+  run_python_tests
+  install_typescript_dependencies
+  run_typescript_tests
 fi
 
 # Summary

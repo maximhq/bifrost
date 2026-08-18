@@ -71,7 +71,10 @@ jobs:
       XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
       REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
       BEDROCK_GUARDRAIL_IDENTIFIER: ${{ secrets.BEDROCK_GUARDRAIL_IDENTIFIER }}
-      BEDROCK_GUARDRAIL_VERSION: ${{ secrets.BEDROCK_GUARDRAIL_VERSION }}
+      # Deliberately a variable, not a secret - see release-pipeline.yml. A
+      # short integer secret makes Actions redact that digit everywhere in the
+      # job log, corrupting the harness counters.
+      BEDROCK_GUARDRAIL_VERSION: ${{ vars.BEDROCK_GUARDRAIL_VERSION }}
       AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
       AWS_BEDROCK_ROLE_ARN: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
       BIFROST_ENCRYPTION_KEY: ${{ secrets.BIFROST_ENCRYPTION_KEY }}
