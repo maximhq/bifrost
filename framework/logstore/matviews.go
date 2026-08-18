@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"fmt"
+	"github.com/maximhq/bifrost/framework/queryscope"
 	"sort"
 	"strings"
 	"sync"
@@ -2064,6 +2065,9 @@ func (s *RDBLogStore) getDimensionCostHistogramFromMatView(ctx context.Context, 
 	}
 	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
+	// Same ceiling as the raw path: bounded dimensions must not name ids the
+	// caller may not be shown, even when the aggregate is served pre-computed.
+	q = applyDimensionCeiling(ctx, q, dimensionReadSource{}, dimCol)
 	if err := q.Select(fmt.Sprintf(`
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
 		%s AS dim_value,
@@ -2123,6 +2127,9 @@ func (s *RDBLogStore) getDimensionTokenHistogramFromMatView(ctx context.Context,
 	}
 	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
+	// Same ceiling as the raw path: bounded dimensions must not name ids the
+	// caller may not be shown, even when the aggregate is served pre-computed.
+	q = applyDimensionCeiling(ctx, q, dimensionReadSource{}, dimCol)
 	if err := q.Select(fmt.Sprintf(`
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
 		%s AS dim_value,
@@ -2199,6 +2206,9 @@ func (s *RDBLogStore) getDimensionLatencyHistogramFromMatView(ctx context.Contex
 	}
 	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
+	// Same ceiling as the raw path: bounded dimensions must not name ids the
+	// caller may not be shown, even when the aggregate is served pre-computed.
+	q = applyDimensionCeiling(ctx, q, dimensionReadSource{}, dimCol)
 	if err := q.Select(fmt.Sprintf(`
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
 		%s AS dim_value,
@@ -2384,6 +2394,10 @@ func (s *RDBLogStore) getUserRankingsFromMatView(ctx context.Context, filters Se
 	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
 	q = q.Where("user_id != ''")
+	// Same ceiling as the raw path in GetUserRankings: the row scope alone does
+	// not bound which user ids a caller may be shown, and the matview stores the
+	// scalar column, so it applies here unchanged.
+	q = applyDimensionCeiling(ctx, q, dimensionReadSource{}, "user_id")
 	q = q.Select(`
 		user_id,
 		SUM(count) AS total,
@@ -2424,6 +2438,7 @@ func (s *RDBLogStore) getUserRankingsFromMatView(ctx context.Context, filters Se
 		pq := s.ScopedDB(ctx).Table("mv_logs_hourly")
 		pq = s.applyMatViewFilters(pq, prevFilters)
 		pq = pq.Where("user_id != ''")
+		pq = applyDimensionCeiling(ctx, pq, dimensionReadSource{}, "user_id")
 		if err := pq.Select(`
 			user_id,
 			SUM(count) AS total,
@@ -2480,6 +2495,10 @@ func (s *RDBLogStore) getDimensionRankingsFromMatView(ctx context.Context, filte
 	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
 	q = q.Where(fmt.Sprintf("%s != ''", idCol))
+	// Same ceiling as the raw path in GetDimensionRankings. Only non-bucketed
+	// dimensions reach this reader, so the scalar column is the group key and
+	// no fan-out alias is involved.
+	q = applyDimensionCeiling(ctx, q, dimensionReadSource{}, idCol)
 	q = q.Select(fmt.Sprintf(`
 		%s AS id,
 		SUM(count) AS total,
@@ -2537,6 +2556,7 @@ func (s *RDBLogStore) getDimensionRankingsFromMatView(ctx context.Context, filte
 		pq := s.ScopedDB(ctx).Table("mv_logs_hourly")
 		pq = s.applyMatViewFilters(pq, prevFilters)
 		pq = pq.Where(fmt.Sprintf("%s != ''", idCol))
+		pq = applyDimensionCeiling(ctx, pq, dimensionReadSource{}, idCol)
 		if err := pq.Select(fmt.Sprintf(`
 			%s AS id,
 			SUM(count) AS total,
@@ -2676,6 +2696,19 @@ func (s *RDBLogStore) getDistinctKeyPairsFromMatView(ctx context.Context, idCol,
 	}
 	if query != "" {
 		q = q.Where("name ILIKE ?", "%"+query+"%")
+	}
+	// The matview projects the dimension value as "id", so the ceiling is
+	// applied to that column rather than to the underlying scalar name. Same
+	// reasoning as the raw-table path in GetDistinctKeyPairs: a dropdown lists
+	// organisation names with no row beside them, and one visible row carrying
+	// two customers would otherwise offer both.
+	if scope := queryscope.DimensionFromContext(ctx); scope != nil {
+		if allowed, bounded := scope(idCol); bounded {
+			if len(allowed) == 0 {
+				return nil, true, nil
+			}
+			q = q.Where("id IN ?", allowed)
+		}
 	}
 	if err := q.
 		Select("DISTINCT id, name").

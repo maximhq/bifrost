@@ -1879,8 +1879,16 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 
 	// Redaction lookups are only needed for KeyPair-style dimensions; skip the
 	// extra calls when the caller didn't request them.
+	//
+	// They are also skipped when the scoped lookup above matched nothing, and
+	// that guard is load-bearing rather than an optimisation. The
+	// GetAllRedacted* store methods treat an empty id list as "no filter" and
+	// return every row in the table, unscoped - so handing them the empty
+	// result of a scoped query inverts it into a full disclosure of every key
+	// in the deployment. It fires precisely when the caller is entitled to
+	// nothing, which is the worst possible moment for it.
 	redactedSelectedKeys := make(map[string]schemas.Key)
-	if _, ok := want[filterDimSelectedKeys]; ok {
+	if _, ok := want[filterDimSelectedKeys]; ok && len(selectedKeys) > 0 {
 		selectedKeyIDs := make([]string, len(selectedKeys))
 		for i, key := range selectedKeys {
 			selectedKeyIDs[i] = key.ID
@@ -1890,7 +1898,7 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 		}
 	}
 	redactedVirtualKeys := make(map[string]tables.TableVirtualKey)
-	if _, ok := want[filterDimVirtualKeys]; ok {
+	if _, ok := want[filterDimVirtualKeys]; ok && len(virtualKeys) > 0 {
 		virtualKeyIDs := make([]string, len(virtualKeys))
 		for i, key := range virtualKeys {
 			virtualKeyIDs[i] = key.ID
@@ -1900,7 +1908,7 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 		}
 	}
 	redactedRoutingRules := make(map[string]tables.TableRoutingRule)
-	if _, ok := want[filterDimRoutingRules]; ok {
+	if _, ok := want[filterDimRoutingRules]; ok && len(routingRules) > 0 {
 		routingRuleIDs := make([]string, len(routingRules))
 		for i, rule := range routingRules {
 			routingRuleIDs[i] = rule.ID
