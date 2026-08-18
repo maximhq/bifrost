@@ -150,10 +150,11 @@ var (
 
 	// bifrostToBedrockStopReason is the reverse of bedrockFinishReasonToBifrost.
 	bifrostToBedrockStopReason = map[string]string{
-		"stop":           "end_turn",
-		"length":         "max_tokens",
-		"tool_calls":     "tool_use",
-		"content_filter": "content_filtered",
+		"stop":              "end_turn",
+		"length":            "max_tokens",
+		"tool_calls":        "tool_use",
+		"content_filter":    "content_filtered",
+		"max_output_tokens": "max_tokens",
 	}
 )
 
