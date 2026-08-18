@@ -214,8 +214,14 @@ client-by-id:
     summary: Edit MCP client
     description: |
       Updates an existing MCP client's configuration. All fields are optional
-      (PATCH semantics); connection_type, auth_type, connection_string,
-      stdio_config, and oauth_config_id are immutable after creation.
+      (PATCH semantics). connection_type, connection_string, stdio_config, and
+      auth_type are now editable in place: changing any of them tears down and
+      re-dials the transport under the same client id (an in-place reconfigure).
+      Switching auth_type INTO an interactive OAuth type (oauth / per_user_oauth)
+      after creation is not supported through this path — recreate the client
+      instead. Switching INTO per_user_headers or token_exchange leaves the
+      client in pending_verification; the response sets requires_verification=true
+      and the admin must re-run verify-headers / verify-exchange.
       Unlike client creation, tool_pricing can be included to set per-tool execution costs since tools are already fetched.
       For OAuth-based clients, providing oauth_config rotates the stored OAuth
       configuration in place and flips every bound token to needs_reauth when

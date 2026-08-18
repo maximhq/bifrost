@@ -242,6 +242,23 @@ export interface UpdateMCPClientRequest {
 	oauth_config?: OAuthConfigUpdate; // Only supported for existing oauth/per_user_oauth clients (credential rotation)
 	token_exchange?: MCPTokenExchangeConfig; // Only supported for existing token_exchange clients; omitted = preserve
 	vk_configs?: MCPVKConfig[]; // When provided, replaces all VK assignments for this MCP client
+	// In-place reconfigure fields — changing any of these tears down and re-dials
+	// the transport under the same client id. Switching auth_type INTO oauth /
+	// per_user_oauth after creation is rejected by the backend (recreate instead).
+	connection_type?: MCPConnectionType;
+	connection_string?: SecretVar;
+	stdio_config?: MCPStdioConfig;
+	auth_type?: MCPAuthType;
+}
+
+// Response envelope for a PUT /mcp/client/:id edit. `requires_verification` is
+// true when an in-place auth-type change parked the client in
+// pending_verification (per_user_headers / token_exchange) and an admin must
+// re-run the verify flow before the server is usable.
+export interface UpdateMCPClientResponse {
+	status: "success" | "partial_success";
+	message: string;
+	requires_verification?: boolean;
 }
 
 // Pagination + filter params for MCP clients list

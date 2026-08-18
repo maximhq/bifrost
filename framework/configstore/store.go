@@ -268,7 +268,12 @@ type ConfigStore interface {
 	ClearMCPClientPendingOAuthConfig(ctx context.Context, clientID string) error
 	GetMCPClientsPaginated(ctx context.Context, params MCPClientsQueryParams) ([]tables.TableMCPClient, int64, error)
 	CreateMCPClientConfig(ctx context.Context, clientConfig *schemas.MCPClientConfig) error
-	UpdateMCPClientConfig(ctx context.Context, id string, clientConfig *tables.TableMCPClient) error
+	// reconfigure (optional, variadic for backward compatibility with existing
+	// callers) forces connection/auth columns (connection_type, connection_string,
+	// stdio_config, auth_type, oauth/token-exchange/per-user metadata) to be
+	// persisted for an in-place edit — the same columns config-file reconciliation
+	// syncs. Omit (or false) for a plain metadata update, which leaves them intact.
+	UpdateMCPClientConfig(ctx context.Context, id string, clientConfig *tables.TableMCPClient, reconfigure ...bool) error
 	// UpdateMCPClientTools is a targeted column update for
 	// discovered_tools_json/tool_name_mapping_json only — safe to call from
 	// a periodic background tool-sync without racing a concurrent full

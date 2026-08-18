@@ -1408,8 +1408,12 @@ const (
 
 // MCPClientUpdateRequest is the body for PUT /api/mcp/client/{id}.
 // All fields are optional — omitting a field retains its existing value (PATCH semantics).
-// Immutable fields (connection_type, auth_type, connection_string, stdio_config) are not
-// accepted here; they cannot be changed after creation.
+//
+// connection_type, connection_string, stdio_config, and auth_type ARE now
+// editable in place (an in-place reconfigure): changing any of them tears down
+// and re-dials the transport under the same client id. Switching auth_type INTO
+// an interactive OAuth type (oauth / per_user_oauth) after creation is not yet
+// supported through this path — recreate the client instead.
 type MCPClientUpdateRequest struct {
 	Name                   *string                         `json:"name,omitempty"`
 	Disabled               *bool                           `json:"disabled,omitempty"`
@@ -1429,6 +1433,11 @@ type MCPClientUpdateRequest struct {
 	TLSConfig              *schemas.MCPTLSConfig           `json:"tls_config,omitempty"`
 	VKConfigs              *[]MCPVKConfigRequest           `json:"vk_configs,omitempty"`
 	OauthConfig            *OAuthConfigRequest             `json:"oauth_config,omitempty"`
+	// In-place reconfigure fields.
+	ConnectionType   *string                 `json:"connection_type,omitempty"`
+	ConnectionString *schemas.SecretVar      `json:"connection_string,omitempty"`
+	StdioConfig      *schemas.MCPStdioConfig `json:"stdio_config,omitempty"`
+	AuthType         *string                 `json:"auth_type,omitempty"`
 }
 
 // addMCPClient handles POST /api/mcp/client - Add a new MCP client
@@ -2041,7 +2050,99 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusNotFound, "MCP client not found")
 		return
 	}
-	if err := validateNeedsSessionStickiness(req.NeedsSessionStickiness, existingConfig.ConnectionType); err != nil {
+	// Resolve the in-place-reconfigure fields (connection + auth) with PATCH
+	// fallback to the existing value. Changing any of them re-dials the transport.
+	normalizeAuth := func(a schemas.MCPAuthType) schemas.MCPAuthType {
+		if a == "" {
+			return schemas.MCPAuthTypeHeaders
+		}
+		return a
+	}
+	resolvedConnectionType := existingConfig.ConnectionType
+	if req.ConnectionType != nil && *req.ConnectionType != "" {
+		resolvedConnectionType = schemas.MCPConnectionType(*req.ConnectionType)
+	}
+	resolvedConnectionString := existingConfig.ConnectionString
+	if req.ConnectionString != nil {
+		cs := *req.ConnectionString
+		// Preserve the stored value when the caller round-trips the redacted
+		// placeholder returned by GET (mirrors headers/TLS handling below).
+		if cs.IsRedacted() && existingConfig.ConnectionString != nil {
+			redactedExisting := h.store.RedactMCPClientConfig(existingConfig)
+			if redactedExisting.ConnectionString != nil && cs.Equals(redactedExisting.ConnectionString) {
+				resolvedConnectionString = existingConfig.ConnectionString
+			} else {
+				resolvedConnectionString = &cs
+			}
+		} else {
+			resolvedConnectionString = &cs
+		}
+	}
+	resolvedStdioConfig := existingConfig.StdioConfig
+	if req.StdioConfig != nil {
+		resolvedStdioConfig = req.StdioConfig
+	}
+	resolvedAuthType := existingConfig.AuthType
+	if req.AuthType != nil {
+		resolvedAuthType = schemas.MCPAuthType(*req.AuthType)
+	}
+	connChanged := (req.ConnectionType != nil && *req.ConnectionType != "" && resolvedConnectionType != existingConfig.ConnectionType) ||
+		(req.ConnectionString != nil && resolvedConnectionString != existingConfig.ConnectionString) ||
+		(req.StdioConfig != nil)
+	authChanged := normalizeAuth(resolvedAuthType) != normalizeAuth(existingConfig.AuthType)
+	isReconfigure := connChanged || authChanged
+
+	// Switching INTO an interactive OAuth type after creation needs the browser
+	// consent bootstrap (the create flow's pending_oauth → complete-oauth path),
+	// which this edit path does not drive — recreate the client instead.
+	if authChanged &&
+		(normalizeAuth(resolvedAuthType) == schemas.MCPAuthTypeOauth || normalizeAuth(resolvedAuthType) == schemas.MCPAuthTypePerUserOauth) {
+		SendError(ctx, fasthttp.StatusBadRequest, "switching auth_type to oauth or per_user_oauth after creation is not supported; recreate the client instead")
+		return
+	}
+	// Validate the resolved auth type.
+	switch normalizeAuth(resolvedAuthType) {
+	case schemas.MCPAuthTypeNone, schemas.MCPAuthTypeHeaders, schemas.MCPAuthTypeOauth,
+		schemas.MCPAuthTypePerUserOauth, schemas.MCPAuthTypePerUserHeaders, schemas.MCPAuthTypeTokenExchange:
+	default:
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid auth_type: %s", resolvedAuthType))
+		return
+	}
+	// Validate connection type + transport-field consistency.
+	switch resolvedConnectionType {
+	case schemas.MCPConnectionTypeHTTP, schemas.MCPConnectionTypeSSE:
+		if resolvedConnectionString == nil || resolvedConnectionString.GetValue() == "" {
+			SendError(ctx, fasthttp.StatusBadRequest, "connection_string is required for http/sse connection types")
+			return
+		}
+	case schemas.MCPConnectionTypeSTDIO:
+		if resolvedStdioConfig == nil || resolvedStdioConfig.Command == "" {
+			SendError(ctx, fasthttp.StatusBadRequest, "stdio_config.command is required for stdio connection type")
+			return
+		}
+		// stdio has no HTTP endpoint to authenticate against.
+		if normalizeAuth(resolvedAuthType) != schemas.MCPAuthTypeHeaders && normalizeAuth(resolvedAuthType) != schemas.MCPAuthTypeNone {
+			SendError(ctx, fasthttp.StatusBadRequest, "stdio connection type only supports 'none' or 'headers' auth")
+			return
+		}
+	default:
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid connection_type: %s", resolvedConnectionType))
+		return
+	}
+	// Entering token_exchange requires the scoping block; entering per_user_headers
+	// requires the key schema. Both are validated by the auth-specific blocks
+	// below (which now gate on the resolved auth type).
+	if authChanged && normalizeAuth(resolvedAuthType) == schemas.MCPAuthTypeTokenExchange && req.TokenExchange == nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "token_exchange is required when switching auth_type to token_exchange")
+		return
+	}
+	if authChanged && normalizeAuth(resolvedAuthType) == schemas.MCPAuthTypePerUserHeaders &&
+		(req.PerUserHeaderKeys == nil || len(*req.PerUserHeaderKeys) == 0) {
+		SendError(ctx, fasthttp.StatusBadRequest, "per_user_header_keys is required when switching auth_type to per_user_headers")
+		return
+	}
+
+	if err := validateNeedsSessionStickiness(req.NeedsSessionStickiness, resolvedConnectionType); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
@@ -2171,13 +2272,13 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	// form that ultimately gets persisted (see invariant doc on
 	// mcputils.CanonicalizeHeaderKey).
 	if req.PerUserHeaderKeys != nil {
-		// Reject an explicit empty list for per_user_headers clients.
-		// AuthType is immutable on update (enforced at clientmanager.go:911),
-		// so existingConfig.AuthType is the reliable gate — clients on other
+		// Reject an explicit empty list for per_user_headers clients. Gate on the
+		// RESOLVED auth type so entering per_user_headers via an in-place
+		// reconfigure is validated the same as an existing one: clients on other
 		// auth types may legitimately carry no per_user_header_keys, but for
 		// per_user_headers an empty schema means the auth mode has nothing
 		// to collect or validate, which violates the feature contract.
-		if existingConfig.AuthType == schemas.MCPAuthTypePerUserHeaders && len(*req.PerUserHeaderKeys) == 0 {
+		if normalizeAuth(resolvedAuthType) == schemas.MCPAuthTypePerUserHeaders && len(*req.PerUserHeaderKeys) == 0 {
 			SendError(ctx, fasthttp.StatusBadRequest, "per_user_header_keys must be a non-empty list for per_user_headers clients")
 			return
 		}
@@ -2198,7 +2299,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	// existingConfig.AuthType is the reliable gate here too; the block is
 	// meaningless on any other auth type.
 	if req.TokenExchange != nil {
-		if existingConfig.AuthType != schemas.MCPAuthTypeTokenExchange {
+		if normalizeAuth(resolvedAuthType) != schemas.MCPAuthTypeTokenExchange {
 			SendError(ctx, fasthttp.StatusBadRequest, "token_exchange can only be set for token_exchange clients")
 			return
 		}
@@ -2373,10 +2474,25 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 
 	// PATCH semantics for the token_exchange scoping block: omitted preserves
 	// the stored block (validated above to only apply to token_exchange
-	// clients).
+	// clients). When switching AWAY from token_exchange, drop the stored block.
 	tokenExchange := existingConfig.TokenExchange
 	if req.TokenExchange != nil {
 		tokenExchange = req.TokenExchange
+	}
+	if authChanged && normalizeAuth(resolvedAuthType) != schemas.MCPAuthTypeTokenExchange {
+		tokenExchange = nil
+	}
+
+	// OAuth linkage: when switching AWAY from an oauth auth type, unlink the
+	// oauth_configs row (a non-nil pointer to "" signals "clear" to the config
+	// merge). The row itself and any live tokens are evicted after the update
+	// below; deleting the orphaned row is a deferred follow-up.
+	leavingOauth := authChanged &&
+		(normalizeAuth(existingConfig.AuthType) == schemas.MCPAuthTypeOauth || normalizeAuth(existingConfig.AuthType) == schemas.MCPAuthTypePerUserOauth)
+	resolvedOauthConfigID := existingConfig.OauthConfigID
+	if leavingOauth {
+		empty := ""
+		resolvedOauthConfigID = &empty
 	}
 
 	// Build the DB update record from all resolved values.
@@ -2384,9 +2500,9 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		ClientID:               id,
 		Name:                   name,
 		IsCodeModeClient:       isCodeMode,
-		ConnectionType:         string(existingConfig.ConnectionType),
-		ConnectionString:       existingConfig.ConnectionString,
-		StdioConfig:            existingConfig.StdioConfig,
+		ConnectionType:         string(resolvedConnectionType),
+		ConnectionString:       resolvedConnectionString,
+		StdioConfig:            resolvedStdioConfig,
 		ToolsToExecute:         resolvedToolsToExecute,
 		ToolsToAutoExecute:     resolvedToolsToAutoExecute,
 		Headers:                headers,
@@ -2396,8 +2512,8 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		ToolPricing:            toolPricing,
 		ToolSyncInterval:       int(resolvedToolSyncInterval / time.Second),
 		ToolExecutionTimeout:   int(resolvedToolExecutionTimeout / time.Second),
-		AuthType:               string(existingConfig.AuthType),
-		OauthConfigID:          existingConfig.OauthConfigID,
+		AuthType:               string(resolvedAuthType),
+		OauthConfigID:          resolvedOauthConfigID,
 		AllowOnAllVirtualKeys:  allowOnAllVKs,
 		Disabled:               disabled,
 		PerUserHeaderKeys:      perUserHeaderKeys,
@@ -2405,8 +2521,10 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		TLSConfig:              tlsConfig,
 	}
 	// Rebind persisted discovered tool keys (and inner Function.Name) to the current
-	// client name so a restart restores them under the right prefix.
-	if oldDBConfig != nil && len(oldDBConfig.DiscoveredTools) > 0 {
+	// client name so a restart restores them under the right prefix. Skipped on an
+	// in-place reconfigure: the old tools belong to the previous connection/auth
+	// and are cleared (the re-dial or admin re-verify repopulates them).
+	if !isReconfigure && oldDBConfig != nil && len(oldDBConfig.DiscoveredTools) > 0 {
 		newPrefix := name + "-"
 		migrated := make(map[string]schemas.ChatTool, len(oldDBConfig.DiscoveredTools))
 		for oldKey, tool := range oldDBConfig.DiscoveredTools {
@@ -2425,7 +2543,9 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		dbUpdateRecord.DiscoveredToolNameMapping = oldDBConfig.DiscoveredToolNameMapping
 	}
 	if h.store.ConfigStore != nil {
-		if err := h.store.ConfigStore.UpdateMCPClientConfig(ctx, id, &dbUpdateRecord); err != nil {
+		// reconfigure forces the connection/auth columns to persist (and clears
+		// stale discovered tools) when a connection/auth field changed.
+		if err := h.store.ConfigStore.UpdateMCPClientConfig(ctx, id, &dbUpdateRecord, isReconfigure); err != nil {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update mcp client config in store: %v", err))
 			return
 		}
@@ -2448,16 +2568,16 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		ID:                     id,
 		Name:                   name,
 		IsCodeModeClient:       isCodeMode,
-		ConnectionType:         existingConfig.ConnectionType,
-		ConnectionString:       existingConfig.ConnectionString,
-		StdioConfig:            existingConfig.StdioConfig,
+		ConnectionType:         resolvedConnectionType,
+		ConnectionString:       resolvedConnectionString,
+		StdioConfig:            resolvedStdioConfig,
 		TLSConfig:              tlsConfig,
 		ToolsToExecute:         resolvedToolsToExecute,
 		ToolsToAutoExecute:     resolvedToolsToAutoExecute,
 		Headers:                headers,
 		AllowedExtraHeaders:    allowedExtraHeaders,
-		AuthType:               existingConfig.AuthType,
-		OauthConfigID:          existingConfig.OauthConfigID,
+		AuthType:               resolvedAuthType,
+		OauthConfigID:          resolvedOauthConfigID,
 		IsPingAvailable:        isPingAvailable,
 		NeedsSessionStickiness: needsSessionStickiness,
 		ToolSyncInterval:       toolSyncInterval,
@@ -2565,6 +2685,20 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		// its early-return no-op — there's no shared connection to close and
 		// no clientState.State that anything reads for this auth type.
 		h.mcpCredentialCacheManager.EvictOauthTokenCacheByMCPClient(ctx, existingConfig.ID)
+	}
+
+	// Switching auth type AWAY from a credentialed type (in-place reconfigure):
+	// evict any cached tokens/credentials bound to the OLD type so nothing stale
+	// can be reused after the re-dial. Orphaned DB rows (oauth_configs, per-user
+	// credential rows) are intentionally left for a follow-up cleanup — nothing
+	// can reference them once the caches are cleared and the link is nulled.
+	if authChanged {
+		switch normalizeAuth(existingConfig.AuthType) {
+		case schemas.MCPAuthTypeOauth, schemas.MCPAuthTypePerUserOauth, schemas.MCPAuthTypeTokenExchange:
+			h.mcpCredentialCacheManager.EvictOauthTokenCacheByMCPClient(ctx, id)
+		case schemas.MCPAuthTypePerUserHeaders:
+			h.mcpCredentialCacheManager.EvictMCPHeaderCredentialCacheByMCPClient(ctx, id)
+		}
 	}
 
 	// If the per-user-headers schema now requires additional keys, flip every
@@ -2741,16 +2875,27 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 			message += ". This client now connects per call instead of maintaining a persistent connection: the existing shared connection was closed."
 		}
 	}
+	// An in-place reconfigure INTO a park-on-setup auth type leaves the client in
+	// pending_verification until an admin re-runs verification (verify-headers /
+	// verify-exchange). Surface it so the UI can prompt the re-verify CTA.
+	requiresReVerification := authChanged &&
+		(normalizeAuth(resolvedAuthType) == schemas.MCPAuthTypePerUserHeaders ||
+			normalizeAuth(resolvedAuthType) == schemas.MCPAuthTypeTokenExchange)
+	if requiresReVerification {
+		message += ". The new authentication type requires re-verification before this server can be used."
+	}
 	if sharedConnectErr != nil {
 		SendJSON(ctx, map[string]any{
-			"status":  "partial_success",
-			"message": fmt.Sprintf("%s However, establishing the shared connection failed: %v. The connection checker will keep retrying automatically.", message, sharedConnectErr),
+			"status":                "partial_success",
+			"message":               fmt.Sprintf("%s However, establishing the shared connection failed: %v. The connection checker will keep retrying automatically.", message, sharedConnectErr),
+			"requires_verification": requiresReVerification,
 		})
 		return
 	}
 	SendJSON(ctx, map[string]any{
-		"status":  "success",
-		"message": message,
+		"status":                "success",
+		"message":               message,
+		"requires_verification": requiresReVerification,
 	})
 }
 

@@ -681,7 +681,7 @@ func (m *MockConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfi
 	return nil
 }
 
-func (m *MockConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, clientConfig *tables.TableMCPClient) error {
+func (m *MockConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, clientConfig *tables.TableMCPClient, reconfigure ...bool) error {
 	m.mcpClientConfigUpdates = append(m.mcpClientConfigUpdates, struct {
 		ID     string
 		Config tables.TableMCPClient

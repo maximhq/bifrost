@@ -1237,6 +1237,17 @@ export const mcpClientUpdateSchema = z
 				ca_cert_pem: secretVarSchema.optional(),
 			})
 			.optional(),
+		// In-place reconfigure fields — editing any of these re-dials the transport.
+		connection_type: z.enum(["http", "stdio", "sse"]).optional(),
+		connection_string: secretVarSchema.optional(),
+		stdio_config: z
+			.object({
+				command: z.string(),
+				args: z.array(z.string()),
+				envs: z.array(z.string()),
+			})
+			.optional(),
+		auth_type: z.enum(["none", "headers", "oauth", "per_user_oauth", "per_user_headers", "token_exchange"]).optional(),
 	})
 	.superRefine((data, ctx) => {
 		// per_user_header_keys is only ever set on the form for per_user_headers
@@ -1248,6 +1259,13 @@ export const mcpClientUpdateSchema = z
 				path: ["per_user_header_keys"],
 				message: "Declare at least one header name users must supply.",
 			});
+		}
+		// http/sse need a connection target; stdio needs a command.
+		if ((data.connection_type === "http" || data.connection_type === "sse") && !data.connection_string?.value && !data.connection_string?.ref) {
+			ctx.addIssue({ code: "custom", path: ["connection_string"], message: "Connection URL is required for http/sse." });
+		}
+		if (data.connection_type === "stdio" && !data.stdio_config?.command?.trim()) {
+			ctx.addIssue({ code: "custom", path: ["stdio_config"], message: "Command is required for stdio." });
 		}
 	});
 
