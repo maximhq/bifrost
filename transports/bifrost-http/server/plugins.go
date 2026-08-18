@@ -49,27 +49,62 @@ func InstantiatePlugin(ctx context.Context, name string, path *string, pluginCon
 	return loadBuiltinPlugin(ctx, name, pluginConfig, bifrostConfig)
 }
 
+// buildTelemetryConfig assembles the telemetry plugin config from both label
+// sources: client.prometheus_labels and the persisted plugin config's
+// custom_labels. The plugin-config labels were previously dropped by the merge
+// (only PushGateway/MetricsEnabled were copied), so the advertised
+// plugins.telemetry.config.custom_labels field silently had no effect
+// (issue #5881). Labels are unioned client-first with duplicates skipped —
+// duplicate label names would panic prometheus vector registration.
+func buildTelemetryConfig(clientLabels []string, pluginConfig any) (*telemetry.Config, error) {
+	telConfig := &telemetry.Config{
+		CustomLabels: dedupeLabels(clientLabels),
+	}
+	if pluginConfig == nil {
+		return telConfig, nil
+	}
+	extraConfig, err := MarshalPluginConfig[telemetry.Config](pluginConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal telemetry plugin config: %w", err)
+	}
+	if extraConfig == nil {
+		return telConfig, nil
+	}
+	if extraConfig.PushGateway != nil {
+		telConfig.PushGateway = extraConfig.PushGateway
+	}
+	if extraConfig.MetricsEnabled != nil {
+		telConfig.MetricsEnabled = extraConfig.MetricsEnabled
+	}
+	if len(extraConfig.CustomLabels) > 0 {
+		telConfig.CustomLabels = dedupeLabels(append(append([]string(nil), telConfig.CustomLabels...), extraConfig.CustomLabels...))
+	}
+	return telConfig, nil
+}
+
+// dedupeLabels returns labels with duplicates removed, preserving first-seen
+// order. Duplicate label names would panic prometheus vector registration, and
+// either source (client.prometheus_labels or the plugin config) may carry them.
+func dedupeLabels(labels []string) []string {
+	if len(labels) == 0 {
+		return labels
+	}
+	deduped := make([]string, 0, len(labels))
+	for _, label := range labels {
+		if !slices.Contains(deduped, label) {
+			deduped = append(deduped, label)
+		}
+	}
+	return deduped
+}
+
 // loadBuiltinPlugin instantiates a built-in plugin by name
 func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifrostConfig *lib.Config) (schemas.BasePlugin, error) {
 	switch name {
 	case telemetry.PluginName:
-		telConfig := &telemetry.Config{
-			CustomLabels: bifrostConfig.ClientConfig.PrometheusLabels,
-		}
-		// Merge persisted config if provided.
-		if pluginConfig != nil {
-			extraConfig, err := MarshalPluginConfig[telemetry.Config](pluginConfig)
-			if err != nil {
-				return nil, fmt.Errorf("failed to marshal telemetry plugin config: %w", err)
-			}
-			if extraConfig != nil {
-				if extraConfig.PushGateway != nil {
-					telConfig.PushGateway = extraConfig.PushGateway
-				}
-				if extraConfig.MetricsEnabled != nil {
-					telConfig.MetricsEnabled = extraConfig.MetricsEnabled
-				}
-			}
+		telConfig, err := buildTelemetryConfig(bifrostConfig.ClientConfig.PrometheusLabels, pluginConfig)
+		if err != nil {
+			return nil, err
 		}
 		return telemetry.Init(telConfig, bifrostConfig.ModelCatalog, logger)
 
