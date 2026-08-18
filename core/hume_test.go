@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -33,6 +34,7 @@ func (t *humeConstraintTracer) AttachPluginLogs(_ string, logs []schemas.PluginL
 type humeConstraintPlugin struct {
 	name               string
 	recoverError       bool
+	addTool            *schemas.ChatTool
 	preOrder           *[]string
 	postOrder          *[]string
 	postFinalState     *[]bool
@@ -46,6 +48,12 @@ func (p *humeConstraintPlugin) PreRequestHook(_ *schemas.BifrostContext, _ *sche
 }
 func (p *humeConstraintPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	*p.preOrder = append(*p.preOrder, p.name)
+	if p.addTool != nil {
+		if req.ChatRequest.Params == nil {
+			req.ChatRequest.Params = &schemas.ChatParameters{}
+		}
+		req.ChatRequest.Params.Tools = append(req.ChatRequest.Params.Tools, *p.addTool)
+	}
 	return req, nil, nil
 }
 func (p *humeConstraintPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
@@ -93,6 +101,88 @@ func newRejectedHumeConstraintRequest() *schemas.BifrostChatRequest {
 			Type: schemas.ChatToolTypeFunction,
 		}}},
 	}
+}
+
+type humeMCPInjectionSpy struct {
+	mcp.MCPManagerInterface
+	addToolsCalls int
+	injectedTool  schemas.ChatTool
+}
+
+func (s *humeMCPInjectionSpy) AddToolsToRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) *schemas.BifrostRequest {
+	s.addToolsCalls++
+	req.ChatRequest.Params.Tools = append(req.ChatRequest.Params.Tools, s.injectedTool)
+	schemas.AppendToContextList(ctx, schemas.BifrostContextKeyMCPAddedTools, s.injectedTool.Function.Name)
+	return req
+}
+
+func TestAddMCPToolsToStreamRequest(t *testing.T) {
+	humeTool := schemas.ChatTool{
+		Type: schemas.ChatToolTypeFunction,
+		Function: &schemas.ChatToolFunction{
+			Name:        "hume_weather",
+			Description: schemas.Ptr("Get weather for Hume"),
+		},
+	}
+	mcpTool := schemas.ChatTool{
+		Type:     schemas.ChatToolTypeFunction,
+		Function: &schemas.ChatToolFunction{Name: "mcp_search"},
+	}
+	toolChoice := "auto"
+	newRequest := func() *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{
+			RequestType: schemas.ChatCompletionStreamRequest,
+			ChatRequest: &schemas.BifrostChatRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-4o-mini",
+				Input: []schemas.ChatMessage{{
+					Role:    schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("weather?")},
+				}},
+				Params: &schemas.ChatParameters{
+					Tools:      []schemas.ChatTool{humeTool},
+					ToolChoice: &schemas.ChatToolChoice{ChatToolChoiceStr: &toolChoice},
+				},
+			},
+		}
+	}
+
+	t.Run("Hume chat stream bypasses MCP injection and preserves its request", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyIntegrationType, humeIntegrationType)
+		spy := &humeMCPInjectionSpy{injectedTool: mcpTool}
+		client := &Bifrost{MCPManager: spy}
+		req := newRequest()
+		originalChatRequest := req.ChatRequest
+		originalInput := req.ChatRequest.Input
+		originalTools := req.ChatRequest.Params.Tools
+		originalToolChoice := req.ChatRequest.Params.ToolChoice
+
+		result := client.addMCPToolsToStreamRequest(ctx, req)
+
+		assert.Same(t, req, result)
+		assert.Same(t, originalChatRequest, result.ChatRequest)
+		assert.Equal(t, originalInput, result.ChatRequest.Input)
+		assert.Equal(t, originalTools, result.ChatRequest.Params.Tools)
+		assert.Same(t, originalToolChoice, result.ChatRequest.Params.ToolChoice)
+		assert.Zero(t, spy.addToolsCalls)
+		assert.Nil(t, ctx.Value(schemas.BifrostContextKeyMCPAddedTools))
+	})
+
+	t.Run("non-Hume chat stream retains MCP injection", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "openai")
+		spy := &humeMCPInjectionSpy{injectedTool: mcpTool}
+		client := &Bifrost{MCPManager: spy}
+
+		result := client.addMCPToolsToStreamRequest(ctx, newRequest())
+
+		assert.Equal(t, 1, spy.addToolsCalls)
+		require.Len(t, result.ChatRequest.Params.Tools, 2)
+		assert.Equal(t, "hume_weather", result.ChatRequest.Params.Tools[0].Function.Name)
+		assert.Equal(t, "mcp_search", result.ChatRequest.Params.Tools[1].Function.Name)
+		assert.Equal(t, []string{"mcp_search"}, ctx.Value(schemas.BifrostContextKeyMCPAddedTools))
+	})
 }
 
 func TestEnforceHumeSingleToolConstraint(t *testing.T) {
@@ -151,7 +241,7 @@ func TestEnforceHumeSingleToolConstraint(t *testing.T) {
 		assert.Nil(t, req.ChatRequest.Params.ParallelToolCalls)
 	})
 
-	t.Run("tools injected into the final request are constrained", func(t *testing.T) {
+	t.Run("provider-bound tools are constrained", func(t *testing.T) {
 		req := newRequest(schemas.OpenAI, "gpt-4o-mini")
 		req.ChatRequest.Params.ParallelToolCalls = nil
 		require.Nil(t, (&Bifrost{}).enforceHumeSingleToolConstraint(ctx, req))
@@ -176,6 +266,40 @@ func TestEnforceHumeSingleToolConstraint(t *testing.T) {
 		require.Nil(t, (&Bifrost{}).enforceHumeSingleToolConstraint(otherCtx, req))
 		assert.Nil(t, req.ChatRequest.Params.ParallelToolCalls)
 	})
+}
+
+func TestHumeConstraintAppliesToPluginAddedTools(t *testing.T) {
+	var preOrder []string
+	var postOrder []string
+	var postFinalState []bool
+	var sawConstraintError bool
+	pluginTool := &schemas.ChatTool{
+		Type:     schemas.ChatToolTypeFunction,
+		Function: &schemas.ChatToolFunction{Name: "plugin_tool"},
+	}
+	plugin := &humeConstraintPlugin{
+		name:               "tool-adder",
+		addTool:            pluginTool,
+		preOrder:           &preOrder,
+		postOrder:          &postOrder,
+		postFinalState:     &postFinalState,
+		sawConstraintError: &sawConstraintError,
+	}
+	client := newHumeConstraintTestClient(t, &humeConstraintTracer{}, plugin)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyIntegrationType, humeIntegrationType)
+
+	request := newRejectedHumeConstraintRequest()
+	request.Params.Tools = nil
+	stream, bifrostErr := client.ChatCompletionStreamRequest(ctx, request)
+
+	assert.Nil(t, stream)
+	require.NotNil(t, bifrostErr)
+	assert.Contains(t, bifrostErr.Error.Message, "cannot guarantee")
+	assert.Equal(t, []string{"tool-adder"}, preOrder)
+	assert.Equal(t, []string{"tool-adder"}, postOrder)
+	assert.True(t, sawConstraintError)
+	assert.Equal(t, []bool{true}, postFinalState)
 }
 
 func TestHumeConstraintErrorRunsPostHooks(t *testing.T) {

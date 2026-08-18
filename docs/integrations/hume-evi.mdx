@@ -91,9 +91,9 @@ Bifrost always replaces an upstream provider's `system_fingerprint`; provider fi
 
 ## Function tools
 
-Hume custom language models use the OpenAI function-calling format. Bifrost preserves Hume's tool definitions, tool choice, assistant tool-call deltas, and tool-result history. The adapter disables parallel tool calls because Hume currently accepts one function call at a time.
+Hume custom language models use the OpenAI function-calling format. Bifrost preserves Hume's tool definitions, tool choice, assistant tool-call deltas, and tool-result history. The adapter disables parallel tool calls because Hume currently accepts one function call at a time. LLM plugins may intentionally modify or remove those tools before the request reaches the provider.
 
-Hume remains responsible for executing Hume-configured tools. Bifrost MCP tools continue to follow the existing MCP configuration and execution pipeline.
+Hume or the connected application remains responsible for executing Hume-configured tools. Bifrost does not automatically inject configured MCP tools into Hume streaming requests—even when `x-bf-mcp-include-*` headers are present—because Hume streams do not enter Bifrost's MCP agent executor. MCP injection remains unchanged for non-Hume routes.
 
 ## Verify the endpoint
 

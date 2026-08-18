@@ -111,7 +111,7 @@ func TestHumePreCallbackModelSessionAndStreamingDefaults(t *testing.T) {
 	assert.True(t, *request.Stream)
 	require.NotNil(t, request.N)
 	assert.Equal(t, 1, *request.N)
-	assert.Nil(t, request.ParallelToolCalls, "core applies the constraint after MCP and plugin tool injection")
+	assert.Nil(t, request.ParallelToolCalls, "core applies the constraint after plugin request mutation")
 	assert.Equal(t, "session-123", request.customSessionID)
 	assert.Equal(t, "session-123", bifrostCtx.Value(humeSessionContextKey{}))
 }
@@ -191,7 +191,9 @@ func TestHumeRequestConverterExposesMetadataToLLMPlugins(t *testing.T) {
 	route := CreateHumeRouteConfigs(lib.NewDefaultHumeConfig())[0]
 	request := parseHumeRequest(t, `{
 		"model":"openai/gpt-4o-mini",
-		"messages":[{"role":"user","content":"hello","time":{"begin":0,"end":100},"models":{"prosody":{"scores":{"Joy":0.8}}}}]
+		"messages":[{"role":"user","content":"hello","time":{"begin":0,"end":100},"models":{"prosody":{"scores":{"Joy":0.8}}}}],
+		"tools":[{"type":"function","function":{"name":"hume_weather","description":"Get weather","parameters":{"type":"object"}}}],
+		"tool_choice":{"type":"function","function":{"name":"hume_weather"}}
 	}`)
 	request.customSessionID = "session-123"
 	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -207,6 +209,15 @@ func TestHumeRequestConverterExposesMetadataToLLMPlugins(t *testing.T) {
 	require.Len(t, probe.metadata.Messages, 1)
 	require.Contains(t, probe.metadata.Messages, 0)
 	assert.Equal(t, "hello", *converted.ChatRequest.Input[0].Content.ContentStr)
+	require.NotNil(t, converted.ChatRequest.Params)
+	require.Len(t, converted.ChatRequest.Params.Tools, 1)
+	require.NotNil(t, converted.ChatRequest.Params.Tools[0].Function)
+	assert.Equal(t, "hume_weather", converted.ChatRequest.Params.Tools[0].Function.Name)
+	require.NotNil(t, converted.ChatRequest.Params.ToolChoice)
+	require.NotNil(t, converted.ChatRequest.Params.ToolChoice.ChatToolChoiceStruct)
+	assert.Equal(t, schemas.ChatToolChoiceTypeFunction, converted.ChatRequest.Params.ToolChoice.ChatToolChoiceStruct.Type)
+	require.NotNil(t, converted.ChatRequest.Params.ToolChoice.ChatToolChoiceStruct.Function)
+	assert.Equal(t, "hume_weather", converted.ChatRequest.Params.ToolChoice.ChatToolChoiceStruct.Function.Name)
 }
 
 func TestHumeProsodyPromptModesAndDeterminism(t *testing.T) {
