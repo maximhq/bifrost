@@ -2,7 +2,6 @@ package routing
 
 import (
 	"github.com/maximhq/bifrost/core/schemas"
-	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/plugins/routing/rules"
 )
 
@@ -27,11 +26,11 @@ func NewMockGovernance() *MockGovernance {
 	return &MockGovernance{MockGovernanceStore: rules.NewMockGovernanceStore()}
 }
 
-func (m *MockGovernance) PublishRoutingAllowlist(_ *schemas.BifrostContext, _ *configstoreTables.TableVirtualKey, modelStr string) {
+func (m *MockGovernance) PublishRoutingAllowlist(_ *schemas.BifrostContext, modelStr string) {
 	m.AllowlistModels = append(m.AllowlistModels, modelStr)
 }
 
-func (m *MockGovernance) LoadBalanceProvider(_ *schemas.BifrostContext, req *schemas.BifrostRequest, _ *configstoreTables.TableVirtualKey) error {
+func (m *MockGovernance) LoadBalanceProvider(_ *schemas.BifrostContext, req *schemas.BifrostRequest) error {
 	_, model, _ := req.GetRequestFields()
 	m.LoadBalancedModels = append(m.LoadBalancedModels, model)
 	if m.OnLoadBalance != nil {

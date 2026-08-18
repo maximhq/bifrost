@@ -17,6 +17,7 @@ import (
 	"github.com/maximhq/bifrost/framework/batchaccounting"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/mcpcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 )
@@ -45,7 +46,7 @@ type InMemoryStore interface {
 
 type BaseGovernancePlugin interface {
 	GetName() string
-	EvaluateGovernanceRequest(ctx *schemas.BifrostContext, evaluationRequest *EvaluationRequest, requestType schemas.RequestType) (*EvaluationResult, *schemas.BifrostError)
+	Evaluate(ctx *schemas.BifrostContext, evaluationRequest *EvaluationRequest) (*EvaluationResult, *schemas.BifrostError)
 	HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error)
 	HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error
 	PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error)
@@ -57,9 +58,16 @@ type BaseGovernancePlugin interface {
 	// Routing collaboration: the routing plugin calls these after evaluating routing rules,
 	// so the allowlist and the load balancer both act on the post-rule provider/model.
 	GetVirtualKey(ctx context.Context, vkValue string) (*configstoreTables.TableVirtualKey, bool)
+	// ResolveAccess answers what a request may reach, resolving it once and recording it on the
+	// request's grant so every later reader sees the same answer. A request context that carries no
+	// grant is a wiring fault, and is reported as one.
+	// Listing surfaces that run outside the request pipeline ask for it directly. It takes the
+	// request context concretely because resolution reads request-scoped values off it, which a
+	// plain context.Context carrying the same request cannot provide.
+	ResolveAccess(ctx *schemas.BifrostContext) (schemas.Access, error)
 	GetBudgetAndRateLimitStatus(ctx context.Context, model string, provider schemas.ModelProvider, vk *configstoreTables.TableVirtualKey, budgetBaselines map[string]float64, tokenBaselines map[string]int64, requestBaselines map[string]int64) *BudgetAndRateLimitStatus
-	PublishRoutingAllowlist(ctx *schemas.BifrostContext, virtualKey *configstoreTables.TableVirtualKey, modelStr string)
-	LoadBalanceProvider(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, virtualKey *configstoreTables.TableVirtualKey) error
+	PublishRoutingAllowlist(ctx *schemas.BifrostContext, modelStr string)
+	LoadBalanceProvider(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error
 }
 
 // GovernancePlugin implements the main governance plugin with hierarchical budget system
@@ -161,11 +169,12 @@ func Init(
 	}
 
 	newStoreStart := time.Now()
-	governanceStore, err := NewLocalGovernanceStore(ctx, logger, configStore, governanceConfig, modelCatalog)
+	governanceStore, err := NewLocalGovernanceStore(ctx, logger, configStore, governanceConfig, modelCatalog, inMemoryStore)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize governance store: %w", err)
 	}
 	logger.Info("[startup-timing] NewLocalGovernanceStore took %v", time.Since(newStoreStart))
+
 	// Initialize components in dependency order with fixed, optimal settings
 	// Resolver (pure decision engine for hierarchical governance, depends only on store)
 	resolver := NewBudgetResolver(governanceStore, modelCatalog, logger, inMemoryStore)
@@ -360,14 +369,14 @@ func (p *GovernancePlugin) GetBudgetAndRateLimitStatus(ctx context.Context, mode
 	return p.store.GetBudgetAndRateLimitStatus(ctx, model, provider, vk, budgetBaselines, tokenBaselines, requestBaselines)
 }
 
-// LoadBalanceProvider picks a weighted provider from the VK's configs for req.Model
+// LoadBalanceProvider picks a weighted provider among those the request may reach for req.Model
 // and mutates req.Provider/req.Model with the refined provider/model. Also populates req.Fallbacks
 // from the remaining weighted providers if no fallbacks were configured by the caller.
-func (p *GovernancePlugin) LoadBalanceProvider(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, virtualKey *configstoreTables.TableVirtualKey) error {
-	if virtualKey == nil {
-		return nil
-	}
-
+//
+// Candidacy comes from the request's grants, so a request that holds providers without presenting
+// a key is balanced across them too. Everything it needs comes off the request: the grants say
+// which providers may serve it, and the store says which of those can be paid for.
+func (p *GovernancePlugin) LoadBalanceProvider(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error {
 	provider, modelStr, existingFallbacks := req.GetRequestFields()
 	if modelStr == "" {
 		return nil
@@ -380,124 +389,107 @@ func (p *GovernancePlugin) LoadBalanceProvider(ctx *schemas.BifrostContext, req 
 
 	ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Load balancing provider for model %s", modelStr))
 
-	// Get provider configs for this virtual key
-	providerConfigs := virtualKey.ProviderConfigs
-	if len(providerConfigs) == 0 {
-		ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelWarn, fmt.Sprintf("No provider configs on virtual key %s for model %s, skipping load balancing", virtualKey.Name, modelStr))
-		// No provider configs, continue without modification
+	access, err := p.ResolveAccess(ctx)
+	if err != nil {
+		return err
+	}
+	if access == nil {
+		// A request that carries no access enumerates no provider configs, so there is nothing to
+		// balance across and the request is routed as it arrived. That is the ordinary key-less case,
+		// not a misconfiguration, so it is named rather than warned about.
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Request carries no access with provider configs to balance across for model %s, skipping load balancing", modelStr))
 		return nil
 	}
 
-	var configuredProviders []string
-	for _, pc := range providerConfigs {
-		configuredProviders = append(configuredProviders, pc.Provider)
+	// Every provider this request may use at all, before narrowing to the ones that serve
+	// this model. Reported as-is because it is what makes the exclusions below readable.
+	configuredProviders := access.GrantedProvidersForModel("")
+	if len(configuredProviders) == 0 {
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelWarn, fmt.Sprintf("No providers are available to this request for model %s, skipping load balancing", modelStr))
+		return nil
 	}
-	p.logger.Debug("[Governance] Virtual key has %d provider configs: %v", len(providerConfigs), configuredProviders)
-	ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Load balancing model %s across %d configured providers: %v", modelStr, len(providerConfigs), configuredProviders))
+	p.logger.Debug("[Governance] Request may use %d providers: %v", len(configuredProviders), configuredProviders)
+	ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Load balancing model %s across %d available providers: %v", modelStr, len(configuredProviders), configuredProviders))
 
-	// Pre-pass: if any config for a provider blacklists the model, that provider is fully blocked.
-	blacklistedProviders := make(map[string]bool)
-	for _, config := range providerConfigs {
-		if config.BlacklistedModels.IsBlocked(modelStr) {
-			blacklistedProviders[config.Provider] = true
+	// Candidates are the provider configs that permit this model: model allowance, blacklists
+	// and composition already applied. Everything below is about which of them may serve the
+	// request right now, and which one gets it.
+	candidates := access.ProvidersForModel(modelStr)
+	serving := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		serving[candidate.Provider] = struct{}{}
+	}
+	for _, availableProvider := range configuredProviders {
+		if _, ok := serving[availableProvider]; !ok {
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Provider %s excluded: model %s is not permitted", availableProvider, modelStr))
 		}
 	}
 
-	allowedProviderConfigs := make([]configstoreTables.TableVirtualKeyProviderConfig, 0)
-	for _, config := range providerConfigs {
-		// Blacklist check wins over allowlist (same as provider-key enforcement)
-		if blacklistedProviders[config.Provider] {
-			ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Provider %s excluded: model %s is blacklisted", config.Provider, modelStr))
+	eligible := make([]schemas.ProviderCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		// Whether a candidate can be afforded right now is the store's answer, because the store
+		// owns what pays for it. Load balancing passes the candidate and does not need to know
+		// whether a key, a team or something else is funding it.
+		if decision, err := p.store.CheckProviderCandidateExclusion(ctx, access, candidate, modelStr); err != nil || decision != DecisionAllow {
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo,
+				fmt.Sprintf("Provider %s excluded: %s", candidate.Provider, candidateExclusionReason(decision, err)))
 			continue
 		}
-
-		// Delegate model allowance check to model catalog
-		// This handles all cross-provider logic (OpenRouter, Vertex, Groq, Bedrock)
-		// and provider-prefixed allowed_models entries
-		isProviderAllowed := false
-		if p.modelCatalog != nil && p.inMemoryStore != nil {
-			provider := schemas.ModelProvider(config.Provider)
-			providerConfig, ok := p.inMemoryStore.GetConfiguredProviders()[provider]
-			providerConfigPtr := &providerConfig
-			if !ok {
-				providerConfigPtr = nil
-			}
-			isProviderAllowed = p.modelCatalog.IsModelAllowedForProvider(provider, modelStr, providerConfigPtr, config.AllowedModels)
-		} else {
-			// Fallback when model catalog is not available: simple string matching
-			// ["*"] = allow all models; [] = deny all models
-			isProviderAllowed = config.AllowedModels.IsAllowed(modelStr)
-		}
-
-		if isProviderAllowed {
-			// Check if the provider's budget or rate limits are violated using resolver helper methods
-			if p.resolver.isProviderBudgetViolated(ctx, virtualKey, config) {
-				ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Provider %s excluded: budget limit violated", config.Provider))
-				continue
-			}
-			if p.resolver.isProviderRateLimitViolated(ctx, virtualKey, config) {
-				ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Provider %s excluded: rate limit violated", config.Provider))
-				continue
-			}
-			allowedProviderConfigs = append(allowedProviderConfigs, config)
-		} else {
-			ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Provider %s excluded: model %s not in allowed models list", config.Provider, modelStr))
-		}
+		eligible = append(eligible, candidate)
 	}
 
-	var allowedProviders []string
-	for _, pc := range allowedProviderConfigs {
-		allowedProviders = append(allowedProviders, pc.Provider)
+	var eligibleProviders []string
+	for _, candidate := range eligible {
+		eligibleProviders = append(eligibleProviders, candidate.Provider)
 	}
-	p.logger.Debug("[Governance] Allowed providers after filtering: %v", allowedProviders)
-	ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Allowed providers after filtering: %v", allowedProviders))
+	p.logger.Debug("[Governance] Allowed providers after filtering: %v", eligibleProviders)
+	ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Allowed providers after filtering: %v", eligibleProviders))
 
-	if len(allowedProviderConfigs) == 0 {
+	if len(eligible) == 0 {
 		ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("No eligible providers remaining after filtering for model %s, skipping load balancing", modelStr))
 		// TODO: Send proper error if (overall VK budget/rate limit) or (all provider budgets/rate limits) are violated
-		// No allowed provider configs, continue without modification
 		return nil
 	}
 
-	weightedConfigs := make([]configstoreTables.TableVirtualKeyProviderConfig, 0, len(allowedProviderConfigs))
-	for _, config := range allowedProviderConfigs {
-		if config.Weight != nil {
-			weightedConfigs = append(weightedConfigs, config)
+	weighted := make([]schemas.ProviderCandidate, 0, len(eligible))
+	for _, candidate := range eligible {
+		if candidate.Weight != nil {
+			weighted = append(weighted, candidate)
 		}
 	}
 
-	if len(weightedConfigs) == 0 {
-		// All allowed configs survived the model-allowance / budget / rate-limit filters,
-		// but none of them have a Weight set — there's nothing to feed weighted selection.
-		// Emit an explicit log so the routing trail explains why governance stops here
-		// instead of trailing off after "Allowed providers after filtering: [...]".
-		ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("No weighted configs for model %s — none of the allowed VK provider configs have a weight assigned; skipping load balancing", modelStr))
+	if len(weighted) == 0 {
+		// Everything survived the model-allowance / budget / rate-limit filters, but none of it
+		// carries a weight: there is nothing to feed weighted selection. Say so explicitly, so
+		// the routing trail explains why governance stops here instead of trailing off after
+		// "Allowed providers after filtering: [...]".
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("No weighted providers for model %s: none of the allowed providers have a weight assigned; skipping load balancing", modelStr))
 		return nil
 	}
 
 	var selectedProvider schemas.ModelProvider
 	totalWeight := 0.0
-	for _, config := range weightedConfigs {
-		totalWeight += getWeight(config.Weight)
+	for _, candidate := range weighted {
+		totalWeight += getWeight(candidate.Weight)
 	}
 	// Generate random number between 0 and totalWeight
 	randomValue := rand.Float64() * totalWeight
 	// Select provider based on weighted random selection
 	currentWeight := 0.0
-	for _, config := range weightedConfigs {
-		currentWeight += getWeight(config.Weight)
+	for _, candidate := range weighted {
+		currentWeight += getWeight(candidate.Weight)
 		if randomValue <= currentWeight {
-			selectedProvider = schemas.ModelProvider(config.Provider)
+			selectedProvider = schemas.ModelProvider(candidate.Provider)
 			break
 		}
 	}
 	// Fallback: if no provider was selected (shouldn't happen but guard against FP issues)
 	if selectedProvider == "" {
-		selectedProvider = schemas.ModelProvider(weightedConfigs[0].Provider)
+		selectedProvider = schemas.ModelProvider(weighted[0].Provider)
 	}
 
 	p.logger.Debug("[governance] Selected provider: %s", selectedProvider)
-	ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Selected provider %s for model %s (from %d eligible: %v)", selectedProvider, modelStr, len(allowedProviderConfigs), allowedProviders))
+	ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, schemas.LogLevelInfo, fmt.Sprintf("Selected provider %s for model %s (from %d eligible: %v)", selectedProvider, modelStr, len(eligible), eligibleProviders))
 
 	refinedModel := modelStr
 	// Refine the model for the selected provider
@@ -514,19 +506,19 @@ func (p *GovernancePlugin) LoadBalanceProvider(ctx *schemas.BifrostContext, req 
 
 	schemas.AppendToContextList(ctx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineGovernance)
 
-	if len(existingFallbacks) == 0 && len(weightedConfigs) > 1 {
-		fallbackConfigs := append([]configstoreTables.TableVirtualKeyProviderConfig(nil), weightedConfigs...)
-		sort.Slice(fallbackConfigs, func(i, j int) bool {
-			return getWeight(fallbackConfigs[i].Weight) > getWeight(fallbackConfigs[j].Weight)
+	if len(existingFallbacks) == 0 && len(weighted) > 1 {
+		fallbackCandidates := append([]schemas.ProviderCandidate(nil), weighted...)
+		sort.Slice(fallbackCandidates, func(i, j int) bool {
+			return getWeight(fallbackCandidates[i].Weight) > getWeight(fallbackCandidates[j].Weight)
 		})
 
 		// Filter out the selected provider and create fallbacks array
-		fallbacks := make([]schemas.Fallback, 0, len(fallbackConfigs)-1)
-		for _, config := range fallbackConfigs {
-			if config.Provider == string(selectedProvider) {
+		fallbacks := make([]schemas.Fallback, 0, len(fallbackCandidates)-1)
+		for _, candidate := range fallbackCandidates {
+			if candidate.Provider == string(selectedProvider) {
 				continue
 			}
-			fbProvider := schemas.ModelProvider(config.Provider)
+			fbProvider := schemas.ModelProvider(candidate.Provider)
 			fbModel := modelStr
 			if p.modelCatalog != nil {
 				refined, err := p.modelCatalog.RefineModelForProvider(fbProvider, modelStr)
@@ -546,151 +538,56 @@ func (p *GovernancePlugin) LoadBalanceProvider(ctx *schemas.BifrostContext, req 
 	return nil
 }
 
-// PublishRoutingAllowlist records, for downstream routing layers, which of the VK's configured
-// providers permit modelStr according to the VK's own allowed_models / blocked_models. It is a
-// coarse provider gate (BifrostContextKeyRoutingAllowedProviders) layered on top of the model
-// catalog checks those layers already run — its purpose is to stop a later routing layer (load
-// balancing, model-catalog resolution) from selecting a provider the VK forbids for this model,
+// candidateExclusionReason is what a routing log says about a candidate governance would not fund.
+//
+// Routing logs are read by whoever made the request, so this says what happened in plain words rather
+// than naming the decision that produced it. The store answers with a Decision because that is what its
+// other checks answer with; turning one into a sentence belongs here, with the log.
+func candidateExclusionReason(decision Decision, err error) string {
+	switch {
+	case isRateLimitViolation(decision):
+		return "rate limit violated"
+	case isBudgetViolation(decision):
+		return "budget limit violated"
+	case err != nil:
+		return err.Error()
+	default:
+		return "governance would not fund it"
+	}
+}
+
+// PublishRoutingAllowlist records, for downstream routing layers, which of the providers the
+// request may reach permit modelStr. It is a coarse provider gate
+// (BifrostContextKeyRoutingAllowedProviders) layered on top of the model catalog checks those
+// layers already run: its purpose is to stop a later routing layer (load balancing,
+// model-catalog resolution) from selecting a provider the request may not use for this model,
 // even when governance itself couldn't pick one. An empty slice means "no provider is permitted"
-// (fail-closed via the empty-provider validation in handleRequest); a nil VK publishes nothing.
+// (fail-closed via the empty-provider validation in handleRequest); a request carrying no grants
+// publishes nothing.
+//
+// The virtual key is not consulted: what the request may reach decides the allowlist, so a
+// request holding grants without presenting a key is narrowed the same way one with a key is.
 //
 // Provider prefixes on the request model are already split into req.Provider + bare model at the
-// HTTP layer (resolveModelAndProvider), so VK allowed_models / blocked_models are matched against
+// HTTP layer (resolveModelAndProvider), so allowed and blocked model names are matched against
 // bare names and plain membership checks are sufficient here.
-func (p *GovernancePlugin) PublishRoutingAllowlist(ctx *schemas.BifrostContext, virtualKey *configstoreTables.TableVirtualKey, modelStr string) {
-	if virtualKey == nil {
+func (p *GovernancePlugin) PublishRoutingAllowlist(ctx *schemas.BifrostContext, modelStr string) {
+	access, err := p.ResolveAccess(ctx)
+	if err != nil || access == nil {
+		// Publishing nothing is not the same as publishing an empty list: an empty list means no
+		// provider is permitted, and would fail-close a request that nothing has narrowed. A request
+		// with no grant is refused by evaluation, which is the place to say so.
 		return
 	}
-	allowed := make([]schemas.ModelProvider, 0, len(virtualKey.ProviderConfigs))
-	for _, pc := range virtualKey.ProviderConfigs {
-		// No model to filter on → keep the provider so we don't over-restrict.
-		if modelStr == "" ||
-			(pc.AllowedModels.IsAllowed(modelStr) && !pc.BlacklistedModels.IsBlocked(modelStr)) {
-			allowed = append(allowed, schemas.ModelProvider(pc.Provider))
-		}
-	}
-	ctx.SetValue(schemas.BifrostContextKeyRoutingAllowedProviders, allowed)
+	ctx.SetValue(schemas.BifrostContextKeyRoutingAllowedProviders, modelProviders(access.GrantedProvidersForModel(modelStr)))
 }
 
-// computeMCPIncludeTools builds the MCP include-tools list for a virtual key. Returns the list
-// directly; callers store it via ctx.SetValue(schemas.MCPContextKeyIncludeTools, ...). VK-specific
-// MCP configs take precedence over AllowOnAllVirtualKeys clients.
-func (p *GovernancePlugin) computeMCPIncludeTools(virtualKey *configstoreTables.TableVirtualKey) []string {
-	var allowAllVKsClients map[string]string
-	if p.inMemoryStore != nil {
-		allowAllVKsClients = p.inMemoryStore.GetMCPClientsAllowingAllVirtualKeys()
-	}
-	return p.computeMCPIncludeToolsWith(virtualKey, allowAllVKsClients)
-}
-
-// computeMCPIncludeToolsWith is the computeMCPIncludeTools variant taking a pre-fetched
-// AllowOnAllVirtualKeys map (clientID → clientName), so callers that make multiple
-// grant decisions per request can evaluate them all against one consistent snapshot.
-func (p *GovernancePlugin) computeMCPIncludeToolsWith(virtualKey *configstoreTables.TableVirtualKey, allowAllVKsClients map[string]string) []string {
-	executeOnlyTools := make([]string, 0)
-
-	if allowAllVKsClients == nil {
-		allowAllVKsClients = make(map[string]string)
-	}
-
-	// Process VK-specific MCP configs first — explicit config always overrides AllowOnAllVirtualKeys.
-	// Track which AllowOnAllVirtualKeys clients have an explicit VK config so we don't double-add them.
-	handledClients := make(map[string]bool)
-	for _, vkMcpConfig := range virtualKey.MCPConfigs {
-		clientID := vkMcpConfig.MCPClient.ClientID
-		if _, isAllowAll := allowAllVKsClients[clientID]; isAllowAll {
-			// Explicit VK config exists — it takes precedence; mark as handled regardless of tool list
-			handledClients[clientID] = true
-		}
-		if vkMcpConfig.ToolsToExecute.IsEmpty() {
-			// No tools specified in virtual key config - skip this client entirely
-			continue
-		}
-		if vkMcpConfig.ToolsToExecute.IsUnrestricted() {
-			executeOnlyTools = append(executeOnlyTools, fmt.Sprintf("%s-*", vkMcpConfig.MCPClient.Name))
-			continue
-		}
-		for _, tool := range vkMcpConfig.ToolsToExecute {
-			if tool != "" {
-				executeOnlyTools = append(executeOnlyTools, fmt.Sprintf("%s-%s", vkMcpConfig.MCPClient.Name, tool))
-			}
-		}
-	}
-
-	// For AllowOnAllVirtualKeys clients with no explicit VK config, fall back to allowing all tools
-	for clientID, clientName := range allowAllVKsClients {
-		if !handledClients[clientID] {
-			executeOnlyTools = append(executeOnlyTools, fmt.Sprintf("%s-*", clientName))
-		}
-	}
-
-	return executeOnlyTools
-}
-
-// pruneMCPIncludeToolsFromContext narrows a caller-provided include-tools list (stamped on ctx
-// from the x-bf-mcp-include-tools header in lib/ctx.go) down to the tools the virtual key
-// allows, and writes the pruned list back to ctx. Returns true when a caller list was present,
-// regardless of how many entries survived. Entries the key does not grant are dropped; a
-// "client-*" wildcard is kept only when the key itself is unrestricted for that client,
-// otherwise it is replaced by the key's specific grants for that client (passing the wildcard
-// through would read downstream as "all tools of this client").
-func (p *GovernancePlugin) pruneMCPIncludeToolsFromContext(ctx *schemas.BifrostContext, virtualKey *configstoreTables.TableVirtualKey) bool {
-	existing := ctx.Value(schemas.MCPContextKeyIncludeTools)
-	if existing == nil {
-		return false
-	}
-	requested, _ := existing.([]string)
-
-	// Fetch the AllowOnAllVirtualKeys snapshot once so the wildcard checks (via vkSet)
-	// and the per-tool checks (via isMCPToolAllowedByVKWith) can't observe different
-	// states across a concurrent config reload.
-	var allowAllClients map[string]string
-	if p.inMemoryStore != nil {
-		allowAllClients = p.inMemoryStore.GetMCPClientsAllowingAllVirtualKeys()
-	}
-
-	vkTools := p.computeMCPIncludeToolsWith(virtualKey, allowAllClients)
-	vkSet := make(map[string]struct{}, len(vkTools))
-	for _, tool := range vkTools {
-		vkSet[tool] = struct{}{}
-	}
-
-	pruned := make([]string, 0, len(requested))
-	seen := make(map[string]struct{}, len(requested))
-	add := func(tool string) {
-		if _, dup := seen[tool]; !dup {
-			seen[tool] = struct{}{}
-			pruned = append(pruned, tool)
-		}
-	}
-	for _, pattern := range requested {
-		if pattern == "" {
-			continue
-		}
-		if clientName, isWildcard := strings.CutSuffix(pattern, "-*"); isWildcard {
-			if _, ok := vkSet[pattern]; ok {
-				add(pattern)
-				continue
-			}
-			for _, tool := range vkTools {
-				if strings.HasPrefix(tool, clientName+"-") {
-					add(tool)
-				}
-			}
-			continue
-		}
-		if p.isMCPToolAllowedByVKWith(virtualKey, pattern, allowAllClients) {
-			add(pattern)
-		}
-	}
-
-	ctx.SetValue(schemas.MCPContextKeyIncludeTools, pruned)
-	return true
-}
-
-// EvaluateGovernanceRequest is a common function that handles virtual key validation
-// and governance evaluation logic. It returns the evaluation result and a BifrostError
-// if the request should be rejected, or nil if allowed.
+// Evaluate is the governance verdict for a request: whether it may proceed, and why not when it
+// may not. It is the one entry point: every hook and every caller outside the pipeline arrives
+// here, which is also why it resolves what the request may reach if nothing has yet.
+//
+// The steps it runs are the plugin's own and stay private: a caller asks for the verdict, not for
+// one level of it. Their order is load bearing and documented below.
 //
 // Parameters:
 //   - ctx: The Bifrost context
@@ -699,27 +596,51 @@ func (p *GovernancePlugin) pruneMCPIncludeToolsFromContext(ctx *schemas.BifrostC
 // Returns:
 //   - *EvaluationResult: The governance evaluation result
 //   - *schemas.BifrostError: The error to return if request is not allowed, nil if allowed
-func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext, evaluationRequest *EvaluationRequest, requestType schemas.RequestType) (*EvaluationResult, *schemas.BifrostError) {
-	// Check if authentication is mandatory (either VK or user auth)
-	// Checking if the virtual key is valid or not
-	isVirtualKeyValid := false
-	if evaluationRequest.VirtualKey != "" {
-		_, exists := p.store.GetVirtualKey(ctx, evaluationRequest.VirtualKey)
-		if exists {
-			isVirtualKeyValid = true
-		} else {
-			// VK was provided but does not exist in the store — reject regardless of mandatory setting
-			return nil, &schemas.BifrostError{
-				Type:       new("virtual_key_not_found"),
-				StatusCode: new(401),
-				Error: &schemas.ErrorField{
-					Message: "virtual key not found. The provided virtual key does not exist or has been revoked.",
-				},
-			}
-		}
+func (p *GovernancePlugin) Evaluate(ctx *schemas.BifrostContext, evaluationRequest *EvaluationRequest) (*EvaluationResult, *schemas.BifrostError) {
+	// Evaluation reads what a request may reach rather than working it out, and not every caller
+	// arrives through a hook that has already worked it out. A request with no grant cannot be
+	// evaluated at all: nothing settled who it is, so there is nothing to evaluate it as.
+	access, err := p.ResolveAccess(ctx)
+	if err != nil {
+		return p.decide(ctx, &EvaluationResult{
+			Decision: DecisionAccessUnresolved,
+			Reason:   err.Error(),
+		})
 	}
+
+	// This request now has the provider and model it will use, so the limits it answers to can be
+	// settled and recorded on its grant. Doing it here rather than in a hook covers every path: the
+	// streaming, realtime-turn and MCP pipelines run no request hook, and this is the funnel they
+	// all pass through. Everything downstream, the checks below and the co-payers named for the
+	// log, then reads one settled set instead of assembling its own.
+	limits := resolveLimits(ctx, p.store, evaluationRequest.Provider, evaluationRequest.Model)
+
+	// The order of everything below is load bearing:
+	//
+	//   key identity -> is authentication even present -> access -> limits (key, provider/model,
+	//   customer, team, user)
+	//
+	// Identity is FIRST because a key that may not be used is refused as a key, before anything
+	// else speaks for it. Putting any limit ahead of it would answer a revoked key with somebody
+	// else's exhausted budget, a 402 or 429 that tells the holder of a dead key which budgets
+	// exist and were consulted.
+	//
+	// Access comes next, and runs for EVERY request, whether or not it presented a key. What a
+	// request may reach is a property of the grants it carries and the store decides what those
+	// are, so a request granted access by something other than a key is held to the same gates
+	// rather than to a second implementation of them alongside. A request carrying no grants at
+	// all is unrestricted here, which is what a key-less request has always been. It also runs
+	// before any limit, so a caller reaching for something they were never granted is told that,
+	// rather than that its budget ran out.
+	//
+	// Limits come last, in the order they can refuse: the deployment's own provider and model
+	// limits, then the key's, then what the key rolls up into (customer, team), then the user.
+
+	// Step 1: was any authentication presented at all? A credential that was presented and turned out to
+	// grant nothing is a different answer, reported by the identity step below; telling a caller who
+	// supplied a key to supply one is not a useful refusal.
 	p.cfgMutex.RLock()
-	if !isVirtualKeyValid && !hasDirectKeyAuth(ctx) && evaluationRequest.UserID == "" && p.isVkMandatory != nil && *p.isVkMandatory {
+	if !presentedGrantBearingCredential(ctx) && !hasDirectKeyAuth(ctx) && p.isVkMandatory != nil && *p.isVkMandatory {
 		message := "virtual key is required. Provide a virtual key via the x-bf-vk header."
 		if p.isEnterprise {
 			message = "authentication is required. Provide a virtual key (x-bf-vk), API key, or user token."
@@ -735,124 +656,88 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 	}
 	p.cfgMutex.RUnlock()
 
-	// Read-only metadata calls (e.g. list models) set this flag to skip budget/rate-limit
-	// checks while still enforcing VK identity (existence, active status, provider/model filtering).
-	skipBudgetsAndRateLimits := bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipBudgetAndRateLimits)
-
-	// Requests that are evaluated but never routed set this flag. Their provider is
-	// whatever upstream the caller was already talking to, not a provider an operator
-	// picked, so the VK provider allowlist carries no meaning for them.
-	skipProviderCheck := bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipProviderCheck)
-
-	// First evaluate model and provider checks (applies even when virtual keys are disabled or not present)
-	result := &EvaluationResult{
-		Decision: DecisionAllow,
-		Reason:   "Provider-level and model-level checks skipped for read-only request",
+	// Step 2: the access itself: may it be used at all? Whether a credential is real, active and
+	// unexpired is settled when its permit is built, so this reads the answer off the permits rather
+	// than resolving a key again. A caller that presented a credential no permit could be built for
+	// is refused here: no permit means nothing authorised the request, which is a different answer
+	// from having presented nothing.
+	if refusal := unusablePermit(access); refusal != nil {
+		return p.decide(ctx, refusal)
 	}
-	if !skipBudgetsAndRateLimits {
-		result = p.resolver.EvaluateModelAndProviderRequest(ctx, evaluationRequest.Provider, evaluationRequest.Model)
+	if access == nil && presentedGrantBearingCredential(ctx) {
+		return p.decide(ctx, &EvaluationResult{
+			Decision: DecisionAccessNotFound,
+			Reason:   "access not found. The provided credential does not exist or has been revoked.",
+		})
 	}
 
-	// The flow for governance checks is:
-	//   VK (identity + VK-level budget/rate-limit) -> Customer -> Team -> User
-	// VK identity runs FIRST so that revoked, provider-disallowed, or model-disallowed
-	// keys are blocked before any hierarchy state is consulted. Running Customer/Team/
-	// User ahead of VK would leak topology: a revoked key attached to an over-budget
-	// team would return 429 team-budget-exceeded instead of 403 VK-blocked, telling
-	// an attacker the key's team structure was validated.
+	// Step 3: what the request may reach.
+	result := p.resolver.evaluateAccess(ctx, evaluationRequest, access)
 
-	// Resolve the VK once; it feeds both the VK evaluation and hierarchy-ID extraction.
-	var hierarchyVK *configstoreTables.TableVirtualKey
-	if evaluationRequest.VirtualKey != "" {
-		if vk, ok := p.store.GetVirtualKey(ctx, evaluationRequest.VirtualKey); ok && vk != nil {
-			hierarchyVK = vk
-		}
+	// Step 4: what the request can afford. One check over every limit covering this attempt, the
+	// deployment's provider limits, the model configs that apply, and whatever the permits are
+	// funded by, so no step here knows what kind of holder is paying.
+	if result.Decision == DecisionAllow {
+		result = p.resolver.evaluateLimits(ctx, evaluationRequest, limits)
 	}
 
-	// Step 1: Evaluate virtual key (identity + VK-level budget/rate-limit hierarchy).
-	// Short-circuits with VirtualKeyBlocked / ProviderBlocked / ModelBlocked before
-	// we touch Customer / Team / User.
-	if result.Decision == DecisionAllow && evaluationRequest.VirtualKey != "" {
-		skipVKBudgetLimit := evaluationRequest.UserID != "" || skipBudgetsAndRateLimits
-		result = p.resolver.EvaluateVirtualKeyRequest(ctx, evaluationRequest.VirtualKey, evaluationRequest.Provider, evaluationRequest.Model, requestType, skipVKBudgetLimit, skipProviderCheck)
-	}
-
-	// Step 2: Customer-level budget (customer attached directly to VK, or via the VK's team).
-	// Fall back to the loaded relation IDs so VKs populated via joins without FK
-	// pointer columns still participate in customer-level enforcement.
-	if !skipBudgetsAndRateLimits && result.Decision == DecisionAllow && hierarchyVK != nil {
-		var customerID string
-		customerFromTeam := false
-		switch {
-		case hierarchyVK.CustomerID != nil:
-			customerID = *hierarchyVK.CustomerID
-		case hierarchyVK.Customer != nil:
-			customerID = hierarchyVK.Customer.ID
-		case hierarchyVK.Team != nil && hierarchyVK.Team.CustomerID != nil:
-			customerID = *hierarchyVK.Team.CustomerID
-			customerFromTeam = true
-		case hierarchyVK.Team != nil && hierarchyVK.Team.Customer != nil:
-			customerID = hierarchyVK.Team.Customer.ID
-			customerFromTeam = true
-		}
-		// When the request is scoped to a specific customer (header-driven, team-VK
-		// path; stamped by the enterprise plugin), skip enforcing the scalar
-		// team.CustomerID customer if it is not the scoped one — the enterprise layer
-		// enforces the scoped customer instead. Mirrors collectBudgetsFromHierarchy.
-		scopedCustomerID, _ := ctx.Value(schemas.BifrostContextKeyGovernanceScopedCustomerID).(string)
-		scopedAway := customerFromTeam && scopedCustomerID != "" && scopedCustomerID != customerID
-		if customerID != "" && !scopedAway {
-			result = p.resolver.EvaluateCustomerRequest(ctx, customerID, evaluationRequest)
-		}
-	}
-
-	// Step 3: Team-level budget. Fall back to vk.Team.ID when the FK pointer is nil
-	// but the relation is populated.
-	if !skipBudgetsAndRateLimits && result.Decision == DecisionAllow && hierarchyVK != nil {
-		var teamID string
-		switch {
-		case hierarchyVK.TeamID != nil:
-			teamID = *hierarchyVK.TeamID
-		case hierarchyVK.Team != nil:
-			teamID = hierarchyVK.Team.ID
-		}
-		if teamID != "" {
-			result = p.resolver.EvaluateTeamRequest(ctx, teamID, evaluationRequest)
-		}
-	}
-
-	// Step 4: User-level governance (enterprise-only).
-	if !skipBudgetsAndRateLimits && result.Decision == DecisionAllow {
-		result = p.resolver.EvaluateUserRequest(ctx, evaluationRequest.UserID, evaluationRequest)
-	}
-
-	// Check the actual MCP tools injected into the request against the VK MCPConfigs.
+	// Check the actual MCP tools injected into the request against what the request may reach.
 	// BifrostContextKeyMCPAddedTools is populated by AddToolsToRequest (which runs before
 	// PreLLMHook), so it contains the real expanded tool names (e.g. "youtube-search") rather
 	// than raw header patterns (e.g. "youtube-*"), giving us exact per-tool validation.
-	if result.Decision == DecisionAllow && result.VirtualKey != nil {
+	if result.Decision == DecisionAllow && access != nil {
 		if addedTools, ok := ctx.Value(schemas.BifrostContextKeyMCPAddedTools).([]string); ok && len(addedTools) > 0 {
-			// Fetch once before the loop to avoid repeated lock acquisitions per tool.
-			var allowAllClients map[string]string
-			if p.inMemoryStore != nil {
-				allowAllClients = p.inMemoryStore.GetMCPClientsAllowingAllVirtualKeys()
-			}
 			var disallowed []string
+			var deniedBy []schemas.Permit
 			for _, tool := range addedTools {
-				if !p.isMCPToolAllowedByVKWith(result.VirtualKey, tool, allowAllClients) {
+				if !access.IsMCPToolAllowed(tool) {
 					disallowed = append(disallowed, tool)
+					if deniedBy == nil {
+						deniedBy = access.DeniedPermitsForMCPTool(tool)
+					}
 				}
 			}
 			if len(disallowed) > 0 {
 				result = &EvaluationResult{
-					Decision:   DecisionMCPToolBlocked,
-					Reason:     fmt.Sprintf("MCP tools not allowed for virtual key '%s': %s", result.VirtualKey.Name, strings.Join(disallowed, ", ")),
-					VirtualKey: result.VirtualKey,
+					Decision: DecisionMCPToolBlocked,
+					Reason:   denialReason(fmt.Sprintf("MCP tools not allowed: %s", strings.Join(disallowed, ", ")), deniedBy),
 				}
 			}
 		}
 	}
 
+	return p.decide(ctx, result)
+}
+
+// unusablePermit is the refusal for a request whose caller holds a permit that may not be used:
+// one that is inactive, or has expired. Whether it may be used is settled when the permit is built,
+// so this reads the answer off it. Nil when every permit the caller holds may be used, or they hold
+// none, which the funnel answers separately by what was presented.
+func unusablePermit(access schemas.Access) *EvaluationResult {
+	if access == nil {
+		return nil
+	}
+	for _, base := range access.Bases() {
+		if !base.IsActive() {
+			return &EvaluationResult{
+				Decision: DecisionAccessBlocked,
+				Reason:   fmt.Sprintf("%s is inactive", grant.PermitType(base.Type()).PrettyString()),
+			}
+		}
+		if base.IsExpired() {
+			return &EvaluationResult{
+				Decision: DecisionAccessBlocked,
+				Reason:   fmt.Sprintf("%s has expired", grant.PermitType(base.Type()).PrettyString()),
+			}
+		}
+	}
+	return nil
+}
+
+// decide turns a governance decision into what the caller gets back: the result, and the error to
+// refuse the request with when it was not allowed. Every step of Evaluate ends here, so a refusal
+// is marked on the request and mapped to a status in one place regardless of which step refused.
+func (p *GovernancePlugin) decide(ctx *schemas.BifrostContext, result *EvaluationResult) (*EvaluationResult, *schemas.BifrostError) {
 	// Mark request as rejected in context if not allowed
 	if result.Decision != DecisionAllow {
 		if ctx != nil {
@@ -874,7 +759,18 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 		}
 		return result, nil
 
-	case DecisionVirtualKeyNotFound, DecisionVirtualKeyBlocked, DecisionModelBlocked, DecisionProviderBlocked:
+	case DecisionAccessNotFound:
+		// The credential itself did not resolve, so this is a failure to authenticate rather than
+		// a permission the caller lacks.
+		return result, &schemas.BifrostError{
+			Type:       new(string(result.Decision)),
+			StatusCode: new(401),
+			Error: &schemas.ErrorField{
+				Message: result.Reason,
+			},
+		}
+
+	case DecisionAccessBlocked, DecisionModelBlocked, DecisionProviderBlocked:
 		return result, &schemas.BifrostError{
 			Type:       new(string(result.Decision)),
 			StatusCode: new(403),
@@ -910,6 +806,17 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 			},
 		}
 
+	case DecisionAccessUnresolved:
+		// A wiring fault, not a policy decision: the request reached evaluation without the grant
+		// every transport installs, so the deployment is misassembled rather than the caller refused.
+		return result, &schemas.BifrostError{
+			Type:       new(string(result.Decision)),
+			StatusCode: new(500),
+			Error: &schemas.ErrorField{
+				Message: result.Reason,
+			},
+		}
+
 	default:
 		// Fallback to deny for unknown decisions
 		return result, &schemas.BifrostError{
@@ -921,65 +828,140 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 	}
 }
 
-// hasDirectKeyAuth returns true when the transport accepted an admin-enabled direct provider key.
-func hasDirectKeyAuth(ctx *schemas.BifrostContext) bool {
+// ResolveAccess resolves what a request may reach and records it on the request's grant, once per
+// request. Later calls find the answer already recorded and return it, so calling it wherever a
+// request is first seen costs one read on all but the first.
+//
+// Once per request, not per attempt: what a request may reach is a fact about the caller, and a
+// request that fails over changes its provider, not its caller. What an attempt answers to in
+// limits is settled separately, once its provider and model are known (see resolveLimits).
+//
+// Resolving is the store's answer to what permits the request carries, folded under one
+// composition mode. Because the store decides that, a deployment resolving permit holders beyond
+// virtual keys answers for them here without this path changing.
+//
+// Two places call it. The request hook, because that is where a request's grant decisions start on
+// the ordinary path. And evaluation, because it is the one funnel every evaluating caller passes
+// through, including the streaming, realtime-turn and MCP pipelines, which never run the request
+// hook, and callers that evaluate governance with no hook in front of them at all.
+//
+// Every request context carries a grant, installed by the transport that built it. One that does
+// not is a wiring fault, and this reports it as such rather than working around it: nothing here
+// installs a grant, because a grant nobody settled an identity on answers every question wrongly.
+//
+// A request that carries no permit at all resolves to nil rather than to access permitting nothing,
+// and nothing is recorded for it: it is unrestricted, as a request nothing granted anything has
+// always been, and consumers read the absence as that.
+func (p *GovernancePlugin) ResolveAccess(ctx *schemas.BifrostContext) (schemas.Access, error) {
 	if ctx == nil {
-		return false
+		return nil, errors.New("nil context")
 	}
-	_, ok := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key)
-	return ok
+	g := ctx.Grant()
+	if g == nil {
+		return nil, errors.New("request carries no grant; the transport did not settle who the request is")
+	}
+	if access := g.Access(); access != nil {
+		return access, nil
+	}
+	bases, scoping, mode := p.store.ResolvePermits(ctx)
+	if len(bases) == 0 && scoping == nil {
+		return nil, nil
+	}
+	access := grant.NewAccess(bases, scoping, mode, p.modelMatcher())
+	g.SetAccess(access)
+	return access, nil
 }
 
-// isMCPToolAllowedByVK checks whether a tool pattern (in "clientName-toolName" or "clientName-*"
-// format) is permitted by the virtual key's MCPConfigs.
+// modelMatcher is how an access resolves a model name against a provider's allowed-models list:
+// through the model catalog, with the provider's own configuration, so cross-provider naming and
+// provider-prefixed entries resolve exactly as they do everywhere else. Without a catalog, names
+// are matched as written.
+func (p *GovernancePlugin) modelMatcher() grant.ModelMatcher {
+	if p.modelCatalog == nil {
+		return nil
+	}
+	return func(provider, model string, allowed []string) bool {
+		var providerConfig *configstore.ProviderConfig
+		if p.inMemoryStore != nil {
+			if config, ok := p.inMemoryStore.GetConfiguredProviders()[schemas.ModelProvider(provider)]; ok {
+				providerConfig = &config
+			}
+		}
+		return p.modelCatalog.IsModelAllowedForProvider(schemas.ModelProvider(provider), model, providerConfig, schemas.WhiteList(allowed))
+	}
+}
+
+// resolveLimits settles the limits an attempt answers to, now that the provider and model it will
+// use are known, and records them on the request's grant for everything downstream.
 //
-// Priority order:
-//  1. If the VK has an explicit MCP config for this client, that config is authoritative (can allow or deny).
-//  2. If no explicit config exists and the client has AllowOnAllVirtualKeys=true, all tools are allowed.
+// Until this runs, only the limits that can tell one provider from another are consulted, by load
+// balancing, one candidate at a time. What funds a holder across every provider, and what a model
+// costs, are settled here.
 //
-// For wildcard patterns ("clientName-*"): allowed if VK has the client configured with any tools.
-// Specific tool enforcement happens at execution time via checkVKMCPToolAllowance.
-// For specific tools ("clientName-toolName"): allowed if VK has "*" or the exact tool name.
-func (p *GovernancePlugin) isMCPToolAllowedByVK(vk *configstoreTables.TableVirtualKey, toolPattern string) bool {
-	var allowAllClients map[string]string
-	if p.inMemoryStore != nil {
-		allowAllClients = p.inMemoryStore.GetMCPClientsAllowingAllVirtualKeys()
+// The result is one list, not several sources a caller combines: what is checked, what is named as
+// a co-payer on the log row, and what is charged all read the same answer, so they cannot disagree
+// about which limits an attempt was subject to. It is replaced whole for the next attempt, which
+// may use another provider.
+//
+// A request carrying no access is still subject to the deployment's own limits, and they are
+// settled for it the same way. A context carrying no grant is a wiring fault evaluation has
+// already refused by the time this runs; it settles nothing.
+func resolveLimits(ctx *schemas.BifrostContext, store GovernanceStore, provider schemas.ModelProvider, model string) schemas.Limits {
+	g := ctx.Grant()
+	if g == nil {
+		return nil
 	}
-	return p.isMCPToolAllowedByVKWith(vk, toolPattern, allowAllClients)
+	budgets, rateLimits := gatherLimits(ctx, store, g.Access(), provider, model)
+	limits := grant.NewLimits(budgets, rateLimits)
+	g.SetLimits(limits)
+	return limits
 }
 
-// isMCPToolAllowedByVKWith checks whether a tool pattern is allowed by the virtual key,
-// using a pre-fetched allowAllClients map (clientID → clientName) to avoid repeated lock
-// acquisitions in loops.
-func (p *GovernancePlugin) isMCPToolAllowedByVKWith(vk *configstoreTables.TableVirtualKey, toolPattern string, allowAllClients map[string]string) bool {
-	// Check VK-specific MCP configs first — explicit config always overrides AllowOnAllVirtualKeys.
-	for _, mcpConfig := range vk.MCPConfigs {
-		clientName := mcpConfig.MCPClient.Name
-		if toolPattern != clientName+"-*" && !strings.HasPrefix(toolPattern, clientName+"-") {
-			continue
-		}
-		// Found an explicit config for this client — use it; do not fall back to AllowOnAllVirtualKeys.
-		if toolPattern == clientName+"-*" {
-			return !mcpConfig.ToolsToExecute.IsEmpty()
-		}
-		if mcpConfig.ToolsToExecute.IsUnrestricted() {
-			return true
-		}
-		toolSuffix := strings.TrimPrefix(toolPattern, clientName+"-")
-		return mcpConfig.ToolsToExecute.Contains(toolSuffix)
+// gatherLimits assembles every limit an attempt answers to: the deployment's own for the pair; for
+// every permit the request carries, what funds the holder and the holder's own model limits; and
+// for every permit that pays for the pair, what funds its use of the provider.
+//
+// A holder's own limits bind whatever the request does, whichever permit admits the pair: a key
+// whose budget is spent is spent, however the request reached the provider. Only what is funded
+// per provider follows the pair, and which permits pay for it is the access's to say (see
+// PermitsForModel).
+//
+// The deployment's own come first, because that is the order refusals report in: what the
+// deployment imposes before what the holder is funded by.
+func gatherLimits(ctx *schemas.BifrostContext, store GovernanceStore, access schemas.Access, provider schemas.ModelProvider, model string) (budgets []schemas.Limit, rateLimits []schemas.Limit) {
+	budgets, rateLimits = store.ProviderAndModelLimits(ctx, nil, provider, model)
+	if access == nil {
+		return budgets, rateLimits
 	}
-	// No explicit VK config found — fall back to AllowOnAllVirtualKeys (allows all tools).
-	for _, clientName := range allowAllClients {
-		if strings.HasPrefix(toolPattern, clientName+"-") || toolPattern == clientName+"-*" {
-			return true
+	carried := access.Bases()
+	if scoping := access.Scoping(); scoping != nil {
+		carried = append(carried, scoping)
+	}
+	for _, permit := range carried {
+		heldBudgets, heldRateLimits := store.HolderLimits(ctx, permit)
+		budgets = append(budgets, heldBudgets...)
+		rateLimits = append(rateLimits, heldRateLimits...)
+
+		// The holder's own model limits, gathered per permit because they are keyed by the permit's
+		// identity. The deployment's and the user's come back with them and are settled once, since
+		// one limit reached twice is still one limit.
+		modelBudgets, modelRateLimits := store.ProviderAndModelLimits(ctx, permit, provider, model)
+		budgets = append(budgets, modelBudgets...)
+		rateLimits = append(rateLimits, modelRateLimits...)
+	}
+	if provider != "" {
+		for _, permit := range access.PermitsForModel(string(provider), model) {
+			providerBudgets, providerRateLimits := store.ProviderLimits(ctx, permit, provider)
+			budgets = append(budgets, providerBudgets...)
+			rateLimits = append(rateLimits, providerRateLimits...)
 		}
 	}
-	return false
+	return budgets, rateLimits
 }
 
-// PreRequestHook is the per-request governance phase: it resolves the request's virtual key,
-// stamps the key's scope on ctx for downstream plugins, and narrows the MCP tool list to what
-// the key grants.
+// PreRequestHook is the per-request governance phase: it resolves the request's access, completes
+// its identity on the grant for downstream plugins, and narrows the MCP tool list to what the
+// access allows.
 //
 // It deliberately runs before the routing plugin so a routing rule evaluates against a fully
 // stamped context. The provider allowlist and load balancing that used to live here now run
@@ -993,21 +975,25 @@ func (p *GovernancePlugin) PreRequestHook(ctx *schemas.BifrostContext, req *sche
 		return nil
 	}
 
-	virtualKeyValue := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
-	if virtualKeyValue == "" {
-		return nil
+	// Resolve the request's access and record it before anything derives a decision from the
+	// credential, so every consumer of this request reads the same answer instead of working out its
+	// own, starting with the tool-list pruning just below. Resolving is also what completes this
+	// request's identity, so nothing here reads the key a second time to do it.
+	access, err := p.ResolveAccess(ctx)
+	if err != nil {
+		return err
 	}
 
-	virtualKey, ok := p.store.GetVirtualKey(ctx, virtualKeyValue)
-	if !ok || virtualKey == nil || !virtualKey.IsActiveValue() || virtualKey.IsExpiredAt(time.Now().UTC()) {
+	// Whether the credential may be used at all is settled when its permit is built, so this reads
+	// the answer off the permits. Asking the key again would answer a settled question from a second
+	// source. Nothing is refused here: this hook only stamps and prunes, and the funnel refuses.
+	if access == nil || unusablePermit(access) != nil {
 		return nil
 	}
-
-	stampGovernanceCtxFromVK(ctx, virtualKey)
 
 	// A caller-provided include-tools list can only narrow the virtual key's
 	// tool grant, never expand it — prune entries the key does not allow.
-	includeToolsProvided := p.pruneMCPIncludeToolsFromContext(ctx, virtualKey)
+	includeToolsProvided := p.pruneMCPIncludeToolsFromContext(ctx, access)
 
 	p.cfgMutex.RLock()
 	autoInjectDisabled := p.disableAutoToolInject != nil && *p.disableAutoToolInject
@@ -1017,7 +1003,9 @@ func (p *GovernancePlugin) PreRequestHook(ctx *schemas.BifrostContext, req *sche
 	// the key's allowlist must be stamped on every path where injection can run.
 	includeClientsPresent := ctx.Value(schemas.MCPContextKeyIncludeClients) != nil
 	if !includeToolsProvided && (!autoInjectDisabled || includeClientsPresent) {
-		if tools := p.computeMCPIncludeTools(virtualKey); tools != nil {
+		// An access that lists nothing because it grants nothing stamps an empty list, which
+		// downstream reads as no tool being permitted: that is the answer, and it belongs on ctx.
+		if tools := access.MCPToolIncludeList(); tools != nil {
 			ctx.SetValue(schemas.MCPContextKeyIncludeTools, tools)
 		}
 	}
@@ -1039,27 +1027,23 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 	if headerErr := p.validateRequiredHeaders(ctx); headerErr != nil {
 		return req, &schemas.LLMPluginShortCircuit{Error: headerErr}, nil
 	}
-	// Extract virtual key using utility functions
-	virtualKeyValue := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
-	// Extract user ID for enterprise user-level governance
-	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
 	// Getting provider and mode from the request
 	provider, model, _ := req.GetRequestFields()
 	// Create request context for evaluation
 	evaluationRequest := &EvaluationRequest{
-		VirtualKey: virtualKeyValue,
-		Provider:   provider,
-		Model:      model,
-		UserID:     userID,
-	}
+		RequestType: req.RequestType,
+		Provider:    provider,
+		Model:       model}
 	// A batch create fans out to many completions, each naming its own model, so
-	// every model it will run is evaluated before the request itself. Every check
-	// reached from here is read-only, so the extra passes cannot double-count usage.
+	// every model it will run is evaluated before the request itself. Each pass
+	// settles that model's limits on the access and checks them; the request's own
+	// pass, last, leaves the access as it would be without the extra passes. Nothing
+	// reached from here charges usage, so the passes cannot double-count it.
 	if req.RequestType == schemas.BatchCreateRequest && req.BatchCreateRequest != nil && len(req.BatchCreateRequest.Requests) > 0 {
 		for _, batchModel := range BatchCreateModels(req, model) {
 			batchEvaluationRequest := *evaluationRequest
 			batchEvaluationRequest.Model = batchModel
-			_, bifrostError := p.EvaluateGovernanceRequest(ctx, &batchEvaluationRequest, req.RequestType)
+			_, bifrostError := p.Evaluate(ctx, &batchEvaluationRequest)
 			if bifrostError != nil {
 				return req, &schemas.LLMPluginShortCircuit{
 					Error: bifrostError,
@@ -1068,7 +1052,7 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 		}
 	}
 	// Evaluate governance using common function
-	_, bifrostError := p.EvaluateGovernanceRequest(ctx, evaluationRequest, req.RequestType)
+	_, bifrostError := p.Evaluate(ctx, evaluationRequest)
 	// Convert BifrostError to LLMPluginShortCircuit if needed
 	if bifrostError != nil {
 		return req, &schemas.LLMPluginShortCircuit{
@@ -1130,6 +1114,11 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		return result, err, nil
 	}
 
+	if ctx.Grant() == nil {
+		p.logger.Warn("PostLLMHook called with no grant in context")
+		return result, err, nil
+	}
+
 	// Extract request type, provider, and model
 	requestType, provider, requestedModel, _ := bifrost.GetResponseFields(result, err)
 
@@ -1137,11 +1126,15 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	virtualKey := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
 	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
 	// Extract user ID for enterprise user-level governance
-	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
 
-	if requestType == schemas.ListModelsRequest && result != nil && result.ListModelsResponse != nil && virtualKey != "" {
-		// filter models which are not supported on this virtual key
-		result.ListModelsResponse.Data = p.filterModelsForVirtualKey(ctx, result.ListModelsResponse.Data, virtualKey)
+	// A request that presented a key, or that carries grants without one, sees only the models it
+	// may use. A request holding neither is unrestricted and its listing is left alone.
+	//
+	// The key still counts on its own: a key that was presented but resolves to nothing must list
+	// nothing, since the key granted the access and the answer went missing.
+	if requestType == schemas.ListModelsRequest && result != nil && result.ListModelsResponse != nil &&
+		(virtualKey != "" || ctx.Grant().Access() != nil) {
+		result.ListModelsResponse.Data = p.filterModelsForAccess(ctx, result.ListModelsResponse.Data)
 	}
 
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
@@ -1152,25 +1145,36 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	// Always process usage tracking. When both virtual key and user are present,
 	// track both scopes; callers that intentionally want user-only accounting can
 	// set BifrostContextKeySkipVirtualKeyUsageTracking.
+	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
 	effectiveVK := virtualKey
 	if bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipVirtualKeyUsageTracking) {
 		effectiveVK = ""
 	}
 	// If effectiveVK is empty, it will be passed as empty string to postHookWorker
 	// The tracker will handle empty virtual keys gracefully by only updating provider-level and model-level usage
-	// Collect the affected budget and rate-limit IDs synchronously (fast in-memory
-	// lookups) and attach them to the context. Batch-create requests commonly omit
-	// a top-level model because each input-file row carries its own model; the
-	// store still returns provider/VK hierarchy IDs when requestedModel is empty.
-	budgetIDs, rateLimitIDs := p.store.CollectApplicableGovernanceIDs(ctx, effectiveVK, userID, provider, requestedModel)
-	if len(budgetIDs) > 0 {
-		ctx.SetValue(schemas.BifrostContextKeyGovernanceBudgetIDs, budgetIDs)
-	}
-	if len(rateLimitIDs) > 0 {
-		ctx.SetValue(schemas.BifrostContextKeyGovernanceRateLimitIDs, rateLimitIDs)
-	}
-
 	if requestedModel != "" {
+		// Collect the affected budget and rate-limit IDs synchronously (fast in-memory
+		// lookups) and attach them to the context. The logging plugin reads these keys
+		// when building the log entry, enabling ghost-node usage reconciliation to
+		// attribute cost/tokens to the correct governance entities.
+		//
+		// Read the limits already settled on the grant, not resolved again: the co-payers recorded
+		// have to be the ones that were checked, and resolving again after the call would answer for
+		// whatever configuration has become in the meantime.
+		accountedLimits := ctx.Grant().Limits()
+		if virtualKey != "" && effectiveVK == "" {
+			// Usage the tracker is being told not to charge must not be recorded as charged either,
+			// or replaying a ghosted node's log invents usage nothing ever debited.
+			accountedLimits = nil
+		}
+		budgetIDs, rateLimitIDs := p.store.CollectApplicableGovernanceIDs(ctx, accountedLimits, provider, requestedModel)
+		if len(budgetIDs) > 0 {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceBudgetIDs, budgetIDs)
+		}
+		if len(rateLimitIDs) > 0 {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceRateLimitIDs, rateLimitIDs)
+		}
+
 		// Attempt number distinguishes physical provider calls within one
 		// logical request so each token-consuming attempt bills exactly once.
 		// Set by core on every retry iteration.
@@ -1221,19 +1225,13 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 		return req, &schemas.MCPPluginShortCircuit{Error: headerErr}, nil
 	}
 
-	// Extract governance headers and virtual key using utility functions
-	virtualKeyValue := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
-	// Extract user ID for enterprise user-level governance
-	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
-
 	// Create request context for evaluation (MCP requests don't have provider/model)
 	evaluationRequest := &EvaluationRequest{
-		VirtualKey: virtualKeyValue,
-		UserID:     userID,
+		RequestType: schemas.MCPToolExecutionRequest,
 	}
 
 	// Evaluate governance using common function
-	_, bifrostError := p.EvaluateGovernanceRequest(ctx, evaluationRequest, schemas.MCPToolExecutionRequest)
+	_, bifrostError := p.Evaluate(ctx, evaluationRequest)
 
 	// Convert BifrostError to MCPPluginShortCircuit if needed
 	if bifrostError != nil {
@@ -1242,52 +1240,25 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 		}, nil
 	}
 
-	// Blind single-tool check: validate the specific tool being executed against VK MCPConfigs.
-	// This runs independently of EvaluateGovernanceRequest to enforce execution-time allow-list.
-	if virtualKeyValue != "" {
-		vk, ok := p.store.GetVirtualKey(ctx, virtualKeyValue)
-		if !ok || vk == nil {
-			// VK became invalid after initial check - fail closed for security
-			ctx.SetValue(governanceRejectedContextKey, true)
-			return req, &schemas.MCPPluginShortCircuit{Error: &schemas.BifrostError{
-				Type:       bifrost.Ptr(string(DecisionVirtualKeyNotFound)),
-				StatusCode: bifrost.Ptr(403),
-				Error: &schemas.ErrorField{
-					Message: "Virtual key not found",
-				},
-			}}, nil
-		}
-		if !vk.IsActiveValue() {
-			ctx.SetValue(governanceRejectedContextKey, true)
-			return req, &schemas.MCPPluginShortCircuit{Error: &schemas.BifrostError{
-				Type:       bifrost.Ptr(string(DecisionVirtualKeyBlocked)),
-				StatusCode: bifrost.Ptr(403),
-				Error: &schemas.ErrorField{
-					Message: "Virtual key is inactive",
-				},
-			}}, nil
-		}
-		if vk.IsExpiredAt(time.Now().UTC()) {
-			ctx.SetValue(governanceRejectedContextKey, true)
-			return req, &schemas.MCPPluginShortCircuit{Error: &schemas.BifrostError{
-				Type:       bifrost.Ptr(string(DecisionVirtualKeyBlocked)),
-				StatusCode: bifrost.Ptr(403),
-				Error: &schemas.ErrorField{
-					Message: "Virtual key has expired",
-				},
-			}}, nil
-		}
-		if !p.isMCPToolAllowedByVK(vk, toolName) {
-			ctx.SetValue(governanceRejectedContextKey, true)
-			return req, &schemas.MCPPluginShortCircuit{Error: &schemas.BifrostError{
-				Type:       bifrost.Ptr(string(DecisionMCPToolBlocked)),
-				StatusCode: bifrost.Ptr(403),
-				Error: &schemas.ErrorField{
-					Message: fmt.Sprintf("MCP tool '%s' is not allowed for virtual key '%s'", toolName, vk.Name),
-				},
-			}}, nil
-		}
-		return req, nil, nil
+	// The one question evaluation cannot answer: this specific tool. Evaluation checks the tools already
+	// injected into the request, which is not the tool being executed now, so the execution-time
+	// allow-list is enforced here.
+	//
+	// Whether the caller may be here at all is not rechecked. Evaluation has already refused a credential
+	// that resolves to nothing, one that is inactive and one that has expired, reading each off the grant
+	// since asking the key again would answer the same question from a second source, and the two could
+	// disagree. What is left is a question about the tool, which the access answers whatever granted it.
+	// A request carrying no access is unrestricted and may execute any tool, as it always could.
+	access := ctx.Grant().Access()
+	if access != nil && !access.IsMCPToolAllowed(toolName) {
+		ctx.SetValue(governanceRejectedContextKey, true)
+		return req, &schemas.MCPPluginShortCircuit{Error: &schemas.BifrostError{
+			Type:       bifrost.Ptr(string(DecisionMCPToolBlocked)),
+			StatusCode: bifrost.Ptr(403),
+			Error: &schemas.ErrorField{
+				Message: denialReason(fmt.Sprintf("MCP tool '%s' is not allowed", toolName), access.DeniedPermitsForMCPTool(toolName)),
+			},
+		}}, nil
 	}
 
 	return req, nil, nil
@@ -1381,40 +1352,27 @@ func (p *GovernancePlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 // row ID, and per-user auth types (per_user_oauth, per_user_headers) key
 // their stored credentials by it.
 //
-// The hook is intentionally narrow: it ONLY populates the identity context
-// keys (VK row ID, name, team / customer fan-out). Policy checks (budget,
-// rate limit, tool allow-list) stay on PreMCPHook for the actual CallTool —
-// Connect is transport setup, not the gated operation.
+// The hook is intentionally narrow: it decides nothing. Resolving the access records the identity
+// context keys (row ID, name, team / customer fan-out) and stops there. Policy checks (budget, rate
+// limit, tool allow-list) stay on PreMCPHook for the actual CallTool: Connect is transport setup, not
+// the gated operation.
 //
 // No short-circuit returned even when the VK isn't recognized: bad-VK
 // rejection belongs on the tool-call path so the caller gets a stable
 // error format. An unknown VK here simply leaves the row ID empty, and the
 // resolver will surface the "requires an identity" error itself.
 func (p *GovernancePlugin) PreMCPConnectionHook(ctx *schemas.BifrostContext, req *schemas.BifrostMCPConnectRequest) (*schemas.BifrostMCPConnectRequest, *schemas.MCPConnectionShortCircuit, error) {
-	virtualKeyValue := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
-	if virtualKeyValue == "" {
-		return req, nil, nil
-	}
-	vk, ok := p.store.GetVirtualKey(ctx, virtualKeyValue)
-	if !ok || vk == nil {
-		// Unknown VK — leave identity unset; the resolver will surface the
-		// appropriate error on the per-user auth path. For shared-connection
-		// auth types this is a no-op (they don't read these keys).
-		return req, nil, nil
-	}
-	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, vk.ID)
-	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyName, vk.Name)
-	if vk.Team != nil {
-		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, vk.Team.ID)
-		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, vk.Team.Name)
-		if vk.Team.Customer != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, vk.Team.Customer.ID)
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, vk.Team.Customer.Name)
-		}
-	}
-	if vk.Customer != nil {
-		ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, vk.Customer.ID)
-		ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, vk.Customer.Name)
+	// Resolving the request's access is what completes its identity and stamps its scope on ctx, so
+	// the row ID the credential resolver needs arrives as a side effect of asking the same question
+	// every other path asks. Doing it here rather than reading the key directly is what keeps one
+	// answer to "whose request is this".
+	//
+	// A credential that resolves to nothing leaves the identity incomplete, as before: the resolver
+	// surfaces the error on the per-user auth path, and shared-connection auth types never read it. A
+	// context with no grant is reported the same way: the connect path is transport setup, and the
+	// tool call that follows is where a wiring fault is refused.
+	if _, err := p.ResolveAccess(ctx); err != nil {
+		p.logger.Warn("governance: %v", err)
 	}
 	return req, nil, nil
 }

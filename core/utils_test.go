@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/network"
+	"github.com/maximhq/bifrost/core/schemas"
 )
 
 func TestValidateExternalURL(t *testing.T) {
@@ -332,9 +333,9 @@ func TestIsPrivateIP(t *testing.T) {
 		// Public IPv6
 		{"2606:4700::1", false},
 		// Unspecified addresses (fail-closed)
-		{"0.0.0.0", true},                   // IPv4 unspecified
-		{"0:0:0:0:0:0:0:0", true},           // IPv6 unspecified long form
-		{"::", true},                         // IPv6 unspecified short form
+		{"0.0.0.0", true},         // IPv4 unspecified
+		{"0:0:0:0:0:0:0:0", true}, // IPv6 unspecified long form
+		{"::", true},              // IPv6 unspecified short form
 	}
 
 	for _, tt := range tests {
@@ -350,3 +351,42 @@ func TestIsPrivateIP(t *testing.T) {
 	}
 }
 
+// Failing over starts a fresh attempt, so the state the previous attempt resolved for itself must not
+// survive into it. What the request may reach is not among it: that is a fact about the caller, not
+// the attempt, and the presented credential and the caller's identity survive with it so the limits
+// of the next attempt can be resolved against the same access.
+func TestClearCtxForFallback(t *testing.T) {
+	cleared := []schemas.BifrostContextKey{
+		schemas.BifrostContextKeyAPIKeyID,
+		schemas.BifrostContextKeyAPIKeyName,
+		schemas.BifrostContextKeyGovernanceIncludeOnlyKeys,
+		schemas.BifrostContextKeyChangeRequestType,
+		schemas.BifrostContextKeyAttemptTrail,
+		schemas.BifrostContextKeyStreamEndIndicator,
+		schemas.BifrostContextKeyConnectionClosed,
+		schemas.BifrostContextKeySupportsAssistantPrefill,
+	}
+	// The next attempt resolves its own limits, which needs the same credential and caller.
+	preserved := []schemas.BifrostContextKey{
+		schemas.BifrostContextKeyVirtualKey,
+		schemas.BifrostContextKeyUserID,
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	for _, key := range append(append([]schemas.BifrostContextKey{}, cleared...), preserved...) {
+		ctx.SetValue(key, "set")
+	}
+
+	clearCtxForFallback(ctx)
+
+	for _, key := range cleared {
+		if ctx.Value(key) != nil {
+			t.Errorf("%v survived into the next attempt", key)
+		}
+	}
+	for _, key := range preserved {
+		if ctx.Value(key) == nil {
+			t.Errorf("%v was cleared, leaving the next attempt unable to resolve its own limits", key)
+		}
+	}
+}

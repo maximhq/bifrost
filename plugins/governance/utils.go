@@ -2,13 +2,11 @@
 package governance
 
 import (
-	"context"
 	"fmt"
 	"strings"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/valyala/fasthttp"
 )
 
@@ -126,98 +124,26 @@ func getWeight(w *float64) float64 {
 	return *w
 }
 
-// stampGovernanceCtxFromVK copies team/customer identifiers from the VK onto ctx so
-// downstream plugins (logging, observability) see the governance scope.
-func stampGovernanceCtxFromVK(ctx *schemas.BifrostContext, vk *configstoreTables.TableVirtualKey) {
-	if vk == nil {
-		return
-	}
-	if vk.TeamID != nil {
-		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, *vk.TeamID)
-	}
-	if vk.Team != nil {
-		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, vk.Team.Name)
-		if vk.Team.CustomerID != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, *vk.Team.CustomerID)
-			if vk.Team.Customer != nil {
-				ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, vk.Team.Customer.Name)
-			}
-		}
-	} else {
-		if vk.CustomerID != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, *vk.CustomerID)
-		}
-		if vk.Customer != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, vk.Customer.Name)
-		}
-	}
-}
-
-// filterModelsForVirtualKey filters models based on virtual key's provider configs
-// Returns only models that are allowed by the virtual key's ProviderConfigs
-func (p *GovernancePlugin) filterModelsForVirtualKey(
-	ctx context.Context,
-	models []schemas.Model,
-	virtualKeyValue string,
-) []schemas.Model {
-	// Get virtual key configuration
-	vk, exists := p.store.GetVirtualKey(ctx, virtualKeyValue)
-	if !exists {
-		p.logger.Warn("[Governance] Virtual key not found for list models filtering: %s", virtualKeyValue)
-		return []schemas.Model{} // VK not found, return empty list
-	}
-
-	// Empty ProviderConfigs means no models are allowed (deny-by-default)
-	if len(vk.ProviderConfigs) == 0 {
+// filterModelsForAccess drops the models a request may not use from a listing. The request's
+// access decides, so a model reachable only through a grant composed onto the request is kept,
+// and one the composition removed is dropped: the listing and the request agree by construction
+// rather than by two implementations happening to match.
+func (p *GovernancePlugin) filterModelsForAccess(ctx *schemas.BifrostContext, models []schemas.Model) []schemas.Model {
+	access, err := p.ResolveAccess(ctx)
+	if err != nil || access == nil {
+		// Nothing resolved: the request presented a credential that carries no permit, or reached
+		// here with no grant at all, so it may list nothing.
 		return []schemas.Model{}
 	}
 
-	// Filter models based on ProviderConfigs
-	filteredModels := make([]schemas.Model, 0, len(models))
+	filtered := make([]schemas.Model, 0, len(models))
 	for _, model := range models {
 		provider, modelName := schemas.ParseModelString(model.ID, "")
-
-		// Pre-pass: if any matching config blacklists the model, block it entirely.
-		isBlocked := false
-		for _, pc := range vk.ProviderConfigs {
-			if pc.Provider == string(provider) && pc.BlacklistedModels.IsBlocked(modelName) {
-				isBlocked = true
-				break
-			}
-		}
-		if isBlocked {
-			continue
-		}
-
-		// Allowlist check — model is allowed if any matching config permits it.
-		isAllowed := false
-		for _, pc := range vk.ProviderConfigs {
-			if pc.Provider == string(provider) {
-				if p.modelCatalog != nil && p.inMemoryStore != nil {
-					providerConfig, ok := p.inMemoryStore.GetConfiguredProviders()[provider]
-					providerConfigPtr := &providerConfig
-					if !ok {
-						providerConfigPtr = nil
-					}
-					if p.modelCatalog.IsModelAllowedForProvider(provider, modelName, providerConfigPtr, pc.AllowedModels) {
-						isAllowed = true
-						break
-					}
-				} else {
-					if pc.AllowedModels.IsAllowed(modelName) {
-						isAllowed = true
-						break
-					}
-				}
-			}
-		}
-
-		if isAllowed {
-			filteredModels = append(filteredModels, model)
+		if access.IsModelAllowed(string(provider), modelName) {
+			filtered = append(filtered, model)
 		}
 	}
-
-	return filteredModels
+	return filtered
 }
 
 // validateRequiredHeaders checks that all configured required headers are present in the request.
@@ -247,4 +173,63 @@ func (p *GovernancePlugin) validateRequiredHeaders(ctx *schemas.BifrostContext) 
 		}
 	}
 	return nil
+}
+
+// modelProviders types a list of provider names the way the routing layers read them.
+func modelProviders(names []string) []schemas.ModelProvider {
+	providers := make([]schemas.ModelProvider, 0, len(names))
+	for _, name := range names {
+		providers = append(providers, schemas.ModelProvider(name))
+	}
+	return providers
+}
+
+// hasDirectKeyAuth returns true when the transport accepted an admin-enabled direct provider key.
+func hasDirectKeyAuth(ctx *schemas.BifrostContext) bool {
+	if ctx == nil {
+		return false
+	}
+	_, ok := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key)
+	return ok
+}
+
+// presentedGrantBearingCredential reports whether the request carried a credential that should have
+// produced a grant. Two do: a virtual key, and the identity a caller authenticated as. Each names an
+// entity whose access is configured somewhere, so failing to find that entity is a failed
+// authentication rather than an absent one.
+//
+// Both, not just the key, because a deployment may resolve grants from either. Reading only the key
+// would refuse a caller who authenticated as themselves for not holding a key, and would let one whose
+// configured access has gone missing proceed as though they had presented nothing, which is
+// unrestricted.
+//
+// It asks what the request carried, never what that resolved to, and it asks the identity the
+// transport settled: what was presented is that layer's to say. A context nothing settled an identity
+// on, as one built outside a transport is, is read the way it always was.
+//
+// A direct key is not one of them, though it is a credential the request carried. It is a raw provider
+// key supplied to bypass the configured key pool, so nothing in the governance model describes it and
+// nothing could have resolved a grant for it. Counting it here would refuse every direct-key request for
+// lacking an access it was never meant to have. It still answers the mandatory-auth question (something
+// was presented), which is why that step asks about it separately.
+func presentedGrantBearingCredential(ctx *schemas.BifrostContext) bool {
+	if identity := ctx.Grant().Identity(); identity != nil {
+		return identity.Presented() || identity.User() != nil
+	}
+	return false
+}
+
+// pruneMCPIncludeToolsFromContext narrows a caller-provided include-tools list (stamped on ctx
+// from the x-bf-mcp-include-tools header in lib/ctx.go) down to the tools the request's access
+// allows, and writes the pruned list back to ctx. Returns true when a caller list was present,
+// regardless of how many entries survived. The narrowing rule itself is the access's own, so every
+// surface that honours the header narrows it identically.
+func (p *GovernancePlugin) pruneMCPIncludeToolsFromContext(ctx *schemas.BifrostContext, access schemas.Access) bool {
+	existing := ctx.Value(schemas.MCPContextKeyIncludeTools)
+	if existing == nil {
+		return false
+	}
+	requested, _ := existing.([]string)
+	ctx.SetValue(schemas.MCPContextKeyIncludeTools, access.NarrowMCPToolIncludeList(requested))
+	return true
 }

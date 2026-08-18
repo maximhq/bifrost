@@ -36,8 +36,8 @@ const PluginName = "routing"
 // through this same call.
 type Governance interface {
 	rules.GovernanceStore
-	PublishRoutingAllowlist(ctx *schemas.BifrostContext, virtualKey *configstoreTables.TableVirtualKey, modelStr string)
-	LoadBalanceProvider(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, virtualKey *configstoreTables.TableVirtualKey) error
+	PublishRoutingAllowlist(ctx *schemas.BifrostContext, modelStr string)
+	LoadBalanceProvider(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error
 }
 
 const noComplexitySignalLog = "Complexity analysis skipped: no configured complexity signal matched the latest user message; continuing with existing routing path"
@@ -218,10 +218,10 @@ func (p *RoutingPlugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas
 
 	// Downstream routing layers (load balancing, model-catalog resolution) and core
 	// enforcement intersect their candidates with this allowlist, so a later layer cannot
-	// select a provider the key forbids for the routed model. Without a virtual key there is
-	// nothing to allow or deny and the call is a no-op.
-	p.governance.PublishRoutingAllowlist(ctx, virtualKey, routedModel)
-	return p.governance.LoadBalanceProvider(ctx, req, virtualKey)
+	// select a provider the request may not use for the routed model. A request that carries no
+	// grants at all has nothing to allow or deny, and the call is a no-op.
+	p.governance.PublishRoutingAllowlist(ctx, routedModel)
+	return p.governance.LoadBalanceProvider(ctx, req)
 }
 
 // routeLargePayloadModel wraps a model string in a synthetic BifrostRequest, runs the same
@@ -248,9 +248,9 @@ func (p *RoutingPlugin) routeLargePayloadModel(ctx *schemas.BifrostContext, virt
 	// one (RefineModelForProvider), and an allowlist computed from that refined name can come
 	// back empty, which downstream layers read as "no provider permitted".
 	_, routedModel, _ := synthetic.GetRequestFields()
-	p.governance.PublishRoutingAllowlist(ctx, virtualKey, routedModel)
+	p.governance.PublishRoutingAllowlist(ctx, routedModel)
 
-	if err := p.governance.LoadBalanceProvider(ctx, synthetic, virtualKey); err != nil {
+	if err := p.governance.LoadBalanceProvider(ctx, synthetic); err != nil {
 		return modelIn, err
 	}
 
