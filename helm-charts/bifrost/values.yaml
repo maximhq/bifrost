@@ -334,6 +334,7 @@ bifrost:
     # hideDeletedVirtualKeysInFilters: false  # Omit deleted virtual keys from logs/MCP filter data
     # whitelistedRoutes: []           # Routes that bypass auth middleware
     # routingChainMaxDepth: 10        # Maximum depth for routing rule chain evaluation
+    # observabilityFlushIntervalSeconds: 10  # How often each observability connector (OTEL, logging) flushes its trace buffer (config.json/helm only, not persisted to DB; max 600)
     # allowDirectKeys: false          # Allow callers to bypass the key pool via x-bf-direct-key + Authorization header
     # mcpExternalClientUrl: ""        # Public base URL used as redirect_uri when Bifrost is an OAuth client to MCP servers
     # How /mcp authenticates inbound MCP clients: headers (default), both, or oauth

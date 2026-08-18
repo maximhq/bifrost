@@ -571,6 +571,13 @@
               "description": "Maximum depth for routing rule chain evaluation",
               "default": 10
             },
+            "observabilityFlushIntervalSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 600,
+              "description": "How often, in seconds, each observability connector (OTEL, logging) flushes its trace buffer. Read from config.json/helm only; not persisted to the database. Maps to client.observability_flush_interval_seconds.",
+              "default": 10
+            },
             "allowDirectKeys": {
               "type": "boolean",
               "description": "Allow callers to bypass the registered key pool by supplying x-bf-direct-key: true with an Authorization header carrying the provider key. Maps to client.allow_direct_keys.",

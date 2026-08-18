@@ -53,6 +53,7 @@ func TestTracer_CompleteAndFlushTraceInjectsObservabilityPlugins(t *testing.T) {
 	defer store.Stop()
 
 	tracer := NewTracer(store, nil, nil)
+	tracer.flushInterval = 20 * time.Millisecond // deliver the single trace on the next tick, not the 10s default
 	defer tracer.Stop()
 
 	traceID := tracer.CreateTrace("")
@@ -82,6 +83,7 @@ func TestTracer_CompleteAndFlushTraceRedactsContentBeforeInject(t *testing.T) {
 	defer store.Stop()
 
 	tracer := NewTracer(store, nil, nil)
+	tracer.flushInterval = 20 * time.Millisecond // deliver the single trace on the next tick, not the 10s default
 	defer tracer.Stop()
 
 	traceID := tracer.CreateTrace("")
@@ -132,6 +134,7 @@ func TestTracer_SetTraceRedactionReplacementsSurvivesLaterObservabilityPlugins(t
 	defer store.Stop()
 
 	tracer := NewTracer(store, nil, nil)
+	tracer.flushInterval = 20 * time.Millisecond // deliver the single trace on the next tick, not the 10s default
 	defer tracer.Stop()
 
 	traceID := tracer.CreateTrace("")
