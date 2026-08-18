@@ -45,15 +45,17 @@ func forwardProviderHeadersFromContext(ctx *fasthttp.RequestCtx, bifrostCtx *sch
 
 // CompletionHandler manages HTTP requests for completion operations
 type CompletionHandler struct {
-	client *bifrost.Bifrost
-	config *lib.Config
+	modelsManager ModelsManager
+	client        *bifrost.Bifrost
+	config        *lib.Config
 }
 
 // NewInferenceHandler creates a new completion handler instance
-func NewInferenceHandler(client *bifrost.Bifrost, config *lib.Config) *CompletionHandler {
+func NewInferenceHandler(modelsManager ModelsManager, client *bifrost.Bifrost, config *lib.Config) *CompletionHandler {
 	return &CompletionHandler{
-		client: client,
-		config: config,
+		modelsManager: modelsManager,
+		client:        client,
+		config:        config,
 	}
 }
 
@@ -849,6 +851,31 @@ func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.DELETE("/v1/containers/{container_id}/files/{file_id}", lib.ChainMiddlewares(h.containerFileDelete, containerFileDeleteMW...))
 }
 
+// applyListModelsProviderFilter narrows the provider fan-out of a models listing to what the
+// request may reach: a provider reachable only through a grant composed onto the request is
+// asked, one the composition removed is not. Without it, every configured provider is asked and
+// governance rejects the ones the request may not use, filling request logs with expected errors.
+//
+// Narrowing is the whole job, so a request with nothing resolved (no key presented, or no
+// governance wired) keeps the fan-out it already had rather than being narrowed to nothing, and
+// so does a request nothing settled who it is: it is refused where that matters, and a listing
+// is not that.
+func (h *CompletionHandler) applyListModelsProviderFilter(bifrostCtx *schemas.BifrostContext) {
+	if h.modelsManager == nil {
+		return
+	}
+	access, err := h.modelsManager.ResolveAccess(bifrostCtx)
+	if err != nil || access == nil {
+		return
+	}
+	granted := access.GrantedProvidersForModel("")
+	providers := make([]schemas.ModelProvider, 0, len(granted))
+	for _, provider := range granted {
+		providers = append(providers, schemas.ModelProvider(provider))
+	}
+	bifrostCtx.SetValue(schemas.BifrostContextKeyAvailableProviders, providers)
+}
+
 // listModels handles GET /v1/models - Process list models requests
 // If provider is not specified, lists all models from all configured providers
 func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
@@ -862,8 +889,8 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
-	if provider == "" && !h.applyListModelsVirtualKeyProviderFilter(ctx, bifrostCtx) {
-		return
+	if provider == "" {
+		h.applyListModelsProviderFilter(bifrostCtx)
 	}
 
 	var resp *schemas.BifrostListModelsResponse
