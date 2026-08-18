@@ -791,6 +791,18 @@ func TestIsEncryptedReasoningRejection(t *testing.T) {
 			want: false,
 		},
 		{
+			// Anthropic's refusal of a foreign payload: no code, block named in the message.
+			name: "anthropic redacted_thinking rejection",
+			err: &schemas.BifrostError{
+				StatusCode: schemas.Ptr(400),
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr("invalid_request_error"),
+					Message: "messages.1.content.0: Invalid `data` in `redacted_thinking` block",
+				},
+			},
+			want: true,
+		},
+		{
 			// This case expected false while the strip only cleared encrypted_content
 			// on Responses-shaped requests: a retry would have resent the same
 			// signature and earned the same 400, so recognising the refusal only
