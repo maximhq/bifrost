@@ -218,3 +218,33 @@ func TestPopulateErrorAttributesWithoutBilledUsageEmitsNoTokens(t *testing.T) {
 		}
 	}
 }
+
+// A cancelled stream reaches PopulateLLMResponseAttributes with BOTH a non-nil
+// accumulated response and a non-nil error (see core/providers/utils). The
+// accumulated response is missing the final usage chunk, so the error's
+// BilledUsage must win. This mirrors the merge order in Tracer.
+func TestErrorAttributesOverrideAccumulatedResponseTokens(t *testing.T) {
+	partial := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Usage: &schemas.BifrostLLMUsage{PromptTokens: 0, CompletionTokens: 0, TotalTokens: 0},
+		},
+	}
+	bifrostErr := &schemas.BifrostError{Error: &schemas.ErrorField{Message: "client cancelled the stream"}}
+	bifrostErr.ExtraFields.BilledUsage = &schemas.BifrostLLMUsage{
+		PromptTokens:     4096,
+		CompletionTokens: 128,
+		TotalTokens:      4224,
+	}
+
+	attrs := PopulateResponseAttributes(partial)
+	for k, v := range PopulateErrorAttributes(bifrostErr) {
+		attrs[k] = v
+	}
+
+	if got := attrs[schemas.AttrInputTokens]; got != 4096 {
+		t.Errorf("%s = %v, want 4096 from BilledUsage", schemas.AttrInputTokens, got)
+	}
+	if got := attrs[schemas.AttrTotalTokens]; got != 4224 {
+		t.Errorf("%s = %v, want 4224 from BilledUsage", schemas.AttrTotalTokens, got)
+	}
+}
