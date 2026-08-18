@@ -99,6 +99,7 @@ func (p *LoggerPlugin) insertInitialLogEntry(
 		RoutingEnginesUsed:          routingEnginesUsed,
 		MetadataParsed:              data.Metadata,
 		VideoGenerationInputParsed:  data.VideoGenerationInput,
+		VideoEditInputParsed:        data.VideoEditInput,
 		PassthroughRequestBody:      data.PassthroughRequestBody,
 	}
 	if parentRequestID != "" {
@@ -2041,7 +2042,7 @@ func buildResponseForRequestType(requestType schemas.RequestType, usage *schemas
 				ExtraFields: extra,
 			},
 		}
-	case schemas.VideoGenerationRequest, schemas.VideoRemixRequest:
+	case schemas.VideoGenerationRequest, schemas.VideoRemixRequest, schemas.VideoEditRequest:
 		// Seconds is not stored in BifrostLLMUsage; the caller must patch it in from
 		// the stored VideoGenerationOutputParsed after this function returns.
 		return &schemas.BifrostResponse{

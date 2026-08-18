@@ -6,9 +6,9 @@ package runware
 // Runware adds a 3D model. Models absent from it fall back to the array form, which the majority
 // of current models use.
 //
-// Runware silently drops inputs it does not recognise, so sending the wrong form yields a
-// prompt-only result at full price instead of an error. Callers can override the whole object
-// through the "inputs" extra param.
+// Runware rejects an input key a model does not declare with unsupportedParameter, so sending the
+// wrong form fails the request outright. Callers can override the whole object through the
+// "inputs" extra param.
 var runware3DImageInputIsArray = map[string]bool{
 	"hyper3d:rodin@gen-2":          true,
 	"meshy:meshy@6":                true,
@@ -25,4 +25,22 @@ func uses3DImageArrayInput(model string) bool {
 		return isArray
 	}
 	return true
+}
+
+// runwareVideoModelsRequiringDimensions lists the video models whose request schema marks width and
+// height as required. Every other model derives them from the reference image on image-to-video,
+// and many reject them outright once a frame image is present, so the width/height default is only
+// kept for these. Sourced from https://schemas.runware.ai/resolve/<model>; refresh it when Runware
+// adds a model that mandates dimensions.
+var runwareVideoModelsRequiringDimensions = map[string]bool{
+	"lightricks:ltx@2.3":      true,
+	"lightricks:ltx@2.3-fast": true,
+	"runway:1@2":              true,
+	"vidu:4@2":                true,
+}
+
+// runwareVideoRequiresDimensions reports whether a video model rejects a request that omits
+// width and height.
+func runwareVideoRequiresDimensions(model string) bool {
+	return runwareVideoModelsRequiringDimensions[model]
 }

@@ -497,6 +497,53 @@ func (provider *RunwareProvider) VideoList(_ *schemas.BifrostContext, _ schemas.
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoListRequest, provider.GetProviderKey())
 }
 
+// VideoEdit submits a task that operates on an existing video. Like video generation it is async,
+// so the response carries the task ID and callers poll it through VideoRetrieve.
+func (provider *RunwareProvider) VideoEdit(ctx *schemas.BifrostContext, key schemas.Key, bifrostReq *schemas.BifrostVideoEditRequest) (*schemas.BifrostVideoEditResponse, *schemas.BifrostError) {
+	providerName := provider.GetProviderKey()
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		bifrostReq,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToRunwareVideoEditRequest(bifrostReq)
+		})
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	reqBody, respBody, latency, bifrostErr := provider.sendTaskArray(ctx, key, jsonData)
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, reqBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
+	}
+
+	var videoResp RunwareResponse
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(respBody, &videoResp, reqBody, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	result, bifrostErr := firstVideoResult(&videoResp)
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, reqBody, respBody, sendBackRawRequest, sendBackRawResponse, latency)
+	}
+
+	bifrostResp := ToBifrostVideoGenerationResponse(result, videoResp.Errors)
+	bifrostResp.ID = providerUtils.AddVideoIDProviderSuffix(result.TaskUUID, providerName)
+	bifrostResp.Model = bifrostReq.Model
+	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
+	if sendBackRawRequest {
+		bifrostResp.ExtraFields.RawRequest = rawRequest
+	}
+	if sendBackRawResponse {
+		bifrostResp.ExtraFields.RawResponse = rawResponse
+	}
+
+	return bifrostResp, nil
+}
+
 // VideoRemix is not supported by the Runware provider.
 func (provider *RunwareProvider) VideoRemix(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoRemixRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoRemixRequest, provider.GetProviderKey())

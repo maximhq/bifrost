@@ -171,10 +171,71 @@ func (r *BifrostVideoGenerationResponse) BackfillParams(req *BifrostRequest) {
 	if seconds != nil {
 		r.Seconds = seconds
 	}
-	if r.Model == "" && req.VideoGenerationRequest != nil {
-		r.Model = req.VideoGenerationRequest.Model
+	if r.Model == "" {
+		switch {
+		case req.VideoGenerationRequest != nil:
+			r.Model = req.VideoGenerationRequest.Model
+		case req.VideoEditRequest != nil:
+			r.Model = req.VideoEditRequest.Model
+		}
 	}
 }
+
+// --- Video Edit ---
+
+// BifrostVideoEditRequest represents a video edit request in bifrost format. Model is optional:
+// when the source video is referenced by an ID that already carries its provider suffix, the
+// provider is resolved from that ID and the upstream API infers the model from the source.
+type BifrostVideoEditRequest struct {
+	Provider       ModelProvider        `json:"provider"`
+	Model          string               `json:"model,omitempty"`
+	Input          *VideoEditInput      `json:"input"`
+	Params         *VideoEditParameters `json:"params,omitempty"`
+	Fallbacks      []Fallback           `json:"fallbacks,omitempty"`
+	RawRequestBody []byte               `json:"-"`
+}
+
+// GetRawRequestBody implements [utils.RequestBodyGetter].
+func (b *BifrostVideoEditRequest) GetRawRequestBody() []byte {
+	return b.RawRequestBody
+}
+
+func (b *BifrostVideoEditRequest) GetExtraParams() map[string]interface{} {
+	if b == nil || b.Params == nil {
+		return nil
+	}
+	return b.Params.ExtraParams
+}
+
+type VideoEditInput struct {
+	Video  VideoInput `json:"video"`
+	Prompt string     `json:"prompt"`
+}
+
+// VideoInput is the source video for an edit, in whichever form the caller supplied it. Exactly
+// one of the three is expected; providers that cannot accept a given form reject it.
+type VideoInput struct {
+	Video []byte `json:"video,omitempty"` // raw bytes, from a multipart upload
+	URL   string `json:"url,omitempty"`   // public URL or data URI
+	ID    string `json:"id,omitempty"`    // provider-side video ID
+}
+
+// VideoEditParameters holds the knobs video edit APIs actually accept. Geometry and duration are
+// deliberately absent: an edit inherits both from its source video, so no provider takes them.
+type VideoEditParameters struct {
+	Type         *string        `json:"type,omitempty"` // operation selector, e.g. "upscale", "background_removal"
+	Seed         *int           `json:"seed,omitempty"`
+	OutputFormat *string        `json:"output_format,omitempty"` // container, e.g. "mp4", "webm", "mov"
+	ExtraParams  map[string]any `json:"-"`
+
+	// Upscale operations (type "upscale"); mutually exclusive.
+	UpscaleFactor    *int `json:"upscale_factor,omitempty"`
+	TargetMegapixels *int `json:"target_megapixels,omitempty"`
+}
+
+// BifrostVideoEditResponse is the video edit job response. Video edit returns the same job object
+// as generation, so callers poll and download it through the existing video endpoints.
+type BifrostVideoEditResponse = BifrostVideoGenerationResponse
 
 // --- Video Remix ---
 
