@@ -1225,6 +1225,7 @@ const (
 	ChatContentBlockTypeText       ChatContentBlockType = "text"
 	ChatContentBlockTypeImage      ChatContentBlockType = "image_url"
 	ChatContentBlockTypeInputAudio ChatContentBlockType = "input_audio"
+	ChatContentBlockTypeInputVideo ChatContentBlockType = "input_video"
 	ChatContentBlockTypeFile       ChatContentBlockType = "file"
 	ChatContentBlockTypeRefusal    ChatContentBlockType = "refusal"
 )
@@ -1236,6 +1237,7 @@ type ChatContentBlock struct {
 	Refusal        *string              `json:"refusal,omitempty"`
 	ImageURLStruct *ChatInputImage      `json:"image_url,omitempty"`
 	InputAudio     *ChatInputAudio      `json:"input_audio,omitempty"`
+	InputVideo     *ChatInputVideo      `json:"input_video,omitempty"`
 	File           *ChatInputFile       `json:"file,omitempty"`
 
 	// Not in OpenAI's schemas, but sent by a few providers (Anthropic, Bedrock are some of them)
@@ -1474,6 +1476,14 @@ type ChatInputImage struct {
 type ChatInputAudio struct {
 	Data   string  `json:"data"`
 	Format *string `json:"format,omitempty"`
+}
+
+// ChatInputVideo represents video data in a message (input_video content part).
+// Not in OpenAI's schemas, but used by llama.cpp-style OpenAI-compatible
+// backends; mirrors input_audio, carrying either raw base64 data or a URL.
+type ChatInputVideo struct {
+	Data *string `json:"data,omitempty"` // Base64 encoded video data
+	URL  *string `json:"url,omitempty"`  // Direct URL to video
 }
 
 // ChatInputFile represents a file in a message.
