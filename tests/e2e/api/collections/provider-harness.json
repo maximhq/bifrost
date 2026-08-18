@@ -129432,7 +129432,7 @@
               "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"stream\": true,\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call emit_status exactly once with status ready.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"emit_status\",\n        \"description\": \"Emit one status.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"status\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"status\"\n          ]\n        }\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"function\": {\n      \"name\": \"emit_status\"\n    }\n  }\n}"
             },
             "url": {
-              "raw": "{{baseUrl}}/hume/v1/chat/completions?custom_session_id=harness-hume-serial-tool",
+              "raw": "{{baseUrl}}/hume/v1/chat/completions?custom_session_id=harness-hume-serial-tool-{{$guid}}",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -129445,7 +129445,7 @@
               "query": [
                 {
                   "key": "custom_session_id",
-                  "value": "harness-hume-serial-tool"
+                  "value": "harness-hume-serial-tool-{{$guid}}"
                 }
               ]
             }
@@ -129485,7 +129485,7 @@
               "raw": "{\n  \"model\": \"openai/bifrost-harness-uncatalogued-model\",\n  \"stream\": true,\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call emit_status exactly once with status ready.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"emit_status\",\n        \"description\": \"Emit one status.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"status\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"status\"\n          ]\n        }\n      }\n    }\n  ]\n}"
             },
             "url": {
-              "raw": "{{baseUrl}}/hume/v1/chat/completions?custom_session_id=harness-hume-uncatalogued-model",
+              "raw": "{{baseUrl}}/hume/v1/chat/completions?custom_session_id=harness-hume-uncatalogued-model-{{$guid}}",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -129498,7 +129498,7 @@
               "query": [
                 {
                   "key": "custom_session_id",
-                  "value": "harness-hume-uncatalogued-model"
+                  "value": "harness-hume-uncatalogued-model-{{$guid}}"
                 }
               ]
             }
