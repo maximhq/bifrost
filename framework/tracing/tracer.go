@@ -9,13 +9,15 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/streaming"
 )
 
 const (
-	DefaultObservabilityBatchSize     = 1000             // number of traces to accumulate before flushing to a connector; the count cap is the primary trigger for busy connectors
-	DefaultObservabilityFlushInterval = 10 * time.Second // how often to flush a connector's buffer, even if the count cap hasn't been hit
+	DefaultObservabilityBatchSize     = 1000                                // number of traces to accumulate before flushing to a connector; the count cap is the primary trigger for busy connectors
+	DefaultObservabilityMaxBatchBytes = logstore.DefaultWriterMaxBatchBytes // in-memory byte size of traces to accumulate before flushing to a connector
+	DefaultObservabilityFlushInterval = 10 * time.Second                    // how often to flush a connector's buffer, even if the count/size caps haven't been hit
 
 	// flushStopTimeout bounds how long Stop waits for in-flight flushes, so a hung
 	// connector cannot block shutdown or a config reload.
@@ -31,11 +33,13 @@ type obsPluginSlot struct {
 	name   string
 
 	batchSize     int
+	maxBatchBytes int
 	flushInterval time.Duration
 
-	mu     sync.Mutex       // guards batch and closed
-	batch  []*schemas.Trace // accumulating buffer; swapped out on flush
-	closed bool             // set once the timer goroutine is stopping; late appends flush immediately
+	mu         sync.Mutex       // guards batch, batchBytes and closed
+	batch      []*schemas.Trace // accumulating buffer; swapped out on flush
+	batchBytes int              // estimated in-memory size of batch; reset when the buffer is swapped
+	closed     bool             // set once the timer goroutine is stopping; late appends flush immediately
 
 	stop    chan struct{}  // closed to tell the timer goroutine to do a final flush and exit
 	stopped sync.Once      // so stop is only closed once (reload and Stop can race)
@@ -67,8 +71,12 @@ func (s *obsPluginSlot) run(logger schemas.Logger) {
 	}
 }
 
-// enqueue appends a trace and flushes early once the buffer reaches the count cap.
+// enqueue appends a trace and flushes early once the buffer reaches either the count cap or
+// the estimated-size cap.
 func (s *obsPluginSlot) enqueue(trace *schemas.Trace, logger schemas.Logger) {
+	// Estimate outside the lock — the walk is the only non-trivial work here.
+	size := estimateTraceSize(trace)
+
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -76,14 +84,92 @@ func (s *obsPluginSlot) enqueue(trace *schemas.Trace, logger schemas.Logger) {
 		return
 	}
 	s.batch = append(s.batch, trace)
-	if len(s.batch) < s.batchSize {
+	s.batchBytes += size
+	if len(s.batch) < s.batchSize && s.batchBytes < s.maxBatchBytes {
 		s.mu.Unlock()
 		return
 	}
 	batch := s.batch
 	s.batch = nil
+	s.batchBytes = 0
 	s.mu.Unlock()
 	s.flush(batch, logger)
+}
+
+// estimateTraceSize returns a cheap, approximate in-memory byte size of a trace, used only
+// to decide when a buffer has grown large enough to flush. It sums the variable-length
+// content (where the heavy message payloads live) plus a flat per-span/per-event overhead.
+// It walks every field that can carry unbounded content - trace-level attributes, request
+// headers, plugin logs, and per-span attributes and events - so a trace whose weight sits
+// outside span attributes is not systematically undercounted.
+func estimateTraceSize(t *schemas.Trace) int {
+	if t == nil {
+		return 0
+	}
+	size := 256 // flat per-trace overhead: ids, timestamps
+	for k, v := range t.Attributes {
+		size += len(k) + estimateAttrSize(v)
+	}
+	for k, v := range t.RequestHeaders {
+		size += len(k) + len(v)
+	}
+	for _, pl := range t.PluginLogs {
+		size += 32 + len(pl.PluginName) + len(pl.Message)
+	}
+	for _, span := range t.Spans {
+		if span == nil {
+			continue
+		}
+		size += 128 + len(span.Name) + len(span.StatusMsg)
+		for k, v := range span.Attributes {
+			size += len(k) + estimateAttrSize(v)
+		}
+		for _, ev := range span.Events {
+			size += 32 + len(ev.Name)
+			for k, v := range ev.Attributes {
+				size += len(k) + estimateAttrSize(v)
+			}
+		}
+	}
+	return size
+}
+
+// estimateAttrSize approximates the byte size of a span-attribute value. It measures the
+// common heavy cases (strings and string slices — where message content lives) exactly and
+// falls back to a small constant for scalars and anything else, keeping the walk cheap.
+func estimateAttrSize(v any) int {
+	switch x := v.(type) {
+	case string:
+		return len(x)
+	case []string:
+		n := 0
+		for _, s := range x {
+			n += len(s)
+		}
+		return n
+	case []any:
+		n := 0
+		for _, e := range x {
+			n += estimateAttrSize(e)
+		}
+		return n
+	case map[string]any:
+		n := 0
+		for k, e := range x {
+			n += len(k) + estimateAttrSize(e)
+		}
+		return n
+	case map[string]string:
+		n := 0
+		for k, e := range x {
+			n += len(k) + len(e)
+		}
+		return n
+	case nil:
+		return 0
+	default:
+		return 16 // numbers, bools, small structs
+	}
 }
 
 // take atomically swaps the current buffer out for a fresh one and returns it.
@@ -91,6 +177,7 @@ func (s *obsPluginSlot) take() []*schemas.Trace {
 	s.mu.Lock()
 	batch := s.batch
 	s.batch = nil
+	s.batchBytes = 0
 	s.mu.Unlock()
 	return batch
 }
@@ -143,10 +230,11 @@ type Tracer struct {
 	cachedHdrPatterns atomic.Pointer[[]string]
 	flushWG           sync.WaitGroup
 
-	// batchSize and flushInterval size each connector's buffer, read when the plugin slots are
-	// built. They default to the DefaultObservability* values; tests override them before
-	// SetObservabilityPlugins.
+	// batchSize, maxBatchBytes, and flushInterval size each connector's buffer, read when the
+	// plugin slots are built. They default to the DefaultObservability* values; tests override
+	// them before SetObservabilityPlugins.
 	batchSize     int
+	maxBatchBytes int
 	flushInterval time.Duration
 }
 
@@ -161,6 +249,7 @@ func NewTracer(store *TraceStore, pricingManager *modelcatalog.ModelCatalog, log
 		logger:         logger,
 		obsPlugins:     atomic.Pointer[[]*obsPluginSlot]{},
 		batchSize:      DefaultObservabilityBatchSize,
+		maxBatchBytes:  DefaultObservabilityMaxBatchBytes,
 		flushInterval:  DefaultObservabilityFlushInterval,
 	}
 }
@@ -193,6 +282,10 @@ func (t *Tracer) SetObservabilityPlugins(obsPlugins []schemas.ObservabilityPlugi
 	if batchSize <= 0 {
 		batchSize = DefaultObservabilityBatchSize
 	}
+	maxBatchBytes := t.maxBatchBytes
+	if maxBatchBytes <= 0 {
+		maxBatchBytes = DefaultObservabilityMaxBatchBytes
+	}
 	flushInterval := t.flushInterval
 	if flushInterval <= 0 {
 		flushInterval = DefaultObservabilityFlushInterval
@@ -212,6 +305,7 @@ func (t *Tracer) SetObservabilityPlugins(obsPlugins []schemas.ObservabilityPlugi
 			plugin:        plugin,
 			name:          name,
 			batchSize:     batchSize,
+			maxBatchBytes: maxBatchBytes,
 			flushInterval: flushInterval,
 			stop:          make(chan struct{}),
 		}
@@ -991,8 +1085,8 @@ func (t *Tracer) CompleteAndFlushTrace(traceID string) {
 		// Append the snapshot to each connector's buffer and return. The snapshot is detached
 		// from the pooled trace, so it's safe to hold in the buffers after this goroutine
 		// releases the pooled object below, and safe for all connectors to share one copy
-		// (they only read it). enqueue never blocks: it appends and, at most, hands a full
-		// batch off to a new flush goroutine.
+		// (they only read it). enqueue appends the snapshot and, when a cap is reached,
+		// flushes the batch inline before returning.
 		for _, slot := range slots {
 			slot.enqueue(exportTrace, t.logger)
 		}

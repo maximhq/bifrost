@@ -2,6 +2,7 @@ package tracing
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -227,6 +228,43 @@ func TestSetObservabilityPlugins_DedupesByName(t *testing.T) {
 	}
 }
 
+// TestObsSlot_SizeTriggerFlushesBeforeCount verifies the memory guard: a few very large
+// traces trip the byte cap and flush long before the count cap (or the timer) would, so the
+// buffer can't accumulate unbounded memory between ticks.
+func TestObsSlot_SizeTriggerFlushesBeforeCount(t *testing.T) {
+	p := &blockingObsPlugin{name: "big"}
+	slot := &obsPluginSlot{
+		plugin:        p,
+		name:          p.name,
+		batchSize:     1_000_000, // count cap effectively unreachable
+		maxBatchBytes: 64 * 1024, // 64 KiB size cap
+		flushInterval: time.Hour, // timer never fires during the test
+		stop:          make(chan struct{}),
+	}
+	slot.start(nil)
+	defer slot.signalStop()
+
+	// Each trace carries ~20 KiB of attribute content, so ~4 trip the 64 KiB cap.
+	bigTrace := func() *schemas.Trace {
+		return &schemas.Trace{
+			Spans: []*schemas.Span{
+				{Name: "s", Attributes: map[string]any{"content": strings.Repeat("x", 20*1024)}},
+			},
+		}
+	}
+	for range 4 {
+		slot.enqueue(bigTrace(), nil)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for p.started.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if p.started.Load() == 0 {
+		t.Fatal("expected the byte cap to trigger a flush before the count cap or the timer")
+	}
+}
+
 // TestObsSlot_PostCloseEnqueueStillDelivers is the shutdown-window guarantee: a trace
 // appended after the slot has been told to stop — a producer still holding a retired slot
 // during a config reload — is flushed immediately rather than lost in a batch the timer will
@@ -237,6 +275,7 @@ func TestObsSlot_PostCloseEnqueueStillDelivers(t *testing.T) {
 		plugin:        p,
 		name:          p.name,
 		batchSize:     1000,      // never reached; only the timer or close flushes
+		maxBatchBytes: 1 << 30,   // size cap effectively disabled, so the first trace buffers
 		flushInterval: time.Hour, // never ticks during the test
 		stop:          make(chan struct{}),
 	}
