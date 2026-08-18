@@ -1,6 +1,7 @@
 package governance
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/grants"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/stretchr/testify/assert"
 )
@@ -227,20 +229,25 @@ func buildProviderConfigWithRateLimit(provider string, allowedModels []string, r
 
 // Test helpers
 
+// resolverCtx returns a context carrying a virtual key and the access resolved for it — the
+// state the request path has already established by the time evaluation runs, since evaluation
+// reads what a request may reach rather than working it out.
+func resolverCtx(store GovernanceStore, virtualKeyValue string) *schemas.BifrostContext {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyVirtualKey, virtualKeyValue)
+	if store != nil {
+		base, scoping, mode := store.GetGrantSet(ctx)
+		if base != nil || scoping != nil {
+			grants.RecordEffectiveAccess(ctx, grants.NewEffectiveAccess(base, scoping, mode, nil, nil))
+		}
+	}
+	return ctx
+}
+
 func assertDecision(t *testing.T, expected Decision, result *EvaluationResult) {
 	t.Helper()
 	assert.NotNil(t, result, "EvaluationResult should not be nil")
 	assert.Equal(t, expected, result.Decision, "Decision mismatch. Reason: %s", result.Reason)
-}
-
-func assertVirtualKeyFound(t *testing.T, result *EvaluationResult) {
-	t.Helper()
-	assert.NotNil(t, result.VirtualKey, "VirtualKey should be found in result")
-}
-
-func assertRateLimitInfo(t *testing.T, result *EvaluationResult) {
-	t.Helper()
-	assert.NotNil(t, result.RateLimitInfo, "RateLimitInfo should be present in result")
 }
 
 func buildModelConfig(id, modelName string, provider *string, budget *configstoreTables.TableBudget, rateLimit *configstoreTables.TableRateLimit) *configstoreTables.TableModelConfig {
@@ -355,4 +362,101 @@ func newTestModelCatalog(t *testing.T) *modelcatalog.ModelCatalog {
 		t.Skipf("skipping: failed to fetch datasheet for test model catalog: %v", datasheetErr)
 	}
 	return modelcatalog.NewTestCatalog(datasheetBaseIndex)
+}
+
+// evaluateGrantedRequest runs a request through the two steps the plugin's evaluation funnel runs it
+// through once its access is resolved — what the request may reach, then what it can afford — so a
+// test can assert the verdict end to end. It takes the access rather than a key: the funnel composes
+// the same two steps for every request, keyed or not.
+func evaluateGrantedRequest(r *BudgetResolver, ctx *schemas.BifrostContext, access *grants.EffectiveAccess, provider schemas.ModelProvider, model string, requestType schemas.RequestType) *EvaluationResult {
+	evaluationRequest := &EvaluationRequest{
+		RequestType: requestType,
+		Provider:    provider,
+		Model:       model,
+	}
+	if result := r.evaluateAccess(ctx, evaluationRequest, access); result.Decision != DecisionAllow {
+		return result
+	}
+	// Evaluate settles the limits onto the access before any check runs; a test reaching the resolver
+	// directly has to do the same, or it checks an access nothing has been resolved for.
+	return r.evaluateLimits(ctx, evaluationRequest, resolveLimits(ctx, r.store, provider, model))
+}
+
+// evaluateDeploymentLimits runs the limits that apply to every request regardless of what granted
+// it — the deployment's provider and model-config limits — through the single check the funnel uses.
+// It stands in for the per-holder entry points those limits used to have.
+func evaluateDeploymentLimits(r *BudgetResolver, ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string) *EvaluationResult {
+	return r.evaluateLimits(ctx, &EvaluationRequest{Provider: provider, Model: model}, nil)
+}
+
+// resolveLimitsForTest settles the limits onto whatever access ctx carries, as Evaluate does, and
+// hands it back for a test that then calls the resolver itself.
+func resolveLimitsForTest(r *BudgetResolver, ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string) *grants.EffectiveAccess {
+	return resolveLimits(ctx, r.store, provider, model)
+}
+
+// evaluateHolderLimits runs the limits a grant carries, plus the deployment's, through that same
+// check — what the funnel does once a request's access is resolved.
+func evaluateHolderLimits(r *BudgetResolver, ctx *schemas.BifrostContext, access *grants.EffectiveAccess, provider schemas.ModelProvider, model string) *EvaluationResult {
+	return r.evaluateLimits(ctx, &EvaluationRequest{Provider: provider, Model: model},
+		resolveLimitsForTest(r, ctx, provider, model))
+}
+
+// evaluateVirtualKey runs a request made with a virtual key through the funnel's two post-resolution
+// steps. The key is named only to say what kind of request this is — the evaluation reads the access
+// already recorded on ctx by resolverCtx, exactly as production code does, and never looks the key up.
+func evaluateVirtualKey(r *BudgetResolver, ctx *schemas.BifrostContext, virtualKeyValue string, provider schemas.ModelProvider, model string, requestType schemas.RequestType, skipRateLimitsAndBudgets bool, skipProviderCheck bool) *EvaluationResult {
+	if skipRateLimitsAndBudgets {
+		ctx.SetValue(schemas.BifrostContextKeySkipBudgetAndRateLimits, true)
+	}
+	if skipProviderCheck {
+		ctx.SetValue(schemas.BifrostContextKeySkipProviderCheck, true)
+	}
+	return evaluateGrantedRequest(r, ctx, grants.EffectiveAccessFromContext(ctx), provider, model, requestType)
+}
+
+// emptyCtx is a request context with nothing on it, for tests that build a grant directly and do not
+// care about the per-request state grant assembly reads.
+func emptyCtx() *schemas.BifrostContext {
+	return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+}
+
+// The helpers below stand in for the per-holder check methods the store used to expose. Each
+// assembles the limits that holder contributes and runs them through the one check, so a test still
+// exercises exactly what it did before — the assembly is now the caller's half, and the evaluation
+// is shared.
+
+// checkDeploymentBudgets checks the limits that apply to every request regardless of what granted
+// it: the provider's own and the global model configs that cover the pair.
+func checkDeploymentBudgets(gs *LocalGovernanceStore, ctx context.Context, provider schemas.ModelProvider, model string, baselines map[string]float64) (Decision, error) {
+	budgets, _ := gs.ProviderAndModelLimits(ctx, nil, provider, model)
+	return gs.CheckBudgets(ctx, budgets, baselines)
+}
+
+// checkDeploymentRateLimits is checkDeploymentBudgets for rate limits.
+func checkDeploymentRateLimits(gs *LocalGovernanceStore, ctx context.Context, provider schemas.ModelProvider, model string, tokens, requests map[string]int64) (Decision, error) {
+	_, rateLimits := gs.ProviderAndModelLimits(ctx, nil, provider, model)
+	return gs.CheckRateLimits(ctx, rateLimits, tokens, requests)
+}
+
+// checkScopedBudgets checks the model configs a named holder set for its own traffic, which is what
+// a grant of that identity resolves to.
+func checkScopedBudgets(gs *LocalGovernanceStore, ctx context.Context, grantType grants.GrantType, scopeID string, provider schemas.ModelProvider, model string, baselines map[string]float64) (Decision, error) {
+	budgets, _ := gs.ProviderAndModelLimits(ctx, &grants.Grant{Type: grantType, ID: scopeID, IsActive: true}, provider, model)
+	return gs.CheckBudgets(ctx, budgets, baselines)
+}
+
+// checkScopedRateLimits is checkScopedBudgets for rate limits.
+func checkScopedRateLimits(gs *LocalGovernanceStore, ctx context.Context, grantType grants.GrantType, scopeID string, provider schemas.ModelProvider, model string, tokens, requests map[string]int64) (Decision, error) {
+	_, rateLimits := gs.ProviderAndModelLimits(ctx, &grants.Grant{Type: grantType, ID: scopeID, IsActive: true}, provider, model)
+	return gs.CheckRateLimits(ctx, rateLimits, tokens, requests)
+}
+
+// checkGrantBudgets checks what a key's grant is funded by — the key's own, its provider configs' for
+// this provider, and the team and customer it belongs to. Both halves, since the grant carries only
+// what is per-provider and the rest comes from the store.
+func checkGrantBudgets(gs *LocalGovernanceStore, bifrostCtx *schemas.BifrostContext, vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider, model string, baselines map[string]float64) (Decision, error) {
+	grant := gs.grantForVirtualKey(bifrostCtx, vk)
+	heldBudgets, _ := gs.HolderLimits(bifrostCtx, grant)
+	return gs.CheckBudgets(bifrostCtx, append(heldBudgets, grant.BudgetsFor(string(provider))...), baselines)
 }

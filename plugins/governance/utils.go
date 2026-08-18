@@ -2,13 +2,11 @@
 package governance
 
 import (
-	"context"
 	"fmt"
 	"strings"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/valyala/fasthttp"
 )
 
@@ -107,98 +105,25 @@ func getWeight(w *float64) float64 {
 	return *w
 }
 
-// stampGovernanceCtxFromVK copies team/customer identifiers from the VK onto ctx so
-// downstream plugins (logging, observability) see the governance scope.
-func stampGovernanceCtxFromVK(ctx *schemas.BifrostContext, vk *configstoreTables.TableVirtualKey) {
-	if vk == nil {
-		return
-	}
-	if vk.TeamID != nil {
-		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, *vk.TeamID)
-	}
-	if vk.Team != nil {
-		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, vk.Team.Name)
-		if vk.Team.CustomerID != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, *vk.Team.CustomerID)
-			if vk.Team.Customer != nil {
-				ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, vk.Team.Customer.Name)
-			}
-		}
-	} else {
-		if vk.CustomerID != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, *vk.CustomerID)
-		}
-		if vk.Customer != nil {
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, vk.Customer.Name)
-		}
-	}
-}
-
-// filterModelsForVirtualKey filters models based on virtual key's provider configs
-// Returns only models that are allowed by the virtual key's ProviderConfigs
-func (p *GovernancePlugin) filterModelsForVirtualKey(
-	ctx context.Context,
-	models []schemas.Model,
-	virtualKeyValue string,
-) []schemas.Model {
-	// Get virtual key configuration
-	vk, exists := p.store.GetVirtualKey(ctx, virtualKeyValue)
-	if !exists {
-		p.logger.Warn("[Governance] Virtual key not found for list models filtering: %s", virtualKeyValue)
-		return []schemas.Model{} // VK not found, return empty list
-	}
-
-	// Empty ProviderConfigs means no models are allowed (deny-by-default)
-	if len(vk.ProviderConfigs) == 0 {
+// filterModelsForAccess drops the models a request may not use from a listing. The request's
+// access decides, so a model reachable only through a grant composed onto the request is kept,
+// and one the composition removed is dropped — the listing and the request agree by construction
+// rather than by two implementations happening to match.
+func (p *GovernancePlugin) filterModelsForAccess(ctx *schemas.BifrostContext, models []schemas.Model) []schemas.Model {
+	access := p.ensureEffectiveAccess(ctx)
+	if access == nil {
+		// Nothing resolved: the request carries no grant, so it may list nothing.
 		return []schemas.Model{}
 	}
 
-	// Filter models based on ProviderConfigs
-	filteredModels := make([]schemas.Model, 0, len(models))
+	filtered := make([]schemas.Model, 0, len(models))
 	for _, model := range models {
 		provider, modelName := schemas.ParseModelString(model.ID, "")
-
-		// Pre-pass: if any matching config blacklists the model, block it entirely.
-		isBlocked := false
-		for _, pc := range vk.ProviderConfigs {
-			if pc.Provider == string(provider) && pc.BlacklistedModels.IsBlocked(modelName) {
-				isBlocked = true
-				break
-			}
-		}
-		if isBlocked {
-			continue
-		}
-
-		// Allowlist check — model is allowed if any matching config permits it.
-		isAllowed := false
-		for _, pc := range vk.ProviderConfigs {
-			if pc.Provider == string(provider) {
-				if p.modelCatalog != nil && p.inMemoryStore != nil {
-					providerConfig, ok := p.inMemoryStore.GetConfiguredProviders()[provider]
-					providerConfigPtr := &providerConfig
-					if !ok {
-						providerConfigPtr = nil
-					}
-					if p.modelCatalog.IsModelAllowedForProvider(provider, modelName, providerConfigPtr, pc.AllowedModels) {
-						isAllowed = true
-						break
-					}
-				} else {
-					if pc.AllowedModels.IsAllowed(modelName) {
-						isAllowed = true
-						break
-					}
-				}
-			}
-		}
-
-		if isAllowed {
-			filteredModels = append(filteredModels, model)
+		if access.IsModelAllowed(provider, modelName) {
+			filtered = append(filtered, model)
 		}
 	}
-
-	return filteredModels
+	return filtered
 }
 
 // validateRequiredHeaders checks that all configured required headers are present in the request.
