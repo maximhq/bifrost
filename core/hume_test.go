@@ -21,6 +21,80 @@ func (s *humeModelCatalogStub) CalculateRequestCost(_ *schemas.BifrostContext, _
 	return 0
 }
 
+type humeConstraintTracer struct {
+	schemas.NoOpTracer
+	logs []schemas.PluginLogEntry
+}
+
+func (t *humeConstraintTracer) AttachPluginLogs(_ string, logs []schemas.PluginLogEntry) {
+	t.logs = append(t.logs, logs...)
+}
+
+type humeConstraintPlugin struct {
+	name               string
+	recoverError       bool
+	preOrder           *[]string
+	postOrder          *[]string
+	postFinalState     *[]bool
+	sawConstraintError *bool
+}
+
+func (p *humeConstraintPlugin) GetName() string { return p.name }
+func (p *humeConstraintPlugin) Cleanup() error  { return nil }
+func (p *humeConstraintPlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
+}
+func (p *humeConstraintPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	*p.preOrder = append(*p.preOrder, p.name)
+	return req, nil, nil
+}
+func (p *humeConstraintPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	*p.postOrder = append(*p.postOrder, p.name)
+	*p.postFinalState = append(*p.postFinalState, IsFinalChunk(ctx))
+	if bifrostErr != nil && bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
+		*p.sawConstraintError = true
+	}
+	ctx.Log(schemas.LogLevelInfo, "handled Hume constraint error")
+	if !p.recoverError {
+		return resp, bifrostErr, nil
+	}
+	return &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{ID: "hume-post-hook-recovery"}}, nil, nil
+}
+
+func newHumeConstraintTestClient(t *testing.T, tracer schemas.Tracer, plugins ...schemas.LLMPlugin) *Bifrost {
+	t.Helper()
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 1)
+	client, err := Init(context.Background(), schemas.BifrostConfig{
+		Account:    account,
+		Logger:     NewNoOpLogger(),
+		Tracer:     tracer,
+		LLMPlugins: plugins,
+		ModelCatalog: &humeModelCatalogStub{models: map[schemas.ModelProvider]map[string]*schemas.Model{
+			schemas.OpenAI: {
+				"o3-mini": {SupportedParameters: []string{"tools"}},
+			},
+		}},
+	})
+	require.NoError(t, err)
+	t.Cleanup(client.Shutdown)
+	return client
+}
+
+func newRejectedHumeConstraintRequest() *schemas.BifrostChatRequest {
+	return &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "o3-mini",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+		}},
+		Params: &schemas.ChatParameters{Tools: []schemas.ChatTool{{
+			Type: schemas.ChatToolTypeFunction,
+		}}},
+	}
+}
+
 func TestEnforceHumeSingleToolConstraint(t *testing.T) {
 	newRequest := func(provider schemas.ModelProvider, model string) *schemas.BifrostRequest {
 		return &schemas.BifrostRequest{
@@ -102,4 +176,68 @@ func TestEnforceHumeSingleToolConstraint(t *testing.T) {
 		require.Nil(t, (&Bifrost{}).enforceHumeSingleToolConstraint(otherCtx, req))
 		assert.Nil(t, req.ChatRequest.Params.ParallelToolCalls)
 	})
+}
+
+func TestHumeConstraintErrorRunsPostHooks(t *testing.T) {
+	tests := []struct {
+		name      string
+		streaming bool
+	}{
+		{name: "unary", streaming: false},
+		{name: "streaming", streaming: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var preOrder []string
+			var postOrder []string
+			var postFinalState []bool
+			var sawConstraintError bool
+			tracer := &humeConstraintTracer{}
+			outer := &humeConstraintPlugin{
+				name:               "outer",
+				recoverError:       true,
+				preOrder:           &preOrder,
+				postOrder:          &postOrder,
+				postFinalState:     &postFinalState,
+				sawConstraintError: &sawConstraintError,
+			}
+			inner := &humeConstraintPlugin{
+				name:               "inner",
+				preOrder:           &preOrder,
+				postOrder:          &postOrder,
+				postFinalState:     &postFinalState,
+				sawConstraintError: &sawConstraintError,
+			}
+			client := newHumeConstraintTestClient(t, tracer, outer, inner)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyIntegrationType, humeIntegrationType)
+			ctx.SetValue(schemas.BifrostContextKeyTraceID, "hume-constraint-trace")
+
+			if tt.streaming {
+				stream, bifrostErr := client.ChatCompletionStreamRequest(ctx, newRejectedHumeConstraintRequest())
+				require.Nil(t, bifrostErr)
+				require.NotNil(t, stream)
+				chunk, ok := <-stream
+				require.True(t, ok)
+				require.NotNil(t, chunk)
+				require.NotNil(t, chunk.BifrostChatResponse)
+				assert.Equal(t, "hume-post-hook-recovery", chunk.BifrostChatResponse.ID)
+				_, ok = <-stream
+				assert.False(t, ok)
+			} else {
+				resp, bifrostErr := client.ChatCompletionRequest(ctx, newRejectedHumeConstraintRequest())
+				require.Nil(t, bifrostErr)
+				require.NotNil(t, resp)
+				assert.Equal(t, "hume-post-hook-recovery", resp.ID)
+			}
+
+			assert.Equal(t, []string{"outer", "inner"}, preOrder)
+			assert.Equal(t, []string{"inner", "outer"}, postOrder)
+			assert.True(t, sawConstraintError)
+			assert.Equal(t, []bool{tt.streaming, tt.streaming}, postFinalState)
+			require.Len(t, tracer.logs, 2)
+			assert.Nil(t, ctx.GetPluginLogs())
+		})
+	}
 }

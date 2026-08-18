@@ -412,7 +412,7 @@ func TestHumeRoutesDisableLargePayloadPassthrough(t *testing.T) {
 	for _, route := range CreateHumeRouteConfigs(lib.NewDefaultHumeConfig()) {
 		assert.True(t, route.DisableLargePayloadMode, route.Path)
 		require.NotNil(t, route.StreamConfig)
-		assert.True(t, route.StreamConfig.FatalConverterErrors, route.Path)
+		assert.False(t, route.StreamConfig.SkipConverterErrors, route.Path)
 	}
 }
 

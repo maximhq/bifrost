@@ -5444,7 +5444,17 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	provider, model, _ = preReq.GetRequestFields()
 	if bifrostErr := bifrost.enforceHumeSingleToolConstraint(ctx, preReq); bifrostErr != nil {
 		bifrostErr.PopulateExtraFields(preReq.RequestType, provider, model, model)
-		return nil, bifrostErr
+		resp, postHookErr := pipeline.RunPostLLMHooks(ctx, nil, bifrostErr, preCount)
+		if postHookErr != nil {
+			postHookErr.PopulateExtraFields(preReq.RequestType, provider, model, model)
+		} else if resp != nil {
+			resp.PopulateExtraFields(preReq.RequestType, provider, model, model)
+		}
+		drainAndAttachPluginLogs(ctx)
+		if postHookErr != nil {
+			return nil, postHookErr
+		}
+		return resp, nil
 	}
 
 	msg := bifrost.getChannelMessage(*preReq)
@@ -5784,6 +5794,20 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 	provider, model, _ = preReq.GetRequestFields()
 	if bifrostErr := bifrost.enforceHumeSingleToolConstraint(ctx, preReq); bifrostErr != nil {
 		bifrostErr.PopulateExtraFields(preReq.RequestType, provider, model, model)
+		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+		recoveredResp, recoveredErr := pipeline.RunPostLLMHooks(ctx, nil, bifrostErr, preCount)
+		if recoveredErr != nil {
+			recoveredErr.PopulateExtraFields(preReq.RequestType, provider, model, model)
+		} else if recoveredResp != nil {
+			recoveredResp.PopulateExtraFields(preReq.RequestType, provider, model, model)
+		}
+		drainAndAttachPluginLogs(ctx)
+		if recoveredErr != nil {
+			return nil, recoveredErr
+		}
+		if recoveredResp != nil {
+			return newBifrostMessageChan(recoveredResp), nil
+		}
 		return nil, bifrostErr
 	}
 
