@@ -791,3 +791,84 @@ func TestBudgetResolver_EvaluateRequest_SkipModelCheckAllowsBlockedModel(t *test
 	assert.NotEqual(t, DecisionModelBlocked, result.Decision, "skipModelCheck must bypass the virtual key model allowlist")
 	assertDecision(t, DecisionAllow, result)
 }
+
+// Enforcement no longer names the holder kinds to check, so a deployment that funds requests from
+// something this package has never heard of gets those limits enforced without registering anything.
+// The alternative fails open: a limit gathered for the attempt, recorded against it, and then neither
+// checked nor charged.
+func TestEvaluateLimitsEnforcesAnUnfamiliarHolderKind(t *testing.T) {
+	logger := NewMockLogger()
+	exhausted := buildBudgetWithUsage("b-somewhere-else", 100.0, 100.0, "1d")
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		Budgets: []configstoreTables.TableBudget{*exhausted},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	resolver := NewBudgetResolver(store, nil, logger, nil)
+	ctx := emptyCtx()
+
+	// Limits funded by a holder kind declared nowhere in this package: what a deployment resolving
+	// its own permits settles.
+	limits := grant.NewLimits([]schemas.Limit{{
+		ID:         exhausted.ID,
+		HolderKind: "some_deployment_holder",
+		HolderID:   "h1",
+		HolderName: "Someone",
+	}}, nil)
+	ctx.Grant().SetLimits(limits)
+
+	result := resolver.evaluateLimits(ctx, &EvaluationRequest{Provider: schemas.OpenAI, Model: "gpt-4o"}, limits)
+
+	assert.Equal(t, DecisionBudgetExceeded, result.Decision,
+		"a holder this package does not know still refuses a request it cannot afford")
+	assert.Contains(t, result.Reason, "Budget exceeded")
+}
+
+// Which credential a request is governed as is settled before governance sees it: a request presenting
+// both is resolved to one, or refused, by whoever authenticated it. So an identity on the context
+// changes nothing about what the request answers to: the limits settled on its grant are the limits,
+// whichever credential produced them.
+func TestEvaluateLimitsEnforcesTheSettledLimitsWhicheverCredentialProducedThem(t *testing.T) {
+	logger := NewMockLogger()
+	exhausted := buildBudgetWithUsage("b-holder", 100.0, 100.0, "1d")
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		Budgets: []configstoreTables.TableBudget{*exhausted},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	resolver := NewBudgetResolver(store, nil, logger, nil)
+	held := []schemas.Limit{{ID: exhausted.ID, HolderKind: string(grant.LimitHolderVirtualKey), HolderID: "vk1"}}
+
+	evaluate := func(t *testing.T, stamp func(ctx *schemas.BifrostContext)) *EvaluationResult {
+		t.Helper()
+		ctx := emptyCtx()
+		stamp(ctx)
+		limits := grant.NewLimits(held, nil)
+		ctx.Grant().SetLimits(limits)
+		return resolver.evaluateLimits(ctx, &EvaluationRequest{Provider: schemas.OpenAI, Model: "gpt-4o"}, limits)
+	}
+
+	t.Run("an exhausted holder refuses the request", func(t *testing.T) {
+		assert.Equal(t, DecisionBudgetExceeded, evaluate(t, func(*schemas.BifrostContext) {}).Decision)
+	})
+
+	t.Run("and still refuses it when an identity is on the context", func(t *testing.T) {
+		// This used to exempt the key's own limits, from the days when a profile was mirrored onto a
+		// key and the two were one allowance recorded twice. Dropping them now would simply not charge
+		// a budget that is real.
+		result := evaluate(t, func(ctx *schemas.BifrostContext) {
+			ctx.SetValue(schemas.BifrostContextKeyUserID, "user-1")
+		})
+
+		assert.Equal(t, DecisionBudgetExceeded, result.Decision)
+	})
+
+	t.Run("only asking for spending checks to be skipped exempts it", func(t *testing.T) {
+		result := evaluate(t, func(ctx *schemas.BifrostContext) {
+			ctx.SetValue(schemas.BifrostContextKeySkipBudgetAndRateLimits, true)
+		})
+
+		assert.Equal(t, DecisionAllow, result.Decision)
+		assert.Contains(t, result.Reason, "spending checks skipped")
+	})
+}

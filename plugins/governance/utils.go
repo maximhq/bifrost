@@ -78,43 +78,6 @@ func IsModelCheckedWhenPresent(requestType schemas.RequestType) bool {
 	}
 }
 
-// parseVirtualKeyFromHTTPRequest parses the virtual key from HTTP request headers.
-// It checks multiple headers in order: x-bf-vk, Authorization (Bearer token), x-api-key, and x-goog-api-key.
-// Parameters:
-//   - req: The HTTP request containing headers to parse
-//
-// Returns:
-//   - *string: The virtual key if found, nil otherwise
-func parseVirtualKeyFromHTTPRequest(req *schemas.HTTPRequest) *string {
-	var virtualKeyValue string
-	vkHeader := req.CaseInsensitiveHeaderLookup("x-bf-vk")
-	if vkHeader != "" && strings.HasPrefix(strings.ToLower(vkHeader), VirtualKeyPrefix) {
-		return new(vkHeader)
-	}
-	authHeader := req.CaseInsensitiveHeaderLookup("Authorization")
-	if authHeader != "" {
-		if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
-			authHeaderValue := strings.TrimSpace(authHeader[7:]) // Remove "Bearer " prefix
-			if authHeaderValue != "" && strings.HasPrefix(strings.ToLower(authHeaderValue), VirtualKeyPrefix) {
-				virtualKeyValue = authHeaderValue
-			}
-		}
-	}
-	if virtualKeyValue != "" {
-		return new(virtualKeyValue)
-	}
-	xAPIKey := req.CaseInsensitiveHeaderLookup("x-api-key")
-	if xAPIKey != "" && strings.HasPrefix(strings.ToLower(xAPIKey), VirtualKeyPrefix) {
-		return new(xAPIKey)
-	}
-	// Checking x-goog-api-key header
-	xGoogleAPIKey := req.CaseInsensitiveHeaderLookup("x-goog-api-key")
-	if xGoogleAPIKey != "" && strings.HasPrefix(strings.ToLower(xGoogleAPIKey), VirtualKeyPrefix) {
-		return new(xGoogleAPIKey)
-	}
-	return nil
-}
-
 // getWeight safely dereferences a *float64 weight pointer, returning 1.0 as default if nil.
 // This allows distinguishing between "not set" (nil -> 1.0) and "explicitly set to 0" (0.0).
 func getWeight(w *float64) float64 {
@@ -124,15 +87,17 @@ func getWeight(w *float64) float64 {
 	return *w
 }
 
-// filterModelsForAccess drops the models a request may not use from a listing. The request's
-// access decides, so a model reachable only through a grant composed onto the request is kept,
-// and one the composition removed is dropped: the listing and the request agree by construction
-// rather than by two implementations happening to match.
-func (p *GovernancePlugin) filterModelsForAccess(ctx *schemas.BifrostContext, models []schemas.Model) []schemas.Model {
-	access, err := p.ResolveAccess(ctx)
-	if err != nil || access == nil {
-		// Nothing resolved: the request presented a credential that carries no permit, or reached
-		// here with no grant at all, so it may list nothing.
+// filterModelsForAccess drops the models a request may not use from a listing. The access decides,
+// so a model reachable only through a permit composed onto the request is kept, and one the
+// composition removed is dropped: the listing and the request agree by construction rather than by
+// two implementations happening to match.
+//
+// The access is handed in rather than resolved here. A listing is produced after the request has
+// been evaluated, and resolving again at that point would answer for whatever configuration has
+// become since; what a caller may list is what it was admitted under. No access lists nothing: a
+// request that presented nothing is not narrowed at all, and the caller gates on that before asking.
+func (p *GovernancePlugin) filterModelsForAccess(access schemas.Access, models []schemas.Model) []schemas.Model {
+	if access == nil {
 		return []schemas.Model{}
 	}
 

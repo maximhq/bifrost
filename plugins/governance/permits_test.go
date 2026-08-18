@@ -982,7 +982,9 @@ func TestFilterModelsForAccess(t *testing.T) {
 	t.Run("keeps only what the request may use", func(t *testing.T) {
 		ctx := presentCtx("sk-bf-test")
 
-		filtered := plugin.filterModelsForAccess(ctx, models)
+		access, err := plugin.ResolveAccess(ctx)
+		require.NoError(t, err)
+		filtered := plugin.filterModelsForAccess(access, models)
 
 		ids := make([]string, 0, len(filtered))
 		for _, model := range filtered {
@@ -998,7 +1000,9 @@ func TestFilterModelsForAccess(t *testing.T) {
 		// authority for the listing and it turned out to grant nothing, so nothing is listed.
 		ctx := presentCtx("sk-bf-unknown")
 
-		filtered := plugin.filterModelsForAccess(ctx, models)
+		access, err := plugin.ResolveAccess(ctx)
+		require.NoError(t, err)
+		filtered := plugin.filterModelsForAccess(access, models)
 
 		assert.NotNil(t, filtered)
 		assert.Empty(t, filtered)
@@ -1011,7 +1015,9 @@ func TestFilterModelsForAccess(t *testing.T) {
 		// access to list against.
 		ctx := emptyCtx()
 
-		filtered := plugin.filterModelsForAccess(ctx, models)
+		access, err := plugin.ResolveAccess(ctx)
+		require.NoError(t, err)
+		filtered := plugin.filterModelsForAccess(access, models)
 
 		assert.Empty(t, filtered)
 	})

@@ -1122,56 +1122,55 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	// Extract request type, provider, and model
 	requestType, provider, requestedModel, _ := bifrost.GetResponseFields(result, err)
 
-	// Extract governance information
-	virtualKey := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
 	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
-	// Extract user ID for enterprise user-level governance
-
-	// A request that presented a key, or that carries grants without one, sees only the models it
-	// may use. A request holding neither is unrestricted and its listing is left alone.
-	//
-	// The key still counts on its own: a key that was presented but resolves to nothing must list
-	// nothing, since the key granted the access and the answer went missing.
-	if requestType == schemas.ListModelsRequest && result != nil && result.ListModelsResponse != nil &&
-		(virtualKey != "" || ctx.Grant().Access() != nil) {
-		result.ListModelsResponse.Data = p.filterModelsForAccess(ctx, result.ListModelsResponse.Data)
-	}
 
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
+
+	// What this request was admitted under, read rather than resolved: everything below reports on a
+	// call that has already happened, and resolving now would answer for whatever configuration has
+	// become in the meantime.
+	access := ctx.Grant().Access()
+
+	// A request that presented something sees only the models it may use, and a credential that
+	// resolved to nothing lists nothing. A request that presented nothing is unrestricted and its
+	// listing is left alone.
+	if requestType == schemas.ListModelsRequest && result != nil && result.ListModelsResponse != nil &&
+		(presentedGrantBearingCredential(ctx) || access != nil) {
+		result.ListModelsResponse.Data = p.filterModelsForAccess(access, result.ListModelsResponse.Data)
+	}
 
 	// Build pricing scopes from context using the governance VK ID (not the raw VK token)
 	pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(provider))
 
-	// Always process usage tracking. When both virtual key and user are present,
-	// track both scopes; callers that intentionally want user-only accounting can
-	// set BifrostContextKeySkipVirtualKeyUsageTracking.
-	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
-	effectiveVK := virtualKey
-	if bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipVirtualKeyUsageTracking) {
-		effectiveVK = ""
-	}
-	// If effectiveVK is empty, it will be passed as empty string to postHookWorker
-	// The tracker will handle empty virtual keys gracefully by only updating provider-level and model-level usage
+	// A caller can ask for the holder's usage not to be counted, leaving what the deployment and the
+	// user answer to still counted.
+	skipHolderUsage := bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipVirtualKeyUsageTracking)
 	if requestedModel != "" {
 		// Collect the affected budget and rate-limit IDs synchronously (fast in-memory
 		// lookups) and attach them to the context. The logging plugin reads these keys
 		// when building the log entry, enabling ghost-node usage reconciliation to
 		// attribute cost/tokens to the correct governance entities.
 		//
-		// Read the limits already settled on the grant, not resolved again: the co-payers recorded
-		// have to be the ones that were checked, and resolving again after the call would answer for
-		// whatever configuration has become in the meantime.
-		accountedLimits := ctx.Grant().Limits()
-		if virtualKey != "" && effectiveVK == "" {
-			// Usage the tracker is being told not to charge must not be recorded as charged either,
-			// or replaying a ghosted node's log invents usage nothing ever debited.
-			accountedLimits = nil
+		// Read the limits settled on the grant, and only those. The grant is the one record of what
+		// this attempt was subject to, so what is billed and what is recorded are the same list the
+		// check used. A request that reached here without being evaluated answers to nothing and is
+		// billed nothing, which is the only consistent answer: charging what was never checked is the
+		// divergence this exists to prevent.
+		var accountedBudgets, accountedRateLimits []schemas.Limit
+		if limits := ctx.Grant().Limits(); limits != nil {
+			accountedBudgets, accountedRateLimits = limits.Budgets(), limits.RateLimits()
 		}
-		budgetIDs, rateLimitIDs := p.store.CollectApplicableGovernanceIDs(ctx, accountedLimits, provider, requestedModel)
-		if len(budgetIDs) > 0 {
+		if skipHolderUsage {
+			// The holder's usage is not being counted, so nothing it funds is billed or recorded. What
+			// the deployment and the user fund still is: those are owed whatever granted the request,
+			// and dropping them would let a caller spend against them without limit.
+			accountedBudgets = grant.LimitsFrom(accountedBudgets, untrackedHolderKinds...)
+			accountedRateLimits = grant.LimitsFrom(accountedRateLimits, untrackedHolderKinds...)
+		}
+		if budgetIDs := limitIDsOf(accountedBudgets); len(budgetIDs) > 0 {
 			ctx.SetValue(schemas.BifrostContextKeyGovernanceBudgetIDs, budgetIDs)
 		}
-		if len(rateLimitIDs) > 0 {
+		if rateLimitIDs := limitIDsOf(accountedRateLimits); len(rateLimitIDs) > 0 {
 			ctx.SetValue(schemas.BifrostContextKeyGovernanceRateLimitIDs, rateLimitIDs)
 		}
 
@@ -1191,7 +1190,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 				}
 			}()
 			// Use the requested model for usage tracking
-			p.postHookWorker(result, err, provider, requestedModel, requestType, effectiveVK, requestID, userID, isFinalChunk, attemptNumber, pricingScopes)
+			p.postHookWorker(result, err, provider, requestedModel, requestType, requestID, isFinalChunk, attemptNumber, pricingScopes, accountedBudgets, accountedRateLimits)
 		}()
 	}
 
@@ -1292,18 +1291,7 @@ func (p *GovernancePlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 		return resp, bifrostErr, nil
 	}
 
-	// Extract governance information
-	virtualKey := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
 	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
-
-	if bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipVirtualKeyUsageTracking) {
-		virtualKey = ""
-	}
-
-	// Skip if no virtual key
-	if virtualKey == "" {
-		return resp, bifrostErr, nil
-	}
 
 	// Determine if request was successful
 	success := (resp != nil && bifrostErr == nil)
@@ -1323,15 +1311,33 @@ func (p *GovernancePlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 		}
 	}
 
-	// Create usage update for tracker (business logic) - MCP requests track request count and tool cost
+	// Create usage update for tracker (business logic) - MCP requests track request count and tool cost.
+	//
+	// Tool execution names no provider and no model, so what it answers to is whatever funds the
+	// holder, read from the limits settled when the tool call was evaluated, the same list that
+	// admitted it.
+	//
+	// Not gated on a credential. Skipping accounting when no key was presented would mean a request
+	// the deployment does charge for goes unbilled, and asking the key here would be a second answer
+	// to a question the grant already settled.
+	var budgets, rateLimits []schemas.Limit
+	if limits := ctx.Grant().Limits(); limits != nil {
+		budgets, rateLimits = limits.Budgets(), limits.RateLimits()
+	}
+	if bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipVirtualKeyUsageTracking) {
+		// The holder's usage is not being counted; what the deployment and the user answer to still is.
+		budgets = grant.LimitsFrom(budgets, untrackedHolderKinds...)
+		rateLimits = grant.LimitsFrom(rateLimits, untrackedHolderKinds...)
+	}
 	usageUpdate := &UsageUpdate{
-		VirtualKey:   virtualKey,
 		Success:      success,
 		Cost:         toolCost,
 		RequestID:    requestID,
 		IsStreaming:  false,
 		IsFinalChunk: true,
 		HasUsageData: toolCost > 0, // Has usage data if we have a cost
+		Budgets:      budgets,
+		RateLimits:   rateLimits,
 	}
 
 	// Queue usage update asynchronously using tracker
@@ -1412,12 +1418,11 @@ func (p *GovernancePlugin) Cleanup() error {
 //   - virtualKey: The raw virtual key token of the request (empty string if not present)
 //   - selectedKeyID: The selected provider key ID used for scoped pricing overrides
 //   - requestID: The request ID
-//   - userID: The user ID for enterprise user-level governance (empty string if not present)
 //   - isCacheRead: Whether the request is a cache read
 //   - isBatch: Whether the request is a batch request
 //   - isFinalChunk: Whether the request is the final chunk
 //   - pricingScopes: Prebuilt pricing lookup scopes using governance VK ID (nil if not applicable)
-func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, provider schemas.ModelProvider, model string, requestType schemas.RequestType, virtualKey, requestID, userID string, isFinalChunk bool, attemptNumber int, pricingScopes *modelcatalog.PricingLookupScopes) {
+func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, provider schemas.ModelProvider, model string, requestType schemas.RequestType, requestID string, isFinalChunk bool, attemptNumber int, pricingScopes *modelcatalog.PricingLookupScopes, budgets, rateLimits []schemas.Limit) {
 	// Determine if request was successful
 	success := (result != nil)
 	billedReason := "success"
@@ -1471,19 +1476,17 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifro
 
 		// Create usage update for tracker (business logic)
 		usageUpdate := &UsageUpdate{
-			VirtualKey:    virtualKey,
-			Provider:      provider,
-			Model:         model,
 			Success:       success,
 			TokensUsed:    int64(tokensUsed),
 			Cost:          cost,
 			RequestID:     requestID,
-			UserID:        userID,
 			IsStreaming:   isStreaming,
 			IsFinalChunk:  isFinalChunk,
 			HasUsageData:  tokensUsed > 0 || cost > 0,
 			AttemptNumber: attemptNumber,
 			BilledReason:  billedReason,
+			Budgets:       budgets,
+			RateLimits:    rateLimits,
 		}
 
 		// Queue usage update asynchronously using tracker
@@ -1530,26 +1533,10 @@ func (p *GovernancePlugin) ReportBatchUsage(ctx context.Context, usage batchacco
 		}
 	}
 
-	if usage.UserID != "" {
-		billingKey := fmt.Sprintf("%s:user-rate-limit:%s", usage.RequestID, usage.UserID)
-		if usage.RequestID == "" || p.tracker.tryClaimBatchBilling(billingKey) {
-			if err := p.store.UpdateUserRateLimitUsageInMemory(ctx, usage.UserID, usage.TokensUsed, true, true); err != nil {
-				p.tracker.releaseBatchBilling(billingKey)
-				errs = append(errs, err)
-			}
-		}
-	}
-
-	if usage.UserID != "" && usage.Cost > 0 {
-		billingKey := fmt.Sprintf("%s:user-budget:%s", usage.RequestID, usage.UserID)
-		if usage.RequestID == "" || p.tracker.tryClaimBatchBilling(billingKey) {
-			if err := p.store.UpdateUserBudgetUsageInMemory(ctx, usage.UserID, usage.Cost); err != nil {
-				p.tracker.releaseBatchBilling(billingKey)
-				errs = append(errs, err)
-			}
-		}
-	}
-
+	// The user's own limits are not a tier of their own here. What funds the user was gathered onto
+	// the request's grant when the batch was created, alongside every other co-payer, so its ids are
+	// already in BudgetIDs and RateLimitIDs and were bumped above. A second pass keyed by user would
+	// bill the same limits twice.
 	errs = append(errs, p.reportBatchModelUsage(ctx, usage)...)
 
 	return errors.Join(errs...)
