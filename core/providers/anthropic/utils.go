@@ -2264,30 +2264,18 @@ func convertChatResponseFormatToTool(ctx *schemas.BifrostContext, params *schema
 	}
 
 	// ResponseFormat is stored as interface{}, need to parse it
-	responseFormatMap, ok := (*params.ResponseFormat).(map[string]interface{})
-	if !ok {
-		return nil
-	}
-
-	// Check if type is "json_schema"
-	formatType, ok := responseFormatMap["type"].(string)
-	if !ok || formatType != "json_schema" {
-		return nil
-	}
-
-	// Extract json_schema object
-	jsonSchemaObj, ok := responseFormatMap["json_schema"].(map[string]interface{})
-	if !ok {
+	rf, ok := schemas.ParseChatResponseFormat(params.ResponseFormat)
+	if !ok || rf.Type != "json_schema" || !rf.HasJSONSchema() {
 		return nil
 	}
 
 	// Extract name and schema
-	toolName, ok := jsonSchemaObj["name"].(string)
+	toolName, ok := rf.Name()
 	if !ok || toolName == "" {
 		toolName = "json_response"
 	}
 
-	schemaOrdered, ok := schemas.SafeExtractOrderedMap(jsonSchemaObj["schema"])
+	schemaOrdered, ok := rf.SchemaMap()
 	if !ok {
 		return nil
 	}
@@ -3451,19 +3439,8 @@ func convertChatResponseFormatToAnthropicOutputFormat(responseFormat *interface{
 		return nil
 	}
 
-	formatMap, ok := (*responseFormat).(map[string]interface{})
-	if !ok {
-		return nil
-	}
-
-	formatType, ok := formatMap["type"].(string)
-	if !ok || formatType != "json_schema" {
-		return nil
-	}
-
-	// Extract the nested json_schema object
-	jsonSchemaObj, ok := formatMap["json_schema"].(map[string]interface{})
-	if !ok {
+	rf, ok := schemas.ParseChatResponseFormat(responseFormat)
+	if !ok || rf.Type != "json_schema" || !rf.HasJSONSchema() {
 		return nil
 	}
 
@@ -3471,12 +3448,14 @@ func convertChatResponseFormatToAnthropicOutputFormat(responseFormat *interface{
 	// Note: name, description, and strict are NOT included as they are not permitted
 	// in Anthropic's GA structured outputs API (output_config.format)
 	outputFormat := map[string]interface{}{
-		"type": formatType,
+		"type": rf.Type,
 	}
 
-	if schema, ok := schemas.SafeExtractOrderedMap(jsonSchemaObj["schema"]); ok {
-		// Normalize the schema to handle type arrays like ["string", "null"]
-		outputFormat["schema"] = normalizeOrderedSchemaForAnthropic(schema)
+	// Normalize the schema to handle type arrays like ["string", "null"]. The raw
+	// normalizer edits the client's bytes in place with sjson, so a schema that
+	// needs no normalization reaches Anthropic exactly as it was sent.
+	if schema := rf.RawSchema(); len(schema) > 0 {
+		outputFormat["schema"] = NormalizeSchemaForAnthropicRaw(schema)
 	}
 
 	result, err := providerUtils.MarshalSorted(outputFormat)

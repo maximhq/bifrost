@@ -40,6 +40,7 @@ BASE_URL="${BASE_URL:-http://localhost:$PORT}"
 APP_DIR="$REPO_ROOT/tmp/cli-harness-app"
 SERVER_LOG="$REPO_ROOT/tmp/bifrost-cli-harness.log"
 REPORTS_DIR="$REPO_ROOT/tests/e2e/clis/reports"
+CLI_TOOLS_DIR="$REPO_ROOT/tmp/cli-harness-tools"
 
 # CLI versions. In CI these are ALWAYS supplied by the environment: the
 # resolve-cli-versions job queries npm on every run and fans latest /
@@ -137,11 +138,38 @@ trap harness_stop_gateway EXIT
 
 source "$SCRIPT_DIR/setup-go-workspace.sh"
 
+# Resolve-then-`npm ci`, rather than `npm install -g <pkg>@<version>`.
+#
+# The three CLI versions themselves stay floating on purpose: resolve-cli-versions.sh
+# fans true-latest / latest-1 / latest-2 into the matrix because the job exists to
+# validate Bifrost against what a user actually gets from `npm i -g`. A committed
+# lockfile would defeat that, so this is not version pinning.
+#
+# What it does pin is the install. `npm install -g` re-resolves every transitive
+# dependency loosely at install time and records nothing. Resolving once into a
+# lockfile and then installing that exact tree with `npm ci` makes the full
+# closure integrity-checked, identical across the run, and auditable afterwards -
+# the lockfile is copied into the reports directory so a failed or suspicious run
+# has an exact manifest of what executed.
+#
+# Local prefix, not -g: node_modules/.bin on PATH is all the harness needs, since
+# the Go runner launches the CLIs by bare name (tests/e2e/clis/runner_test.go).
 echo "📦 Installing coding CLIs (pinned)..."
-npm install -g \
-  "@anthropic-ai/claude-code@$CLAUDE_CODE_VERSION" \
-  "@openai/codex@$CODEX_VERSION" \
-  "opencode-ai@$OPENCODE_VERSION"
+rm -rf "$CLI_TOOLS_DIR"
+mkdir -p "$CLI_TOOLS_DIR"
+printf '%s\n' '{"name":"bifrost-cli-harness-tools","version":"0.0.0","private":true}' \
+  > "$CLI_TOOLS_DIR/package.json"
+(
+  cd "$CLI_TOOLS_DIR"
+  npm install --package-lock-only --no-audit --no-fund \
+    "@anthropic-ai/claude-code@$CLAUDE_CODE_VERSION" \
+    "@openai/codex@$CODEX_VERSION" \
+    "opencode-ai@$OPENCODE_VERSION"
+  npm ci --no-audit --no-fund
+)
+export PATH="$CLI_TOOLS_DIR/node_modules/.bin:$PATH"
+mkdir -p "$REPORTS_DIR"
+cp "$CLI_TOOLS_DIR/package-lock.json" "$REPORTS_DIR/cli-tools-lock.json"
 echo "  claude:   $(claude --version 2>&1 | head -n1)"
 echo "  codex:    $(codex --version 2>&1 | head -n1)"
 echo "  opencode: $(opencode --version 2>&1 | head -n1)"

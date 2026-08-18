@@ -13,6 +13,23 @@
 
 import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
 import { dirname, basename, join } from "node:path";
+// The census depends on the same env the matrix builder read, so a renderer invoked without it
+// would report every gated cell as missing. Tolerate the census being unavailable rather than
+// losing the whole report over the summary table.
+//
+// Imported dynamically, not with a static `import`: ESM resolves and evaluates every static
+// import before the module body runs, so a failure there throws before any try block is entered
+// and the guard below could never catch it. `await import(...)` moves the load inside the guard,
+// which is the only arrangement where the fallback actually runs.
+const expectedCells = async () => {
+  try {
+    const { expectedTokenParityCells } = await import("./lib/token-parity-matrix.mjs");
+    return expectedTokenParityCells();
+  } catch (err) {
+    console.error(`[render-token-parity-report] cell census unavailable: ${err.message}`);
+    return [];
+  }
+};
 
 const args = Object.fromEntries(
   process.argv.slice(2).reduce((acc, cur, i, arr) => {
@@ -116,22 +133,88 @@ for (const r of merged) {
 }
 lines.push("");
 
+// Both legs read the same provider field for `total`, and prompt/completion are asserted while
+// total is not. So a cell whose prompt and completion agree but whose total does not is reporting
+// something neither asserted column can see -- gemini/audio came back +3903 on total with
+// completion identical at 15. Not scored (the cause is unknown and may be legitimate, e.g. a
+// modality count the two legs bill differently), but it must not sit in an all-green table
+// unremarked, which is how it survived the run that produced it.
+const TOTAL_DIVERGENCE_FLOOR = 100;
+const unexplainedTotals = merged.filter((r) => {
+  const totalGap = Math.abs((r.bifrost.total || 0) - (r.direct.total || 0));
+  if (totalGap < TOTAL_DIVERGENCE_FLOOR) return false;
+  return withinPct(r.direct.prompt, r.bifrost.prompt, TOLERANCE_PCT) && withinPct(r.direct.completion, r.bifrost.completion, TOLERANCE_PCT);
+});
+if (unexplainedTotals.length > 0) {
+  lines.push("> **Unexplained total-token divergence.** These cells agree on prompt and completion -- the two");
+  lines.push("> asserted columns -- but disagree on total by more than " + TOTAL_DIVERGENCE_FLOOR + " tokens. Total is reported,");
+  lines.push("> not asserted, so this does not fail; it is surfaced because a gap the asserted columns cannot");
+  lines.push("> explain is worth a look before it is assumed benign.");
+  lines.push("");
+  for (const r of unexplainedTotals) {
+    lines.push(`> - ${r.backend}/${r.modality}: direct ${r.direct.total} vs bifrost ${r.bifrost.total} (${tokenDelta(r.direct.total, r.bifrost.total)})`);
+  }
+  lines.push("");
+}
+
 const byBackend = new Map();
 for (const r of merged) {
   const list = byBackend.get(r.backend) || [];
   list.push(r);
   byBackend.set(r.backend, list);
 }
+
+// The summary is built from the matrix census, not just from the cells that reported data. A
+// backend whose every cell errored out (bad credentials, retired model id) returns no fragments at
+// all, so summarizing only what came back rendered it as absent -- and an all-green report missing
+// three of its seven backends reads as healthier than a red one. Missing cells are counted and
+// named here instead.
+const census = await expectedCells();
+const expectedByBackend = new Map();
+for (const c of census) {
+  const list = expectedByBackend.get(c.backend) || [];
+  list.push(c);
+  expectedByBackend.set(c.backend, list);
+}
+
 lines.push("### Per-model summary");
 lines.push("");
-lines.push("| Backend | Cells | Passing | Failing | Info (not asserted) |");
-lines.push("|---|---:|---:|---:|---:|");
-for (const [backend, list] of byBackend) {
+lines.push("| Backend | Expected | Reported | Passing | Failing | Info (not asserted) | Skipped (documented) | Missing |");
+lines.push("|---|---:|---:|---:|---:|---:|---:|---:|");
+const backendNames = [...new Set([...expectedByBackend.keys(), ...byBackend.keys()])].sort();
+const gaps = [];
+for (const backend of backendNames) {
+  const list = byBackend.get(backend) || [];
+  const expected = expectedByBackend.get(backend) || [];
+  const runnable = expected.filter((c) => c.status === "run");
+  const skipped = expected.filter((c) => c.status === "skip");
+  const gated = expected.filter((c) => c.status === "gated");
   const failing = list.filter((r) => verdict(r) === "FAIL").length;
   const info = list.filter((r) => verdict(r) === "INFO").length;
-  lines.push(`| ${backend} | ${list.length} | ${list.length - failing - info} | ${failing} | ${info} |`);
+  // Gated cells were deliberately not built this run, so they are neither expected nor missing.
+  const missing = Math.max(0, runnable.length - list.length);
+  if (missing > 0) {
+    gaps.push(`${backend}: ${missing} cell(s) expected but absent from the report`);
+  }
+  if (gated.length > 0) {
+    gaps.push(`${backend}: ${gated.length} cell(s) not run - ${gated[0].reason}`);
+  }
+  lines.push(
+    `| ${backend} | ${runnable.length} | ${list.length} | ${list.length - failing - info} | ${failing} | ${info} | ${skipped.length} | ${missing} |`
+  );
 }
 lines.push("");
+if (gaps.length > 0) {
+  lines.push("> **Coverage gaps this run.** A cell counted under `Missing` was expected to produce a row and did not.");
+  lines.push("> Either its requests all errored (check `tmp/harness-failures.md`) or the run was filtered and never");
+  lines.push("> reached them (`PROVIDER=`/`FEATURE=`/`SMOKE=`). Whichever it was, the cell was not measured -- so it is");
+  lines.push("> not a pass, and the verdict counts to its left do not cover it.");
+  lines.push("");
+  for (const g of gaps) {
+    lines.push(`> - ${g}`);
+  }
+  lines.push("");
+}
 
 writeFileSync(OUT, lines.join("\n") + "\n");
 const totalFail = merged.filter((r) => verdict(r) === "FAIL").length;

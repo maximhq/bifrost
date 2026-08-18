@@ -2332,6 +2332,10 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		fi; \
 	fi; \
 	say "$(CYAN)Augmenting provider harness with generated streaming/thinking cases...$(NC)"; \
+	: "VERTEX_ACCESS_TOKEN_VAL is exported so the token-parity matrix can skip the Vertex"; \
+	: "direct legs when gcloud could not mint a token, instead of emitting cells that post an"; \
+	: "unresolved {{vertexAccessToken}} placeholder and 401 en masse."; \
+	export VERTEX_ACCESS_TOKEN_VAL; \
 	$(USE_NODE); run_quiet node tests/e2e/api/runners/augment-provider-harness.mjs \
 		--source tests/e2e/api/collections/provider-harness.json \
 		--out tmp/harness-augmented.json || { say "$(RED)Harness augmentation failed$(NC)"; exit 1; }; \

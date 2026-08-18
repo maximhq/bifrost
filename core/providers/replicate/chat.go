@@ -181,6 +181,13 @@ func ToReplicateChatRequest(bifrostReq *schemas.BifrostChatRequest) (*ReplicateP
 					input.Tools = responsesTools
 				}
 			}
+			// gpt-5-structured takes its schema as the `json_schema` input, in
+			// the Responses text-config shape. Without this mapping a chat
+			// request reaches the model with no structured output at all, while
+			// the same request on the Responses path gets one.
+			if format := schemas.ResponsesTextConfigFormatFromChatResponseFormat(params.ResponseFormat); format != nil {
+				input.JsonSchema = &schemas.ResponsesTextConfig{Format: format}
+			}
 		}
 
 		if params.ExtraParams != nil {
