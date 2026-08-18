@@ -73,6 +73,7 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 				ocr: true,
 				ocr_stream: true,
 				video_generation: true,
+				video_edit: true,
 				video_retrieve: true,
 				video_download: true,
 				video_delete: true,

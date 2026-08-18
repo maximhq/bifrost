@@ -1948,6 +1948,82 @@ func (bifrost *Bifrost) VideoGenerationRequest(ctx *schemas.BifrostContext,
 	return response.VideoGenerationResponse, nil
 }
 
+// VideoEditRequest sends a video edit request to the specified provider.
+func (bifrost *Bifrost) VideoEditRequest(ctx *schemas.BifrostContext,
+	req *schemas.BifrostVideoEditRequest,
+) (*schemas.BifrostVideoEditResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "video edit request is nil",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.VideoEditRequest,
+			},
+		}
+	}
+	if req.Input == nil ||
+		(len(req.Input.Video.Video) == 0 && req.Input.Video.URL == "" && req.Input.Video.ID == "") {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "source video not provided for video edit request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType:            schemas.VideoEditRequest,
+				Provider:               req.Provider,
+				OriginalModelRequested: req.Model,
+				ResolvedModelUsed:      req.Model,
+			},
+		}
+	}
+	// Operations driven purely by the source video (upscale, background removal) carry no prompt.
+	var videoEditParamsType *string
+	if req.Params != nil {
+		videoEditParamsType = req.Params.Type
+	}
+	if !isPromptOptionalVideoEditType(videoEditParamsType) && req.Input.Prompt == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "prompt not provided for video edit request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType:            schemas.VideoEditRequest,
+				Provider:               req.Provider,
+				OriginalModelRequested: req.Model,
+				ResolvedModelUsed:      req.Model,
+			},
+		}
+	}
+
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.VideoEditRequest
+	bifrostReq.VideoEditRequest = req
+
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	if response == nil || response.VideoGenerationResponse == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "received nil response from provider",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType:            schemas.VideoEditRequest,
+				Provider:               req.Provider,
+				OriginalModelRequested: req.Model,
+				ResolvedModelUsed:      req.Model,
+			},
+		}
+	}
+
+	return response.VideoGenerationResponse, nil
+}
+
 func (bifrost *Bifrost) VideoRetrieveRequest(ctx *schemas.BifrostContext, req *schemas.BifrostVideoRetrieveRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
 	if req == nil {
 		return nil, &schemas.BifrostError{
@@ -7270,6 +7346,13 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		}
 		videoGenerationResponse.BackfillParams(&req.BifrostRequest)
 		response.VideoGenerationResponse = videoGenerationResponse
+	case schemas.VideoEditRequest:
+		videoEditResponse, bifrostError := provider.VideoEdit(req.Context, key, req.BifrostRequest.VideoEditRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		videoEditResponse.BackfillParams(&req.BifrostRequest)
+		response.VideoGenerationResponse = videoEditResponse
 	case schemas.VideoRetrieveRequest:
 		videoRetrieveResponse, bifrostError := provider.VideoRetrieve(req.Context, key, req.BifrostRequest.VideoRetrieveRequest)
 		if bifrostError != nil {
@@ -8302,6 +8385,7 @@ func resetBifrostRequest(req *schemas.BifrostRequest) {
 	req.ImageEditRequest = nil
 	req.ImageVariationRequest = nil
 	req.VideoGenerationRequest = nil
+	req.VideoEditRequest = nil
 	req.VideoRetrieveRequest = nil
 	req.VideoDownloadRequest = nil
 	req.VideoListRequest = nil

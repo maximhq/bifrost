@@ -373,6 +373,7 @@ func estimateLogEntrySize(log *logstore.Log) int {
 		len(log.ImageGenerationInput) +
 		len(log.ImageGenerationOutput) +
 		len(log.VideoGenerationInput) +
+		len(log.VideoEditInput) +
 		len(log.VideoGenerationOutput) +
 		len(log.VideoRetrieveOutput) +
 		len(log.VideoDownloadOutput) +
@@ -474,6 +475,7 @@ func buildCompleteLogEntryFromPending(pending *PendingLogData) *logstore.Log {
 		ImageEditInputParsed:        pending.InitialData.ImageEditInput,
 		ImageVariationInputParsed:   pending.InitialData.ImageVariationInput,
 		VideoGenerationInputParsed:  pending.InitialData.VideoGenerationInput,
+		VideoEditInputParsed:        pending.InitialData.VideoEditInput,
 		PassthroughRequestBody:      pending.InitialData.PassthroughRequestBody,
 	}
 	if pending.ParentRequestID != "" {

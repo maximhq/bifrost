@@ -153,6 +153,7 @@ const (
 	ImageEditStreamRequest         RequestType = "image_edit_stream"
 	ImageVariationRequest          RequestType = "image_variation"
 	VideoGenerationRequest         RequestType = "video_generation"
+	VideoEditRequest               RequestType = "video_edit"
 	VideoRetrieveRequest           RequestType = "video_retrieve"
 	VideoDownloadRequest           RequestType = "video_download"
 	VideoDeleteRequest             RequestType = "video_delete"
@@ -541,6 +542,7 @@ type BifrostRequest struct {
 	ImageEditRequest             *BifrostImageEditRequest
 	ImageVariationRequest        *BifrostImageVariationRequest
 	VideoGenerationRequest       *BifrostVideoGenerationRequest
+	VideoEditRequest             *BifrostVideoEditRequest
 	VideoRetrieveRequest         *BifrostVideoRetrieveRequest
 	VideoDownloadRequest         *BifrostVideoDownloadRequest
 	VideoListRequest             *BifrostVideoListRequest
@@ -615,6 +617,8 @@ func (br *BifrostRequest) GetRequestFields() (provider ModelProvider, model stri
 		return br.ImageVariationRequest.Provider, br.ImageVariationRequest.Model, br.ImageVariationRequest.Fallbacks
 	case br.VideoGenerationRequest != nil:
 		return br.VideoGenerationRequest.Provider, br.VideoGenerationRequest.Model, br.VideoGenerationRequest.Fallbacks
+	case br.VideoEditRequest != nil:
+		return br.VideoEditRequest.Provider, br.VideoEditRequest.Model, br.VideoEditRequest.Fallbacks
 	case br.VideoRetrieveRequest != nil:
 		return br.VideoRetrieveRequest.Provider, "", nil
 	case br.VideoDownloadRequest != nil:
@@ -766,6 +770,8 @@ func (br *BifrostRequest) SetProvider(provider ModelProvider) {
 		br.ImageVariationRequest.Provider = provider
 	case br.VideoGenerationRequest != nil:
 		br.VideoGenerationRequest.Provider = provider
+	case br.VideoEditRequest != nil:
+		br.VideoEditRequest.Provider = provider
 	case br.VideoRetrieveRequest != nil:
 		br.VideoRetrieveRequest.Provider = provider
 	case br.VideoDownloadRequest != nil:
@@ -819,6 +825,8 @@ func (br *BifrostRequest) SetModel(model string) {
 		br.ImageVariationRequest.Model = model
 	case br.VideoGenerationRequest != nil:
 		br.VideoGenerationRequest.Model = model
+	case br.VideoEditRequest != nil:
+		br.VideoEditRequest.Model = model
 	case br.BatchCreateRequest != nil:
 		if br.BatchCreateRequest.Model != nil {
 			br.BatchCreateRequest.Model = new(model)
@@ -874,6 +882,8 @@ func (br *BifrostRequest) SetFallbacks(fallbacks []Fallback) {
 		br.ImageVariationRequest.Fallbacks = fallbacks
 	case br.VideoGenerationRequest != nil:
 		br.VideoGenerationRequest.Fallbacks = fallbacks
+	case br.VideoEditRequest != nil:
+		br.VideoEditRequest.Fallbacks = fallbacks
 	}
 }
 
@@ -915,6 +925,8 @@ func (br *BifrostRequest) SetRawRequestBody(rawRequestBody []byte) {
 		br.ImageVariationRequest.RawRequestBody = rawRequestBody
 	case br.VideoGenerationRequest != nil:
 		br.VideoGenerationRequest.RawRequestBody = rawRequestBody
+	case br.VideoEditRequest != nil:
+		br.VideoEditRequest.RawRequestBody = rawRequestBody
 	case br.VideoRemixRequest != nil:
 		br.VideoRemixRequest.RawRequestBody = rawRequestBody
 	case br.CachedContentCreateRequest != nil:

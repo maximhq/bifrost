@@ -170,6 +170,7 @@ export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 		"image_variation",
 		"count_tokens",
 		"video_generation",
+		"video_edit",
 		"video_retrieve",
 		"video_download",
 		"video_delete",
