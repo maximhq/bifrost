@@ -103,6 +103,7 @@ var dynamicallyConfigurableProviders = []schemas.ModelProvider{
 	schemas.OpenRouter,
 	schemas.Parasail,
 	schemas.Perplexity,
+	schemas.Qwen,
 	schemas.Sarvam,
 	schemas.Vertex,
 	schemas.Wafer,

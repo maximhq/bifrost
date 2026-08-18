@@ -439,6 +439,9 @@
         "deepseek": {
           "$ref": "#/$defs/provider_with_deepseek_config"
         },
+        "qwen": {
+          "$ref": "#/$defs/provider"
+        },
         "wafer": {
           "$ref": "#/$defs/provider"
         },
@@ -2849,6 +2852,7 @@
                         "vertex",
                         "cerebras",
                         "deepseek",
+                        "qwen",
                         "vllm",
                         "parasail",
                         "perplexity",
@@ -7825,6 +7829,7 @@
             "perplexity",
             "cerebras",
             "deepseek",
+            "qwen",
             "gemini",
             "openrouter",
             "elevenlabs",
