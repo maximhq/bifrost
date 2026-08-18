@@ -390,6 +390,10 @@ func makeRequestWithDoFunc(ctx context.Context, do func() error) (time.Duration,
 					ExtraFields: schemas.BifrostErrorExtraFields{Latency: latency.Milliseconds()},
 				}, noop
 			}
+			// SSRF-guard rejections get their own actionable message.
+			if errors.Is(err, ErrRestrictedIPBlocked) {
+				return latency, SetErrorLatency(NewBifrostUpstreamConnectionError(schemas.ErrProviderRestrictedIPBlocked, err), latency), noop
+			}
 			// Check for timeout errors first before checking net.OpError to avoid misclassification.
 			if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 				return latency, SetErrorLatency(NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency), noop
@@ -496,6 +500,12 @@ func ConfigureRetry(client *fasthttp.Client) *fasthttp.Client {
 	return client
 }
 
+// ErrRestrictedIPBlocked marks dial rejections made by the SSRF guard below
+// (private, link-local, or unspecified IPs), so error classification can
+// surface the reason and point at allow_private_network instead of reporting
+// a generic HTTP failure (issue #5855).
+var ErrRestrictedIPBlocked = errors.New("restricted IP blocked")
+
 // ConfigureDialer configures the client's connection behavior:
 //  1. Sets up the stale-connection retry policy (see network.StaleConnectionRetryIfErr).
 //  2. Wraps the Dial function to enable TCP keepalive on all connections,
@@ -563,14 +573,14 @@ func ConfigureDialer(client *fasthttp.Client, allowPrivateNetwork bool) *fasthtt
 			for _, ip := range ips {
 				// Unspecified (0.0.0.0, ::) and link-local (169.254.x.x, fe80::) are always blocked
 				if ip.IsUnspecified() {
-					return nil, fmt.Errorf("connection to unspecified IP %s is not allowed", ip)
+					return nil, fmt.Errorf("%w: connection to unspecified IP %s is not allowed", ErrRestrictedIPBlocked, ip)
 				}
 				if network.IsLinkLocal(ip) {
-					return nil, fmt.Errorf("connection to link-local IP %s is not allowed", ip)
+					return nil, fmt.Errorf("%w: connection to link-local IP %s is not allowed", ErrRestrictedIPBlocked, ip)
 				}
 				// RFC 1918 blocked unless operator explicitly opted in; loopback always allowed
 				if !ip.IsLoopback() && !allowPrivateNetwork && network.IsPrivateIP(ip) {
-					return nil, fmt.Errorf("connection to private IP %s is not allowed", ip)
+					return nil, fmt.Errorf("%w: connection to private IP %s is not allowed", ErrRestrictedIPBlocked, ip)
 				}
 				conn, err = dialer.Dial("tcp", net.JoinHostPort(ip.String(), port))
 				if err == nil {
@@ -3333,6 +3343,32 @@ func aggregateListModelsResponses(responses []*schemas.BifrostListModelsResponse
 	return aggregated
 }
 
+// formatListModelsFailure renders an ErrorField for the list-models failure
+// log. The underlying error is appended to the message rather than shown only
+// when the message is empty — the message is often a generic classification
+// ("failed to execute HTTP request to provider API") while the underlying
+// error carries the actionable cause (issue #5855).
+func formatListModelsFailure(errorField *schemas.ErrorField) string {
+	if errorField == nil {
+		return "unknown error"
+	}
+	msg := errorField.Message
+	underlying := ""
+	if errorField.Error != nil {
+		underlying = errorField.Error.Error()
+	}
+	switch {
+	case msg != "" && underlying != "" && underlying != msg:
+		return msg + ": " + underlying
+	case msg != "":
+		return msg
+	case underlying != "":
+		return underlying
+	default:
+		return "unknown error"
+	}
+}
+
 // extractSuccessfulListModelsResponses extracts successful responses from a results channel
 // and tracks per-key status information. This utility reduces code duplication across providers
 // for handling multi-key ListModels requests.
@@ -3343,15 +3379,7 @@ func extractSuccessfulListModelsResponses(results chan schemas.ListModelsByKeyRe
 
 	for result := range results {
 		if result.Err != nil {
-			errMsg := "unknown error"
-			if errorField := result.Err.Error; errorField != nil {
-				if errorField.Message != "" {
-					errMsg = errorField.Message
-				} else if errorField.Error != nil {
-					errMsg = errorField.Error.Error()
-				}
-			}
-			getLogger().Warn(fmt.Sprintf("failed to list models with key %s: %s", result.KeyID, errMsg))
+			getLogger().Warn(fmt.Sprintf("failed to list models with key %s: %s", result.KeyID, formatListModelsFailure(result.Err.Error)))
 			keyStatuses = append(keyStatuses, schemas.KeyStatus{
 				KeyID:    result.KeyID,
 				Provider: provider,

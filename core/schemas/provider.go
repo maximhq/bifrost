@@ -40,6 +40,7 @@ const (
 	ErrProviderCreateRequest        = "failed to create HTTP request to provider API"
 	ErrProviderDoRequest            = "failed to execute HTTP request to provider API"
 	ErrProviderNetworkError         = "network error occurred while connecting to provider API (DNS lookup, connection refused, etc.)"
+	ErrProviderRestrictedIPBlocked  = "connection to the provider endpoint was blocked because it resolves to a restricted IP (private, link-local, or unspecified). If the upstream is intentionally on a private network (e.g. a Docker or Kubernetes service), set allow_private_network to true in the provider's network_config or in UI - Providers > Provider Name > Network Config. Link-local and unspecified addresses are always blocked."
 	ErrProviderResponseDecode       = "failed to decode response body from provider API"
 	ErrProviderResponseUnmarshal    = "failed to unmarshal response from provider API"
 	ErrProviderResponseEmpty        = "empty response received from provider"
