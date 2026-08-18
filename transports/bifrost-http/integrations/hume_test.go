@@ -3,12 +3,14 @@ package integrations
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"strings"
 	"testing"
 
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
 	"github.com/google/uuid"
+	"github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -114,6 +116,8 @@ func TestHumePreCallbackModelSessionAndStreamingDefaults(t *testing.T) {
 	assert.Nil(t, request.ParallelToolCalls, "core applies the constraint after plugin request mutation")
 	assert.Equal(t, "session-123", request.customSessionID)
 	assert.Equal(t, "session-123", bifrostCtx.Value(humeSessionContextKey{}))
+	assert.Equal(t, []string{}, bifrostCtx.Value(schemas.MCPContextKeyIncludeClients))
+	assert.Equal(t, true, bifrostCtx.Value(schemas.BifrostContextKeyRequireSerialToolCalls))
 }
 
 func TestHumePreCallbackGeneratesSessionID(t *testing.T) {
@@ -423,8 +427,35 @@ func TestHumeRoutesDisableLargePayloadPassthrough(t *testing.T) {
 	for _, route := range CreateHumeRouteConfigs(lib.NewDefaultHumeConfig()) {
 		assert.True(t, route.DisableLargePayloadMode, route.Path)
 		require.NotNil(t, route.StreamConfig)
-		assert.False(t, route.StreamConfig.SkipConverterErrors, route.Path)
+		assert.True(t, route.StreamConfig.FatalConverterErrors, route.Path)
 	}
+}
+
+func TestHumeRouteTerminatesOnConverterFailure(t *testing.T) {
+	route := CreateHumeRouteConfigs(lib.NewDefaultHumeConfig())[0]
+	router := NewGenericRouter(nil, &mockHandlerStore{}, []RouteConfig{route}, nil, bifrost.NewNoOpLogger())
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostCtx.SetValue(humeSessionContextKey{}, "session-converter-error")
+	stream := make(chan *schemas.BifrostStreamChunk, 1)
+	stream <- &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{
+		Choices: []schemas.BifrostResponseChoice{{
+			ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{Delta: &schemas.ChatStreamResponseChoiceDelta{
+				ToolCalls: []schemas.ChatAssistantMessageToolCall{{Index: 1}},
+			}},
+		}},
+	}}
+	close(stream)
+
+	var httpCtx fasthttp.RequestCtx
+	cancelCalled := false
+	router.handleStreaming(&httpCtx, bifrostCtx, route, stream, func() { cancelCalled = true })
+	body, err := io.ReadAll(httpCtx.Response.BodyStream())
+	require.NoError(t, err)
+
+	assert.Contains(t, string(body), lib.ClientSafeInternalErrorMessage)
+	assert.NotContains(t, string(body), "parallel tool calls")
+	assert.NotContains(t, string(body), "[DONE]")
+	assert.True(t, cancelCalled)
 }
 
 func TestHumeRouteStreamsOpenAISSEAndDoneMarker(t *testing.T) {

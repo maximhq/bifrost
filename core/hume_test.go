@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -32,13 +31,18 @@ func (t *humeConstraintTracer) AttachPluginLogs(_ string, logs []schemas.PluginL
 }
 
 type humeConstraintPlugin struct {
-	name               string
-	recoverError       bool
-	addTool            *schemas.ChatTool
-	preOrder           *[]string
-	postOrder          *[]string
-	postFinalState     *[]bool
-	sawConstraintError *bool
+	name          string
+	recoverError  bool
+	suppressError bool
+	addTool       *schemas.ChatTool
+	recorder      *humeConstraintRecorder
+}
+
+type humeConstraintRecorder struct {
+	preOrder           []string
+	postOrder          []string
+	postFinalState     []bool
+	sawConstraintError bool
 }
 
 func (p *humeConstraintPlugin) GetName() string { return p.name }
@@ -47,7 +51,7 @@ func (p *humeConstraintPlugin) PreRequestHook(_ *schemas.BifrostContext, _ *sche
 	return nil
 }
 func (p *humeConstraintPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
-	*p.preOrder = append(*p.preOrder, p.name)
+	p.recorder.preOrder = append(p.recorder.preOrder, p.name)
 	if p.addTool != nil {
 		if req.ChatRequest.Params == nil {
 			req.ChatRequest.Params = &schemas.ChatParameters{}
@@ -57,12 +61,15 @@ func (p *humeConstraintPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schema
 	return req, nil, nil
 }
 func (p *humeConstraintPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
-	*p.postOrder = append(*p.postOrder, p.name)
-	*p.postFinalState = append(*p.postFinalState, IsFinalChunk(ctx))
+	p.recorder.postOrder = append(p.recorder.postOrder, p.name)
+	p.recorder.postFinalState = append(p.recorder.postFinalState, IsFinalChunk(ctx))
 	if bifrostErr != nil && bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
-		*p.sawConstraintError = true
+		p.recorder.sawConstraintError = true
 	}
-	ctx.Log(schemas.LogLevelInfo, "handled Hume constraint error")
+	ctx.Log(schemas.LogLevelInfo, "handled serial tool constraint error")
+	if p.suppressError {
+		return nil, nil, nil
+	}
 	if !p.recoverError {
 		return resp, bifrostErr, nil
 	}
@@ -71,21 +78,12 @@ func (p *humeConstraintPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *sc
 
 func newHumeConstraintTestClient(t *testing.T, tracer schemas.Tracer, plugins ...schemas.LLMPlugin) *Bifrost {
 	t.Helper()
-	account := NewMockAccount()
-	account.AddProvider(schemas.OpenAI, 1, 1)
-	client, err := Init(context.Background(), schemas.BifrostConfig{
-		Account:    account,
-		Logger:     NewNoOpLogger(),
-		Tracer:     tracer,
-		LLMPlugins: plugins,
-		ModelCatalog: &humeModelCatalogStub{models: map[schemas.ModelProvider]map[string]*schemas.Model{
-			schemas.OpenAI: {
-				"o3-mini": {SupportedParameters: []string{"tools"}},
-			},
-		}},
-	})
-	require.NoError(t, err)
-	t.Cleanup(client.Shutdown)
+	client := newCatalogProbeClient(t, &humeModelCatalogStub{models: map[schemas.ModelProvider]map[string]*schemas.Model{
+		schemas.OpenAI: {
+			"o3-mini": {SupportedParameters: []string{"tools"}},
+		},
+	}}, plugins...)
+	client.SetTracer(tracer)
 	return client
 }
 
@@ -103,89 +101,7 @@ func newRejectedHumeConstraintRequest() *schemas.BifrostChatRequest {
 	}
 }
 
-type humeMCPInjectionSpy struct {
-	mcp.MCPManagerInterface
-	addToolsCalls int
-	injectedTool  schemas.ChatTool
-}
-
-func (s *humeMCPInjectionSpy) AddToolsToRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) *schemas.BifrostRequest {
-	s.addToolsCalls++
-	req.ChatRequest.Params.Tools = append(req.ChatRequest.Params.Tools, s.injectedTool)
-	schemas.AppendToContextList(ctx, schemas.BifrostContextKeyMCPAddedTools, s.injectedTool.Function.Name)
-	return req
-}
-
-func TestAddMCPToolsToStreamRequest(t *testing.T) {
-	humeTool := schemas.ChatTool{
-		Type: schemas.ChatToolTypeFunction,
-		Function: &schemas.ChatToolFunction{
-			Name:        "hume_weather",
-			Description: schemas.Ptr("Get weather for Hume"),
-		},
-	}
-	mcpTool := schemas.ChatTool{
-		Type:     schemas.ChatToolTypeFunction,
-		Function: &schemas.ChatToolFunction{Name: "mcp_search"},
-	}
-	toolChoice := "auto"
-	newRequest := func() *schemas.BifrostRequest {
-		return &schemas.BifrostRequest{
-			RequestType: schemas.ChatCompletionStreamRequest,
-			ChatRequest: &schemas.BifrostChatRequest{
-				Provider: schemas.OpenAI,
-				Model:    "gpt-4o-mini",
-				Input: []schemas.ChatMessage{{
-					Role:    schemas.ChatMessageRoleUser,
-					Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("weather?")},
-				}},
-				Params: &schemas.ChatParameters{
-					Tools:      []schemas.ChatTool{humeTool},
-					ToolChoice: &schemas.ChatToolChoice{ChatToolChoiceStr: &toolChoice},
-				},
-			},
-		}
-	}
-
-	t.Run("Hume chat stream bypasses MCP injection and preserves its request", func(t *testing.T) {
-		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-		ctx.SetValue(schemas.BifrostContextKeyIntegrationType, humeIntegrationType)
-		spy := &humeMCPInjectionSpy{injectedTool: mcpTool}
-		client := &Bifrost{MCPManager: spy}
-		req := newRequest()
-		originalChatRequest := req.ChatRequest
-		originalInput := req.ChatRequest.Input
-		originalTools := req.ChatRequest.Params.Tools
-		originalToolChoice := req.ChatRequest.Params.ToolChoice
-
-		result := client.addMCPToolsToStreamRequest(ctx, req)
-
-		assert.Same(t, req, result)
-		assert.Same(t, originalChatRequest, result.ChatRequest)
-		assert.Equal(t, originalInput, result.ChatRequest.Input)
-		assert.Equal(t, originalTools, result.ChatRequest.Params.Tools)
-		assert.Same(t, originalToolChoice, result.ChatRequest.Params.ToolChoice)
-		assert.Zero(t, spy.addToolsCalls)
-		assert.Nil(t, ctx.Value(schemas.BifrostContextKeyMCPAddedTools))
-	})
-
-	t.Run("non-Hume chat stream retains MCP injection", func(t *testing.T) {
-		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-		ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "openai")
-		spy := &humeMCPInjectionSpy{injectedTool: mcpTool}
-		client := &Bifrost{MCPManager: spy}
-
-		result := client.addMCPToolsToStreamRequest(ctx, newRequest())
-
-		assert.Equal(t, 1, spy.addToolsCalls)
-		require.Len(t, result.ChatRequest.Params.Tools, 2)
-		assert.Equal(t, "hume_weather", result.ChatRequest.Params.Tools[0].Function.Name)
-		assert.Equal(t, "mcp_search", result.ChatRequest.Params.Tools[1].Function.Name)
-		assert.Equal(t, []string{"mcp_search"}, ctx.Value(schemas.BifrostContextKeyMCPAddedTools))
-	})
-}
-
-func TestEnforceHumeSingleToolConstraint(t *testing.T) {
+func TestEnforceSingleToolConstraint(t *testing.T) {
 	newRequest := func(provider schemas.ModelProvider, model string) *schemas.BifrostRequest {
 		return &schemas.BifrostRequest{
 			RequestType: schemas.ChatCompletionStreamRequest,
@@ -200,7 +116,7 @@ func TestEnforceHumeSingleToolConstraint(t *testing.T) {
 	}
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	ctx.SetValue(schemas.BifrostContextKeyIntegrationType, humeIntegrationType)
+	ctx.SetValue(schemas.BifrostContextKeyRequireSerialToolCalls, true)
 	ctx.SetValue(schemas.BifrostContextKeyModelCatalog, &humeModelCatalogStub{models: map[schemas.ModelProvider]map[string]*schemas.Model{
 		schemas.OpenAI: {
 			"gpt-4o-mini": {SupportedParameters: []string{"parallel_tool_calls"}},
@@ -213,21 +129,21 @@ func TestEnforceHumeSingleToolConstraint(t *testing.T) {
 
 	t.Run("OpenAI model with wire support is constrained", func(t *testing.T) {
 		req := newRequest(schemas.OpenAI, "gpt-4o-mini")
-		require.Nil(t, (&Bifrost{}).enforceHumeSingleToolConstraint(ctx, req))
+		require.Nil(t, (&Bifrost{}).enforceSingleToolConstraint(ctx, req))
 		require.NotNil(t, req.ChatRequest.Params.ParallelToolCalls)
 		assert.False(t, *req.ChatRequest.Params.ParallelToolCalls)
 	})
 
 	t.Run("Anthropic is translated by its request converter", func(t *testing.T) {
 		req := newRequest(schemas.Anthropic, "claude-sonnet-4-5")
-		require.Nil(t, (&Bifrost{}).enforceHumeSingleToolConstraint(ctx, req))
+		require.Nil(t, (&Bifrost{}).enforceSingleToolConstraint(ctx, req))
 		require.NotNil(t, req.ChatRequest.Params.ParallelToolCalls)
 		assert.False(t, *req.ChatRequest.Params.ParallelToolCalls)
 	})
 
 	t.Run("unsupported OpenAI model is rejected instead of receiving an invalid field", func(t *testing.T) {
 		req := newRequest(schemas.OpenAI, "o3-mini")
-		err := (&Bifrost{}).enforceHumeSingleToolConstraint(ctx, req)
+		err := (&Bifrost{}).enforceSingleToolConstraint(ctx, req)
 		require.NotNil(t, err)
 		assert.Contains(t, err.Error.Message, "cannot guarantee")
 		assert.Equal(t, schemas.Ptr(400), err.StatusCode)
@@ -236,7 +152,7 @@ func TestEnforceHumeSingleToolConstraint(t *testing.T) {
 
 	t.Run("native provider without a wire mapping is rejected", func(t *testing.T) {
 		req := newRequest(schemas.Gemini, "gemini-test")
-		err := (&Bifrost{}).enforceHumeSingleToolConstraint(ctx, req)
+		err := (&Bifrost{}).enforceSingleToolConstraint(ctx, req)
 		require.NotNil(t, err)
 		assert.Nil(t, req.ChatRequest.Params.ParallelToolCalls)
 	})
@@ -244,7 +160,7 @@ func TestEnforceHumeSingleToolConstraint(t *testing.T) {
 	t.Run("provider-bound tools are constrained", func(t *testing.T) {
 		req := newRequest(schemas.OpenAI, "gpt-4o-mini")
 		req.ChatRequest.Params.ParallelToolCalls = nil
-		require.Nil(t, (&Bifrost{}).enforceHumeSingleToolConstraint(ctx, req))
+		require.Nil(t, (&Bifrost{}).enforceSingleToolConstraint(ctx, req))
 		assert.Equal(t, schemas.Ptr(false), req.ChatRequest.Params.ParallelToolCalls)
 	})
 
@@ -255,39 +171,40 @@ func TestEnforceHumeSingleToolConstraint(t *testing.T) {
 			BaseProviderType: schemas.OpenAI,
 		}}
 		req := newRequest(customProvider, "gpt-4o-mini")
-		require.Nil(t, (&Bifrost{account: account}).enforceHumeSingleToolConstraint(ctx, req))
+		require.Nil(t, (&Bifrost{account: account}).enforceSingleToolConstraint(ctx, req))
 		assert.Equal(t, schemas.Ptr(false), req.ChatRequest.Params.ParallelToolCalls)
 	})
 
-	t.Run("other integrations are unchanged", func(t *testing.T) {
+	t.Run("catalog-absent OpenAI-compatible model is constrained", func(t *testing.T) {
+		catalogAbsentCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		catalogAbsentCtx.SetValue(schemas.BifrostContextKeyRequireSerialToolCalls, true)
+		req := newRequest(schemas.Ollama, "local-model")
+		require.Nil(t, (&Bifrost{}).enforceSingleToolConstraint(catalogAbsentCtx, req))
+		assert.Equal(t, schemas.Ptr(false), req.ChatRequest.Params.ParallelToolCalls)
+	})
+
+	t.Run("requests without the policy are unchanged", func(t *testing.T) {
 		otherCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-		otherCtx.SetValue(schemas.BifrostContextKeyIntegrationType, "openai")
 		req := newRequest(schemas.OpenAI, "gpt-4o-mini")
-		require.Nil(t, (&Bifrost{}).enforceHumeSingleToolConstraint(otherCtx, req))
+		require.Nil(t, (&Bifrost{}).enforceSingleToolConstraint(otherCtx, req))
 		assert.Nil(t, req.ChatRequest.Params.ParallelToolCalls)
 	})
 }
 
 func TestHumeConstraintAppliesToPluginAddedTools(t *testing.T) {
-	var preOrder []string
-	var postOrder []string
-	var postFinalState []bool
-	var sawConstraintError bool
+	recorder := &humeConstraintRecorder{}
 	pluginTool := &schemas.ChatTool{
 		Type:     schemas.ChatToolTypeFunction,
 		Function: &schemas.ChatToolFunction{Name: "plugin_tool"},
 	}
 	plugin := &humeConstraintPlugin{
-		name:               "tool-adder",
-		addTool:            pluginTool,
-		preOrder:           &preOrder,
-		postOrder:          &postOrder,
-		postFinalState:     &postFinalState,
-		sawConstraintError: &sawConstraintError,
+		name:     "tool-adder",
+		addTool:  pluginTool,
+		recorder: recorder,
 	}
 	client := newHumeConstraintTestClient(t, &humeConstraintTracer{}, plugin)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	ctx.SetValue(schemas.BifrostContextKeyIntegrationType, humeIntegrationType)
+	ctx.SetValue(schemas.BifrostContextKeyRequireSerialToolCalls, true)
 
 	request := newRejectedHumeConstraintRequest()
 	request.Params.Tools = nil
@@ -296,10 +213,10 @@ func TestHumeConstraintAppliesToPluginAddedTools(t *testing.T) {
 	assert.Nil(t, stream)
 	require.NotNil(t, bifrostErr)
 	assert.Contains(t, bifrostErr.Error.Message, "cannot guarantee")
-	assert.Equal(t, []string{"tool-adder"}, preOrder)
-	assert.Equal(t, []string{"tool-adder"}, postOrder)
-	assert.True(t, sawConstraintError)
-	assert.Equal(t, []bool{true}, postFinalState)
+	assert.Equal(t, []string{"tool-adder"}, recorder.preOrder)
+	assert.Equal(t, []string{"tool-adder"}, recorder.postOrder)
+	assert.True(t, recorder.sawConstraintError)
+	assert.Equal(t, []bool{true}, recorder.postFinalState)
 }
 
 func TestHumeConstraintErrorRunsPostHooks(t *testing.T) {
@@ -313,29 +230,20 @@ func TestHumeConstraintErrorRunsPostHooks(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var preOrder []string
-			var postOrder []string
-			var postFinalState []bool
-			var sawConstraintError bool
+			recorder := &humeConstraintRecorder{}
 			tracer := &humeConstraintTracer{}
 			outer := &humeConstraintPlugin{
-				name:               "outer",
-				recoverError:       true,
-				preOrder:           &preOrder,
-				postOrder:          &postOrder,
-				postFinalState:     &postFinalState,
-				sawConstraintError: &sawConstraintError,
+				name:         "outer",
+				recoverError: true,
+				recorder:     recorder,
 			}
 			inner := &humeConstraintPlugin{
-				name:               "inner",
-				preOrder:           &preOrder,
-				postOrder:          &postOrder,
-				postFinalState:     &postFinalState,
-				sawConstraintError: &sawConstraintError,
+				name:     "inner",
+				recorder: recorder,
 			}
 			client := newHumeConstraintTestClient(t, tracer, outer, inner)
 			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-			ctx.SetValue(schemas.BifrostContextKeyIntegrationType, humeIntegrationType)
+			ctx.SetValue(schemas.BifrostContextKeyRequireSerialToolCalls, true)
 			ctx.SetValue(schemas.BifrostContextKeyTraceID, "hume-constraint-trace")
 
 			if tt.streaming {
@@ -356,12 +264,26 @@ func TestHumeConstraintErrorRunsPostHooks(t *testing.T) {
 				assert.Equal(t, "hume-post-hook-recovery", resp.ID)
 			}
 
-			assert.Equal(t, []string{"outer", "inner"}, preOrder)
-			assert.Equal(t, []string{"inner", "outer"}, postOrder)
-			assert.True(t, sawConstraintError)
-			assert.Equal(t, []bool{tt.streaming, tt.streaming}, postFinalState)
+			assert.Equal(t, []string{"outer", "inner"}, recorder.preOrder)
+			assert.Equal(t, []string{"inner", "outer"}, recorder.postOrder)
+			assert.True(t, recorder.sawConstraintError)
+			assert.Equal(t, []bool{tt.streaming, tt.streaming}, recorder.postFinalState)
 			require.Len(t, tracer.logs, 2)
 			assert.Nil(t, ctx.GetPluginLogs())
 		})
 	}
+}
+
+func TestUnaryConstraintKeepsOriginalErrorWhenPostHookReturnsNilNil(t *testing.T) {
+	recorder := &humeConstraintRecorder{}
+	plugin := &humeConstraintPlugin{name: "suppressor", suppressError: true, recorder: recorder}
+	client := newHumeConstraintTestClient(t, &humeConstraintTracer{}, plugin)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequireSerialToolCalls, true)
+
+	resp, bifrostErr := client.ChatCompletionRequest(ctx, newRejectedHumeConstraintRequest())
+
+	assert.Nil(t, resp)
+	require.NotNil(t, bifrostErr)
+	assert.Contains(t, bifrostErr.Error.Message, "cannot guarantee serial tool execution")
 }

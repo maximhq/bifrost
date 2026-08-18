@@ -200,11 +200,12 @@ func Test_handleStreamingPlainInterceptionErrorKeepsFlatFormat(t *testing.T) {
 	assert.True(t, cancelCalled)
 }
 
-func Test_handleStreamingConverterErrorEmitsSanitizedErrorAndTerminates(t *testing.T) {
+func Test_handleStreamingConverterErrorEmitsSanitizedErrorAndTerminatesWhenConfigured(t *testing.T) {
 	var convertedError *schemas.BifrostError
 	config := RouteConfig{
 		Type: RouteConfigTypeOpenAI,
 		StreamConfig: &StreamConfig{
+			FatalConverterErrors: true,
 			ChatStreamResponseConverter: func(_ *schemas.BifrostContext, _ *schemas.BifrostChatResponse) (string, interface{}, error) {
 				return "", nil, errors.New("converter internals must not leak")
 			},
@@ -237,12 +238,11 @@ func Test_handleStreamingConverterErrorEmitsSanitizedErrorAndTerminates(t *testi
 	assert.True(t, cancelCalled)
 }
 
-func Test_handleStreamingConverterErrorIsSkippedWhenConfigured(t *testing.T) {
+func Test_handleStreamingConverterErrorIsSkippedByDefault(t *testing.T) {
 	callCount := 0
 	config := RouteConfig{
 		Type: RouteConfigTypeOpenAI,
 		StreamConfig: &StreamConfig{
-			SkipConverterErrors: true,
 			ChatStreamResponseConverter: func(_ *schemas.BifrostContext, _ *schemas.BifrostChatResponse) (string, interface{}, error) {
 				callCount++
 				if callCount == 1 {

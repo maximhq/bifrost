@@ -62,7 +62,6 @@
           "additionalProperties": false
         }
       },
-      "required": ["default_model"],
       "additionalProperties": false
     },
     "version": {

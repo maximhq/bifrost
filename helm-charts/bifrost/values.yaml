@@ -251,7 +251,7 @@ bifrost:
 
   # Hume EVI custom language model adapter configuration.
   # hume:
-  #   # Required whenever the Hume section is configured.
+  #   # Optional fallback when Hume omits its model identifier.
   #   defaultModel: "openai/gpt-4o-mini"
   #   # Optionally expose Hume vocal-expression scores to the model as prompt text.
   #   prosodyPrompt:

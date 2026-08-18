@@ -43,11 +43,22 @@ func TestHumeConfigPreservesAllScoresSetting(t *testing.T) {
 	}
 }
 
+func TestHumeConfigAllowsProsodyWithoutDefaultModel(t *testing.T) {
+	config := &HumeConfig{ProsodyPrompt: &HumeProsodyPromptConfig{Enabled: true}}
+	if err := config.CheckAndSetDefaults(); err != nil {
+		t.Fatalf("CheckAndSetDefaults() error = %v", err)
+	}
+	if config.DefaultModel != "" {
+		t.Fatalf("DefaultModel = %q, want empty", config.DefaultModel)
+	}
+	if config.ProsodyPrompt.Scope != HumeProsodyPromptScopeLatestUser {
+		t.Fatalf("Scope = %q, want %q", config.ProsodyPrompt.Scope, HumeProsodyPromptScopeLatestUser)
+	}
+}
+
 func TestHumeConfigValidation(t *testing.T) {
 	negative := -1
 	tests := []HumeConfig{
-		{},
-		{DefaultModel: "   "},
 		{DefaultModel: "openai/gpt-4o-mini", ProsodyPrompt: &HumeProsodyPromptConfig{Scope: "invalid"}},
 		{DefaultModel: "openai/gpt-4o-mini", ProsodyPrompt: &HumeProsodyPromptConfig{Scope: HumeProsodyPromptScopeLatestUser, MaxEmotions: &negative}},
 	}

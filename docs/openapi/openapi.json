@@ -21083,7 +21083,7 @@
       "post": {
         "operationId": "humeCreateChatCompletion",
         "summary": "Stream a Hume EVI chat completion",
-        "description": "Serves as a Hume EVI custom language model using an OpenAI-compatible\nrequest and Server-Sent Events response. Hume message timing and prosody\nmetadata are retained for plugins and are not forwarded directly to the\nselected provider. This endpoint also works without the `/v1` path segment.\n\nIf `custom_session_id` is absent, Bifrost generates a UUID. Every response\nchunk returns the resolved session ID in `system_fingerprint`, and the\nstream ends with `data: [DONE]`.\n",
+        "description": "Serves as a Hume EVI custom language model using an OpenAI-compatible\nrequest and Server-Sent Events response. Hume message timing and prosody\nmetadata are retained for plugins and are not forwarded directly to the\nselected provider.\n\nIf `custom_session_id` is absent, Bifrost generates a UUID. Every response\nchunk returns the resolved session ID in `system_fingerprint`, and the\nstream ends with `data: [DONE]`.\n",
         "tags": [
           "Hume Integration"
         ],

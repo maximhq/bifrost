@@ -344,7 +344,7 @@
               "type": "string",
               "minLength": 1,
               "pattern": "\\S",
-              "description": "Required Bifrost provider/model string or model-catalog-resolvable name used when Hume omits its custom language model identifier. Must contain at least one non-whitespace character."
+              "description": "Optional Bifrost provider/model string or model-catalog-resolvable name used when Hume omits its custom language model identifier. Must contain at least one non-whitespace character when set."
             },
             "prosodyPrompt": {
               "type": "object",
@@ -370,7 +370,6 @@
               "additionalProperties": false
             }
           },
-          "required": ["defaultModel"],
           "additionalProperties": false
         },
         "authConfig": {
