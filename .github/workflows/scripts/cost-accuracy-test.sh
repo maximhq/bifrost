@@ -118,7 +118,13 @@ start_postgres() {
   container="$(docker_compose -p "${COMPOSE_PROJECT}" -f "${COMPOSE_FILE}" ps -q postgres)"
   local pg_ready=0
   for _ in $(seq 1 60); do
-    if docker exec "${container}" pg_isready -U "${POSTGRES_USER}" -d bifrost >/dev/null 2>&1; then
+    # -h forces a TCP check instead of the default Unix socket: on a fresh
+    # volume, Postgres runs a temporary init server that only listens on the
+    # socket (listen_addresses=''), so a socket-based check can report ready
+    # against that server right as it shuts down, killing the next
+    # connection with "terminating connection due to administrator command".
+    # TCP only comes up once the real server starts.
+    if docker exec "${container}" pg_isready -h 127.0.0.1 -U "${POSTGRES_USER}" -d bifrost >/dev/null 2>&1; then
       log "Postgres is ready"
       pg_ready=1
       break
@@ -146,8 +152,18 @@ build_binaries() {
   mkdir -p "${ROOT_DIR}/tmp" "${ROOT_DIR}/transports/bifrost-http/ui"
   touch "${ROOT_DIR}/transports/bifrost-http/ui/.gitkeep"
 
-  log "building bifrost-http"
-  (cd "${ROOT_DIR}/transports/bifrost-http" && go build -o "${BIFROST_BIN}" .)
+  # CI's build-gateway job supplies bifrost-http as an artifact. The mocker and
+  # hitter below are still built here - they live in a separate repo.
+  if [ "${SKIP_GATEWAY_BUILD:-0}" = "1" ]; then
+    if [ ! -x "${BIFROST_BIN}" ]; then
+      log "SKIP_GATEWAY_BUILD=1 but no executable binary at ${BIFROST_BIN}"
+      exit 1
+    fi
+    log "using prebuilt bifrost-http at ${BIFROST_BIN}"
+  else
+    log "building bifrost-http"
+    (cd "${ROOT_DIR}/transports/bifrost-http" && go build -o "${BIFROST_BIN}" .)
+  fi
 
   # GOWORK=off: bifrost-benchmarking is its own module and in CI is checked out
   # inside the repo root (${github.workspace}/bifrost-benchmarking), so `go build`

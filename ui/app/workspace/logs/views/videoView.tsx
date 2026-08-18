@@ -72,7 +72,7 @@ export default function VideoView({ videoInput, videoOutput, videoListOutput, re
 					<div className="space-y-3 p-6">
 						{downloadOutput ? (
 							<>
-								<div className="grid grid-cols-3 gap-3">
+								<div className="grid grid-cols-1 gap-3 md:grid-cols-3">
 									{downloadOutput.video_id && (
 										<div className="space-y-1">
 											<div className="text-muted-foreground text-xs font-medium">VIDEO ID</div>
@@ -92,7 +92,7 @@ export default function VideoView({ videoInput, videoOutput, videoListOutput, re
 								<p className="text-muted-foreground text-xs">Video content was successfully downloaded (content is not stored in logs)</p>
 							</>
 						) : deleteOutput ? (
-							<div className="grid grid-cols-3 gap-3">
+							<div className="grid grid-cols-1 gap-3 md:grid-cols-3">
 								{deleteOutput.id && (
 									<div className="space-y-1">
 										<div className="text-muted-foreground text-xs font-medium">VIDEO ID</div>
@@ -111,7 +111,7 @@ export default function VideoView({ videoInput, videoOutput, videoListOutput, re
 							</div>
 						) : generationOutput ? (
 							<>
-								<div className="grid grid-cols-3 gap-3">
+								<div className="grid grid-cols-1 gap-3 md:grid-cols-3">
 									{generationOutput.id && (
 										<div className="space-y-1">
 											<div className="text-muted-foreground text-xs font-medium">VIDEO ID</div>

@@ -1,6 +1,7 @@
 import { IS_ENTERPRISE } from "@/lib/constants/config";
-import { useGetBrandingQuery } from "@/lib/store/apis/brandingApi";
+import { useGetBrandingQuery, type BrandingState } from "@/lib/store/apis/brandingApi";
 import { getApiBaseUrl } from "@/lib/utils/port";
+import { useEffect } from "react";
 
 /** Bundled Bifrost assets. These are the OSS values and the fallback for every
  * slot an enterprise deployment has not overridden. */
@@ -19,6 +20,87 @@ export function resolveBrandingAssetUrl(url: string | undefined): string {
 	if (!url) return "";
 	const apiBase = getApiBaseUrl();
 	return url.startsWith("/api/") ? `${apiBase}${url.slice("/api".length)}` : url;
+}
+
+/**
+ * Last known branding state, mirrored in localStorage.
+ *
+ * The GET is a round trip, and until it lands every branded surface would
+ * render the bundled Bifrost defaults — so a client-side navigation into the
+ * dashboard, or a reload once past the pre-hydration shell, flashed the wrong
+ * logo. Persisting the resolved state lets the first paint use the customer's
+ * assets: the URLs are content-versioned and served with a long max-age, so the
+ * images themselves come from the browser cache and nothing is fetched.
+ *
+ * A cached URL can be stale if another admin re-uploaded since — it 404s and
+ * shows a broken image for the one frame before the in-flight response replaces
+ * it. Acceptable against a guaranteed wrong-logo flash on every load.
+ */
+const CACHE_KEY = "bifrost-branding";
+
+/** Read once per page load and kept in sync from the query below, so every
+ * consumer of the hook agrees and repeat renders don't re-parse the entry. */
+let cachedBranding: BrandingState | null | undefined;
+
+/**
+ * Validates a parsed cache entry before it is trusted.
+ *
+ * Checking `enabled` alone is not enough: the URLs reach
+ * resolveBrandingAssetUrl, which calls startsWith on them, so a
+ * wrong-typed URL would throw during render rather than degrade to the
+ * defaults. null counts as absent — if the branding endpoint ever
+ * serializes an unset URL as null instead of omitting it, the entry is
+ * still usable and discarding it would restore the flash this cache
+ * exists to prevent.
+ */
+function isOptionalString(value: unknown): boolean {
+	return value === undefined || value === null || typeof value === "string";
+}
+
+function isBrandingState(value: unknown): value is BrandingState {
+	if (!value || typeof value !== "object") return false;
+	const state = value as Record<string, unknown>;
+	return (
+		typeof state.enabled === "boolean" &&
+		typeof state.has_logo === "boolean" &&
+		typeof state.has_icon === "boolean" &&
+		isOptionalString(state.logo_url) &&
+		isOptionalString(state.icon_url) &&
+		isOptionalString(state.updated_at)
+	);
+}
+
+function readCachedBranding(): BrandingState | undefined {
+	if (cachedBranding === undefined) {
+		cachedBranding = null;
+		try {
+			const raw = localStorage.getItem(CACHE_KEY);
+			// Guard against a hand-edited or older-shaped entry: a bad parse must
+			// fall back to the defaults, not render undefined URLs.
+			const parsed: unknown = raw ? JSON.parse(raw) : null;
+			if (isBrandingState(parsed)) {
+				cachedBranding = parsed;
+			}
+		} catch {
+			// localStorage unavailable (privacy mode) or unparseable — no cache.
+		}
+	}
+	return cachedBranding ?? undefined;
+}
+
+function writeCachedBranding(state: BrandingState) {
+	// Nothing to restore on a deployment with no branding, and the entry has to
+	// be dropped on reset or the defaults would never come back.
+	cachedBranding = state.enabled ? state : null;
+	try {
+		if (cachedBranding) {
+			localStorage.setItem(CACHE_KEY, JSON.stringify(cachedBranding));
+		} else {
+			localStorage.removeItem(CACHE_KEY);
+		}
+	} catch {
+		// localStorage unavailable — branding just won't paint early next load.
+	}
 }
 
 export interface BrandingAssets {
@@ -43,12 +125,37 @@ export interface BrandingAssets {
  * upload serves both light and dark — so `isDark` only selects between the two
  * bundled defaults.
  *
- * While the query is in flight the defaults are returned rather than nothing,
- * so the logo never renders as a blank gap. On a branded deployment that means
- * a brief flash of the Bifrost logo on first paint; the pre-hydration shell is
- * rewritten server-side to avoid it on the initial document load, and the
- * response is cached for subsequent navigations.
+ * While the query is in flight the last known state from localStorage is used,
+ * falling back to the defaults when there is none — so the logo never renders
+ * as a blank gap, and a branded deployment doesn't flash the Bifrost logo while
+ * the response is outstanding. The pre-hydration shell is separately rewritten
+ * server-side to cover the initial document load, before any of this runs.
  */
+function toBrandingAssets(branding: BrandingState | undefined, isDark: boolean): BrandingAssets {
+	const hasLogo = Boolean(branding?.has_logo && branding.logo_url);
+	const hasIcon = Boolean(branding?.has_icon && branding.icon_url);
+
+	return {
+		logoSrc: hasLogo ? resolveBrandingAssetUrl(branding!.logo_url) : isDark ? DEFAULT_LOGO_DARK : DEFAULT_LOGO_LIGHT,
+		iconSrc: hasIcon ? resolveBrandingAssetUrl(branding!.icon_url) : isDark ? DEFAULT_ICON_DARK : DEFAULT_ICON_LIGHT,
+		isCustom: Boolean(branding?.enabled),
+		logoAlt: branding?.enabled ? "" : "Bifrost",
+	};
+}
+
+/**
+ * Branding for surfaces that render outside <ReduxProvider> — the version-skew
+ * updating screen sits above RouterProvider and is also the router's error
+ * component, so it has no store to query and calling the hook there throws.
+ *
+ * Cache-only by design: those screens paint during an upgrade, when the API is
+ * mid-rollout and a request would likely fail anyway. Falls back to the bundled
+ * defaults when nothing has been cached yet.
+ */
+export function getCachedBrandingAssets(isDark: boolean): BrandingAssets {
+	return toBrandingAssets(IS_ENTERPRISE ? readCachedBranding() : undefined, isDark);
+}
+
 export function useBranding(isDark: boolean): BrandingAssets {
 	// Fires on the login screen too, where no session exists — the endpoint is
 	// public precisely so this works pre-auth. Skipped on OSS, where the whole
@@ -57,13 +164,15 @@ export function useBranding(isDark: boolean): BrandingAssets {
 	// then fall back to the defaults it already has.
 	const { data } = useGetBrandingQuery(undefined, { skip: !IS_ENTERPRISE });
 
-	const hasLogo = Boolean(data?.has_logo && data.logo_url);
-	const hasIcon = Boolean(data?.has_icon && data.icon_url);
+	// The mutations invalidate the Branding tag, so a save or reset refetches and
+	// lands here — every cache write funnels through this one effect.
+	useEffect(() => {
+		if (data) writeCachedBranding(data);
+	}, [data]);
 
-	return {
-		logoSrc: hasLogo ? resolveBrandingAssetUrl(data!.logo_url) : isDark ? DEFAULT_LOGO_DARK : DEFAULT_LOGO_LIGHT,
-		iconSrc: hasIcon ? resolveBrandingAssetUrl(data!.icon_url) : isDark ? DEFAULT_ICON_DARK : DEFAULT_ICON_LIGHT,
-		isCustom: Boolean(data?.enabled),
-		logoAlt: data?.enabled ? "" : "Bifrost",
-	};
+	// Safe to read during render: the app is client-rendered (createRoot, not
+	// hydrateRoot), so there is no server markup for this to mismatch against.
+	const branding = data ?? (IS_ENTERPRISE ? readCachedBranding() : undefined);
+
+	return toBrandingAssets(branding, isDark);
 }

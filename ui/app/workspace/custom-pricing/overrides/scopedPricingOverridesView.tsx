@@ -1,3 +1,4 @@
+import PageTitle from "@/components/pageTitle";
 import { VirtualKeySelector } from "@/components/entitySelectors/virtualKeySelector";
 import FullPageLoader from "@/components/fullPageLoader";
 import {
@@ -296,16 +297,31 @@ export default function ScopedPricingOverridesView() {
 
 	const hasActiveFilters = debouncedSearch || scopeKind !== "all" || userID || virtualKeyID || providerID || providerKeyID;
 
+	// Rendered on every branch below, not just the populated one: PageTitle draws
+	// nothing inline, and without it the topbar drops to the route-derived
+	// fallback, which for this route reads "Overrides".
+	const pageTitle = (
+		<PageTitle title="Pricing Overrides">
+			Set custom rates for any model across global, virtual key, or user scopes, optionally narrowed to a specific provider or key
+		</PageTitle>
+	);
+
 	// Without this the table chrome paints first, then swaps to the full-page empty
 	// state once the first response resolves to zero rows. Hold a plain loader until
 	// then; later filter/page fetches keep the table so the chrome doesn't jump.
 	if (isLoading && !hasLoadedOnceRef.current) {
-		return <FullPageLoader />;
+		return (
+			<>
+				{pageTitle}
+				<FullPageLoader />
+			</>
+		);
 	}
 
 	if (!isLoading && !error && totalCount === 0 && !hasActiveFilters) {
 		return (
 			<>
+				{pageTitle}
 				<PricingOverridesEmptyState onCreateClick={openCreateDrawer} />
 				<PricingOverrideSheet
 					open={isDrawerOpen}
@@ -319,21 +335,9 @@ export default function ScopedPricingOverridesView() {
 
 	return (
 		<div className="flex flex-col overflow-y-auto">
-			<div className="mb-4 flex items-center justify-between gap-4">
-				<div>
-					<h2 className="text-lg font-semibold tracking-tight">Pricing Overrides</h2>
-					<p className="text-muted-foreground text-sm">
-						Set custom rates for any model across global, virtual key, or user scopes, optionally narrowed to a specific provider or key
-					</p>
-				</div>
-				<Button data-testid="pricing-override-create-btn" onClick={openCreateDrawer} className="gap-2">
-					<Plus className="h-4 w-4" />
-					<span className="hidden sm:inline">New Override</span>
-				</Button>
-			</div>
-
-			{/* Search and filters */}
+			{/* Search, filters and actions */}
 			<div className="mb-4 flex flex-wrap items-center gap-2">
+				{pageTitle}
 				<div className="relative w-full max-w-sm">
 					<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 					<Input
@@ -368,6 +372,18 @@ export default function ScopedPricingOverridesView() {
 						Clear
 					</Button>
 				)}
+
+				{/* The label is hidden below sm, leaving an icon with no accessible
+				    name, so the name is carried on the button itself. */}
+				<Button
+					data-testid="pricing-override-create-btn"
+					onClick={openCreateDrawer}
+					className="gap-2 sm:ml-auto"
+					aria-label="New pricing override"
+				>
+					<Plus className="h-4 w-4" />
+					<span className="hidden sm:inline">New Override</span>
+				</Button>
 			</div>
 
 			<div className="mb-2 overflow-hidden rounded-sm border">

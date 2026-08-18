@@ -355,7 +355,7 @@ export default function OnboardingWidget() {
 						);
 					})}
 				</CardContent>
-				<CardFooter className="grid grid-cols-2 divide-x border-t p-0 !pt-0 text-xs">
+				<CardFooter className="grid grid-cols-1 divide-y border-t p-0 !pt-0 text-xs sm:grid-cols-2 sm:divide-x sm:divide-y-0">
 					<Popover
 						open={remindPickerOpen}
 						onOpenChange={(open) => {
@@ -364,11 +364,7 @@ export default function OnboardingWidget() {
 						}}
 					>
 						<PopoverTrigger asChild>
-							<button
-								type="button"
-								data-testid="onboarding-later"
-								className="text-muted-foreground hover:text-foreground py-2 text-center"
-							>
+							<button type="button" data-testid="onboarding-later" className="text-muted-foreground hover:text-foreground py-2 text-center">
 								Remind me later
 							</button>
 						</PopoverTrigger>

@@ -211,8 +211,7 @@ export default function LogsPage() {
 			// period mode `newFilters` carries no start/end, so only touch time when an
 			// explicit range is actually provided — otherwise we'd wipe the active period/range.
 			const hasExplicitTime = !!newFilters.start_time && !!newFilters.end_time;
-			const timeChanged =
-				hasExplicitTime && (newFilters.start_time !== filters.start_time || newFilters.end_time !== filters.end_time);
+			const timeChanged = hasExplicitTime && (newFilters.start_time !== filters.start_time || newFilters.end_time !== filters.end_time);
 			if (timeChanged) {
 				userModifiedTimeRange.current = true;
 			}
@@ -734,7 +733,7 @@ export default function LogsPage() {
 	);
 
 	return (
-		<div className="dark:bg-card no-padding-parent no-border-parent h-[calc(100vh_-_16px)]">
+		<div className="dark:bg-card no-padding-parent no-border-parent h-[calc(var(--app-content-viewport)_-_16px)]">
 			{showEmptyState ? (
 				<EmptyState error={error ?? (logsError ? getErrorMessage(logsError as Parameters<typeof getErrorMessage>[0]) : null)} />
 			) : (

@@ -1250,6 +1250,18 @@ type ResponsesMessage struct {
 	// reject the item type can hoist them into the top-level tools param.
 	AdditionalTools json.RawMessage `json:"-"`
 
+	// ProviderNativeParts carries a provider's own response fragment for this item when
+	// the canonical shape cannot hold it losslessly, so a native-surface integration can
+	// re-emit exactly what the provider sent. Currently Gemini's server-side
+	// toolCall/toolResponse parts: the web_search_call item keeps their queries, but not
+	// the raw tool response or the thoughtSignature bytes Gemini demands back on replay.
+	// The non-streaming path carries these on the response's ProviderExtraFields; a
+	// per-chunk stream item has no such field, which is what this one supplies.
+	//
+	// json:"-" like the two above: it rides the in-process item between a provider and an
+	// integration and is never part of the public wire shape.
+	ProviderNativeParts json.RawMessage `json:"-"`
+
 	*ResponsesToolMessage // For Tool calls and outputs
 
 	CacheControl *CacheControl `json:"cache_control,omitempty"` // Carries cache_control for function_call and function_call_output message types
@@ -2350,6 +2362,22 @@ func (tc ResponsesToolChoice) MarshalJSON() ([]byte, error) {
 		return MarshalSorted(tc.ResponsesToolChoiceStr)
 	}
 	if tc.ResponsesToolChoiceStruct != nil {
+		// A choice that carries only a mode - no function name, no server label, no allowed-tools
+		// list - is a bare string on the wire. The object form's `type` names a TOOL TYPE
+		// ("function", "code_interpreter", ...), so serializing {"type":"auto"} is rejected with
+		// Invalid value: 'auto'. Supported values are: 'function', 'code_interpreter', ...
+		// Normalizing here rather than in each inbound converter keeps every drop-in shape
+		// consistent; the struct form remains Bifrost's internal representation.
+		if s := tc.ResponsesToolChoiceStruct; s.Name == nil && s.ServerLabel == nil && len(s.Tools) == 0 {
+			switch s.Type {
+			case ResponsesToolChoiceTypeAuto, ResponsesToolChoiceTypeNone,
+				ResponsesToolChoiceTypeRequired, ResponsesToolChoiceTypeAny:
+				return MarshalSorted(string(s.Type))
+			}
+			if s.Mode != nil && s.Type == "" {
+				return MarshalSorted(*s.Mode)
+			}
+		}
 		return MarshalSorted(tc.ResponsesToolChoiceStruct)
 	}
 	// If both are nil, return null

@@ -196,7 +196,7 @@ export function WebhookDetailsSheet({ endpoint, isTesting, canManage, onTest, on
 
 	return (
 		<Sheet open={open} onOpenChange={(sheetOpen) => !sheetOpen && onClose()}>
-			<SheetContent className="flex w-full flex-col gap-0 overflow-x-hidden p-8 sm:max-w-[60%]">
+			<SheetContent className="flex w-full flex-col gap-0 overflow-x-hidden p-4 sm:max-w-[60%] md:p-8">
 				<SheetHeader className="flex flex-col items-start px-0">
 					<SheetTitle className="flex w-fit items-center gap-2 font-medium">
 						<p className="text-md max-w-full truncate">{endpoint?.name}</p>
@@ -214,7 +214,7 @@ export function WebhookDetailsSheet({ endpoint, isTesting, canManage, onTest, on
 				</SheetHeader>
 
 				<div className="space-y-4 rounded-sm border p-4">
-					<div className="grid grid-cols-3 gap-4">
+					<div className="grid grid-cols-1 gap-4 md:grid-cols-3">
 						<DetailEntry
 							label="Events"
 							value={

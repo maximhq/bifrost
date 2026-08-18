@@ -1243,6 +1243,111 @@ func TestApplyXAICompatibility(t *testing.T) {
 			},
 		},
 		{
+			name:  "grok-4.6: preserves reasoning_effort xhigh",
+			model: "grok-4.6",
+			request: &OpenAIChatRequest{
+				Model:    "grok-4.6",
+				Messages: []OpenAIMessage{},
+				ChatParameters: schemas.ChatParameters{
+					Reasoning: &schemas.ChatReasoning{
+						Effort: schemas.Ptr("xhigh"),
+					},
+				},
+			},
+			validate: func(t *testing.T, req *OpenAIChatRequest) {
+				if req.Reasoning == nil || req.Reasoning.Effort == nil {
+					t.Fatal("Expected Reasoning.Effort to be preserved for grok-4.6")
+				}
+				if *req.Reasoning.Effort != "xhigh" {
+					t.Errorf("Expected Reasoning.Effort 'xhigh', got %v", *req.Reasoning.Effort)
+				}
+			},
+		},
+		{
+			name:  "grok-4.5: preserves reasoning_effort",
+			model: "grok-4.5",
+			request: &OpenAIChatRequest{
+				Model:    "grok-4.5",
+				Messages: []OpenAIMessage{},
+				ChatParameters: schemas.ChatParameters{
+					Reasoning: &schemas.ChatReasoning{
+						Effort: schemas.Ptr("low"),
+					},
+				},
+			},
+			validate: func(t *testing.T, req *OpenAIChatRequest) {
+				if req.Reasoning == nil || req.Reasoning.Effort == nil {
+					t.Fatal("Expected Reasoning.Effort to be preserved for grok-4.5")
+				}
+				if *req.Reasoning.Effort != "low" {
+					t.Errorf("Expected Reasoning.Effort 'low', got %v", *req.Reasoning.Effort)
+				}
+			},
+		},
+		{
+			name:  "grok-4.3: preserves reasoning_effort",
+			model: "grok-4.3",
+			request: &OpenAIChatRequest{
+				Model:    "grok-4.3",
+				Messages: []OpenAIMessage{},
+				ChatParameters: schemas.ChatParameters{
+					Reasoning: &schemas.ChatReasoning{
+						Effort: schemas.Ptr("medium"),
+					},
+				},
+			},
+			validate: func(t *testing.T, req *OpenAIChatRequest) {
+				if req.Reasoning == nil || req.Reasoning.Effort == nil {
+					t.Fatal("Expected Reasoning.Effort to be preserved for grok-4.3")
+				}
+				if *req.Reasoning.Effort != "medium" {
+					t.Errorf("Expected Reasoning.Effort 'medium', got %v", *req.Reasoning.Effort)
+				}
+			},
+		},
+		{
+			name:  "grok-4.20-multi-agent-0309: preserves reasoning_effort (agent count)",
+			model: "grok-4.20-multi-agent-0309",
+			request: &OpenAIChatRequest{
+				Model:    "grok-4.20-multi-agent-0309",
+				Messages: []OpenAIMessage{},
+				ChatParameters: schemas.ChatParameters{
+					Reasoning: &schemas.ChatReasoning{
+						Effort: schemas.Ptr("high"),
+					},
+				},
+			},
+			validate: func(t *testing.T, req *OpenAIChatRequest) {
+				if req.Reasoning == nil || req.Reasoning.Effort == nil {
+					t.Fatal("Expected Reasoning.Effort to be preserved for grok-4.20-multi-agent")
+				}
+				if *req.Reasoning.Effort != "high" {
+					t.Errorf("Expected Reasoning.Effort 'high', got %v", *req.Reasoning.Effort)
+				}
+			},
+		},
+		{
+			name:  "grok-4-0709: dated grok-4 alias still clears reasoning_effort",
+			model: "grok-4-0709",
+			request: &OpenAIChatRequest{
+				Model:    "grok-4-0709",
+				Messages: []OpenAIMessage{},
+				ChatParameters: schemas.ChatParameters{
+					Reasoning: &schemas.ChatReasoning{
+						Effort: schemas.Ptr("high"),
+					},
+				},
+			},
+			validate: func(t *testing.T, req *OpenAIChatRequest) {
+				if req.Reasoning == nil {
+					t.Fatal("Expected Reasoning to remain non-nil")
+				}
+				if req.Reasoning.Effort != nil {
+					t.Errorf("Expected Reasoning.Effort cleared for grok-4-0709, got %v", *req.Reasoning.Effort)
+				}
+			},
+		},
+		{
 			name:  "grok-3: preserves other parameters like temperature",
 			model: "grok-3",
 			request: &OpenAIChatRequest{
@@ -1707,6 +1812,63 @@ func TestToOpenAIChatRequest_DoesNotEmitInboundReasoningAliases(t *testing.T) {
 				"the inbound-only reasoning alias must never be marshalled outbound")
 			require.NotContains(t, assistantMessage, "reasoning_details",
 				"the inbound-only reasoning_details alias must never be marshalled outbound")
+		})
+	}
+}
+
+// TestXAIReasoningEffortEndToEnd pins reasoning_effort through the FULL conversion
+// pipeline, not just applyXAICompatibility. filterOpenAISpecificParameters runs
+// normalizeReasoningEffort BEFORE the xAI compat pass, so a value can be rewritten
+// upstream of the deny-list check - which is exactly how "xhigh" was silently
+// downgraded to "high" for grok-4.6 even after the deny-list was fixed.
+func TestXAIReasoningEffortEndToEnd(t *testing.T) {
+	tests := []struct {
+		name     string
+		model    string
+		effort   string
+		expected *string // nil => expect the field stripped
+	}{
+		{"grok-4.6 keeps xhigh", "grok-4.6", "xhigh", schemas.Ptr("xhigh")},
+		{"grok-4.6 maps max to xhigh", "grok-4.6", "max", schemas.Ptr("xhigh")},
+		{"grok-4.6 keeps low", "grok-4.6", "low", schemas.Ptr("low")},
+		{"grok-4.5 downgrades xhigh to high", "grok-4.5", "xhigh", schemas.Ptr("high")},
+		{"grok-4.5 keeps medium", "grok-4.5", "medium", schemas.Ptr("medium")},
+		{"grok-4.20-multi-agent keeps xhigh", "grok-4.20-multi-agent-0309", "xhigh", schemas.Ptr("xhigh")},
+		{"grok-4 strips effort", "grok-4-0709", "high", nil},
+		{"grok-code-fast-1 strips effort", "grok-code-fast-1", "high", nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bifrostReq := &schemas.BifrostChatRequest{
+				Provider: schemas.XAI,
+				Model:    tt.model,
+				Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+				},
+				Params: &schemas.ChatParameters{
+					Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr(tt.effort)},
+				},
+			}
+
+			ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+			defer cancel()
+
+			result := ToOpenAIChatRequest(ctx, bifrostReq)
+			require.NotNil(t, result)
+
+			if tt.expected == nil {
+				if result.Reasoning != nil && result.Reasoning.Effort != nil {
+					t.Fatalf("expected effort stripped for %s, got %q", tt.model, *result.Reasoning.Effort)
+				}
+				return
+			}
+			require.NotNil(t, result.Reasoning, "reasoning missing for %s", tt.model)
+			require.NotNil(t, result.Reasoning.Effort, "effort stripped for %s", tt.model)
+			if *result.Reasoning.Effort != *tt.expected {
+				t.Errorf("model %s effort %q: expected %q, got %q",
+					tt.model, tt.effort, *tt.expected, *result.Reasoning.Effort)
+			}
 		})
 	}
 }

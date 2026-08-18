@@ -113,6 +113,32 @@ const providerConfigSchema = z.object({
 			request_reset_duration: z.string().optional(),
 		})
 		.optional(),
+	// Per-model budgets/rate-limits under this provider
+	model_budgets: z
+		.array(
+			z.object({
+				model_name: z.string().trim().min(1, "Model name is required"),
+				budgets: z
+					.array(
+						z.object({
+							id: z.string().optional(),
+							max_limit: z.number().nonnegative().optional(),
+							reset_duration: z.string().optional(),
+							reset_config: z.object({ quarter_start_month: z.number().int().min(1).max(12).optional() }).optional(),
+						}),
+					)
+					.optional(),
+				rate_limit: z
+					.object({
+						token_max_limit: z.number().int().nonnegative().optional(),
+						token_reset_duration: z.string().optional(),
+						request_max_limit: z.number().int().nonnegative().optional(),
+						request_reset_duration: z.string().optional(),
+					})
+					.optional(),
+			}),
+		)
+		.optional(),
 });
 
 const mcpConfigSchema = z.object({
@@ -365,6 +391,23 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 							request_reset_duration: config.rate_limit.request_reset_duration,
 						}
 						: undefined,
+					model_budgets: config.model_budgets?.map((mb) => ({
+						model_name: mb.model_name,
+						budgets: mb.budgets?.map((b) => ({
+							id: b.id,
+							max_limit: b.max_limit,
+							reset_duration: b.reset_duration,
+							reset_config: b.reset_config,
+						})),
+						rate_limit: mb.rate_limit
+							? {
+									token_max_limit: mb.rate_limit.token_max_limit ?? undefined,
+									token_reset_duration: mb.rate_limit.token_reset_duration,
+									request_max_limit: mb.rate_limit.request_max_limit ?? undefined,
+									request_reset_duration: mb.rate_limit.request_reset_duration,
+								}
+							: undefined,
+					})),
 				})) || [],
 			mcpConfigs:
 				virtualKey?.mcp_configs?.map((config) => ({
@@ -573,31 +616,52 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 		form.setValue("requestResetDuration", "1h", { shouldDirty: true });
 	};
 
+	// Build a request rate-limit payload from the form's rate-limit fields. Returns the field
+	// values when a limit is set, {} to clear an existing rate limit (removal), or undefined.
+	const normalizeRateLimit = (
+		rl:
+			| { token_max_limit?: number; token_reset_duration?: string; request_max_limit?: number; request_reset_duration?: string }
+			| undefined,
+		hadExisting: boolean,
+	) => {
+		const hasToken = rl?.token_max_limit !== undefined;
+		const hasRequest = rl?.request_max_limit !== undefined;
+		if (hasToken || hasRequest) {
+			return {
+				token_max_limit: rl?.token_max_limit ?? null,
+				token_reset_duration: hasToken ? rl?.token_reset_duration || "1h" : null,
+				request_max_limit: rl?.request_max_limit ?? null,
+				request_reset_duration: hasRequest ? rl?.request_reset_duration || "1h" : null,
+			};
+		}
+		return hadExisting ? {} : undefined;
+	};
+
 	const normalizeProviderConfigs = (configs: typeof providerConfigs, existingConfigs?: VirtualKey["provider_configs"]): any[] => {
-		return configs.map((config) => ({
-			...config,
-			budgets: config.budgets?.filter((b): b is { id?: string; max_limit: number; reset_duration: string } => b.max_limit !== undefined),
-			weight: config.weight ?? null,
-			rate_limit: (() => {
-				const hasTokenMaxLimit = config.rate_limit?.token_max_limit !== undefined;
-				const hasRequestMaxLimit = config.rate_limit?.request_max_limit !== undefined;
-				if (hasTokenMaxLimit || hasRequestMaxLimit) {
-					return {
-						token_max_limit: config.rate_limit?.token_max_limit ?? null,
-						token_reset_duration: hasTokenMaxLimit ? config.rate_limit?.token_reset_duration || "1h" : null,
-						request_max_limit: config.rate_limit?.request_max_limit ?? null,
-						request_reset_duration: hasRequestMaxLimit ? config.rate_limit?.request_reset_duration || "1h" : null,
-					};
-				}
-
-				const existingConfig = existingConfigs?.find((item) => (config.id ? item.id === config.id : item.provider === config.provider));
-				if (existingConfig?.rate_limit) {
-					return {};
-				}
-
-				return undefined;
-			})(),
-		}));
+		return configs.map((config) => {
+			const existingConfig = existingConfigs?.find((item) => (config.id ? item.id === config.id : item.provider === config.provider));
+			return {
+				...config,
+				budgets: config.budgets?.filter((b): b is { id?: string; max_limit: number; reset_duration: string } => b.max_limit !== undefined),
+				weight: config.weight ?? null,
+				rate_limit: normalizeRateLimit(config.rate_limit, !!existingConfig?.rate_limit),
+				// Full desired per-model set: drop unfilled models, keep an empty array so the
+				// backend prunes any per-model budgets removed here.
+				model_budgets: (config.model_budgets || [])
+					.filter((mb) => mb.model_name && mb.model_name.trim() !== "")
+					.map((mb) => {
+						const existingMB = existingConfig?.model_budgets?.find((m) => m.model_name === mb.model_name.trim());
+						return {
+							model_name: mb.model_name.trim(),
+							budgets: (mb.budgets || []).filter(
+								(b): b is { id?: string; max_limit: number; reset_duration: string } => b.max_limit !== undefined,
+							),
+							rate_limit: normalizeRateLimit(mb.rate_limit, !!existingMB?.rate_limit),
+						};
+					})
+					.filter((mb) => mb.budgets.length > 0 || mb.rate_limit !== undefined),
+			};
+		});
 	};
 
 	const parseResetDurationMs = (duration?: string) => {
@@ -992,7 +1056,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 				onInteractOutside={(e) => e.preventDefault()}
 				onEscapeKeyDown={() => handleClose()}
 			>
-				<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-8">
+				<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-4 md:px-8">
 					<SheetTitle className="flex items-center gap-2">{isEditing ? virtualKey?.name : "Create Virtual Key"}</SheetTitle>
 					<SheetDescription>
 						{isEditing
@@ -1003,7 +1067,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 
 				<Form {...form}>
 					<form onSubmit={form.handleSubmit(onSubmit)} className="flex h-full flex-col gap-6">
-						<div className="grow space-y-4 px-8">
+						<div className="grow space-y-4 px-4 md:px-8">
 							{isManagedByProfile && (
 								<>
 									<Alert variant="info">
@@ -1193,6 +1257,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 														providerLabel={providerLabel}
 														iconProvider={iconProvider}
 														providerKeys={providerKeys}
+														showModelBudgets
 														onRemove={() => handleRemoveProvider(index)}
 														value={{
 															providerName: config.provider,
@@ -1202,6 +1267,11 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 															keyIds: config.key_ids || [],
 															budgets: config.budgets || [],
 															rateLimit: config.rate_limit ?? null,
+															modelBudgets: (config.model_budgets || []).map((mb) => ({
+																model_name: mb.model_name,
+																budgets: mb.budgets || [],
+																rate_limit: mb.rate_limit,
+															})),
 														}}
 														onChange={(next) => {
 															const updated = [...providerConfigs];
@@ -1218,6 +1288,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 																	reset_config: l.reset_config,
 																})),
 																rate_limit: next.rateLimit ?? undefined,
+																model_budgets: next.modelBudgets,
 															};
 															form.setValue("providerConfigs", updated, {
 																shouldDirty: true,
@@ -1594,7 +1665,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 											</Label>
 											<p id="vk-budget-calendar-aligned-description" className="text-muted-foreground text-xs">
 												Reset budgets and rate limits at the start of each period (e.g. 1st of month) instead of rolling from creation date.
-												Applies to durations of a day or longer.
+												Quarterly budgets always align to fiscal quarter starts. Applies to durations of a day or longer.
 											</p>
 										</div>
 										<Switch
@@ -1782,6 +1853,68 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 												)}
 											/>
 										)}
+
+										{form.watch("entityType") === "user" && UserPicker && (
+											<FormField
+												control={form.control}
+												name="userId"
+												render={({ field }) => (
+													<FormItem>
+														<FormLabel className="font-normal">Select User</FormLabel>
+														<UserPicker
+															value={field.value || ""}
+															onChange={(val) => {
+																field.onChange(val);
+																void form.trigger("entityType");
+															}}
+															// The attached user may fall outside the picker's first
+															// page; seed the label resolved from the association.
+															fallbackOption={
+																field.value
+																	? {
+																			value: field.value,
+																			label: field.value === assignedUserId ? assignedUserLabel : field.value,
+																		}
+																	: null
+															}
+															triggerClassName="h-9"
+														/>
+														<FormMessage />
+													</FormItem>
+												)}
+											/>
+										)}
+
+										{form.watch("entityType") === "user" && UserPicker && (
+											<FormField
+												control={form.control}
+												name="userId"
+												render={({ field }) => (
+													<FormItem>
+														<FormLabel className="font-normal">Select User</FormLabel>
+														<UserPicker
+															value={field.value || ""}
+															onChange={(val) => {
+																field.onChange(val);
+																void form.trigger("entityType");
+															}}
+															// The attached user may fall outside the picker's first
+															// page; seed the label resolved from the association.
+															fallbackOption={
+																field.value
+																	? {
+																			value: field.value,
+																			label: field.value === assignedUserId ? assignedUserLabel : field.value,
+																		}
+																	: null
+															}
+															triggerClassName="h-9"
+														/>
+														<FormMessage />
+													</FormItem>
+												)}
+											/>
+										)}
 									</div>
 									{form.watch("entityType") === "user" && (
 										<p className="text-muted-foreground text-xs">
@@ -1837,12 +1970,12 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 							</AlertDialogContent>
 						</AlertDialog>
 						{isEditing && virtualKey?.config_hash && (
-							<div className="px-8">
+							<div className="px-4 md:px-8">
 								<ConfigSyncAlert className="mt-2" />
 							</div>
 						)}
 						{/* Form Footer */}
-						<div className="border-border bg-card sticky bottom-0 z-10 border-t px-8 py-4">
+						<div className="border-border bg-card sticky bottom-0 z-10 border-t px-4 py-4 md:px-8">
 							<div className="flex items-center justify-between gap-2">
 								{isEditing ? (
 									<Button

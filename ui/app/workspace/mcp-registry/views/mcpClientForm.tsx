@@ -322,19 +322,19 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 			token_exchange:
 				authType === "token_exchange"
 					? {
-						audience: data.token_exchange?.audience?.trim() || "",
-						use_idp_credentials: data.token_exchange?.use_idp_credentials || undefined,
-						client_id: data.token_exchange?.use_idp_credentials ? undefined : (data.token_exchange?.client_id ?? emptySecretVar),
-						client_secret: data.token_exchange?.use_idp_credentials
-							? undefined
-							: data.token_exchange?.client_secret?.value ||
-								data.token_exchange?.client_secret?.type === "env" ||
-								data.token_exchange?.client_secret?.type === "vault"
-								? data.token_exchange.client_secret
-								: undefined,
-						scopes: tokenExchangeScopesText.trim() ? parseArrayFromText(tokenExchangeScopesText) : undefined,
-						authorization_server_url: data.token_exchange?.authorization_server_url?.trim() || undefined,
-					}
+							audience: data.token_exchange?.audience?.trim() || "",
+							use_idp_credentials: data.token_exchange?.use_idp_credentials || undefined,
+							client_id: data.token_exchange?.use_idp_credentials ? undefined : (data.token_exchange?.client_id ?? emptySecretVar),
+							client_secret: data.token_exchange?.use_idp_credentials
+								? undefined
+								: data.token_exchange?.client_secret?.value ||
+									  data.token_exchange?.client_secret?.type === "env" ||
+									  data.token_exchange?.client_secret?.type === "vault"
+									? data.token_exchange.client_secret
+									: undefined,
+							scopes: tokenExchangeScopesText.trim() ? parseArrayFromText(tokenExchangeScopesText) : undefined,
+							authorization_server_url: data.token_exchange?.authorization_server_url?.trim() || undefined,
+						}
 					: undefined,
 			tools_to_execute: ["*"],
 		};
@@ -507,8 +507,8 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 																	<TooltipContent className="max-w-xs">
 																		<p>
 																			Enable to keep one shared connection open and reused across every caller. Disable to connect fresh on
-																			every call instead, same as per-user auth types. Only applies to HTTP connections; SSE and STDIO always
-																			keep a persistent connection.
+																			every call instead, same as per-user auth types. Only applies to HTTP connections; SSE and STDIO
+																			always keep a persistent connection.
 																		</p>
 																	</TooltipContent>
 																</Tooltip>
@@ -782,7 +782,8 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 														useIdPCredentialsDedicatedDescription="A separate identity-provider app, scoped only to this server. Recommended for most providers."
 														useIdPCredentialsIdPDescription="Reuses your SSO login application's own credentials. Required for Microsoft Entra ID."
 														useIdPCredentialsRequiredWarning={
-															isEntraIdp && "Your identity provider is Microsoft Entra ID - a dedicated application might not work, switch to Identity provider application."
+															isEntraIdp &&
+															"Your identity provider is Microsoft Entra ID - a dedicated application might not work, switch to Identity provider application."
 														}
 														onUseIdPCredentialsToggled={(checked) => {
 															if (checked) clearErrors(["token_exchange.client_id", "token_exchange.client_secret"]);

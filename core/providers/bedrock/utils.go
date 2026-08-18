@@ -157,6 +157,14 @@ var (
 	}
 )
 
+// Bifrost-format stop reasons (post-convertBedrockStopReason) that map to a
+// content-filtered outcome: "content_filtered" is remapped to "content_filter",
+// while "guardrail_intervened" has no Bifrost equivalent and passes through as-is.
+const (
+	bedrockStopReasonContentFilter       = "content_filter"
+	bedrockStopReasonGuardrailIntervened = "guardrail_intervened"
+)
+
 // convertBedrockStopReason converts a Bedrock stop reason to Bifrost format.
 func convertBedrockStopReason(stopReason string) string {
 	if reason, ok := bedrockFinishReasonToBifrost[stopReason]; ok {
@@ -403,9 +411,18 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 			}
 			if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
 				if anthropic.IsAdaptiveOnlyThinkingModel(capModel) {
-					bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
+					thinkingConfig := map[string]any{
 						"type": "adaptive",
-					})
+					}
+					// Mirror the effort arm below: without an explicit display these
+					// models emit no visible thinking blocks, so a caller who asked
+					// for a reasoning budget would get a 200 carrying no reasoning.
+					if bifrostReq.Params.Reasoning.Display != nil {
+						thinkingConfig["display"] = *bifrostReq.Params.Reasoning.Display
+					} else {
+						thinkingConfig["display"] = "summarized"
+					}
+					bedrockReq.AdditionalModelRequestFields.Set("thinking", thinkingConfig)
 					// Preserve a co-present effort — these models support effort,
 					// and the budget is otherwise dropped.
 					if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {

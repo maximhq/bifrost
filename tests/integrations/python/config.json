@@ -1,17 +1,11 @@
 {
   "$schema": "https://www.getbifrost.ai/schema",
-  "env_label":"Development",
   "mcp": {
     "client_configs": [
       {
         "name": "sse_mcp",
         "connection_type": "sse",
-        "connection_string": "env.MCP_SSE_URL",
-        "auth_type": "headers",
-        "headers": {
-          "Authorization": "env.MCP_SSE_AUTHORIZATION",
-          "ENV_EXA_API_KEY": "env.MCP_SSE_API_KEY"
-        },
+        "connection_string": "http://localhost:3012/sse",
         "tools_to_execute": ["*"],
         "tools_to_auto_execute": ["*"]
       }
@@ -114,7 +108,12 @@
           "weight": 1,
           "models": ["*"],
           "use_for_batch_api": true,
-          "blacklisted_models": ["claude-sonnet-4-6", "claude-opus-4-8", "moonshotai/kimi-k2-thinking-maas", "minimaxai/minimax-m2-maas"]
+          "blacklisted_models": [
+            "claude-sonnet-4-6",
+            "claude-opus-4-8",
+            "moonshotai/kimi-k2-thinking-maas",
+            "minimaxai/minimax-m2-maas"
+          ]
         },
         {
           "name": "Vertex Global (Claude)",
@@ -124,7 +123,12 @@
             "auth_credentials": "env.VERTEX_CREDENTIALS"
           },
           "weight": 1,
-          "models": ["claude-sonnet-4-6", "claude-opus-4-8", "moonshotai/kimi-k2-thinking-maas", "minimaxai/minimax-m2-maas"]
+          "models": [
+            "claude-sonnet-4-6",
+            "claude-opus-4-8",
+            "moonshotai/kimi-k2-thinking-maas",
+            "minimaxai/minimax-m2-maas"
+          ]
         }
       ],
       "network_config": {
@@ -349,17 +353,17 @@
     "enabled": true,
     "type": "sqlite",
     "config": {
-      "path": "../../tests/integrations/python/config.db"
+      "path": "tests/integrations/python/config.db"
     }
   },
   "logs_store": {
     "enabled": true,
     "type": "sqlite",
     "config": {
-      "path": "../../tests/integrations/python/logs.db"
+      "path": "tests/integrations/python/logs.db"
     },
     "writer": {
-      "max_batch_size":  100,
+      "max_batch_size": 100,
       "batch_interval": "1s",
       "max_batch_bytes": 10485760,
       "write_queue_capacity": 1000,
@@ -374,24 +378,114 @@
         "value": "sk-bf-test-key",
         "is_active": true,
         "provider_configs": [
-          { "provider": "openai", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-          { "provider": "elevenlabs", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-          { "provider": "xai", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-          { "provider": "huggingface", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-          { "provider": "anthropic", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-          { "provider": "gemini", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-          { "provider": "vertex", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-          { "provider": "mistral", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-          { "provider": "cohere", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-          { "provider": "parasail", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-          { "provider": "groq", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-          { "provider": "perplexity", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-          { "provider": "cerebras", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-          { "provider": "openrouter", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-          { "provider": "azure", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-          { "provider": "bedrock", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-          { "provider": "bedrock_mantle", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-          { "provider": "deepseek", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 }
+          {
+            "provider": "openai",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "elevenlabs",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "xai",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "huggingface",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "anthropic",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "gemini",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "vertex",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "mistral",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "cohere",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "parasail",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "groq",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "perplexity",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "cerebras",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "openrouter",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "azure",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "bedrock",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "bedrock_mantle",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "deepseek",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          }
         ]
       }
     ]

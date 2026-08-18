@@ -292,8 +292,15 @@ func (req *CohereChatRequest) ToBifrostChatRequest(ctx *schemas.BifrostContext) 
 				Effort: schemas.Ptr("none"),
 			}
 		} else {
+			// Enabled is how "think, effort unspecified" is expressed. Effort was previously set
+			// to "auto", which is not a value that field accepts ("none" | "minimal" | "low" |
+			// "medium" | "high" | "xhigh"), so it reached providers verbatim and they rejected it:
+			//   openai:  Invalid value: 'auto'. Supported values are: 'low', 'medium', 'high'...
+			//   bedrock: unknown variant `auto`, expected one of `low`, `medium`, `high`...
+			// Cohere states no effort, so none is invented here; the budget carries the intent and
+			// the downstream model-aware mapping derives an effort where it needs one.
 			bifrostReq.Params.Reasoning = &schemas.ChatReasoning{
-				Effort: schemas.Ptr("auto"),
+				Enabled: schemas.Ptr(true),
 			}
 			if req.Thinking.TokenBudget != nil {
 				bifrostReq.Params.Reasoning.MaxTokens = req.Thinking.TokenBudget

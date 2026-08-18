@@ -89,6 +89,13 @@ type AnthropicProviderRequestDefaults struct {
 	// InjectBetaHeadersIntoBody serialises filtered beta headers into the JSON
 	// body as "anthropic_beta" (Vertex only — embeds in body, others use HTTP).
 	InjectBetaHeadersIntoBody bool
+
+	// InlineURLSources fetches URL-sourced images and documents and rewrites them
+	// as inline base64/text sources. Set for hosts that reject remote sources —
+	// Bedrock Mantle answers them with "URL content sources are not yet supported
+	// for this model". Native Anthropic accepts URLs and fetches them itself, so
+	// it leaves this off and avoids a redundant download.
+	InlineURLSources bool
 }
 
 // AnthropicProviderRequestDefaultsMap maps each Anthropic-family provider to
@@ -112,6 +119,11 @@ var AnthropicProviderRequestDefaultsMap = map[schemas.ModelProvider]AnthropicPro
 	// Converse path without coupling the two.
 	schemas.BedrockMantle: {
 		RemapToolVersions: true,
+		// AWS-hosted Claude has no URL fetcher: a {"type":"url"} image or document
+		// source comes back as 400 "URL content sources are not yet supported for
+		// this model". Bedrock's Converse path already inlines these; this keeps
+		// the native-Anthropic surface at parity.
+		InlineURLSources: true,
 	},
 	schemas.DeepSeek: {},
 	// Vertex publisher endpoint: model + region in URL, anthropic_version
@@ -412,6 +424,13 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 		}
 	}
 
+	if defaults.InlineURLSources {
+		jsonBody, err = InlineURLContentSources(ctx, jsonBody)
+		if err != nil {
+			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+		}
+	}
+
 	if defaults.InjectBetaHeadersIntoBody {
 		if betaHeaders := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, cfg.ProviderExtraHeaders), cfg.Provider, cfg.BetaHeaderOverrides); len(betaHeaders) > 0 {
 			jsonBody, err = providerUtils.SetJSONField(jsonBody, "anthropic_beta", betaHeaders)
@@ -642,6 +661,13 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 
 	if defaults.DeleteStreamField {
 		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "stream")
+		if err != nil {
+			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+		}
+	}
+
+	if defaults.InlineURLSources {
+		jsonBody, err = InlineURLContentSources(ctx, jsonBody)
 		if err != nil {
 			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 		}

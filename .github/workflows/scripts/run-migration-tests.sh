@@ -2113,6 +2113,40 @@ append_dynamic_columns_postgres() {
   fi
 
   # -------------------------------------------------------------------------
+  # v1.6.3 columns - config store tables
+  # -------------------------------------------------------------------------
+
+  # config_client.mcp_server_auth_mode (added in v1.6.3 - varchar(20), default 'headers')
+  if column_exists_postgres "config_client" "mcp_server_auth_mode"; then
+    echo "UPDATE config_client SET mcp_server_auth_mode = 'headers' WHERE id = 1;" >> "$output_file"
+  fi
+
+  # config_client.oauth2_server_config_json (added in v1.6.3 - text, empty string when unset)
+  if column_exists_postgres "config_client" "oauth2_server_config_json"; then
+    echo "UPDATE config_client SET oauth2_server_config_json = '' WHERE id = 1;" >> "$output_file"
+  fi
+
+  # config_keys.bedrock_mantle_* (added in v1.6.3 - nullable text SecretVars for Bedrock Mantle auth)
+  for mantle_col in bedrock_mantle_access_key bedrock_mantle_secret_key bedrock_mantle_session_token bedrock_mantle_region bedrock_mantle_role_arn bedrock_mantle_external_id bedrock_mantle_role_session_name; do
+    if column_exists_postgres "config_keys" "$mantle_col"; then
+      echo "UPDATE config_keys SET $mantle_col = NULL WHERE name = 'migration-test-key-openai';" >> "$output_file"
+      echo "UPDATE config_keys SET $mantle_col = NULL WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+    fi
+  done
+
+  # governance_model_pricing.is_deprecated (added in v1.6.3 - bool, default false)
+  if column_exists_postgres "governance_model_pricing" "is_deprecated"; then
+    echo "UPDATE governance_model_pricing SET is_deprecated = false WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET is_deprecated = false WHERE id = 2;" >> "$output_file"
+  fi
+
+  # governance_virtual_keys.expires_at (added in v1.6.3 - nullable timestamp, NULL = never expires)
+  if column_exists_postgres "governance_virtual_keys" "expires_at"; then
+    echo "UPDATE governance_virtual_keys SET expires_at = NULL WHERE id = 'vk-migration-test-1';" >> "$output_file"
+    echo "UPDATE governance_virtual_keys SET expires_at = NULL WHERE id = 'vk-migration-test-2';" >> "$output_file"
+  fi
+
+  # -------------------------------------------------------------------------
   # v1.6.5 columns - config store / webhooks / log store tables
   # -------------------------------------------------------------------------
 
@@ -2211,6 +2245,54 @@ append_dynamic_columns_postgres() {
     echo "UPDATE logs SET redaction_mapping = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
   fi
 
+  # -------------------------------------------------------------------------
+  # v1.6.4 columns
+  # -------------------------------------------------------------------------
+
+  # config_keys.vertex_force_single_region (added in v1.6.4 via add_vertex_force_single_region_column - nullable bool)
+  if column_exists_postgres "config_keys" "vertex_force_single_region"; then
+    echo "UPDATE config_keys SET vertex_force_single_region = NULL WHERE name = 'migration-test-key-openai';" >> "$output_file"
+    echo "UPDATE config_keys SET vertex_force_single_region = NULL WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+  fi
+
+  # config_keys.bedrock_project_id, bedrock_mantle_project_id (added in v1.6.4 via add_bedrock_project_id_columns - nullable text SecretVars)
+  for bedrock_proj_col in bedrock_project_id bedrock_mantle_project_id; do
+    if column_exists_postgres "config_keys" "$bedrock_proj_col"; then
+      echo "UPDATE config_keys SET $bedrock_proj_col = NULL WHERE name = 'migration-test-key-openai';" >> "$output_file"
+      echo "UPDATE config_keys SET $bedrock_proj_col = NULL WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+    fi
+  done
+
+  # governance_model_pricing flex/272k cache-creation tiers (added in v1.6.4 via
+  # add_flex_and_cache_creation_272k_pricing_columns), fast-mode cache pricing
+  # (add_fast_mode_cache_pricing_columns), and inference geo multiplier
+  # (add_inference_geo_multiplier_column) - all nullable float64
+  for pricing_col in \
+    input_cost_per_token_flex_above_272k_tokens \
+    output_cost_per_token_flex_above_272k_tokens \
+    cache_read_input_token_cost_flex_above_272k_tokens \
+    cache_creation_input_token_cost_above_272k_tokens \
+    cache_creation_input_token_cost_flex \
+    cache_creation_input_token_cost_flex_above_272k_tokens \
+    cache_creation_input_token_cost_priority \
+    cache_creation_input_token_cost_fast \
+    cache_creation_input_token_cost_above_1hr_fast \
+    cache_read_input_token_cost_fast \
+    inference_geo_us_multiplier; do
+    if column_exists_postgres "governance_model_pricing" "$pricing_col"; then
+      echo "UPDATE governance_model_pricing SET $pricing_col = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET $pricing_col = NULL WHERE id = 2;" >> "$output_file"
+    fi
+  done
+
+  # logs.redaction_mapping (added in v1.6.4 via logs_add_redaction_mapping_column -
+  # nullable text, stores the encrypted reversible redaction mapping)
+  if column_exists_postgres "logs" "redaction_mapping"; then
+    echo "UPDATE logs SET redaction_mapping = NULL WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET redaction_mapping = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
+    echo "UPDATE logs SET redaction_mapping = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
+
   # config_keys.bedrock_batch_role_arn (added via add_bedrock_batch_role_arn_column)
   # Set to NULL for coverage, matching the bedrock_mantle_* SecretVar columns above.
   if column_exists_postgres "config_keys" "bedrock_batch_role_arn"; then
@@ -2243,6 +2325,13 @@ append_dynamic_columns_postgres() {
   if column_exists_postgres "governance_budgets" "override_anchor_reset"; then
     echo "UPDATE governance_budgets SET override_anchor_reset = $now WHERE id = 'budget-migration-test-1';" >> "$output_file"
     echo "UPDATE governance_budgets SET override_anchor_reset = NULL WHERE id = 'budget-migration-test-2';" >> "$output_file"
+  fi
+
+  # governance_budgets.reset_config_json (added via migrationAddBudgetResetConfigColumn -
+  # nullable text, JSON reset config; '' when unset, e.g. '{"quarter_start_month":4}' for quarterly resets)
+  if column_exists_postgres "governance_budgets" "reset_config_json"; then
+    echo "UPDATE governance_budgets SET reset_config_json = '{\"quarter_start_month\":4}' WHERE id = 'budget-migration-test-1';" >> "$output_file"
+    echo "UPDATE governance_budgets SET reset_config_json = '' WHERE id = 'budget-migration-test-2';" >> "$output_file"
   fi
 
   # governance_pricing_overrides.user_id (added via add_pricing_override_user_id_column)
@@ -3570,6 +3659,13 @@ append_dynamic_columns_sqlite() {
   if column_exists_sqlite "$config_db" "governance_budgets" "override_anchor_reset"; then
     echo "UPDATE governance_budgets SET override_anchor_reset = $now WHERE id = 'budget-migration-test-1';" >> "$output_file"
     echo "UPDATE governance_budgets SET override_anchor_reset = NULL WHERE id = 'budget-migration-test-2';" >> "$output_file"
+  fi
+
+  # governance_budgets.reset_config_json (added via migrationAddBudgetResetConfigColumn -
+  # nullable text, JSON reset config; '' when unset, e.g. '{"quarter_start_month":4}' for quarterly resets)
+  if column_exists_sqlite "$config_db" "governance_budgets" "reset_config_json"; then
+    echo "UPDATE governance_budgets SET reset_config_json = '{\"quarter_start_month\":4}' WHERE id = 'budget-migration-test-1';" >> "$output_file"
+    echo "UPDATE governance_budgets SET reset_config_json = '' WHERE id = 'budget-migration-test-2';" >> "$output_file"
   fi
 
   # governance_pricing_overrides.user_id (added via add_pricing_override_user_id_column)
@@ -5178,6 +5274,15 @@ compare_postgres_snapshots() {
     if [ "$table" = "oauth_user_tokens" ]; then
       dropped_columns="$dropped_columns session_token session_token_hash"
     fi
+    # state, code_verifier, code_challenge, expires_at (dropped from oauth_configs by
+    # migrationDropOauthConfigPKCEColumns) and token_id (dropped by
+    # migrationDropOauthConfigTokenIDColumn). The CSRF-state / PKCE handshake and its
+    # token reference moved onto mcp_oauth_flows; nothing populates these on
+    # oauth_configs anymore, so they are dropped outright rather than left as dead
+    # NOT NULL columns that would break every future INSERT.
+    if [ "$table" = "oauth_configs" ]; then
+      dropped_columns="$dropped_columns state code_verifier code_challenge expires_at token_id"
+    fi
     # enable_litellm_fallbacks (dropped from config_client in latest cut - behavior moved elsewhere)
     # allow_direct_keys (dropped from config_client in v1.5.0 - direct-keys-only mode removed; HTTP header
     # pass-through is no longer accepted)
@@ -5644,19 +5749,32 @@ EOF
   generate_faker_sql "postgres" "$faker_sql"
 
   # Build current version ONCE before testing
-  log_info "Building current version from Go workspace..."
   local current_binary="$TEMP_DIR/bifrost-http-current"
   cd "$REPO_ROOT"
-  # Ensure the embedded ui directory exists (it's gitignored, so it won't be present in CI)
-  if [ ! -d "$REPO_ROOT/transports/bifrost-http/ui" ]; then
-    mkdir -p "$REPO_ROOT/transports/bifrost-http/ui"
-    echo "placeholder" > "$REPO_ROOT/transports/bifrost-http/ui/.gitkeep"
+  # CI's build-gateway job already built this exact commit and handed it over as
+  # an artifact at tmp/bifrost-http; copy it rather than paying for the build
+  # again. Only the CURRENT version comes from there - the previous versions
+  # this test migrates from are still fetched per release below.
+  if [ "${SKIP_GATEWAY_BUILD:-0}" = "1" ]; then
+    if [ ! -x "$REPO_ROOT/tmp/bifrost-http" ]; then
+      log_error "SKIP_GATEWAY_BUILD=1 but no executable binary at $REPO_ROOT/tmp/bifrost-http"
+      return 1
+    fi
+    log_info "Using prebuilt current version from $REPO_ROOT/tmp/bifrost-http"
+    cp "$REPO_ROOT/tmp/bifrost-http" "$current_binary"
+  else
+    log_info "Building current version from Go workspace..."
+    # Ensure the embedded ui directory exists (it's gitignored, so it won't be present in CI)
+    if [ ! -d "$REPO_ROOT/transports/bifrost-http/ui" ]; then
+      mkdir -p "$REPO_ROOT/transports/bifrost-http/ui"
+      echo "placeholder" > "$REPO_ROOT/transports/bifrost-http/ui/.gitkeep"
+    fi
+    if ! go build -o "$current_binary" ./transports/bifrost-http; then
+      log_error "Failed to build current version"
+      return 1
+    fi
   fi
-  if ! go build -o "$current_binary" ./transports/bifrost-http; then
-    log_error "Failed to build current version"
-    return 1
-  fi
-  log_info "Current version built successfully: $current_binary"
+  log_info "Current version ready: $current_binary"
 
   # Get previous versions
   local versions
@@ -5849,19 +5967,32 @@ EOF
   generate_faker_sql "sqlite" "$faker_sql"
 
   # Build current version ONCE before testing
-  log_info "Building current version from Go workspace..."
   local current_binary="$TEMP_DIR/bifrost-http-current"
   cd "$REPO_ROOT"
-  # Ensure the embedded ui directory exists (it's gitignored, so it won't be present in CI)
-  if [ ! -d "$REPO_ROOT/transports/bifrost-http/ui" ]; then
-    mkdir -p "$REPO_ROOT/transports/bifrost-http/ui"
-    echo "placeholder" > "$REPO_ROOT/transports/bifrost-http/ui/.gitkeep"
+  # CI's build-gateway job already built this exact commit and handed it over as
+  # an artifact at tmp/bifrost-http; copy it rather than paying for the build
+  # again. Only the CURRENT version comes from there - the previous versions
+  # this test migrates from are still fetched per release below.
+  if [ "${SKIP_GATEWAY_BUILD:-0}" = "1" ]; then
+    if [ ! -x "$REPO_ROOT/tmp/bifrost-http" ]; then
+      log_error "SKIP_GATEWAY_BUILD=1 but no executable binary at $REPO_ROOT/tmp/bifrost-http"
+      return 1
+    fi
+    log_info "Using prebuilt current version from $REPO_ROOT/tmp/bifrost-http"
+    cp "$REPO_ROOT/tmp/bifrost-http" "$current_binary"
+  else
+    log_info "Building current version from Go workspace..."
+    # Ensure the embedded ui directory exists (it's gitignored, so it won't be present in CI)
+    if [ ! -d "$REPO_ROOT/transports/bifrost-http/ui" ]; then
+      mkdir -p "$REPO_ROOT/transports/bifrost-http/ui"
+      echo "placeholder" > "$REPO_ROOT/transports/bifrost-http/ui/.gitkeep"
+    fi
+    if ! go build -o "$current_binary" ./transports/bifrost-http; then
+      log_error "Failed to build current version"
+      return 1
+    fi
   fi
-  if ! go build -o "$current_binary" ./transports/bifrost-http; then
-    log_error "Failed to build current version"
-    return 1
-  fi
-  log_info "Current version built successfully: $current_binary"
+  log_info "Current version ready: $current_binary"
 
   # Get previous versions
   local versions

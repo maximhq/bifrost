@@ -1,0 +1,7 @@
+- feat: make log recalculation task cancellable backend (#5801)
+- feat: add `roots_only` filter to collapse fallback chains with child aggregates (#5737)
+- feat: add plugin logs in mcp logs (#5746)
+- feat(mcp-guardrails): add MCP log redaction changes (#5744)
+- feat: video requests info in logs ui (#5946)
+- feat: cost for prompt guardrails (#4931)
+- chore: upgraded core to v1.7.11 and framework to v1.5.9

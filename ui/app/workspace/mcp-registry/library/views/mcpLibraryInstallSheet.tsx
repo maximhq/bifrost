@@ -392,14 +392,14 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 	return (
 		<Sheet open={open} onOpenChange={(sheetOpen) => !sheetOpen && !oauthFlow && !headersFlow && onClose()}>
 			<SheetContent className="flex w-full flex-col overflow-x-hidden p-0 pt-4 sm:max-w-2xl">
-				<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 sticky px-8 -top-4 bg-card z-10">
+				<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 sticky px-4 md:px-8 -top-4 bg-card z-10">
 					<SheetTitle>Install MCP server</SheetTitle>
 					<SheetDescription>Confirm the catalog configuration before adding this server to Bifrost.</SheetDescription>
 				</SheetHeader>
 
 				<Form {...form}>
 					<form onSubmit={handleSubmit(onSubmit)} className="flex min-h-0 flex-1 flex-col">
-						<div className="flex-1 space-y-6 px-8 pt-5 pb-6">
+						<div className="flex-1 space-y-6 px-4 pt-5 pb-6 md:px-8">
 							<section className="border-b pb-5">
 								<div className="bg-muted/10 flex items-start gap-3 rounded-sm border p-3">
 									<div className="bg-background flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-sm border">
@@ -840,7 +840,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 							</section>
 						</div>
 
-						<div className="border-border bg-card sticky bottom-0 z-10 border-t px-8 py-4">
+						<div className="border-border bg-card sticky bottom-0 z-10 border-t px-4 py-4 md:px-8">
 							<div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
 								<p className="text-muted-foreground text-sm">
 									{isOauth
