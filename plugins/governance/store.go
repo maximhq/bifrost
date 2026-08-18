@@ -248,7 +248,10 @@ type GovernanceStore interface {
 	UpdateProviderInMemory(ctx context.Context, provider *configstoreTables.TableProvider) *configstoreTables.TableProvider
 	DeleteProviderInMemory(ctx context.Context, providerName string)
 	// Budget and rate limit status queries for routing with baseline support
-	GetBudgetAndRateLimitStatus(ctx context.Context, model string, provider schemas.ModelProvider, vk *configstoreTables.TableVirtualKey, budgetBaselines map[string]float64, tokenBaselines map[string]int64, requestBaselines map[string]int64) *BudgetAndRateLimitStatus
+	// GetBudgetAndRateLimitStatus reports how close the request is to what it answers to for a
+	// provider and model pair, read from the access on its grant. Routing asks this before an attempt's
+	// limits are settled, one pair at a time, so it gathers rather than reads the settled set.
+	GetBudgetAndRateLimitStatus(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, budgetBaselines map[string]float64, tokenBaselines map[string]int64, requestBaselines map[string]int64) *BudgetAndRateLimitStatus
 	// CollectModelScopedGovernanceIDs returns the budget and rate-limit IDs owned by
 	// model configs matching (provider, model) across the global, user and virtual-key
 	// scopes. It takes the virtual key's ID rather than its value, so a caller settling
@@ -1851,22 +1854,6 @@ func modelConfigStoreKey(scope, scopeID, modelKey string, provider *string) stri
 		return base
 	}
 	return fmt.Sprintf("%s:%s:%s", scope, scopeID, base)
-}
-
-// modelConfigScope is one level of the model-config scope chain (name + target ID).
-type modelConfigScope struct {
-	name string
-	id   string
-}
-
-// nonGlobalModelConfigScopeChain returns the non-global scopes that apply to a request
-// made with the given virtual key, most specific first. The global scope is intentionally
-// excluded because it is enforced separately, and unconditionally, by ProviderAndModelLimits.
-func nonGlobalModelConfigScopeChain(vk *configstoreTables.TableVirtualKey) []modelConfigScope {
-	if vk == nil {
-		return nil
-	}
-	return []modelConfigScope{{name: configstoreTables.ModelConfigScopeVirtualKey, id: vk.ID}}
 }
 
 // findScopedModelOnlyConfig looks up a model-only config (no provider) within a specific
@@ -4213,175 +4200,47 @@ func (gs *LocalGovernanceStore) updateRateLimitReferences(ctx context.Context, r
 	})
 }
 
-// GetBudgetAndRateLimitStatus returns the current budget and rate limit status for provider and model combination
-// Accounts for baseline usage from remote nodes when calculating percentages
-func (gs *LocalGovernanceStore) GetBudgetAndRateLimitStatus(ctx context.Context, model string, provider schemas.ModelProvider, vk *configstoreTables.TableVirtualKey, budgetBaselines map[string]float64, tokenBaselines map[string]int64, requestBaselines map[string]int64) *BudgetAndRateLimitStatus {
-	// Prevent nil pointer dereferences
-	if budgetBaselines == nil {
-		budgetBaselines = map[string]float64{}
-	}
-	if tokenBaselines == nil {
-		tokenBaselines = map[string]int64{}
-	}
-	if requestBaselines == nil {
-		requestBaselines = map[string]int64{}
+// GetBudgetAndRateLimitStatus implements GovernanceStore. It gathers what the request would answer to
+// for the pair, from the store and the access on its grant, and reports the fullest budget and rate
+// limit among them. A request with no access still answers to the deployment's own limits.
+func (gs *LocalGovernanceStore) GetBudgetAndRateLimitStatus(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, budgetBaselines map[string]float64, tokenBaselines map[string]int64, requestBaselines map[string]int64) *BudgetAndRateLimitStatus {
+	budgets, rateLimits := gatherLimits(ctx, gs, ctx.Grant().Access(), provider, model)
+	status := &BudgetAndRateLimitStatus{}
+
+	for _, limit := range budgets {
+		budget := gs.LoadBudget(ctx, limit.ID)
+		if budget == nil {
+			continue
+		}
+		maxLimit := budget.EffectiveMaxLimit()
+		if maxLimit <= 0 {
+			continue
+		}
+		if percent := (budget.CurrentUsage + budgetBaselines[budget.ID]) / maxLimit * 100; percent > status.BudgetPercentUsed {
+			status.BudgetPercentUsed = percent
+		}
 	}
 
-	result := &BudgetAndRateLimitStatus{
-		BudgetPercentUsed:           0,
-		RateLimitTokenPercentUsed:   0,
-		RateLimitRequestPercentUsed: 0,
-	}
-
-	var providerStr *string
-	if provider != "" {
-		p := string(provider)
-		providerStr = &p
-	}
-
-	// applyModelConfig folds a model config's rate-limit and budgets into the running max.
-	applyModelConfig := func(modelConfig *configstoreTables.TableModelConfig) {
-		if modelConfig.RateLimitID != nil {
-			if rateLimitValue, ok := gs.rateLimits.Load(*modelConfig.RateLimitID); ok && rateLimitValue != nil {
-				if rateLimit, ok := rateLimitValue.(*configstoreTables.TableRateLimit); ok && rateLimit != nil {
-					if rateLimit.TokenMaxLimit != nil && *rateLimit.TokenMaxLimit > 0 {
-						tokenPercent := float64(rateLimit.TokenCurrentUsage+tokenBaselines[rateLimit.ID]) / float64(*rateLimit.TokenMaxLimit) * 100
-						if tokenPercent > result.RateLimitTokenPercentUsed {
-							result.RateLimitTokenPercentUsed = tokenPercent
-						}
-					}
-					// Calculate request percent used
-					if rateLimit.RequestMaxLimit != nil && *rateLimit.RequestMaxLimit > 0 {
-						requestPercent := float64(rateLimit.RequestCurrentUsage+requestBaselines[rateLimit.ID]) / float64(*rateLimit.RequestMaxLimit) * 100
-						if requestPercent > result.RateLimitRequestPercentUsed {
-							result.RateLimitRequestPercentUsed = requestPercent
-						}
-					}
-				}
+	for _, limit := range rateLimits {
+		rateLimit := gs.LoadRateLimit(ctx, limit.ID)
+		if rateLimit == nil {
+			continue
+		}
+		if rateLimit.TokenMaxLimit != nil && *rateLimit.TokenMaxLimit > 0 {
+			used := float64(rateLimit.TokenCurrentUsage+tokenBaselines[rateLimit.ID]) / float64(*rateLimit.TokenMaxLimit) * 100
+			if used > status.RateLimitTokenPercentUsed {
+				status.RateLimitTokenPercentUsed = used
 			}
 		}
-		// Get budget status (max percent across the config's budgets)
-		for bi := range modelConfig.Budgets {
-			if budgetValue, ok := gs.budgets.Load(modelConfig.Budgets[bi].ID); ok && budgetValue != nil {
-				if budget, ok := budgetValue.(*configstoreTables.TableBudget); ok && budget != nil {
-					if effectiveMaxLimit := budget.EffectiveMaxLimit(); effectiveMaxLimit > 0 {
-						budgetPercent := float64(budget.CurrentUsage+budgetBaselines[budget.ID]) / effectiveMaxLimit * 100
-						if budgetPercent > result.BudgetPercentUsed {
-							result.BudgetPercentUsed = budgetPercent
-						}
-					}
-				}
+		if rateLimit.RequestMaxLimit != nil && *rateLimit.RequestMaxLimit > 0 {
+			used := float64(rateLimit.RequestCurrentUsage+requestBaselines[rateLimit.ID]) / float64(*rateLimit.RequestMaxLimit) * 100
+			if used > status.RateLimitRequestPercentUsed {
+				status.RateLimitRequestPercentUsed = used
 			}
 		}
 	}
 
-	// Model-level (global scope), all tiers incl. the "*:provider" / "*:nil" wildcards
-	// that carry provider-level governance after the provider-governance migration.
-	if model != "" {
-		for _, modelConfig := range gs.collectModelConfigsFor(ctx, configstoreTables.ModelConfigScopeGlobal, "", model, providerStr) {
-			applyModelConfig(modelConfig)
-		}
-	}
-
-	// VK-scoped model configs. The per-VK provider budget set via the model limits UI now
-	// lives here (scope=virtual_key, model="*"); before the provider-governance migration it
-	// was read from vk.ProviderConfigs below. Mirror the scope walk enforcement uses.
-	if model != "" && vk != nil {
-		for _, scope := range nonGlobalModelConfigScopeChain(vk) {
-			for _, modelConfig := range gs.collectModelConfigsFor(ctx, scope.name, scope.id, model, providerStr) {
-				applyModelConfig(modelConfig)
-			}
-		}
-	}
-
-	// Check global provider-specific rate limits and budgets
-	providerValue, ok := gs.providers.Load(string(provider))
-	if ok && providerValue != nil {
-		if providerTable, ok := providerValue.(*configstoreTables.TableProvider); ok && providerTable != nil {
-			// Get rate limit status
-			if providerTable.RateLimitID != nil {
-				if rateLimitValue, ok := gs.rateLimits.Load(*providerTable.RateLimitID); ok && rateLimitValue != nil {
-					if rateLimit, ok := rateLimitValue.(*configstoreTables.TableRateLimit); ok && rateLimit != nil {
-						// Calculate token percent used
-						if rateLimit.TokenMaxLimit != nil && *rateLimit.TokenMaxLimit > 0 {
-							tokenPercent := float64(rateLimit.TokenCurrentUsage+tokenBaselines[rateLimit.ID]) / float64(*rateLimit.TokenMaxLimit) * 100
-							if tokenPercent > result.RateLimitTokenPercentUsed {
-								result.RateLimitTokenPercentUsed = tokenPercent
-							}
-						}
-						// Calculate request percent used
-						if rateLimit.RequestMaxLimit != nil && *rateLimit.RequestMaxLimit > 0 {
-							requestPercent := float64(rateLimit.RequestCurrentUsage+requestBaselines[rateLimit.ID]) / float64(*rateLimit.RequestMaxLimit) * 100
-							if requestPercent > result.RateLimitRequestPercentUsed {
-								result.RateLimitRequestPercentUsed = requestPercent
-							}
-						}
-					}
-				}
-			}
-			// Get budget status
-			if providerTable.BudgetID != nil {
-				if budgetValue, ok := gs.budgets.Load(*providerTable.BudgetID); ok && budgetValue != nil {
-					if budget, ok := budgetValue.(*configstoreTables.TableBudget); ok && budget != nil {
-						if effectiveMaxLimit := budget.EffectiveMaxLimit(); effectiveMaxLimit > 0 {
-							budgetPercent := float64(budget.CurrentUsage+budgetBaselines[budget.ID]) / effectiveMaxLimit * 100
-							if budgetPercent > result.BudgetPercentUsed {
-								result.BudgetPercentUsed = budgetPercent
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-
-	// Check virtual key level provider-specific rate limits and budgets
-	// NO LONGER NEEDED - provider budgets are now handled in model configs under the virtual key scope. Keeping this code here for now, but it can be removed.
-	if vk != nil {
-		if vk.ProviderConfigs != nil {
-			for _, pc := range vk.ProviderConfigs {
-				if pc.Provider == string(provider) {
-					// Get rate limit status
-					if pc.RateLimit != nil {
-						// Look up canonical rate limit from gs.rateLimits
-						if rateLimitValue, ok := gs.rateLimits.Load(pc.RateLimit.ID); ok && rateLimitValue != nil {
-							if rateLimit, ok := rateLimitValue.(*configstoreTables.TableRateLimit); ok && rateLimit != nil {
-								// Calculate token percent used
-								if rateLimit.TokenMaxLimit != nil && *rateLimit.TokenMaxLimit > 0 {
-									tokenPercent := float64(rateLimit.TokenCurrentUsage+tokenBaselines[rateLimit.ID]) / float64(*rateLimit.TokenMaxLimit) * 100
-									if tokenPercent > result.RateLimitTokenPercentUsed {
-										result.RateLimitTokenPercentUsed = tokenPercent
-									}
-								}
-								// Calculate request percent used
-								if rateLimit.RequestMaxLimit != nil && *rateLimit.RequestMaxLimit > 0 {
-									requestPercent := float64(rateLimit.RequestCurrentUsage+requestBaselines[rateLimit.ID]) / float64(*rateLimit.RequestMaxLimit) * 100
-									if requestPercent > result.RateLimitRequestPercentUsed {
-										result.RateLimitRequestPercentUsed = requestPercent
-									}
-								}
-							}
-						}
-					}
-					// Get budget status from multi-budgets
-					for _, b := range pc.Budgets {
-						if budgetValue, ok := gs.budgets.Load(b.ID); ok && budgetValue != nil {
-							if budget, ok := budgetValue.(*configstoreTables.TableBudget); ok && budget != nil {
-								if effectiveMaxLimit := budget.EffectiveMaxLimit(); effectiveMaxLimit > 0 {
-									budgetPercent := float64(budget.CurrentUsage+budgetBaselines[budget.ID]) / effectiveMaxLimit * 100
-									if budgetPercent > result.BudgetPercentUsed {
-										result.BudgetPercentUsed = budgetPercent
-									}
-								}
-							}
-						}
-					}
-					break
-				}
-			}
-		}
-	}
-	return result
+	return status
 }
 
 // GlobalProviderLimits reports the deployment's own limits on a provider: unscoped to any holder,

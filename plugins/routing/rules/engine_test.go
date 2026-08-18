@@ -16,9 +16,38 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// withUser adds the calling user to a scope, for tests that vary the user independently of the credential.
+func withUser(scope GovernanceScope, userID string) GovernanceScope {
+	scope.UserID = userID
+	return scope
+}
+
+// scopeOf is the governance scope a virtual key resolves to. Production reads these identifiers off the
+// context, where resolving the request's access stamped them; a test that wants "a key under a team under
+// a customer" is clearest saying so as rows, so this mirrors that mapping in one place.
+func scopeOf(vk *configstoreTables.TableVirtualKey) GovernanceScope {
+	if vk == nil {
+		return GovernanceScope{}
+	}
+	scope := GovernanceScope{VirtualKeyID: vk.ID, VirtualKeyName: vk.Name}
+	if vk.Team != nil {
+		scope.TeamID, scope.TeamName = vk.Team.ID, vk.Team.Name
+		if vk.Team.Customer != nil {
+			scope.CustomerID, scope.CustomerName = vk.Team.Customer.ID, vk.Team.Customer.Name
+		}
+	}
+	// A customer the key names directly wins over the one reached through its team, which is the order
+	// resolving the access stamps them in; a helper that disagreed would have tests assert a scope no
+	// request ever carries.
+	if vk.Customer != nil {
+		scope.CustomerID, scope.CustomerName = vk.Customer.ID, vk.Customer.Name
+	}
+	return scope
+}
+
 // TestBuildScopeChain_GlobalOnly tests scope chain with no VirtualKey
 func TestBuildScopeChain_GlobalOnly(t *testing.T) {
-	chain := buildScopeChain(nil, "")
+	chain := buildScopeChain(GovernanceScope{})
 
 	require.Equal(t, 1, len(chain))
 	assert.Equal(t, "global", chain[0].ScopeName)
@@ -32,7 +61,7 @@ func TestBuildScopeChain_VirtualKeyOnly(t *testing.T) {
 		Name: "test-vk",
 	}
 
-	chain := buildScopeChain(vk, "")
+	chain := buildScopeChain(scopeOf(vk))
 
 	require.Equal(t, 2, len(chain))
 	assert.Equal(t, "virtual_key", chain[0].ScopeName)
@@ -54,7 +83,7 @@ func TestBuildScopeChain_WithTeam(t *testing.T) {
 		Team: team,
 	}
 
-	chain := buildScopeChain(vk, "")
+	chain := buildScopeChain(scopeOf(vk))
 
 	require.Equal(t, 3, len(chain))
 	assert.Equal(t, "virtual_key", chain[0].ScopeName)
@@ -83,7 +112,7 @@ func TestBuildScopeChain_FullHierarchy(t *testing.T) {
 		Team: team,
 	}
 
-	chain := buildScopeChain(vk, "")
+	chain := buildScopeChain(scopeOf(vk))
 
 	require.Equal(t, 4, len(chain))
 	assert.Equal(t, "virtual_key", chain[0].ScopeName)
@@ -99,7 +128,7 @@ func TestBuildScopeChain_FullHierarchy(t *testing.T) {
 // TestBuildScopeChain_UserOnly verifies a session-authenticated request with
 // no virtual key still gets a user level ahead of global.
 func TestBuildScopeChain_UserOnly(t *testing.T) {
-	chain := buildScopeChain(nil, "user-1")
+	chain := buildScopeChain(GovernanceScope{UserID: "user-1"})
 
 	require.Equal(t, 2, len(chain))
 	assert.Equal(t, "user", chain[0].ScopeName)
@@ -114,7 +143,7 @@ func TestBuildScopeChain_FullHierarchyWithUser(t *testing.T) {
 	team := &configstoreTables.TableTeam{ID: "team-456", Name: "premium-team", Customer: customer}
 	vk := &configstoreTables.TableVirtualKey{ID: "vk-123", Name: "test-vk", Team: team}
 
-	chain := buildScopeChain(vk, "user-1")
+	chain := buildScopeChain(withUser(scopeOf(vk), "user-1"))
 
 	require.Equal(t, 5, len(chain))
 	assert.Equal(t, "virtual_key", chain[0].ScopeName)
@@ -410,7 +439,7 @@ func TestEvaluateRoutingRules_ScopePrecedence(t *testing.T) {
 	}
 
 	ctx := &EvaluationContext{
-		VirtualKey:  vk,
+		Scope:       scopeOf(vk),
 		Provider:    schemas.OpenAI,
 		Model:       "gpt-4o",
 		Headers:     map[string]string{},
@@ -1476,9 +1505,9 @@ func TestExtractRoutingVariables_WithVirtualKey(t *testing.T) {
 	}
 
 	ctx := &EvaluationContext{
-		VirtualKey: vk,
-		Provider:   schemas.OpenAI,
-		Model:      "gpt-4o",
+		Scope:    scopeOf(vk),
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
 	}
 
 	variables, err := extractRoutingVariables(ctx)
@@ -1504,9 +1533,9 @@ func TestExtractRoutingVariables_WithTeam(t *testing.T) {
 	}
 
 	ctx := &EvaluationContext{
-		VirtualKey: vk,
-		Provider:   schemas.OpenAI,
-		Model:      "gpt-4o",
+		Scope:    scopeOf(vk),
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
 	}
 
 	variables, err := extractRoutingVariables(ctx)
@@ -1537,9 +1566,9 @@ func TestExtractRoutingVariables_WithCustomer(t *testing.T) {
 	}
 
 	ctx := &EvaluationContext{
-		VirtualKey: vk,
-		Provider:   schemas.OpenAI,
-		Model:      "gpt-4o",
+		Scope:    scopeOf(vk),
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
 	}
 
 	variables, err := extractRoutingVariables(ctx)
@@ -1654,7 +1683,7 @@ func TestBuildRoutingContext(t *testing.T) {
 	params := map[string]string{"org": "test"}
 
 	ctx := &EvaluationContext{
-		VirtualKey:               vk,
+		Scope:                    scopeOf(vk),
 		Provider:                 schemas.OpenAI,
 		Model:                    "gpt-4o",
 		Headers:                  headers,
@@ -1662,7 +1691,7 @@ func TestBuildRoutingContext(t *testing.T) {
 		BudgetAndRateLimitStatus: &governance.BudgetAndRateLimitStatus{},
 	}
 
-	assert.Equal(t, vk, ctx.VirtualKey)
+	assert.Equal(t, scopeOf(vk), ctx.Scope)
 	assert.Equal(t, schemas.OpenAI, ctx.Provider)
 	assert.Equal(t, "gpt-4o", ctx.Model)
 	assert.Equal(t, headers, ctx.Headers)
@@ -1689,7 +1718,7 @@ func TestExtractRoutingVariables_ComplexHierarchy(t *testing.T) {
 	}
 
 	ctx := &EvaluationContext{
-		VirtualKey:  vk,
+		Scope:       scopeOf(vk),
 		Provider:    schemas.OpenAI,
 		Model:       "gpt-4o",
 		Headers:     map[string]string{"X-Tier": "premium", "X-Org": "acme"},
@@ -1960,7 +1989,7 @@ func TestEvaluateRoutingRules_UserScopedRule(t *testing.T) {
 		return &EvaluationContext{
 			Provider:    schemas.OpenAI,
 			Model:       "gpt-4o",
-			UserID:      userID,
+			Scope:       GovernanceScope{UserID: userID},
 			Headers:     map[string]string{},
 			QueryParams: map[string]string{},
 		}
@@ -2020,8 +2049,7 @@ func TestEvaluateRoutingRules_VirtualKeyPreemptsUser(t *testing.T) {
 	require.NoError(t, store.UpsertRule(context.Background(), vkRule))
 
 	decision, err := engine.EvaluateRoutingRules(bgCtx, &EvaluationContext{
-		VirtualKey:  &configstoreTables.TableVirtualKey{ID: "vk-123", Name: "test-vk"},
-		UserID:      "user-1",
+		Scope:       withUser(scopeOf(&configstoreTables.TableVirtualKey{ID: "vk-123", Name: "test-vk"}), "user-1"),
 		Provider:    schemas.OpenAI,
 		Model:       "gpt-4o",
 		Headers:     map[string]string{},
@@ -2059,7 +2087,7 @@ func TestEvaluateRoutingRules_UserIDCELVariable(t *testing.T) {
 	decision, err := engine.EvaluateRoutingRules(bgCtx, &EvaluationContext{
 		Provider:    schemas.OpenAI,
 		Model:       "gpt-4o",
-		UserID:      "user-1",
+		Scope:       GovernanceScope{UserID: "user-1"},
 		Headers:     map[string]string{},
 		QueryParams: map[string]string{},
 	})
@@ -2070,10 +2098,37 @@ func TestEvaluateRoutingRules_UserIDCELVariable(t *testing.T) {
 	decision, err = engine.EvaluateRoutingRules(bgCtx, &EvaluationContext{
 		Provider:    schemas.OpenAI,
 		Model:       "gpt-4o",
-		UserID:      "someone-else",
+		Scope:       GovernanceScope{UserID: "someone-else"},
 		Headers:     map[string]string{},
 		QueryParams: map[string]string{},
 	})
 	require.NoError(t, err)
 	assert.Nil(t, decision, "user_id CEL predicate must not match a different user")
+}
+
+// A key can sit under a team that belongs to one customer and name a different customer directly. Which
+// of them a request belongs to is governance's answer, and routing has to match rules at the same one:
+// deriving it a second time is how a customer-scoped rule came to fire for a customer that was not paying.
+//
+// The direct customer wins, because that is what resolving the access stamps.
+func TestBuildScopeChain_DirectCustomerWinsOverTheTeams(t *testing.T) {
+	teamsCustomer := &configstoreTables.TableCustomer{ID: "cust-team", Name: "Team's Customer"}
+	team := &configstoreTables.TableTeam{ID: "team-1", Name: "team", CustomerID: &teamsCustomer.ID, Customer: teamsCustomer}
+	vk := &configstoreTables.TableVirtualKey{
+		ID: "vk-123", Name: "test-vk",
+		Team:     team,
+		Customer: &configstoreTables.TableCustomer{ID: "cust-direct", Name: "Direct Customer"},
+	}
+
+	chain := buildScopeChain(scopeOf(vk))
+
+	var customerScope string
+	for _, level := range chain {
+		if level.ScopeName == "customer" {
+			customerScope = level.ScopeID
+		}
+	}
+	assert.Equal(t, "cust-direct", customerScope,
+		"the customer the request is charged to is the one its rules must match at")
+	assert.Equal(t, "team-1", chain[1].ScopeID, "and the team is still in the chain")
 }

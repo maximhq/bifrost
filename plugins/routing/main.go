@@ -16,10 +16,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
-	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/maximhq/bifrost/plugins/routing/rules"
 )
@@ -36,6 +34,9 @@ const PluginName = "routing"
 // through this same call.
 type Governance interface {
 	rules.GovernanceStore
+	// ResolveAccess answers what the request may reach, and is what routing reads a request's
+	// governance scope from: the identifiers it needs are stamped when the access is resolved.
+	ResolveAccess(ctx *schemas.BifrostContext) (schemas.Access, error)
 	PublishRoutingAllowlist(ctx *schemas.BifrostContext, modelStr string)
 	LoadBalanceProvider(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error
 }
@@ -188,7 +189,7 @@ func (p *RoutingPlugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas
 		return nil
 	}
 
-	virtualKey, ok := p.resolveVirtualKey(ctx)
+	scope, ok := p.resolveGovernanceScope(ctx)
 	if !ok {
 		return nil
 	}
@@ -200,7 +201,7 @@ func (p *RoutingPlugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas
 	// reads metadata.Model when it rewrites the model field in the body prefix, so
 	// mutating it here is what propagates the routing decision to the upstream call.
 	if metadata, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadMetadata).(*schemas.LargePayloadMetadata); metadata != nil && metadata.Model != "" {
-		newModel, err := p.routeLargePayloadModel(ctx, virtualKey, metadata.Model, req.RequestType)
+		newModel, err := p.routeLargePayloadModel(ctx, scope, metadata.Model, req.RequestType)
 		if err != nil {
 			return err
 		}
@@ -210,7 +211,7 @@ func (p *RoutingPlugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas
 		return nil
 	}
 
-	if _, err := p.applyRoutingRules(ctx, req, virtualKey); err != nil {
+	if _, err := p.applyRoutingRules(ctx, req, scope); err != nil {
 		return err
 	}
 
@@ -228,7 +229,7 @@ func (p *RoutingPlugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas
 // rule evaluation and virtual key materialization as the main PreRequestHook path, and returns the resolved
 // model (provider-prefixed when a provider was selected, plain model otherwise). Used by the
 // large-payload branch where req.Model is empty because the body wasn't parsed.
-func (p *RoutingPlugin) routeLargePayloadModel(ctx *schemas.BifrostContext, virtualKey *configstoreTables.TableVirtualKey, modelIn string, requestType schemas.RequestType) (string, error) {
+func (p *RoutingPlugin) routeLargePayloadModel(ctx *schemas.BifrostContext, scope rules.GovernanceScope, modelIn string, requestType schemas.RequestType) (string, error) {
 	// Parse a provider-prefixed model string the same way the transport does for
 	// body-having requests, so an explicit prefix like "openai/gpt-4o" lands in
 	// ChatRequest.Provider and rule evaluation honors the caller's routing intent.
@@ -238,7 +239,7 @@ func (p *RoutingPlugin) routeLargePayloadModel(ctx *schemas.BifrostContext, virt
 		ChatRequest: &schemas.BifrostChatRequest{Provider: providerIn, Model: parsedModel},
 	}
 
-	if _, err := p.applyRoutingRules(ctx, synthetic, virtualKey); err != nil {
+	if _, err := p.applyRoutingRules(ctx, synthetic, scope); err != nil {
 		return modelIn, err
 	}
 
@@ -265,7 +266,7 @@ func (p *RoutingPlugin) routeLargePayloadModel(ctx *schemas.BifrostContext, virt
 // req.Provider/req.Model/req.Fallbacks when a rule matches, returning the matched
 // rules.Decision, or nil when no rule matched. A deployment with no rules configured pays a
 // single map check here and falls through to the virtual key's own provider selection.
-func (p *RoutingPlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, virtualKey *configstoreTables.TableVirtualKey) (*rules.Decision, error) {
+func (p *RoutingPlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, scope rules.GovernanceScope) (*rules.Decision, error) {
 	if !p.rules.HasRules(ctx) {
 		return nil, nil
 	}
@@ -318,19 +319,18 @@ func (p *RoutingPlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *sche
 	}
 
 	routingCtx := &rules.EvaluationContext{
-		VirtualKey:               virtualKey,
-		UserID:                   bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID),
+		Scope:                    scope,
 		Provider:                 provider,
 		Model:                    model,
 		RequestType:              requestType,
 		Headers:                  headers,
 		QueryParams:              queryParams,
-		BudgetAndRateLimitStatus: p.governance.GetBudgetAndRateLimitStatus(ctx, model, provider, virtualKey, nil, nil, nil),
+		BudgetAndRateLimitStatus: p.governance.GetBudgetAndRateLimitStatus(ctx, provider, model, nil, nil, nil),
 		ComputeComplexity:        computeComplexity,
 	}
 
-	p.logger.Debug("[Routing] Built routing context: provider=%s, model=%s, requestType=%s, vk=%v",
-		provider, model, requestType, virtualKey != nil)
+	p.logger.Debug("[Routing] Built routing context: provider=%s, model=%s, requestType=%s, vk=%s",
+		provider, model, requestType, scope.VirtualKeyID)
 
 	// Evaluate routing rules
 	decision, err := p.engine.EvaluateRoutingRules(ctx, routingCtx)
