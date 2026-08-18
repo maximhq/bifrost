@@ -59,6 +59,46 @@ func Test_handleStreamingSSESendsHeartbeatDuringIdleGap(t *testing.T) {
 	})
 }
 
+// Test_handleStreamingGenAIDelimitsHeartbeatComment verifies the GenAI integration emits
+// its heartbeat as a self-contained SSE comment block. The official Google GenAI SDK splits
+// streams on blank-line delimiters and otherwise groups a bare comment line with the next
+// data event, causing that event to be discarded because the combined block starts with ':'.
+func Test_handleStreamingGenAIDelimitsHeartbeatComment(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		stream := make(chan *schemas.BifrostStreamChunk)
+		router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, bifrost.NewNoOpLogger())
+		ctx := &fasthttp.RequestCtx{}
+		var streamRoute *RouteConfig
+		routes := CreateGenAIRouteConfigs("/genai")
+		for i := range routes {
+			if routes[i].StreamConfig != nil {
+				streamRoute = &routes[i]
+				break
+			}
+		}
+		require.NotNil(t, streamRoute)
+		router.handleStreaming(ctx, nil, *streamRoute, stream, func() {})
+
+		bodyStream := ctx.Response.BodyStream()
+		type readResult struct {
+			body string
+			err  error
+		}
+		readDone := make(chan readResult, 1)
+		go func() {
+			b, err := io.ReadAll(bodyStream)
+			readDone <- readResult{body: string(b), err: err}
+		}()
+
+		time.Sleep(2*lib.DefaultSSEHeartbeatInterval + time.Millisecond)
+		close(stream)
+
+		result := <-readDone
+		require.NoError(t, result.err)
+		assert.Contains(t, result.body, ": heartbeat\n\n")
+	})
+}
+
 // Test_passthroughHeartbeatEligible pins down the content-type gate handlePassthroughStream
 // uses to decide whether the heartbeat is safe to inject: only when the resolved
 // content-type is actually SSE. Injecting anything into a non-SSE passthrough body (e.g.
