@@ -4354,11 +4354,8 @@ func mergePlugins(ctx context.Context, config *Config, configData *ConfigData) {
 		logger.Debug("no plugins found in store, using plugins from config file")
 		config.PluginConfigs = configData.Plugins
 	} else {
-		// Merge new plugins and update if version is higher
+		// Merge new plugins and replace stored ones whose placement/order changed
 		for _, plugin := range configData.Plugins {
-			if plugin.Version == nil {
-				plugin.Version = bifrost.Ptr(int16(1))
-			}
 			existingIdx := slices.IndexFunc(config.PluginConfigs, func(p *schemas.PluginConfig) bool {
 				return p.Name == plugin.Name
 			})
@@ -4367,13 +4364,8 @@ func mergePlugins(ctx context.Context, config *Config, configData *ConfigData) {
 				config.PluginConfigs = append(config.PluginConfigs, plugin)
 			} else {
 				existingPlugin := config.PluginConfigs[existingIdx]
-				existingVersion := int16(1)
-				if existingPlugin.Version != nil {
-					existingVersion = *existingPlugin.Version
-				}
-				placementChanged := !placementEqual(existingPlugin.Placement, plugin.Placement) || !orderEqual(existingPlugin.Order, plugin.Order)
-				if *plugin.Version > existingVersion || placementChanged {
-					logger.Debug("replacing plugin %s (version %d→%d, placementChanged=%v)", plugin.Name, existingVersion, *plugin.Version, placementChanged)
+				if !placementEqual(existingPlugin.Placement, plugin.Placement) || !orderEqual(existingPlugin.Order, plugin.Order) {
+					logger.Debug("replacing plugin %s (placement/order changed)", plugin.Name)
 					config.PluginConfigs[existingIdx] = plugin
 				}
 			}
@@ -4389,15 +4381,11 @@ func mergePlugins(ctx context.Context, config *Config, configData *ConfigData) {
 				logger.Warn("failed to deep copy plugin config, skipping database update: %v", err)
 				continue
 			}
-			if plugin.Version == nil {
-				plugin.Version = bifrost.Ptr(int16(1))
-			}
 			pluginConfig := &configstoreTables.TablePlugin{
 				Name:      plugin.Name,
 				Enabled:   plugin.Enabled,
 				Config:    pluginConfigCopy,
 				Path:      plugin.Path,
-				Version:   *plugin.Version,
 				Placement: plugin.Placement,
 				Order:     plugin.Order,
 			}
@@ -4443,15 +4431,11 @@ func syncPluginsFromFile(ctx context.Context, config *Config, configData *Config
 			if err != nil {
 				return fmt.Errorf("failed to deep copy plugin config for %s: %w", plugin.Name, err)
 			}
-			if plugin.Version == nil {
-				plugin.Version = bifrost.Ptr(int16(1))
-			}
 			tablePlugin := &configstoreTables.TablePlugin{
 				Name:      plugin.Name,
 				Enabled:   plugin.Enabled,
 				Config:    pluginConfigCopy,
 				Path:      plugin.Path,
-				Version:   *plugin.Version,
 				Placement: plugin.Placement,
 				Order:     plugin.Order,
 			}

@@ -19,9 +19,11 @@ type TablePlugin struct {
 	Path       *string   `json:"path,omitempty"`
 	ConfigJSON string    `gorm:"type:text" json:"-"` // JSON serialized plugin.Config
 	CreatedAt  time.Time `gorm:"index;not null" json:"created_at"`
-	Version    int16     `gorm:"not null;default:1" json:"version"`
-	UpdatedAt  time.Time `gorm:"index;not null" json:"updated_at"`
-	IsCustom   bool      `gorm:"not null;default:false" json:"isCustom"`
+	// Version is unused (plugin versioning was removed) and kept only so the column
+	// stays present on both fresh and upgraded databases, for downgrade compatibility
+	Version   int16     `gorm:"not null;default:1" json:"-"`
+	UpdatedAt time.Time `gorm:"index;not null" json:"updated_at"`
+	IsCustom  bool      `gorm:"not null;default:false" json:"isCustom"`
 
 	Placement *schemas.PluginPlacement `gorm:"column:placement;type:varchar(20);null" json:"placement,omitempty"`
 	Order     *int                     `gorm:"column:exec_order;type:int;null" json:"order,omitempty"`
@@ -88,4 +90,3 @@ func (p *TablePlugin) AfterFind(tx *gorm.DB) error {
 
 	return nil
 }
-

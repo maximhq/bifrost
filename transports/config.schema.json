@@ -2287,14 +2287,6 @@
             "description": "Path to the plugin (optional, required for dynamic plugins)",
             "optional": true
           },
-          "version": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 32767,
-            "description": "DB-Backed Only. Version metadata persisted on TablePlugin (default: 1). In DB-backed sync, version metadata is considered for plugin replacement/reload decisions.",
-            "optional": true,
-            "default": 1
-          },
           "placement": {
             "type": "string",
             "enum": ["pre_builtin", "post_builtin", "builtin"],
