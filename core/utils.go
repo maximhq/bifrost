@@ -727,7 +727,7 @@ func isPromptOptionalImageEditType(t *string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(*t))
 	normalized = strings.ReplaceAll(normalized, "-", "_")
 	return slices.Contains(
-		[]string{"background_removal", "remove_background", "remove_bg", "erase_object", "upscale_fast"},
+		[]string{"background_removal", "remove_background", "remove_bg", "erase_object", "upscale", "upscale_fast", "mask", "segmentation", "vectorize"},
 		normalized,
 	)
 }

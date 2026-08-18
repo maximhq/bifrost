@@ -103,7 +103,8 @@ func (req *OpenAIVideoGenerationRequest) ToBifrostVideoGenerationRequest(ctx *sc
 	provider, model := schemas.ParseModelString(req.Model, "")
 
 	input := &schemas.VideoGenerationInput{
-		Prompt: req.Prompt,
+		Prompt:   req.Prompt,
+		VideoURI: req.VideoURI,
 	}
 	if req.InputReference != nil {
 		input.InputReference = schemas.Ptr(providerUtils.FileBytesToBase64DataURL(req.InputReference))

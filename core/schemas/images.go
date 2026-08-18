@@ -40,6 +40,7 @@ type ImageGenerationParameters struct {
 	OutputCompression *int                   `json:"output_compression,omitempty"`  // compression level (0-100%)
 	OutputFormat      *string                `json:"output_format,omitempty"`       // "png", "webp", "jpeg"
 	Style             *string                `json:"style,omitempty"`               // "natural", "vivid"
+	Type              *string                `json:"type,omitempty"`                // operation selector, e.g. "vectorize"
 	ResponseFormat    *string                `json:"response_format,omitempty"`     // "url", "b64_json"
 	Seed              *int                   `json:"seed,omitempty"`                // seed for image generation
 	NegativePrompt    *string                `json:"negative_prompt,omitempty"`     // negative prompt for image generation
@@ -190,10 +191,21 @@ type ImageGenerationResponseParameters struct {
 }
 
 type ImageData struct {
-	URL           string `json:"url,omitempty"`
-	B64JSON       string `json:"b64_json,omitempty"`
-	RevisedPrompt string `json:"revised_prompt,omitempty"`
-	Index         int    `json:"index"`
+	ID            string           `json:"id,omitempty"` // provider-side asset identifier, when one is assigned
+	URL           string           `json:"url,omitempty"`
+	B64JSON       string           `json:"b64_json,omitempty"`
+	RevisedPrompt string           `json:"revised_prompt,omitempty"`
+	Index         int              `json:"index"`
+	Detections    []ImageDetection `json:"detections,omitempty"`
+}
+
+// ImageDetection is a region located by a masking or segmentation model. Coordinates are absolute
+// pixels in the input image's own coordinate space, not normalized.
+type ImageDetection struct {
+	XMin int `json:"x_min"`
+	YMin int `json:"y_min"`
+	XMax int `json:"x_max"`
+	YMax int `json:"y_max"`
 }
 
 type ImageUsage struct {
@@ -326,10 +338,11 @@ type ImageEditInput struct {
 
 type ImageInput struct {
 	Image []byte `json:"image"`
+	URL   string `json:"url,omitempty"` // alternative to Image; providers that require bytes reject it
 }
 
 type ImageEditParameters struct {
-	Type              *string                `json:"type,omitempty"`           // "inpainting", "outpainting", "background_removal", "remove_background", "erase_object", "recolor", "search_replace", "control_sketch", "control_structure", "style_guide", "style_transfer", "upscale_fast", "upscale_creative", "upscale_conservative"
+	Type              *string                `json:"type,omitempty"`           // "inpainting", "outpainting", "background_removal", "remove_background", "erase_object", "recolor", "search_replace", "control_sketch", "control_structure", "style_guide", "style_transfer", "upscale", "upscale_fast", "upscale_creative", "upscale_conservative", "mask", "segmentation", "vectorize"
 	Background        *string                `json:"background,omitempty"`     // "transparent", "opaque", "auto"
 	InputFidelity     *string                `json:"input_fidelity,omitempty"` // "low", "high"
 	Mask              []byte                 `json:"mask,omitempty"`
@@ -344,6 +357,8 @@ type ImageEditParameters struct {
 	NegativePrompt    *string                `json:"negative_prompt,omitempty"`     // negative prompt for image editing
 	Seed              *int                   `json:"seed,omitempty"`                // seed for image editing
 	NumInferenceSteps *int                   `json:"num_inference_steps,omitempty"` // number of inference steps
+	UpscaleFactor     *int                   `json:"upscale_factor,omitempty"`      // type "upscale": multiply each dimension by N
+	TargetMegapixels  *int                   `json:"target_megapixels,omitempty"`   // type "upscale": target output size; mutually exclusive with upscale_factor
 	ExtraParams       map[string]interface{} `json:"-"`
 }
 

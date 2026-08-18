@@ -1139,8 +1139,9 @@ var ValidOpenAIVideoSizes = map[string]bool{
 
 // OpenAIVideoGenerationRequest is the request body for OpenAI video generation.
 type OpenAIVideoGenerationRequest struct {
-	Prompt         string `json:"prompt"`                    // Text prompt that describes the video to generate (max 32000, min 1)
-	InputReference []byte `json:"input_reference,omitempty"` // Optional image reference file that guides generation
+	Prompt         string  `json:"prompt"`                    // Text prompt that describes the video to generate (max 32000, min 1)
+	InputReference []byte  `json:"input_reference,omitempty"` // Optional image reference file that guides generation
+	VideoURI       *string `json:"video_uri,omitempty"`       // Optional source video for video-to-video
 
 	Model string `json:"model"` // Video generation model (defaults to sora-2)
 
