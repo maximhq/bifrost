@@ -269,6 +269,7 @@ var imageGenerationParamsKnownFields = map[string]bool{
 	"user":                true,
 	"aspect_ratio":        true,
 	"input_images":        true,
+	"type":                true,
 }
 
 // imageEditParamsKnownFields contains known fields for image edit requests
@@ -279,6 +280,8 @@ var imageEditParamsKnownFields = map[string]bool{
 	"fallbacks":           true,
 	"image":               true,
 	"image[]":             true,
+	"image_url":           true,
+	"image_url[]":         true,
 	"mask":                true,
 	"type":                true,
 	"background":          true,
@@ -294,6 +297,8 @@ var imageEditParamsKnownFields = map[string]bool{
 	"negative_prompt":     true,
 	"seed":                true,
 	"num_inference_steps": true,
+	"upscale_factor":      true,
+	"target_megapixels":   true,
 	"stream":              true,
 }
 
@@ -313,16 +318,19 @@ var imageVariationParamsKnownFields = map[string]bool{
 // videoGenerationParamsKnownFields contains known fields for video generation requests
 // Based on VideoGenerationInput and VideoGenerationParameters structs
 var videoGenerationParamsKnownFields = map[string]bool{
-	"model":           true,
-	"prompt":          true,
-	"input_reference": true,
-	"seconds":         true,
-	"size":            true,
-	"negative_prompt": true,
-	"seed":            true,
-	"video_uri":       true,
-	"audio":           true,
-	"fallbacks":       true,
+	"model":             true,
+	"prompt":            true,
+	"input_reference":   true,
+	"seconds":           true,
+	"size":              true,
+	"negative_prompt":   true,
+	"seed":              true,
+	"type":              true,
+	"upscale_factor":    true,
+	"target_megapixels": true,
+	"video_uri":         true,
+	"audio":             true,
+	"fallbacks":         true,
 }
 
 var videoRemixParamsKnownFields = map[string]bool{
@@ -2339,10 +2347,19 @@ func prepareImageEditRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Ima
 	} else if imageFilesSingle := form.File["image"]; len(imageFilesSingle) > 0 {
 		imageFiles = imageFilesSingle
 	}
-	if len(imageFiles) == 0 {
-		return nil, nil, fmt.Errorf("at least one image is required")
+	// Providers whose upstream fetches the asset itself (e.g. Runware) accept a URL in place of an
+	// upload, which avoids round-tripping large images through the gateway as base64.
+	imageURLs := form.Value["image_url[]"]
+	if len(imageURLs) == 0 {
+		imageURLs = form.Value["image_url"]
 	}
-	images := make([]schemas.ImageInput, 0, len(imageFiles))
+	if len(imageFiles) == 0 && len(imageURLs) == 0 {
+		return nil, nil, fmt.Errorf("at least one image or image_url is required")
+	}
+	// Uploads keep their leading position so a request that sends no URL is ordered exactly as
+	// before: providers treat the first image as the primary one (Runware's seed image, Bedrock's
+	// style-transfer base), so the order is part of the contract.
+	images := make([]schemas.ImageInput, 0, len(imageFiles)+len(imageURLs))
 	for _, fh := range imageFiles {
 		f, err := fh.Open()
 		if err != nil {
@@ -2354,6 +2371,11 @@ func prepareImageEditRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Ima
 			return nil, nil, fmt.Errorf("failed to read uploaded file: %v", err)
 		}
 		images = append(images, schemas.ImageInput{Image: fileData})
+	}
+	for _, imageURL := range imageURLs {
+		if imageURL != "" {
+			images = append(images, schemas.ImageInput{URL: imageURL})
+		}
 	}
 	prompt := ""
 	if len(promptValues) > 0 && promptValues[0] != "" {
@@ -2399,6 +2421,20 @@ func prepareImageEditRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Ima
 			return nil, nil, fmt.Errorf("invalid num_inference_steps value: %v", err)
 		}
 		req.ImageEditParameters.NumInferenceSteps = &numInferenceSteps
+	}
+	if upscaleFactorValues := form.Value["upscale_factor"]; len(upscaleFactorValues) > 0 && upscaleFactorValues[0] != "" {
+		upscaleFactor, err := strconv.Atoi(upscaleFactorValues[0])
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid upscale_factor value: %v", err)
+		}
+		req.ImageEditParameters.UpscaleFactor = &upscaleFactor
+	}
+	if targetMegapixelsValues := form.Value["target_megapixels"]; len(targetMegapixelsValues) > 0 && targetMegapixelsValues[0] != "" {
+		targetMegapixels, err := strconv.Atoi(targetMegapixelsValues[0])
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid target_megapixels value: %v", err)
+		}
+		req.ImageEditParameters.TargetMegapixels = &targetMegapixels
 	}
 	if seedValues := form.Value["seed"]; len(seedValues) > 0 && seedValues[0] != "" {
 		seed, err := strconv.Atoi(seedValues[0])
@@ -2663,13 +2699,15 @@ func (h *CompletionHandler) videoGeneration(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if req.VideoGenerationInput == nil || req.Prompt == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "prompt cannot be empty")
-		return
-	}
-
 	if req.VideoGenerationParameters == nil {
 		req.VideoGenerationParameters = &schemas.VideoGenerationParameters{}
+	}
+
+	// Operations driven by an input asset (video upscale, image-to-3D) carry no prompt.
+	if req.VideoGenerationInput == nil ||
+		(req.Prompt == "" && req.InputReference == nil && req.VideoURI == nil) {
+		SendError(ctx, fasthttp.StatusBadRequest, "prompt, input_reference or video_uri is required")
+		return
 	}
 
 	extraParams, err := extractExtraParams(ctx.PostBody(), videoGenerationParamsKnownFields)

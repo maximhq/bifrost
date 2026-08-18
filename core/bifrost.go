@@ -1905,11 +1905,13 @@ func (bifrost *Bifrost) VideoGenerationRequest(ctx *schemas.BifrostContext,
 			},
 		}
 	}
-	if req.Input == nil || req.Input.Prompt == "" {
+	// Operations driven by an input asset (video upscale, image-to-3D) carry no prompt; the
+	// provider rejects a combination its model cannot serve.
+	if req.Input == nil || (req.Input.Prompt == "" && req.Input.InputReference == nil && req.Input.VideoURI == nil) {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
-				Message: "prompt not provided for video generation request",
+				Message: "prompt, input_reference or video_uri not provided for video generation request",
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
 				RequestType:            schemas.VideoGenerationRequest,

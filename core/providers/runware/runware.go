@@ -323,7 +323,7 @@ func (provider *RunwareProvider) VideoGeneration(ctx *schemas.BifrostContext, ke
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, reqBody, respBody, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
-	bifrostResp := ToBifrostVideoGenerationResponse(result)
+	bifrostResp := ToBifrostVideoGenerationResponse(result, videoResp.Errors)
 	bifrostResp.ID = providerUtils.AddVideoIDProviderSuffix(result.TaskUUID, providerName)
 	bifrostResp.Model = bifrostReq.Model
 	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
@@ -365,7 +365,7 @@ func (provider *RunwareProvider) VideoRetrieve(ctx *schemas.BifrostContext, key 
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, reqBody, respBody, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
-	bifrostResp := ToBifrostVideoGenerationResponse(result)
+	bifrostResp := ToBifrostVideoGenerationResponse(result, videoResp.Errors)
 	bifrostResp.ID = providerUtils.AddVideoIDProviderSuffix(taskID, providerName)
 	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
 	if sendBackRawRequest {
