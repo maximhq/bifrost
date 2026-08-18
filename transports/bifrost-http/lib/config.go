@@ -194,7 +194,11 @@ func (c *HumeConfig) CheckAndSetDefaults() error {
 	if c == nil {
 		return nil
 	}
-	c.DefaultModel = strings.TrimSpace(c.DefaultModel)
+	trimmedDefaultModel := strings.TrimSpace(c.DefaultModel)
+	if c.DefaultModel != "" && trimmedDefaultModel == "" {
+		return errors.New("hume.default_model must contain at least one non-whitespace character when set")
+	}
+	c.DefaultModel = trimmedDefaultModel
 	if c.ProsodyPrompt == nil {
 		c.ProsodyPrompt = &HumeProsodyPromptConfig{}
 	}

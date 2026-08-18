@@ -59,6 +59,7 @@ func TestHumeConfigAllowsProsodyWithoutDefaultModel(t *testing.T) {
 func TestHumeConfigValidation(t *testing.T) {
 	negative := -1
 	tests := []HumeConfig{
+		{DefaultModel: "   "},
 		{DefaultModel: "openai/gpt-4o-mini", ProsodyPrompt: &HumeProsodyPromptConfig{Scope: "invalid"}},
 		{DefaultModel: "openai/gpt-4o-mini", ProsodyPrompt: &HumeProsodyPromptConfig{Scope: HumeProsodyPromptScopeLatestUser, MaxEmotions: &negative}},
 	}
