@@ -10,7 +10,6 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	openaiProvider "github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
-	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -534,11 +533,7 @@ func (m *mockRealtimeMintingGovernancePlugin) GetGovernanceStore() governance.Go
 	return nil
 }
 
-func (m *mockRealtimeMintingGovernancePlugin) GetVirtualKey(_ context.Context, _ string) (*configstoreTables.TableVirtualKey, bool) {
-	return nil, false
-}
-
-func (m *mockRealtimeMintingGovernancePlugin) GetBudgetAndRateLimitStatus(_ context.Context, _ string, _ schemas.ModelProvider, _ *configstoreTables.TableVirtualKey, _ map[string]float64, _ map[string]int64, _ map[string]int64) *governance.BudgetAndRateLimitStatus {
+func (m *mockRealtimeMintingGovernancePlugin) GetBudgetAndRateLimitStatus(_ *schemas.BifrostContext, _ schemas.ModelProvider, _ string, _ map[string]float64, _ map[string]int64, _ map[string]int64) *governance.BudgetAndRateLimitStatus {
 	return nil
 }
 
