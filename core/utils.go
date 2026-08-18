@@ -348,10 +348,16 @@ func newBifrostMessageChan(message *schemas.BifrostResponse) chan *schemas.Bifro
 }
 
 // clearCtxForFallback clears the ctx values which are not applicable for fallback requests.
+//
+// Resolved access is cleared with them, so the next attempt resolves its own. What a request may
+// reach, and which limits it answers to, are read from live configuration at resolution time; an
+// attempt that reuses the previous attempt's answer would enforce configuration that has since
+// changed, and a request failing over across several slow calls is exactly where it changes.
 func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyAPIKeyID)
 	ctx.ClearValue(schemas.BifrostContextKeyAPIKeyName)
 	ctx.ClearValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys)
+	ctx.ClearValue(schemas.BifrostContextKeyGovernanceEffectiveAccess)
 	ctx.ClearValue(schemas.BifrostContextKeyChangeRequestType)
 	ctx.ClearValue(schemas.BifrostContextKeyAttemptTrail)
 	ctx.ClearValue(schemas.BifrostContextKeyStreamEndIndicator)

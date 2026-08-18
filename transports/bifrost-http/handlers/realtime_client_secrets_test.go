@@ -11,6 +11,7 @@ import (
 	openaiProvider "github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/grants"
 	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -472,20 +473,21 @@ func (m *mockRealtimeMintingGovernancePlugin) GetName() string {
 	return governance.PluginName
 }
 
-func (m *mockRealtimeMintingGovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext, evaluationRequest *governance.EvaluationRequest, _ schemas.RequestType) (*governance.EvaluationResult, *schemas.BifrostError) {
+func (m *mockRealtimeMintingGovernancePlugin) Evaluate(ctx *schemas.BifrostContext, evaluationRequest *governance.EvaluationRequest) (*governance.EvaluationResult, *schemas.BifrostError) {
 	m.evaluateCalls++
 	m.seenUserID = ""
 	m.seenVirtualKey = ""
 	m.seenProvider = ""
 	m.seenModel = ""
 	if evaluationRequest != nil {
-		m.seenUserID = evaluationRequest.UserID
-		m.seenVirtualKey = evaluationRequest.VirtualKey
 		m.seenProvider = evaluationRequest.Provider
 		m.seenModel = evaluationRequest.Model
 	}
-	if ctx != nil && m.seenVirtualKey == "" {
+	// The credential and the user are the request's, carried on its context — the handler no longer
+	// restates them, so this is where they are observed.
+	if ctx != nil {
 		m.seenVirtualKey = bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
+		m.seenUserID = bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
 	}
 	if m.err != nil {
 		return nil, m.err
@@ -541,10 +543,14 @@ func (m *mockRealtimeMintingGovernancePlugin) GetBudgetAndRateLimitStatus(_ cont
 	return nil
 }
 
-func (m *mockRealtimeMintingGovernancePlugin) PublishRoutingAllowlist(_ *schemas.BifrostContext, _ *configstoreTables.TableVirtualKey, _ string) {
+func (m *mockRealtimeMintingGovernancePlugin) PublishRoutingAllowlist(_ *schemas.BifrostContext, _ string) {
 }
 
-func (m *mockRealtimeMintingGovernancePlugin) LoadBalanceProvider(_ *schemas.BifrostContext, _ *schemas.BifrostRequest, _ *configstoreTables.TableVirtualKey) error {
+func (m *mockRealtimeMintingGovernancePlugin) ResolveEffectiveAccess(_ *schemas.BifrostContext) *grants.EffectiveAccess {
+	return nil
+}
+
+func (m *mockRealtimeMintingGovernancePlugin) LoadBalanceProvider(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
 	return nil
 }
 
