@@ -1001,10 +1001,11 @@ func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
 	}
 
 	usage := &ResponsesResponseUsage{
-		InputTokens:  cu.PromptTokens,
-		OutputTokens: cu.CompletionTokens,
-		TotalTokens:  cu.TotalTokens,
-		Cost:         cu.Cost,
+		InputTokens:    cu.PromptTokens,
+		OutputTokens:   cu.CompletionTokens,
+		TotalTokens:    cu.TotalTokens,
+		Cost:           cu.Cost,
+		CostInUsdTicks: cu.CostInUsdTicks,
 	}
 
 	if cu.PromptTokensDetails != nil {
@@ -1042,6 +1043,7 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 		CompletionTokens: ru.OutputTokens,
 		TotalTokens:      ru.TotalTokens,
 		Cost:             ru.Cost,
+		CostInUsdTicks:   ru.CostInUsdTicks,
 	}
 
 	if ru.InputTokensDetails != nil {
@@ -1208,6 +1210,18 @@ func (brr *BifrostResponsesRequest) ToChatRequest() *BifrostChatRequest {
 
 	// Convert Input messages using existing ToChatMessages()
 	bcr.Input = ToChatMessages(brr.Input)
+
+	// The Responses API carries its system prompt in the top-level `instructions` field rather than
+	// as a message, and the Chat API has no equivalent - so without this it was dropped outright and
+	// the request still succeeded, just ignoring the instruction. OpenAI defines `instructions` as
+	// context inserted at the FRONT, so it leads even when Input already opens with a system turn.
+	if brr.Params != nil && brr.Params.Instructions != nil && *brr.Params.Instructions != "" {
+		bcr.Input = append([]ChatMessage{{
+			Role:    ChatMessageRoleSystem,
+			Content: &ChatMessageContent{ContentStr: brr.Params.Instructions},
+		}}, bcr.Input...)
+	}
+
 	normalizeDeveloperRoleForChatFallback(bcr.Input)
 
 	// Convert Parameters
@@ -1368,7 +1382,9 @@ func sanitizeChatToolChoiceForFallback(toolChoice *ChatToolChoice, tools []ChatT
 func responsesStatusFromChatFinishReason(finishReason string) (status string, incompleteDetails *ResponsesResponseIncompleteDetails, mapped bool) {
 	switch finishReason {
 	case string(BifrostFinishReasonLength):
-		return "incomplete", &ResponsesResponseIncompleteDetails{Reason: "max_output_tokens"}, true
+		return "incomplete", &ResponsesResponseIncompleteDetails{Reason: ResponsesResponseIncompleteReasonMaxOutputTokens}, true
+	case "content_filter", "guardrail_intervened":
+		return "incomplete", &ResponsesResponseIncompleteDetails{Reason: ResponsesResponseIncompleteReasonContentFilter}, true
 	case string(BifrostFinishReasonStop), string(BifrostFinishReasonToolCalls):
 		return "completed", nil, true
 	default:
@@ -2627,6 +2643,7 @@ func (cr *BifrostChatResponse) ToBifrostTextCompletionResponse() *BifrostTextCom
 				Latency:                 cr.ExtraFields.Latency,
 				RawResponse:             cr.ExtraFields.RawResponse,
 				CacheDebug:              cr.ExtraFields.CacheDebug,
+				GuardrailDebug:          cr.ExtraFields.GuardrailDebug,
 				ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,
 			},
 		}
@@ -2661,6 +2678,7 @@ func (cr *BifrostChatResponse) ToBifrostTextCompletionResponse() *BifrostTextCom
 				Latency:                 cr.ExtraFields.Latency,
 				RawResponse:             cr.ExtraFields.RawResponse,
 				CacheDebug:              cr.ExtraFields.CacheDebug,
+				GuardrailDebug:          cr.ExtraFields.GuardrailDebug,
 				ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,
 			},
 		}
@@ -2711,6 +2729,7 @@ func (cr *BifrostChatResponse) ToBifrostTextCompletionResponse() *BifrostTextCom
 				Latency:                 cr.ExtraFields.Latency,
 				RawResponse:             cr.ExtraFields.RawResponse,
 				CacheDebug:              cr.ExtraFields.CacheDebug,
+				GuardrailDebug:          cr.ExtraFields.GuardrailDebug,
 				ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,
 			},
 		}
@@ -2732,6 +2751,7 @@ func (cr *BifrostChatResponse) ToBifrostTextCompletionResponse() *BifrostTextCom
 			Latency:                 cr.ExtraFields.Latency,
 			RawResponse:             cr.ExtraFields.RawResponse,
 			CacheDebug:              cr.ExtraFields.CacheDebug,
+			GuardrailDebug:          cr.ExtraFields.GuardrailDebug,
 			ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,
 		},
 	}

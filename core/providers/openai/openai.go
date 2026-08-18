@@ -860,7 +860,13 @@ func HandleOpenAIChatCompletionRequest(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToOpenAIChatRequest(ctx, request), nil
+			reqBody := ToOpenAIChatRequest(ctx, request)
+			// Resolved here rather than inside the converter, so a failed document fetch surfaces
+			// as itself instead of as a provider 400 about a missing file_id.
+			if err := ResolveChatFileURLs(ctx, request.Provider, reqBody); err != nil {
+				return nil, err
+			}
+			return reqBody, nil
 		})
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -1041,6 +1047,11 @@ func HandleOpenAIChatCompletionStreaming(
 				return customRequestConverter(request)
 			}
 			reqBody := ToOpenAIChatRequest(ctx, request)
+			// Same resolution the non-streaming path does: streaming rejects file_url just as
+			// hard, so a URL-sourced document has to be inlined here too.
+			if err := ResolveChatFileURLs(ctx, request.Provider, reqBody); err != nil {
+				return nil, err
+			}
 			if reqBody != nil {
 				reqBody.Stream = new(true)
 				reqBody.StreamOptions = &schemas.ChatStreamOptions{
@@ -7455,16 +7466,7 @@ func (provider *OpenAIProvider) Passthrough(
 		return nil, err
 	}
 
-	path := req.Path
-	// if path has v1 or v1/ remove it
-	if after, ok := strings.CutPrefix(path, "/v1"); ok {
-		path = after
-	}
-
-	url := provider.networkConfig.BaseURL + "/v1" + path
-	if req.RawQuery != "" {
-		url += "?" + req.RawQuery
-	}
+	url := provider.buildPassthroughURL(req)
 
 	fasthttpReq := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -7520,6 +7522,34 @@ func (provider *OpenAIProvider) Passthrough(
 	return bifrostResponse, nil
 }
 
+// buildPassthroughURL returns the upstream URL for raw passthrough requests.
+func (provider *OpenAIProvider) buildPassthroughURL(req *schemas.BifrostPassthroughRequest) string {
+	path := req.Path
+	baseURL := provider.networkConfig.BaseURL
+	if req.UpstreamURL != "" {
+		baseURL = strings.TrimRight(req.UpstreamURL, "/")
+		if !strings.HasPrefix(path, "/") {
+			path = "/" + path
+		}
+		url := baseURL + path
+		if req.RawQuery != "" {
+			url += "?" + req.RawQuery
+		}
+		return url
+	}
+
+	// if path has v1 or v1/ remove it
+	if after, ok := strings.CutPrefix(path, "/v1"); ok {
+		path = after
+	}
+
+	url := baseURL + "/v1" + path
+	if req.RawQuery != "" {
+		url += "?" + req.RawQuery
+	}
+	return url
+}
+
 func (provider *OpenAIProvider) PassthroughStream(
 	ctx *schemas.BifrostContext,
 	postHookRunner schemas.PostHookRunner,
@@ -7532,14 +7562,7 @@ func (provider *OpenAIProvider) PassthroughStream(
 	}
 
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
-	path := req.Path
-	if after, ok := strings.CutPrefix(path, "/v1"); ok {
-		path = after
-	}
-	url := provider.networkConfig.BaseURL + "/v1" + path
-	if req.RawQuery != "" {
-		url += "?" + req.RawQuery
-	}
+	url := provider.buildPassthroughURL(req)
 
 	fasthttpReq := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()

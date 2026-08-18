@@ -6,8 +6,8 @@ under any inbound-auth configuration. It speaks streamable HTTP via
 credential styles the Bifrost MCP server accepts:
 
 - **header credentials** — a virtual key (`x-bf-vk`, `Authorization: Bearer`, or
-  `x-api-key`) or a session id (`x-bf-mcp-session-id`). Use with server auth
-  mode `headers` or `both`.
+  `x-api-key`), a JWT (`Authorization: Bearer`), or a session id
+  (`x-bf-mcp-session-id`). Use with server auth mode `headers` or `both`.
 - **OAuth** — full discovery (RFC 9728/8414) + dynamic client registration +
   PKCE authorization-code flow, with a local browser-callback. Use with server
   auth mode `both` or `oauth`.
@@ -38,6 +38,12 @@ Same VK as a bearer, or as `x-api-key`:
 ```bash
 GOWORK=off go run . -auth headers -bearer sk-bf-xxxxx
 GOWORK=off go run . -auth headers -api-key sk-bf-xxxxx
+```
+
+JWT as bearer (mutually exclusive with `-bearer`, both set `Authorization`):
+
+```bash
+GOWORK=off go run . -auth headers -jwt eyJhbGciOi...
 ```
 
 Session id (only accepted while `enforce_auth_on_inference=false`):

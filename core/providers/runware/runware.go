@@ -562,9 +562,99 @@ func (provider *RunwareProvider) ContainerFileDelete(_ *schemas.BifrostContext, 
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerFileDeleteRequest, provider.GetProviderKey())
 }
 
-// Passthrough is not supported by the Runware provider.
-func (provider *RunwareProvider) Passthrough(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughRequest, provider.GetProviderKey())
+// buildPassthroughURL builds the upstream URL for a Runware passthrough request. Runware exposes a
+// single endpoint whose base URL already includes the /v1 version segment, so a leading /v1 in the
+// passthrough path is stripped to avoid duplicating it — both /runware_passthrough and
+// /runware_passthrough/v1 therefore map to the base endpoint.
+func (provider *RunwareProvider) buildPassthroughURL(req *schemas.BifrostPassthroughRequest) string {
+	baseURL := provider.networkConfig.BaseURL
+	if req.UpstreamURL != "" {
+		baseURL = strings.TrimRight(req.UpstreamURL, "/")
+	}
+	path := strings.TrimPrefix(req.Path, "/v1")
+	url := baseURL + path
+	if req.RawQuery != "" {
+		url += "?" + req.RawQuery
+	}
+	return url
+}
+
+// Passthrough forwards a raw request to Runware's unified endpoint and returns the untouched
+// response. This unlocks any Runware task type (3D, upscaling, background removal, ...) without a
+// per-feature translation, while Bifrost still injects the key, strips client auth, and logs the
+// call. Cost tracking is not yet wired for passthrough; usage is left nil ($0) until a
+// provider-reported cost hook (data[].cost) is added.
+func (provider *RunwareProvider) Passthrough(
+	ctx *schemas.BifrostContext,
+	key schemas.Key,
+	req *schemas.BifrostPassthroughRequest,
+) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+
+	url := provider.buildPassthroughURL(req)
+
+	fasthttpReq := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(fasthttpReq)
+	defer fasthttp.ReleaseResponse(resp)
+
+	fasthttpReq.Header.SetMethod(req.Method)
+	fasthttpReq.SetRequestURI(url)
+
+	providerUtils.SetExtraHeaders(ctx, fasthttpReq, provider.networkConfig.ExtraHeaders, nil)
+	for k, v := range req.SafeHeaders {
+		fasthttpReq.Header.Set(k, v)
+	}
+	if key.Value.GetValue() != "" {
+		fasthttpReq.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
+	}
+	fasthttpReq.SetBody(req.Body)
+
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, fasthttpReq, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	headers := providerUtils.ExtractPassthroughProviderResponseHeaders(resp)
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, headers)
+
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to decode response body", err)
+	}
+
+	// Runware echoes its own per-task cost in the body (when includeCost is set); surface it so
+	// passthrough calls are billed at the provider-reported price instead of $0.
+	var passthroughUsage *schemas.BifrostPassthroughUsage
+	if resp.StatusCode() >= 200 && resp.StatusCode() < 300 {
+		passthroughUsage = ExtractRunwarePassthroughUsage(body)
+	}
+
+	bifrostResponse := &schemas.BifrostPassthroughResponse{
+		StatusCode: resp.StatusCode(),
+		Headers:    headers,
+		Body:       body,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Latency:                 latency.Milliseconds(),
+			ProviderResponseHeaders: headers,
+			PassthroughPath:         req.Path,
+		},
+		PassthroughUsage: passthroughUsage,
+	}
+
+	// Honor the provider's raw-payload exposure config: expose the raw upstream request/response
+	// to callers only when send_back_raw_request/response is enabled (internal store_raw logging is
+	// handled separately by the logging layer).
+	if sendBackRawRequest {
+		bifrostResponse.ExtraFields.RawRequest = string(req.Body)
+	}
+	if sendBackRawResponse {
+		bifrostResponse.ExtraFields.RawResponse = string(body)
+	}
+
+	return bifrostResponse, nil
 }
 
 // PassthroughStream is not supported by the Runware provider.

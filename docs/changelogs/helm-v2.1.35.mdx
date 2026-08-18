@@ -1,0 +1,22 @@
+---
+title: "v2.1.35"
+description: "Helm v2.1.35 changelog - 2026-08-13"
+---
+
+<Update label="Bifrost Helm" description="v2.1.35">
+
+## Changelog
+
+- Added `bifrost.plugins.otel.config.traces_enabled` (and `profiles[*].traces_enabled`, default `true`) — set `false` for a metrics-only profile where no traces are sent and `collector_url` is not required. Renders into `traces_enabled`.
+- Added `bifrost.plugins.otel.config.trace_headers` and `metrics_headers` (and their `profiles[*]` forms) — extra headers sent only to the trace or metrics endpoint, overlaid on the shared `headers` (same key wins), e.g. a Databricks table name required only on metrics. Render into `trace_headers` / `metrics_headers`.
+- Added top-level `bifrost.setupToken` — the operator-provisioned bootstrap secret required to create the first admin account when none exists (supports `env.`/`vault.` prefixes and the `BIFROST_SETUP_TOKEN` env var). Renders into `setup_token`.
+- Added `bifrost.server.pluginDownloadPrivateAllowlist` (array of hostnames/IPs/CIDRs) to let custom plugin (`.so`) downloads reach trusted internal hosts that resolve to private/loopback/link-local/CGNAT addresses, blocked by default to prevent SSRF. Renders into `server.plugin_download_private_allowlist`.
+- Added `http2_ping_interval_in_seconds` (0–3600, `0` disables) to provider `network_config` — sends a client-initiated HTTP/2 keepalive PING after that many idle seconds; only applies when `enforce_http2` is set. Renders into `network_config.http2_ping_interval_in_seconds`.
+- Added inline `oauthConfig` to `bifrost.mcp.clientConfigs[]` (`clientId`, `clientSecret`, `authorizeUrl`, `tokenUrl`, `registrationUrl`, `scopes`; all optional) for `authType` `oauth`/`per_user_oauth`, so OAuth can be declared inline instead of pre-creating a config — missing URLs and client IDs are discovered/registered during admin verification. Renders into `oauth_config`. (`oauthConfigId` is now Bifrost-managed and is no longer emitted.)
+- Added `tokenExchange` to `bifrost.mcp.clientConfigs[]` (`audience`, `useIdpCredentials`, `clientId`, `clientSecret`, `authorizationServerUrl`, `scopes`) for the new `token_exchange` auth type (Enterprise builds), exchanging each caller's IDP token for a short-lived token scoped to the server's audience. Renders into `token_exchange`.
+- Added `needsSessionStickiness` to `bifrost.mcp.clientConfigs[]` (HTTP servers only) to choose one persistent connection reused across callers (`true`) or a fresh connection per call (`false`, default). Renders into `needs_session_stickiness`.
+- Documented `endpoints` on the `bedrock` and `bedrock_mantle` key examples (AWS PrivateLink interface VPC endpoint hosts: `runtime`, `control_plane`, `mantle`, `agent_runtime`, `s3`). Passes through into `bedrock_key_config.endpoints` / `bedrock_mantle_key_config.endpoints`.
+- Extended `bifrost.governance.budgets[]` with quarterly resets (`reset_duration: "1Q"`) and `reset_config.quarter_start_month` (1–12, sets the fiscal Q1 month). Passes through into `budgets[].reset_config`.
+- Added `target` (`llm` default, or `mcp`) to `bifrost.governance` guardrail rules to select the rule's execution target. Passes through into the rule's `target`.
+
+</Update>

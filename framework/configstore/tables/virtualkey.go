@@ -37,6 +37,19 @@ type TableVirtualKeyProviderConfig struct {
 	RateLimit *TableRateLimit `gorm:"foreignKey:RateLimitID;onDelete:CASCADE" json:"rate_limit,omitempty"`
 	Budgets   []TableBudget   `gorm:"foreignKey:ProviderConfigID;constraint:OnDelete:CASCADE" json:"budgets,omitempty"`              // Multiple budgets with different reset intervals
 	Keys      []TableKey      `gorm:"many2many:governance_virtual_key_provider_config_keys;constraint:OnDelete:CASCADE" json:"keys"` // Empty means all keys allowed for this provider
+
+	// ModelBudgets carries per-model budgets/rate-limits under this provider for serialization
+	// only. They live in VK-scoped model configs (the source of truth), not this table; the
+	// handler hydrates this field when returning a VK so the sheet can render/edit them.
+	ModelBudgets []VKProviderModelBudget `gorm:"-" json:"model_budgets,omitempty"`
+}
+
+// VKProviderModelBudget is one per-model budget/rate-limit group under a VK provider config,
+// used purely for serialization (reverse-mapped from a VK-scoped model config).
+type VKProviderModelBudget struct {
+	ModelName string          `json:"model_name"`
+	Budgets   []TableBudget   `json:"budgets,omitempty"`
+	RateLimit *TableRateLimit `json:"rate_limit,omitempty"`
 }
 
 // TableName sets the table name for each model

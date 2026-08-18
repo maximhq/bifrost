@@ -2,10 +2,17 @@
 
 import { ModelProviderName, RequestType } from "./config";
 
+/** Window settings the reset duration cannot express. Only valid on "1Q". */
+export interface BudgetResetConfig {
+	/** First month of Q1 as 1-12; omitted means January. */
+	quarter_start_month?: number;
+}
+
 export interface Budget {
 	id: string;
 	max_limit: number; // In dollars
-	reset_duration: string; // e.g., "30s", "5m", "1h", "1d", "1w", "1M"
+	reset_duration: string; // e.g., "30s", "5m", "1h", "1d", "1w", "1M", "1Q"
+	reset_config?: BudgetResetConfig;
 	current_usage: number; // In dollars
 	last_reset: string; // ISO timestamp
 	override_amount?: number;
@@ -113,6 +120,13 @@ export interface VirtualKey {
 	config_hash?: string; // Present when config is synced from config.json
 }
 
+// Per-model budgets/rate-limits under a provider config, surfaced on the VK for display/edit.
+export interface VirtualKeyModelBudget {
+	model_name: string;
+	budgets?: Budget[];
+	rate_limit?: RateLimit;
+}
+
 export interface VirtualKeyProviderConfig {
 	id?: number;
 	provider: string;
@@ -122,6 +136,7 @@ export interface VirtualKeyProviderConfig {
 	allow_all_keys: boolean; // True means all keys allowed; false with empty keys means no keys allowed
 	budgets?: Budget[];
 	rate_limit?: RateLimit;
+	model_budgets?: VirtualKeyModelBudget[]; // Per-model budgets/rate-limits under this provider
 	keys?: DBKey[]; // Associated database keys for this provider (only used when allow_all_keys is false)
 }
 
@@ -158,6 +173,14 @@ export interface UsageStats {
 	requests_last_reset: string;
 }
 
+// One per-model budget/rate-limit group in a provider-config request. model_name must be a
+// concrete model (not the "*" wildcard, which is the provider-level tier).
+export interface VirtualKeyModelBudgetRequest {
+	model_name: string;
+	budgets?: CreateBudgetRequest[];
+	rate_limit?: CreateRateLimitRequest;
+}
+
 // Request interfaces for provider config operations
 export interface VirtualKeyProviderConfigRequest {
 	provider: string;
@@ -166,6 +189,7 @@ export interface VirtualKeyProviderConfigRequest {
 	blacklisted_models?: string[];
 	budgets?: CreateBudgetRequest[];
 	rate_limit?: CreateRateLimitRequest;
+	model_budgets?: VirtualKeyModelBudgetRequest[];
 	key_ids?: string[]; // List of DBKey UUIDs to associate with this provider config
 }
 
@@ -177,6 +201,7 @@ export interface VirtualKeyProviderConfigUpdateRequest {
 	blacklisted_models?: string[];
 	budgets?: CreateBudgetRequest[];
 	rate_limit?: UpdateRateLimitRequest;
+	model_budgets?: VirtualKeyModelBudgetRequest[]; // Full desired per-model set when provider_configs is supplied
 	key_ids?: string[]; // List of DBKey UUIDs to associate with this provider config
 }
 
@@ -234,6 +259,8 @@ export interface UpdateTeamRequest {
 	budgets?: CreateBudgetRequest[]; // Replaces all team budgets; empty array clears
 	rate_limit?: UpdateRateLimitRequest;
 	calendar_aligned?: boolean;
+	/** Zero current usage on the reconciled budgets. The reset window is unchanged. */
+	reset_budget_usage?: boolean;
 }
 
 export interface CreateCustomerRequest {
@@ -250,17 +277,21 @@ export interface UpdateCustomerRequest {
 	budget?: UpdateBudgetRequest; // deprecated: use budgets
 	rate_limit?: UpdateRateLimitRequest;
 	calendar_aligned?: boolean;
+	/** Zero current usage on the reconciled budgets. The reset window is unchanged. */
+	reset_budget_usage?: boolean;
 }
 
 export interface CreateBudgetRequest {
 	id?: string;
 	max_limit: number; // In dollars
-	reset_duration: string; // e.g., "30s", "5m", "1h", "1d", "1w", "1M"
+	reset_duration: string; // e.g., "30s", "5m", "1h", "1d", "1w", "1M", "1Q"
+	reset_config?: BudgetResetConfig;
 }
 
 export interface UpdateBudgetRequest {
 	max_limit?: number;
 	reset_duration?: string;
+	reset_config?: BudgetResetConfig;
 }
 
 export interface CreateRateLimitRequest {
@@ -413,6 +444,8 @@ export interface UpdateModelConfigRequest {
 	provider?: string; // Optional provider - if empty/null, applies to all providers
 	budgets?: CreateBudgetRequest[]; // Full desired set; reconciled against existing
 	rate_limit?: UpdateRateLimitRequest;
+	/** Zero current usage on the reconciled budgets. The reset window is unchanged. */
+	reset_budget_usage?: boolean;
 }
 
 export interface GetModelConfigsParams {
@@ -528,6 +561,7 @@ export interface PricingOverridePatch {
 	search_context_cost_per_query?: number;
 	code_interpreter_cost_per_session?: number;
 	inference_geo_us_multiplier?: number;
+	cost_per_request?: number;
 	// OCR
 	ocr_cost_per_page?: number;
 	annotation_cost_per_page?: number;
@@ -597,6 +631,8 @@ export interface UpdateProviderGovernanceRequest {
 	budgets?: CreateBudgetRequest[]; // [] = remove all
 	rate_limit?: UpdateRateLimitRequest;
 	calendar_aligned?: boolean;
+	/** Zero current usage on the reconciled budgets. The reset window is unchanged. */
+	reset_budget_usage?: boolean;
 }
 
 export interface GetProviderGovernanceResponse {

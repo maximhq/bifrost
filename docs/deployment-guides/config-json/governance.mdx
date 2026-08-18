@@ -124,7 +124,8 @@ Budgets cap cumulative spend (in USD) for an owning governance entity over a rol
 |-------|----------|-------------|
 | `id` | Yes | Unique budget ID |
 | `max_limit` | Yes | Maximum spend in USD |
-| `reset_duration` | Yes | Window length: `"30s"`, `"5m"`, `"1h"`, `"1d"`, `"1w"`, `"1M"`, `"1Y"` |
+| `reset_duration` | Yes | Window length: `"30s"`, `"5m"`, `"1h"`, `"1d"`, `"1w"`, `"1M"`, `"1Q"`, `"1Y"` |
+| `reset_config` | No | Quarterly windows only. `{ "quarter_start_month": 4 }` sets the first month of Q1. Values are integers from 1 through 12; omit the field for January. See [Quarterly budgets](/features/governance/budget-and-limits#quarterly-budgets-and-fiscal-quarters) |
 | `team_id` | No | Attach to a team. Set this on the budget; teams do not have `budget_id` |
 | `virtual_key_id` | No | Attach to a virtual key |
 | `provider_config_id` | No | Attach to a provider config ID |

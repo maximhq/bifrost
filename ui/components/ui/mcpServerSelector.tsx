@@ -126,7 +126,7 @@ export function MCPServerSelector({
 
 	const getStateBadgeVariant = (state?: string) => {
 		switch (state) {
-			case "connected":
+			case "healthy":
 				return "success";
 			case "error":
 				return "destructive";

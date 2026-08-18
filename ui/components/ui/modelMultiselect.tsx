@@ -88,8 +88,9 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 	} = props;
 	const isSingleSelect = props.isSingleSelect === true;
 
-	const [getModels, { data: modelsData, isLoading }] = useLazyGetModelsQuery();
-	const [getBaseModels, { data: baseModelsData, isLoading: isLoadingBaseModels }] = useLazyGetBaseModelsQuery();
+	const [getModels, { data: modelsData, isFetching, isError }] = useLazyGetModelsQuery();
+	const [getBaseModels, { data: baseModelsData, isFetching: isFetchingBaseModels, isError: isBaseModelsError }] =
+		useLazyGetBaseModelsQuery();
 	const [inputValue, setInputValue] = useState("");
 	const inputValueRef = useRef("");
 
@@ -262,6 +263,10 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 	}, [modelsData, baseModelsData, shouldUseBaseModels, allowAllOption]);
 
 	const shouldBeDisabled = disabled || (!provider && !shouldLoadOnEmpty);
+	const modelsQueryEnabled = !!provider || shouldLoadOnEmpty;
+	const activeIsFetching = shouldUseBaseModels ? isFetchingBaseModels : modelsQueryEnabled ? isFetching : false;
+	const activeIsError = shouldUseBaseModels ? isBaseModelsError : modelsQueryEnabled ? isError : false;
+	const modelLoadError = !activeIsFetching && activeIsError;
 
 	const select = (
 		<AsyncMultiSelect<ModelOption>
@@ -279,7 +284,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 			dynamicOptionCreation={true}
 			createOptionText={"Press enter to add new model"}
 			defaultOptions={defaultOptions.length > 0 ? defaultOptions : ([] as Option<ModelOption>[])}
-			isLoading={shouldUseBaseModels ? isLoadingBaseModels : isLoading}
+			isLoading={activeIsFetching}
 			placeholder={placeholder}
 			disabled={shouldBeDisabled}
 			className={cn("!min-h-9 w-full", className)}
@@ -293,8 +298,10 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 			menuListClassName="mx-1"
 			inputValue={inputValue}
 			onInputChange={handleInputChange}
-			noResultsFoundPlaceholder="No models found"
-			emptyResultPlaceholder={provider || shouldLoadOnEmpty ? "Start typing to search models..." : "Please select a provider first"}
+			noResultsFoundPlaceholder={modelLoadError ? "Couldn’t load models." : "No matching models."}
+			emptyResultPlaceholder={
+				modelLoadError ? "Couldn’t load models." : provider ? "No models available for this provider." : shouldLoadOnEmpty ? "No models available." : "Select a provider first."
+			}
 			views={{
 				dropdownIndicator: isSingleSelect ? undefined : () => <></>,
 				singleValue: isSingleSelect

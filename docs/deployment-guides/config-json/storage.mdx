@@ -279,7 +279,7 @@ Set `matview_refresh_interval` (Go duration string) to slow down refreshes when 
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `matview_refresh_interval` | `"1m"` | How often to refresh dashboard materialized views. Accepts any Go duration string (`"1m"`, `"5m"`, `"1h"`). Minimum `5s`. |
+| `matview_refresh_interval` | `"1m"` | How often to refresh dashboard materialized views. Accepts any Go duration string (`"1m"`, `"5m"`, `"1h"`); positive values below `5s` are clamped up to `5s`. Set `"off"` or a zero duration (`"0s"`) to disable matview maintenance entirely. |
 
 **Notes**
 
@@ -296,6 +296,10 @@ Set `matview_refresh_interval` (Go duration string) to slow down refreshes when 
 
 - The database has consistent CPU headroom.
 - Operators rely on near-real-time dashboards (e.g. live incident triage).
+
+**When to turn it off:**
+
+- You don't use the Bifrost dashboard (e.g. Bifrost runs headless behind your own observability stack). With `"off"`, the views are neither created nor refreshed, and any dashboard query transparently uses the raw tables.
 
 ### Object Storage for Logs
 

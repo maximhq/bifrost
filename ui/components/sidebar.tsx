@@ -1,5 +1,7 @@
 import {
 	ArrowUpRight,
+	BadgeCheck,
+	BadgeInfo,
 	BookOpenText,
 	BookUser,
 	Boxes,
@@ -9,21 +11,26 @@ import {
 	Building2,
 	ChartColumnBig,
 	ChevronsLeftRightEllipsis,
+	CircuitBoard,
 	Construction,
 	DatabaseZap,
 	Flag,
 	FlaskConical,
 	FolderGit,
 	Gavel,
+	GitCompareArrows,
 	Globe,
+	Hexagon,
 	History,
 	KeyRound,
 	Landmark,
+	LaptopMinimalCheck,
 	LayoutGrid,
 	LogOut,
 	Logs,
 	Megaphone,
 	Network,
+	Palette,
 	PanelLeftClose,
 	PanelLeftOpen,
 	Plug,
@@ -46,13 +53,10 @@ import {
 	Wallet,
 	WalletCards,
 	Webhook,
-	CircuitBoard,
-	GitCompareArrows,
 } from "lucide-react";
 
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Separator } from "@/components/ui/separator";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
 	Sidebar,
 	SidebarContent,
@@ -67,9 +71,11 @@ import {
 	SidebarMenuSubItem,
 	useSidebar,
 } from "@/components/ui/sidebar";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { HIDDEN_UNTIL_NAV_COOKIE, REMIND_LATER_COOKIE, useOnboardingChecklist } from "@/hooks/useOnboardingChecklist";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
+import { useBranding } from "@/lib/hooks/useBranding";
 import { useGetCoreConfigQuery, useGetLatestReleaseQuery, useGetVersionQuery, useLogoutMutation } from "@/lib/store";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import type { UserInfo } from "@enterprise/lib/store/utils/tokenManager";
@@ -279,15 +285,14 @@ const SidebarItemView = ({
 
 	const isHighlighted = !hasSubItems && highlightedUrl === item.url;
 
-	const buttonClassName = `group/nav-item relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${
-		isHighlighted
-			? "bg-sidebar-accent text-accent-foreground border-primary/20"
-			: isActive || isAnySubItemActive
-				? "bg-sidebar-accent text-primary border-primary/20"
-				: item.hasAccess
-					? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
-					: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-	} `;
+	const buttonClassName = `group/nav-item relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${isHighlighted
+		? "bg-sidebar-accent text-accent-foreground border-primary/20"
+		: isActive || isAnySubItemActive
+			? "bg-sidebar-accent text-primary border-primary/20"
+			: item.hasAccess
+				? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
+				: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+		} `;
 
 	const innerContent = (
 		<div className="flex w-full items-center justify-between">
@@ -438,15 +443,14 @@ const SidebarItemView = ({
 						const isSubItemActive = subItem.queryParam ? pathname === subItem.url : isRouteMatch(subItem.url);
 						const isSubItemHighlighted = highlightedUrl ? subItemHref.startsWith(highlightedUrl) : false;
 						const SubItemIcon = subItem.icon;
-						const subItemClassName = `group/nav-item h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${
-							isSubItemHighlighted
-								? "bg-sidebar-accent text-accent-foreground"
-								: isSubItemActive
-									? "bg-sidebar-accent text-primary font-medium"
-									: subItem.hasAccess === false
-										? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-										: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
-						}`;
+						const subItemClassName = `h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${isSubItemHighlighted
+							? "bg-sidebar-accent text-accent-foreground"
+							: isSubItemActive
+								? "bg-sidebar-accent text-primary font-medium"
+								: subItem.hasAccess === false
+									? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+									: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
+							}`;
 						const subInner = (
 							<div className="flex w-full items-center gap-2">
 								{SubItemIcon && <SubItemIcon className={`h-3.5 w-3.5 ${isSubItemActive ? "text-primary" : "text-muted-foreground"}`} />}
@@ -585,6 +589,10 @@ export default function AppSidebar() {
 	const hasAPIKeyAccess = useRbac(RbacResource.APIKeys, RbacOperation.View);
 	const hasPromptRepositoryAccess = useRbac(RbacResource.PromptRepository, RbacOperation.View);
 	const hasSkillsRepositoryAccess = useRbac(RbacResource.SkillsRepository, RbacOperation.View);
+	const hasDevicesAccess = useRbac(RbacResource.Devices, RbacOperation.View);
+	const hasInventoryAccess = useRbac(RbacResource.Inventory, RbacOperation.View);
+	const hasEdgeConfigAccess = useRbac(RbacResource.EdgeConfig, RbacOperation.View);
+	const hasAnyEdgeControlAccess = hasDevicesAccess || hasInventoryAccess || hasEdgeConfigAccess;
 	const hasAccessProfilesAccess = useRbac(RbacResource.AccessProfiles, RbacOperation.View);
 	const hasAnyGovernanceAccess =
 		hasVirtualKeysAccess ||
@@ -925,6 +933,36 @@ export default function AppSidebar() {
 				hasAccess: hasGovernanceLegacyAccess,
 			},
 			{
+				title: "Edge Control",
+				icon: Hexagon,
+				description: "Edge device management",
+				url: "/workspace/edge-control",
+				hasAccess: hasAnyEdgeControlAccess,
+				subItems: [
+					{
+						title: "Devices",
+						url: "/workspace/edge-control/devices",
+						icon: LaptopMinimalCheck,
+						description: "Manage edge devices",
+						hasAccess: hasDevicesAccess,
+					},
+					{
+						title: "Approvals",
+						url: "/workspace/edge-control/inventory",
+						icon: BadgeCheck,
+						description: "Approve apps and MCP servers",
+						hasAccess: hasInventoryAccess,
+					},
+					{
+						title: "Edge Settings",
+						url: "/workspace/edge-control/config",
+						icon: Settings,
+						description: "Edge settings",
+						hasAccess: hasEdgeConfigAccess,
+					},
+				],
+			},
+			{
 				title: "Cluster Config",
 				url: "/workspace/cluster",
 				icon: Network,
@@ -956,21 +994,21 @@ export default function AppSidebar() {
 			},
 			...(isDbConnected
 				? [
-						{
-							title: "Prompt Repository",
-							url: "/workspace/prompt-repo",
-							icon: FolderGit,
-							description: "Prompt repository",
-							hasAccess: hasPromptRepositoryAccess,
-						},
-						{
-							title: "Skills Repository",
-							url: "/workspace/skills-repo",
-							icon: BookOpenText,
-							description: "Skills repository",
-							hasAccess: hasSkillsRepositoryAccess,
-						},
-					]
+					{
+						title: "Prompt Repository",
+						url: "/workspace/prompt-repo",
+						icon: FolderGit,
+						description: "Prompt repository",
+						hasAccess: hasPromptRepositoryAccess,
+					},
+					{
+						title: "Skills Repository",
+						url: "/workspace/skills-repo",
+						icon: BookOpenText,
+						description: "Skills repository",
+						hasAccess: hasSkillsRepositoryAccess,
+					},
+				]
 				: []),
 			{
 				title: "Evals",
@@ -1017,14 +1055,14 @@ export default function AppSidebar() {
 					},
 					...(IS_ENTERPRISE
 						? [
-								{
-									title: "Proxy",
-									url: "/workspace/config/proxy",
-									icon: Globe,
-									description: "Proxy configuration",
-									hasAccess: hasSettingsAccess,
-								},
-							]
+							{
+								title: "Proxy",
+								url: "/workspace/config/proxy",
+								icon: Globe,
+								description: "Proxy configuration",
+								hasAccess: hasSettingsAccess,
+							},
+						]
 						: []),
 					{
 						title: "API Keys",
@@ -1047,6 +1085,24 @@ export default function AppSidebar() {
 						description: "Toggle feature flags",
 						hasAccess: hasFeatureFlagsAccess,
 					},
+					...(IS_ENTERPRISE
+						? [
+							{
+								title: "Branding",
+								url: "/workspace/config/branding",
+								icon: Palette,
+								description: "Custom logo and icon",
+								hasAccess: hasSettingsAccess,
+							},
+							{
+								title: "License Info",
+								url: "/workspace/config/license",
+								icon: BadgeInfo,
+								description: "Enterprise license information",
+								hasAccess: hasSettingsAccess,
+							},
+						]
+						: []),
 				],
 			},
 		],
@@ -1081,6 +1137,11 @@ export default function AppSidebar() {
 			hasPromptRepositoryAccess,
 			hasSkillsRepositoryAccess,
 			hasAccessProfilesAccess,
+			hasFeatureFlagsAccess,
+			hasDevicesAccess,
+			hasInventoryAccess,
+			hasEdgeConfigAccess,
+			hasAnyEdgeControlAccess,
 			isDbConnected,
 		],
 	);
@@ -1302,9 +1363,10 @@ export default function AppSidebar() {
 		return false;
 	};
 
-	// Always render the light theme version for SSR to avoid hydration mismatch
-	const logoSrc = mounted && resolvedTheme === "dark" ? "/bifrost-logo-dark.webp" : "/bifrost-logo.webp";
-	const iconSrc = mounted && resolvedTheme === "dark" ? "/bifrost-icon-dark.webp" : "/bifrost-icon.webp";
+	// Always render the light theme version for SSR to avoid hydration mismatch.
+	// On a custom branding deployment useBranding returns the customer's assets
+	// instead, which are theme-agnostic.
+	const { logoSrc, iconSrc, logoAlt } = useBranding(mounted && resolvedTheme === "dark");
 
 	const { isConnected: isWebSocketConnected } = useWebSocket();
 
@@ -1460,7 +1522,16 @@ export default function AppSidebar() {
 				{/* Expanded state: horizontal layout */}
 				<div className="flex h-10 w-full items-center justify-between px-1.5 group-data-[collapsible=icon]:hidden">
 					<Link to="/workspace/logs" className="group flex items-center gap-2 pl-2">
-						<img className="h-[22px] w-auto" src={logoSrc} alt="Bifrost" width={70} height={70} />
+						{/* max-w caps an unusually wide uploaded logo so it cannot push the
+						    collapse button out of the header; object-contain preserves its
+						    aspect ratio within that box. */}
+						<img
+							className="h-[22px] w-auto max-w-[150px] object-contain"
+							src={logoSrc}
+							alt={logoAlt}
+							width={70}
+							height={70}
+						/>
 					</Link>
 					<button
 						onClick={toggleSidebar}
@@ -1477,7 +1548,14 @@ export default function AppSidebar() {
 					className="hidden w-full cursor-pointer flex-col items-center gap-2 py-2 group-data-[collapsible=icon]:flex"
 					onClick={toggleSidebar}
 				>
-					<img className="h-[22px] w-auto" src={iconSrc} alt="Bifrost" width={22} height={22} style={{ width: 18 }} />
+					<img
+						className="h-[22px] w-auto object-contain"
+						src={iconSrc}
+						alt={logoAlt}
+						width={22}
+						height={22}
+						style={{ width: 18 }}
+					/>
 				</div>
 			</SidebarHeader>
 			{envLabel && (

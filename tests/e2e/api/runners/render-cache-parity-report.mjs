@@ -109,8 +109,20 @@ const legVerdict = (entry, leg) => {
 const anchorRowVerdict = (entry) =>
   LEG_ORDER.filter((l) => entry.legs[l]).every((l) => legVerdict(entry, l) === "PASS") ? "PASS" : "FAIL";
 
-const matrixVerdict = (r) =>
-  r.mechanism === "implicit" ? ((r.hitRate || 0) > 0 ? "PASS" : "FAIL") : (r.hitRate || 0) >= (r.hitRateFloor ?? 0.85) ? "PASS" : "FAIL";
+// A cell that recorded no cache write never observed a cache being created: {{cachePrefix}} is a
+// static collection variable, so any run inside the provider's cache TTL starts warm and reads a
+// cache some earlier run wrote. That still clears the floor, but it proves only the read path.
+// Since hitRate = read / (read + write + uncached), a warm cell reports ~100% whether the write
+// accounting is correct or silently dropping tokens - the two are indistinguishable from this row.
+// Flagged rather than failed: a hard write > 0 would fail every legitimate re-run within the TTL.
+const isWarmStart = (r) => (r.write || 0) === 0 && (r.read || 0) > 0;
+
+const matrixVerdict = (r) => {
+  const passed =
+    r.mechanism === "implicit" ? (r.hitRate || 0) > 0 : (r.hitRate || 0) >= (r.hitRateFloor ?? 0.85);
+  if (!passed) return "FAIL";
+  return isWarmStart(r) ? "PASS (warm)" : "PASS";
+};
 
 const lines = [];
 lines.push("## Prompt Cache Parity Report");
@@ -121,6 +133,39 @@ lines.push(
     `hitRate = read / (read + write + uncached).`
 );
 lines.push("");
+
+// Both generated folders always exist in the augmented collection, so an empty section means the
+// rows were filtered out of THIS run (PROVIDER=/FEATURE= narrow the collection), not that the
+// coverage is missing. Without this the report reads as "the anchor cases ran and were fine".
+{
+  const providersSeen = new Set(matrix.map((r) => r.provider));
+  const scope = [];
+  if (!anchorCases.size) {
+    scope.push(
+      `No Round 34 cache-anchor rows were captured in this run - the folder exists in the collection, ` +
+        `so this means the run was filtered (e.g. PROVIDER=), not that the coverage is absent.`
+    );
+  }
+  // else-if, not two ifs: providersSeen is derived from matrix, so an empty matrix always
+  // means size === 0 and the branches are mutually exclusive by construction. The empty
+  // case needs its own branch because `if (matrix.length)` below drops the whole Round 35
+  // section, leaving a report that shows anchors, no matrix, and no reason why.
+  if (!matrix.length) {
+    scope.push(
+      `No Round 35 cross-provider matrix rows were captured in this run - the folder exists in the ` +
+        `collection, so this means the run was filtered (e.g. PROVIDER=), not that the coverage is absent.`
+    );
+  } else if (providersSeen.size === 1) {
+    scope.push(
+      `The Round 35 matrix covers 34 (provider, model) cells, but only \`${[...providersSeen][0]}\` ` +
+        `reported here. Cross-provider parity cannot be judged from a single provider - run unfiltered for that.`
+    );
+  }
+  if (scope.length) {
+    lines.push(`> **Scope of this run.** ${scope.join(" ")}`);
+    lines.push("");
+  }
+}
 
 if (anchorCases.size) {
   lines.push("### Round 34 - Mid-Conversation System Cache-Anchor Parity (direct vs Bifrost)");
@@ -161,6 +206,15 @@ if (matrix.length) {
       "(per-round hit rates shown in `Series`)."
   );
   lines.push("");
+  if (matrix.some(isWarmStart)) {
+    lines.push(
+      `\`PASS (warm)\` marks a cell that recorded zero cache writes: it read a cache an earlier run ` +
+        `created, so only the read path was exercised. {{cachePrefix}} is static, so re-running inside ` +
+        `the provider's cache TTL is the normal cause. To prove the write path, run against a cold ` +
+        `cache (wait out the TTL, or perturb the cached prefix).`
+    );
+    lines.push("");
+  }
   lines.push("| Provider | Model | Shape | Mechanism | Arm | Read | Write | Uncached | Hit rate | Bar | Series | Verdict |");
   lines.push("|---|---|---|---|---|---:|---:|---:|---:|---|---|---|");
   for (const r of matrix) {

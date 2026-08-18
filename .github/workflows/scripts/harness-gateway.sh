@@ -19,6 +19,18 @@ HARNESS_BINARY="$REPO_ROOT/tmp/bifrost-http"
 HARNESS_SOURCE_CONFIG="$REPO_ROOT/tests/integrations/python/config.json"
 
 harness_build_gateway() {
+  # CI's build-gateway job builds the UI + binary once and hands every consuming
+  # job the same artifact, so the harness jobs skip a ~3.5 minute rebuild. Local
+  # runs never set SKIP_GATEWAY_BUILD and always build from source.
+  if [ "${SKIP_GATEWAY_BUILD:-0}" = "1" ]; then
+    if [ ! -x "$HARNESS_BINARY" ]; then
+      echo "❌ SKIP_GATEWAY_BUILD=1 but no executable binary at $HARNESS_BINARY" >&2
+      return 1
+    fi
+    echo "⏭️  Using prebuilt bifrost-http binary at $HARNESS_BINARY"
+    return 0
+  fi
+
   echo "🎨 Building UI..."
   (cd "$REPO_ROOT" && make build-ui)
 

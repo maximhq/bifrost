@@ -2937,3 +2937,44 @@ func TestMigrationAddBudgetOverrideAnchorColumns(t *testing.T) {
 	require.NotNil(t, anchor)
 	assert.True(t, anchor.UTC().Equal(lastReset))
 }
+
+// TestMigrationAddBudgetResetConfigColumn_NonRollbackable pins that rolling the
+// fiscal-quarter column back is refused rather than performed. reset_config_json
+// is the only home for a budget's quarter definition, and QuarterStartMonth
+// reads a nil ResetConfig as January, so dropping the column would not merely
+// lose data: it would silently re-window every fiscal-year budget onto the
+// calendar year. The rollback must fail loudly and leave the column in place.
+func TestMigrationAddBudgetResetConfigColumn_NonRollbackable(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	require.NoError(t, db.AutoMigrate(&tables.TableBudget{}))
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableBudget{}, "reset_config_json"))
+	require.False(t, db.Migrator().HasColumn(&tables.TableBudget{}, "reset_config_json"),
+		"precondition: the column must be absent to reproduce the upgrade path")
+
+	require.NoError(t, migrationAddBudgetResetConfigColumn(ctx, db, testMigrationLogger))
+	require.True(t, db.Migrator().HasColumn(&tables.TableBudget{}, "reset_config_json"),
+		"migration should have added reset_config_json")
+
+	// A budget carrying a non-default fiscal quarter is exactly the state a
+	// rollback would destroy.
+	seed := &tables.TableBudget{
+		ID:            "fiscal-budget",
+		MaxLimit:      100,
+		ResetDuration: "1Q",
+		ResetConfig:   &tables.BudgetResetConfig{QuarterStartMonth: int(time.April)},
+	}
+	require.NoError(t, db.Create(seed).Error)
+
+	err := rollbackBudgetResetConfigColumn(db)
+	require.Error(t, err, "rollback must refuse: dropping the column destroys unrecoverable fiscal-quarter state")
+	assert.Contains(t, err.Error(), "non-rollbackable")
+	assert.True(t, db.Migrator().HasColumn(&tables.TableBudget{}, "reset_config_json"),
+		"a refused rollback must leave the column intact")
+
+	var got tables.TableBudget
+	require.NoError(t, db.Where("id = ?", seed.ID).First(&got).Error)
+	assert.Equal(t, time.April, got.QuarterStartMonth(),
+		"the fiscal quarter definition must survive the refused rollback")
+}

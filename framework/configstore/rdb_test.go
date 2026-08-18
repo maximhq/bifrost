@@ -56,6 +56,9 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 		&tables.TablePromptSessionMessage{},
 		&tables.TableOauthUserSession{},
 		&tables.TableOauthUserToken{},
+		&tables.TableOauthToken{},
+		&tables.TableMCPOauthToken{},
+		&tables.TableMCPOauthFlow{},
 		&tables.TableMCPPerUserHeaderCredential{},
 		&tables.TableMCPPerUserHeaderFlow{},
 		&tables.TableOAuth2RefreshToken{},
@@ -916,7 +919,7 @@ func TestUpdateBudgetOverrideAnchorsAtCalendarPeriodStart(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, updated.OverrideAnchorReset)
 
-	wantAnchor := tables.GetCalendarPeriodStart("1d", time.Now())
+	wantAnchor := tables.GetCalendarPeriodStart("1d", time.Now(), tables.QuarterStartNotApplicable)
 	assert.True(t, updated.OverrideAnchorReset.Equal(wantAnchor),
 		"calendar-aligned grant anchor should be midnight UTC today: got %s, want %s",
 		updated.OverrideAnchorReset.UTC(), wantAnchor.UTC())

@@ -1,4 +1,4 @@
-// Package e2eseed creates deterministic OSS fixtures for API and DAC tests.
+// Package seed creates deterministic OSS fixtures for API and DAC tests.
 package seed
 
 import (
@@ -258,7 +258,8 @@ func SeedBase(ctx context.Context, configDB, logsDB *gorm.DB, opts Options) (*Su
 		return nil, err
 	}
 	seedBaseTime = time.Now().UTC()
-	InitEncryption(opts)
+	// Encryption is initialized by the caller (see cmd/e2eseed/main.go) before
+	// SeedBase runs, so we do not re-initialize it here.
 	env := SeedEnv(opts.Prefix)
 	manifest := BuildExpectedManifest(opts.Prefix, opts.LogRowsPerShape)
 	summary := &Summary{
@@ -336,6 +337,20 @@ func BuildShapes(prefix string) []Shape {
 	teamVK := prefix + "-vk-team-only"
 	outsideVK := prefix + "-vk-outside"
 
+	ids := dacFixtureIDs{
+		tiggingsUser:     tiggingsUser,
+		outsideUser:      outsideUser,
+		tiggingsTeam:     tiggingsTeam,
+		outsideTeam:      outsideTeam,
+		tiggingsCustomer: tiggingsCustomer,
+		outsideCustomer:  outsideCustomer,
+		tiggingsBU:       tiggingsBU,
+		outsideBU:        outsideBU,
+		userVK:           userVK,
+		teamVK:           teamVK,
+		outsideVK:        outsideVK,
+	}
+
 	shapes := make([]Shape, 0, 18)
 	for mask := 1; mask <= 15; mask++ {
 		hasVK := mask&0x1 != 0
@@ -362,20 +377,22 @@ func BuildShapes(prefix string) []Shape {
 			shape.CustomerID = tiggingsCustomer
 		}
 		shape.Marker = prefix + "-shape-" + shape.Name
-		shape.VisibleTo = computeVisibleTo(shape, tiggingsUser, outsideUser, tiggingsTeam, outsideTeam, userVK, teamVK, outsideVK)
+		shape.VisibleTo = computeVisibleTo(shape, ids)
 		shapes = append(shapes, shape)
 	}
 
-	shapes = append(shapes,
-		Shape{
+	// Negative shapes derive their visibility too. Hardcoding them is what hid the
+	// missing customer/BU dimensions: the hand-written outside lists happened to be
+	// right, so only the computed tiggings side disagreed with the server.
+	negatives := []Shape{
+		{
 			Name:           "user-not-in-tiggings",
 			UserID:         outsideUser,
 			CustomerID:     outsideCustomer,
 			BusinessUnitID: outsideBU,
 			Marker:         prefix + "-shape-user-not-in-tiggings",
-			VisibleTo:      []string{"all_data_admin", "own_reader_outside", "team_reader_outside"},
 		},
-		Shape{
+		{
 			Name:           "outside-team-virtual-key",
 			UserID:         outsideUser,
 			TeamID:         outsideTeam,
@@ -383,14 +400,16 @@ func BuildShapes(prefix string) []Shape {
 			BusinessUnitID: outsideBU,
 			VirtualKeyID:   outsideVK,
 			Marker:         prefix + "-shape-outside-team-vk",
-			VisibleTo:      []string{"all_data_admin", "own_reader_outside", "team_reader_outside"},
 		},
-		Shape{
-			Name:      "legacy-unowned",
-			Marker:    prefix + "-shape-legacy-unowned",
-			VisibleTo: []string{"all_data_admin"},
+		{
+			Name:   "legacy-unowned",
+			Marker: prefix + "-shape-legacy-unowned",
 		},
-	)
+	}
+	for _, shape := range negatives {
+		shape.VisibleTo = computeVisibleTo(shape, ids)
+		shapes = append(shapes, shape)
+	}
 	return shapes
 }
 
@@ -417,37 +436,69 @@ func shapeNameFromDims(hasVK, hasU, hasT, hasB bool) string {
 	return strings.Join(parts, "-")
 }
 
+// dacFixtureIDs carries the seeded values computeVisibleTo matches shapes against.
+// A struct rather than positional strings: the dimensions come in tiggings/outside
+// pairs, and swapping two would look like a server bug rather than a manifest one.
+type dacFixtureIDs struct {
+	tiggingsUser, outsideUser         string
+	tiggingsTeam, outsideTeam         string
+	tiggingsCustomer, outsideCustomer string
+	tiggingsBU, outsideBU             string
+	userVK, teamVK, outsideVK         string
+}
+
 // computeVisibleTo returns the sorted set of personas that can see rows of the
 // given shape, derived directly from the shape's DAC dimensions and the
 // well-known seeded principal/VK values.
-func computeVisibleTo(s Shape, tigU, outU, tigT, outT, userVK, teamVK, outVK string) []string {
+//
+// Mirrors the enterprise log scope (framework/logstore/dacscope.go); keep the two
+// in step, since a dimension the scope ORs in but this ignores makes the manifest
+// under-predict and the tests blame the server. Only team-data personas are widened
+// by the org dimensions, hence the team_reader_* -only customer/BU branches.
+func computeVisibleTo(s Shape, ids dacFixtureIDs) []string {
 	set := map[string]struct{}{"all_data_admin": {}}
 
 	switch s.UserID {
-	case tigU:
+	case ids.tiggingsUser:
 		set["own_reader_tiggings"] = struct{}{}
 		set["team_reader_tiggings"] = struct{}{}
-	case outU:
+	case ids.outsideUser:
 		set["own_reader_outside"] = struct{}{}
 		set["team_reader_outside"] = struct{}{}
 	}
 
 	switch s.TeamID {
-	case tigT:
+	case ids.tiggingsTeam:
 		set["team_reader_tiggings"] = struct{}{}
-	case outT:
+	case ids.outsideTeam:
+		set["team_reader_outside"] = struct{}{}
+	}
+
+	// BuildShapes sets customer and BU as a pair, so either branch alone would do
+	// today; both are modelled in case that pairing is relaxed.
+	switch s.CustomerID {
+	case ids.tiggingsCustomer:
+		set["team_reader_tiggings"] = struct{}{}
+	case ids.outsideCustomer:
+		set["team_reader_outside"] = struct{}{}
+	}
+
+	switch s.BusinessUnitID {
+	case ids.tiggingsBU:
+		set["team_reader_tiggings"] = struct{}{}
+	case ids.outsideBU:
 		set["team_reader_outside"] = struct{}{}
 	}
 
 	switch s.VirtualKeyID {
-	case userVK:
+	case ids.userVK:
 		set["vk_user_owned"] = struct{}{}
 		set["own_reader_tiggings"] = struct{}{}
 		set["team_reader_tiggings"] = struct{}{}
-	case teamVK:
+	case ids.teamVK:
 		set["vk_team_owned"] = struct{}{}
 		set["team_reader_tiggings"] = struct{}{}
-	case outVK:
+	case ids.outsideVK:
 		set["own_reader_outside"] = struct{}{}
 		set["team_reader_outside"] = struct{}{}
 	}
@@ -597,7 +648,6 @@ func seedProviders(ctx context.Context, db *gorm.DB, prefix string, now time.Tim
 
 // seedGovernance writes customers, teams, budgets, rate limits, VKs, and VK provider configs.
 func seedGovernance(ctx context.Context, db *gorm.DB, prefix string, now time.Time) error {
-	active := true
 	tiggingsCustomer := prefix + "-customer-tiggings"
 	outsideCustomer := prefix + "-customer-outside"
 	tiggingsTeam := prefix + "-team-tiggings"
@@ -612,10 +662,11 @@ func seedGovernance(ctx context.Context, db *gorm.DB, prefix string, now time.Ti
 			return err
 		}
 	}
+	active := new(true)
 	for _, vk := range []tables.TableVirtualKey{
-		{ID: prefix + "-vk-user-team", Name: "E2E User Team VK", Value: *schemas.NewSecretVar(prefix + "-vk-user-team-secret"), IsActive: &active, TeamID: &tiggingsTeam, CreatedAt: now, UpdatedAt: now},
-		{ID: prefix + "-vk-team-only", Name: "E2E Team Only VK", Value: *schemas.NewSecretVar(prefix + "-vk-team-only-secret"), IsActive: &active, TeamID: &tiggingsTeam, CreatedAt: now, UpdatedAt: now},
-		{ID: prefix + "-vk-outside", Name: "E2E Outside VK", Value: *schemas.NewSecretVar(prefix + "-vk-outside-secret"), IsActive: &active, TeamID: &outsideTeam, CreatedAt: now, UpdatedAt: now},
+		{ID: prefix + "-vk-user-team", Name: "E2E User Team VK", Value: *schemas.NewSecretVar(prefix + "-vk-user-team-secret"), IsActive: active, TeamID: &tiggingsTeam, CreatedAt: now, UpdatedAt: now},
+		{ID: prefix + "-vk-team-only", Name: "E2E Team Only VK", Value: *schemas.NewSecretVar(prefix + "-vk-team-only-secret"), IsActive: active, TeamID: &tiggingsTeam, CreatedAt: now, UpdatedAt: now},
+		{ID: prefix + "-vk-outside", Name: "E2E Outside VK", Value: *schemas.NewSecretVar(prefix + "-vk-outside-secret"), IsActive: active, TeamID: &outsideTeam, CreatedAt: now, UpdatedAt: now},
 	} {
 		if err := db.WithContext(ctx).Where("id = ?", vk.ID).Assign(vk).FirstOrCreate(&vk).Error; err != nil {
 			return err

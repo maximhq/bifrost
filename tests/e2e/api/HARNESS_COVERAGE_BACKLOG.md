@@ -29,6 +29,7 @@ Sources:
 - [x] Tool choice forced (`tool_choice: "required"`)
 - [x] Structured output (`response_format: json_schema`)
 - [x] Reasoning effort (`reasoning_effort: "high"` for gpt-5/o3)
+- [x] Reasoning effort forwarded to xAI (grok-4.5 / grok-4.6 / grok-4.20-multi-agent) — folder 50
 - [ ] **Tool choice: specific function** (`tool_choice: { type: "function", function: { name: "x" } }`)
 - [ ] **Parallel tool calls** (`parallel_tool_calls: true/false`)
 - [ ] **Response format JSON object** (`response_format: { type: "json_object" }`)
@@ -181,7 +182,7 @@ Sources:
 - [x] Tool config (`toolConfig: { tools: [{ toolSpec: { name, inputSchema } }] }`)
 - [ ] **Streaming** (`POST /model/{modelId}/converse-stream`)
 - [ ] **Vision** (`content: [{ image: { format, source: { bytes } } }]`)
-- [ ] **Document input** (`content: [{ document: { format, name, source: { bytes } } }]`)
+- [~] **Document input** (`content: [{ document: { format, name, source: { bytes } } }]`) — the converter into this block is covered by folder 42 (#5472: OpenAI `type:"file"` / Responses `input_file` document uploads via `/v1/chat/completions` and `/v1/responses`, xlsx/docx/csv/pdf/txt + `file_url`). A native Converse-shaped `document` block posted directly at `/bedrock/model/{id}/converse` is still uncovered.
 - [ ] **Video input** (`content: [{ video: { format, source } }]`)
 - [ ] **Tool result** (`content: [{ toolResult: { toolUseId, content, status } }]`)
 - [ ] **Stop sequences** (`inferenceConfig: { stopSequences: [...] }`)
@@ -259,7 +260,7 @@ Sources:
 - [ ] **URL context** (`tools: [{ urlContext: {} }]`)
 - [ ] **Live API** (websocket-based bidirectional streaming)
 - [ ] **Function responses** (`role: "function"` parts with `functionResponse`)
-- [ ] **Thinking response signature** (return `thoughtSignature` to continue thinking across turns)
+- [x] **Thinking response signature** (return `thoughtSignature` to continue thinking across turns): folder `49.` replays a captured server-side tool turn (toolCall/toolResponse + thoughtSignature) in `contents`; Gemini validates signatures upstream, so a 2xx pins the round-trip
 
 ### Other endpoints
 
@@ -396,7 +397,7 @@ should be re-tested through passthrough since the translation layer is bypassed.
 - [ ] **OpenAI passthrough w/ web_search**
 - [ ] **OpenAI passthrough w/ code_interpreter**
 - [ ] **Anthropic passthrough w/ computer_use** (verify auth header strip + beta header injection)
-- [ ] **Anthropic passthrough w/ extended thinking**
+- [~] **Anthropic passthrough w/ extended thinking** (folder 51 sends `thinking: { type: "enabled", budget_tokens }` through `/anthropic/v1/messages` and pins the encrypted-reasoning fail-soft's raw rewrite against Anthropic's "latest assistant message cannot be modified" rule — PR #6110; a fresh non-replay request asserting a `thinking` block comes back through passthrough, and the streaming variant, are still open)
 - [ ] **Anthropic passthrough w/ prompt caching**
 - [ ] **Anthropic passthrough w/ web_search_20260209**
 - [ ] **GenAI passthrough w/ googleSearch**

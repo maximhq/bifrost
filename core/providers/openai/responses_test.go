@@ -270,9 +270,32 @@ func TestToOpenAIResponsesRequest_ReasoningStringContent(t *testing.T) {
 		}
 	})
 
-	t.Run("non-empty string content becomes a reasoning_text block", func(t *testing.T) {
+	t.Run("non-empty string content is dropped for a non-gpt-oss model", func(t *testing.T) {
 		bifrostReq := &schemas.BifrostResponsesRequest{
 			Model: "gpt-5.5",
+			Input: []schemas.ResponsesMessage{{
+				Type:               schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+				ResponsesReasoning: &schemas.ResponsesReasoning{EncryptedContent: schemas.Ptr("enc1")},
+				Content:            &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("thinking")},
+			}},
+		}
+
+		result := ToOpenAIResponsesRequest(nil, bifrostReq)
+		original := bifrostReq.Input[0].Content
+		if original == nil || original.ContentStr == nil || *original.ContentStr != "thinking" {
+			t.Fatalf("expected input reasoning content string to remain unchanged, got %#v", original)
+		}
+		if result == nil || len(result.Input.OpenAIResponsesRequestInputArray) != 1 {
+			t.Fatalf("expected one converted message, got %#v", result)
+		}
+		if c := result.Input.OpenAIResponsesRequestInputArray[0].Content; c != nil {
+			t.Errorf("expected reasoning Content to be dropped for gpt-5.5, got %#v", c)
+		}
+	})
+
+	t.Run("non-empty string content becomes a reasoning_text block for gpt-oss", func(t *testing.T) {
+		bifrostReq := &schemas.BifrostResponsesRequest{
+			Model: "gpt-oss-120b",
 			Input: []schemas.ResponsesMessage{{
 				Type:               schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
 				ResponsesReasoning: &schemas.ResponsesReasoning{EncryptedContent: schemas.Ptr("enc1")},
@@ -299,6 +322,107 @@ func TestToOpenAIResponsesRequest_ReasoningStringContent(t *testing.T) {
 		if block.Type != schemas.ResponsesOutputMessageContentTypeReasoning ||
 			block.Text == nil || *block.Text != "thinking" {
 			t.Errorf("expected reasoning_text block with text %q, got %#v", "thinking", block)
+		}
+	})
+}
+
+// TestToOpenAIResponsesRequest_ReasoningContentBlocksDropped guards the Anthropic
+// replay path: Claude thinking blocks translate into a reasoning item whose content
+// carries reasoning_text blocks (with Anthropic signatures). Replaying that item to a
+// non-gpt-oss OpenAI/Azure reasoning model fails with
+// "Invalid 'input[N].content': array too long. Expected an array with maximum length 0",
+// because those models keep their reasoning state in summary + encrypted_content only.
+// The outbound conversion must therefore drop content while preserving both.
+func TestToOpenAIResponsesRequest_ReasoningContentBlocksDropped(t *testing.T) {
+	newReasoningItem := func() schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			ID:   schemas.Ptr("rs_abc"),
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+			ResponsesReasoning: &schemas.ResponsesReasoning{
+				Summary: []schemas.ResponsesReasoningSummary{{
+					Type: schemas.ResponsesReasoningContentBlockTypeSummaryText,
+					Text: "summary text",
+				}},
+				EncryptedContent: schemas.Ptr("gAAAAAB-encrypted"),
+			},
+			Content: &schemas.ResponsesMessageContent{
+				ContentBlocks: []schemas.ResponsesMessageContentBlock{
+					{
+						Type:      schemas.ResponsesOutputMessageContentTypeReasoning,
+						Text:      schemas.Ptr("first thinking block"),
+						Signature: schemas.Ptr("anthropic-signature-1"),
+					},
+					{
+						Type:      schemas.ResponsesOutputMessageContentTypeReasoning,
+						Text:      schemas.Ptr("second thinking block"),
+						Signature: schemas.Ptr("anthropic-signature-2"),
+					},
+				},
+			},
+		}
+	}
+
+	// gpt-4o is not a reasoning model, so it additionally has cross-provider
+	// encrypted_content stripped (it could never decrypt it).
+	models := map[string]bool{"gpt-5.6-sol": true, "gpt-5.5": true, "o3": true, "gpt-4o": false}
+	for model, keepsEncrypted := range models {
+		t.Run(model, func(t *testing.T) {
+			input := newReasoningItem()
+			bifrostReq := &schemas.BifrostResponsesRequest{
+				Model: model,
+				Input: []schemas.ResponsesMessage{input},
+			}
+
+			result := ToOpenAIResponsesRequest(nil, bifrostReq)
+			if result == nil || len(result.Input.OpenAIResponsesRequestInputArray) != 1 {
+				t.Fatalf("expected the reasoning item to be preserved, got %#v", result)
+			}
+			msg := result.Input.OpenAIResponsesRequestInputArray[0]
+			if msg.Content != nil {
+				t.Errorf("expected reasoning content to be dropped, got %#v", msg.Content)
+			}
+			if msg.ResponsesReasoning == nil || len(msg.ResponsesReasoning.Summary) != 1 {
+				t.Fatalf("expected summary to be preserved, got %#v", msg.ResponsesReasoning)
+			}
+			if keepsEncrypted {
+				if msg.ResponsesReasoning.EncryptedContent == nil ||
+					*msg.ResponsesReasoning.EncryptedContent != "gAAAAAB-encrypted" {
+					t.Errorf("expected encrypted_content to be preserved, got %#v", msg.ResponsesReasoning.EncryptedContent)
+				}
+			} else if msg.ResponsesReasoning.EncryptedContent != nil {
+				t.Errorf("expected encrypted_content to be stripped for a non-reasoning model, got %q", *msg.ResponsesReasoning.EncryptedContent)
+			}
+
+			// The caller's input must not be mutated.
+			if bifrostReq.Input[0].Content == nil || len(bifrostReq.Input[0].Content.ContentBlocks) != 2 {
+				t.Errorf("expected caller input to keep its two reasoning blocks, got %#v", bifrostReq.Input[0].Content)
+			}
+
+			// End-to-end: nothing reasoning_text-shaped may reach the wire.
+			out, err := json.Marshal(result)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if strings.Contains(string(out), "reasoning_text") ||
+				strings.Contains(string(out), "anthropic-signature-1") {
+				t.Errorf("reasoning item serialized with content blocks: %s", string(out))
+			}
+		})
+	}
+
+	t.Run("gpt-oss keeps reasoning content blocks", func(t *testing.T) {
+		bifrostReq := &schemas.BifrostResponsesRequest{
+			Model: "gpt-oss-120b",
+			Input: []schemas.ResponsesMessage{newReasoningItem()},
+		}
+
+		result := ToOpenAIResponsesRequest(nil, bifrostReq)
+		if result == nil || len(result.Input.OpenAIResponsesRequestInputArray) != 1 {
+			t.Fatalf("expected the reasoning item to be preserved, got %#v", result)
+		}
+		c := result.Input.OpenAIResponsesRequestInputArray[0].Content
+		if c == nil || len(c.ContentBlocks) != 2 {
+			t.Fatalf("expected gpt-oss to keep both reasoning blocks, got %#v", c)
 		}
 	})
 }
@@ -379,8 +503,62 @@ func TestToOpenAIResponsesRequest_NormalizesReasoningEffort(t *testing.T) {
 			expected: "high",
 		},
 		{
-			name:     "maps minimal to low",
+			name:     "maps minimal to low for gpt-5.4",
 			model:    "gpt-5.4",
+			effort:   "minimal",
+			expected: "low",
+		},
+		{
+			name:     "preserves minimal for gpt-5",
+			model:    "gpt-5",
+			effort:   "minimal",
+			expected: "minimal",
+		},
+		{
+			name:     "preserves minimal for gpt-5-mini",
+			model:    "gpt-5-mini",
+			effort:   "minimal",
+			expected: "minimal",
+		},
+		{
+			name:     "preserves minimal for gpt-5-nano",
+			model:    "gpt-5-nano",
+			effort:   "minimal",
+			expected: "minimal",
+		},
+		{
+			name:     "maps minimal to low for gpt-5.2",
+			model:    "gpt-5.2",
+			effort:   "minimal",
+			expected: "low",
+		},
+		{
+			name:     "maps minimal to low for gpt-5.6",
+			model:    "gpt-5.6",
+			effort:   "minimal",
+			expected: "low",
+		},
+		{
+			name:     "maps minimal to low for o3",
+			model:    "o3",
+			effort:   "minimal",
+			expected: "low",
+		},
+		{
+			name:     "maps minimal to low for o1",
+			model:    "o1",
+			effort:   "minimal",
+			expected: "low",
+		},
+		{
+			name:     "maps minimal to low for o4",
+			model:    "o4",
+			effort:   "minimal",
+			expected: "low",
+		},
+		{
+			name:     "maps minimal to low for gpt-oss",
+			model:    "gpt-oss",
 			effort:   "minimal",
 			expected: "low",
 		},

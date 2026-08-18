@@ -1,0 +1,265 @@
+---
+title: "Bifrost Deployment Requirements"
+description: "The container, storage, configuration, networking, health, and scaling details needed to deploy Bifrost"
+icon: "file-contract"
+---
+
+This page describes the information your platform needs to run Bifrost. Use it together with the guide for [Kubernetes](/deployment-guides/helm), [EKS](/deployment-guides/platforms/eks), [GKE](/deployment-guides/platforms/gke), [AKS](/deployment-guides/platforms/aks), [ECS](/deployment-guides/ecs), or another container platform.
+
+## What you will deploy
+
+Bifrost is distributed as a Linux container image:
+
+```text
+docker.io/maximhq/bifrost:<BIFROST_VERSION>
+```
+
+Enterprise customers use the image repository and credentials supplied by Maxim. Pin a version or image digest so that an earlier release remains available for rollback.
+
+The published image supports `linux/amd64` and `linux/arm64`. It runs as user `1000`, listens on HTTP port `8080`, and stores local application data under `/app/data`.
+
+The image starts Bifrost with:
+
+```text
+/app/main -app-dir "$APP_DIR" -port "$APP_PORT" -host "$APP_HOST" -log-level "$LOG_LEVEL" -log-style "$LOG_STYLE"
+```
+
+Keep the supplied entrypoint unless your own wrapper prepares `/app/data`, forwards termination signals, and starts `/app/docker-entrypoint.sh` with `exec`.
+
+## Choose storage
+
+OSS Bifrost can store application configuration and request logs in SQLite or PostgreSQL. Bifrost Enterprise requires PostgreSQL 16 or later for both stores and does not support SQLite.
+
+<Note>
+Persistent `/app/data` storage is used only when the configuration store or log store uses SQLite. When both stores use PostgreSQL, Bifrost does not create or use the SQLite databases and the Helm chart does not create the Bifrost data PVC. The container still needs access to its application directory and `config.json` during startup.
+</Note>
+
+### SQLite
+
+SQLite is an OSS-only option. It is the OSS default and works for one Bifrost instance. Mount a writable persistent volume at `/app/data` so that configuration and logs survive a container replacement.
+
+Keep one Bifrost process attached to each SQLite database. A shared SQLite file cannot be used to coordinate several replicas.
+
+### PostgreSQL
+
+**Bifrost requires PostgreSQL 16 or later.** Startup fails when the configured PostgreSQL server is older than version 16. Use PostgreSQL when Bifrost runs on ephemeral compute, when you prefer an external database, or for every Enterprise deployment.
+
+Configure both `config_store` and `logs_store` as PostgreSQL to remove SQLite from the deployment. Enterprise deployments must use PostgreSQL for both stores. With Helm, `storage.mode: postgres` makes both enabled stores inherit PostgreSQL unless a per-store `type` override selects another backend.
+
+The database may be hosted anywhere that Bifrost can reach. Common choices include an existing PostgreSQL server, Amazon RDS or Aurora PostgreSQL, Google Cloud SQL, Azure Database for PostgreSQL, and provider-hosted PostgreSQL services.
+
+Provide these values to Bifrost:
+
+| Value | Example | Description |
+|---|---|---|
+| Host | `postgres.example.internal` | DNS name or IP reachable from the Bifrost container |
+| Port | `5432` | PostgreSQL TCP port |
+| Database | `bifrost` | Existing UTF8 database used by Bifrost |
+| User | `bifrost` | Login role used by the application and migrations |
+| Password | Kubernetes Secret or secret environment value | Password for the application role |
+| TLS mode | `require` | PostgreSQL `sslmode` supported by the selected server |
+
+The database role must be able to connect and run Bifrost's schema migrations. Give it ownership of the Bifrost database or schema, or equivalent permissions to create and alter tables and indexes and to select, insert, update, and delete Bifrost data.
+
+Bifrost runs migrations during startup. Several starting nodes coordinate migrations using a PostgreSQL advisory lock. A failed connection or migration prevents startup.
+
+The config store and log store use separate connection pools. Each pool defaults to 50 maximum open connections and 5 idle connections per Bifrost process, and both defaults are configurable. Include both pools when setting the database connection limit.
+
+With Helm, override either pool independently in the same values file used for the deployment:
+
+```yaml
+storage:
+  configStore:
+    maxOpenConns: 50
+    maxIdleConns: 5
+  logsStore:
+    maxOpenConns: 50
+    maxIdleConns: 5
+```
+
+Adjust these values to the database connection limit and replica count. The maximum Bifrost connection allocation is `replica count × (config-store maxOpenConns + log-store maxOpenConns)`. In `config.json`, use `max_open_conns` and `max_idle_conns` inside each PostgreSQL store's `config` object. See [Storage configuration](/deployment-guides/config-json/storage) for the complete fields.
+
+Verify the connection from the same network used by Bifrost:
+
+```bash
+PGPASSWORD='<POSTGRES_PASSWORD>' psql \
+  "host=<POSTGRES_HOST> port=5432 dbname=bifrost user=bifrost sslmode=require" \
+  -c "SHOW server_version;" \
+  -c "SHOW server_encoding;" \
+  -c "SELECT current_user, current_database();"
+```
+
+The connection should succeed, `server_version` should report PostgreSQL 16 or later, and `server_encoding` should return `UTF8`.
+
+## Configuration and secrets
+
+The container has defaults for its basic runtime settings:
+
+| Setting | Default | How Bifrost uses it |
+|---|---|---|
+| `APP_HOST` | `0.0.0.0` | Address used by the HTTP listener |
+| `APP_PORT` | `8080` | HTTP port used by the API, dashboard, health check, and metrics |
+| `APP_DIR` | `/app/data` | Location of `config.json` and local runtime files; persistence is used when an OSS store uses SQLite |
+| `LOG_LEVEL` | `info` | Process log level: `debug`, `info`, `warn`, or `error` |
+| `LOG_STYLE` | `json` | Process log format: `json` or `pretty` |
+| `GOMEMLIMIT` | Unset | Go runtime memory target; a common starting point is about 90% of the container memory limit |
+| `BIFROST_ENCRYPTION_KEY` | No generated value | Stable secret used to protect persisted sensitive configuration |
+| `BIFROST_SETUP_TOKEN` | Unset | Bootstrap secret used only to create the first admin account; `setup_token` in `config.json` can reference this variable |
+
+The official container entrypoint uses `APP_HOST`, `APP_PORT`, and `APP_DIR`. Use those names when configuring a container platform.
+
+Provider keys and integration credentials can be referenced from `config.json` with `env.VARIABLE_NAME`. For example:
+
+```json
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "encryption_key": "env.BIFROST_ENCRYPTION_KEY",
+  "setup_token": "env.BIFROST_SETUP_TOKEN",
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "primary",
+          "value": "env.OPENAI_API_KEY",
+          "models": ["*"]
+        }
+      ]
+    }
+  }
+}
+```
+
+Keep the encryption key stable across restarts, replicas, upgrades, backups, and restores. Losing or changing it can make persisted encrypted values unreadable.
+
+Configure `setup_token` before starting a deployment that does not have an admin account. It accepts a literal value, an `env.VARIABLE_NAME` reference, or a `vault.path` reference; `BIFROST_SETUP_TOKEN` is also used when `setup_token` is absent. The token is never persisted or logged, must be identical across replicas, and is required only when [creating the first admin account](/quickstart/gateway/setting-up-auth).
+
+Use [config.json](/deployment-guides/config-json) for application configuration and [Helm Values](/deployment-guides/helm/values) for Kubernetes configuration.
+
+## Minimal Kubernetes values
+
+For one OSS instance with SQLite and persistent `/app/data`:
+
+```yaml
+image:
+  tag: "<BIFROST_VERSION>"
+
+replicaCount: 1
+
+storage:
+  mode: sqlite
+
+bifrost:
+  encryptionKeySecret:
+    name: bifrost-encryption
+    key: encryption-key
+```
+
+For one instance connected to PostgreSQL:
+
+```yaml
+image:
+  tag: "<BIFROST_VERSION>"
+
+replicaCount: 1
+
+storage:
+  mode: postgres
+
+postgresql:
+  enabled: false
+  external:
+    enabled: true
+    host: "<POSTGRES_HOST>"
+    port: 5432
+    user: bifrost
+    database: bifrost
+    sslMode: require
+    existingSecret: postgres-credentials
+    passwordKey: password
+
+bifrost:
+  encryptionKeySecret:
+    name: bifrost-encryption
+    key: encryption-key
+```
+
+The [Helm guide](/deployment-guides/helm) shows how to create the Secrets, install the chart, and verify the pods.
+
+This PostgreSQL-only configuration renders a Kubernetes `Deployment` without the Bifrost SQLite PVC. Its application directory uses the container filesystem for startup configuration and other non-durable runtime files; PostgreSQL holds the durable configuration and logs.
+
+## Networking
+
+Bifrost serves the API, dashboard, health endpoint, and metrics from one HTTP listener.
+
+| Traffic | Port and protocol | Where it is used |
+|---|---|---|
+| API and dashboard | `8080/TCP`, HTTP | Clients, ingress, gateway, or load balancer |
+| Health check | `GET /health` on the HTTP port | Container platform, Kubernetes probes, and load balancer |
+| Prometheus metrics | `GET /metrics` on the HTTP port | Monitoring system when Prometheus telemetry is enabled |
+| Enterprise membership | `10101/TCP` and `10101/UDP` | Communication between Enterprise mesh replicas |
+| Enterprise application sync | `10102/TCP`, gRPC | Communication between Enterprise mesh replicas |
+
+The HTTP frontend should:
+
+- Forward server-sent events as they arrive instead of buffering them.
+- Allow requests to remain open for the expected duration of streamed responses.
+- Support WebSocket upgrades when the Realtime or WebSocket APIs are used.
+- Preserve `Host`, `X-Forwarded-For`, and `X-Forwarded-Proto` when it terminates TLS.
+- Accept the configured request size. `client.max_request_body_size_mb` defaults to `100` MB.
+
+Bifrost serves HTTP inside the container. Terminate TLS at the platform endpoint, ingress, gateway, or reverse proxy before exposing it to users.
+
+Bifrost also needs outbound DNS and network access to every model provider, PostgreSQL server, MCP server, vector store, identity system, and observability endpoint configured for the deployment.
+
+## Health checks and shutdown
+
+`GET /health` returns `200` after Bifrost is ready. By default, it also checks the configured config, log, and vector stores and returns `503` when one of those checks fails.
+
+The Helm chart uses these probe settings:
+
+- Readiness begins after 10 seconds, runs every 10 seconds, and times out after 5 seconds.
+- Liveness begins after 30 seconds, runs every 30 seconds, and times out after 5 seconds.
+- The pod receives a 60-second termination grace period, including a 15-second pre-stop delay.
+- Bifrost allows up to 30 seconds for internal shutdown cleanup after `SIGTERM` or `SIGINT`.
+
+Increase the startup allowance if the database or migrations take longer. Keep traffic away from a new container until `/health` returns `200`.
+
+## Replicas and scaling
+
+| Deployment | Replica behavior |
+|---|---|
+| OSS with SQLite | Run one Bifrost process for the database and persistent directory |
+| OSS with file-only `config.json` | Run several replicas with the same immutable file and secrets; restart all replicas after a configuration change |
+| OSS with PostgreSQL configuration | Run one replica because live in-memory changes are not synchronized between OSS processes |
+| Enterprise mesh | Run several replicas with PostgreSQL, peer discovery, `10101/TCP+UDP`, and `10102/TCP` |
+| Enterprise broker | Run gateway replicas that connect to the Enterprise broker endpoint |
+
+Session affinity is unnecessary for ordinary inference requests. A load balancer can distribute HTTP traffic across correctly configured replicas.
+
+Use [Cluster Mode and HA](/deployment-guides/helm/cluster) for an Enterprise Kubernetes cluster. See [Enterprise clustering](/enterprise/clustering) before placing one logical Enterprise cluster across several environments.
+
+## Verify the deployment
+
+1. Confirm that the container remains running and logs `successfully started bifrost`.
+2. Call `/health` and confirm that it returns HTTP `200`.
+3. When using PostgreSQL, check the startup logs for completed migrations and initialized config and log stores.
+4. Send one non-streaming inference request with a configured provider.
+5. Send one streaming inference request and confirm that chunks arrive incrementally through the public endpoint.
+6. Restart or replace the container and confirm that configuration survives.
+7. For several Enterprise replicas, confirm that every expected node appears in cluster status.
+
+```bash
+curl --fail --show-error "https://<BIFROST_HOST>/health"
+
+curl --fail --show-error --no-buffer \
+  "https://<BIFROST_HOST>/v1/chat/completions" \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <BIFROST_CREDENTIAL>' \
+  --data '{"model":"<PROVIDER>/<MODEL>","stream":true,"messages":[{"role":"user","content":"Reply in three chunks"}]}'
+```
+
+## Upgrade Bifrost
+
+Keep the current image version, database backup, and encryption key before an upgrade. Review the [open-source changelogs](/changelogs/v1.6.7) or [Enterprise changelogs](/changelogs/ent-v2.0.0-prerelease2) for the target release, deploy one version at a time, wait for `/health`, and test a real inference request before completing the rollout.
+
+Bifrost runs database migrations during startup. Rolling the container image back does not reverse those migrations. Follow the release-specific migration guidance before using an older binary with newer data.

@@ -2,7 +2,7 @@
 
 MCPAuthType:
   type: string
-  enum: [none, headers, oauth, per_user_oauth, per_user_headers]
+  enum: [none, headers, oauth, per_user_oauth, per_user_headers, token_exchange]
   description: |
     Authentication type for MCP connections:
     - none: No authentication
@@ -10,6 +10,81 @@ MCPAuthType:
     - oauth: OAuth 2.0 authentication (server-level, admin authenticates once)
     - per_user_oauth: Per-user OAuth 2.0 authentication (each user authenticates individually)
     - per_user_headers: Per-user headers (each user submits their own header values; admin declares the schema)
+    - token_exchange: Delegated token exchange (each caller's own identity-provider token is
+      exchanged for a short-lived token scoped to this server on every call; nothing is
+      stored per caller). Requires an enabled identity-provider integration (enterprise).
+
+MCPTokenExchangeConfig:
+  type: object
+  required: [audience]
+  properties:
+    audience:
+      type: string
+      minLength: 1
+      description: Resource identifier this server is scoped to at the identity provider (e.g. "api://jira-mcp")
+    use_idp_credentials:
+      type: boolean
+      description: |
+        When true, performs the exchange as the SSO login application itself
+        instead of client_id/client_secret below, which are then ignored.
+        Some providers require this: Microsoft Entra ID's on-behalf-of grant
+        only accepts an assertion audienced to the exchanging application,
+        and the SSO login flow always requests a token self-audienced to the
+        SSO application, so a separate exchange application can never
+        receive a usable one.
+    client_id:
+      type: string
+      minLength: 1
+      description: |
+        The identity-provider application authorized to perform exchanges for
+        this audience — typically a dedicated registration carrying the
+        token-exchange (or on-behalf-of) grant, separate from the SSO login
+        application. Required unless use_idp_credentials is true. Supports
+        env.VAR_NAME and vault.path references. Redacted in API responses.
+    client_secret:
+      type: string
+      description: |
+        Secret for the exchange application; omit for public clients. Ignored
+        when use_idp_credentials is true. Supports env.VAR_NAME and
+        vault.path references. Redacted in API responses.
+    scopes:
+      type: array
+      items:
+        type: string
+      description: |
+        Optional scopes to request on the exchanged token. Include
+        "offline_access" (where the identity provider supports it) so the
+        retained admin discovery credential gets a refresh token and stays
+        self-renewing.
+    authorization_server_url:
+      type: string
+      description: |
+        Overrides the Authorization Server the exchange request is sent to.
+        Only needed when the audience is registered on a different
+        Authorization Server than the one used for SSO login (e.g. Okta's
+        per-resource Custom Authorization Servers). Leave unset to use the
+        deployment's SSO login issuer, which is correct for providers with a
+        single tenant-wide token endpoint (Entra, Auth0).
+  allOf:
+    - if:
+        not:
+          properties:
+            use_idp_credentials:
+              const: true
+          required: [use_idp_credentials]
+      then:
+        required: [client_id]
+        description: |
+          client_id is required unless use_idp_credentials is true, in which
+          case the exchange uses the SSO login application's own credentials
+          instead.
+  additionalProperties: false
+  description: |
+    Delegated token-exchange scoping and credentials for auth_type
+    "token_exchange". The exchange endpoint and grant shape come from the
+    deployment's identity-provider integration; this block only says which
+    resource the exchanged token must be scoped to and which application
+    performs the exchange.
 
 MCPConnectionType:
   type: string
@@ -18,14 +93,49 @@ MCPConnectionType:
 
 MCPConnectionState:
   type: string
-  enum: [connected, disconnected, error, pending_tools, disabled]
+  enum: [healthy, unstable, error, pending_verification, needs_reauth, disabled, degraded]
   description: |
     Connection state of an MCP client:
-    - connected: Client is connected and ready to use
-    - disconnected: Client is not connected (will be auto-recovered by health monitor)
-    - error: Client is in an unrecoverable error state
-    - pending_tools: Connected but tools not yet populated (per-user OAuth clients)
+    - healthy: Bifrost's own periodic connection check (ping/list_tools for
+      sticky clients, list_tools for per-call clients) most recently
+      succeeded.
+    - unstable: The periodic connection check most recently failed with a
+      transient-classified error. Purely informational — unlike
+      needs_reauth, this never gates execution; tool calls are still
+      attempted normally. Self-heals to healthy on the next successful
+      check, no human action required.
+    - error: A data-consistency fallback used only when a client is
+      registered in the config store but missing from the runtime manager
+      entirely — a deeper anomaly than anything in the normal
+      connect/health-check lifecycle, which never assigns this value itself.
+    - pending_verification: Declared (typically via config.json) but the one-time
+      admin verification has not been completed yet. Complete it via
+      POST /api/mcp/client/{id}/initiate-verification (auth_type oauth /
+      per_user_oauth) or POST /api/mcp/client/{id}/verify-headers
+      (auth_type per_user_headers).
+    - needs_reauth: Setup completed at least once, but a credential an admin is
+      responsible for has permanently died and needs a human to repair it.
+      For shared OAuth clients the connection credential itself was
+      rejected/expired with no silent recovery; the state is sticky (the health
+      monitor will not clobber it) until an admin runs
+      POST /api/mcp/client/{id}/reauthorize. For per-user clients this is a
+      response-only projection — computed at list-time, never stored in the
+      runtime manager — meaning the retained admin discovery credential
+      needs repair; end-user credentials and tool calls keep working, only
+      periodic tool-list refresh pauses. Overlays onto both healthy and
+      unstable runtime readings, never onto disabled or
+      pending_verification. Repair via reauthorize (per_user_oauth),
+      verify-headers with fresh sample values (per_user_headers), or
+      verify-exchange (token_exchange, which re-exchanges the signed-in
+      admin's own identity token — no sample values to supply).
     - disabled: Client has been intentionally disabled; no connection or workers are active
+    - degraded: A read-time cluster aggregate, never a single node's own
+      local state — multiple instances of a distributed deployment each
+      currently hold a different self-reported state for the same client.
+      Only meaningful for states that can genuinely vary per instance
+      (healthy, unstable, pending_verification); needs_reauth/disabled are
+      config-sourced facts expected to already agree everywhere. Never
+      appears in a single-instance deployment.
 
 MCPStdioConfig:
   type: object
@@ -87,6 +197,30 @@ MCPClientCreateRequestBase:
           When `auth_type` is `per_user_headers`, `per_user_header_keys` must
           declare at least one header name — the submission flow has nothing
           to ask the end-user for otherwise.
+    - if:
+        required: [auth_type]
+        properties:
+          auth_type:
+            const: token_exchange
+      then:
+        required: [token_exchange]
+        description: |
+          When `auth_type` is `token_exchange`, `token_exchange` must declare
+          at least `audience`, plus either `client_id` or
+          `use_idp_credentials: true` — there is nothing to scope the
+          exchange to, or exchange with, otherwise.
+    - if:
+        required: [auth_type]
+        properties:
+          auth_type:
+            not:
+              const: token_exchange
+      then:
+        not:
+          required: [token_exchange]
+        description: |
+          A `token_exchange` block only applies to auth_type "token_exchange";
+          reject it for every other auth_type instead of silently ignoring it.
   properties:
     client_id:
       type: string
@@ -104,6 +238,39 @@ MCPClientCreateRequestBase:
         Whether the MCP server supports ping for health checks.
         If true, uses lightweight ping method for health checks.
         If false, uses listTools method for health checks instead.
+    needs_session_stickiness:
+      type: boolean
+      default: false
+      description: |
+        HTTP-only. Only meaningful for auth_type "oauth", "headers", or "none"
+        (a server-level connection) — per-user auth types are always per-call
+        regardless of this field. When true, Bifrost holds one persistent
+        upstream connection, reused for every tool call. When false or
+        omitted (the default), a fresh connection is dialed per tool call.
+        Cannot be set to false for connection_type "sse" or "stdio" — both
+        are always sticky.
+    tool_sync_interval:
+      type: integer
+      description: |
+        Per-client tool-list sync interval in minutes. 0 (or omitted) falls back
+        to the global mcp_tool_sync_interval client config; a negative value
+        disables periodic tool sync for this client.
+    tool_execution_timeout:
+      type: integer
+      minimum: 0
+      description: |
+        Per-client tool execution timeout in seconds. 0 (or omitted) falls back
+        to the global mcp_tool_execution_timeout client config.
+    allowed_extra_headers:
+      type: array
+      items:
+        type: string
+      description: |
+        Allowlist of request-level headers callers may forward to this MCP
+        server at execution time.
+        ["*"] => any header may be forwarded
+        [] or omitted => no extra headers are forwarded
+        ["header1", "header2"] => only the specified headers
     connection_type:
       $ref: '#/MCPConnectionType'
     auth_type:
@@ -126,8 +293,9 @@ MCPClientCreateRequestBase:
       $ref: '../../schemas/management/oauth.yaml#/OAuthConfigRequest'
       description: |
         OAuth configuration for initiating OAuth flow.
-        Only include this when creating a client with auth_type "oauth".
-        This will trigger the OAuth flow and return an authorization URL.
+        Required when creating a client with auth_type "oauth" or "per_user_oauth".
+        This will trigger the OAuth flow and return an authorization URL
+        (see the pending_oauth response variant).
     tools_to_execute:
       type: array
       items:
@@ -180,6 +348,13 @@ MCPClientCreateRequestBase:
         end-user must supply the first time they hit this MCP server. Values are
         submitted per user via the inline-401 flow — never persisted on the MCP
         client config.
+    token_exchange:
+      $ref: '#/MCPTokenExchangeConfig'
+      description: |
+        Required when creating a client with auth_type "token_exchange".
+        Verification runs automatically as the signed-in admin (see
+        POST /api/mcp/client/{id}/verify-exchange) — there is no sample-token
+        field on this request.
     user_headers:
       type: object
       additionalProperties:
@@ -187,9 +362,11 @@ MCPClientCreateRequestBase:
       description: |
         Used only at create time when `auth_type` is `per_user_headers`. A sample
         set of header values the admin supplies so Bifrost can run a one-time
-        upstream verify and discover the tool list. Discarded after the create
-        call — not persisted. Mirrors how the admin's temp OAuth token is used
-        for `per_user_oauth` setup.
+        upstream verify and discover the tool list. Not persisted by the create
+        call; each end-user submits their own values at runtime. To have Bifrost
+        retain an admin discovery credential for periodic tool-list refresh,
+        use POST /api/mcp/client/{id}/verify-headers, which stores the sample
+        values as that credential.
 
 MCPClientCreateRequestHTTP:
   allOf:
@@ -235,55 +412,83 @@ MCPClientCreateRequestSTDIO:
 
 MCPClientUpdateRequest:
   type: object
-  description: MCP client configuration for updating an existing client (includes tool_pricing)
-  allOf:
-    - if:
-        required: [auth_type]
-        properties:
-          auth_type:
-            const: per_user_headers
-      then:
-        required: [per_user_header_keys]
-        properties:
-          per_user_header_keys:
-            type: array
-            minItems: 1
-            items:
-              type: string
-              minLength: 1
+  description: |
+    MCP client configuration for updating an existing client (includes tool_pricing).
+    All fields are optional; omitting a field retains its existing value (PATCH
+    semantics). Immutable fields (connection_type, auth_type, connection_string,
+    stdio_config, oauth_config_id) are not accepted here; they cannot be changed
+    after creation.
   properties:
-    client_id:
-      type: string
-      description: Unique identifier for the MCP client
     name:
       type: string
       description: Display name for the MCP client
     is_code_mode_client:
       type: boolean
       description: Whether this client is available in code mode
-    connection_type:
-      $ref: '#/MCPConnectionType'
-    connection_string:
-      type: string
-      description: HTTP or SSE URL (required for HTTP or SSE connections)
-    stdio_config:
-      $ref: '#/MCPStdioConfig'
-    auth_type:
-      $ref: '#/MCPAuthType'
-      description: Authentication type for the MCP connection
-    oauth_config_id:
-      type: string
+    is_ping_available:
+      type: boolean
       description: |
-        OAuth config ID for OAuth authentication.
-        References the oauth_configs table.
-        Only relevant when auth_type is "oauth".
+        Whether the MCP server supports ping for health checks.
+        If true, uses lightweight ping method for health checks.
+        If false, uses listTools method for health checks instead.
+    needs_session_stickiness:
+      type: boolean
+      description: |
+        HTTP-only. Only meaningful for auth_type "oauth", "headers", or "none"
+        — per-user auth types are always per-call regardless of this field.
+        When true, Bifrost holds one persistent upstream connection, reused
+        for every tool call. When false, a fresh connection is dialed per
+        tool call. Cannot be set to false for connection_type "sse" or
+        "stdio" — both are always sticky.
+    tool_sync_interval:
+      type: integer
+      description: |
+        Per-client tool-list sync interval in minutes. 0 falls back to the
+        global mcp_tool_sync_interval client config; a negative value disables
+        periodic tool sync for this client.
+    tool_execution_timeout:
+      type: integer
+      minimum: 0
+      description: |
+        Per-client tool execution timeout in seconds. 0 falls back to the
+        global mcp_tool_execution_timeout client config.
     headers:
       type: object
       additionalProperties:
         type: string
       description: |
         Custom headers to include in requests.
-        Only used when auth_type is "headers".
+        Only used when auth_type is "headers". Supports env./vault. references.
+        Values echoed back redacted from a GET response are recognized and
+        preserve the stored value, so a fetch-modify-put round trip is safe.
+    allowed_extra_headers:
+      type: array
+      items:
+        type: string
+      description: |
+        Allowlist of request-level headers callers may forward to this MCP
+        server at execution time.
+        ["*"] => any header may be forwarded
+        [] => no extra headers are forwarded
+        ["header1", "header2"] => only the specified headers
+    oauth_config:
+      $ref: '../../schemas/management/oauth.yaml#/OAuthConfigRequest'
+      description: |
+        Rotates the stored OAuth configuration in place. Only accepted for
+        auth_type "oauth" or "per_user_oauth" (400 otherwise). Any provided
+        field replaces the stored value; no new config row is created and no
+        re-discovery or re-registration runs. Unset fields preserve stored
+        values: client_id/client_secret follow the SecretVar masked-placeholder
+        convention (send back the redacted placeholder from a GET response to
+        keep the stored secret), while empty strings / empty arrays on the
+        remaining fields mean "not provided".
+
+        When any field actually changes, every token bound to the OAuth config
+        is flipped to needs_reauth regardless of auth mode, shared and
+        per-user sessions alike must re-authenticate. A round trip that
+        resolves to the stored values is a no-op and does not cascade.
+        Rotation cannot run while the client is (or is being) disabled
+        (400); send those as two separate requests.
     tools_to_execute:
       type: array
       items:
@@ -325,9 +530,20 @@ MCPClientUpdateRequest:
       items:
         type: string
       description: |
-        For `per_user_headers` clients only. Updating this list flips every existing
-        active per-user credential row to `needs_update`; callers will be sent back to
-        the submission form on their next tool call to satisfy the new schema.
+        For `per_user_headers` clients only. Cannot be set to an empty list.
+        Updating this list flips every existing active per-user credential row
+        to `needs_update`; callers will be sent back to the submission form on
+        their next tool call to satisfy the new schema. The retained admin
+        discovery credential is flipped the same way; repair it by calling
+        POST /api/mcp/client/{id}/verify-headers with fresh sample values.
+    token_exchange:
+      $ref: '#/MCPTokenExchangeConfig'
+      description: |
+        For `token_exchange` clients only. Omitted preserves the stored
+        configuration. A redacted `client_id` / `client_secret` round-tripped
+        from a prior GET is resolved back to the stored value rather than
+        overwriting it; any other change re-scopes future exchanges and
+        invalidates cached exchanged tokens for this client.
     disabled:
       type: boolean
       default: false
@@ -472,6 +688,11 @@ MCPClientConfig:
         For `per_user_headers` clients only. The list of header names each end-user
         must supply via the inline-401 flow. Header values themselves are stored
         per-user in a separate table (surfaced on `/api/mcp/sessions`).
+    token_exchange:
+      $ref: '#/MCPTokenExchangeConfig'
+      description: |
+        For `token_exchange` clients only. `client_id` and `client_secret` are
+        redacted in this response.
     disabled:
       type: boolean
       default: false
