@@ -163,6 +163,10 @@ func RunToolCallsWithEmptyPropertiesTest(t *testing.T, client *bifrost.Bifrost, 
 		t.Logf("Tool calls not supported for provider %s", testConfig.Provider)
 		return
 	}
+	if testConfig.SkipEmptyToolSchemas {
+		t.Logf("Empty/nil tool schemas not accepted by provider %s", testConfig.Provider)
+		return
+	}
 
 	t.Run("ToolCallsWithEmptyProperties", func(t *testing.T) {
 		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
@@ -295,6 +299,10 @@ func RunToolCallsWithEmptyPropertiesTest(t *testing.T, client *bifrost.Bifrost, 
 func RunToolCallsWithNilPropertiesTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) {
 	if !testConfig.Scenarios.ToolCalls {
 		t.Logf("Tool calls not supported for provider %s", testConfig.Provider)
+		return
+	}
+	if testConfig.SkipEmptyToolSchemas {
+		t.Logf("Empty/nil tool schemas not accepted by provider %s", testConfig.Provider)
 		return
 	}
 
