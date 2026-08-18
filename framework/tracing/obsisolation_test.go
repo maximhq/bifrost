@@ -2,6 +2,7 @@ package tracing
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -336,6 +337,57 @@ func TestSetObservabilityPlugins_DedupesByName(t *testing.T) {
 	}
 }
 
+// TestObsSlot_SizeTriggerFlushesBeforeCount verifies the memory guard: the byte cap gates
+// delivery — traces buffer silently until their combined size crosses maxBatchBytes, at which
+// point the whole batch flushes, long before the count cap (or the timer) would. The negative
+// half (three traces stay buffered) is what distinguishes a real size cap from an
+// implementation that just flushes every trace. Content lives in both trace- and span-level
+// attributes, so trace-level byte accounting is exercised too.
+func TestObsSlot_SizeTriggerFlushesBeforeCount(t *testing.T) {
+	p := &blockingObsPlugin{name: "big"}
+	slot := &obsPluginSlot{
+		plugin:        p,
+		name:          p.name,
+		batchSize:     1_000_000, // count cap effectively unreachable
+		maxBatchBytes: 64 * 1024, // 64 KiB size cap
+		flushInterval: time.Hour, // timer never fires during the test
+		stop:          make(chan struct{}),
+	}
+	slot.start(nil)
+	defer slot.signalStop()
+
+	// ~18 KiB per trace, split across trace- and span-level attributes: three stay under the
+	// 64 KiB cap (~54 KiB), the fourth crosses it (~72 KiB).
+	bigTrace := func() *schemas.Trace {
+		return &schemas.Trace{
+			Attributes: map[string]any{"trace.big": strings.Repeat("x", 9*1024)},
+			Spans: []*schemas.Span{
+				{Name: "s", Attributes: map[string]any{"span.big": strings.Repeat("x", 9*1024)}},
+			},
+		}
+	}
+
+	// Three traces must NOT flush — the cap gates, it doesn't fire per trace. Give any wrongly
+	// triggered flush time to reach Inject before asserting nothing was delivered.
+	for range 3 {
+		slot.enqueue(bigTrace(), nil)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if got := p.started.Load(); got != 0 {
+		t.Fatalf("byte cap flushed early: %d trace(s) delivered before the cap was reached", got)
+	}
+
+	// The fourth trace crosses the cap and flushes the whole buffered batch.
+	slot.enqueue(bigTrace(), nil)
+	deadline := time.Now().Add(2 * time.Second)
+	for p.started.Load() < 4 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := p.started.Load(); got != 4 {
+		t.Fatalf("expected the byte cap to flush all 4 buffered traces, got %d", got)
+	}
+}
+
 // TestObsSlot_PostCloseEnqueueStillDelivers is the shutdown-window guarantee: a trace
 // appended after the slot has been told to stop — a producer still holding a retired slot
 // during a config reload — is flushed immediately rather than lost in a batch the timer will
@@ -346,6 +398,7 @@ func TestObsSlot_PostCloseEnqueueStillDelivers(t *testing.T) {
 		plugin:        p,
 		name:          p.name,
 		batchSize:     1000,      // never reached; only the timer or close flushes
+		maxBatchBytes: 1 << 30,   // size cap effectively disabled, so the first trace buffers
 		flushInterval: time.Hour, // never ticks during the test
 		stop:          make(chan struct{}),
 	}
