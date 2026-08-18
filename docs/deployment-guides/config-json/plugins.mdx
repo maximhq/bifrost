@@ -11,7 +11,7 @@ icon: "puzzle-piece"
 </Note>
 
 <Note>
-In DB-backed deployments, plugin sync depends on the reconciliation mode. Split mode preserves DB plugins unless a file plugin has a higher `version` or changed placement/order. With `source_of_truth: "config.json"`, a present `plugins` array is authoritative; `plugins: []` removes stored opt-in plugins. See [Source of Truth & Reconciliation](/deployment-guides/config-json/source-of-truth).
+In DB-backed deployments, plugin sync depends on the reconciliation mode. Split mode preserves DB plugins unless a file plugin has changed placement/order. With `source_of_truth: "config.json"`, a present `plugins` array is authoritative; `plugins: []` removes stored opt-in plugins. See [Source of Truth & Reconciliation](/deployment-guides/config-json/source-of-truth).
 </Note>
 
 ---
@@ -40,12 +40,11 @@ Every entry in the `plugins` array supports these common fields:
 | `enabled` | boolean | Yes | Enable or disable this plugin |
 | `config` | object | Varies | Plugin-specific configuration |
 | `path` | string | No | Path to a custom plugin binary or WASM file |
-| `version` | integer | No | 🛑 **DB-Backed Only.** Plugin metadata persisted on `TablePlugin`. In DB-backed sync, higher values trigger replacement/reload. Valid range: `1` to `32767`. |
 | `placement` | string | No | 🛑 **DB-Backed Only.** Execution metadata (`"pre_builtin"`, `"builtin"`, `"post_builtin"`) persisted on `TablePlugin` and used for ordering behavior. |
 | `order` | integer | No | 🛑 **DB-Backed Only.** Execution metadata persisted on `TablePlugin`; within a placement group, lower values run earlier. |
 
 <Note>
-`name`, `enabled`, `path`, and `config` are the core plugin config fields. In DB-backed mode, `version`, `placement`, and `order` are persisted on `TablePlugin` and used during sync/runtime ordering.
+`name`, `enabled`, `path`, and `config` are the core plugin config fields. In DB-backed mode, `placement` and `order` are persisted on `TablePlugin` and used during sync/runtime ordering.
 </Note>
 
 ---
@@ -315,7 +314,7 @@ See [Writing Go Plugins](/plugins/writing-go-plugin) for new plugin development.
 
 **Placement and ordering (DB-backed only):**
 
-In DB-backed mode, plugin metadata such as `version` (`1` to `32767`), `placement`, and `order` can be managed via config sync and DB/UI workflows:
+In DB-backed mode, plugin metadata such as `placement` and `order` can be managed via config sync and DB/UI workflows:
 
 | `placement` | When it runs |
 |-------------|-------------|
