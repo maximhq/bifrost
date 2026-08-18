@@ -2368,7 +2368,7 @@
                       },
                       "apiToken": {
                         "type": "string",
-                        "description": "Okta API token for Admin API access"
+                        "description": "Okta API token for Admin API access (optional; enables 24-hour background user/group reconciliation)"
                       },
                       "audience": {
                         "type": "string",
@@ -2396,13 +2396,14 @@
                       },
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
+                      "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
                       "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
                       "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
                       "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
                     },
-                    "required": ["issuerUrl", "clientId", "clientSecret", "apiToken"],
+                    "required": ["issuerUrl", "clientId", "clientSecret"],
                     "additionalProperties": false
                   }
                 }
@@ -2470,6 +2471,7 @@
                       },
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
+                      "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
                       "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
@@ -2538,6 +2540,7 @@
                       },
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
+                      "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
                       "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
@@ -2604,6 +2607,7 @@
                       },
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
+                      "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
                       "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
@@ -2680,6 +2684,7 @@
                       },
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
+                      "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
                       "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
@@ -2778,6 +2783,7 @@
                       },
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
+                      "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
                       "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
@@ -2851,6 +2857,7 @@
                       },
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
+                      "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
                       "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
@@ -6724,6 +6731,12 @@
       "enum": ["highestPermissionCount", "order"],
       "default": "highestPermissionCount",
       "description": "How a single role is chosen when a user resolves to more than one role: 'highestPermissionCount' (default) picks the role with the most permissions; 'order' evaluates the attribute-role mappings top to bottom and the first matching rule wins."
+    },
+    "scim_claims_sync_mode": {
+      "type": "string",
+      "enum": ["both", "scim"],
+      "default": "both",
+      "description": "When SCIM is enabled, selects whether IdP login/refresh claims still drive role/team/business-unit/profile sync and JIT user creation: 'both' (default) keeps syncing from both claims and SCIM; 'scim' makes SCIM the sole source of truth — claims are ignored for provisioning and new users must be pushed by SCIM. Inert when SCIM is disabled (claims always sync then)."
     },
     "scim_attribute_team_mappings": {
       "type": "array",
