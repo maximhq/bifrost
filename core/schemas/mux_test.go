@@ -1510,3 +1510,57 @@ func TestResponsesToChatStreamUsesDenseToolCallIndexes(t *testing.T) {
 		t.Fatalf("second tool-call index = %d, want 1", got)
 	}
 }
+
+// A function_call_arguments.delta that omits output_index cannot name a new
+// item; it must continue the tool call that was most recently opened rather
+// than being keyed as its own (index 0) call.
+func TestResponsesToChatStreamNilOutputIndexContinuesLastToolCall(t *testing.T) {
+	state := &ResponsesToChatStreamState{}
+	functionType := ResponsesMessageTypeFunctionCall
+
+	added := (&BifrostResponsesStreamResponse{
+		Type:        ResponsesStreamResponseTypeOutputItemAdded,
+		OutputIndex: Ptr(1), // a message item came first
+		Item: &ResponsesMessage{
+			Type: &functionType,
+			ResponsesToolMessage: &ResponsesToolMessage{
+				CallID: Ptr("call-1"),
+				Name:   Ptr("first_tool"),
+			},
+		},
+	}).ToBifrostChatResponseWithState(state)
+	if got := added.Choices[0].ChatStreamResponseChoice.Delta.ToolCalls[0].Index; got != 0 {
+		t.Fatalf("tool-call index = %d, want 0", got)
+	}
+
+	args := (&BifrostResponsesStreamResponse{
+		Type:  ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
+		Delta: Ptr(`{"value":1}`), // no output_index
+	}).ToBifrostChatResponseWithState(state)
+	if got := args.Choices[0].ChatStreamResponseChoice.Delta.ToolCalls[0].Index; got != 0 {
+		t.Fatalf("argument delta without output_index got index %d, want 0 (continue the open call)", got)
+	}
+
+	// A later item with a real output_index still gets the next dense ordinal.
+	next := (&BifrostResponsesStreamResponse{
+		Type:        ResponsesStreamResponseTypeOutputItemAdded,
+		OutputIndex: Ptr(2),
+		Item: &ResponsesMessage{
+			Type: &functionType,
+			ResponsesToolMessage: &ResponsesToolMessage{
+				CallID: Ptr("call-2"),
+				Name:   Ptr("second_tool"),
+			},
+		},
+	}).ToBifrostChatResponseWithState(state)
+	if got := next.Choices[0].ChatStreamResponseChoice.Delta.ToolCalls[0].Index; got != 1 {
+		t.Fatalf("second tool-call index = %d, want 1", got)
+	}
+	trailing := (&BifrostResponsesStreamResponse{
+		Type:  ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
+		Delta: Ptr(`{"value":2}`),
+	}).ToBifrostChatResponseWithState(state)
+	if got := trailing.Choices[0].ChatStreamResponseChoice.Delta.ToolCalls[0].Index; got != 1 {
+		t.Fatalf("trailing argument delta got index %d, want 1", got)
+	}
+}

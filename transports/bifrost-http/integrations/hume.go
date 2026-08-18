@@ -236,10 +236,13 @@ func humePreCallback(config *lib.HumeConfig) PreRequestCallback {
 		}
 		humeRequest.customSessionID = sessionID
 		bifrostCtx.SetValue(humeSessionContextKey{}, sessionID)
-		// Hume EVI accepts a single tool call per turn. Do not inject MCP tools,
+		// Hume executes tool calls itself and accepts a single tool call per
+		// turn. Suppress Bifrost MCP tool injection (Hume streams never enter the
+		// MCP executor, so an injected tool call would have no execution path)
 		// and require the provider request to express serial tool execution for
 		// any tools supplied by Hume or added by earlier transport processing.
-		bifrostCtx.SetValue(schemas.MCPContextKeyIncludeClients, []string{})
+		// Both keys are reserved, so LLM plugins cannot unset them.
+		bifrostCtx.SetValue(schemas.BifrostContextKeySkipMCPToolInjection, true)
 		bifrostCtx.SetValue(schemas.BifrostContextKeyRequireSerialToolCalls, true)
 		schemas.ExtractAndSetUserAgentFromHeaders(extractHeadersFromRequest(httpCtx), bifrostCtx)
 		return nil

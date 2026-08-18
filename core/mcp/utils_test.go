@@ -210,3 +210,31 @@ func TestConvertMCPToolToBifrostSchema_PreservesDefs(t *testing.T) {
 	assert.Contains(t, s, "Preferences", "definition name must be present")
 	assert.Contains(t, s, `"$ref"`, "the property $ref must still be present (resolution happens per-provider)")
 }
+
+// shouldIncludeClient is the load-bearing branch behind the request-context
+// client allow-list: nil means "no filter", an explicit empty list admits no
+// client, "*" admits every client, and anything else is an exact allow-list.
+func TestShouldIncludeClient(t *testing.T) {
+	t.Parallel()
+
+	logger := &MockLogger{}
+	tests := []struct {
+		name           string
+		includeClients []string
+		client         string
+		want           bool
+	}{
+		{name: "nil filter admits everything", includeClients: nil, client: "alpha", want: true},
+		{name: "empty list admits nothing", includeClients: []string{}, client: "alpha", want: false},
+		{name: "wildcard admits everything", includeClients: []string{"*"}, client: "beta", want: true},
+		{name: "listed client is admitted", includeClients: []string{"alpha"}, client: "alpha", want: true},
+		{name: "unlisted client is blocked", includeClients: []string{"alpha"}, client: "beta", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldIncludeClient(tt.client, tt.includeClients, logger); got != tt.want {
+				t.Fatalf("shouldIncludeClient(%q, %v) = %v, want %v", tt.client, tt.includeClients, got, tt.want)
+			}
+		})
+	}
+}

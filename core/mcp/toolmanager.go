@@ -458,6 +458,18 @@ func (m *ToolsManager) ParseAndAddToolsToRequest(ctx *schemas.BifrostContext, re
 		return req
 	}
 
+	// Trusted transports whose downstream consumer cannot execute Bifrost MCP
+	// tools opt out of injection entirely (reserved key; plugins cannot unset it).
+	if skip, ok := ctx.Value(schemas.BifrostContextKeySkipMCPToolInjection).(bool); ok && skip {
+		return req
+	}
+
+	// An explicit empty client allow-list admits no client, so there is nothing
+	// to collect; skip the per-client tool walk.
+	if includeClients, ok := ctx.Value(schemas.MCPContextKeyIncludeClients).([]string); ok && includeClients != nil && len(includeClients) == 0 {
+		return req
+	}
+
 	// When auto tool injection is disabled, only inject tools if the request
 	// has explicit context filters set (e.g. via x-bf-mcp-include-tools header).
 	if m.disableAutoToolInject.Load() {

@@ -129411,7 +129411,7 @@
                   "  pm.expect(body, 'Hume converter returned a sanitized mid-stream failure: ' + body).to.not.include('internal server error');",
                   "  pm.expect(body).to.include('tool_calls');",
                   "  pm.expect(body).to.include('emit_status');",
-                  "  pm.expect(body).to.include('\\\"index\\\":0');",
+                  "  pm.expect(body, 'tool call must be emitted at Chat Completions tool index 0: ' + body).to.include('\\\"tool_calls\\\":[{\\\"index\\\":0');",
                   "  pm.expect(body).to.not.include('\\\"index\\\":1');",
                   "  pm.expect(body).to.include('data: [DONE]');",
                   "});"
@@ -129432,7 +129432,7 @@
               "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"stream\": true,\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call emit_status exactly once with status ready.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"emit_status\",\n        \"description\": \"Emit one status.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"status\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"status\"\n          ]\n        }\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"function\": {\n      \"name\": \"emit_status\"\n    }\n  }\n}"
             },
             "url": {
-              "raw": "{{baseUrl}}/hume/v1/chat/completions?custom_session_id=harness-hume-serial-tool",
+              "raw": "{{baseUrl}}/hume/v1/chat/completions?custom_session_id=harness-hume-serial-tool-{{$guid}}",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -129445,7 +129445,60 @@
               "query": [
                 {
                   "key": "custom_session_id",
-                  "value": "harness-hume-serial-tool"
+                  "value": "harness-hume-serial-tool-{{$guid}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-4XX] openai/bifrost-harness-uncatalogued-model Hume serial tool stream forwards catalog-absent model",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Pins core/toolconstraints.go: a model absent from the catalog is assumed to accept",
+                  "// parallel_tool_calls=false and is forwarded, so the 4xx must come from the provider",
+                  "// (unknown model), not from Bifrost's pre-flight serial-tool rejection. Red before the",
+                  "// change (Bifrost 400 'cannot guarantee serial tool execution'), green after.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('catalog-absent model reaches the provider instead of a Bifrost serial-tool rejection', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'Bifrost rejected the request pre-flight: ' + body).to.not.include('cannot guarantee serial tool execution');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/bifrost-harness-uncatalogued-model\",\n  \"stream\": true,\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call emit_status exactly once with status ready.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"emit_status\",\n        \"description\": \"Emit one status.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"status\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"status\"\n          ]\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/hume/v1/chat/completions?custom_session_id=harness-hume-uncatalogued-model-{{$guid}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "hume",
+                "v1",
+                "chat",
+                "completions"
+              ],
+              "query": [
+                {
+                  "key": "custom_session_id",
+                  "value": "harness-hume-uncatalogued-model-{{$guid}}"
                 }
               ]
             }

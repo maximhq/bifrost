@@ -217,8 +217,8 @@ Other routes retain their existing MCP behavior: eligible non-Hume streams can s
 Provider handling is intentionally strict:
 
 - Anthropic-family request formats use their native serial-tool setting.
-- OpenAI-compatible request formats use `parallel_tool_calls: false` only when the selected model advertises support for that parameter.
-- If Bifrost cannot express or verify a single-call constraint for the provider/model combination, it returns HTTP 400 instead of risking a parallel tool response that Hume cannot process.
+- OpenAI-compatible request formats send `parallel_tool_calls: false` unless the model's catalog entry explicitly lacks that parameter. Models absent from the catalog (self-hosted and custom OpenAI-compatible deployments) are assumed to accept it. Key aliases are checked against the model they resolve to, not only the alias name.
+- If the provider wire format cannot express a single-call constraint (for example Vertex Gemini and Gemma models, including all-digit fine-tuned endpoint IDs), or a catalog entry explicitly lacks support, Bifrost returns HTTP 400 instead of risking a parallel tool response that Hume cannot process.
 - The response adapter also rejects a response containing more than one tool call.
 
 If a model works for ordinary Hume conversations but fails only when tools are attached, choose a model/provider combination with verified serial function-calling support.
@@ -422,7 +422,7 @@ After the direct endpoint test passes:
 - Hume routes support SSE only, not the legacy WebSocket custom-language-model protocol.
 - Requests are streaming-only and limited to one completion.
 - Hume can process only one function call at a time.
-- Hume requests exclude Bifrost MCP clients through the normal per-request MCP filter.
+- Hume requests carry a reserved skip-MCP-injection flag that LLM plugins cannot unset, so Bifrost MCP tools are never added to them.
 - The Hume adapter does not execute Hume tools or persist conversation state.
 - Changes to the top-level Bifrost `hume` configuration require a restart.
 

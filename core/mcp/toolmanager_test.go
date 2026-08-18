@@ -1023,3 +1023,91 @@ func TestParseAndAddToolsToRequest_OpenCode_NoDuplicate(t *testing.T) {
 		}
 	}
 }
+
+// =============================================================================
+// ParseAndAddToolsToRequest – injection suppression
+// =============================================================================
+
+// The mock ClientManager ignores request-context filters, so any tool that
+// shows up in the request proves the per-client walk ran. These tests pin the
+// two ways a request opts out of MCP tool injection before that walk.
+
+func TestParseAndAddToolsToRequest_SkipInjectionFlagLeavesRequestUntouched(t *testing.T) {
+	t.Parallel()
+
+	cm := &mockToolClientManager{tools: []schemas.ChatTool{makeTool("calculator")}}
+	tm := newToolsManagerForTest(cm)
+
+	req := buildChatRequest("echo")
+	originalTools := req.ChatRequest.Params.Tools
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeySkipMCPToolInjection, true)
+
+	result := tm.ParseAndAddToolsToRequest(ctx, req)
+
+	if result != req {
+		t.Fatalf("expected the same request to be returned")
+	}
+	names := toolNamesFromChatRequest(result)
+	if len(names) != 1 || names[0] != "echo" {
+		t.Fatalf("expected only the caller's tool to remain, got %v", names)
+	}
+	if len(result.ChatRequest.Params.Tools) != len(originalTools) {
+		t.Fatalf("tools slice was modified: %v", names)
+	}
+}
+
+func TestParseAndAddToolsToRequest_SkipInjectionFlagIsReservedFromPlugins(t *testing.T) {
+	t.Parallel()
+
+	cm := &mockToolClientManager{tools: []schemas.ChatTool{makeTool("calculator")}}
+	tm := newToolsManagerForTest(cm)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeySkipMCPToolInjection, true)
+	// While plugin hooks run, writes to reserved keys are dropped, so a plugin
+	// cannot re-enable injection for a transport that opted out.
+	ctx.BlockRestrictedWrites()
+	ctx.SetValue(schemas.BifrostContextKeySkipMCPToolInjection, false)
+	ctx.UnblockRestrictedWrites()
+
+	result := tm.ParseAndAddToolsToRequest(ctx, buildChatRequest("echo"))
+
+	if names := toolNamesFromChatRequest(result); len(names) != 1 || names[0] != "echo" {
+		t.Fatalf("plugin write must not re-enable injection, got %v", names)
+	}
+}
+
+func TestParseAndAddToolsToRequest_EmptyIncludeClientsAdmitsNothing(t *testing.T) {
+	t.Parallel()
+
+	cm := &mockToolClientManager{tools: []schemas.ChatTool{makeTool("calculator")}}
+	tm := newToolsManagerForTest(cm)
+
+	req := buildChatRequest("echo")
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.MCPContextKeyIncludeClients, []string{})
+
+	result := tm.ParseAndAddToolsToRequest(ctx, req)
+
+	if result != req {
+		t.Fatalf("expected the same request to be returned")
+	}
+	if names := toolNamesFromChatRequest(result); len(names) != 1 || names[0] != "echo" {
+		t.Fatalf("an explicit empty client allow-list must inject nothing, got %v", names)
+	}
+}
+
+func TestParseAndAddToolsToRequest_NilIncludeClientsStillInjects(t *testing.T) {
+	t.Parallel()
+
+	cm := &mockToolClientManager{tools: []schemas.ChatTool{makeTool("calculator")}}
+	tm := newToolsManagerForTest(cm)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result := tm.ParseAndAddToolsToRequest(ctx, buildChatRequest("echo"))
+
+	if names := toolNamesFromChatRequest(result); countOccurrences(names, "calculator") != 1 {
+		t.Fatalf("no filter must keep injecting, got %v", names)
+	}
+}

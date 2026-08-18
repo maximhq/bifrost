@@ -116,8 +116,9 @@ func TestHumePreCallbackModelSessionAndStreamingDefaults(t *testing.T) {
 	assert.Nil(t, request.ParallelToolCalls, "core applies the constraint after plugin request mutation")
 	assert.Equal(t, "session-123", request.customSessionID)
 	assert.Equal(t, "session-123", bifrostCtx.Value(humeSessionContextKey{}))
-	assert.Equal(t, []string{}, bifrostCtx.Value(schemas.MCPContextKeyIncludeClients))
+	assert.Equal(t, true, bifrostCtx.Value(schemas.BifrostContextKeySkipMCPToolInjection))
 	assert.Equal(t, true, bifrostCtx.Value(schemas.BifrostContextKeyRequireSerialToolCalls))
+	assert.Nil(t, bifrostCtx.Value(schemas.MCPContextKeyIncludeClients), "Hume must not stamp an MCP client filter; suppression rides on the reserved skip flag")
 }
 
 func TestHumePreCallbackGeneratesSessionID(t *testing.T) {
@@ -487,6 +488,45 @@ func TestHumeRouteStreamsOpenAISSEAndDoneMarker(t *testing.T) {
 	assert.Contains(t, body, `data: {"id":"chatcmpl-sse"`)
 	assert.Contains(t, body, `"system_fingerprint":"session-sse"`)
 	assert.Contains(t, body, `"content":"hello"`)
+	assert.True(t, strings.HasSuffix(body, "data: [DONE]\n\n"), body)
+}
+
+// The provider harness pins Hume tool-call streaming on the exact byte shape
+// `"tool_calls":[{"index":0` (choices[].index is a non-omitempty int that is
+// always 0, so it cannot carry the assertion). Keep the wire shape stable.
+func TestHumeRouteStreamsToolCallIndexBytes(t *testing.T) {
+	route := CreateHumeRouteConfigs(lib.NewDefaultHumeConfig())[0]
+	router := NewGenericRouter(nil, &mockHandlerStore{}, []RouteConfig{route}, nil, &testLogger{})
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostCtx.SetValue(humeSessionContextKey{}, "session-tool-call")
+	stream := make(chan *schemas.BifrostStreamChunk, 1)
+	stream <- &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{
+		ID:     "chatcmpl-tool",
+		Model:  "gpt-4o-mini",
+		Object: "chat.completion.chunk",
+		Choices: []schemas.BifrostResponseChoice{{
+			Index: 0,
+			ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{Delta: &schemas.ChatStreamResponseChoiceDelta{
+				ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+					Index: 0,
+					Type:  schemas.Ptr("function"),
+					ID:    schemas.Ptr("call_1"),
+					Function: schemas.ChatAssistantMessageToolCallFunction{
+						Name:      schemas.Ptr("emit_status"),
+						Arguments: `{"status":"ready"}`,
+					},
+				}},
+			}},
+		}},
+	}}
+	close(stream)
+
+	var httpCtx fasthttp.RequestCtx
+	httpCtx.SetContentType("text/event-stream")
+	router.handleStreaming(&httpCtx, bifrostCtx, route, stream, func() {})
+	body := string(httpCtx.Response.Body())
+	assert.Contains(t, body, `"tool_calls":[{"index":0,"type":"function","id":"call_1","function":{"name":"emit_status","arguments":"{\"status\":\"ready\"}"}}]`, body)
+	assert.NotContains(t, body, `"index":1`)
 	assert.True(t, strings.HasSuffix(body, "data: [DONE]\n\n"), body)
 }
 

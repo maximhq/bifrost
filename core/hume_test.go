@@ -183,6 +183,89 @@ func TestEnforceSingleToolConstraint(t *testing.T) {
 		assert.Equal(t, schemas.Ptr(false), req.ChatRequest.Params.ParallelToolCalls)
 	})
 
+	t.Run("Vertex all-digit endpoint IDs route to the Gemini builder and are rejected", func(t *testing.T) {
+		req := newRequest(schemas.Vertex, "1234567890")
+		err := (&Bifrost{}).enforceSingleToolConstraint(ctx, req)
+		require.NotNil(t, err)
+		assert.Contains(t, err.Error.Message, "cannot guarantee")
+		assert.Nil(t, req.ChatRequest.Params.ParallelToolCalls)
+	})
+
+	t.Run("Vertex non-Gemini names still use the OpenAI wire", func(t *testing.T) {
+		req := newRequest(schemas.Vertex, "meta/llama-3.1-405b-instruct-maas")
+		require.Nil(t, (&Bifrost{}).enforceSingleToolConstraint(ctx, req))
+		assert.Equal(t, schemas.Ptr(false), req.ChatRequest.Params.ParallelToolCalls)
+	})
+
+	newAliasClient := func(provider schemas.ModelProvider, keys ...schemas.Key) *Bifrost {
+		account := NewMockAccount()
+		account.SetKeysForProvider(provider, keys)
+		return &Bifrost{account: account}
+	}
+	aliasKey := func(id string, enabled bool, models schemas.WhiteList, aliases schemas.KeyAliases) schemas.Key {
+		return schemas.Key{
+			ID:      id,
+			Value:   *schemas.NewSecretVar("sk-test"),
+			Enabled: schemas.Ptr(enabled),
+			Models:  models,
+			Aliases: aliases,
+		}
+	}
+
+	t.Run("key alias is checked against the model it resolves to", func(t *testing.T) {
+		client := newAliasClient(schemas.OpenAI, aliasKey("openai-alias", true, schemas.WhiteList{"*"},
+			schemas.KeyAliases{"voice": {ModelID: "o3-mini"}}))
+		req := newRequest(schemas.OpenAI, "voice")
+		err := client.enforceSingleToolConstraint(ctx, req)
+		require.NotNil(t, err)
+		assert.Contains(t, err.Error.Message, `model "voice" cannot guarantee serial tool execution (key alias resolves to "o3-mini")`)
+		assert.Equal(t, schemas.Ptr(400), err.StatusCode)
+		assert.Nil(t, req.ChatRequest.Params.ParallelToolCalls)
+	})
+
+	t.Run("key alias to a supported model is constrained", func(t *testing.T) {
+		client := newAliasClient(schemas.OpenAI, aliasKey("openai-alias", true, schemas.WhiteList{"*"},
+			schemas.KeyAliases{"fast": {ModelID: "gpt-4o-mini"}}))
+		req := newRequest(schemas.OpenAI, "fast")
+		require.Nil(t, client.enforceSingleToolConstraint(ctx, req))
+		assert.Equal(t, schemas.Ptr(false), req.ChatRequest.Params.ParallelToolCalls)
+	})
+
+	t.Run("key alias to a Vertex Gemini model is rejected before the worker resolves it", func(t *testing.T) {
+		client := newAliasClient(schemas.Vertex, aliasKey("vertex-alias", true, schemas.WhiteList{"*"},
+			schemas.KeyAliases{"voice-fast": {ModelID: "gemini-2.5-flash"}}))
+		req := newRequest(schemas.Vertex, "voice-fast")
+		err := client.enforceSingleToolConstraint(ctx, req)
+		require.NotNil(t, err)
+		assert.Contains(t, err.Error.Message, `key alias resolves to "gemini-2.5-flash"`)
+		assert.Nil(t, req.ChatRequest.Params.ParallelToolCalls)
+	})
+
+	t.Run("aliases on keys that cannot serve the request are ignored", func(t *testing.T) {
+		client := newAliasClient(schemas.OpenAI,
+			aliasKey("disabled", false, schemas.WhiteList{"*"}, schemas.KeyAliases{"voice": {ModelID: "o3-mini"}}),
+			aliasKey("other-models", true, schemas.WhiteList{"gpt-4o-mini"}, schemas.KeyAliases{"voice": {ModelID: "o3-mini"}}),
+			aliasKey("serving", true, schemas.WhiteList{"*"}, schemas.KeyAliases{"voice": {ModelID: "gpt-4o-mini"}}),
+		)
+		req := newRequest(schemas.OpenAI, "voice")
+		require.Nil(t, client.enforceSingleToolConstraint(ctx, req))
+		assert.Equal(t, schemas.Ptr(false), req.ChatRequest.Params.ParallelToolCalls)
+	})
+
+	t.Run("a direct key's alias takes precedence over configured keys", func(t *testing.T) {
+		client := newAliasClient(schemas.OpenAI, aliasKey("configured", true, schemas.WhiteList{"*"},
+			schemas.KeyAliases{"voice": {ModelID: "gpt-4o-mini"}}))
+		directCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		directCtx.SetValue(schemas.BifrostContextKeyRequireSerialToolCalls, true)
+		directCtx.SetValue(schemas.BifrostContextKeyModelCatalog, ctx.Value(schemas.BifrostContextKeyModelCatalog))
+		directCtx.SetValue(schemas.BifrostContextKeyDirectKey, aliasKey("direct", true, schemas.WhiteList{"*"},
+			schemas.KeyAliases{"voice": {ModelID: "o3-mini"}}))
+		req := newRequest(schemas.OpenAI, "voice")
+		err := client.enforceSingleToolConstraint(directCtx, req)
+		require.NotNil(t, err)
+		assert.Contains(t, err.Error.Message, `key alias resolves to "o3-mini"`)
+	})
+
 	t.Run("requests without the policy are unchanged", func(t *testing.T) {
 		otherCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		req := newRequest(schemas.OpenAI, "gpt-4o-mini")

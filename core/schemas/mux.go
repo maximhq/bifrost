@@ -2393,14 +2393,21 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 // ResponsesToChatStreamState maps Responses output-item indices to the dense
 // tool-call ordinals expected by Chat Completions. A Responses stream may place
 // reasoning or message items before its first function call.
+//
+// One state belongs to one stream and is driven from that stream's single
+// consumer goroutine, so it carries no lock.
 type ResponsesToChatStreamState struct {
-	mu              sync.Mutex
 	toolCallIndexes map[int]uint16
 	nextToolIndex   uint16
+	// lastToolIndex is the ordinal handed out most recently. Chunks that omit
+	// output_index cannot name a new item, so they continue this tool call.
+	lastToolIndex uint16
 }
 
 func (state *ResponsesToChatStreamState) toolCallIndex(outputIndex *int) uint16 {
 	if state == nil {
+		// Stateless legacy conversion: only correct when function-call items
+		// are the sole output items of the Responses stream.
 		var idx uint16
 		if outputIndex != nil && *outputIndex > 0 {
 			idx = uint16(*outputIndex - 1)
@@ -2408,25 +2415,29 @@ func (state *ResponsesToChatStreamState) toolCallIndex(outputIndex *int) uint16 
 		return idx
 	}
 
-	key := 0
-	if outputIndex != nil {
-		key = *outputIndex
+	if outputIndex == nil {
+		return state.lastToolIndex
 	}
-	state.mu.Lock()
-	defer state.mu.Unlock()
 	if state.toolCallIndexes == nil {
 		state.toolCallIndexes = make(map[int]uint16)
 	}
-	if idx, ok := state.toolCallIndexes[key]; ok {
+	if idx, ok := state.toolCallIndexes[*outputIndex]; ok {
+		state.lastToolIndex = idx
 		return idx
 	}
 	idx := state.nextToolIndex
-	state.toolCallIndexes[key] = idx
+	state.toolCallIndexes[*outputIndex] = idx
 	state.nextToolIndex++
+	state.lastToolIndex = idx
 	return idx
 }
 
 // ToBifrostChatResponse converts a BifrostResponsesStreamResponse chunk to a BifrostChatResponse (chat.completion.chunk).
+//
+// Deprecated: this stateless form derives tool_call indexes from output_index
+// alone and is only dense when function-call items are the sole output items.
+// Stream consumers should hold one ResponsesToChatStreamState per stream and
+// call ToBifrostChatResponseWithState.
 func (rsr *BifrostResponsesStreamResponse) ToBifrostChatResponse() *BifrostChatResponse {
 	return rsr.ToBifrostChatResponseWithState(nil)
 }
