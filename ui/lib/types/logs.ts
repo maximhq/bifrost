@@ -604,6 +604,9 @@ export interface LogEntry {
 	cache_debug?: CacheDebug;
 	guardrail_debug?: GuardrailDebug;
 	cost?: number; // Cost in dollars (total cost of the request - includes cache lookup cost and also guardrail judge calls)
+	// Served billing tier, denormalized onto the log row so cost recomputation can reprice
+	// at the rates the request was actually served at. OpenAI: "priority" / "flex" / "default".
+	service_tier?: string;
 	status: string; // "success", "error", "processing", or "cancelled"
 	stop_reason?: string; // Why the model stopped: "stop", "length", "content_filter", "tool_calls", etc.
 	error_details?: BifrostError;

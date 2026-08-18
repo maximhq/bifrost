@@ -588,6 +588,7 @@ export default function LogsPage() {
 			latency: "Latency",
 			tokens: "Tokens",
 			cost: "Cost",
+			service_tier: "Service Tier",
 			virtual_key: "Virtual Key",
 			routing_rule: "Routing Rule",
 			team: "Team",
@@ -598,7 +599,10 @@ export default function LogsPage() {
 		[],
 	);
 
-	const DEFAULT_HIDDEN_COLUMNS = useMemo(() => ["virtual_key", "routing_rule", "team", "customer", "user", "business_unit"], []);
+	const DEFAULT_HIDDEN_COLUMNS = useMemo(
+		() => ["service_tier", "virtual_key", "routing_rule", "team", "customer", "user", "business_unit"],
+		[],
+	);
 
 	const {
 		entries: columnEntries,
