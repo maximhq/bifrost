@@ -697,6 +697,12 @@ func (t *Tracer) ProcessStreamingChunk(ctx *schemas.BifrostContext, traceID stri
 		accResult.OutputMessage = processedResp.Data.OutputMessage
 		accResult.OutputMessages = processedResp.Data.OutputMessages
 		accResult.TokenUsage = processedResp.Data.TokenUsage
+		// Speed and InferenceGeo ride along inside TokenUsage (providers set them on
+		// BifrostLLMUsage for exactly that reason), but service_tier lives on the
+		// response envelope, so it has to be copied across explicitly or the tier the
+		// accumulator resolved across chunks is lost and the row reprices at standard
+		// rates.
+		accResult.ServiceTier = processedResp.Data.ServiceTier
 		accResult.Cost = processedResp.Data.Cost
 		accResult.CacheDebug = processedResp.Data.CacheDebug
 		accResult.GuardrailDebug = processedResp.Data.GuardrailDebug
