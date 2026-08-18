@@ -1,6 +1,6 @@
 module github.com/maximhq/bifrost/plugins/logging
 
-go 1.26.5
+go 1.26.6
 
 require (
 	github.com/bytedance/sonic v1.15.2
