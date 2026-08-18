@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   check-egress-allowlist:
-    name: Egress allowlist covers apt usage
+    name: Egress allowlist covers apt + provider-harness hosts
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

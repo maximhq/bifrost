@@ -106,6 +106,7 @@ jobs:
             bedrock-runtime.us-east-1.amazonaws.com:443
             bedrock.us-east-1.amazonaws.com:443
             bifrost-batch-api-file-upload-testing.s3.us-east-1.amazonaws.com:443
+            discoveryengine.googleapis.com:443
             dl.google.com:443
             fal.media:443
             fonts.googleapis.com:443
@@ -131,6 +132,7 @@ jobs:
             storage.googleapis.com:443
             sum.golang.org:443
             us-central1-aiplatform.googleapis.com:443
+            www.berkshirehathaway.com:443
             www.getbifrost.ai:443
 
       - name: Checkout requested branch

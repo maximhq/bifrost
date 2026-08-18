@@ -222,3 +222,28 @@ func TestInlineURLSourcesEnabledOnlyForBedrockMantle(t *testing.T) {
 		}
 	}
 }
+
+// TestInlineURLContentSourcesForwardsUnfetchableSchemes: bifrost inlines only what it can
+// download. A source it cannot fetch is left in the body as {"type":"url"} and the platform
+// answers for itself - which keeps working if AWS-hosted Claude ever gains URL support.
+func TestInlineURLContentSourcesForwardsUnfetchableSchemes(t *testing.T) {
+	for _, tc := range []struct{ name, url string }{
+		{name: "s3", url: "s3://my-bucket/doc.pdf"},
+		{name: "gcs", url: "gs://my-bucket/doc.pdf"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{"messages":[{"role":"user","content":[{"type":"document","source":{"type":"url","url":"` + tc.url + `"}}]}]}`)
+
+			out, err := InlineURLContentSources(nil, body)
+			if err != nil {
+				t.Fatalf("expected pass-through for %q, got error: %v", tc.url, err)
+			}
+			if got := gjson.GetBytes(out, "messages.0.content.0.source.url").String(); got != tc.url {
+				t.Errorf("url = %q, want %q left untouched", got, tc.url)
+			}
+			if got := gjson.GetBytes(out, "messages.0.content.0.source.type").String(); got != "url" {
+				t.Errorf("source.type = %q, want it to stay url", got)
+			}
+		})
+	}
+}
