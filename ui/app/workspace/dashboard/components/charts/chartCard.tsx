@@ -12,6 +12,12 @@ interface ChartCardProps {
 	loading?: boolean;
 	testId?: string;
 	className?: string;
+	// Let the card grow to its content instead of the fixed chart height. Needed
+	// by cards that render a ranked legend under the plot. This has to be a prop
+	// rather than an `h-full` in `className`: cn() merges per variant, so a
+	// caller class only cancels the unprefixed height and leaves `sm:h-[330px]`
+	// in place, which clips the legend at the sm breakpoint and up.
+	autoHeight?: boolean;
 	total?: ReactNode;
 	totalLabel?: string;
 	totalTooltip?: ReactNode;
@@ -132,10 +138,16 @@ export function ChartCard({
 	secondaryTotal,
 	secondaryTotalLabel,
 	secondaryTotalTooltip,
+	autoHeight,
 }: ChartCardProps) {
+	const heightClass = autoHeight ? "h-auto" : "h-[260px] sm:h-[330px]";
+	// An auto-height card has no height for the skeleton's `h-full` to resolve
+	// against, so the loading state keeps the fixed height as a floor.
+	const loadingHeightClass = autoHeight ? "h-auto min-h-[260px] sm:min-h-[330px]" : heightClass;
+
 	if (loading) {
 		return (
-			<Card className={cn("min-w-0 rounded-sm p-2 shadow-none h-[260px] sm:h-[330px]", className)} data-testid={testId}>
+			<Card className={cn("min-w-0 rounded-sm p-2 shadow-none", loadingHeightClass, className)} data-testid={testId}>
 				<Header
 					title={title}
 					controls={controls}
@@ -156,7 +168,7 @@ export function ChartCard({
 	}
 
 	return (
-		<Card className={cn("min-w-0 rounded-sm p-2 shadow-none h-[260px] sm:h-[330px]", className)} data-testid={testId}>
+		<Card className={cn("min-w-0 rounded-sm p-2 shadow-none", heightClass, className)} data-testid={testId}>
 			<Header
 				title={title}
 				controls={controls}

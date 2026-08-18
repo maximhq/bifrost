@@ -42,6 +42,28 @@ func parseS3URI(uri string) (bucket, key string) {
 	return
 }
 
+// bedrockS3LocationFromURL converts an s3:// content URL into the s3Location member of
+// a Converse source union, so the object reference travels with the request instead of
+// its bytes.
+//
+// Converse resolves S3 objects itself -- s3Location is a documented member of both
+// DocumentSource and ImageSource -- which means Bifrost neither has to download the
+// object nor squeeze it through the 25 MiB inline cap. ok is false for anything that is
+// not an s3:// URI, leaving the caller's existing http(s) fetch path in charge.
+//
+// A bucket-only URI ("s3://bucket") is rejected: Converse needs an object, and parseS3URI
+// happily returns an empty key for it.
+func bedrockS3LocationFromURL(rawURL string) (*BedrockS3Location, bool) {
+	if !strings.HasPrefix(rawURL, "s3://") {
+		return nil, false
+	}
+	bucket, key := parseS3URI(rawURL)
+	if bucket == "" || key == "" {
+		return nil, false
+	}
+	return &BedrockS3Location{URI: rawURL}, true
+}
+
 // S3ListObjectsResponse represents S3 ListObjectsV2 response.
 type S3ListObjectsResponse struct {
 	Contents              []S3Object `json:"contents"`

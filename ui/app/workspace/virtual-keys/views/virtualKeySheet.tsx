@@ -124,6 +124,7 @@ const providerConfigSchema = z.object({
 							id: z.string().optional(),
 							max_limit: z.number().nonnegative().optional(),
 							reset_duration: z.string().optional(),
+							reset_config: z.object({ quarter_start_month: z.number().int().min(1).max(12).optional() }).optional(),
 						}),
 					)
 					.optional(),
@@ -396,6 +397,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 							id: b.id,
 							max_limit: b.max_limit,
 							reset_duration: b.reset_duration,
+							reset_config: b.reset_config,
 						})),
 						rate_limit: mb.rate_limit
 							? {
@@ -1663,7 +1665,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 											</Label>
 											<p id="vk-budget-calendar-aligned-description" className="text-muted-foreground text-xs">
 												Reset budgets and rate limits at the start of each period (e.g. 1st of month) instead of rolling from creation date.
-												Applies to durations of a day or longer.
+												Quarterly budgets always align to fiscal quarter starts. Applies to durations of a day or longer.
 											</p>
 										</div>
 										<Switch
@@ -1810,6 +1812,37 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 																			value: field.value,
 																			label:
 																				field.value === virtualKey?.customer_id ? (virtualKey?.customer?.name ?? field.value) : field.value,
+																		}
+																	: null
+															}
+															triggerClassName="h-9"
+														/>
+														<FormMessage />
+													</FormItem>
+												)}
+											/>
+										)}
+
+										{form.watch("entityType") === "user" && UserPicker && (
+											<FormField
+												control={form.control}
+												name="userId"
+												render={({ field }) => (
+													<FormItem>
+														<FormLabel className="font-normal">Select User</FormLabel>
+														<UserPicker
+															value={field.value || ""}
+															onChange={(val) => {
+																field.onChange(val);
+																void form.trigger("entityType");
+															}}
+															// The attached user may fall outside the picker's first
+															// page; seed the label resolved from the association.
+															fallbackOption={
+																field.value
+																	? {
+																			value: field.value,
+																			label: field.value === assignedUserId ? assignedUserLabel : field.value,
 																		}
 																	: null
 															}

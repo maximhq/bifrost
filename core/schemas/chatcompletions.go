@@ -297,6 +297,24 @@ func (cp *ChatParameters) UnmarshalJSON(data []byte) error {
 			cp.Reasoning.Display = aux.ReasoningDisplay
 		}
 	}
+	// response_format carries a user-authored JSON Schema, and Bifrost is not
+	// entitled to rewrite it. Decoding it into interface{} (what the alias does)
+	// yields a map[string]interface{}, which loses two things the provider cares
+	// about: key order, because Structured Outputs generates fields in schema key
+	// order ("outputs will be produced in the same order as the ordering of keys
+	// in the schema", https://developers.openai.com/api/docs/guides/structured-outputs),
+	// and numeric literals, because every number becomes a float64 (so an integer
+	// above 2^53 comes back corrupted and 1.0 comes back as 1).
+	//
+	// Keep the object form as raw bytes instead. Providers that forward
+	// response_format unchanged then emit exactly what the client sent, and the
+	// few that must rewrite it read it on demand via ParseChatResponseFormat.
+	// Non-object values (null, or a provider quirk) keep whatever the alias produced.
+	if rf := gjson.GetBytes(data, "response_format"); rf.IsObject() {
+		var value interface{} = json.RawMessage(rf.Raw)
+		cp.ResponseFormat = &value
+	}
+
 	// ExtraParams etc. are already handled by the alias
 	return nil
 }
@@ -1024,6 +1042,81 @@ type ChatMessage struct {
 	*ChatAssistantMessage
 }
 
+// MarshalJSON implements custom JSON marshalling for ChatMessage.
+//
+// The mirror of UnmarshalJSON below, and needed for the same reason: Go promotes
+// an embedded type's MarshalJSON to the outer struct, so ChatAssistantMessage's
+// marshaller would otherwise serialise a ChatMessage as ONLY its assistant fields,
+// silently dropping role, content and name from every message on the wire.
+//
+// The embedded pointers are flattened by hand rather than by struct embedding,
+// because embedding them in the output type would re-promote the same method and
+// reintroduce the bug this exists to prevent.
+//
+// The fragments are spliced textually rather than merged through a map: a Go map
+// marshals its keys in sorted order, which silently reorders every message body
+// on the wire (payload_ordering_test.go pins that ordering, and providers that
+// hash or cache on the raw payload are sensitive to it).
+func (cm ChatMessage) MarshalJSON() ([]byte, error) {
+	// Base fields first, in declaration order. Marshalled through a plain struct so
+	// the omitempty rules and ChatMessageContent's own marshaller are honoured
+	// exactly as declared.
+	base, err := Marshal(struct {
+		Name    *string             `json:"name,omitempty"`
+		Role    ChatMessageRole     `json:"role,omitempty"`
+		Content *ChatMessageContent `json:"content,omitempty"`
+	}{Name: cm.Name, Role: cm.Role, Content: cm.Content})
+	if err != nil {
+		return nil, err
+	}
+	fragments := [][]byte{base}
+
+	// Only one of the embedded pointers is ever set (see the struct comment), but
+	// appending both keeps this correct if that ever stops holding.
+	if cm.ChatToolMessage != nil {
+		encoded, err := Marshal(cm.ChatToolMessage)
+		if err != nil {
+			return nil, err
+		}
+		fragments = append(fragments, encoded)
+	}
+	if cm.ChatAssistantMessage != nil {
+		encoded, err := Marshal(cm.ChatAssistantMessage)
+		if err != nil {
+			return nil, err
+		}
+		fragments = append(fragments, encoded)
+	}
+
+	return spliceJSONObjects(fragments), nil
+}
+
+// spliceJSONObjects concatenates the bodies of several JSON objects into one,
+// preserving the order the fragments were produced in. Each fragment must be a
+// marshalled object; empty ones contribute nothing.
+func spliceJSONObjects(fragments [][]byte) []byte {
+	var buf bytes.Buffer
+	buf.WriteByte('{')
+	first := true
+	for _, fragment := range fragments {
+		trimmed := bytes.TrimSpace(fragment)
+		if len(trimmed) < 2 || trimmed[0] != '{' || trimmed[len(trimmed)-1] != '}' {
+			continue
+		}
+		body := bytes.TrimSpace(trimmed[1 : len(trimmed)-1])
+		if len(body) == 0 {
+			continue
+		}
+		if !first {
+			buf.WriteByte(',')
+		}
+		buf.Write(body)
+		first = false
+	}
+	buf.WriteByte('}')
+	return buf.Bytes()
+}
+
 // UnmarshalJSON implements custom JSON unmarshalling for ChatMessage.
 // This is needed because ChatAssistantMessage has a custom UnmarshalJSON method,
 // which interferes with the JSON library's handling of other fields in ChatMessage.
@@ -1413,6 +1506,43 @@ type ChatAssistantMessage struct {
 	ToolCalls        []ChatAssistantMessageToolCall   `json:"tool_calls,omitempty"`
 }
 
+// MarshalJSON emits reasoning under both spellings the ecosystem uses.
+//
+// OpenRouter defines them as interchangeable: reasoning text "will appear in the
+// `reasoning` field of each message", and "you can also use `reasoning_content`
+// as an alias - it functions identically to `reasoning`"
+// (https://openrouter.ai/docs/use-cases/reasoning-tokens). DeepSeek and xAI spell
+// it reasoning_content; OpenRouter-shaped clients read reasoning. UnmarshalJSON
+// below already accepts either on the way in, so emitting only one on the way out
+// left a client written against the other spelling seeing no reasoning at all -
+// the text was present the whole time, under a key it never looked at.
+//
+// The alias is derived from Reasoning at marshal time rather than stored, so the
+// two can never disagree, and a message with no reasoning gains no empty key.
+//
+// This does NOT reach provider requests. The outbound OpenAI-family wire type is
+// openai.OpenAIChatAssistantMessage, which has its own field set (and already
+// spells the outbound field reasoning_content); the other providers build their
+// own message types. This type is the internal/response shape.
+//
+// NOTE: ChatMessage embeds *ChatAssistantMessage, and Go promotes an embedded
+// type's MarshalJSON to the outer struct - so ChatMessage carries its own
+// MarshalJSON to stop this one swallowing role/content/name. Same reason
+// ChatMessage.UnmarshalJSON exists. Do not remove one without the other.
+func (cm ChatAssistantMessage) MarshalJSON() ([]byte, error) {
+	type Alias ChatAssistantMessage
+	if cm.Reasoning == nil {
+		return Marshal(Alias(cm))
+	}
+	return Marshal(struct {
+		Alias
+		ReasoningContent *string `json:"reasoning_content,omitempty"`
+	}{
+		Alias:            Alias(cm),
+		ReasoningContent: cm.Reasoning,
+	})
+}
+
 // UnmarshalJSON implements custom unmarshalling for ChatAssistantMessage.
 // If Reasoning is non-nil and ReasoningDetails is nil/empty, it adds a single
 // ChatReasoningDetails entry of type "reasoning.text" with the text set to Reasoning.
@@ -1593,6 +1723,28 @@ type ChatStreamResponseChoiceDelta struct {
 	Annotations      []ChatAssistantMessageAnnotation `json:"annotations,omitempty"`   // URL citations from web search
 	ToolCalls        []ChatAssistantMessageToolCall   `json:"tool_calls,omitempty"`    // If tool calls used (supports incremental updates)
 	ExtraContent     json.RawMessage                  `json:"extra_content,omitempty"` // Provider-specific metadata (e.g. Gemini thought markers, thought_signature)
+}
+
+// MarshalJSON emits reasoning under both spellings, matching
+// ChatAssistantMessage.MarshalJSON. See that method for why the alias exists.
+//
+// Streaming needs this independently of the non-streaming path: DeepSeek streams
+// its thinking phase under reasoning_content, so a client written against that
+// wire watched a Bifrost stream emit the entire reasoning phase under a key it
+// never read. Unlike ChatAssistantMessage this type is not embedded anywhere, so
+// no companion marshaller is required.
+func (d ChatStreamResponseChoiceDelta) MarshalJSON() ([]byte, error) {
+	type Alias ChatStreamResponseChoiceDelta
+	if d.Reasoning == nil {
+		return Marshal(Alias(d))
+	}
+	return Marshal(struct {
+		Alias
+		ReasoningContent *string `json:"reasoning_content,omitempty"`
+	}{
+		Alias:            Alias(d),
+		ReasoningContent: d.Reasoning,
+	})
 }
 
 // UnmarshalJSON implements custom unmarshalling for ChatStreamResponseChoiceDelta.

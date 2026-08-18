@@ -71,7 +71,10 @@ jobs:
       XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
       REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
       BEDROCK_GUARDRAIL_IDENTIFIER: ${{ secrets.BEDROCK_GUARDRAIL_IDENTIFIER }}
-      BEDROCK_GUARDRAIL_VERSION: ${{ secrets.BEDROCK_GUARDRAIL_VERSION }}
+      # Deliberately a variable, not a secret - see release-pipeline.yml. A
+      # short integer secret makes Actions redact that digit everywhere in the
+      # job log, corrupting the harness counters.
+      BEDROCK_GUARDRAIL_VERSION: ${{ vars.BEDROCK_GUARDRAIL_VERSION }}
       AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
       AWS_BEDROCK_ROLE_ARN: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
       BIFROST_ENCRYPTION_KEY: ${{ secrets.BIFROST_ENCRYPTION_KEY }}
@@ -106,6 +109,7 @@ jobs:
             bedrock-runtime.us-east-1.amazonaws.com:443
             bedrock.us-east-1.amazonaws.com:443
             bifrost-batch-api-file-upload-testing.s3.us-east-1.amazonaws.com:443
+            discoveryengine.googleapis.com:443
             dl.google.com:443
             fal.media:443
             fonts.googleapis.com:443
@@ -127,10 +131,12 @@ jobs:
             proxy.golang.org:443
             registry.npmjs.org:443
             release-assets.githubusercontent.com:443
+            releases.astral.sh:443
             router.huggingface.co:443
             storage.googleapis.com:443
             sum.golang.org:443
             us-central1-aiplatform.googleapis.com:443
+            www.berkshirehathaway.com:443
             www.getbifrost.ai:443
 
       - name: Checkout requested branch
@@ -148,11 +154,31 @@ jobs:
         with:
           node-version: "25"
 
+      # Required by the test-integration step below: test-integrations.sh installs the
+      # Python suite with `uv sync --frozen`, and its pip fallback cannot build
+      # tests/integrations/python (a dependency manifest, not a package). Kept in step
+      # with the same block in release-pipeline.yml's test-core-integrations job.
+      - name: Install uv
+        uses: step-security/setup-uv@ccf0a26ce9117d9e99292b0ce953ea5d9ffe778e # v7.3.0
+        with:
+          version: "0.11.0"
+          python-version: "3.12"
+
       - name: Install test dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y jq
-          npm install -g newman@6.2.1 newman-reporter-htmlextra@1.23.1
+
+      # `npm install -g newman@x` pins the version but verifies nothing, which is what
+      # Scorecard's Pinned-Dependencies check flags. `npm ci` against the committed
+      # lockfile enforces an integrity hash for newman and all 166 of its transitive
+      # deps. The bin directory goes on PATH because the test scripts probe for newman
+      # with `command -v` rather than calling it through npx.
+      - name: Install newman (hash-pinned via lockfile)
+        run: |
+          npm ci --no-audit --no-fund
+          echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
+        working-directory: .github/workflows/tools
 
       - name: Set up gcloud CLI
         uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1

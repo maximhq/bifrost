@@ -53,6 +53,7 @@ const createInitialState = (customer?: Customer | null): Omit<CustomerFormData, 
 			id: b.id,
 			max_limit: b.max_limit,
 			reset_duration: b.reset_duration,
+			reset_config: b.reset_config,
 		})),
 		tokenMaxLimit: customer?.rate_limit?.token_max_limit ?? undefined,
 		tokenResetDuration: customer?.rate_limit?.token_reset_duration || "1h",
@@ -196,9 +197,9 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 	// spend becomes a meaningful choice; creating one has no usage to reset.
 	const budgetsChanged = () => {
 		if (!isEditing || !customer) return false;
-		const signature = (rows: { max_limit?: number | null; reset_duration?: string }[]) =>
+		const signature = (rows: { max_limit?: number | null; reset_duration?: string; reset_config?: { quarter_start_month?: number } }[]) =>
 			[...rows]
-				.map((r) => `${r.max_limit ?? ""}:${r.reset_duration ?? ""}`)
+				.map((r) => `${r.max_limit ?? ""}:${r.reset_duration ?? ""}:${r.reset_config?.quarter_start_month ?? ""}`)
 				.sort()
 				.join("|");
 		const next = formData.budgets.filter((b) => b.max_limit !== undefined && b.max_limit !== null);
@@ -223,7 +224,7 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 	const saveCustomer = async (resetBudgetUsage: boolean) => {
 		const budgetRequests: CreateBudgetRequest[] = formData.budgets
 			.filter((b) => b.max_limit !== undefined && b.max_limit !== null)
-			.map((b) => ({ id: b.id, max_limit: b.max_limit!, reset_duration: b.reset_duration }));
+			.map((b) => ({ id: b.id, max_limit: b.max_limit!, reset_duration: b.reset_duration, reset_config: b.reset_config }));
 
 		try {
 			if (isEditing && customer) {
@@ -366,7 +367,7 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 											Align to calendar cycle
 										</Label>
 										<p className="text-muted-foreground text-xs">
-											Reset budgets and rate limits at the start of each period (e.g. 1st of month) instead of rolling from creation date.
+											Reset budgets and rate limits at the start of each period (e.g. 1st of month) instead of rolling from creation date. Quarterly budgets always align to fiscal quarter starts.
 											Applies to durations of a day or longer.
 										</p>
 									</div>

@@ -428,6 +428,7 @@ type StreamConfig struct {
 	TranscriptionStreamResponseConverter   TranscriptionStreamResponseConverter   // Function to convert BifrostTranscriptionResponse to streaming format
 	ImageGenerationStreamResponseConverter ImageGenerationStreamResponseConverter // Function to convert BifrostImageGenerationStreamResponse to streaming format
 	ErrorConverter                         StreamErrorConverter                   // Function to convert BifrostError to streaming error format
+	HeartbeatFraming                       lib.SSEHeartbeatFraming                // Wire framing for no-op SSE heartbeat comments
 }
 
 type RouteConfigType string
@@ -2776,7 +2777,14 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 		var heartbeatDone chan struct{}
 		var heartbeatExited <-chan struct{}
 		if config.Type != RouteConfigTypeBedrock {
-			heartbeatDone, heartbeatExited = lib.StartSSEHeartbeat(lib.DefaultSSEHeartbeatInterval, reader.SendHeartbeat, cancel)
+			heartbeatFraming := lib.SSEHeartbeatBareCommentLine
+			if config.StreamConfig != nil {
+				heartbeatFraming = config.StreamConfig.HeartbeatFraming
+			}
+			sendHeartbeat := func() bool {
+				return reader.SendHeartbeatWithFraming(heartbeatFraming)
+			}
+			heartbeatDone, heartbeatExited = lib.StartSSEHeartbeat(lib.DefaultSSEHeartbeatInterval, sendHeartbeat, cancel)
 		}
 
 		defer func() {

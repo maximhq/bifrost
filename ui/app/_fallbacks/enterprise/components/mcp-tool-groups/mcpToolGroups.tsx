@@ -1,15 +1,13 @@
+import PageTitle from "@/components/pageTitle";
 import { ToolCase } from "lucide-react";
 import ContactUsView from "../views/contactUsView";
 
 export default function MCPToolGroups() {
 	return (
 		<>
-			<div className="mb-4 flex items-center justify-between gap-4">
-				<div>
-					<h2 className="text-lg font-semibold tracking-tight">MCP Tool Groups</h2>
-					<p className="text-muted-foreground text-sm">Configure tool groups for MCP servers to organize and govern tools.</p>
-				</div>
-			</div>
+			{/* The name and description live in the topbar, like every other page —
+			    an inline <h2> here would just repeat the title shown above it. */}
+			<PageTitle title="MCP Tool Groups">Configure tool groups for MCP servers to organize and govern tools.</PageTitle>
 			<div className="rounded-sm border">
 				<div className="flex w-full flex-col items-center justify-center py-16">
 					<ContactUsView

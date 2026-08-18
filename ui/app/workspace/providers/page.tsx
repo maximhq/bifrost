@@ -202,7 +202,7 @@ export default function Providers() {
 					setShowCustomProviderSheet(false);
 				}}
 			/>
-			<div className={cn("w-full flex-col md:flex md:max-h-[calc(100vh-70px)] md:w-[300px]", mobileDetailOpen ? "hidden" : "flex")}>
+			<div className={cn("w-full flex-col md:flex md:max-h-[calc(var(--app-content-viewport)_-_70px)] md:w-[300px]", mobileDetailOpen ? "hidden" : "flex")}>
 				<TooltipProvider>
 					<div className="custom-scrollbar flex-1 overflow-y-auto">
 						<div className="rounded-md bg-zinc-50/50 md:p-4 dark:bg-zinc-800/20">
@@ -274,12 +274,12 @@ export default function Providers() {
 					Providers
 				</Button>
 				{isLoadingProvider && (
-					<div className="bg-muted/10 flex w-full items-center justify-center rounded-md md:max-h-[calc(100vh-300px)]">
+					<div className="bg-muted/10 flex w-full items-center justify-center rounded-md md:max-h-[calc(var(--app-content-viewport)_-_300px)]">
 						<FullPageLoader />
 					</div>
 				)}
 				{!selectedProvider && (
-					<div className="bg-muted/10 flex w-full items-center justify-center rounded-md md:max-h-[calc(100vh-300px)]">
+					<div className="bg-muted/10 flex w-full items-center justify-center rounded-md md:max-h-[calc(var(--app-content-viewport)_-_300px)]">
 						<div className="text-muted-foreground text-sm">Select a provider</div>
 					</div>
 				)}

@@ -1,5 +1,5 @@
 import { Button } from "@/components/ui/button";
-import { useBranding } from "@/lib/hooks/useBranding";
+import { getCachedBrandingAssets } from "@/lib/hooks/useBranding";
 import { getEndpointUrl } from "@/lib/utils/port";
 import { consumeAutoReload, startVersionPoll } from "@/lib/utils/versionSkew";
 import { Loader2, RefreshCw, Sparkles } from "lucide-react";
@@ -13,8 +13,8 @@ export function UpdatingBanner() {
 			role="status"
 			aria-live="polite"
 		>
-			<div className="bg-card/95 pointer-events-auto flex w-full max-w-xl items-center gap-3 rounded-lg border p-2.5 pr-3 shadow-xl backdrop-blur sm:gap-4 sm:p-3">
-				<div className="bg-primary/10 text-primary relative flex size-9 shrink-0 items-center justify-center rounded-md">
+			<div className="bg-card/95 pointer-events-auto flex w-full max-w-xl items-center gap-3 rounded-sm border p-2.5 pr-3 backdrop-blur sm:gap-4 sm:p-3">
+				<div className="bg-primary/10 text-primary relative flex size-9 shrink-0 items-center justify-center rounded-sm">
 					<span className="bg-primary/20 absolute size-2.5 rounded-full motion-safe:animate-ping" aria-hidden="true" />
 					<span className="bg-primary relative size-2 rounded-full" aria-hidden="true" />
 				</div>
@@ -38,7 +38,9 @@ export function UpdatingBanner() {
 }
 
 export function UpdatingScreen() {
-	const { logoSrc, logoAlt } = useBranding(false);
+	// Rendered above <ReduxProvider> (main.tsx) and as the router error component,
+	// so branding has to come from the cache rather than a query.
+	const [{ logoSrc, logoAlt }] = useState(() => getCachedBrandingAssets(false));
 	const [autoReloadExhausted, setAutoReloadExhausted] = useState(false);
 
 	useEffect(
@@ -72,7 +74,7 @@ export function UpdatingScreen() {
 				aria-hidden="true"
 			/>
 			<section
-				className="bg-card w-full max-w-lg overflow-hidden rounded-xl border shadow-[0_24px_80px_-36px_rgba(0,0,0,0.35)]"
+				className="bg-card w-full max-w-lg overflow-hidden rounded-sm border"
 				aria-labelledby="updating-title"
 				aria-describedby="updating-description"
 				aria-live="polite"
@@ -82,7 +84,7 @@ export function UpdatingScreen() {
 				</div>
 
 				<div className="px-5 py-8 sm:px-8 sm:py-10">
-					<div className="bg-primary/10 text-primary flex size-12 items-center justify-center rounded-xl">
+					<div className="bg-primary/10 text-primary flex size-12 items-center justify-center rounded-sm">
 						<Sparkles className="size-5" aria-hidden="true" />
 					</div>
 					<h1 id="updating-title" className="text-foreground mt-5 text-2xl font-semibold tracking-tight">

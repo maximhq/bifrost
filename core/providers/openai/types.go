@@ -256,11 +256,16 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 							blockCopy.CacheControl = nil
 						}
 						blockCopy.Citations = nil
-						// Strip FileType and FileURL from file block
-						if blockCopy.File != nil && (blockCopy.File.FileType != nil || blockCopy.File.FileURL != nil) {
+						// Strip file_type: it is a Bifrost extension, not part of any
+						// OpenAI-shaped wire format. file_url is deliberately NOT stripped.
+						// Dropping it produced {"type":"file","file":{}} and an upstream
+						// complaint about a missing file_id, hiding the fact that a source
+						// was discarded. Providers that cannot take a URL now say so by
+						// name, and any OpenAI-compatible endpoint that does accept one
+						// keeps working without a Bifrost change.
+						if blockCopy.File != nil && blockCopy.File.FileType != nil {
 							fileCopy := *blockCopy.File
 							fileCopy.FileType = nil
-							fileCopy.FileURL = nil
 							blockCopy.File = &fileCopy
 						}
 						contentCopy.ContentBlocks[j] = blockCopy
@@ -689,7 +694,7 @@ func hasFieldsToStripInChatMessage(msg OpenAIMessage, keepCacheControl bool) boo
 			if block.Citations != nil {
 				return true
 			}
-			if block.File != nil && (block.File.FileType != nil || block.File.FileURL != nil) {
+			if block.File != nil && block.File.FileType != nil {
 				return true
 			}
 		}

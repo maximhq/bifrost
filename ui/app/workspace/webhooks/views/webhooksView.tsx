@@ -1,3 +1,4 @@
+import PageTitle from "@/components/pageTitle";
 import FullPageLoader from "@/components/fullPageLoader";
 import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import {
@@ -324,19 +325,10 @@ export default function WebhooksView() {
 				<WebhooksEmptyState onAddClick={handleAdd} canCreate={hasCreateAccess} />
 			) : (
 				<>
-					<div className="flex items-center justify-between">
-						<div>
-							<h2 className="text-lg font-semibold tracking-tight">Webhooks</h2>
-							<p className="text-muted-foreground text-sm">
-								Register endpoints to receive signed notifications when async inference jobs complete or fail. Pass the endpoint's name in
-								the <code>x-bf-async-webhook</code> header when submitting a job.
-							</p>
-						</div>
-						<Button onClick={handleAdd} disabled={!hasCreateAccess} data-testid="create-webhook-btn">
-							<Plus className="h-4 w-4" />
-							Add Endpoint
-						</Button>
-					</div>
+					<PageTitle title="Webhooks">
+						Register endpoints to receive signed notifications when async inference jobs complete or fail. Pass the endpoint's name in the{" "}
+						<code>x-bf-async-webhook</code> header when submitting a job.
+					</PageTitle>
 
 					<WebhooksFilterBar
 						search={urlState.q}
@@ -347,6 +339,12 @@ export default function WebhooksView() {
 						onStatusFilterChange={(value) => setUrlState({ status: value.length ? value : null, offset: 0 })}
 						hasActiveFilters={hasActiveFilters}
 						onClearFilters={handleClearFilters}
+						actions={
+							<Button onClick={handleAdd} disabled={!hasCreateAccess} data-testid="create-webhook-btn">
+								<Plus className="h-4 w-4" />
+								Add Endpoint
+							</Button>
+						}
 					/>
 
 					<div className={`overflow-auto rounded-sm border ${isFetching ? "opacity-70" : ""}`}>

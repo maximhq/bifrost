@@ -264,7 +264,7 @@ if (response.choices[0].message.tool_calls) {
 				</div>
 
 				<Tabs defaultValue="manual" className="w-full rounded-lg border">
-					<TabsList className="flex h-10 w-full justify-start overflow-x-auto rounded-t-lg rounded-b-none">
+					<TabsList className="flex h-10 w-full justify-start rounded-t-lg rounded-b-none">
 						<TabsTrigger value="manual">Manual Tool Execution</TabsTrigger>
 						<TabsTrigger value="agent">Agent Mode (Auto-Execute)</TabsTrigger>
 					</TabsList>

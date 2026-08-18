@@ -109,13 +109,21 @@ const legVerdict = (entry, leg) => {
 const anchorRowVerdict = (entry) =>
   LEG_ORDER.filter((l) => entry.legs[l]).every((l) => legVerdict(entry, l) === "PASS") ? "PASS" : "FAIL";
 
-// A cell that recorded no cache write never observed a cache being created: {{cachePrefix}} is a
-// static collection variable, so any run inside the provider's cache TTL starts warm and reads a
-// cache some earlier run wrote. That still clears the floor, but it proves only the read path.
-// Since hitRate = read / (read + write + uncached), a warm cell reports ~100% whether the write
-// accounting is correct or silently dropping tokens - the two are indistinguishable from this row.
+// A cell that recorded no cache write across ANY round never observed a cache being created: it
+// read a cache some earlier run wrote, which still clears the floor but proves only the read path.
+// Since hitRate = read / (read + write + uncached), such a cell reports ~100% whether the write
+// accounting is correct or silently dropping tokens - the two are indistinguishable from that row.
 // Flagged rather than failed: a hard write > 0 would fail every legitimate re-run within the TTL.
-const isWarmStart = (r) => (r.write || 0) === 0 && (r.read || 0) > 0;
+//
+// writeTotal sums every round. The `write` field beside it describes the BEST round, which is
+// almost never round 1 - and round 1 is where the write happens. Judging warmth from `write` alone
+// therefore labelled every correct cold run "PASS (warm)", which is how a full matrix of 68 cells
+// came to claim the write path was never exercised while {{pcNonce}} was making each run cold.
+// Fall back to `write` only for producers that predate writeTotal.
+const isWarmStart = (r) => {
+  const written = r.writeTotal !== undefined ? r.writeTotal : r.write;
+  return (written || 0) === 0 && (r.read || 0) > 0;
+};
 
 const matrixVerdict = (r) => {
   const passed =
@@ -208,10 +216,12 @@ if (matrix.length) {
   lines.push("");
   if (matrix.some(isWarmStart)) {
     lines.push(
-      `\`PASS (warm)\` marks a cell that recorded zero cache writes: it read a cache an earlier run ` +
-        `created, so only the read path was exercised. {{cachePrefix}} is static, so re-running inside ` +
-        `the provider's cache TTL is the normal cause. To prove the write path, run against a cold ` +
-        `cache (wait out the TTL, or perturb the cached prefix).`
+      `\`PASS (warm)\` marks a cell that recorded zero cache writes across every round: it read a cache ` +
+        `an earlier run created, so only the read path was exercised. Each cell salts its prefix with ` +
+        `{{pcNonce}} (fresh per run) so a cold start is the norm; a warm one usually means the salt did ` +
+        `not reach that cell's prefix, or the provider matched a prefix shorter than the salted segment. ` +
+        `Implicit-caching cells are expected here regardless: providers report a read counter for ` +
+        `implicit caching but no write counter, so there is no write for the row to show.`
     );
     lines.push("");
   }

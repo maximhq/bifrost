@@ -1145,6 +1145,36 @@ func TestSSEStreamReaderSendHeartbeat(t *testing.T) {
 	}
 }
 
+func TestSSEStreamReaderSendHeartbeatWithFraming(t *testing.T) {
+	tests := []struct {
+		name    string
+		framing SSEHeartbeatFraming
+		want    string
+	}{
+		{"bare comment line", SSEHeartbeatBareCommentLine, ": heartbeat\n"},
+		{"delimited comment block", SSEHeartbeatDelimitedCommentBlock, ": heartbeat\n\n"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := NewSSEStreamReader()
+			go func() {
+				r.SendHeartbeatWithFraming(tt.framing)
+				r.Done()
+			}()
+
+			buf := make([]byte, 4096)
+			n, err := r.Read(buf)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got := string(buf[:n]); got != tt.want {
+				t.Errorf("heartbeat frame = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestSSEStreamReaderSendHeartbeatAfterClose verifies the same disconnect
 // contract as the other Send* wrappers: false once the reader is closed.
 func TestSSEStreamReaderSendHeartbeatAfterClose(t *testing.T) {

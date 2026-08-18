@@ -211,6 +211,9 @@ false
 {{- if .Values.bifrost.envLabel }}
 {{- $_ := set $config "env_label" .Values.bifrost.envLabel }}
 {{- end }}
+{{- if .Values.bifrost.setupToken }}
+{{- $_ := set $config "setup_token" .Values.bifrost.setupToken }}
+{{- end }}
 {{- if .Values.bifrost.client }}
 {{- $client := dict }}
 {{- if hasKey .Values.bifrost.client "dropExcessRequests" }}
@@ -360,6 +363,9 @@ false
 {{- if .Values.bifrost.server.readBufferSize }}
 {{- $_ := set $server "read_buffer_size" .Values.bifrost.server.readBufferSize }}
 {{- end }}
+{{- if .Values.bifrost.server.pluginDownloadPrivateAllowlist }}
+{{- $_ := set $server "plugin_download_private_allowlist" .Values.bifrost.server.pluginDownloadPrivateAllowlist }}
+{{- end }}
 {{- if $server }}
 {{- $_ := set $config "server" $server }}
 {{- end }}
@@ -381,14 +387,15 @@ false
 {{- if .Values.bifrost.framework.pricing.mcpLibraryUrl }}
 {{- $_ := set $pricing "mcp_library_url" .Values.bifrost.framework.pricing.mcpLibraryUrl }}
 {{- end }}
-{{- if .Values.bifrost.framework.pricing.mcpLibrarySyncInterval }}
+{{- /* nil-aware: 0 is a meaningful value here (disables the catalog sync) */ -}}
+{{- if not (kindIs "invalid" .Values.bifrost.framework.pricing.mcpLibrarySyncInterval) }}
 {{- $_ := set $pricing "mcp_library_sync_interval" .Values.bifrost.framework.pricing.mcpLibrarySyncInterval }}
 {{- end }}
 {{- /* nil-aware: 0 is a meaningful value here (disables the background refresh) */ -}}
 {{- if not (kindIs "invalid" .Values.bifrost.framework.pricing.liveModelsSyncInterval) }}
 {{- $_ := set $pricing "live_models_sync_interval" .Values.bifrost.framework.pricing.liveModelsSyncInterval }}
 {{- end }}
-{{- if or $pricing.pricing_url $pricing.model_parameters_url $pricing.pricing_sync_interval $pricing.mcp_library_url $pricing.mcp_library_sync_interval (hasKey $pricing "live_models_sync_interval") }}
+{{- if or $pricing.pricing_url $pricing.model_parameters_url $pricing.pricing_sync_interval $pricing.mcp_library_url (hasKey $pricing "mcp_library_sync_interval") (hasKey $pricing "live_models_sync_interval") }}
 {{- $_ := set $framework "pricing" $pricing }}
 {{- end }}
 {{- end }}
@@ -443,6 +450,9 @@ false
 {{- end }}
 {{- if hasKey $providerConfig.network_config "enforce_http2" }}
 {{- $_ := set $networkConfig "enforce_http2" $providerConfig.network_config.enforce_http2 }}
+{{- end }}
+{{- if hasKey $providerConfig.network_config "http2_ping_interval_in_seconds" }}
+{{- $_ := set $networkConfig "http2_ping_interval_in_seconds" $providerConfig.network_config.http2_ping_interval_in_seconds }}
 {{- end }}
 {{- if $providerConfig.network_config.beta_header_overrides }}
 {{- $_ := set $networkConfig "beta_header_overrides" $providerConfig.network_config.beta_header_overrides }}
@@ -1172,13 +1182,36 @@ false
 {{- else if hasKey $client "authType" }}
 {{- $_ := set $cc "auth_type" $client.authType }}
 {{- end }}
-{{- if hasKey $client "oauth_config_id" }}
-{{- $_ := set $cc "oauth_config_id" $client.oauth_config_id }}
-{{- else if hasKey $client "oauthConfigId" }}
-{{- $_ := set $cc "oauth_config_id" $client.oauthConfigId }}
+{{- /* Inline OAuth provider config for auth_type "oauth"/"per_user_oauth". oauth_config_id is Bifrost-managed (minted by the admin verification flow) and is ignored when supplied via config.json, so it is not rendered here. */ -}}
+{{- if $client.oauthConfig }}
+{{- $oauthCfg := dict }}
+{{- with $client.oauthConfig.clientId }}{{- $_ := set $oauthCfg "client_id" . }}{{- end }}
+{{- with $client.oauthConfig.clientSecret }}{{- $_ := set $oauthCfg "client_secret" . }}{{- end }}
+{{- with $client.oauthConfig.authorizeUrl }}{{- $_ := set $oauthCfg "authorize_url" . }}{{- end }}
+{{- with $client.oauthConfig.tokenUrl }}{{- $_ := set $oauthCfg "token_url" . }}{{- end }}
+{{- with $client.oauthConfig.registrationUrl }}{{- $_ := set $oauthCfg "registration_url" . }}{{- end }}
+{{- with $client.oauthConfig.scopes }}{{- $_ := set $oauthCfg "scopes" . }}{{- end }}
+{{- /* Only emit oauth_config when at least one field resolved; an all-empty block would render "oauth_config": {} instead of relying on discovery. */ -}}
+{{- if $oauthCfg }}
+{{- $_ := set $cc "oauth_config" $oauthCfg }}
+{{- end }}
+{{- end }}
+{{- /* Delegated token-exchange config for auth_type "token_exchange" (Enterprise builds only). */ -}}
+{{- if $client.tokenExchange }}
+{{- $te := dict }}
+{{- with $client.tokenExchange.audience }}{{- $_ := set $te "audience" . }}{{- end }}
+{{- if hasKey $client.tokenExchange "useIdpCredentials" }}{{- $_ := set $te "use_idp_credentials" $client.tokenExchange.useIdpCredentials }}{{- end }}
+{{- with $client.tokenExchange.clientId }}{{- $_ := set $te "client_id" . }}{{- end }}
+{{- with $client.tokenExchange.clientSecret }}{{- $_ := set $te "client_secret" . }}{{- end }}
+{{- with $client.tokenExchange.authorizationServerUrl }}{{- $_ := set $te "authorization_server_url" . }}{{- end }}
+{{- with $client.tokenExchange.scopes }}{{- $_ := set $te "scopes" . }}{{- end }}
+{{- $_ := set $cc "token_exchange" $te }}
 {{- end }}
 {{- if hasKey $client "isPingAvailable" }}
 {{- $_ := set $cc "is_ping_available" $client.isPingAvailable }}
+{{- end }}
+{{- if hasKey $client "needsSessionStickiness" }}
+{{- $_ := set $cc "needs_session_stickiness" $client.needsSessionStickiness }}
 {{- end }}
 {{- if $client.clientId }}
 {{- $_ := set $cc "client_id" $client.clientId }}
@@ -1962,9 +1995,6 @@ Call this template at the beginning of deployment/stateful templates
 {{- end }}
 {{- if not $scimValidation.config.clientSecret }}
 {{- fail "ERROR: bifrost.scim.config.clientSecret is required when SCIM provider is Okta." }}
-{{- end }}
-{{- if not $scimValidation.config.apiToken }}
-{{- fail "ERROR: bifrost.scim.config.apiToken is required when SCIM provider is Okta." }}
 {{- end }}
 {{- end }}
 {{- if eq $scimValidation.provider "entra" }}

@@ -148,6 +148,8 @@ tags:
     description: CADF-compliant audit log search, export, and signature verification endpoints
   - name: Webhooks
     description: Webhook endpoint management and signed async-job delivery history
+  - name: Notifications
+    description: Role-targeted dashboard notifications, delivered over the dashboard WebSocket
 
 paths:
   # ==================== Unified Inference API ====================
@@ -1229,6 +1231,10 @@ paths:
   /api/webhooks/deliveries/{id}/redeliver:
     $ref: "./paths/management/webhooks.yaml#/webhooks-deliveries-redeliver"
 
+  # Notifications
+  /api/notifications:
+    $ref: "./paths/management/notifications.yaml#/notifications"
+
 components:
   securitySchemes:
     BearerAuth:
@@ -1291,6 +1297,12 @@ components:
             $ref: "./schemas/inference/common.yaml#/BifrostError"
     Unauthorized:
       description: Unauthorized — missing or invalid credentials
+      content:
+        application/json:
+          schema:
+            $ref: "./schemas/inference/common.yaml#/BifrostError"
+    Forbidden:
+      description: Forbidden — authenticated, but not permitted to perform this action
       content:
         application/json:
           schema:
@@ -1873,3 +1885,15 @@ components:
       $ref: "./schemas/management/webhooks.yaml#/RedeliverWebhookResponse"
     WebhookStatusResponse:
       $ref: "./schemas/management/webhooks.yaml#/WebhookStatusResponse"
+
+    # Notifications
+    NotificationSeverity:
+      $ref: "./schemas/management/notifications.yaml#/NotificationSeverity"
+    NotificationAudience:
+      $ref: "./schemas/management/notifications.yaml#/NotificationAudience"
+    NotificationInput:
+      $ref: "./schemas/management/notifications.yaml#/NotificationInput"
+    Notification:
+      $ref: "./schemas/management/notifications.yaml#/Notification"
+    NotificationList:
+      $ref: "./schemas/management/notifications.yaml#/NotificationList"

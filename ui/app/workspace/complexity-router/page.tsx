@@ -1,3 +1,4 @@
+import PageTitle from "@/components/pageTitle";
 import FullPageLoader from "@/components/fullPageLoader";
 import {
 	AlertDialog,
@@ -335,7 +336,7 @@ export default function ComplexityRouterPage() {
 	const hasErrors = Boolean(boundaryErrors || keywordErrors);
 
 	return (
-		<div className="no-padding-parent flex h-[calc(100dvh_-_16px)] min-w-0 flex-col">
+		<div className="no-padding-parent flex h-[calc(var(--app-content-viewport)_-_16px)] min-w-0 flex-col">
 			<ScrollArea className="min-h-0 w-full flex-1">
 				<form
 					id="complexity-router-form"
@@ -344,15 +345,12 @@ export default function ComplexityRouterPage() {
 					noValidate
 				>
 					{/* ── Page header ── */}
-					<div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-						<div className="space-y-1.5">
-							<h1 className="text-2xl font-semibold tracking-tight">Complexity Router</h1>
-							<p className="text-muted-foreground max-w-2xl text-sm leading-relaxed">
-								Tune how incoming requests are classified into four tiers. Thresholds and keyword lists feed the{" "}
-								<code className="bg-muted rounded-sm px-1 py-0.5 font-mono text-xs">complexity_tier</code> field that routing rules can
-								target.
-							</p>
-						</div>
+					<div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-end">
+						<PageTitle>
+							Tune how incoming requests are classified into four tiers. Thresholds and keyword lists feed the{" "}
+							<code className="bg-muted rounded-sm px-1 py-0.5 font-mono text-xs">complexity_tier</code> field that routing rules can
+							target.
+						</PageTitle>
 						<Button asChild variant="outline" size="sm" className="w-full shrink-0 sm:w-fit" data-testid="complexity-router-docs-link">
 							<a href={"https://docs.getbifrost.ai/features/governance/complexity-router"} target="_blank" rel="noopener noreferrer">
 								<ExternalLink className="size-3.5" />

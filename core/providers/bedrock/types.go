@@ -263,9 +263,12 @@ type BedrockImageSource struct {
 	Source BedrockImageSourceData `json:"source"` // Required: Image source data
 }
 
-// BedrockImageSourceData represents the source of image data
+// BedrockImageSourceData represents the source of image data.
+// This is a tagged union — exactly one of Bytes or S3Location should be set.
+// See: https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ImageSource.html
 type BedrockImageSourceData struct {
-	Bytes *string `json:"bytes,omitempty"` // Base64-encoded image bytes
+	Bytes      *string            `json:"bytes,omitempty"`      // Base64-encoded image bytes
+	S3Location *BedrockS3Location `json:"s3Location,omitempty"` // Optional: S3 location (model-dependent support)
 }
 
 // BedrockDocumentSource represents document content
@@ -275,10 +278,13 @@ type BedrockDocumentSource struct {
 	Source *BedrockDocumentSourceData `json:"source"` // Required: Document source data
 }
 
-// BedrockDocumentSourceData represents the source of document data
+// BedrockDocumentSourceData represents the source of document data.
+// This is a tagged union — exactly one of Bytes, Text or S3Location should be set.
+// See: https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_DocumentSource.html
 type BedrockDocumentSourceData struct {
-	Bytes *string `json:"bytes,omitempty"` // Base64-encoded document bytes
-	Text  *string `json:"text,omitempty"`  // Plain text content
+	Bytes      *string            `json:"bytes,omitempty"`      // Base64-encoded document bytes
+	Text       *string            `json:"text,omitempty"`       // Plain text content
+	S3Location *BedrockS3Location `json:"s3Location,omitempty"` // Optional: S3 location (model-dependent support)
 }
 
 // BedrockVideoBlock represents a video content block.

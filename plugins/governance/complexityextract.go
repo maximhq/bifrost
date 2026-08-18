@@ -143,8 +143,13 @@ func extractChatText(content *schemas.ChatMessageContent) string {
 	return text
 }
 
-// extractChatTextOnly returns chat content only when every block is text,
-// allowing mixed-modality user prompts to opt out of complexity routing.
+// extractChatTextOnly returns the text portion of a user chat turn, ignoring
+// non-text blocks (images, files, audio) so mixed-modality prompts still feed
+// their text into complexity routing. It succeeds whenever at least one non-empty
+// text block is present; it returns false only when there is no usable text at
+// all. The analyzer self-gates on lexical signal, so a text-light turn with no
+// signal (e.g. "what's this?" beside an image) still yields no tier and falls
+// through to default routing.
 func extractChatTextOnly(content *schemas.ChatMessageContent) (string, bool) {
 	if content == nil {
 		return "", false
@@ -152,16 +157,15 @@ func extractChatTextOnly(content *schemas.ChatMessageContent) (string, bool) {
 	if content.ContentStr != nil {
 		return *content.ContentStr, true
 	}
-	if len(content.ContentBlocks) == 0 {
-		return "", false
-	}
 
 	var text string
 	for _, block := range content.ContentBlocks {
-		if !isChatTextBlock(block) || block.Text == nil || *block.Text == "" {
-			return "", false
+		if isChatTextBlock(block) && block.Text != nil && *block.Text != "" {
+			text = appendText(text, *block.Text)
 		}
-		text = appendText(text, *block.Text)
+	}
+	if strings.TrimSpace(text) == "" {
+		return "", false
 	}
 	return text, true
 }
@@ -185,8 +189,10 @@ func extractResponsesText(content *schemas.ResponsesMessageContent) string {
 	return text
 }
 
-// extractResponsesTextOnly returns Responses content only when every block is
-// input text, avoiding synthesized prompts for mixed-modality user requests.
+// extractResponsesTextOnly returns the text portion of a user Responses turn,
+// ignoring non-text blocks (images, files, audio) so mixed-modality requests
+// still feed their text into complexity routing. It succeeds whenever at least
+// one non-empty input-text block is present, mirroring extractChatTextOnly.
 func extractResponsesTextOnly(content *schemas.ResponsesMessageContent) (string, bool) {
 	if content == nil {
 		return "", false
@@ -194,16 +200,15 @@ func extractResponsesTextOnly(content *schemas.ResponsesMessageContent) (string,
 	if content.ContentStr != nil {
 		return *content.ContentStr, true
 	}
-	if len(content.ContentBlocks) == 0 {
-		return "", false
-	}
 
 	var text string
 	for _, block := range content.ContentBlocks {
-		if !isResponsesInputTextBlock(block) || block.Text == nil || *block.Text == "" {
-			return "", false
+		if isResponsesInputTextBlock(block) && block.Text != nil && *block.Text != "" {
+			text = appendText(text, *block.Text)
 		}
-		text = appendText(text, *block.Text)
+	}
+	if strings.TrimSpace(text) == "" {
+		return "", false
 	}
 	return text, true
 }
