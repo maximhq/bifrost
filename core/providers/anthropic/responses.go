@@ -3730,6 +3730,9 @@ func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 	if req.Diagnostics != nil {
 		params.ExtraParams["diagnostics"] = req.Diagnostics
 	}
+	if req.Container != nil {
+		params.ExtraParams["container"] = req.Container
+	}
 	if req.TopK != nil {
 		params.ExtraParams["top_k"] = *req.TopK
 	}
@@ -4168,6 +4171,30 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 				}
 				if parsed {
 					delete(anthropicReq.ExtraParams, "diagnostics")
+				}
+			}
+			if containerRaw, exists := anthropicReq.ExtraParams["container"]; exists {
+				parsed := false
+				switch v := containerRaw.(type) {
+				case *AnthropicContainer:
+					anthropicReq.Container = v
+					parsed = true
+				case AnthropicContainer:
+					anthropicReq.Container = &v
+					parsed = true
+				default:
+					// Raw forms from other surfaces: a bare string id or an
+					// object map both decode via the AnthropicContainer union.
+					if data, err := providerUtils.MarshalSorted(v); err == nil {
+						var c AnthropicContainer
+						if sonic.Unmarshal(data, &c) == nil {
+							anthropicReq.Container = &c
+							parsed = true
+						}
+					}
+				}
+				if parsed {
+					delete(anthropicReq.ExtraParams, "container")
 				}
 			}
 			topK, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["top_k"])
