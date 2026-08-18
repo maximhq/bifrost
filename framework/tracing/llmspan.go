@@ -162,8 +162,10 @@ func PopulateErrorAttributes(err *schemas.BifrostError) map[string]any {
 		attrs[schemas.AttrCompletionTokens] = u.CompletionTokens
 
 		if d := u.PromptTokensDetails; d != nil && d.CachedReadTokens > 0 {
+			attrs[schemas.AttrUsageCacheReadInputTokens] = d.CachedReadTokens
+			// legacy nested keys, mirrored from the chat and responses success paths.
 			attrs[schemas.AttrInputTokenDetailsCachedRead] = d.CachedReadTokens
-			attrs[schemas.AttrPromptTokenDetailsCachedRead] = d.CachedReadTokens // legacy
+			attrs[schemas.AttrPromptTokenDetailsCachedRead] = d.CachedReadTokens
 		}
 	}
 

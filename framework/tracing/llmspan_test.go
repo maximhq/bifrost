@@ -197,6 +197,7 @@ func TestPopulateErrorAttributesEmitsBilledUsage(t *testing.T) {
 		schemas.AttrInputTokens:                  1200,
 		schemas.AttrOutputTokens:                 34,
 		schemas.AttrTotalTokens:                  1234,
+		schemas.AttrUsageCacheReadInputTokens:    1000,
 		schemas.AttrInputTokenDetailsCachedRead:  1000,
 		schemas.AttrPromptTokenDetailsCachedRead: 1000,
 	} {
