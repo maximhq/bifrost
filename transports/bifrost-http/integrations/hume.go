@@ -191,7 +191,6 @@ func CreateHumeRouteConfigs(config *lib.HumeConfig) []RouteConfig {
 			StreamConfig: &StreamConfig{
 				ChatStreamResponseConverter: humeChatStreamResponseConverter,
 				ErrorConverter:              humeErrorConverter,
-				FatalConverterErrors:        true,
 			},
 		})
 	}

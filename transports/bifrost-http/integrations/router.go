@@ -402,9 +402,10 @@ type ShortCircuit func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostCont
 
 // StreamConfig defines streaming-specific configuration for an integration.
 // A response converter returns ("", nil, nil) to skip a chunk. Converter errors
-// are logged and skipped by default. Routes that cannot safely continue after a
-// conversion error can opt into a sanitized error event and stream termination
-// with FatalConverterErrors.
+// are fatal by default: the router emits a sanitized integration-specific error,
+// cancels and drains the upstream stream, and terminates without a success marker.
+// Routes that can safely continue after a conversion failure may opt in with
+// SkipConverterErrors.
 //
 // SSE FORMAT BEHAVIOR:
 //
@@ -432,7 +433,7 @@ type StreamConfig struct {
 	TranscriptionStreamResponseConverter   TranscriptionStreamResponseConverter   // Function to convert BifrostTranscriptionResponse to streaming format
 	ImageGenerationStreamResponseConverter ImageGenerationStreamResponseConverter // Function to convert BifrostImageGenerationStreamResponse to streaming format
 	ErrorConverter                         StreamErrorConverter                   // Function to convert BifrostError to streaming error format
-	FatalConverterErrors                   bool                                   // Emit a sanitized error and terminate the stream when a response converter fails
+	SkipConverterErrors                    bool                                   // Log and skip response converter failures instead of terminating the stream
 }
 
 type RouteConfigType string
@@ -2967,7 +2968,7 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 
 				if err != nil {
 					g.logger.Warn("Failed to convert streaming response: %v", err)
-					if config.StreamConfig.FatalConverterErrors {
+					if !config.StreamConfig.SkipConverterErrors {
 						sendConvertedStreamError(newBifrostErrorWithCode(nil, lib.ClientSafeInternalErrorMessage, fasthttp.StatusInternalServerError))
 						cancel()
 						for range streamChan {

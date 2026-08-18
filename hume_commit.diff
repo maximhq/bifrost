@@ -1,0 +1,1466 @@
+commit d8f229c4e1fe7ee8da0503db6e988c79aaf07db6
+Author: Harold Martin <harold.martin@gmail.com>
+Date:   Sun Aug 16 08:34:40 2026 -0700
+
+    Add Hume EVI custom language model adapter
+    
+    Model: GPT-5 (Codex)
+    Reasoning: default
+    Thread-ID: 01a00afa-1614-7c80-90fe-7dcdf5156e31
+
+diff --git a/core/internal/llmtests/simple_chat.go b/core/internal/llmtests/simple_chat.go
+index 9d8e4185a..b1aabe6f8 100644
+--- a/core/internal/llmtests/simple_chat.go
++++ b/core/internal/llmtests/simple_chat.go
+@@ -79,6 +79,15 @@ func RunSimpleChatTest(t *testing.T, client *bifrost.Bifrost, ctx context.Contex
+ 					MaxCompletionTokens: bifrost.Ptr(150),
+ 				},
+ 				Fallbacks: testConfig.Fallbacks,
++				// Request-only integration metadata must remain available to plugins
++				// without leaking into any provider's wire payload.
++				HumeMetadata: &schemas.HumeChatRequestMetadata{
++					CustomSessionID: "provider-harness-session",
++					Messages: map[int]schemas.HumeMessageMetadata{0: {
++						Time:          &schemas.HumeMessageTime{Begin: schemas.Ptr(0.0), End: schemas.Ptr(1000.0)},
++						ProsodyScores: map[string]float64{"Interest": 0.9},
++					}},
++				},
+ 			}
+ 			response, err := client.ChatCompletionRequest(bfCtx, chatReq)
+ 			if err != nil {
+diff --git a/core/providers/openai/chat_test.go b/core/providers/openai/chat_test.go
+index e8bd7e2e2..e50a70ebf 100644
+--- a/core/providers/openai/chat_test.go
++++ b/core/providers/openai/chat_test.go
+@@ -969,6 +969,35 @@ func TestToOpenAIChatRequest_AnnotationsNotInWirePayload(t *testing.T) {
+ 	}
+ }
+ 
++func TestToOpenAIChatRequest_HumeMetadataDoesNotAffectWirePayload(t *testing.T) {
++	baseRequest := &schemas.BifrostChatRequest{
++		Provider: schemas.OpenAI,
++		Model:    "gpt-4o-mini",
++		Input: []schemas.ChatMessage{
++			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}},
++		},
++	}
++	requestWithMetadata := *baseRequest
++	requestWithMetadata.HumeMetadata = &schemas.HumeChatRequestMetadata{
++		CustomSessionID: "session-123",
++		Messages: map[int]schemas.HumeMessageMetadata{
++			0: {
++				Time: &schemas.HumeMessageTime{Begin: schemas.Ptr(100.0), End: schemas.Ptr(450.0)},
++				ProsodyScores: map[string]float64{
++					"Calmness": 0.91,
++				},
++			},
++		},
++	}
++
++	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
++	withoutMetadata, err := providerUtils.MarshalSorted(ToOpenAIChatRequest(ctx, baseRequest))
++	require.NoError(t, err)
++	withMetadata, err := providerUtils.MarshalSorted(ToOpenAIChatRequest(ctx, &requestWithMetadata))
++	require.NoError(t, err)
++	require.Equal(t, string(withoutMetadata), string(withMetadata))
++}
++
+ func TestApplyXAICompatibility(t *testing.T) {
+ 	tests := []struct {
+ 		name     string
+diff --git a/core/schemas/chatcompletions.go b/core/schemas/chatcompletions.go
+index 9a5ab3e54..2e299e1b4 100644
+--- a/core/schemas/chatcompletions.go
++++ b/core/schemas/chatcompletions.go
+@@ -18,6 +18,30 @@ type BifrostChatRequest struct {
+ 	Params         *ChatParameters `json:"params,omitempty"`
+ 	Fallbacks      []Fallback      `json:"fallbacks,omitempty"`
+ 	RawRequestBody []byte          `json:"-"` // set bifrost-use-raw-request-body to true in ctx to use the raw request body. Bifrost will directly send this to the downstream provider.
++	// HumeMetadata carries request-only metadata supplied by Hume EVI's custom
++	// language model protocol. LLM plugins may inspect it, but it must never be
++	// serialized to an upstream provider.
++	HumeMetadata *HumeChatRequestMetadata `json:"-"`
++}
++
++// HumeChatRequestMetadata contains Hume EVI metadata associated with a chat request.
++// The metadata is read-only by convention once the request enters the plugin pipeline.
++type HumeChatRequestMetadata struct {
++	CustomSessionID string                      `json:"custom_session_id"`
++	Messages        map[int]HumeMessageMetadata `json:"messages,omitempty"`
++}
++
++// HumeMessageMetadata contains Hume metadata for one entry in BifrostChatRequest.Input.
++// Its key in HumeChatRequestMetadata.Messages is the corresponding message index.
++type HumeMessageMetadata struct {
++	Time          *HumeMessageTime   `json:"time,omitempty"`
++	ProsodyScores map[string]float64 `json:"prosody_scores,omitempty"`
++}
++
++// HumeMessageTime identifies the start and end of a Hume message in milliseconds.
++type HumeMessageTime struct {
++	Begin *float64 `json:"begin,omitempty"`
++	End   *float64 `json:"end,omitempty"`
+ }
+ 
+ // GetRawRequestBody returns the raw request body
+diff --git a/core/schemas/hume_test.go b/core/schemas/hume_test.go
+new file mode 100644
+index 000000000..fe5857ad2
+--- /dev/null
++++ b/core/schemas/hume_test.go
+@@ -0,0 +1,35 @@
++package schemas
++
++import (
++	"strings"
++	"testing"
++)
++
++func TestBifrostChatRequestDoesNotSerializeHumeMetadata(t *testing.T) {
++	content := "hello"
++	request := &BifrostChatRequest{
++		Provider: OpenAI,
++		Model:    "gpt-4o-mini",
++		Input: []ChatMessage{{
++			Role:    ChatMessageRoleUser,
++			Content: &ChatMessageContent{ContentStr: &content},
++		}},
++		HumeMetadata: &HumeChatRequestMetadata{
++			CustomSessionID: "session-123",
++			Messages: map[int]HumeMessageMetadata{0: {
++				Time:          &HumeMessageTime{Begin: Ptr(0.0), End: Ptr(100.0)},
++				ProsodyScores: map[string]float64{"Joy": 0.9},
++			}},
++		},
++	}
++
++	encoded, err := MarshalSorted(request)
++	if err != nil {
++		t.Fatalf("MarshalSorted() error = %v", err)
++	}
++	for _, forbidden := range []string{"Hume", "hume", "session-123", "prosody", "Joy"} {
++		if strings.Contains(string(encoded), forbidden) {
++			t.Fatalf("serialized request leaked Hume metadata %q: %s", forbidden, encoded)
++		}
++	}
++}
+diff --git a/docs/docs.json b/docs/docs.json
+index 391262006..82eba816b 100644
+--- a/docs/docs.json
++++ b/docs/docs.json
+@@ -446,6 +446,7 @@
+               "integrations/litellm-sdk",
+               "integrations/langchain-sdk",
+               "integrations/pydanticai-sdk",
++              "integrations/hume-evi",
+               "integrations/passthrough"
+             ]
+           },
+@@ -2412,4 +2413,4 @@
+       "linkedin": "https://linkedin.com/company/maxim-ai"
+     }
+   }
+-}
+\ No newline at end of file
++}
+diff --git a/docs/integrations/hume-evi.mdx b/docs/integrations/hume-evi.mdx
+new file mode 100644
+index 000000000..b99ac5cd4
+--- /dev/null
++++ b/docs/integrations/hume-evi.mdx
+@@ -0,0 +1,141 @@
++---
++title: "Hume EVI"
++description: "Use Bifrost as a custom language model for Hume's Empathic Voice Interface."
++icon: "waveform"
++---
++
++## Overview
++
++Bifrost can serve as a [custom language model](https://dev.hume.ai/docs/speech-to-speech-evi/guides/custom-language-model) for Hume's Empathic Voice Interface (EVI). Hume sends conversation history and vocal-expression measurements to Bifrost, and Bifrost streams an OpenAI-compatible response from any configured provider.
++
++The Hume adapter uses the normal Bifrost inference pipeline, including virtual keys, governance, routing, fallbacks, plugins, logging, and observability.
++
++**Recommended endpoint:** `https://<YOUR-BIFROST-HOST>/hume/v1/chat/completions`
++
++<Note>
++The endpoint must be reachable from Hume over public HTTPS. The legacy Hume custom-language-model WebSocket protocol is not supported.
++</Note>
++
++## Configure Bifrost
++
++The Hume routes are always registered. Configuration is optional unless Hume will omit its custom language model identifier.
++
++```json
++{
++  "$schema": "https://www.getbifrost.ai/schema",
++  "hume": {
++    "default_model": "openai/gpt-4o-mini",
++    "prosody_prompt": {
++      "enabled": false,
++      "scope": "latest_user",
++      "max_emotions": 3
++    }
++  }
++}
++```
++
++| Field | Default | Behavior |
++| --- | --- | --- |
++| `default_model` | None | Used only when Hume does not send a custom language model identifier. It may be a `provider/model` string or a name resolvable by the model catalog. |
++| `prosody_prompt.enabled` | `false` | Adds Hume vocal-expression confidence scores to selected user messages. Typed metadata remains available to Go LLM plugins even when disabled. |
++| `prosody_prompt.scope` | `latest_user` | Selects `latest_user` or `all_user_messages`. |
++| `prosody_prompt.max_emotions` | `3` | Includes the highest-confidence scores. Set to `0` to include every score. |
++
++Restart Bifrost after changing these settings.
++
++## Configure Hume
++
++In the Hume Platform:
++
++1. Create or edit an EVI configuration.
++2. Select **Custom language model**.
++3. Set the URL to `https://<YOUR-BIFROST-HOST>/hume/v1/chat/completions`.
++4. Set **Custom language model identifier** to the Bifrost model you want, such as `anthropic/claude-sonnet-4-5`. You may leave it empty when `hume.default_model` is configured.
++5. Attach any Hume function tools needed by the conversation.
++
++The identifier supplied by Hume takes precedence over `hume.default_model`. If both are absent, Bifrost returns HTTP 400.
++
++## Authentication
++
++Hume sends `language_model_api_key` as an `Authorization: Bearer` header. Use a Bifrost virtual key and enable inference authentication for production deployments.
++
++```json
++{
++  "type": "session_settings",
++  "language_model_api_key": "<YOUR-BIFROST-VIRTUAL-KEY>"
++}
++```
++
++The Hume routes use the same authentication and governance middleware as other inference routes. They do not add a separate shared-secret mechanism.
++
++## Prosody-aware prompting
++
++Hume attaches timestamps and expression confidence scores to messages. Bifrost exposes these values to Go LLM plugins through `BifrostChatRequest.HumeMetadata` without forwarding the metadata fields directly to providers.
++
++When prompt injection is enabled, Bifrost adds a stable system instruction and appends deterministic `<hume_vocal_expression>` JSON to selected user messages. Scores are sorted by confidence, labels break ties, and values are rounded to three decimal places. The instruction tells the model that scores describe perceived vocal expression—not verified internal feelings—and should be used subtly.
++
++Choose the scope based on latency, token usage, and provider prompt caching:
++
++| Scope | Token cost | Prefix-cache behavior |
++| --- | --- | --- |
++| `latest_user` | Lowest | The tagged message changes as the conversation advances, so prior transformed history is not byte-stable and prefix-cache reuse may decrease. |
++| `all_user_messages` | Higher | Earlier tagged messages remain deterministic across turns, improving prefix stability when Hume resends unchanged scores. |
++
++Keeping injection disabled preserves Hume's original text history and lets an LLM plugin apply a custom policy using the typed metadata.
++
++## Session IDs
++
++If Hume sends `custom_session_id` as a query parameter, Bifrost validates and echoes it. Otherwise Bifrost generates a UUID. Every streamed chat chunk carries the resolved ID as `system_fingerprint`, allowing Hume to remember it and include it on later turns.
++
++Bifrost always replaces an upstream provider's `system_fingerprint`; provider fingerprints can never overwrite the Hume session ID. Session IDs are not persisted by the adapter.
++
++## Function tools
++
++Hume custom language models use the OpenAI function-calling format. Bifrost preserves Hume's tool definitions, tool choice, assistant tool-call deltas, and tool-result history. The adapter disables parallel tool calls because Hume currently accepts one function call at a time.
++
++Hume remains responsible for executing Hume-configured tools. Bifrost MCP tools continue to follow the existing MCP configuration and execution pipeline.
++
++## Verify the endpoint
++
++Use the OpenAI Python SDK to verify parsing, SSE framing, and session handling before connecting the endpoint to Hume:
++
++```python
++import asyncio
++from openai import AsyncOpenAI
++
++client = AsyncOpenAI(
++    base_url="https://<YOUR-BIFROST-HOST>/hume/v1",
++    api_key="<YOUR-BIFROST-VIRTUAL-KEY>",
++    default_query={"custom_session_id": "hume-test-123"},
++)
++
++async def main():
++    stream = await client.chat.completions.create(
++        model="openai/gpt-4o-mini",
++        messages=[],
++        stream=True,
++        extra_body={
++            "messages": [
++                {
++                    "role": "user",
++                    "content": "Hello, how are you?",
++                    "time": {"begin": 0, "end": 1000},
++                    "models": {
++                        "prosody": {
++                            "scores": {"Interest": 0.82, "Joy": 0.41}
++                        }
++                    },
++                }
++            ]
++        },
++    )
++
++    async for chunk in stream:
++        print(chunk.system_fingerprint, chunk.choices)
++
++asyncio.run(main())
++```
++
++The response must use `Content-Type: text/event-stream`, stream `data:` events incrementally, report `hume-test-123` as `system_fingerprint`, and finish with `data: [DONE]`.
++
++Finally, configure the public endpoint in Hume and start a call in the EVI Playground. Confirm that text begins streaming without waiting for the full model response, the conversation resumes with the same custom session ID, and any configured function tool produces a single valid tool call.
+diff --git a/transports/bifrost-http/handlers/integrations.go b/transports/bifrost-http/handlers/integrations.go
+index 7339709c2..fff75505c 100644
+--- a/transports/bifrost-http/handlers/integrations.go
++++ b/transports/bifrost-http/handlers/integrations.go
+@@ -24,6 +24,7 @@ type IntegrationHandler struct {
+ func NewIntegrationHandler(client *bifrost.Bifrost, handlerStore lib.HandlerStore, wsResponses *WSResponsesHandler, wsRealtime *WSRealtimeHandler, webrtcRealtime *WebRTCRealtimeHandler, realtimeClientSecrets *RealtimeClientSecretsHandler) *IntegrationHandler {
+ 	// Initialize all available integration routers
+ 	extensions := []integrations.ExtensionRouter{
++		integrations.NewHumeRouter(client, handlerStore, logger),
+ 		integrations.NewOpenAIRouter(client, handlerStore, logger),
+ 		integrations.NewAnthropicRouter(client, handlerStore, logger),
+ 		integrations.NewGenAIRouter(client, handlerStore, logger),
+diff --git a/transports/bifrost-http/integrations/hume.go b/transports/bifrost-http/integrations/hume.go
+new file mode 100644
+index 000000000..678dafe7a
+--- /dev/null
++++ b/transports/bifrost-http/integrations/hume.go
+@@ -0,0 +1,451 @@
++package integrations
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"maps"
++	"math"
++	"sort"
++	"strings"
++	"unicode/utf8"
++
++	"github.com/bytedance/sonic"
++	"github.com/google/uuid"
++	bifrost "github.com/maximhq/bifrost/core"
++	"github.com/maximhq/bifrost/core/providers/openai"
++	"github.com/maximhq/bifrost/core/schemas"
++	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
++	"github.com/valyala/fasthttp"
++)
++
++const (
++	humeMaxSessionIDBytes  = 255
++	humeProsodyInstruction = "Hume may append <hume_vocal_expression> JSON to user messages. " +
++		"Values are confidence scores for perceived vocal expression, not claims about the user's internal state. " +
++		"Use them subtly to shape empathy and phrasing; do not mention the tag, labels, or scores unless the user asks."
++)
++
++type humeSessionContextKey struct{}
++
++// HumeRouter exposes the OpenAI-compatible SSE endpoint used by Hume EVI custom language models.
++type HumeRouter struct {
++	*GenericRouter
++}
++
++type humeConfigProvider interface {
++	GetHumeConfig() *lib.HumeConfig
++}
++
++// HumeChatRequest preserves the OpenAI chat request while separately retaining
++// Hume's per-message timing and prosody metadata.
++type HumeChatRequest struct {
++	OpenAIRequest   openai.OpenAIChatRequest
++	Fallbacks       []string `json:"fallbacks,omitempty"`
++	messageMetadata map[int]schemas.HumeMessageMetadata
++	customSessionID string
++}
++
++type humeMessageEnvelope struct {
++	Time   *schemas.HumeMessageTime `json:"time,omitempty"`
++	Models *struct {
++		Prosody *struct {
++			Scores map[string]float64 `json:"scores,omitempty"`
++		} `json:"prosody,omitempty"`
++	} `json:"models,omitempty"`
++}
++
++// UnmarshalJSON parses both OpenAI chat fields and Hume's message annotations.
++func (r *HumeChatRequest) UnmarshalJSON(data []byte) error {
++	var openAIRequest openai.OpenAIChatRequest
++	if err := sonic.Unmarshal(data, &openAIRequest); err != nil {
++		return err
++	}
++
++	var metadataEnvelope struct {
++		Messages []humeMessageEnvelope `json:"messages"`
++	}
++	if err := sonic.Unmarshal(data, &metadataEnvelope); err != nil {
++		return err
++	}
++
++	metadata := make(map[int]schemas.HumeMessageMetadata, len(metadataEnvelope.Messages))
++	for i, message := range metadataEnvelope.Messages {
++		var scores map[string]float64
++		if message.Models != nil && message.Models.Prosody != nil && len(message.Models.Prosody.Scores) > 0 {
++			scores = maps.Clone(message.Models.Prosody.Scores)
++		}
++		if message.Time == nil && len(scores) == 0 {
++			continue
++		}
++		metadata[i] = schemas.HumeMessageMetadata{
++			Time:          message.Time,
++			ProsodyScores: scores,
++		}
++	}
++
++	*r = HumeChatRequest{
++		OpenAIRequest:   openAIRequest,
++		Fallbacks:       openAIRequest.Fallbacks,
++		messageMetadata: metadata,
++	}
++	return nil
++}
++
++// IsStreamingRequested implements StreamingRequest.
++func (r *HumeChatRequest) IsStreamingRequested() bool {
++	return r != nil && r.OpenAIRequest.IsStreamingRequested()
++}
++
++// SetExtraParams implements RequestWithSettableExtraParams.
++func (r *HumeChatRequest) SetExtraParams(params map[string]interface{}) {
++	r.OpenAIRequest.SetExtraParams(params)
++}
++
++// GetExtraParams exposes provider-specific extra parameters for router helpers.
++func (r *HumeChatRequest) GetExtraParams() map[string]interface{} {
++	return r.OpenAIRequest.GetExtraParams()
++}
++
++type humeStreamChunk struct {
++	ID                string             `json:"id"`
++	Choices           []humeStreamChoice `json:"choices"`
++	Created           int                `json:"created"`
++	Model             string             `json:"model"`
++	Object            string             `json:"object"`
++	SystemFingerprint string             `json:"system_fingerprint"`
++	Usage             *humeUsage         `json:"usage,omitempty"`
++}
++
++type humeStreamChoice struct {
++	Index        int             `json:"index"`
++	Delta        humeStreamDelta `json:"delta"`
++	FinishReason *string         `json:"finish_reason,omitempty"`
++}
++
++type humeStreamDelta struct {
++	Role      *string        `json:"role,omitempty"`
++	Content   *string        `json:"content,omitempty"`
++	Refusal   *string        `json:"refusal,omitempty"`
++	ToolCalls []humeToolCall `json:"tool_calls,omitempty"`
++}
++
++type humeToolCall struct {
++	Index    uint16                                       `json:"index"`
++	Type     *string                                      `json:"type,omitempty"`
++	ID       *string                                      `json:"id,omitempty"`
++	Function schemas.ChatAssistantMessageToolCallFunction `json:"function"`
++}
++
++type humeUsage struct {
++	PromptTokens     int `json:"prompt_tokens"`
++	CompletionTokens int `json:"completion_tokens"`
++	TotalTokens      int `json:"total_tokens"`
++}
++
++type humeErrorEnvelope struct {
++	Error *schemas.ErrorField `json:"error"`
++}
++
++type humePromptScore struct {
++	Label string  `json:"label"`
++	Score float64 `json:"score"`
++}
++
++// NewHumeRouter creates the dedicated Hume EVI custom language model router.
++func NewHumeRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *HumeRouter {
++	config := lib.NewDefaultHumeConfig()
++	if provider, ok := handlerStore.(humeConfigProvider); ok {
++		if configured := provider.GetHumeConfig(); configured != nil {
++			config = configured
++		}
++	}
++	return &HumeRouter{
++		GenericRouter: NewGenericRouter(client, handlerStore, CreateHumeRouteConfigs(config), nil, logger),
++	}
++}
++
++// CreateHumeRouteConfigs returns the two Hume-compatible chat completion routes.
++func CreateHumeRouteConfigs(config *lib.HumeConfig) []RouteConfig {
++	if config == nil {
++		config = lib.NewDefaultHumeConfig()
++	}
++	routes := make([]RouteConfig, 0, 2)
++	for _, path := range []string{"/hume/v1/chat/completions", "/hume/chat/completions"} {
++		routes = append(routes, RouteConfig{
++			Type:        RouteConfigTypeHume,
++			Path:        path,
++			Method:      fasthttp.MethodPost,
++			PreCallback: humePreCallback(config),
++			GetHTTPRequestType: func(_ *fasthttp.RequestCtx) schemas.RequestType {
++				return schemas.ChatCompletionRequest
++			},
++			GetRequestTypeInstance: func(_ context.Context) interface{} {
++				return &HumeChatRequest{}
++			},
++			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
++				humeRequest, ok := req.(*HumeChatRequest)
++				if !ok {
++					return nil, errors.New("invalid Hume chat request type")
++				}
++				chatRequest := humeRequest.OpenAIRequest.ToBifrostChatRequest(ctx)
++				metadata := cloneHumeMetadata(humeRequest.messageMetadata)
++				chatRequest.Input, metadata = injectHumeProsody(chatRequest.Input, metadata, config.ProsodyPrompt)
++				chatRequest.HumeMetadata = &schemas.HumeChatRequestMetadata{
++					CustomSessionID: humeRequest.customSessionID,
++					Messages:        metadata,
++				}
++				return &schemas.BifrostRequest{ChatRequest: chatRequest}, nil
++			},
++			ErrorConverter: humeErrorConverter,
++			StreamConfig: &StreamConfig{
++				ChatStreamResponseConverter: humeChatStreamResponseConverter,
++				ErrorConverter: func(_ *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
++					return humeErrorConverter(nil, err)
++				},
++			},
++		})
++	}
++	return routes
++}
++
++func humePreCallback(config *lib.HumeConfig) PreRequestCallback {
++	return func(httpCtx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
++		humeRequest, ok := req.(*HumeChatRequest)
++		if !ok {
++			return errors.New("invalid Hume chat request type")
++		}
++		openAIRequest := &humeRequest.OpenAIRequest
++		if openAIRequest.Stream != nil && !*openAIRequest.Stream {
++			return errors.New("Hume custom language model requests must use streaming")
++		}
++		openAIRequest.Stream = schemas.Ptr(true)
++		if openAIRequest.N != nil && *openAIRequest.N != 1 {
++			return errors.New("Hume custom language model requests must request exactly one completion")
++		}
++		openAIRequest.N = schemas.Ptr(1)
++		if len(openAIRequest.Tools) > 0 {
++			openAIRequest.ParallelToolCalls = schemas.Ptr(false)
++		}
++
++		openAIRequest.Model = strings.TrimSpace(openAIRequest.Model)
++		if openAIRequest.Model == "" {
++			openAIRequest.Model = config.DefaultModel
++		}
++		if openAIRequest.Model == "" {
++			return errors.New("Hume custom language model identifier is missing and hume.default_model is not configured")
++		}
++
++		sessionID := string(httpCtx.QueryArgs().Peek("custom_session_id"))
++		if sessionID != "" {
++			if !utf8.ValidString(sessionID) {
++				return errors.New("custom_session_id must be valid UTF-8")
++			}
++			if len(sessionID) > humeMaxSessionIDBytes {
++				return fmt.Errorf("custom_session_id must not exceed %d bytes", humeMaxSessionIDBytes)
++			}
++		} else {
++			sessionID = uuid.NewString()
++		}
++		humeRequest.customSessionID = sessionID
++		bifrostCtx.SetValue(humeSessionContextKey{}, sessionID)
++		schemas.ExtractAndSetUserAgentFromHeaders(extractHeadersFromRequest(httpCtx), bifrostCtx)
++		return nil
++	}
++}
++
++func cloneHumeMetadata(metadata map[int]schemas.HumeMessageMetadata) map[int]schemas.HumeMessageMetadata {
++	cloned := make(map[int]schemas.HumeMessageMetadata, len(metadata))
++	for messageIndex, item := range metadata {
++		if item.Time != nil {
++			timeCopy := schemas.HumeMessageTime{}
++			if item.Time.Begin != nil {
++				begin := *item.Time.Begin
++				timeCopy.Begin = &begin
++			}
++			if item.Time.End != nil {
++				end := *item.Time.End
++				timeCopy.End = &end
++			}
++			item.Time = &timeCopy
++		}
++		item.ProsodyScores = maps.Clone(item.ProsodyScores)
++		cloned[messageIndex] = item
++	}
++	return cloned
++}
++
++func injectHumeProsody(messages []schemas.ChatMessage, metadata map[int]schemas.HumeMessageMetadata, config *lib.HumeProsodyPromptConfig) ([]schemas.ChatMessage, map[int]schemas.HumeMessageMetadata) {
++	if config == nil || !config.Enabled {
++		return messages, metadata
++	}
++
++	selected := make(map[int]string)
++	if config.Scope == lib.HumeProsodyPromptScopeAllUserMessages {
++		for i := range messages {
++			if tag := humeProsodyTag(messages[i], metadata, i, config.MaxEmotions); tag != "" {
++				selected[i] = tag
++			}
++		}
++	} else {
++		for i := len(messages) - 1; i >= 0; i-- {
++			if tag := humeProsodyTag(messages[i], metadata, i, config.MaxEmotions); tag != "" {
++				selected[i] = tag
++				break
++			}
++		}
++	}
++	if len(selected) == 0 {
++		return messages, metadata
++	}
++
++	insertAt := 0
++	for insertAt < len(messages) && (messages[insertAt].Role == schemas.ChatMessageRoleSystem || messages[insertAt].Role == schemas.ChatMessageRoleDeveloper) {
++		insertAt++
++	}
++	instruction := humeProsodyInstruction
++	instructionMessage := schemas.ChatMessage{
++		Role: schemas.ChatMessageRoleSystem,
++		Content: &schemas.ChatMessageContent{
++			ContentStr: &instruction,
++		},
++	}
++
++	result := make([]schemas.ChatMessage, 0, len(messages)+1)
++	for i, message := range messages {
++		if i == insertAt {
++			result = append(result, instructionMessage)
++		}
++		if tag, ok := selected[i]; ok {
++			message = appendHumeProsodyTag(message, tag)
++		}
++		result = append(result, message)
++	}
++	shiftedMetadata := make(map[int]schemas.HumeMessageMetadata, len(metadata))
++	for messageIndex, item := range metadata {
++		if messageIndex >= insertAt {
++			messageIndex++
++		}
++		shiftedMetadata[messageIndex] = item
++	}
++	return result, shiftedMetadata
++}
++
++func humeProsodyTag(message schemas.ChatMessage, metadata map[int]schemas.HumeMessageMetadata, messageIndex int, maxEmotions *int) string {
++	if message.Role != schemas.ChatMessageRoleUser {
++		return ""
++	}
++	messageMetadata, ok := metadata[messageIndex]
++	if !ok || len(messageMetadata.ProsodyScores) == 0 {
++		return ""
++	}
++
++	scores := make([]humePromptScore, 0, len(messageMetadata.ProsodyScores))
++	for label, score := range messageMetadata.ProsodyScores {
++		scores = append(scores, humePromptScore{Label: label, Score: score})
++	}
++	sort.Slice(scores, func(i, j int) bool {
++		if scores[i].Score == scores[j].Score {
++			return scores[i].Label < scores[j].Label
++		}
++		return scores[i].Score > scores[j].Score
++	})
++	if maxEmotions != nil && *maxEmotions > 0 && len(scores) > *maxEmotions {
++		scores = scores[:*maxEmotions]
++	}
++	for i := range scores {
++		scores[i].Score = math.Round(scores[i].Score*1000) / 1000
++	}
++	encoded, err := schemas.MarshalSorted(scores)
++	if err != nil {
++		return ""
++	}
++	return "<hume_vocal_expression>" + string(encoded) + "</hume_vocal_expression>"
++}
++
++func appendHumeProsodyTag(message schemas.ChatMessage, tag string) schemas.ChatMessage {
++	separatorAndTag := "\n\n" + tag
++	if message.Content == nil {
++		message.Content = &schemas.ChatMessageContent{ContentStr: &separatorAndTag}
++		return message
++	}
++	content := *message.Content
++	if content.ContentStr != nil {
++		combined := *content.ContentStr + separatorAndTag
++		content.ContentStr = &combined
++	} else {
++		blocks := append([]schemas.ChatContentBlock(nil), content.ContentBlocks...)
++		blocks = append(blocks, schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: &separatorAndTag})
++		content.ContentBlocks = blocks
++	}
++	message.Content = &content
++	return message
++}
++
++func humeChatStreamResponseConverter(ctx *schemas.BifrostContext, resp *schemas.BifrostChatResponse) (string, interface{}, error) {
++	if resp == nil {
++		return "", nil, errors.New("Hume stream response is nil")
++	}
++	sessionID, _ := ctx.Value(humeSessionContextKey{}).(string)
++	if sessionID == "" {
++		return "", nil, errors.New("Hume custom session ID is missing")
++	}
++
++	choices := make([]humeStreamChoice, 0, len(resp.Choices))
++	for _, choice := range resp.Choices {
++		converted := humeStreamChoice{
++			Index:        choice.Index,
++			FinishReason: choice.FinishReason,
++		}
++		if choice.ChatStreamResponseChoice != nil && choice.ChatStreamResponseChoice.Delta != nil {
++			delta := choice.ChatStreamResponseChoice.Delta
++			converted.Delta = humeStreamDelta{
++				Role:      delta.Role,
++				Content:   delta.Content,
++				Refusal:   delta.Refusal,
++				ToolCalls: toHumeToolCalls(delta.ToolCalls),
++			}
++		}
++		choices = append(choices, converted)
++	}
++
++	chunk := &humeStreamChunk{
++		ID:                resp.ID,
++		Choices:           choices,
++		Created:           resp.Created,
++		Model:             resp.Model,
++		Object:            "chat.completion.chunk",
++		SystemFingerprint: sessionID,
++	}
++	if resp.Usage != nil {
++		chunk.Usage = &humeUsage{
++			PromptTokens:     resp.Usage.PromptTokens,
++			CompletionTokens: resp.Usage.CompletionTokens,
++			TotalTokens:      resp.Usage.TotalTokens,
++		}
++	}
++	return "", chunk, nil
++}
++
++func toHumeToolCalls(toolCalls []schemas.ChatAssistantMessageToolCall) []humeToolCall {
++	if len(toolCalls) == 0 {
++		return nil
++	}
++	converted := make([]humeToolCall, len(toolCalls))
++	for i, toolCall := range toolCalls {
++		converted[i] = humeToolCall{
++			Index:    toolCall.Index,
++			Type:     toolCall.Type,
++			ID:       toolCall.ID,
++			Function: toolCall.Function,
++		}
++	}
++	return converted
++}
++
++func humeErrorConverter(_ *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
++	if err == nil || err.Error == nil {
++		return &humeErrorEnvelope{Error: &schemas.ErrorField{Message: "An error occurred while processing the Hume request"}}
++	}
++	return &humeErrorEnvelope{Error: err.Error}
++}
+diff --git a/transports/bifrost-http/integrations/hume_test.go b/transports/bifrost-http/integrations/hume_test.go
+new file mode 100644
+index 000000000..26bc703c7
+--- /dev/null
++++ b/transports/bifrost-http/integrations/hume_test.go
+@@ -0,0 +1,354 @@
++package integrations
++
++import (
++	"context"
++	"encoding/json"
++	"strings"
++	"testing"
++
++	"github.com/bytedance/sonic"
++	"github.com/fasthttp/router"
++	"github.com/google/uuid"
++	"github.com/maximhq/bifrost/core/providers/openai"
++	"github.com/maximhq/bifrost/core/schemas"
++	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++	"github.com/valyala/fasthttp"
++)
++
++func TestHumeChatRequestParsesMetadataAndOpenAIFields(t *testing.T) {
++	raw := []byte(`{
++		"model":"anthropic/claude-sonnet-4-5",
++		"stream":true,
++		"fallbacks":["openai/gpt-4o-mini"],
++		"messages":[
++			{"role":"user","content":"weather?","time":{"begin":10.5,"end":900},"models":{"prosody":{"scores":{"Joy":0.2,"Interest":0.9}}}},
++			{"role":"assistant","content":null,"time":{"end":950},"tool_calls":[{"id":"call-1","type":"function","function":{"name":"weather","arguments":"{\"city\":\"Paris\"}"}}]}
++		],
++		"tools":[{"type":"function","function":{"name":"weather","parameters":{"type":"object"}}}],
++		"tool_choice":"auto"
++	}`)
++
++	var request HumeChatRequest
++	require.NoError(t, sonic.Unmarshal(raw, &request))
++	assert.Equal(t, "anthropic/claude-sonnet-4-5", request.OpenAIRequest.Model)
++	assert.True(t, request.IsStreamingRequested())
++	require.Len(t, request.OpenAIRequest.Messages, 2)
++	require.NotNil(t, request.OpenAIRequest.Messages[1].OpenAIChatAssistantMessage)
++	require.Len(t, request.OpenAIRequest.Messages[1].ToolCalls, 1)
++	require.Len(t, request.OpenAIRequest.Tools, 1)
++	assert.Equal(t, []string{"openai/gpt-4o-mini"}, request.Fallbacks)
++	require.Len(t, request.messageMetadata, 2)
++	require.NotNil(t, request.messageMetadata[0].Time.Begin)
++	require.NotNil(t, request.messageMetadata[0].Time.End)
++	assert.Equal(t, 10.5, *request.messageMetadata[0].Time.Begin)
++	assert.Equal(t, 900.0, *request.messageMetadata[0].Time.End)
++	assert.Equal(t, 0.9, request.messageMetadata[0].ProsodyScores["Interest"])
++	require.NotNil(t, request.messageMetadata[1].Time)
++	assert.Nil(t, request.messageMetadata[1].Time.Begin)
++	require.NotNil(t, request.messageMetadata[1].Time.End)
++	assert.Equal(t, 950.0, *request.messageMetadata[1].Time.End)
++}
++
++func TestHumePreCallbackModelSessionAndStreamingDefaults(t *testing.T) {
++	config := lib.NewDefaultHumeConfig()
++	config.DefaultModel = "openai/gpt-4o-mini"
++	request := &HumeChatRequest{}
++	request.OpenAIRequest.Tools = []schemas.ChatTool{{Type: schemas.ChatToolTypeFunction}}
++	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
++	var httpCtx fasthttp.RequestCtx
++	httpCtx.Request.SetRequestURI("/hume/v1/chat/completions?custom_session_id=session-123")
++
++	require.NoError(t, humePreCallback(config)(&httpCtx, bifrostCtx, request))
++	assert.Equal(t, "openai/gpt-4o-mini", request.OpenAIRequest.Model)
++	require.NotNil(t, request.OpenAIRequest.Stream)
++	assert.True(t, *request.OpenAIRequest.Stream)
++	require.NotNil(t, request.OpenAIRequest.N)
++	assert.Equal(t, 1, *request.OpenAIRequest.N)
++	require.NotNil(t, request.OpenAIRequest.ParallelToolCalls)
++	assert.False(t, *request.OpenAIRequest.ParallelToolCalls)
++	assert.Equal(t, "session-123", request.customSessionID)
++	assert.Equal(t, "session-123", bifrostCtx.Value(humeSessionContextKey{}))
++}
++
++func TestHumePreCallbackGeneratesSessionID(t *testing.T) {
++	request := &HumeChatRequest{OpenAIRequest: openAIRequestWithModel("openai/gpt-4o-mini")}
++	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
++	var httpCtx fasthttp.RequestCtx
++	config := lib.NewDefaultHumeConfig()
++	config.DefaultModel = "anthropic/claude-sonnet-4-5"
++
++	require.NoError(t, humePreCallback(config)(&httpCtx, bifrostCtx, request))
++	assert.Equal(t, "openai/gpt-4o-mini", request.OpenAIRequest.Model)
++	_, err := uuid.Parse(request.customSessionID)
++	require.NoError(t, err)
++	assert.Equal(t, request.customSessionID, bifrostCtx.Value(humeSessionContextKey{}))
++}
++
++func TestHumePreCallbackValidation(t *testing.T) {
++	falseValue := false
++	two := 2
++	tests := []struct {
++		name       string
++		config     *lib.HumeConfig
++		request    HumeChatRequest
++		requestURI string
++		contains   string
++	}{
++		{
++			name:     "explicit non-streaming request",
++			config:   &lib.HumeConfig{DefaultModel: "openai/gpt-4o-mini"},
++			request:  HumeChatRequest{OpenAIRequest: openAIRequestWithStream(&falseValue)},
++			contains: "must use streaming",
++		},
++		{
++			name:     "multiple completions",
++			config:   &lib.HumeConfig{DefaultModel: "openai/gpt-4o-mini"},
++			request:  HumeChatRequest{OpenAIRequest: openAIRequestWithN(&two)},
++			contains: "exactly one completion",
++		},
++		{
++			name:     "missing model",
++			config:   lib.NewDefaultHumeConfig(),
++			request:  HumeChatRequest{},
++			contains: "identifier is missing",
++		},
++		{
++			name:       "session ID too long",
++			config:     &lib.HumeConfig{DefaultModel: "openai/gpt-4o-mini"},
++			request:    HumeChatRequest{},
++			requestURI: "/hume/chat/completions?custom_session_id=" + strings.Repeat("a", humeMaxSessionIDBytes+1),
++			contains:   "must not exceed",
++		},
++	}
++
++	for _, test := range tests {
++		t.Run(test.name, func(t *testing.T) {
++			bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
++			var httpCtx fasthttp.RequestCtx
++			httpCtx.Request.SetRequestURI(test.requestURI)
++			err := humePreCallback(test.config)(&httpCtx, bifrostCtx, &test.request)
++			require.ErrorContains(t, err, test.contains)
++		})
++	}
++
++	t.Run("invalid UTF-8 session ID", func(t *testing.T) {
++		request := &HumeChatRequest{}
++		bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
++		var httpCtx fasthttp.RequestCtx
++		httpCtx.QueryArgs().SetBytesV("custom_session_id", []byte{0xff})
++		err := humePreCallback(&lib.HumeConfig{DefaultModel: "openai/gpt-4o-mini"})(&httpCtx, bifrostCtx, request)
++		require.ErrorContains(t, err, "valid UTF-8")
++	})
++}
++
++func TestHumeRequestConverterExposesMetadataWithoutInjection(t *testing.T) {
++	route := CreateHumeRouteConfigs(lib.NewDefaultHumeConfig())[0]
++	request := parseHumeRequest(t, `{
++		"model":"openai/gpt-4o-mini",
++		"messages":[{"role":"user","content":"hello","time":{"begin":0,"end":100},"models":{"prosody":{"scores":{"Joy":0.8}}}}]
++	}`)
++	request.customSessionID = "session-123"
++	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
++
++	converted, err := route.RequestConverter(bifrostCtx, request)
++	require.NoError(t, err)
++	require.NotNil(t, converted.ChatRequest.HumeMetadata)
++	assert.Equal(t, "session-123", converted.ChatRequest.HumeMetadata.CustomSessionID)
++	require.Len(t, converted.ChatRequest.HumeMetadata.Messages, 1)
++	require.Contains(t, converted.ChatRequest.HumeMetadata.Messages, 0)
++	assert.Equal(t, "hello", *converted.ChatRequest.Input[0].Content.ContentStr)
++}
++
++func TestHumeProsodyPromptModesAndDeterminism(t *testing.T) {
++	maxThree := 3
++	messages := []schemas.ChatMessage{
++		chatMessage(schemas.ChatMessageRoleSystem, "base prompt"),
++		chatMessage(schemas.ChatMessageRoleUser, "first"),
++		chatMessage(schemas.ChatMessageRoleAssistant, "answer"),
++		chatMessage(schemas.ChatMessageRoleUser, "second"),
++	}
++	metadata := map[int]schemas.HumeMessageMetadata{
++		1: {ProsodyScores: map[string]float64{"Joy": 0.7}},
++		3: {ProsodyScores: map[string]float64{"Sadness": 0.23456, "Interest": 0.91, "Joy": 0.91, "Calmness": 0.5}},
++	}
++	config := &lib.HumeProsodyPromptConfig{Enabled: true, Scope: lib.HumeProsodyPromptScopeLatestUser, MaxEmotions: &maxThree}
++
++	converted, convertedMetadata := injectHumeProsody(messages, cloneHumeMetadata(metadata), config)
++	require.Len(t, converted, 5)
++	assert.Equal(t, schemas.ChatMessageRoleSystem, converted[1].Role)
++	assert.Equal(t, humeProsodyInstruction, *converted[1].Content.ContentStr)
++	assert.NotContains(t, *converted[2].Content.ContentStr, "hume_vocal_expression")
++	assert.Contains(t, *converted[4].Content.ContentStr, `<hume_vocal_expression>`)
++	assert.Contains(t, *converted[4].Content.ContentStr, `{"label":"Interest","score":0.91}`)
++	assert.Contains(t, *converted[4].Content.ContentStr, `{"label":"Joy","score":0.91}`)
++	assert.Contains(t, *converted[4].Content.ContentStr, `{"label":"Calmness","score":0.5}`)
++	assert.NotContains(t, *converted[4].Content.ContentStr, "Sadness")
++	require.Contains(t, convertedMetadata, 2)
++	require.Contains(t, convertedMetadata, 4)
++	assert.NotContains(t, convertedMetadata, 1)
++	assert.NotContains(t, convertedMetadata, 3)
++
++	again, _ := injectHumeProsody(messages, cloneHumeMetadata(metadata), config)
++	firstJSON, err := schemas.MarshalSorted(converted)
++	require.NoError(t, err)
++	secondJSON, err := schemas.MarshalSorted(again)
++	require.NoError(t, err)
++	assert.Equal(t, string(firstJSON), string(secondJSON))
++
++	allScores := 0
++	config.Scope = lib.HumeProsodyPromptScopeAllUserMessages
++	config.MaxEmotions = &allScores
++	allMessages, _ := injectHumeProsody(messages, cloneHumeMetadata(metadata), config)
++	assert.Contains(t, *allMessages[2].Content.ContentStr, "Joy")
++	assert.Contains(t, *allMessages[4].Content.ContentStr, "Sadness")
++}
++
++func TestHumeStreamConverterOverridesFingerprintAndSanitizesChunk(t *testing.T) {
++	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
++	bifrostCtx.SetValue(humeSessionContextKey{}, "hume-session")
++	role := "assistant"
++	content := "hello"
++	toolType := "function"
++	toolID := "call-1"
++	toolName := "lookup"
++	finishReason := "tool_calls"
++	resp := &schemas.BifrostChatResponse{
++		ID:                "chatcmpl-1",
++		Created:           123,
++		Model:             "gpt-4o-mini",
++		Object:            "chat.completion.chunk",
++		SystemFingerprint: "upstream-fingerprint",
++		Choices: []schemas.BifrostResponseChoice{{
++			Index:        0,
++			FinishReason: &finishReason,
++			ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{Delta: &schemas.ChatStreamResponseChoiceDelta{
++				Role:         &role,
++				Content:      &content,
++				Reasoning:    schemas.Ptr("provider-only reasoning"),
++				ExtraContent: json.RawMessage(`{"thought_signature":"secret"}`),
++				ToolCalls: []schemas.ChatAssistantMessageToolCall{{
++					Index: 0,
++					Type:  &toolType,
++					ID:    &toolID,
++					Function: schemas.ChatAssistantMessageToolCallFunction{
++						Name:      &toolName,
++						Arguments: `{"query":"x"}`,
++					},
++					ExtraContent: json.RawMessage(`{"provider":"secret"}`),
++				}},
++			}},
++		}},
++		Usage:       &schemas.BifrostLLMUsage{PromptTokens: 1, CompletionTokens: 2, TotalTokens: 3, Cost: &schemas.BifrostCost{}},
++		ExtraFields: schemas.BifrostResponseExtraFields{RawResponse: json.RawMessage(`{"system_fingerprint":"raw-upstream"}`)},
++	}
++
++	_, converted, err := humeChatStreamResponseConverter(bifrostCtx, resp)
++	require.NoError(t, err)
++	body, err := sonic.Marshal(converted)
++	require.NoError(t, err)
++	assert.Contains(t, string(body), `"system_fingerprint":"hume-session"`)
++	assert.Contains(t, string(body), `"tool_calls"`)
++	assert.NotContains(t, string(body), "upstream-fingerprint")
++	assert.NotContains(t, string(body), "raw-upstream")
++	assert.NotContains(t, string(body), "extra_fields")
++	assert.NotContains(t, string(body), "provider-only reasoning")
++	assert.NotContains(t, string(body), "thought_signature")
++	assert.NotContains(t, string(body), "cost")
++}
++
++func TestHumeRouteStreamsOpenAISSEAndDoneMarker(t *testing.T) {
++	route := CreateHumeRouteConfigs(lib.NewDefaultHumeConfig())[0]
++	router := NewGenericRouter(nil, &mockHandlerStore{}, []RouteConfig{route}, nil, &testLogger{})
++	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
++	bifrostCtx.SetValue(humeSessionContextKey{}, "session-sse")
++	content := "hello"
++	stream := make(chan *schemas.BifrostStreamChunk, 1)
++	stream <- &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{
++		ID:      "chatcmpl-sse",
++		Created: 123,
++		Model:   "gpt-4o-mini",
++		Object:  "chat.completion.chunk",
++		Choices: []schemas.BifrostResponseChoice{{
++			Index: 0,
++			ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{Delta: &schemas.ChatStreamResponseChoiceDelta{
++				Content: &content,
++			}},
++		}},
++	}}
++	close(stream)
++
++	var httpCtx fasthttp.RequestCtx
++	httpCtx.SetContentType("text/event-stream")
++	router.handleStreaming(&httpCtx, bifrostCtx, route, stream, func() {})
++	body := string(httpCtx.Response.Body())
++	assert.Equal(t, "text/event-stream", string(httpCtx.Response.Header.ContentType()))
++	assert.Contains(t, body, `data: {"id":"chatcmpl-sse"`)
++	assert.Contains(t, body, `"system_fingerprint":"session-sse"`)
++	assert.Contains(t, body, `"content":"hello"`)
++	assert.True(t, strings.HasSuffix(body, "data: [DONE]\n\n"), body)
++}
++
++func TestHumeRoutesAreAlwaysRegistered(t *testing.T) {
++	r := router.New()
++	humeRouter := NewHumeRouter(nil, &mockHandlerStore{}, &testLogger{})
++	humeRouter.RegisterRoutes(r, func(_ fasthttp.RequestHandler) fasthttp.RequestHandler {
++		return func(ctx *fasthttp.RequestCtx) {
++			if string(ctx.Request.Header.Peek("Authorization")) != "Bearer bf-virtual-key" {
++				ctx.SetStatusCode(fasthttp.StatusUnauthorized)
++				return
++			}
++			ctx.SetStatusCode(fasthttp.StatusNoContent)
++		}
++	})
++
++	for _, path := range []string{"/hume/v1/chat/completions", "/hume/chat/completions"} {
++		var ctx fasthttp.RequestCtx
++		ctx.Request.Header.SetMethod(fasthttp.MethodPost)
++		ctx.Request.Header.Set("Authorization", "Bearer bf-virtual-key")
++		ctx.Request.SetRequestURI(path)
++		r.Handler(&ctx)
++		assert.Equal(t, fasthttp.StatusNoContent, ctx.Response.StatusCode(), path)
++	}
++}
++
++func TestHumeMissingModelReturnsBadRequestBeforeInference(t *testing.T) {
++	r := router.New()
++	humeRouter := NewHumeRouter(nil, &mockHandlerStore{}, &testLogger{})
++	humeRouter.RegisterRoutes(r)
++
++	var ctx fasthttp.RequestCtx
++	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
++	ctx.Request.Header.SetContentType("application/json")
++	ctx.Request.SetRequestURI("/hume/v1/chat/completions")
++	ctx.Request.SetBodyString(`{"messages":[{"role":"user","content":"hello"}]}`)
++	r.Handler(&ctx)
++
++	assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
++	assert.Equal(t, "application/json", string(ctx.Response.Header.ContentType()))
++	assert.Contains(t, string(ctx.Response.Body()), "identifier is missing")
++}
++
++func parseHumeRequest(t *testing.T, raw string) *HumeChatRequest {
++	t.Helper()
++	var request HumeChatRequest
++	require.NoError(t, sonic.Unmarshal([]byte(raw), &request))
++	return &request
++}
++
++func chatMessage(role schemas.ChatMessageRole, content string) schemas.ChatMessage {
++	return schemas.ChatMessage{Role: role, Content: &schemas.ChatMessageContent{ContentStr: &content}}
++}
++
++func openAIRequestWithModel(model string) openai.OpenAIChatRequest {
++	return openai.OpenAIChatRequest{Model: model}
++}
++
++func openAIRequestWithStream(stream *bool) openai.OpenAIChatRequest {
++	return openai.OpenAIChatRequest{Stream: stream}
++}
++
++func openAIRequestWithN(n *int) openai.OpenAIChatRequest {
++	return openai.OpenAIChatRequest{ChatParameters: schemas.ChatParameters{N: n}}
++}
+diff --git a/transports/bifrost-http/integrations/router.go b/transports/bifrost-http/integrations/router.go
+index 90272c846..f3f42b095 100644
+--- a/transports/bifrost-http/integrations/router.go
++++ b/transports/bifrost-http/integrations/router.go
+@@ -438,6 +438,7 @@ const (
+ 	RouteConfigTypeGenAI     RouteConfigType = "genai"
+ 	RouteConfigTypeBedrock   RouteConfigType = "bedrock"
+ 	RouteConfigTypeCohere    RouteConfigType = "cohere"
++	RouteConfigTypeHume      RouteConfigType = "hume"
+ )
+ 
+ // RouteConfig defines the configuration for a single route in an integration.
+diff --git a/transports/bifrost-http/integrations/utils.go b/transports/bifrost-http/integrations/utils.go
+index 4d33151d3..9494222f4 100644
+--- a/transports/bifrost-http/integrations/utils.go
++++ b/transports/bifrost-http/integrations/utils.go
+@@ -28,6 +28,7 @@ var availableIntegrations = []string{
+ 	"bedrock",
+ 	"pydantic",
+ 	"cohere",
++	"hume",
+ }
+ 
+ // newBifrostErrorWithCode is like newBifrostError but sets an explicit HTTP status code.
+diff --git a/transports/bifrost-http/lib/config.go b/transports/bifrost-http/lib/config.go
+index 74f3d5479..d558e9800 100644
+--- a/transports/bifrost-http/lib/config.go
++++ b/transports/bifrost-http/lib/config.go
+@@ -158,6 +158,61 @@ type ServerConfig struct {
+ 	PluginDownloadPrivateAllowlist []string `json:"plugin_download_private_allowlist,omitempty"`
+ }
+ 
++const (
++	HumeProsodyPromptScopeLatestUser      = "latest_user"
++	HumeProsodyPromptScopeAllUserMessages = "all_user_messages"
++	DefaultHumeMaxEmotions                = 3
++)
++
++// HumeConfig controls the Hume EVI custom language model integration.
++type HumeConfig struct {
++	DefaultModel  string                   `json:"default_model,omitempty"`
++	ProsodyPrompt *HumeProsodyPromptConfig `json:"prosody_prompt,omitempty"`
++}
++
++// HumeProsodyPromptConfig controls conversion of Hume prosody scores into prompt text.
++type HumeProsodyPromptConfig struct {
++	Enabled     bool   `json:"enabled,omitempty"`
++	Scope       string `json:"scope,omitempty"`
++	MaxEmotions *int   `json:"max_emotions,omitempty"`
++}
++
++// NewDefaultHumeConfig returns a Hume configuration with safe, non-mutating defaults.
++func NewDefaultHumeConfig() *HumeConfig {
++	maxEmotions := DefaultHumeMaxEmotions
++	return &HumeConfig{
++		ProsodyPrompt: &HumeProsodyPromptConfig{
++			Scope:       HumeProsodyPromptScopeLatestUser,
++			MaxEmotions: &maxEmotions,
++		},
++	}
++}
++
++// CheckAndSetDefaults validates a Hume configuration and fills omitted values.
++func (c *HumeConfig) CheckAndSetDefaults() error {
++	if c == nil {
++		return nil
++	}
++	c.DefaultModel = strings.TrimSpace(c.DefaultModel)
++	if c.ProsodyPrompt == nil {
++		c.ProsodyPrompt = NewDefaultHumeConfig().ProsodyPrompt
++		return nil
++	}
++	if c.ProsodyPrompt.Scope == "" {
++		c.ProsodyPrompt.Scope = HumeProsodyPromptScopeLatestUser
++	}
++	if c.ProsodyPrompt.Scope != HumeProsodyPromptScopeLatestUser && c.ProsodyPrompt.Scope != HumeProsodyPromptScopeAllUserMessages {
++		return fmt.Errorf("hume.prosody_prompt.scope must be %q or %q", HumeProsodyPromptScopeLatestUser, HumeProsodyPromptScopeAllUserMessages)
++	}
++	if c.ProsodyPrompt.MaxEmotions == nil {
++		maxEmotions := DefaultHumeMaxEmotions
++		c.ProsodyPrompt.MaxEmotions = &maxEmotions
++	} else if *c.ProsodyPrompt.MaxEmotions < 0 {
++		return errors.New("hume.prosody_prompt.max_emotions must be greater than or equal to 0")
++	}
++	return nil
++}
++
+ // ConfigData represents the configuration data for the Bifrost HTTP transport.
+ // It contains the client configuration, provider configurations, MCP configuration,
+ // vector store configuration, config store configuration, and logs store configuration.
+@@ -192,6 +247,7 @@ type ConfigData struct {
+ 	Plugins           []*schemas.PluginConfig               `json:"plugins,omitempty"`
+ 	WebSocket         *schemas.WebSocketConfig              `json:"websocket,omitempty"`
+ 	FeatureFlags      *FeatureFlagsFileConfig               `json:"feature_flags,omitempty"`
++	Hume              *HumeConfig                           `json:"hume,omitempty"`
+ 
+ 	presentSections           map[string]bool
+ 	presentGovernanceSections map[string]bool
+@@ -450,6 +506,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
+ 		Plugins           []*schemas.PluginConfig               `json:"plugins,omitempty"`
+ 		WebSocket         *schemas.WebSocketConfig              `json:"websocket,omitempty"`
+ 		FeatureFlags      *FeatureFlagsFileConfig               `json:"feature_flags,omitempty"`
++		Hume              *HumeConfig                           `json:"hume,omitempty"`
+ 		SkillsRegistry    *SkillsRegistryConfig                 `json:"skills_registry,omitempty"`
+ 	}
+ 
+@@ -474,6 +531,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
+ 	cd.Plugins = temp.Plugins
+ 	cd.WebSocket = temp.WebSocket
+ 	cd.FeatureFlags = temp.FeatureFlags
++	cd.Hume = temp.Hume
+ 	cd.presentGovernanceSections = nil
+ 	if rawGovernance, ok := raw["governance"]; ok && len(rawGovernance) > 0 {
+ 		var rawGovernanceFields map[string]json.RawMessage
+@@ -647,6 +705,8 @@ type Config struct {
+ 	StreamingDecompressThreshold int64
+ 	// WebSocket configuration for WS gateway features (Responses WS mode, Realtime API).
+ 	WebSocketConfig *schemas.WebSocketConfig
++	// HumeConfig is immutable startup configuration for the Hume EVI adapter.
++	HumeConfig *HumeConfig
+ 
+ 	// Precompiled header matcher for header filtering. Rebuilt on config change.
+ 	headerMatcher atomic.Pointer[HeaderMatcher]
+@@ -934,6 +994,13 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
+ 			applyV1Compat(&configData)
+ 		}
+ 	}
++	if configData.Hume == nil {
++		configData.Hume = NewDefaultHumeConfig()
++	}
++	if err := configData.Hume.CheckAndSetDefaults(); err != nil {
++		return nil, fmt.Errorf("invalid Hume configuration: %w", err)
++	}
++	config.HumeConfig = configData.Hume
+ 
+ 	// 1. Encryption (before stores so BeforeSave hooks work correctly)
+ 	if err := initEncryption(&configData); err != nil {
+@@ -5262,6 +5329,14 @@ func (c *Config) GetMCPExternalClientURL() string {
+ 	return c.ClientConfig.MCPExternalClientURL.GetValue()
+ }
+ 
++// GetHumeConfig returns immutable startup configuration for the Hume EVI adapter.
++func (c *Config) GetHumeConfig() *HumeConfig {
++	if c == nil || c.HumeConfig == nil {
++		return NewDefaultHumeConfig()
++	}
++	return c.HumeConfig
++}
++
+ // GetHeaderMatcher returns the precompiled header matcher for header filtering.
+ // Lock-free via atomic pointer; safe for concurrent reads from hot paths.
+ func (c *Config) GetHeaderMatcher() *HeaderMatcher {
+diff --git a/transports/bifrost-http/lib/humeconfig_test.go b/transports/bifrost-http/lib/humeconfig_test.go
+new file mode 100644
+index 000000000..f8d709960
+--- /dev/null
++++ b/transports/bifrost-http/lib/humeconfig_test.go
+@@ -0,0 +1,74 @@
++package lib
++
++import (
++	"encoding/json"
++	"testing"
++)
++
++func TestHumeConfigDefaults(t *testing.T) {
++	config := &HumeConfig{}
++	if err := config.CheckAndSetDefaults(); err != nil {
++		t.Fatalf("CheckAndSetDefaults() error = %v", err)
++	}
++	if config.ProsodyPrompt == nil {
++		t.Fatal("ProsodyPrompt is nil")
++	}
++	if config.ProsodyPrompt.Enabled {
++		t.Fatal("prosody prompt injection must default to disabled")
++	}
++	if config.ProsodyPrompt.Scope != HumeProsodyPromptScopeLatestUser {
++		t.Fatalf("Scope = %q, want %q", config.ProsodyPrompt.Scope, HumeProsodyPromptScopeLatestUser)
++	}
++	if config.ProsodyPrompt.MaxEmotions == nil || *config.ProsodyPrompt.MaxEmotions != DefaultHumeMaxEmotions {
++		t.Fatalf("MaxEmotions = %v, want %d", config.ProsodyPrompt.MaxEmotions, DefaultHumeMaxEmotions)
++	}
++}
++
++func TestHumeConfigPreservesAllScoresSetting(t *testing.T) {
++	zero := 0
++	config := &HumeConfig{ProsodyPrompt: &HumeProsodyPromptConfig{
++		Enabled:     true,
++		Scope:       HumeProsodyPromptScopeAllUserMessages,
++		MaxEmotions: &zero,
++	}}
++	if err := config.CheckAndSetDefaults(); err != nil {
++		t.Fatalf("CheckAndSetDefaults() error = %v", err)
++	}
++	if *config.ProsodyPrompt.MaxEmotions != 0 {
++		t.Fatalf("MaxEmotions = %d, want 0", *config.ProsodyPrompt.MaxEmotions)
++	}
++}
++
++func TestHumeConfigValidation(t *testing.T) {
++	negative := -1
++	tests := []HumeConfig{
++		{ProsodyPrompt: &HumeProsodyPromptConfig{Scope: "invalid"}},
++		{ProsodyPrompt: &HumeProsodyPromptConfig{Scope: HumeProsodyPromptScopeLatestUser, MaxEmotions: &negative}},
++	}
++	for i := range tests {
++		if err := tests[i].CheckAndSetDefaults(); err == nil {
++			t.Fatalf("test %d: CheckAndSetDefaults() error = nil", i)
++		}
++	}
++}
++
++func TestConfigDataUnmarshalsHumeConfig(t *testing.T) {
++	var config ConfigData
++	if err := json.Unmarshal([]byte(`{
++		"hume": {
++			"default_model": "openai/gpt-4o-mini",
++			"prosody_prompt": {"enabled": true, "scope": "all_user_messages", "max_emotions": 0}
++		}
++	}`), &config); err != nil {
++		t.Fatalf("Unmarshal() error = %v", err)
++	}
++	if config.Hume == nil || config.Hume.ProsodyPrompt == nil {
++		t.Fatal("Hume config was not unmarshaled")
++	}
++	if config.Hume.DefaultModel != "openai/gpt-4o-mini" || !config.Hume.ProsodyPrompt.Enabled {
++		t.Fatalf("unexpected Hume config: %+v", config.Hume)
++	}
++	if config.Hume.ProsodyPrompt.MaxEmotions == nil || *config.Hume.ProsodyPrompt.MaxEmotions != 0 {
++		t.Fatalf("MaxEmotions = %v, want 0", config.Hume.ProsodyPrompt.MaxEmotions)
++	}
++}
+diff --git a/transports/config.schema.json b/transports/config.schema.json
+index fbf187682..3d50de165 100644
+--- a/transports/config.schema.json
++++ b/transports/config.schema.json
+@@ -28,6 +28,42 @@
+       },
+       "required": ["read_buffer_size"]
+     },
++    "hume": {
++      "type": "object",
++      "description": "Configuration for the Hume EVI custom language model SSE adapter. Changes require a restart.",
++      "properties": {
++        "default_model": {
++          "type": "string",
++          "minLength": 1,
++          "pattern": "\\S",
++          "description": "Bifrost provider/model string or model-catalog-resolvable name used when Hume omits its custom language model identifier."
++        },
++        "prosody_prompt": {
++          "type": "object",
++          "description": "Controls optional conversion of Hume vocal-expression confidence scores into prompt text.",
++          "properties": {
++            "enabled": {
++              "type": "boolean",
++              "default": false
++            },
++            "scope": {
++              "type": "string",
++              "enum": ["latest_user", "all_user_messages"],
++              "default": "latest_user",
++              "description": "Select only the latest scored user message or every scored user message."
++            },
++            "max_emotions": {
++              "type": "integer",
++              "minimum": 0,
++              "default": 3,
++              "description": "Maximum number of highest-confidence expressions to inject per selected message. Zero includes all scores."
++            }
++          },
++          "additionalProperties": false
++        }
++      },
++      "additionalProperties": false
++    },
+     "version": {
+       "type": "integer",
+       "description": "Controls how empty arrays in allow-list fields (models, allowed_models, key_ids, tools_to_execute) are interpreted. Omit or set to 2 for v1.5.0+ semantics: empty = deny all, [\"*\"] = allow all. Set to 1 to restore v1.4.x semantics: empty = allow all.",
+@@ -8224,4 +8260,4 @@
+       }
+     }
+   }
+-}
+\ No newline at end of file
++}
+diff --git a/transports/schema_test/config_schema_test.go b/transports/schema_test/config_schema_test.go
+index 148151949..6d81d08e5 100644
+--- a/transports/schema_test/config_schema_test.go
++++ b/transports/schema_test/config_schema_test.go
+@@ -358,6 +358,34 @@ func validateConfig(t *testing.T, schema *jsonschema.Schema, configJSON string)
+ 	return schema.Validate(v)
+ }
+ 
++func TestSchemaHumeConfig(t *testing.T) {
++	compiled := compileSchema(t)
++
++	valid := []string{
++		`{"hume":{}}`,
++		`{"hume":{"default_model":"openai/gpt-4o-mini"}}`,
++		`{"hume":{"prosody_prompt":{"enabled":true,"scope":"latest_user","max_emotions":3}}}`,
++		`{"hume":{"prosody_prompt":{"enabled":true,"scope":"all_user_messages","max_emotions":0}}}`,
++	}
++	for _, configJSON := range valid {
++		if err := validateConfig(t, compiled, configJSON); err != nil {
++			t.Errorf("valid Hume config %s failed validation: %v", configJSON, err)
++		}
++	}
++
++	invalid := []string{
++		`{"hume":{"default_model":"   "}}`,
++		`{"hume":{"prosody_prompt":{"scope":"unknown"}}}`,
++		`{"hume":{"prosody_prompt":{"max_emotions":-1}}}`,
++		`{"hume":{"unknown":true}}`,
++	}
++	for _, configJSON := range invalid {
++		if err := validateConfig(t, compiled, configJSON); err == nil {
++			t.Errorf("invalid Hume config %s passed validation", configJSON)
++		}
++	}
++}
++
+ // TestSchemaGuardrailRuleTarget verifies explicit MCP targets without breaking legacy LLM rules.
+ func TestSchemaGuardrailRuleTarget(t *testing.T) {
+ 	compiled := compileSchema(t)

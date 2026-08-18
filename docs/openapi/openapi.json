@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Bifrost API",
-    "description": "Bifrost HTTP Transport API for AI model inference and gateway management.\n\nThis API provides a unified interface for interacting with multiple AI providers\nincluding OpenAI, Anthropic, Bedrock, Gemini, and more through a single API,\nalong with comprehensive management APIs for configuring and monitoring the gateway.\n\n## API Structure\n\n### Unified Inference API (`/v1/*`)\nThe primary API using Bifrost's unified format. Model parameters use the format\n`provider/model` (e.g., `openai/gpt-4`, `anthropic/claude-3-opus`).\n\n### Async Inference API (`/v1/async/*`)\nSubmit inference requests for asynchronous execution. Returns a job ID immediately\nand allows polling for results. Supports all inference types except batches, files,\nand containers.\n\n### Provider Integration APIs\nNative provider-format APIs for drop-in compatibility:\n- `/openai/*` - OpenAI-compatible API\n- `/anthropic/*` - Anthropic-compatible API\n- `/genai/*` - Google GenAI (Gemini) compatible API\n- `/bedrock/*` - AWS Bedrock compatible API\n- `/cohere/*` - Cohere compatible API\n\n### Framework Integration APIs\nMulti-provider proxy endpoints for AI frameworks:\n- `/litellm/*` - LiteLLM proxy with all provider formats\n- `/langchain/*` - LangChain compatible endpoints\n- `/pydanticai/*` - PydanticAI compatible endpoints\n\n### Management APIs (`/api/*`)\nAPIs for managing and monitoring the Bifrost gateway:\n- `/api/config` - Configuration management\n- `/api/providers` - Provider and API key management\n- `/api/plugins` - Plugin management\n- `/api/governance/*` - Virtual keys, teams, customers, budgets, rate limits, routing rules, and pricing overrides\n- `/api/logs` - Log search and analytics\n- `/api/mcp/*` - MCP (Model Context Protocol) client management\n- `/api/session/*` - Authentication and session management\n- `/api/cache/*` - Cache management\n- `/health` - Health check endpoint\n\n## Fallbacks\nRequests can include fallback models that will be tried if the primary model fails.\n",
+    "description": "Bifrost HTTP Transport API for AI model inference and gateway management.\n\nThis API provides a unified interface for interacting with multiple AI providers\nincluding OpenAI, Anthropic, Bedrock, Gemini, and more through a single API,\nalong with comprehensive management APIs for configuring and monitoring the gateway.\n\n## API Structure\n\n### Unified Inference API (`/v1/*`)\nThe primary API using Bifrost's unified format. Model parameters use the format\n`provider/model` (e.g., `openai/gpt-4`, `anthropic/claude-3-opus`).\n\n### Async Inference API (`/v1/async/*`)\nSubmit inference requests for asynchronous execution. Returns a job ID immediately\nand allows polling for results. Supports all inference types except batches, files,\nand containers.\n\n### Provider Integration APIs\nNative provider-format APIs for drop-in compatibility:\n- `/openai/*` - OpenAI-compatible API\n- `/hume/*` - Hume EVI custom language model SSE API\n- `/anthropic/*` - Anthropic-compatible API\n- `/genai/*` - Google GenAI (Gemini) compatible API\n- `/bedrock/*` - AWS Bedrock compatible API\n- `/cohere/*` - Cohere compatible API\n\n### Framework Integration APIs\nMulti-provider proxy endpoints for AI frameworks:\n- `/litellm/*` - LiteLLM proxy with all provider formats\n- `/langchain/*` - LangChain compatible endpoints\n- `/pydanticai/*` - PydanticAI compatible endpoints\n\n### Management APIs (`/api/*`)\nAPIs for managing and monitoring the Bifrost gateway:\n- `/api/config` - Configuration management\n- `/api/providers` - Provider and API key management\n- `/api/plugins` - Plugin management\n- `/api/governance/*` - Virtual keys, teams, customers, budgets, rate limits, routing rules, and pricing overrides\n- `/api/logs` - Log search and analytics\n- `/api/mcp/*` - MCP (Model Context Protocol) client management\n- `/api/session/*` - Authentication and session management\n- `/api/cache/*` - Cache management\n- `/health` - Health check endpoint\n\n## Fallbacks\nRequests can include fallback models that will be tried if the primary model fails.\n",
     "version": "1.0.0",
     "contact": {
       "name": "Contact Us",
@@ -104,6 +104,10 @@
     {
       "name": "OpenAI Integration",
       "description": "OpenAI-compatible API endpoints (/openai/*)"
+    },
+    {
+      "name": "Hume Integration",
+      "description": "Hume EVI custom language model SSE endpoints (/hume/*)"
     },
     {
       "name": "Azure Integration",
@@ -21034,6 +21038,160 @@
                 "schema": {
                   "type": "object",
                   "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/hume/v1/chat/completions": {
+      "post": {
+        "operationId": "humeCreateChatCompletion",
+        "summary": "Stream a Hume EVI chat completion",
+        "description": "Serves as a Hume EVI custom language model using an OpenAI-compatible\nrequest and Server-Sent Events response. Hume message timing and prosody\nmetadata are retained for plugins and are not forwarded directly to the\nselected provider. This endpoint also works without the `/v1` path segment.\n\nIf `custom_session_id` is absent, Bifrost generates a UUID. Every response\nchunk returns the resolved session ID in `system_fingerprint`, and the\nstream ends with `data: [DONE]`.\n",
+        "tags": [
+          "Hume Integration"
+        ],
+        "parameters": [
+          {
+            "name": "custom_session_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "UTF-8 session identifier of at most 255 encoded bytes, echoed as\n`system_fingerprint`. Bifrost generates a UUID when this parameter is\nempty or omitted.\n"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HumeChatRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OpenAI-compatible SSE stream terminated by `data: [DONE]`.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/HumeChatStreamChunk"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/hume/chat/completions": {
+      "post": {
+        "operationId": "humeCreateChatCompletionUnversioned",
+        "summary": "Stream a Hume EVI chat completion (unversioned alias)",
+        "description": "Unversioned alias of `POST /hume/v1/chat/completions`. It has the same\nrequest validation, authentication, session handling, and SSE response.\n",
+        "tags": [
+          "Hume Integration"
+        ],
+        "parameters": [
+          {
+            "name": "custom_session_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "UTF-8 session identifier of at most 255 encoded bytes, echoed as\n`system_fingerprint`. Bifrost generates a UUID when this parameter is\nempty or omitted.\n"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HumeChatRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OpenAI-compatible SSE stream terminated by `data: [DONE]`.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/HumeChatStreamChunk"
                 }
               }
             }
@@ -79230,7 +79388,7 @@
         "type": "apiKey",
         "in": "header",
         "name": "x-bf-vk",
-        "description": "Bifrost Virtual Key for governance, routing, and access control. Supported on all inference endpoints (`/v1/*`, `/openai/*`, `/anthropic/*`, `/bedrock/*`, `/cohere/*`, `/genai/*`, `/langchain/*`, `/litellm/*`, `/pydanticai/*`, `/mcp`), not on management APIs (`/api/*`).\nExample: `sk-bf-*` prefixed keys.\n"
+        "description": "Bifrost Virtual Key for governance, routing, and access control. Supported on all inference endpoints (`/v1/*`, `/openai/*`, `/hume/*`, `/anthropic/*`, `/bedrock/*`, `/cohere/*`, `/genai/*`, `/langchain/*`, `/litellm/*`, `/pydanticai/*`, `/mcp`), not on management APIs (`/api/*`).\nExample: `sk-bf-*` prefixed keys.\n"
       },
       "ApiKeyAuth": {
         "type": "apiKey",
@@ -87381,6 +87539,677 @@
                 }
               }
             }
+          }
+        }
+      },
+      "HumeChatRequest": {
+        "type": "object",
+        "required": [
+          "messages"
+        ],
+        "description": "OpenAI-compatible chat completion request sent by Hume EVI. Hume may add\ntiming and prosody metadata to each message. The model identifier is optional\nwhen `hume.default_model` is configured in Bifrost.\n",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Bifrost provider/model identifier or model-catalog-resolvable name. An\nempty or omitted value falls back to `hume.default_model`.\n"
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HumeMessage"
+            },
+            "description": "Conversation history with optional Hume timing and prosody metadata."
+          },
+          "stream": {
+            "type": "boolean",
+            "const": true,
+            "default": true,
+            "description": "May be omitted; Bifrost forces streaming. Explicit `false` is rejected."
+          },
+          "max_tokens": {
+            "type": "integer",
+            "description": "Maximum tokens to generate (legacy; prefer `max_completion_tokens`)."
+          },
+          "max_completion_tokens": {
+            "type": "integer",
+            "description": "Maximum tokens to generate."
+          },
+          "temperature": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 2
+          },
+          "top_p": {
+            "type": "number"
+          },
+          "frequency_penalty": {
+            "type": "number",
+            "minimum": -2,
+            "maximum": 2
+          },
+          "presence_penalty": {
+            "type": "number",
+            "minimum": -2,
+            "maximum": 2
+          },
+          "logit_bias": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "number"
+            }
+          },
+          "logprobs": {
+            "type": "boolean"
+          },
+          "top_logprobs": {
+            "type": "integer"
+          },
+          "n": {
+            "type": "integer",
+            "const": 1,
+            "default": 1,
+            "description": "Hume consumes exactly one completion branch."
+          },
+          "stop": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            ]
+          },
+          "seed": {
+            "type": "integer"
+          },
+          "user": {
+            "type": "string"
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "type"
+              ],
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "function",
+                    "custom"
+                  ]
+                },
+                "function": {
+                  "type": "object",
+                  "required": [
+                    "name"
+                  ],
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "description": {
+                      "type": "string"
+                    },
+                    "parameters": {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "required": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "properties": {
+                          "type": "object",
+                          "additionalProperties": true
+                        },
+                        "enum": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": {
+                          "type": "boolean"
+                        }
+                      }
+                    },
+                    "strict": {
+                      "type": "boolean"
+                    }
+                  }
+                },
+                "custom": {
+                  "type": "object",
+                  "properties": {
+                    "format": {
+                      "type": "object",
+                      "required": [
+                        "type"
+                      ],
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "grammar": {
+                          "type": "object",
+                          "required": [
+                            "definition",
+                            "syntax"
+                          ],
+                          "properties": {
+                            "definition": {
+                              "type": "string"
+                            },
+                            "syntax": {
+                              "type": "string",
+                              "enum": [
+                                "lark",
+                                "regex"
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                "cache_control": {
+                  "$ref": "#/components/schemas/CacheControl"
+                }
+              }
+            }
+          },
+          "tool_choice": {
+            "oneOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "auto",
+                  "required"
+                ]
+              },
+              {
+                "type": "object",
+                "required": [
+                  "type"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "none",
+                      "any",
+                      "required",
+                      "function",
+                      "allowed_tools",
+                      "custom"
+                    ]
+                  },
+                  "function": {
+                    "type": "object",
+                    "required": [
+                      "name"
+                    ],
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "allowed_tools": {
+                    "type": "object",
+                    "properties": {
+                      "mode": {
+                        "type": "string",
+                        "enum": [
+                          "auto",
+                          "required"
+                        ]
+                      },
+                      "tools": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "required": [
+                            "type"
+                          ],
+                          "properties": {
+                            "type": {
+                              "type": "string"
+                            },
+                            "function": {
+                              "type": "object",
+                              "required": [
+                                "name"
+                              ],
+                              "properties": {
+                                "name": {
+                                  "type": "string"
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "parallel_tool_calls": {
+            "type": "boolean",
+            "description": "Forced to `false` by Bifrost whenever tools are present."
+          },
+          "response_format": {
+            "type": "object",
+            "description": "Provider response-format configuration."
+          },
+          "reasoning_effort": {
+            "type": "string",
+            "enum": [
+              "none",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ]
+          },
+          "service_tier": {
+            "type": "string"
+          },
+          "stream_options": {
+            "type": "object",
+            "properties": {
+              "include_obfuscation": {
+                "type": "boolean"
+              },
+              "include_usage": {
+                "type": "boolean"
+              }
+            }
+          },
+          "fallbacks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Bifrost fallback model identifiers."
+          }
+        }
+      },
+      "HumeMessage": {
+        "type": "object",
+        "required": [
+          "role"
+        ],
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": [
+              "system",
+              "user",
+              "assistant",
+              "tool",
+              "developer"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "content": {
+            "oneOf": [
+              {
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "type"
+                      ],
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "text",
+                            "image_url",
+                            "input_audio",
+                            "file",
+                            "refusal"
+                          ]
+                        },
+                        "text": {
+                          "type": "string"
+                        },
+                        "refusal": {
+                          "type": "string"
+                        },
+                        "image_url": {
+                          "type": "object",
+                          "required": [
+                            "url"
+                          ],
+                          "properties": {
+                            "url": {
+                              "type": "string"
+                            },
+                            "detail": {
+                              "type": "string",
+                              "enum": [
+                                "low",
+                                "high",
+                                "auto"
+                              ]
+                            }
+                          }
+                        },
+                        "input_audio": {
+                          "type": "object",
+                          "required": [
+                            "data"
+                          ],
+                          "properties": {
+                            "data": {
+                              "type": "string"
+                            },
+                            "format": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "file": {
+                          "type": "object",
+                          "properties": {
+                            "file_data": {
+                              "type": "string"
+                            },
+                            "file_id": {
+                              "type": "string"
+                            },
+                            "filename": {
+                              "type": "string"
+                            },
+                            "file_type": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "cache_control": {
+                          "$ref": "#/components/schemas/CacheControl"
+                        }
+                      }
+                    }
+                  }
+                ],
+                "description": "Message content - can be a string or array of content blocks"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tool_call_id": {
+            "type": "string",
+            "description": "Tool call identifier for tool-result messages."
+          },
+          "refusal": {
+            "type": "string"
+          },
+          "reasoning": {
+            "type": "string"
+          },
+          "annotations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string"
+                },
+                "url_citation": {
+                  "type": "object",
+                  "properties": {
+                    "start_index": {
+                      "type": "integer"
+                    },
+                    "end_index": {
+                      "type": "integer"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "url": {
+                      "type": "string"
+                    },
+                    "sources": {
+                      "type": "object"
+                    },
+                    "type": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "tool_calls": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "function"
+              ],
+              "properties": {
+                "index": {
+                  "type": "integer"
+                },
+                "type": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "function": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "arguments": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "time": {
+            "$ref": "#/components/schemas/HumeMessageTime"
+          },
+          "models": {
+            "$ref": "#/components/schemas/HumeMessageModels"
+          }
+        }
+      },
+      "HumeMessageTime": {
+        "type": "object",
+        "description": "Message timing in milliseconds.",
+        "properties": {
+          "begin": {
+            "type": "number"
+          },
+          "end": {
+            "type": "number"
+          }
+        }
+      },
+      "HumeMessageModels": {
+        "type": "object",
+        "properties": {
+          "prosody": {
+            "$ref": "#/components/schemas/HumeProsodyModel"
+          }
+        }
+      },
+      "HumeProsodyModel": {
+        "type": "object",
+        "properties": {
+          "scores": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "number"
+            },
+            "description": "Vocal-expression labels mapped to confidence scores."
+          }
+        }
+      },
+      "HumeChatStreamChunk": {
+        "type": "object",
+        "required": [
+          "id",
+          "choices",
+          "created",
+          "model",
+          "object",
+          "system_fingerprint"
+        ],
+        "description": "One OpenAI-compatible JSON chunk carried in an SSE `data:` event. Bifrost\nremoves provider-only fields and always replaces `system_fingerprint` with\nthe resolved Hume custom session ID. The stream terminates with\n`data: [DONE]`.\n",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "choices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HumeStreamChoice"
+            }
+          },
+          "created": {
+            "type": "integer"
+          },
+          "model": {
+            "type": "string"
+          },
+          "object": {
+            "type": "string",
+            "const": "chat.completion.chunk"
+          },
+          "system_fingerprint": {
+            "type": "string",
+            "description": "Resolved `custom_session_id`, never the upstream provider fingerprint."
+          },
+          "usage": {
+            "$ref": "#/components/schemas/HumeUsage"
+          }
+        }
+      },
+      "HumeStreamChoice": {
+        "type": "object",
+        "required": [
+          "index",
+          "delta"
+        ],
+        "properties": {
+          "index": {
+            "type": "integer"
+          },
+          "delta": {
+            "$ref": "#/components/schemas/HumeStreamDelta"
+          },
+          "finish_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "HumeStreamDelta": {
+        "type": "object",
+        "properties": {
+          "role": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "refusal": {
+            "type": "string"
+          },
+          "tool_calls": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HumeToolCall"
+            }
+          }
+        }
+      },
+      "HumeToolCall": {
+        "type": "object",
+        "required": [
+          "index",
+          "function"
+        ],
+        "properties": {
+          "index": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "type": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "function": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "arguments": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "HumeUsage": {
+        "type": "object",
+        "required": [
+          "prompt_tokens",
+          "completion_tokens",
+          "total_tokens"
+        ],
+        "properties": {
+          "prompt_tokens": {
+            "type": "integer"
+          },
+          "completion_tokens": {
+            "type": "integer"
+          },
+          "total_tokens": {
+            "type": "integer"
           }
         }
       },

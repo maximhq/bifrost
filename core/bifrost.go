@@ -5444,7 +5444,17 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	provider, model, _ = preReq.GetRequestFields()
 	if bifrostErr := bifrost.enforceHumeSingleToolConstraint(ctx, preReq); bifrostErr != nil {
 		bifrostErr.PopulateExtraFields(preReq.RequestType, provider, model, model)
-		return nil, bifrostErr
+		resp, postHookErr := pipeline.RunPostLLMHooks(ctx, nil, bifrostErr, preCount)
+		if postHookErr != nil {
+			postHookErr.PopulateExtraFields(preReq.RequestType, provider, model, model)
+		} else if resp != nil {
+			resp.PopulateExtraFields(preReq.RequestType, provider, model, model)
+		}
+		drainAndAttachPluginLogs(ctx)
+		if postHookErr != nil {
+			return nil, postHookErr
+		}
+		return resp, nil
 	}
 
 	msg := bifrost.getChannelMessage(*preReq)
@@ -5601,6 +5611,24 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	}
 }
 
+// addMCPToolsToStreamRequest applies the normal MCP injection policy to streams.
+// Hume chat streams are excluded because they do not enter Bifrost's MCP agent
+// executor; advertising Bifrost MCP tools there would leave their calls unhandled.
+func (bifrost *Bifrost) addMCPToolsToStreamRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) *schemas.BifrostRequest {
+	if req == nil || bifrost.MCPManager == nil ||
+		req.RequestType == schemas.SpeechStreamRequest || req.RequestType == schemas.TranscriptionStreamRequest {
+		return req
+	}
+
+	if req.RequestType == schemas.ChatCompletionStreamRequest && ctx != nil {
+		if integrationType, _ := ctx.Value(schemas.BifrostContextKeyIntegrationType).(string); integrationType == humeIntegrationType {
+			return req
+		}
+	}
+
+	return bifrost.MCPManager.AddToolsToRequest(ctx, req)
+}
+
 // tryStreamRequest is a generic function that handles common request processing logic
 // It consolidates queue setup, plugin pipeline execution, enqueue logic, and response handling
 func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
@@ -5612,10 +5640,9 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		return nil, bifrostErr
 	}
 
-	// Add MCP tools to request if MCP is configured and requested
-	if req.RequestType != schemas.SpeechStreamRequest && req.RequestType != schemas.TranscriptionStreamRequest && bifrost.MCPManager != nil {
-		req = bifrost.MCPManager.AddToolsToRequest(ctx, req)
-	}
+	// Add MCP tools when supported by the streaming execution path. Hume chat
+	// streams deliberately bypass injection regardless of per-request MCP headers.
+	req = bifrost.addMCPToolsToStreamRequest(ctx, req)
 
 	tracer := bifrost.getTracer()
 	if tracer == nil {
@@ -5784,6 +5811,20 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 	provider, model, _ = preReq.GetRequestFields()
 	if bifrostErr := bifrost.enforceHumeSingleToolConstraint(ctx, preReq); bifrostErr != nil {
 		bifrostErr.PopulateExtraFields(preReq.RequestType, provider, model, model)
+		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+		recoveredResp, recoveredErr := pipeline.RunPostLLMHooks(ctx, nil, bifrostErr, preCount)
+		if recoveredErr != nil {
+			recoveredErr.PopulateExtraFields(preReq.RequestType, provider, model, model)
+		} else if recoveredResp != nil {
+			recoveredResp.PopulateExtraFields(preReq.RequestType, provider, model, model)
+		}
+		drainAndAttachPluginLogs(ctx)
+		if recoveredErr != nil {
+			return nil, recoveredErr
+		}
+		if recoveredResp != nil {
+			return newBifrostMessageChan(recoveredResp), nil
+		}
 		return nil, bifrostErr
 	}
 

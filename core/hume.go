@@ -12,8 +12,9 @@ import (
 const humeIntegrationType = "hume"
 
 // enforceHumeSingleToolConstraint runs on the final provider-bound request, after
-// MCP and plugin tool injection. Hume EVI supports at most one tool call per turn,
-// so only providers whose wire format can express that constraint are eligible.
+// plugin processing. It therefore covers both Hume-origin and plugin-added tools.
+// Hume EVI supports at most one tool call per turn, so only providers whose wire
+// format can express that constraint are eligible.
 func (bifrost *Bifrost) enforceHumeSingleToolConstraint(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) *schemas.BifrostError {
 	if integrationType, _ := ctx.Value(schemas.BifrostContextKeyIntegrationType).(string); integrationType != humeIntegrationType {
 		return nil
