@@ -191,6 +191,7 @@ func CreateHumeRouteConfigs(config *lib.HumeConfig) []RouteConfig {
 			StreamConfig: &StreamConfig{
 				ChatStreamResponseConverter: humeChatStreamResponseConverter,
 				ErrorConverter:              humeErrorConverter,
+				FatalConverterErrors:        true,
 			},
 		})
 	}
@@ -235,6 +236,11 @@ func humePreCallback(config *lib.HumeConfig) PreRequestCallback {
 		}
 		humeRequest.customSessionID = sessionID
 		bifrostCtx.SetValue(humeSessionContextKey{}, sessionID)
+		// Hume EVI accepts a single tool call per turn. Do not inject MCP tools,
+		// and require the provider request to express serial tool execution for
+		// any tools supplied by Hume or added by earlier transport processing.
+		bifrostCtx.SetValue(schemas.MCPContextKeyIncludeClients, []string{})
+		bifrostCtx.SetValue(schemas.BifrostContextKeyRequireSerialToolCalls, true)
 		schemas.ExtractAndSetUserAgentFromHeaders(extractHeadersFromRequest(httpCtx), bifrostCtx)
 		return nil
 	}

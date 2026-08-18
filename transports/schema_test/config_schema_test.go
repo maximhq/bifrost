@@ -362,7 +362,9 @@ func TestSchemaHumeConfig(t *testing.T) {
 	compiled := compileSchema(t)
 
 	valid := []string{
+		`{"hume":{}}`,
 		`{"hume":{"default_model":"openai/gpt-4o-mini"}}`,
+		`{"hume":{"prosody_prompt":{"enabled":true}}}`,
 		`{"hume":{"default_model":"openai/gpt-4o-mini","prosody_prompt":{"enabled":true,"scope":"latest_user","max_emotions":3}}}`,
 		`{"hume":{"default_model":"openai/gpt-4o-mini","prosody_prompt":{"enabled":true,"scope":"all_user_messages","max_emotions":0}}}`,
 	}
@@ -374,7 +376,6 @@ func TestSchemaHumeConfig(t *testing.T) {
 
 	invalid := []string{
 		`{"hume":null}`,
-		`{"hume":{}}`,
 		`{"hume":{"default_model":"   "}}`,
 		`{"hume":{"default_model":"openai/gpt-4o-mini","prosody_prompt":null}}`,
 		`{"hume":{"default_model":"openai/gpt-4o-mini","prosody_prompt":{"scope":"unknown"}}}`,

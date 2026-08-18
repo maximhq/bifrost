@@ -736,6 +736,7 @@ func isPromptOptionalImageEditType(t *string) bool {
 // responses produced by a type-converted request are converted back to the
 // caller's original type before the post-hook runs.
 func wrapConvertedStreamPostHookRunner(postHookRunner schemas.PostHookRunner, targetType schemas.RequestType) schemas.PostHookRunner {
+	responsesToChatState := &schemas.ResponsesToChatStreamState{}
 	return func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 		if result != nil {
 			switch targetType {
@@ -749,7 +750,7 @@ func wrapConvertedStreamPostHookRunner(postHookRunner schemas.PostHookRunner, ta
 			case schemas.ResponsesRequest:
 				// chat→responses: convert responses stream chunk back to chat
 				if result.ResponsesStreamResponse != nil {
-					if converted := result.ResponsesStreamResponse.ToBifrostChatResponse(); converted != nil {
+					if converted := result.ResponsesStreamResponse.ToBifrostChatResponseWithState(responsesToChatState); converted != nil {
 						result = &schemas.BifrostResponse{ChatResponse: converted}
 					}
 				}

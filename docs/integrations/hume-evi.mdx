@@ -98,7 +98,7 @@ Add a `hume` object when you want a default model or prosody-aware prompt inject
 }
 ```
 
-If the `hume` object is present, `default_model` is required and must contain a non-whitespace value. Restart Bifrost after changing these settings.
+`default_model` is optional, so a prosody-only `hume` object is valid when Hume always supplies its model identifier. When set, it must contain a non-whitespace value. Restart Bifrost after changing these settings.
 
 | Field | Default | Behavior |
 | --- | --- | --- |
@@ -422,7 +422,7 @@ After the direct endpoint test passes:
 - Hume routes support SSE only, not the legacy WebSocket custom-language-model protocol.
 - Requests are streaming-only and limited to one completion.
 - Hume can process only one function call at a time.
-- Bifrost MCP tools are not injected into Hume streaming requests.
+- Hume requests exclude Bifrost MCP clients through the normal per-request MCP filter.
 - The Hume adapter does not execute Hume tools or persist conversation state.
 - Changes to the top-level Bifrost `hume` configuration require a restart.
 
@@ -432,8 +432,8 @@ After the direct endpoint test passes:
 | --- | --- | --- |
 | HTTP 400 says the custom language model identifier is missing | Neither Hume's identifier nor `hume.default_model` is set. | Set **Custom language model identifier** in Hume or configure `hume.default_model`. |
 | HTTP 400 says Hume requests must use streaming | A caller explicitly sent `stream: false`. | Send `stream: true` or omit the field. |
-| HTTP 400 says exactly one completion is required | The request contains `n` greater than one. | Set `n: 1` or omit it. |
-| HTTP 400 says the provider/model cannot guarantee Hume's single-tool-call requirement | Tools are present, but the selected provider/model cannot express or verify serial tool calling. | Choose a supported tool-calling model/provider or remove tools for that configuration. |
+| HTTP 400 says exactly one completion is required | The request explicitly sets `n` to any value other than `1`, including `0` or a negative value. | Set `n: 1` or omit it. |
+| HTTP 400 says the provider/model cannot guarantee serial tool execution | Tools are present, but the selected provider wire format cannot express serial tool calling, or a catalog entry explicitly lacks support. | Choose a supported tool-calling model/provider or remove tools for that configuration. |
 | HTTP 401 or 403 | The Bifrost virtual key is missing, invalid, disabled, or not allowed to use the selected provider/model. | Send it through `language_model_api_key` and inspect the key's governance policy. |
 | Hume cannot connect, but local curl works | The URL is not publicly reachable, TLS is invalid, or a firewall blocks Hume. | Test from outside your network and use a public HTTPS endpoint. |
 | Text arrives only after the full response | A reverse proxy or CDN is buffering SSE. | Disable proxy buffering and verify chunks with `curl -N`. |

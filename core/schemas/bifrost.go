@@ -285,6 +285,7 @@ const (
 	BifrostContextKeySendBackRawRequest                  BifrostContextKey = "bifrost-send-back-raw-request"                    // bool (per-request override — read by bifrost.go, never overwritten)
 	BifrostContextKeySendBackRawResponse                 BifrostContextKey = "bifrost-send-back-raw-response"                   // bool (per-request override — read by bifrost.go, never overwritten)
 	BifrostContextKeyIntegrationType                     BifrostContextKey = "bifrost-integration-type"                         // integration used in gateway (e.g. openai, anthropic, bedrock, etc.)
+	BifrostContextKeyRequireSerialToolCalls              BifrostContextKey = "bifrost-require-serial-tool-calls"                // bool (set by trusted transports when the downstream consumer cannot accept parallel tool calls)
 	BifrostContextKeyIsResponsesToChatCompletionFallback BifrostContextKey = "bifrost-is-responses-to-chat-completion-fallback" // bool (set by bifrost - DO NOT SET THIS MANUALLY)
 	BifrostMCPAgentOriginalRequestID                     BifrostContextKey = "bifrost-mcp-agent-original-request-id"            // string (to store the original request ID for MCP agent mode)
 	BifrostContextKeyParentMCPRequestID                  BifrostContextKey = "bf-parent-mcp-request-id"                         // string (parent request ID for nested tool calls from executeCode)
@@ -1714,13 +1715,13 @@ type BifrostResponseExtraFields struct {
 	// matched (i.e. RoutingInfo.ResolvedKeyAlias != nil), otherwise
 	// RoutingInfo.Model. Still populated for backward compatibility; new
 	// consumers should read from RoutingInfo.
-	ResolvedModelUsed string     `json:"resolved_model_used,omitempty"`
-	Latency           int64      `json:"latency"` // in milliseconds (for streaming responses this will be each chunk latency, and the last chunk latency will be the total latency)
+	ResolvedModelUsed string `json:"resolved_model_used,omitempty"`
+	Latency           int64  `json:"latency"` // in milliseconds (for streaming responses this will be each chunk latency, and the last chunk latency will be the total latency)
 	// UpstreamLatency is the total time spent blocked on upstream sockets across
 	// every attempt, in milliseconds. Unlike Latency it survives retries and
 	// fallbacks, so total-UpstreamLatency is Bifrost's own cost. Nil when the
 	// request never accumulated one; nil means unknown, not zero.
-	UpstreamLatency           *int64             `json:"upstream_latency,omitempty"`
+	UpstreamLatency           *int64                 `json:"upstream_latency,omitempty"`
 	ChunkIndex                int                    `json:"chunk_index"` // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
 	RawRequest                interface{}            `json:"raw_request,omitempty"`
 	RawResponse               interface{}            `json:"raw_response,omitempty"`
@@ -1734,8 +1735,8 @@ type BifrostResponseExtraFields struct {
 	// web_search requested against a non-Nova Bedrock model). Currently populated
 	// only by the Bedrock provider.
 	DroppedUnsupportedTools []string          `json:"dropped_unsupported_tools,omitempty"`
-	ProviderResponseHeaders map[string]string     `json:"provider_response_headers,omitempty"` // HTTP response headers from the provider (filtered to exclude transport-level headers)
-	PassthroughPath         string                `json:"passthrough_path,omitempty"`          // Stripped provider path for passthrough requests, e.g. "/v1/chat/completions"
+	ProviderResponseHeaders map[string]string `json:"provider_response_headers,omitempty"` // HTTP response headers from the provider (filtered to exclude transport-level headers)
+	PassthroughPath         string            `json:"passthrough_path,omitempty"`          // Stripped provider path for passthrough requests, e.g. "/v1/chat/completions"
 }
 
 type RoutingInfo struct {

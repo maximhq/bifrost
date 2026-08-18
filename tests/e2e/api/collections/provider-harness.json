@@ -129391,6 +129391,67 @@
           }
         }
       ]
+    },
+    {
+      "name": "52. Hume EVI serial tool streaming",
+      "description": "Pins the Hume transport and core serial-tool policy together. A forced single function call must survive OpenAI-compatible SSE conversion with Chat Completions tool index 0 and a normal [DONE] terminator.",
+      "item": [
+        {
+          "name": "openai/gpt-4o-mini Hume serial tool stream",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Hume emits one valid tool call and completes the SSE stream', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect((pm.response.headers.get('content-type') || '').toLowerCase()).to.include('text/event-stream');",
+                  "  pm.expect(body, 'Hume converter returned a sanitized mid-stream failure: ' + body).to.not.include('internal server error');",
+                  "  pm.expect(body).to.include('tool_calls');",
+                  "  pm.expect(body).to.include('emit_status');",
+                  "  pm.expect(body).to.include('\\\"index\\\":0');",
+                  "  pm.expect(body).to.not.include('\\\"index\\\":1');",
+                  "  pm.expect(body).to.include('data: [DONE]');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"stream\": true,\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call emit_status exactly once with status ready.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"emit_status\",\n        \"description\": \"Emit one status.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"status\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"status\"\n          ]\n        }\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"function\": {\n      \"name\": \"emit_status\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/hume/v1/chat/completions?custom_session_id=harness-hume-serial-tool",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "hume",
+                "v1",
+                "chat",
+                "completions"
+              ],
+              "query": [
+                {
+                  "key": "custom_session_id",
+                  "value": "harness-hume-serial-tool"
+                }
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

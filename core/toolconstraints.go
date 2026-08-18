@@ -9,17 +9,12 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-const humeIntegrationType = "hume"
-
-// enforceHumeSingleToolConstraint runs on the final provider-bound request, after
-// plugin processing. It therefore covers both Hume-origin and plugin-added tools.
-// Hume EVI supports at most one tool call per turn, so only providers whose wire
-// format can express that constraint are eligible.
-func (bifrost *Bifrost) enforceHumeSingleToolConstraint(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) *schemas.BifrostError {
-	if integrationType, _ := ctx.Value(schemas.BifrostContextKeyIntegrationType).(string); integrationType != humeIntegrationType {
-		return nil
-	}
-	if req == nil || req.ChatRequest == nil || req.ChatRequest.Params == nil || len(req.ChatRequest.Params.Tools) == 0 {
+// enforceSingleToolConstraint runs on the final provider-bound request, after
+// plugin processing. Transports whose downstream consumer accepts only one tool
+// call can opt into the policy without coupling core to an integration name.
+func (bifrost *Bifrost) enforceSingleToolConstraint(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) *schemas.BifrostError {
+	requireSerial, _ := ctx.Value(schemas.BifrostContextKeyRequireSerialToolCalls).(bool)
+	if !requireSerial || req == nil || req.ChatRequest == nil || req.ChatRequest.Params == nil || len(req.ChatRequest.Params.Tools) == 0 {
 		return nil
 	}
 
@@ -31,9 +26,9 @@ func (bifrost *Bifrost) enforceHumeSingleToolConstraint(ctx *schemas.BifrostCont
 			baseProvider = config.CustomProviderConfig.BaseProviderType
 		}
 	}
-	if !humeProviderSupportsSingleToolControl(ctx, provider, baseProvider, model) {
+	if !providerSupportsSingleToolControl(ctx, provider, baseProvider, model) {
 		return providerUtils.NewBifrostBadRequestError(fmt.Sprintf(
-			"provider %q model %q cannot guarantee Hume's single-tool-call requirement",
+			"provider %q model %q cannot guarantee serial tool execution",
 			provider,
 			model,
 		))
@@ -43,7 +38,7 @@ func (bifrost *Bifrost) enforceHumeSingleToolConstraint(ctx *schemas.BifrostCont
 	return nil
 }
 
-func humeProviderSupportsSingleToolControl(ctx *schemas.BifrostContext, provider, baseProvider schemas.ModelProvider, model string) bool {
+func providerSupportsSingleToolControl(ctx *schemas.BifrostContext, provider, baseProvider schemas.ModelProvider, model string) bool {
 	// Anthropic's Messages wire format expresses the inverse setting as
 	// tool_choice.disable_parallel_tool_use. These providers all use the shared
 	// Anthropic request builder for Anthropic-family models.
@@ -53,7 +48,7 @@ func humeProviderSupportsSingleToolControl(ctx *schemas.BifrostContext, provider
 		return true
 	}
 
-	if !humeUsesParallelToolCallsWire(ctx, baseProvider, model) {
+	if !usesParallelToolCallsWire(ctx, baseProvider, model) {
 		return false
 	}
 
@@ -61,10 +56,12 @@ func humeProviderSupportsSingleToolControl(ctx *schemas.BifrostContext, provider
 	if modelInfo == nil && baseProvider != provider {
 		modelInfo = ctx.GetModelInfo(baseProvider, model)
 	}
-	return modelInfo != nil && slices.Contains(modelInfo.SupportedParameters, "parallel_tool_calls")
+	// An absent catalog entry is common for self-hosted and custom providers.
+	// Their OpenAI-compatible wire still supports parallel_tool_calls=false.
+	return modelInfo == nil || slices.Contains(modelInfo.SupportedParameters, "parallel_tool_calls")
 }
 
-func humeUsesParallelToolCallsWire(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string) bool {
+func usesParallelToolCallsWire(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string) bool {
 	switch provider {
 	case schemas.OpenAI,
 		schemas.Azure,

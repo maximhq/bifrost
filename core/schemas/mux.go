@@ -2390,8 +2390,50 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 	return responses
 }
 
+// ResponsesToChatStreamState maps Responses output-item indices to the dense
+// tool-call ordinals expected by Chat Completions. A Responses stream may place
+// reasoning or message items before its first function call.
+type ResponsesToChatStreamState struct {
+	mu              sync.Mutex
+	toolCallIndexes map[int]uint16
+	nextToolIndex   uint16
+}
+
+func (state *ResponsesToChatStreamState) toolCallIndex(outputIndex *int) uint16 {
+	if state == nil {
+		var idx uint16
+		if outputIndex != nil && *outputIndex > 0 {
+			idx = uint16(*outputIndex - 1)
+		}
+		return idx
+	}
+
+	key := 0
+	if outputIndex != nil {
+		key = *outputIndex
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.toolCallIndexes == nil {
+		state.toolCallIndexes = make(map[int]uint16)
+	}
+	if idx, ok := state.toolCallIndexes[key]; ok {
+		return idx
+	}
+	idx := state.nextToolIndex
+	state.toolCallIndexes[key] = idx
+	state.nextToolIndex++
+	return idx
+}
+
 // ToBifrostChatResponse converts a BifrostResponsesStreamResponse chunk to a BifrostChatResponse (chat.completion.chunk).
 func (rsr *BifrostResponsesStreamResponse) ToBifrostChatResponse() *BifrostChatResponse {
+	return rsr.ToBifrostChatResponseWithState(nil)
+}
+
+// ToBifrostChatResponseWithState converts one chunk while preserving tool-call
+// indexing across the surrounding Responses stream.
+func (rsr *BifrostResponsesStreamResponse) ToBifrostChatResponseWithState(state *ResponsesToChatStreamState) *BifrostChatResponse {
 	if rsr == nil {
 		return nil
 	}
@@ -2482,10 +2524,7 @@ func (rsr *BifrostResponsesStreamResponse) ToBifrostChatResponse() *BifrostChatR
 				return resp
 			}
 			funcType := "function"
-			var idx uint16
-			if rsr.OutputIndex != nil && *rsr.OutputIndex > 0 {
-				idx = uint16(*rsr.OutputIndex - 1)
-			}
+			idx := state.toolCallIndex(rsr.OutputIndex)
 			resp.Choices = []BifrostResponseChoice{
 				{
 					Index: 0,
@@ -2547,10 +2586,7 @@ func (rsr *BifrostResponsesStreamResponse) ToBifrostChatResponse() *BifrostChatR
 			}
 			return resp
 		}
-		var idx uint16
-		if rsr.OutputIndex != nil && *rsr.OutputIndex > 0 {
-			idx = uint16(*rsr.OutputIndex - 1)
-		}
+		idx := state.toolCallIndex(rsr.OutputIndex)
 
 		resp.Choices = []BifrostResponseChoice{
 			{

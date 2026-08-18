@@ -5367,6 +5367,44 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	return nil, primaryErr
 }
 
+// finishWithTerminalError gives every error that terminates an attempt the same
+// post-hook recovery semantics. If hooks suppress the error without supplying a
+// response, the original error remains authoritative.
+func finishWithTerminalError(
+	ctx *schemas.BifrostContext,
+	pipeline *PluginPipeline,
+	originalErr *schemas.BifrostError,
+	preCount int,
+	requestType schemas.RequestType,
+	provider schemas.ModelProvider,
+	model string,
+	streaming bool,
+) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	originalErr.PopulateExtraFields(requestType, provider, model, model)
+	if streaming {
+		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	}
+
+	resp, postHookErr := pipeline.RunPostLLMHooks(ctx, nil, originalErr, preCount)
+	if postHookErr != nil {
+		postHookErr.PopulateExtraFields(requestType, provider, model, model)
+	} else if resp != nil {
+		resp.PopulateExtraFields(requestType, provider, model, model)
+	}
+	drainAndAttachPluginLogs(ctx)
+	if streaming {
+		pipeline.FinalizeStreamingPostHookSpans(ctx)
+	}
+
+	if postHookErr != nil {
+		return nil, postHookErr
+	}
+	if resp != nil {
+		return resp, nil
+	}
+	return nil, originalErr
+}
+
 // tryRequest is a generic function that handles common request processing logic
 // It consolidates queue setup, plugin pipeline execution, enqueue logic, and response handling
 func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
@@ -5421,18 +5459,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		}
 		// Handle short-circuit with error
 		if shortCircuit.Error != nil {
-			shortCircuit.Error.PopulateExtraFields(req.RequestType, provider, model, model)
-			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, nil, shortCircuit.Error, preCount)
-			if bifrostErr != nil {
-				bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
-			} else if resp != nil {
-				resp.PopulateExtraFields(req.RequestType, provider, model, model)
-			}
-			drainAndAttachPluginLogs(ctx)
-			if bifrostErr != nil {
-				return nil, bifrostErr
-			}
-			return resp, nil
+			return finishWithTerminalError(ctx, pipeline, shortCircuit.Error, preCount, req.RequestType, provider, model, false)
 		}
 	}
 	if preReq == nil {
@@ -5442,19 +5469,8 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	}
 
 	provider, model, _ = preReq.GetRequestFields()
-	if bifrostErr := bifrost.enforceHumeSingleToolConstraint(ctx, preReq); bifrostErr != nil {
-		bifrostErr.PopulateExtraFields(preReq.RequestType, provider, model, model)
-		resp, postHookErr := pipeline.RunPostLLMHooks(ctx, nil, bifrostErr, preCount)
-		if postHookErr != nil {
-			postHookErr.PopulateExtraFields(preReq.RequestType, provider, model, model)
-		} else if resp != nil {
-			resp.PopulateExtraFields(preReq.RequestType, provider, model, model)
-		}
-		drainAndAttachPluginLogs(ctx)
-		if postHookErr != nil {
-			return nil, postHookErr
-		}
-		return resp, nil
+	if bifrostErr := bifrost.enforceSingleToolConstraint(ctx, preReq); bifrostErr != nil {
+		return finishWithTerminalError(ctx, pipeline, bifrostErr, preCount, preReq.RequestType, provider, model, false)
 	}
 
 	msg := bifrost.getChannelMessage(*preReq)
@@ -5612,18 +5628,12 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 }
 
 // addMCPToolsToStreamRequest applies the normal MCP injection policy to streams.
-// Hume chat streams are excluded because they do not enter Bifrost's MCP agent
-// executor; advertising Bifrost MCP tools there would leave their calls unhandled.
+// Integrations that do not execute MCP tools use the standard context filters to
+// exclude clients before the request reaches core.
 func (bifrost *Bifrost) addMCPToolsToStreamRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) *schemas.BifrostRequest {
 	if req == nil || bifrost.MCPManager == nil ||
 		req.RequestType == schemas.SpeechStreamRequest || req.RequestType == schemas.TranscriptionStreamRequest {
 		return req
-	}
-
-	if req.RequestType == schemas.ChatCompletionStreamRequest && ctx != nil {
-		if integrationType, _ := ctx.Value(schemas.BifrostContextKeyIntegrationType).(string); integrationType == humeIntegrationType {
-			return req
-		}
 	}
 
 	return bifrost.MCPManager.AddToolsToRequest(ctx, req)
@@ -5640,8 +5650,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		return nil, bifrostErr
 	}
 
-	// Add MCP tools when supported by the streaming execution path. Hume chat
-	// streams deliberately bypass injection regardless of per-request MCP headers.
+	// Add MCP tools when supported by the streaming execution path.
 	req = bifrost.addMCPToolsToStreamRequest(ctx, req)
 
 	tracer := bifrost.getTracer()
@@ -5788,14 +5797,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		}
 		// Handle short-circuit with error
 		if shortCircuit.Error != nil {
-			shortCircuit.Error.PopulateExtraFields(req.RequestType, provider, model, model)
-			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, nil, shortCircuit.Error, preCount)
-			if bifrostErr != nil {
-				bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
-			} else if resp != nil {
-				resp.PopulateExtraFields(req.RequestType, provider, model, model)
-			}
-			drainAndAttachPluginLogs(ctx)
+			resp, bifrostErr := finishWithTerminalError(ctx, pipeline, shortCircuit.Error, preCount, req.RequestType, provider, model, true)
 			if bifrostErr != nil {
 				return nil, bifrostErr
 			}
@@ -5809,23 +5811,12 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 	}
 
 	provider, model, _ = preReq.GetRequestFields()
-	if bifrostErr := bifrost.enforceHumeSingleToolConstraint(ctx, preReq); bifrostErr != nil {
-		bifrostErr.PopulateExtraFields(preReq.RequestType, provider, model, model)
-		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-		recoveredResp, recoveredErr := pipeline.RunPostLLMHooks(ctx, nil, bifrostErr, preCount)
-		if recoveredErr != nil {
-			recoveredErr.PopulateExtraFields(preReq.RequestType, provider, model, model)
-		} else if recoveredResp != nil {
-			recoveredResp.PopulateExtraFields(preReq.RequestType, provider, model, model)
-		}
-		drainAndAttachPluginLogs(ctx)
+	if bifrostErr := bifrost.enforceSingleToolConstraint(ctx, preReq); bifrostErr != nil {
+		recoveredResp, recoveredErr := finishWithTerminalError(ctx, pipeline, bifrostErr, preCount, preReq.RequestType, provider, model, true)
 		if recoveredErr != nil {
 			return nil, recoveredErr
 		}
-		if recoveredResp != nil {
-			return newBifrostMessageChan(recoveredResp), nil
-		}
-		return nil, bifrostErr
+		return newBifrostMessageChan(recoveredResp), nil
 	}
 
 	msg := bifrost.getChannelMessage(*preReq)
@@ -5909,16 +5900,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		} else {
 			bifrost.logger.Debug("error while executing stream request: %+v", bifrostErrVal)
 		}
-		// Marking final chunk
-		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-		// On error we will complete post-hooks
-		recoveredResp, recoveredErr := pipeline.RunPostLLMHooks(ctx, nil, &bifrostErrVal, len(*bifrost.llmPlugins.Load()))
-		if recoveredErr != nil {
-			recoveredErr.PopulateExtraFields(req.RequestType, provider, model, model)
-		} else if recoveredResp != nil {
-			recoveredResp.PopulateExtraFields(req.RequestType, provider, model, model)
-		}
-		drainAndAttachPluginLogs(ctx)
+		recoveredResp, recoveredErr := finishWithTerminalError(ctx, pipeline, &bifrostErrVal, len(*bifrost.llmPlugins.Load()), req.RequestType, provider, model, true)
 		bifrost.releaseChannelMessage(msg)
 		if recoveredErr != nil {
 			return nil, recoveredErr

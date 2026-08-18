@@ -1466,3 +1466,47 @@ func TestToBifrostResponsesStreamResponse_ReasoningOpensThinkingBlock(t *testing
 		t.Fatalf("text output index %d must be greater than reasoning output index %d", textOutputIndex, reasoningOutputIndex)
 	}
 }
+
+func TestResponsesToChatStreamUsesDenseToolCallIndexes(t *testing.T) {
+	state := &ResponsesToChatStreamState{}
+	functionType := ResponsesMessageTypeFunctionCall
+
+	firstAdded := (&BifrostResponsesStreamResponse{
+		Type:        ResponsesStreamResponseTypeOutputItemAdded,
+		OutputIndex: Ptr(2), // reasoning and message items came first
+		Item: &ResponsesMessage{
+			Type: &functionType,
+			ResponsesToolMessage: &ResponsesToolMessage{
+				CallID: Ptr("call-1"),
+				Name:   Ptr("first_tool"),
+			},
+		},
+	}).ToBifrostChatResponseWithState(state)
+	if got := firstAdded.Choices[0].ChatStreamResponseChoice.Delta.ToolCalls[0].Index; got != 0 {
+		t.Fatalf("first tool-call index = %d, want 0", got)
+	}
+
+	firstArgs := (&BifrostResponsesStreamResponse{
+		Type:        ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
+		OutputIndex: Ptr(2),
+		Delta:       Ptr(`{"value":1}`),
+	}).ToBifrostChatResponseWithState(state)
+	if got := firstArgs.Choices[0].ChatStreamResponseChoice.Delta.ToolCalls[0].Index; got != 0 {
+		t.Fatalf("first tool-call argument index = %d, want 0", got)
+	}
+
+	secondAdded := (&BifrostResponsesStreamResponse{
+		Type:        ResponsesStreamResponseTypeOutputItemAdded,
+		OutputIndex: Ptr(3),
+		Item: &ResponsesMessage{
+			Type: &functionType,
+			ResponsesToolMessage: &ResponsesToolMessage{
+				CallID: Ptr("call-2"),
+				Name:   Ptr("second_tool"),
+			},
+		},
+	}).ToBifrostChatResponseWithState(state)
+	if got := secondAdded.Choices[0].ChatStreamResponseChoice.Delta.ToolCalls[0].Index; got != 1 {
+		t.Fatalf("second tool-call index = %d, want 1", got)
+	}
+}

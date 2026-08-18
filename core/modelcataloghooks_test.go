@@ -83,7 +83,7 @@ func (d *catalogProbePlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *sche
 	return resp, bifrostErr, nil
 }
 
-func newCatalogProbeClient(t *testing.T, catalog schemas.ModelInfoProvider, plugin schemas.LLMPlugin) *Bifrost {
+func newCatalogProbeClient(t *testing.T, catalog schemas.ModelInfoProvider, plugins ...schemas.LLMPlugin) *Bifrost {
 	t.Helper()
 	account := NewMockAccount()
 	account.AddProvider(schemas.OpenAI, 1, 1)
@@ -97,7 +97,7 @@ func newCatalogProbeClient(t *testing.T, catalog schemas.ModelInfoProvider, plug
 		Account:      account,
 		Logger:       NewNoOpLogger(),
 		ModelCatalog: catalog,
-		LLMPlugins:   []schemas.LLMPlugin{plugin},
+		LLMPlugins:   plugins,
 	})
 	if initErr != nil {
 		t.Fatalf("Init failed: %v", initErr)
