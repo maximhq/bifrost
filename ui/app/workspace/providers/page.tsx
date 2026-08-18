@@ -1,8 +1,10 @@
 import ModelProviderConfig from "@/app/workspace/providers/views/modelProviderConfig";
 import FullPageLoader from "@/components/fullPageLoader";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { TruncatedLabel } from "@/components/ui/truncatedLabel";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { DefaultNetworkConfig, DefaultPerformanceConfig } from "@/lib/constants/config";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderNames } from "@/lib/constants/logs";
@@ -19,7 +21,7 @@ import { KnownProvider, ModelProviderName, ProviderStatus } from "@/lib/types/co
 import { cn } from "@/lib/utils";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useNavigate } from "@tanstack/react-router";
-import { AlertCircle } from "lucide-react";
+import { AlertCircle, ArrowLeft } from "lucide-react";
 import { useQueryState } from "nuqs";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
@@ -30,6 +32,7 @@ import { AddProviderDropdown } from "./views/addProviderDropdown";
 import { ProvidersEmptyState } from "./views/providersEmptyState";
 
 export default function Providers() {
+	const isMobile = useIsMobile();
 	const dispatch = useAppDispatch();
 	const navigate = useNavigate();
 	const hasProvidersAccess = useRbac(RbacResource.ModelProvider, RbacOperation.View);
@@ -50,6 +53,7 @@ export default function Providers() {
 	const [showDeleteProviderDialog, setShowDeleteProviderDialog] = useState(false);
 	const [pendingRedirection, setPendingRedirection] = useState<string | undefined>(undefined);
 	const [showCustomProviderSheet, setShowCustomProviderSheet] = useState(false);
+	const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
 	const [provider, setProvider] = useQueryState("provider");
 
 	const { data: savedProviders, isLoading: isLoadingProviders } = useGetProvidersQuery();
@@ -102,6 +106,13 @@ export default function Providers() {
 		setProvider(configuredProviders[0].name);
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [selectedProvider, configuredProviderNamesKey]);
+
+	// A provider in the URL is a direct link to its detail view on small screens.
+	useEffect(() => {
+		if (isMobile && provider) {
+			setMobileDetailOpen(true);
+		}
+	}, [isMobile, provider]);
 
 	// When current provider is no longer configured (e.g. all keys deleted), switch to another configured provider
 	useEffect(() => {
@@ -163,7 +174,7 @@ export default function Providers() {
 	}
 
 	return (
-		<div className="flex h-full w-full flex-row gap-4">
+		<div className="flex h-full w-full min-w-0 flex-col gap-4 p-4 md:flex-row md:p-0">
 			<ConfirmDeleteProviderDialog
 				provider={selectedProvider!}
 				show={showDeleteProviderDialog}
@@ -191,10 +202,10 @@ export default function Providers() {
 					setShowCustomProviderSheet(false);
 				}}
 			/>
-			<div className="flex flex-col" style={{ maxHeight: "calc(100vh - 70px)", width: "300px" }}>
+			<div className={cn("w-full flex-col md:flex md:max-h-[calc(var(--app-content-viewport)_-_70px)] md:w-[300px]", mobileDetailOpen ? "hidden" : "flex")}>
 				<TooltipProvider>
 					<div className="custom-scrollbar flex-1 overflow-y-auto">
-						<div className="rounded-md bg-zinc-50/50 p-4 dark:bg-zinc-800/20">
+						<div className="rounded-md bg-zinc-50/50 md:p-4 dark:bg-zinc-800/20">
 							{/* Configured Providers (standard with keys + custom) */}
 							{configuredProviders.length > 0 && (
 								<div className="mb-4">
@@ -221,6 +232,7 @@ export default function Providers() {
 														return;
 													}
 													setProvider(p.name);
+													if (isMobile) setMobileDetailOpen(true);
 												}}
 											>
 												<RenderProviderIcon
@@ -256,19 +268,25 @@ export default function Providers() {
 					</div>
 				</TooltipProvider>
 			</div>
-			{isLoadingProvider && (
-				<div className="bg-muted/10 flex w-full items-center justify-center rounded-md" style={{ maxHeight: "calc(100vh - 300px)" }}>
-					<FullPageLoader />
-				</div>
-			)}
-			{!selectedProvider && (
-				<div className="bg-muted/10 flex w-full items-center justify-center rounded-md" style={{ maxHeight: "calc(100vh - 300px)" }}>
-					<div className="text-muted-foreground text-sm">Select a provider</div>
-				</div>
-			)}
-			{!isLoadingProvider && selectedProvider && (
-				<ModelProviderConfig provider={selectedProvider} onRequestDelete={() => setShowDeleteProviderDialog(true)} />
-			)}
+			<div className={cn("min-w-0 w-full", mobileDetailOpen ? "block" : "hidden md:block")}>
+				<Button variant="ghost" size="sm" className="mb-3 -ml-2 md:hidden" onClick={() => setMobileDetailOpen(false)}>
+					<ArrowLeft className="size-4" />
+					Providers
+				</Button>
+				{isLoadingProvider && (
+					<div className="bg-muted/10 flex w-full items-center justify-center rounded-md md:max-h-[calc(var(--app-content-viewport)_-_300px)]">
+						<FullPageLoader />
+					</div>
+				)}
+				{!selectedProvider && (
+					<div className="bg-muted/10 flex w-full items-center justify-center rounded-md md:max-h-[calc(var(--app-content-viewport)_-_300px)]">
+						<div className="text-muted-foreground text-sm">Select a provider</div>
+					</div>
+				)}
+				{!isLoadingProvider && selectedProvider && (
+					<ModelProviderConfig provider={selectedProvider} onRequestDelete={() => setShowDeleteProviderDialog(true)} />
+				)}
+			</div>
 		</div>
 	);
 }

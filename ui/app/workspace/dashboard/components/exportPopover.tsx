@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
 	DropdownMenu,
 	DropdownMenuContent,
@@ -84,12 +85,34 @@ export function ExportPopover({ getData, activeTab, onPreloadData, onPdfExport, 
 
 	return (
 		<DropdownMenu>
-			<DropdownMenuTrigger asChild>
-				<Button variant="outline" size="default" disabled={exporting} data-testid="dashboard-export-trigger">
-					{exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-					{exporting ? "Exporting..." : "Export"}
-				</Button>
-			</DropdownMenuTrigger>
+			<Tooltip>
+				{/* The span carries the tooltip, not the Button: a disabled button
+				    emits no pointer or focus events, so anchoring the trigger on it
+				    would hide the "Exporting..." tooltip exactly while it is the one
+				    worth reading. DropdownMenuTrigger stays on the Button so the
+				    disabled state still blocks a second export. */}
+				<TooltipTrigger asChild>
+					<span tabIndex={0} className="inline-flex">
+						<DropdownMenuTrigger asChild>
+							{/* Icon-only: the label would crowd the tab strip it now shares a
+						    row with. State still reads from the spinner + tooltip. */}
+							{/* size="icon" is size-9; the date range trigger next to it uses the
+						    default h-7.5, so pin the square to that height instead. */}
+							<Button
+								variant="outline"
+								size="icon"
+								className="size-7.5"
+								disabled={exporting}
+								data-testid="dashboard-export-trigger"
+								aria-label={exporting ? "Exporting..." : "Export"}
+							>
+								{exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+							</Button>
+						</DropdownMenuTrigger>
+					</span>
+				</TooltipTrigger>
+				<TooltipContent side="bottom">{exporting ? "Exporting..." : "Export"}</TooltipContent>
+			</Tooltip>
 			<DropdownMenuContent align="end">
 				<DropdownMenuSub>
 					<DropdownMenuSubTrigger data-testid="export-csv-item" className="flex gap-2">

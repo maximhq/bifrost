@@ -1,3 +1,4 @@
+import PageTitle from "@/components/pageTitle";
 import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import {
 	AlertDialog,
@@ -202,10 +203,16 @@ export default function TeamsTable({
 
 	const hasActiveFilters = debouncedSearch;
 
+	// Rendered on the empty branch too, not just the populated one: PageTitle
+	// draws nothing inline, and leaving it out drops the topbar to the
+	// route-derived fallback.
+	const pageTitle = <PageTitle title="Teams">Organize users into teams with shared budgets and access controls.</PageTitle>;
+
 	// True empty state: no teams at all (not just filtered to zero)
 	if (totalCount === 0 && !hasActiveFilters && !isLoading) {
 		return (
 			<>
+				{pageTitle}
 				<TooltipProvider>
 					{showTeamSheet && <TeamSheet team={editingTeam} onSave={handleTeamSaved} onCancel={onDialogClose} />}
 					<TeamsEmptyState onAddClick={handleAddTeam} canCreate={hasCreateAccess} />
@@ -220,18 +227,8 @@ export default function TeamsTable({
 				{showTeamSheet && <TeamSheet team={editingTeam} onSave={handleTeamSaved} onCancel={onDialogClose} />}
 
 				<div className="flex grow flex-col overflow-y-auto">
-					<div className="mb-4 flex items-center justify-between">
-						<div>
-							<h2 className="text-lg font-semibold">Teams</h2>
-							<p className="text-muted-foreground text-sm">Organize users into teams with shared budgets and access controls.</p>
-						</div>
-						<Button data-testid="create-team-btn" onClick={handleAddTeam} disabled={!hasCreateAccess}>
-							<Plus className="h-4 w-4" />
-							Add Team
-						</Button>
-					</div>
-
-					<div className="mb-4 flex items-center gap-3">
+					<div className="mb-4 flex flex-wrap items-center gap-3">
+						{pageTitle}
 						<div className="relative max-w-sm flex-1">
 							<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 							<Input
@@ -243,6 +240,10 @@ export default function TeamsTable({
 								data-testid="teams-search-input"
 							/>
 						</div>
+						<Button className="ml-auto" data-testid="create-team-btn" onClick={handleAddTeam} disabled={!hasCreateAccess}>
+							<Plus className="h-4 w-4" />
+							Add Team
+						</Button>
 					</div>
 
 					<div className="mb-2 grow overflow-auto rounded-sm border" data-testid="teams-table">

@@ -5,8 +5,8 @@ go 1.26.5
 require (
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/google/uuid v1.6.0
-	github.com/maximhq/bifrost/core v1.7.9
-	github.com/maximhq/bifrost/framework v1.5.8
+	github.com/maximhq/bifrost/core v1.7.11
+	github.com/maximhq/bifrost/framework v1.5.9
 	github.com/maximhq/bifrost/plugins/mocker v1.5.19
 )
 
@@ -41,7 +41,7 @@ require (
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.2.0 // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
-	github.com/bytedance/sonic v1.15.1 // indirect
+	github.com/bytedance/sonic v1.15.2 // indirect
 	github.com/bytedance/sonic/loader v0.5.1 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect

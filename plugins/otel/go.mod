@@ -3,8 +3,8 @@ module github.com/maximhq/bifrost/plugins/otel
 go 1.26.5
 
 require (
-	github.com/maximhq/bifrost/core v1.7.9
-	github.com/maximhq/bifrost/framework v1.5.8
+	github.com/maximhq/bifrost/core v1.7.11
+	github.com/maximhq/bifrost/framework v1.5.9
 	go.opentelemetry.io/otel v1.43.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.43.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp v1.43.0
@@ -171,7 +171,7 @@ require (
 )
 
 require (
-	github.com/bytedance/sonic v1.15.1
+	github.com/bytedance/sonic v1.15.2
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect

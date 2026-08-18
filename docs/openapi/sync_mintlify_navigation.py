@@ -80,6 +80,7 @@ SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "Audit Logs",
             "Infrastructure",
             "Webhooks",
+            "Notifications",
         ),
     ),
 )

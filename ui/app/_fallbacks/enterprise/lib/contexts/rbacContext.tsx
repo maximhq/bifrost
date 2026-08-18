@@ -37,6 +37,7 @@ export enum RbacResource {
 	Inventory = "Inventory",
 	EdgeConfig = "EdgeConfig",
 	SkillsRepository = "SkillsRepository",
+	Notifications = "Notifications",
 }
 
 // RBAC Operation Names (must match backend definitions)

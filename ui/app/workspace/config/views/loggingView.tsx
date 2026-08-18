@@ -1,3 +1,4 @@
+import PageTitle from "@/components/pageTitle";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -75,11 +76,8 @@ export default function LoggingView() {
 	}, [bifrostConfig, localConfig, updateCoreConfig]);
 
 	return (
-		<div className="mx-auto w-full max-w-4xl space-y-4 py-6">
-			<div>
-				<h2 className="text-lg font-semibold tracking-tight">Logs Settings</h2>
-				<p className="text-muted-foreground text-sm">Configure logging settings for requests and responses.</p>
-			</div>
+		<div className="mx-auto w-full max-w-4xl space-y-4 px-4 py-6 md:px-0">
+			<PageTitle title="Logs Settings">Configure logging settings for requests and responses.</PageTitle>
 
 			<div className="space-y-4">
 				{/* Enable Logs */}
@@ -273,8 +271,8 @@ export default function LoggingView() {
 						<p className="text-muted-foreground text-sm">
 							Comma-separated list of request headers to capture in log metadata. Supports exact names and wildcard patterns (e.g.{" "}
 							<code className="text-xs">x-custom-*</code> captures all headers with that prefix, <code className="text-xs">*</code> logs all
-							headers; note that <code className="text-xs">*</code> will capture sensitive headers like Authorization). Values are
-							extracted from incoming requests and stored in the metadata field of log entries. Headers with the{" "}
+							headers; note that <code className="text-xs">*</code> will capture sensitive headers like Authorization). Values are extracted
+							from incoming requests and stored in the metadata field of log entries. Headers with the{" "}
 							<code className="text-xs">x-bf-lh-</code> prefix are always captured automatically.
 						</p>
 						<Textarea

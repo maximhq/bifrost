@@ -920,7 +920,10 @@ func HandleAnthropicChatCompletionStreaming(
 
 		usage := &schemas.BifrostLLMUsage{}
 		// Served billing modifiers (top-level response fields, not usage) captured
-		// across events and set on the final chunk: fast mode and data residency.
+		// across events and set on the final chunk: served tier, fast mode and data
+		// residency. Anthropic reports service_tier on the message_start usage, which
+		// the per-event converter drops, so it has to be latched here like the rest.
+		var servedServiceTier *schemas.BifrostServiceTier
 		var servedSpeed *string
 		var servedInferenceGeo *string
 		// Model that actually served the turn after a server-side fallback handoff.
@@ -1026,9 +1029,15 @@ func HandleAnthropicChatCompletionStreaming(
 						usage.CompletionTokensDetails.ReasoningTokens = t
 					}
 				}
-				// Capture served fast mode + inference geography (top-level response fields).
-				// Mirror onto the billing usage handle so a mid-stream cancel/timeout can
-				// still apply the served-tier multiplier (billed usage is otherwise bare).
+				// Capture served tier + fast mode + inference geography (top-level response
+				// fields). Speed and InferenceGeo are mirrored onto the billing usage handle
+				// so a mid-stream cancel/timeout can still apply the served-tier multiplier
+				// (billed usage is otherwise bare); BifrostLLMUsage has no service_tier field,
+				// so that one can only ride the final chunk's response envelope.
+				if usageToProcess.ServiceTier != nil {
+					mapped := MapAnthropicServiceTierToBifrost(*usageToProcess.ServiceTier)
+					servedServiceTier = &mapped
+				}
 				if usageToProcess.Speed != nil {
 					servedSpeed = usageToProcess.Speed
 					usage.Speed = usageToProcess.Speed
@@ -1221,7 +1230,10 @@ func HandleAnthropicChatCompletionStreaming(
 				return
 			}
 		}
-		// Forward served fast mode + data residency so the final chunk bills correctly.
+		// Forward served tier + fast mode + data residency so the final chunk bills correctly.
+		if servedServiceTier != nil {
+			response.ServiceTier = servedServiceTier
+		}
 		if servedSpeed != nil {
 			response.Speed = servedSpeed
 		}
@@ -1590,6 +1602,7 @@ func HandleAnthropicResponsesStream(
 		}
 
 		var modelName string
+		var servedServiceTier *schemas.BifrostServiceTier
 		var servedSpeed *string
 		var servedInferenceGeo *string
 		// Model that served the turn after a server-side fallback handoff. Latched
@@ -1649,6 +1662,12 @@ func HandleAnthropicResponsesStream(
 				accumulateAnthropicResponsesUsage(usage, billedUsage, usageToProcess)
 				// Mirror served tier onto billedUsage so a mid-stream cancel/timeout can
 				// still apply the served-tier multiplier (billed usage is otherwise bare).
+				// service_tier has no home on BifrostLLMUsage, so it is latched for the
+				// final chunk's response envelope only.
+				if usageToProcess.ServiceTier != nil {
+					mapped := MapAnthropicServiceTierToBifrost(*usageToProcess.ServiceTier)
+					servedServiceTier = &mapped
+				}
 				if usageToProcess.Speed != nil {
 					servedSpeed = usageToProcess.Speed
 					if billedUsage != nil {
@@ -1727,6 +1746,9 @@ func HandleAnthropicResponsesStream(
 							usage.TotalTokens = usage.TotalTokens + usage.InputTokensDetails.CachedReadTokens + usage.InputTokensDetails.CachedWriteTokens
 						}
 						response.Response.Usage = usage
+						if servedServiceTier != nil {
+							response.Response.ServiceTier = servedServiceTier
+						}
 						if servedSpeed != nil {
 							response.Response.Speed = servedSpeed
 						}

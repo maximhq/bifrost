@@ -11,7 +11,7 @@ export function NoPermissionView({ entity, className, align = "middle" }: NoPerm
 	return (
 		<div
 			className={cn(
-				"flex min-h-[calc(100vh-200px)] flex-col items-center  gap-4 text-center",
+				"flex min-h-[calc(var(--app-content-viewport)_-_200px)] flex-col items-center  gap-4 text-center",
 				align === "middle" ? "justify-center" : "justify-start",
 				className,
 			)}

@@ -19,7 +19,7 @@ export function WebhooksEmptyState({ onAddClick, canCreate }: WebhooksEmptyState
 			</div>
 			<div className="flex flex-col gap-1">
 				<h1 className="text-muted-foreground text-xl font-medium">Get notified when async jobs finish</h1>
-				<div className="text-muted-foreground mx-auto mt-2 max-w-[600px] text-sm font-normal">
+				<div className="text-muted-foreground mx-auto mt-2 w-full max-w-[600px] text-sm font-normal">
 					Register webhook endpoints and Bifrost will send a signed notification whenever an async inference job completes or fails, so you
 					don't have to poll for results.
 				</div>

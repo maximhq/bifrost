@@ -17,7 +17,7 @@ export function CustomersEmptyState({ onAddClick, canCreate = true }: CustomersE
 			</div>
 			<div className="flex flex-col gap-1">
 				<h1 className="text-muted-foreground text-xl font-medium">Customers have their own teams, budgets, and access controls</h1>
-				<div className="text-muted-foreground mx-auto mt-2 max-w-[600px] text-sm font-normal">
+				<div className="text-muted-foreground mx-auto mt-2 w-full max-w-[600px] text-sm font-normal">
 					Create customer accounts to manage multi-tenant usage, assign teams, and set spending and rate limits per customer.
 				</div>
 				<div className="mx-auto mt-6 flex flex-row flex-wrap items-center justify-center gap-2">

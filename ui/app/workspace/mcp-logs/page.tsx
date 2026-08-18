@@ -340,7 +340,10 @@ export default function MCPLogsPage() {
 		return icons;
 	}, [userAgentMappingsData?.mappings]);
 
-	const columns = useMemo(() => createMCPColumns(handleDelete, hasDeleteAccess, customAppIcons), [customAppIcons, handleDelete, hasDeleteAccess]);
+	const columns = useMemo(
+		() => createMCPColumns(handleDelete, hasDeleteAccess, customAppIcons),
+		[customAppIcons, handleDelete, hasDeleteAccess],
+	);
 
 	const columnIds = useMemo(
 		() => columns.map((col) => ("id" in col && col.id ? col.id : "accessorKey" in col ? String(col.accessorKey) : "")).filter(Boolean),
@@ -434,7 +437,7 @@ export default function MCPLogsPage() {
 			) : showEmptyState ? (
 				<MCPEmptyState error={displayError} />
 			) : (
-				<div className="no-padding-parent no-border-parent bg-background flex h-[calc(100vh_-_16px)] w-full gap-3">
+				<div className="no-padding-parent no-border-parent bg-background flex h-[calc(var(--app-content-viewport)_-_16px)] w-full gap-3">
 					{/* Sidebar Filters */}
 					<MCPFilterSidebar filters={filters} onFiltersChange={setFilters} />
 

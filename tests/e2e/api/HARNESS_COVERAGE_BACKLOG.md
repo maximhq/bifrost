@@ -260,7 +260,7 @@ Sources:
 - [ ] **URL context** (`tools: [{ urlContext: {} }]`)
 - [ ] **Live API** (websocket-based bidirectional streaming)
 - [ ] **Function responses** (`role: "function"` parts with `functionResponse`)
-- [ ] **Thinking response signature** (return `thoughtSignature` to continue thinking across turns)
+- [x] **Thinking response signature** (return `thoughtSignature` to continue thinking across turns): folder `49.` replays a captured server-side tool turn (toolCall/toolResponse + thoughtSignature) in `contents`; Gemini validates signatures upstream, so a 2xx pins the round-trip
 
 ### Other endpoints
 

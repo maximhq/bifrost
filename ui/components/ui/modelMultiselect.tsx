@@ -294,7 +294,13 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 			onInputChange={handleInputChange}
 			noResultsFoundPlaceholder={modelLoadError ? "Couldn’t load models." : "No matching models."}
 			emptyResultPlaceholder={
-				modelLoadError ? "Couldn’t load models." : provider ? "No models available for this provider." : shouldLoadOnEmpty ? "No models available." : "Select a provider first."
+				modelLoadError
+					? "Couldn’t load models."
+					: provider
+						? "No models available for this provider."
+						: shouldLoadOnEmpty
+							? "No models available."
+							: "Select a provider first."
 			}
 			views={{
 				dropdownIndicator: isSingleSelect ? undefined : () => <></>,
