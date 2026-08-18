@@ -81,3 +81,63 @@ func TestParseOpenAIError_DefaultStatusCodeFallsBackWithStatusNumber(t *testing.
 		t.Fatalf("expected fallback message with default status, got %q", errResp.Error.Message)
 	}
 }
+
+// TestStatusCodeForResponsesStreamErrorCode_CanonicalTypesCoverage is a
+// regression test (found via greptile review): responsesStreamErrorCodeStatus
+// previously only covered a handful of literal OpenAI codes, so a canonical
+// schemas.ErrorType* value like context_length_exceeded or
+// content_policy_violation fell through to the generic 500 fallback,
+// misrepresenting a client-side error as a retryable server failure.
+func TestStatusCodeForResponsesStreamErrorCode_CanonicalTypesCoverage(t *testing.T) {
+	tests := []struct {
+		code           string
+		expectedStatus int
+	}{
+		{schemas.ErrorTypeInvalidRequest, fasthttp.StatusBadRequest},
+		{schemas.ErrorTypeContextLengthExceeded, fasthttp.StatusBadRequest},
+		{schemas.ErrorTypeContentPolicyViolation, fasthttp.StatusBadRequest},
+		{schemas.ErrorTypeAuthentication, fasthttp.StatusUnauthorized},
+		{schemas.ErrorTypePermissionDenied, fasthttp.StatusForbidden},
+		{schemas.ErrorTypeNotFound, fasthttp.StatusNotFound},
+		{schemas.ErrorTypeUnprocessableEntity, fasthttp.StatusUnprocessableEntity},
+		{schemas.ErrorTypeRequestTimeout, fasthttp.StatusRequestTimeout},
+		{schemas.ErrorTypeServiceUnavailable, fasthttp.StatusServiceUnavailable},
+		{schemas.ErrorTypeBadGateway, fasthttp.StatusBadGateway},
+	}
+	for _, tt := range tests {
+		t.Run(tt.code, func(t *testing.T) {
+			code := tt.code
+			status := StatusCodeForResponsesStreamErrorCode(&code, nil)
+			if status != tt.expectedStatus {
+				t.Errorf("expected status %d for code %q, got %d (would have been misclassified as a retryable server error if still falling back to 500)", tt.expectedStatus, tt.code, status)
+			}
+		})
+	}
+}
+
+// TestStatusCodeForResponsesStreamErrorCode_FallsBackToType is a regression
+// test (found via greptile review): some OpenAI-compatible backends populate
+// only error.type on an in-body SSE error, not error.code. Passing a nil
+// code must still resolve via errType instead of unconditionally falling
+// back to the generic 500.
+func TestStatusCodeForResponsesStreamErrorCode_FallsBackToType(t *testing.T) {
+	errType := schemas.ErrorTypeContextLengthExceeded
+	status := StatusCodeForResponsesStreamErrorCode(nil, &errType)
+	if status != fasthttp.StatusBadRequest {
+		t.Errorf("expected 400 via Error.Type fallback when Error.Code is nil, got %d", status)
+	}
+
+	// An unrecognized code combined with a recognized type should still
+	// resolve via the type.
+	unrecognizedCode := "some_backend_specific_code_not_in_the_table"
+	status = StatusCodeForResponsesStreamErrorCode(&unrecognizedCode, &errType)
+	if status != fasthttp.StatusBadRequest {
+		t.Errorf("expected 400 via Error.Type fallback when Error.Code is unrecognized, got %d", status)
+	}
+
+	// Neither code nor type recognized (or both nil) still falls back to 500.
+	status = StatusCodeForResponsesStreamErrorCode(nil, nil)
+	if status != fasthttp.StatusInternalServerError {
+		t.Errorf("expected 500 fallback when both Code and Type are nil, got %d", status)
+	}
+}
