@@ -286,6 +286,7 @@ const (
 	BifrostContextKeySendBackRawResponse                 BifrostContextKey = "bifrost-send-back-raw-response"                   // bool (per-request override — read by bifrost.go, never overwritten)
 	BifrostContextKeyIntegrationType                     BifrostContextKey = "bifrost-integration-type"                         // integration used in gateway (e.g. openai, anthropic, bedrock, etc.)
 	BifrostContextKeyRequireSerialToolCalls              BifrostContextKey = "bifrost-require-serial-tool-calls"                // bool (set by trusted transports when the downstream consumer cannot accept parallel tool calls)
+	BifrostContextKeySkipMCPToolInjection                BifrostContextKey = "bifrost-skip-mcp-tool-injection"                  // bool (set by trusted transports whose downstream consumer cannot execute Bifrost MCP tools; suppresses MCP tool injection regardless of MCP filters)
 	BifrostContextKeyIsResponsesToChatCompletionFallback BifrostContextKey = "bifrost-is-responses-to-chat-completion-fallback" // bool (set by bifrost - DO NOT SET THIS MANUALLY)
 	BifrostMCPAgentOriginalRequestID                     BifrostContextKey = "bifrost-mcp-agent-original-request-id"            // string (to store the original request ID for MCP agent mode)
 	BifrostContextKeyParentMCPRequestID                  BifrostContextKey = "bf-parent-mcp-request-id"                         // string (parent request ID for nested tool calls from executeCode)
