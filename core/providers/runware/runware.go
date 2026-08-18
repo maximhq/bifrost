@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -19,7 +20,8 @@ import (
 // RunwareProvider implements the Provider interface for Runware's API.
 type RunwareProvider struct {
 	logger              schemas.Logger        // Logger for provider operations
-	client              *fasthttp.Client      // HTTP client for API requests
+	client              *fasthttp.Client      // HTTP client for unary API requests (ReadTimeout bounds overall response)
+	streamingClient     *fasthttp.Client      // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
 	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
 	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
@@ -44,6 +46,7 @@ func NewRunwareProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
 	client = providerUtils.ConfigureDialer(client, config.NetworkConfig.AllowPrivateNetwork)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
+	streamingClient := providerUtils.BuildStreamingClient(client)
 
 	// Set default BaseURL if not provided. Runware's single endpoint already includes /v1.
 	if config.NetworkConfig.BaseURL == "" {
@@ -54,6 +57,7 @@ func NewRunwareProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 	return &RunwareProvider{
 		logger:              logger,
 		client:              client,
+		streamingClient:     streamingClient,
 		networkConfig:       config.NetworkConfig,
 		sendBackRawRequest:  config.SendBackRawRequest,
 		sendBackRawResponse: config.SendBackRawResponse,
@@ -80,24 +84,70 @@ func (provider *RunwareProvider) TextCompletionStream(ctx *schemas.BifrostContex
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TextCompletionStreamRequest, provider.GetProviderKey())
 }
 
-// ChatCompletion is not supported by the Runware provider.
+// ChatCompletion performs a chat completion request against Runware's OpenAI-compatible endpoint.
+// Runware serves text inference at /v1/chat/completions in the standard OpenAI request and response
+// shape, including reasoning_content, so the OpenAI handlers are used unchanged. Models are named
+// by their AIR identifier rather than an OpenAI model name.
 func (provider *RunwareProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ChatCompletionRequest, provider.GetProviderKey())
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	return openai.HandleOpenAIChatCompletionRequest(
+		ctx,
+		provider.client,
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/chat/completions"),
+		request,
+		openai.BearerAuthHeader(key),
+		provider.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.GetProviderKey(),
+		nil,
+		nil,
+		nil,
+		provider.logger,
+	)
 }
 
-// ChatCompletionStream is not supported by the Runware provider.
+// ChatCompletionStream streams a chat completion from Runware's OpenAI-compatible endpoint. The SSE
+// format matches OpenAI's, terminating with [DONE].
 func (provider *RunwareProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ChatCompletionStreamRequest, provider.GetProviderKey())
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	return openai.HandleOpenAIChatCompletionStreaming(
+		ctx,
+		provider.streamingClient,
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/chat/completions"),
+		request,
+		openai.BearerAuthHeader(key),
+		provider.networkConfig.ExtraHeaders,
+		provider.networkConfig.StreamIdleTimeoutInSeconds,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.GetProviderKey(),
+		postHookRunner,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		provider.logger,
+		postHookSpanFinalizer,
+	)
 }
 
-// Responses is not supported by the Runware provider.
+// Responses serves the Responses API from the chat completions endpoint. Runware routes /v1/responses
+// but rejects every model on it, so the request is muxed through chat rather than sent natively.
 func (provider *RunwareProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ResponsesRequest, provider.GetProviderKey())
+	chatResponse, bifrostErr := provider.ChatCompletion(ctx, key, request.ToChatRequest())
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	return chatResponse.ToBifrostResponsesResponse(), nil
 }
 
-// ResponsesStream is not supported by the Runware provider.
+// ResponsesStream streams the Responses API through chat completions (see Responses).
 func (provider *RunwareProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ResponsesStreamRequest, provider.GetProviderKey())
+	ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
+	return provider.ChatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, request.ToChatRequest())
 }
 
 // Embedding is not supported by the Runware provider.
