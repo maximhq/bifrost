@@ -1995,9 +1995,6 @@ Call this template at the beginning of deployment/stateful templates
 {{- if not $scimValidation.config.clientSecret }}
 {{- fail "ERROR: bifrost.scim.config.clientSecret is required when SCIM provider is Okta." }}
 {{- end }}
-{{- if not $scimValidation.config.apiToken }}
-{{- fail "ERROR: bifrost.scim.config.apiToken is required when SCIM provider is Okta." }}
-{{- end }}
 {{- end }}
 {{- if eq $scimValidation.provider "entra" }}
 {{- if not $scimValidation.config.tenantId }}

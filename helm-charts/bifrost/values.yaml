@@ -1005,7 +1005,7 @@ bifrost:
       # authServerType: "org"  # "org" or "custom"; auto-detected from issuer URL when omitted
       # clientId: ""
       # clientSecret: ""
-      # apiToken: ""
+      # apiToken: ""  # optional — enables 24-hour background user/group reconciliation
       # audience: ""
       # # Extra OAuth scopes on top of the base openid/profile/email/offline_access set
       # # (for Custom Authorization Servers where claims like "groups" are gated behind a scope).
@@ -1049,6 +1049,10 @@ bifrost:
       #     attributeType: "group"                   # "user" (SCIM User attribute) or "group" (match SCIM Group)
       #     attributeValue: "displayName"
       # provisioningToken: "env.SCIM_PROVISIONING_TOKEN"  # bearer token the IdP presents; generate: openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
+      # # Claims-sync mode (Enterprise). Shared across every provider above; only matters when SCIM is enabled:
+      # # "both" (default) = login/refresh claims and SCIM both sync roles/teams/business-units/profile and can JIT-create users;
+      # # "scim" = SCIM is the sole source of truth — claims are ignored for provisioning and new users must be pushed by SCIM.
+      # claimsSyncMode: "both"
       #
       # # Auth proxy / identity-aware proxy (Enterprise). Shared across every provider above:
       # # when a Zero Trust / ZTNA proxy fronts the IdP, Bifrost reads the login credential from the
