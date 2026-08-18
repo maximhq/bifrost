@@ -19,23 +19,56 @@ func (bifrost *Bifrost) enforceSingleToolConstraint(ctx *schemas.BifrostContext,
 	}
 
 	provider, model, _ := req.GetRequestFields()
-	baseProvider := provider
-	if bifrost != nil && bifrost.account != nil {
-		if config, err := bifrost.account.GetConfigForProvider(provider); err == nil && config != nil &&
-			config.CustomProviderConfig != nil && config.CustomProviderConfig.BaseProviderType != "" {
-			baseProvider = config.CustomProviderConfig.BaseProviderType
+	baseProvider := bifrost.baseProviderTypeFor(provider)
+	for _, candidate := range bifrost.serialToolCandidateModels(ctx, provider, model) {
+		if providerSupportsSingleToolControl(ctx, provider, baseProvider, candidate) {
+			continue
 		}
-	}
-	if !providerSupportsSingleToolControl(ctx, provider, baseProvider, model) {
+		detail := ""
+		if candidate != model {
+			detail = fmt.Sprintf(" (key alias resolves to %q)", candidate)
+		}
 		return providerUtils.NewBifrostBadRequestError(fmt.Sprintf(
-			"provider %q model %q cannot guarantee serial tool execution",
+			"provider %q model %q cannot guarantee serial tool execution%s",
 			provider,
 			model,
+			detail,
 		))
 	}
 
 	req.ChatRequest.Params.ParallelToolCalls = schemas.Ptr(false)
 	return nil
+}
+
+// serialToolCandidateModels returns every model identifier the request may
+// reach the provider under. Key aliases are resolved per key by the worker
+// after this policy runs, so the alias target configured on each key that
+// could serve the request is checked alongside the requested name.
+func (bifrost *Bifrost) serialToolCandidateModels(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string) []string {
+	candidates := []string{model}
+	if bifrost == nil || bifrost.account == nil {
+		return candidates
+	}
+	var keys []schemas.Key
+	if directKey, ok := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key); ok {
+		keys = []schemas.Key{directKey}
+	} else if providerKeys, err := bifrost.account.GetKeysForProvider(ctx, provider); err == nil {
+		keys = providerKeys
+	}
+	for _, key := range keys {
+		if key.Enabled != nil && !*key.Enabled {
+			continue
+		}
+		if !key.Models.IsAllowed(model) || key.BlacklistedModels.IsBlocked(model) {
+			continue
+		}
+		aliasConfig := key.Aliases.ResolveConfig(model)
+		if aliasConfig == nil || aliasConfig.ModelID == "" || slices.Contains(candidates, aliasConfig.ModelID) {
+			continue
+		}
+		candidates = append(candidates, aliasConfig.ModelID)
+	}
+	return candidates
 }
 
 func providerSupportsSingleToolControl(ctx *schemas.BifrostContext, provider, baseProvider schemas.ModelProvider, model string) bool {
@@ -87,7 +120,10 @@ func usesParallelToolCallsWire(ctx *schemas.BifrostContext, provider schemas.Mod
 	case schemas.Bedrock:
 		return schemas.IsOpenAIModelFamily(ctx, model) || strings.Contains(schemas.ResolveCanonicalModel(ctx, model), "gemma-4")
 	case schemas.Vertex:
-		return !schemas.IsGeminiModelFamily(ctx, model) && !schemas.IsGemmaModelFamily(ctx, model)
+		// Mirrors the Vertex chat routing predicate: Gemini- and Gemma-family
+		// names and all-digit fine-tuned endpoint IDs use the Gemini request
+		// builder, which has no parallel_tool_calls field.
+		return !schemas.IsGeminiModelFamily(ctx, model) && !schemas.IsAllDigitsASCII(model) && !schemas.IsGemmaModelFamily(ctx, model)
 	default:
 		return false
 	}
