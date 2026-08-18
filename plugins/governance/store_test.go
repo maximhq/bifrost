@@ -931,14 +931,14 @@ func TestGovernanceStore_RateLimitStatus(t *testing.T) {
 	store.providers.Store("openai", providerConfig)
 
 	// Get status
-	status := store.GetBudgetAndRateLimitStatus(context.Background(), "", schemas.ModelProvider("openai"), nil, nil, nil, nil)
+	status := store.GetBudgetAndRateLimitStatus(statusCtx(), schemas.ModelProvider("openai"), "", nil, nil, nil)
 
 	assert.NotNil(t, status)
 	assert.Equal(t, 50.0, status.RateLimitTokenPercentUsed)
 
 	// Update usage to exhausted state
 	rl.TokenCurrentUsage = 1000
-	status = store.GetBudgetAndRateLimitStatus(context.Background(), "", schemas.ModelProvider("openai"), nil, nil, nil, nil)
+	status = store.GetBudgetAndRateLimitStatus(statusCtx(), schemas.ModelProvider("openai"), "", nil, nil, nil)
 
 	assert.Equal(t, 100.0, status.RateLimitTokenPercentUsed)
 }
@@ -966,14 +966,14 @@ func TestGovernanceStore_BudgetStatus(t *testing.T) {
 	store.providers.Store("openai", providerConfig)
 
 	// Get status
-	status := store.GetBudgetAndRateLimitStatus(context.Background(), "", schemas.ModelProvider("openai"), nil, nil, nil, nil)
+	status := store.GetBudgetAndRateLimitStatus(statusCtx(), schemas.ModelProvider("openai"), "", nil, nil, nil)
 
 	assert.NotNil(t, status)
 	assert.Equal(t, 60.0, status.BudgetPercentUsed)
 
 	// Update usage to exhausted state
 	budget.CurrentUsage = 100.0
-	status = store.GetBudgetAndRateLimitStatus(context.Background(), "", schemas.ModelProvider("openai"), nil, nil, nil, nil)
+	status = store.GetBudgetAndRateLimitStatus(statusCtx(), schemas.ModelProvider("openai"), "", nil, nil, nil)
 
 	assert.Equal(t, 100.0, status.BudgetPercentUsed)
 }
@@ -1006,7 +1006,7 @@ func TestGetBudgetAndRateLimitStatus_VKScopedModelConfig(t *testing.T) {
 
 	store.virtualKeys.Store(vkValue, vk)
 
-	status := store.GetBudgetAndRateLimitStatus(context.Background(), "gpt-5", schemas.ModelProvider(providerName), vk, nil, nil, nil)
+	status := store.GetBudgetAndRateLimitStatus(resolverCtx(store, vkValue), schemas.ModelProvider(providerName), "gpt-5", nil, nil, nil)
 
 	require.NotNil(t, status)
 	assert.Greater(t, status.BudgetPercentUsed, 100.0, "VK-scoped model budget at 120%% must be visible to routing status")
@@ -1033,7 +1033,7 @@ func TestGetBudgetAndRateLimitStatus_VKScopedModelConfig_NoMatchOtherProvider(t 
 	store.virtualKeys.Store(vkValue, vk)
 
 	// Query for anthropic — should not see the openai-scoped budget.
-	status := store.GetBudgetAndRateLimitStatus(context.Background(), "claude-3-5-sonnet", schemas.ModelProvider("anthropic"), vk, nil, nil, nil)
+	status := store.GetBudgetAndRateLimitStatus(statusCtx(), schemas.ModelProvider("anthropic"), "claude-3-5-sonnet", nil, nil, nil)
 
 	require.NotNil(t, status)
 	assert.Equal(t, 0.0, status.BudgetPercentUsed, "openai VK-scoped budget must not appear for anthropic requests")
@@ -1054,7 +1054,7 @@ func TestGetBudgetAndRateLimitStatus_GlobalModelConfig(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	status := store.GetBudgetAndRateLimitStatus(context.Background(), "gpt-5", schemas.ModelProvider(providerName), nil, nil, nil, nil)
+	status := store.GetBudgetAndRateLimitStatus(statusCtx(), schemas.ModelProvider(providerName), "gpt-5", nil, nil, nil)
 
 	require.NotNil(t, status)
 	assert.Equal(t, 75.0, status.BudgetPercentUsed, "global model+provider budget must be visible to routing status")
@@ -1370,5 +1370,146 @@ func TestResolveLimits(t *testing.T) {
 		ids := limitIDsOf(resolved.ResolvedBudgets())
 		assert.Contains(t, ids, "b-provider")
 		assert.NotContains(t, ids, "b-model", "no model means no model config applies")
+	})
+}
+
+// statusCtx is a request context carrying unrestricted access, which is what a status query without a
+// credential is answering for: the deployment's own limits and nothing a holder funds.
+func statusCtx() *schemas.BifrostContext {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	grants.RecordEffectiveAccess(ctx, grants.NewEffectiveAccess(grants.UnrestrictedGrant(), nil, "", nil, nil))
+	return ctx
+}
+
+// Routing asks for this before a request's limits have been settled onto its access, so the status cannot
+// read the resolved set — GatherLimits assembles from the store and the grant each time. Every source a
+// request can answer to has to be reachable that way, or routing prefers a provider that is out of money.
+//
+// Each case loads exactly one source at 40% and asserts the status reports 40: a source that is not
+// reached reports 0, so this fails for whichever one is missed rather than only for the total.
+func TestGetBudgetAndRateLimitStatusReachesEverySource(t *testing.T) {
+	const vkValue = "sk-bf-status"
+
+	newStore := func(t *testing.T, build func(vk *configstoreTables.TableVirtualKey, cfg *configstore.GovernanceConfig)) *LocalGovernanceStore {
+		t.Helper()
+		vk := buildVirtualKey("vk1", vkValue, "Status VK", true)
+		vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+			buildProviderConfig("openai", []string{"*"}),
+		}
+		cfg := &configstore.GovernanceConfig{}
+		build(vk, cfg)
+		cfg.VirtualKeys = []configstoreTables.TableVirtualKey{*vk}
+		store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, cfg, nil)
+		require.NoError(t, err)
+		return store
+	}
+
+	// 40 used of 100 — distinct from 0 so a source that is never reached is visible.
+	fortyPercent := func(id string) *configstoreTables.TableBudget {
+		return buildBudgetWithUsage(id, 100.0, 40.0, "1d")
+	}
+
+	cases := []struct {
+		name  string
+		build func(vk *configstoreTables.TableVirtualKey, cfg *configstore.GovernanceConfig)
+	}{
+		{
+			name: "the deployment's own provider budget",
+			build: func(_ *configstoreTables.TableVirtualKey, cfg *configstore.GovernanceConfig) {
+				budget := fortyPercent("b-provider")
+				cfg.Providers = []configstoreTables.TableProvider{*buildProviderWithGovernance("openai", budget, nil)}
+				cfg.Budgets = append(cfg.Budgets, *budget)
+			},
+		},
+		{
+			name: "a global model config",
+			build: func(_ *configstoreTables.TableVirtualKey, cfg *configstore.GovernanceConfig) {
+				budget := fortyPercent("b-model")
+				cfg.ModelConfigs = []configstoreTables.TableModelConfig{*buildModelConfig("mc1", "gpt-4o", nil, budget, nil)}
+				cfg.Budgets = append(cfg.Budgets, *budget)
+			},
+		},
+		{
+			name: "a model config the key scoped to itself",
+			build: func(vk *configstoreTables.TableVirtualKey, cfg *configstore.GovernanceConfig) {
+				budget := fortyPercent("b-vk-model")
+				cfg.ModelConfigs = []configstoreTables.TableModelConfig{
+					*buildVKScopedModelConfig("mc-vk", "gpt-4o", nil, vk.ID, budget, nil),
+				}
+				cfg.Budgets = append(cfg.Budgets, *budget)
+			},
+		},
+		{
+			name: "the key's own budget",
+			build: func(vk *configstoreTables.TableVirtualKey, cfg *configstore.GovernanceConfig) {
+				budget := fortyPercent("b-key")
+				vk.Budgets = []configstoreTables.TableBudget{*budget}
+				cfg.Budgets = append(cfg.Budgets, *budget)
+			},
+		},
+		{
+			name: "the key's provider config",
+			build: func(vk *configstoreTables.TableVirtualKey, cfg *configstore.GovernanceConfig) {
+				budget := fortyPercent("b-key-openai")
+				vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+					buildProviderConfigWithBudgets("openai", []string{"*"}, []configstoreTables.TableBudget{*budget}),
+				}
+				cfg.Budgets = append(cfg.Budgets, *budget)
+			},
+		},
+		{
+			name: "the team the key belongs to",
+			build: func(vk *configstoreTables.TableVirtualKey, cfg *configstore.GovernanceConfig) {
+				budget := fortyPercent("b-team")
+				team := buildTeam("team1", "Team 1", budget)
+				vk.TeamID = &team.ID
+				vk.Team = team
+				cfg.Teams = []configstoreTables.TableTeam{*team}
+				cfg.Budgets = append(cfg.Budgets, *budget)
+			},
+		},
+		{
+			name: "the customer above that team",
+			build: func(vk *configstoreTables.TableVirtualKey, cfg *configstore.GovernanceConfig) {
+				budget := fortyPercent("b-customer")
+				customer := buildCustomer("cust1", "Customer 1", budget)
+				team := buildTeam("team1", "Team 1", nil)
+				team.CustomerID = &customer.ID
+				team.Customer = customer
+				vk.TeamID = &team.ID
+				vk.Team = team
+				cfg.Teams = []configstoreTables.TableTeam{*team}
+				cfg.Customers = []configstoreTables.TableCustomer{*customer}
+				cfg.Budgets = append(cfg.Budgets, *budget)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newStore(t, tc.build)
+
+			status := store.GetBudgetAndRateLimitStatus(resolverCtx(store, vkValue), schemas.OpenAI, "gpt-4o", nil, nil, nil)
+
+			require.NotNil(t, status)
+			assert.Equal(t, 40.0, status.BudgetPercentUsed,
+				"this source is not reached, so routing would prefer a provider that is out of money")
+		})
+	}
+
+	t.Run("the tightest constraint is what routing sees", func(t *testing.T) {
+		// Not a sum and not the last one read: a request is refused by whichever limit is closest to its
+		// cap, so that is the number a rule preferring a provider with room has to be given.
+		store := newStore(t, func(vk *configstoreTables.TableVirtualKey, cfg *configstore.GovernanceConfig) {
+			loose := buildBudgetWithUsage("b-provider", 100.0, 10.0, "1d")
+			tight := buildBudgetWithUsage("b-key", 100.0, 90.0, "1d")
+			cfg.Providers = []configstoreTables.TableProvider{*buildProviderWithGovernance("openai", loose, nil)}
+			vk.Budgets = []configstoreTables.TableBudget{*tight}
+			cfg.Budgets = append(cfg.Budgets, *loose, *tight)
+		})
+
+		status := store.GetBudgetAndRateLimitStatus(resolverCtx(store, vkValue), schemas.OpenAI, "gpt-4o", nil, nil, nil)
+
+		assert.Equal(t, 90.0, status.BudgetPercentUsed)
 	})
 }
