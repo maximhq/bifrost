@@ -463,3 +463,47 @@ func TestCloseAndMarkNeedsReauth_PerCallSharedOAuth_ReturnsReconnectNotApplicabl
 	assert.True(t, errors.Is(err, schemas.ErrMCPReconnectNotApplicable))
 	assert.NotContains(t, err.Error(), "per-user", "a genuinely shared client must not be told it's a per-user auth client")
 }
+
+// TestUpdateClient_ConnectionStringChange_ReDialsAndParks exercises the in-place
+// reconfigure path: changing connection_string on a per_user_headers client
+// tears down the old transport and re-registers under the same id. With no
+// DiscoveredTools, per_user_headers parks in pending_verification — a network-
+// free assertion that reconfigureClientConn swapped the config and re-ran the
+// registration state machine.
+func TestUpdateClient_ConnectionStringChange_ReDialsAndParks(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, nil, nil)
+	config := &schemas.MCPClientConfig{
+		ID:                "client-reconf",
+		Name:              "reconfclient",
+		AuthType:          schemas.MCPAuthTypePerUserHeaders,
+		ConnectionType:    schemas.MCPConnectionTypeHTTP,
+		ConnectionString:  schemas.NewSecretVar("https://old.example.com/mcp"),
+		PerUserHeaderKeys: []string{"X-Api-Key"},
+	}
+
+	m.mu.Lock()
+	m.clientMap[config.ID] = &schemas.MCPClientState{
+		Name:            config.Name,
+		ExecutionConfig: config,
+		State:           schemas.MCPConnectionStateHealthy,
+		ToolMap:         map[string]schemas.ChatTool{},
+		ToolNameMapping: map[string]string{},
+		ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
+	}
+	m.mu.Unlock()
+
+	updated := *config
+	updated.ConnectionString = schemas.NewSecretVar("https://new.example.com/mcp")
+
+	err := m.UpdateClient(config.ID, &updated)
+	require.NoError(t, err)
+
+	m.mu.RLock()
+	state := m.clientMap[config.ID]
+	gotURL := state.ExecutionConfig.ConnectionString.GetValue()
+	gotState := state.State
+	m.mu.RUnlock()
+
+	assert.Equal(t, "https://new.example.com/mcp", gotURL, "the new connection target must be swapped into the live config")
+	assert.Equal(t, schemas.MCPConnectionStatePendingVerification, gotState, "a per_user_headers client with no discovered tools must re-park in pending_verification after reconfigure")
+}

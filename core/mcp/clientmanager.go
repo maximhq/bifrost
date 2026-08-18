@@ -539,6 +539,33 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 	// This is to avoid deadlocks when the connection attempt is made
 	m.mu.Unlock()
 
+	// Register the connection using the shared state machine. The placeholder
+	// clientMap entry was created above, so registerClientConnection only
+	// dials/parks it — it never inserts or deletes the map key.
+	if err := m.registerClientConnection(requestCtx, configCopy); err != nil {
+		// Clean up the failed entry — this is a user-initiated action (UI/API),
+		// so surface the error cleanly rather than retaining a ghost entry.
+		m.mu.Lock()
+		delete(m.clientMap, config.ID)
+		m.mu.Unlock()
+		return fmt.Errorf("failed to connect to MCP client %s: %w", config.Name, err)
+	}
+
+	return nil
+}
+
+// registerClientConnection runs the connect/registration state machine for a
+// client whose clientMap entry already exists. Depending on auth type it parks
+// the client in pending_verification (interactive oauth / per-user-headers /
+// token-exchange setup), performs per-call setup (per-user auth types), or
+// dials a persistent connection. Call it WITHOUT holding m.mu. It never inserts
+// or deletes the clientMap key and never runs the name-collision check — the
+// callers (AddClient, reconfigureClientConn) own the entry's lifecycle.
+func (m *MCPManager) registerClientConnection(requestCtx context.Context, config *schemas.MCPClientConfig) error {
+	if requestCtx == nil {
+		requestCtx = m.ctx
+	}
+
 	// OAuth-type clients with PendingOAuthConfig set carry the inline
 	// `oauth_config` block from config.json but have not yet been
 	// authorized by an admin. For shared OAuth there is no oauth_configs
@@ -612,7 +639,7 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 	// Per-user auth types: skip persistent connection. Auth is per-request at
 	// runtime. The admin verifies the configuration via a sample login before
 	// this is called, and tools are populated separately via SetClientTools().
-	if m.credStore.RequiresPerCallConnection(configCopy) {
+	if m.credStore.RequiresPerCallConnection(config) {
 		m.mu.Lock()
 		if client, exists := m.clientMap[config.ID]; exists {
 			if config.ConnectionString != nil {
@@ -682,17 +709,8 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 		return nil
 	}
 
-	// Connect using the copied config
-	if err := m.connectToMCPClient(requestCtx, configCopy); err != nil {
-		// Clean up the failed entry — this is a user-initiated action (UI/API),
-		// so surface the error cleanly rather than retaining a ghost entry.
-		m.mu.Lock()
-		delete(m.clientMap, config.ID)
-		m.mu.Unlock()
-		return fmt.Errorf("failed to connect to MCP client %s: %w", config.Name, err)
-	}
-
-	return nil
+	// Connect using the config
+	return m.connectToMCPClient(requestCtx, config)
 }
 
 // VerifyPerUserOAuthConnection creates a temporary MCP connection using the
@@ -1341,6 +1359,11 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 	var newConfig *schemas.MCPClientConfig
 	var becamePerCall, becameSticky bool
 	var clientName string
+	// Set when a connection- or auth-affecting field changed: the metadata swap
+	// below is skipped and reconfigureClientConn tears down and re-dials the
+	// transport with newConfig after this locked section releases.
+	var doReconfigure bool
+	var oldConfig *schemas.MCPClientConfig
 
 	err := func() error {
 		m.mu.Lock()
@@ -1355,18 +1378,21 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 			return fmt.Errorf("invalid MCP client configuration: %w", err)
 		}
 
-		if updatedConfig.ConnectionType != "" && updatedConfig.ConnectionType != client.ExecutionConfig.ConnectionType {
-			return fmt.Errorf("connection type cannot be updated for client %s", id)
-		}
-		if updatedConfig.ConnectionString != nil && !updatedConfig.ConnectionString.Equals(client.ExecutionConfig.ConnectionString) {
-			return fmt.Errorf("connection string cannot be updated for client %s", id)
-		}
-		if updatedConfig.StdioConfig != nil && !stdioConfigEqual(updatedConfig.StdioConfig, client.ExecutionConfig.StdioConfig) {
-			return fmt.Errorf("stdio config cannot be updated for client %s", id)
-		}
+		// In-process (code-registered) servers can never be reconfigured through
+		// the API — their transport is a Go object, not a dialable connection.
 		if updatedConfig.InProcessServer != nil && updatedConfig.InProcessServer != client.ExecutionConfig.InProcessServer {
 			return fmt.Errorf("in-process server cannot be updated for client %s", id)
 		}
+
+		// Detect connection/auth-affecting changes. Unlike the pure metadata
+		// path, these require tearing down and re-dialing (or re-parking) the
+		// transport, which reconfigureClientConn does after this locked section
+		// releases (it re-acquires m.mu itself). When nothing here changed the
+		// original immutable-copy metadata path runs unchanged.
+		connChanged := (updatedConfig.ConnectionType != "" && updatedConfig.ConnectionType != client.ExecutionConfig.ConnectionType) ||
+			(updatedConfig.ConnectionString != nil && !updatedConfig.ConnectionString.Equals(client.ExecutionConfig.ConnectionString)) ||
+			(updatedConfig.StdioConfig != nil && !stdioConfigEqual(updatedConfig.StdioConfig, client.ExecutionConfig.StdioConfig))
+
 		// Normalize empty AuthType to "headers" — both are semantically identical
 		oldAuthType := client.ExecutionConfig.AuthType
 		if oldAuthType == "" {
@@ -1376,8 +1402,23 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 		if newAuthType == "" {
 			newAuthType = schemas.MCPAuthTypeHeaders
 		}
-		if newAuthType != oldAuthType {
-			return fmt.Errorf("auth_type cannot be updated for client %s", id)
+		authChanged := newAuthType != oldAuthType
+
+		if connChanged || authChanged {
+			if id == BifrostMCPClientKey {
+				return fmt.Errorf("connection/auth of the internal bifrost client cannot be updated")
+			}
+			// The handler fully resolves updatedConfig's connection/auth fields
+			// (mirroring create); take it verbatim as the new config, protecting
+			// only the immutable identity fields from the live entry.
+			oldConfig = client.ExecutionConfig
+			resolved := *updatedConfig
+			resolved.ID = client.ExecutionConfig.ID
+			resolved.InProcessServer = client.ExecutionConfig.InProcessServer
+			resolved.ConfigHash = client.ExecutionConfig.ConfigHash
+			newConfig = &resolved
+			doReconfigure = true
+			return nil
 		}
 
 		oauthConfigID := client.ExecutionConfig.OauthConfigID
@@ -1502,6 +1543,13 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 		return err
 	}
 
+	// A connection/auth-affecting change bypasses the metadata swap entirely:
+	// tear down the live transport and re-register with the new config. Still
+	// runs under the exclusive-op guard held at the top of UpdateClient.
+	if doReconfigure {
+		return m.reconfigureClientConn(id, newConfig, oldConfig)
+	}
+
 	if becamePerCall {
 		m.checkerManager.StopChecking(id)
 		m.logger.Info("%s MCP client '%s' switched to per-call connections (needs_session_stickiness=false): released its persistent connection", MCPLogPrefix, clientName)
@@ -1542,6 +1590,85 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 		m.logger.Info("%s MCP client '%s' switched to a shared connection (needs_session_stickiness=true): established it now", MCPLogPrefix, clientName)
 	}
 
+	return nil
+}
+
+// reconfigureClientConn tears down an existing client's live transport and
+// re-registers it under newConfig, preserving the same clientMap id. It is the
+// heavy path taken by UpdateClient when a connection- or auth-affecting field
+// changed (connection_type, connection_string, stdio_config, auth_type).
+//
+// The caller (UpdateClient) already holds the per-client exclusive-op guard, so
+// no concurrent reconnect/enable/disable can race this. On a failed re-dial the
+// old connection is already gone, so rollback restores oldConfig and best-effort
+// re-dials it — unlike UpdateClientCredentials, which can leave the current
+// connection intact.
+func (m *MCPManager) reconfigureClientConn(id string, newConfig, oldConfig *schemas.MCPClientConfig) error {
+	// Teardown the live transport (mirror removeClientUnsafe minus the delete),
+	// swap in the new config, and reset discovered tools — the new connection or
+	// auth type discovers its own.
+	m.mu.Lock()
+	client, ok := m.clientMap[id]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("client %s not found", id)
+	}
+	m.checkerManager.StopChecking(id)
+	// A check already in flight must not write back stale tools/state against
+	// the new config — bump the generation so its results are dropped.
+	client.ConnGeneration++
+	if client.CancelFunc != nil {
+		client.CancelFunc()
+		client.CancelFunc = nil
+	}
+	if client.Conn != nil {
+		if closeErr := client.Conn.Close(); closeErr != nil {
+			m.logger.Error("%s Failed to close connection while reconfiguring MCP client '%s': %v", MCPLogPrefix, oldConfig.Name, closeErr)
+		}
+		client.Conn = nil
+	}
+	client.ToolMap = make(map[string]schemas.ChatTool)
+	client.ToolNameMapping = make(map[string]string)
+	client.ExecutionConfig = newConfig
+	client.Name = newConfig.Name
+	if client.ConnectionInfo == nil {
+		client.ConnectionInfo = &schemas.MCPClientConnectionInfo{}
+	}
+	client.ConnectionInfo.Type = newConfig.ConnectionType
+	// Neutral interim state; registerClientConnection sets the correct final
+	// state (Healthy / PendingVerification / Unstable).
+	client.State = schemas.MCPConnectionStateUnstable
+	m.mu.Unlock()
+
+	// Disabled clients keep a dormant entry with the new config — no dial.
+	if newConfig.Disabled {
+		m.mu.Lock()
+		if cs, exists := m.clientMap[id]; exists {
+			cs.State = schemas.MCPConnectionStateDisabled
+		}
+		m.mu.Unlock()
+		return nil
+	}
+
+	if err := m.registerClientConnection(m.ctx, newConfig); err != nil {
+		// Rollback: the old connection is already torn down, so restore the old
+		// config and best-effort re-establish it. Wrap in the post-update
+		// sentinel so the HTTP caller keeps the persisted DB row rather than
+		// diverging it from a runtime the checker will keep retrying.
+		m.mu.Lock()
+		if cs, exists := m.clientMap[id]; exists {
+			cs.ExecutionConfig = oldConfig
+			cs.Name = oldConfig.Name
+			if cs.ConnectionInfo != nil {
+				cs.ConnectionInfo.Type = oldConfig.ConnectionType
+			}
+		}
+		m.mu.Unlock()
+		if reErr := m.registerClientConnection(m.ctx, oldConfig); reErr != nil {
+			m.logger.Error("%s Reconfigure of MCP client '%s' failed and restoring the previous configuration also failed: %v", MCPLogPrefix, oldConfig.Name, reErr)
+		}
+		return fmt.Errorf("failed to reconfigure MCP client %s: %w: %w", oldConfig.Name, ErrMCPSharedConnectFailedAfterUpdate, err)
+	}
 	return nil
 }
 

@@ -18,6 +18,7 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { HeadersTable } from "@/components/ui/headersTable";
 import { Input } from "@/components/ui/input";
 import { MultiSelect } from "@/components/ui/multiSelect";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
@@ -235,6 +236,9 @@ export default function MCPClientSheet({
 		mode: "onBlur",
 		defaultValues: {
 			name: mcpClient.config.name,
+			connection_type: mcpClient.config.connection_type,
+			connection_string: mcpClient.config.connection_string,
+			stdio_config: mcpClient.config.stdio_config,
 			is_code_mode_client: mcpClient.config.is_code_mode_client || false,
 			is_ping_available: mcpClient.config.is_ping_available === true || mcpClient.config.is_ping_available === undefined,
 			needs_session_stickiness: mcpClient.config.needs_session_stickiness === true,
@@ -281,11 +285,15 @@ export default function MCPClientSheet({
 	});
 	const isDisabled = form.watch("disabled");
 	const needsSessionStickiness = form.watch("needs_session_stickiness");
+	const connectionType = form.watch("connection_type");
 
 	// Reset form when mcpClient changes
 	useEffect(() => {
 		form.reset({
 			name: mcpClient.config.name,
+			connection_type: mcpClient.config.connection_type,
+			connection_string: mcpClient.config.connection_string,
+			stdio_config: mcpClient.config.stdio_config,
 			is_code_mode_client: mcpClient.config.is_code_mode_client || false,
 			is_ping_available: mcpClient.config.is_ping_available === true || mcpClient.config.is_ping_available === undefined,
 			needs_session_stickiness: mcpClient.config.needs_session_stickiness === true,
@@ -428,11 +436,21 @@ export default function MCPClientSheet({
 						.map((s) => s.trim())
 						.filter(Boolean)
 				: [];
-			await updateMCPClient({
+			// Connection fields: only send when actually changed so a plain
+			// metadata edit doesn't needlessly tear down and re-dial the transport.
+			const connectionTypeChanged = data.connection_type !== undefined && data.connection_type !== mcpClient.config.connection_type;
+			const connectionStringChanged =
+				JSON.stringify(data.connection_string ?? null) !== JSON.stringify(mcpClient.config.connection_string ?? null);
+			const stdioConfigChanged = JSON.stringify(data.stdio_config ?? null) !== JSON.stringify(mcpClient.config.stdio_config ?? null);
+			const isHttpish = data.connection_type === "http" || data.connection_type === "sse";
+			const res = (await updateMCPClient({
 				id: mcpClient.config.client_id,
 				data: {
 					name: data.name,
 					is_code_mode_client: data.is_code_mode_client,
+					...(connectionTypeChanged ? { connection_type: data.connection_type } : {}),
+					...((connectionTypeChanged || connectionStringChanged) && isHttpish ? { connection_string: data.connection_string } : {}),
+					...((connectionTypeChanged || stdioConfigChanged) && data.connection_type === "stdio" ? { stdio_config: data.stdio_config } : {}),
 					is_ping_available: data.is_ping_available,
 					// Only meaningful (and only accepted) for http clients — an
 					// explicit false is rejected for sse/stdio, which always keep
@@ -480,11 +498,13 @@ export default function MCPClientSheet({
 							: undefined,
 					vk_configs: vkConfigsDirty ? vkConfigs : undefined,
 				},
-			}).unwrap();
+			}).unwrap()) as { requires_verification?: boolean } | undefined;
 
 			toast({
 				title: "Success",
-				description: "MCP client updated successfully",
+				description: res?.requires_verification
+					? "MCP client updated. The new authentication type requires re-verification before this server can be used."
+					: "MCP client updated successfully",
 			});
 			onSubmitSuccess();
 		} catch (error) {
@@ -690,50 +710,116 @@ export default function MCPClientSheet({
 													</FormItem>
 												)}
 											/>
-											{/* Read-only connection summary. Connection type and target
-										    can't be changed after create — surface them here for
-										    visibility without exposing edit controls. */}
-											<div className="flex flex-col gap-2">
-												<div className="text-sm font-medium">Connection</div>
-												<div className="bg-muted/40 text-muted-foreground rounded-md border px-3 py-2 text-sm">
-													<span className="text-foreground font-mono text-xs uppercase">
-														{mcpClient.config.connection_type === "stdio"
-															? "STDIO"
-															: mcpClient.config.connection_type === "sse"
-																? "SSE"
-																: "HTTP"}
-													</span>
-													<span className="mx-2">·</span>
-													<span className="font-mono break-all">
-														{mcpClient.config.connection_type === "stdio"
-															? `${mcpClient.config.stdio_config?.command ?? ""} ${(mcpClient.config.stdio_config?.args ?? []).join(" ")}`.trim() ||
-																"-"
-															: mcpClient.config.connection_string?.type === "env" || mcpClient.config.connection_string?.type === "vault"
-																? mcpClient.config.connection_string.ref
-																: mcpClient.config.connection_string?.value || "-"}
-													</span>
-												</div>
-											</div>
-											{mcpClient.config.connection_type === "stdio" &&
-												mcpClient.config.stdio_config?.envs &&
-												mcpClient.config.stdio_config.envs.length > 0 && (
-													<div className="space-y-2">
-														<div className="text-sm font-medium">Environment Variables</div>
-														<HeadersTable
-															value={Object.fromEntries(
-																mcpClient.config.stdio_config.envs.map((env) => {
-																	const [name, ...valueParts] = env.split("=");
-																	return [name, valueParts.join("=")];
-																}),
-															)}
-															onChange={() => {}}
-															fixedKeys={mcpClient.config.stdio_config.envs.map((env) => env.split("=")[0])}
-															valuePlaceholder="—"
-															label=""
-															disabled
-														/>
-													</div>
+											{/* Editable connection. Changing the type, target URL, or stdio
+										    command re-dials the transport under the same client id (an
+										    in-place reconfigure). Auth type editing is not yet exposed
+										    here — the API supports it, the UI is a follow-up. */}
+											<FormField
+												control={form.control}
+												name="connection_type"
+												render={({ field }) => (
+													<FormItem className="flex flex-col gap-2">
+														<FormLabel>Connection Type</FormLabel>
+														<Select value={field.value} onValueChange={field.onChange}>
+															<FormControl>
+																<SelectTrigger className="w-full" data-testid="mcpclient-connection-type-select">
+																	<SelectValue placeholder="Select connection type" />
+																</SelectTrigger>
+															</FormControl>
+															<SelectContent>
+																<SelectItem value="http">HTTP</SelectItem>
+																<SelectItem value="sse">SSE</SelectItem>
+																<SelectItem value="stdio">STDIO</SelectItem>
+															</SelectContent>
+														</Select>
+														<FormMessage />
+													</FormItem>
 												)}
+											/>
+											{connectionType !== "stdio" ? (
+												<FormField
+													control={form.control}
+													name="connection_string"
+													render={({ field }) => (
+														<FormItem className="flex flex-col gap-2">
+															<FormLabel>Connection URL</FormLabel>
+															<FormControl>
+																<Input
+																	placeholder="https://mcp.example.com/sse"
+																	data-testid="mcpclient-connection-string"
+																	value={field.value?.value ?? ""}
+																	onChange={(e) => field.onChange({ value: e.target.value })}
+																/>
+															</FormControl>
+															<FormMessage />
+														</FormItem>
+													)}
+												/>
+											) : (
+												<>
+													<FormField
+														control={form.control}
+														name="stdio_config.command"
+														render={({ field }) => (
+															<FormItem className="flex flex-col gap-2">
+																<FormLabel>Command</FormLabel>
+																<FormControl>
+																	<Input placeholder="npx" data-testid="mcpclient-stdio-command" {...field} value={field.value ?? ""} />
+																</FormControl>
+																<FormMessage />
+															</FormItem>
+														)}
+													/>
+													<FormField
+														control={form.control}
+														name="stdio_config.args"
+														render={({ field }) => (
+															<FormItem className="flex flex-col gap-2">
+																<FormLabel>Arguments (one per line)</FormLabel>
+																<FormControl>
+																	<Textarea
+																		className="h-20 font-mono text-xs"
+																		placeholder={"-y\n@modelcontextprotocol/server-filesystem"}
+																		value={(field.value ?? []).join("\n")}
+																		onChange={(e) =>
+																			field.onChange(
+																				e.target.value
+																					.split("\n")
+																					.map((s) => s.trim())
+																					.filter(Boolean),
+																			)
+																		}
+																	/>
+																</FormControl>
+															</FormItem>
+														)}
+													/>
+													<FormField
+														control={form.control}
+														name="stdio_config.envs"
+														render={({ field }) => (
+															<FormItem className="flex flex-col gap-2">
+																<FormLabel>Environment Variables (KEY=VALUE, one per line)</FormLabel>
+																<FormControl>
+																	<Textarea
+																		className="h-20 font-mono text-xs"
+																		placeholder={"API_KEY=xxxx"}
+																		value={(field.value ?? []).join("\n")}
+																		onChange={(e) =>
+																			field.onChange(
+																				e.target.value
+																					.split("\n")
+																					.map((s) => s.trim())
+																					.filter(Boolean),
+																			)
+																		}
+																	/>
+																</FormControl>
+															</FormItem>
+														)}
+													/>
+												</>
+											)}
 										</div>
 
 										<DottedSeparator />

@@ -2276,7 +2276,8 @@ func marshalTokenExchangeJSON(cfg *schemas.MCPTokenExchangeConfig) (*string, err
 }
 
 // UpdateMCPClientConfig updates an existing MCP client configuration in the database.
-func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, clientConfig *tables.TableMCPClient) error {
+func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, clientConfig *tables.TableMCPClient, reconfigure ...bool) error {
+	isReconfigure := len(reconfigure) > 0 && reconfigure[0]
 	return s.DB().Transaction(func(tx *gorm.DB) error {
 		// Find existing client
 		var existingClient tables.TableMCPClient
@@ -2394,8 +2395,11 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 			headersJSONStr = encrypted
 		}
 
-		// Update only editable fields using a map to avoid updating connection info
-		// Connection info (ConnectionType, ConnectionString, StdioConfig) is read-only and should not be modified via API
+		// Update only editable fields using a map. Connection/auth columns
+		// (ConnectionType, ConnectionString, StdioConfig, AuthType, ...) are left
+		// intact for a plain metadata update; they are only rewritten during
+		// config-file reconciliation (ConfigHash set) or an explicit in-place
+		// reconfigure (isReconfigure), handled in the block further below.
 		if clientConfigCopy.ToolExecutionTimeout < 0 {
 			return fmt.Errorf("tool_execution_timeout must be non-negative, got %d", clientConfigCopy.ToolExecutionTimeout)
 		}
@@ -2443,9 +2447,12 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		if tokenExchangeJSON != nil {
 			updates["token_exchange_json"] = tokenExchangeJSON
 		}
-		// Config-file driven reconciliation passes ConfigHash. In this mode we should
-		// also sync connection/auth metadata from config.json and persist the hash.
-		if clientConfigCopy.ConfigHash != "" {
+		// Two paths write the full connection/auth metadata: config-file driven
+		// reconciliation (ConfigHash set) and an explicit in-place reconfigure
+		// (isReconfigure) from the API. Both sync connection_type/connection_string/
+		// stdio_config/auth_type and the auth sub-configs; only the config-file
+		// path additionally persists the hash.
+		if clientConfigCopy.ConfigHash != "" || isReconfigure {
 			connectionStringToPersist := clientConfigCopy.ConnectionString
 			if encrypt.IsEnabled() && connectionStringToPersist != nil &&
 				!connectionStringToPersist.IsFromSecret() && connectionStringToPersist.GetValue() != "" {
@@ -2459,7 +2466,11 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 				connectionStringToPersist = &cs
 			}
 
-			updates["config_hash"] = clientConfigCopy.ConfigHash
+			// Only the config-file path owns the hash; an API reconfigure must
+			// not clobber an existing hash (or write an empty one).
+			if clientConfigCopy.ConfigHash != "" {
+				updates["config_hash"] = clientConfigCopy.ConfigHash
+			}
 			updates["connection_type"] = clientConfigCopy.ConnectionType
 			updates["connection_string"] = connectionStringToPersist
 			updates["stdio_config_json"] = stdioConfigJSON
@@ -2490,6 +2501,17 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 				pendingOAuthConfigJSON = &s
 			}
 			updates["pending_oauth_config_json"] = pendingOAuthConfigJSON
+
+			// An API in-place reconfigure (no ConfigHash) changes the connection
+			// or auth type, so any previously discovered tools are stale — clear
+			// them. Without this, a restart would restore tools that belong to
+			// the old transport/auth and, for park-on-restart auth types
+			// (per_user_headers/token_exchange), skip the required re-verification.
+			// The config-file path keeps its own discovered tools intact.
+			if isReconfigure && clientConfigCopy.ConfigHash == "" {
+				updates["discovered_tools_json"] = ""
+				updates["tool_name_mapping_json"] = ""
+			}
 		}
 
 		// Only update is_ping_available if explicitly provided (non-nil)

@@ -415,9 +415,13 @@ MCPClientUpdateRequest:
   description: |
     MCP client configuration for updating an existing client (includes tool_pricing).
     All fields are optional; omitting a field retains its existing value (PATCH
-    semantics). Immutable fields (connection_type, auth_type, connection_string,
-    stdio_config, oauth_config_id) are not accepted here; they cannot be changed
-    after creation.
+    semantics). connection_type, connection_string, stdio_config, and auth_type
+    are editable in place: changing any of them tears down and re-dials the
+    transport under the same client id (an in-place reconfigure). Switching
+    auth_type INTO oauth / per_user_oauth after creation is rejected (recreate
+    the client). Switching INTO per_user_headers or token_exchange leaves the
+    client in pending_verification and the response sets
+    requires_verification=true. oauth_config_id remains immutable.
   properties:
     name:
       type: string
@@ -425,6 +429,30 @@ MCPClientUpdateRequest:
     is_code_mode_client:
       type: boolean
       description: Whether this client is available in code mode
+    connection_type:
+      type: string
+      enum: [http, sse, stdio]
+      description: |
+        In-place reconfigure. Changing this re-dials the transport. stdio only
+        supports auth_type "none" or "headers".
+    connection_string:
+      type: string
+      description: |
+        In-place reconfigure. Target URL for http/sse connection types. Supports
+        env./vault. references. A redacted value echoed back from a GET response
+        preserves the stored target (safe fetch-modify-put).
+    stdio_config:
+      $ref: '#/MCPStdioConfig'
+      description: |
+        In-place reconfigure. Command/args/envs for the stdio connection type.
+    auth_type:
+      type: string
+      enum: [none, headers, oauth, per_user_oauth, per_user_headers, token_exchange]
+      description: |
+        In-place reconfigure. Switching INTO oauth / per_user_oauth after
+        creation is rejected (recreate the client). Switching INTO
+        per_user_headers / token_exchange parks the client in
+        pending_verification (requires_verification=true in the response).
     is_ping_available:
       type: boolean
       description: |

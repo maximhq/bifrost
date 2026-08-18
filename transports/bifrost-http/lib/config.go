@@ -6676,9 +6676,10 @@ func (c *Config) UpdateMCPClient(ctx context.Context, id string, updatedConfig *
 		}
 		logger.Debug("updated MCP catalog pricing for client: %s (%d tools)", updatedConfig.Name, len(updatedConfig.ToolPricing))
 	}
-	// Update the in-memory configuration with only the fields that were changed
-	// Preserve connection info (connection_type, connection_string, stdio_config) from oldConfig
-	// as these are read-only and not sent in the update request
+	// Update the in-memory configuration. The handler passes a fully-resolved
+	// config (connection/auth fields included), so mirroring them here is a no-op
+	// for a plain metadata edit and correctly applies an in-place reconfigure
+	// (connection_type / connection_string / stdio_config / auth_type change).
 	c.MCPConfig.ClientConfigs[configIndex].Name = updatedConfig.Name
 	c.MCPConfig.ClientConfigs[configIndex].IsCodeModeClient = updatedConfig.IsCodeModeClient
 	c.MCPConfig.ClientConfigs[configIndex].Headers = updatedConfig.Headers
@@ -6694,6 +6695,29 @@ func (c *Config) UpdateMCPClient(ctx context.Context, id string, updatedConfig *
 	c.MCPConfig.ClientConfigs[configIndex].Disabled = updatedConfig.Disabled
 	c.MCPConfig.ClientConfigs[configIndex].PerUserHeaderKeys = updatedConfig.PerUserHeaderKeys
 	c.MCPConfig.ClientConfigs[configIndex].TokenExchange = updatedConfig.TokenExchange
+	// In-place reconfigure fields (previously preserved from oldConfig as
+	// read-only). Each is only overwritten when the handler actually supplied it,
+	// so a metadata-only edit that leaves them zero/nil does not wipe the stored
+	// connection target or auth linkage. To CLEAR OauthConfigID when leaving an
+	// oauth auth type, the handler passes a non-nil pointer to "".
+	if updatedConfig.ConnectionType != "" {
+		c.MCPConfig.ClientConfigs[configIndex].ConnectionType = updatedConfig.ConnectionType
+	}
+	if updatedConfig.ConnectionString != nil {
+		c.MCPConfig.ClientConfigs[configIndex].ConnectionString = updatedConfig.ConnectionString
+	}
+	if updatedConfig.StdioConfig != nil {
+		c.MCPConfig.ClientConfigs[configIndex].StdioConfig = updatedConfig.StdioConfig
+	}
+	if updatedConfig.AuthType != "" {
+		c.MCPConfig.ClientConfigs[configIndex].AuthType = updatedConfig.AuthType
+	}
+	if updatedConfig.OauthConfigID != nil {
+		c.MCPConfig.ClientConfigs[configIndex].OauthConfigID = updatedConfig.OauthConfigID
+	}
+	if updatedConfig.PendingOAuthConfig != nil {
+		c.MCPConfig.ClientConfigs[configIndex].PendingOAuthConfig = updatedConfig.PendingOAuthConfig
+	}
 
 	// Handle disable/enable lifecycle when the Disabled flag toggles and the client
 	// is registered at runtime. We call the core bifrost methods directly (not the

@@ -44295,7 +44295,7 @@
       "put": {
         "operationId": "editMCPClient",
         "summary": "Edit MCP client",
-        "description": "Updates an existing MCP client's configuration. All fields are optional\n(PATCH semantics); connection_type, auth_type, connection_string,\nstdio_config, and oauth_config_id are immutable after creation.\nUnlike client creation, tool_pricing can be included to set per-tool execution costs since tools are already fetched.\nFor OAuth-based clients, providing oauth_config rotates the stored OAuth\nconfiguration in place and flips every bound token to needs_reauth when\na field actually changes (see MCPClientUpdateRequest.oauth_config).\nOptionally provide vk_configs to manage which virtual keys have access to this MCP server and with which tools. When provided, this fully replaces all existing VK assignments in a single atomic transaction.\nSet disabled: true to shut down the client's connection and workers without removing it. Set disabled: false to reconnect a previously disabled client.\n",
+        "description": "Updates an existing MCP client's configuration. All fields are optional\n(PATCH semantics). connection_type, connection_string, stdio_config, and\nauth_type are now editable in place: changing any of them tears down and\nre-dials the transport under the same client id (an in-place reconfigure).\nSwitching auth_type INTO an interactive OAuth type (oauth / per_user_oauth)\nafter creation is not supported through this path — recreate the client\ninstead. Switching INTO per_user_headers or token_exchange leaves the\nclient in pending_verification; the response sets requires_verification=true\nand the admin must re-run verify-headers / verify-exchange.\nUnlike client creation, tool_pricing can be included to set per-tool execution costs since tools are already fetched.\nFor OAuth-based clients, providing oauth_config rotates the stored OAuth\nconfiguration in place and flips every bound token to needs_reauth when\na field actually changes (see MCPClientUpdateRequest.oauth_config).\nOptionally provide vk_configs to manage which virtual keys have access to this MCP server and with which tools. When provided, this fully replaces all existing VK assignments in a single atomic transaction.\nSet disabled: true to shut down the client's connection and workers without removing it. Set disabled: false to reconnect a previously disabled client.\n",
         "tags": [
           "MCP"
         ],
@@ -44316,7 +44316,7 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "description": "MCP client configuration for updating an existing client (includes tool_pricing).\nAll fields are optional; omitting a field retains its existing value (PATCH\nsemantics). Immutable fields (connection_type, auth_type, connection_string,\nstdio_config, oauth_config_id) are not accepted here; they cannot be changed\nafter creation.\n",
+                "description": "MCP client configuration for updating an existing client (includes tool_pricing).\nAll fields are optional; omitting a field retains its existing value (PATCH\nsemantics). connection_type, connection_string, stdio_config, and auth_type\nare editable in place: changing any of them tears down and re-dials the\ntransport under the same client id (an in-place reconfigure). Switching\nauth_type INTO oauth / per_user_oauth after creation is rejected (recreate\nthe client). Switching INTO per_user_headers or token_exchange leaves the\nclient in pending_verification and the response sets\nrequires_verification=true. oauth_config_id remains immutable.\n",
                 "properties": {
                   "name": {
                     "type": "string",
@@ -44325,6 +44325,55 @@
                   "is_code_mode_client": {
                     "type": "boolean",
                     "description": "Whether this client is available in code mode"
+                  },
+                  "connection_type": {
+                    "type": "string",
+                    "enum": [
+                      "http",
+                      "sse",
+                      "stdio"
+                    ],
+                    "description": "In-place reconfigure. Changing this re-dials the transport. stdio only\nsupports auth_type \"none\" or \"headers\".\n"
+                  },
+                  "connection_string": {
+                    "type": "string",
+                    "description": "In-place reconfigure. Target URL for http/sse connection types. Supports\nenv./vault. references. A redacted value echoed back from a GET response\npreserves the stored target (safe fetch-modify-put).\n"
+                  },
+                  "stdio_config": {
+                    "type": "object",
+                    "description": "In-place reconfigure. Command/args/envs for the stdio connection type.\n",
+                    "properties": {
+                      "command": {
+                        "type": "string",
+                        "description": "Executable command to run"
+                      },
+                      "args": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "description": "Command line arguments"
+                      },
+                      "envs": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "description": "Environment variables required"
+                      }
+                    }
+                  },
+                  "auth_type": {
+                    "type": "string",
+                    "enum": [
+                      "none",
+                      "headers",
+                      "oauth",
+                      "per_user_oauth",
+                      "per_user_headers",
+                      "token_exchange"
+                    ],
+                    "description": "In-place reconfigure. Switching INTO oauth / per_user_oauth after\ncreation is rejected (recreate the client). Switching INTO\nper_user_headers / token_exchange parks the client in\npending_verification (requires_verification=true in the response).\n"
                   },
                   "is_ping_available": {
                     "type": "boolean",
