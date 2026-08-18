@@ -454,7 +454,12 @@ jobs:
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           BEDROCK_GUARDRAIL_IDENTIFIER: ${{ secrets.BEDROCK_GUARDRAIL_IDENTIFIER }}
-          BEDROCK_GUARDRAIL_VERSION: ${{ secrets.BEDROCK_GUARDRAIL_VERSION }}
+          # Deliberately a variable, not a secret. Guardrail versions are short
+          # integers, and Actions masks a secret's value everywhere in the job
+          # log with no word boundary - a value of "1" redacts every "1" the
+          # harness prints, turning "fail 141" into "fail ***4***". Not
+          # sensitive, so vars.* (never auto-masked) is the right home.
+          BEDROCK_GUARDRAIL_VERSION: ${{ vars.BEDROCK_GUARDRAIL_VERSION }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
         run: ./.github/workflows/scripts/test-core.sh
@@ -616,9 +621,13 @@ jobs:
       - name: Build MCP test servers
         run: make setup-mcp-tests
 
-      - name: Run core integration tests
+      - name: Run core integration test files in parallel
         env:
           SKIP_GATEWAY_BUILD: "1"
+          # Ceiling on concurrently running test files. Set explicitly rather than
+          # left to the script's default so the release gate's provider-quota budget
+          # is visible and tunable here, next to the credentials it spends.
+          INTEGRATION_TEST_MAX_PARALLEL: "4"
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
@@ -656,7 +665,7 @@ jobs:
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
-        run: ./.github/workflows/scripts/test-integrations.sh
+        run: ./.github/workflows/scripts/test-integrations.sh --parallel-files
 
   test-core-unit:
     needs: [check-skip, detect-changes]
