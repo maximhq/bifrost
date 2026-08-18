@@ -237,15 +237,17 @@ func TestBuildComplexityInput_SkipsUnsupportedRequestTypesEvenWhenTextIsPresent(
 	assert.Empty(t, input.LastUserText)
 }
 
-func TestBuildComplexityInput_SkipsMixedModalityUserContent(t *testing.T) {
+func TestBuildComplexityInput_ExtractsTextFromMixedModalityUserContent(t *testing.T) {
 	userRole := schemas.ResponsesInputMessageRoleUser
 
 	tests := []struct {
-		name string
-		req  *schemas.BifrostRequest
+		name     string
+		req      *schemas.BifrostRequest
+		wantText string
 	}{
 		{
-			name: "chat_text_plus_image",
+			name:     "chat_text_plus_image",
+			wantText: "What changed in this screenshot?",
 			req: &schemas.BifrostRequest{
 				RequestType: schemas.ChatCompletionRequest,
 				ChatRequest: &schemas.BifrostChatRequest{
@@ -262,7 +264,8 @@ func TestBuildComplexityInput_SkipsMixedModalityUserContent(t *testing.T) {
 			},
 		},
 		{
-			name: "responses_text_plus_file",
+			name:     "responses_text_plus_file",
+			wantText: "Summarize this document",
 			req: &schemas.BifrostRequest{
 				RequestType: schemas.ResponsesRequest,
 				ResponsesRequest: &schemas.BifrostResponsesRequest{
@@ -271,6 +274,56 @@ func TestBuildComplexityInput_SkipsMixedModalityUserContent(t *testing.T) {
 							Role: &userRole,
 							Content: complexityResponsesBlocks(
 								complexityResponsesTextBlock("Summarize this document"),
+								schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesInputMessageContentBlockTypeFile},
+							),
+						},
+					},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input, ok := buildComplexityInput(tt.req)
+			require.True(t, ok)
+			assert.Equal(t, tt.wantText, input.LastUserText)
+		})
+	}
+}
+
+func TestBuildComplexityInput_SkipsUserContentWithoutText(t *testing.T) {
+	userRole := schemas.ResponsesInputMessageRoleUser
+
+	tests := []struct {
+		name string
+		req  *schemas.BifrostRequest
+	}{
+		{
+			name: "chat_image_only",
+			req: &schemas.BifrostRequest{
+				RequestType: schemas.ChatCompletionRequest,
+				ChatRequest: &schemas.BifrostChatRequest{
+					Input: []schemas.ChatMessage{
+						{
+							Role: schemas.ChatMessageRoleUser,
+							Content: complexityChatBlocks(
+								schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeImage},
+							),
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "responses_file_only",
+			req: &schemas.BifrostRequest{
+				RequestType: schemas.ResponsesRequest,
+				ResponsesRequest: &schemas.BifrostResponsesRequest{
+					Input: []schemas.ResponsesMessage{
+						{
+							Role: &userRole,
+							Content: complexityResponsesBlocks(
 								schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesInputMessageContentBlockTypeFile},
 							),
 						},
