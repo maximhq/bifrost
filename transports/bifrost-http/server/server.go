@@ -24,6 +24,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
+	"github.com/maximhq/bifrost/framework/grants"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	dynamicPlugins "github.com/maximhq/bifrost/framework/plugins"
@@ -176,6 +177,10 @@ type ServerCallbacks interface {
 	// client-level mutation that invalidates its credential rows as a set
 	// (needs_update schema flip, access reconciliation, client deletion).
 	EvictMCPHeaderCredentialCacheByMCPClient(ctx context.Context, mcpClientID string)
+	// ResolveEffectiveAccess answers what a key-authenticated request may reach, for the
+	// listing routes that run outside the request pipeline and so have no resolved answer
+	// to read off the request.
+	ResolveEffectiveAccess(ctx *schemas.BifrostContext) *grants.EffectiveAccess
 }
 
 // GovernanceRouteOverridesProvider lets downstream editions replace selected OSS governance route families.
@@ -1346,6 +1351,20 @@ func (s *BifrostHTTPServer) UpdateSyncConfig(ctx context.Context) error {
 	return s.Config.ModelCatalog.UpdateSyncConfig(ctx, pricing)
 }
 
+// ResolveEffectiveAccess answers what the request may reach, so a route that never enters the
+// request pipeline decides from the same answer the pipeline would have used.
+//
+// Without governance there is nothing to resolve and nothing to restrict, which is why a
+// missing plugin returns nil rather than access permitting nothing.
+func (s *BifrostHTTPServer) ResolveEffectiveAccess(ctx *schemas.BifrostContext) *grants.EffectiveAccess {
+	governancePlugin, err := s.getGovernancePlugin()
+	if err != nil {
+		logger.Warn("governance plugin not found: %v", err)
+		return nil
+	}
+	return governancePlugin.ResolveEffectiveAccess(ctx)
+}
+
 // backgroundCtx returns the server-lifetime context background workers should
 // hang off. Falls back to context.Background() before Bootstrap has set s.Ctx.
 func (s *BifrostHTTPServer) backgroundCtx() context.Context {
@@ -2045,7 +2064,7 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 	webrtcRealtimeHandler := handlers.NewWebRTCRealtimeHandler(s.Client, s.Config)
 	realtimeClientSecretsHandler := handlers.NewRealtimeClientSecretsHandler(s.Client, s.Config)
 
-	inferenceHandler := handlers.NewInferenceHandler(s.Client, s.Config)
+	inferenceHandler := handlers.NewInferenceHandler(s, s.Client, s.Config)
 	s.IntegrationHandler = handlers.NewIntegrationHandler(s.Client, s.Config, wsResponsesHandler, wsRealtimeHandler, webrtcRealtimeHandler, realtimeClientSecretsHandler)
 	mcpInferenceHandler := handlers.NewMCPInferenceHandler(s.Client, s.Config)
 	// Serve by-ID virtual key lookups on the /mcp JWT auth path from the
