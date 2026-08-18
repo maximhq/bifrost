@@ -67,6 +67,19 @@ func isAnthropicServerToolSupported(toolType string, features ProviderFeatureSup
 	return true
 }
 
+// isAnthropicOnlyServerToolType reports whether the tool type is a server tool
+// implemented exclusively by the Anthropic API itself (flagged "Anthropic only"
+// in ProviderFeatureSupport — currently the advisor family). For providers
+// absent from ProviderFeatures — user-defined custom providers speaking the
+// Anthropic wire format — these fail closed: such endpoints implement none of
+// Anthropic's server-side tools, and forwarding the converted stub produces an
+// invalid tool definition that strict upstreams reject (#6153). Covers both
+// the neutral Responses type ("advisor") and the versioned Anthropic-native
+// type ("advisor_20260301").
+func isAnthropicOnlyServerToolType(toolType string) bool {
+	return toolType == string(schemas.ResponsesToolTypeAdvisor) || strings.HasPrefix(toolType, "advisor_")
+}
+
 // ValidateChatToolsForProvider is the chat-path mirror of
 // ValidateToolsForProvider. It partitions []schemas.ChatTool into a keep-set
 // (function/custom tools + server tools supported on the target provider)
@@ -78,12 +91,32 @@ func isAnthropicServerToolSupported(toolType string, features ProviderFeatureSup
 // request still reaches the provider without the unsupported tool; the model
 // responds with a prose completion instead of tool use.
 //
-// Unknown providers keep all tools (safe default for custom providers),
-// matching ValidateToolsForProvider.
+// Unknown providers keep all tools (safe default for custom providers) except
+// Anthropic-API-only server tools, which fail closed, matching
+// ValidateToolsForProvider.
 func ValidateChatToolsForProvider(tools []schemas.ChatTool, provider schemas.ModelProvider) (keep []schemas.ChatTool, dropped []string) {
 	features, ok := ProviderFeatures[provider]
 	if !ok {
-		return tools, nil
+		// A custom provider speaks the Anthropic wire format but does
+		// not implement Anthropic's own server-side tools, and the converted
+		// advisor stub (name, no input schema) is an invalid tool definition
+		// that strict upstreams reject. The zero-value features struct
+		// leaves the Anthropic-only flags false, matching enumerated
+		// third-party providers like DeepSeek.
+		for _, tool := range tools {
+			// Gate Anthropic-only types before the function/custom fast
+			// path: a directly constructed ChatTool can carry an
+			// Anthropic-only server tool Type alongside a populated
+			// Function (wire input is canonicalized by UnmarshalJSON,
+			// in-memory values are not).
+			t := string(tool.Type)
+			if isAnthropicOnlyServerToolType(t) {
+				dropped = append(dropped, t)
+			} else {
+				keep = append(keep, tool)
+			}
+		}
+		return keep, dropped
 	}
 	for _, tool := range tools {
 		// Function/custom tools are universal — always keep.
@@ -114,15 +147,24 @@ func ValidateChatToolsForProvider(tools []schemas.ChatTool, provider schemas.Mod
 // Bifrost (exposed to the model as function tools) and must not be forwarded to
 // providers like Bedrock/Vertex whose Converse APIs have no remote-MCP connector.
 //
-// Unknown providers keep all tools (safe default for custom providers),
-// matching ValidateToolsForProvider. The per-type gating mirrors
+// Unknown providers keep all tools (safe default for custom providers) except
+// Anthropic-API-only server tools, which fail closed, matching
+// ValidateToolsForProvider. The per-type gating mirrors
 // ValidateToolsForProvider exactly — only the control flow differs (partition
 // instead of erroring).
 func ValidateResponsesToolsForProvider(tools []schemas.ResponsesTool, provider schemas.ModelProvider) (keep []schemas.ResponsesTool, dropped []string) {
 	features, ok := ProviderFeatures[provider]
 	if !ok {
-		// Unknown provider — keep all tools (safe default for custom providers).
-		return tools, nil
+		// Unknown provider — keep all tools except Anthropic-API-only server
+		// tools, which fail closed.
+		for _, tool := range tools {
+			if isAnthropicOnlyServerToolType(string(tool.Type)) {
+				dropped = append(dropped, string(tool.Type))
+			} else {
+				keep = append(keep, tool)
+			}
+		}
+		return keep, dropped
 	}
 
 	for _, tool := range tools {
@@ -168,7 +210,13 @@ func ValidateResponsesToolsForProvider(tools []schemas.ResponsesTool, provider s
 func ValidateToolsForProvider(tools []schemas.ResponsesTool, provider schemas.ModelProvider) error {
 	features, ok := ProviderFeatures[provider]
 	if !ok {
-		// Unknown provider — allow all tools (safe default for custom providers)
+		// Unknown provider — allow all tools except Anthropic-API-only server
+		// tools, which fail closed.
+		for _, tool := range tools {
+			if isAnthropicOnlyServerToolType(string(tool.Type)) {
+				return fmt.Errorf("tool type '%s' is not supported by provider '%s'", tool.Type, provider)
+			}
+		}
 		return nil
 	}
 
@@ -1445,7 +1493,10 @@ func AddMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 						headers = appendUniqueHeader(headers, AnthropicComputerUseBetaHeader20250124)
 					}
 				case AnthropicToolTypeAdvisor20260301:
-					if !hasProvider || features.AdvisorTool {
+					// Advisor is Anthropic-API-only, so unlike the other
+					// gates it fails closed for unknown providers — the
+					// zero-value features struct leaves AdvisorTool false
+					if features.AdvisorTool {
 						headers = appendUniqueHeader(headers, AnthropicAdvisorBetaHeader)
 					}
 				}
