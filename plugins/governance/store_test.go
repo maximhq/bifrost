@@ -22,7 +22,7 @@ func TestGovernanceStore_GetVirtualKey(t *testing.T) {
 			*buildVirtualKey("vk1", "sk-bf-test1", "Test VK 1", true),
 			*buildVirtualKey("vk2", "sk-bf-test2", "Test VK 2", false),
 		},
-	}, nil)
+	}, nil, nil)
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -71,7 +71,7 @@ func TestGovernanceStore_ConcurrentReads(t *testing.T) {
 	vk := buildVirtualKey("vk1", "sk-bf-test", "Test VK", true)
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
-	}, nil)
+	}, nil, nil)
 	require.NoError(t, err)
 
 	// Launch 100 concurrent readers
@@ -109,7 +109,7 @@ func TestGovernanceStore_CheckBudget_SingleBudget(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Budgets:     []configstoreTables.TableBudget{*budget},
-	}, nil)
+	}, nil, nil)
 	require.NoError(t, err)
 
 	// Retrieve VK with budget
@@ -149,10 +149,10 @@ func TestGovernanceStore_CheckBudget_SingleBudget(t *testing.T) {
 			testStore, _ := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 				VirtualKeys: []configstoreTables.TableVirtualKey{*testVK},
 				Budgets:     []configstoreTables.TableBudget{*testBudget},
-			}, nil)
+			}, nil, nil)
 
 			testVK, _ = testStore.GetVirtualKey(context.Background(), "sk-bf-test")
-			_, err := testStore.CheckVirtualKeyBudget(context.Background(), testVK, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
+			_, err := checkGrantBudgets(testStore, emptyCtx(), testVK, schemas.OpenAI, "", nil)
 			if tt.shouldErr {
 				assert.Error(t, err, "Expected error for usage check")
 			} else {
@@ -164,7 +164,7 @@ func TestGovernanceStore_CheckBudget_SingleBudget(t *testing.T) {
 
 // TestGovernanceStoreCheckBudgetUsesOverride verifies enforcement reads the additive effective limit.
 func TestGovernanceStoreCheckBudgetUsesOverride(t *testing.T) {
-	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 	budget := buildBudgetWithUsage("override-budget", 100, 110, "1d")
 	require.NoError(t, budget.SetOverride(25, configstoreTables.BudgetOverrideModeCycles, 2))
@@ -203,13 +203,13 @@ func TestGovernanceStore_CheckBudget_HierarchyValidation(t *testing.T) {
 		Budgets:     []configstoreTables.TableBudget{*vkBudget, *teamBudget, *customerBudget},
 		Teams:       []configstoreTables.TableTeam{*team},
 		Customers:   []configstoreTables.TableCustomer{*customer},
-	}, nil)
+	}, nil, nil)
 	require.NoError(t, err)
 
 	vk, _ = store.GetVirtualKey(context.Background(), "sk-bf-test")
 
 	// Test: All budgets under limit should pass
-	_, err = store.CheckVirtualKeyBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
+	_, err = checkGrantBudgets(store, emptyCtx(), vk, schemas.OpenAI, "", nil)
 	assert.NoError(t, err, "Should pass when all budgets are under limit")
 
 	// Test: If VK budget exceeds limit, should fail
@@ -223,7 +223,7 @@ func TestGovernanceStore_CheckBudget_HierarchyValidation(t *testing.T) {
 			}
 		}
 	}
-	_, err = store.CheckVirtualKeyBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
+	_, err = checkGrantBudgets(store, emptyCtx(), vk, schemas.OpenAI, "", nil)
 	require.Error(t, err, "Should fail when VK budget exceeds limit")
 }
 
@@ -245,11 +245,11 @@ func TestGovernanceStore_MultiBudget_AllUnderLimit(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Budgets:     []configstoreTables.TableBudget{*hourlyBudget, *dailyBudget},
-	}, nil)
+	}, nil, nil)
 	require.NoError(t, err)
 
 	vk, _ = store.GetVirtualKey(context.Background(), "sk-bf-test")
-	_, err = store.CheckVirtualKeyBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
+	_, err = checkGrantBudgets(store, emptyCtx(), vk, schemas.OpenAI, "", nil)
 	assert.NoError(t, err, "Should pass when all budgets are under limit")
 }
 
@@ -270,11 +270,11 @@ func TestGovernanceStore_MultiBudget_SmallBudgetExceeded(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Budgets:     []configstoreTables.TableBudget{*hourlyBudget, *dailyBudget},
-	}, nil)
+	}, nil, nil)
 	require.NoError(t, err)
 
 	vk, _ = store.GetVirtualKey(context.Background(), "sk-bf-test")
-	_, err = store.CheckVirtualKeyBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
+	_, err = checkGrantBudgets(store, emptyCtx(), vk, schemas.OpenAI, "", nil)
 	require.Error(t, err, "Should fail when hourly budget is exceeded even though daily is fine")
 	assert.Contains(t, err.Error(), "budget exceeded")
 }
@@ -296,11 +296,11 @@ func TestGovernanceStore_MultiBudget_LargeBudgetExceeded(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Budgets:     []configstoreTables.TableBudget{*hourlyBudget, *dailyBudget},
-	}, nil)
+	}, nil, nil)
 	require.NoError(t, err)
 
 	vk, _ = store.GetVirtualKey(context.Background(), "sk-bf-test")
-	_, err = store.CheckVirtualKeyBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
+	_, err = checkGrantBudgets(store, emptyCtx(), vk, schemas.OpenAI, "", nil)
 	require.Error(t, err, "Should fail when daily budget is exceeded even though hourly is fine")
 	assert.Contains(t, err.Error(), "budget exceeded")
 }
@@ -321,7 +321,7 @@ func TestGovernanceStore_MultiBudget_UsageUpdatesAllBudgets(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Budgets:     []configstoreTables.TableBudget{*hourlyBudget, *dailyBudget},
-	}, nil)
+	}, nil, nil)
 	require.NoError(t, err)
 
 	vk, _ = store.GetVirtualKey(context.Background(), "sk-bf-test")
@@ -350,7 +350,7 @@ func TestGovernanceStore_MultiBudget_UsageUpdatesAllBudgets(t *testing.T) {
 	assert.InDelta(t, 10.50, dailyVal.(*configstoreTables.TableBudget).CurrentUsage, 0.01, "Daily budget should accumulate")
 
 	// Now CheckBudget should fail (hourly exceeded)
-	_, err = store.CheckVirtualKeyBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
+	_, err = checkGrantBudgets(store, emptyCtx(), vk, schemas.OpenAI, "", nil)
 	require.Error(t, err, "Should fail after usage exceeds hourly budget")
 	assert.Contains(t, err.Error(), "budget exceeded")
 }
@@ -372,11 +372,11 @@ func TestGovernanceStore_MultiBudget_ProviderConfigBudgets(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Budgets:     []configstoreTables.TableBudget{*pcHourly, *pcDaily},
-	}, nil)
+	}, nil, nil)
 	require.NoError(t, err)
 
 	vk, _ = store.GetVirtualKey(context.Background(), "sk-bf-test")
-	_, err = store.CheckVirtualKeyBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
+	_, err = checkGrantBudgets(store, emptyCtx(), vk, schemas.OpenAI, "", nil)
 	require.Error(t, err, "Should fail when provider config hourly budget is exceeded")
 	assert.Contains(t, err.Error(), "budget exceeded")
 }
@@ -401,13 +401,13 @@ func TestGovernanceStore_MultiBudget_VKAndProviderConfigCombined(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Budgets:     []configstoreTables.TableBudget{*vkMonthly, *pcHourly},
-	}, nil)
+	}, nil, nil)
 	require.NoError(t, err)
 
 	vk, _ = store.GetVirtualKey(context.Background(), "sk-bf-test")
 
 	// Provider config budget exceeded → should block even though VK budget is fine
-	_, err = store.CheckVirtualKeyBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
+	_, err = checkGrantBudgets(store, emptyCtx(), vk, schemas.OpenAI, "", nil)
 	require.Error(t, err, "Should fail: provider config budget exceeded even though VK budget is fine")
 	assert.Contains(t, err.Error(), "budget exceeded")
 }
@@ -429,13 +429,13 @@ func TestGovernanceStore_MultiBudget_ResolverBlocksOnBudgetExceeded(t *testing.T
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Budgets:     []configstoreTables.TableBudget{*hourlyBudget, *dailyBudget},
-	}, nil)
+	}, nil, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger, nil)
-	ctx := &schemas.BifrostContext{}
+	ctx := resolverCtx(store, "sk-bf-test")
 
-	result := resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false, false)
+	result := evaluateVirtualKey(resolver, ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false, false)
 	assertDecision(t, DecisionBudgetExceeded, result)
 	assert.Contains(t, result.Reason, "budget exceeded")
 }
@@ -456,13 +456,13 @@ func TestGovernanceStore_MultiBudget_ResolverAllowsUnderLimit(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Budgets:     []configstoreTables.TableBudget{*hourlyBudget, *dailyBudget},
-	}, nil)
+	}, nil, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger, nil)
-	ctx := &schemas.BifrostContext{}
+	ctx := resolverCtx(store, "sk-bf-test")
 
-	result := resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false, false)
+	result := evaluateVirtualKey(resolver, ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false, false)
 	assertDecision(t, DecisionAllow, result)
 }
 
@@ -484,7 +484,7 @@ func TestGovernanceStore_MultiBudget_UsageDrivesBlockAfterRequests(t *testing.T)
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Budgets:     []configstoreTables.TableBudget{*hourlyBudget, *dailyBudget},
-	}, nil)
+	}, nil, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger, nil)
@@ -494,8 +494,8 @@ func TestGovernanceStore_MultiBudget_UsageDrivesBlockAfterRequests(t *testing.T)
 	err = store.UpdateVirtualKeyBudgetUsageInMemory(context.Background(), vk, schemas.OpenAI, 0.80)
 	require.NoError(t, err)
 
-	ctx := &schemas.BifrostContext{}
-	result := resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false, false)
+	ctx := resolverCtx(store, "sk-bf-test")
+	result := evaluateVirtualKey(resolver, ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false, false)
 	assertDecision(t, DecisionAllow, result)
 
 	// Request 2: $0.80 — still fine ($1.60 total)
@@ -503,8 +503,8 @@ func TestGovernanceStore_MultiBudget_UsageDrivesBlockAfterRequests(t *testing.T)
 	err = store.UpdateVirtualKeyBudgetUsageInMemory(context.Background(), vk, schemas.OpenAI, 0.80)
 	require.NoError(t, err)
 
-	ctx = &schemas.BifrostContext{}
-	result = resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false, false)
+	ctx = resolverCtx(store, "sk-bf-test")
+	result = evaluateVirtualKey(resolver, ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false, false)
 	assertDecision(t, DecisionAllow, result)
 
 	// Request 3: $0.80 — pushes hourly to $2.40 > $2.00 limit → blocked
@@ -512,8 +512,8 @@ func TestGovernanceStore_MultiBudget_UsageDrivesBlockAfterRequests(t *testing.T)
 	err = store.UpdateVirtualKeyBudgetUsageInMemory(context.Background(), vk, schemas.OpenAI, 0.80)
 	require.NoError(t, err)
 
-	ctx = &schemas.BifrostContext{}
-	result = resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false, false)
+	ctx = resolverCtx(store, "sk-bf-test")
+	result = evaluateVirtualKey(resolver, ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false, false)
 	assertDecision(t, DecisionBudgetExceeded, result)
 	assert.Contains(t, result.Reason, "budget exceeded")
 
@@ -554,7 +554,7 @@ func TestGovernanceStore_MultiBudget_CalendarAligned(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Budgets:     []configstoreTables.TableBudget{*dailyBudget, *monthlyBudget},
-	}, nil)
+	}, nil, nil)
 	require.NoError(t, err)
 
 	// Verify VK-level calendar_aligned is set
@@ -562,7 +562,7 @@ func TestGovernanceStore_MultiBudget_CalendarAligned(t *testing.T) {
 	assert.True(t, vk.CalendarAligned, "VK should have calendar_aligned=true")
 
 	// Both under limit — should pass
-	_, err = store.CheckVirtualKeyBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
+	_, err = checkGrantBudgets(store, emptyCtx(), vk, schemas.OpenAI, "", nil)
 	assert.NoError(t, err)
 }
 
@@ -571,7 +571,7 @@ func TestGovernanceStore_MultiBudget_CalendarAligned(t *testing.T) {
 func TestGovernanceStore_MultiBudget_InMemoryCreateAndDelete(t *testing.T) {
 	logger := NewMockLogger()
 
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	b1 := buildBudget("b1", 10.0, "1h")
@@ -616,7 +616,7 @@ func TestGovernanceStore_MultiBudget_InMemoryCreateAndDelete(t *testing.T) {
 // decoupled clone.
 func TestGovernanceStore_CreateVirtualKeyInMemory_DecouplesFromCallerPointer(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	// A freshly-created VK loaded from DB carries no legacy rate-limit/budget — its
@@ -668,7 +668,7 @@ func TestGovernanceStore_UpdateVirtualKeyInMemory_RotatedValueRemovesOldLookup(t
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Budgets:     []configstoreTables.TableBudget{*budget},
-	}, nil)
+	}, nil, nil)
 	require.NoError(t, err)
 
 	updated := *vk
@@ -1029,7 +1029,7 @@ func TestGovernanceStore_UpdateRateLimitUsage_TokensAndRequests(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		RateLimits:  []configstoreTables.TableRateLimit{*rateLimit},
-	}, nil)
+	}, nil, nil)
 	require.NoError(t, err)
 
 	// Test updating tokens
@@ -1082,7 +1082,7 @@ func TestGovernanceStore_ResetExpiredRateLimits(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		RateLimits:  []configstoreTables.TableRateLimit{*rateLimit},
-	}, nil)
+	}, nil, nil)
 	require.NoError(t, err)
 
 	// Reset expired rate limits
@@ -1117,7 +1117,7 @@ func TestGovernanceStore_ResetExpiredBudgets(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Budgets:     []configstoreTables.TableBudget{*budget},
-	}, nil)
+	}, nil, nil)
 	require.NoError(t, err)
 
 	// Reset expired budgets
@@ -1201,7 +1201,7 @@ func TestGovernanceStoreResetPersistsOverrideLifecycle(t *testing.T) {
 	require.NoError(t, budget.SetOverride(25, configstoreTables.BudgetOverrideModeCycles, 2))
 	require.NoError(t, configStore.CreateBudget(ctx, budget))
 
-	store, err := NewLocalGovernanceStore(ctx, logger, configStore, nil, nil)
+	store, err := NewLocalGovernanceStore(ctx, logger, configStore, nil, nil, nil)
 	require.NoError(t, err)
 	reset, ok := store.ResetBudgetAt(ctx, budget.ID, budget.LastReset.Add(24*time.Hour))
 	require.True(t, ok)
@@ -1227,7 +1227,7 @@ func TestGovernanceStore_GetAllBudgets(t *testing.T) {
 
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		Budgets: budgets,
-	}, nil)
+	}, nil, nil)
 	require.NoError(t, err)
 
 	allBudgets := store.GetGovernanceData(context.Background()).Budgets
@@ -1240,7 +1240,7 @@ func TestGovernanceStore_GetAllBudgets(t *testing.T) {
 // TestGovernanceStore_RateLimitStatus tests rate limit status calculation
 func TestGovernanceStore_RateLimitStatus(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	// Create a rate limit with 1000 token limit
@@ -1277,7 +1277,7 @@ func TestGovernanceStore_RateLimitStatus(t *testing.T) {
 // TestGovernanceStore_BudgetStatus tests budget status calculation
 func TestGovernanceStore_BudgetStatus(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	budgetID := "provider:openai:budget"
@@ -1332,7 +1332,7 @@ func TestGetBudgetAndRateLimitStatus_VKScopedModelConfig(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
 		Budgets:      []configstoreTables.TableBudget{*budget},
-	}, nil)
+	}, nil, nil)
 	require.NoError(t, err)
 
 	store.virtualKeys.Store(vkValue, vk)
@@ -1358,7 +1358,7 @@ func TestGetBudgetAndRateLimitStatus_VKScopedModelConfig_NoMatchOtherProvider(t 
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
 		Budgets:      []configstoreTables.TableBudget{*budget},
-	}, nil)
+	}, nil, nil)
 	require.NoError(t, err)
 
 	store.virtualKeys.Store(vkValue, vk)
@@ -1389,12 +1389,17 @@ func TestCollectApplicableGovernanceIDs_VKWildcardBudget_NoModel(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
 		Budgets:      []configstoreTables.TableBudget{*budget},
-	}, nil)
+	}, nil, nil)
 	require.NoError(t, err)
 
 	store.virtualKeys.Store(vkValue, vk)
 
-	budgetIDs, _ := store.CollectApplicableGovernanceIDs(context.Background(), vkValue, "", schemas.ModelProvider("anthropic"), "")
+	// Settled the way the funnel settles it: the grant carries the attempt's limits, and the
+	// recorded set is read from there.
+	ctx := resolverCtx(store, vkValue)
+	limits := resolveLimits(ctx, store, schemas.ModelProvider("anthropic"), "")
+	require.NotNil(t, limits)
+	budgetIDs, _ := store.CollectApplicableGovernanceIDs(ctx, limits, schemas.ModelProvider("anthropic"), "")
 
 	assert.Contains(t, budgetIDs, budget.ID, "VK-scoped wildcard budget must be found even when the request carries no model (e.g. batch-create)")
 }
@@ -1411,7 +1416,7 @@ func TestGetBudgetAndRateLimitStatus_GlobalModelConfig(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
 		Budgets:      []configstoreTables.TableBudget{*budget},
-	}, nil)
+	}, nil, nil)
 	require.NoError(t, err)
 
 	status := store.GetBudgetAndRateLimitStatus(context.Background(), "gpt-5", schemas.ModelProvider(providerName), nil, nil, nil, nil)
@@ -1425,7 +1430,7 @@ func TestGetBudgetAndRateLimitStatus_GlobalModelConfig(t *testing.T) {
 // caches miss: known entities return their name, unknown/empty ids return "".
 func TestGetTeamNameAndGetCustomerName(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	store.CreateTeamInMemory(context.Background(), buildTeam("team-1", "Platform", nil))
@@ -1445,7 +1450,7 @@ func TestGetTeamNameAndGetCustomerName(t *testing.T) {
 // rate limit so ResetExpiredBudgetsInMemory uses the calendar-aligned reset path.
 func TestGovernanceStore_Customer_CalendarAligned_CreateInMemory(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	budgetID := "cust-bud-1"
@@ -1486,7 +1491,7 @@ func TestGovernanceStore_Customer_CalendarAligned_CreateInMemory(t *testing.T) {
 // IsCalendarAligned is false when the customer does not have calendar alignment enabled.
 func TestGovernanceStore_Customer_CalendarAligned_CreateInMemory_False(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	budgetID := "cust-bud-2"
@@ -1536,7 +1541,7 @@ func TestGovernanceStore_Customer_CalendarAligned_UpdateInMemory(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		Customers: []configstoreTables.TableCustomer{*customer},
 		Budgets:   []configstoreTables.TableBudget{*budget},
-	}, nil)
+	}, nil, nil)
 	require.NoError(t, err)
 
 	// Budget and rate limit should start as non-calendar-aligned
@@ -1585,11 +1590,14 @@ func TestCollectModelScopedGovernanceIDs_FindsExactModelConfigMissedAtCreateTime
 	store, err := NewLocalGovernanceStore(ctx, logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*perModelMC, *wildcardMC},
 		Budgets:      []configstoreTables.TableBudget{*perModel, *wildcard},
-	}, nil)
+	}, nil, nil)
 	require.NoError(t, err)
 
-	// What batch create sees: no model, so only the wildcard is collected.
-	inFlight, _ := store.CollectApplicableGovernanceIDs(ctx, "", userID, schemas.ModelProvider(providerName), "")
+	// What batch create sees: no model, so only the wildcard is collected. The user is a scope of
+	// its own, read off the request rather than off a grant, so no access is needed to reach it.
+	inFlightCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+	inFlightCtx.SetValue(schemas.BifrostContextKeyUserID, userID)
+	inFlight, _ := store.CollectApplicableGovernanceIDs(inFlightCtx, nil, schemas.ModelProvider(providerName), "")
 	assert.Contains(t, inFlight, wildcard.ID)
 	assert.NotContains(t, inFlight, perModel.ID, "the per-model budget cannot be matched without a model")
 
@@ -1608,4 +1616,213 @@ func TestCollectModelScopedGovernanceIDs_FindsExactModelConfigMissedAtCreateTime
 	// Scope isolation: another user's id must not reach these configs.
 	otherUser, _ := store.CollectModelScopedGovernanceIDs(ctx, "", "user-bob", schemas.ModelProvider(providerName), "gpt-5")
 	assert.Empty(t, otherUser)
+}
+
+// The IDs recorded on a log row are what a recovering node replays usage against, so they have to be
+// every limit the request was actually charged to and nothing else. Both halves matter: a limit left
+// out loses its usage when the node ghosts, and one added that nothing debits invents usage.
+func TestCollectApplicableGovernanceIDs(t *testing.T) {
+	logger := NewMockLogger()
+
+	vkBudget := buildBudget("b-vk", 1000, "1d")
+	teamBudget := buildBudget("b-team", 1000, "1d")
+	customerBudget := buildBudget("b-customer", 1000, "1d")
+	providerBudget := buildBudget("b-provider", 1000, "1d")
+	modelBudget := buildBudget("b-model", 1000, "1d")
+
+	customer := buildCustomer("customer1", "Customer 1", customerBudget)
+	team := buildTeam("team1", "Team 1", teamBudget)
+	team.CustomerID = &customer.ID
+	team.Customer = customer
+
+	vk := buildVirtualKeyWithBudget("vk1", "sk-bf-collect", "Collecting VK", vkBudget)
+	vk.TeamID = &team.ID
+	vk.Team = team
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"*"}),
+	}
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys:  []configstoreTables.TableVirtualKey{*vk},
+		Teams:        []configstoreTables.TableTeam{*team},
+		Customers:    []configstoreTables.TableCustomer{*customer},
+		Providers:    []configstoreTables.TableProvider{*buildProviderWithGovernance("openai", providerBudget, nil)},
+		ModelConfigs: []configstoreTables.TableModelConfig{*buildModelConfig("mc1", "gpt-4o", nil, modelBudget, nil)},
+		Budgets: []configstoreTables.TableBudget{
+			*vkBudget, *teamBudget, *customerBudget, *providerBudget, *modelBudget,
+		},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	// Settling the limits on the grant is what the funnel does before any check runs, so the
+	// recorded set is read from there rather than worked out again here.
+	settle := func(t *testing.T, provider schemas.ModelProvider, model string) (*schemas.BifrostContext, schemas.Limits) {
+		t.Helper()
+		ctx := resolverCtx(store, "sk-bf-collect")
+		limits := resolveLimits(ctx, store, provider, model)
+		require.NotNil(t, limits)
+		return ctx, limits
+	}
+
+	t.Run("records every limit the access answers to, and the attempt's own", func(t *testing.T) {
+		ctx, limits := settle(t, schemas.OpenAI, "gpt-4o")
+		budgetIDs, _ := store.CollectApplicableGovernanceIDs(ctx, limits, schemas.OpenAI, "gpt-4o")
+
+		assert.ElementsMatch(t,
+			[]string{"b-provider", "b-model", "b-vk", "b-team", "b-customer"}, budgetIDs,
+			"the holder chain the permit pays for, plus the provider and model config this attempt draws on")
+	})
+
+	t.Run("nil limits leave only what the attempt itself is subject to", func(t *testing.T) {
+		// What a request whose holder is deliberately not being tracked records. The provider and the
+		// model config are charged regardless of what granted the request, so they stay.
+		ctx, _ := settle(t, schemas.OpenAI, "gpt-4o")
+		budgetIDs, _ := store.CollectApplicableGovernanceIDs(ctx, nil, schemas.OpenAI, "gpt-4o")
+
+		assert.ElementsMatch(t, []string{"b-provider", "b-model"}, budgetIDs)
+	})
+
+	t.Run("a limit reached twice is recorded once", func(t *testing.T) {
+		// The same budget row can cover a request by more than one route. Recording it twice would
+		// have reconciliation replay its usage twice.
+		ctx, limits := settle(t, schemas.OpenAI, "gpt-4o")
+		budgetIDs, _ := store.CollectApplicableGovernanceIDs(ctx, limits, schemas.OpenAI, "gpt-4o")
+
+		seen := map[string]int{}
+		for _, id := range budgetIDs {
+			seen[id]++
+		}
+		for id, count := range seen {
+			assert.Equal(t, 1, count, "budget %s recorded more than once", id)
+		}
+	})
+
+	t.Run("an attempt with no model still records what its provider is charged", func(t *testing.T) {
+		// Tool execution and other modelless attempts still spend against the provider.
+		ctx, limits := settle(t, schemas.OpenAI, "")
+		budgetIDs, _ := store.CollectApplicableGovernanceIDs(ctx, limits, schemas.OpenAI, "")
+
+		assert.Contains(t, budgetIDs, "b-provider")
+		assert.NotContains(t, budgetIDs, "b-model", "no model means no model config applies")
+	})
+}
+
+// Narrowing is what turns "every limit this request might answer to" into the one set it does, and it
+// happens once the provider and model are settled. Everything after it (the checks, the co-payers
+// named for the log, the usage charged) reads that set, so what lands here is what gets enforced.
+func TestResolveLimits(t *testing.T) {
+	logger := NewMockLogger()
+
+	keyBudget := buildBudget("b-key", 1000, "1d")
+	openaiBudget := buildBudget("b-key-openai", 1000, "1d")
+	bedrockBudget := buildBudget("b-key-bedrock", 1000, "1d")
+	teamBudget := buildBudget("b-team", 1000, "1d")
+	providerBudget := buildBudget("b-provider", 1000, "1d")
+	modelBudget := buildBudget("b-model", 1000, "1d")
+
+	team := buildTeam("team1", "Team 1", teamBudget)
+	vk := buildVirtualKeyWithBudget("vk1", "sk-bf-resolve", "Resolving VK", keyBudget)
+	vk.TeamID = &team.ID
+	vk.Team = team
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfigWithBudgets("openai", []string{"*"}, []configstoreTables.TableBudget{*openaiBudget}),
+		buildProviderConfigWithBudgets("bedrock", []string{"*"}, []configstoreTables.TableBudget{*bedrockBudget}),
+	}
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys:  []configstoreTables.TableVirtualKey{*vk},
+		Teams:        []configstoreTables.TableTeam{*team},
+		Providers:    []configstoreTables.TableProvider{*buildProviderWithGovernance("openai", providerBudget, nil)},
+		ModelConfigs: []configstoreTables.TableModelConfig{*buildModelConfig("mc1", "gpt-4o", nil, modelBudget, nil)},
+		Budgets: []configstoreTables.TableBudget{
+			*keyBudget, *openaiBudget, *bedrockBudget, *teamBudget, *providerBudget, *modelBudget,
+		},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	t.Run("before it runs, only what tells one provider from another is known", func(t *testing.T) {
+		// What load balancing needs and all it needs: each config's own limits, per provider, read
+		// from the store by the permit's identity. Nothing that answers the same for every provider,
+		// because that cannot help it choose. And nothing is settled on the grant yet, which is not
+		// the same as nothing applying.
+		ctx := resolverCtx(store, "sk-bf-resolve")
+		access := ctx.Grant().Access()
+		require.NotNil(t, access)
+		require.Len(t, access.Bases(), 1)
+
+		openaiBudgets, _ := store.ProviderLimits(ctx, access.Bases()[0], schemas.OpenAI)
+		bedrockBudgets, _ := store.ProviderLimits(ctx, access.Bases()[0], schemas.Bedrock)
+		assert.Equal(t, []string{"b-key-openai"}, limitIDsOf(openaiBudgets))
+		assert.Equal(t, []string{"b-key-bedrock"}, limitIDsOf(bedrockBudgets))
+		assert.Nil(t, ctx.Grant().Limits(), "nothing is settled yet, which is not the same as nothing applying")
+	})
+
+	t.Run("after it runs, the grant carries exactly what this pair answers to", func(t *testing.T) {
+		ctx := resolverCtx(store, "sk-bf-resolve")
+
+		settled := resolveLimits(ctx, store, schemas.OpenAI, "gpt-4o")
+
+		require.NotNil(t, settled)
+		assert.ElementsMatch(t,
+			[]string{"b-provider", "b-model", "b-key", "b-key-openai", "b-team"},
+			limitIDsOf(settled.Budgets()))
+		assert.NotContains(t, limitIDsOf(settled.Budgets()), "b-key-bedrock",
+			"a provider this request is not using is not funding it")
+	})
+
+	t.Run("the settled limits are what everything downstream reads", func(t *testing.T) {
+		ctx := resolverCtx(store, "sk-bf-resolve")
+
+		settled := resolveLimits(ctx, store, schemas.OpenAI, "gpt-4o")
+
+		assert.Same(t, settled, ctx.Grant().Limits(),
+			"recorded, or the check and the charge would each resolve their own")
+	})
+
+	t.Run("the next attempt replaces them whole", func(t *testing.T) {
+		// A request that fails over changes its provider, not its caller: the access stays, and the
+		// limits are settled again for the pair the new attempt uses.
+		ctx := resolverCtx(store, "sk-bf-resolve")
+		access := ctx.Grant().Access()
+
+		first := resolveLimits(ctx, store, schemas.OpenAI, "gpt-4o")
+		second := resolveLimits(ctx, store, schemas.Bedrock, "claude-sonnet-4")
+
+		assert.Same(t, access, ctx.Grant().Access(), "what the request may reach is unchanged")
+		assert.NotSame(t, first, second)
+		assert.Same(t, second, ctx.Grant().Limits())
+		assert.Contains(t, limitIDsOf(second.Budgets()), "b-key-bedrock")
+		assert.NotContains(t, limitIDsOf(second.Budgets()), "b-key-openai")
+	})
+
+	t.Run("a request carrying no access still answers to the deployment", func(t *testing.T) {
+		// Nothing granted it anything, so no holder pays for it; the deployment's own limits bind it
+		// all the same, and they are settled on its grant like anyone else's.
+		ctx := emptyCtx()
+
+		settled := resolveLimits(ctx, store, schemas.OpenAI, "gpt-4o")
+
+		require.NotNil(t, settled)
+		assert.ElementsMatch(t, []string{"b-provider", "b-model"}, limitIDsOf(settled.Budgets()))
+		assert.Nil(t, ctx.Grant().Access(), "nothing resolved is not access permitting nothing")
+	})
+
+	t.Run("a context carrying no grant has nowhere to settle them", func(t *testing.T) {
+		// The transport installs a grant on every request; a context without one is a wiring fault,
+		// and nothing here papers over it.
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+		assert.Nil(t, resolveLimits(ctx, store, schemas.OpenAI, "gpt-4o"))
+		assert.Nil(t, ctx.Grant())
+	})
+
+	t.Run("a modelless attempt still answers to its provider", func(t *testing.T) {
+		ctx := resolverCtx(store, "sk-bf-resolve")
+
+		settled := resolveLimits(ctx, store, schemas.OpenAI, "")
+
+		ids := limitIDsOf(settled.Budgets())
+		assert.Contains(t, ids, "b-provider")
+		assert.NotContains(t, ids, "b-model", "no model means no model config applies")
+	})
 }

@@ -34,7 +34,7 @@ func TestPruneMCPIncludeTools_NoCallerList(t *testing.T) {
 	vk := buildVKWithMCPConfigs("client-1", "sentry", []string{"find_projects"})
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
-	assert.False(t, p.pruneMCPIncludeToolsFromContext(ctx, vk))
+	assert.False(t, p.pruneMCPIncludeToolsFromContext(ctx, accessFor(vk, nil)))
 	assert.Nil(t, ctx.Value(schemas.MCPContextKeyIncludeTools),
 		"ctx should remain unset when the caller provided no list")
 }
@@ -45,7 +45,7 @@ func TestPruneMCPIncludeTools_DisallowedToolDropped(t *testing.T) {
 	vk := buildVKWithMCPConfigs("client-1", "sentry", []string{"find_projects"})
 	ctx := newCtxWithIncludeTools([]string{"sentry-search_tools"})
 
-	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, vk))
+	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, accessFor(vk, nil)))
 	assert.Empty(t, includeToolsFromCtx(t, ctx),
 		"a tool outside the VK grant must be pruned, leaving a deny-all list")
 }
@@ -56,7 +56,7 @@ func TestPruneMCPIncludeTools_GrantedToolKept(t *testing.T) {
 	vk := buildVKWithMCPConfigs("client-1", "sentry", []string{"find_projects", "search_issues"})
 	ctx := newCtxWithIncludeTools([]string{"sentry-find_projects", "sentry-search_tools"})
 
-	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, vk))
+	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, accessFor(vk, nil)))
 	assert.Equal(t, []string{"sentry-find_projects"}, includeToolsFromCtx(t, ctx),
 		"granted entries survive, ungranted entries are dropped")
 }
@@ -68,7 +68,7 @@ func TestPruneMCPIncludeTools_SpecificToolUnderUnrestrictedGrant(t *testing.T) {
 	vk := buildVKWithMCPConfigs("client-1", "sentry", []string{"*"})
 	ctx := newCtxWithIncludeTools([]string{"sentry-search_tools"})
 
-	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, vk))
+	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, accessFor(vk, nil)))
 	assert.Equal(t, []string{"sentry-search_tools"}, includeToolsFromCtx(t, ctx),
 		"specific request should be allowed by the client's unrestricted grant")
 }
@@ -79,7 +79,7 @@ func TestPruneMCPIncludeTools_WildcardKeptWhenVKUnrestricted(t *testing.T) {
 	vk := buildVKWithMCPConfigs("client-1", "sentry", []string{"*"})
 	ctx := newCtxWithIncludeTools([]string{"sentry-*"})
 
-	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, vk))
+	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, accessFor(vk, nil)))
 	assert.Equal(t, []string{"sentry-*"}, includeToolsFromCtx(t, ctx))
 }
 
@@ -90,7 +90,7 @@ func TestPruneMCPIncludeTools_WildcardNarrowedToSpecificGrants(t *testing.T) {
 	vk := buildVKWithMCPConfigs("client-1", "sentry", []string{"find_projects", "search_issues"})
 	ctx := newCtxWithIncludeTools([]string{"sentry-*"})
 
-	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, vk))
+	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, accessFor(vk, nil)))
 	assert.Equal(t, []string{"sentry-find_projects", "sentry-search_issues"}, includeToolsFromCtx(t, ctx))
 }
 
@@ -100,7 +100,7 @@ func TestPruneMCPIncludeTools_WildcardForUngrantedClientDropped(t *testing.T) {
 	vk := buildVKWithMCPConfigs("client-1", "sentry", []string{"find_projects"})
 	ctx := newCtxWithIncludeTools([]string{"github-*"})
 
-	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, vk))
+	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, accessFor(vk, nil)))
 	assert.Empty(t, includeToolsFromCtx(t, ctx))
 }
 
@@ -111,7 +111,7 @@ func TestPruneMCPIncludeTools_EmptyHeaderOptOut(t *testing.T) {
 	vk := buildVKWithMCPConfigs("client-1", "sentry", []string{"*"})
 	ctx := newCtxWithIncludeTools([]string{""})
 
-	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, vk))
+	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, accessFor(vk, nil)))
 	assert.Empty(t, includeToolsFromCtx(t, ctx))
 }
 
@@ -121,7 +121,7 @@ func TestPruneMCPIncludeTools_DedupAcrossWildcardAndSpecific(t *testing.T) {
 	vk := buildVKWithMCPConfigs("client-1", "sentry", []string{"find_projects", "search_issues"})
 	ctx := newCtxWithIncludeTools([]string{"sentry-*", "sentry-find_projects"})
 
-	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, vk))
+	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, accessFor(vk, nil)))
 	assert.Equal(t, []string{"sentry-find_projects", "sentry-search_issues"}, includeToolsFromCtx(t, ctx))
 }
 
@@ -134,7 +134,7 @@ func TestPruneMCPIncludeTools_AllowOnAllVirtualKeysClient(t *testing.T) {
 	vk := buildVKNoMCPConfigs()
 	ctx := newCtxWithIncludeTools([]string{"youtube-search", "youtube-*", "github-list_repos"})
 
-	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, vk))
+	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, accessFor(vk, map[string]string{"client-1": "youtube"})))
 	assert.Equal(t, []string{"youtube-search", "youtube-*"}, includeToolsFromCtx(t, ctx),
 		"AllowOnAllVirtualKeys grants the whole client; other clients are still pruned")
 }
@@ -147,7 +147,7 @@ func TestPruneMCPIncludeTools_ExplicitEmptyConfigOverridesAllowAll(t *testing.T)
 	vk := buildVKWithMCPConfigs("client-1", "youtube", []string{})
 	ctx := newCtxWithIncludeTools([]string{"youtube-search", "youtube-*"})
 
-	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, vk))
+	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, accessFor(vk, map[string]string{"client-1": "youtube"})))
 	assert.Empty(t, includeToolsFromCtx(t, ctx))
 }
 
@@ -170,7 +170,7 @@ func TestPruneMCPIncludeTools_MultipleClients(t *testing.T) {
 	}
 	ctx := newCtxWithIncludeTools([]string{"sentry-find_projects", "sentry-search_issues", "github-list_repos", "github-*"})
 
-	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, vk))
+	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, accessFor(vk, nil)))
 	assert.Equal(t, []string{"sentry-find_projects", "github-list_repos", "github-*"}, includeToolsFromCtx(t, ctx))
 }
 
@@ -181,7 +181,7 @@ func TestPruneMCPIncludeTools_WrongTypeFailsClosed(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.MCPContextKeyIncludeTools, "sentry-search_tools")
 
-	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, vk))
+	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, accessFor(vk, nil)))
 	assert.Empty(t, includeToolsFromCtx(t, ctx),
 		"a malformed ctx value must prune to deny-all, not pass through")
 }
