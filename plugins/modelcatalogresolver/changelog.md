@@ -1,1 +1,1 @@
-- chore: upgraded core to v1.7.11 and framework to v1.5.9
+- fix: prefer OpenAI when resolving unprefixed models for the Hume integration

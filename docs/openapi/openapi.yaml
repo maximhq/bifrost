@@ -387,8 +387,6 @@ paths:
   # ==================== Hume Integration ====================
   /hume/v1/chat/completions:
     $ref: "./paths/integrations/hume/chat.yaml#/chat-completions"
-  /hume/chat/completions:
-    $ref: "./paths/integrations/hume/chat.yaml#/chat-completions-unversioned"
 
   # ==================== Anthropic Integration ====================
   # Messages API

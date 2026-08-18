@@ -401,10 +401,10 @@ type HTTPRequestTypeGetter func(ctx *fasthttp.RequestCtx) schemas.RequestType
 type ShortCircuit func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) (bool, error)
 
 // StreamConfig defines streaming-specific configuration for an integration.
-// A response converter returns ("", nil, nil) to skip a chunk. Any non-nil
-// converter error is fatal: the router emits a sanitized integration-specific
-// error event, cancels the upstream request, drains its channel, and terminates
-// the stream for every integration.
+// A response converter returns ("", nil, nil) to skip a chunk. Converter errors
+// are logged and skipped by default. Routes that cannot safely continue after a
+// conversion error can opt into a sanitized error event and stream termination
+// with FatalConverterErrors.
 //
 // SSE FORMAT BEHAVIOR:
 //
@@ -432,6 +432,7 @@ type StreamConfig struct {
 	TranscriptionStreamResponseConverter   TranscriptionStreamResponseConverter   // Function to convert BifrostTranscriptionResponse to streaming format
 	ImageGenerationStreamResponseConverter ImageGenerationStreamResponseConverter // Function to convert BifrostImageGenerationStreamResponse to streaming format
 	ErrorConverter                         StreamErrorConverter                   // Function to convert BifrostError to streaming error format
+	FatalConverterErrors                   bool                                   // Emit a sanitized error and terminate the stream when a response converter fails
 }
 
 type RouteConfigType string
@@ -2966,11 +2967,14 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 
 				if err != nil {
 					g.logger.Warn("Failed to convert streaming response: %v", err)
-					sendConvertedStreamError(newBifrostErrorWithCode(nil, lib.ClientSafeInternalErrorMessage, fasthttp.StatusInternalServerError))
-					cancel()
-					for range streamChan {
+					if config.StreamConfig.FatalConverterErrors {
+						sendConvertedStreamError(newBifrostErrorWithCode(nil, lib.ClientSafeInternalErrorMessage, fasthttp.StatusInternalServerError))
+						cancel()
+						for range streamChan {
+						}
+						return
 					}
-					return
+					continue
 				}
 
 				// Handle Bedrock Event Stream format

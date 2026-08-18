@@ -205,6 +205,7 @@ func Test_handleStreamingConverterErrorEmitsSanitizedErrorAndTerminates(t *testi
 	config := RouteConfig{
 		Type: RouteConfigTypeOpenAI,
 		StreamConfig: &StreamConfig{
+			FatalConverterErrors: true,
 			ChatStreamResponseConverter: func(_ *schemas.BifrostContext, _ *schemas.BifrostChatResponse) (string, interface{}, error) {
 				return "", nil, errors.New("converter internals must not leak")
 			},
@@ -235,4 +236,39 @@ func Test_handleStreamingConverterErrorEmitsSanitizedErrorAndTerminates(t *testi
 	assert.NotContains(t, string(body), "converter internals")
 	assert.NotContains(t, string(body), "[DONE]")
 	assert.True(t, cancelCalled)
+}
+
+func Test_handleStreamingConverterErrorIsSkippedByDefault(t *testing.T) {
+	callCount := 0
+	config := RouteConfig{
+		Type: RouteConfigTypeOpenAI,
+		StreamConfig: &StreamConfig{
+			ChatStreamResponseConverter: func(_ *schemas.BifrostContext, _ *schemas.BifrostChatResponse) (string, interface{}, error) {
+				callCount++
+				if callCount == 1 {
+					return "", nil, errors.New("transient converter error")
+				}
+				return "", map[string]string{"content": "kept"}, nil
+			},
+		},
+	}
+
+	stream := make(chan *schemas.BifrostStreamChunk, 2)
+	stream <- &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{}}
+	stream <- &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{}}
+	close(stream)
+
+	router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, bifrost.NewNoOpLogger())
+	ctx := &fasthttp.RequestCtx{}
+	cancelCalled := false
+	router.handleStreaming(ctx, nil, config, stream, func() {
+		cancelCalled = true
+	})
+
+	body, err := io.ReadAll(ctx.Response.BodyStream())
+	require.NoError(t, err)
+	assert.Contains(t, string(body), `{"content":"kept"}`)
+	assert.Contains(t, string(body), "[DONE]")
+	assert.NotContains(t, string(body), lib.ClientSafeInternalErrorMessage)
+	assert.False(t, cancelCalled)
 }

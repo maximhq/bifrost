@@ -5442,6 +5442,10 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	}
 
 	provider, model, _ = preReq.GetRequestFields()
+	if bifrostErr := bifrost.enforceHumeSingleToolConstraint(ctx, preReq); bifrostErr != nil {
+		bifrostErr.PopulateExtraFields(preReq.RequestType, provider, model, model)
+		return nil, bifrostErr
+	}
 
 	msg := bifrost.getChannelMessage(*preReq)
 	msg.Context = ctx
@@ -5778,6 +5782,10 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 	}
 
 	provider, model, _ = preReq.GetRequestFields()
+	if bifrostErr := bifrost.enforceHumeSingleToolConstraint(ctx, preReq); bifrostErr != nil {
+		bifrostErr.PopulateExtraFields(preReq.RequestType, provider, model, model)
+		return nil, bifrostErr
+	}
 
 	msg := bifrost.getChannelMessage(*preReq)
 	msg.Context = ctx

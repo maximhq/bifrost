@@ -15,13 +15,13 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/klauspost/compress v1.18.6
 	github.com/mark3labs/mcp-go v0.43.2
-	github.com/maximhq/bifrost/core v1.7.12-0.20260816184414-8dc2459b11c0
+	github.com/maximhq/bifrost/core v1.7.12
 	github.com/maximhq/bifrost/framework v1.5.9
 	github.com/maximhq/bifrost/plugins/compat v0.1.35
 	github.com/maximhq/bifrost/plugins/governance v1.6.13
 	github.com/maximhq/bifrost/plugins/logging v1.6.9
 	github.com/maximhq/bifrost/plugins/maxim v1.6.36
-	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.0.17
+	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.0.19
 	github.com/maximhq/bifrost/plugins/otel v1.4.8
 	github.com/maximhq/bifrost/plugins/prompts v1.0.36
 	github.com/maximhq/bifrost/plugins/semanticcache v1.5.36

@@ -672,6 +672,12 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			}
 			anthropicReq.ToolChoice = toolChoice
 		}
+		if bifrostReq.Params.ParallelToolCalls != nil && len(anthropicReq.Tools) > 0 {
+			if anthropicReq.ToolChoice == nil {
+				anthropicReq.ToolChoice = &AnthropicToolChoice{Type: "auto"}
+			}
+			anthropicReq.ToolChoice.DisableParallelToolUse = schemas.Ptr(!*bifrostReq.Params.ParallelToolCalls)
+		}
 
 		// Convert reasoning
 		if reasoningParams != nil {
