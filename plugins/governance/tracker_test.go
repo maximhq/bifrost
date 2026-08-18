@@ -34,9 +34,6 @@ func TestUsageTracker_FailedRequestWithUsage_IsBilled(t *testing.T) {
 	defer tracker.Cleanup()
 
 	update := &UsageUpdate{
-		VirtualKey:   "sk-bf-test",
-		Provider:     schemas.OpenAI,
-		Model:        "gpt-4",
 		Success:      false, // Failed/cancelled request...
 		TokensUsed:   100,
 		Cost:         25.5, // ...that nonetheless consumed provider tokens.
@@ -44,7 +41,7 @@ func TestUsageTracker_FailedRequestWithUsage_IsBilled(t *testing.T) {
 		HasUsageData: true,
 	}
 
-	tracker.UpdateUsage(context.Background(), update)
+	tracker.UpdateUsage(context.Background(), settleLimits(store, "sk-bf-test", schemas.OpenAI, "gpt-4", update))
 
 	// Give time for async processing
 	time.Sleep(200 * time.Millisecond)
@@ -79,16 +76,13 @@ func TestUsageTracker_FailedRequestNoUsage_IsSkipped(t *testing.T) {
 	defer tracker.Cleanup()
 
 	update := &UsageUpdate{
-		VirtualKey: "sk-bf-test",
-		Provider:   schemas.OpenAI,
-		Model:      "gpt-4",
 		Success:    false, // Failed before the model ran...
 		TokensUsed: 0,
 		Cost:       0.0, // ...so no tokens were consumed.
 		RequestID:  "req-456",
 	}
 
-	tracker.UpdateUsage(context.Background(), update)
+	tracker.UpdateUsage(context.Background(), settleLimits(store, "sk-bf-test", schemas.OpenAI, "gpt-4", update))
 
 	// Give time for async processing
 	time.Sleep(200 * time.Millisecond)
@@ -114,16 +108,13 @@ func TestUsageTracker_UpdateUsage_VirtualKeyNotFound(t *testing.T) {
 	defer tracker.Cleanup()
 
 	update := &UsageUpdate{
-		VirtualKey: "sk-bf-nonexistent",
-		Provider:   schemas.OpenAI,
-		Model:      "gpt-4",
 		Success:    true,
 		TokensUsed: 100,
 		Cost:       25.5,
 	}
 
 	// Should not panic or error
-	tracker.UpdateUsage(context.Background(), update)
+	tracker.UpdateUsage(context.Background(), settleLimits(store, "sk-bf-test", schemas.OpenAI, "gpt-4", update))
 
 	time.Sleep(100 * time.Millisecond)
 	// Just verify it doesn't crash
@@ -149,9 +140,6 @@ func TestUsageTracker_UpdateUsage_StreamingOptimization(t *testing.T) {
 
 	// First streaming chunk (not final, has usage data)
 	update1 := &UsageUpdate{
-		VirtualKey:   "sk-bf-test",
-		Provider:     schemas.OpenAI,
-		Model:        "gpt-4",
 		Success:      true,
 		TokensUsed:   50,
 		Cost:         0.0, // No cost on non-final chunks
@@ -161,7 +149,7 @@ func TestUsageTracker_UpdateUsage_StreamingOptimization(t *testing.T) {
 		HasUsageData: true,
 	}
 
-	tracker.UpdateUsage(context.Background(), update1)
+	tracker.UpdateUsage(context.Background(), settleLimits(store, "sk-bf-test", schemas.OpenAI, "gpt-4", update1))
 	time.Sleep(200 * time.Millisecond)
 
 	// Retrieve the updated rate limit from the main RateLimits map
@@ -175,9 +163,6 @@ func TestUsageTracker_UpdateUsage_StreamingOptimization(t *testing.T) {
 
 	// Final chunk
 	update2 := &UsageUpdate{
-		VirtualKey:   "sk-bf-test",
-		Provider:     schemas.OpenAI,
-		Model:        "gpt-4",
 		Success:      true,
 		TokensUsed:   0, // Already counted
 		Cost:         12.5,
@@ -187,7 +172,7 @@ func TestUsageTracker_UpdateUsage_StreamingOptimization(t *testing.T) {
 		HasUsageData: true,
 	}
 
-	tracker.UpdateUsage(context.Background(), update2)
+	tracker.UpdateUsage(context.Background(), settleLimits(store, "sk-bf-test", schemas.OpenAI, "gpt-4", update2))
 	time.Sleep(200 * time.Millisecond)
 
 	// Retrieve the updated rate limit again
@@ -222,9 +207,6 @@ func TestUsageTracker_Idempotency_SameAttemptBilledOnce(t *testing.T) {
 
 	mk := func() *UsageUpdate {
 		return &UsageUpdate{
-			VirtualKey:    "sk-bf-test",
-			Provider:      schemas.OpenAI,
-			Model:         "gpt-4",
 			Success:       false,
 			TokensUsed:    100,
 			Cost:          10.0,
@@ -234,8 +216,8 @@ func TestUsageTracker_Idempotency_SameAttemptBilledOnce(t *testing.T) {
 		}
 	}
 
-	tracker.UpdateUsage(context.Background(), mk())
-	tracker.UpdateUsage(context.Background(), mk()) // duplicate settlement
+	tracker.UpdateUsage(context.Background(), settleLimits(store, "sk-bf-test", schemas.OpenAI, "gpt-4", mk()))
+	tracker.UpdateUsage(context.Background(), settleLimits(store, "sk-bf-test", schemas.OpenAI, "gpt-4", mk())) // duplicate settlement
 	time.Sleep(200 * time.Millisecond)
 
 	budgets := store.GetGovernanceData(context.Background()).Budgets
@@ -268,9 +250,6 @@ func TestUsageTracker_Idempotency_DifferentAttemptsBothBilled(t *testing.T) {
 
 	mk := func(attempt int, success bool, cost float64) *UsageUpdate {
 		return &UsageUpdate{
-			VirtualKey:    "sk-bf-test",
-			Provider:      schemas.OpenAI,
-			Model:         "gpt-4",
 			Success:       success,
 			TokensUsed:    100,
 			Cost:          cost,
@@ -280,8 +259,8 @@ func TestUsageTracker_Idempotency_DifferentAttemptsBothBilled(t *testing.T) {
 		}
 	}
 
-	tracker.UpdateUsage(context.Background(), mk(0, false, 4.0)) // failed attempt, partial usage
-	tracker.UpdateUsage(context.Background(), mk(1, true, 6.0))  // successful retry
+	tracker.UpdateUsage(context.Background(), settleLimits(store, "sk-bf-test", schemas.OpenAI, "gpt-4", mk(0, false, 4.0))) // failed attempt, partial usage
+	tracker.UpdateUsage(context.Background(), settleLimits(store, "sk-bf-test", schemas.OpenAI, "gpt-4", mk(1, true, 6.0)))  // successful retry
 	time.Sleep(200 * time.Millisecond)
 
 	budgets := store.GetGovernanceData(context.Background()).Budgets

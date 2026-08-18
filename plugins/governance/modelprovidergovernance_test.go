@@ -278,7 +278,7 @@ func TestStore_UpdateModelBudgetUsage_MultiBudget_BumpsAll(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	err = store.UpdateProviderAndModelBudgetUsageInMemory(context.Background(), "gpt-4", schemas.OpenAI, 7.5)
+	err = chargeDeploymentBudgets(store, context.Background(), "gpt-4", schemas.OpenAI, 7.5)
 	require.NoError(t, err)
 
 	for _, id := range []string{"b-day", "b-hour"} {
@@ -517,7 +517,7 @@ func TestStore_UpdateProviderBudgetUsage_NoConfig(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
-	err = store.UpdateProviderAndModelBudgetUsageInMemory(context.Background(), "", schemas.OpenAI, 10.0)
+	err = chargeDeploymentBudgets(store, context.Background(), "", schemas.OpenAI, 10.0)
 	assert.NoError(t, err, "Should not error when no provider config exists")
 }
 
@@ -531,7 +531,7 @@ func TestStore_UpdateProviderBudgetUsage_UpdatesUsage(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	err = store.UpdateProviderAndModelBudgetUsageInMemory(context.Background(), "", schemas.OpenAI, 10.0)
+	err = chargeDeploymentBudgets(store, context.Background(), "", schemas.OpenAI, 10.0)
 	assert.NoError(t, err, "Should successfully update provider budget usage")
 
 	// Verify usage was updated
@@ -539,7 +539,7 @@ func TestStore_UpdateProviderBudgetUsage_UpdatesUsage(t *testing.T) {
 	assert.NoError(t, err, "Should still be within limit after first update")
 
 	// Update again to exceed
-	err = store.UpdateProviderAndModelBudgetUsageInMemory(context.Background(), "", schemas.OpenAI, 95.0)
+	err = chargeDeploymentBudgets(store, context.Background(), "", schemas.OpenAI, 95.0)
 	assert.NoError(t, err, "Should successfully update provider budget usage even when exceeding")
 
 	// Now should be exceeded
@@ -557,7 +557,7 @@ func TestStore_UpdateProviderRateLimitUsage_NoConfig(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
-	err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "", schemas.OpenAI, 1000, true, true)
+	err = chargeDeploymentRateLimits(store, context.Background(), "", schemas.OpenAI, 1000, true, true)
 	assert.NoError(t, err, "Should not error when no provider config exists")
 }
 
@@ -571,7 +571,7 @@ func TestStore_UpdateProviderRateLimitUsage_UpdatesTokens(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "", schemas.OpenAI, 5000, true, false)
+	err = chargeDeploymentRateLimits(store, context.Background(), "", schemas.OpenAI, 5000, true, false)
 	assert.NoError(t, err, "Should successfully update provider token usage")
 
 	// Check that tokens were updated but requests were not
@@ -580,7 +580,7 @@ func TestStore_UpdateProviderRateLimitUsage_UpdatesTokens(t *testing.T) {
 	assert.Equal(t, DecisionAllow, decision)
 
 	// Update tokens to exceed
-	err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "", schemas.OpenAI, 6000, true, false)
+	err = chargeDeploymentRateLimits(store, context.Background(), "", schemas.OpenAI, 6000, true, false)
 	assert.NoError(t, err, "Should successfully update provider token usage even when exceeding")
 
 	// Now should be exceeded
@@ -602,7 +602,7 @@ func TestStore_UpdateProviderRateLimitUsage_UpdatesRequests(t *testing.T) {
 
 	// Update requests 500 times
 	for i := 0; i < 500; i++ {
-		err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "", schemas.OpenAI, 0, false, true)
+		err = chargeDeploymentRateLimits(store, context.Background(), "", schemas.OpenAI, 0, false, true)
 		assert.NoError(t, err, "Should successfully update provider request usage")
 	}
 
@@ -613,7 +613,7 @@ func TestStore_UpdateProviderRateLimitUsage_UpdatesRequests(t *testing.T) {
 
 	// Update 500 more times to exceed
 	for i := 0; i < 500; i++ {
-		err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "", schemas.OpenAI, 0, false, true)
+		err = chargeDeploymentRateLimits(store, context.Background(), "", schemas.OpenAI, 0, false, true)
 		assert.NoError(t, err, "Should successfully update provider request usage even when exceeding")
 	}
 
@@ -634,7 +634,7 @@ func TestStore_UpdateModelBudgetUsage_NoConfig(t *testing.T) {
 	require.NoError(t, err)
 
 	provider := schemas.OpenAI
-	err = store.UpdateProviderAndModelBudgetUsageInMemory(context.Background(), "gpt-4", provider, 10.0)
+	err = chargeDeploymentBudgets(store, context.Background(), "gpt-4", provider, 10.0)
 	assert.NoError(t, err, "Should not error when no model config exists")
 }
 
@@ -649,7 +649,7 @@ func TestStore_UpdateModelBudgetUsage_ModelOnly_UpdatesUsage(t *testing.T) {
 	require.NoError(t, err)
 
 	provider := schemas.OpenAI
-	err = store.UpdateProviderAndModelBudgetUsageInMemory(context.Background(), "gpt-4", provider, 10.0)
+	err = chargeDeploymentBudgets(store, context.Background(), "gpt-4", provider, 10.0)
 	assert.NoError(t, err, "Should successfully update model budget usage")
 
 	// Verify usage was updated
@@ -657,7 +657,7 @@ func TestStore_UpdateModelBudgetUsage_ModelOnly_UpdatesUsage(t *testing.T) {
 	assert.NoError(t, err, "Should still be within limit after first update")
 
 	// Update again to exceed
-	err = store.UpdateProviderAndModelBudgetUsageInMemory(context.Background(), "gpt-4", provider, 95.0)
+	err = chargeDeploymentBudgets(store, context.Background(), "gpt-4", provider, 95.0)
 	assert.NoError(t, err, "Should successfully update model budget usage even when exceeding")
 
 	// Now should be exceeded
@@ -682,7 +682,7 @@ func TestStore_UpdateModelBudgetUsage_ModelWithProvider_UpdatesBoth(t *testing.T
 	require.NoError(t, err)
 
 	provider := schemas.OpenAI
-	err = store.UpdateProviderAndModelBudgetUsageInMemory(context.Background(), "gpt-4", provider, 10.0)
+	err = chargeDeploymentBudgets(store, context.Background(), "gpt-4", provider, 10.0)
 	assert.NoError(t, err, "Should successfully update both model-only and model+provider budget usage")
 
 	// Both budgets should be updated
@@ -691,7 +691,7 @@ func TestStore_UpdateModelBudgetUsage_ModelWithProvider_UpdatesBoth(t *testing.T
 	assert.NoError(t, err, "Should still be within limit")
 
 	// Update to exceed model-only budget
-	err = store.UpdateProviderAndModelBudgetUsageInMemory(context.Background(), "gpt-4", provider, 95.0)
+	err = chargeDeploymentBudgets(store, context.Background(), "gpt-4", provider, 95.0)
 	assert.NoError(t, err, "Should successfully update model budget usage even when exceeding")
 
 	// Now model-only budget should be exceeded
@@ -710,7 +710,7 @@ func TestStore_UpdateModelRateLimitUsage_NoConfig(t *testing.T) {
 	require.NoError(t, err)
 
 	provider := schemas.OpenAI
-	err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "gpt-4", provider, 1000, true, true)
+	err = chargeDeploymentRateLimits(store, context.Background(), "gpt-4", provider, 1000, true, true)
 	assert.NoError(t, err, "Should not error when no model config exists")
 }
 
@@ -725,7 +725,7 @@ func TestStore_UpdateModelRateLimitUsage_ModelOnly_UpdatesUsage(t *testing.T) {
 	require.NoError(t, err)
 
 	provider := schemas.OpenAI
-	err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "gpt-4", provider, 5000, true, false)
+	err = chargeDeploymentRateLimits(store, context.Background(), "gpt-4", provider, 5000, true, false)
 	assert.NoError(t, err, "Should successfully update model token usage")
 
 	// Should still be within limit
@@ -734,7 +734,7 @@ func TestStore_UpdateModelRateLimitUsage_ModelOnly_UpdatesUsage(t *testing.T) {
 	assert.Equal(t, DecisionAllow, decision)
 
 	// Update to exceed
-	err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "gpt-4", provider, 6000, true, false)
+	err = chargeDeploymentRateLimits(store, context.Background(), "gpt-4", provider, 6000, true, false)
 	assert.NoError(t, err, "Should successfully update model token usage even when exceeding")
 
 	// Now should be exceeded
@@ -760,7 +760,7 @@ func TestStore_UpdateModelRateLimitUsage_ModelWithProvider_UpdatesUsage(t *testi
 	require.NoError(t, err)
 
 	provider := schemas.OpenAI
-	err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "gpt-4", provider, 5000, true, false)
+	err = chargeDeploymentRateLimits(store, context.Background(), "gpt-4", provider, 5000, true, false)
 	assert.NoError(t, err, "Should successfully update both model-only and model+provider token usage")
 
 	// Should still be within limit
@@ -769,7 +769,7 @@ func TestStore_UpdateModelRateLimitUsage_ModelWithProvider_UpdatesUsage(t *testi
 	assert.Equal(t, DecisionAllow, decision)
 
 	// Update to exceed model-only rate limit (should fail at model-only level)
-	err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "gpt-4", provider, 6000, true, false)
+	err = chargeDeploymentRateLimits(store, context.Background(), "gpt-4", provider, 6000, true, false)
 	assert.NoError(t, err, "Should successfully update model token usage even when exceeding")
 
 	// Now should be exceeded (model-only rate limit exceeded)
@@ -792,7 +792,7 @@ func TestStore_UpdateModelRateLimitUsage_ModelOnly_UpdatesUsage_RequestLimit(t *
 	provider := schemas.OpenAI
 	// Update requests 500 times
 	for range 500 {
-		err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "gpt-4", provider, 0, false, true)
+		err = chargeDeploymentRateLimits(store, context.Background(), "gpt-4", provider, 0, false, true)
 		assert.NoError(t, err, "Should successfully update model request usage")
 	}
 
@@ -803,7 +803,7 @@ func TestStore_UpdateModelRateLimitUsage_ModelOnly_UpdatesUsage_RequestLimit(t *
 
 	// Update 500 more times to exceed
 	for range 500 {
-		err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "gpt-4", provider, 0, false, true)
+		err = chargeDeploymentRateLimits(store, context.Background(), "gpt-4", provider, 0, false, true)
 		assert.NoError(t, err, "Should successfully update model request usage even when exceeding")
 	}
 
@@ -832,7 +832,7 @@ func TestStore_UpdateModelRateLimitUsage_ModelWithProvider_UpdatesUsage_RequestL
 	provider := schemas.OpenAI
 	// Update requests 500 times (should update both model-only and model+provider)
 	for range 500 {
-		err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "gpt-4", provider, 0, false, true)
+		err = chargeDeploymentRateLimits(store, context.Background(), "gpt-4", provider, 0, false, true)
 		assert.NoError(t, err, "Should successfully update both model-only and model+provider request usage")
 	}
 
@@ -843,7 +843,7 @@ func TestStore_UpdateModelRateLimitUsage_ModelWithProvider_UpdatesUsage_RequestL
 
 	// Update 500 more times to exceed model-only rate limit
 	for range 500 {
-		err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "gpt-4", provider, 0, false, true)
+		err = chargeDeploymentRateLimits(store, context.Background(), "gpt-4", provider, 0, false, true)
 		assert.NoError(t, err, "Should successfully update model request usage even when exceeding")
 	}
 
@@ -2087,6 +2087,15 @@ func TestPostHook_TracksVirtualKeyUsageWhenUserIDPresent(t *testing.T) {
 		},
 	}
 
+	// The funnel settles what this request answers to before anything is billed against it, so the test
+	// runs it — an update carrying no limits is billed nothing, by design.
+	_, shortCircuit, err := plugin.PreLLMHook(ctx, &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4"},
+	})
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit)
+
 	_, _, err = plugin.PostLLMHook(ctx, result, nil)
 	require.NoError(t, err)
 	plugin.wg.Wait()
@@ -2169,8 +2178,12 @@ func TestPostMCPHook_TracksVirtualKeyUsageWhenUserIDPresent(t *testing.T) {
 		},
 	}
 
-	_, _, err = plugin.PostMCPHook(ctx, resp, nil)
-	require.NoError(t, err)
+	// Evaluating the tool call settles the limits it answers to, and billing reads them from there. Tool
+	// execution names no provider and no model, so what it answers to is whatever funds the holder.
+	require.NotNil(t, resolveLimits(ctx, store, "", ""))
+
+	_, _, hookErr := plugin.PostMCPHook(ctx, resp, nil)
+	require.NoError(t, hookErr)
 	plugin.wg.Wait()
 
 	updated, exists := store.GetGovernanceData(context.Background()).RateLimits["vk-rl"]
@@ -2430,11 +2443,11 @@ func TestStore_UpdateModelBudgetUsage_CrossProviderModelMatch(t *testing.T) {
 	require.NoError(t, err)
 
 	// Update usage with prefixed model name
-	err = store.UpdateProviderAndModelBudgetUsageInMemory(context.Background(), "openai/gpt-4o", schemas.OpenRouter, 50.0)
+	err = chargeDeploymentBudgets(store, context.Background(), "openai/gpt-4o", schemas.OpenRouter, 50.0)
 	assert.NoError(t, err, "Should successfully update budget usage via cross-provider match")
 
 	// Now exceed the budget
-	err = store.UpdateProviderAndModelBudgetUsageInMemory(context.Background(), "openai/gpt-4o", schemas.OpenRouter, 55.0)
+	err = chargeDeploymentBudgets(store, context.Background(), "openai/gpt-4o", schemas.OpenRouter, 55.0)
 	assert.NoError(t, err)
 
 	// Budget should now be exceeded
@@ -2458,7 +2471,7 @@ func TestStore_UpdateModelRateLimitUsage_CrossProviderModelMatch(t *testing.T) {
 	require.NoError(t, err)
 
 	// Update token usage with prefixed model name
-	err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "openai/gpt-4o", schemas.OpenRouter, 100, true, false)
+	err = chargeDeploymentRateLimits(store, context.Background(), "openai/gpt-4o", schemas.OpenRouter, 100, true, false)
 	assert.NoError(t, err, "Should successfully update rate limit via cross-provider match")
 
 	// Rate limit should now be exceeded
@@ -2576,7 +2589,7 @@ func TestStore_UpdateProviderModelUsage_BumpsAllModelsWildcard(t *testing.T) {
 	require.Equal(t, DecisionAllow, decision)
 
 	// Record usage for a (different) model on the provider — must bump the "*:openai" config.
-	require.NoError(t, store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "gpt-4o", schemas.OpenAI, 150, true, true))
+	require.NoError(t, chargeDeploymentRateLimits(store, context.Background(), "gpt-4o", schemas.OpenAI, 150, true, true))
 
 	// Now the all-models rate limit trips for any model on the provider.
 	decision, err = checkDeploymentRateLimits(store, context.Background(), schemas.OpenAI, "gpt-4o-mini", nil, nil)
@@ -2604,7 +2617,7 @@ func TestStore_CheckVirtualKeyScopedModelBudget_NoConfig(t *testing.T) {
 	require.NoError(t, err)
 
 	vk := buildVirtualKey("vk1", "vk1-value", "vk1", true)
-	decision, err := checkScopedBudgets(store, context.Background(), grants.GrantType(configstoreTables.ModelConfigScopeVirtualKey), vk.ID, schemas.OpenAI, "gpt-4", nil)
+	decision, err := checkScopedBudgets(store, context.Background(), grants.GrantTypeVirtualKey, vk.ID, schemas.OpenAI, "gpt-4", nil)
 	assert.NoError(t, err)
 	assert.Equal(t, DecisionAllow, decision)
 }
@@ -2620,7 +2633,7 @@ func TestStore_CheckVirtualKeyScopedModelBudget_WithinLimit(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	_, err = checkScopedBudgets(store, context.Background(), grants.GrantType(configstoreTables.ModelConfigScopeVirtualKey), vk.ID, schemas.OpenAI, "gpt-4", nil)
+	_, err = checkScopedBudgets(store, context.Background(), grants.GrantTypeVirtualKey, vk.ID, schemas.OpenAI, "gpt-4", nil)
 	assert.NoError(t, err, "Should allow when per-VK model budget is within limit")
 }
 
@@ -2635,7 +2648,7 @@ func TestStore_CheckVirtualKeyScopedModelBudget_Exceeded(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	_, err = checkScopedBudgets(store, context.Background(), grants.GrantType(configstoreTables.ModelConfigScopeVirtualKey), vk.ID, schemas.OpenAI, "gpt-4", nil)
+	_, err = checkScopedBudgets(store, context.Background(), grants.GrantTypeVirtualKey, vk.ID, schemas.OpenAI, "gpt-4", nil)
 	assert.Error(t, err, "Should reject when per-VK model budget is exceeded")
 	assert.Contains(t, err.Error(), "budget exceeded")
 }
@@ -2653,7 +2666,7 @@ func TestStore_CheckVirtualKeyScopedModelBudget_OnlyAppliesToMatchingVK(t *testi
 	require.NoError(t, err)
 
 	// A request made with a DIFFERENT virtual key must not be affected by vk1's scoped config.
-	decision, err := checkScopedBudgets(store, context.Background(), grants.GrantType(configstoreTables.ModelConfigScopeVirtualKey), otherVK.ID, schemas.OpenAI, "gpt-4", nil)
+	decision, err := checkScopedBudgets(store, context.Background(), grants.GrantTypeVirtualKey, otherVK.ID, schemas.OpenAI, "gpt-4", nil)
 	assert.NoError(t, err)
 	assert.Equal(t, DecisionAllow, decision)
 }
@@ -2675,10 +2688,10 @@ func TestStore_ScopedAndGlobalModelBudgetsBothApply(t *testing.T) {
 
 	// The holder has no model config of its own, so only the deployment's applies — and it refuses.
 	budgets, _ := store.ProviderAndModelLimits(context.Background(), &grants.Grant{
-		Type: grants.GrantType(configstoreTables.ModelConfigScopeVirtualKey), ID: vk.ID, IsActive: true,
+		Type: grants.GrantTypeVirtualKey, ID: vk.ID, IsActive: true,
 	}, schemas.OpenAI, "gpt-4")
 	require.Len(t, budgets, 1, "the deployment's model budget, and nothing of the holder's")
-	assert.Equal(t, LimitHolderModelConfig, budgets[0].HolderKind)
+	assert.Equal(t, grants.LimitHolderModelConfig, budgets[0].HolderKind)
 
 	_, err = store.CheckBudgets(context.Background(), budgets, nil)
 	assert.Error(t, err, "the deployment's exhausted model budget refuses the request")
@@ -2695,7 +2708,7 @@ func TestStore_CheckVirtualKeyScopedModelRateLimit_TokenLimitExceeded(t *testing
 	}, nil)
 	require.NoError(t, err)
 
-	decision, err := checkScopedRateLimits(store, context.Background(), grants.GrantType(configstoreTables.ModelConfigScopeVirtualKey), vk.ID, schemas.OpenAI, "gpt-4", nil, nil)
+	decision, err := checkScopedRateLimits(store, context.Background(), grants.GrantTypeVirtualKey, vk.ID, schemas.OpenAI, "gpt-4", nil, nil)
 	assert.Error(t, err, "Should reject when per-VK model token limit is exceeded")
 	assert.Equal(t, DecisionTokenLimited, decision)
 }
@@ -2711,7 +2724,7 @@ func TestStore_CheckVirtualKeyScopedModelRateLimit_WithinLimit(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	decision, err := checkScopedRateLimits(store, context.Background(), grants.GrantType(configstoreTables.ModelConfigScopeVirtualKey), vk.ID, schemas.OpenAI, "gpt-4", nil, nil)
+	decision, err := checkScopedRateLimits(store, context.Background(), grants.GrantTypeVirtualKey, vk.ID, schemas.OpenAI, "gpt-4", nil, nil)
 	assert.NoError(t, err)
 	assert.Equal(t, DecisionAllow, decision)
 }
@@ -2731,16 +2744,16 @@ func TestStore_VirtualKeyScopedModel_RecordThenCheck_TokenLimitTrips(t *testing.
 	require.NoError(t, err)
 
 	// Initially within limit.
-	decision, err := checkScopedRateLimits(store, context.Background(), grants.GrantType(configstoreTables.ModelConfigScopeVirtualKey), vk.ID, schemas.Anthropic, "claude-opus-4-7", nil, nil)
+	decision, err := checkScopedRateLimits(store, context.Background(), grants.GrantTypeVirtualKey, vk.ID, schemas.Anthropic, "claude-opus-4-7", nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, DecisionAllow, decision)
 
 	// Record usage above the limit (what the tracker does post-response). Provider differs from
 	// the config's (which is all-providers), exercising the model-only scoped lookup.
-	require.NoError(t, store.UpdateScopedModelRateLimitUsageInMemory(context.Background(), configstoreTables.ModelConfigScopeVirtualKey, vk.ID, "claude-opus-4-7", schemas.Anthropic, 150, true, true))
+	require.NoError(t, chargeScopedRateLimits(store, context.Background(), configstoreTables.ModelConfigScopeVirtualKey, vk.ID, "claude-opus-4-7", schemas.Anthropic, 150, true, true))
 
 	// Now the scoped check must trip.
-	decision, err = checkScopedRateLimits(store, context.Background(), grants.GrantType(configstoreTables.ModelConfigScopeVirtualKey), vk.ID, schemas.Anthropic, "claude-opus-4-7", nil, nil)
+	decision, err = checkScopedRateLimits(store, context.Background(), grants.GrantTypeVirtualKey, vk.ID, schemas.Anthropic, "claude-opus-4-7", nil, nil)
 	assert.Error(t, err)
 	assert.Equal(t, DecisionTokenLimited, decision)
 }
@@ -2756,13 +2769,13 @@ func TestStore_VirtualKeyScopedModel_RecordThenCheck_BudgetTrips(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	decision, err := checkScopedBudgets(store, context.Background(), grants.GrantType(configstoreTables.ModelConfigScopeVirtualKey), vk.ID, schemas.Anthropic, "claude-opus-4-7", nil)
+	decision, err := checkScopedBudgets(store, context.Background(), grants.GrantTypeVirtualKey, vk.ID, schemas.Anthropic, "claude-opus-4-7", nil)
 	require.NoError(t, err)
 	require.Equal(t, DecisionAllow, decision)
 
-	require.NoError(t, store.UpdateScopedModelBudgetUsageInMemory(context.Background(), configstoreTables.ModelConfigScopeVirtualKey, vk.ID, "claude-opus-4-7", schemas.Anthropic, 15.0))
+	require.NoError(t, chargeScopedBudgets(store, context.Background(), configstoreTables.ModelConfigScopeVirtualKey, vk.ID, "claude-opus-4-7", schemas.Anthropic, 15.0))
 
-	_, err = checkScopedBudgets(store, context.Background(), grants.GrantType(configstoreTables.ModelConfigScopeVirtualKey), vk.ID, schemas.Anthropic, "claude-opus-4-7", nil)
+	_, err = checkScopedBudgets(store, context.Background(), grants.GrantTypeVirtualKey, vk.ID, schemas.Anthropic, "claude-opus-4-7", nil)
 	assert.Error(t, err, "scoped budget should trip once usage exceeds the cap")
 }
 
@@ -2785,8 +2798,8 @@ func TestStore_VKGovernanceBudget_NoDoubleCount(t *testing.T) {
 	require.NoError(t, err)
 
 	// Mirror tracker.UpdateUsage: scoped-model path + hierarchy path, same request/cost.
-	require.NoError(t, store.UpdateScopedModelBudgetUsageInMemory(context.Background(), configstoreTables.ModelConfigScopeVirtualKey, vk.ID, "gpt-4", schemas.OpenAI, 10.0))
-	require.NoError(t, store.UpdateVirtualKeyBudgetUsageInMemory(context.Background(), vk, schemas.OpenAI, 10.0))
+	require.NoError(t, chargeScopedBudgets(store, context.Background(), configstoreTables.ModelConfigScopeVirtualKey, vk.ID, "gpt-4", schemas.OpenAI, 10.0))
+	require.NoError(t, chargeGrantBudgets(store, context.Background(), vk, schemas.OpenAI, 10.0))
 
 	b := store.LoadBudget(context.Background(), "vkb")
 	require.NotNil(t, b)
@@ -2818,6 +2831,6 @@ func TestStore_CheckVirtualKeyScopedModelBudget_MultiBudget_OneExceededBlocks(t 
 	}, nil)
 	require.NoError(t, err)
 
-	_, err = checkScopedBudgets(store, context.Background(), grants.GrantType(configstoreTables.ModelConfigScopeVirtualKey), vk.ID, schemas.OpenAI, "gpt-4", nil)
+	_, err = checkScopedBudgets(store, context.Background(), grants.GrantTypeVirtualKey, vk.ID, schemas.OpenAI, "gpt-4", nil)
 	assert.Error(t, err, "an exceeded budget among several on a VK-scoped config must block")
 }

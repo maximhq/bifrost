@@ -859,7 +859,7 @@ func TestFilterModelsForAccess(t *testing.T) {
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
 
-		filtered := plugin.filterModelsForAccess(ctx, models)
+		filtered := plugin.filterModelsForAccess(plugin.ensureEffectiveAccess(ctx), models)
 
 		ids := make([]string, 0, len(filtered))
 		for _, model := range filtered {
@@ -876,7 +876,7 @@ func TestFilterModelsForAccess(t *testing.T) {
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-unknown")
 
-		filtered := plugin.filterModelsForAccess(ctx, models)
+		filtered := plugin.filterModelsForAccess(plugin.ensureEffectiveAccess(ctx), models)
 
 		assert.NotNil(t, filtered)
 		assert.Empty(t, filtered)
@@ -887,7 +887,7 @@ func TestFilterModelsForAccess(t *testing.T) {
 		// the opposite of the case above, and the reason the two are told apart by what was presented.
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
-		filtered := plugin.filterModelsForAccess(ctx, models)
+		filtered := plugin.filterModelsForAccess(plugin.ensureEffectiveAccess(ctx), models)
 
 		assert.Len(t, filtered, len(models))
 	})
