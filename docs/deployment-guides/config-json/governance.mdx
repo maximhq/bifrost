@@ -95,7 +95,7 @@ Virtual keys are issued to clients and act as scoped API tokens. Each key specif
 |-------|----------|-------------|
 | `provider` | Yes | Provider name (e.g. `"openai"`) |
 | `allowed_models` | No | Model allow-list. `["*"]` = all models; `[]` = deny all |
-| `key_ids` | No | Provider key names allowed for this VK. `["*"]` = all keys; `[]` = deny all. Use key `name` values (not UUIDs) in `config.json` |
+| `key_ids` | No | Provider keys allowed for this VK. `["*"]` = all keys; `[]` = deny all. Entries may be key `name` values (recommended for GitOps, stable across environments) or key `key_id` UUIDs |
 | `weight` | No | Load-balancing weight when multiple provider configs are present |
 | `rate_limit_id` | No | Attach a per-provider-config rate limit |
 
