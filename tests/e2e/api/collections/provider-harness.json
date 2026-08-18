@@ -131329,6 +131329,292 @@
           ]
         }
       ]
+    },
+    {
+      "name": "54. Gemini 3 thinkingLevel per-model clamp + thinking floor",
+      "description": "Gemini 3 controls reasoning depth with generationConfig.thinkingConfig.thinkingLevel, and the set of levels is per-model rather than per-family: gemini-3.7-flash accepts low/medium/high but NOT minimal, while gemini-3.6-flash accepts all four. Gemini 3 also has no \"off\" rung - thinkingBudget is the pre-3.0 control surface, and zeroing it suppresses the internal reasoning Gemini 3 relies on to select functions, which surfaced as \"MCP tools advertised but never invoked\" after moving from gemini-2.5-pro. Bifrost previously branched only on whether the model name contained \"pro\", which emitted \"minimal\" to models that reject it and silently upgraded \"medium\" to \"high\" on gemini-3.1-pro. These cases assert the OUTBOUND payload via x-bf-send-back-raw-request rather than inferring from model behaviour, so they are deterministic. Levels per model: https://ai.google.dev/gemini-api/docs/thinking#thinking-levels ThinkingLevel enum: https://ai.google.dev/api/generate-content#ThinkingLevel Thinking improves Gemini 3 function calling: https://ai.google.dev/gemini-api/docs/function-calling#thinking",
+      "item": [
+        {
+          "name": "gemini-3.7-flash reasoning_effort minimal clamps thinkingLevel to low (chat completions)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-3.7-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Tokyo? Use the get_weather tool.\"\n    }\n  ],\n  \"reasoning_effort\": \"minimal\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get the current weather for a city\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ],\n  \"tool_choice\": \"required\",\n  \"max_completion_tokens\": 256\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('gemini-3.7-flash minimal clamp: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var ef = body.extra_fields || {};",
+                  "var rr = ef.raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('gemini-3.7-flash minimal clamp: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var tc = (rr.generationConfig || {}).thinkingConfig || {};",
+                  "var tcs = JSON.stringify(tc);",
+                  "pm.test('gemini-3.7-flash: thinkingLevel clamped to low (model rejects minimal)', function () {",
+                  "  pm.expect(tc.thinkingLevel, 'thinkingConfig: ' + tcs).to.eql('low');",
+                  "});",
+                  "pm.test('gemini-3.7-flash: minimal never reaches the wire', function () {",
+                  "  pm.expect(tc.thinkingLevel, 'thinkingConfig: ' + tcs).to.not.eql('minimal');",
+                  "});",
+                  "pm.test('gemini-3.7-flash: thinkingBudget not sent alongside thinkingLevel', function () {",
+                  "  pm.expect(tc.thinkingBudget === undefined || tc.thinkingBudget === null, 'thinkingConfig: ' + tcs).to.be.true;",
+                  "});",
+                  "var toolCalls = [];",
+                  "(body.choices || []).forEach(function (ch) {",
+                  "  var m = ch.message || ch.delta || {};",
+                  "  (m.tool_calls || []).forEach(function (t) { toolCalls.push(t); });",
+                  "});",
+                  "pm.test('gemini-3.7-flash minimal clamp: function tool actually invoked', function () {",
+                  "  pm.expect(toolCalls.length, 'no tool_calls returned: ' + pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini-3.7-flash reasoning_effort none keeps thinking on and still calls tools (chat completions)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-3.7-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Tokyo? Use the get_weather tool.\"\n    }\n  ],\n  \"reasoning_effort\": \"none\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get the current weather for a city\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ],\n  \"tool_choice\": \"required\",\n  \"max_completion_tokens\": 256\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('gemini-3.7-flash effort none: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var ef = body.extra_fields || {};",
+                  "var rr = ef.raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('gemini-3.7-flash effort none: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var tc = (rr.generationConfig || {}).thinkingConfig || {};",
+                  "var tcs = JSON.stringify(tc);",
+                  "pm.test('gemini-3.7-flash: thinking not disabled via thinkingBudget 0', function () {",
+                  "  pm.expect(tc.thinkingBudget, 'thinkingConfig: ' + tcs).to.not.eql(0);",
+                  "});",
+                  "pm.test('gemini-3.7-flash: effort none floors at the lowest supported level', function () {",
+                  "  pm.expect(tc.thinkingLevel, 'thinkingConfig: ' + tcs).to.eql('low');",
+                  "});",
+                  "var toolCalls = [];",
+                  "(body.choices || []).forEach(function (ch) {",
+                  "  var m = ch.message || ch.delta || {};",
+                  "  (m.tool_calls || []).forEach(function (t) { toolCalls.push(t); });",
+                  "});",
+                  "pm.test('gemini-3.7-flash: function tool still invoked with effort none', function () {",
+                  "  pm.expect(toolCalls.length, 'no tool_calls returned: ' + pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini-3.7-flash reasoning effort minimal clamps to low on responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-3.7-flash\",\n  \"input\": \"What is the weather in Tokyo? Use the get_weather tool.\",\n  \"reasoning\": {\n    \"effort\": \"minimal\"\n  },\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ],\n  \"tool_choice\": \"required\",\n  \"max_output_tokens\": 256\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('gemini-3.7-flash responses minimal clamp: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var ef = body.extra_fields || {};",
+                  "var rr = ef.raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('gemini-3.7-flash responses minimal clamp: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var tc = (rr.generationConfig || {}).thinkingConfig || {};",
+                  "var tcs = JSON.stringify(tc);",
+                  "pm.test('gemini-3.7-flash responses: thinkingLevel clamped to low', function () {",
+                  "  pm.expect(tc.thinkingLevel, 'thinkingConfig: ' + tcs).to.eql('low');",
+                  "});",
+                  "pm.test('gemini-3.7-flash responses: minimal never reaches the wire', function () {",
+                  "  pm.expect(tc.thinkingLevel, 'thinkingConfig: ' + tcs).to.not.eql('minimal');",
+                  "});",
+                  "var fnCalls = [];",
+                  "(body.output || []).forEach(function (o) {",
+                  "  if (o && o.type === 'function_call') { fnCalls.push(o); }",
+                  "});",
+                  "pm.test('gemini-3.7-flash responses minimal clamp: function tool actually invoked', function () {",
+                  "  pm.expect(fnCalls.length, 'no function_call output returned: ' + pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini-3.6-flash keeps thinkingLevel minimal (clamp must not over-correct)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-3.6-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Tokyo? Use the get_weather tool.\"\n    }\n  ],\n  \"reasoning_effort\": \"minimal\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get the current weather for a city\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ],\n  \"tool_choice\": \"required\",\n  \"max_completion_tokens\": 256\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('gemini-3.6-flash minimal preserved: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var ef = body.extra_fields || {};",
+                  "var rr = ef.raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('gemini-3.6-flash minimal preserved: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var tc = (rr.generationConfig || {}).thinkingConfig || {};",
+                  "var tcs = JSON.stringify(tc);",
+                  "// Negative control: gemini-3.6-flash DOES support minimal, so a fix that blanket-maps",
+                  "// minimal -> low for every Gemini 3 model must fail here.",
+                  "pm.test('gemini-3.6-flash: minimal preserved (model supports it)', function () {",
+                  "  pm.expect(tc.thinkingLevel, 'thinkingConfig: ' + tcs).to.eql('minimal');",
+                  "});",
+                  "var toolCalls = [];",
+                  "(body.choices || []).forEach(function (ch) {",
+                  "  var m = ch.message || ch.delta || {};",
+                  "  (m.tool_calls || []).forEach(function (t) { toolCalls.push(t); });",
+                  "});",
+                  "pm.test('gemini-3.6-flash minimal preserved: function tool actually invoked', function () {",
+                  "  pm.expect(toolCalls.length, 'no tool_calls returned: ' + pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

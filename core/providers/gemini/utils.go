@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -172,7 +173,118 @@ func canDisableThinkingWithBudget(model string) bool {
 	return !strings.Contains(strings.ToLower(model), "gemini-2.5-pro")
 }
 
+// geminiThinkingLevels is the thinkingLevel ladder ordered from least to most
+// thinking. Source: https://ai.google.dev/api/generate-content#ThinkingLevel
+var geminiThinkingLevels = []string{"minimal", "low", "medium", "high"}
+
+// geminiThinkingLevelSupport records which rungs of that ladder each model actually
+// implements. The sets are not uniform across the Gemini 3 family - gemini-3.7-flash
+// has no "minimal", gemini-3-pro-preview has neither "minimal" nor "medium" - and the
+// API rejects a level the model does not implement, so an effort has to be clamped per
+// model rather than per family.
+// Source: https://ai.google.dev/gemini-api/docs/thinking#thinking-levels
+// Matching is first-prefix-wins, so longer prefixes are listed before the shorter
+// prefixes they would otherwise be shadowed by.
+var geminiThinkingLevelSupport = []struct {
+	prefix string
+	levels []string
+}{
+	{"gemini-3.1-flash-lite-image", []string{"minimal", "high"}},
+	{"gemini-3.7-flash", []string{"low", "medium", "high"}},
+	{"gemini-3.6-flash", []string{"minimal", "low", "medium", "high"}},
+	{"gemini-3.5-flash-lite", []string{"minimal", "low", "medium", "high"}},
+	{"gemini-3.5-flash", []string{"minimal", "low", "medium", "high"}},
+	{"gemini-3.1-pro", []string{"low", "medium", "high"}},
+	{"gemini-3-flash", []string{"minimal", "low", "medium", "high"}},
+	{"gemini-3-pro", []string{"low", "high"}},
+}
+
+// defaultGemini3ThinkingLevels is the fallback for a Gemini 3 model not yet in the table.
+//
+// It omits "minimal" because that is the rung the text models most often lack: of the
+// documented Gemini 3 text models, gemini-3.7-flash, gemini-3.1-pro-preview and
+// gemini-3-pro-preview all reject it, so defaulting to it would send an unreleased model
+// a level it is more likely than not to refuse.
+//
+// This is a heuristic, not a guarantee -- there is no rung every documented Gemini 3 model
+// accepts. gemini-3.1-flash-lite-image implements only "minimal" and "high", so even "low"
+// is not universal, which is why that model has its own entry above rather than relying on
+// this fallback. Any model whose set genuinely differs needs an explicit entry too.
+// TestNotEveryDocumentedGemini3ModelAcceptsLow pins that counterexample.
+// Source: https://ai.google.dev/gemini-api/docs/thinking#thinking-levels
+var defaultGemini3ThinkingLevels = []string{"low", "medium", "high"}
+
+// supportedThinkingLevels returns the thinkingLevel values model accepts.
+func supportedThinkingLevels(model string) []string {
+	modelLower := strings.ToLower(model)
+	for _, entry := range geminiThinkingLevelSupport {
+		if strings.Contains(modelLower, entry.prefix) {
+			return entry.levels
+		}
+	}
+	return defaultGemini3ThinkingLevels
+}
+
+// lowestThinkingLevel returns the least amount of thinking model can be asked for.
+// Gemini 3 has no "off" switch, so this is the floor a "none" effort lands on.
+func lowestThinkingLevel(model string) string {
+	levels := supportedThinkingLevels(model)
+	if len(levels) == 0 {
+		return "low"
+	}
+	return levels[0]
+}
+
+// clampThinkingLevel snaps a requested level onto the nearest rung model implements.
+// Ties break upward so a clamp never silently spends less reasoning than asked for.
+func clampThinkingLevel(level string, model string) string {
+	supported := supportedThinkingLevels(model)
+	if slices.Contains(supported, level) {
+		return level
+	}
+	want := slices.Index(geminiThinkingLevels, level)
+	if want < 0 {
+		return level
+	}
+	best := ""
+	bestDistance := 0
+	for _, candidate := range supported {
+		idx := slices.Index(geminiThinkingLevels, candidate)
+		if idx < 0 {
+			continue
+		}
+		distance := idx - want
+		if distance < 0 {
+			distance = -distance
+		}
+		if best == "" || distance < bestDistance || (distance == bestDistance && idx > want) {
+			best = candidate
+			bestDistance = distance
+		}
+	}
+	if best == "" {
+		return level
+	}
+	return best
+}
+
 func setThinkingBudgetZeroIfSupported(config *GenerationConfig, model string) {
+	// Gemini 3 cannot turn thinking off. Depth is controlled by thinkingLevel and the
+	// floor is the model's lowest supported rung, so a "none" effort clamps to that rung
+	// instead of zeroing the budget. Sending thinkingBudget:0 here used the pre-3.0
+	// control surface and suppressed the internal reasoning Gemini 3 leans on to pick
+	// functions, which surfaced as tools being advertised but never called.
+	// Docs: https://ai.google.dev/gemini-api/docs/thinking#thinking-levels
+	//       https://ai.google.dev/gemini-api/docs/function-calling#thinking
+	if isGemini3Plus(model) {
+		if config.ThinkingConfig == nil {
+			config.ThinkingConfig = &GenerationConfigThinkingConfig{}
+		}
+		config.ThinkingConfig.IncludeThoughts = false
+		config.ThinkingConfig.ThinkingBudget = nil
+		config.ThinkingConfig.ThinkingLevel = schemas.Ptr(lowestThinkingLevel(model))
+		return
+	}
 	if !canDisableThinkingWithBudget(model) {
 		config.ThinkingConfig = nil
 		return
@@ -184,35 +296,26 @@ func setThinkingBudgetZeroIfSupported(config *GenerationConfig, model string) {
 	config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(0))
 }
 
-// effortToThinkingLevel converts reasoning effort to Gemini ThinkingLevel string
-// Pro models only support "low" or "high"
-// Other models support "minimal", "low", "medium", and "high"
+// effortToThinkingLevel converts reasoning effort to a Gemini ThinkingLevel string,
+// clamped to the levels the target model implements. Returns "" for "none", which
+// callers handle through setThinkingBudgetZeroIfSupported instead.
 func effortToThinkingLevel(effort string, model string) string {
-	isPro := strings.Contains(strings.ToLower(model), "pro")
-
+	var desired string
 	switch effort {
 	case "none":
 		return "" // Empty string for no thinking
 	case "minimal":
-		if isPro {
-			return "low" // Pro models don't support minimal, use low
-		}
-		return "minimal"
+		desired = "minimal"
 	case "low":
-		return "low"
+		desired = "low"
 	case "medium":
-		if isPro {
-			return "high" // Pro models don't support medium, use high
-		}
-		return "medium"
+		desired = "medium"
 	case "high", "xhigh", "max":
-		return "high"
+		desired = "high"
 	default:
-		if isPro {
-			return "high"
-		}
-		return "medium"
+		desired = "medium"
 	}
+	return clampThinkingLevel(desired, model)
 }
 
 func getThinkingBudgetRange(model string, defaultMaxTokens int) thinkingBudgetRange {
@@ -1232,8 +1335,9 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 			// User provided effort only (no max_tokens)
 			if supportsLevel {
 				// Gemini 3.0+ - use thinkingLevel (more native)
-				level := effortToThinkingLevel(*params.Reasoning.Effort, model)
-				config.ThinkingConfig.ThinkingLevel = &level
+				if level := effortToThinkingLevel(*params.Reasoning.Effort, model); level != "" {
+					config.ThinkingConfig.ThinkingLevel = &level
+				}
 			} else {
 				maxTokens := providerUtils.GetMaxOutputTokensOrDefault(model, DefaultCompletionMaxTokens)
 				if config.MaxOutputTokens > 0 {

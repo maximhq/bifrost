@@ -3788,7 +3788,9 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 			// User provided effort only (no max_tokens)
 			if supportsLevel {
 				// Gemini 3.0+ - use thinkingLevel (more native)
-				config.ThinkingConfig.ThinkingLevel = schemas.Ptr(effortToThinkingLevel(*params.Reasoning.Effort, capModel))
+				if level := effortToThinkingLevel(*params.Reasoning.Effort, capModel); level != "" {
+					config.ThinkingConfig.ThinkingLevel = schemas.Ptr(level)
+				}
 			} else {
 				maxTokens := providerUtils.GetMaxOutputTokensOrDefault(capModel, DefaultCompletionMaxTokens)
 				if config.MaxOutputTokens > 0 {
