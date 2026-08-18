@@ -4555,11 +4555,7 @@ func (bifrost *Bifrost) SelectKeyForProviderRequestType(ctx *schemas.BifrostCont
 	if ctx == nil {
 		ctx = bifrost.ctx
 	}
-	baseProvider := providerKey
-	if config, err := bifrost.account.GetConfigForProvider(providerKey); err == nil && config != nil &&
-		config.CustomProviderConfig != nil && config.CustomProviderConfig.BaseProviderType != "" {
-		baseProvider = config.CustomProviderConfig.BaseProviderType
-	}
+	baseProvider := bifrost.baseProviderTypeFor(providerKey)
 	supportedKeys, _, err := bifrost.selectKeyFromProviderForModelWithPool(ctx, requestType, providerKey, model, baseProvider)
 	if err != nil {
 		return schemas.Key{}, err
@@ -4571,6 +4567,19 @@ func (bifrost *Bifrost) SelectKeyForProviderRequestType(ctx *schemas.BifrostCont
 		return supportedKeys[0], nil
 	}
 	return bifrost.keySelector(ctx, supportedKeys, providerKey, model)
+}
+
+// baseProviderTypeFor resolves a custom provider key to the built-in provider
+// type it wraps. Standard providers resolve to themselves.
+func (bifrost *Bifrost) baseProviderTypeFor(providerKey schemas.ModelProvider) schemas.ModelProvider {
+	if bifrost == nil || bifrost.account == nil {
+		return providerKey
+	}
+	if config, err := bifrost.account.GetConfigForProvider(providerKey); err == nil && config != nil &&
+		config.CustomProviderConfig != nil && config.CustomProviderConfig.BaseProviderType != "" {
+		return config.CustomProviderConfig.BaseProviderType
+	}
+	return providerKey
 }
 
 // ComputeRawStorageForProvider determines whether raw request/response payloads should be
@@ -5367,9 +5376,11 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	return nil, primaryErr
 }
 
-// finishWithTerminalError gives every error that terminates an attempt the same
-// post-hook recovery semantics. If hooks suppress the error without supplying a
-// response, the original error remains authoritative.
+// finishWithTerminalError stamps request metadata on a freshly created terminal
+// error (plugin short-circuit, request-policy rejection) and then runs post-hook
+// recovery for it. Errors produced by the provider worker already carry
+// alias-resolved metadata and routing info; route those through
+// recoverFromTerminalError directly so post-hooks observe the worker's fields.
 func finishWithTerminalError(
 	ctx *schemas.BifrostContext,
 	pipeline *PluginPipeline,
@@ -5378,9 +5389,25 @@ func finishWithTerminalError(
 	requestType schemas.RequestType,
 	provider schemas.ModelProvider,
 	model string,
-	streaming bool,
 ) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	originalErr.PopulateExtraFields(requestType, provider, model, model)
+	return recoverFromTerminalError(ctx, pipeline, originalErr, preCount, requestType, provider, model)
+}
+
+// recoverFromTerminalError gives every error that terminates an attempt the same
+// post-hook recovery semantics. If hooks suppress the error without supplying a
+// response, the original error remains authoritative. Streaming request types
+// additionally mark the stream end and finalize aggregated post-hook spans.
+func recoverFromTerminalError(
+	ctx *schemas.BifrostContext,
+	pipeline *PluginPipeline,
+	originalErr *schemas.BifrostError,
+	preCount int,
+	requestType schemas.RequestType,
+	provider schemas.ModelProvider,
+	model string,
+) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	streaming := IsStreamRequestType(requestType)
 	if streaming {
 		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 	}
@@ -5459,7 +5486,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		}
 		// Handle short-circuit with error
 		if shortCircuit.Error != nil {
-			return finishWithTerminalError(ctx, pipeline, shortCircuit.Error, preCount, req.RequestType, provider, model, false)
+			return finishWithTerminalError(ctx, pipeline, shortCircuit.Error, preCount, req.RequestType, provider, model)
 		}
 	}
 	if preReq == nil {
@@ -5470,7 +5497,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 
 	provider, model, _ = preReq.GetRequestFields()
 	if bifrostErr := bifrost.enforceSingleToolConstraint(ctx, preReq); bifrostErr != nil {
-		return finishWithTerminalError(ctx, pipeline, bifrostErr, preCount, preReq.RequestType, provider, model, false)
+		return finishWithTerminalError(ctx, pipeline, bifrostErr, preCount, preReq.RequestType, provider, model)
 	}
 
 	msg := bifrost.getChannelMessage(*preReq)
@@ -5577,14 +5604,12 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		}
 		return resp, nil
 	case bifrostErrVal := <-msg.Err:
-		bifrostErrPtr := &bifrostErrVal
-		resp, bifrostErrPtr = pipeline.RunPostLLMHooks(msg.Context, nil, bifrostErrPtr, pluginCount)
-		if bifrostErrPtr != nil {
-			bifrostErrPtr.PopulateExtraFields(req.RequestType, provider, model, model)
-		} else if resp != nil {
-			resp.PopulateExtraFields(req.RequestType, provider, model, model)
-		}
-		drainAndAttachPluginLogs(msg.Context)
+		// The worker already populated ExtraFields (alias-resolved model) and
+		// routing info on this error; run recovery without re-stamping it so
+		// post-hooks observe the worker's metadata, and keep the original error
+		// authoritative when hooks return (nil, nil).
+		var bifrostErrPtr *schemas.BifrostError
+		resp, bifrostErrPtr = recoverFromTerminalError(msg.Context, pipeline, &bifrostErrVal, pluginCount, req.RequestType, provider, model)
 		bifrost.releaseChannelMessage(msg)
 		// Strip raw fields on error path too.
 		dropReq, _ := ctx.Value(schemas.BifrostContextKeyDropRawRequestFromClient).(bool)
@@ -5797,7 +5822,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		}
 		// Handle short-circuit with error
 		if shortCircuit.Error != nil {
-			resp, bifrostErr := finishWithTerminalError(ctx, pipeline, shortCircuit.Error, preCount, req.RequestType, provider, model, true)
+			resp, bifrostErr := finishWithTerminalError(ctx, pipeline, shortCircuit.Error, preCount, req.RequestType, provider, model)
 			if bifrostErr != nil {
 				return nil, bifrostErr
 			}
@@ -5812,7 +5837,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 
 	provider, model, _ = preReq.GetRequestFields()
 	if bifrostErr := bifrost.enforceSingleToolConstraint(ctx, preReq); bifrostErr != nil {
-		recoveredResp, recoveredErr := finishWithTerminalError(ctx, pipeline, bifrostErr, preCount, preReq.RequestType, provider, model, true)
+		recoveredResp, recoveredErr := finishWithTerminalError(ctx, pipeline, bifrostErr, preCount, preReq.RequestType, provider, model)
 		if recoveredErr != nil {
 			return nil, recoveredErr
 		}
@@ -5900,15 +5925,14 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		} else {
 			bifrost.logger.Debug("error while executing stream request: %+v", bifrostErrVal)
 		}
-		recoveredResp, recoveredErr := finishWithTerminalError(ctx, pipeline, &bifrostErrVal, len(*bifrost.llmPlugins.Load()), req.RequestType, provider, model, true)
+		// The worker already populated ExtraFields (alias-resolved model) and
+		// routing info on this error; do not re-stamp it before post-hooks run.
+		recoveredResp, recoveredErr := recoverFromTerminalError(ctx, pipeline, &bifrostErrVal, len(*bifrost.llmPlugins.Load()), req.RequestType, provider, model)
 		bifrost.releaseChannelMessage(msg)
 		if recoveredErr != nil {
 			return nil, recoveredErr
 		}
-		if recoveredResp != nil {
-			return newBifrostMessageChan(recoveredResp), nil
-		}
-		return nil, &bifrostErrVal
+		return newBifrostMessageChan(recoveredResp), nil
 	case <-ctx.Done():
 		// Do NOT releaseChannelMessage here — see the identical note in tryRequest.
 		// Worker still holds msg.ResponseStream/msg.Err; releasing now corrupts the
