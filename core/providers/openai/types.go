@@ -1156,6 +1156,30 @@ func (req *OpenAIVideoGenerationRequest) GetExtraParams() map[string]interface{}
 	return req.ExtraParams
 }
 
+// OpenAIVideoEditRequest is the request body for OpenAI video edits. The source video is either an
+// uploaded file, sent as multipart, or a reference to a completed video, sent as JSON.
+type OpenAIVideoEditRequest struct {
+	Prompt string                    `json:"prompt"` // Text prompt describing how to edit the source video
+	Video  OpenAIVideoEditVideoInput `json:"video"`  // Source video: uploaded bytes or a video reference
+
+	Model string `json:"model,omitempty"` // Inferred from the source video when it is referenced by ID
+
+	Fallbacks   []string               `json:"fallbacks,omitempty"`
+	ExtraParams map[string]interface{} `json:"-"`
+}
+
+// OpenAIVideoEditVideoInput is the "video" field, which is overloaded: a file part on a multipart
+// request, or an object carrying the ID of a completed video on a JSON one.
+type OpenAIVideoEditVideoInput struct {
+	ID    string `json:"id,omitempty"`
+	Bytes []byte `json:"-"`
+}
+
+// GetExtraParams implements the ExtraParamsGetter interface
+func (r *OpenAIVideoEditRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
+}
+
 // OpenAIVideoRemixRequest represents an OpenAI video remix request
 type OpenAIVideoRemixRequest struct {
 	Prompt string `json:"prompt"`

@@ -326,6 +326,7 @@ export type RequestType =
 	| "ocr"
 	| "ocr_stream"
 	| "video_generation"
+	| "video_edit"
 	| "video_retrieve"
 	| "video_download"
 	| "video_delete"
@@ -383,6 +384,7 @@ export interface AllowedRequests {
 	list_models: boolean;
 	rerank: boolean;
 	video_generation: boolean;
+	video_edit: boolean;
 	video_retrieve: boolean;
 	video_download: boolean;
 	video_delete: boolean;

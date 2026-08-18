@@ -27,8 +27,8 @@ const deliveryMethodAsync = "async"
 
 // RunwareFrameImage anchors an input image to a video frame for image-to-video generation.
 type RunwareFrameImage struct {
-	InputImage string  `json:"inputImage"`      // image UUID, URL, or base64/data-URI string
-	Frame      *string `json:"frame,omitempty"` // "first" | "last"
+	Image string  `json:"image"`           // image UUID, URL, or base64/data-URI string
+	Frame *string `json:"frame,omitempty"` // "first" | "last"
 }
 
 // RunwareInputs holds a task's media inputs. Runware nests them under "inputs" while scalar
@@ -37,6 +37,13 @@ type RunwareInputs struct {
 	Image  *string  `json:"image,omitempty"`  // image UUID, URL, or base64/data-URI string
 	Images []string `json:"images,omitempty"` // array form, used by some 3D models
 	Video  *string  `json:"video,omitempty"`  // video UUID or URL
+
+	// Frame and reference images are nested here rather than sent top-level: the newest video
+	// models (klingai kling-video 3.x, alibaba wan 2.6/2.7, lightricks ltx 2.x, xai grok-imagine,
+	// runway aleph) reject the flat form with unsupportedParameter, while every model accepts the
+	// nested one. Note the item key is "image" here, where the flat form used "inputImage".
+	FrameImages     []RunwareFrameImage `json:"frameImages,omitempty"`
+	ReferenceImages []string            `json:"referenceImages,omitempty"`
 }
 
 // RunwareInferenceRequest is a single Runware task. taskType selects the operation; each
@@ -62,10 +69,8 @@ type RunwareInferenceRequest struct {
 	MaskImage *string `json:"maskImage,omitempty"` // inpainting mask
 
 	// Video-only
-	DeliveryMethod  *string             `json:"deliveryMethod,omitempty"`
-	Duration        *float64            `json:"duration,omitempty"`
-	FrameImages     []RunwareFrameImage `json:"frameImages,omitempty"` // image-to-video
-	ReferenceImages []string            `json:"referenceImages,omitempty"`
+	DeliveryMethod *string  `json:"deliveryMethod,omitempty"`
+	Duration       *float64 `json:"duration,omitempty"`
 
 	// Nested envelope, shared by the tool task types (upscale, removeBackground, 3D, ...).
 	Inputs           *RunwareInputs         `json:"inputs,omitempty"`

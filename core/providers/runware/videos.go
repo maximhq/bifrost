@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -38,9 +39,14 @@ func ToRunwareVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationR
 		IncludeCost:    new(true),
 	}
 
+	// Image-to-video derives its dimensions from the reference image, and many models reject
+	// width/height outright once a frame image is present, so the default is skipped there. Models
+	// that mandate explicit dimensions keep it, and an explicit size always wins (applied below).
+	isImageToVideo := isVideo && bifrostReq.Input.InputReference != nil && *bifrostReq.Input.InputReference != ""
+
 	// Runware requires explicit width/height for video and rejects square sizes on some models;
 	// default to 16:9 1080p when no size is given. Non-video task types do not use width/height.
-	if isVideo {
+	if isVideo && (!isImageToVideo || runwareVideoRequiresDimensions(bifrostReq.Model)) {
 		request.Width = new(defaultRunwareVideoWidth)
 		request.Height = new(defaultRunwareVideoHeight)
 	}
@@ -64,7 +70,7 @@ func ToRunwareVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationR
 		}
 		switch {
 		case taskType != taskType3DInference:
-			request.FrameImages = []RunwareFrameImage{{InputImage: sanitizedURL, Frame: new("first")}}
+			request.Inputs = &RunwareInputs{FrameImages: []RunwareFrameImage{{Image: sanitizedURL, Frame: new("first")}}}
 		case uses3DImageArrayInput(bifrostReq.Model):
 			request.Inputs = &RunwareInputs{Images: []string{sanitizedURL}}
 		default:
@@ -78,9 +84,11 @@ func ToRunwareVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationR
 		request.NegativePrompt = params.NegativePrompt
 		request.Seed = params.Seed
 
-		// Size maps to width/height, which only apply to the video task type.
+		// Size maps to width/height, which only apply to the video task type. An explicit size is
+		// honoured even for image-to-video, where no default was set.
 		if isVideo && params.Size != "" {
-			*request.Width, *request.Height = parseRunwareSize(params.Size)
+			width, height := parseRunwareSize(params.Size)
+			request.Width, request.Height = &width, &height
 		}
 
 		if params.Seconds != nil && *params.Seconds != "" {
@@ -116,6 +124,94 @@ func ToRunwareVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationR
 	}
 
 	return request, nil
+}
+
+// ToRunwareVideoEditRequest converts a Bifrost video edit request to a Runware task operating on
+// an existing video. The source goes under inputs.video for every task type; the neutral "type"
+// parameter picks between prompt-driven editing, upscaling and background removal.
+//
+// Output geometry and duration are intentionally not sent: Runware's edit models expose no
+// width/height/duration, deriving both from the source video.
+func ToRunwareVideoEditRequest(bifrostReq *schemas.BifrostVideoEditRequest) (*RunwareInferenceRequest, error) {
+	if bifrostReq.Input == nil {
+		return nil, fmt.Errorf("input is required")
+	}
+	video := runwareVideoInput(bifrostReq.Input.Video)
+	if video == "" {
+		return nil, fmt.Errorf("source video is required")
+	}
+	// Runware keys every task off an AIR model identifier, so it cannot infer one from the source.
+	if bifrostReq.Model == "" {
+		return nil, fmt.Errorf("model is required for runware video edit")
+	}
+
+	request := &RunwareInferenceRequest{
+		TaskType:       runwareVideoEditTaskType(bifrostReq.Params),
+		TaskUUID:       uuid.New().String(),
+		DeliveryMethod: new(deliveryMethodAsync),
+		Model:          bifrostReq.Model,
+		Inputs:         &RunwareInputs{Video: &video},
+		IncludeCost:    new(true),
+	}
+
+	if bifrostReq.Input.Prompt != "" {
+		request.PositivePrompt = &bifrostReq.Input.Prompt
+	}
+
+	if bifrostReq.Params == nil {
+		return request, nil
+	}
+	params := bifrostReq.Params
+
+	request.Seed = params.Seed
+	request.OutputFormat = runwareOutputFormat(params.OutputFormat)
+	request.UpscaleFactor = params.UpscaleFactor
+	request.TargetMegapixels = params.TargetMegapixels
+
+	request.ExtraParams = params.ExtraParams
+
+	// Promote the Runware-native fields to typed properties so they reach the wire without
+	// extra-param passthrough, and drop them from ExtraParams so they are not sent twice.
+	if v, ok := runwareSettings(request.ExtraParams["settings"]); ok {
+		delete(request.ExtraParams, "settings")
+		request.Settings = v
+	}
+	if v, ok := runwareSettings(request.ExtraParams["providerSettings"]); ok {
+		delete(request.ExtraParams, "providerSettings")
+		request.ProviderSettings = v
+	}
+
+	return request, nil
+}
+
+// runwareVideoInput resolves the source video to the reference Runware expects. IDs and URLs pass
+// through untouched; raw bytes become a base64 data URI, which Runware decodes even though its
+// published schema advertises only UUID and URL for inputs.video.
+func runwareVideoInput(video schemas.VideoInput) string {
+	switch {
+	case video.ID != "":
+		return video.ID
+	case video.URL != "":
+		return video.URL
+	case len(video.Video) > 0:
+		return providerUtils.FileBytesToBase64DataURL(video.Video)
+	}
+	return ""
+}
+
+// runwareVideoEditTaskType maps the neutral edit type onto a Runware task type. Prompt-driven
+// editing runs as videoInference, the same task type that generates a video from scratch.
+func runwareVideoEditTaskType(params *schemas.VideoEditParameters) string {
+	if params == nil || params.Type == nil {
+		return taskTypeVideoInference
+	}
+	switch strings.ReplaceAll(strings.ToLower(strings.TrimSpace(*params.Type)), "-", "_") {
+	case "upscale":
+		return taskTypeUpscale
+	case "background_removal", "remove_background", "remove_bg":
+		return taskTypeRemoveBackground
+	}
+	return taskTypeVideoInference
 }
 
 // runwareVideoTaskType resolves the Runware task type for a /videos request. The neutral "type"

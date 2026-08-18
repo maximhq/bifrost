@@ -7934,6 +7934,9 @@
             "video_generation": {
               "type": "boolean"
             },
+            "video_edit": {
+              "type": "boolean"
+            },
             "video_retrieve": {
               "type": "boolean"
             },

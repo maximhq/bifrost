@@ -338,6 +338,22 @@ var videoRemixParamsKnownFields = map[string]bool{
 	"fallbacks": true,
 }
 
+// videoEditParamsKnownFields contains known fields for video edit requests
+// Based on VideoEditInput and VideoEditParameters structs
+var videoEditParamsKnownFields = map[string]bool{
+	"model":             true,
+	"prompt":            true,
+	"video":             true,
+	"video_url":         true,
+	"video_id":          true,
+	"type":              true,
+	"seed":              true,
+	"output_format":     true,
+	"upscale_factor":    true,
+	"target_megapixels": true,
+	"fallbacks":         true,
+}
+
 var transcriptionParamsKnownFields = map[string]bool{
 	"model":           true,
 	"file":            true,
@@ -582,6 +598,12 @@ type VideoRemixRequest struct {
 	ExtraParams map[string]any `json:"extra_params,omitempty"`
 }
 
+type VideoEditHTTPRequest struct {
+	*schemas.VideoEditInput
+	BifrostParams
+	*schemas.VideoEditParameters
+}
+
 // BatchCreateRequest is a bifrost batch create request
 type BatchCreateRequest struct {
 	Model            string                     `json:"model"`                       // Model in "provider/model" format
@@ -700,6 +722,7 @@ var PathToTypeMapping = map[string]schemas.RequestType{
 	"/v1/responses/compact":      schemas.CompactionRequest,
 	"/v1/images/edits":           schemas.ImageEditRequest,
 	"/v1/images/variations":      schemas.ImageVariationRequest,
+	"/v1/videos/edits":           schemas.VideoEditRequest,
 	"/v1/models":                 schemas.ListModelsRequest,
 }
 
@@ -758,6 +781,7 @@ func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.POST("/v1/images/edits", lib.ChainMiddlewares(h.imageEdit, baseMiddlewares...))
 	r.POST("/v1/images/variations", lib.ChainMiddlewares(h.imageVariation, baseMiddlewares...))
 	r.POST("/v1/videos", lib.ChainMiddlewares(h.videoGeneration, baseMiddlewares...))
+	r.POST("/v1/videos/edits", lib.ChainMiddlewares(h.videoEdit, baseMiddlewares...))
 
 	// Video API endpoints (parameterized routes need explicit request type middleware)
 	videoListMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.VideoListRequest)}, middlewares...)
@@ -2734,6 +2758,227 @@ func (h *CompletionHandler) videoGeneration(ctx *fasthttp.RequestCtx) {
 	defer cancel()
 
 	resp, bifrostErr := h.client.VideoGenerationRequest(bifrostCtx, bifrostReq)
+	if bifrostErr != nil {
+		forwardProviderHeadersFromContext(ctx, bifrostCtx)
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
+	}
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
+	SendJSON(ctx, resp)
+}
+
+// isMultipartRequest reports whether the request body is a multipart form.
+func isMultipartRequest(ctx *fasthttp.RequestCtx) bool {
+	return strings.HasPrefix(strings.ToLower(string(ctx.Request.Header.ContentType())), "multipart/form-data")
+}
+
+// resolveVideoEditProvider resolves the provider and model for a video edit request. Model is
+// optional here — an edit of an existing video is identified by an ID that already names its
+// provider, and the upstream infers the model from that video — so the provider can instead come
+// from the ?provider= query param, the x-model-provider header, or that ID suffix.
+//
+// A provider prefix on the model wins, then the explicit sources, then the ID suffix, which is
+// inferred rather than stated. A bare model name with no provider anywhere is left for the model
+// catalogue and routing plugins to resolve, as on every other inference endpoint.
+func resolveVideoEditProvider(ctx *fasthttp.RequestCtx, config *lib.Config, model string, videoID string) (schemas.ModelProvider, string, error) {
+	provider, modelName, err := resolveModelAndProvider(ctx, config, model)
+	if err != nil {
+		return "", "", err
+	}
+	if provider != "" {
+		return provider, modelName, nil
+	}
+
+	for _, candidate := range []string{
+		string(ctx.QueryArgs().Peek("provider")),
+		string(ctx.Request.Header.Peek("x-model-provider")),
+		videoIDProviderSuffix(videoID),
+	} {
+		if candidate != "" {
+			return schemas.ModelProvider(candidate), modelName, nil
+		}
+	}
+
+	if modelName != "" {
+		return "", modelName, nil
+	}
+	return "", "", fmt.Errorf("model is required unless the source video id carries a provider suffix, or a provider query parameter or x-model-provider header is set")
+}
+
+// videoIDProviderSuffix returns the provider a video ID is scoped to, if it carries one. The suffix
+// counts only when it names a real provider, so an ID that merely contains a colon is left alone.
+func videoIDProviderSuffix(videoID string) string {
+	idx := strings.LastIndex(videoID, ":")
+	if idx <= 0 || idx == len(videoID)-1 {
+		return ""
+	}
+	if suffix := videoID[idx+1:]; schemas.IsKnownProvider(suffix) {
+		return suffix
+	}
+	return ""
+}
+
+// prepareVideoEditRequest builds a BifrostVideoEditRequest from either a multipart form (uploaded
+// source video, matching OpenAI's /v1/videos/edits) or a JSON body (source referenced by id or url).
+func prepareVideoEditRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*schemas.BifrostVideoEditRequest, error) {
+	var req VideoEditHTTPRequest
+	var extraParams map[string]any
+
+	if isMultipartRequest(ctx) {
+		form, err := ctx.MultipartForm()
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse multipart form: %v", err)
+		}
+		if err := parseVideoEditMultipartForm(&req, form); err != nil {
+			return nil, err
+		}
+		extraParams = make(map[string]any)
+		for key, value := range form.Value {
+			if len(value) > 0 && value[0] != "" && !videoEditParamsKnownFields[key] {
+				extraParams[key] = value[0]
+			}
+		}
+	} else {
+		if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
+			return nil, fmt.Errorf("Invalid request payload")
+		}
+		ep, epErr := extractExtraParams(ctx.PostBody(), videoEditParamsKnownFields)
+		if epErr != nil {
+			logger.Warn("Failed to extract extra params: %v", epErr)
+		} else {
+			extraParams = ep
+		}
+	}
+
+	if req.VideoEditInput == nil {
+		return nil, fmt.Errorf("video is required")
+	}
+	source := req.VideoEditInput.Video
+	if len(source.Video) == 0 && source.URL == "" && source.ID == "" {
+		return nil, fmt.Errorf("video is required")
+	}
+
+	provider, modelName, err := resolveVideoEditProvider(ctx, config, req.Model, source.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	fallbacks, err := parseFallbacks(req.Fallbacks)
+	if err != nil {
+		return nil, err
+	}
+
+	if req.VideoEditParameters == nil {
+		req.VideoEditParameters = &schemas.VideoEditParameters{}
+	}
+	req.VideoEditParameters.ExtraParams = extraParams
+
+	return &schemas.BifrostVideoEditRequest{
+		Provider:  provider,
+		Model:     modelName,
+		Input:     req.VideoEditInput,
+		Params:    req.VideoEditParameters,
+		Fallbacks: fallbacks,
+	}, nil
+}
+
+// parseVideoEditMultipartForm fills req from an OpenAI-style multipart video edit form.
+func parseVideoEditMultipartForm(req *VideoEditHTTPRequest, form *multipart.Form) error {
+	req.VideoEditInput = &schemas.VideoEditInput{}
+	req.VideoEditParameters = &schemas.VideoEditParameters{}
+
+	if modelValues := form.Value["model"]; len(modelValues) > 0 {
+		req.Model = modelValues[0]
+	}
+	if promptValues := form.Value["prompt"]; len(promptValues) > 0 {
+		req.VideoEditInput.Prompt = promptValues[0]
+	}
+
+	// The source arrives as an upload, or as a reference the upstream resolves itself.
+	if videoFiles := form.File["video"]; len(videoFiles) > 0 {
+		f, err := videoFiles[0].Open()
+		if err != nil {
+			return fmt.Errorf("failed to open uploaded file: %v", err)
+		}
+		fileData, err := io.ReadAll(f)
+		f.Close()
+		if err != nil {
+			return fmt.Errorf("failed to read uploaded file: %v", err)
+		}
+		req.VideoEditInput.Video.Video = fileData
+	}
+	// "video[id]" / "video[url]" are how the official OpenAI SDKs flatten a reference source into a
+	// multipart body; the underscore forms are the plain-form equivalents.
+	for _, key := range []string{"video_url", "video[url]"} {
+		if values := form.Value[key]; len(values) > 0 && values[0] != "" {
+			req.VideoEditInput.Video.URL = values[0]
+			break
+		}
+	}
+	for _, key := range []string{"video_id", "video[id]"} {
+		if values := form.Value[key]; len(values) > 0 && values[0] != "" {
+			req.VideoEditInput.Video.ID = values[0]
+			break
+		}
+	}
+
+	if typeValues := form.Value["type"]; len(typeValues) > 0 && typeValues[0] != "" {
+		req.VideoEditParameters.Type = &typeValues[0]
+	}
+	if outputFormatValues := form.Value["output_format"]; len(outputFormatValues) > 0 && outputFormatValues[0] != "" {
+		req.VideoEditParameters.OutputFormat = &outputFormatValues[0]
+	}
+	if seedValues := form.Value["seed"]; len(seedValues) > 0 && seedValues[0] != "" {
+		seed, err := strconv.Atoi(seedValues[0])
+		if err != nil {
+			return fmt.Errorf("invalid seed value: %v", err)
+		}
+		req.VideoEditParameters.Seed = &seed
+	}
+	if upscaleFactorValues := form.Value["upscale_factor"]; len(upscaleFactorValues) > 0 && upscaleFactorValues[0] != "" {
+		upscaleFactor, err := strconv.Atoi(upscaleFactorValues[0])
+		if err != nil {
+			return fmt.Errorf("invalid upscale_factor value: %v", err)
+		}
+		req.VideoEditParameters.UpscaleFactor = &upscaleFactor
+	}
+	if targetMegapixelsValues := form.Value["target_megapixels"]; len(targetMegapixelsValues) > 0 && targetMegapixelsValues[0] != "" {
+		targetMegapixels, err := strconv.Atoi(targetMegapixelsValues[0])
+		if err != nil {
+			return fmt.Errorf("invalid target_megapixels value: %v", err)
+		}
+		req.VideoEditParameters.TargetMegapixels = &targetMegapixels
+	}
+	if fallbackValues := form.Value["fallbacks"]; len(fallbackValues) > 0 {
+		req.Fallbacks = fallbackValues
+	}
+
+	return nil
+}
+
+// videoEdit handles POST /v1/videos/edits - Edit an existing video
+func (h *CompletionHandler) videoEdit(ctx *fasthttp.RequestCtx) {
+	bifrostReq, err := prepareVideoEditRequest(ctx, h.config)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
+	if bifrostCtx == nil {
+		cancel()
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
+		return
+	}
+	defer cancel()
+
+	resp, bifrostErr := h.client.VideoEditRequest(bifrostCtx, bifrostReq)
 	if bifrostErr != nil {
 		forwardProviderHeadersFromContext(ctx, bifrostCtx)
 		SendBifrostError(ctx, bifrostErr)
