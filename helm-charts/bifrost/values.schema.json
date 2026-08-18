@@ -2186,7 +2186,7 @@
             },
             "complexityAnalyzerConfig": {
               "type": ["object", "null"],
-              "description": "Runtime configuration for complexity_tier CEL routing. Renders into governance.complexity_analyzer_config in config.json. Semantic (embedding-based) classification is the only mechanism — without the semantic block no complexity_tier is published.",
+              "description": "Runtime configuration for complexity_tier CEL routing. Renders into governance.complexity_analyzer_config in config.json. Semantic (embedding-based) classification is the primary mechanism — without the semantic block no complexity_tier is published. The optional llm block is a chat-completion fallback engaged only when semantic.fallback is 'llm'.",
               "properties": {
                 "semantic": {
                   "type": "object",
@@ -2235,9 +2235,60 @@
                       "type": "string",
                       "enum": ["embedded", "vector_store"],
                       "description": "Where phrase embeddings are stored: 'embedded' uses the built-in chromem store; 'vector_store' uses the configured top-level vectorStore and falls back to embedded when none is configured (default: embedded)."
+                    },
+                    "fallback": {
+                      "type": "string",
+                      "enum": ["none", "llm"],
+                      "description": "What answers when semantic classification produces no tier (a match below min_similarity, a timeout, an unfinished warmup): 'none' (default) records the request as skipped; 'llm' asks the chat model configured in the sibling llm block, which is required when this is set."
                     }
                   },
                   "required": ["provider", "embedding_model"],
+                  "additionalProperties": false
+                },
+                "llm": {
+                  "type": "object",
+                  "description": "Chat-completion (LLM) fallback classifier settings. Inert unless semantic.fallback selects 'llm'; the classifier runs only after semantic classification produces no tier. Tier names and the response format are fixed and always appended by the gateway.",
+                  "properties": {
+                    "provider": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Provider used to run the classification chat completion (must have an enabled key)"
+                    },
+                    "model": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Chat model asked to name the tier. Every fallback classification waits on one completion from this model, so pick a small, fast one."
+                    },
+                    "timeout": {
+                      "description": "Per-request classification timeout (duration string like '2s', or milliseconds as a number; default: 4s). On timeout no tier is published for that request.",
+                      "oneOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)$"
+                        },
+                        {
+                          "type": "number",
+                          "exclusiveMinimum": 0
+                        }
+                      ]
+                    },
+                    "prompt": {
+                      "type": "string",
+                      "maxLength": 4000,
+                      "description": "Replaces the shipped classification guidance (max 4000 characters); empty means the shipped guidance is used. The gateway always appends a fixed tier-name and response-format reinforcement."
+                    },
+                    "message_history_count": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 10,
+                      "description": "How many of the most recent user messages are given to the classifier, oldest first (default: 1, the latest message only)."
+                    },
+                    "count_toward_budgets": {
+                      "type": "boolean",
+                      "description": "Record classification completion cost against governance budgets (record-only, never enforced; default: false)"
+                    }
+                  },
+                  "required": ["provider", "model"],
                   "additionalProperties": false
                 },
                 "tier_boundaries": {
