@@ -304,6 +304,17 @@ jobs:
           # dl.google.com / packages.cloud.google.com / objects.githubusercontent.com
           # are the gcloud CLI install; oauth2.googleapis.com + accounts.google.com
           # are the service-account token exchange for the Vertex parity cells.
+          #
+          # www.berkshirehathaway.com hosts the PDF the document-input rows pass as
+          # document.source.type "url". Anthropic fetches such a URL server-side, but
+          # Bedrock/Vertex/Gemini/OpenAI/Azure have no url member on their document
+          # types, so Bifrost downloads it here and inlines the bytes - meaning the
+          # RUNNER needs egress to it. Omitting it fails 44 rows whose requests all
+          # go to 127.0.0.1, which reads as "PDF input is broken on five providers".
+          #
+          # discoveryengine.googleapis.com is the Vertex semantic-ranker backend for
+          # the rerank rows. Its host is built in Go rather than declared in
+          # config.json, so auditing the seeded provider config does not reveal it.
           allowed-endpoints: >
             127.0.0.1:8080
             7defe2860d5ee49a1e667e1eeea34b25.r2.cloudflarestorage.com:443
@@ -331,6 +342,7 @@ jobs:
             bedrock-runtime.us-east-1.amazonaws.com:443
             bedrock.us-east-1.amazonaws.com:443
             bifrost-batch-api-file-upload-testing.s3.us-east-1.amazonaws.com:443
+            discoveryengine.googleapis.com:443
             dl.google.com:443
             fal.media:443
             fonts.googleapis.com:443
@@ -356,6 +368,7 @@ jobs:
             storage.googleapis.com:443
             sum.golang.org:443
             us-central1-aiplatform.googleapis.com:443
+            www.berkshirehathaway.com:443
             www.getbifrost.ai:443
 
       - name: Checkout repository
@@ -521,6 +534,7 @@ jobs:
             bedrock-runtime.us-east-1.amazonaws.com:443
             bedrock.us-east-1.amazonaws.com:443
             bifrost-batch-api-file-upload-testing.s3.us-east-1.amazonaws.com:443
+            discoveryengine.googleapis.com:443
             dl.google.com:443
             fal.media:443
             fonts.googleapis.com:443
@@ -546,6 +560,7 @@ jobs:
             storage.googleapis.com:443
             sum.golang.org:443
             us-central1-aiplatform.googleapis.com:443
+            www.berkshirehathaway.com:443
             www.getbifrost.ai:443
 
       - name: Checkout repository

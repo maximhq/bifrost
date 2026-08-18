@@ -73,10 +73,23 @@ const J = (v) => JSON.stringify(v);
 // it. Deliberately NOT applied to implicit-caching cells - see the header.
 const HIT_RATE_FLOOR = 0.85;
 
-// Rounds for implicit-caching cells. Four is enough to distinguish "this provider caches this
-// conversation sometimes" from "this conversation never caches": across the direct-baseline runs
-// above, every model that cached at all did so within the first four rounds.
-const IMPLICIT_ROUNDS = 4;
+// Rounds for implicit-caching cells, sized to distinguish "this provider caches this conversation
+// sometimes" from "this conversation never caches".
+//
+// This was 4, justified by the direct-baseline runs above, in which every model that cached at all
+// did so within the first four rounds. A later harness run refuted that: gemini-3-flash-preview
+// went 0%/0%/0%/0% on the control arm while its midconv arm went 0%/0%/0%/52% -- first engaging on
+// the very last round. gemini-2.5-flash (midconv 0%/0%/0%/97%) and vertex/gemini-2.5-flash
+// (control 0%/97%/97%/0%) sat on the same edge. A four-round window was therefore not measuring
+// whether the gateway breaks caching, it was sampling a coin flip and reporting the tail as FAIL.
+//
+// Six rounds keeps the assertion honest without weakening it: the bar is still "caching engaged at
+// least once", and a gateway that genuinely breaks caching still reports zero across every round.
+// The cost is 2 extra requests per implicit arm-cell.
+//
+// Exported so the unit tests drive their fixtures off it rather than hardcoding a round count that
+// silently goes stale the next time this is retuned.
+export const IMPLICIT_ROUNDS = 6;
 
 const SEG = "{{cachePrefix}}";
 const REMINDER =
@@ -161,8 +174,16 @@ const salt = (cellId) => `[cache-matrix cell ${cellId} run {{pcNonce}}]\n\n${SEG
 // only shape that carries cache_control; everything else uses the unified chat route.
 //
 // Model IDs are exactly those probed reachable against this account - notably
-// bedrock/openai.gpt-oss-120b-1:0 is NOT here (404s; the collection's bedrockOpenaiModel default
-// is stale) and bedrock/openai.gpt-5.6-sol stands in for the OpenAI-family-on-Bedrock cell.
+// bedrock/openai.gpt-oss-120b-1:0 is NOT here: it 404s against this account, which is also why
+// the collection's bedrockOpenaiModel default was retargeted to the OpenAI-family-on-Bedrock id.
+//
+// That default is the INFERENCE PROFILE, global.openai.gpt-5.6-sol, not the bare model id. The
+// bare id reaches Converse but is refused before inference: "Invocation of model ID
+// openai.gpt-5.6-sol with on-demand throughput isn't supported. Retry your request with the ID or
+// ARN of an inference profile that contains this model." The profile form answers normally. The
+// cells below route through Bifrost, which resolves the profile itself, so they read either way -
+// the token-parity matrix's DIRECT leg calls bedrock-runtime converse with this value verbatim
+// and does not.
 // ---------------------------------------------------------------------------------------------
 const CELLS = [
   // --- Anthropic API, Claude family: latest through several generations back -----------------
@@ -447,6 +468,11 @@ ${
     // The best round's counters, matching the hitRate below. The renderer prints these side by
     // side, and a row is only readable if both halves describe the same round.
     read: bestRound.r, write: bestRound.w, uncached: bestRound.u,
+    // Writes summed across every round, because the write happens on round 1 and the counters
+    // above describe the BEST round - which is almost never round 1. Judging "did this run
+    // exercise the write path" from the best round alone marked every correct cold run as warm:
+    // round 2 legitimately writes nothing, so write:0 there says nothing about round 1.
+    writeTotal: series.reduce(function (sum, x) { return sum + (x.w || 0); }, 0),
     // Implicit cells assert only "cached at least once", so the renderer scores hitRate > 0 for
     // them; hitRateFloor is carried anyway so the report can show the bar that was applied.
     hitRate: best, series: rates, hitRateFloor: 0
