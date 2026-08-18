@@ -2068,7 +2068,17 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 
 	// Check if this is a completion chunk with finish_reason
 	if choice.FinishReason != nil {
-		terminalEventType, terminalStatus, terminalIncompleteDetails := responsesTerminalFromChatFinishReason(choice.FinishReason)
+		finishReason := choice.FinishReason
+		// Some OpenAI-compatible upstreams report finish_reason "stop" even when
+		// the turn emitted tool calls. The non-streaming converter already
+		// compensates by scanning the output for function calls (#3640); mirror
+		// that here using the tool calls tracked in state, so the Anthropic and
+		// Responses streaming surfaces report tool_use instead of end_turn and
+		// agentic clients still execute the tool (issue #6123).
+		if *finishReason == string(BifrostFinishReasonStop) && len(state.ToolCallOutputIndices) > 0 {
+			finishReason = Ptr(string(BifrostFinishReasonToolCalls))
+		}
+		terminalEventType, terminalStatus, terminalIncompleteDetails := responsesTerminalFromChatFinishReason(finishReason)
 
 		// Close reasoning item if the stream ends while it is still open (reasoning-only
 		// or reasoning cut short), so the thinking block is bracketed by a content_block_stop.
@@ -2217,7 +2227,7 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			CreatedAt:         state.CreatedAt,
 			Usage:             usage,
 			Status:            &responseStatus,
-			StopReason:        responsesStopReasonFromChatFinishReason(choice.FinishReason),
+			StopReason:        responsesStopReasonFromChatFinishReason(finishReason),
 			IncompleteDetails: terminalIncompleteDetails,
 		}
 
