@@ -337,12 +337,92 @@ func TestSetObservabilityPlugins_DedupesByName(t *testing.T) {
 	}
 }
 
-// TestObsSlot_SizeTriggerFlushesBeforeCount verifies the memory guard: the byte cap gates
-// delivery — traces buffer silently until their combined size crosses maxBatchBytes, at which
-// point the whole batch flushes, long before the count cap (or the timer) would. The negative
-// half (three traces stay buffered) is what distinguishes a real size cap from an
-// implementation that just flushes every trace. Content lives in both trace- and span-level
-// attributes, so trace-level byte accounting is exercised too.
+// TestObsSlot_DrainDoesNotRaceLateEnqueue is a regression for the shutdown ordering: many
+// producers — some blocked on the semaphore, some arriving after signalStop — run concurrently
+// with the drain (signalStop + wg.Wait). wg accounting must never let a late Add race a Wait.
+// Run under -race; a regression trips the detector or panics with a WaitGroup misuse.
+func TestObsSlot_DrainDoesNotRaceLateEnqueue(t *testing.T) {
+	for iter := 0; iter < 25; iter++ {
+		p := &blockingObsPlugin{name: "race"}
+		slot := &obsPluginSlot{
+			plugin:        p,
+			name:          p.name,
+			batchSize:     1,         // each trace flushes on its own → maximally exercises wg
+			maxBatchBytes: 1 << 30,   // size cap disabled
+			flushInterval: time.Hour, // timer never fires
+			flushSem:      make(chan struct{}, 2),
+			stop:          make(chan struct{}),
+		}
+		slot.start(nil)
+
+		var producers sync.WaitGroup
+		for range 16 {
+			producers.Add(1)
+			go func() {
+				defer producers.Done()
+				slot.enqueue(&schemas.Trace{}, nil)
+			}()
+		}
+		// Drain concurrently with the producers — the racy window.
+		slot.signalStop()
+		slot.wg.Wait()
+		producers.Wait()
+	}
+}
+
+// TestObsSlot_FlushConcurrencyIsBounded verifies the flush-concurrency cap: no more than
+// flushSem's capacity of Inject calls run at once, even under a backlog, and nothing is
+// dropped — the excess producers block on the semaphore until a slot frees.
+func TestObsSlot_FlushConcurrencyIsBounded(t *testing.T) {
+	const cap = 2
+	p := &blockingObsPlugin{name: "bounded", release: make(chan struct{})}
+	slot := &obsPluginSlot{
+		plugin:        p,
+		name:          p.name,
+		batchSize:     1,         // each trace flushes as its own batch → one goroutine each
+		maxBatchBytes: 1 << 30,   // size cap disabled
+		flushInterval: time.Hour, // timer never fires
+		flushSem:      make(chan struct{}, cap),
+		stop:          make(chan struct{}),
+	}
+	slot.start(nil)
+
+	// Fire more traces than the cap; enqueue blocks on the semaphore once cap flushes are busy.
+	const n = 10
+	var producers sync.WaitGroup
+	for range n {
+		producers.Add(1)
+		go func() {
+			defer producers.Done()
+			slot.enqueue(&schemas.Trace{}, nil)
+		}()
+	}
+
+	// Wait for the pool to saturate, then confirm concurrency never exceeded the cap.
+	deadline := time.Now().Add(2 * time.Second)
+	for p.inFlight.Load() < cap && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := p.maxInFlight.Load(); got > cap {
+		t.Fatalf("flush concurrency exceeded the cap: got %d, cap %d", got, cap)
+	}
+
+	close(p.release) // let the backlog drain
+	producers.Wait()
+	slot.signalStop()
+	slot.wg.Wait()
+
+	if got := p.started.Load(); got != n {
+		t.Fatalf("expected all %d traces delivered (none dropped), got %d", n, got)
+	}
+	if got := p.maxInFlight.Load(); got > cap {
+		t.Fatalf("flush concurrency exceeded the cap at some point: got %d, cap %d", got, cap)
+	}
+}
+
+// TestObsSlot_SizeTriggerFlushesBeforeCount verifies the memory guard: a few very large
+// traces trip the byte cap and flush long before the count cap (or the timer) would, so the
+// buffer can't accumulate unbounded memory between ticks.
 func TestObsSlot_SizeTriggerFlushesBeforeCount(t *testing.T) {
 	p := &blockingObsPlugin{name: "big"}
 	slot := &obsPluginSlot{
@@ -351,6 +431,7 @@ func TestObsSlot_SizeTriggerFlushesBeforeCount(t *testing.T) {
 		batchSize:     1_000_000, // count cap effectively unreachable
 		maxBatchBytes: 64 * 1024, // 64 KiB size cap
 		flushInterval: time.Hour, // timer never fires during the test
+		flushSem:      make(chan struct{}, 16),
 		stop:          make(chan struct{}),
 	}
 	slot.start(nil)
@@ -400,16 +481,23 @@ func TestObsSlot_PostCloseEnqueueStillDelivers(t *testing.T) {
 		batchSize:     1000,      // never reached; only the timer or close flushes
 		maxBatchBytes: 1 << 30,   // size cap effectively disabled, so the first trace buffers
 		flushInterval: time.Hour, // never ticks during the test
+		flushSem:      make(chan struct{}, 16),
 		stop:          make(chan struct{}),
 	}
 	slot.start(nil)
 
-	// One buffered before close (drained by the final flush), one after close (self-flushed).
+	// One buffered before close (drained by the final flush, tracked by wg), one after close
+	// (delivered on a detached goroutine that wg does NOT track — so poll for it rather than
+	// relying on wg.Wait).
 	slot.enqueue(&schemas.Trace{}, nil)
 	slot.signalStop()
 	slot.enqueue(&schemas.Trace{}, nil)
 
-	slot.wg.Wait()
+	slot.wg.Wait() // awaits the pre-close flush
+	deadline := time.Now().Add(2 * time.Second)
+	for p.started.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
 	if got := p.started.Load(); got != 2 {
 		t.Fatalf("expected both traces delivered (none lost across close), got %d", got)
 	}

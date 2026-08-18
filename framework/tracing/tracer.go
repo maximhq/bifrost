@@ -19,6 +19,14 @@ const (
 	DefaultObservabilityMaxBatchBytes = logstore.DefaultWriterMaxBatchBytes // in-memory byte size of traces to accumulate before flushing to a connector
 	DefaultObservabilityFlushInterval = 10 * time.Second                    // how often to flush a connector's buffer, even if the count/size caps haven't been hit
 
+	// DefaultObservabilityFlushConcurrency caps concurrent flush goroutines per connector.
+	// Sizing: a connector sustains R traces/s while the cap N holds as long as its per-trace
+	// Inject latency L satisfies N ≥ R·L. At N=256 a connector keeps up with 5000 traces/s
+	// for any L up to ~51ms. OTel and logging return from Inject in well under a millisecond,
+	// so this is generous headroom; it exists mainly to bound concurrency (and backend
+	// connections) if a connector turns slow, without ever dropping a trace.
+	DefaultObservabilityFlushConcurrency = 256
+
 	// flushStopTimeout bounds how long Stop waits for in-flight flushes, so a hung
 	// connector cannot block shutdown or a config reload.
 	flushStopTimeout = 10 * time.Second
@@ -41,6 +49,8 @@ type obsPluginSlot struct {
 	batch      []*schemas.Trace // accumulating buffer; swapped out on flush
 	batchBytes int              // estimated in-memory size of batch; reset when the buffer is swapped
 	closed     bool             // set once the timer goroutine is stopping; late appends flush immediately
+
+	flushSem chan struct{} // bounds concurrent flush goroutines; blocking acquire, never drops
 
 	stop    chan struct{}  // closed to tell the timer goroutine to do a final flush and exit
 	stopped sync.Once      // so stop is only closed once (reload and Stop can race)
@@ -72,8 +82,19 @@ func (s *obsPluginSlot) run(logger schemas.Logger) {
 	}
 }
 
-// enqueue appends a trace and flushes early once the buffer reaches either the count cap or
-// the estimated-size cap.
+// enqueue appends a trace and flushes early once the buffer reaches either the count cap
+// (batchSize) or the size cap (maxBatchBytes), whichever comes first — so a busy connector,
+// or a few very large traces, don't sit growing until the next tick. Whichever of
+// count / size / interval hits first wins.
+//
+// After the slot is closed (signalStop), the timer goroutine has already done its final
+// flush, so a trace appended to the buffer would never be delivered. Such late arrivals —
+// producers still holding a retired slot during a config reload — are delivered on a detached
+// goroutine (deliverDetached) instead, so no trace is lost. That path is deliberately NOT
+// tracked by wg: a wg.Add after the slot is closed could run concurrently with drain's
+// wg.Wait once the counter has reached zero, which is a WaitGroup misuse. The normal path
+// registers on wg under the mutex, so any flush a drain must wait for is counted before
+// signalStop (which sets closed under the same mutex) can be observed.
 func (s *obsPluginSlot) enqueue(trace *schemas.Trace, logger schemas.Logger) {
 	// Size outside the lock — the marshal is the only non-trivial work here.
 	size := marshaledTraceSize(trace)
@@ -81,7 +102,7 @@ func (s *obsPluginSlot) enqueue(trace *schemas.Trace, logger schemas.Logger) {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
-		s.flush([]*schemas.Trace{trace}, logger)
+		s.deliverDetached(trace, logger)
 		return
 	}
 	s.batch = append(s.batch, trace)
@@ -93,6 +114,7 @@ func (s *obsPluginSlot) enqueue(trace *schemas.Trace, logger schemas.Logger) {
 	batch := s.batch
 	s.batch = nil
 	s.batchBytes = 0
+	s.wg.Add(1) // register under mu, before close can be observed; paired with Done in flush
 	s.mu.Unlock()
 	s.flush(batch, logger)
 }
@@ -113,28 +135,57 @@ func marshaledTraceSize(t *schemas.Trace) int {
 	return len(data)
 }
 
-// take atomically swaps the current buffer out for a fresh one and returns it.
+// take atomically swaps the current buffer out for a fresh one and returns it, registering the
+// resulting flush on wg (under the mutex) when the batch is non-empty — paired with the Done in
+// flush's goroutine.
 func (s *obsPluginSlot) take() []*schemas.Trace {
 	s.mu.Lock()
 	batch := s.batch
 	s.batch = nil
 	s.batchBytes = 0
+	if len(batch) > 0 {
+		s.wg.Add(1)
+	}
 	s.mu.Unlock()
 	return batch
 }
 
 // flush delivers a batch on its own goroutine so accumulation never blocks on a slow
 // connector. Empty batches are a no-op.
+//
+// flushSem caps how many flush goroutines run at once for this connector. The acquire is
+// blocking (not a drop): once the cap is reached, the caller — a producer's flush goroutine
+// or the timer — waits for a slot, applying backpressure rather than losing traces. This
+// bounds concurrent Inject calls (so a burst can't open an unbounded number of connections to
+// the backend) while keeping the no-drop guarantee. The cap is sized to sustain the target
+// request rate; see DefaultObservabilityFlushConcurrency.
+//
+// The caller must have already registered this flush on wg (Add under the mutex) for every
+// non-empty batch; the spawned goroutine calls the matching Done. This keeps wg accounting
+// serialized with the closed flag so a drain never races a late Add.
 func (s *obsPluginSlot) flush(batch []*schemas.Trace, logger schemas.Logger) {
 	if len(batch) == 0 {
-		return
+		return // caller does not Add for an empty batch, so there is nothing to Done
 	}
-	s.wg.Add(1)
+	s.flushSem <- struct{}{} // acquire (blocks the caller if the cap is reached)
 	go func() {
 		defer s.wg.Done()
+		defer func() { <-s.flushSem }() // release
 		for _, trace := range batch {
 			s.inject(trace, logger)
 		}
+	}()
+}
+
+// deliverDetached delivers a single late-arriving trace — one appended after the slot was
+// closed — on a goroutine that is not tracked by wg, so its lifetime can never race the
+// drain's wg.Wait. It still honours the concurrency cap. Drain does not await it, which is
+// acceptable: these arise only in the reload/shutdown window and are best-effort telemetry.
+func (s *obsPluginSlot) deliverDetached(trace *schemas.Trace, logger schemas.Logger) {
+	go func() {
+		s.flushSem <- struct{}{}
+		defer func() { <-s.flushSem }()
+		s.inject(trace, logger)
 	}()
 }
 
@@ -176,12 +227,13 @@ type Tracer struct {
 	cachedHdrPatterns atomic.Pointer[[]string]
 	flushWG           sync.WaitGroup
 
-	// batchSize, maxBatchBytes, and flushInterval size each connector's buffer, read when the
-	// plugin slots are built. They default to the DefaultObservability* values; tests override
-	// them before SetObservabilityPlugins.
-	batchSize     int
-	maxBatchBytes int
-	flushInterval time.Duration
+	// batchSize, maxBatchBytes, flushInterval, and flushConcurrency size each connector's
+	// buffer and flush pool, read when the plugin slots are built. They default to the
+	// DefaultObservability* values; tests override them before SetObservabilityPlugins.
+	batchSize        int
+	maxBatchBytes    int
+	flushInterval    time.Duration
+	flushConcurrency int
 }
 
 // NewTracer creates a new Tracer wrapping the given TraceStore.
@@ -189,14 +241,15 @@ type Tracer struct {
 // The pricingManager is used for cost calculation in span attributes.
 func NewTracer(store *TraceStore, pricingManager *modelcatalog.ModelCatalog, logger schemas.Logger) *Tracer {
 	return &Tracer{
-		store:          store,
-		accumulator:    streaming.NewAccumulator(pricingManager, logger),
-		pricingManager: pricingManager,
-		logger:         logger,
-		obsPlugins:     atomic.Pointer[[]*obsPluginSlot]{},
-		batchSize:      DefaultObservabilityBatchSize,
-		maxBatchBytes:  DefaultObservabilityMaxBatchBytes,
-		flushInterval:  DefaultObservabilityFlushInterval,
+		store:            store,
+		accumulator:      streaming.NewAccumulator(pricingManager, logger),
+		pricingManager:   pricingManager,
+		logger:           logger,
+		obsPlugins:       atomic.Pointer[[]*obsPluginSlot]{},
+		batchSize:        DefaultObservabilityBatchSize,
+		maxBatchBytes:    DefaultObservabilityMaxBatchBytes,
+		flushInterval:    DefaultObservabilityFlushInterval,
+		flushConcurrency: DefaultObservabilityFlushConcurrency,
 	}
 }
 
@@ -236,6 +289,10 @@ func (t *Tracer) SetObservabilityPlugins(obsPlugins []schemas.ObservabilityPlugi
 	if flushInterval <= 0 {
 		flushInterval = DefaultObservabilityFlushInterval
 	}
+	flushConcurrency := t.flushConcurrency
+	if flushConcurrency <= 0 {
+		flushConcurrency = DefaultObservabilityFlushConcurrency
+	}
 	slots := make([]*obsPluginSlot, 0, len(obsPlugins))
 	seenPlugins := make(map[string]struct{}, len(obsPlugins))
 	for _, plugin := range obsPlugins {
@@ -253,6 +310,7 @@ func (t *Tracer) SetObservabilityPlugins(obsPlugins []schemas.ObservabilityPlugi
 			batchSize:     batchSize,
 			maxBatchBytes: maxBatchBytes,
 			flushInterval: flushInterval,
+			flushSem:      make(chan struct{}, flushConcurrency),
 			stop:          make(chan struct{}),
 		}
 		slot.start(t.logger)
