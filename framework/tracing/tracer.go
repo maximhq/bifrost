@@ -25,9 +25,10 @@ const (
 )
 
 // obsPluginSlot gives one observability plugin its own batch buffer and a timer goroutine
-// that flushes it. Traces accumulate in the buffer; a flush delivers the whole batch by
-// injecting each trace in turn. Nothing is dropped — producers always append. Each connector
-// has its own buffer so they don't contend on a shared one.
+// that flushes it. Traces accumulate in the buffer; a flush hands the whole batch to a new
+// goroutine (so it never blocks accumulation) which delivers each trace via Inject. Nothing
+// is dropped — producers always append. Each connector has its own buffer so a slow one
+// can't hold up the others.
 type obsPluginSlot struct {
 	plugin schemas.ObservabilityPlugin
 	name   string
@@ -43,7 +44,7 @@ type obsPluginSlot struct {
 
 	stop    chan struct{}  // closed to tell the timer goroutine to do a final flush and exit
 	stopped sync.Once      // so stop is only closed once (reload and Stop can race)
-	wg      sync.WaitGroup // timer goroutine, for a bounded drain
+	wg      sync.WaitGroup // timer goroutine + in-flight flush goroutines, for a bounded drain
 
 	dropped atomic.Int64 // retained for ObservabilityDropCounts; stays 0 in this design
 }
@@ -71,8 +72,7 @@ func (s *obsPluginSlot) run(logger schemas.Logger) {
 	}
 }
 
-// enqueue appends a trace and flushes early once the buffer reaches either the count cap or
-// the estimated-size cap.
+// enqueue appends a trace and flushes early once the buffer reaches either the count cap or estimated-size cap
 func (s *obsPluginSlot) enqueue(trace *schemas.Trace, logger schemas.Logger) {
 	// Estimate outside the lock — the walk is the only non-trivial work here.
 	size := estimateTraceSize(trace)
@@ -182,14 +182,19 @@ func (s *obsPluginSlot) take() []*schemas.Trace {
 	return batch
 }
 
-// flush delivers a batch by injecting each trace in turn. Empty batches are a no-op.
+// flush delivers a batch on its own goroutine so accumulation never blocks on a slow
+// connector. Empty batches are a no-op.
 func (s *obsPluginSlot) flush(batch []*schemas.Trace, logger schemas.Logger) {
 	if len(batch) == 0 {
 		return
 	}
-	for _, trace := range batch {
-		s.inject(trace, logger)
-	}
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		for _, trace := range batch {
+			s.inject(trace, logger)
+		}
+	}()
 }
 
 // inject hands one trace to the plugin, recovering from panics so a bad backend can't take
@@ -1085,8 +1090,8 @@ func (t *Tracer) CompleteAndFlushTrace(traceID string) {
 		// Append the snapshot to each connector's buffer and return. The snapshot is detached
 		// from the pooled trace, so it's safe to hold in the buffers after this goroutine
 		// releases the pooled object below, and safe for all connectors to share one copy
-		// (they only read it). enqueue appends the snapshot and, when a cap is reached,
-		// flushes the batch inline before returning.
+		// (they only read it). enqueue never blocks: it appends and, at most, hands a full
+		// batch off to a new flush goroutine.
 		for _, slot := range slots {
 			slot.enqueue(exportTrace, t.logger)
 		}

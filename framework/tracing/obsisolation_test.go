@@ -91,6 +91,41 @@ func TestSetObservabilityFlushIntervalSeconds(t *testing.T) {
 	}
 }
 
+// TestCompleteAndFlushTrace_SlowPluginDoesNotDelayOthers is the core isolation guarantee:
+// a connector doing blocking network I/O in Inject must not hold up delivery to another
+// connector — including the logging plugin, whose Inject enqueues the row for the DB.
+func TestCompleteAndFlushTrace_SlowPluginDoesNotDelayOthers(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+
+	tracer := newTestTracer(store, 20*time.Millisecond)
+	defer tracer.Stop()
+
+	const slowInject = 750 * time.Millisecond
+	slow := &blockingObsPlugin{name: "slow-connector", delay: slowInject}
+	fast := &blockingObsPlugin{name: "fast-connector"}
+
+	// Slow one registered first: the ordering that used to cause the stall.
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{slow, fast})
+
+	traceID := tracer.CreateTrace("")
+	start := time.Now()
+	tracer.CompleteAndFlushTrace(traceID)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for fast.started.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if fast.started.Load() == 0 {
+		t.Fatal("fast plugin was never injected")
+	}
+
+	elapsed := time.Unix(0, fast.firstEntry.Load()).Sub(start)
+	if elapsed >= slowInject {
+		t.Fatalf("fast plugin was blocked behind the slow one: entered Inject after %v (slow plugin takes %v)", elapsed, slowInject)
+	}
+}
+
 // TestCompleteAndFlushTrace_CountTriggerFlushesBeforeTick verifies the count trigger: once a
 // connector's buffer reaches batchSize it flushes immediately, without waiting for the
 // interval tick, and nothing is dropped.
@@ -121,6 +156,68 @@ func TestCompleteAndFlushTrace_CountTriggerFlushesBeforeTick(t *testing.T) {
 	}
 	if dropped := tracer.ObservabilityDropCounts()["counter"]; dropped != 0 {
 		t.Fatalf("expected no drops, got %d", dropped)
+	}
+}
+
+// TestCompleteAndFlushTrace_HungPluginBuffersThenDeliversAll is the end-to-end promise:
+// push 10000 traces at a plugin whose Inject hangs. They fill the buffer and pile up behind
+// blocked flush goroutines — delivered nowhere, but dropped nowhere either. Once the plugin
+// unblocks, every single one of the 10000 must drain through.
+func TestCompleteAndFlushTrace_HungPluginBuffersThenDeliversAll(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+
+	// Short interval so the trailing partial batch (10000 is not a multiple of 1024) is
+	// flushed by the timer too, exercising both triggers under the hang.
+	tracer := newTestTracer(store, 50*time.Millisecond)
+	tracer.batchSize = 1024
+	defer tracer.Stop()
+
+	hung := &blockingObsPlugin{name: "hung", release: make(chan struct{})}
+	// Release on every exit path so a failed assertion doesn't leave flush goroutines
+	// blocked in Inject (pinning their batches) for the rest of the package run.
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(hung.release) }) }
+	defer release()
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{hung})
+
+	const total = 10000
+	for range total {
+		tracer.CompleteAndFlushTrace(tracer.CreateTrace(""))
+	}
+	// All producer appends complete quickly even though every flush goroutine is stuck.
+	if !tracer.waitForFlushes(5 * time.Second) {
+		t.Fatal("producers did not finish appending")
+	}
+
+	// Give the timer a few ticks to flush the trailing partial batch into a (blocked) flush
+	// goroutine, so every trace is now either buffered or in-flight — none dropped.
+	time.Sleep(300 * time.Millisecond)
+
+	// While the plugin hangs, delivery is stalled: only the first trace of each dispatched
+	// batch has entered Inject; the vast majority wait behind them.
+	if s := hung.started.Load(); s == 0 || s >= total {
+		t.Fatalf("while hung, expected some-but-not-all traces in Inject, got %d/%d", s, total)
+	}
+	if hung.inFlight.Load() == 0 {
+		t.Fatal("expected flush goroutines blocked in Inject while the plugin hangs")
+	}
+	if d := tracer.ObservabilityDropCounts()["hung"]; d != 0 {
+		t.Fatalf("expected no drops while buffering, got %d", d)
+	}
+
+	// Release: every buffered / in-flight trace must now drain through.
+	release()
+
+	deadline := time.Now().Add(15 * time.Second)
+	for hung.started.Load() < total && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if got := hung.started.Load(); got != total {
+		t.Fatalf("expected all %d traces delivered after release, got %d", total, got)
+	}
+	if d := tracer.ObservabilityDropCounts()["hung"]; d != 0 {
+		t.Fatalf("expected zero drops overall, got %d", d)
 	}
 }
 
