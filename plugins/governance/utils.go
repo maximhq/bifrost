@@ -7,6 +7,7 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/grants"
 	"github.com/valyala/fasthttp"
 )
 
@@ -78,43 +79,6 @@ func IsModelCheckedWhenPresent(requestType schemas.RequestType) bool {
 	}
 }
 
-// parseVirtualKeyFromHTTPRequest parses the virtual key from HTTP request headers.
-// It checks multiple headers in order: x-bf-vk, Authorization (Bearer token), x-api-key, and x-goog-api-key.
-// Parameters:
-//   - req: The HTTP request containing headers to parse
-//
-// Returns:
-//   - *string: The virtual key if found, nil otherwise
-func parseVirtualKeyFromHTTPRequest(req *schemas.HTTPRequest) *string {
-	var virtualKeyValue string
-	vkHeader := req.CaseInsensitiveHeaderLookup("x-bf-vk")
-	if vkHeader != "" && strings.HasPrefix(strings.ToLower(vkHeader), VirtualKeyPrefix) {
-		return new(vkHeader)
-	}
-	authHeader := req.CaseInsensitiveHeaderLookup("Authorization")
-	if authHeader != "" {
-		if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
-			authHeaderValue := strings.TrimSpace(authHeader[7:]) // Remove "Bearer " prefix
-			if authHeaderValue != "" && strings.HasPrefix(strings.ToLower(authHeaderValue), VirtualKeyPrefix) {
-				virtualKeyValue = authHeaderValue
-			}
-		}
-	}
-	if virtualKeyValue != "" {
-		return new(virtualKeyValue)
-	}
-	xAPIKey := req.CaseInsensitiveHeaderLookup("x-api-key")
-	if xAPIKey != "" && strings.HasPrefix(strings.ToLower(xAPIKey), VirtualKeyPrefix) {
-		return new(xAPIKey)
-	}
-	// Checking x-goog-api-key header
-	xGoogleAPIKey := req.CaseInsensitiveHeaderLookup("x-goog-api-key")
-	if xGoogleAPIKey != "" && strings.HasPrefix(strings.ToLower(xGoogleAPIKey), VirtualKeyPrefix) {
-		return new(xGoogleAPIKey)
-	}
-	return nil
-}
-
 // getWeight safely dereferences a *float64 weight pointer, returning 1.0 as default if nil.
 // This allows distinguishing between "not set" (nil -> 1.0) and "explicitly set to 0" (0.0).
 func getWeight(w *float64) float64 {
@@ -124,14 +88,18 @@ func getWeight(w *float64) float64 {
 	return *w
 }
 
-// filterModelsForAccess drops the models a request may not use from a listing. The request's
-// access decides, so a model reachable only through a grant composed onto the request is kept,
-// and one the composition removed is dropped — the listing and the request agree by construction
-// rather than by two implementations happening to match.
-func (p *GovernancePlugin) filterModelsForAccess(ctx *schemas.BifrostContext, models []schemas.Model) []schemas.Model {
-	access := p.ensureEffectiveAccess(ctx)
+// filterModelsForAccess drops the models a request may not use from a listing. The access decides, so a
+// model reachable only through a grant composed onto the request is kept, and one the composition removed
+// is dropped — the listing and the request agree by construction rather than by two implementations
+// happening to match.
+//
+// The access is handed in rather than resolved here. A listing is produced after the request has been
+// evaluated, and resolving again at that point would answer for whatever configuration has become since;
+// what a caller may list is what it was admitted under.
+func (p *GovernancePlugin) filterModelsForAccess(access *grants.EffectiveAccess, models []schemas.Model) []schemas.Model {
 	if access == nil {
-		// Nothing resolved: the request carries no grant, so it may list nothing.
+		// A credential was presented and resolved to nothing, so there is nothing to list. A request that
+		// presented nothing is unrestricted, which is an access — not this case.
 		return []schemas.Model{}
 	}
 

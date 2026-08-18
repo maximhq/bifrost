@@ -750,3 +750,85 @@ func TestBudgetResolver_EvaluateRequest_SkipModelCheckAllowsBlockedModel(t *test
 	assert.NotEqual(t, DecisionModelBlocked, result.Decision, "skipModelCheck must bypass the virtual key model allowlist")
 	assertDecision(t, DecisionAllow, result)
 }
+
+// Enforcement names the holder kinds to skip, not the ones to check, so a deployment that funds requests
+// from something this package has never heard of gets those limits enforced without registering anything.
+// The alternative fails open: a limit gathered for the attempt, recorded against it, and then neither
+// checked nor charged.
+func TestEvaluateLimitsEnforcesAnUnfamiliarHolderKind(t *testing.T) {
+	logger := NewMockLogger()
+	exhausted := buildBudgetWithUsage("b-somewhere-else", 100.0, 100.0, "1d")
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		Budgets: []configstoreTables.TableBudget{*exhausted},
+	}, nil)
+	require.NoError(t, err)
+
+	resolver := NewBudgetResolver(store, nil, logger, nil)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	// An access funded by a holder kind declared nowhere in this package — what an edition resolving its
+	// own grants produces.
+	access := grants.NewEffectiveAccess(grants.UnrestrictedGrant(), nil, "", nil, nil).
+		WithResolvedLimits([]grants.Limit{{
+			ID:         exhausted.ID,
+			HolderKind: "some_edition_holder",
+			HolderID:   "h1",
+			HolderName: "Someone",
+		}}, nil)
+	grants.RecordEffectiveAccess(ctx, access)
+
+	result := resolver.evaluateLimits(ctx, &EvaluationRequest{Provider: schemas.OpenAI, Model: "gpt-4o"}, access)
+
+	assert.Equal(t, DecisionBudgetExceeded, result.Decision,
+		"a holder this package does not know still refuses a request it cannot afford")
+	assert.Contains(t, result.Reason, "Budget exceeded")
+}
+
+// Which credential a request is governed as is settled before governance sees it — a request presenting
+// both is resolved to one, or refused, by whoever authenticated it. So an identity on the context changes
+// nothing about what the request answers to: the limits on its access are the limits, whichever credential
+// produced them.
+func TestEvaluateLimitsEnforcesTheAccessWhicheverCredentialProducedIt(t *testing.T) {
+	logger := NewMockLogger()
+	exhausted := buildBudgetWithUsage("b-holder", 100.0, 100.0, "1d")
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		Budgets: []configstoreTables.TableBudget{*exhausted},
+	}, nil)
+	require.NoError(t, err)
+
+	resolver := NewBudgetResolver(store, nil, logger, nil)
+	held := []grants.Limit{{ID: exhausted.ID, HolderKind: grants.LimitHolderVirtualKey, HolderID: "vk1"}}
+
+	evaluate := func(t *testing.T, stamp func(ctx *schemas.BifrostContext)) *EvaluationResult {
+		t.Helper()
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		stamp(ctx)
+		access := grants.NewEffectiveAccess(grants.UnrestrictedGrant(), nil, "", nil, nil).WithResolvedLimits(held, nil)
+		grants.RecordEffectiveAccess(ctx, access)
+		return resolver.evaluateLimits(ctx, &EvaluationRequest{Provider: schemas.OpenAI, Model: "gpt-4o"}, access)
+	}
+
+	t.Run("an exhausted holder refuses the request", func(t *testing.T) {
+		assert.Equal(t, DecisionBudgetExceeded, evaluate(t, func(*schemas.BifrostContext) {}).Decision)
+	})
+
+	t.Run("and still refuses it when an identity is on the context", func(t *testing.T) {
+		// This used to exempt the key's own limits, from the days when an access profile was mirrored onto
+		// a key and the two were one allowance recorded twice. Dropping them now would simply not charge a
+		// budget that is real.
+		result := evaluate(t, func(ctx *schemas.BifrostContext) {
+			ctx.SetValue(schemas.BifrostContextKeyUserID, "user-1")
+		})
+
+		assert.Equal(t, DecisionBudgetExceeded, result.Decision)
+	})
+
+	t.Run("only asking for spending checks to be skipped exempts it", func(t *testing.T) {
+		result := evaluate(t, func(ctx *schemas.BifrostContext) {
+			ctx.SetValue(schemas.BifrostContextKeySkipBudgetAndRateLimits, true)
+		})
+
+		assert.Equal(t, DecisionAllow, result.Decision)
+		assert.Contains(t, result.Reason, "spending checks skipped")
+	})
+}

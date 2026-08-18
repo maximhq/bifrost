@@ -244,6 +244,16 @@ func resolverCtx(store GovernanceStore, virtualKeyValue string) *schemas.Bifrost
 	return ctx
 }
 
+// settleLimits fills in the limits a request made with vkValue for this provider and model answers to, as
+// the funnel does before the tracker ever sees an update. Charging bills the limits it is handed rather
+// than working out which of them apply — the update says what to charge, not who made the request — so a
+// test driving the tracker directly has to settle them or nothing is billed.
+func settleLimits(gs GovernanceStore, vkValue string, provider schemas.ModelProvider, model string, update *UsageUpdate) *UsageUpdate {
+	ctx := resolverCtx(gs, vkValue)
+	update.Budgets, update.RateLimits = gs.GatherLimits(ctx, grants.EffectiveAccessFromContext(ctx), provider, model)
+	return update
+}
+
 func assertDecision(t *testing.T, expected Decision, result *EvaluationResult) {
 	t.Helper()
 	assert.NotNil(t, result, "EvaluationResult should not be nil")
@@ -386,7 +396,11 @@ func evaluateGrantedRequest(r *BudgetResolver, ctx *schemas.BifrostContext, acce
 // it — the deployment's provider and model-config limits — through the single check the funnel uses.
 // It stands in for the per-holder entry points those limits used to have.
 func evaluateDeploymentLimits(r *BudgetResolver, ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string) *EvaluationResult {
-	return r.evaluateLimits(ctx, &EvaluationRequest{Provider: provider, Model: model}, nil)
+	// What a request nobody granted anything answers to, reached the way such a request reaches it: the
+	// unrestricted access it carries, with the deployment's limits settled onto it.
+	grants.RecordEffectiveAccess(ctx, grants.NewEffectiveAccess(grants.UnrestrictedGrant(), nil, "", nil, nil))
+	return r.evaluateLimits(ctx, &EvaluationRequest{Provider: provider, Model: model},
+		resolveLimits(ctx, r.store, provider, model))
 }
 
 // resolveLimitsForTest settles the limits onto whatever access ctx carries, as Evaluate does, and
@@ -450,6 +464,67 @@ func checkScopedBudgets(gs *LocalGovernanceStore, ctx context.Context, grantType
 func checkScopedRateLimits(gs *LocalGovernanceStore, ctx context.Context, grantType grants.GrantType, scopeID string, provider schemas.ModelProvider, model string, tokens, requests map[string]int64) (Decision, error) {
 	_, rateLimits := gs.ProviderAndModelLimits(ctx, &grants.Grant{Type: grantType, ID: scopeID, IsActive: true}, provider, model)
 	return gs.CheckRateLimits(ctx, rateLimits, tokens, requests)
+}
+
+// The helpers below stand in for the per-level update methods the store used to expose. Charging now
+// bills the limits resolved for an attempt, so each of these assembles the limits that level contributes
+// and bills them — the assembly is the caller's half, the charge is shared.
+
+// chargeDeploymentBudgets bills a cost to the limits every request to this provider and model answers to
+// regardless of what granted it, and chargeDeploymentRateLimits counts one against them.
+func chargeDeploymentBudgets(gs *LocalGovernanceStore, ctx context.Context, model string, provider schemas.ModelProvider, cost float64) error {
+	budgets, _ := gs.ProviderAndModelLimits(ctx, nil, provider, model)
+	return gs.ChargeBudgets(ctx, budgets, cost)
+}
+
+func chargeDeploymentRateLimits(gs *LocalGovernanceStore, ctx context.Context, model string, provider schemas.ModelProvider, tokensUsed int64, shouldUpdateTokens, shouldUpdateRequests bool) error {
+	_, rateLimits := gs.ProviderAndModelLimits(ctx, nil, provider, model)
+	return gs.ChargeRateLimits(ctx, rateLimits, tokensUsed, shouldUpdateTokens, shouldUpdateRequests)
+}
+
+// scopedModelLimits is what one named scope's model configs impose on a request to this provider and
+// model — that scope alone, so a test can bill it without the deployment's own coming along.
+func scopedModelLimits(gs *LocalGovernanceStore, ctx context.Context, scope, scopeID, model string, provider schemas.ModelProvider) (budgets, rateLimits []grants.Limit) {
+	providerName := string(provider)
+	var providerArg *string
+	if providerName != "" {
+		providerArg = &providerName
+	}
+	for _, mc := range gs.collectModelConfigsFor(ctx, scope, scopeID, model, providerArg) {
+		if mc == nil {
+			continue
+		}
+		budgets = append(budgets, grants.LimitsHeldBy(grants.LimitHolderVirtualKeyModelConfig, mc.ID, modelConfigDisplayName(mc), providerName, model, budgetIDsOf(mc.Budgets)...)...)
+		rateLimits = append(rateLimits, grants.LimitsHeldBy(grants.LimitHolderVirtualKeyModelConfig, mc.ID, modelConfigDisplayName(mc), providerName, model, idOrEmpty(mc.RateLimitID)...)...)
+	}
+	return budgets, rateLimits
+}
+
+// chargeScopedBudgets bills a cost to the model configs a named holder set for its own traffic, and
+// chargeScopedRateLimits counts one against them.
+func chargeScopedBudgets(gs *LocalGovernanceStore, ctx context.Context, scope, scopeID, model string, provider schemas.ModelProvider, cost float64) error {
+	budgets, _ := scopedModelLimits(gs, ctx, scope, scopeID, model, provider)
+	return gs.ChargeBudgets(ctx, budgets, cost)
+}
+
+func chargeScopedRateLimits(gs *LocalGovernanceStore, ctx context.Context, scope, scopeID, model string, provider schemas.ModelProvider, tokensUsed int64, shouldUpdateTokens, shouldUpdateRequests bool) error {
+	_, rateLimits := scopedModelLimits(gs, ctx, scope, scopeID, model, provider)
+	return gs.ChargeRateLimits(ctx, rateLimits, tokensUsed, shouldUpdateTokens, shouldUpdateRequests)
+}
+
+// chargeGrantBudgets bills a cost to what a key's grant is funded by — the key's own, its provider
+// configs' for this provider, and the team and customer it belongs to. chargeGrantRateLimits is its
+// rate-limit counterpart.
+func chargeGrantBudgets(gs *LocalGovernanceStore, ctx context.Context, vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider, cost float64) error {
+	grant := gs.grantForVirtualKey(ctx, vk)
+	heldBudgets, _ := gs.HolderLimits(ctx, grant)
+	return gs.ChargeBudgets(ctx, append(heldBudgets, grant.BudgetsFor(string(provider))...), cost)
+}
+
+func chargeGrantRateLimits(gs *LocalGovernanceStore, ctx context.Context, vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider, tokensUsed int64, shouldUpdateTokens, shouldUpdateRequests bool) error {
+	grant := gs.grantForVirtualKey(ctx, vk)
+	_, heldRateLimits := gs.HolderLimits(ctx, grant)
+	return gs.ChargeRateLimits(ctx, append(heldRateLimits, grant.RateLimitsFor(string(provider))...), tokensUsed, shouldUpdateTokens, shouldUpdateRequests)
 }
 
 // checkGrantBudgets checks what a key's grant is funded by — the key's own, its provider configs' for
