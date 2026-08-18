@@ -50,6 +50,19 @@ dependencies = [
     "pyasn1>=0.6.4",
 ]
 
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+# This project ships no importable code - it is a dependency manifest plus a pytest
+# suite. An empty py-modules says exactly that, and it also switches setuptools'
+# auto-discovery off. Without it, a plain `pip install -e .` (the fallback in
+# .github/workflows/scripts/test-integrations.sh when uv is missing) aborts with
+# "Multiple top-level modules discovered in a flat-layout" on run_all_tests.py and
+# run_integration_tests.py.
+[tool.setuptools]
+py-modules = []
+
 [project.optional-dependencies]
 dev = [
     "black>=23.0.0",   # Code formatting
@@ -123,4 +136,8 @@ exclude_lines = [
 
 
 [tool.uv]
+# Pins the root back to a virtual (non-installed) project. Declaring [build-system]
+# above would otherwise make uv treat it as an editable package, which changes the
+# root's entry in uv.lock and breaks `uv sync --frozen`.
+package = false
 exclude-newer = "2026-07-10T00:00:00Z"

@@ -1561,17 +1561,22 @@ func TestStructuredOutputConversion(t *testing.T) {
 				assert.Equal(t, "application/json", result.GenerationConfig.ResponseMIMEType)
 				assert.NotNil(t, result.GenerationConfig.ResponseJSONSchema)
 
-				schemaMap := result.GenerationConfig.ResponseJSONSchema.(map[string]interface{})
-				properties := schemaMap["properties"].(map[string]interface{})
-				items := properties["items"].(map[string]interface{})
+				schemaMap, ok := asPlainMap(t, result.GenerationConfig.ResponseJSONSchema)
+				require.True(t, ok, "ResponseJSONSchema should be a schema object")
+				properties, ok := asPlainMap(t, schemaMap["properties"])
+				require.True(t, ok, "properties should be a schema object")
+				items, ok := asPlainMap(t, properties["items"])
+				require.True(t, ok, "items should be a schema object")
 
 				// Validate array items
 				assert.Equal(t, "array", items["type"])
-				itemsSchema := items["items"].(map[string]interface{})
+				itemsSchema, ok := asPlainMap(t, items["items"])
+				require.True(t, ok, "items.items should be a schema object")
 				assert.Equal(t, "object", itemsSchema["type"])
 
 				// Validate nested properties
-				nestedProps := itemsSchema["properties"].(map[string]interface{})
+				nestedProps, ok := asPlainMap(t, itemsSchema["properties"])
+				require.True(t, ok, "nested properties should be a schema object")
 				assert.Contains(t, nestedProps, "id")
 				assert.Contains(t, nestedProps, "name")
 			},
@@ -1762,6 +1767,14 @@ func asPlainMap(t *testing.T, v interface{}) (map[string]interface{}, bool) {
 		return m.ToMap(), true
 	case schemas.OrderedMap:
 		return m.ToMap(), true
+	case json.RawMessage:
+		// A schema Gemini needs no rewrites on is forwarded as the client's own
+		// raw bytes, so decode it here to inspect it.
+		var decoded map[string]interface{}
+		if err := schemas.Unmarshal(m, &decoded); err != nil {
+			return nil, false
+		}
+		return decoded, true
 	}
 	return nil, false
 }
