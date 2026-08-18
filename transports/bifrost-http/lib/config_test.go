@@ -18789,7 +18789,7 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 	})
 
 	t.Run("mcp library invalid db interval falls back and requests db update", func(t *testing.T) {
-		invalidDBSync := int64(0)
+		invalidDBSync := int64(-1)
 		dbConfig := &tables.TableFrameworkConfig{
 			ID:                     10,
 			MCPLibraryURL:          &defaultMCPLibraryURL,
@@ -18800,6 +18800,36 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 		require.True(t, needsDBUpdate)
 		require.Equal(t, defaultSyncSeconds, *normalizedTable.MCPLibrarySyncInterval)
 		require.Equal(t, defaultSyncSeconds, *normalizedModelCatalog.MCPLibrarySyncInterval)
+	})
+
+	// 0 is the air-gapped opt-out (modelcatalog.MCPLibrarySyncDisabled), not
+	// corruption: it must survive a resolve untouched instead of being
+	// backfilled with the default, or a disabled deployment would silently
+	// resume dialing the default catalog endpoint on the next boot.
+	t.Run("mcp library disabled db interval is honoured", func(t *testing.T) {
+		disabled := modelcatalog.MCPLibrarySyncDisabled
+		dbConfig := &tables.TableFrameworkConfig{
+			ID:                     10,
+			MCPLibraryURL:          &defaultMCPLibraryURL,
+			MCPLibrarySyncInterval: &disabled,
+		}
+
+		normalizedTable, normalizedModelCatalog, _ := ResolveFrameworkPricingConfig(dbConfig, nil)
+		require.Equal(t, modelcatalog.MCPLibrarySyncDisabled, *normalizedTable.MCPLibrarySyncInterval)
+		require.Equal(t, modelcatalog.MCPLibrarySyncDisabled, *normalizedModelCatalog.MCPLibrarySyncInterval)
+	})
+
+	t.Run("mcp library disabled file interval is honoured", func(t *testing.T) {
+		disabled := modelcatalog.MCPLibrarySyncDisabled
+		fileConfig := &framework.FrameworkConfig{
+			Pricing: &modelcatalog.Config{
+				MCPLibrarySyncInterval: &disabled,
+			},
+		}
+
+		normalizedTable, normalizedModelCatalog, _ := ResolveFrameworkPricingConfig(nil, fileConfig)
+		require.Equal(t, modelcatalog.MCPLibrarySyncDisabled, *normalizedTable.MCPLibrarySyncInterval)
+		require.Equal(t, modelcatalog.MCPLibrarySyncDisabled, *normalizedModelCatalog.MCPLibrarySyncInterval)
 	})
 
 	t.Run("invalid db interval (zero) falls back and requests db update", func(t *testing.T) {

@@ -4,10 +4,13 @@ import OnboardingWidget from "@/components/onboardingWidget";
 import ProgressProvider from "@/components/progressBar";
 import Sidebar from "@/components/sidebar";
 import { ThemeProvider } from "@/components/themeProvider";
+import Topbar from "@/components/topbar";
 import TrialExpiryBanner from "@/components/trialExpiryBanner";
 import { Button } from "@/components/ui/button";
-import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
+import { SidebarProvider } from "@/components/ui/sidebar";
 import { useStoreSync } from "@/hooks/useStoreSync";
+import { useNotificationSync } from "@/hooks/useNotificationSync";
+import { TopbarProvider } from "@/lib/contexts/topbarContext";
 import { WebSocketProvider } from "@/hooks/useWebSocket";
 import { getErrorMessage, ReduxProvider, useGetCoreConfigQuery, useIsAuthEnabledQuery } from "@/lib/store";
 import { BifrostConfig } from "@/lib/types/config";
@@ -33,6 +36,7 @@ const DevProfiler = () => (
 
 function StoreSyncInitializer() {
 	useStoreSync();
+	useNotificationSync();
 	return null;
 }
 
@@ -51,12 +55,6 @@ function AppContent({ children }: { children: React.ReactNode }) {
 	// neither a fragment nor a cookie to drive the tempTokenScoped per-visitor
 	// logic.
 	const publicShell = matches.some((m) => (m.staticData as { publicShell?: boolean } | undefined)?.publicShell === true);
-	const pathname = useLocation({ select: (location) => location.pathname });
-	const mobilePageTitle = (pathname.split("/").filter(Boolean).at(-1) ?? "Dashboard")
-		.split("-")
-		.map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-		.join(" ");
-
 	// Probe dashboard auth state on opted-in routes. is-auth-enabled is whitelisted
 	// (no 401 risk) and returns whether the current cookie is a valid session.
 	const { data: authState, isLoading: authLoading } = useIsAuthEnabledQuery(undefined, { skip: !tempTokenScoped });
@@ -118,28 +116,38 @@ function AppContent({ children }: { children: React.ReactNode }) {
 		<WebSocketProvider>
 			<CookiesProvider>
 				<StoreSyncInitializer />
-				<SidebarProvider>
-					<Sidebar />
-					<div className="dark:bg-card custom-scrollbar content-container mx-0 h-dvh w-full min-w-0 overflow-auto border border-gray-200 bg-white md:my-[0.5rem] md:mr-[0.5rem] md:h-[calc(100dvh-1rem)] md:rounded-md md:px-10 dark:border-zinc-800">
-						<div className="bg-card sticky top-0 z-20 flex h-12 min-w-0 items-center border-b px-4 md:hidden">
-							<div className="flex min-w-0 items-center gap-2">
-								<SidebarTrigger className="shrink-0" />
-								<span className="truncate text-sm font-semibold">{mobilePageTitle}</span>
+				<TopbarProvider>
+					<SidebarProvider>
+						<Sidebar />
+						{/* Content column: a fixed-height flex stack so the topbar takes its
+					    48px and the content card absorbs the remainder. The topbar has no
+					    background of its own, so it reads as the same surface as the
+					    sidebar (both show the page body background). */}
+						<div className="flex h-dvh w-full min-w-0 flex-col">
+							<Topbar />
+							{/* No w-full: in a column flex container the cross axis is width, and
+							    an explicit 100% would sit *outside* the right margin, pushing it
+							    off-screen. Default align-items:stretch already fills the column
+							    minus margins. No top margin either: the card butts against the
+							    60px topbar so its top edge lands on the same line as the sidebar's
+							    search input, and --app-content-viewport compensates so full-height
+							    pages still measure to the card's inner height. */}
+							<div className="dark:bg-card custom-scrollbar content-container mx-0 min-h-0 min-w-0 flex-1 overflow-auto border border-gray-200 bg-white md:mr-2 md:mb-2 md:rounded-md md:px-10 dark:border-zinc-800">
+								<TrialExpiryBanner />
+								<main className="custom-scrollbar content-container-inner relative mx-auto flex h-full min-h-0 flex-col overflow-y-hidden md:p-4">
+									{isLoading ? (
+										<FullPageLoader />
+									) : (
+										<FullPage config={bifrostConfig} hasError={!!error} isRetrying={isFetching} onRetry={refetch}>
+											{children}
+										</FullPage>
+									)}
+								</main>
+								{bifrostConfig?.is_db_connected && <OnboardingWidget />}
 							</div>
 						</div>
-						<TrialExpiryBanner />
-						<main className="custom-scrollbar content-container-inner relative mx-auto flex h-[calc(100%-3rem)] min-h-0 flex-col overflow-y-hidden md:h-full md:p-4">
-							{isLoading ? (
-								<FullPageLoader />
-							) : (
-								<FullPage config={bifrostConfig} hasError={!!error} isRetrying={isFetching} onRetry={refetch}>
-									{children}
-								</FullPage>
-							)}
-						</main>
-						{bifrostConfig?.is_db_connected && <OnboardingWidget />}
-					</div>
-				</SidebarProvider>
+					</SidebarProvider>
+				</TopbarProvider>
 			</CookiesProvider>
 		</WebSocketProvider>
 	);
