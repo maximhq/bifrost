@@ -9,10 +9,16 @@ import (
 )
 
 // GetModelCapabilityEntryForModel returns capability metadata for a
-// (model, provider) pair. Prefers chat, then responses, then text-completion
-// entries; falls back to the lexicographically first available mode for
-// deterministic behavior.
+// (model, provider) pair, resolving configured aliases to their canonical
+// pricing model first. Prefers chat, then responses, then text-completion
+// entries; falls back to the lexicographically first available mode.
 func (mc *ModelCatalog) GetModelCapabilityEntryForModel(model string, provider schemas.ModelProvider) *PricingEntry {
+	if alias, ok := mc.keyconf.ResolveAlias(provider, model); ok {
+		model = alias.Config.ModelID
+		if alias.Config.ModelName != nil {
+			model = *alias.Config.ModelName
+		}
+	}
 	return mc.datasheet.GetCapabilityEntry(model, provider)
 }
 
