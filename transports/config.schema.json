@@ -296,6 +296,13 @@
           "description": "Maximum depth for routing rule chain evaluation",
           "default": 10
         },
+        "observability_flush_interval_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 600,
+          "description": "How often, in seconds, each observability connector (OTEL, logging) flushes its trace buffer regardless of fill level.",
+          "default": 10
+        },
         "mcp_external_client_url": {
           "anyOf": [
             {

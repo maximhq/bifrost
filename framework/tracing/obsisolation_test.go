@@ -60,86 +60,112 @@ func (p *blockingObsPlugin) Inject(_ context.Context, _ *schemas.Trace) error {
 	return nil
 }
 
-// TestCompleteAndFlushTrace_SlowPluginDoesNotDelayOthers is the core regression: the
-// observability plugins used to be invoked sequentially on a single flush goroutine, so
-// a connector doing blocking network I/O sat in front of every plugin after it —
-// including the logging plugin, whose Inject is what enqueues the row for Postgres.
-func TestCompleteAndFlushTrace_SlowPluginDoesNotDelayOthers(t *testing.T) {
-	store := NewTraceStore(5*time.Minute, nil)
-	defer store.Stop()
-
+// newTestTracer builds a tracer with a short flush interval so tests don't wait the full 10s tick to see a low-volume trace delivered.
+func newTestTracer(store *TraceStore, flushInterval time.Duration) *Tracer {
 	tracer := NewTracer(store, nil, nil)
-	defer tracer.Stop()
+	tracer.flushInterval = flushInterval
+	return tracer
+}
 
-	const slowInject = 750 * time.Millisecond
-	slow := &blockingObsPlugin{name: "slow-connector", delay: slowInject}
-	fast := &blockingObsPlugin{name: "fast-connector"}
-
-	// Slow one registered first: the ordering that used to cause the stall.
-	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{slow, fast})
-
-	traceID := tracer.CreateTrace("")
-	start := time.Now()
-	tracer.CompleteAndFlushTrace(traceID)
-
-	deadline := time.Now().Add(5 * time.Second)
-	for fast.started.Load() == 0 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
+// TestSetObservabilityFlushIntervalSeconds covers the config-supplied interval: valid values
+// pass through and non-positive falls back to the default.
+func TestSetObservabilityFlushIntervalSeconds(t *testing.T) {
+	cases := []struct {
+		in   int
+		want time.Duration
+	}{
+		{0, DefaultObservabilityFlushInterval},
+		{-5, DefaultObservabilityFlushInterval},
+		{30, 30 * time.Second},
+		{600, 600 * time.Second},
 	}
-	if fast.started.Load() == 0 {
-		t.Fatal("fast plugin was never injected")
-	}
-
-	elapsed := time.Unix(0, fast.firstEntry.Load()).Sub(start)
-	if elapsed >= slowInject {
-		t.Fatalf("fast plugin was blocked behind the slow one: entered Inject after %v (slow plugin takes %v)", elapsed, slowInject)
+	for _, c := range cases {
+		store := NewTraceStore(time.Minute, nil)
+		tr := NewTracer(store, nil, nil)
+		tr.SetObservabilityFlushIntervalSeconds(c.in)
+		if tr.flushInterval != c.want {
+			t.Fatalf("SetObservabilityFlushIntervalSeconds(%d) = %v, want %v", c.in, tr.flushInterval, c.want)
+		}
+		store.Stop()
 	}
 }
 
-// TestCompleteAndFlushTrace_BoundsInjectsPerPlugin verifies the concurrency cap. Without
-// it, one goroutine and one full trace snapshot accumulate per request for as long as the
-// collector hangs, and that heap/scheduler pressure is what starves the log batch writer.
-func TestCompleteAndFlushTrace_BoundsInjectsPerPlugin(t *testing.T) {
+// TestCompleteAndFlushTrace_CountTriggerFlushesBeforeTick verifies the count trigger: once a
+// connector's buffer reaches batchSize it flushes immediately, without waiting for the
+// interval tick, and nothing is dropped.
+func TestCompleteAndFlushTrace_CountTriggerFlushesBeforeTick(t *testing.T) {
 	store := NewTraceStore(5*time.Minute, nil)
 	defer store.Stop()
 
-	tracer := NewTracer(store, nil, nil)
+	// Long interval so the timer cannot be what flushes — only the size trigger can.
+	tracer := newTestTracer(store, time.Hour)
+	defer tracer.Stop()
+	tracer.batchSize = 64
 
-	stuck := &blockingObsPlugin{name: "stuck-connector", release: make(chan struct{})}
-	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{stuck})
+	counter := &blockingObsPlugin{name: "counter"}
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{counter})
 
-	const overshoot = 250
-	total := maxConcurrentInjectsPerPlugin + overshoot
-	for range total {
+	// Exactly one full batch: the 64th append should trigger a flush on its own.
+	for range 64 {
+		tracer.CompleteAndFlushTrace(tracer.CreateTrace(""))
+	}
+	tracer.waitForFlushes(5 * time.Second)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for counter.started.Load() < 64 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := counter.started.Load(); got != 64 {
+		t.Fatalf("expected all 64 buffered traces delivered by the size trigger, got %d", got)
+	}
+	if dropped := tracer.ObservabilityDropCounts()["counter"]; dropped != 0 {
+		t.Fatalf("expected no drops, got %d", dropped)
+	}
+}
+
+// TestCompleteAndFlushTrace_TimerFlushesPartialBatch verifies the interval trigger: a
+// sub-batch of traces that never reaches batchSize is still delivered on the next tick.
+func TestCompleteAndFlushTrace_TimerFlushesPartialBatch(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+
+	tracer := newTestTracer(store, 20*time.Millisecond)
+	defer tracer.Stop()
+	tracer.batchSize = 1024 // far above what we push, so only the timer can flush
+
+	counter := &blockingObsPlugin{name: "counter"}
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{counter})
+
+	const n = 5
+	for range n {
 		tracer.CompleteAndFlushTrace(tracer.CreateTrace(""))
 	}
 
-	// Wait for the semaphore to saturate and the excess to be skipped.
-	deadline := time.Now().Add(10 * time.Second)
-	for tracer.ObservabilityDropCounts()["stuck-connector"] == 0 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
+	deadline := time.Now().Add(5 * time.Second)
+	for counter.started.Load() < n && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
 	}
-
-	if got := stuck.maxInFlight.Load(); got > maxConcurrentInjectsPerPlugin {
-		t.Fatalf("concurrent injects exceeded the cap: got %d, cap %d", got, maxConcurrentInjectsPerPlugin)
+	if got := counter.started.Load(); got != n {
+		t.Fatalf("expected the partial batch of %d flushed by the timer, got %d", n, got)
 	}
-	if dropped := tracer.ObservabilityDropCounts()["stuck-connector"]; dropped == 0 {
-		t.Fatal("expected traces to be skipped once the plugin saturated, got 0")
-	}
-
-	close(stuck.release)
-	tracer.Stop()
 }
 
-// TestWaitForFlushes_TimesOutOnHungPlugin ensures a connector blocked on an unreachable
-// collector cannot hold up shutdown or a config reload.
-func TestWaitForFlushes_TimesOutOnHungPlugin(t *testing.T) {
+// TestDrainObsPlugins_TimesOutOnHungPlugin ensures a connector blocked on an unreachable
+// collector cannot hold up shutdown or a config reload. The blocking work lives in a flush
+// goroutine, so the bounded wait that protects shutdown is drainObsPlugins.
+func TestDrainObsPlugins_TimesOutOnHungPlugin(t *testing.T) {
 	store := NewTraceStore(5*time.Minute, nil)
 	defer store.Stop()
 
-	tracer := NewTracer(store, nil, nil)
+	tracer := newTestTracer(store, 20*time.Millisecond)
+	defer tracer.Stop()
 
 	hung := &blockingObsPlugin{name: "hung-connector", release: make(chan struct{})}
+	// Release on every exit path so a failed assertion doesn't leave a flush goroutine
+	// blocked in Inject for the rest of the package run.
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(hung.release) }) }
+	defer release()
 	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{hung})
 	tracer.CompleteAndFlushTrace(tracer.CreateTrace(""))
 
@@ -151,16 +177,22 @@ func TestWaitForFlushes_TimesOutOnHungPlugin(t *testing.T) {
 		t.Fatal("hung plugin was never injected")
 	}
 
-	start := time.Now()
-	if completed := tracer.waitForFlushes(200 * time.Millisecond); completed {
-		t.Fatal("waitForFlushes reported completion while a plugin was still blocked")
-	}
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
-		t.Fatalf("waitForFlushes did not honour its timeout: took %v", elapsed)
+	// The producer append completes promptly even while a flush goroutine is stuck in Inject.
+	if completed := tracer.waitForFlushes(2 * time.Second); !completed {
+		t.Fatal("waitForFlushes should complete once the snapshot is appended")
 	}
 
-	close(hung.release)
-	tracer.Stop()
+	// Draining, however, must honour its timeout rather than block on the stuck Inject.
+	start := time.Now()
+	tracer.drainObsPlugins(200 * time.Millisecond)
+	if elapsed := time.Since(start); elapsed < 200*time.Millisecond {
+		t.Fatalf("drainObsPlugins returned before a blocked flush could have finished: %v", elapsed)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("drainObsPlugins did not honour its timeout: took %v", elapsed)
+	}
+
+	release()
 }
 
 // TestSetObservabilityPlugins_DedupesByName preserves the behaviour the old flush loop
@@ -169,7 +201,7 @@ func TestSetObservabilityPlugins_DedupesByName(t *testing.T) {
 	store := NewTraceStore(5*time.Minute, nil)
 	defer store.Stop()
 
-	tracer := NewTracer(store, nil, nil)
+	tracer := newTestTracer(store, 20*time.Millisecond)
 	defer tracer.Stop()
 
 	dup := &blockingObsPlugin{name: "dup-connector"}
@@ -187,9 +219,36 @@ func TestSetObservabilityPlugins_DedupesByName(t *testing.T) {
 	for dup.started.Load() == 0 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
-	tracer.waitForFlushes(5 * time.Second)
+	// Give any erroneously-duplicated slot a couple of ticks to also fire.
+	time.Sleep(100 * time.Millisecond)
 
 	if got := dup.started.Load(); got != 1 {
 		t.Fatalf("expected a duplicate-named plugin to be injected once, got %d", got)
+	}
+}
+
+// TestObsSlot_PostCloseEnqueueStillDelivers is the shutdown-window guarantee: a trace
+// appended after the slot has been told to stop — a producer still holding a retired slot
+// during a config reload — is flushed immediately rather than lost in a batch the timer will
+// never drain again.
+func TestObsSlot_PostCloseEnqueueStillDelivers(t *testing.T) {
+	p := &blockingObsPlugin{name: "late"}
+	slot := &obsPluginSlot{
+		plugin:        p,
+		name:          p.name,
+		batchSize:     1000,      // never reached; only the timer or close flushes
+		flushInterval: time.Hour, // never ticks during the test
+		stop:          make(chan struct{}),
+	}
+	slot.start(nil)
+
+	// One buffered before close (drained by the final flush), one after close (self-flushed).
+	slot.enqueue(&schemas.Trace{}, nil)
+	slot.signalStop()
+	slot.enqueue(&schemas.Trace{}, nil)
+
+	slot.wg.Wait()
+	if got := p.started.Load(); got != 2 {
+		t.Fatalf("expected both traces delivered (none lost across close), got %d", got)
 	}
 }

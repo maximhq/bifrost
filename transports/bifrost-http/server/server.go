@@ -2604,6 +2604,8 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// Initializing tracer with embedded streaming accumulator
 	traceStore := tracing.NewTraceStore(60*time.Minute, logger)
 	tracer := tracing.NewTracer(traceStore, s.Config.ModelCatalog, logger)
+	// config.json/helm-derived flush interval (not DB-persisted); set before building slots.
+	tracer.SetObservabilityFlushIntervalSeconds(s.Config.ClientConfig.ObservabilityFlushIntervalSeconds)
 	tracer.SetObservabilityPlugins(observabilityPlugins)
 	s.Client.SetTracer(tracer)
 	s.TracingMiddleware = handlers.NewTracingMiddleware(tracer)

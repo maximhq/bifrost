@@ -14,28 +14,120 @@ import (
 )
 
 const (
-	// maxConcurrentInjectsPerPlugin bounds how many traces may sit inside a single
-	// observability connector's Inject at once. A connector pointed at a wrong or
-	// black-holed endpoint blocks on network I/O while pinning a full trace snapshot;
-	// uncapped that is one goroutine and one snapshot per request, whose heap and
-	// scheduler pressure starves the rest of the process — notably the logging
-	// plugin's single DB batch writer, whose queue then drops rows silently.
-	// Each connector gets its own budget so a stalled one cannot crowd out a healthy one.
-	maxConcurrentInjectsPerPlugin = 1024
+	DefaultObservabilityBatchSize     = 1000             // number of traces to accumulate before flushing to a connector; the count cap is the primary trigger for busy connectors
+	DefaultObservabilityFlushInterval = 10 * time.Second // how often to flush a connector's buffer, even if the count cap hasn't been hit
 
-	// flushStopTimeout bounds how long Stop waits for in-flight trace exports, so a
-	// hung collector cannot block shutdown or a config reload.
+	// flushStopTimeout bounds how long Stop waits for in-flight flushes, so a hung
+	// connector cannot block shutdown or a config reload.
 	flushStopTimeout = 10 * time.Second
 )
 
-// obsPluginSlot pairs an observability plugin with its own concurrency budget and
-// drop counter. Isolating the budget per connector is what keeps a misconfigured
-// exporter from consuming the capacity that healthy connectors need.
+// obsPluginSlot gives one observability plugin its own batch buffer and a timer goroutine
+// that flushes it. Traces accumulate in the buffer; a flush delivers the whole batch by
+// injecting each trace in turn. Nothing is dropped — producers always append. Each connector
+// has its own buffer so they don't contend on a shared one.
 type obsPluginSlot struct {
-	plugin  schemas.ObservabilityPlugin
-	name    string
-	sem     chan struct{}
-	dropped atomic.Int64
+	plugin schemas.ObservabilityPlugin
+	name   string
+
+	batchSize     int
+	flushInterval time.Duration
+
+	mu     sync.Mutex       // guards batch and closed
+	batch  []*schemas.Trace // accumulating buffer; swapped out on flush
+	closed bool             // set once the timer goroutine is stopping; late appends flush immediately
+
+	stop    chan struct{}  // closed to tell the timer goroutine to do a final flush and exit
+	stopped sync.Once      // so stop is only closed once (reload and Stop can race)
+	wg      sync.WaitGroup // timer goroutine, for a bounded drain
+
+	dropped atomic.Int64 // retained for ObservabilityDropCounts; stays 0 in this design
+}
+
+// start launches the timer goroutine that flushes the buffer every flushInterval.
+func (s *obsPluginSlot) start(logger schemas.Logger) {
+	s.wg.Add(1)
+	go s.run(logger)
+}
+
+// run flushes on every tick and once more on stop, so buffered traces are delivered even
+// when traffic is too light to ever fill a batch.
+func (s *obsPluginSlot) run(logger schemas.Logger) {
+	defer s.wg.Done()
+	ticker := time.NewTicker(s.flushInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			s.flush(s.take(), logger)
+		case <-s.stop:
+			s.flush(s.take(), logger) // final flush of whatever is left
+			return
+		}
+	}
+}
+
+// enqueue appends a trace and flushes early once the buffer reaches the count cap.
+func (s *obsPluginSlot) enqueue(trace *schemas.Trace, logger schemas.Logger) {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		s.flush([]*schemas.Trace{trace}, logger)
+		return
+	}
+	s.batch = append(s.batch, trace)
+	if len(s.batch) < s.batchSize {
+		s.mu.Unlock()
+		return
+	}
+	batch := s.batch
+	s.batch = nil
+	s.mu.Unlock()
+	s.flush(batch, logger)
+}
+
+// take atomically swaps the current buffer out for a fresh one and returns it.
+func (s *obsPluginSlot) take() []*schemas.Trace {
+	s.mu.Lock()
+	batch := s.batch
+	s.batch = nil
+	s.mu.Unlock()
+	return batch
+}
+
+// flush delivers a batch by injecting each trace in turn. Empty batches are a no-op.
+func (s *obsPluginSlot) flush(batch []*schemas.Trace, logger schemas.Logger) {
+	if len(batch) == 0 {
+		return
+	}
+	for _, trace := range batch {
+		s.inject(trace, logger)
+	}
+}
+
+// inject hands one trace to the plugin, recovering from panics so a bad backend can't take
+// down the flush goroutine.
+func (s *obsPluginSlot) inject(trace *schemas.Trace, logger schemas.Logger) {
+	defer func() {
+		if r := recover(); r != nil && logger != nil {
+			logger.Error("observability plugin %s panicked during trace injection: %v", s.name, r)
+		}
+	}()
+	if err := s.plugin.Inject(context.Background(), trace); err != nil && logger != nil {
+		logger.Warn("observability plugin %s failed to inject trace: %v", s.name, err)
+	}
+}
+
+// signalStop tells the timer goroutine to do its final flush and exit. Safe to call twice.
+// closed is set before stop is closed so a concurrent enqueue either lands in the buffer the
+// final flush will drain, or observes closed and flushes on its own — never lost.
+func (s *obsPluginSlot) signalStop() {
+	s.stopped.Do(func() {
+		s.mu.Lock()
+		s.closed = true
+		s.mu.Unlock()
+		close(s.stop)
+	})
 }
 
 // Tracer implements schemas.Tracer using TraceStore.
@@ -50,6 +142,12 @@ type Tracer struct {
 	obsPlugins        atomic.Pointer[[]*obsPluginSlot]
 	cachedHdrPatterns atomic.Pointer[[]string]
 	flushWG           sync.WaitGroup
+
+	// batchSize and flushInterval size each connector's buffer, read when the plugin slots are
+	// built. They default to the DefaultObservability* values; tests override them before
+	// SetObservabilityPlugins.
+	batchSize     int
+	flushInterval time.Duration
 }
 
 // NewTracer creates a new Tracer wrapping the given TraceStore.
@@ -62,7 +160,23 @@ func NewTracer(store *TraceStore, pricingManager *modelcatalog.ModelCatalog, log
 		pricingManager: pricingManager,
 		logger:         logger,
 		obsPlugins:     atomic.Pointer[[]*obsPluginSlot]{},
+		batchSize:      DefaultObservabilityBatchSize,
+		flushInterval:  DefaultObservabilityFlushInterval,
 	}
+}
+
+// SetObservabilityFlushIntervalSeconds sets how often each connector flushes its buffer,
+// from a config-supplied seconds value. Non-positive falls back to the default.
+// Call before SetObservabilityPlugins for it to take effect.
+func (t *Tracer) SetObservabilityFlushIntervalSeconds(seconds int) {
+	if t == nil {
+		return
+	}
+	if seconds <= 0 {
+		t.flushInterval = DefaultObservabilityFlushInterval
+		return
+	}
+	t.flushInterval = time.Duration(seconds) * time.Second
 }
 
 // SetObservabilityPlugins updates the plugins that receive completed traces.
@@ -72,9 +186,17 @@ func (t *Tracer) SetObservabilityPlugins(obsPlugins []schemas.ObservabilityPlugi
 	if t == nil {
 		return
 	}
-	// Build one slot per distinct plugin, each with its own concurrency budget.
+	// Build one slot per distinct plugin, each with its own buffer and timer goroutine.
 	// Deduplication by name happens here rather than on every flush, so the hot
 	// path does not rebuild a map per trace.
+	batchSize := t.batchSize
+	if batchSize <= 0 {
+		batchSize = DefaultObservabilityBatchSize
+	}
+	flushInterval := t.flushInterval
+	if flushInterval <= 0 {
+		flushInterval = DefaultObservabilityFlushInterval
+	}
 	slots := make([]*obsPluginSlot, 0, len(obsPlugins))
 	seenPlugins := make(map[string]struct{}, len(obsPlugins))
 	for _, plugin := range obsPlugins {
@@ -86,13 +208,26 @@ func (t *Tracer) SetObservabilityPlugins(obsPlugins []schemas.ObservabilityPlugi
 			continue
 		}
 		seenPlugins[name] = struct{}{}
-		slots = append(slots, &obsPluginSlot{
-			plugin: plugin,
-			name:   name,
-			sem:    make(chan struct{}, maxConcurrentInjectsPerPlugin),
-		})
+		slot := &obsPluginSlot{
+			plugin:        plugin,
+			name:          name,
+			batchSize:     batchSize,
+			flushInterval: flushInterval,
+			stop:          make(chan struct{}),
+		}
+		slot.start(t.logger)
+		slots = append(slots, slot)
 	}
+
+	// Swap in the new slots, then tell the old ones to do a final flush and wind down. They
+	// drain in the background — no need to block the reload on them.
+	old := t.obsPlugins.Load()
 	t.obsPlugins.Store(&slots)
+	if old != nil {
+		for _, slot := range *old {
+			slot.signalStop()
+		}
+	}
 
 	seen := make(map[string]struct{})
 	var patterns []string
@@ -747,15 +882,50 @@ func (t *Tracer) AttachPluginLogs(traceID string, logs []schemas.PluginLogEntry)
 // Stop stops the tracer and releases its resources.
 // This stops the internal TraceStore's cleanup goroutine.
 func (t *Tracer) Stop() {
-	// Bounded wait: a connector blocked on an unreachable collector would otherwise
-	// hold up shutdown and config reload indefinitely (gRPC exports carry no deadline
-	// of their own).
+	// Let in-flight producers finish appending (fast — no network), then drain the connector
+	// buffers via a final flush. Both phases share a single flushStopTimeout budget — the drain
+	// gets whatever the (usually near-instant) producer wait didn't use — so a connector stuck on
+	// an unreachable collector can't push total shutdown past one timeout (gRPC exports carry no
+	// deadline of their own).
+	deadline := time.Now().Add(flushStopTimeout)
 	t.waitForFlushes(flushStopTimeout)
+	t.drainObsPlugins(time.Until(deadline))
 	if t.store != nil {
 		t.store.Stop()
 	}
 	if t.accumulator != nil {
 		t.accumulator.Cleanup()
+	}
+}
+
+// drainObsPlugins tells every connector to do a final flush and waits up to timeout for its
+// timer and flush goroutines to finish. Anything still in flight when the budget runs out is
+// abandoned — best-effort telemetry must never block shutdown. A non-positive timeout (the
+// shared budget already spent by an earlier phase) means don't wait: signal and move on.
+func (t *Tracer) drainObsPlugins(timeout time.Duration) {
+	if timeout < 0 {
+		timeout = 0
+	}
+	loaded := t.obsPlugins.Load()
+	if loaded == nil {
+		return
+	}
+	done := make(chan struct{})
+	go func() {
+		for _, slot := range *loaded {
+			slot.signalStop()
+		}
+		for _, slot := range *loaded {
+			slot.wg.Wait()
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		if t.logger != nil {
+			t.logger.Warn("timed out after %s draining observability plugin buffers; continuing shutdown", timeout)
+		}
 	}
 }
 
@@ -818,52 +988,20 @@ func (t *Tracer) CompleteAndFlushTrace(traceID string) {
 			slots = *loaded
 		}
 
-		// Fan out rather than iterate: every connector receives the trace on its own
-		// goroutine, so a connector doing blocking network I/O can never delay another.
-		// This used to be a sequential loop, where only the builtin plugin ordering
-		// (logging before otel) kept a stalled exporter from sitting in front of the
-		// logging plugin's DB enqueue — accidental protection that any custom or
-		// reordered connector would have removed.
-		var wg sync.WaitGroup
+		// Append the snapshot to each connector's buffer and return. The snapshot is detached
+		// from the pooled trace, so it's safe to hold in the buffers after this goroutine
+		// releases the pooled object below, and safe for all connectors to share one copy
+		// (they only read it). enqueue never blocks: it appends and, at most, hands a full
+		// batch off to a new flush goroutine.
 		for _, slot := range slots {
-			// Non-blocking acquire. A saturated connector is skipped and counted; parking
-			// yet another goroutine on it is exactly the failure this cap exists to stop.
-			select {
-			case slot.sem <- struct{}{}:
-			default:
-				// Throttled: at saturation this fires once per request, which would make
-				// the logging itself a second source of load.
-				if n := slot.dropped.Add(1); (n == 1 || n%1000 == 0) && t.logger != nil {
-					t.logger.Warn("observability plugin %s saturated at %d concurrent injects, skipped trace %s (%d skipped so far)",
-						slot.name, maxConcurrentInjectsPerPlugin, exportTrace.TraceID, n)
-				}
-				continue
-			}
-			wg.Add(1)
-			go func(slot *obsPluginSlot) {
-				defer wg.Done()
-				defer func() { <-slot.sem }()
-				// Isolate each plugin callback — one bad observability backend should
-				// not crash the server or prevent other plugins from receiving the trace.
-				defer func() {
-					if r := recover(); r != nil && t.logger != nil {
-						t.logger.Error("observability plugin %s panicked during trace injection: %v", slot.name, r)
-					}
-				}()
-				if err := slot.plugin.Inject(context.Background(), exportTrace); err != nil && t.logger != nil {
-					t.logger.Warn("observability plugin %s failed to inject trace: %v", slot.name, err)
-				}
-			}(slot)
+			slot.enqueue(exportTrace, t.logger)
 		}
-		// Join before the deferred ReleaseTrace runs: connectors read exportTrace, and
-		// the pooled trace it was snapshotted from must not be recycled underneath them.
-		wg.Wait()
 	})
 }
 
 // ObservabilityDropCounts returns, per observability plugin name, how many traces were
-// skipped because that plugin was already at its concurrency cap. A non-zero and rising
-// count means the connector's backend is unreachable or too slow to keep up.
+// dropped before delivery. Retained for API compatibility; this delivery path buffers rather
+// than drops, so counts stay at zero.
 func (t *Tracer) ObservabilityDropCounts() map[string]int64 {
 	if t == nil {
 		return nil

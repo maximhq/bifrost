@@ -39,6 +39,7 @@ import (
 	"github.com/maximhq/bifrost/framework/oauth2"
 	"github.com/maximhq/bifrost/framework/objectstore"
 	plugins "github.com/maximhq/bifrost/framework/plugins"
+	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/plugins/compat"
 	"github.com/maximhq/bifrost/plugins/governance"
@@ -659,23 +660,24 @@ type Config struct {
 
 // DefaultClientConfig is the default client config used when no config is provided.
 var DefaultClientConfig = configstore.ClientConfig{
-	DropExcessRequests:              false,
-	PrometheusLabels:                []string{},
-	InitialPoolSize:                 schemas.DefaultInitialPoolSize,
-	EnableLogging:                   new(true),
-	DisableContentLogging:           false,
-	RetainContentInObjectStorage:    false,
-	EnforceAuthOnInference:          false,
-	AllowedOrigins:                  []string{"*"},
-	AllowedHeaders:                  []string{},
-	WhitelistedRoutes:               []string{},
-	MaxRequestBodySizeMB:            100,
-	MCPAgentDepth:                   10,
-	MCPToolExecutionTimeout:         30,
-	MCPCodeModeBindingLevel:         string(schemas.CodeModeBindingLevelServer),
-	MCPEnableTempTokenAuth:          false,
-	HideDeletedVirtualKeysInFilters: false,
-	RoutingChainMaxDepth:            governance.DefaultRoutingChainMaxDepth,
+	DropExcessRequests:                false,
+	PrometheusLabels:                  []string{},
+	InitialPoolSize:                   schemas.DefaultInitialPoolSize,
+	EnableLogging:                     new(true),
+	DisableContentLogging:             false,
+	RetainContentInObjectStorage:      false,
+	EnforceAuthOnInference:            false,
+	AllowedOrigins:                    []string{"*"},
+	AllowedHeaders:                    []string{},
+	WhitelistedRoutes:                 []string{},
+	MaxRequestBodySizeMB:              100,
+	MCPAgentDepth:                     10,
+	MCPToolExecutionTimeout:           30,
+	MCPCodeModeBindingLevel:           string(schemas.CodeModeBindingLevelServer),
+	MCPEnableTempTokenAuth:            false,
+	HideDeletedVirtualKeysInFilters:   false,
+	RoutingChainMaxDepth:              governance.DefaultRoutingChainMaxDepth,
+	ObservabilityFlushIntervalSeconds: int(tracing.DefaultObservabilityFlushInterval / time.Second),
 }
 
 // applyV1Compat normalizes ConfigData to restore v1.4.x allow-list semantics.
@@ -1162,6 +1164,9 @@ func applyClientConfigDefaults(cc *configstore.ClientConfig) {
 	if cc.RoutingChainMaxDepth == 0 {
 		cc.RoutingChainMaxDepth = DefaultClientConfig.RoutingChainMaxDepth
 	}
+	if cc.ObservabilityFlushIntervalSeconds == 0 {
+		cc.ObservabilityFlushIntervalSeconds = DefaultClientConfig.ObservabilityFlushIntervalSeconds
+	}
 	if cc.MCPToolExecutionTimeout == 0 {
 		cc.MCPToolExecutionTimeout = DefaultClientConfig.MCPToolExecutionTimeout
 	}
@@ -1216,6 +1221,14 @@ func sanitizeMCPExternalOAuthURLs(client *configstore.ClientConfig) {
 // The hash covers both the client section and mcp.tool_manager_config so that UI changes to either
 // survive restarts when the file is unchanged.
 func loadClientConfig(ctx context.Context, config *Config, configData *ConfigData) {
+	defer func() {
+		if configData != nil && configData.Client != nil && config.ClientConfig != nil {
+			if v := configData.Client.ObservabilityFlushIntervalSeconds; v > 0 {
+				config.ClientConfig.ObservabilityFlushIntervalSeconds = v
+			}
+		}
+	}()
+
 	var clientConfig *configstore.ClientConfig
 	var err error
 	if config.ConfigStore != nil {
