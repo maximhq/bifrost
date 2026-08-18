@@ -565,13 +565,18 @@ type Config struct {
 	oauth2SigningKey atomic.Pointer[configstoreTables.OAuth2SigningKey]
 
 	// In-memory storage
-	ServerConfig     *ServerConfig
-	ClientConfig     *configstore.ClientConfig
-	Providers        map[schemas.ModelProvider]configstore.ProviderConfig
-	MCPConfig        *schemas.MCPConfig
-	GovernanceConfig *configstore.GovernanceConfig
-	FrameworkConfig  *framework.FrameworkConfig
-	ProxyConfig      *configstoreTables.GlobalProxyConfig
+	ServerConfig *ServerConfig
+	ClientConfig *configstore.ClientConfig
+	Providers    map[schemas.ModelProvider]configstore.ProviderConfig
+	// RejectedProviders records providers from config.json that failed load-time
+	// validation (e.g. a custom provider named after a built-in provider) with the
+	// rejection reason, so runtime lookups can point at the real cause instead of
+	// a bare "not found" (issue #6117). Written only during config load.
+	RejectedProviders map[schemas.ModelProvider]string
+	MCPConfig         *schemas.MCPConfig
+	GovernanceConfig  *configstore.GovernanceConfig
+	FrameworkConfig   *framework.FrameworkConfig
+	ProxyConfig       *configstoreTables.GlobalProxyConfig
 
 	// SetupToken is the resolved operator-provisioned bootstrap secret (see
 	// ConfigData.SetupToken / resolveSetupToken). Empty when the operator hasn't
@@ -1374,6 +1379,10 @@ func loadProviders(ctx context.Context, config *Config, configData *ConfigData) 
 			for providerName, providerCfgInFile := range configData.Providers {
 				if err = processProvider(config, providerName, providerCfgInFile, providersInConfigStore); err != nil {
 					logger.Warn("failed to process provider %s: %v", providerName, err)
+					if config.RejectedProviders == nil {
+						config.RejectedProviders = make(map[schemas.ModelProvider]string)
+					}
+					config.RejectedProviders[schemas.ModelProvider(strings.ToLower(providerName))] = err.Error()
 				}
 			}
 		} else if len(providersInConfigStore) == 0 && (!configData.isConfigJSONSourceOfTruth() || providersSectionPresent) {
@@ -5251,6 +5260,10 @@ func (c *Config) GetProviderConfigRaw(provider schemas.ModelProvider) (*configst
 	defer c.Mu.RUnlock()
 	config, exists := c.Providers[provider]
 	if !exists {
+		// A provider that was present in config.json but rejected at load time pointing at real cause now.
+		if reason, rejected := c.RejectedProviders[provider]; rejected {
+			return nil, fmt.Errorf("%w: provider %q was rejected at config load: %s", ErrNotFound, provider, reason)
+		}
 		return nil, ErrNotFound
 	}
 	// Return direct reference for maximum performance - this is used by Bifrost core
@@ -5995,6 +6008,10 @@ func (c *Config) GetProviderConfigRedacted(provider schemas.ModelProvider) (*con
 
 	config, exists := c.Providers[provider]
 	if !exists {
+		// A provider that was present in config.json but rejected at load time pointing at the real cause.
+		if reason, rejected := c.RejectedProviders[provider]; rejected {
+			return nil, fmt.Errorf("%w: provider %q was rejected at config load: %s", ErrNotFound, provider, reason)
+		}
 		return nil, ErrNotFound
 	}
 
@@ -6008,6 +6025,10 @@ func (c *Config) GetProviderKeysRaw(provider schemas.ModelProvider) ([]schemas.K
 
 	config, exists := c.Providers[provider]
 	if !exists {
+		// A provider that was present in config.json but rejected at load time pointing at the real cause.
+		if reason, rejected := c.RejectedProviders[provider]; rejected {
+			return nil, fmt.Errorf("%w: provider %q was rejected at config load: %s", ErrNotFound, provider, reason)
+		}
 		return nil, ErrNotFound
 	}
 
@@ -6022,6 +6043,10 @@ func (c *Config) GetProviderKeysRedacted(provider schemas.ModelProvider) ([]sche
 
 	config, exists := c.Providers[provider]
 	if !exists {
+		// A provider that was present in config.json but rejected at load time pointing at the real cause.
+		if reason, rejected := c.RejectedProviders[provider]; rejected {
+			return nil, fmt.Errorf("%w: provider %q was rejected at config load: %s", ErrNotFound, provider, reason)
+		}
 		return nil, ErrNotFound
 	}
 
@@ -6035,6 +6060,10 @@ func (c *Config) GetProviderKeyRaw(provider schemas.ModelProvider, keyID string)
 
 	config, exists := c.Providers[provider]
 	if !exists {
+		// A provider that was present in config.json but rejected at load time pointing at the real cause.
+		if reason, rejected := c.RejectedProviders[provider]; rejected {
+			return nil, fmt.Errorf("%w: provider %q was rejected at config load: %s", ErrNotFound, provider, reason)
+		}
 		return nil, ErrNotFound
 	}
 
@@ -6056,6 +6085,10 @@ func (c *Config) GetProviderKeyRedacted(provider schemas.ModelProvider, keyID st
 
 	config, exists := c.Providers[provider]
 	if !exists {
+		// A provider that was present in config.json but rejected at load time pointing at the real cause.
+		if reason, rejected := c.RejectedProviders[provider]; rejected {
+			return nil, fmt.Errorf("%w: provider %q was rejected at config load: %s", ErrNotFound, provider, reason)
+		}
 		return nil, ErrNotFound
 	}
 
@@ -7143,7 +7176,7 @@ func ValidateCustomProvider(config configstore.ProviderConfig, provider schemas.
 	}
 
 	if bifrost.IsStandardProvider(provider) {
-		return fmt.Errorf("custom provider validation failed: cannot be created on standard providers: %s", provider)
+		return fmt.Errorf("custom provider validation failed: provider name %q is reserved for a built-in provider type; choose a different name for the custom provider", provider)
 	}
 
 	cpc := config.CustomProviderConfig
