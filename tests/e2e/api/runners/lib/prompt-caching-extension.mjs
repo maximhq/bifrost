@@ -56,6 +56,16 @@ const CACHING_BACKENDS = [
 // tokenizer differences across the five backends.
 const PREFIX_MIN_PROMPT_TOKENS = 500;
 
+// A cache write is not readable the instant the writing response returns, and these rows fire back
+// to back with nothing between them. Observed on vertex/claude-sonnet-4-6: round 2 came back with
+// cached_write_tokens 4742 and cached_tokens 0, meaning Vertex wrote the prefix a second time
+// rather than reading round 1's copy. That is propagation latency, not a dropped breakpoint - the
+// same cell reads back fine in the cross-provider matrix, which has carried this settle since it
+// was written (crossprovider-cache-matrix.mjs). Applied to the read rounds only; round 1 has
+// nothing to wait for. Busy-wait rather than setTimeout because a Postman prerequest script has no
+// async escape hatch that blocks the request.
+const SETTLE = `var __t = Date.now(); while (Date.now() - __t < 1200) { /* settle: let the previous round's cache write land */ }`;
+
 const QUESTIONS = [
   "In one sentence, what is this operating manual mostly about?",
   "Name one specific rule this manual mentions about formatting.",
@@ -133,7 +143,12 @@ pm.test(${J(`Prompt caching hit-verification: ${backend.key} round 1 (write) suc
 
       items.push({
         name: `Prompt caching hit-verification: ${backend.key}/${backend.model.split("/")[1]} round ${round}${isReadRound ? " (read)" : " (write)"}`,
-        event: [{ listen: "test", script: { type: "text/javascript", exec: script.split("\n") } }],
+        event: [
+          ...(isReadRound
+            ? [{ listen: "prerequest", script: { type: "text/javascript", exec: [SETTLE] } }]
+            : []),
+          { listen: "test", script: { type: "text/javascript", exec: script.split("\n") } },
+        ],
         request: {
           method: "POST",
           header: [{ key: "Content-Type", value: "application/json" }],

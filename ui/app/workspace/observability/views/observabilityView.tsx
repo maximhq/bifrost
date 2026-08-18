@@ -1,10 +1,13 @@
 import FullPageLoader from "@/components/fullPageLoader";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { setSelectedPlugin, useAppDispatch, useGetPluginsQuery } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { useTheme } from "next-themes";
+import { ArrowLeft } from "lucide-react";
 import { useQueryState } from "nuqs";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import BigQueryView from "./plugins/bigqueryView";
 import DatadogView from "./plugins/datadogView";
 import KafkaView from "./plugins/kafkaView";
@@ -84,10 +87,12 @@ const supportedPlatformsList = (resolvedTheme: string): SupportedPlatform[] => [
 ];
 
 export default function ObservabilityView() {
+	const isMobile = useIsMobile();
 	const dispatch = useAppDispatch();
 	const { data: plugins, isLoading } = useGetPluginsQuery();
 	const [selectedPluginId, setSelectedPluginId] = useQueryState("plugin");
 	const { resolvedTheme } = useTheme();
+	const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
 
 	const supportedPlatforms = useMemo(() => supportedPlatformsList(resolvedTheme || "light"), [resolvedTheme]);
 
@@ -133,9 +138,9 @@ export default function ObservabilityView() {
 	}
 
 	return (
-		<div className="flex h-full flex-row gap-4 p-4">
-			<div className="flex flex-col">
-				<div className="flex w-[270px] flex-col gap-2 pb-10">
+		<div className="flex h-full min-w-0 flex-col gap-4 p-4 md:flex-row">
+			<div className={cn("w-full flex-col md:flex md:w-[270px]", mobileDetailOpen ? "hidden" : "flex")}>
+				<div className="flex w-full flex-col gap-2 pb-10">
 					<div className="rounded-md bg-zinc-100/10 p-4 dark:bg-zinc-800/20">
 						<div className="flex flex-col gap-1">
 							<div className="text-muted-foreground mb-2 text-xs font-medium">Providers</div>
@@ -161,6 +166,7 @@ export default function ObservabilityView() {
 											return;
 										}
 										setSelectedPluginId(tab.id ?? supportedPlatforms[0].id);
+										if (isMobile) setMobileDetailOpen(true);
 									}}
 								>
 									<div className="w-[24px]">{tab.icon}</div> {tab.name}
@@ -180,7 +186,11 @@ export default function ObservabilityView() {
 					</div>
 				</div>
 			</div>
-			<div className="w-full pt-4">
+			<div className={cn("min-w-0 w-full pt-4", mobileDetailOpen ? "block" : "hidden md:block")}>
+				<Button variant="ghost" size="sm" className="mb-2 md:hidden" onClick={() => setMobileDetailOpen(false)}>
+					<ArrowLeft className="size-4" />
+					Providers
+				</Button>
 				{selectedPluginId === "prometheus" && <PrometheusView />}
 				{selectedPluginId === "otel" && <OtelView />}
 				{selectedPluginId === "maxim" && <MaximView />}

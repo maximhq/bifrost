@@ -176,6 +176,17 @@ export function ProviderConfigCard({
 
 	const modelBudgets = value.modelBudgets || [];
 	const capLabel = budgetLinesLabel(value.budgets);
+	// Header summary: the provider cap and/or a model-budget count, falling back to
+	// "No budget" only when neither is set — so a provider with only model budgets
+	// doesn't read as "No budget".
+	const modelBudgetCount = showModelBudgets ? modelBudgets.length : 0;
+	const headerSummary =
+		[
+			budgetLinesLabel(value.budgets, ""),
+			modelBudgetCount > 0 ? `${modelBudgetCount} model budget${modelBudgetCount === 1 ? "" : "s"}` : "",
+		]
+			.filter(Boolean)
+			.join(" · ") || "No budget";
 	const ws = globalProviderCap;
 
 	// Key scope handed to ModelMultiselect so model suggestions match the keys
@@ -216,8 +227,9 @@ export function ProviderConfigCard({
 			>
 				<RenderProviderIcon provider={iconProvider} size="sm" className="h-4 w-4 shrink-0" />
 				<span className="shrink-0 text-sm font-medium whitespace-nowrap">{providerLabel}</span>
-				<span className="min-w-0 flex-1" />
-				<span className="text-muted-foreground shrink-0 text-sm whitespace-nowrap">{capLabel}</span>
+				<span className="text-muted-foreground min-w-0 flex-1 truncate text-right text-sm" title={headerSummary}>
+					{headerSummary}
+				</span>
 				<button
 					type="button"
 					onClick={(e) => {

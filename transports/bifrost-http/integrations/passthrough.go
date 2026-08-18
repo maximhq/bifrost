@@ -74,6 +74,18 @@ func NewAzurePassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Handler
 	})
 }
 
+// NewRunwarePassthroughRouter creates a passthrough router for /runware_passthrough. Runware exposes
+// a single task-based endpoint, so this forwards raw task arrays and unlocks any Runware task type
+// (3D, upscaling, background removal, ...) that Bifrost does not model natively.
+func NewRunwarePassthroughRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *PassthroughRouter {
+	return NewPassthroughRouter(client, handlerStore, logger, &PassthroughConfig{
+		Provider: schemas.Runware,
+		StripPrefix: []string{
+			"/runware_passthrough",
+		},
+	})
+}
+
 // NewGenAIPassthroughRouter creates a passthrough router for /genai_passthrough.
 func NewGenAIPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *PassthroughRouter {
 	return NewPassthroughRouter(client, handlerStore, logger, &PassthroughConfig{

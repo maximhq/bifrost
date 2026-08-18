@@ -126,12 +126,20 @@ export function TokenExchangeFields({
 								<FormItem className={`flex flex-col gap-2 ${gridClassName.includes("grid-cols") ? "md:col-span-2" : ""}`}>
 									<FormLabel>{useIdPCredentialsLabel}</FormLabel>
 									<FormControl>
-										<div className="bg-muted inline-flex w-fit gap-0.5 rounded-md p-0.5" role="radiogroup" aria-label={String(useIdPCredentialsLabel)}>
+										<div
+											className="bg-muted inline-flex w-fit gap-0.5 rounded-md p-0.5"
+											role="radiogroup"
+											aria-label={String(useIdPCredentialsLabel)}
+										>
 											<Button
 												type="button"
 												size="sm"
 												variant="ghost"
-												className={checked ? "text-muted-foreground hover:text-foreground" : "bg-background dark:bg-input/30 text-foreground shadow-sm hover:bg-background dark:hover:bg-input/30"}
+												className={
+													checked
+														? "text-muted-foreground hover:text-foreground"
+														: "bg-background dark:bg-input/30 text-foreground hover:bg-background dark:hover:bg-input/30 shadow-sm"
+												}
 												disabled={disabled}
 												onClick={() => select(false)}
 												role="radio"
@@ -144,7 +152,11 @@ export function TokenExchangeFields({
 												type="button"
 												size="sm"
 												variant="ghost"
-												className={checked ? "bg-background dark:bg-input/30 text-foreground shadow-sm hover:bg-background dark:hover:bg-input/30" : "text-muted-foreground hover:text-foreground"}
+												className={
+													checked
+														? "bg-background dark:bg-input/30 text-foreground hover:bg-background dark:hover:bg-input/30 shadow-sm"
+														: "text-muted-foreground hover:text-foreground"
+												}
 												disabled={disabled}
 												onClick={() => select(true)}
 												role="radio"

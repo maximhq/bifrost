@@ -11,20 +11,40 @@ import (
 )
 
 // ToRunwareVideoGenerationRequest converts a Bifrost video generation request to a Runware
-// videoInference task. An input reference image turns it into image-to-video generation.
+// task. An input reference image turns it into image-to-video generation.
+//
+// The task type defaults to videoInference but can be overridden via the "taskType" extra_param
+// (e.g. "3dInference"), which lets the /videos endpoint drive any Runware async task type that
+// shares the submit-then-poll lifecycle. Video-only defaults (width/height) are applied only for
+// the video task type; other task types (3D uses "resolution", etc.) supply their own dimensions
+// through extra_params.
 func ToRunwareVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationRequest) (*RunwareInferenceRequest, error) {
 	if bifrostReq.Input == nil {
 		return nil, fmt.Errorf("input is required")
 	}
 
-	// Runware requires explicit width/height for video; default to 16:9 1080p when no size is given.
+	// Resolve the task type from extra_params before building the request; it decides which
+	// modality-specific defaults apply below.
+	taskType := taskTypeVideoInference
+	if bifrostReq.Params != nil {
+		if override, ok := schemas.SafeExtractString(bifrostReq.Params.ExtraParams["taskType"]); ok && override != "" {
+			taskType = override
+		}
+	}
+	isVideo := taskType == taskTypeVideoInference
+
 	request := &RunwareInferenceRequest{
-		TaskType:       taskTypeVideoInference,
+		TaskType:       taskType,
 		TaskUUID:       uuid.New().String(),
 		DeliveryMethod: new(deliveryMethodAsync),
 		Model:          bifrostReq.Model,
-		Width:          new(defaultRunwareVideoWidth),
-		Height:         new(defaultRunwareVideoHeight),
+	}
+
+	// Runware requires explicit width/height for video and rejects square sizes on some models;
+	// default to 16:9 1080p when no size is given. Non-video task types do not use width/height.
+	if isVideo {
+		request.Width = new(defaultRunwareVideoWidth)
+		request.Height = new(defaultRunwareVideoHeight)
 	}
 
 	if bifrostReq.Input.Prompt != "" {
@@ -46,7 +66,8 @@ func ToRunwareVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationR
 		request.NegativePrompt = params.NegativePrompt
 		request.Seed = params.Seed
 
-		if params.Size != "" {
+		// Size maps to width/height, which only apply to the video task type.
+		if isVideo && params.Size != "" {
 			*request.Width, *request.Height = parseRunwareSize(params.Size)
 		}
 
@@ -64,7 +85,10 @@ func ToRunwareVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationR
 	return request, nil
 }
 
-// ToBifrostVideoGenerationResponse converts a Runware video task result to a Bifrost video response.
+// ToBifrostVideoGenerationResponse converts a Runware task result to a Bifrost video response.
+// It handles both video tasks (videoURL) and other async task types that return artifacts under
+// outputs.files[] (e.g. 3dInference), surfacing every asset as a VideoOutput URL so callers can
+// consume them through the existing /videos response shape.
 func ToBifrostVideoGenerationResponse(result *RunwareResult) *schemas.BifrostVideoGenerationResponse {
 	response := &schemas.BifrostVideoGenerationResponse{
 		ID:        result.TaskUUID,
@@ -85,11 +109,39 @@ func ToBifrostVideoGenerationResponse(result *RunwareResult) *schemas.BifrostVid
 	}
 
 	if result.VideoURL != "" {
-		response.Videos = []schemas.VideoOutput{{
+		response.Videos = append(response.Videos, schemas.VideoOutput{
 			Type:        schemas.VideoOutputTypeURL,
 			URL:         new(result.VideoURL),
 			ContentType: "video/mp4",
-		}}
+		})
+	}
+
+	// Non-video task types (e.g. 3dInference) return their artifacts here. The content type is
+	// derived from the URL extension since the output format varies per task type and model.
+	if result.Outputs != nil {
+		for _, file := range result.Outputs.Files {
+			if file.URL == "" {
+				continue
+			}
+			response.Videos = append(response.Videos, schemas.VideoOutput{
+				Type:        schemas.VideoOutputTypeURL,
+				URL:         new(file.URL),
+				ContentType: contentTypeForAssetURL(file.URL),
+			})
+		}
+	}
+
+	// Some task types omit an explicit status and simply return artifacts once finished; the
+	// presence of any asset on a non-failed task means the job is complete.
+	if response.Status != schemas.VideoStatusFailed && response.Status != schemas.VideoStatusInProgress && len(response.Videos) > 0 {
+		response.Status = schemas.VideoStatusCompleted
+	}
+
+	// Runware reports the exact task cost (only when the request sets includeCost). Surface it as
+	// the provider-reported cost so pricing uses it verbatim — important for task types like 3D
+	// that have no datasheet rate.
+	if result.Cost > 0 {
+		response.Usage = &schemas.VideoUsage{Cost: &schemas.BifrostCost{TotalCost: result.Cost}}
 	}
 
 	return response

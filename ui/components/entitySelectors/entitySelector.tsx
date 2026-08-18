@@ -84,6 +84,11 @@ export interface EntitySelectorCommonProps {
 	 * Single mode only.
 	 */
 	triggerClassName?: string;
+	/**
+	 * Overrides the popover width, which otherwise matches the trigger. For a
+	 * narrow trigger whose options need more room than it has. Single/add only.
+	 */
+	contentClassName?: string;
 	/** Ids to omit from the results — e.g. entities already added to a list. */
 	excludeIds?: string[];
 	/**
@@ -181,6 +186,7 @@ export function EntitySelector(props: EntitySelectorProps) {
 		fallbackOptions,
 		noPortal = true,
 		triggerClassName,
+		contentClassName,
 		excludeIds,
 		trigger,
 	} = props;
@@ -417,10 +423,11 @@ export function EntitySelector(props: EntitySelectorProps) {
 				emptyMessage={emptyMessage}
 				disabled={disabled}
 				// A compact trigger shouldn't dictate the popover width, so add
-				// mode keeps SearchSelect's own fixed width.
+				// mode keeps SearchSelect's own fixed width. Either default gives
+				// way to an explicit contentClassName.
 				align={isAdd ? "end" : "start"}
 				className={isAdd ? undefined : "w-full"}
-				contentClassName={isAdd ? undefined : "w-(--radix-popover-trigger-width)"}
+				contentClassName={contentClassName ?? (isAdd ? undefined : "w-(--radix-popover-trigger-width)")}
 				noPortal={noPortal}
 			/>
 		</div>

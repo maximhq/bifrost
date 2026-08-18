@@ -117,8 +117,17 @@ type BifrostVideoGenerationResponse struct {
 	Status             VideoStatus        `json:"status,omitempty"`                // Current lifecycle status of the video job
 	Videos             []VideoOutput      `json:"videos,omitempty"`                // Generated videos (supports multiple videos)
 	ContentFilter      *ContentFilterInfo `json:"content_filter,omitempty"`        // Information about content filtering (if applicable)
+	Usage              *VideoUsage        `json:"usage,omitempty"`                 // Provider-reported usage/cost, when the provider returns it
 
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields,omitempty"`
+}
+
+// VideoUsage carries provider-reported usage for a video (or other async media) generation job.
+// Currently only the provider-computed cost is modeled; providers that report an exact price
+// (e.g. Runware's per-task cost) populate Cost so pricing uses it verbatim instead of a datasheet
+// estimate.
+type VideoUsage struct {
+	Cost *BifrostCost `json:"cost,omitempty"`
 }
 
 // getSecondsFromVideoRequest extracts Seconds from video-related requests.

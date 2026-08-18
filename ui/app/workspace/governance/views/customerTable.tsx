@@ -1,3 +1,4 @@
+import PageTitle from "@/components/pageTitle";
 import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import {
 	AlertDialog,
@@ -181,10 +182,16 @@ export default function CustomersTable({
 
 	const hasActiveFilters = debouncedSearch;
 
+	// Rendered on the empty branch too, not just the populated one: PageTitle
+	// draws nothing inline, and leaving it out drops the topbar to the
+	// route-derived fallback.
+	const pageTitle = <PageTitle title="Customers">Manage customer accounts with their own teams, budgets, and access controls.</PageTitle>;
+
 	// True empty state: no customers at all (not just filtered to zero)
 	if (totalCount === 0 && !hasActiveFilters && !isFetching) {
 		return (
 			<>
+				{pageTitle}
 				<TooltipProvider>
 					<CustomerSheet
 						open={showCustomerSheet}
@@ -223,18 +230,8 @@ export default function CustomersTable({
 				/>
 
 				<div className="flex grow flex-col">
-					<div className="mb-4 flex items-center justify-between">
-						<div>
-							<h2 className="text-lg font-semibold">Customers</h2>
-							<p className="text-muted-foreground text-sm">Manage customer accounts with their own teams, budgets, and access controls.</p>
-						</div>
-						<Button data-testid="customer-button-create" onClick={handleAddCustomer} disabled={!hasCreateAccess}>
-							<Plus className="h-4 w-4" />
-							Add Customer
-						</Button>
-					</div>
-
-					<div className="mb-4 flex items-center gap-3">
+					<div className="mb-4 flex flex-wrap items-center gap-3">
+						{pageTitle}
 						<div className="relative max-w-sm flex-1">
 							<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 							<Input
@@ -246,6 +243,10 @@ export default function CustomersTable({
 								data-testid="customers-search-input"
 							/>
 						</div>
+						<Button className="ml-auto" data-testid="customer-button-create" onClick={handleAddCustomer} disabled={!hasCreateAccess}>
+							<Plus className="h-4 w-4" />
+							Add Customer
+						</Button>
 					</div>
 
 					<div className="mb-2 grow overflow-auto rounded-sm border" data-testid="customer-table-container">

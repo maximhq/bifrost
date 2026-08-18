@@ -1,6 +1,6 @@
 import { Progress } from "@/components/ui/progress";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { resetDurationLabels, supportsCalendarAlignment } from "@/lib/constants/governance";
+import { fiscalQuarterNote, resetDurationLabels, supportsCalendarAlignment } from "@/lib/constants/governance";
 import { Budget } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
 import { formatCurrency, getEffectiveBudgetLimit, hasActiveBudgetOverride } from "@/lib/utils/governance";
@@ -45,7 +45,10 @@ export function BudgetDisplay({ budgets, calendarAligned }: BudgetDisplayProps) 
 										{formatCurrency(effectiveMaxLimit)}
 										{hasOverride ? <span className="text-muted-foreground ml-1 text-[10px]">override</span> : null}
 									</span>
-									<span className="text-muted-foreground text-xs">{formatResetDuration(b.reset_duration, calendarAligned)}</span>
+									<span className="text-muted-foreground text-xs">
+										{formatResetDuration(b.reset_duration, calendarAligned)}
+										{fiscalQuarterNote(b.reset_duration, b.reset_config)}
+									</span>
 								</div>
 								<Progress value={pct} className={cn("bg-muted/70 dark:bg-muted/30 h-1.5", barClass)} />
 							</div>
@@ -60,7 +63,10 @@ export function BudgetDisplay({ budgets, calendarAligned }: BudgetDisplayProps) 
 								</p>
 							) : null}
 							{b.reset_duration ? (
-								<p className="text-primary-foreground/80 text-xs">Resets {formatResetDuration(b.reset_duration, calendarAligned)}</p>
+								<p className="text-primary-foreground/80 text-xs">
+								Resets {formatResetDuration(b.reset_duration, calendarAligned)}
+								{fiscalQuarterNote(b.reset_duration, b.reset_config)}
+							</p>
 							) : null}
 						</TooltipContent>
 					</Tooltip>

@@ -159,9 +159,9 @@ export const MCPHeadersAuthorizer: React.FC<MCPHeadersAuthorizerProps> = ({
 									available tools.
 								</p>
 								<p className="text-muted-foreground/80 text-xs">
-									You will be asked to provide sample values for the required headers. Bifrost keeps these values on file to
-									periodically refresh the available tool list; they are never used for real end-user requests. Once verified,
-									each user will submit their own header values when they use this MCP server.
+									You will be asked to provide sample values for the required headers. Bifrost keeps these values on file to periodically
+									refresh the available tool list; they are never used for real end-user requests. Once verified, each user will submit
+									their own header values when they use this MCP server.
 								</p>
 							</InfoBox>
 							<div className="flex justify-end gap-2">
@@ -180,8 +180,8 @@ export const MCPHeadersAuthorizer: React.FC<MCPHeadersAuthorizerProps> = ({
 						<>
 							<InfoBox icon={<KeyRound className="size-4" />}>
 								<p>
-									These values verify the connection now and are kept on file so Bifrost can periodically refresh the available
-									tool list. Each user still submits their own values when they use this server.
+									These values verify the connection now and are kept on file so Bifrost can periodically refresh the available tool list.
+									Each user still submits their own values when they use this server.
 								</p>
 							</InfoBox>
 							<HeadersForm

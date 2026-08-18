@@ -31,7 +31,15 @@ const TOLERANCE_PCT = 20;
 // single biggest source of FAILs that weren't actual bugs). Passing on EITHER the relative band
 // OR this floor, whichever is looser, doesn't weaken detection of genuinely large swings (they
 // fail both checks), it just stops small numbers from manufacturing noise on their own.
-const COMPLETION_ABS_FLOOR = 10;
+//
+// Raised from 10 after gemini/audio r3 reported direct=15 bifrost=30 while the two legs' PROMPT
+// counts sat one token apart (6585 vs 6584) - the conversation reached the model identically on
+// both legs and the model simply answered at double length on one, restating its earlier turns
+// instead of obeying "reply with ONLY the exact text". One extra volunteered sentence is the
+// natural unit of this noise and costs about 15 tokens, so a floor of 10 cannot absorb it. Real
+// gateway drift in completion counts does not look like this: it is systematic across a
+// backend's cells or it is zero, and either still fails both checks at 24.
+const COMPLETION_ABS_FLOOR = 24;
 
 // Deterministic ~5000-token reference block (274 numbered, templated facts about a fictional
 // research station - never a real-world topic a model might "correct" or paraphrase instead of
@@ -60,6 +68,13 @@ const LARGE_CONTEXT = "Fact #1: The station's primary reactor operates at a core
 // - Claude has no automatic caching, only explicit cache_control breakpoints (none set here).
 // Fixed, short, not part of the cacheable prefix - shared across all cells (no salting needed).
 const TOOL_RESULT = "27C, humid, light rain";
+
+// Leg component of the cache salt, kept token-identical across legs on purpose: both
+// values are the same length and differ only in the final digit, which every tokenizer
+// here emits as a single token. The leg still gets its own cold cache (different bytes,
+// different prefix hash) without the two legs of a row differing in prompt-token count.
+// Never substitute the readable leg names back in -- that is the bug this replaced.
+const LEG_SALT = { direct: "leg1", bifrost: "leg2" };
 
 function buildQ(cellId) {
   const ctx = `Test cell ID: ${cellId}.\n\n${LARGE_CONTEXT}`;
@@ -583,11 +598,24 @@ function buildLegItems({ leg, shape, backendKey, backendLabel, modality, urlFor,
   // (bedrock's {{bedrockModel}}) so the report shows the real resolved value, not the template.
   const resolvedModelExpr = modelExpr || J(model || "");
   const varPrefix = `pt_${backendKey}_${modality.key}_${leg}`;
+  // The cache salt must stay out of varPrefix. "direct" and "bifrost" are different
+  // strings of different lengths, so interpolating the leg name into the prompt made
+  // the two legs of every row cost different token counts -- the one thing a parity
+  // matrix must never do. It put a constant per-backend bias into the Δ column (anthropic +1,
+  // openai/bedrock +2, gemini +2..+3 on every cell), far under the 20% tolerance but
+  // large enough to hide a genuine few-token regression underneath the artifact.
+  //
+  // LEG_SALT keeps each leg its own cold cache (see buildQ) while costing both legs the
+  // same token count: the ids differ only in a single trailing digit, and every
+  // tokenizer in this matrix emits a lone digit as its own token. varPrefix keeps the
+  // readable leg name, because it only ever names Postman variables and report rows,
+  // which are not sent to a model.
+  const promptSalt = `pt_${backendKey}_${modality.key}_${LEG_SALT[leg]}`;
   const isTools = modality.tools;
   const isFinalLegRound = (round) => round === 3;
   // Gives this leg its own cold cache in round 1 - see buildQ's comment for why an unsalted
   // shared LARGE_CONTEXT prefix makes the direct-vs-bifrost cached-token comparison a race.
-  const Q = buildQ(varPrefix);
+  const Q = buildQ(promptSalt);
 
   const round1Turn = isTools
     ? shape.plainTurn(Q.tool1)

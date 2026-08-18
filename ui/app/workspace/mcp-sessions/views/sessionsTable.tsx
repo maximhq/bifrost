@@ -17,6 +17,7 @@
 //                 Caller must resubmit values.
 //   pending:      flow row, user must complete OAuth authentication.
 
+import PageTitle from "@/components/pageTitle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -134,14 +135,9 @@ export default function SessionsTable({
 				</AlertDialogContent>
 			</AlertDialog>
 
-			<div className="mb-4 flex items-center justify-between gap-4">
-				<div>
-					<h2 className="text-lg font-semibold tracking-tight">MCP Auth Sessions</h2>
-					<p className="text-muted-foreground text-sm">
-						Per-user credentials stored for MCP servers (OAuth tokens and submitted headers), plus any pending authentication flows.
-					</p>
-				</div>
-			</div>
+			<PageTitle title="MCP Auth Sessions">
+				Per-user credentials stored for MCP servers (OAuth tokens and submitted headers), plus any pending authentication flows.
+			</PageTitle>
 
 			<div className="mb-4 flex items-center gap-3">
 				<div className="relative max-w-sm min-w-[200px] flex-1">

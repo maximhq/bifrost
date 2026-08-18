@@ -136,11 +136,15 @@ export default function MultiBudgetLines({
 							</Button>
 						</div>
 						{isQuarterly(line.reset_duration) && (
-							<QuarterStartSelect
-								data-testid={`${testId}-quarter-config-${index}`}
-								value={line.reset_config?.quarter_start_month}
-								onChange={(month) => updateQuarterStartMonth(index, month)}
-							/>
+							// mr-10 (40px) = the remove button (w-8) + its gap-2, so the fiscal-year
+							// row shares its right edge with the Reset Period select above it.
+							<div className="mr-10">
+								<QuarterStartSelect
+									data-testid={`${testId}-quarter-config-${index}`}
+									value={line.reset_config?.quarter_start_month}
+									onChange={(month) => updateQuarterStartMonth(index, month)}
+								/>
+							</div>
 						)}
 						{isDuplicate && (
 							<p className="text-destructive pl-0.5 text-xs">Duplicate reset period; each budget line must use a different interval.</p>

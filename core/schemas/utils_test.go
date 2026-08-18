@@ -51,6 +51,36 @@ func TestSanitizeImageURLDataURLUnaffectedByAllowlist(t *testing.T) {
 	assert.Equal(t, dataURL, got)
 }
 
+func TestSupportsGrokReasoningEffort(t *testing.T) {
+	// Deny-listed: models confirmed to reject reasoning_effort.
+	denied := []string{
+		"grok-3",
+		"grok-4",
+		"grok-4-0709",   // dated alias must normalize to grok-4
+		"grok-4-latest", // channel alias must normalize to grok-4
+		"xai/grok-4",    // routing prefix must be stripped
+		"grok-4-fast-reasoning",
+		"grok-4-1-fast-reasoning",
+		"grok-code-fast-1",
+	}
+	for _, m := range denied {
+		assert.False(t, SupportsGrokReasoningEffort(m), "expected %q to be denied", m)
+	}
+
+	// Allowed: current generation, plus anything unrecognized (fail open).
+	allowed := []string{
+		"grok-3-mini",
+		"grok-4.3",
+		"grok-4.5",
+		"grok-4.6",
+		"grok-4.20-0309-reasoning",
+		"grok-4.20-multi-agent-0309",
+		"grok-5", // unknown future model must not be silently stripped
+	}
+	for _, m := range allowed {
+		assert.True(t, SupportsGrokReasoningEffort(m), "expected %q to be allowed", m)
+	}
+}
 func TestParseDataURL(t *testing.T) {
 	tests := []struct {
 		name              string
