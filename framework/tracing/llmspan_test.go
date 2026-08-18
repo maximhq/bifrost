@@ -176,3 +176,45 @@ func TestPopulateRequestExtraParamsSerializesStructuredValues(t *testing.T) {
 		})
 	}
 }
+
+func TestPopulateErrorAttributesEmitsBilledUsage(t *testing.T) {
+	msg := "stream cancelled by client"
+	bifrostErr := &schemas.BifrostError{
+		Error: &schemas.ErrorField{Message: msg},
+	}
+	bifrostErr.ExtraFields.BilledUsage = &schemas.BifrostLLMUsage{
+		PromptTokens:     1200,
+		CompletionTokens: 34,
+		TotalTokens:      1234,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			CachedReadTokens: 1000,
+		},
+	}
+
+	attrs := PopulateErrorAttributes(bifrostErr)
+
+	for key, want := range map[string]any{
+		schemas.AttrInputTokens:                  1200,
+		schemas.AttrOutputTokens:                 34,
+		schemas.AttrTotalTokens:                  1234,
+		schemas.AttrInputTokenDetailsCachedRead:  1000,
+		schemas.AttrPromptTokenDetailsCachedRead: 1000,
+	} {
+		if got := attrs[key]; got != want {
+			t.Errorf("attribute %s = %v, want %v", key, got, want)
+		}
+	}
+}
+
+func TestPopulateErrorAttributesWithoutBilledUsageEmitsNoTokens(t *testing.T) {
+	msg := "401 before the model ran"
+	bifrostErr := &schemas.BifrostError{Error: &schemas.ErrorField{Message: msg}}
+
+	attrs := PopulateErrorAttributes(bifrostErr)
+
+	for _, key := range []string{schemas.AttrInputTokens, schemas.AttrOutputTokens, schemas.AttrTotalTokens} {
+		if _, ok := attrs[key]; ok {
+			t.Errorf("attribute %s present for a request that consumed no tokens", key)
+		}
+	}
+}

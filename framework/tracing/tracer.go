@@ -425,6 +425,23 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 	if t.pricingManager != nil && resp != nil {
 		cost := t.pricingManager.CalculateCost(resp, modelcatalog.PricingLookupScopesFromContext(ctx, string(resp.GetExtraFields().Provider)))
 		span.SetAttribute(schemas.AttrUsageCost, cost)
+	} else if t.pricingManager != nil && err != nil && err.ExtraFields.BilledUsage != nil {
+		// Failed / cancelled request that still consumed provider tokens. Core
+		// calls BifrostError.PopulateExtraFields around RunPostLLMHooks, so
+		// Provider / RequestType / the model fields are always set here.
+		ef := err.ExtraFields
+		model := ef.ResolvedModelUsed
+		if model == "" {
+			model = ef.OriginalModelRequested
+		}
+		cost := t.pricingManager.CalculateCostForUsage(
+			ef.BilledUsage,
+			ef.Provider,
+			model,
+			ef.RequestType,
+			modelcatalog.PricingLookupScopesFromContext(ctx, string(ef.Provider)),
+		)
+		span.SetAttribute(schemas.AttrUsageCost, cost)
 	}
 
 	// Propagate output messages, response model, and finish reasons to root span so observability backends (e.g. Langfuse)

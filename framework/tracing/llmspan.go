@@ -149,6 +149,25 @@ func PopulateErrorAttributes(err *schemas.BifrostError) map[string]any {
 		attrs[schemas.AttrHTTPResponseStatusCode] = *err.StatusCode
 	}
 
+	// Usage the provider billed us for even though the request failed or was
+	// cancelled (see BifrostError.ExtraFields.BilledUsage). Governance and the
+	// logging plugin already charge for this; without emitting it here every
+	// span-based consumer — the otel plugin and the BigQuery / Datadog / Kafka /
+	// Pub-Sub connectors — records zero tokens for the same request.
+	if u := err.ExtraFields.BilledUsage; u != nil {
+		attrs[schemas.AttrInputTokens] = u.PromptTokens
+		attrs[schemas.AttrOutputTokens] = u.CompletionTokens
+		attrs[schemas.AttrTotalTokens] = u.TotalTokens
+		// legacy: deprecated OTel names, mirrored from the success path.
+		attrs[schemas.AttrPromptTokens] = u.PromptTokens
+		attrs[schemas.AttrCompletionTokens] = u.CompletionTokens
+
+		if d := u.PromptTokensDetails; d != nil && d.CachedReadTokens > 0 {
+			attrs[schemas.AttrInputTokenDetailsCachedRead] = d.CachedReadTokens
+			attrs[schemas.AttrPromptTokenDetailsCachedRead] = d.CachedReadTokens // legacy
+		}
+	}
+
 	return attrs
 }
 
