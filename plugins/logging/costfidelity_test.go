@@ -347,6 +347,37 @@ func TestApplyServedTierToEntryRecordsResponseAndUsageSources(t *testing.T) {
 	})
 }
 
+// TestStreamingServiceTierSurvivesAccumulatorHandoff covers the streaming leak: the
+// accumulator resolves the served tier across chunks, but it then crosses the tracer
+// boundary as a schemas.StreamAccumulatorResult. That struct carried no ServiceTier
+// field, so every streamed row logged an empty service_tier and repriced at standard
+// rates — the same class of mis-billing #5669 fixed for non-streamed rows.
+func TestStreamingServiceTierSurvivesAccumulatorHandoff(t *testing.T) {
+	priority := schemas.BifrostServiceTierPriority
+
+	processed := convertToProcessedStreamResponse(&schemas.StreamAccumulatorResult{
+		RequestID:      "req-stream-tier",
+		RequestedModel: "gpt-4o",
+		ResolvedModel:  "gpt-4o",
+		Provider:       schemas.OpenAI,
+		Status:         "success",
+		ServiceTier:    &priority,
+		TokenUsage:     &schemas.BifrostLLMUsage{TotalTokens: 1},
+	}, schemas.ChatCompletionStreamRequest)
+	if processed == nil || processed.Data == nil {
+		t.Fatal("expected a processed stream response with data")
+	}
+	if processed.Data.ServiceTier == nil || *processed.Data.ServiceTier != schemas.BifrostServiceTierPriority {
+		t.Fatalf("expected priority tier to survive the conversion, got %v", processed.Data.ServiceTier)
+	}
+
+	entry := &logstore.Log{}
+	(&LoggerPlugin{}).applyStreamingOutputToEntry(entry, processed, false, false)
+	if entry.ServiceTier == nil || *entry.ServiceTier != "priority" {
+		t.Fatalf("expected service_tier priority on the log entry, got %v", entry.ServiceTier)
+	}
+}
+
 // TestCalculateCostForLogPricesOneHourCacheWrites covers the Responses-path leak:
 // CachedWriteTokenDetails was dropped in the conversion, so 1h cache writes billed at
 // the cheaper 5m rate.
