@@ -60,8 +60,12 @@ type Store struct {
 	baseModelIndex         map[string]string                              // model → canonical base name
 	supportedResponseTypes map[string][]string                            // model → [chat_completion, responses, …]
 	supportedParams        map[string][]string                            // model → [temperature, top_p, …]
-	datasheetByProvider    map[schemas.ModelProvider][]string             // rebuilt every reload
-	deprecatedByProvider   map[schemas.ModelProvider][]string             // rebuilt every reload
+
+	// onModelParametersApplied fires after a model-parameters reload lands, so
+	// caches built from the previous sheet can be dropped.
+	onModelParametersApplied func()
+	datasheetByProvider      map[schemas.ModelProvider][]string // rebuilt every reload
+	deprecatedByProvider     map[schemas.ModelProvider][]string // rebuilt every reload
 
 	// Overrides under their own mutex: writes here don't block pricing reads
 	// (the hot CalculateCost path takes mu.RLock and overridesMu.RLock

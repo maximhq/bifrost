@@ -63,7 +63,7 @@ func roundTrip(t *testing.T, messages []AnthropicMessage, system *AnthropicConte
 	defer cancel()
 
 	bifrost := ConvertAnthropicMessagesToBifrostMessages(ctx, messages, system, false, false)
-	outMsgs, outSystem := ConvertBifrostMessagesToAnthropicMessages(ctx, bifrost, true, provider, model)
+	outMsgs, outSystem := ConvertBifrostMessagesToAnthropicMessages(ctx, bifrost, true, schemas.ResolveModelCaps(provider, model))
 	return outMsgs, outSystem
 }
 
