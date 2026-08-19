@@ -545,6 +545,11 @@ export interface PricingOverridePatch {
 	output_cost_per_image_above_1024_and_1024_pixels_and_premium_image?: number;
 	output_cost_per_image_above_2048_and_2048_pixels?: number;
 	output_cost_per_image_above_4096_and_4096_pixels?: number;
+	output_cost_per_image_above_4_megapixels?: number;
+	output_cost_per_image_above_8_megapixels?: number;
+	output_cost_per_image_above_16_megapixels?: number;
+	output_cost_per_image_above_32_megapixels?: number;
+	output_cost_per_image_above_64_megapixels?: number;
 	output_cost_per_image_low_quality?: number;
 	output_cost_per_image_medium_quality?: number;
 	output_cost_per_image_high_quality?: number;

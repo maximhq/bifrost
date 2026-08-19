@@ -469,6 +469,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_bedrock_endpoints_columns"}, run: migrationAddBedrockEndpointsColumns},
 	{IDs: []string{"add_cost_per_request_pricing_column"}, run: migrationAddCostPerRequestPricingColumn},
 	{IDs: []string{"add_notifications_table"}, run: migrationAddNotificationsTable},
+	{IDs: []string{"add_image_megapixel_tier_pricing_columns"}, run: migrationAddImageMegapixelTierPricingColumns},
 }
 
 func migrationAddNotificationsTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
@@ -11933,6 +11934,49 @@ func migrationAddBedrockEndpointsColumns(ctx context.Context, db *gorm.DB, logge
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddImageMegapixelTierPricingColumns adds the megapixel-banded output
+// image cost tier columns (output_cost_per_image_above_{4,8,16,32,64}_megapixels),
+// used by providers (e.g. Replicate's upscaler models) that publish tiered
+// per-image pricing by total output megapixels rather than by a squared
+// width/height threshold.
+func migrationAddImageMegapixelTierPricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_image_megapixel_tier_pricing_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	columns := []string{
+		"output_cost_per_image_above_4_megapixels",
+		"output_cost_per_image_above_8_megapixels",
+		"output_cost_per_image_above_16_megapixels",
+		"output_cost_per_image_above_32_megapixels",
+		"output_cost_per_image_above_64_megapixels",
+	}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_image_megapixel_tier_pricing_columns migration: %s", err.Error())
 	}
 	return nil
 }

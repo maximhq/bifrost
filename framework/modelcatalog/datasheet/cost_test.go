@@ -1387,6 +1387,56 @@ func TestComputeImageCost_QualityBasedRates(t *testing.T) {
 	assert.InDelta(t, 0.05, computeImageCost(&p, usage, "", "", serviceTier{}), 1e-12)
 }
 
+func TestComputeImageCost_MegapixelTier_SelectsCorrectBand(t *testing.T) {
+	// Mirrors replicate/prunaai/p-image-upscale's real tier structure.
+	p := configstoreTables.TableModelPricing{
+		OutputCostPerImage:                  bifrost.Ptr(0.005),
+		OutputCostPerImageAbove4Megapixels:  bifrost.Ptr(0.01),
+		OutputCostPerImageAbove8Megapixels:  bifrost.Ptr(0.02),
+		OutputCostPerImageAbove16Megapixels: bifrost.Ptr(0.04),
+		OutputCostPerImageAbove32Megapixels: bifrost.Ptr(0.06),
+		OutputCostPerImageAbove64Megapixels: bifrost.Ptr(0.12),
+	}
+	usage := &schemas.ImageUsage{
+		OutputTokensDetails: &schemas.ImageTokenDetails{NImages: 1},
+	}
+
+	// 10MP output (between the 8MP and 16MP thresholds) → $0.02 tier.
+	cost := computeImageCost(&p, usage, "1x10000000", "", serviceTier{})
+	assert.InDelta(t, 0.02, cost, 1e-12)
+
+	// 2MP output (below the lowest 4MP threshold) → falls back to base rate.
+	cost = computeImageCost(&p, usage, "1x2000000", "", serviceTier{})
+	assert.InDelta(t, 0.005, cost, 1e-12)
+
+	// 70MP output (above every threshold) → top $0.12 tier.
+	cost = computeImageCost(&p, usage, "1x70000000", "", serviceTier{})
+	assert.InDelta(t, 0.12, cost, 1e-12)
+}
+
+func TestComputeImageCost_MegapixelAndSquaredPixelTiers_Interleave(t *testing.T) {
+	// 4096x4096 = 16,777,216px sits BETWEEN the 16MP and 32MP thresholds, not
+	// between 8MP and 16MP — the tier ladder must be ordered by actual pixel
+	// count, not by field family, or a model using both families would pick
+	// the wrong tier.
+	p := configstoreTables.TableModelPricing{
+		OutputCostPerImage:                     bifrost.Ptr(0.005),
+		OutputCostPerImageAbove16Megapixels:    bifrost.Ptr(0.04),
+		OutputCostPerImageAbove4096x4096Pixels: bifrost.Ptr(0.30),
+	}
+	usage := &schemas.ImageUsage{
+		OutputTokensDetails: &schemas.ImageTokenDetails{NImages: 1},
+	}
+
+	// 16.5MP: above the 16MP threshold but below 4096x4096 (16,777,216px) → $0.04.
+	cost := computeImageCost(&p, usage, "1x16500000", "", serviceTier{})
+	assert.InDelta(t, 0.04, cost, 1e-12)
+
+	// 17MP: above both thresholds → the larger (4096x4096) threshold wins → $0.30.
+	cost = computeImageCost(&p, usage, "1x17000000", "", serviceTier{})
+	assert.InDelta(t, 0.30, cost, 1e-12)
+}
+
 func TestParseImagePixels(t *testing.T) {
 	assert.Equal(t, 1048576, parseImagePixels("1024x1024"))
 	assert.Equal(t, 262144, parseImagePixels("512x512"))
