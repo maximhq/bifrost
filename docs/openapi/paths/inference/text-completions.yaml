@@ -5,7 +5,7 @@ text-completions:
     description: |
       Creates a completion for the provided prompt. Supports streaming via SSE.
     tags:
-      - Text Completions
+    - Text Completions
     requestBody:
       required: true
       content:
@@ -26,3 +26,8 @@ text-completions:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

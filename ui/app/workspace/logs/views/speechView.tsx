@@ -1,6 +1,6 @@
 import { BifrostSpeech, SpeechInput } from "@/lib/types/logs";
 import { AlertCircle, Play, Volume2 } from "lucide-react";
-import React, { Component, useMemo } from "react";
+import React, { Component } from "react";
 import AudioPlayer from "./audioPlayer";
 
 interface SpeechViewProps {

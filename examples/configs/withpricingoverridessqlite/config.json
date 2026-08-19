@@ -1,0 +1,82 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "config_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "config.db"
+    }
+  },
+  "logs_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "logs.db"
+    }
+  },
+  "governance": {
+    "pricing_overrides": [
+      {
+        "id": "override-global-gpt4o",
+        "name": "Global GPT-4o Pricing",
+        "scope_kind": "global",
+        "match_type": "exact",
+        "pattern": "gpt-4o",
+        "request_types": ["chat_completion"],
+        "pricing_patch": "{\"input_cost_per_token\":0.0000025,\"output_cost_per_token\":0.00001}"
+      },
+      {
+        "id": "override-global-claude-wildcard",
+        "name": "Global Claude Models Pricing",
+        "scope_kind": "global",
+        "match_type": "wildcard",
+        "pattern": "claude-*",
+        "request_types": ["chat_completion"],
+        "pricing_patch": "{\"input_cost_per_token\":0.000003,\"output_cost_per_token\":0.000015}"
+      },
+      {
+        "id": "override-provider-openai-gpt4o-mini",
+        "name": "OpenAI GPT-4o Mini Pricing",
+        "scope_kind": "provider",
+        "provider_id": "openai",
+        "match_type": "exact",
+        "pattern": "gpt-4o-mini",
+        "request_types": ["chat_completion"],
+        "pricing_patch": "{\"input_cost_per_token\":0.00000015,\"output_cost_per_token\":0.0000006}"
+      }
+    ]
+  },
+  "plugins": [
+    {
+      "name": "governance",
+      "enabled": true,
+      "config": {
+        "is_vk_mandatory": false
+      }
+    }
+  ],
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "id": "key-openai-1",
+          "name": "openai-key-1",
+          "value": "env.OPENAI_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ]
+    },
+    "anthropic": {
+      "keys": [
+        {
+          "id": "key-anthropic-1",
+          "name": "anthropic-key-1",
+          "value": "env.ANTHROPIC_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ]
+    }
+  }
+}

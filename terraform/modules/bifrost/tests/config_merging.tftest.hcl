@@ -70,7 +70,22 @@ run "schema_url_injected" {
   }
   assert {
     condition     = jsondecode(output.config_json)["$schema"] == "https://www.getbifrost.ai/schema"
-    error_message = "Schema URL should always be injected"
+    error_message = "Schema location should always be injected"
+  }
+}
+
+run "schema_url_override" {
+  command = plan
+  module { source = "./tests/setup" }
+  variables {
+    cloud_provider = "aws"
+    service        = "ecs"
+    region         = "us-east-1"
+    schema_url     = "https://schema.internal/bifrost"
+  }
+  assert {
+    condition     = jsondecode(output.config_json)["$schema"] == "https://schema.internal/bifrost"
+    error_message = "schema_url should override the default schema location"
   }
 }
 

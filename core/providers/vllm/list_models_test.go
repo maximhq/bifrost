@@ -62,16 +62,16 @@ func TestListModels_QueriesAllBackends(t *testing.T) {
 	keys := []schemas.Key{
 		{
 			ID:    "key-1",
-			Value: schemas.EnvVar{Val: "test-api-key-1"},
+			Value: schemas.SecretVar{Val: "test-api-key-1"},
 			VLLMKeyConfig: &schemas.VLLMKeyConfig{
-				URL: schemas.EnvVar{Val: server1.URL},
+				URL: schemas.SecretVar{Val: server1.URL},
 			},
 		},
 		{
 			ID:    "key-2",
-			Value: schemas.EnvVar{Val: "test-api-key-2"},
+			Value: schemas.SecretVar{Val: "test-api-key-2"},
 			VLLMKeyConfig: &schemas.VLLMKeyConfig{
-				URL: schemas.EnvVar{Val: server2.URL},
+				URL: schemas.SecretVar{Val: server2.URL},
 			},
 		},
 	}
@@ -140,16 +140,16 @@ func TestListModels_SingleBackendFailure(t *testing.T) {
 	keys := []schemas.Key{
 		{
 			ID:    "good-key",
-			Value: schemas.EnvVar{Val: "key1"},
+			Value: schemas.SecretVar{Val: "key1"},
 			VLLMKeyConfig: &schemas.VLLMKeyConfig{
-				URL: schemas.EnvVar{Val: server1.URL},
+				URL: schemas.SecretVar{Val: server1.URL},
 			},
 		},
 		{
 			ID:    "bad-key",
-			Value: schemas.EnvVar{Val: "key2"},
+			Value: schemas.SecretVar{Val: "key2"},
 			VLLMKeyConfig: &schemas.VLLMKeyConfig{
-				URL: schemas.EnvVar{Val: server2.URL},
+				URL: schemas.SecretVar{Val: server2.URL},
 			},
 		},
 	}
@@ -198,7 +198,7 @@ func TestListModels_ErrorsWithoutPerKeyURL(t *testing.T) {
 	keys := []schemas.Key{
 		{
 			ID:    "no-config-key",
-			Value: schemas.EnvVar{Val: "api-key"},
+			Value: schemas.SecretVar{Val: "api-key"},
 			// No VLLMKeyConfig — should produce an error.
 		},
 	}

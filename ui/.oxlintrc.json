@@ -1,0 +1,17 @@
+{
+	"$schema": "./node_modules/oxlint/configuration_schema.json",
+	"plugins": ["typescript", "import", "react"],
+	"env": {
+		"browser": true,
+		"es2024": true
+	},
+	"categories": {
+		"correctness": "warn"
+	},
+	"rules": {
+		"import/no-cycle": ["warn", { "maxDepth": 1, "ignoreExternal": true }],
+		"typescript/no-explicit-any": "warn",
+		"typescript/ban-ts-comment": "off"
+	},
+	"ignorePatterns": ["out/**", "node_modules/**", "*.config.*"]
+}

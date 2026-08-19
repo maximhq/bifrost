@@ -364,8 +364,8 @@ func RunImageEditTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context
 			t.Error("❌ ExtraFields.Provider is empty")
 		}
 
-		if imageEditResponse.ExtraFields.ModelRequested == "" {
-			t.Error("❌ ExtraFields.ModelRequested is empty")
+		if imageEditResponse.ExtraFields.OriginalModelRequested == "" {
+			t.Error("❌ ExtraFields.OriginalModelRequested is empty")
 		}
 
 		// Validate RequestType is ImageEditRequest
@@ -374,7 +374,7 @@ func RunImageEditTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context
 		}
 
 		t.Logf("✅ Image edit successful: ID=%s, Provider=%s, Model=%s, Images=%d",
-			imageEditResponse.ID, imageEditResponse.ExtraFields.Provider, imageEditResponse.ExtraFields.ModelRequested, len(imageEditResponse.Data))
+			imageEditResponse.ID, imageEditResponse.ExtraFields.Provider, imageEditResponse.ExtraFields.OriginalModelRequested, len(imageEditResponse.Data))
 	})
 }
 

@@ -1,0 +1,167 @@
+# Schemas for RBAC role and permission management.
+
+DAC:
+  type: string
+  enum:
+    - own-data
+    - team-data
+    - all-data
+  description: |
+    Data access scope. Determines which rows members of the role can see.
+    - `own-data` - Only rows the member personally owns.
+    - `team-data` - Own rows plus rows owned by any team they belong to.
+    - `all-data` - No row filtering.
+
+Role:
+  type: object
+  properties:
+    id:
+      type: integer
+      format: uint
+    name:
+      type: string
+      description: Lowercase letters, digits, `_`, `.`. Must start with a letter. Unique.
+      maxLength: 255
+    description:
+      type: string
+    is_system_role:
+      type: boolean
+      description: True for built-in roles. System roles cannot be deleted.
+    dac:
+      $ref: '#/DAC'
+    created_by_user_id:
+      type: string
+      nullable: true
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+
+CreateRoleRequest:
+  type: object
+  required:
+    - name
+  properties:
+    name:
+      type: string
+      description: |
+        Must match `^[a-z][a-z0-9_.]*$`. Max 255 characters. Unique.
+      maxLength: 255
+    description:
+      type: string
+    dac:
+      $ref: '#/DAC'
+      description: Defaults to `all-data` when omitted.
+
+UpdateRoleRequest:
+  type: object
+  description: |
+    Partial update. Omitted fields preserve the current value.
+    - `description` is a nullable string: omitting it preserves the existing description; sending an empty string clears it.
+    - `dac` defaults to the existing value when omitted, preventing accidental scope escalation.
+  properties:
+    name:
+      type: string
+      description: If supplied (and different from current), must match the role-name regex.
+      maxLength: 255
+    description:
+      type: string
+      nullable: true
+    dac:
+      $ref: '#/DAC'
+
+RoleResponse:
+  type: object
+  properties:
+    role:
+      $ref: '#/Role'
+
+RolesListResponse:
+  type: object
+  properties:
+    roles:
+      type: array
+      items:
+        $ref: '#/Role'
+
+Permission:
+  type: object
+  properties:
+    id:
+      type: integer
+      format: uint
+    resource:
+      type: string
+    operation:
+      type: string
+
+PermissionsListResponse:
+  type: object
+  properties:
+    permissions:
+      type: array
+      items:
+        $ref: '#/Permission'
+
+UpdateRolePermissionsRequest:
+  type: object
+  required:
+    - permission_ids
+  properties:
+    permission_ids:
+      type: array
+      items:
+        type: integer
+        format: uint
+
+Resource:
+  type: object
+  properties:
+    id:
+      type: integer
+      format: uint
+    name:
+      type: string
+
+ResourcesListResponse:
+  type: object
+  properties:
+    resources:
+      type: array
+      items:
+        $ref: '#/Resource'
+
+Operation:
+  type: object
+  properties:
+    id:
+      type: integer
+      format: uint
+    name:
+      type: string
+
+OperationsListResponse:
+  type: object
+  properties:
+    operations:
+      type: array
+      items:
+        $ref: '#/Operation'
+
+AssignUserRoleRequest:
+  type: object
+  required:
+    - role_id
+  properties:
+    role_id:
+      type: integer
+      format: uint
+      description: ID of an existing role. Must be non-zero.
+
+MessageResponse:
+  type: object
+  properties:
+    message:
+      type: string

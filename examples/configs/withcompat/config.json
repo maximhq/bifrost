@@ -1,0 +1,39 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "config_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "./config.db"
+    }
+  },
+  "client": {
+    "compat": {
+      "convert_text_to_chat": true,
+      "convert_chat_to_responses": true,
+      "should_drop_params": true,
+      "should_convert_params": false
+    },
+    "enable_logging": true,
+    "initial_pool_size": 300,
+    "log_retention_days": 365,
+    "header_filter_config": {
+      "allowlist": ["x-bf-eh-user-id", "x-bf-eh-team-id"],
+      "denylist": []
+    },
+    "required_headers": ["x-bf-user-id"],
+    "logging_headers": ["x-bf-user-id", "x-bf-team-id"]
+  },
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "openai-key-1",
+          "value": "sk-dummy",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ]
+    }
+  }
+}

@@ -4,6 +4,9 @@ package handlers
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -12,15 +15,53 @@ import (
 	"github.com/fasthttp/router"
 	"github.com/fasthttp/websocket"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
+
+// websocketWriteTimeout bounds a single write to a client connection.
+const websocketWriteTimeout = 10 * time.Second
+
+// errWebSocketClientClosed is returned when a write targets a client whose
+// connection has already been handed back to the transport.
+var errWebSocketClientClosed = errors.New("websocket client is closed")
 
 // WebSocketClient represents a connected WebSocket client with its own mutex
 type WebSocketClient struct {
 	conn *websocket.Conn
 	mu   sync.Mutex // Per-connection mutex for thread-safe writes
+
+	// closed is set under mu once the connection's owning handler is done with
+	// it. It cannot be inferred from conn: fasthttp hands the upgrade handler a
+	// pooled *hijackConn wrapper, so the connection stays non-nil while its
+	// underlying net.Conn has been nil'd out from under it.
+	closed bool
+}
+
+// close marks the client unusable and releases its connection.
+//
+// It blocks until any in-flight write finishes, which is what lets the caller
+// safely return from the upgrade handler afterwards: fasthttp recycles the
+// hijacked connection the moment that handler returns, nils its net.Conn and
+// leases the wrapper to the next client. A write racing that recycle either
+// panics on a nil dereference or, when the wrapper has already been re-leased,
+// silently delivers to an unrelated client's socket.
+func (c *WebSocketClient) close() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.closeLocked()
+}
+
+// closeLocked is close with c.mu already held.
+func (c *WebSocketClient) closeLocked() {
+	if c.closed {
+		return
+	}
+	c.closed = true
+	if c.conn != nil {
+		_ = c.conn.Close()
+		c.conn = nil
+	}
 }
 
 // WebSocketHandler manages WebSocket connections for real-time updates
@@ -69,16 +110,25 @@ func (h *WebSocketHandler) getUpgrader() websocket.FastHTTPUpgrader {
 
 // isLocalhost checks if the given host is localhost
 func isLocalhost(host string) bool {
-	// Remove port if present
-	if idx := strings.LastIndex(host, ":"); idx != -1 {
-		host = host[:idx]
+	// Remove port if present; SplitHostPort also unwraps IPv6 brackets ("[::1]:8080" -> "::1")
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	// Bare bracketed IPv6 literal without a port ("[::1]"); reject half-bracketed hosts
+	if strings.HasPrefix(host, "[") || strings.HasSuffix(host, "]") {
+		if !strings.HasPrefix(host, "[") || !strings.HasSuffix(host, "]") {
+			return false
+		}
+		host = strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
+		ip := net.ParseIP(host)
+		return ip != nil && ip.IsLoopback()
 	}
 
-	// Check for localhost variations
-	return host == "localhost" ||
-		host == "127.0.0.1" ||
-		host == "::1" ||
-		host == ""
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // connectStream handles WebSocket connections for real-time streaming
@@ -102,12 +152,23 @@ func (h *WebSocketHandler) connectStream(ctx *fasthttp.RequestCtx) {
 		h.clients[ws] = client
 		h.mu.Unlock()
 
-		// Clean up on disconnect
+		// Clean up on disconnect.
+		//
+		// The client is deregistered first so no new broadcast picks it up, then
+		// closed. close() waits on the client's write lock, so this returns only
+		// once every in-flight write has finished — required, because returning
+		// from this function lets fasthttp recycle ws underneath any goroutine
+		// still holding it from an earlier snapshot.
+		//
+		// h.mu is released before taking the client lock: writes hold the client
+		// lock and take h.mu to deregister themselves, so holding both here in
+		// the opposite order would deadlock.
 		defer func() {
 			h.mu.Lock()
 			delete(h.clients, ws)
 			h.mu.Unlock()
-			ws.Close()
+
+			client.close()
 		}()
 
 		// Keep connection alive and handle client messages
@@ -137,126 +198,81 @@ func (h *WebSocketHandler) connectStream(ctx *fasthttp.RequestCtx) {
 	}
 }
 
-// sendMessageSafely sends a message to a client with proper locking and error handling
-func (h *WebSocketHandler) sendMessageSafely(client *WebSocketClient, messageType int, data []byte) error {
+// writeSafely runs write against the client's connection under the client's
+// write lock, with the client discarded on any failure.
+//
+// Holding the lock for the whole write is what gives close() something to wait
+// on, so a client can never be written to after its handler has released the
+// underlying connection.
+func (h *WebSocketHandler) writeSafely(client *WebSocketClient, write func(conn *websocket.Conn) error) (writeErr error) {
+	if client == nil {
+		return fmt.Errorf("websocket client is nil")
+	}
+
 	client.mu.Lock()
 	defer client.mu.Unlock()
 
-	// Set a write deadline to prevent hanging connections
-	client.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	defer client.conn.SetWriteDeadline(time.Time{}) // Clear the deadline
+	if client.closed || client.conn == nil {
+		return errWebSocketClientClosed
+	}
+	conn := client.conn
 
-	err := client.conn.WriteMessage(messageType, data)
-	if err != nil {
-		// Remove the client from the map if write fails
-		go func() {
-			h.mu.Lock()
-			delete(h.clients, client.conn)
-			h.mu.Unlock()
-			client.conn.Close()
-		}()
+	// discard drops the client on any failure. It runs with client.mu held, and
+	// takes h.mu via removeClient — never the reverse.
+	discard := func() {
+		client.closeLocked()
+		h.removeClient(conn)
 	}
 
-	return err
-}
-
-// BroadcastLogUpdate sends a log update to all connected WebSocket clients
-func (h *WebSocketHandler) BroadcastLogUpdate(logEntry *logstore.Log) {
-	// Nil guard to prevent panics
-	if logEntry == nil {
-		return
-	}
-
-	// Add panic recovery to prevent server crashes
 	defer func() {
 		if r := recover(); r != nil {
-			logger.Error("panic in BroadcastLogUpdate: %v", r)
+			writeErr = fmt.Errorf("panic while writing websocket message: %v", r)
+			discard()
 		}
 	}()
 
-	// Determine operation type based on log status and timestamp
-	operationType := "update"
-	if logEntry.Status == "processing" && logEntry.CreatedAt.Equal(logEntry.Timestamp) {
-		operationType = "create"
+	if err := write(conn); err != nil {
+		discard()
+		return err
 	}
 
-	// Trim payload for table view: keep only the last input message and nil out
-	// large output fields that the table never renders.
-	if len(logEntry.InputHistoryParsed) > 1 {
-		logEntry.InputHistoryParsed = logEntry.InputHistoryParsed[len(logEntry.InputHistoryParsed)-1:]
-	}
-	if len(logEntry.ResponsesInputHistoryParsed) > 1 {
-		logEntry.ResponsesInputHistoryParsed = logEntry.ResponsesInputHistoryParsed[len(logEntry.ResponsesInputHistoryParsed)-1:]
-	}
-	logEntry.OutputMessageParsed = nil
-	logEntry.ResponsesOutputParsed = nil
-	logEntry.EmbeddingOutputParsed = nil
-	logEntry.RerankOutputParsed = nil
-	logEntry.ParamsParsed = nil
-	logEntry.ToolsParsed = nil
-	logEntry.ToolCallsParsed = nil
-	logEntry.SpeechOutputParsed = nil
-	logEntry.TranscriptionOutputParsed = nil
-	logEntry.ImageGenerationOutputParsed = nil
-	logEntry.ListModelsOutputParsed = nil
-	logEntry.CacheDebugParsed = nil
-
-	message := struct {
-		Type      string        `json:"type"`
-		Operation string        `json:"operation"` // "create" or "update"
-		Payload   *logstore.Log `json:"payload"`
-	}{
-		Type:      "log",
-		Operation: operationType,
-		Payload:   logEntry,
-	}
-
-	data, err := sonic.Marshal(message)
-	if err != nil {
-		logger.Error("failed to marshal log entry: %v", err)
-		return
-	}
-
-	h.BroadcastMarshaledMessage(data)
+	return nil
 }
 
-// BroadcastMCPLogUpdate sends an MCP tool log update to all connected WebSocket clients
-func (h *WebSocketHandler) BroadcastMCPLogUpdate(logEntry *logstore.MCPToolLog) {
-	// Nil guard to prevent panics
-	if logEntry == nil {
-		return
-	}
-
-	// Add panic recovery to prevent server crashes
-	defer func() {
-		if r := recover(); r != nil {
-			logger.Error("panic in BroadcastMCPLogUpdate: %v", r)
+// sendMessageSafely sends a message to a client with proper locking and error handling
+func (h *WebSocketHandler) sendMessageSafely(client *WebSocketClient, messageType int, data []byte) error {
+	return h.writeSafely(client, func(conn *websocket.Conn) error {
+		// Set a write deadline to prevent hanging connections
+		if err := conn.SetWriteDeadline(time.Now().Add(websocketWriteTimeout)); err != nil {
+			return err
 		}
-	}()
+		if err := conn.WriteMessage(messageType, data); err != nil {
+			return err
+		}
+		// Clear write deadline on successful write.
+		return conn.SetWriteDeadline(time.Time{})
+	})
+}
 
-	// Determine operation type based on log status and timestamp
-	operationType := "update"
-	if logEntry.Status == "processing" && logEntry.CreatedAt.Equal(logEntry.Timestamp) {
-		operationType = "create"
-	}
+// sendPingSafely sends a keepalive ping to a client.
+//
+// Pings go out via WriteControl rather than WriteMessage: WriteControl frames
+// the message on its own buffer, so a failed ping cannot leave the connection's
+// concurrent-write detector latched and turn every later write on that
+// connection into a spurious "concurrent write" panic.
+func (h *WebSocketHandler) sendPingSafely(client *WebSocketClient) error {
+	return h.writeSafely(client, func(conn *websocket.Conn) error {
+		return conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(websocketWriteTimeout))
+	})
+}
 
-	message := struct {
-		Type      string               `json:"type"`
-		Operation string               `json:"operation"` // "create" or "update"
-		Payload   *logstore.MCPToolLog `json:"payload"`
-	}{
-		Type:      "mcp_log",
-		Operation: operationType,
-		Payload:   logEntry,
-	}
-
-	data, err := sonic.Marshal(message)
-	if err != nil {
-		logger.Error("failed to marshal MCP log entry: %v", err)
+func (h *WebSocketHandler) removeClient(conn *websocket.Conn) {
+	if conn == nil {
 		return
 	}
-
-	h.BroadcastMarshaledMessage(data)
+	h.mu.Lock()
+	delete(h.clients, conn)
+	h.mu.Unlock()
 }
 
 // BroadcastUpdatesToClients sends a store update notification to all connected WebSocket clients
@@ -309,9 +325,10 @@ func (h *WebSocketHandler) BroadcastMarshaledMessage(data []byte) {
 	}
 	h.mu.RUnlock()
 
-	// Send message to each client safely
+	// Send message to each client safely. A client that disconnected between the
+	// snapshot and the write is expected, not an error worth logging.
 	for _, client := range clients {
-		if err := h.sendMessageSafely(client, websocket.TextMessage, data); err != nil {
+		if err := h.sendMessageSafely(client, websocket.TextMessage, data); err != nil && !errors.Is(err, errWebSocketClientClosed) {
 			logger.Error("failed to send message to client: %v", err)
 		}
 	}
@@ -342,7 +359,7 @@ func (h *WebSocketHandler) StartHeartbeat() {
 
 				// Send heartbeat to each client safely
 				for _, client := range clients {
-					if err := h.sendMessageSafely(client, websocket.PingMessage, nil); err != nil {
+					if err := h.sendPingSafely(client); err != nil && !errors.Is(err, errWebSocketClientClosed) {
 						logger.Error("failed to send heartbeat: %v", err)
 					}
 				}
@@ -358,11 +375,20 @@ func (h *WebSocketHandler) Stop() {
 	close(h.stopChan) // Signal heartbeat goroutine to stop
 	<-h.done          // Wait for heartbeat goroutine to finish
 
-	// Close all client connections
+	// Close all client connections.
+	//
+	// Detach the map under h.mu, then close outside it: close() waits on each
+	// client's write lock, and a write holding that lock takes h.mu to
+	// deregister itself. Closing while holding h.mu would deadlock.
 	h.mu.Lock()
+	clients := make([]*WebSocketClient, 0, len(h.clients))
 	for _, client := range h.clients {
-		client.conn.Close()
+		clients = append(clients, client)
 	}
 	h.clients = make(map[*websocket.Conn]*WebSocketClient)
 	h.mu.Unlock()
+
+	for _, client := range clients {
+		client.close()
+	}
 }

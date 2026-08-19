@@ -29,7 +29,7 @@
         "config": {
           "service_name": "bifrost",
           "collector_url": "http://localhost:4318/v1/traces",
-          "trace_type": "otel",
+          "trace_type": "genai_extension",
           "protocol": "http"
         }
       }

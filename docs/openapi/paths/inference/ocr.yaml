@@ -1,0 +1,103 @@
+# OCR Endpoints
+
+ocr:
+  post:
+    operationId: performOCR
+    summary: Perform OCR
+    description: |
+      Extracts text and content from documents or images using optical character recognition.
+      Supports PDF URLs, base64-encoded documents, and image URLs.
+    tags:
+    - OCR
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/inference/ocr.yaml#/OCRRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/ocr.yaml#/OCRResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+async-ocr:
+  post:
+    operationId: createAsyncOCR
+    summary: Create async OCR job
+    description: |
+      Submits an OCR request for asynchronous execution. Returns a job ID immediately
+      with HTTP 202. Poll the corresponding GET endpoint with the job ID to retrieve the result.
+    tags:
+    - Async Jobs
+    parameters:
+    - $ref: '../../openapi.yaml#/components/parameters/AsyncResultTTL'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/inference/ocr.yaml#/OCRRequest'
+    responses:
+      '202':
+        description: Job accepted for processing
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/async.yaml#/AsyncJobResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+async-ocr-job:
+  get:
+    operationId: getAsyncOCRJob
+    summary: Get async OCR job
+    description: |
+      Retrieves the status and result of an async OCR job.
+      Returns HTTP 202 if the job is still pending or processing, HTTP 200 if completed or failed.
+    tags:
+    - Async Jobs
+    parameters:
+    - $ref: '../../openapi.yaml#/components/parameters/AsyncJobId'
+    responses:
+      '200':
+        description: Job completed (successfully or with failure)
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/async.yaml#/AsyncJobResponse'
+      '202':
+        description: Job is still pending or processing
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/async.yaml#/AsyncJobResponse'
+      '404':
+        description: Job not found or expired
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

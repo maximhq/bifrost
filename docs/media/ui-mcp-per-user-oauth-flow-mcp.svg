@@ -1,0 +1,122 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="1000" viewBox="0 0 900 1000" role="img" aria-labelledby="title desc">
+  <title id="title">Per-user OAuth flow sequence diagram for MCP</title>
+  <desc id="desc">Sequence diagram showing MCP Client, Bifrost, End User, OAuth Provider, and MCP Server across a per-user OAuth authentication flow.</desc>
+
+  <defs>
+    <marker id="arrow-grey" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 4 L 0 8 z" fill="#6B7280" />
+    </marker>
+    <marker id="arrow-red" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 4 L 0 8 z" fill="#C2410C" />
+    </marker>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 4 L 0 8 z" fill="#2563EB" />
+    </marker>
+    <marker id="arrow-green" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 4 L 0 8 z" fill="#15803D" />
+    </marker>
+    <style>
+      .bg { fill: #FFFFFF; }
+      .actor { font: 600 16px "Helvetica Neue", Helvetica, Arial, sans-serif; fill: #111827; text-anchor: middle; }
+      .label { font: 14px "Helvetica Neue", Helvetica, Arial, sans-serif; fill: #111827; text-anchor: middle; }
+      .num { font: 11px "Helvetica Neue", Helvetica, Arial, sans-serif; fill: #6B7280; text-anchor: middle; dominant-baseline: middle; }
+      .lane { stroke: #C7CDD4; stroke-width: 1.5; stroke-dasharray: 2 7; }
+      .arrow-grey { stroke: #6B7280; stroke-width: 2.2; fill: none; marker-end: url(#arrow-grey); }
+      .arrow-red { stroke: #C2410C; stroke-width: 2.2; fill: none; stroke-dasharray: 7 5; marker-end: url(#arrow-red); }
+      .arrow-blue { stroke: #2563EB; stroke-width: 2.2; fill: none; marker-end: url(#arrow-blue); }
+      .arrow-green { stroke: #15803D; stroke-width: 2.2; fill: none; marker-end: url(#arrow-green); }
+      .arrow-green-dashed { stroke: #15803D; stroke-width: 2.2; fill: none; stroke-dasharray: 7 5; marker-end: url(#arrow-green); }
+      .step { fill: #FFFFFF; stroke: #BFC5CC; stroke-width: 1.5; }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="900" height="1000" />
+
+  <text class="actor" x="90" y="40">MCP Client</text>
+  <text class="actor" x="270" y="40">Bifrost</text>
+  <text class="actor" x="450" y="40">End User</text>
+  <text class="actor" x="630" y="40">OAuth Provider</text>
+  <text class="actor" x="810" y="40">MCP Server</text>
+
+  <line class="lane" x1="90" y1="68" x2="90" y2="970" />
+  <line class="lane" x1="270" y1="68" x2="270" y2="970" />
+  <line class="lane" x1="450" y1="68" x2="450" y2="970" />
+  <line class="lane" x1="630" y1="68" x2="630" y2="970" />
+  <line class="lane" x1="810" y1="68" x2="810" y2="970" />
+
+  <line class="arrow-grey" x1="90" y1="100" x2="270" y2="100" />
+  <text class="label" x="180" y="92">POST /mcp</text>
+  <circle class="step" cx="180" cy="100" r="12" />
+  <text class="num" x="180" y="100">1</text>
+
+  <line class="arrow-red" x1="270" y1="155" x2="90" y2="155" />
+  <text class="label" x="180" y="147">401 + WWW-Authenticate</text>
+  <circle class="step" cx="180" cy="155" r="12" />
+  <text class="num" x="180" y="155">2</text>
+
+  <line class="arrow-grey" x1="90" y1="210" x2="270" y2="210" />
+  <text class="label" x="180" y="202">OAuth discovery</text>
+  <circle class="step" cx="180" cy="210" r="12" />
+  <text class="num" x="180" y="210">3</text>
+
+  <line class="arrow-grey" x1="90" y1="265" x2="270" y2="265" />
+  <text class="label" x="180" y="257">POST /register → client_id</text>
+  <circle class="step" cx="180" cy="265" r="12" />
+  <text class="num" x="180" y="265">4</text>
+
+  <line class="arrow-blue" x1="90" y1="320" x2="450" y2="320" />
+  <text class="label" x="270" y="312">open consent URL</text>
+  <circle class="step" cx="270" cy="320" r="12" />
+  <text class="num" x="270" y="320">5</text>
+
+  <line class="arrow-blue" x1="450" y1="375" x2="270" y2="375" />
+  <text class="label" x="360" y="367">select identity + services</text>
+  <circle class="step" cx="360" cy="375" r="12" />
+  <text class="num" x="360" y="375">6</text>
+
+  <line class="arrow-blue" x1="270" y1="430" x2="630" y2="430" />
+  <text class="label" x="450" y="422">upstream authorize redirect</text>
+  <circle class="step" cx="450" cy="430" r="12" />
+  <text class="num" x="450" y="430">7</text>
+
+  <line class="arrow-blue" x1="450" y1="485" x2="630" y2="485" />
+  <text class="label" x="540" y="477">grant access</text>
+  <circle class="step" cx="540" cy="485" r="12" />
+  <text class="num" x="540" y="485">8</text>
+
+  <line class="arrow-green" x1="630" y1="540" x2="270" y2="540" />
+  <text class="label" x="450" y="532">GET /api/oauth/callback</text>
+  <circle class="step" cx="450" cy="540" r="12" />
+  <text class="num" x="450" y="540">9</text>
+
+  <line class="arrow-blue" x1="270" y1="595" x2="90" y2="595" />
+  <text class="label" x="180" y="587">redirect with code</text>
+  <circle class="step" cx="180" cy="595" r="12" />
+  <text class="num" x="180" y="595">10</text>
+
+  <line class="arrow-grey" x1="90" y1="650" x2="270" y2="650" />
+  <text class="label" x="180" y="642">POST /token</text>
+  <circle class="step" cx="180" cy="650" r="12" />
+  <text class="num" x="180" y="650">11</text>
+
+  <line class="arrow-green-dashed" x1="270" y1="705" x2="90" y2="705" />
+  <text class="label" x="180" y="697">session token</text>
+  <circle class="step" cx="180" cy="705" r="12" />
+  <text class="num" x="180" y="705">12</text>
+
+  <line class="arrow-green" x1="90" y1="760" x2="270" y2="760" />
+  <text class="label" x="180" y="752">POST /mcp + Bearer token</text>
+  <circle class="step" cx="180" cy="760" r="12" />
+  <text class="num" x="180" y="760">13</text>
+
+  <line class="arrow-green" x1="270" y1="815" x2="810" y2="815" />
+  <text class="label" x="540" y="807">tool call + user token</text>
+  <circle class="step" cx="540" cy="815" r="12" />
+  <text class="num" x="540" y="815">14</text>
+
+  <line class="arrow-green" x1="810" y1="870" x2="270" y2="870" />
+  <line class="arrow-green" x1="270" y1="900" x2="90" y2="900" />
+  <text class="label" x="450" y="862">result ✓</text>
+  <circle class="step" cx="450" cy="885" r="12" />
+  <text class="num" x="450" y="885">15</text>
+</svg>

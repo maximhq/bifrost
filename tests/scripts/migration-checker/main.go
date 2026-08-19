@@ -82,14 +82,14 @@ func main() {
 // and extracts foreign key relationships from GORM struct tags
 //
 // GORM FK relationships:
-// 1. Belongs-to: `Budget *TableBudget gorm:"foreignKey:BudgetID"` 
-//    - FK column (BudgetID) is on THIS table
-//    - Referenced table (TableBudget) must be created FIRST
+// 1. Belongs-to: `Budget *TableBudget gorm:"foreignKey:BudgetID"`
+//   - FK column (BudgetID) is on THIS table
+//   - Referenced table (TableBudget) must be created FIRST
 //
 // 2. Has-many: `Keys []TableKey gorm:"foreignKey:ProviderID"`
-//    - FK column (ProviderID) is on the CHILD table (TableKey)
-//    - THIS table (parent) must be created FIRST
-//    - We don't track this as a dependency because the parent comes first naturally
+//   - FK column (ProviderID) is on the CHILD table (TableKey)
+//   - THIS table (parent) must be created FIRST
+//   - We don't track this as a dependency because the parent comes first naturally
 func parseTableDefinitions(tablesDir string) ([]TableDependency, error) {
 	var dependencies []TableDependency
 
@@ -177,7 +177,7 @@ func parseTableDefinitions(tablesDir string) ([]TableDependency, error) {
 				}
 
 				tag := field.Tag.Value
-				
+
 				// Skip fields that are not stored in DB
 				if strings.Contains(tag, `gorm:"-"`) {
 					continue
@@ -276,32 +276,33 @@ func parseMigrationOrder(migrationsPath string) ([]MigrationAction, error) {
 
 	// Table struct to table name mapping (simplified)
 	tableMapping := map[string]string{
-		"TableConfigHash":              "config_hashes",
-		"TableBudget":                  "governance_budgets",
-		"TableRateLimit":               "governance_rate_limits",
-		"TableProvider":                "config_providers",
-		"TableKey":                     "config_keys",
-		"TableModel":                   "config_models",
-		"TableOauthConfig":             "oauth_configs",
-		"TableOauthToken":              "oauth_tokens",
-		"TableMCPClient":               "config_mcp_clients",
-		"TableClientConfig":            "config_client",
-		"TableEnvKey":                  "config_env_keys",
-		"TableVectorStoreConfig":       "config_vector_stores",
-		"TableLogStoreConfig":          "config_log_stores",
-		"TableCustomer":                "governance_customers",
-		"TableTeam":                    "governance_teams",
-		"TableVirtualKey":              "governance_virtual_keys",
-		"TableGovernanceConfig":        "governance_configs",
-		"TableModelPricing":            "model_pricing",
-		"TablePlugin":                  "plugins",
-		"TableFrameworkConfig":         "framework_configs",
+		"TableConfigHash":               "config_hashes",
+		"TableBudget":                   "governance_budgets",
+		"TableRateLimit":                "governance_rate_limits",
+		"TableProvider":                 "config_providers",
+		"TableKey":                      "config_keys",
+		"TableModel":                    "config_models",
+		"TableOauthConfig":              "oauth_configs",
+		"TableOauthToken":               "oauth_tokens",
+		"TableMCPOauthToken":            "mcp_oauth_tokens",
+		"TableMCPClient":                "config_mcp_clients",
+		"TableClientConfig":             "config_client",
+		"TableEnvKey":                   "config_env_keys",
+		"TableVectorStoreConfig":        "config_vector_stores",
+		"TableLogStoreConfig":           "config_log_stores",
+		"TableCustomer":                 "governance_customers",
+		"TableTeam":                     "governance_teams",
+		"TableVirtualKey":               "governance_virtual_keys",
+		"TableGovernanceConfig":         "governance_configs",
+		"TableModelPricing":             "model_pricing",
+		"TablePlugin":                   "plugins",
+		"TableFrameworkConfig":          "framework_configs",
 		"TableVirtualKeyProviderConfig": "governance_virtual_key_provider_configs",
-		"TableVirtualKeyMCPConfig":     "governance_virtual_key_mcp_configs",
-		"SessionsTable":                "sessions",
-		"TableDistributedLock":         "distributed_locks",
-		"TableModelConfig":             "model_configs",
-		"TableRoutingRule":             "routing_rules",
+		"TableVirtualKeyMCPConfig":      "governance_virtual_key_mcp_configs",
+		"SessionsTable":                 "sessions",
+		"TableDistributedLock":          "distributed_locks",
+		"TableModelConfig":              "model_configs",
+		"TableRoutingRule":              "routing_rules",
 	}
 
 	ast.Inspect(node, func(n ast.Node) bool {
@@ -361,6 +362,37 @@ func parseMigrationOrder(migrationsPath string) ([]MigrationAction, error) {
 										})
 										order++
 									}
+								}
+							}
+						}
+					}
+				}
+			}
+
+			// Look for addColumnIfNotExists(tx, logger, &tables.X{}, "col") calls —
+			// the idempotent helper that replaced direct migrator.AddColumn(...)
+			// calls. Here the model is the 3rd arg and the column name the 4th.
+			if ident, ok := call.Fun.(*ast.Ident); ok && ident.Name == "addColumnIfNotExists" {
+				if len(call.Args) >= 4 {
+					if unary, ok := call.Args[2].(*ast.UnaryExpr); ok {
+						if comp, ok := unary.X.(*ast.CompositeLit); ok {
+							if sel, ok := comp.Type.(*ast.SelectorExpr); ok {
+								structName := sel.Sel.Name
+								if tableName, exists := tableMapping[structName]; exists {
+									colName := ""
+									if lit, ok := call.Args[3].(*ast.BasicLit); ok {
+										colName = strings.Trim(lit.Value, `"`)
+									}
+									pos := fset.Position(call.Pos())
+									actions = append(actions, MigrationAction{
+										MigrationID: currentMigration,
+										ActionType:  "AddColumn",
+										Table:       tableName,
+										Column:      colName,
+										Order:       order,
+										Line:        pos.Line,
+									})
+									order++
 								}
 							}
 						}

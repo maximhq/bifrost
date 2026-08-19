@@ -272,7 +272,7 @@ func TestToBifrostResponsesStream_CompactionContentBlockStop(t *testing.T) {
 func TestToAnthropicResponsesStreamResponse_CompactionOutputItemAdded(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
 
 	summary := "Summary of the conversation about building a website"
@@ -339,7 +339,7 @@ func TestToAnthropicResponsesStreamResponse_CompactionOutputItemAdded(t *testing
 func TestToAnthropicResponsesStreamResponse_CompactionOutputItemDone(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
 
 	bifrostResp := &schemas.BifrostResponsesStreamResponse{
@@ -380,7 +380,7 @@ func TestToAnthropicResponsesStreamResponse_CompactionOutputItemDone(t *testing.
 func TestToAnthropicResponsesStreamResponse_TextOutputItemAdded_NotAffectedByCompactionCheck(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
 
 	// Regular text message should still emit content_block_start with type=text
@@ -438,23 +438,23 @@ func TestToBifrostResponsesResponse_PreservesStopReason(t *testing.T) {
 		{
 			name:               "end_turn stop reason",
 			stopReason:         AnthropicStopReasonEndTurn,
-			expectedStopReason: "end_turn",
+			expectedStopReason: "stop",
 		},
 		{
 			name:               "tool_use stop reason",
 			stopReason:         AnthropicStopReasonToolUse,
-			expectedStopReason: "tool_use",
+			expectedStopReason: "tool_calls",
 		},
 		{
 			name:               "max_tokens stop reason",
 			stopReason:         AnthropicStopReasonMaxTokens,
-			expectedStopReason: "max_tokens",
+			expectedStopReason: "length",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 			defer cancel()
 
 			resp := &AnthropicMessageResponse{
@@ -483,7 +483,7 @@ func TestToBifrostResponsesResponse_PreservesStopReason(t *testing.T) {
 func TestToBifrostResponsesResponse_EmptyStopReason(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
 
 	resp := &AnthropicMessageResponse{
@@ -526,8 +526,8 @@ func TestToAnthropicResponsesResponse_StopReasonFromBifrost(t *testing.T) {
 			expectedReason: AnthropicStopReasonToolUse,
 		},
 		{
-			name:       "nil stop_reason defaults to end_turn",
-			stopReason: nil,
+			name:           "nil stop_reason defaults to end_turn",
+			stopReason:     nil,
 			expectedReason: AnthropicStopReasonEndTurn,
 		},
 		{
@@ -548,7 +548,7 @@ func TestToAnthropicResponsesResponse_StopReasonFromBifrost(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 			defer cancel()
 
 			bifrostResp := &schemas.BifrostResponsesResponse{
@@ -572,7 +572,7 @@ func TestToAnthropicResponsesResponse_StopReasonFromBifrost(t *testing.T) {
 func TestCompactionContentBlock_NonStreamingRoundTrip(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
 
 	summary := "The user requested help building a web scraper using Python with BeautifulSoup."
@@ -659,7 +659,7 @@ func TestCompactionContentBlock_NonStreamingRoundTrip(t *testing.T) {
 func TestToAnthropicResponsesStreamResponse_CompletedWithCompactionStopReason(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
 
 	bifrostResp := &schemas.BifrostResponsesStreamResponse{
@@ -699,5 +699,96 @@ func TestToAnthropicResponsesStreamResponse_CompletedWithCompactionStopReason(t 
 	messageStop := events[1]
 	if messageStop.Type != AnthropicStreamEventTypeMessageStop {
 		t.Errorf("event[1] type = %v, want message_stop", messageStop.Type)
+	}
+}
+
+func TestMixedTextThenToolCallsStreamMapsStopReasonToToolUse(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	state := schemas.AcquireChatToResponsesStreamState()
+	defer schemas.ReleaseChatToResponsesStreamState(state)
+
+	content := "\n\nNow let me fetch the source branch:"
+	toolCallID := "chatcmpl-tool-123"
+	toolName := "Bash"
+	toolType := "function"
+	arguments := `{"command":"git fetch origin feat-IGPS-15746-controller-health-endpoint"}`
+	finishReason := string(schemas.BifrostFinishReasonToolCalls)
+
+	chatChunks := []*schemas.BifrostChatResponse{
+		{
+			Choices: []schemas.BifrostResponseChoice{
+				{
+					Index: 0,
+					ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+						Delta: &schemas.ChatStreamResponseChoiceDelta{Content: &content},
+					},
+				},
+			},
+		},
+		{
+			Choices: []schemas.BifrostResponseChoice{
+				{
+					Index: 0,
+					ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+						Delta: &schemas.ChatStreamResponseChoiceDelta{
+							ToolCalls: []schemas.ChatAssistantMessageToolCall{
+								{
+									Index: 0,
+									ID:    &toolCallID,
+									Type:  &toolType,
+									Function: schemas.ChatAssistantMessageToolCallFunction{
+										Name:      &toolName,
+										Arguments: arguments,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			Choices: []schemas.BifrostResponseChoice{
+				{
+					Index:        0,
+					FinishReason: &finishReason,
+					ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+						Delta: &schemas.ChatStreamResponseChoiceDelta{},
+					},
+				},
+			},
+		},
+	}
+
+	var events []*AnthropicStreamEvent
+	for _, chunk := range chatChunks {
+		for _, responseEvent := range chunk.ToBifrostResponsesStreamResponse(state) {
+			events = append(events, ToAnthropicResponsesStreamResponse(ctx, responseEvent)...)
+		}
+	}
+
+	var messageDelta *AnthropicStreamEvent
+	var hasMessageStop bool
+	for _, event := range events {
+		if event.Type == AnthropicStreamEventTypeMessageDelta {
+			messageDelta = event
+		}
+		if event.Type == AnthropicStreamEventTypeMessageStop {
+			hasMessageStop = true
+		}
+	}
+
+	if messageDelta == nil || messageDelta.Delta == nil || messageDelta.Delta.StopReason == nil {
+		t.Fatalf("expected message_delta stop_reason in events: %#v", events)
+	}
+	if *messageDelta.Delta.StopReason != AnthropicStopReasonToolUse {
+		t.Fatalf("message_delta stop_reason = %q, want %q", *messageDelta.Delta.StopReason, AnthropicStopReasonToolUse)
+	}
+	if !hasMessageStop {
+		t.Fatal("expected message_stop event in mixed text+tool_use stream")
 	}
 }

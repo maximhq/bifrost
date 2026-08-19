@@ -6,6 +6,11 @@ icon: "diamond"
 
 [Gemini CLI](https://github.com/google-gemini/gemini-cli) is Google's powerful coding assistant with advanced reasoning capabilities.
 
+
+<Note>
+If your Allowed Headers are already set to `*`, you can skip this note. If not and you face issues integrating Bifrost with Gemini CLI, try switching to `*` or adding the specific headers required by your client. By default, Bifrost whitelists: `Content-Type`, `Authorization`, `X-Requested-With`, `X-Stainless-Timeout`, and `X-Api-Key`.
+</Note>
+
 ## To install Gemini CLI
 
 ```bash
@@ -94,7 +99,7 @@ gemini -m groq/llama-3.3-70b-versatile
 
 Bifrost supports the following providers with the `provider/model-name` format:
 
-`openai`, `azure`, `gemini`, `vertex`, `bedrock`, `mistral`, `groq`, `cerebras`, `cohere`, `perplexity`, `xai`, `ollama`, `openrouter`, `huggingface`, `nebius`, `parasail`, `replicate`, `vllm`, `sgl`
+`openai`, `azure`, `gemini`, `vertex`, `bedrock`, `mistral`, `groq`, `cerebras`, `deepseek`, `cohere`, `perplexity`, `xai`, `ollama`, `openrouter`, `huggingface`, `nebius`, `parasail`, `replicate`, `vllm`, `sgl`
 
 <Warning>
 Non-Google models **must support tool use** for Gemini CLI to work properly. Gemini CLI relies on tool calling for file operations, terminal commands, and code editing. Models without tool use support will fail on most operations.

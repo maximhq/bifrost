@@ -1,175 +1,167 @@
-"use client"
-
 import { CodeEditor } from "@/components/ui/codeEditor";
-import { ChevronDown, ChevronRight, X } from "lucide-react"
-import { useCallback, useMemo, useState } from "react"
+import { ChevronDown, ChevronRight, X } from "lucide-react";
+import { useCallback, useMemo, useState } from "react";
 import { components, OptionProps } from "react-select";
-import { AsyncMultiSelect } from "./asyncMultiselect"
-import { Badge } from "./badge"
-import { Button } from "./button"
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./collapsible"
+import { AsyncMultiSelect } from "./asyncMultiselect";
+import { Badge } from "./badge";
+import { Button } from "./button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./collapsible";
 import { Option } from "./multiselectUtils";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./table";
-import { cn } from "./utils"
+import { cn } from "./utils";
 
 // Types
 export interface SelectedTool {
-  mcpClientId: string
-  toolName: string
+	mcpClientId: string;
+	toolName: string;
 }
 
 export interface ToolFunction {
-  name: string
-  description?: string
-  // Parameters can be any object type to support various schema formats
-  parameters?: Record<string, unknown> | object
-  strict?: boolean
+	name: string;
+	description?: string;
+	// Parameters can be any object type to support various schema formats
+	parameters?: Record<string, unknown> | object;
+	strict?: boolean;
 }
 
 export interface MCPClientInfo {
-  config: {
-    client_id: string
-    name: string
-    connection_type?: string
-  }
-  tools: ToolFunction[]
-  state?: string
+	config: {
+		client_id: string;
+		name: string;
+		connection_type?: string;
+	};
+	tools: ToolFunction[];
+	state?: string;
 }
 
 interface ToolOptionMeta {
-  mcpClientId: string
-  mcpClientName: string
-  toolName: string
-  description?: string
-  parameters?: Record<string, unknown> | object
+	mcpClientId: string;
+	mcpClientName: string;
+	toolName: string;
+	description?: string;
+	parameters?: Record<string, unknown> | object;
 }
 
 interface MCPToolSelectorProps {
-  value: SelectedTool[]
-  onChange: (tools: SelectedTool[]) => void
-  mcpClients: MCPClientInfo[]
-  placeholder?: string
-  disabled?: boolean
-  className?: string
+	value: SelectedTool[];
+	onChange: (tools: SelectedTool[]) => void;
+	mcpClients: MCPClientInfo[];
+	placeholder?: string;
+	disabled?: boolean;
+	className?: string;
 }
 
 export function MCPToolSelector({
-  value,
-  onChange,
-  mcpClients,
-  placeholder = "Search and select tools...",
-  disabled = false,
-  className,
+	value,
+	onChange,
+	mcpClients,
+	placeholder = "Search and select tools...",
+	disabled = false,
+	className,
 }: MCPToolSelectorProps) {
-  const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set())
+	const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
 
-  // Flatten all tools from all MCP clients into searchable options
-  // Using meta field for complex data as per Option type definition
-  const allToolOptions = useMemo(() => {
-    const options: Option<ToolOptionMeta>[] = []
-    
-    for (const client of mcpClients) {
-      if (!client.tools) continue
-      
-      for (const tool of client.tools) {
-        const key = `${client.config.client_id}:${tool.name}`
-        
-        options.push({
-          label: `${client.config.name} / ${tool.name}`,
-          value: key,
-          meta: {
-            mcpClientId: client.config.client_id,
-            mcpClientName: client.config.name,
-            toolName: tool.name,
-            description: tool.description,
-            parameters: tool.parameters,
-          },
-        })
-      }
-    }
-    
-    return options
-  }, [mcpClients])
+	// Flatten all tools from all MCP clients into searchable options
+	// Using meta field for complex data as per Option type definition
+	const allToolOptions = useMemo(() => {
+		const options: Option<ToolOptionMeta>[] = [];
 
-  // Get full tool info for selected tools
-  const selectedToolsWithInfo = useMemo(() => {
-    return value.map((selected) => {
-      const client = mcpClients.find((c) => c.config.client_id === selected.mcpClientId)
-      const tool = client?.tools?.find((t) => t.name === selected.toolName)
-      return {
-        ...selected,
-        mcpClientName: client?.config.name || selected.mcpClientId,
-        description: tool?.description,
-        parameters: tool?.parameters,
-      }
-    })
-  }, [value, mcpClients])
+		for (const client of mcpClients) {
+			if (!client.tools) continue;
 
-  // Filter out already selected tools from options
-  const availableOptions = useMemo(() => {
-    const selectedKeys = new Set(
-      value.map((t) => `${t.mcpClientId}:${t.toolName}`)
-    )
-    return allToolOptions.filter((opt) => !selectedKeys.has(opt.value))
-  }, [allToolOptions, value])
+			for (const tool of client.tools) {
+				const key = `${client.config.client_id}:${tool.name}`;
 
-  const toggleExpanded = useCallback((key: string) => {
-    setExpandedTools((prev) => {
-      const next = new Set(prev)
-      if (next.has(key)) {
-        next.delete(key)
-      } else {
-        next.add(key)
-      }
-      return next
-    })
-  }, [])
+				options.push({
+					label: `${client.config.name} / ${tool.name}`,
+					value: key,
+					meta: {
+						mcpClientId: client.config.client_id,
+						mcpClientName: client.config.name,
+						toolName: tool.name,
+						description: tool.description,
+						parameters: tool.parameters,
+					},
+				});
+			}
+		}
 
-  const handleSelectTool = useCallback(
-    (selected: Option<ToolOptionMeta>[]) => {
-      if (selected.length === 0) return
-      
-      const newTool = selected[selected.length - 1]
-      if (!newTool?.meta) return
-      
-      const newSelectedTool: SelectedTool = {
-        mcpClientId: newTool.meta.mcpClientId,
-        toolName: newTool.meta.toolName,
-      }
-      
-      // Check if already selected
-      const exists = value.some(
-        (t) => t.mcpClientId === newSelectedTool.mcpClientId && t.toolName === newSelectedTool.toolName
-      )
-      
-      if (!exists) {
-        onChange([...value, newSelectedTool])
-      }
-    },
-    [value, onChange]
-  )
+		return options;
+	}, [mcpClients]);
 
-  const handleRemoveTool = useCallback(
-    (mcpClientId: string, toolName: string) => {
-      onChange(value.filter((t) => !(t.mcpClientId === mcpClientId && t.toolName === toolName)))
-    },
-    [value, onChange]
-  )
+	// Get full tool info for selected tools
+	const selectedToolsWithInfo = useMemo(() => {
+		return value.map((selected) => {
+			const client = mcpClients.find((c) => c.config.client_id === selected.mcpClientId);
+			const tool = client?.tools?.find((t) => t.name === selected.toolName);
+			return {
+				...selected,
+				mcpClientName: client?.config.name || selected.mcpClientId,
+				description: tool?.description,
+				parameters: tool?.parameters,
+			};
+		});
+	}, [value, mcpClients]);
 
-  const reload = useCallback(
-    (query: string, callback: (options: Option<ToolOptionMeta>[]) => void) => {
-      const lowerQuery = query.toLowerCase()
-      const filtered = availableOptions.filter(
-        (opt) =>
-          opt.label.toLowerCase().includes(lowerQuery) ||
-          opt.meta?.description?.toLowerCase().includes(lowerQuery)
-      )
-      callback(filtered)
-    },
-    [availableOptions]
-  )
+	// Filter out already selected tools from options
+	const availableOptions = useMemo(() => {
+		const selectedKeys = new Set(value.map((t) => `${t.mcpClientId}:${t.toolName}`));
+		return allToolOptions.filter((opt) => !selectedKeys.has(opt.value));
+	}, [allToolOptions, value]);
 
-  return (
+	const toggleExpanded = useCallback((key: string) => {
+		setExpandedTools((prev) => {
+			const next = new Set(prev);
+			if (next.has(key)) {
+				next.delete(key);
+			} else {
+				next.add(key);
+			}
+			return next;
+		});
+	}, []);
+
+	const handleSelectTool = useCallback(
+		(selected: Option<ToolOptionMeta>[]) => {
+			if (selected.length === 0) return;
+
+			const newTool = selected[selected.length - 1];
+			if (!newTool?.meta) return;
+
+			const newSelectedTool: SelectedTool = {
+				mcpClientId: newTool.meta.mcpClientId,
+				toolName: newTool.meta.toolName,
+			};
+
+			// Check if already selected
+			const exists = value.some((t) => t.mcpClientId === newSelectedTool.mcpClientId && t.toolName === newSelectedTool.toolName);
+
+			if (!exists) {
+				onChange([...value, newSelectedTool]);
+			}
+		},
+		[value, onChange],
+	);
+
+	const handleRemoveTool = useCallback(
+		(mcpClientId: string, toolName: string) => {
+			onChange(value.filter((t) => !(t.mcpClientId === mcpClientId && t.toolName === toolName)));
+		},
+		[value, onChange],
+	);
+
+	const reload = useCallback(
+		(query: string, callback: (options: Option<ToolOptionMeta>[]) => void) => {
+			const lowerQuery = query.toLowerCase();
+			const filtered = availableOptions.filter(
+				(opt) => opt.label.toLowerCase().includes(lowerQuery) || opt.meta?.description?.toLowerCase().includes(lowerQuery),
+			);
+			callback(filtered);
+		},
+		[availableOptions],
+	);
+
+	return (
 		<div className={cn("space-y-3", className)}>
 			{/* Search dropdown */}
 			<AsyncMultiSelect<ToolOptionMeta>

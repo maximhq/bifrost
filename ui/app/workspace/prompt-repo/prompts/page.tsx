@@ -1,12 +1,13 @@
-"use client";
-
-import { PromptProvider } from "@/components/prompts/context";
-import PromptsView from "@/components/prompts/promptsView";
+import { useLocation, useNavigate } from "@tanstack/react-router";
+import { useEffect } from "react";
 
 export default function PromptsPage() {
-	return (
-		<PromptProvider>
-			<PromptsView />
-		</PromptProvider>
-	);
+	const navigate = useNavigate();
+	const { searchStr } = useLocation();
+
+	useEffect(() => {
+		navigate({ to: `/workspace/prompt-repo${searchStr}`, replace: true });
+	}, [navigate, searchStr]);
+
+	return null;
 }

@@ -1,0 +1,79 @@
+---
+title: "Deploy with MDM"
+description: "Roll Bifrost Edge out to every machine silently through your device management platform. Edge ships with a managed configuration so Jamf, Intune, and Kandji can install and point it at your Bifrost with no per-user setup."
+icon: "cloud-arrow-up"
+---
+
+Bifrost Edge is built for fleet-wide deployment. Rather than asking users to download and configure anything, you push Edge to every machine through your existing device management platform with a managed configuration that points it at your organization's Bifrost. The first time it runs, a user signs in once, and from then on it is invisible.
+
+```mermaid
+flowchart LR
+    A[Package Edge in your MDM] --> B[Push managed configuration]
+    B --> C[Edge installs on every machine]
+    C --> D[User signs in once]
+    D --> E[All AI traffic governed]
+```
+
+## Works with your MDM
+
+Edge deploys through the device management platforms you already use, on macOS, Windows, and Linux.
+
+<CardGroup cols={3}>
+  <Card title="Jamf" icon="apple">
+    Deploy Edge to your Mac fleet with a configuration profile and managed settings.
+  </Card>
+  <Card title="Microsoft Intune" icon="microsoft">
+    Push Edge to Windows, macOS, and Linux devices alongside your existing Intune policies.
+  </Card>
+  <Card title="Kandji" icon="shield">
+    Distribute Edge across managed Apple devices with zero-touch provisioning.
+  </Card>
+  <Card title="Omnissa Workspace ONE" icon="layer-group">
+    Roll Edge out to Windows, macOS, and Linux endpoints from your Workspace ONE UEM console.
+  </Card>
+  <Card title="JumpCloud" icon="cloud">
+    Deploy Edge to macOS, Windows, and Linux devices through JumpCloud commands and software management.
+  </Card>
+</CardGroup>
+
+## Managed configuration
+
+Your MDM delivers a small managed configuration that tells Edge which Bifrost to connect to. Because this is delivered centrally, machines arrive pre-pointed at your organization and users never have to enter a server address or paste a key.
+
+<CardGroup cols={2}>
+  <Card title="Pre-pointed at your Bifrost" icon="location-dot">
+    The managed configuration sets your gateway and management endpoints, so every machine connects to the right place from the start.
+  </Card>
+  <Card title="No secrets on the device" icon="lock">
+    The configuration carries only non-sensitive connection settings. Identity and keys come from the user's sign-in.
+  </Card>
+</CardGroup>
+
+## What happens on first launch
+
+<Steps>
+  <Step title="Edge installs silently">
+    Your MDM pushes Edge to the machine as part of its normal device setup. There is nothing for the user to download.
+  </Step>
+  <Step title="One setup approval">
+    On first run, Edge asks for a single approval to set itself up so it can route AI traffic on the device. This happens once.
+  </Step>
+  <Step title="User signs in">
+    The user signs in through the browser with your organization's single sign-on, linking the machine to their identity and keys.
+  </Step>
+  <Step title="Governance turns on">
+    From that point on, all supported AI traffic on the machine is routed through Bifrost, with policies kept in sync automatically.
+  </Step>
+</Steps>
+
+<Note>
+After setup, Edge keeps its policies and configuration in sync with Bifrost on its own. Changes you make centrally - app policy, MCP allow and deny lists, routing - reach the fleet without revisiting individual machines.
+</Note>
+
+---
+
+## Next steps
+
+- Decide what to allow in [Govern AI apps](/edge/app-governance) and [Govern MCP servers](/edge/mcp-governance).
+- Confirm coverage in [Supported applications](/edge/supported-applications).
+- Not deployed yet? Request access from the [Edge overview](/edge/overview).

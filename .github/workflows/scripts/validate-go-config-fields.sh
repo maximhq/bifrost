@@ -166,14 +166,19 @@ compare_struct_to_schema \
   '."$defs".mcp_tool_manager_config.properties'
 
 # MCPClientConfig — core/schemas/mcp.go → .$defs.mcp_client_config.properties
-# Exclude: state (runtime-only), config_hash (internal)
+# Exclude: state (runtime-only), config_hash (internal),
+#   oauth_client_id / oauth_client_secret (response-only; redacted values populated
+#   on GET from oauth_configs, not user-configurable via config.json — see
+#   schemasync/main.go and config_test.go for the matching exclusions)
 compare_struct_to_schema \
   "MCP Client Config" \
   "$REPO_ROOT/core/schemas/mcp.go" \
   "MCPClientConfig" \
   '."$defs".mcp_client_config.properties' \
   "state" \
-  "config_hash"
+  "config_hash" \
+  "oauth_client_id" \
+  "oauth_client_secret"
 
 # PluginConfig — core/schemas/plugin.go → .properties.plugins.items.properties
 compare_struct_to_schema \

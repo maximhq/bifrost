@@ -1,6 +1,8 @@
 package lib
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -54,6 +56,100 @@ func TestValidateConfigSchema_EmptyObject(t *testing.T) {
 	err := ValidateConfigSchema([]byte(emptyConfig), loadLocalSchema(t))
 	if err != nil {
 		t.Errorf("expected empty config to pass validation, got error: %v", err)
+	}
+}
+
+func TestValidateConfigSchema_CustomSchemaURL(t *testing.T) {
+	schema := loadLocalSchema(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(schema)
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv(ConfigSchemaURLEnv, "")
+
+	config := []byte(`{"$schema":"` + server.URL + `"}`)
+	err := ValidateConfigSchema(config)
+	if err != nil {
+		t.Errorf("expected schema to load from the config's custom $schema URL, got error: %v", err)
+	}
+}
+
+func TestValidateConfigSchema_CustomSchemaURL_HTTPError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv(ConfigSchemaURLEnv, "")
+
+	config := []byte(`{"$schema":"` + server.URL + `"}`)
+	err := ValidateConfigSchema(config)
+	if err == nil {
+		t.Fatal("expected a non-2xx schema response to fail")
+	}
+	if !strings.Contains(err.Error(), "failed to get config schema from") {
+		t.Errorf("expected load error to name the schema location, got: %v", err)
+	}
+}
+
+func TestValidateConfigSchema_CustomSchemaFilePath(t *testing.T) {
+	schemaPath := filepath.Join(t.TempDir(), "config.schema.json")
+	if err := os.WriteFile(schemaPath, loadLocalSchema(t), 0644); err != nil {
+		t.Fatalf("failed to write temp schema: %v", err)
+	}
+	t.Setenv(ConfigSchemaURLEnv, schemaPath)
+
+	err := ValidateConfigSchema([]byte(`{"$schema":"/opt/bifrost/config.schema.json"}`))
+	if err != nil {
+		t.Errorf("expected custom schema filesystem path to pass validation, got error: %v", err)
+	}
+}
+
+func TestValidateConfigSchema_ConfigSchemaFilePath(t *testing.T) {
+	schemaPath := filepath.Join(t.TempDir(), "config.schema.json")
+	if err := os.WriteFile(schemaPath, loadLocalSchema(t), 0644); err != nil {
+		t.Fatalf("failed to write temp schema: %v", err)
+	}
+	oldCandidates := localSchemaCandidates
+	localSchemaCandidates = nil
+	t.Cleanup(func() { localSchemaCandidates = oldCandidates })
+
+	config := []byte(`{"$schema":"` + schemaPath + `"}`)
+	err := ValidateConfigSchema(config)
+	if err != nil {
+		t.Errorf("expected config $schema filesystem path to load schema, got error: %v", err)
+	}
+}
+
+func TestValidateConfigSchema_FileURL(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "schema dir") // space exercises percent-decoding
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	schemaPath := filepath.Join(dir, "config.schema.json")
+	if err := os.WriteFile(schemaPath, loadLocalSchema(t), 0644); err != nil {
+		t.Fatalf("failed to write temp schema: %v", err)
+	}
+	fileURL := "file://" + strings.ReplaceAll(schemaPath, " ", "%20")
+	t.Setenv(ConfigSchemaURLEnv, fileURL)
+
+	err := ValidateConfigSchema([]byte(`{"$schema":"/opt/bifrost/config.schema.json"}`))
+	if err != nil {
+		t.Errorf("expected file:// schema URL to load schema from filesystem, got error: %v", err)
+	}
+}
+
+func TestFilePathFromSchemaLocation(t *testing.T) {
+	cases := map[string]string{
+		"/opt/bifrost/config.schema.json":               "/opt/bifrost/config.schema.json",
+		"file:///opt/bifrost/config.schema.json":        "/opt/bifrost/config.schema.json",
+		"file://localhost/opt/config.schema.json":       "/opt/config.schema.json",
+		"file:///opt/my%20dir/config.schema.json":       "/opt/my dir/config.schema.json",
+		"https://www.getbifrost.ai/schema-as-path-only": "https://www.getbifrost.ai/schema-as-path-only",
+	}
+	for input, want := range cases {
+		if got := filePathFromSchemaLocation(input); got != want {
+			t.Errorf("filePathFromSchemaLocation(%q) = %q, want %q", input, got, want)
+		}
 	}
 }
 
@@ -605,7 +701,7 @@ func TestValidateConfigSchema_VirtualKeyProviderConfig_MissingProvider(t *testin
 // =============================================================================
 
 func TestValidateConfigSchema_VirtualKeyMCPConfig_Valid(t *testing.T) {
-	// Valid virtual key MCP config with required field: mcp_client_id
+	// Valid virtual key MCP config identifying the MCP client by mcp_client_id (DB form)
 	validConfig := `{
 		"governance": {
 			"virtual_keys": [
@@ -629,9 +725,11 @@ func TestValidateConfigSchema_VirtualKeyMCPConfig_Valid(t *testing.T) {
 	}
 }
 
-func TestValidateConfigSchema_VirtualKeyMCPConfig_MissingMCPClientId(t *testing.T) {
-	// Missing required field: mcp_client_id
-	invalidConfig := `{
+func TestValidateConfigSchema_VirtualKeyMCPConfig_ValidWithClientName(t *testing.T) {
+	// Valid virtual key MCP config identifying the MCP client by mcp_client_name
+	// (config-file form — resolved to mcp_client_id at startup). Either identifier
+	// alone is sufficient; neither is required at the JSON Schema level.
+	validConfig := `{
 		"governance": {
 			"virtual_keys": [
 				{
@@ -640,6 +738,7 @@ func TestValidateConfigSchema_VirtualKeyMCPConfig_MissingMCPClientId(t *testing.
 					"value": "vk_test_123456",
 					"mcp_configs": [
 						{
+							"mcp_client_name": "my-mcp-client",
 							"tools_to_execute": ["tool1"]
 						}
 					]
@@ -648,9 +747,9 @@ func TestValidateConfigSchema_VirtualKeyMCPConfig_MissingMCPClientId(t *testing.
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
-	if err == nil {
-		t.Error("expected config missing 'mcp_client_id' in virtual key MCP config to fail validation")
+	err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t))
+	if err != nil {
+		t.Errorf("expected virtual key MCP config with mcp_client_name to pass validation, got error: %v", err)
 	}
 }
 
@@ -680,17 +779,15 @@ func TestValidateConfigSchema_MCPClientConfig_Valid_Stdio(t *testing.T) {
 	}
 }
 
-func TestValidateConfigSchema_MCPClientConfig_Valid_Websocket(t *testing.T) {
-	// Valid MCP client config with websocket connection type
+func TestValidateConfigSchema_MCPClientConfig_Valid_Sse(t *testing.T) {
+	// Valid MCP client config with sse connection type
 	validConfig := `{
 		"mcp": {
 			"client_configs": [
 				{
 					"name": "my-mcp-client",
-					"connection_type": "websocket",
-					"websocket_config": {
-						"url": "ws://localhost:8080"
-					}
+					"connection_type": "sse",
+					"connection_string": "http://localhost:8080"
 				}
 			]
 		}
@@ -698,7 +795,7 @@ func TestValidateConfigSchema_MCPClientConfig_Valid_Websocket(t *testing.T) {
 
 	err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t))
 	if err != nil {
-		t.Errorf("expected valid MCP client config (websocket) to pass validation, got error: %v", err)
+		t.Errorf("expected valid MCP client config (sse) to pass validation, got error: %v", err)
 	}
 }
 
@@ -710,9 +807,7 @@ func TestValidateConfigSchema_MCPClientConfig_Valid_Http(t *testing.T) {
 				{
 					"name": "my-mcp-client",
 					"connection_type": "http",
-					"http_config": {
-						"url": "http://localhost:8080"
-					}
+					"connection_string": "http://localhost:8080"
 				}
 			]
 		}
@@ -1025,7 +1120,7 @@ func TestValidateConfigSchema_Plugin_MissingName(t *testing.T) {
 // =============================================================================
 
 func TestValidateConfigSchema_SemanticCachePlugin_Valid(t *testing.T) {
-	// Valid semantic cache plugin with all required fields: provider, keys, dimension
+	// Valid semantic cache plugin with provider, embedding model, and dimension. Keys are injected at runtime.
 	validConfig := `{
 		"plugins": [
 			{
@@ -1033,7 +1128,7 @@ func TestValidateConfigSchema_SemanticCachePlugin_Valid(t *testing.T) {
 				"name": "semantic_cache",
 				"config": {
 					"provider": "openai",
-					"keys": ["sk-test-key"],
+					"embedding_model": "text-embedding-3-small",
 					"dimension": 1536
 				}
 			}
@@ -1047,14 +1142,13 @@ func TestValidateConfigSchema_SemanticCachePlugin_Valid(t *testing.T) {
 }
 
 func TestValidateConfigSchema_SemanticCachePlugin_MissingProvider(t *testing.T) {
-	// Missing required field: provider
+	// Missing required field: provider for semantic mode (dimension > 1)
 	invalidConfig := `{
 		"plugins": [
 			{
 				"enabled": true,
 				"name": "semantic_cache",
 				"config": {
-					"keys": ["sk-test-key"],
 					"dimension": 1536
 				}
 			}
@@ -1067,8 +1161,29 @@ func TestValidateConfigSchema_SemanticCachePlugin_MissingProvider(t *testing.T) 
 	}
 }
 
-func TestValidateConfigSchema_SemanticCachePlugin_MissingKeys(t *testing.T) {
-	// Missing required field: keys
+func TestValidateConfigSchema_SemanticCachePlugin_ProviderWithoutKeys(t *testing.T) {
+	// Keys are not required at schema level for provider-backed config.
+	validConfig := `{
+		"plugins": [
+			{
+				"enabled": true,
+				"name": "semantic_cache",
+				"config": {
+					"provider": "openai",
+					"embedding_model": "text-embedding-3-small",
+					"dimension": 1536
+				}
+			}
+		]
+	}`
+
+	err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t))
+	if err != nil {
+		t.Errorf("expected provider-backed semantic cache config without plugin keys to pass validation, got error: %v", err)
+	}
+}
+
+func TestValidateConfigSchema_SemanticCachePlugin_ProviderWithoutEmbeddingModel(t *testing.T) {
 	invalidConfig := `{
 		"plugins": [
 			{
@@ -1084,7 +1199,67 @@ func TestValidateConfigSchema_SemanticCachePlugin_MissingKeys(t *testing.T) {
 
 	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
-		t.Error("expected config missing 'keys' in semantic cache plugin to fail validation")
+		t.Error("expected provider-backed semantic cache config without embedding_model to fail validation")
+	}
+}
+
+func TestValidateConfigSchema_SemanticCachePlugin_DirectModeValid(t *testing.T) {
+	validConfig := `{
+		"plugins": [
+			{
+				"enabled": true,
+				"name": "semantic_cache",
+				"config": {
+					"dimension": 1
+				}
+			}
+		]
+	}`
+
+	err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t))
+	if err != nil {
+		t.Errorf("expected direct-only semantic cache config to pass validation, got error: %v", err)
+	}
+}
+
+func TestValidateConfigSchema_SemanticCachePlugin_DirectModeWithEmbeddingModelInvalid(t *testing.T) {
+	invalidConfig := `{
+		"plugins": [
+			{
+				"enabled": true,
+				"name": "semantic_cache",
+				"config": {
+					"dimension": 1,
+					"embedding_model": "text-embedding-3-small"
+				}
+			}
+		]
+	}`
+
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
+	if err == nil {
+		t.Error("expected direct-only semantic cache config with embedding_model to fail validation")
+	}
+}
+
+func TestValidateConfigSchema_SemanticCachePlugin_DimensionOneWithProviderInvalid(t *testing.T) {
+	invalidConfig := `{
+		"plugins": [
+			{
+				"enabled": true,
+				"name": "semantic_cache",
+				"config": {
+					"provider": "openai",
+					"embedding_model": "text-embedding-3-small",
+					"dimension": 1
+				}
+			}
+		]
+	}`
+
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
+	if err == nil {
+		t.Error("expected dimension: 1 with provider in semantic cache plugin to fail validation")
 	}
 }
 
@@ -1097,7 +1272,7 @@ func TestValidateConfigSchema_SemanticCachePlugin_MissingDimension(t *testing.T)
 				"name": "semantic_cache",
 				"config": {
 					"provider": "openai",
-					"keys": ["sk-test-key"]
+					"embedding_model": "text-embedding-3-small"
 				}
 			}
 		]
@@ -1122,7 +1297,7 @@ func TestValidateConfigSchema_OtelPlugin_Valid(t *testing.T) {
 				"name": "otel",
 				"config": {
 					"collector_url": "http://localhost:4318",
-					"trace_type": "otel",
+					"trace_type": "genai_extension",
 					"protocol": "http"
 				}
 			}
@@ -1135,6 +1310,31 @@ func TestValidateConfigSchema_OtelPlugin_Valid(t *testing.T) {
 	}
 }
 
+func TestValidateConfigSchema_OtelPlugin_GrpcAddress(t *testing.T) {
+	// gRPC configs use bare host:port — previously failed because host:port satisfies both
+	// format:uri (RFC 3986 opaque URI) and the host:port pattern, causing oneOf to reject it.
+	grpcConfig := `{
+		"plugins": [
+			{
+				"enabled": true,
+				"name": "otel",
+				"config": {
+					"collector_url": "something.somewhere.svc.cluster.local:1111",
+					"trace_type": "open_inference",
+					"protocol": "grpc",
+					"metrics_enabled": true,
+					"metrics_endpoint": "something.somewhere.svc.cluster.local:1111"
+				}
+			}
+		]
+	}`
+
+	err := ValidateConfigSchema([]byte(grpcConfig), loadLocalSchema(t))
+	if err != nil {
+		t.Errorf("expected gRPC OTel config to pass validation, got error: %v", err)
+	}
+}
+
 func TestValidateConfigSchema_OtelPlugin_MissingCollectorUrl(t *testing.T) {
 	// Missing required field: collector_url
 	invalidConfig := `{
@@ -1143,7 +1343,7 @@ func TestValidateConfigSchema_OtelPlugin_MissingCollectorUrl(t *testing.T) {
 				"enabled": true,
 				"name": "otel",
 				"config": {
-					"trace_type": "otel",
+					"trace_type": "genai_extension",
 					"protocol": "http"
 				}
 			}
@@ -1186,7 +1386,7 @@ func TestValidateConfigSchema_OtelPlugin_MissingProtocol(t *testing.T) {
 				"name": "otel",
 				"config": {
 					"collector_url": "http://localhost:4318",
-					"trace_type": "otel"
+					"trace_type": "genai_extension"
 				}
 			}
 		]
@@ -1274,9 +1474,9 @@ func TestValidateConfigSchema_AzureKeyConfig_MissingEndpoint(t *testing.T) {
 	}
 }
 
-func TestValidateConfigSchema_AzureKeyConfig_MissingApiVersion(t *testing.T) {
-	// Missing required field: api_version in azure_key_config
-	invalidConfig := `{
+func TestValidateConfigSchema_AzureKeyConfig_ApiVersionOptional(t *testing.T) {
+	// api_version is optional; Azure uses the provider default when it is omitted.
+	validConfig := `{
 		"providers": {
 			"azure": {
 				"keys": [
@@ -1293,9 +1493,9 @@ func TestValidateConfigSchema_AzureKeyConfig_MissingApiVersion(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
-	if err == nil {
-		t.Error("expected config missing 'api_version' in Azure key config to fail validation")
+	err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t))
+	if err != nil {
+		t.Errorf("expected config missing optional 'api_version' in Azure key config to pass validation, got: %v", err)
 	}
 }
 

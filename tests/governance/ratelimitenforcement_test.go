@@ -22,7 +22,8 @@ func TestVirtualKeyTokenRateLimitEnforcement(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name: vkName,
+			Name:            vkName,
+			ProviderConfigs: defaultProviderConfigs(),
 			RateLimit: &CreateRateLimitRequest{
 				TokenMaxLimit:      &tokenLimit,
 				TokenResetDuration: &tokenResetDuration,
@@ -52,8 +53,10 @@ func TestVirtualKeyTokenRateLimitEnforcement(t *testing.T) {
 		t.Fatalf("Failed to get governance data: status %d", getDataResp.StatusCode)
 	}
 
-	virtualKeysMap := getDataResp.Body["virtual_keys"].(map[string]interface{})
-	vkData := virtualKeysMap[vkValue].(map[string]interface{})
+	vkData := FindListItem(t, getDataResp.Body, "virtual_keys", "value", vkValue)
+	if vkData == nil {
+		t.Fatalf("VK %s not found in virtual keys list", vkValue)
+	}
 	rateLimitID, _ := vkData["rate_limit_id"].(string)
 
 	if rateLimitID == "" {
@@ -143,7 +146,8 @@ func TestVirtualKeyRequestRateLimitEnforcement(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name: vkName,
+			Name:            vkName,
+			ProviderConfigs: defaultProviderConfigs(),
 			RateLimit: &CreateRateLimitRequest{
 				RequestMaxLimit:      &requestLimit,
 				RequestResetDuration: &requestResetDuration,
@@ -230,8 +234,10 @@ func TestProviderConfigTokenRateLimitEnforcement(t *testing.T) {
 			Name: vkName,
 			ProviderConfigs: []ProviderConfigRequest{
 				{
-					Provider: "openai",
-					Weight:   1.0,
+					Provider:      "openai",
+					Weight:        float64Ptr(1.0),
+					AllowedModels: []string{"*"},
+					KeyIDs:        []string{"*"},
 					RateLimit: &CreateRateLimitRequest{
 						TokenMaxLimit:      &providerTokenLimit,
 						TokenResetDuration: &tokenResetDuration,
@@ -263,8 +269,10 @@ func TestProviderConfigTokenRateLimitEnforcement(t *testing.T) {
 		t.Fatalf("Failed to get governance data: status %d", getDataResp.StatusCode)
 	}
 
-	virtualKeysMap := getDataResp.Body["virtual_keys"].(map[string]interface{})
-	vkData := virtualKeysMap[vkValue].(map[string]interface{})
+	vkData := FindListItem(t, getDataResp.Body, "virtual_keys", "value", vkValue)
+	if vkData == nil {
+		t.Fatalf("VK %s not found in virtual keys list", vkValue)
+	}
 	providerConfigs, _ := vkData["provider_configs"].([]interface{})
 
 	if len(providerConfigs) == 0 {
@@ -357,8 +365,10 @@ func TestProviderConfigRequestRateLimitEnforcement(t *testing.T) {
 			Name: vkName,
 			ProviderConfigs: []ProviderConfigRequest{
 				{
-					Provider: "openai",
-					Weight:   1.0,
+					Provider:      "openai",
+					Weight:        float64Ptr(1.0),
+					AllowedModels: []string{"*"},
+					KeyIDs:        []string{"*"},
 					RateLimit: &CreateRateLimitRequest{
 						RequestMaxLimit:      &providerRequestLimit,
 						RequestResetDuration: &requestResetDuration,
@@ -452,8 +462,10 @@ func TestProviderAndVKRateLimitBothEnforced(t *testing.T) {
 			},
 			ProviderConfigs: []ProviderConfigRequest{
 				{
-					Provider: "openai",
-					Weight:   1.0,
+					Provider:      "openai",
+					Weight:        float64Ptr(1.0),
+					AllowedModels: []string{"*"},
+					KeyIDs:        []string{"*"},
 					RateLimit: &CreateRateLimitRequest{
 						RequestMaxLimit:      &providerRequestLimit,
 						RequestResetDuration: &requestResetDuration,
@@ -533,7 +545,8 @@ func TestRateLimitInMemoryUsageTracking(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name: vkName,
+			Name:            vkName,
+			ProviderConfigs: defaultProviderConfigs(),
 			RateLimit: &CreateRateLimitRequest{
 				TokenMaxLimit:      &tokenLimit,
 				TokenResetDuration: &tokenResetDuration,
@@ -599,13 +612,8 @@ func TestRateLimitInMemoryUsageTracking(t *testing.T) {
 			return false
 		}
 
-		virtualKeysMap, ok := getDataResp.Body["virtual_keys"].(map[string]interface{})
-		if !ok || virtualKeysMap == nil {
-			return false
-		}
-
-		vkData, ok := virtualKeysMap[vkValue].(map[string]interface{})
-		if !ok {
+		vkData := FindListItem(t, getDataResp.Body, "virtual_keys", "value", vkValue)
+		if vkData == nil {
 			return false
 		}
 

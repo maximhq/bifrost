@@ -13,7 +13,7 @@ import (
 )
 
 func TestCreateHandler_SkipsRequestParserInLargePayloadMode(t *testing.T) {
-	handlerStore := &mockHandlerStore{allowDirectKeys: true}
+	handlerStore := &mockHandlerStore{}
 	parserCalls := 0
 
 	route := RouteConfig{
@@ -55,7 +55,7 @@ func TestCreateHandler_SkipsRequestParserInLargePayloadMode(t *testing.T) {
 }
 
 func TestCreateHandler_UsesRequestParserWhenNotInLargePayloadMode(t *testing.T) {
-	handlerStore := &mockHandlerStore{allowDirectKeys: true}
+	handlerStore := &mockHandlerStore{}
 	parserCalls := 0
 
 	route := RouteConfig{

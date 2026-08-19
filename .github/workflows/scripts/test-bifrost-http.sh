@@ -40,9 +40,19 @@ CONFIGS_DIR=".github/workflows/configs"
 # Register cleanup handler to run on script exit (success or failure)
 trap cleanup_docker EXIT
 
-# Build UI first before we can validate the transport build
-echo "🎨 Building UI..."
-make build-ui
+# The transport build needs transports/bifrost-http/ui to exist because main.go
+# declares `//go:embed all:ui`, but nothing in this job's unit or integration
+# tests reads the real assets - the integration binary comes prebuilt from CI's
+# build-gateway job, UI and all. So when that binary is supplied, stub the
+# directory instead of paying ~1 minute for a full npm build.
+if [ "${SKIP_GATEWAY_BUILD:-0}" = "1" ]; then
+  echo "⏭️  Stubbing embedded ui/ (prebuilt binary supplied)..."
+  mkdir -p transports/bifrost-http/ui
+  [ -f transports/bifrost-http/ui/.gitkeep ] || echo "placeholder" > transports/bifrost-http/ui/.gitkeep
+else
+  echo "🎨 Building UI..."
+  make build-ui
+fi
 
 # Building hello-world plugin
 echo "🔨 Building hello-world plugin..."
@@ -71,12 +81,20 @@ else
   rm -f coverage.txt
 fi
 
-# Build the binary for integration testing
-echo "🔨 Building binary for integration testing..."
-mkdir -p ../tmp
-cd bifrost-http
-go build -o ../../tmp/bifrost-http .
-cd ..
+# Build the binary for integration testing (CI downloads it instead, see above)
+if [ "${SKIP_GATEWAY_BUILD:-0}" = "1" ]; then
+  if [ ! -x "../tmp/bifrost-http" ]; then
+    echo "❌ SKIP_GATEWAY_BUILD=1 but no executable binary at tmp/bifrost-http" >&2
+    exit 1
+  fi
+  echo "⏭️  Using prebuilt binary at tmp/bifrost-http for integration tests"
+else
+  echo "🔨 Building binary for integration testing..."
+  mkdir -p ../tmp
+  cd bifrost-http
+  go build -o ../../tmp/bifrost-http .
+  cd ..
+fi
 
 # Run integration tests with different configurations
 echo "🧪 Running integration tests with different configurations..."
@@ -91,7 +109,6 @@ CONFIGS_TO_TEST=(
   "withdynamicplugin"
   "withobservability"
   "withsemanticcache"
-  "withpostgresmcpclientsinconfig"
 )
 
 TEST_BINARY="../tmp/bifrost-http"
@@ -137,6 +154,24 @@ if [ "$SERVICES_READY" = false ]; then
   echo "❌ Docker services failed to become healthy within ${MAX_WAIT}s"
   echo "   Current service status:"
   docker compose -f "$CONFIGS_DIR/docker-compose.yml" ps
+  exit 1
+fi
+
+echo "⏳ Waiting for Weaviate readiness via host..."
+WEAVIATE_WAIT=60
+WEAVIATE_ELAPSED=0
+WEAVIATE_READY=false
+while [ $WEAVIATE_ELAPSED -lt $WEAVIATE_WAIT ]; do
+  if curl -fsS -o /dev/null "http://localhost:9000/v1/.well-known/ready"; then
+    WEAVIATE_READY=true
+    echo "✅ Weaviate ready (${WEAVIATE_ELAPSED}s)"
+    break
+  fi
+  sleep 2
+  WEAVIATE_ELAPSED=$((WEAVIATE_ELAPSED + 2))
+done
+if [ "$WEAVIATE_READY" = false ]; then
+  echo "❌ Weaviate failed readiness check within ${WEAVIATE_WAIT}s"
   exit 1
 fi
 

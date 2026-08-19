@@ -29,10 +29,10 @@ func TestMultipleVKsSharingTeamBudgetFairness(t *testing.T) {
 		Path:   "/api/governance/teams",
 		Body: CreateTeamRequest{
 			Name: teamName,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      teamBudget,
 				ResetDuration: teamResetDuration,
-			},
+			}},
 		},
 	})
 
@@ -51,8 +51,9 @@ func TestMultipleVKsSharingTeamBudgetFairness(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name:   vk1Name,
-			TeamID: &teamID,
+			Name:            vk1Name,
+			ProviderConfigs: defaultProviderConfigs(),
+			TeamID:          &teamID,
 		},
 	})
 
@@ -72,8 +73,9 @@ func TestMultipleVKsSharingTeamBudgetFairness(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name:   vk2Name,
-			TeamID: &teamID,
+			Name:            vk2Name,
+			ProviderConfigs: defaultProviderConfigs(),
+			TeamID:          &teamID,
 		},
 	})
 
@@ -199,10 +201,10 @@ func TestFullBudgetHierarchyEnforcement(t *testing.T) {
 		Path:   "/api/governance/customers",
 		Body: CreateCustomerRequest{
 			Name: customerName,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      1000.0, // Very high
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 
@@ -221,10 +223,10 @@ func TestFullBudgetHierarchyEnforcement(t *testing.T) {
 		Body: CreateTeamRequest{
 			Name:       teamName,
 			CustomerID: &customerID,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      100.0, // Medium
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 
@@ -246,18 +248,20 @@ func TestFullBudgetHierarchyEnforcement(t *testing.T) {
 		Body: CreateVirtualKeyRequest{
 			Name:   vkName,
 			TeamID: &teamID,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      vkBudget,
 				ResetDuration: "1h",
-			},
+			}},
 			ProviderConfigs: []ProviderConfigRequest{
 				{
-					Provider: "openai",
-					Weight:   1.0,
-					Budget: &BudgetRequest{
+					Provider:      "openai",
+					Weight:        float64Ptr(1.0),
+					AllowedModels: []string{"*"},
+					KeyIDs:        []string{"*"},
+					Budgets: []BudgetRequest{{
 						MaxLimit:      providerBudget,
 						ResetDuration: "1h",
-					},
+					}},
 				},
 			},
 		},
@@ -368,11 +372,12 @@ func TestFailedRequestsDoNotConsumeBudget(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name: vkName,
-			Budget: &BudgetRequest{
+			Name:            vkName,
+			ProviderConfigs: defaultProviderConfigs(),
+			Budgets: []BudgetRequest{{
 				MaxLimit:      budget,
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 
@@ -394,19 +399,21 @@ func TestFailedRequestsDoNotConsumeBudget(t *testing.T) {
 		Path:   "/api/governance/virtual-keys?from_memory=true",
 	})
 
-	virtualKeysMap1 := getDataResp1.Body["virtual_keys"].(map[string]interface{})
-
 	getBudgetsResp1 := MakeRequest(t, APIRequest{
 		Method: "GET",
 		Path:   "/api/governance/budgets?from_memory=true",
 	})
 
-	budgetsMap1 := getBudgetsResp1.Body["budgets"].(map[string]interface{})
+	vkData1 := FindListItem(t, getDataResp1.Body, "virtual_keys", "value", vkValue)
+	if vkData1 == nil {
+		t.Fatalf("VK not found in in-memory store")
+	}
+	budgetID := FirstBudgetID(vkData1)
 
-	vkData1 := virtualKeysMap1[vkValue].(map[string]interface{})
-	budgetID, _ := vkData1["budget_id"].(string)
-
-	budgetData1 := budgetsMap1[budgetID].(map[string]interface{})
+	budgetData1 := FindListItem(t, getBudgetsResp1.Body, "budgets", "id", budgetID)
+	if budgetData1 == nil {
+		t.Fatalf("Budget %s not found in in-memory store", budgetID)
+	}
 	initialUsage, _ := budgetData1["current_usage"].(float64)
 
 	t.Logf("Initial budget usage: $%.6f", initialUsage)
@@ -443,8 +450,10 @@ func TestFailedRequestsDoNotConsumeBudget(t *testing.T) {
 		Path:   "/api/governance/budgets?from_memory=true",
 	})
 
-	budgetsMap2 := getBudgetsResp2.Body["budgets"].(map[string]interface{})
-	budgetData2 := budgetsMap2[budgetID].(map[string]interface{})
+	budgetData2 := FindListItem(t, getBudgetsResp2.Body, "budgets", "id", budgetID)
+	if budgetData2 == nil {
+		t.Fatalf("Budget %s not found in in-memory store", budgetID)
+	}
 	usageAfterFailed, _ := budgetData2["current_usage"].(float64)
 
 	t.Logf("Budget usage after failed request: $%.6f", usageAfterFailed)
@@ -482,8 +491,10 @@ func TestFailedRequestsDoNotConsumeBudget(t *testing.T) {
 		Path:   "/api/governance/budgets?from_memory=true",
 	})
 
-	budgetsMap3 := getBudgetsResp3.Body["budgets"].(map[string]interface{})
-	budgetData3 := budgetsMap3[budgetID].(map[string]interface{})
+	budgetData3 := FindListItem(t, getBudgetsResp3.Body, "budgets", "id", budgetID)
+	if budgetData3 == nil {
+		t.Fatalf("Budget %s not found in in-memory store", budgetID)
+	}
 	usageAfterSuccess, _ := budgetData3["current_usage"].(float64)
 
 	t.Logf("Budget usage after successful request: $%.6f", usageAfterSuccess)
@@ -514,8 +525,9 @@ func TestInactiveVirtualKeyBlocking(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name:     vkName,
-			IsActive: &isActive,
+			Name:            vkName,
+			ProviderConfigs: defaultProviderConfigs(),
+			IsActive:        &isActive,
 		},
 	})
 
@@ -660,7 +672,8 @@ func TestRateLimitResetBoundaryConditions(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name: vkName,
+			Name:            vkName,
+			ProviderConfigs: defaultProviderConfigs(),
 			RateLimit: &CreateRateLimitRequest{
 				RequestMaxLimit:      &requestLimit,
 				RequestResetDuration: &resetDuration,
@@ -776,7 +789,8 @@ func TestConcurrentRequestsToSameVK(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name: vkName,
+			Name:            vkName,
+			ProviderConfigs: defaultProviderConfigs(),
 			RateLimit: &CreateRateLimitRequest{
 				TokenMaxLimit:      &tokenLimit,
 				TokenResetDuration: &tokenResetDuration,
@@ -873,11 +887,12 @@ func TestBudgetStateAfterReset(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name: vkName,
-			Budget: &BudgetRequest{
+			Name:            vkName,
+			ProviderConfigs: defaultProviderConfigs(),
+			Budgets: []BudgetRequest{{
 				MaxLimit:      budgetLimit,
 				ResetDuration: resetDuration,
-			},
+			}},
 		},
 	})
 
@@ -899,19 +914,21 @@ func TestBudgetStateAfterReset(t *testing.T) {
 		Path:   "/api/governance/virtual-keys?from_memory=true",
 	})
 
-	virtualKeysMap1 := getDataResp1.Body["virtual_keys"].(map[string]interface{})
-
 	getBudgetsResp1 := MakeRequest(t, APIRequest{
 		Method: "GET",
 		Path:   "/api/governance/budgets?from_memory=true",
 	})
 
-	budgetsMap1 := getBudgetsResp1.Body["budgets"].(map[string]interface{})
+	vkData1 := FindListItem(t, getDataResp1.Body, "virtual_keys", "value", vkValue)
+	if vkData1 == nil {
+		t.Fatalf("VK not found in in-memory store")
+	}
+	budgetID := FirstBudgetID(vkData1)
 
-	vkData1 := virtualKeysMap1[vkValue].(map[string]interface{})
-	budgetID, _ := vkData1["budget_id"].(string)
-
-	budgetData1 := budgetsMap1[budgetID].(map[string]interface{})
+	budgetData1 := FindListItem(t, getBudgetsResp1.Body, "budgets", "id", budgetID)
+	if budgetData1 == nil {
+		t.Fatalf("Budget %s not found in in-memory store", budgetID)
+	}
 	initialUsage, _ := budgetData1["current_usage"].(float64)
 	lastReset1, _ := budgetData1["last_reset"].(string)
 
@@ -946,8 +963,10 @@ func TestBudgetStateAfterReset(t *testing.T) {
 		Path:   "/api/governance/budgets?from_memory=true",
 	})
 
-	budgetsMap2 := getBudgetsResp2.Body["budgets"].(map[string]interface{})
-	budgetData2 := budgetsMap2[budgetID].(map[string]interface{})
+	budgetData2 := FindListItem(t, getBudgetsResp2.Body, "budgets", "id", budgetID)
+	if budgetData2 == nil {
+		t.Fatalf("Budget %s not found in in-memory store", budgetID)
+	}
 	usageAfterRequest, _ := budgetData2["current_usage"].(float64)
 
 	t.Logf("Budget after request: usage=$%.6f (consumed)", usageAfterRequest)
@@ -1015,12 +1034,8 @@ func TestBudgetStateAfterReset(t *testing.T) {
 		if resp.StatusCode != 200 {
 			return false
 		}
-		budgetsData, ok := resp.Body["budgets"].(map[string]interface{})
-		if !ok {
-			return false
-		}
-		budgetData, ok := budgetsData[budgetID].(map[string]interface{})
-		if !ok {
+		budgetData := FindListItem(t, resp.Body, "budgets", "id", budgetID)
+		if budgetData == nil {
 			return false
 		}
 		// Check if LastReset has been updated (indicating reset occurred)
@@ -1038,8 +1053,10 @@ func TestBudgetStateAfterReset(t *testing.T) {
 		Path:   "/api/governance/budgets?from_memory=true",
 	})
 
-	budgetsMap3 := getBudgetsResp3.Body["budgets"].(map[string]interface{})
-	budgetData3 := budgetsMap3[budgetID].(map[string]interface{})
+	budgetData3 := FindListItem(t, getBudgetsResp3.Body, "budgets", "id", budgetID)
+	if budgetData3 == nil {
+		t.Fatalf("Budget %s not found in in-memory store", budgetID)
+	}
 	usageAfterReset, _ := budgetData3["current_usage"].(float64)
 	lastReset3, _ := budgetData3["last_reset"].(string)
 
@@ -1084,10 +1101,10 @@ func TestTeamDeletionCascade(t *testing.T) {
 		Path:   "/api/governance/teams",
 		Body: CreateTeamRequest{
 			Name: teamName,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      100.0,
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 
@@ -1106,8 +1123,9 @@ func TestTeamDeletionCascade(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name:   vkName,
-			TeamID: &teamID,
+			Name:            vkName,
+			ProviderConfigs: defaultProviderConfigs(),
+			TeamID:          &teamID,
 		},
 	})
 
@@ -1209,11 +1227,12 @@ func TestVKDeletionCascade(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name: vkName,
-			Budget: &BudgetRequest{
+			Name:            vkName,
+			ProviderConfigs: defaultProviderConfigs(),
+			Budgets: []BudgetRequest{{
 				MaxLimit:      10.0,
 				ResetDuration: "1h",
-			},
+			}},
 			RateLimit: &CreateRateLimitRequest{
 				TokenMaxLimit:      &tokenLimit,
 				TokenResetDuration: &tokenResetDuration,
@@ -1244,13 +1263,7 @@ func TestVKDeletionCascade(t *testing.T) {
 			return false
 		}
 
-		virtualKeysMap1, ok := getDataResp1.Body["virtual_keys"].(map[string]interface{})
-		if !ok {
-			return false
-		}
-
-		_, exists := virtualKeysMap1[vkValue]
-		return exists
+		return FindListItem(t, getDataResp1.Body, "virtual_keys", "value", vkValue) != nil
 	}, 5*time.Second, "VK exists in in-memory store")
 
 	if !vkExists {
@@ -1283,14 +1296,7 @@ func TestVKDeletionCascade(t *testing.T) {
 			return false
 		}
 
-		virtualKeysMap2, ok := getDataResp2.Body["virtual_keys"].(map[string]interface{})
-		if !ok {
-			t.Logf("Invalid response structure for virtual_keys")
-			return false
-		}
-
-		_, exists := virtualKeysMap2[vkValue]
-		return !exists // Return true when VK is NOT found (successfully removed)
+		return FindListItem(t, getDataResp2.Body, "virtual_keys", "value", vkValue) == nil // Return true when VK is NOT found (successfully removed)
 	}, 5*time.Second, "VK removed from in-memory store")
 
 	if !vkRemoved {
@@ -1348,13 +1354,15 @@ func TestWeightedProviderLoadBalancing(t *testing.T) {
 			ProviderConfigs: []ProviderConfigRequest{
 				{
 					Provider:      "openai",
-					Weight:        openaiWeight,
+					Weight:        &openaiWeight,
 					AllowedModels: []string{"gpt-4o"},
+					KeyIDs:        []string{"*"},
 				},
 				{
 					Provider:      "azure",
-					Weight:        azureWeight,
+					Weight:        &azureWeight,
 					AllowedModels: []string{"gpt-4o"},
+					KeyIDs:        []string{"*"},
 				},
 			},
 		},
@@ -1378,8 +1386,10 @@ func TestWeightedProviderLoadBalancing(t *testing.T) {
 		Path:   "/api/governance/virtual-keys?from_memory=true",
 	})
 
-	virtualKeysMap := getDataResp.Body["virtual_keys"].(map[string]interface{})
-	vkData := virtualKeysMap[vkValue].(map[string]interface{})
+	vkData := FindListItem(t, getDataResp.Body, "virtual_keys", "value", vkValue)
+	if vkData == nil {
+		t.Fatalf("VK not found in in-memory store")
+	}
 	providerConfigs, _ := vkData["provider_configs"].([]interface{})
 
 	if len(providerConfigs) != 2 {
@@ -1422,7 +1432,7 @@ func TestWeightedProviderLoadBalancing(t *testing.T) {
 		// Try to detect which provider was used
 		// Check if model in response contains provider name
 		if provider, ok := resp.Body["extra_fields"].(map[string]interface{})["provider"].(string); ok {
-			model, ok := resp.Body["extra_fields"].(map[string]interface{})["model_requested"].(string)
+			model, ok := resp.Body["extra_fields"].(map[string]interface{})["original_model_requested"].(string)
 			if !ok {
 				t.Logf("Request %d failed to get model requested", i+1)
 				continue
@@ -1482,13 +1492,15 @@ func TestProviderFallbackMechanism(t *testing.T) {
 			ProviderConfigs: []ProviderConfigRequest{
 				{
 					Provider:      "anthropic",
-					Weight:        anthropicWeight,
+					Weight:        &anthropicWeight,
 					AllowedModels: []string{"claude-3-sonnet"}, // Does NOT include gpt-4o
+					KeyIDs:        []string{"*"},
 				},
 				{
 					Provider:      "openai",
-					Weight:        openaiWeight,
+					Weight:        &openaiWeight,
 					AllowedModels: []string{"gpt-4o"}, // DOES include gpt-4o
+					KeyIDs:        []string{"*"},
 				},
 			},
 		},
@@ -1582,11 +1594,12 @@ func TestVirtualKeyHeaderFormats(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name: vkName,
-			Budget: &BudgetRequest{
+			Name:            vkName,
+			ProviderConfigs: defaultProviderConfigs(),
+			Budgets: []BudgetRequest{{
 				MaxLimit:      10.0,
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 

@@ -1,0 +1,16 @@
+---
+title: "v2.0.17"
+description: "Helm v2.0.17 changelog - 2026-04-08"
+---
+
+<Update label="Bifrost Helm" description="v2.0.17">
+
+## Changelog
+
+- Added object storage support (S3/GCS) for offloading log payloads from the database
+- Added `storage.logsStore.objectStorage` configuration with S3 and GCS backend support
+- Added object storage credential injection from Kubernetes secrets (`existingSecret`)
+- Added `object_storage` schema to `config.schema.json` under `logs_store`
+- Updated deployment and stateful templates with object storage secret env vars
+
+</Update>

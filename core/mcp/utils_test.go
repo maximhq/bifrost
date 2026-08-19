@@ -1,9 +1,13 @@
 package mcp
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestConvertMCPToolToBifrostSchema_EmptyParameters tests that tools with no parameters
@@ -47,6 +51,68 @@ func TestConvertMCPToolToBifrostSchema_EmptyParameters(t *testing.T) {
 	if bifrostTool.Function.Parameters.Type != "object" {
 		t.Errorf("Expected type 'object', got '%s'", bifrostTool.Function.Parameters.Type)
 	}
+}
+
+// TestConvertMCPToolToBifrostSchema_WithAnnotations tests that MCP tool annotations
+// are preserved on ChatTool.Annotations (not ChatToolFunction) and are absent from JSON.
+func TestConvertMCPToolToBifrostSchema_WithAnnotations(t *testing.T) {
+	readOnly := true
+	destructive := false
+
+	mcpTool := &mcp.Tool{
+		Name:        "read_resource",
+		Description: "Reads a resource",
+		InputSchema: mcp.ToolInputSchema{
+			Type:       "object",
+			Properties: map[string]interface{}{},
+		},
+		Annotations: mcp.ToolAnnotation{
+			Title:           "Resource Reader",
+			ReadOnlyHint:    &readOnly,
+			DestructiveHint: &destructive,
+			IdempotentHint:  schemas.Ptr(true),
+		},
+	}
+
+	bifrostTool := convertMCPToolToBifrostSchema(mcpTool, defaultLogger)
+
+	// Annotations must be on ChatTool, not buried in Function
+	require.NotNil(t, bifrostTool.Annotations, "Annotations should be set on ChatTool")
+	assert.Equal(t, "Resource Reader", bifrostTool.Annotations.Title)
+	require.NotNil(t, bifrostTool.Annotations.ReadOnlyHint)
+	assert.True(t, *bifrostTool.Annotations.ReadOnlyHint)
+	require.NotNil(t, bifrostTool.Annotations.DestructiveHint)
+	assert.False(t, *bifrostTool.Annotations.DestructiveHint)
+	require.NotNil(t, bifrostTool.Annotations.IdempotentHint)
+	assert.True(t, *bifrostTool.Annotations.IdempotentHint)
+	assert.Nil(t, bifrostTool.Annotations.OpenWorldHint)
+
+	// The JSON sent to providers must not contain annotations
+	toolJSON, err := json.Marshal(bifrostTool)
+	require.NoError(t, err)
+	s := string(toolJSON)
+	assert.NotContains(t, s, "annotations", "annotations must be absent from provider JSON")
+	assert.NotContains(t, s, "readOnlyHint", "readOnlyHint must be absent from provider JSON")
+	assert.NotContains(t, s, "Resource Reader", "annotation title must be absent from provider JSON")
+}
+
+// TestConvertMCPToolToBifrostSchema_NilAnnotationsWhenAllZero verifies the nil guard:
+// when all annotation fields are zero-valued, ChatTool.Annotations must remain nil.
+func TestConvertMCPToolToBifrostSchema_NilAnnotationsWhenAllZero(t *testing.T) {
+	mcpTool := &mcp.Tool{
+		Name:        "no_hints_tool",
+		Description: "A tool with no annotation hints",
+		InputSchema: mcp.ToolInputSchema{
+			Type:       "object",
+			Properties: map[string]interface{}{},
+		},
+		Annotations: mcp.ToolAnnotation{}, // All zero values — Title empty, all hints nil
+	}
+
+	bifrostTool := convertMCPToolToBifrostSchema(mcpTool, defaultLogger)
+
+	assert.Nil(t, bifrostTool.Annotations,
+		"Annotations should be nil when all MCP annotation fields are zero")
 }
 
 // TestConvertMCPToolToBifrostSchema_WithParameters tests the normal case with parameters
@@ -102,4 +168,45 @@ func TestConvertMCPToolToBifrostSchema_WithParameters(t *testing.T) {
 	if bifrostTool.Function.Parameters.Required[0] != "param1" {
 		t.Errorf("Expected required field 'param1', got '%s'", bifrostTool.Function.Parameters.Required[0])
 	}
+}
+
+// TestConvertMCPToolToBifrostSchema_PreservesDefs verifies that top-level JSON
+// Schema definitions ($defs) on an MCP tool's input schema survive conversion.
+// Without this, a $ref inside a property (which rides along in Properties) would
+// be left dangling once the definitions it targets are dropped — the cause of
+// Vertex Gemini rejecting such tools with INVALID_ARGUMENT.
+func TestConvertMCPToolToBifrostSchema_PreservesDefs(t *testing.T) {
+	mcpTool := &mcp.Tool{
+		Name:        "suggest_time",
+		Description: "Suggests time periods",
+		InputSchema: mcp.ToolInputSchema{
+			Type: "object",
+			Properties: map[string]interface{}{
+				"preferences": map[string]interface{}{
+					"$ref": "#/$defs/Preferences",
+				},
+			},
+			Required: []string{"preferences"},
+			Defs: map[string]interface{}{
+				"Preferences": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"startHour": map[string]interface{}{"type": "string"},
+					},
+				},
+			},
+		},
+	}
+
+	bifrostTool := convertMCPToolToBifrostSchema(mcpTool, defaultLogger)
+	require.NotNil(t, bifrostTool.Function)
+	require.NotNil(t, bifrostTool.Function.Parameters)
+	require.NotNil(t, bifrostTool.Function.Parameters.Defs, "$defs must be preserved on conversion")
+
+	data, err := json.Marshal(bifrostTool.Function.Parameters)
+	require.NoError(t, err)
+	s := string(data)
+	assert.Contains(t, s, `"$defs"`, "marshalled schema must carry $defs")
+	assert.Contains(t, s, "Preferences", "definition name must be present")
+	assert.Contains(t, s, `"$ref"`, "the property $ref must still be present (resolution happens per-provider)")
 }

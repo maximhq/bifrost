@@ -13,11 +13,13 @@ help:
 	@echo ""
 	@echo "Options:"
 	@echo "  TYPE=llm|mcp       - Log type to generate (default: llm)"
+	@echo "  INVALID_META=1     - Generate all logs with invalid JSON metadata"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make populate-sqlite"
 	@echo "  make populate-postgres POSTGRES_PASSWORD=yourpassword"
 	@echo "  make populate-postgres TYPE=mcp ROWS=100000"
+	@echo "  make populate-postgres INVALID_META=1"
 	@echo ""
 
 # Default values
@@ -26,6 +28,10 @@ ROWS ?= 1000000
 SIZE ?= 17.5
 BATCH ?= 1000
 DB_PATH ?= ../../tests/configs/default/logs.db
+INVALID_META ?=
+
+# Derive flag from INVALID_META
+INVALID_META_FLAG = $(if $(INVALID_META),-invalid-metadata,)
 
 POSTGRES_HOST ?= localhost
 POSTGRES_PORT ?= 5432
@@ -47,7 +53,8 @@ populate-sqlite:
 		-path $(DB_PATH) \
 		-rows $(ROWS) \
 		-size $(SIZE) \
-		-batch 50
+		-batch 50 \
+		$(INVALID_META_FLAG)
 
 # Populate PostgreSQL database
 populate-postgres:
@@ -68,7 +75,8 @@ populate-postgres:
 		-dbname $(POSTGRES_DB) \
 		-rows $(ROWS) \
 		-size $(SIZE) \
-		-batch $(BATCH)
+		-batch $(BATCH) \
+		$(INVALID_META_FLAG)
 
 # Quick test with small dataset
 populate-small:

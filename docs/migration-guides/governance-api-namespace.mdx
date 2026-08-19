@@ -1,0 +1,96 @@
+---
+title: "Governance API namespace migration"
+description: "Move Enterprise governance clients from legacy management paths to /api/governance."
+---
+
+Governance APIs now use the same `/api/governance/*` namespace in Bifrost Open Source and Bifrost Enterprise. Shared resources have one path and wire contract; Enterprise installs edition-specific handlers and adds relationship routes beneath the same resources.
+
+## Compatibility window
+
+Enterprise legacy paths remain executable aliases for one complete GA release. Aliases execute the same handler directly, including mutating requests, and return:
+
+- `Deprecation: true`
+- `Link: </api/governance/...>; rel="successor-version"` ([RFC 5829](https://www.rfc-editor.org/rfc/rfc5829))
+
+Alias use is also logged as structured telemetry. Migrate first-party and external clients during this window. The aliases are planned for removal in the following major release.
+
+To find alias traffic in your own clients, check responses for the presence of the `Deprecation` header and follow the `successor-version` link to the path you should call instead.
+
+<Warning>
+The former user-governance policy paths conflict with canonical User CRUD. They do not have compatibility aliases. Move `POST /api/governance/users` and `PUT|DELETE /api/governance/users/{user_id}` policy calls to `/api/governance/users/{user_id}/governance` when upgrading.
+</Warning>
+
+## Endpoint mapping
+
+| Legacy Enterprise path | Canonical path |
+|---|---|
+| `/api/teams` | `/api/governance/teams` |
+| `/api/teams/{id}` | `/api/governance/teams/{team_id}` |
+| `/api/teams/{id}/members` | `/api/governance/teams/{team_id}/members` |
+| `/api/teams/{id}/members/{userId}` | `/api/governance/teams/{team_id}/members/{user_id}` |
+| `/api/teams/{id}/customers` | `/api/governance/teams/{team_id}/customers` |
+| `/api/teams/{id}/customers/{customerId}` | `/api/governance/teams/{team_id}/customers/{customer_id}` |
+| `/api/customers/{id}/teams` | `/api/governance/customers/{customer_id}/teams` |
+| `/api/users` | `/api/governance/users` |
+| `/api/users/{id}` | `/api/governance/users/{user_id}` |
+| `/api/users/{id}/teams` | `/api/governance/users/{user_id}/teams` |
+| `/api/users/{id}/role` | `/api/governance/users/{user_id}/role` |
+| `/api/users/me/permissions` | `/api/governance/users/me/permissions` |
+| `/api/users/email/{email}` | `/api/governance/users/email/{email}` |
+| `/api/users/email/{email}/virtual-keys` | `/api/governance/users/email/{email}/virtual-keys` |
+| `/api/virtual-keys/{vk_id}/users` | `/api/governance/virtual-keys/{vk_id}/users` |
+| `/api/virtual-keys/{vk_id}/users/{user_id}` | `/api/governance/virtual-keys/{vk_id}/users/{user_id}` |
+| `/api/users/{id}/virtual-keys` | `/api/governance/users/{user_id}/virtual-keys` |
+| `/api/access-profiles` | `/api/governance/access-profiles` |
+| `/api/access-profiles/{id}/*` | `/api/governance/access-profiles/{profile_id}/*` |
+| `/api/users/{id}/access-profiles/*` | `/api/governance/users/{user_id}/access-profiles/*` |
+| `/api/roles` | `/api/governance/rbac/roles` |
+| `/api/roles/{id}` | `/api/governance/rbac/roles/{role_id}` |
+| `/api/roles/{id}/permissions` | `/api/governance/rbac/roles/{role_id}/permissions` |
+| `/api/resources` | `/api/governance/rbac/resources` |
+| `/api/operations` | `/api/governance/rbac/operations` |
+| `/api/permissions` | `/api/governance/rbac/permissions` |
+| `/api/audit-logs` | `/api/governance/audit-logs` |
+| `/api/audit-logs/filterdata` | `/api/governance/audit-logs/filterdata` |
+| `/api/audit-logs/export` | `/api/governance/audit-logs/export` |
+| `/api/audit-logs/{id}` | `/api/governance/audit-logs/{id}` |
+| `/api/audit-logs/{id}/verify` | `/api/governance/audit-logs/{id}/verify` |
+| `POST /api/governance/users` (policy) | `POST /api/governance/users/{user_id}/governance` |
+| `PUT|DELETE /api/governance/users/{user_id}` (policy) | `PUT|DELETE /api/governance/users/{user_id}/governance` |
+
+Business Unit URLs were already under `/api/governance/business-units`; only OpenAPI path-parameter names were standardized.
+
+## Permissions
+
+Canonical paths require the same RBAC resource and operation as the legacy alias they replace. Moving a client, script, or API key to a canonical path never requires regranting a permission, and no role loses access on upgrade. This parity is enforced by a test over the mapping table above, so it holds for every row.
+
+One deliberate exception: listing the virtual keys attached to a user is now gated on `VirtualKeys` rather than `Users`, on both the canonical `/api/governance/users/{user_id}/virtual-keys` and its legacy alias. This endpoint returns virtual-key material, and its siblings under `/api/governance/virtual-keys/{vk_id}/users` were already gated on `VirtualKeys`. Callers that read it with a `Users`-only role or API key need `VirtualKeys:View` added.
+
+<Note>
+The user-level policy endpoints under `/api/governance/users/{user_id}/governance` keep the `UserProvisioning` resource they had when they lived on `/api/governance/users`. They have no compatibility alias, so grant parity here comes from the resource mapping rather than from an alias.
+</Note>
+
+## Pagination changes
+
+Canonical Team and User list APIs use `limit` and zero-based `offset`, and return `count`, `total_count`, `limit`, and `offset`. Legacy aliases continue accepting `page` and preserve their former response envelopes during the compatibility window.
+
+```http
+GET /api/governance/teams?limit=20&offset=40
+GET /api/governance/users?limit=20&offset=40
+```
+
+Audit logs are unchanged: `/api/governance/audit-logs` keeps the one-based `page` and `limit` parameters and the response envelope it served on `/api/audit-logs`. Only the path moved.
+
+## Team customer semantics
+
+The canonical Team `customer_id` field retains the Open Source budget-hierarchy meaning. Enterprise many-to-many customer attachments use the relationship endpoints under `/api/governance/teams/{team_id}/customers`. Do not use the scalar `customer_id` field to represent Enterprise many-to-many membership.
+
+## Rollout checklist
+
+1. Upgrade to an Open Source transport version containing the typed governance route override seam.
+2. Upgrade Enterprise so it installs its Team read handler before Open Source route registration.
+3. Move API clients, scripts, Postman collections, and UI callers to canonical paths.
+4. Replace `page` with `offset` on canonical Team and User list requests.
+5. Grant `VirtualKeys:View` to any role or API key that reads a user's virtual keys with only `Users` permission (see [Permissions](#permissions)).
+6. Monitor deprecated-route telemetry until external alias traffic reaches zero.
+7. Remove aliases only in the following major release.

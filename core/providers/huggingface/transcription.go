@@ -144,10 +144,6 @@ func (response *HuggingFaceTranscriptionResponse) ToBifrostTranscriptionResponse
 	// Create the base Bifrost response
 	bifrostResponse := &schemas.BifrostTranscriptionResponse{
 		Text: response.Text,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			Provider:       schemas.HuggingFace,
-			ModelRequested: requestedModel,
-		},
 	}
 
 	// Map chunks to segments if available

@@ -8,6 +8,9 @@ type vtStreamNormalizer struct {
 	pendingCSI []byte
 }
 
+// Normalize returns PTY output with unsupported or incompatible terminal
+// sequences removed or rewritten, preserving partial CSI sequences between
+// calls.
 func (n *vtStreamNormalizer) Normalize(data []byte) []byte {
 	if len(n.pendingCSI) > 0 {
 		combined := make([]byte, 0, len(n.pendingCSI)+len(data))

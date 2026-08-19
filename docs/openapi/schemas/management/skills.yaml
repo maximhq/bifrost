@@ -1,0 +1,384 @@
+SkillSourceType:
+  type: string
+  description: Source backing for an attached skill file.
+  enum:
+    - url
+    - dataurl
+    - text
+    - upload
+
+SkillFileEntry:
+  type: object
+  description: File entry used when creating or updating a skill version.
+  required:
+    - path
+    - source_type
+    - mime_type
+  properties:
+    path:
+      type: string
+      description: Relative file path inside the skill package.
+      example: references/style-guide.md
+    source_type:
+      $ref: '#/SkillSourceType'
+    content:
+      type: string
+      description: Inline file content for `text` source files.
+    source_url:
+      type: string
+      format: uri
+      description: HTTP or HTTPS URL for `url` source files.
+    dataurl:
+      type: string
+      description: Data URL payload for `dataurl` source files.
+      example: data:text/plain;base64,SGVsbG8=
+    upload_id:
+      type: string
+      description: Upload identifier returned by the multipart upload endpoint.
+    storage_key:
+      type: string
+      description: Object-storage key for an uploaded or stored file.
+    blob_id:
+      type: string
+      description: Database blob ID used when object storage is not configured.
+    mime_type:
+      type: string
+      description: MIME type for the file.
+      example: text/markdown
+
+SkillFile:
+  allOf:
+    - $ref: '#/SkillFileEntry'
+    - type: object
+      description: Persisted file attached to a skill version.
+      properties:
+        id:
+          type: string
+          description: File row ID.
+        skill_version_id:
+          type: string
+          description: Version snapshot ID this file belongs to.
+        file_size_bytes:
+          type: integer
+          format: int64
+          description: File size in bytes when known.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+SkillVersion:
+  type: object
+  description: Immutable skill version snapshot.
+  properties:
+    id:
+      type: string
+    skill_id:
+      type: string
+    version:
+      type: string
+      example: 1.0.0
+    skill_md_body:
+      type: string
+      description: SKILL.md body for this version. Included when a full version is loaded.
+    frontmatter_snapshot:
+      type: object
+      additionalProperties: true
+      description: Frontmatter snapshot for this version.
+    created_by:
+      type: string
+      nullable: true
+    created_at:
+      type: string
+      format: date-time
+    files:
+      type: array
+      items:
+        $ref: '#/SkillFile'
+
+Skill:
+  type: object
+  description: Skill repository entry and currently served version metadata.
+  properties:
+    id:
+      type: string
+    name:
+      type: string
+      example: review-migrations
+    description:
+      type: string
+      example: Reviews database migration safety and rollback behavior.
+    license:
+      type: string
+      nullable: true
+      example: MIT
+    compatibility:
+      type: string
+      nullable: true
+      example: Claude Code, Codex
+    metadata:
+      type: object
+      additionalProperties:
+        type: string
+      description: Metadata emitted under the `metadata` frontmatter key.
+    extra_frontmatter:
+      type: object
+      additionalProperties: true
+      description: Additional top-level SKILL.md frontmatter fields.
+    allowed_tools:
+      type: string
+      nullable: true
+      description: Tool guidance emitted in SKILL.md frontmatter.
+    skill_md_body:
+      type: string
+      description: Markdown body of the composed SKILL.md.
+    latest_version:
+      type: string
+      description: Currently served version.
+      example: 1.0.0
+    created_by:
+      type: string
+      nullable: true
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+    files:
+      type: array
+      description: Files attached to the currently served version.
+      items:
+        $ref: '#/SkillFile'
+    file_count:
+      type: integer
+      format: int64
+      description: Number of files in the currently served version.
+    highest_version:
+      type: string
+      description: Highest created SemVer for validation, even if an older version is served.
+      example: 1.2.0
+
+CreateSkillRequest:
+  type: object
+  required:
+    - name
+    - description
+    - skill_md_body
+    - version
+  properties:
+    name:
+      type: string
+      description: Immutable skill name. Lowercase letters, numbers, and single hyphens only.
+      example: review-migrations
+    description:
+      type: string
+      maxLength: 1024
+    license:
+      type: string
+      nullable: true
+    compatibility:
+      type: string
+      nullable: true
+    metadata:
+      type: object
+      additionalProperties:
+        type: string
+    extra_frontmatter:
+      type: object
+      additionalProperties: true
+    allowed_tools:
+      type: string
+      nullable: true
+    skill_md_body:
+      type: string
+    version:
+      type: string
+      example: 1.0.0
+    files:
+      type: array
+      items:
+        $ref: '#/SkillFileEntry'
+
+UpdateSkillRequest:
+  type: object
+  required:
+    - description
+    - skill_md_body
+    - version
+  properties:
+    description:
+      type: string
+      maxLength: 1024
+    license:
+      type: string
+      nullable: true
+    compatibility:
+      type: string
+      nullable: true
+    metadata:
+      type: object
+      additionalProperties:
+        type: string
+    extra_frontmatter:
+      type: object
+      additionalProperties: true
+    allowed_tools:
+      type: string
+      nullable: true
+    skill_md_body:
+      type: string
+    version:
+      type: string
+      example: 1.0.1
+    files:
+      type: array
+      items:
+        $ref: '#/SkillFileEntry'
+    serve:
+      type: boolean
+      description: When false, creates a new version without making it the served version.
+      default: true
+
+SkillResponse:
+  type: object
+  properties:
+    skill:
+      $ref: '#/Skill'
+
+ListSkillsResponse:
+  type: object
+  properties:
+    skills:
+      type: array
+      items:
+        $ref: '#/Skill'
+    total:
+      type: integer
+      format: int64
+    limit:
+      type: integer
+    offset:
+      type: integer
+
+ListSkillVersionsResponse:
+  type: object
+  properties:
+    versions:
+      type: array
+      items:
+        $ref: '#/SkillVersion'
+    total:
+      type: integer
+      format: int64
+    limit:
+      type: integer
+    offset:
+      type: integer
+
+UploadSkillFileRequest:
+  type: object
+  required:
+    - file
+  properties:
+    file:
+      type: string
+      format: binary
+      description: File to upload. Exactly one file part is accepted.
+    path:
+      type: string
+      description: Optional relative path to store with the uploaded file.
+      example: references/style-guide.md
+
+UploadSkillFileResponse:
+  type: object
+  properties:
+    upload_id:
+      type: string
+    storage_key:
+      type: string
+      description: Object-storage key when object storage is configured.
+    blob_id:
+      type: string
+      description: DB blob ID when object storage is not configured.
+    path:
+      type: string
+    filename:
+      type: string
+    mime_type:
+      type: string
+    file_size_bytes:
+      type: integer
+      format: int64
+
+SkillOrphanCleanupResponse:
+  type: object
+  properties:
+    deleted_db_blobs:
+      type: integer
+      format: int64
+    deleted_storage_objects:
+      type: integer
+    object_storage_configured:
+      type: boolean
+    message:
+      type: string
+
+AllSkillsVersionResponse:
+  type: object
+  properties:
+    version:
+      type: string
+      example: 1.2.0
+
+BumpAllSkillsVersionRequest:
+  type: object
+  required:
+    - bump
+  properties:
+    bump:
+      type: string
+      enum:
+        - patch
+        - minor
+        - major
+
+ShiftSkillVersionRequest:
+  type: object
+  required:
+    - version
+  properties:
+    version:
+      type: string
+      example: 1.0.0
+
+ClaudeCodeSkillMarketplace:
+  type: object
+  description: Claude Code marketplace document generated by Bifrost.
+  properties:
+    name:
+      type: string
+    owner:
+      type: string
+    plugins:
+      type: array
+      items:
+        type: object
+        additionalProperties: true
+
+CodexSkillMarketplace:
+  type: object
+  description: Codex marketplace document generated by Bifrost.
+  properties:
+    name:
+      type: string
+    interface:
+      type: object
+      additionalProperties: true
+    plugins:
+      type: array
+      items:
+        type: object
+        additionalProperties: true

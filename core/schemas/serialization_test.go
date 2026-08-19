@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 
@@ -155,6 +156,31 @@ func TestSonic_OrderedMap_NestedPreservesOrder(t *testing.T) {
 	output, err := Marshal(om)
 	require.NoError(t, err)
 	assert.Equal(t, input, string(output))
+}
+
+func TestSonic_EmbeddingStruct_PreservesFloat64Precision(t *testing.T) {
+	const want = 0.12345678901234568
+
+	var embedding EmbeddingStruct
+	err := embedding.UnmarshalJSON([]byte(`[0.12345678901234568]`))
+	require.NoError(t, err)
+
+	require.Len(t, embedding.EmbeddingArray, 1)
+
+	got := embedding.EmbeddingArray[0]
+	assert.Equal(t, want, got)
+
+	float32Rounded := float64(float32(want))
+	assert.NotEqual(t, float32Rounded, got)
+
+	marshaled, err := embedding.MarshalJSON()
+	require.NoError(t, err)
+
+	var roundTrip []float64
+	err = Unmarshal(marshaled, &roundTrip)
+	require.NoError(t, err)
+	require.Len(t, roundTrip, 1)
+	assert.Equal(t, math.Float64bits(got), math.Float64bits(roundTrip[0]))
 }
 
 // --- ToolFunctionParameters through sonic ---
@@ -722,6 +748,8 @@ func TestResponsesTool_MarshalJSON_RoundTrip(t *testing.T) {
 		`{"type":"function","name":"get_weather","description":"Get weather","strict":true}`,
 		`{"type":"function","name":"search_db","description":"Search database","cache_control":{"type":"ephemeral"},"strict":false}`,
 		`{"type":"file_search","vector_store_ids":["vs_1"],"max_num_results":10}`,
+		// Anthropic advisor server tool: model/max_uses/max_tokens/caching must survive the JSON boundary.
+		`{"type":"advisor","name":"advisor","model":"claude-opus-4-8","max_uses":3,"max_tokens":2048,"caching":{"type":"ephemeral","ttl":"5m"}}`,
 	}
 
 	for _, input := range inputs {
@@ -753,6 +781,246 @@ func TestResponsesTool_MarshalJSON_RoundTrip(t *testing.T) {
 			assert.Equal(t, original, roundTripped, "content should match original input")
 		})
 	}
+}
+
+// TestResponsesTool_RoundTrip_AnthropicFields ensures the Anthropic-native tool
+// flags promoted onto ResponsesTool (defer_loading, allowed_callers,
+// input_examples, eager_input_streaming) survive a full Marshal→Unmarshal→
+// Marshal cycle. Before MarshalJSON/UnmarshalJSON were taught to handle these
+// keys, all four were silently dropped at the JSON boundary.
+func TestResponsesTool_RoundTrip_AnthropicFields(t *testing.T) {
+	original := ResponsesTool{
+		Type:                ResponsesToolTypeFunction,
+		Name:                Ptr("lookup"),
+		Description:         Ptr("lookup something"),
+		DeferLoading:        Ptr(true),
+		AllowedCallers:      []string{"direct", "agent"},
+		EagerInputStreaming: Ptr(false),
+		InputExamples: []ChatToolInputExample{
+			{Input: json.RawMessage(`{"q":"hello"}`), Description: Ptr("basic")},
+			{Input: json.RawMessage(`{"q":"world"}`)},
+		},
+		ResponsesToolFunction: &ResponsesToolFunction{
+			Parameters: &ToolFunctionParameters{},
+		},
+	}
+
+	data, err := Marshal(original)
+	require.NoError(t, err)
+
+	// All four keys must appear in the wire bytes.
+	for _, key := range []string{`"defer_loading"`, `"allowed_callers"`, `"input_examples"`, `"eager_input_streaming"`} {
+		assert.Contains(t, string(data), key,
+			"%s must be emitted by MarshalJSON — otherwise it is silently dropped", key)
+	}
+
+	var decoded ResponsesTool
+	require.NoError(t, Unmarshal(data, &decoded))
+
+	require.NotNil(t, decoded.DeferLoading)
+	assert.True(t, *decoded.DeferLoading)
+	assert.Equal(t, []string{"direct", "agent"}, decoded.AllowedCallers)
+	require.NotNil(t, decoded.EagerInputStreaming)
+	assert.False(t, *decoded.EagerInputStreaming)
+	require.Len(t, decoded.InputExamples, 2)
+	assert.JSONEq(t, `{"q":"hello"}`, string(decoded.InputExamples[0].Input))
+	require.NotNil(t, decoded.InputExamples[0].Description)
+	assert.Equal(t, "basic", *decoded.InputExamples[0].Description)
+	assert.JSONEq(t, `{"q":"world"}`, string(decoded.InputExamples[1].Input))
+
+	// Second-round marshal must be byte-stable.
+	data2, err := Marshal(decoded)
+	require.NoError(t, err)
+	assert.Equal(t, string(data), string(data2), "round-trip must be stable")
+}
+
+// TestChatTool_MarshalJSON_EnforcesUnion verifies that the custom codec
+// canonicalizes mixed-state ChatTools on the wire, regardless of what the
+// caller populated in memory. Exactly one variant's fields survive marshal —
+// matching Type — so downstream provider converters can't misinterpret or
+// forward stray fields from a different shape.
+func TestChatTool_MarshalJSON_EnforcesUnion(t *testing.T) {
+	t.Run("function_type_clears_custom_and_server_tool_fields", func(t *testing.T) {
+		tool := ChatTool{
+			Type:     ChatToolTypeFunction,
+			Function: &ChatToolFunction{Name: "get_weather"},
+			// Mixed state: server-tool + custom fields also populated.
+			Custom:         &ChatToolCustom{},
+			Name:           "leaked_name",
+			MaxUses:        Ptr(5),
+			DisplayWidthPx: Ptr(1280),
+			MCPServerName:  "leaked_server",
+		}
+		data, err := Marshal(tool)
+		require.NoError(t, err)
+		raw := string(data)
+
+		assert.Contains(t, raw, `"type":"function"`)
+		assert.Contains(t, raw, `"get_weather"`)
+		for _, leak := range []string{`"custom"`, `"leaked_name"`, `"max_uses"`, `"display_width_px"`, `"mcp_server_name"`} {
+			assert.NotContains(t, raw, leak, "function-type wire must not carry %s", leak)
+		}
+	})
+
+	t.Run("custom_type_clears_function_and_server_tool_fields", func(t *testing.T) {
+		tool := ChatTool{
+			Type:   ChatToolTypeCustom,
+			Custom: &ChatToolCustom{Format: &ChatToolCustomFormat{Type: "text"}},
+			Name:   "my_custom",
+			// Leaks
+			Function: &ChatToolFunction{Name: "should_be_stripped"},
+			MaxUses:  Ptr(5),
+		}
+		data, err := Marshal(tool)
+		require.NoError(t, err)
+		raw := string(data)
+
+		assert.Contains(t, raw, `"type":"custom"`)
+		assert.Contains(t, raw, `"my_custom"`) // custom tool retains top-level Name
+		assert.Contains(t, raw, `"format"`)    // custom's format field
+		assert.NotContains(t, raw, `"function"`)
+		assert.NotContains(t, raw, `"should_be_stripped"`)
+		assert.NotContains(t, raw, `"max_uses"`)
+	})
+
+	t.Run("server_tool_type_clears_function_and_custom", func(t *testing.T) {
+		tool := ChatTool{
+			Type:           "web_search_20260209",
+			Name:           "web_search",
+			MaxUses:        Ptr(5),
+			AllowedCallers: []string{"direct"},
+			// Leaks
+			Function: &ChatToolFunction{Name: "should_be_stripped"},
+			Custom:   &ChatToolCustom{},
+		}
+		data, err := Marshal(tool)
+		require.NoError(t, err)
+		raw := string(data)
+
+		assert.Contains(t, raw, `"type":"web_search_20260209"`)
+		assert.Contains(t, raw, `"web_search"`)
+		assert.Contains(t, raw, `"max_uses":5`)
+		assert.Contains(t, raw, `"allowed_callers":["direct"]`)
+		assert.NotContains(t, raw, `"function"`)
+		assert.NotContains(t, raw, `"custom"`)
+		assert.NotContains(t, raw, `"should_be_stripped"`)
+	})
+}
+
+// TestChatTool_UnmarshalJSON_NormalizesMixedInput verifies that tolerant
+// decode of a mixed-shape payload produces a canonical single-variant struct
+// so downstream provider conversion code doesn't have to defend against
+// the untrusted shape.
+func TestChatTool_UnmarshalJSON_NormalizesMixedInput(t *testing.T) {
+	t.Run("function_type_mixed_with_server_fields_normalizes", func(t *testing.T) {
+		// Caller sends a function tool but also includes server-tool metadata.
+		raw := []byte(`{
+			"type":"function",
+			"function":{"name":"get_weather"},
+			"name":"stray_server_name",
+			"max_uses":5,
+			"display_width_px":1280
+		}`)
+		var tool ChatTool
+		require.NoError(t, Unmarshal(raw, &tool))
+
+		assert.Equal(t, ChatToolTypeFunction, tool.Type)
+		require.NotNil(t, tool.Function)
+		assert.Equal(t, "get_weather", tool.Function.Name)
+		assert.Empty(t, tool.Name, "function-type must nil top-level Name (lives in Function.Name)")
+		assert.Nil(t, tool.MaxUses)
+		assert.Nil(t, tool.DisplayWidthPx)
+	})
+
+	t.Run("server_tool_type_mixed_with_function_normalizes", func(t *testing.T) {
+		// Caller sends a server-tool but also includes function.
+		raw := []byte(`{
+			"type":"web_search_20260209",
+			"name":"web_search",
+			"max_uses":5,
+			"function":{"name":"stray"}
+		}`)
+		var tool ChatTool
+		require.NoError(t, Unmarshal(raw, &tool))
+
+		assert.Equal(t, ChatToolType("web_search_20260209"), tool.Type)
+		assert.Equal(t, "web_search", tool.Name)
+		require.NotNil(t, tool.MaxUses)
+		assert.Equal(t, 5, *tool.MaxUses)
+		assert.Nil(t, tool.Function, "server-tool must nil Function")
+		assert.Nil(t, tool.Custom, "server-tool must nil Custom")
+	})
+}
+
+// TestChatTool_RoundTrip_SurvivesMixedInput verifies that a mixed-input
+// payload, once canonicalized by Unmarshal and re-emitted by Marshal, drops
+// the stray fields and produces a deterministic single-variant wire format.
+func TestChatTool_RoundTrip_SurvivesMixedInput(t *testing.T) {
+	raw := []byte(`{
+		"type":"web_search_20260209",
+		"name":"web_search",
+		"max_uses":5,
+		"function":{"name":"stray"},
+		"custom":{"format":{"type":"text"}}
+	}`)
+	var tool ChatTool
+	require.NoError(t, Unmarshal(raw, &tool))
+
+	out, err := Marshal(tool)
+	require.NoError(t, err)
+	outStr := string(out)
+	assert.NotContains(t, outStr, `"function"`)
+	assert.NotContains(t, outStr, `"custom"`)
+	assert.Contains(t, outStr, `"web_search_20260209"`)
+
+	// Second pass must be byte-stable (critical for prompt caching keys).
+	var tool2 ChatTool
+	require.NoError(t, Unmarshal(out, &tool2))
+	out2, err := Marshal(tool2)
+	require.NoError(t, err)
+	assert.Equal(t, string(out), string(out2), "round-trip must be stable")
+}
+
+func TestToolFunctionParameters_ExplicitEmptyObjectPreserved(t *testing.T) {
+	var params ToolFunctionParameters
+	err := Unmarshal([]byte(`{}`), &params)
+	require.NoError(t, err)
+
+	marshaled, err := Marshal(params)
+	require.NoError(t, err)
+	assert.Equal(t, `{}`, string(marshaled))
+
+	normalized, err := Marshal(params.Normalized())
+	require.NoError(t, err)
+	assert.Equal(t, `{}`, string(normalized))
+}
+
+func TestToolFunctionParameters_ExplicitEmptyObjectWhitespacePreserved(t *testing.T) {
+	var params ToolFunctionParameters
+	err := Unmarshal([]byte(` { } `), &params)
+	require.NoError(t, err)
+
+	marshaled, err := Marshal(params)
+	require.NoError(t, err)
+	assert.Equal(t, `{}`, string(marshaled))
+
+	normalized, err := Marshal(params.Normalized())
+	require.NoError(t, err)
+	assert.Equal(t, `{}`, string(normalized))
+}
+
+func TestToolFunctionParameters_ExplicitObjectSchemaPreserved(t *testing.T) {
+	var params ToolFunctionParameters
+	err := Unmarshal([]byte(`{"type":"object","properties":{}}`), &params)
+	require.NoError(t, err)
+
+	marshaled, err := Marshal(params)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"type":"object","properties":{}}`, string(marshaled))
+
+	normalized, err := Marshal(params.Normalized())
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"type":"object","properties":{}}`, string(normalized))
 }
 
 // TestResponsesToolFileSearchFilter_MarshalJSON_Deterministic verifies deterministic
@@ -847,7 +1115,7 @@ func TestNetworkConfig_TLSFieldsRoundTrip(t *testing.T) {
 		DefaultRequestTimeoutInSeconds: 60,
 		MaxRetries:                     3,
 		InsecureSkipVerify:             true,
-		CACertPEM:                      "-----BEGIN CERTIFICATE-----\nMIIB...\n-----END CERTIFICATE-----",
+		CACertPEM:                      NewSecretVar("-----BEGIN CERTIFICATE-----\nMIIB...\n-----END CERTIFICATE-----"),
 	}
 
 	data, err := json.Marshal(nc)
@@ -858,7 +1126,7 @@ func TestNetworkConfig_TLSFieldsRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, nc.InsecureSkipVerify, decoded.InsecureSkipVerify, "insecure_skip_verify should round-trip")
-	assert.Equal(t, nc.CACertPEM, decoded.CACertPEM, "ca_cert_pem should round-trip")
+	assert.Equal(t, nc.CACertPEM.GetValue(), decoded.CACertPEM.GetValue(), "ca_cert_pem should round-trip")
 	assert.Contains(t, string(data), `"insecure_skip_verify":true`)
 	assert.Contains(t, string(data), `"ca_cert_pem"`)
 }
@@ -867,7 +1135,7 @@ func TestNetworkConfig_TLSFieldsRoundTrip(t *testing.T) {
 // round-trips correctly through JSON marshaling.
 func TestNetworkConfig_StreamIdleTimeoutRoundTrip(t *testing.T) {
 	nc := NetworkConfig{
-		DefaultRequestTimeoutInSeconds: 30,
+		DefaultRequestTimeoutInSeconds: 300,
 		StreamIdleTimeoutInSeconds:     120,
 	}
 
@@ -880,6 +1148,37 @@ func TestNetworkConfig_StreamIdleTimeoutRoundTrip(t *testing.T) {
 
 	assert.Equal(t, 120, decoded.StreamIdleTimeoutInSeconds, "stream_idle_timeout_in_seconds should round-trip")
 	assert.Contains(t, string(data), `"stream_idle_timeout_in_seconds":120`)
+}
+
+func TestNetworkConfig_HTTP2PingInterval(t *testing.T) {
+	nc := NetworkConfig{EnforceHTTP2: true, HTTP2PingIntervalInSeconds: 45}
+	data, err := json.Marshal(nc)
+	require.NoError(t, err)
+	var decoded NetworkConfig
+	require.NoError(t, json.Unmarshal(data, &decoded))
+	assert.Equal(t, 45, decoded.HTTP2PingIntervalInSeconds, "http2_ping_interval_in_seconds should round-trip")
+	assert.Contains(t, string(data), `"http2_ping_interval_in_seconds":45`)
+
+	// enforce_http2 set + interval unset -> left at zero (pings are opt-in, off by default)
+	cfgDefault := &ProviderConfig{NetworkConfig: NetworkConfig{EnforceHTTP2: true}}
+	cfgDefault.CheckAndSetDefaults()
+	assert.Equal(t, 0, cfgDefault.NetworkConfig.HTTP2PingIntervalInSeconds)
+
+	// explicit interval is preserved
+	cfgExplicit := &ProviderConfig{NetworkConfig: NetworkConfig{EnforceHTTP2: true, HTTP2PingIntervalInSeconds: 5}}
+	cfgExplicit.CheckAndSetDefaults()
+	assert.Equal(t, 5, cfgExplicit.NetworkConfig.HTTP2PingIntervalInSeconds)
+
+	// enforce_http2 off -> left at zero (no ping keepalive)
+	cfgOff := &ProviderConfig{}
+	cfgOff.CheckAndSetDefaults()
+	assert.Equal(t, 0, cfgOff.NetworkConfig.HTTP2PingIntervalInSeconds)
+
+	// a value above the int64-nanosecond ceiling is clamped rather than left to
+	// overflow silently when the Bedrock transport multiplies it by time.Second
+	cfgOverflow := &ProviderConfig{NetworkConfig: NetworkConfig{EnforceHTTP2: true, HTTP2PingIntervalInSeconds: HTTP2PingIntervalUpperBoundSeconds + 1}}
+	cfgOverflow.CheckAndSetDefaults()
+	assert.Equal(t, HTTP2PingIntervalUpperBoundSeconds, cfgOverflow.NetworkConfig.HTTP2PingIntervalInSeconds)
 }
 
 // TestNormalizeResponsesToolType verifies that versioned/provider-specific tool type
@@ -924,6 +1223,26 @@ func TestNormalizeResponsesToolType(t *testing.T) {
 		// memory versioned aliases
 		{"memory_20250818", ResponsesToolTypeMemory},
 
+		// tool_search variants (issue #5279) — both variants, dated and undated.
+		// The dated forms used to fall through to the default branch, which is
+		// what made Anthropic treat the server-side meta-tool as a client tool.
+		{ResponsesToolTypeToolSearch, ResponsesToolTypeToolSearch},
+		{"tool_search_tool_regex_20251119", ResponsesToolTypeToolSearch},
+		{"tool_search_tool_bm25_20251119", ResponsesToolTypeToolSearch},
+		{"tool_search_tool_regex", ResponsesToolTypeToolSearch},
+		{"tool_search_tool_bm25", ResponsesToolTypeToolSearch},
+
+		// Types that merely share the tool_search prefix are NOT tool-search
+		// variants and must reach unknown-tool handling rather than being
+		// collapsed onto the canonical type. Anthropic documents exactly two
+		// variants -- tool_search_tool_{regex,bm25}_20251119 -- so anything
+		// else under this prefix is a type Bifrost does not yet understand.
+		// Cite: https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool
+		{"tool_search_preview", "tool_search_preview"},
+		{"tool_search_tool_semantic_20260101", "tool_search_tool_semantic_20260101"},
+		// "regex"/"bm25" appearing anywhere in the string is not enough either.
+		{"custom_regex_search", "custom_regex_search"},
+
 		// Unrecognized types pass through unchanged
 		{"totally_unknown", "totally_unknown"},
 		{"mcp", ResponsesToolTypeMCP},
@@ -948,6 +1267,9 @@ func TestResponsesTool_UnmarshalJSON_NormalizesVersionedToolTypes(t *testing.T) 
 		wantWebFetch   bool
 		wantComputer   bool
 		wantCodeInterp bool
+		wantAdvisor    bool
+		wantToolSearch bool
+		wantModel      string
 	}{
 		// web_search variants
 		{name: "web_search canonical", input: `{"type":"web_search"}`, wantType: ResponsesToolTypeWebSearch, wantWebSearch: true},
@@ -974,6 +1296,15 @@ func TestResponsesTool_UnmarshalJSON_NormalizesVersionedToolTypes(t *testing.T) 
 		{name: "code_execution_20250522", input: `{"type":"code_execution_20250522"}`, wantType: ResponsesToolTypeCodeInterpreter, wantCodeInterp: true},
 		{name: "code_execution_20250825", input: `{"type":"code_execution_20250825"}`, wantType: ResponsesToolTypeCodeInterpreter, wantCodeInterp: true},
 
+		// advisor variants → advisor
+		{name: "advisor canonical", input: `{"type":"advisor","name":"advisor","model":"claude-opus-4-8"}`, wantType: ResponsesToolTypeAdvisor, wantAdvisor: true, wantModel: "claude-opus-4-8"},
+		{name: "advisor_20260301", input: `{"type":"advisor_20260301","name":"advisor","model":"claude-opus-4-8"}`, wantType: ResponsesToolTypeAdvisor, wantAdvisor: true, wantModel: "claude-opus-4-8"},
+
+		// tool_search variants → tool_search (issue #5279)
+		{name: "tool_search canonical", input: `{"type":"tool_search"}`, wantType: ResponsesToolTypeToolSearch, wantToolSearch: true},
+		{name: "tool_search_tool_regex_20251119", input: `{"type":"tool_search_tool_regex_20251119","name":"tool_search_tool_regex"}`, wantType: ResponsesToolTypeToolSearch, wantToolSearch: true},
+		{name: "tool_search_tool_bm25_20251119", input: `{"type":"tool_search_tool_bm25_20251119","name":"tool_search_tool_bm25"}`, wantType: ResponsesToolTypeToolSearch, wantToolSearch: true},
+
 		// unrecognized types pass through unchanged
 		{name: "function unchanged", input: `{"type":"function","name":"foo","strict":true}`, wantType: ResponsesToolTypeFunction},
 		{name: "custom unchanged", input: `{"type":"custom","name":"bar"}`, wantType: ResponsesToolTypeCustom},
@@ -998,6 +1329,474 @@ func TestResponsesTool_UnmarshalJSON_NormalizesVersionedToolTypes(t *testing.T) 
 			if tt.wantCodeInterp {
 				assert.NotNil(t, tool.ResponsesToolCodeInterpreter, "ResponsesToolCodeInterpreter should be populated")
 			}
+			if tt.wantAdvisor {
+				require.NotNil(t, tool.ResponsesToolAdvisor, "ResponsesToolAdvisor should be populated")
+				assert.Equal(t, tt.wantModel, tool.ResponsesToolAdvisor.Model)
+			}
+			if tt.wantToolSearch {
+				assert.NotNil(t, tool.ResponsesToolToolSearch, "ResponsesToolToolSearch should be populated")
+			}
 		})
 	}
+}
+
+// TestChatTool_ServerToolNameRoundTrip is a diagnostic probe for the Bedrock
+// managed-tool harness failures (`tools.0.<type>.name: Field required`). It feeds
+// the exact request shapes the harness sends for Anthropic server tools through the
+// real Unmarshal -> MarshalSorted round-trip and asserts the top-level `name`
+// survives. If this fails, the name is dropped at the schemas layer (sonic /
+// ChatTool.UnmarshalJSON / normalizeShape) and the fix belongs here for all providers.
+func TestChatTool_ServerToolNameRoundTrip(t *testing.T) {
+	cases := []struct {
+		name     string
+		input    string
+		wantType ChatToolType
+		wantName string
+	}{
+		{"bash", `{"type":"bash_20250124","name":"bash"}`, "bash_20250124", "bash"},
+		{"computer", `{"type":"computer_20251124","name":"computer","display_width_px":1280,"display_height_px":800}`, "computer_20251124", "computer"},
+		{"text_editor", `{"type":"text_editor_20250728","name":"str_replace_based_edit_tool"}`, "text_editor_20250728", "str_replace_based_edit_tool"},
+		{"memory", `{"type":"memory_20250818","name":"memory"}`, "memory_20250818", "memory"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var tool ChatTool
+			require.NoError(t, Unmarshal([]byte(tc.input), &tool))
+			assert.Equal(t, tc.wantType, tool.Type, "type should survive unmarshal")
+			assert.Equal(t, tc.wantName, tool.Name, "name should survive unmarshal")
+
+			out, err := MarshalSorted(tool)
+			require.NoError(t, err)
+			assert.Contains(t, string(out), `"name":"`+tc.wantName+`"`, "marshaled tool must carry name; got %s", string(out))
+		})
+	}
+}
+
+// TestDeepCopyChatTool_PreservesServerToolFields locks in the fix for the Bedrock
+// managed-tool harness 400s (`tools.0.<type>.name: Field required`). The compat
+// plugin clones requests via DeepCopyChatTool during its PreHook; the copier used
+// to drop the top-level Name and every Anthropic server-tool variant field, so a
+// {type:"bash_20250124", name:"bash"} tool reached Bedrock with no name. This
+// asserts all server-tool fields survive the copy and that the copy is independent
+// of the original (mutating the copy must not affect the source).
+func TestDeepCopyChatTool_PreservesServerToolFields(t *testing.T) {
+	original := ChatTool{
+		Type:                "computer_20251124",
+		Name:                "computer",
+		DeferLoading:        Ptr(true),
+		AllowedCallers:      []string{"direct", "code_execution_20250825"},
+		EagerInputStreaming: Ptr(true),
+		InputExamples: []ChatToolInputExample{
+			{Input: json.RawMessage(`{"action":"screenshot"}`), Description: Ptr("take a screenshot")},
+		},
+		MaxUses:          Ptr(5),
+		AllowedDomains:   []string{"example.com"},
+		BlockedDomains:   []string{"evil.com"},
+		UserLocation:     &ChatToolUserLocation{Type: Ptr("approximate"), City: Ptr("SF"), Region: Ptr("CA"), Country: Ptr("US"), Timezone: Ptr("America/Los_Angeles")},
+		MaxContentTokens: Ptr(1000),
+		Citations:        &ChatToolCitationsConfig{Enabled: Ptr(true)},
+		UseCache:         Ptr(true),
+		DisplayWidthPx:   Ptr(1280),
+		DisplayHeightPx:  Ptr(800),
+		DisplayNumber:    Ptr(1),
+		EnableZoom:       Ptr(true),
+		MaxCharacters:    Ptr(2000),
+		MCPServerName:    "my-server",
+		DefaultConfig:    &ChatMCPToolsetConfig{Enabled: Ptr(true), DeferLoading: Ptr(false)},
+		Configs:          map[string]*ChatMCPToolsetConfig{"tool_a": {Enabled: Ptr(false)}},
+	}
+
+	c := DeepCopyChatTool(original)
+
+	// Every server-tool field must survive the copy.
+	assert.Equal(t, ChatToolType("computer_20251124"), c.Type)
+	assert.Equal(t, "computer", c.Name)
+	require.NotNil(t, c.DeferLoading)
+	assert.True(t, *c.DeferLoading)
+	assert.Equal(t, []string{"direct", "code_execution_20250825"}, c.AllowedCallers)
+	require.NotNil(t, c.EagerInputStreaming)
+	require.Len(t, c.InputExamples, 1)
+	assert.JSONEq(t, `{"action":"screenshot"}`, string(c.InputExamples[0].Input))
+	require.NotNil(t, c.MaxUses)
+	assert.Equal(t, 5, *c.MaxUses)
+	assert.Equal(t, []string{"example.com"}, c.AllowedDomains)
+	assert.Equal(t, []string{"evil.com"}, c.BlockedDomains)
+	require.NotNil(t, c.UserLocation)
+	require.NotNil(t, c.UserLocation.City)
+	assert.Equal(t, "SF", *c.UserLocation.City)
+	require.NotNil(t, c.Citations)
+	require.NotNil(t, c.Citations.Enabled)
+	require.NotNil(t, c.MaxContentTokens)
+	require.NotNil(t, c.UseCache)
+	require.NotNil(t, c.DisplayWidthPx)
+	assert.Equal(t, 1280, *c.DisplayWidthPx)
+	require.NotNil(t, c.DisplayHeightPx)
+	require.NotNil(t, c.DisplayNumber)
+	require.NotNil(t, c.EnableZoom)
+	require.NotNil(t, c.MaxCharacters)
+	assert.Equal(t, "my-server", c.MCPServerName)
+	require.NotNil(t, c.DefaultConfig)
+	require.NotNil(t, c.DefaultConfig.Enabled)
+	require.NotNil(t, c.Configs["tool_a"])
+	require.NotNil(t, c.Configs["tool_a"].Enabled)
+
+	// The copy must be independent: mutating it must not touch the original.
+	*c.DisplayWidthPx = 9999
+	c.AllowedDomains[0] = "mutated.com"
+	*c.UserLocation.City = "NYC"
+	c.Configs["tool_a"] = nil
+	assert.Equal(t, 1280, *original.DisplayWidthPx, "original DisplayWidthPx must be unchanged")
+	assert.Equal(t, "example.com", original.AllowedDomains[0], "original AllowedDomains must be unchanged")
+	assert.Equal(t, "SF", *original.UserLocation.City, "original UserLocation.City must be unchanged")
+	assert.NotNil(t, original.Configs["tool_a"], "original Configs entry must be unchanged")
+}
+
+// TestSonic_ChatTool_AnnotationsNeverSerialized verifies that MCPToolAnnotations
+// (json:"-") are never included in the JSON payload sent to providers.
+func TestSonic_ChatTool_AnnotationsNeverSerialized(t *testing.T) {
+	readOnly := true
+	destructive := false
+
+	tool := ChatTool{
+		Type: ChatToolTypeFunction,
+		Function: &ChatToolFunction{
+			Name:        "read_file",
+			Description: Ptr("Reads a file from the filesystem"),
+			Parameters: &ToolFunctionParameters{
+				Type:       "object",
+				Properties: NewOrderedMapFromPairs(KV("path", map[string]interface{}{"type": "string"})),
+				Required:   []string{"path"},
+			},
+		},
+		Annotations: &MCPToolAnnotations{
+			Title:           "File Reader",
+			ReadOnlyHint:    &readOnly,
+			DestructiveHint: &destructive,
+			IdempotentHint:  Ptr(true),
+		},
+	}
+
+	output, err := Marshal(tool)
+	require.NoError(t, err)
+
+	s := string(output)
+
+	// Annotations must be absent — json:"-" must suppress the entire field
+	assert.NotContains(t, s, "annotations", "annotations field must not appear in provider payload")
+	assert.NotContains(t, s, "readOnlyHint", "readOnlyHint must not appear in provider payload")
+	assert.NotContains(t, s, "destructiveHint", "destructiveHint must not appear in provider payload")
+	assert.NotContains(t, s, "idempotentHint", "idempotentHint must not appear in provider payload")
+	assert.NotContains(t, s, "File Reader", "annotation title must not appear in provider payload")
+
+	// The function definition itself must still be present
+	assert.Contains(t, s, "read_file", "function name must be in payload")
+	assert.Contains(t, s, "path", "parameter must be in payload")
+}
+
+// TestSonic_ChatTool_DeepCopy_AnnotationsPreserved verifies that DeepCopyChatTool
+// correctly copies Annotations so they survive any clone-based flows.
+func TestSonic_ChatTool_DeepCopy_AnnotationsPreserved(t *testing.T) {
+	readOnly := true
+	idempotent := false
+
+	original := ChatTool{
+		Type: ChatToolTypeFunction,
+		Function: &ChatToolFunction{
+			Name: "query_db",
+		},
+		Annotations: &MCPToolAnnotations{
+			Title:          "DB Query",
+			ReadOnlyHint:   &readOnly,
+			IdempotentHint: &idempotent,
+		},
+	}
+
+	copied := DeepCopyChatTool(original)
+
+	require.NotNil(t, copied.Annotations)
+	assert.Equal(t, "DB Query", copied.Annotations.Title)
+	assert.Equal(t, true, *copied.Annotations.ReadOnlyHint)
+	assert.Equal(t, false, *copied.Annotations.IdempotentHint)
+	assert.Nil(t, copied.Annotations.DestructiveHint)
+	assert.Nil(t, copied.Annotations.OpenWorldHint)
+
+	// Verify it's a true deep copy — mutations don't bleed back
+	*original.Annotations.ReadOnlyHint = false
+	assert.True(t, *copied.Annotations.ReadOnlyHint, "copy must not share pointer with original")
+}
+
+// TestSonic_ChatTool_DeepCopy_NilAnnotationsStaysNil verifies that a tool
+// without annotations deep-copies cleanly with Annotations remaining nil.
+func TestSonic_ChatTool_DeepCopy_NilAnnotationsStaysNil(t *testing.T) {
+	original := ChatTool{
+		Type:     ChatToolTypeFunction,
+		Function: &ChatToolFunction{Name: "plain_tool"},
+	}
+
+	copied := DeepCopyChatTool(original)
+
+	assert.Nil(t, copied.Annotations, "Annotations should stay nil when original has none")
+}
+
+func TestSonic_ChatTool_DeepCopy_PreservesFullParameterSchema(t *testing.T) {
+	ref := "#/$defs/Preferences"
+	minItems := int64(1)
+	nullable := true
+	original := ChatTool{
+		Type: ChatToolTypeFunction,
+		Function: &ChatToolFunction{
+			Name: "suggest_time",
+			Parameters: &ToolFunctionParameters{
+				Type: "object",
+				Properties: NewOrderedMapFromPairs(
+					KV("preferences", NewOrderedMapFromPairs(KV("$ref", ref))),
+				),
+				Required: []string{"preferences"},
+				Defs: NewOrderedMapFromPairs(
+					KV("Preferences", NewOrderedMapFromPairs(
+						KV("type", "object"),
+						KV("properties", NewOrderedMapFromPairs(
+							KV("startHour", NewOrderedMapFromPairs(KV("type", "string"))),
+						)),
+					)),
+				),
+				Ref:      &ref,
+				Items:    NewOrderedMapFromPairs(KV("type", "string")),
+				MinItems: &minItems,
+				AnyOf: []OrderedMap{
+					*NewOrderedMapFromPairs(KV("type", "string")),
+				},
+				Nullable: &nullable,
+			},
+		},
+	}
+
+	copied := DeepCopyChatTool(original)
+
+	require.NotNil(t, copied.Function)
+	require.NotNil(t, copied.Function.Parameters)
+	data, err := Marshal(copied.Function.Parameters)
+	require.NoError(t, err)
+	s := string(data)
+	assert.Contains(t, s, `"$defs"`)
+	assert.Contains(t, s, `"Preferences"`)
+	assert.Contains(t, s, `"$ref":"#/$defs/Preferences"`)
+	assert.Contains(t, s, `"items"`)
+	assert.Contains(t, s, `"anyOf"`)
+	assert.Contains(t, s, `"nullable":true`)
+
+	copied.Function.Parameters.Defs.Set("Mutated", map[string]any{"type": "object"})
+	_, exists := original.Function.Parameters.Defs.Get("Mutated")
+	assert.False(t, exists, "copy must not share $defs map with original")
+}
+
+func TestSonic_ToolFunctionParameters_DeepCopy_KeyOrderIndependent(t *testing.T) {
+	var original ToolFunctionParameters
+	require.NoError(t, Unmarshal([]byte(`{"$defs":{"Preferences":{"type":"object"}},"type":"object","properties":{"preferences":{"$ref":"#/$defs/Preferences"}}}`), &original))
+	require.NotEmpty(t, original.keyOrder.keys)
+
+	copied := DeepCopyToolFunctionParameters(&original)
+	require.NotNil(t, copied)
+	require.Equal(t, original.keyOrder.keys, copied.keyOrder.keys)
+
+	original.keyOrder.keys[0] = "mutated"
+
+	assert.NotEqual(t, original.keyOrder.keys[0], copied.keyOrder.keys[0], "copy must not share JSONKeyOrder.keys backing array")
+	assert.Equal(t, "$defs", copied.keyOrder.keys[0])
+}
+
+// --- ChatPromptTokensDetails / ResponsesResponseInputTokens cached_tokens ---
+// Per the OpenAI spec, cached_tokens counts prompt tokens read from the cache. Cache
+// writes must not be folded in, or spec consumers price cache writes as cache reads.
+
+func TestSonic_ChatPromptTokensDetails_CachedTokensExcludesWrites(t *testing.T) {
+	// Fresh-cache turn: write only, no read. cached_tokens must stay 0.
+	out, err := Marshal(ChatPromptTokensDetails{CachedWriteTokens: 9106})
+	require.NoError(t, err)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(out, &m))
+	assert.Equal(t, float64(0), m["cached_tokens"])
+	assert.Equal(t, float64(9106), m["cached_write_tokens"])
+	assert.Equal(t, float64(9106), m["cache_write_tokens"]) // OpenAI SDK reads this name
+
+	// Cache-hit turn with a concurrent write: cached_tokens must equal reads only.
+	out, err = Marshal(ChatPromptTokensDetails{CachedReadTokens: 500, CachedWriteTokens: 100})
+	require.NoError(t, err)
+	m = nil
+	require.NoError(t, json.Unmarshal(out, &m))
+	assert.Equal(t, float64(500), m["cached_tokens"])
+	assert.Equal(t, float64(500), m["cached_read_tokens"])
+	assert.Equal(t, float64(100), m["cached_write_tokens"])
+	assert.Equal(t, float64(100), m["cache_write_tokens"])
+}
+
+func TestSonic_ChatPromptTokensDetails_CachedTokensRoundTrip(t *testing.T) {
+	// Round-trip must preserve the read/write split; the bare cached_tokens fallback
+	// in UnmarshalJSON only applies when the split fields are absent.
+	in := ChatPromptTokensDetails{CachedReadTokens: 500, CachedWriteTokens: 100}
+	out, err := Marshal(in)
+	require.NoError(t, err)
+	var back ChatPromptTokensDetails
+	require.NoError(t, Unmarshal(out, &back))
+	assert.Equal(t, in.CachedReadTokens, back.CachedReadTokens)
+	assert.Equal(t, in.CachedWriteTokens, back.CachedWriteTokens)
+
+	// OpenAI-spec providers send only cached_tokens; it maps to reads.
+	var d ChatPromptTokensDetails
+	require.NoError(t, Unmarshal([]byte(`{"cached_tokens":42}`), &d))
+	assert.Equal(t, 42, d.CachedReadTokens)
+	assert.Equal(t, 0, d.CachedWriteTokens)
+}
+
+func TestSonic_ResponsesResponseInputTokens_CachedTokensExcludesWrites(t *testing.T) {
+	// Fresh-cache turn: write only, no read. cached_tokens must stay 0.
+	out, err := Marshal(ResponsesResponseInputTokens{CachedWriteTokens: 9106})
+	require.NoError(t, err)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(out, &m))
+	assert.Equal(t, float64(0), m["cached_tokens"])
+	assert.Equal(t, float64(9106), m["cached_write_tokens"])
+	assert.Equal(t, float64(9106), m["cache_write_tokens"]) // OpenAI SDK reads this name
+
+	// Cache-hit turn with a concurrent write: cached_tokens must equal reads only.
+	out, err = Marshal(ResponsesResponseInputTokens{CachedReadTokens: 500, CachedWriteTokens: 100})
+	require.NoError(t, err)
+	m = nil
+	require.NoError(t, json.Unmarshal(out, &m))
+	assert.Equal(t, float64(500), m["cached_tokens"])
+	assert.Equal(t, float64(500), m["cached_read_tokens"])
+	assert.Equal(t, float64(100), m["cached_write_tokens"])
+	assert.Equal(t, float64(100), m["cache_write_tokens"])
+}
+
+func TestSonic_ResponsesResponseInputTokens_CachedTokensRoundTrip(t *testing.T) {
+	in := ResponsesResponseInputTokens{CachedReadTokens: 500, CachedWriteTokens: 100}
+	out, err := Marshal(in)
+	require.NoError(t, err)
+	var back ResponsesResponseInputTokens
+	require.NoError(t, Unmarshal(out, &back))
+	assert.Equal(t, in.CachedReadTokens, back.CachedReadTokens)
+	assert.Equal(t, in.CachedWriteTokens, back.CachedWriteTokens)
+
+	var d ResponsesResponseInputTokens
+	require.NoError(t, Unmarshal([]byte(`{"cached_tokens":42}`), &d))
+	assert.Equal(t, 42, d.CachedReadTokens)
+	assert.Equal(t, 0, d.CachedWriteTokens)
+}
+
+// OpenAI's Responses API reports cache writes under cache_write_tokens (distinct
+// from Bifrost's cached_write_tokens); it must map into CachedWriteTokens.
+func TestSonic_ResponsesResponseInputTokens_OpenAICacheWriteTokensAlias(t *testing.T) {
+	// Fresh-cache Responses turn: OpenAI sends cache_write_tokens with cached_tokens:0.
+	var d ResponsesResponseInputTokens
+	require.NoError(t, Unmarshal([]byte(`{"cached_tokens":0,"cache_write_tokens":28003}`), &d))
+	assert.Equal(t, 28003, d.CachedWriteTokens)
+	assert.Equal(t, 0, d.CachedReadTokens)
+
+	// Bifrost's own cached_write_tokens takes precedence when both are present.
+	var d2 ResponsesResponseInputTokens
+	require.NoError(t, Unmarshal([]byte(`{"cached_write_tokens":100,"cache_write_tokens":28003}`), &d2))
+	assert.Equal(t, 100, d2.CachedWriteTokens)
+}
+
+func TestSonic_ChatPromptTokensDetails_OpenAICacheWriteTokensAlias(t *testing.T) {
+	var d ChatPromptTokensDetails
+	require.NoError(t, Unmarshal([]byte(`{"cached_tokens":0,"cache_write_tokens":28003}`), &d))
+	assert.Equal(t, 28003, d.CachedWriteTokens)
+	assert.Equal(t, 0, d.CachedReadTokens)
+
+	var d2 ChatPromptTokensDetails
+	require.NoError(t, Unmarshal([]byte(`{"cached_write_tokens":100,"cache_write_tokens":28003}`), &d2))
+	assert.Equal(t, 100, d2.CachedWriteTokens)
+}
+
+// --- prompt_cache_options / prompt_cache_breakpoint (OpenAI gpt-5.6+) ---
+
+func TestSonic_PromptCacheOptions_RoundTrip(t *testing.T) {
+	mode := "explicit"
+	ttl := "30m"
+
+	// Responses request params serialize the object to the wire.
+	out, err := Marshal(ResponsesParameters{PromptCacheOptions: &PromptCacheOptions{Mode: &mode, TTL: &ttl}})
+	require.NoError(t, err)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(out, &m))
+	pco, ok := m["prompt_cache_options"].(map[string]any)
+	require.True(t, ok, "prompt_cache_options must serialize on ResponsesParameters")
+	assert.Equal(t, "explicit", pco["mode"])
+	assert.Equal(t, "30m", pco["ttl"])
+
+	// Chat request params round-trip (through ChatParameters' custom unmarshaler).
+	out, err = Marshal(ChatParameters{PromptCacheOptions: &PromptCacheOptions{Mode: &mode, TTL: &ttl}})
+	require.NoError(t, err)
+	var cp ChatParameters
+	require.NoError(t, Unmarshal(out, &cp))
+	require.NotNil(t, cp.PromptCacheOptions)
+	assert.Equal(t, "explicit", *cp.PromptCacheOptions.Mode)
+	assert.Equal(t, "30m", *cp.PromptCacheOptions.TTL)
+
+	// Response echo: OpenAI returns prompt_cache_options on the response object.
+	var resp BifrostResponsesResponse
+	require.NoError(t, Unmarshal([]byte(`{"prompt_cache_options":{"mode":"implicit","ttl":"30m"}}`), &resp))
+	require.NotNil(t, resp.PromptCacheOptions)
+	assert.Equal(t, "implicit", *resp.PromptCacheOptions.Mode)
+	assert.Equal(t, "30m", *resp.PromptCacheOptions.TTL)
+}
+
+func TestSonic_PromptCacheBreakpoint_RoundTrip(t *testing.T) {
+	mode := "explicit"
+
+	// Responses content block serializes the breakpoint to the wire.
+	out, err := Marshal(ResponsesMessageContentBlock{
+		Type:                  ResponsesInputMessageContentBlockTypeText,
+		PromptCacheBreakpoint: &PromptCacheBreakpoint{Mode: &mode},
+	})
+	require.NoError(t, err)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(out, &m))
+	bp, ok := m["prompt_cache_breakpoint"].(map[string]any)
+	require.True(t, ok, "prompt_cache_breakpoint must serialize on ResponsesMessageContentBlock")
+	assert.Equal(t, "explicit", bp["mode"])
+
+	// Chat content block round-trips through its custom unmarshaler.
+	out, err = Marshal(ChatContentBlock{
+		Type:                  ChatContentBlockTypeText,
+		PromptCacheBreakpoint: &PromptCacheBreakpoint{Mode: &mode},
+	})
+	require.NoError(t, err)
+	var cb ChatContentBlock
+	require.NoError(t, Unmarshal(out, &cb))
+	require.NotNil(t, cb.PromptCacheBreakpoint)
+	assert.Equal(t, "explicit", *cb.PromptCacheBreakpoint.Mode)
+}
+
+// A native Responses stream's response.completed event carries the full response
+// object; prompt_cache_options and cache_write_tokens usage must survive parsing.
+func TestSonic_ResponsesStreamCompleted_CapturesPromptCacheAndCacheWrite(t *testing.T) {
+	event := `{
+		"type": "response.completed",
+		"sequence_number": 42,
+		"response": {
+			"id": "resp_1",
+			"object": "response",
+			"prompt_cache_options": {"mode": "implicit", "ttl": "30m"},
+			"usage": {
+				"input_tokens": 2006,
+				"input_tokens_details": {"cached_tokens": 1920, "cache_write_tokens": 80},
+				"output_tokens": 300,
+				"total_tokens": 2306
+			}
+		}
+	}`
+	var stream BifrostResponsesStreamResponse
+	require.NoError(t, Unmarshal([]byte(event), &stream))
+	require.NotNil(t, stream.Response)
+	require.NotNil(t, stream.Response.PromptCacheOptions)
+	assert.Equal(t, "implicit", *stream.Response.PromptCacheOptions.Mode)
+	assert.Equal(t, "30m", *stream.Response.PromptCacheOptions.TTL)
+	require.NotNil(t, stream.Response.Usage)
+	require.NotNil(t, stream.Response.Usage.InputTokensDetails)
+	assert.Equal(t, 80, stream.Response.Usage.InputTokensDetails.CachedWriteTokens)
+	assert.Equal(t, 1920, stream.Response.Usage.InputTokensDetails.CachedReadTokens)
 }

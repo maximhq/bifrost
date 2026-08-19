@@ -1,0 +1,108 @@
+---
+title: "Overview"
+description: "What carries over from open-source Bifrost, what changes, and how to migrate your SQLite config store to PostgreSQL before upgrading."
+icon: "book"
+---
+
+Bifrost Enterprise is a strict superset of open-source Bifrost - every provider, plugin, integration, and `config.json` field you use in OSS continues to work in Enterprise without changes. The handful of things that *do* change are operational: how you run the gateway at scale, how you store its state, and how you harden it for production. This section walks through each of those.
+
+<CardGroup cols={2}>
+  <Card title="Sizing & redundancy" icon="server" href="/enterprise/moving-from-oss/sizing">
+    How many Bifrost pods you need, what PostgreSQL hardware to budget for, and where object storage fits in.
+  </Card>
+  <Card title="Cross-region topology" icon="globe" href="/enterprise/moving-from-oss/cross-region">
+    Why Bifrost tolerates geographically distributed deployments without putting DB latency on the request path.
+  </Card>
+  <Card title="Security hardening" icon="shield" href="/enterprise/moving-from-oss/security-hardening">
+    The non-negotiable controls to enable before exposing Enterprise to real traffic.
+  </Card>
+  <Card title="Versioning" icon="code-branch" href="/enterprise/moving-from-oss/versioning">
+    Enterprise and OSS run on independent version numbers - check the changelog for the OSS base, never derive from the Enterprise version.
+  </Card>
+  <Card title="Version migrations" icon="arrow-up-right-dots" href="/enterprise/migration-guides/v1.4.0">
+    Breaking changes between Enterprise releases. Apply these *after* moving from OSS.
+  </Card>
+</CardGroup>
+
+## What carries over
+
+Anything that lives in `config.json` works identically in Enterprise - same schema, same provider blocks, same governance entities, same plugin configuration. SDK integrations (OpenAI, Anthropic, Bedrock, GenAI, LiteLLM, LangChain, PydanticAI), drop-in headers, MCP servers, and custom plugins all transfer without modification. See the [Enterprise overview](/enterprise/overview) for the full feature delta.
+
+## What does not carry over: SQLite
+
+<Warning>
+**Enterprise does not support SQLite as a config or log store.** SQLite is single-writer and single-host by design, which is incompatible with HA clustering, cross-region replicas, and the connection-pool patterns Enterprise relies on. You must migrate to PostgreSQL before starting the Enterprise upgrade.
+</Warning>
+
+Open-source Bifrost ships with a SQLite store as the zero-config default. Enterprise requires PostgreSQL for both the config store and the log store. Any production-grade PostgreSQL distribution works: Amazon RDS, Aurora PostgreSQL, Google Cloud SQL, AlloyDB, Azure Database for PostgreSQL, Crunchy Bridge, or self-managed PG 16+.
+
+### Migrating SQLite to PostgreSQL with pgloader
+
+[`pgloader`](https://github.com/dimitri/pgloader) is the recommended one-shot migration tool. It reads the SQLite file directly, translates the schema, and streams data into PostgreSQL using the native `COPY` protocol in a single command. It also handles type mapping and skips bad rows instead of aborting the whole load.
+
+**Install pgloader:**
+
+```bash
+# Debian / Ubuntu
+sudo apt-get install pgloader
+
+# macOS
+brew install pgloader
+
+# Or run via Docker
+docker run --rm -v "$PWD":/data dimitri/pgloader \
+  pgloader /data/migrate.load
+```
+
+**One-shot migration (CLI form):**
+
+```bash
+pgloader \
+  ./bifrost.db \
+  postgresql://bifrost:PASSWORD@postgres-host:5432/bifrost
+```
+
+**Reusable migration script (`migrate.load`):**
+
+```text
+LOAD DATABASE
+  FROM   sqlite:///var/bifrost/data/bifrost.db
+  INTO   postgresql://bifrost:PASSWORD@postgres-host:5432/bifrost
+
+WITH    include drop, create tables, create indexes, reset sequences
+SET     work_mem to '256MB', maintenance_work_mem to '512MB';
+```
+
+```bash
+pgloader migrate.load
+```
+
+<Note>
+pgloader is a one-shot loader, not a continuous replicator. Stop the OSS Bifrost gateway before running the migration so no writes land in SQLite after the snapshot is taken. For databases under 10 GB this typically completes in well under an hour.
+</Note>
+
+**Reference:** [pgloader SQLite documentation](https://pgloader.readthedocs.io/en/latest/ref/sqlite.html), [Render's SQLite-to-Postgres guide](https://render.com/articles/how-to-migrate-from-sqlite-to-postgresql).
+
+### After the migration
+
+Point Bifrost Enterprise at the new PostgreSQL DSN in your `config.json` (or the equivalent Helm value). Boot a single Enterprise pod first and confirm it migrates the schema cleanly before scaling out - see [Sizing & redundancy](/enterprise/moving-from-oss/sizing) for the recommended pod and DB shapes.
+
+## Pre-flight checklist
+
+<Steps>
+<Step title="Snapshot your SQLite file">
+  Stop the OSS gateway and copy `bifrost.db` to a safe location. This is your rollback point.
+</Step>
+<Step title="Provision PostgreSQL">
+  Pick a production-grade PostgreSQL service. See [Sizing](/enterprise/moving-from-oss/sizing) for hardware recommendations.
+</Step>
+<Step title="Run pgloader">
+  Migrate the SQLite snapshot into PostgreSQL with the command above. Verify row counts on a couple of representative tables.
+</Step>
+<Step title="Point Enterprise at the new DSN">
+  Update the database URL in `config.json` (or your Helm values) to the PostgreSQL DSN.
+</Step>
+<Step title="Apply hardening before exposing the gateway">
+  Work through [Security hardening](/enterprise/moving-from-oss/security-hardening) before allowing inference traffic.
+</Step>
+</Steps>

@@ -144,9 +144,6 @@ func TestAgent_RequestID_Propagation(t *testing.T) {
 		req,
 		initialResponse,
 		mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Assertions
@@ -236,9 +233,6 @@ func TestAgent_RequestID_PreservationAcrossDepth(t *testing.T) {
 
 	result, bifrostErr := manager.CheckAndExecuteAgentForChatRequest(
 		ctx, req, initialResponse, mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Assertions
@@ -311,9 +305,6 @@ func TestAgent_RequestID_NoGeneratorFunction(t *testing.T) {
 
 	result, bifrostErr := manager.CheckAndExecuteAgentForChatRequest(
 		ctx, req, initialResponse, mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Assertions
@@ -380,9 +371,6 @@ func TestAgent_RequestID_EmptyGeneratorResult(t *testing.T) {
 
 	result, bifrostErr := manager.CheckAndExecuteAgentForChatRequest(
 		ctx, req, initialResponse, mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Assertions
@@ -452,9 +440,6 @@ func TestAgent_RequestID_SequentialUpdates(t *testing.T) {
 
 	result, bifrostErr := manager.CheckAndExecuteAgentForChatRequest(
 		ctx, req, initialResponse, mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Assertions
@@ -526,9 +511,6 @@ func TestAgent_RequestID_MixedAutoAndNonAuto(t *testing.T) {
 
 	result, bifrostErr := manager.CheckAndExecuteAgentForChatRequest(
 		ctx, req, initialResponse, mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Assertions

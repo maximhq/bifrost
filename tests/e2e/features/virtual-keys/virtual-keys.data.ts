@@ -30,6 +30,8 @@ export function createVirtualKeyWithProvider(
       {
         provider,
         weight: 1.0,
+        allowedModels: ['*'],
+        keyIds: ['*'],
       },
     ],
     ...vkOverrides,
@@ -37,10 +39,10 @@ export function createVirtualKeyWithProvider(
 }
 
 /**
- * Factory function to create virtual key with budget
+ * Factory function to create virtual key with one or more budget lines
  */
 export function createVirtualKeyWithBudget(
-  budget: BudgetConfig,
+  budgets: BudgetConfig[],
   vkOverrides: Partial<VirtualKeyConfig> = {}
 ): VirtualKeyConfig {
   const timestamp = Date.now()
@@ -48,7 +50,7 @@ export function createVirtualKeyWithBudget(
     name: `Test VK Budget ${timestamp}`,
     description: 'Virtual key with budget configuration',
     isActive: true,
-    budget,
+    budgets,
     ...vkOverrides,
   }
 }
@@ -87,6 +89,8 @@ export function createVirtualKeyWithMultipleProviders(
     providerConfigs: providers.map((provider) => ({
       provider,
       weight,
+      allowedModels: ['*'],
+      keyIds: ['*'],
     })),
     ...vkOverrides,
   }
@@ -99,6 +103,8 @@ export function createProviderConfig(overrides: Partial<ProviderConfig> = {}): P
   return {
     provider: 'openai',
     weight: 1.0,
+    allowedModels: ['*'],
+    keyIds: ['*'],
     ...overrides,
   }
 }
@@ -126,6 +132,10 @@ export const SAMPLE_BUDGETS: Record<string, BudgetConfig> = {
   weekly: {
     maxLimit: 200,
     resetDuration: '1w',
+  },
+  everyMinute: {
+    maxLimit: 5,
+    resetDuration: '1m',
   },
 }
 

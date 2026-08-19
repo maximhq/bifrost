@@ -8,14 +8,14 @@ invoke:
       Invokes a model using AWS Bedrock InvokeModel API format.
       Accepts raw model-specific request body.
     tags:
-      - Bedrock Integration
+    - Bedrock Integration
     parameters:
-      - name: modelId
-        in: path
-        required: true
-        schema:
-          type: string
-        description: Model ID (e.g., anthropic.claude-3-sonnet-20240229-v1:0)
+    - name: modelId
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Model ID (e.g., anthropic.claude-3-sonnet-20240229-v1:0)
     requestBody:
       required: true
       content:
@@ -42,6 +42,11 @@ invoke:
             schema:
               $ref: '../../../schemas/integrations/bedrock/common.yaml#/BedrockError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 invoke-stream:
   post:
     operationId: bedrockInvokeModelStream
@@ -49,14 +54,14 @@ invoke-stream:
     description: |
       Invokes a model with streaming using AWS Bedrock InvokeModelWithResponseStream API format.
     tags:
-      - Bedrock Integration
+    - Bedrock Integration
     parameters:
-      - name: modelId
-        in: path
-        required: true
-        schema:
-          type: string
-        description: Model ID (e.g., anthropic.claude-3-sonnet-20240229-v1:0)
+    - name: modelId
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Model ID (e.g., anthropic.claude-3-sonnet-20240229-v1:0)
     requestBody:
       required: true
       content:
@@ -83,3 +88,8 @@ invoke-stream:
           application/json:
             schema:
               $ref: '../../../schemas/integrations/bedrock/common.yaml#/BedrockError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

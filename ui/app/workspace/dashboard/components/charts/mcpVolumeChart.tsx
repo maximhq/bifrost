@@ -1,8 +1,7 @@
-"use client";
-
 import type { MCPHistogramResponse } from "@/lib/types/logs";
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { formatCompactNumber } from "@/lib/utils/numbers";
 import { CHART_COLORS, formatFullTimestamp, formatTimestamp } from "../../utils/chartUtils";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
@@ -47,7 +46,7 @@ function CustomTooltip({ active, payload }: any) {
 	);
 }
 
-export function MCPVolumeChart({ data, chartType, startTime, endTime }: MCPVolumeChartProps) {
+function MCPVolumeChartImpl({ data, chartType, startTime, endTime }: MCPVolumeChartProps) {
 	const chartData = useMemo(() => {
 		if (!data?.buckets || !data.bucket_size_seconds) {
 			return [];
@@ -89,14 +88,30 @@ export function MCPVolumeChart({ data, chartType, startTime, endTime }: MCPVolum
 							tick={{ fontSize: 11, className: "fill-zinc-500" }}
 							tickLine={false}
 							axisLine={false}
-							width={40}
-							tickFormatter={(v) => v.toLocaleString()}
+							width={44}
+							tickFormatter={(v) => formatCompactNumber(v)}
 							domain={[0, (dataMax: number) => Math.max(dataMax, 1)]}
 							allowDataOverflow={false}
 						/>
 						<Tooltip content={<CustomTooltip />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
-						<Bar isAnimationActive={false} dataKey="success" stackId="requests" fill={CHART_COLORS.success} fillOpacity={0.9} radius={[0, 0, 0, 0]} barSize={30} />
-						<Bar isAnimationActive={false} dataKey="error" stackId="requests" fill={CHART_COLORS.error} fillOpacity={0.9} radius={[2, 2, 0, 0]} barSize={30} />
+						<Bar
+							isAnimationActive={false}
+							dataKey="success"
+							stackId="requests"
+							fill={CHART_COLORS.success}
+							fillOpacity={0.9}
+							radius={[0, 0, 0, 0]}
+							barSize={30}
+						/>
+						<Bar
+							isAnimationActive={false}
+							dataKey="error"
+							stackId="requests"
+							fill={CHART_COLORS.error}
+							fillOpacity={0.9}
+							radius={[2, 2, 0, 0]}
+							barSize={30}
+						/>
 					</BarChart>
 				) : (
 					<AreaChart {...commonProps}>
@@ -115,8 +130,8 @@ export function MCPVolumeChart({ data, chartType, startTime, endTime }: MCPVolum
 							tick={{ fontSize: 11, className: "fill-zinc-500" }}
 							tickLine={false}
 							axisLine={false}
-							width={40}
-							tickFormatter={(v) => v.toLocaleString()}
+							width={44}
+							tickFormatter={(v) => formatCompactNumber(v)}
 							domain={[0, (dataMax: number) => Math.max(dataMax, 1)]}
 							allowDataOverflow={false}
 						/>
@@ -130,10 +145,19 @@ export function MCPVolumeChart({ data, chartType, startTime, endTime }: MCPVolum
 							fill={CHART_COLORS.success}
 							fillOpacity={0.7}
 						/>
-						<Area isAnimationActive={false} type="monotone" dataKey="error" stackId="1" stroke={CHART_COLORS.error} fill={CHART_COLORS.error} fillOpacity={0.7} />
+						<Area
+							isAnimationActive={false}
+							type="monotone"
+							dataKey="error"
+							stackId="1"
+							stroke={CHART_COLORS.error}
+							fill={CHART_COLORS.error}
+							fillOpacity={0.7}
+						/>
 					</AreaChart>
 				)}
 			</ResponsiveContainer>
 		</ChartErrorBoundary>
 	);
 }
+export const MCPVolumeChart = memo(MCPVolumeChartImpl);

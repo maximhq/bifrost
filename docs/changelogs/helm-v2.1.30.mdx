@@ -1,0 +1,18 @@
+---
+title: "v2.1.30"
+description: "Helm v2.1.30 changelog - 2026-07-21"
+---
+
+<Update label="Bifrost Helm" description="v2.1.30">
+
+## Changelog
+
+- Added `bifrost.client.retainContentInObjectStorage` (default off, commented out) to keep full request/response content in object storage when content logging is disabled — via the global `disableContentLogging` setting or the `x-bf-disable-content-logging` header — instead of dropping it. The content is hidden: the database row stays metadata-only and the UI/API never fetch the payload back, so it is only readable with direct access to the bucket. Requires `storage.logsStore.objectStorage.enabled: true`; without it the content is dropped as before. Renders into `client.retain_content_in_object_storage`.
+- Added top-level `bifrost.webhooks[]` endpoint declarations (name/url/events plus per-endpoint delivery tuning like `include_response`, `max_retries`, retry backoff, timeouts, and `max_concurrent_deliveries`), reconciled by name at startup. Renders directly into the top-level `webhooks` array. Also added `bifrost.client.webhookConfig.deliveryHistoryRetentionDays` (global delivery-history retention), rendering into `client.webhook_config.delivery_history_retention_days`.
+- Added `bifrost.loadBalancer.appendFallbacksToPinned` (default off) to append healthy providers eligible for a request's model as fallbacks behind a pinned provider. Renders into `load_balancer_config.append_fallbacks_to_pinned`.
+- Added audit-log object-storage archival tuning `bifrost.auditLogs.archiveInterval` (default `24h`), `archiveGracePeriod` (default `15m`), and `archiveMaxObjectBytes` (default 128MiB), rendering into `audit_logs.archive_interval` / `archive_grace_period` / `archive_max_object_bytes`.
+- Added `keep_alive_timeout_in_seconds` to provider `network_config` (default 30) to drop idle pooled connections before the upstream closes them. Renders into `network_config.keep_alive_timeout_in_seconds`.
+- Added `use_anthropic_endpoints` to provider keys (deepseek/fireworks/vllm/sgl) and to per-alias configs, routing chat completions and responses through Anthropic-compatible endpoints. Passes through into each key / alias as `use_anthropic_endpoints`.
+- Added SCIM auth-proxy / identity-aware-proxy support via `bifrost.scim.config.authProxy` (shared across all SCIM providers), for deployments fronted by a Zero Trust / ZTNA proxy — Cloudflare Access, a generic OIDC proxy. Carries `enabled`, `provider`, `mode` (`login_only`/`full`), the JWKS fields (`issuerUrl`/`jwksUrl`/`audience`/`allowedAudiences`/`headerName`), plus `userIdClaim`. Renders into `scim_config.config.authProxy`.
+
+</Update>

@@ -54,8 +54,7 @@ func NewOrderedMapFromPairs(pairs ...Pair) *OrderedMap {
 }
 
 // OrderedMapFromMap creates an OrderedMap from a plain map.
-// Key order is NOT guaranteed since Go maps have undefined iteration order.
-// Use this only when insertion order doesn't matter (e.g., for hashing).
+// Keys are sorted lexicographically to ensure deterministic ordering.
 func OrderedMapFromMap(m map[string]interface{}) *OrderedMap {
 	if m == nil {
 		return nil
@@ -68,6 +67,7 @@ func OrderedMapFromMap(m map[string]interface{}) *OrderedMap {
 		om.keys = append(om.keys, k)
 		om.values[k] = v
 	}
+	sort.Strings(om.keys)
 	return om
 }
 
@@ -187,7 +187,7 @@ func (om OrderedMap) MarshalJSON() ([]byte, error) {
 		}
 
 		// key
-		keyBytes, err := Marshal(k)
+		keyBytes, err := MarshalSorted(k)
 		if err != nil {
 			return nil, err
 		}
@@ -195,7 +195,7 @@ func (om OrderedMap) MarshalJSON() ([]byte, error) {
 		buf.WriteByte(':')
 
 		// value — nested *OrderedMap values will use their own MarshalJSON
-		valBytes, err := Marshal(om.values[k])
+		valBytes, err := MarshalSorted(om.values[k])
 		if err != nil {
 			return nil, err
 		}
@@ -225,14 +225,14 @@ func (om *OrderedMap) MarshalSorted() ([]byte, error) {
 			buf.WriteByte(',')
 		}
 
-		keyBytes, err := Marshal(k)
+		keyBytes, err := MarshalSorted(k)
 		if err != nil {
 			return nil, err
 		}
 		buf.Write(keyBytes)
 		buf.WriteByte(':')
 
-		valBytes, err := Marshal(om.values[k])
+		valBytes, err := MarshalSorted(om.values[k])
 		if err != nil {
 			return nil, err
 		}

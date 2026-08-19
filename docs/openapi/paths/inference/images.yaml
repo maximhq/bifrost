@@ -7,7 +7,7 @@ image-generation:
     description: |
       Generates images from text prompts using the specified model.
     tags:
-      - Images
+    - Images
     requestBody:
       required: true
       content:
@@ -34,6 +34,11 @@ image-generation:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 image-edit:
   post:
     operationId: imageEdit
@@ -42,7 +47,7 @@ image-edit:
       Edits an image using a text prompt and optional mask. Request must be sent as multipart/form-data
       with at least `model`, `prompt` (unless `type` is `background_removal`), and `image` (or `image[]`).
     tags:
-      - Images
+    - Images
     requestBody:
       required: true
       content:
@@ -69,6 +74,11 @@ image-edit:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 image-variation:
   post:
     operationId: imageVariation
@@ -77,7 +87,7 @@ image-variation:
       Creates variations of an image. Request must be sent as multipart/form-data with `model` and `image` (or `image[]`).
       Does not support streaming.
     tags:
-      - Images
+    - Images
     requestBody:
       required: true
       content:
@@ -95,3 +105,8 @@ image-variation:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

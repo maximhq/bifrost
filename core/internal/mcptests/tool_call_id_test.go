@@ -154,9 +154,6 @@ func TestToolCallID_DuplicateIDsInParallelExecution(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mockLLM.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Should complete (even if results might be ambiguous)
@@ -327,9 +324,6 @@ func TestToolCallID_UniqueIDsInBatch(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mockLLM.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	require.Nil(t, bifrostErr)

@@ -1,0 +1,53 @@
+# Enterprise overlay: access profile governance example.
+# Demonstrates:
+# - Profile-level (global) budget + rate limit
+# - Provider-level model allow-list
+# - Provider-level budget + rate limit overrides
+bifrost:
+  accessProfiles:
+    - name: "enterprise-governed-profile"
+      description: "Access profile with global budget and rate limits"
+      is_active: true
+      tags:
+        - "enterprise"
+        - "governance"
+      budgets:
+        - id: "ap-global-budget"
+          max_limit: 3000
+          reset_duration: "1M"
+      rate_limit:
+        id: "ap-global-rate-limit"
+        token_max_limit: 500000
+        token_reset_duration: "1d"
+        request_max_limit: 25000
+        request_reset_duration: "1h"
+      provider_configs:
+        - provider_name: "openai"
+          all_models_allowed: false
+          allowed_models:
+            - "gpt-4o-mini"
+            - "gpt-4o"
+          budgets:
+            - id: "ap-openai-budget"
+              max_limit: 1800
+              reset_duration: "1M"
+          rate_limit:
+            id: "ap-openai-rate"
+            token_max_limit: 300000
+            token_reset_duration: "1d"
+            request_max_limit: 15000
+            request_reset_duration: "1h"
+        - provider_name: "anthropic"
+          all_models_allowed: false
+          allowed_models:
+            - "claude-3-5-sonnet-latest"
+          budgets:
+            - id: "ap-anthropic-budget"
+              max_limit: 1200
+              reset_duration: "1M"
+          rate_limit:
+            id: "ap-anthropic-rate"
+            token_max_limit: 200000
+            token_reset_duration: "1d"
+            request_max_limit: 10000
+            request_reset_duration: "1h"

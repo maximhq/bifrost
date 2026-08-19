@@ -25,7 +25,11 @@ func TestRunway(t *testing.T) {
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:             schemas.Runway,
 		VideoGenerationModel: "gen4.5",
+		ImageGenerationModel: "gen4_image",
+		ImageEditModel:       "gen4_image",
 		Scenarios: llmtests.TestScenarios{
+			ImageGeneration: true,
+			ImageEdit:       true,
 			VideoGeneration: false, // disabled for now because of long running operations
 			VideoRetrieve:   false,
 			VideoRemix:      false,

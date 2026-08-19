@@ -1,7 +1,66 @@
-
-
 export function capitalize(name: string) {
-    return name.charAt(0).toUpperCase() + name.slice(1);
+	return name.charAt(0).toUpperCase() + name.slice(1);
+}
+
+// titleCaseFromSnakeCase turns a snake_case identifier (e.g. an enum-style
+// state value like "pending_verification") into a title-cased display string
+// (e.g. "Pending Verification"), for rendering in badges, labels, and the like.
+export function titleCaseFromSnakeCase(value: string): string {
+	return value
+		.split("_")
+		.filter(Boolean)
+		.map((word) => capitalize(word.toLowerCase()))
+		.join(" ");
+}
+
+export type TrimmableKeys<T> = { [K in keyof T]: T[K] extends string | string[] | undefined ? K : never }[keyof T];
+
+// trimFields trims whitespace from the named string (or string[]) fields of obj, in place.
+// Undefined fields are left untouched.
+export function trimFields<T extends object>(obj: T, ...keys: TrimmableKeys<T>[]): T {
+	for (const key of keys) {
+		const value = obj[key];
+		if (typeof value === "string") {
+			obj[key] = value.trim() as T[typeof key];
+		} else if (Array.isArray(value)) {
+			obj[key] = value.map((item) => (typeof item === "string" ? item.trim() : item)) as T[typeof key];
+		}
+	}
+	return obj;
+}
+
+// Cleans raw input into a valid numeric string:
+// - Single non-alphabetic separator between digits (commas, spaces, underscores) → stripped
+// - Alphabetic characters → stop processing
+// - 2+ consecutive non-digit characters → stop processing
+// - First decimal point preserved, subsequent dots stripped
+export function cleanNumericInput(raw: string): string {
+	raw = raw.trim();
+	let result = "";
+	let hasDecimal = false;
+	let i = 0;
+	while (i < raw.length) {
+		const ch = raw[i];
+		if (/\d/.test(ch)) {
+			result += ch;
+			i++;
+		} else if (ch === "." && !hasDecimal) {
+			result += ch;
+			hasDecimal = true;
+			i++;
+		} else if (/[a-zA-Z]/.test(ch)) {
+			break;
+		} else {
+			// Non-alphabetic, non-digit character (comma, space, extra dot, etc.)
+			// Accept only if it's a single separator followed by a digit
+			if (i + 1 < raw.length && /\d/.test(raw[i + 1])) {
+				i++; // skip the separator
+			} else {
+				break;
+			}
+		}
+	}
+	return result;
 }
 
 export function formatBytes(bytes: number): string {

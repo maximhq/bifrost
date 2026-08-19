@@ -9,8 +9,8 @@ End-to-end API tests for the Bifrost API using Postman collections and [Newman](
 | Path | Description |
 |------|-------------|
 | `bifrost-v1-complete.postman_collection.json` | Postman collection: all `/v1` endpoints (models, chat, completions, responses, embeddings, audio, images, count tokens, batches, files, containers, MCP) |
-| `bifrost-v1.postman_environment.json` | Optional/legacy Postman environment (OpenAI). `run-newman-tests.sh` uses **BIFROST_*** environment variables as the fallback when no provider-specific env file is passed (see script and `--help`). |
-| `run-newman-tests.sh` | Script to run the V1 collection with Newman (single provider or all providers). |
+| `bifrost-v1.postman_environment.json` | Optional/legacy Postman environment (OpenAI). `run-newman-inference-tests.sh` uses **BIFROST_*** environment variables as the fallback when no provider-specific env file is passed (see script and `--help`). |
+| `run-newman-inference-tests.sh` | Script to run the V1 collection with Newman (single provider or all providers). |
 
 ### Integration Endpoint Tests
 
@@ -26,12 +26,21 @@ End-to-end API tests for the Bifrost API using Postman collections and [Newman](
 | `run-newman-composite-integration.sh` | Script to run composite integration tests |
 | `run-all-integration-tests.sh` | Master script to run all integration test suites |
 
+### Model Catalog Wiring Tests
+
+| Path | Description |
+|------|-------------|
+| `collections/bifrost-model-catalog-wiring.postman_collection.json` | Generated collection asserting that management-API mutations (add/update/delete provider and key, toggle key, alias) propagate into the model catalog read endpoints. **Generated — do not hand-edit.** |
+| `runners/build-model-catalog-wiring-collection.py` | Generator for the collection above. Holds the scenario spec (the source of truth) and emits the JSON. |
+| `runners/individual/run-newman-model-catalog-wiring-tests.sh` | Script to run the model-catalog wiring collection. |
+
 ### Shared Resources
 
 | Path | Description |
 |------|-------------|
 | `provider_config/` | Per-provider Postman env `.json` files (`bifrost-v1-openai.postman_environment.json`, etc.). Reused across all collections. |
 | `provider-capabilities.json` | Provider capability matrix: per-provider map of booleans (e.g. `chat_completions: true`, `embedding: false`) for batch, file, container, embedding, speech, transcription, image. Derived from `core/providers/*/provider.go` NewUnsupportedOperationError. Used by integration collections to skip unsupported requests when run with all providers. |
+| `collections/smoke-manifest.json` | Curated ~100-request smoke selection for `make smoke-provider-harness-test` (see [Provider Harness Smoke Set](#provider-harness-smoke-set)). Hand-maintained; guarded offline by `runners/lib/smoke-manifest.test.mjs`. |
 | `fixtures/` | Sample files for multipart requests: `sample.mp3`, `sample.jsonl`, `sample.txt` |
 | `setup-plugin.sh` | Builds the hello-world plugin for API Management plugin tests. Run automatically by API Management and all-integration runners. |
 | `setup-mcp.sh` | Starts the test MCP server (`examples/mcps/http-no-ping-server`) on http://localhost:3001/ so Add/Update/Delete MCP Client tests can pass. Run automatically by API Management and all-integration runners. |
@@ -49,7 +58,7 @@ Before running **API Management** or **all integration** tests, the runners opti
 - **`setup-plugin.sh`** – Builds `examples/plugins/hello-world` into `build/hello-world.so` (native OS/arch). If the plugin fails to build, plugin tests may fail with "plugin not found" / "failed to load"; those failures are treated as expected when the plugin is missing.
 - **`setup-mcp.sh`** – Builds and starts the test MCP server (`examples/mcps/http-no-ping-server`) on **http://localhost:3001/** so the collection’s test MCP client (connection string `http://localhost:3001/`) can connect. If the server is already listening on 3001 or the script is skipped, MCP client tests accept 404/500 as fallback.
 
-Both are called automatically by `run-newman-api-tests.sh` and `run-all-integration-tests.sh`.
+Both are called automatically by `runners/run-newman-api-tests.sh` and `runners/run-all-integration-tests.sh`.
 
 To run setup manually (from this directory):
 
@@ -68,20 +77,134 @@ From this directory (`tests/e2e/api`):
 
 ```bash
 # Run for all providers in parallel (each provider_config/bifrost-v1-*.postman_environment.json except sgl and ollama)
-./run-newman-tests.sh
+./runners/run-newman-inference-tests.sh
 
 # Run for a single provider (by name or path to .json env)
-./run-newman-tests.sh --env openai
-./run-newman-tests.sh --env provider_config/bifrost-v1-openai.postman_environment.json
+./runners/run-newman-inference-tests.sh --env openai
+./runners/run-newman-inference-tests.sh --env provider_config/bifrost-v1-openai.postman_environment.json
 
 # Options
-./run-newman-tests.sh --help
-./run-newman-tests.sh --folder "Chat Completions"
-./run-newman-tests.sh --html --verbose
+./runners/run-newman-inference-tests.sh --help
+./runners/run-newman-inference-tests.sh --folder "Chat Completions"
+./runners/run-newman-inference-tests.sh --html --verbose
 ```
 
-**Retry logic (CI)**  
-When `CI=1` or `CI=true` is set (case-insensitive), each failing request in the V1 collection is retried up to 3 times before moving to the next request. This helps with flaky tests in CI. The runner passes the value through to Newman when the environment variable is set (e.g. `CI=1 ./run-newman-tests.sh --env openai` or `CI=true ./run-newman-tests.sh --env openai`). Retry attempts are logged to the console as `[RETRY] Request "..." failed (attempt n/3). Retrying...`.
+### Provider Harness Smoke Set
+
+The full provider harness runs ~1900 requests after augmentation. For a
+pre-release or pre-merge check, run the curated smoke set instead:
+
+```bash
+make smoke-provider-harness-test                       # ~100 requests, all 8 providers
+make run-provider-harness-test SMOKE=1                 # identical
+make run-provider-harness-test SMOKE=1 PROVIDER=bedrock  # smoke set, one fork
+make run-provider-harness-test SMOKE=path/to/other.json  # a different manifest
+```
+
+The selection lives in `collections/smoke-manifest.json`, grouped into five
+pillars, each with an `intent` saying what it buys:
+
+| Pillar | Picks | Covers |
+|---|---:|---|
+| `cache-parity` | 32 | Round 34 direct-vs-Bifrost cache anchor, Round 35 cross-provider matrix, content-block `cache_control` / `cachePoint`, OpenRouter pass-through |
+| `reasoning-tools-interleave` | 24 | Folder 46's three-turn reasoning × tool-call chains, plus chat→responses tool replay |
+| `reasoning` | 19 | Redacted thinking, encrypted reasoning item-id round-trips, thought-signature replay, fail-soft |
+| `cross-cut-baseline` | 16 | One cell per endpoint shape and modality, including the azure and passthrough forks |
+| `costing-guards` | 9 | Cost/usage recording (dbverify) and provider egress streaming/truncation guards |
+
+Three things about the manifest are load-bearing:
+
+- **Rows are matched by `(folder, name)` against the *augmented* collection**,
+  not against `provider-harness.json`. The cache-parity rows are generated at
+  augment time by `runners/lib/midconv-system-cache-parity.mjs` and
+  `crossprovider-cache-matrix.mjs`, so they exist nowhere in the source
+  collection and cannot be tagged in place the way `[PREVIEW]` / `[SKIP]` rows
+  are. The folder is required, not decorative: criss-cross rows are named after
+  their model, so a bare `gemini/gemini-2.5-flash` matches 25 requests.
+- **`SMOKE` forces the deferred cache-parity pass on.** That pass normally runs
+  only for a completely unfiltered sweep, and `SMOKE` is a filter — without the
+  override the cache rows would be carved out of the parallel pass and never
+  replayed. `RERUN_FAILED=1` still wins, because its selection comes from the
+  main pass's report.
+- **`make test-harness-runner-lib` guards the manifest offline.**
+  `runners/lib/smoke-manifest.test.mjs` runs the real augment step and resolves
+  every entry, so a renamed or moved request fails there instead of silently
+  shrinking the smoke set. It also asserts cache write/read pairs stay balanced,
+  every provider fork has something to run, and each three-turn interleave chain
+  keeps all three turns (turn 1 sets the collection variables; turns 2 and 3
+  replay them).
+
+Selecting a request pulls in its chained-variable producers automatically, and a
+row claimed by two provider partitions runs once per fork — both the same as in a
+full sweep, so the effective request count can exceed the manifest's 100.
+
+### Routing Harness Ledger
+
+Harness days are journaled in `routing/ledger-YYYY-MM-DD.md` (gitignored, one
+file per day the routing/catalog suites run). Each ledger holds: an
+open-divergences snapshot, per-suite scenario tables (setup / expected /
+actual, with ✅ / ⚠️ recalibrated / 🐞 bug-found markers), the day's run
+results, and day notes. Append to the current day's file during a session;
+never rewrite past days.
+
+### Management API coverage
+
+`bifrost-api-management.postman_collection.json` is the OSS management surface:
+every `/api/*` route the OSS binary serves, plus `/health` and `/metrics`.
+Enterprise-only routes (RBAC, access profiles, audit logs, business units,
+circuit breaker, MCP tool groups, vault) are **not** here — they 404 on an OSS
+server and live in `bifrost-enterprise/tests/e2e/api/enterprise-management.postman_collection.json`,
+which the enterprise runner merges on top of this base.
+
+Two request styles coexist, and the difference is load-bearing:
+
+- **Lifecycle requests** create a resource, assert on it, and tear it down. The
+  collection-level script requires a 2xx, so these only belong to routes that
+  succeed deterministically against a local gateway.
+- **Requests suffixed `(Coverage Probe)`** pass on a 2xx or on any 4xx/5xx — but
+  not on a 3xx, and not on a response the gate rejects for other reasons. Use
+  that suffix only when the outcome depends on deployment shape rather than on
+  correctness — an unconfigured vault, a missing background job runner, a webhook
+  receiver that is deliberately not listening.
+
+The collection-level gate also whitelists a handful of named requests that carry
+no `(Coverage Probe)` suffix, because their non-2xx outcome is itself the
+expected result. Keep this list in sync when adding to it:
+
+- `Get … (Before Create)` requests may answer 404 — the resource does not exist yet.
+- `Add / Reconnect / Update / Delete MCP Client` may answer 404 when the client
+  was never added.
+- Plugin requests may answer 404 with a "plugin not found"/"failed to load"
+  message (the `.so` is not built), or 403 with "requires genuine admin
+  authentication" in the unauthenticated pass.
+- `Clear Cache by Cache ID / by Key (Coverage Probe)` may answer 405 — the routes
+  are not implemented yet.
+
+Resource names are stamped with `Date.now()` so the collection can run twice in
+one invocation (the runner replays it with dashboard auth enabled).
+
+### API Management Extensions
+
+The API management runner can merge additional Postman folders maintained
+outside this repo:
+
+```bash
+./runners/run-newman-api-tests.sh --extra-collection /path/to/extra.postman_collection.json
+```
+
+You can also pass extensions via environment variable:
+
+```bash
+BIFROST_API_EXTRA_COLLECTION=/path/to/extra.postman_collection.json \
+  ./runners/run-newman-api-tests.sh
+```
+
+The default run loads no extra collections. Downstream repos pass their own
+collections at run time, so the shared management requests live here while
+assertions specific to those repos stay with them.
+
+**Retry logic (CI)**
+When `CI=1` or `CI=true` is set (case-insensitive), each failing request in the V1 collection is retried up to 3 times before moving to the next request. This helps with flaky tests in CI. The runner passes the value through to Newman when the environment variable is set (e.g. `CI=1 ./runners/run-newman-inference-tests.sh --env openai` or `CI=true ./runners/run-newman-inference-tests.sh --env openai`). Retry attempts are logged to the console as `[RETRY] Request "..." failed (attempt n/3). Retrying...`.
 
 ### Integration Endpoint Tests
 
@@ -101,6 +224,134 @@ When `CI=1` or `CI=true` is set (case-insensitive), each failing request in the 
 # Run with options
 ./run-newman-openai-integration.sh --html --verbose
 ./run-newman-openai-integration.sh --env azure   # Test Azure-specific paths
+```
+
+### Model Catalog Wiring Tests
+
+These tests cover the path **HTTP mutation → config write → server-side catalog
+hook → read endpoint**: the wiring that keeps the model catalog (`/api/models`,
+`/api/models/details`) in sync with provider and key changes made through the
+management API. Each scenario stands up an isolated custom provider backed by a
+real upstream (OpenAI), drives a sequence of mutations, and asserts the catalog
+reflects each one.
+
+What it covers (one scenario per contract):
+
+- **Add provider + key** — a gated key surfaces its allowed model.
+- **Update key model set** — changing a key's allow-list re-gates the catalog.
+- **Disable / re-enable key** — a disabled key drops its models; re-enabling restores them.
+- **Delete one of two keys** — only the deleted key's models drop; the sibling's survive.
+- **Delete provider** — the provider and its models disappear from the catalog.
+- **Alias resolution** — an inference call via a key alias routes to the underlying model.
+
+Run locally (from this directory):
+
+```bash
+./runners/individual/run-newman-model-catalog-wiring-tests.sh
+```
+
+Requirements:
+
+- Bifrost running at `{{base_url}}` (default `http://localhost:8080`), ideally
+  against a clean config store so no pre-existing `catwiring-*` providers linger.
+- `openai_api_key` available — either in the seed env file (`generated/seed.env`
+  or `$BIFROST_E2E_SEED_ENV`) or exported in the shell. Scenarios whose required
+  credentials are missing skip themselves rather than fail.
+
+Notes:
+
+- Every resource is named `catwiring-openai-<scenario>-<run-id>`, where the
+  run-id is built once per run from `e2e_seed_prefix` plus a timestamp nonce, so
+  parallel runs never collide and a failed run leaves no blocking state.
+- The catalog's live-model cache is populated asynchronously by the key hooks, so
+  every post-mutation read polls with exponential backoff (up to 8 attempts)
+  instead of asserting immediately.
+- Each scenario has a cleanup folder that deletes its provider (cascading to its
+  keys); it runs even when a mid-scenario step fails, and accepts 200/204/404.
+- To change or extend the scenarios, edit
+  `runners/build-model-catalog-wiring-collection.py` and re-run it, then commit
+  both the script and the regenerated collection:
+
+  ```bash
+  python3 runners/build-model-catalog-wiring-collection.py
+  ```
+
+Required seed-env vars: `openai_api_key`, plus `e2e_seed_prefix` for
+run-id namespacing. The runner also forwards the full per-provider credential set
+(`anthropic_api_key`, `azure_*`, `bedrock_*`, `vertex_*`, etc.) so per-provider
+expansion needs no runner change.
+
+### Auth Matrix Tests
+
+| Path | Description |
+|------|-------------|
+| `collections/bifrost-v1-auth-matrix.postman_collection.json` | Asserts the separation between inference auth (governance / virtual key) and dashboard auth (admin password on `/api/*`). |
+| `runners/individual/run-newman-auth-matrix-tests.sh` | Boots a fresh server per config combination and runs the collection against each. |
+
+Unlike the other runners, this one **boots its own servers** — each of the four
+combinations needs a different boot config, so it cannot reuse a shared running
+server. It requires a built `bifrost-http` binary.
+
+It sweeps the 2x2 of `client.enforce_auth_on_inference` x
+`governance.auth_config.is_enabled` (admin password) with a pre-seeded virtual key
+and an unreachable dummy provider (so "auth passed" surfaces as a non-401 upstream
+error). Per combination it asserts:
+
+- **VK-authenticated inference is never blocked by the auth layer** (never 401),
+  in every combination — including admin-password-on. This is the core regression
+  guard: the admin middleware must not reject virtual-key inference.
+- **No-VK inference** is rejected by governance with `virtual_key_required` only
+  when `enforce_auth_on_inference` is on; otherwise it passes the auth layer.
+- **Admin Basic auth is not a substitute for a VK** on inference (same governance
+  rejection when enforce is on).
+- **`/api/config`** requires admin creds (admin-middleware `Unauthorized`) only
+  when admin password auth is on; it is open otherwise.
+
+Run locally (from this directory):
+
+```bash
+./runners/individual/run-newman-auth-matrix-tests.sh --binary /path/to/bifrost-http
+# options: --port <port> (default 8090), --html, --json, --verbose, --bail
+```
+
+### MCP Auth Tests
+
+| Path | Description |
+|------|-------------|
+| `collections/bifrost-v1-mcp-auth.postman_collection.json` | Asserts inbound `/mcp` authentication across the three server auth modes (`headers` / `both` / `oauth`): discovery gating, the credential connect matrix, the full issuance flow, refresh rotation + family revocation, the revocation window, and the runtime `headers`→`both` upgrade. |
+| `runners/individual/run-newman-mcp-auth-tests.sh` | Builds + starts the upstream MCP server, then boots a fresh server per `client.mcp_server_auth_mode` and runs the collection against each. |
+
+Like the auth-matrix runner, this one **boots its own servers** — each mode needs a
+different boot config. It also builds and starts the upstream MCP server
+(`examples/mcps/http-no-ping-server`) so `/mcp` exposes real tools, and pre-seeds it
+as an MCP client plus two virtual keys (one active, one inactive). It requires a
+built `bifrost-http` binary.
+
+The collection's test scripts branch on the `auth_mode` env-var, so a single
+collection encodes the full matrix. Per mode it asserts:
+
+- **`headers` (default):** discovery endpoints 404; every virtual-key credential
+  (`x-bf-vk`, `Authorization: Bearer <vk>`, `x-api-key`) connects exactly as before;
+  anonymous connects when auth is not enforced; an inactive key never connects. The
+  OAuth surface is invisible.
+- **`both`:** every header-credential outcome is identical to `headers`, and only
+  *adds* JWT acceptance + live discovery; an invalid JWT is rejected with
+  `WWW-Authenticate`.
+- **`oauth`:** header credentials and anonymous are rejected (401 +
+  `WWW-Authenticate`); only issued JWTs connect.
+
+In `both`/`oauth` it also runs the end-to-end issuance flow (dynamic client
+registration, PKCE-S256 authorize, consent bound to a virtual key or to a
+server-minted session, token exchange, JWT connect), then refresh rotation with
+stolen-token family revocation, the revocation window (a revoked grant stops refresh
+while its already-issued access token keeps working until expiry), and — from the
+`headers` boot — the runtime `headers`→`both` upgrade.
+
+Run locally (from this directory):
+
+```bash
+./runners/individual/run-newman-mcp-auth-tests.sh --binary /path/to/bifrost-http
+# options: --port <port> (default 8090), --mcp-port <port> (default 3001), --html, --json, --verbose, --bail
 ```
 
 ### Test Success Criteria
@@ -186,13 +437,13 @@ Rather than duplicating 100+ tests for each composite integration, we test **rep
 When integration tests are run for **all providers** (e.g. `./run-newman-openai-integration.sh` without `--env`), each collection is executed once per provider environment. Some providers do not support batch, file, container, embedding, audio, or image operations. To avoid failing on those requests, each integration collection has:
 
 - **Collection-level prerequest**: Runs before every request. Reads the current **provider** from the environment and the **request name**. If the request maps to an operation category for which the provider has `false` in `provider_capabilities` (e.g. `providers.anthropic.embedding === false`), the request is **skipped** via `postman.setNextRequest(nextRequestName)` so the next request in execution order runs instead.
-- **Embedded variables**: `execution_order` (JSON array of request names in depth-first order) and `request_to_operation` (JSON map of request name → operation category). For the **V1** collection, `provider_capabilities` is **not** embedded: it is loaded from `provider-capabilities.json` at run time by `run-newman-tests.sh` and passed to Newman as globals.
+- **Embedded variables**: `execution_order` (JSON array of request names in depth-first order) and `request_to_operation` (JSON map of request name → operation category). For the **V1** collection, `provider_capabilities` is **not** embedded: it is loaded from `provider-capabilities.json` at run time by `run-newman-inference-tests.sh` and passed to Newman as globals.
 
 **Config file**: `provider-capabilities.json` in this directory is a map per provider of capability flags (e.g. `chat_completions`, `embedding`, `batch`) to booleans. It is the single source of truth for which operations each provider supports (aligned with `core/providers/*/provider.go` returning `NewUnsupportedOperationError`).
 
 **Updating capabilities or request mappings**:
 
-1. **Change provider support**: Edit `provider-capabilities.json` and set each capability to `true` or `false` under `providers.<name>` (e.g. `providers.anthropic.embedding: false`). It is the only source of truth; the V1 run script loads it at run time (no embedded copy in the collection).
+1. **Change provider support**: Edit `provider-capabilities.json` and set each capability to `true` or `false` under `providers.<name>` (e.g. `providers.anthropic.embedding: false`). It is the only source of truth; the V1 inference run script loads it at run time (no embedded copy in the collection).
 2. **Change which requests are skippable**: Edit `scripts/update-collection-capabilities.js` (function `getRequestToOperationMap`) to adjust the request-name → operation map for each collection.
 3. **Re-inject variables into a collection**: From this directory run:
    ```bash
@@ -216,6 +467,6 @@ The collection and supporting files are maintained under `docs/openapi/`. To ref
 
 - `bifrost-v1-complete.postman_collection.json` ← `docs/openapi/bifrost-v1-complete.postman_collection.json`
 - `bifrost-v1.postman_environment.json` ← `docs/openapi/bifrost-v1.postman_environment.json`
-- `run-newman-tests.sh` ← `docs/openapi/run-newman-tests.sh`
+- `runners/run-newman-inference-tests.sh` ← `docs/openapi/run-newman-inference-tests.sh`
 - `provider_config/*.postman_environment.json` and `provider_config/README.md` ← `docs/openapi/provider_config/` (if syncing from docs)
 - `fixtures/*` ← `docs/openapi/fixtures/`

@@ -8,14 +8,40 @@ export interface ExecutionConfig {
 	modelParams: ModelParams;
 	apiKeyId: string;
 	variables?: VariableMap;
+	customHeaders?: Record<string, string>;
 }
 
 function getBaseUrl() {
-	if(process.env.NODE_ENV === "development") {
+	if (process.env.NODE_ENV === "development") {
 		return "http://localhost:8080";
 	} else {
 		return "";
 	}
+}
+
+function buildHeaders(config: Pick<ExecutionConfig, "apiKeyId" | "customHeaders">): Record<string, string> {
+	const headers: Record<string, string> = { "Content-Type": "application/json" };
+	if (config.apiKeyId && config.apiKeyId !== "__auto__") {
+		if (config.apiKeyId.startsWith("sk-bf-")) {
+			headers["Authorization"] = `Bearer ${config.apiKeyId}`;
+		} else {
+			headers["x-bf-api-key-id"] = config.apiKeyId;
+		}
+	}
+	if (config.customHeaders) {
+		const reserved = new Set(["content-type", "authorization", "x-bf-api-key-id"]);
+		for (const [name, value] of Object.entries(config.customHeaders)) {
+			const trimmedName = name.trim();
+			const trimmedValue = value.trim();
+			if (!trimmedName || !trimmedValue) continue;
+			if (reserved.has(trimmedName.toLowerCase())) {
+				console.warn(`Ignoring custom header "${trimmedName}" — reserved by the playground.`);
+				continue;
+			}
+			headers[trimmedName] = trimmedValue;
+		}
+	}
+	return headers;
 }
 
 export interface ExecutionCallbacks {
@@ -33,6 +59,7 @@ export async function executePrompt(
 	pendingMessage: Message | undefined,
 	config: ExecutionConfig,
 	callbacks: ExecutionCallbacks,
+	signal?: AbortSignal,
 ) {
 	let allMessages: Message[];
 	if (pendingMessage) {
@@ -45,24 +72,16 @@ export async function executePrompt(
 	callbacks.onStreamingStart(allMessages, placeholder);
 
 	// Replace Jinja2 variables before sending to the API
-	const resolvedMessages = config.variables
-		? replaceVariablesInMessages(allMessages, config.variables)
-		: allMessages;
+	const resolvedMessages = config.variables ? replaceVariablesInMessages(allMessages, config.variables) : allMessages;
 
 	try {
-		const headers: Record<string, string> = { "Content-Type": "application/json" };
-		if (config.apiKeyId && config.apiKeyId !== "__auto__") {
-			if (config.apiKeyId.startsWith("sk-bf-")) {
-				headers["Authorization"] = `Bearer ${config.apiKeyId}`;
-			} else {
-				headers["x-bf-api-key-id"] = config.apiKeyId;
-			}
-		}
+		const headers = buildHeaders(config);
 
 		const { api_key_id: _, ...requestParams } = config.modelParams;
 		const response = await fetch(`${getBaseUrl()}/v1/chat/completions`, {
 			method: "POST",
 			headers,
+			signal,
 			body: JSON.stringify({
 				model: `${config.provider}/${config.model}`,
 				messages: Message.toAPIMessages(resolvedMessages),
@@ -178,8 +197,68 @@ export async function executePrompt(
 			}
 		}
 	} catch (err) {
-		callbacks.onError(getErrorMessage(err));
+		if (err instanceof DOMException && err.name === "AbortError") {
+			// User cancelled — no error to display
+		} else {
+			callbacks.onError(getErrorMessage(err));
+		}
 	} finally {
 		callbacks.onFinally();
 	}
+}
+
+export class MCPAuthRequiredError extends Error {
+	kind: "oauth" | "headers";
+	mcpClientName: string;
+	authorizeUrl: string;
+
+	constructor(opts: { kind: "oauth" | "headers"; mcpClientName: string; authorizeUrl: string; message: string }) {
+		super(opts.message);
+		this.name = "MCPAuthRequiredError";
+		this.kind = opts.kind;
+		this.mcpClientName = opts.mcpClientName;
+		this.authorizeUrl = opts.authorizeUrl;
+	}
+}
+
+export async function executeToolCall(toolCall: ToolCall, config: Pick<ExecutionConfig, "apiKeyId" | "customHeaders">): Promise<string> {
+	const headers = buildHeaders(config);
+
+	const response = await fetch(`${getBaseUrl()}/v1/mcp/tool/execute`, {
+		method: "POST",
+		headers,
+		body: JSON.stringify({
+			id: toolCall.id,
+			type: toolCall.type,
+			index: 0,
+			function: {
+				name: toolCall.function.name,
+				arguments: toolCall.function.arguments,
+			},
+		}),
+	});
+
+	if (!response.ok) {
+		let errorMessage = `HTTP error! status: ${response.status}`;
+		try {
+			const data = await response.json();
+			errorMessage = data.error?.message || data.error?.error || errorMessage;
+
+			const authRequired = data.extra_fields?.mcp_auth_required;
+			if (authRequired) {
+				throw new MCPAuthRequiredError({
+					kind: authRequired.kind,
+					mcpClientName: authRequired.mcp_client_name || "MCP server",
+					authorizeUrl: authRequired.authorize_url || authRequired.submit_url || "",
+					message: authRequired.message || errorMessage,
+				});
+			}
+		} catch (e) {
+			if (e instanceof MCPAuthRequiredError) throw e;
+		}
+		throw new Error(errorMessage);
+	}
+
+	const data = await response.json();
+	return typeof data.content === "string" ? data.content : JSON.stringify(data.content);
 }

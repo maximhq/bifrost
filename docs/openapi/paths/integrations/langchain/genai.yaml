@@ -8,18 +8,18 @@ models:
     description: |
       Lists available models in Google Gemini API format via LangChain.
     tags:
-      - LangChain Integration
+    - LangChain Integration
     parameters:
-      - name: pageSize
-        in: query
-        schema:
-          type: integer
-        description: Maximum number of models to return
-      - name: pageToken
-        in: query
-        schema:
-          type: string
-        description: Page token for pagination
+    - name: pageSize
+      in: query
+      schema:
+        type: integer
+      description: Maximum number of models to return
+    - name: pageToken
+      in: query
+      schema:
+        type: string
+      description: Page token for pagination
     responses:
       '200':
         description: Successful response
@@ -40,6 +40,11 @@ models:
             schema:
               $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 generate-content:
   post:
     operationId: langchainGeminiGenerateContent
@@ -47,14 +52,14 @@ generate-content:
     description: |
       Generates content using Google Gemini-compatible format via LangChain.
     tags:
-      - LangChain Integration
+    - LangChain Integration
     parameters:
-      - name: model
-        in: path
-        required: true
-        schema:
-          type: string
-        description: Model name with action
+    - name: model
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Model name with action
     requestBody:
       required: true
       content:
@@ -81,6 +86,11 @@ generate-content:
             schema:
               $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 stream-generate-content:
   post:
     operationId: langchainGeminiStreamGenerateContent
@@ -88,14 +98,14 @@ stream-generate-content:
     description: |
       Streams content generation using Google Gemini-compatible format via LangChain.
     tags:
-      - LangChain Integration
+    - LangChain Integration
     parameters:
-      - name: model
-        in: path
-        required: true
-        schema:
-          type: string
-        description: Model name with action
+    - name: model
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Model name with action
     requestBody:
       required: true
       content:
@@ -121,3 +131,8 @@ stream-generate-content:
           application/json:
             schema:
               $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

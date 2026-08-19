@@ -1,0 +1,16 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "logs_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "../../examples/configs/withobjectstoragegcs/logs.db"
+    },
+    "object_storage": {
+      "type": "gcs",
+      "bucket": "env.GCS_BUCKET",
+      "credentials": "env.GCS_KEY",
+      "prefix":"bifrost/logs"
+    }
+  }
+}

@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -31,17 +32,13 @@ func checkForErrorStatus(prediction *ReplicatePredictionResponse) *schemas.Bifro
 		}
 		return providerUtils.NewBifrostOperationError(
 			"prediction failed",
-			fmt.Errorf("%s", errorMsg),
-			schemas.Replicate,
-		)
+			fmt.Errorf("%s", errorMsg))
 	}
 
 	if prediction.Status == ReplicatePredictionStatusCanceled {
 		return providerUtils.NewBifrostOperationError(
 			"prediction was canceled",
-			fmt.Errorf("prediction was canceled"),
-			schemas.Replicate,
-		)
+			fmt.Errorf("prediction was canceled"))
 	}
 
 	return nil
@@ -110,25 +107,27 @@ func listenToReplicateStreamURL(
 	}
 
 	// Make request
-	err := client.Do(req, resp)
+	startTime := time.Now()
+	err := providerUtils.DoStreamingRequest(ctx, client, req, resp)
+	latency := time.Since(startTime)
 	fasthttp.ReleaseRequest(req)
 
 	if err != nil {
-		providerUtils.ReleaseStreamingResponse(resp)
+		providerUtils.ReleaseStreamingResponse(ctx, resp)
 		if errors.Is(err, context.Canceled) {
-			return nil, nil, &schemas.BifrostError{
+			return nil, nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
 				IsBifrostError: false,
 				Error: &schemas.ErrorField{
 					Type:    schemas.Ptr(schemas.RequestCancelled),
 					Message: schemas.ErrRequestCancelled,
 					Error:   err,
 				},
-			}
+			}, latency)
 		}
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, schemas.Replicate)
+			return nil, nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency)
 		}
-		return nil, nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, schemas.Replicate)
+		return nil, nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err), latency)
 	}
 
 	// Extract provider response headers before status check so error responses also forward them
@@ -138,8 +137,8 @@ func listenToReplicateStreamURL(
 
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
-		defer providerUtils.ReleaseStreamingResponse(resp)
-		return nil, nil, parseReplicateError(resp.Body(), resp.StatusCode())
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
+		return nil, nil, providerUtils.SetErrorLatency(parseReplicateError(resp.Body(), resp.StatusCode()), latency)
 	}
 
 	return resp.BodyStream(), resp, nil
@@ -178,24 +177,12 @@ func isVersionID(s string) bool {
 	return versionIDPattern.MatchString(s)
 }
 
-// resolveDeploymentModel checks if the model maps to a deployment.
-// Returns the resolved model and whether it is a deployment.
-func resolveDeploymentModel(model string, key schemas.Key) (string, bool) {
-	if key.ReplicateKeyConfig == nil || key.ReplicateKeyConfig.Deployments == nil {
-		return model, false
-	}
-	if deployment, ok := key.ReplicateKeyConfig.Deployments[model]; ok && deployment != "" {
-		return deployment, true
-	}
-	return model, false
-}
-
 // buildPredictionURL builds the appropriate URL for creating a prediction
 // Returns the URL for the appropriate prediction endpoint.
-func buildPredictionURL(ctx *schemas.BifrostContext, baseURL, model string, customProviderConfig *schemas.CustomProviderConfig, requestType schemas.RequestType, isDeployment bool) string {
+func buildPredictionURL(ctx *schemas.BifrostContext, baseURL, model string, customProviderConfig *schemas.CustomProviderConfig, requestType schemas.RequestType, useDeploymentsEndpoint bool) string {
 	var defaultPath string
 
-	if isDeployment {
+	if useDeploymentsEndpoint {
 		defaultPath = "/v1/deployments/" + model + "/predictions"
 	} else if isVersionID(model) {
 		// If model is a version ID, use base predictions endpoint
@@ -212,6 +199,19 @@ func buildPredictionURL(ctx *schemas.BifrostContext, baseURL, model string, cust
 	return baseURL + path
 }
 
+// Token-usage log patterns compiled once at package init (hot path — avoid per-call MustCompile).
+var (
+	inputTokenCountPattern      = regexp.MustCompile(`Input token count:\s*(\d+)`)
+	inputTextTokenCountPattern  = regexp.MustCompile(`Input text token count:\s*(\d+)`)
+	inputImageTokenCountPattern = regexp.MustCompile(`Input image token count:\s*(\d+)`)
+	outputTokenCountPattern     = regexp.MustCompile(`Output token count:\s*(\d+)`)
+	totalTokenCountPattern      = regexp.MustCompile(`Total token count:\s*(\d+)`)
+	simpleTokensPattern         = regexp.MustCompile(`Tokens:\s*(\d+)`)
+
+	// Preferred first: "Input token count" then "Input text token count"
+	inputTokenPatterns = []*regexp.Regexp{inputTokenCountPattern, inputTextTokenCountPattern}
+)
+
 // parseTokenUsageFromLogs extracts token counts from Replicate's logs field
 // Handles multiple log formats with varying levels of detail
 func parseTokenUsageFromLogs(logs *string, requestType schemas.RequestType) (inputTokens, outputTokens, totalTokens int, found bool) {
@@ -225,12 +225,8 @@ func parseTokenUsageFromLogs(logs *string, requestType schemas.RequestType) (inp
 	// Pattern 1: Detailed format with input/output breakdown
 	// "Input token count: 20"
 	// "Input text token count: 15"
-	inputPatterns := []string{
-		`Input token count:\s*(\d+)`,
-		`Input text token count:\s*(\d+)`,
-	}
-	for _, pattern := range inputPatterns {
-		if matches := regexp.MustCompile(pattern).FindStringSubmatch(logText); len(matches) > 1 {
+	for _, pattern := range inputTokenPatterns {
+		if matches := pattern.FindStringSubmatch(logText); len(matches) > 1 {
 			if val, err := strconv.Atoi(matches[1]); err == nil {
 				inputTokens = val
 				foundAny = true
@@ -240,7 +236,7 @@ func parseTokenUsageFromLogs(logs *string, requestType schemas.RequestType) (inp
 	}
 
 	// "Input image token count: 0" (for image generation)
-	if matches := regexp.MustCompile(`Input image token count:\s*(\d+)`).FindStringSubmatch(logText); len(matches) > 1 {
+	if matches := inputImageTokenCountPattern.FindStringSubmatch(logText); len(matches) > 1 {
 		if val, err := strconv.Atoi(matches[1]); err == nil {
 			inputTokens += val // Add to text input tokens
 			foundAny = true
@@ -248,7 +244,7 @@ func parseTokenUsageFromLogs(logs *string, requestType schemas.RequestType) (inp
 	}
 
 	// "Output token count: 28"
-	if matches := regexp.MustCompile(`Output token count:\s*(\d+)`).FindStringSubmatch(logText); len(matches) > 1 {
+	if matches := outputTokenCountPattern.FindStringSubmatch(logText); len(matches) > 1 {
 		if val, err := strconv.Atoi(matches[1]); err == nil {
 			outputTokens = val
 			foundAny = true
@@ -256,7 +252,7 @@ func parseTokenUsageFromLogs(logs *string, requestType schemas.RequestType) (inp
 	}
 
 	// "Total token count: 48"
-	if matches := regexp.MustCompile(`Total token count:\s*(\d+)`).FindStringSubmatch(logText); len(matches) > 1 {
+	if matches := totalTokenCountPattern.FindStringSubmatch(logText); len(matches) > 1 {
 		if val, err := strconv.Atoi(matches[1]); err == nil {
 			totalTokens = val
 			foundAny = true
@@ -266,7 +262,7 @@ func parseTokenUsageFromLogs(logs *string, requestType schemas.RequestType) (inp
 	// Pattern 2: Simple "Tokens: X" format (ambiguous - need heuristic)
 	// Only use if detailed format not found
 	if !foundAny {
-		if matches := regexp.MustCompile(`Tokens:\s*(\d+)`).FindStringSubmatch(logText); len(matches) > 1 {
+		if matches := simpleTokensPattern.FindStringSubmatch(logText); len(matches) > 1 {
 			if val, err := strconv.Atoi(matches[1]); err == nil {
 				// Heuristic based on response type
 				switch requestType {

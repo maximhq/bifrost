@@ -10,10 +10,10 @@ interface Props {
 	required?: boolean;
 	disabled?: boolean;
 	caption?: string;
-	'data-testid'?: string;
+	"data-testid"?: string;
 }
 
-const Toggle = ({ className, label, val, setVal, required = false, disabled = false, caption, 'data-testid': testId }: Props) => {
+const Toggle = ({ className, label, val, setVal, required = false, disabled = false, caption, "data-testid": testId }: Props) => {
 	return (
 		<div className="w-full">
 			<label

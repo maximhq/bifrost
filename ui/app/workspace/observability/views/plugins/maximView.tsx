@@ -11,7 +11,7 @@ interface MaximViewProps {
 
 export default function MaximView({ onDelete, isDeleting }: MaximViewProps) {
 	const selectedPlugin = useAppSelector((state) => state.plugin.selectedPlugin);
-	const [updatePlugin, { isLoading: isUpdatingPlugin }] = useUpdatePluginMutation();
+	const [updatePlugin] = useUpdatePluginMutation();
 	const currentConfig = useMemo(
 		() => ({ ...((selectedPlugin?.config as MaximConfigSchema) ?? {}), enabled: selectedPlugin?.enabled }),
 		[selectedPlugin],
@@ -42,7 +42,7 @@ export default function MaximView({ onDelete, isDeleting }: MaximViewProps) {
 
 	return (
 		<div className="flex w-full flex-col gap-4">
-			<div className="flex w-full flex-col gap-2 ">
+			<div className="flex w-full flex-col gap-2">
 				<div className="text-muted-foreground text-xs font-medium">Configuration</div>
 				<div className="text-muted-foreground mb-2 text-xs font-normal">
 					You can send in header <code>x-bf-log-repo-id</code> with a repository ID to log to a specific repository.

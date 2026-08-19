@@ -1,0 +1,12 @@
+---
+title: "v0.10.4"
+description: "v0.10.4 changelog - 2026-05-19"
+---
+
+<Update label="Bifrost CLI" description="v0.10.4">
+- feat: adds Codex preLaunch hook to merge Bifrost virtual key, base URL, and model into `~/.codex/auth.json` and `~/.codex/config.toml` so stale Codex credentials don't shadow Bifrost-injected env vars
+- feat: adds scrollback history buffer with vi-style navigation (`[` to enter, `j`/`k`, `g`/`G`, PgUp/PgDn, `q` to exit) for browsing rows that have scrolled off the active tab
+- feat: adds mouse-wheel scrollback browsing and fixes scrollback rendering on terminal resize — truncates over-wide rows with `…`, strips trailing default-style padding, and keeps the view anchored to the same content rows when new lines evict into history while browsing
+
+</Update>
+

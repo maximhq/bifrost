@@ -25,7 +25,8 @@ func TestVKRateLimitUpdateSyncToMemory(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name: vkName,
+			Name:            vkName,
+			ProviderConfigs: defaultProviderConfigs(),
 			RateLimit: &CreateRateLimitRequest{
 				TokenMaxLimit:      &initialTokenLimit,
 				TokenResetDuration: &tokenResetDuration,
@@ -51,7 +52,10 @@ func TestVKRateLimitUpdateSyncToMemory(t *testing.T) {
 		Path:   "/api/governance/virtual-keys?from_memory=true",
 	})
 
-	vkData1 := getVKResp1.Body["virtual_keys"].(map[string]interface{})[vkValue].(map[string]interface{})
+	vkData1 := FindListItem(t, getVKResp1.Body, "virtual_keys", "value", vkValue)
+	if vkData1 == nil {
+		t.Fatalf("VK %s not found in memory", vkValue)
+	}
 	rateLimitID1, _ := vkData1["rate_limit_id"].(string)
 
 	getRateLimitsResp1 := MakeRequest(t, APIRequest{
@@ -59,8 +63,10 @@ func TestVKRateLimitUpdateSyncToMemory(t *testing.T) {
 		Path:   "/api/governance/rate-limits?from_memory=true",
 	})
 
-	rateLimitsMap1 := getRateLimitsResp1.Body["rate_limits"].(map[string]interface{})
-	rateLimit1 := rateLimitsMap1[rateLimitID1].(map[string]interface{})
+	rateLimit1 := FindListItem(t, getRateLimitsResp1.Body, "rate_limits", "id", rateLimitID1)
+	if rateLimit1 == nil {
+		t.Fatalf("Rate limit %s not found in memory", rateLimitID1)
+	}
 
 	initialTokenMaxLimit, _ := rateLimit1["token_max_limit"].(float64)
 	initialTokenUsage, _ := rateLimit1["token_current_usage"].(float64)
@@ -100,7 +106,10 @@ func TestVKRateLimitUpdateSyncToMemory(t *testing.T) {
 		Path:   "/api/governance/virtual-keys?from_memory=true",
 	})
 
-	vkData2 := getVKResp2.Body["virtual_keys"].(map[string]interface{})[vkValue].(map[string]interface{})
+	vkData2 := FindListItem(t, getVKResp2.Body, "virtual_keys", "value", vkValue)
+	if vkData2 == nil {
+		t.Fatalf("VK %s not found in memory", vkValue)
+	}
 	rateLimitID2, _ := vkData2["rate_limit_id"].(string)
 
 	getRateLimitsResp2 := MakeRequest(t, APIRequest{
@@ -108,8 +117,10 @@ func TestVKRateLimitUpdateSyncToMemory(t *testing.T) {
 		Path:   "/api/governance/rate-limits?from_memory=true",
 	})
 
-	rateLimitsMap2 := getRateLimitsResp2.Body["rate_limits"].(map[string]interface{})
-	rateLimit2 := rateLimitsMap2[rateLimitID2].(map[string]interface{})
+	rateLimit2 := FindListItem(t, getRateLimitsResp2.Body, "rate_limits", "id", rateLimitID2)
+	if rateLimit2 == nil {
+		t.Fatalf("Rate limit %s not found in memory", rateLimitID2)
+	}
 
 	tokenUsageBeforeUpdate, _ := rateLimit2["token_current_usage"].(float64)
 	t.Logf("DEBUG: Token usage after request: %d", int64(tokenUsageBeforeUpdate))
@@ -159,7 +170,10 @@ func TestVKRateLimitUpdateSyncToMemory(t *testing.T) {
 		Path:   "/api/governance/virtual-keys?from_memory=true",
 	})
 
-	vkData3 := getVKResp3.Body["virtual_keys"].(map[string]interface{})[vkValue].(map[string]interface{})
+	vkData3 := FindListItem(t, getVKResp3.Body, "virtual_keys", "value", vkValue)
+	if vkData3 == nil {
+		t.Fatalf("VK %s not found in memory", vkValue)
+	}
 	rateLimitID3, _ := vkData3["rate_limit_id"].(string)
 
 	getRateLimitsResp3 := MakeRequest(t, APIRequest{
@@ -167,8 +181,10 @@ func TestVKRateLimitUpdateSyncToMemory(t *testing.T) {
 		Path:   "/api/governance/rate-limits?from_memory=true",
 	})
 
-	rateLimitsMap3 := getRateLimitsResp3.Body["rate_limits"].(map[string]interface{})
-	rateLimit3 := rateLimitsMap3[rateLimitID3].(map[string]interface{})
+	rateLimit3 := FindListItem(t, getRateLimitsResp3.Body, "rate_limits", "id", rateLimitID3)
+	if rateLimit3 == nil {
+		t.Fatalf("Rate limit %s not found in memory", rateLimitID3)
+	}
 
 	t.Logf("DEBUG: Rate limit ID after update: %s", rateLimitID3)
 	t.Logf("DEBUG: Rate limit ID changed: %v", rateLimitID2 != rateLimitID3)
@@ -216,7 +232,10 @@ func TestVKRateLimitUpdateSyncToMemory(t *testing.T) {
 		Path:   "/api/governance/virtual-keys?from_memory=true",
 	})
 
-	vkData4 := getVKResp4.Body["virtual_keys"].(map[string]interface{})[vkValue].(map[string]interface{})
+	vkData4 := FindListItem(t, getVKResp4.Body, "virtual_keys", "value", vkValue)
+	if vkData4 == nil {
+		t.Fatalf("VK %s not found in memory", vkValue)
+	}
 	rateLimitID4, _ := vkData4["rate_limit_id"].(string)
 
 	getRateLimitsResp4 := MakeRequest(t, APIRequest{
@@ -224,8 +243,10 @@ func TestVKRateLimitUpdateSyncToMemory(t *testing.T) {
 		Path:   "/api/governance/rate-limits?from_memory=true",
 	})
 
-	rateLimitsMap4 := getRateLimitsResp4.Body["rate_limits"].(map[string]interface{})
-	rateLimit4 := rateLimitsMap4[rateLimitID4].(map[string]interface{})
+	rateLimit4 := FindListItem(t, getRateLimitsResp4.Body, "rate_limits", "id", rateLimitID4)
+	if rateLimit4 == nil {
+		t.Fatalf("Rate limit %s not found in memory", rateLimitID4)
+	}
 
 	newerTokenMaxLimit, _ := rateLimit4["token_max_limit"].(float64)
 	tokenUsageAfterSecondUpdate, _ := rateLimit4["token_current_usage"].(float64)
@@ -261,11 +282,12 @@ func TestVKBudgetUpdateSyncToMemory(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name: vkName,
-			Budget: &BudgetRequest{
+			Name:            vkName,
+			ProviderConfigs: defaultProviderConfigs(),
+			Budgets: []BudgetRequest{{
 				MaxLimit:      initialBudget,
 				ResetDuration: resetDuration,
-			},
+			}},
 		},
 	})
 
@@ -287,16 +309,21 @@ func TestVKBudgetUpdateSyncToMemory(t *testing.T) {
 		Path:   "/api/governance/virtual-keys?from_memory=true",
 	})
 
-	vkData1 := getVKResp1.Body["virtual_keys"].(map[string]interface{})[vkValue].(map[string]interface{})
-	budgetID, _ := vkData1["budget_id"].(string)
+	vkData1 := FindListItem(t, getVKResp1.Body, "virtual_keys", "value", vkValue)
+	if vkData1 == nil {
+		t.Fatalf("VK %s not found in memory", vkValue)
+	}
+	budgetID := FirstBudgetID(vkData1)
 
 	getBudgetsResp1 := MakeRequest(t, APIRequest{
 		Method: "GET",
 		Path:   "/api/governance/budgets?from_memory=true",
 	})
 
-	budgetsMap1 := getBudgetsResp1.Body["budgets"].(map[string]interface{})
-	budget1 := budgetsMap1[budgetID].(map[string]interface{})
+	budget1 := FindListItem(t, getBudgetsResp1.Body, "budgets", "id", budgetID)
+	if budget1 == nil {
+		t.Fatalf("Budget %s not found in memory", budgetID)
+	}
 
 	initialMaxLimit, _ := budget1["max_limit"].(float64)
 	initialUsage, _ := budget1["current_usage"].(float64)
@@ -336,8 +363,10 @@ func TestVKBudgetUpdateSyncToMemory(t *testing.T) {
 		Path:   "/api/governance/budgets?from_memory=true",
 	})
 
-	budgetsMap2 := getBudgetsResp2.Body["budgets"].(map[string]interface{})
-	budget2 := budgetsMap2[budgetID].(map[string]interface{})
+	budget2 := FindListItem(t, getBudgetsResp2.Body, "budgets", "id", budgetID)
+	if budget2 == nil {
+		t.Fatalf("Budget %s not found in memory", budgetID)
+	}
 
 	usageBeforeUpdate, _ := budget2["current_usage"].(float64)
 	t.Logf("Budget usage after request: $%.6f", usageBeforeUpdate)
@@ -356,10 +385,10 @@ func TestVKBudgetUpdateSyncToMemory(t *testing.T) {
 		Method: "PUT",
 		Path:   "/api/governance/virtual-keys/" + vkID,
 		Body: UpdateVirtualKeyRequest{
-			Budget: &UpdateBudgetRequest{
-				MaxLimit:      &newLowerBudget,
-				ResetDuration: &resetDuration,
-			},
+			Budgets: []BudgetRequest{{
+				MaxLimit:      newLowerBudget,
+				ResetDuration: resetDuration,
+			}},
 		},
 	})
 
@@ -378,8 +407,10 @@ func TestVKBudgetUpdateSyncToMemory(t *testing.T) {
 		Path:   "/api/governance/budgets?from_memory=true",
 	})
 
-	budgetsMap3 := getBudgetsResp3.Body["budgets"].(map[string]interface{})
-	budget3 := budgetsMap3[budgetID].(map[string]interface{})
+	budget3 := FindListItem(t, getBudgetsResp3.Body, "budgets", "id", budgetID)
+	if budget3 == nil {
+		t.Fatalf("Budget %s not found in memory", budgetID)
+	}
 
 	newMaxLimit, _ := budget3["max_limit"].(float64)
 	usageAfterUpdate, _ := budget3["current_usage"].(float64)
@@ -421,8 +452,10 @@ func TestProviderRateLimitUpdateSyncToMemory(t *testing.T) {
 			Name: vkName,
 			ProviderConfigs: []ProviderConfigRequest{
 				{
-					Provider: "openai",
-					Weight:   1.0,
+					Provider:      "openai",
+					Weight:        float64Ptr(1.0),
+					AllowedModels: []string{"*"},
+					KeyIDs:        []string{"*"},
 					RateLimit: &CreateRateLimitRequest{
 						TokenMaxLimit:      &initialTokenLimit,
 						TokenResetDuration: &tokenResetDuration,
@@ -444,7 +477,10 @@ func TestProviderRateLimitUpdateSyncToMemory(t *testing.T) {
 		Method: "GET",
 		Path:   "/api/governance/virtual-keys?from_memory=true",
 	})
-	vkData1 := getVKResp1.Body["virtual_keys"].(map[string]interface{})[vkValue].(map[string]interface{})
+	vkData1 := FindListItem(t, getVKResp1.Body, "virtual_keys", "value", vkValue)
+	if vkData1 == nil {
+		t.Fatalf("VK %s not found in memory", vkValue)
+	}
 	providerConfigs1 := vkData1["provider_configs"].([]interface{})
 	providerConfig1 := providerConfigs1[0].(map[string]interface{})
 	providerConfigID := uint(providerConfig1["id"].(float64))
@@ -453,8 +489,10 @@ func TestProviderRateLimitUpdateSyncToMemory(t *testing.T) {
 		Method: "GET",
 		Path:   "/api/governance/rate-limits?from_memory=true",
 	})
-	rateLimitsMap1 := getRateLimitsResp1.Body["rate_limits"].(map[string]interface{})
-	rateLimit1 := rateLimitsMap1[rateLimitID1].(map[string]interface{})
+	rateLimit1 := FindListItem(t, getRateLimitsResp1.Body, "rate_limits", "id", rateLimitID1)
+	if rateLimit1 == nil {
+		t.Fatalf("Rate limit %s not found in memory", rateLimitID1)
+	}
 	initialTokenMaxLimit, _ := rateLimit1["token_max_limit"].(float64)
 	initialTokenUsage, _ := rateLimit1["token_current_usage"].(float64)
 	if int64(initialTokenMaxLimit) != initialTokenLimit {
@@ -488,7 +526,10 @@ func TestProviderRateLimitUpdateSyncToMemory(t *testing.T) {
 		Method: "GET",
 		Path:   "/api/governance/virtual-keys?from_memory=true",
 	})
-	vkData2 := getVKResp2.Body["virtual_keys"].(map[string]interface{})[vkValue].(map[string]interface{})
+	vkData2 := FindListItem(t, getVKResp2.Body, "virtual_keys", "value", vkValue)
+	if vkData2 == nil {
+		t.Fatalf("VK %s not found in memory", vkValue)
+	}
 	providerConfigs2 := vkData2["provider_configs"].([]interface{})
 	providerConfig2 := providerConfigs2[0].(map[string]interface{})
 	rateLimitID2, _ := providerConfig2["rate_limit_id"].(string)
@@ -496,8 +537,10 @@ func TestProviderRateLimitUpdateSyncToMemory(t *testing.T) {
 		Method: "GET",
 		Path:   "/api/governance/rate-limits?from_memory=true",
 	})
-	rateLimitsMap2 := getRateLimitsResp2.Body["rate_limits"].(map[string]interface{})
-	rateLimit2 := rateLimitsMap2[rateLimitID2].(map[string]interface{})
+	rateLimit2 := FindListItem(t, getRateLimitsResp2.Body, "rate_limits", "id", rateLimitID2)
+	if rateLimit2 == nil {
+		t.Fatalf("Rate limit %s not found in memory", rateLimitID2)
+	}
 	tokenUsageBeforeUpdate, _ := rateLimit2["token_current_usage"].(float64)
 	t.Logf("Provider token usage after request: %d", int64(tokenUsageBeforeUpdate))
 	if tokenUsageBeforeUpdate <= 0 {
@@ -512,9 +555,11 @@ func TestProviderRateLimitUpdateSyncToMemory(t *testing.T) {
 		Body: UpdateVirtualKeyRequest{
 			ProviderConfigs: []ProviderConfigRequest{
 				{
-					ID:       &providerConfigID,
-					Provider: "openai",
-					Weight:   1.0,
+					ID:            &providerConfigID,
+					Provider:      "openai",
+					Weight:        float64Ptr(1.0),
+					AllowedModels: []string{"*"},
+					KeyIDs:        []string{"*"},
 					RateLimit: &CreateRateLimitRequest{
 						TokenMaxLimit:      &newLowerLimit,
 						TokenResetDuration: &tokenResetDuration,
@@ -533,7 +578,10 @@ func TestProviderRateLimitUpdateSyncToMemory(t *testing.T) {
 		Method: "GET",
 		Path:   "/api/governance/virtual-keys?from_memory=true",
 	})
-	vkData3 := getVKResp3.Body["virtual_keys"].(map[string]interface{})[vkValue].(map[string]interface{})
+	vkData3 := FindListItem(t, getVKResp3.Body, "virtual_keys", "value", vkValue)
+	if vkData3 == nil {
+		t.Fatalf("VK %s not found in memory", vkValue)
+	}
 	providerConfigs3 := vkData3["provider_configs"].([]interface{})
 	providerConfig3 := providerConfigs3[0].(map[string]interface{})
 	rateLimitID3, _ := providerConfig3["rate_limit_id"].(string)
@@ -541,8 +589,10 @@ func TestProviderRateLimitUpdateSyncToMemory(t *testing.T) {
 		Method: "GET",
 		Path:   "/api/governance/rate-limits?from_memory=true",
 	})
-	rateLimitsMap3 := getRateLimitsResp3.Body["rate_limits"].(map[string]interface{})
-	rateLimit3 := rateLimitsMap3[rateLimitID3].(map[string]interface{})
+	rateLimit3 := FindListItem(t, getRateLimitsResp3.Body, "rate_limits", "id", rateLimitID3)
+	if rateLimit3 == nil {
+		t.Fatalf("Rate limit %s not found in memory", rateLimitID3)
+	}
 	newTokenMaxLimit, _ := rateLimit3["token_max_limit"].(float64)
 	tokenUsageAfterUpdate, _ := rateLimit3["token_current_usage"].(float64)
 	// Verify new limit is reflected
@@ -578,10 +628,10 @@ func TestTeamBudgetUpdateSyncToMemory(t *testing.T) {
 		Path:   "/api/governance/teams",
 		Body: CreateTeamRequest{
 			Name: teamName,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      initialBudget,
 				ResetDuration: resetDuration,
-			},
+			}},
 		},
 	})
 
@@ -598,8 +648,9 @@ func TestTeamBudgetUpdateSyncToMemory(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name:   vkName,
-			TeamID: &teamID,
+			Name:            vkName,
+			ProviderConfigs: defaultProviderConfigs(),
+			TeamID:          &teamID,
 		},
 	})
 
@@ -621,17 +672,26 @@ func TestTeamBudgetUpdateSyncToMemory(t *testing.T) {
 		Path:   "/api/governance/teams?from_memory=true",
 	})
 
-	teamsMap1 := getTeamsResp1.Body["teams"].(map[string]interface{})
-	teamData1 := teamsMap1[teamID].(map[string]interface{})
-	budgetID, _ := teamData1["budget_id"].(string)
+	teamData1 := FindListItem(t, getTeamsResp1.Body, "teams", "id", teamID)
+	if teamData1 == nil {
+		t.Fatalf("Team %s not found in memory", teamID)
+	}
+	// Teams now expose a `budgets` array instead of a single `budget_id`.
+	budgetsList, ok := teamData1["budgets"].([]interface{})
+	if !ok || len(budgetsList) == 0 {
+		t.Fatalf("Team %s has no budgets in memory", teamID)
+	}
+	budgetID, _ := budgetsList[0].(map[string]interface{})["id"].(string)
 
 	getBudgetsResp1 := MakeRequest(t, APIRequest{
 		Method: "GET",
 		Path:   "/api/governance/budgets?from_memory=true",
 	})
 
-	budgetsMap1 := getBudgetsResp1.Body["budgets"].(map[string]interface{})
-	budget1 := budgetsMap1[budgetID].(map[string]interface{})
+	budget1 := FindListItem(t, getBudgetsResp1.Body, "budgets", "id", budgetID)
+	if budget1 == nil {
+		t.Fatalf("Budget %s not found in memory", budgetID)
+	}
 
 	initialMaxLimit, _ := budget1["max_limit"].(float64)
 	initialUsage, _ := budget1["current_usage"].(float64)
@@ -670,8 +730,7 @@ func TestTeamBudgetUpdateSyncToMemory(t *testing.T) {
 			Path:   "/api/governance/budgets?from_memory=true",
 		})
 
-		budgetsMap := getBudgetsResp.Body["budgets"].(map[string]interface{})
-		if budget, ok := budgetsMap[budgetID].(map[string]interface{}); ok {
+		if budget := FindListItem(t, getBudgetsResp.Body, "budgets", "id", budgetID); budget != nil {
 			if usage, ok := budget["current_usage"].(float64); ok && usage > 0 {
 				usageBeforeUpdate = usage
 				return true
@@ -693,10 +752,10 @@ func TestTeamBudgetUpdateSyncToMemory(t *testing.T) {
 		Method: "PUT",
 		Path:   "/api/governance/teams/" + teamID,
 		Body: UpdateTeamRequest{
-			Budget: &UpdateBudgetRequest{
-				MaxLimit:      &newLowerBudget,
-				ResetDuration: &resetDurationPtr,
-			},
+			Budgets: &[]BudgetRequest{{
+				MaxLimit:      newLowerBudget,
+				ResetDuration: resetDurationPtr,
+			}},
 		},
 	})
 
@@ -714,8 +773,7 @@ func TestTeamBudgetUpdateSyncToMemory(t *testing.T) {
 			Path:   "/api/governance/budgets?from_memory=true",
 		})
 
-		budgetsMap := getBudgetsResp.Body["budgets"].(map[string]interface{})
-		if budget, ok := budgetsMap[budgetID].(map[string]interface{}); ok {
+		if budget := FindListItem(t, getBudgetsResp.Body, "budgets", "id", budgetID); budget != nil {
 			if maxLimit, ok := budget["max_limit"].(float64); ok {
 				newMaxLimit = maxLimit
 				usageAfterUpdate, _ = budget["current_usage"].(float64)
@@ -762,10 +820,10 @@ func TestCustomerBudgetUpdateSyncToMemory(t *testing.T) {
 		Path:   "/api/governance/customers",
 		Body: CreateCustomerRequest{
 			Name: customerName,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      initialBudget,
 				ResetDuration: resetDuration,
-			},
+			}},
 		},
 	})
 
@@ -799,8 +857,9 @@ func TestCustomerBudgetUpdateSyncToMemory(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name:   vkName,
-			TeamID: &teamID,
+			Name:            vkName,
+			ProviderConfigs: defaultProviderConfigs(),
+			TeamID:          &teamID,
 		},
 	})
 
@@ -822,17 +881,21 @@ func TestCustomerBudgetUpdateSyncToMemory(t *testing.T) {
 		Path:   "/api/governance/customers?from_memory=true",
 	})
 
-	customersMap1 := getCustomersResp1.Body["customers"].(map[string]interface{})
-	customerData1 := customersMap1[customerID].(map[string]interface{})
-	budgetID, _ := customerData1["budget_id"].(string)
+	customerData1 := FindListItem(t, getCustomersResp1.Body, "customers", "id", customerID)
+	if customerData1 == nil {
+		t.Fatalf("Customer %s not found in memory", customerID)
+	}
+	budgetID := FirstBudgetID(customerData1)
 
 	getBudgetsResp1 := MakeRequest(t, APIRequest{
 		Method: "GET",
 		Path:   "/api/governance/budgets?from_memory=true",
 	})
 
-	budgetsMap1 := getBudgetsResp1.Body["budgets"].(map[string]interface{})
-	budget1 := budgetsMap1[budgetID].(map[string]interface{})
+	budget1 := FindListItem(t, getBudgetsResp1.Body, "budgets", "id", budgetID)
+	if budget1 == nil {
+		t.Fatalf("Budget %s not found in memory", budgetID)
+	}
 
 	initialMaxLimit, _ := budget1["max_limit"].(float64)
 	initialUsage, _ := budget1["current_usage"].(float64)
@@ -872,8 +935,10 @@ func TestCustomerBudgetUpdateSyncToMemory(t *testing.T) {
 		Path:   "/api/governance/budgets?from_memory=true",
 	})
 
-	budgetsMap2 := getBudgetsResp2.Body["budgets"].(map[string]interface{})
-	budget2 := budgetsMap2[budgetID].(map[string]interface{})
+	budget2 := FindListItem(t, getBudgetsResp2.Body, "budgets", "id", budgetID)
+	if budget2 == nil {
+		t.Fatalf("Budget %s not found in memory", budgetID)
+	}
 
 	usageBeforeUpdate, _ := budget2["current_usage"].(float64)
 	t.Logf("Customer budget usage after request: $%.6f", usageBeforeUpdate)
@@ -889,10 +954,10 @@ func TestCustomerBudgetUpdateSyncToMemory(t *testing.T) {
 		Method: "PUT",
 		Path:   "/api/governance/customers/" + customerID,
 		Body: UpdateCustomerRequest{
-			Budget: &UpdateBudgetRequest{
-				MaxLimit:      &newLowerBudget,
-				ResetDuration: &resetDurationPtr,
-			},
+			Budgets: []BudgetRequest{{
+				MaxLimit:      newLowerBudget,
+				ResetDuration: resetDurationPtr,
+			}},
 		},
 	})
 
@@ -910,8 +975,10 @@ func TestCustomerBudgetUpdateSyncToMemory(t *testing.T) {
 		Path:   "/api/governance/budgets?from_memory=true",
 	})
 
-	budgetsMap3 := getBudgetsResp3.Body["budgets"].(map[string]interface{})
-	budget3 := budgetsMap3[budgetID].(map[string]interface{})
+	budget3 := FindListItem(t, getBudgetsResp3.Body, "budgets", "id", budgetID)
+	if budget3 == nil {
+		t.Fatalf("Budget %s not found in memory", budgetID)
+	}
 
 	newMaxLimit, _ := budget3["max_limit"].(float64)
 	usageAfterUpdate, _ := budget3["current_usage"].(float64)
@@ -955,12 +1022,14 @@ func TestProviderBudgetUpdateSyncToMemory(t *testing.T) {
 			Name: vkName,
 			ProviderConfigs: []ProviderConfigRequest{
 				{
-					Provider: "openai",
-					Weight:   1.0,
-					Budget: &BudgetRequest{
+					Provider:      "openai",
+					Weight:        float64Ptr(1.0),
+					AllowedModels: []string{"*"},
+					KeyIDs:        []string{"*"},
+					Budgets: []BudgetRequest{{
 						MaxLimit:      initialBudget,
 						ResetDuration: resetDuration,
-					},
+					}},
 				},
 			},
 		},
@@ -984,19 +1053,24 @@ func TestProviderBudgetUpdateSyncToMemory(t *testing.T) {
 		Path:   "/api/governance/virtual-keys?from_memory=true",
 	})
 
-	vkData1 := getVKResp1.Body["virtual_keys"].(map[string]interface{})[vkValue].(map[string]interface{})
+	vkData1 := FindListItem(t, getVKResp1.Body, "virtual_keys", "value", vkValue)
+	if vkData1 == nil {
+		t.Fatalf("VK %s not found in memory", vkValue)
+	}
 	providerConfigs1 := vkData1["provider_configs"].([]interface{})
 	providerConfig1 := providerConfigs1[0].(map[string]interface{})
 	providerConfigID := uint(providerConfig1["id"].(float64))
-	budgetID, _ := providerConfig1["budget_id"].(string)
+	budgetID := FirstBudgetID(providerConfig1)
 
 	getBudgetsResp1 := MakeRequest(t, APIRequest{
 		Method: "GET",
 		Path:   "/api/governance/budgets?from_memory=true",
 	})
 
-	budgetsMap1 := getBudgetsResp1.Body["budgets"].(map[string]interface{})
-	budget1 := budgetsMap1[budgetID].(map[string]interface{})
+	budget1 := FindListItem(t, getBudgetsResp1.Body, "budgets", "id", budgetID)
+	if budget1 == nil {
+		t.Fatalf("Budget %s not found in memory", budgetID)
+	}
 
 	initialMaxLimit, _ := budget1["max_limit"].(float64)
 	initialUsage, _ := budget1["current_usage"].(float64)
@@ -1036,8 +1110,10 @@ func TestProviderBudgetUpdateSyncToMemory(t *testing.T) {
 		Path:   "/api/governance/budgets?from_memory=true",
 	})
 
-	budgetsMap2 := getBudgetsResp2.Body["budgets"].(map[string]interface{})
-	budget2 := budgetsMap2[budgetID].(map[string]interface{})
+	budget2 := FindListItem(t, getBudgetsResp2.Body, "budgets", "id", budgetID)
+	if budget2 == nil {
+		t.Fatalf("Budget %s not found in memory", budgetID)
+	}
 
 	usageBeforeUpdate, _ := budget2["current_usage"].(float64)
 	t.Logf("Provider budget usage after request: $%.6f", usageBeforeUpdate)
@@ -1054,13 +1130,15 @@ func TestProviderBudgetUpdateSyncToMemory(t *testing.T) {
 		Body: UpdateVirtualKeyRequest{
 			ProviderConfigs: []ProviderConfigRequest{
 				{
-					ID:       &providerConfigID,
-					Provider: "openai",
-					Weight:   1.0,
-					Budget: &BudgetRequest{
+					ID:            &providerConfigID,
+					Provider:      "openai",
+					Weight:        float64Ptr(1.0),
+					AllowedModels: []string{"*"},
+					KeyIDs:        []string{"*"},
+					Budgets: []BudgetRequest{{
 						MaxLimit:      newLowerBudget,
 						ResetDuration: resetDuration,
-					},
+					}},
 				},
 			},
 		},
@@ -1080,8 +1158,10 @@ func TestProviderBudgetUpdateSyncToMemory(t *testing.T) {
 		Path:   "/api/governance/budgets?from_memory=true",
 	})
 
-	budgetsMap3 := getBudgetsResp3.Body["budgets"].(map[string]interface{})
-	budget3 := budgetsMap3[budgetID].(map[string]interface{})
+	budget3 := FindListItem(t, getBudgetsResp3.Body, "budgets", "id", budgetID)
+	if budget3 == nil {
+		t.Fatalf("Budget %s not found in memory", budgetID)
+	}
 
 	newMaxLimit, _ := budget3["max_limit"].(float64)
 	usageAfterUpdate, _ := budget3["current_usage"].(float64)

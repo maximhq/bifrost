@@ -1,0 +1,3 @@
+image:
+  # Base image tag shared by all layered example files.
+  tag: "v1.5.0-prerelease5"

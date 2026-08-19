@@ -341,9 +341,6 @@ func TestCodeMode_Agent_MixedCodeModeWithApproval(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	require.Nil(t, agentErr)
@@ -449,9 +446,6 @@ func TestCodeMode_Agent_CodeModeInCode_NonCodeModeDirect(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	require.Nil(t, agentErr)
@@ -555,9 +549,6 @@ func TestCodeMode_Agent_PartialApprovalMixed(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	require.Nil(t, agentErr)

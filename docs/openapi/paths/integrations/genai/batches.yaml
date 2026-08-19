@@ -1,0 +1,164 @@
+# Google GenAI (Gemini) - Batches API
+#
+# Note: Gemini uses `:action` URL conventions. `POST /v1beta/batches/{batch_id}`
+# is the cancel operation (Gemini sends the request as `/v1beta/batches/{name}:cancel`
+# and the router matches the trailing segment via the wildcard parameter).
+
+batches:
+  get:
+    operationId: geminiListBatches
+    summary: List batch jobs (Gemini format)
+    description: Lists batch jobs in Gemini format. Supports `pageSize` / `pageToken` pagination.
+    tags:
+    - GenAI Integration
+    parameters:
+    - name: pageSize
+      in: query
+      required: false
+      schema:
+        type: integer
+    - name: pageToken
+      in: query
+      required: false
+      schema:
+        type: string
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+batches-by-id:
+  get:
+    operationId: geminiRetrieveBatch
+    summary: Retrieve a batch job (Gemini format)
+    tags:
+    - GenAI Integration
+    parameters:
+    - name: batch_id
+      in: path
+      required: true
+      schema:
+        type: string
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      '404':
+        description: Batch not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+  post:
+    operationId: geminiCancelBatch
+    summary: Cancel a batch job (Gemini format)
+    description: |
+      Cancels a batch job. Gemini conventionally sends the request as
+      `/v1beta/batches/{batch_id}:cancel`; the router matches the `:cancel`
+      suffix into the `batch_id` path parameter.
+    tags:
+    - GenAI Integration
+    parameters:
+    - name: batch_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Batch identifier, optionally with a `:cancel` action suffix.
+    responses:
+      '200':
+        description: Cancellation accepted.
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      '404':
+        description: Batch not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+  delete:
+    operationId: geminiDeleteBatch
+    summary: Delete a batch job (Gemini format)
+    tags:
+    - GenAI Integration
+    parameters:
+    - name: batch_id
+      in: path
+      required: true
+      schema:
+        type: string
+    responses:
+      '200':
+        description: Successful response (empty object on Gemini).
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      '404':
+        description: Batch not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

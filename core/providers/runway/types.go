@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/bytedance/sonic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 )
 
 type Reference struct {
@@ -12,8 +13,9 @@ type Reference struct {
 }
 
 type ReferenceImage struct {
-	URI string `json:"uri"`
-	Tag string `json:"tag"`
+	URI     string `json:"uri"`
+	Tag     string `json:"tag,omitempty"`
+	Subject string `json:"subject,omitempty"` // "object" or "human" (gemini image models)
 }
 
 type PromptImageObject struct {
@@ -36,13 +38,13 @@ func (pi PromptImage) MarshalJSON() ([]byte, error) {
 	}
 
 	if pi.PromptImageStr != nil {
-		return sonic.Marshal(*pi.PromptImageStr)
+		return providerUtils.MarshalSorted(*pi.PromptImageStr)
 	}
 	if pi.PromptImageObject != nil {
-		return sonic.Marshal(pi.PromptImageObject)
+		return providerUtils.MarshalSorted(pi.PromptImageObject)
 	}
 	// If both are nil, return null
-	return sonic.Marshal(nil)
+	return []byte("null"), nil
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for PromptImage.
@@ -89,6 +91,23 @@ func (r *RunwayVideoGenerationRequest) GetExtraParams() map[string]interface{} {
 
 type ContentModeration struct {
 	PublicFigureThreshold *string `json:"public_figure_threshold,omitempty"`
+}
+
+type RunwayImageGenerationRequest struct {
+	Model             string                 `json:"model"`
+	PromptText        string                 `json:"promptText"`
+	Ratio             string                 `json:"ratio"`
+	Seed              *int                   `json:"seed,omitempty"`
+	ReferenceImages   []ReferenceImage       `json:"referenceImages,omitempty"`
+	Quality           *string                `json:"quality,omitempty"`     // gpt_image_2: "low", "medium", "high", "auto"
+	Background        *string                `json:"background,omitempty"`  // gpt_image_2: "opaque", "auto"
+	OutputCount       *int                   `json:"outputCount,omitempty"` // gpt_image_2 (1-10), gemini (1 or 4)
+	ContentModeration *ContentModeration     `json:"contentModeration,omitempty"`
+	ExtraParams       map[string]interface{} `json:"-"`
+}
+
+func (r *RunwayImageGenerationRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
 }
 
 type RunwayTaskCreationResponse struct {

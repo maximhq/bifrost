@@ -1,0 +1,116 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+
+  "version": 1,
+
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "main",
+          "value": "env.OPENAI_API_KEY",
+          "models": [],
+          "weight": 1.0
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 30,
+        "max_retries": 2
+      }
+    },
+    "anthropic": {
+      "keys": [
+        {
+          "name": "primary",
+          "value": "env.ANTHROPIC_API_KEY",
+          "models": [],
+          "weight": 1.0
+        },
+        {
+          "name": "secondary",
+          "value": "env.ANTHROPIC_API_KEY_2",
+          "models": [],
+          "weight": 0.5
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 60,
+        "max_retries": 1
+      }
+    }
+  },
+
+  "mcp": {
+    "client_configs": [
+      {
+        "name": "internal_tools",
+        "connection_type": "http",
+        "connection_string": "http://localhost:3001",
+        "auth_type": "none",
+        "tools_to_execute": ["*"],
+        "allow_on_all_virtual_keys": false
+      }
+    ]
+  },
+
+  "config_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "../../examples/configs/v1compat/config.db"
+    }
+  },
+
+  "logs_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "../../examples/configs/v1compat/logs.db"
+    }
+  },
+
+  "governance": {
+    "virtual_keys": [
+      {
+        "id": "vk-full-access",
+        "name": "Full Access",
+        "description": "v1 compat: empty provider_configs and mcp_configs mean allow all",
+        "provider_configs": [],
+        "mcp_configs": []
+      },
+      {
+        "id": "vk-openai-restricted",
+        "name": "OpenAI Restricted",
+        "description": "v1 compat: explicit provider entry but empty allowed_models and key_ids mean allow all",
+        "provider_configs": [
+          {
+            "provider": "openai",
+            "allowed_models": [],
+            "key_ids": [],
+            "weight": 1.0
+          }
+        ],
+        "mcp_configs": [
+          {
+            "mcp_client_name": "internal_tools",
+            "tools_to_execute": ["*"]
+          }
+        ]
+      },
+      {
+        "id": "vk-anthropic-restricted",
+        "name": "Anthropic Restricted",
+        "description": "v1 compat: mix — one provider with specific model list, another with empty (allow all)",
+        "provider_configs": [
+          {
+            "provider": "anthropic",
+            "allowed_models": [],
+            "key_ids": [],
+            "weight": 1.0
+          }
+        ],
+        "mcp_configs": []
+      }
+    ]
+  }
+}

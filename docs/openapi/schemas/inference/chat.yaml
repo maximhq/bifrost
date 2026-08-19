@@ -97,7 +97,7 @@ ChatCompletionRequest:
       $ref: '#/ChatPrediction'
     prompt_cache_retention:
       type: string
-      enum: [in-memory, 24h]
+      enum: [in_memory, 24h]
       description: Prompt cache retention policy
     web_search_options:
       $ref: '#/ChatWebSearchOptions'

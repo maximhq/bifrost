@@ -165,3 +165,54 @@ export function createCodeModeClientData(overrides: Partial<MCPClientConfig> = {
     ...overrides,
   })
 }
+
+/**
+ * Create HTTP client pointing at auth-demo-server (port 3002) with header auth.
+ * Requires auth-demo-server to be running: examples/mcps/auth-demo-server
+ */
+export function createHeadersAuthClientData(overrides: Partial<MCPClientConfig> = {}): MCPClientConfig {
+  return createMCPClientData({
+    name: `headers_auth_client_${Date.now()}`,
+    connectionType: 'http',
+    connectionUrl: 'http://localhost:3002/',
+    authType: 'headers',
+    headers: {
+      'X-API-Key': { value: 'super-secret-key', env_var: '', from_env: false },
+      'X-Tool-Token': { value: 'tool-exec-secret', env_var: '', from_env: false },
+    },
+    isPingAvailable: false,
+    ...overrides,
+  })
+}
+
+/**
+ * Create HTTP client pointing at oauth-demo-server (port 3003) with OAuth 2.0.
+ * Relies on RFC 8414 / RFC 9728 auto-discovery — no manual URLs needed.
+ * Requires oauth-demo-server to be running: examples/mcps/oauth-demo-server
+ */
+export function createOAuthClientData(overrides: Partial<MCPClientConfig> = {}): MCPClientConfig {
+  return createMCPClientData({
+    name: `oauth_client_${Date.now()}`,
+    connectionType: 'http',
+    connectionUrl: 'http://localhost:3003/mcp',
+    authType: 'oauth',
+    isPingAvailable: false,
+    ...overrides,
+  })
+}
+
+/**
+ * Create HTTP client pointing at oauth-demo-server (port 3003) with Per-User OAuth 2.0.
+ * Requires user consent via browser before tools are accessible.
+ * Requires oauth-demo-server to be running: examples/mcps/oauth-demo-server
+ */
+export function createPerUserOAuthClientData(overrides: Partial<MCPClientConfig> = {}): MCPClientConfig {
+  return createMCPClientData({
+    name: `per_user_oauth_client_${Date.now()}`,
+    connectionType: 'http',
+    connectionUrl: 'http://localhost:3003/mcp',
+    authType: 'per_user_oauth',
+    isPingAvailable: false,
+    ...overrides,
+  })
+}

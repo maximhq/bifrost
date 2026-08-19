@@ -1,5 +1,3 @@
-"use client";
-
 import { cn } from "@/components/ui/utils";
 import { useLazyGetBaseModelsQuery, useLazyGetModelsQuery } from "@/lib/store/apis/providersApi";
 import { X } from "lucide-react";
@@ -11,6 +9,7 @@ import { Option } from "./multiselectUtils";
 interface ModelMultiselectPropsBase {
 	provider?: string;
 	keys?: string[];
+	vks?: string[];
 	placeholder?: string;
 	disabled?: boolean;
 	className?: string;
@@ -19,10 +18,20 @@ interface ModelMultiselectPropsBase {
 	 * - `"base_models"`: loads distinct base model names (useful for governance where cross-provider matching is needed)
 	 */
 	loadModelsOnEmptyProvider?: boolean | "base_models";
+	/** Prepends an "Allow All Models" option (value: "*") to the dropdown */
+	allowAllOption?: boolean;
+	/** Hides the search icon rendered inside the control */
+	hideSearchIcon?: boolean;
 	/** id for the search input (accessibility) */
 	inputId?: string;
 	/** id of element that labels this control (accessibility) */
 	ariaLabelledBy?: string;
+	/** test selector for the container element */
+	"data-testid"?: string;
+	/** Menu position strategy. Use "absolute" inside popovers to avoid portal issues. Defaults to "fixed". */
+	menuPosition?: "absolute" | "fixed";
+	/** Target element for the menu portal. */
+	menuPortalTarget?: HTMLElement | null;
 }
 
 interface ModelMultiselectPropsSingle extends ModelMultiselectPropsBase {
@@ -31,6 +40,7 @@ interface ModelMultiselectPropsSingle extends ModelMultiselectPropsBase {
 	unfiltered?: boolean;
 	value: string;
 	onChange: (model: string) => void;
+	clearable?: boolean;
 }
 
 interface ModelMultiselectPropsMulti extends ModelMultiselectPropsBase {
@@ -39,6 +49,7 @@ interface ModelMultiselectPropsMulti extends ModelMultiselectPropsBase {
 	unfiltered?: boolean;
 	value: string[];
 	onChange: (models: string[]) => void;
+	clearable?: boolean;
 }
 
 export type ModelMultiselectProps = ModelMultiselectPropsSingle | ModelMultiselectPropsMulti;
@@ -47,12 +58,18 @@ interface ModelOption {
 	label: string;
 	value: string;
 	provider?: string;
+	isDeprecated?: boolean;
+	/** react-select reads this to make an option non-selectable */
+	isDisabled?: boolean;
 }
+
+const ALL_MODELS_OPTION: ModelOption = { label: "All Models", value: "*" };
 
 export function ModelMultiselect(props: ModelMultiselectProps) {
 	const {
 		provider,
 		keys,
+		vks,
 		value,
 		unfiltered = false,
 		onChange,
@@ -60,11 +77,14 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 		disabled = false,
 		className,
 		loadModelsOnEmptyProvider = false,
+		allowAllOption = false,
+		clearable = false,
 	} = props;
 	const isSingleSelect = props.isSingleSelect === true;
 
-	const [getModels, { data: modelsData, isLoading }] = useLazyGetModelsQuery();
-	const [getBaseModels, { data: baseModelsData, isLoading: isLoadingBaseModels }] = useLazyGetBaseModelsQuery();
+	const [getModels, { data: modelsData, isFetching, isError }] = useLazyGetModelsQuery();
+	const [getBaseModels, { data: baseModelsData, isFetching: isFetchingBaseModels, isError: isBaseModelsError }] =
+		useLazyGetBaseModelsQuery();
 	const [inputValue, setInputValue] = useState("");
 	const inputValueRef = useRef("");
 
@@ -77,19 +97,17 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 	const arrayValue = value as string[];
 	const selectedOptions: ModelOption[] = isSingleSelect
 		? stringValue
-			? [{ label: stringValue, value: stringValue }]
+			? [stringValue === "*" ? ALL_MODELS_OPTION : { label: stringValue, value: stringValue }]
 			: []
-		: arrayValue.map((model) => ({
-			label: model,
-			value: model,
-		}));
+		: arrayValue.map((model) => (model === "*" ? ALL_MODELS_OPTION : { label: model, value: model }));
 
-	// Fetch initial models on mount or when provider/keys change
+	// Fetch initial models on mount or when provider/keys/vks change
 	useEffect(() => {
 		if (provider) {
 			getModels({
 				provider,
 				keys: keys && keys.length > 0 ? keys : undefined,
+				vks: vks && vks.length > 0 ? vks : undefined,
 				limit: 5,
 				unfiltered,
 			});
@@ -98,17 +116,21 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 		} else if (shouldLoadOnEmpty) {
 			getModels({
 				keys: keys && keys.length > 0 ? keys : undefined,
+				vks: vks && vks.length > 0 ? vks : undefined,
 				limit: 20,
 				unfiltered,
 			});
 		}
-	}, [provider, keys, getModels, getBaseModels, shouldLoadOnEmpty, shouldUseBaseModels]);
+	}, [provider, keys, vks, getModels, getBaseModels, shouldLoadOnEmpty, shouldUseBaseModels]);
 
 	// Load options function for AsyncMultiSelect
 	const loadOptions = useCallback(
 		(query: string, callback: (options: ModelOption[]) => void) => {
+			// Prepend "Allow All Models" when allowAllOption is enabled and query matches (or is empty)
+			const prefix: ModelOption[] = allowAllOption && (!query || "all models".includes(query.toLowerCase())) ? [ALL_MODELS_OPTION] : [];
+
 			if (!provider && !shouldLoadOnEmpty) {
-				callback([]);
+				callback(prefix);
 				return;
 			}
 
@@ -123,16 +145,17 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 							label: model,
 							value: model,
 						}));
-						callback(options);
+						callback([...prefix, ...options]);
 					})
 					.catch(() => {
-						callback([]);
+						callback(prefix);
 					});
 			} else {
 				getModels({
 					query: query || undefined,
 					provider: provider || undefined,
 					keys: keys && keys.length > 0 ? keys : undefined,
+					vks: vks && vks.length > 0 ? vks : undefined,
 					limit: query ? 50 : shouldLoadOnEmpty && !provider ? 20 : 5,
 					unfiltered,
 				})
@@ -142,15 +165,17 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 							label: model.name,
 							value: model.name,
 							provider: model.provider,
+							isDeprecated: model.is_deprecated,
+							isDisabled: model.is_deprecated,
 						}));
-						callback(options);
+						callback([...prefix, ...options]);
 					})
 					.catch(() => {
-						callback([]);
+						callback(prefix);
 					});
 			}
 		},
-		[getModels, getBaseModels, provider, keys, shouldLoadOnEmpty, shouldUseBaseModels],
+		[getModels, getBaseModels, provider, keys, vks, shouldLoadOnEmpty, shouldUseBaseModels, allowAllOption],
 	);
 
 	// Handle selection change
@@ -171,6 +196,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 					query: currentQuery || undefined,
 					provider,
 					keys: keys && keys.length > 0 ? keys : undefined,
+					vks: vks && vks.length > 0 ? vks : undefined,
 					limit: currentQuery ? 20 : 5,
 					unfiltered,
 				});
@@ -183,48 +209,67 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 				getModels({
 					query: currentQuery || undefined,
 					keys: keys && keys.length > 0 ? keys : undefined,
+					vks: vks && vks.length > 0 ? vks : undefined,
 					limit: currentQuery ? 20 : 5,
 					unfiltered,
 				});
 			}
 		},
-		[onChange, provider, keys, getModels, getBaseModels, isSingleSelect, shouldLoadOnEmpty, shouldUseBaseModels],
+		[onChange, provider, keys, vks, getModels, getBaseModels, isSingleSelect, shouldLoadOnEmpty, shouldUseBaseModels],
 	);
 
 	// Handle input change - track in both state and ref
 	// Per react-select docs: ignore input clear on blur, menu close, and set-value (selection)
-	const handleInputChange = useCallback((newValue: string, actionMeta: { action: string }) => {
-		// Don't clear input on blur or menu close (preserves search while browsing)
-		if (!isSingleSelect && (actionMeta.action === "input-blur" || actionMeta.action === "menu-close")) {
-			return;
-		}
-		setInputValue(newValue);
-		inputValueRef.current = newValue;
-	}, []);
+	const handleInputChange = useCallback(
+		(newValue: string, actionMeta: { action: string }) => {
+			// Don't clear input on blur or menu close (preserves search while browsing)
+			if (!isSingleSelect && (actionMeta.action === "input-blur" || actionMeta.action === "menu-close")) {
+				return;
+			}
+			setInputValue(newValue);
+			inputValueRef.current = newValue;
+		},
+		[isSingleSelect],
+	);
 
 	// Convert API data to options for default display
 	const defaultOptions: ModelOption[] = useMemo(() => {
+		const prefix = allowAllOption ? [ALL_MODELS_OPTION] : [];
 		if (shouldUseBaseModels) {
-			return baseModelsData?.models?.map((model) => ({
-				label: model,
-				value: model,
-			})) || [];
+			return [
+				...prefix,
+				...(baseModelsData?.models?.map((model) => ({
+					label: model,
+					value: model,
+				})) || []),
+			];
 		}
-		return modelsData?.models?.map((model) => ({
-			label: model.name,
-			value: model.name,
-			provider: model.provider,
-		})) || [];
-	}, [modelsData, baseModelsData, shouldUseBaseModels]);
+		return [
+			...prefix,
+			...(modelsData?.models?.map((model) => ({
+				label: model.name,
+				value: model.name,
+				provider: model.provider,
+				isDeprecated: model.is_deprecated,
+				isDisabled: model.is_deprecated,
+			})) || []),
+		];
+	}, [modelsData, baseModelsData, shouldUseBaseModels, allowAllOption]);
 
 	const shouldBeDisabled = disabled || (!provider && !shouldLoadOnEmpty);
+	const modelsQueryEnabled = !!provider || shouldLoadOnEmpty;
+	const activeIsFetching = shouldUseBaseModels ? isFetchingBaseModels : modelsQueryEnabled ? isFetching : false;
+	const activeIsError = shouldUseBaseModels ? isBaseModelsError : modelsQueryEnabled ? isError : false;
+	const modelLoadError = !activeIsFetching && activeIsError;
 
 	return (
 		<AsyncMultiSelect<ModelOption>
 			isSingleSelect={isSingleSelect}
 			hideSelectedOptions
+			hideSearchIcon={props.hideSearchIcon}
 			inputId={props.inputId}
 			ariaLabelledBy={props.ariaLabelledBy}
+			data-testid={props["data-testid"]}
 			value={selectedOptions}
 			onChange={handleChange}
 			reload={loadOptions}
@@ -232,56 +277,70 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 			isCreatable={true}
 			dynamicOptionCreation={true}
 			createOptionText={"Press enter to add new model"}
-			defaultOptions={defaultOptions.length > 0 ? defaultOptions : [] as Option<ModelOption>[]}
-			isLoading={shouldUseBaseModels ? isLoadingBaseModels : isLoading}
+			defaultOptions={defaultOptions.length > 0 ? defaultOptions : ([] as Option<ModelOption>[])}
+			isLoading={activeIsFetching}
 			placeholder={placeholder}
 			disabled={shouldBeDisabled}
 			className={cn("!min-h-9 w-full", className)}
 			triggerClassName="!shadow-none !border-border !min-h-9 px-1"
 			menuClassName="!z-[100] max-h-[300px] overflow-y-auto w-full cursor-pointer custom-scrollbar"
-			isClearable={false}
+			isClearable={clearable}
 			closeMenuOnSelect={isSingleSelect}
 			menuPlacement="auto"
+			menuPosition={props.menuPosition}
+			menuPortalTarget={props.menuPortalTarget}
 			menuListClassName="mx-1"
 			inputValue={inputValue}
 			onInputChange={handleInputChange}
-			noResultsFoundPlaceholder="No models found"
-			emptyResultPlaceholder={provider || shouldLoadOnEmpty ? "Start typing to search models..." : "Please select a provider first"}
+			noResultsFoundPlaceholder={modelLoadError ? "Couldn’t load models." : "No matching models."}
+			emptyResultPlaceholder={
+				modelLoadError ? "Couldn’t load models." : provider ? "No models available for this provider." : shouldLoadOnEmpty ? "No models available." : "Select a provider first."
+			}
 			views={{
 				dropdownIndicator: isSingleSelect ? undefined : () => <></>,
-				singleValue: isSingleSelect ? (singleValueProps: SingleValueProps<ModelOption>) => (
-					<span className="absolute left-1.5 text-sm">{singleValueProps.data.label}</span>
-				) : undefined,
-				multiValue: isSingleSelect ? undefined : (multiValueProps: MultiValueProps<ModelOption>) => {
-					return (
-						<div
-							{...multiValueProps.innerProps}
-							className="bg-accent dark:!bg-card flex cursor-pointer items-center gap-1 rounded-sm px-1 py-0.5 text-sm"
-						>
-							{multiValueProps.data.label}{" "}
-							<X
-								className="hover:text-foreground text-muted-foreground h-4 w-4 cursor-pointer"
-								onClick={(e) => {
-									e.stopPropagation();
-									multiValueProps.removeProps.onClick?.(e as any);
-								}}
-							/>
-						</div>
-					);
-				},
+				singleValue: isSingleSelect
+					? (singleValueProps: SingleValueProps<ModelOption>) => (
+							<span className="absolute left-1.5 text-sm">{singleValueProps.data.label}</span>
+						)
+					: undefined,
+				multiValue: isSingleSelect
+					? undefined
+					: (multiValueProps: MultiValueProps<ModelOption>) => {
+							return (
+								<div
+									{...multiValueProps.innerProps}
+									className="bg-accent dark:!bg-card flex cursor-pointer items-center gap-1 rounded-sm px-1 py-0.5 text-sm"
+								>
+									{multiValueProps.data.label}{" "}
+									<X
+										className="hover:text-foreground text-muted-foreground h-4 w-4 cursor-pointer"
+										onClick={(e) => {
+											e.stopPropagation();
+											multiValueProps.removeProps.onClick?.(e as any);
+										}}
+									/>
+								</div>
+							);
+						},
 				option: (optionProps: OptionProps<ModelOption>) => {
 					const { Option } = components;
+					const isDeprecated = optionProps.data.isDeprecated;
 					return (
 						<Option
 							{...optionProps}
 							className={cn(
-								"flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-2 text-sm",
-								optionProps.isFocused && "bg-accent dark:!bg-card",
-								"hover:bg-accent",
-								optionProps.isSelected && "bg-accent dark:!bg-card",
+								"flex w-full items-center gap-2 rounded-sm px-2 py-2 text-sm",
+								isDeprecated ? "cursor-not-allowed opacity-60" : "cursor-pointer hover:bg-accent",
+								!isDeprecated && optionProps.isFocused && "bg-accent dark:!bg-card",
+								!isDeprecated && optionProps.isSelected && "bg-accent dark:!bg-card",
 							)}
 						>
-							<span className="grow truncate text-sm">{optionProps.data.label}</span>
+							<span className={cn("grow truncate text-sm", isDeprecated && "text-muted-foreground")}>{optionProps.data.label}</span>
+							{isDeprecated && (
+								<span className="text-muted-foreground border-border shrink-0 rounded-sm border px-1.5 py-0.5 text-[10px] font-medium tracking-wide uppercase">
+									Deprecated
+								</span>
+							)}
 						</Option>
 					);
 				},

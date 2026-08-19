@@ -1,0 +1,46 @@
+# OpenAI Integration - Context Compaction Schemas
+
+OpenAICompactionRequest:
+  type: object
+  required:
+    - model
+  properties:
+    model:
+      type: string
+      description: >
+        Model identifier (e.g., "gpt-4o"). When routing through Bifrost's provider-prefixed
+        path, use "provider/model" format.
+    input:
+      $ref: '#/OpenAICompactionInput'
+    instructions:
+      type: string
+      description: System instructions that persist across the compacted context.
+    previous_response_id:
+      type: string
+      description: ID of a previous response to extend rather than sending full input.
+    prompt_cache_key:
+      type: string
+    prompt_cache_retention:
+      type: string
+    service_tier:
+      type: string
+    # Bifrost-specific
+    fallbacks:
+      type: array
+      items:
+        type: string
+      description: Bifrost-specific — fallback model list in provider/model format.
+
+OpenAICompactionInput:
+  oneOf:
+    - type: string
+    - type: array
+      items:
+        $ref: '../../inference/responses.yaml#/ResponsesMessage'
+  description: >
+    Conversation to compact. Required unless previous_response_id is set.
+    Compaction items (type "response.compaction") from prior responses may be included.
+
+# Response reuses the inference compaction schema
+OpenAICompactionResponse:
+  $ref: '../../inference/compaction.yaml#/CompactionResponse'

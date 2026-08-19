@@ -79,6 +79,24 @@ func TestOpenAIResponsesRequest_MarshalJSON_ReasoningMaxTokensAbsent(t *testing.
 			},
 			description: "When Reasoning is nil, reasoning field should not appear in output",
 		},
+		{
+			name: "reasoning context and mode are preserved while max_tokens is dropped",
+			request: &OpenAIResponsesRequest{
+				Model: "gpt-5.6",
+				Input: OpenAIResponsesRequestInput{
+					OpenAIResponsesRequestInputStr: schemas.Ptr("test"),
+				},
+				ResponsesParameters: schemas.ResponsesParameters{
+					Reasoning: &schemas.ResponsesParametersReasoning{
+						Effort:    schemas.Ptr("max"),
+						Context:   schemas.Ptr("current_turn"),
+						Mode:      schemas.Ptr("pro"),
+						MaxTokens: schemas.Ptr(1000),
+					},
+				},
+			},
+			description: "reasoning.context and reasoning.mode should pass through to output",
+		},
 	}
 
 	for _, tt := range tests {
@@ -117,12 +135,62 @@ func TestOpenAIResponsesRequest_MarshalJSON_ReasoningMaxTokensAbsent(t *testing.
 							t.Error("reasoning.generate_summary should be present in output")
 						}
 					}
+					if tt.request.Reasoning.Context != nil {
+						if got, exists := reasoning["context"]; !exists || got != *tt.request.Reasoning.Context {
+							t.Errorf("reasoning.context = %v, want %q", got, *tt.request.Reasoning.Context)
+						}
+					}
+					if tt.request.Reasoning.Mode != nil {
+						if got, exists := reasoning["mode"]; !exists || got != *tt.request.Reasoning.Mode {
+							t.Errorf("reasoning.mode = %v, want %q", got, *tt.request.Reasoning.Mode)
+						}
+					}
 				}
 			} else if tt.request.Reasoning != nil {
 				// If reasoning is set, it should appear in JSON (unless all fields are nil/omitted)
 				if tt.request.Reasoning.Effort != nil || tt.request.Reasoning.Summary != nil || tt.request.Reasoning.GenerateSummary != nil {
 					t.Error("reasoning field should be present in JSON when Reasoning is set with non-nil fields")
 				}
+			}
+		})
+	}
+}
+
+func TestNormalizeOpenAIReasoningEffort(t *testing.T) {
+	tests := []struct {
+		name     string
+		model    string
+		effort   string
+		expected string
+	}{
+		{"preserves minimal for gpt-5", "gpt-5", "minimal", "minimal"},
+		{"preserves minimal for gpt-5-mini", "gpt-5-mini", "minimal", "minimal"},
+		{"preserves minimal for gpt-5-nano", "gpt-5-nano", "minimal", "minimal"},
+		{"maps minimal to low for gpt-5.4", "gpt-5.4", "minimal", "low"},
+		{"maps minimal to low for gpt-5.2", "gpt-5.2", "minimal", "low"},
+		{"maps minimal to low for gpt-5.6", "gpt-5.6", "minimal", "low"},
+		{"maps minimal to low for o3", "o3", "minimal", "low"},
+		{"maps minimal to low for o1", "o1", "minimal", "low"},
+		{"maps minimal to low for o4", "o4", "minimal", "low"},
+		{"maps minimal to low for gpt-oss", "gpt-oss", "minimal", "low"},
+		{"gpt-5.6 keeps max", "gpt-5.6", "max", "max"},
+		{"gpt-5.6 variant keeps max", "gpt-5.6-terra", "max", "max"},
+		{"gpt-5.6 keeps xhigh", "gpt-5.6", "xhigh", "xhigh"},
+		{"provider-prefixed gpt-5.6 keeps max", "openai/gpt-5.6", "max", "max"},
+		{"deepseek-v4 keeps max", "deepseek-v4", "max", "max"},
+		{"glm-5.2 keeps max", "glm-5.2", "max", "max"},
+		{"gpt-5.5 downgrades max to xhigh", "gpt-5.5", "max", "xhigh"},
+		{"gpt-5.2 downgrades max to xhigh", "gpt-5.2", "max", "xhigh"},
+		{"gpt-5.5 keeps xhigh", "gpt-5.5", "xhigh", "xhigh"},
+		{"gpt-5.1 downgrades max to high", "gpt-5.1", "max", "high"},
+		{"gpt-5.1 downgrades xhigh to high", "gpt-5.1", "xhigh", "high"},
+		{"standard effort passes through", "gpt-5.1", "medium", "medium"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeOpenAIReasoningEffort(tt.model, tt.effort); got != tt.expected {
+				t.Errorf("normalizeOpenAIReasoningEffort(%q, %q) = %q, want %q", tt.model, tt.effort, got, tt.expected)
 			}
 		})
 	}
@@ -312,6 +380,51 @@ func TestOpenAIResponsesRequest_MarshalJSON_InputArrayForm(t *testing.T) {
 	}
 }
 
+func TestToOpenAIResponsesRequest_FireworksPreservesNativeFields(t *testing.T) {
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Fireworks,
+		Model:    "accounts/fireworks/models/deepseek-v3p2",
+		Input: []schemas.ResponsesMessage{
+			{
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{
+					ContentStr: schemas.Ptr("hello"),
+				},
+			},
+		},
+		Params: &schemas.ResponsesParameters{
+			PreviousResponseID: schemas.Ptr("resp_previous"),
+			MaxToolCalls:       schemas.Ptr(2),
+			Store:              schemas.Ptr(true),
+		},
+	}
+
+	request := ToOpenAIResponsesRequest(nil, bifrostReq)
+	if request == nil {
+		t.Fatal("expected non-nil request")
+	}
+
+	jsonBytes, err := request.MarshalJSON()
+	if err != nil {
+		t.Fatalf("failed to marshal responses request: %v", err)
+	}
+
+	var jsonMap map[string]interface{}
+	if err := sonic.Unmarshal(jsonBytes, &jsonMap); err != nil {
+		t.Fatalf("failed to parse marshaled JSON: %v", err)
+	}
+
+	if got, ok := jsonMap["previous_response_id"].(string); !ok || got != "resp_previous" {
+		t.Fatalf("expected previous_response_id to be preserved, got %#v", jsonMap["previous_response_id"])
+	}
+	if got, ok := jsonMap["max_tool_calls"].(float64); !ok || got != 2 {
+		t.Fatalf("expected max_tool_calls to be preserved, got %#v", jsonMap["max_tool_calls"])
+	}
+	if got, ok := jsonMap["store"].(bool); !ok || !got {
+		t.Fatalf("expected store=true to be preserved, got %#v", jsonMap["store"])
+	}
+}
+
 func TestOpenAIResponsesRequest_MarshalJSON_FieldShadowingBehavior(t *testing.T) {
 	// This test verifies that the field shadowing pattern works correctly
 	// by ensuring that the aux struct properly shadows Input and Reasoning fields
@@ -477,4 +590,517 @@ func TestOpenAIResponsesRequest_MarshalJSON_RoundTrip(t *testing.T) {
 			t.Error("Reasoning.MaxTokens should be nil after unmarshaling (was omitted from JSON)")
 		}
 	})
+}
+
+// Regression test for multi-turn Anthropic tool_result with array-form content.
+// The OpenAI Responses API defines function_call_output.output as a string (see
+// https://platform.openai.com/docs/api-reference/responses/create). When an
+// Anthropic client sends a tool_result whose content is an array of text blocks,
+// Bifrost's Anthropic→Responses translator populates
+// ResponsesToolMessageOutputStruct.ResponsesFunctionToolCallOutputBlocks.
+// Historically, that array was marshaled verbatim onto the wire, which some
+// strict OpenAI-compat upstreams (e.g. Ollama Cloud) reject with an error like
+//
+//	json: cannot unmarshal array into Go struct field ResponsesFunctionCallOutput.output of type string
+//
+// The outgoing OpenAI Responses request must emit `output` as a string for
+// text-only tool outputs.
+func TestOpenAIResponsesRequestInput_MarshalJSON_FunctionCallOutputFlattensTextBlocksToString(t *testing.T) {
+	outputText := "line1"
+	callID := "toolu_abc123"
+	functionName := "read_file"
+
+	input := &OpenAIResponsesRequestInput{
+		OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+			{
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{
+					ContentStr: schemas.Ptr("Read /tmp/test.txt and tell me what it contains."),
+				},
+			},
+			{
+				Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				Status: schemas.Ptr("completed"),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID:    schemas.Ptr(callID),
+					Name:      schemas.Ptr(functionName),
+					Arguments: schemas.Ptr(`{"path":"/tmp/test.txt"}`),
+				},
+			},
+			{
+				Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				Status: schemas.Ptr("completed"),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr(callID),
+					Output: &schemas.ResponsesToolMessageOutputStruct{
+						ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
+							{
+								Type: schemas.ResponsesInputMessageContentBlockTypeText,
+								Text: schemas.Ptr(outputText),
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	jsonBytes, err := input.MarshalJSON()
+	if err != nil {
+		t.Fatalf("Failed to marshal OpenAIResponsesRequestInput: %v", err)
+	}
+
+	var messages []map[string]interface{}
+	if err := sonic.Unmarshal(jsonBytes, &messages); err != nil {
+		t.Fatalf("Failed to unmarshal marshaled input as array: %v\nraw=%s", err, string(jsonBytes))
+	}
+
+	var fcoMsg map[string]interface{}
+	for _, m := range messages {
+		if t, ok := m["type"].(string); ok && t == string(schemas.ResponsesMessageTypeFunctionCallOutput) {
+			fcoMsg = m
+			break
+		}
+	}
+	if fcoMsg == nil {
+		t.Fatalf("did not find function_call_output message in marshaled JSON: %s", string(jsonBytes))
+	}
+
+	outputVal, ok := fcoMsg["output"]
+	if !ok {
+		t.Fatalf("function_call_output message has no `output` field: %s", string(jsonBytes))
+	}
+
+	outputStr, isString := outputVal.(string)
+	if !isString {
+		t.Fatalf("function_call_output.output must be a string (OpenAI Responses API spec); got %T: %v\nraw=%s", outputVal, outputVal, string(jsonBytes))
+	}
+	if outputStr != outputText {
+		t.Fatalf("function_call_output.output mismatch: want %q, got %q", outputText, outputStr)
+	}
+}
+
+// Flattening must concatenate multiple text blocks with newline separators so
+// every character from the upstream tool response reaches the model.
+func TestOpenAIResponsesRequestInput_MarshalJSON_FunctionCallOutputConcatenatesMultipleTextBlocks(t *testing.T) {
+	callID := "toolu_multi"
+	input := &OpenAIResponsesRequestInput{
+		OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+			{
+				Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				Status: schemas.Ptr("completed"),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr(callID),
+					Output: &schemas.ResponsesToolMessageOutputStruct{
+						ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
+							{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("line1")},
+							{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("line2")},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	jsonBytes, err := input.MarshalJSON()
+	if err != nil {
+		t.Fatalf("Failed to marshal: %v", err)
+	}
+	var messages []map[string]interface{}
+	if err := sonic.Unmarshal(jsonBytes, &messages); err != nil {
+		t.Fatalf("Failed to unmarshal: %v\nraw=%s", err, string(jsonBytes))
+	}
+	if len(messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(messages))
+	}
+	got, ok := messages[0]["output"].(string)
+	if !ok {
+		t.Fatalf("output must be string, got %T", messages[0]["output"])
+	}
+	if want := "line1\nline2"; got != want {
+		t.Fatalf("flattened output mismatch: want %q, got %q", want, got)
+	}
+}
+
+// When the tool result contains a non-text block (e.g. an image), flattening is
+// unsafe — preserve the array form and let the upstream handle it. This keeps
+// the fix scoped to the common text-only case without dropping rich content.
+func TestOpenAIResponsesRequestInput_MarshalJSON_FunctionCallOutputPreservesNonTextBlocks(t *testing.T) {
+	callID := "toolu_with_image"
+	imageURL := "https://example.com/screenshot.png"
+	input := &OpenAIResponsesRequestInput{
+		OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+			{
+				Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				Status: schemas.Ptr("completed"),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr(callID),
+					Output: &schemas.ResponsesToolMessageOutputStruct{
+						ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
+							{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("here is the screenshot:")},
+							{
+								Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+								ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
+									ImageURL: &imageURL,
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	jsonBytes, err := input.MarshalJSON()
+	if err != nil {
+		t.Fatalf("Failed to marshal: %v", err)
+	}
+	var messages []map[string]interface{}
+	if err := sonic.Unmarshal(jsonBytes, &messages); err != nil {
+		t.Fatalf("Failed to unmarshal: %v\nraw=%s", err, string(jsonBytes))
+	}
+	if _, isString := messages[0]["output"].(string); isString {
+		t.Fatalf("non-text blocks must not be flattened to string; raw=%s", string(jsonBytes))
+	}
+}
+
+// TestOpenAIResponsesRequest_MarshalJSON_StripsAnthropicToolFlags ensures the
+// Responses serializer drops the four Anthropic-native tool flags
+// (defer_loading, allowed_callers, input_examples, eager_input_streaming)
+// along with CacheControl before forwarding to OpenAI — mirroring the Chat
+// path's behavior so Anthropic-flavored tools cannot 400 OpenAI via Responses.
+func TestOpenAIResponsesRequest_MarshalJSON_StripsAnthropicToolFlags(t *testing.T) {
+	req := &OpenAIResponsesRequest{
+		Model: "gpt-4o",
+		Input: OpenAIResponsesRequestInput{
+			OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+				{
+					Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{
+						ContentStr: schemas.Ptr("hello"),
+					},
+				},
+			},
+		},
+		ResponsesParameters: schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{
+					Type:                schemas.ResponsesToolTypeFunction,
+					Name:                schemas.Ptr("lookup"),
+					Description:         schemas.Ptr("lookup something"),
+					CacheControl:        &schemas.CacheControl{Type: "ephemeral"},
+					DeferLoading:        schemas.Ptr(true),
+					AllowedCallers:      []string{"direct", "agent"},
+					EagerInputStreaming: schemas.Ptr(false),
+					InputExamples: []schemas.ChatToolInputExample{
+						{Input: json.RawMessage(`{"q":"hi"}`)},
+					},
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{},
+				},
+				{
+					Type: schemas.ResponsesToolTypeCodeInterpreter,
+					ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{
+						Version: schemas.Ptr("code_execution_20260120"),
+					},
+				},
+			},
+		},
+	}
+
+	jsonBytes, err := req.MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	raw := string(jsonBytes)
+
+	// None of the Anthropic-only tool keys must survive on the wire.
+	for _, key := range []string{`"cache_control"`, `"defer_loading"`, `"allowed_callers"`, `"input_examples"`, `"eager_input_streaming"`, `"code_execution_version"`} {
+		if strings.Contains(raw, key) {
+			t.Errorf("OpenAI Responses serializer must strip %s; raw=%s", key, raw)
+		}
+	}
+	// Function tool identity should be preserved.
+	if !strings.Contains(raw, `"name":"lookup"`) {
+		t.Errorf("tool identity lost after strip; raw=%s", raw)
+	}
+}
+
+// TestOpenAIResponsesRequest_MarshalJSON_DropsAnthropicOnlyToolTypes verifies
+// that Anthropic-only tool types (web_fetch, memory) are dropped entirely when
+// serializing for OpenAI Responses. Per OpenAI's OpenAPI spec the Responses
+// Tool discriminator union does not include web_fetch or memory, so forwarding
+// them would trigger a 400 schema-validation error. Mirrors the Chat path's
+// isAnthropicServerToolShape drop behavior.
+func TestOpenAIResponsesRequest_MarshalJSON_DropsAnthropicOnlyToolTypes(t *testing.T) {
+	req := &OpenAIResponsesRequest{
+		Model: "gpt-4o",
+		Input: OpenAIResponsesRequestInput{
+			OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+				{
+					Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{
+						ContentStr: schemas.Ptr("hello"),
+					},
+				},
+			},
+		},
+		ResponsesParameters: schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				// Kept: function (OpenAI-native).
+				{
+					Type:                  schemas.ResponsesToolTypeFunction,
+					Name:                  schemas.Ptr("keeper_func"),
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{},
+				},
+				// Dropped: web_fetch (Anthropic-only).
+				{
+					Type:                  schemas.ResponsesToolTypeWebFetch,
+					Name:                  schemas.Ptr("anthropic_webfetch"),
+					ResponsesToolWebFetch: &schemas.ResponsesToolWebFetch{},
+				},
+				// Kept: web_search (both support).
+				{
+					Type:                   schemas.ResponsesToolTypeWebSearch,
+					ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{},
+				},
+				// Dropped: memory (Anthropic-only).
+				{
+					Type: schemas.ResponsesToolTypeMemory,
+					Name: schemas.Ptr("anthropic_memory"),
+				},
+				// Kept: tool_search (both support per OpenAI OpenAPI spec).
+				{
+					Type: schemas.ResponsesToolTypeToolSearch,
+				},
+			},
+		},
+	}
+
+	jsonBytes, err := req.MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	raw := string(jsonBytes)
+
+	// Dropped types must not appear on the wire.
+	for _, dropped := range []string{`"web_fetch"`, `"memory"`, `"anthropic_webfetch"`, `"anthropic_memory"`} {
+		if strings.Contains(raw, dropped) {
+			t.Errorf("Anthropic-only tool must be dropped; found %s in raw=%s", dropped, raw)
+		}
+	}
+	// Kept types must still appear.
+	for _, kept := range []string{`"function"`, `"web_search"`, `"tool_search"`, `"keeper_func"`} {
+		if !strings.Contains(raw, kept) {
+			t.Errorf("supported tool %s should be preserved; raw=%s", kept, raw)
+		}
+	}
+
+	// Confirm the tools array is present and has exactly 3 entries (2 dropped of 5).
+	var decoded struct {
+		Tools []map[string]interface{} `json:"tools"`
+	}
+	if err := json.Unmarshal(jsonBytes, &decoded); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if len(decoded.Tools) != 3 {
+		t.Errorf("expected 3 tools after drop (function, web_search, tool_search), got %d; tools=%+v", len(decoded.Tools), decoded.Tools)
+	}
+}
+
+// TestOpenAIResponsesRequest_MarshalJSON_KeepsAllWhenAllSupported verifies the
+// no-reshape fast path: if every tool is OpenAI-compatible with no
+// Anthropic-only flags, the tools slice passes through unchanged (no copy,
+// no drop).
+func TestOpenAIResponsesRequest_MarshalJSON_KeepsAllWhenAllSupported(t *testing.T) {
+	req := &OpenAIResponsesRequest{
+		Model: "gpt-4o",
+		Input: OpenAIResponsesRequestInput{
+			OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+				{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+				},
+			},
+		},
+		ResponsesParameters: schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("f"), ResponsesToolFunction: &schemas.ResponsesToolFunction{}},
+				{Type: schemas.ResponsesToolTypeWebSearch, ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{}},
+				{Type: schemas.ResponsesToolTypeCodeInterpreter, ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{}},
+			},
+		},
+	}
+
+	jsonBytes, err := req.MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	var decoded struct {
+		Tools []map[string]interface{} `json:"tools"`
+	}
+	if err := json.Unmarshal(jsonBytes, &decoded); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if len(decoded.Tools) != 3 {
+		t.Errorf("expected 3 tools preserved, got %d", len(decoded.Tools))
+	}
+}
+
+// TestResponsesToolMessage_NamespaceRoundTrip verifies that the namespace field
+// on function_call items (returned by OpenAI when namespace tools are used) is
+// preserved through unmarshal → marshal without being dropped.
+func TestResponsesToolMessage_NamespaceRoundTrip(t *testing.T) {
+	raw := `{
+		"type": "function_call",
+		"id": "fc_abc123",
+		"call_id": "call_abc123",
+		"name": "get_app_state",
+		"namespace": "mcp__computer_use__",
+		"arguments": "{\"app\":\"Google Chrome\"}",
+		"status": "completed"
+	}`
+
+	var msg schemas.ResponsesMessage
+	if err := sonic.UnmarshalString(raw, &msg); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if msg.ResponsesToolMessage == nil {
+		t.Fatal("ResponsesToolMessage is nil after unmarshal")
+	}
+	if msg.ResponsesToolMessage.Namespace == nil {
+		t.Fatal("namespace field was dropped during unmarshal")
+	}
+	if *msg.ResponsesToolMessage.Namespace != "mcp__computer_use__" {
+		t.Fatalf("namespace mismatch: want %q, got %q", "mcp__computer_use__", *msg.ResponsesToolMessage.Namespace)
+	}
+
+	out, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if !strings.Contains(string(out), `"namespace":"mcp__computer_use__"`) {
+		t.Fatalf("namespace not in marshaled output: %s", string(out))
+	}
+}
+
+// TestOpenAIResponsesRequest_MarshalJSON_CompactionSummaryStripped verifies that the
+// "summary" field is removed from a compaction input item (OpenAI rejects it as an
+// unknown parameter) while a sibling reasoning item keeps its summary array intact.
+func TestOpenAIResponsesRequest_MarshalJSON_CompactionSummaryStripped(t *testing.T) {
+	enc := "gAAAA-encrypted"
+	compactionType := schemas.ResponsesMessageTypeCompaction
+	reasoningType := schemas.ResponsesMessageTypeReasoning
+
+	input := OpenAIResponsesRequestInput{
+		OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+			{
+				// Compaction item: encrypted_content rides the embedded ResponsesReasoning,
+				// which would otherwise re-emit summary:null. summary must be stripped.
+				Type:               &compactionType,
+				ResponsesReasoning: &schemas.ResponsesReasoning{Summary: nil, EncryptedContent: &enc},
+			},
+			{
+				// Reasoning item: summary (even empty []) is required by OpenAI and must survive.
+				Type:               &reasoningType,
+				ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}, EncryptedContent: &enc},
+			},
+		},
+	}
+
+	data, err := input.MarshalJSON()
+	if err != nil {
+		t.Fatalf("MarshalJSON returned error: %v", err)
+	}
+
+	var items []map[string]json.RawMessage
+	if err := json.Unmarshal(data, &items); err != nil {
+		t.Fatalf("failed to unmarshal serialized input: %v\n%s", err, string(data))
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items, got %d: %s", len(items), string(data))
+	}
+
+	// Compaction item (index 0) must NOT carry a summary key.
+	if _, exists := items[0]["summary"]; exists {
+		t.Errorf("compaction item should not contain a summary field, got: %s", string(data))
+	}
+	if _, exists := items[0]["encrypted_content"]; !exists {
+		t.Errorf("compaction item should retain encrypted_content, got: %s", string(data))
+	}
+
+	// Reasoning item (index 1) must retain its summary array.
+	rawSummary, exists := items[1]["summary"]
+	if !exists {
+		t.Errorf("reasoning item should retain its summary field, got: %s", string(data))
+	} else if string(rawSummary) != "[]" {
+		t.Errorf("reasoning item summary should be [], got: %s", string(rawSummary))
+	}
+}
+
+// TestOpenAICompactionRequest_MarshalJSON_Input guards against the `input` union
+// serializing as a JSON object (which /v1/responses/compact rejects with
+// "Invalid type for 'input': expected a string, but got an object instead").
+func TestOpenAICompactionRequest_MarshalJSON_Input(t *testing.T) {
+	tests := []struct {
+		name    string
+		request *OpenAICompactionRequest
+		assert  func(t *testing.T, m map[string]interface{})
+	}{
+		{
+			name: "empty input is omitted (previous_response_id-only compaction)",
+			request: &OpenAICompactionRequest{
+				Model:              "gpt-5",
+				PreviousResponseID: schemas.Ptr("resp_123"),
+			},
+			assert: func(t *testing.T, m map[string]interface{}) {
+				if v, ok := m["input"]; ok {
+					t.Errorf("input should be omitted when empty, got: %#v", v)
+				}
+			},
+		},
+		{
+			name: "string input serializes as a bare string",
+			request: &OpenAICompactionRequest{
+				Model: "gpt-5",
+				Input: OpenAIResponsesRequestInput{OpenAIResponsesRequestInputStr: schemas.Ptr("hello")},
+			},
+			assert: func(t *testing.T, m map[string]interface{}) {
+				if s, ok := m["input"].(string); !ok || s != "hello" {
+					t.Errorf("input should be the string %q, got: %#v", "hello", m["input"])
+				}
+			},
+		},
+		{
+			name: "array input serializes as an array",
+			request: &OpenAICompactionRequest{
+				Model: "gpt-5",
+				Input: OpenAIResponsesRequestInput{OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+				}}},
+			},
+			assert: func(t *testing.T, m map[string]interface{}) {
+				if _, ok := m["input"].([]interface{}); !ok {
+					t.Errorf("input should be an array, got: %#v", m["input"])
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			jsonBytes, err := tt.request.MarshalJSON()
+			if err != nil {
+				t.Fatalf("MarshalJSON failed: %v", err)
+			}
+			var m map[string]interface{}
+			if err := sonic.Unmarshal(jsonBytes, &m); err != nil {
+				t.Fatalf("unmarshal failed: %v", err)
+			}
+			// The regression: input must never be a JSON object.
+			if obj, ok := m["input"].(map[string]interface{}); ok {
+				t.Fatalf("input serialized as an object (the bug): %v", obj)
+			}
+			tt.assert(t, m)
+		})
+	}
 }

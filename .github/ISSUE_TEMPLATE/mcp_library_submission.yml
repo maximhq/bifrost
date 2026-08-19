@@ -1,0 +1,135 @@
+name: "Add MCP Server to Library"
+description: "Propose a new MCP server for the Bifrost community library"
+title: "[MCP Library] Add: "
+labels: ["community", "mcp-library"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for contributing to the Bifrost MCP Library. Please fill out the details below, then open a PR editing `community/mcp-library/servers.json`.
+
+        Do not include secrets, tokens, API keys, private URLs, or personal data.
+
+  - type: input
+    id: name
+    attributes:
+      label: Server name
+      description: "Human-readable display name. Bifrost derives the internal slug from this name."
+      placeholder: "My Server"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: "What does this MCP server do? Keep it concise and factual."
+    validations:
+      required: true
+
+  - type: input
+    id: category
+    attributes:
+      label: Category
+      description: "Reuse an existing category from community/mcp-library/README.md when possible."
+      placeholder: "Developer Tools"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: connection_type
+    attributes:
+      label: Connection type
+      options:
+        - http
+        - stdio
+        - sse
+        - inprocess
+    validations:
+      required: true
+
+  - type: input
+    id: connection_url
+    attributes:
+      label: Connection URL
+      description: "Required for http or sse servers. Leave blank for stdio servers."
+      placeholder: "https://api.example.com/mcp"
+
+  - type: textarea
+    id: stdio_config
+    attributes:
+      label: STDIO config
+      description: "Required for stdio servers. Include command, args, and environment variable names only."
+      value: |
+        command:
+        args:
+        envs:
+
+  - type: dropdown
+    id: auth_type
+    attributes:
+      label: Auth type
+      options:
+        - none
+        - headers
+        - oauth
+        - per_user_oauth
+        - per_user_headers
+    validations:
+      required: true
+
+  - type: input
+    id: required_header_keys
+    attributes:
+      label: Required header keys
+      description: "Header names only, comma-separated. Never include values."
+      placeholder: "Authorization, x-api-key"
+
+  - type: input
+    id: docs_url
+    attributes:
+      label: Documentation URL
+      description: "Link to the server's docs, repo, or homepage."
+      placeholder: "https://github.com/example/mcp-server"
+    validations:
+      required: true
+
+  - type: input
+    id: publisher
+    attributes:
+      label: Publisher
+      description: "Person or organization that maintains this server."
+    validations:
+      required: true
+
+  - type: input
+    id: icon_url
+    attributes:
+      label: Icon URL or path
+      description: "Optional square PNG or SVG icon URL/path."
+      placeholder: "/images/mcp-servers/example.svg"
+
+  - type: input
+    id: tags
+    attributes:
+      label: Tags
+      description: "Short tags, comma-separated."
+      placeholder: "api, docs, developer-tools"
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: "I searched `servers.json` and this is not a duplicate."
+          required: true
+        - label: "I did not include secrets, tokens, API keys, private URLs, or personal data."
+          required: true
+        - label: "I did not add `slug` or `version` fields."
+          required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: "Anything else maintainers should know?"

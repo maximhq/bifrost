@@ -1,6 +1,7 @@
 package mcptests
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -25,11 +26,11 @@ func TestAddClientDuplicate(t *testing.T) {
 
 	// Add client
 	clientConfig := GetSampleHTTPClientConfig(config.HTTPServerURL)
-	err := manager.AddClient(&clientConfig)
+	err := manager.AddClient(context.Background(), &clientConfig)
 	require.NoError(t, err, "should add client first time")
 
 	// Try to add same client again
-	err = manager.AddClient(&clientConfig)
+	err = manager.AddClient(context.Background(), &clientConfig)
 	// Should either return error or be idempotent
 	if err == nil {
 		clients := manager.GetClients()
@@ -370,7 +371,7 @@ func TestReconnectClient(t *testing.T) {
 	// Verify client is still connected
 	time.Sleep(time.Second)
 	clients = manager.GetClients()
-	AssertClientState(t, clients, clientID, schemas.MCPConnectionStateConnected)
+	AssertClientState(t, clients, clientID, schemas.MCPConnectionStateHealthy)
 }
 
 func TestReconnectClientInvalidID(t *testing.T) {
@@ -431,7 +432,7 @@ func TestConcurrentClientOperations(t *testing.T) {
 			clientConfig.ID = string(rune('a'+id)) + "-concurrent-client"
 			clientConfig.Name = "TestHTTPServer" + string(rune('a'+id))
 
-			err := manager.AddClient(&clientConfig)
+			err := manager.AddClient(context.Background(), &clientConfig)
 			if err != nil {
 				errors <- err
 			}

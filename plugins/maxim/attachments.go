@@ -4,6 +4,7 @@ package maxim
 import (
 	"encoding/base64"
 	"log"
+	"net/http"
 	"net/url"
 	"path"
 	"strings"
@@ -14,7 +15,8 @@ import (
 )
 
 // ExtractAttachmentsFromRequest extracts image_url, file, and input_audio blocks from
-// Chat and Responses API messages and converts them to maxim-go attachment types.
+// Chat and Responses API messages, and input_images from image generation requests,
+// converting them to maxim-go attachment types.
 // Returns a slice of *logging.UrlAttachment or *logging.FileDataAttachment for use with
 // Logger.GenerationAddAttachment.
 func ExtractAttachmentsFromRequest(req *schemas.BifrostRequest) []interface{} {
@@ -27,8 +29,99 @@ func ExtractAttachmentsFromRequest(req *schemas.BifrostRequest) []interface{} {
 		return extractFromChatRequest(req.ChatRequest)
 	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
 		return extractFromResponsesRequest(req.ResponsesRequest)
+	case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
+		return extractFromImageGenerationRequest(req.ImageGenerationRequest)
+	case schemas.ImageEditRequest, schemas.ImageEditStreamRequest:
+		return extractFromImageEditRequest(req.ImageEditRequest)
 	default:
 		return nil
+	}
+}
+
+func extractFromImageGenerationRequest(igr *schemas.BifrostImageGenerationRequest) []interface{} {
+	if igr == nil || igr.Params == nil || len(igr.Params.InputImages) == 0 {
+		return nil
+	}
+	var attachments []interface{}
+	for _, img := range igr.Params.InputImages {
+		if att := inputImageStringToAttachment(img); att != nil {
+			attachments = append(attachments, att)
+		}
+	}
+	return attachments
+}
+
+func extractFromImageEditRequest(ier *schemas.BifrostImageEditRequest) []interface{} {
+	if ier == nil || ier.Input == nil || len(ier.Input.Images) == 0 {
+		return nil
+	}
+	var attachments []interface{}
+	for i, img := range ier.Input.Images {
+		if att := imageInputToAttachment(img, i); att != nil {
+			attachments = append(attachments, att)
+		}
+	}
+	return attachments
+}
+
+// imageInputToAttachment converts a raw ImageInput (binary image bytes) to a maxim FileDataAttachment.
+// idx is appended to the filename when greater than zero (for multi-image edit requests).
+func imageInputToAttachment(img schemas.ImageInput, idx int) interface{} {
+	if len(img.Image) == 0 {
+		return nil
+	}
+	mime := http.DetectContentType(img.Image)
+	if !strings.HasPrefix(mime, "image/") {
+		mime = "image/png"
+	}
+	ext := extFromMime(mime)
+	var name string
+	if idx == 0 {
+		name = "input_image." + ext
+	} else {
+		digits := []byte{byte('0' + idx%10)}
+		if idx >= 10 {
+			digits = []byte{byte('0' + idx/10), byte('0' + idx%10)}
+		}
+		name = "input_image_" + string(digits) + "." + ext
+	}
+	return &logging.FileDataAttachment{
+		BaseAttachmentProps: logging.BaseAttachmentProps{
+			ID:       uuid.New().String(),
+			Name:     name,
+			MimeType: mime,
+		},
+		Type: logging.AttachmentTypeFileData,
+		Data: img.Image,
+	}
+}
+
+// inputImageStringToAttachment maps ImageGenerationParameters.InputImages entries (URL,
+// data URL, or raw base64) to maxim attachment types.
+func inputImageStringToAttachment(s string) interface{} {
+	if s == "" {
+		return nil
+	}
+	if strings.HasPrefix(s, "data:") || strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://") {
+		return urlToAttachment(s, "image", "")
+	}
+	decoded, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		return urlToAttachment(s, "image", "")
+	}
+	mime := http.DetectContentType(decoded)
+	if !strings.HasPrefix(mime, "image/") {
+		mime = "image/png"
+	}
+	name := "input_image." + extFromMime(mime)
+	return &logging.FileDataAttachment{
+		BaseAttachmentProps: logging.BaseAttachmentProps{
+			ID:       uuid.New().String(),
+			Name:     name,
+			MimeType: mime,
+		},
+		Type: logging.AttachmentTypeFileData,
+		Data: decoded,
 	}
 }
 
@@ -74,7 +167,7 @@ func chatBlockToAttachment(block schemas.ChatContentBlock) interface{} {
 	switch block.Type {
 	case schemas.ChatContentBlockTypeImage:
 		if block.ImageURLStruct != nil && block.ImageURLStruct.URL != "" {
-			return urlToAttachment(block.ImageURLStruct.URL, "image")
+			return urlToAttachment(block.ImageURLStruct.URL, "image", "")
 		}
 	case schemas.ChatContentBlockTypeFile:
 		if block.File != nil {
@@ -92,7 +185,7 @@ func responsesBlockToAttachment(block schemas.ResponsesMessageContentBlock) inte
 	switch block.Type {
 	case schemas.ResponsesInputMessageContentBlockTypeImage:
 		if block.ImageURL != nil && *block.ImageURL != "" {
-			return urlToAttachment(*block.ImageURL, "image")
+			return urlToAttachment(*block.ImageURL, "image", "")
 		}
 	case schemas.ResponsesInputMessageContentBlockTypeFile:
 		return responsesFileToAttachment(&block)
@@ -249,25 +342,60 @@ func audioDataToAttachment(data string, format *string) interface{} {
 	}
 }
 
-func urlToAttachment(urlStr string, kind string) interface{} {
+// urlToAttachment builds a UrlAttachment (e.g. chat vision image_url). For images, MIME is:
+// outputFormat when set → URL rsct query (e.g. Azure) → image/png.
+func urlToAttachment(urlStr string, kind string, outputFormat string) interface{} {
 	if strings.HasPrefix(urlStr, "data:") {
 		return dataURLToAttachment(urlStr, kind)
 	}
 	// HTTP/HTTPS URL
 	name := "attachment"
-	if u, err := url.Parse(urlStr); err == nil {
+	mime := ""
+	u, errParse := url.Parse(urlStr)
+	if errParse == nil {
 		if p := path.Base(u.Path); p != "" && p != "." {
 			name = p
+		}
+	}
+	if kind == "image" {
+		mime = imageOutputFormatToMime(outputFormat)
+		if mime == "" && errParse == nil {
+			mime = imageOutputFormatToMime(strings.TrimPrefix(strings.ToLower(path.Ext(u.Path)), "."))
+		}
+		if mime == "" && errParse == nil {
+			if q := u.Query().Get("rsct"); q != "" {
+				mime = q
+			}
+		}
+		if mime == "" {
+			mime = "image/png"
 		}
 	}
 	return &logging.UrlAttachment{
 		BaseAttachmentProps: logging.BaseAttachmentProps{
 			ID:       uuid.New().String(),
 			Name:     name,
+			MimeType: mime,
 			Metadata: map[string]string{"url": urlStr},
 		},
 		Type: logging.AttachmentTypeURL,
 		URL:  urlStr,
+	}
+}
+
+// imageOutputFormatToMime maps provider output_format (e.g. png, jpeg, webp) to a MIME type.
+func imageOutputFormatToMime(format string) string {
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "png":
+		return "image/png"
+	case "jpeg", "jpg":
+		return "image/jpeg"
+	case "webp":
+		return "image/webp"
+	case "gif":
+		return "image/gif"
+	default:
+		return ""
 	}
 }
 

@@ -1,0 +1,92 @@
+---
+title: "Gray Swan Cygnal"
+description: "Integrate Gray Swan Cygnal Monitor with Bifrost for AI safety monitoring with natural language rule definitions, violation scoring, and advanced threat detection."
+icon: "/media/grayswan-logo-nav.svg"
+---
+
+Bifrost integrates with **Gray Swan Cygnal Monitor** to provide AI safety monitoring with natural language rule definitions and advanced threat detection capabilities. This page covers the configuration and capabilities of the Gray Swan Cygnal guardrail provider.
+
+![Gray Swan configuration form](/media/guardrails/gray-swan-config-on-bifrost.png)
+
+## Capabilities
+
+- **Violation Scoring**: Continuous 0-1 scale violation detection with configurable thresholds
+- **Custom Natural Language Rules**: Define safety rules in plain English without code
+- **Policy Management**: Use pre-built policies from Gray Swan platform or create custom ones
+- **Indirect Prompt Injection (IPI) Detection**: Identify hidden instructions in user inputs
+- **Mutation Detection**: Detect attempts to manipulate or alter content
+- **Reasoning Modes**: Choose from fast ("off"), balanced ("hybrid"), or thorough ("thinking") analysis
+
+## Configuration Fields
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `api_key` | string | Yes | - | Gray Swan API key |
+| `base_url` | string | No | `https://api.grayswan.ai` | Gray Swan API base URL. Bifrost accepts either the API root or a URL that already ends in `/cygnal/monitor`. |
+| `violation_threshold` | number | No | 0.5 | Score threshold (0-1) for triggering intervention. Lower values are more strict. |
+| `reasoning_mode` | enum | No | "off" | Analysis depth: `off` (fastest), `hybrid` (balanced), or `thinking` (most thorough) |
+| `policy_id` | string | Yes | - | Required policy ID from the Gray Swan platform. Gray Swan rejects monitor requests that omit it. |
+| `policy_ids` | array | No | - | Multiple policy IDs for aggregated rule evaluation |
+| `rules` | object | No | - | Custom natural language rules as key-value pairs |
+| `timeout` | integer | No | provider default | Provider execution timeout in seconds. |
+
+`policy_id` is mandatory even when you define custom `rules`; Gray Swan does not apply a default policy. The Bifrost configuration **Name** is only a local profile name and is not a Gray Swan policy ID. Create or select a policy in Gray Swan and copy its ID into Bifrost.
+
+## Request Header Metadata
+
+For each Gray Swan monitor call, Bifrost includes sanitized incoming request headers in Gray Swan `metadata.headers`. This gives Gray Swan request context for correlation and policy analysis, such as `x-request-id`, `x-correlation-id`, `traceparent`, `x-tenant-id`, `x-org-id`, `content-type`, and `content-length`.
+
+Credential-bearing headers are excluded. Bifrost does not send `authorization`, `proxy-authorization`, `x-api-key`, `api-key`, `x-goog-api-key`, `x-bf-vk`, `x-bf-api-key`, `x-bf-api-key-id`, `cookie`, `set-cookie`, or `grayswan-api-key` in Gray Swan metadata.
+
+This is metadata only: these values are added to the JSON body sent to Gray Swan, not forwarded as outbound HTTP headers, and they cannot override the configured Gray Swan API key.
+
+```json
+{
+  "metadata": {
+    "headers": {
+      "x-request-id": "req-123",
+      "traceparent": "00-...",
+      "x-tenant-id": "tenant-123",
+      "content-type": "application/json"
+    }
+  }
+}
+```
+
+## Streaming Output and Tool Calls
+
+For text-only streaming responses, Bifrost forwards output to the client normally and does not call Cygnal.
+
+If Bifrost detects a supported tool call, it stops forwarding further chunks to the client, accumulates the remaining chunks until the model response is complete, and sends the full accumulated response and earlier conversation to Cygnal in one request. If Cygnal allows the response, Bifrost sends the held chunks to the client. If Cygnal blocks it, the tool call and later content are not sent.
+
+Any text sent before Bifrost detects the tool call remains visible to the client. Bifrost recognizes Chat Completions tool calls and Responses API function-call and custom tool-call events.
+
+<Note>
+  If the same rule also uses another output guardrail profile, Bifrost waits for that profile to check the completed response. Gray Swan's text-only behavior only skips the Gray Swan call; it does not bypass the other profile. See [Streaming Output Guardrails](/enterprise/guardrails#streaming-output-guardrails) for the shared behavior.
+</Note>
+
+## Custom Rules Example
+
+![Gray Swan custom rules](/media/guardrails/gray-swan-custom-rule.png)
+
+Rules are defined as key-value pairs where the key is the rule name and the value is a natural language description:
+
+```json
+{
+  "rules": {
+    "no_profanity": "Do not allow profanity or vulgar language",
+    "no_pii": "Do not allow personally identifiable information",
+    "professional_tone": "Ensure all responses maintain a professional tone"
+  }
+}
+```
+
+## Detection Features
+
+- Real-time violation scoring
+- Multi-rule evaluation
+- IPI attack detection
+- Content mutation monitoring
+- Detailed violation descriptions with rule attribution
+
+For provider comparison and information on configuring guardrail rules and profiles, see [Guardrails](/enterprise/guardrails).

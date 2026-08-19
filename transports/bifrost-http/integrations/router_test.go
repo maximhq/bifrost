@@ -1,15 +1,84 @@
 package integrations
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"fmt"
+	"io"
+	"mime/multipart"
+	"net"
+	"net/http"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/fasthttp/router"
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/valyala/fasthttp"
 )
+
+func TestParsePassthroughBody_MultipartExtractsModelAfterFilePart(t *testing.T) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+
+	fileWriter, err := writer.CreateFormFile("file", "sample.mp3")
+	require.NoError(t, err)
+	_, err = fileWriter.Write([]byte("audio-bytes"))
+	require.NoError(t, err)
+	require.NoError(t, writer.WriteField("model", "openai/whisper-1"))
+	require.NoError(t, writer.WriteField("stream", "true"))
+	require.NoError(t, writer.Close())
+
+	model, stream := parsePassthroughBody(writer.FormDataContentType(), body.Bytes())
+	assert.Equal(t, "openai/whisper-1", model)
+	assert.True(t, stream)
+}
+
+func TestChatGPTPassthroughRouterRegistersCodexResponsesPost(t *testing.T) {
+	r := router.New()
+	passthroughRouter := NewChatGPTPassthroughRouter(nil, &mockHandlerStore{}, &testLogger{})
+	passthroughRouter.RegisterRoutes(r, func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			ctx.SetStatusCode(fasthttp.StatusNoContent)
+		}
+	})
+
+	var ctx fasthttp.RequestCtx
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.SetRequestURI("/chatgpt_passthrough/backend-api/codex/responses")
+
+	r.Handler(&ctx)
+
+	require.Equal(t, fasthttp.StatusNoContent, ctx.Response.StatusCode())
+}
+
+func TestRunwarePassthroughRouterRegistersCatchAll(t *testing.T) {
+	r := router.New()
+	passthroughRouter := NewRunwarePassthroughRouter(nil, &mockHandlerStore{}, &testLogger{})
+	passthroughRouter.RegisterRoutes(r, func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			ctx.SetStatusCode(fasthttp.StatusNoContent)
+		}
+	})
+
+	// Runware is a single-endpoint API, so the passthrough router forwards any path under the
+	// prefix; /runware_passthrough/v1 is the canonical way clients hit the base endpoint.
+	for _, uri := range []string{"/runware_passthrough/v1", "/runware_passthrough/v1/anything"} {
+		var ctx fasthttp.RequestCtx
+		ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+		ctx.Request.SetRequestURI(uri)
+
+		r.Handler(&ctx)
+
+		require.Equal(t, fasthttp.StatusNoContent, ctx.Response.StatusCode(), "POST %s should match a registered route", uri)
+	}
+}
 
 func TestRequestWithSettableExtraParams_OpenAIChatRequest(t *testing.T) {
 	t.Run("SetExtraParams populates both standalone and embedded ExtraParams", func(t *testing.T) {
@@ -85,7 +154,7 @@ func TestRequestWithSettableExtraParams_AllOpenAIRequestTypes(t *testing.T) {
 }
 
 func TestExtraParamsRequiresPassthroughHeader(t *testing.T) {
-	handlerStore := &mockHandlerStore{allowDirectKeys: true}
+	handlerStore := &mockHandlerStore{}
 	routes := CreateOpenAIRouteConfigs("/openai", handlerStore)
 
 	var chatRoute *RouteConfig
@@ -288,13 +357,317 @@ func TestExtraParamsPassthrough_NoExtraParamsKey(t *testing.T) {
 		"ExtraParams should be empty when extra_params key is absent from JSON")
 }
 
+func TestOpenAIChatStructuredOutputRequestParserAndConverter(t *testing.T) {
+	handlerStore := &mockHandlerStore{}
+	routes := CreateOpenAIRouteConfigs("", handlerStore)
+
+	var chatRoute *RouteConfig
+	for i := range routes {
+		if routes[i].Path == "/v1/chat/completions" {
+			chatRoute = &routes[i]
+			break
+		}
+	}
+	require.NotNil(t, chatRoute)
+
+	rawBody := []byte(`{
+		"model": "gemini/gemini-2.5-flash",
+		"messages": [
+			{
+				"role": "user",
+				"content": "Extract city/country/population for Paris."
+			}
+		],
+		"stream": false,
+		"response_format": {
+			"type": "json_schema",
+			"json_schema": {
+				"name": "city",
+				"strict": true,
+				"schema": {
+					"type": "object",
+					"properties": {
+						"city": {"type": "string"},
+						"country": {"type": "string"},
+						"population": {"type": "number", "multipleOf": 1.50}
+					},
+					"required": ["city", "country", "population"],
+					"additionalProperties": false
+				}
+			}
+		}
+	}`)
+
+	req := chatRoute.GetRequestTypeInstance(context.Background())
+	require.NoError(t, parseJSONRequestBody(rawBody, req))
+
+	bifrostCtx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	bifrostReq, err := chatRoute.RequestConverter(bifrostCtx, req)
+	require.NoError(t, err)
+	require.NotNil(t, bifrostReq)
+	require.NotNil(t, bifrostReq.ChatRequest)
+	require.NotNil(t, bifrostReq.ChatRequest.Params)
+	require.NotNil(t, bifrostReq.ChatRequest.Params.ResponseFormat)
+
+	assert.Equal(t, schemas.Gemini, bifrostReq.ChatRequest.Provider)
+	assert.Equal(t, "gemini-2.5-flash", bifrostReq.ChatRequest.Model)
+	assert.False(t, req.(*openai.OpenAIChatRequest).IsStreamingRequested())
+
+	// Object-valued response_format is carried as json.RawMessage now, so that the client's
+	// exact bytes (numeric literals included) survive to the provider. Read it through the
+	// shared accessor rather than asserting one concrete representation.
+	responseFormat, ok := schemas.ParseChatResponseFormat(bifrostReq.ChatRequest.Params.ResponseFormat)
+	require.True(t, ok)
+	assert.Equal(t, "json_schema", responseFormat.Type)
+	assert.True(t, responseFormat.HasJSONSchema(), "the json_schema payload must survive the conversion")
+
+	name, ok := responseFormat.Name()
+	require.True(t, ok)
+	assert.Equal(t, "city", name)
+
+	// HasJSONSchema only proves json_schema is an object and Name only reads its name, so
+	// neither would notice conversion dropping or replacing json_schema.schema. Assert the
+	// retained schema payload itself, which is the contract the comment above claims.
+	rawSchema := responseFormat.RawSchema()
+	require.NotEmpty(t, rawSchema, "the json_schema.schema payload must survive the conversion")
+
+	schemaStr := string(rawSchema)
+	assert.Contains(t, schemaStr, `"population"`, "every declared property must survive")
+	assert.Contains(t, schemaStr, `"additionalProperties"`, "schema keywords must survive, not just properties")
+
+	// Property order is the thing this PR exists to preserve, so pin it rather than just
+	// membership: city before country before population, as the client wrote them.
+	iCity := strings.Index(schemaStr, `"city"`)
+	iCountry := strings.Index(schemaStr, `"country"`)
+	iPopulation := strings.Index(schemaStr, `"population"`)
+	require.True(t, iCity >= 0 && iCountry >= 0 && iPopulation >= 0, "schema: %s", schemaStr)
+	assert.Less(t, iCity, iCountry, "client property order must survive; schema: %s", schemaStr)
+	assert.Less(t, iCountry, iPopulation, "client property order must survive; schema: %s", schemaStr)
+
+	// The numeric literal is the only thing in this payload a re-encoder can actually
+	// damage: "number" above is a string, so without a real numeric token the assertions
+	// above would pass even if 1.50 arrived as 1.5. This is what makes the byte-preservation
+	// claim in the comment at the top of this block testable rather than aspirational.
+	assert.Contains(t, schemaStr, "1.50",
+		"the client's exact numeric literal must survive; a re-encode would render it 1.5; schema: %s", schemaStr)
+}
+
+// TestCreateHandler_AnthropicRouteSetsPassthroughFlags verifies that a Claude
+// Code request on the Anthropic route is marked for raw-body passthrough by the
+// checkAnthropicPassthrough pre-callback, and that the flags are still set at
+// converter time. The router does not clear them when the model later resolves
+// to a non-native provider (e.g. Bedrock) — that happens per attempt in core
+// (clearAnthropicPassthroughForNonNativeProvider), after final provider
+// resolution.
+func TestCreateHandler_AnthropicRouteSetsPassthroughFlags(t *testing.T) {
+	handlerStore := &mockHandlerStore{}
+
+	var capturedUseRaw interface{}
+	var capturedSendRawResponse interface{}
+	var capturedPassthroughOverrides interface{}
+	route := RouteConfig{
+		Type:   RouteConfigTypeAnthropic,
+		Path:   "/v1/messages",
+		Method: fasthttp.MethodPost,
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.ResponsesRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
+			return &anthropic.AnthropicMessageRequest{}
+		},
+		PreCallback: checkAnthropicPassthrough,
+		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+			capturedUseRaw = ctx.Value(schemas.BifrostContextKeyUseRawRequestBody)
+			capturedSendRawResponse = ctx.Value(schemas.BifrostContextKeySendBackRawResponse)
+			capturedPassthroughOverrides = ctx.Value(schemas.BifrostContextKeyPassthroughOverridesPresent)
+			return nil, fmt.Errorf("stop before bifrost execution")
+		},
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+			return err
+		},
+	}
+
+	router := NewGenericRouter(nil, handlerStore, nil, nil, nil)
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.Header.Set("user-agent", "claude-code/1.0")
+	ctx.Request.SetBodyString(`{"model":"claude-opus-4-8","max_tokens":1024,"messages":[{"role":"user","content":"hi"}]}`)
+
+	router.createHandler(route)(ctx)
+
+	// Non-Bifrost errors without an explicit status code map to 400 (see
+	// GenericRouter.sendError), so the converter's sentinel error surfaces as one.
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+	require.Equal(t, true, capturedUseRaw, "UseRawRequestBody should be set for a Claude Code request")
+	require.Equal(t, true, capturedSendRawResponse, "SendBackRawResponse should be set for a Claude Code request")
+	require.Equal(t, true, capturedPassthroughOverrides, "PassthroughOverridesPresent should be set for a Claude Code request")
+}
+
+func TestCreateHandler_CustomParserFailureClosesConnection(t *testing.T) {
+	handlerStore := &mockHandlerStore{}
+	converterCalled := false
+	route := RouteConfig{
+		Type:   RouteConfigTypeOpenAI,
+		Path:   "/v1/chat/completions",
+		Method: fasthttp.MethodPost,
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.ChatCompletionRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
+			return &openai.OpenAIChatRequest{}
+		},
+		RequestParser: func(ctx *fasthttp.RequestCtx, req interface{}) error {
+			return parseJSONRequestBody(ctx.Request.Body(), req)
+		},
+		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+			converterCalled = true
+			return nil, nil
+		},
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+			return err
+		},
+	}
+
+	router := NewGenericRouter(nil, handlerStore, nil, nil, nil)
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.SetBodyString(`{"model":"gemini/gemini-2.5-flash","messages":[]}}`)
+
+	router.createHandler(route)(ctx)
+
+	assert.False(t, converterCalled)
+	assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+	assert.True(t, ctx.Response.ConnectionClose())
+	assert.Contains(t, string(ctx.Response.Body()), "invalid JSON request body")
+	assert.Contains(t, string(ctx.Response.Body()), "length")
+}
+
+func TestCreateHandler_DefaultJSONParserFailureClosesConnection(t *testing.T) {
+	handlerStore := &mockHandlerStore{}
+	route := RouteConfig{
+		Type:   RouteConfigTypeOpenAI,
+		Path:   "/v1/test",
+		Method: fasthttp.MethodPost,
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.ChatCompletionRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
+			return &openai.OpenAIChatRequest{}
+		},
+		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+			return nil, nil
+		},
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+			return err
+		},
+	}
+
+	router := NewGenericRouter(nil, handlerStore, nil, nil, nil)
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.SetBodyString(`{"model":"gemini/gemini-2.5-flash","messages":[]}x`)
+
+	router.createHandler(route)(ctx)
+
+	assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+	assert.True(t, ctx.Response.ConnectionClose())
+	assert.Contains(t, string(ctx.Response.Body()), "invalid JSON request body")
+}
+
+func TestCreateHandler_ParseFailureClosesKeepAliveSocket(t *testing.T) {
+	route := RouteConfig{
+		Type:   RouteConfigTypeOpenAI,
+		Path:   "/v1/chat/completions",
+		Method: fasthttp.MethodPost,
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.ChatCompletionRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
+			return &openai.OpenAIChatRequest{}
+		},
+		ShortCircuit: func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) (bool, error) {
+			ctx.SetStatusCode(fasthttp.StatusOK)
+			ctx.SetBodyString(`{"ok":true}`)
+			return true, nil
+		},
+		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+			t.Fatal("RequestConverter should not run when ShortCircuit handles the request")
+			return nil, nil
+		},
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+			return err
+		},
+	}
+	router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil)
+	server := &fasthttp.Server{
+		Handler: router.createHandler(route),
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close()
+	go func() {
+		_ = server.Serve(ln)
+	}()
+	defer server.Shutdown()
+
+	t.Run("valid keep-alive requests reuse the socket", func(t *testing.T) {
+		conn, err := net.Dial("tcp", ln.Addr().String())
+		require.NoError(t, err)
+		defer conn.Close()
+		reader := bufio.NewReader(conn)
+		body := `{"model":"gemini/gemini-2.5-flash","messages":[]}`
+		req := fmt.Sprintf("POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nConnection: keep-alive\r\nContent-Length: %d\r\n\r\n%s", len(body), body)
+
+		_, err = conn.Write([]byte(req + req))
+		require.NoError(t, err)
+		resp1, err := http.ReadResponse(reader, nil)
+		require.NoError(t, err)
+		_, err = io.ReadAll(resp1.Body)
+		require.NoError(t, err)
+		require.NoError(t, resp1.Body.Close())
+		assert.Equal(t, http.StatusOK, resp1.StatusCode)
+		assert.False(t, resp1.Close)
+
+		resp2, err := http.ReadResponse(reader, nil)
+		require.NoError(t, err)
+		_, err = io.ReadAll(resp2.Body)
+		require.NoError(t, err)
+		require.NoError(t, resp2.Body.Close())
+		assert.Equal(t, http.StatusOK, resp2.StatusCode)
+		assert.False(t, resp2.Close)
+	})
+
+	t.Run("malformed request closes the socket", func(t *testing.T) {
+		conn, err := net.Dial("tcp", ln.Addr().String())
+		require.NoError(t, err)
+		defer conn.Close()
+		reader := bufio.NewReader(conn)
+		body := `{"model":"gemini/gemini-2.5-flash","messages":[]}x`
+		req := fmt.Sprintf("POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nConnection: keep-alive\r\nContent-Length: %d\r\n\r\n%s", len(body), body)
+
+		_, err = conn.Write([]byte(req))
+		require.NoError(t, err)
+		resp, err := http.ReadResponse(reader, nil)
+		require.NoError(t, err)
+		_, err = io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		require.NoError(t, resp.Body.Close())
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		assert.True(t, resp.Close)
+
+		require.NoError(t, conn.SetReadDeadline(time.Now().Add(time.Second)))
+		_, err = reader.Peek(1)
+		require.Error(t, err)
+	})
+}
+
 // TestExtraParamsSetViaInterfaceMutatesOriginalReq verifies that setting extra
 // params through the RequestWithSettableExtraParams interface assertion mutates
 // the original req (interface{}) value. This matters because createHandler
 // passes req to config.RequestConverter after the extra params block -- both
 // variables must reference the same underlying struct via pointer semantics.
 func TestExtraParamsSetViaInterfaceMutatesOriginalReq(t *testing.T) {
-	handlerStore := &mockHandlerStore{allowDirectKeys: true}
+	handlerStore := &mockHandlerStore{}
 	routes := CreateOpenAIRouteConfigs("/openai", handlerStore)
 
 	var chatRoute *RouteConfig
@@ -351,4 +724,54 @@ func TestExtraParamsSetViaInterfaceMutatesOriginalReq(t *testing.T) {
 	require.NotNil(t, bifrostReq.ChatRequest.Params)
 	assert.Contains(t, bifrostReq.ChatRequest.Params.ExtraParams, "guardrailConfig",
 		"extra params should propagate through RequestConverter to BifrostChatRequest")
+}
+
+// TestExtractModelFromPath covers model extraction across provider path styles: GenAI
+// models/tunedModels (with :action suffixes), Vertex fully-qualified publisher paths, and
+// Azure OpenAI deployments/{deployment} (where the deployment name is the model identifier).
+func TestExtractModelFromPath(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{"azure deployment chat", "/openai/deployments/my-gpt4o/chat/completions", "my-gpt4o"},
+		{"azure deployment leading-stripped", "openai/deployments/prod-embed-3/embeddings", "prod-embed-3"},
+		{"genai models with action", "/v1beta/models/gemini-2.5-pro:generateContent", "gemini-2.5-pro"},
+		{"genai models stream action", "/models/gemini-2.5-flash:streamGenerateContent", "gemini-2.5-flash"},
+		{"genai tunedModels", "/v1beta/tunedModels/my-tuned-1:generateContent", "my-tuned-1"},
+		{"vertex fully-qualified", "/projects/p/locations/us-central1/publishers/google/models/gemini-3-pro:streamGenerateContent", "gemini-3-pro"},
+		{"no model segment", "/v1/chat/completions", ""},
+		{"deployments with no trailing segment", "/openai/deployments", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := extractModelFromPath(tt.path); got != tt.want {
+				t.Fatalf("extractModelFromPath(%q) = %q, want %q", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestExtractPassthroughModel verifies the path value wins when present, and the body model is
+// used as a fallback — notably for Azure deployment routes where the body usually omits "model".
+func TestExtractPassthroughModel(t *testing.T) {
+	tests := []struct {
+		name      string
+		path      string
+		bodyModel string
+		want      string
+	}{
+		{"azure deployment path overrides empty body", "/openai/deployments/my-gpt4o/chat/completions", "", "my-gpt4o"},
+		{"body fallback when path has no model", "/openai/v1/chat/completions", "gpt-4o", "gpt-4o"},
+		{"path wins over body", "/openai/deployments/dep-a/chat/completions", "ignored-body-model", "dep-a"},
+		{"both empty", "/v1/chat/completions", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := extractPassthroughModel(tt.path, tt.bodyModel); got != tt.want {
+				t.Fatalf("extractPassthroughModel(%q, %q) = %q, want %q", tt.path, tt.bodyModel, got, tt.want)
+			}
+		})
+	}
 }

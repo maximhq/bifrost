@@ -11,11 +11,16 @@
     "prepare": "npm run build"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.4",
-    "zod": "^3.24.1"
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "zod": "3.24.1"
   },
   "devDependencies": {
-    "@types/node": "^20.10.0",
-    "typescript": "^5.3.3"
+    "@types/node": "20.10.0",
+    "typescript": "5.3.3"
+  },
+  "overrides": {
+    "fast-uri": "3.1.5",
+    "hono": "4.12.34",
+    "@hono/node-server": "2.0.10"
   }
 }

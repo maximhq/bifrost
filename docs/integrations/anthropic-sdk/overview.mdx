@@ -31,7 +31,7 @@ import anthropic
 # Configure client to use Bifrost
 client = anthropic.Anthropic(
     base_url="http://localhost:8080/anthropic",
-    api_key="dummy-key"  # Keys handled by Bifrost
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>"  # Replace with your actual Bifrost virtual key.
 )
 
 # Make requests as usual
@@ -53,7 +53,7 @@ import Anthropic from "@anthropic-ai/sdk";
 // Configure client to use Bifrost
 const anthropic = new Anthropic({
   baseURL: "http://localhost:8080/anthropic",
-  apiKey: "dummy-key", // Keys handled by Bifrost
+  apiKey: "<YOUR-BIFROST-VIRTUAL-KEY>", // Replace with your actual Bifrost virtual key.
 });
 
 // Make requests as usual
@@ -83,7 +83,7 @@ import anthropic
 
 client = anthropic.Anthropic(
     base_url="http://localhost:8080/anthropic",
-    api_key="dummy-key"
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>"  # Replace with your actual Bifrost virtual key.
 )
 
 # Anthropic models (default)
@@ -130,7 +130,7 @@ import Anthropic from "@anthropic-ai/sdk";
 
 const anthropic = new Anthropic({
   baseURL: "http://localhost:8080/anthropic",
-  apiKey: "dummy-key",
+  apiKey: "<YOUR-BIFROST-VIRTUAL-KEY>", // Replace with your actual Bifrost virtual key.
 });
 
 // Anthropic models (default)
@@ -184,11 +184,12 @@ Pass custom headers required by Bifrost plugins (like governance, telemetry, etc
 ```python
 import anthropic
 
+# Sending the virtual key through both fields requires dual_credential_conflict_behavior to be set to "prefer_vk".
 client = anthropic.Anthropic(
     base_url="http://localhost:8080/anthropic",
-    api_key="dummy-key",
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>",  # Replace with your actual Bifrost virtual key.
     default_headers={
-        "x-bf-vk": "vk_12345",  # Virtual key for governance
+        "x-bf-vk": "<YOUR-BIFROST-VIRTUAL-KEY>",  # Replace with your actual Bifrost virtual key.
     }
 )
 
@@ -205,11 +206,12 @@ response = client.messages.create(
 ```javascript
 import Anthropic from "@anthropic-ai/sdk";
 
+// Sending the virtual key through both fields requires dual_credential_conflict_behavior to be set to "prefer_vk".
 const anthropic = new Anthropic({
   baseURL: "http://localhost:8080/anthropic",
-  apiKey: "dummy-key",
+  apiKey: "<YOUR-BIFROST-VIRTUAL-KEY>", // Replace with your actual Bifrost virtual key.
   defaultHeaders: {
-    "x-bf-vk": "vk_12345", // Virtual key for governance
+    "x-bf-vk": "<YOUR-BIFROST-VIRTUAL-KEY>", // Replace with your actual Bifrost virtual key.
   },
 });
 
@@ -217,109 +219,6 @@ const response = await anthropic.messages.create({
   model: "claude-3-sonnet-20240229",
   max_tokens: 1000,
   messages: [{ role: "user", content: "Hello with custom headers!" }],
-});
-```
-
-</Tab>
-</Tabs>
-
----
-
-## Using Direct Keys
-
-Pass API keys directly in requests to bypass Bifrost's load balancing. You can pass any provider's API key (OpenAI, Anthropic, Mistral, etc.) since Bifrost only looks for `Authorization` or `x-api-key` headers. This requires the **Allow Direct API keys** option to be enabled in Bifrost configuration.
-
-> **Learn more:** See [Key Management](../../features/keys-management#direct-key-bypass) for enabling direct API key usage.
-
-<Tabs group="anthropic-sdk">
-<Tab title="Python">
-
-```python
-import anthropic
-
-# Using Anthropic's API key directly
-client_with_direct_key = anthropic.Anthropic(
-    base_url="http://localhost:8080/anthropic",
-    api_key="sk-your-anthropic-key"  # Anthropic's API key works
-)
-
-anthropic_response = client_with_direct_key.messages.create(
-    model="claude-3-sonnet-20240229",
-    max_tokens=1000,
-    messages=[{"role": "user", "content": "Hello from Claude!"}]
-)
-
-# or pass different provider keys per request using headers
-client = anthropic.Anthropic(
-    base_url="http://localhost:8080/anthropic",
-    api_key="dummy-key"
-)
-
-# Use Anthropic key for Claude
-anthropic_response = client.messages.create(
-    model="claude-3-sonnet-20240229",
-    max_tokens=1000,
-    messages=[{"role": "user", "content": "Hello Claude!"}],
-    extra_headers={
-        "x-api-key": "sk-ant-your-anthropic-key"
-    }
-)
-
-# Use OpenAI key for GPT models
-openai_response = client.messages.create(
-    model="openai/gpt-4o-mini",
-    max_tokens=1000,
-    messages=[{"role": "user", "content": "Hello GPT!"}],
-    extra_headers={
-        "Authorization": "Bearer sk-your-openai-key"
-    }
-)
-```
-
-</Tab>
-<Tab title="JavaScript">
-
-```javascript
-import Anthropic from "@anthropic-ai/sdk";
-
-// Using Anthropic's API key directly
-const anthropicWithDirectKey = new Anthropic({
-  baseURL: "http://localhost:8080/anthropic",
-  apiKey: "sk-your-anthropic-key", // Anthropic's API key works
-});
-
-
-const anthropicResponse = await anthropicWithDirectKey.messages.create({
-  model: "claude-3-sonnet-20240229",
-  max_tokens: 1000,
-  messages: [{ role: "user", content: "Hello from Claude!" }],
-});
-
-
-// or pass different provider keys per request using headers
-const anthropic = new Anthropic({
-  baseURL: "http://localhost:8080/anthropic",
-  apiKey: "dummy-key",
-});
-
-// Use Anthropic key for Claude
-const anthropicResponse = await anthropic.messages.create({
-  model: "claude-3-sonnet-20240229",
-  max_tokens: 1000,
-  messages: [{ role: "user", content: "Hello Claude!" }],
-  headers: {
-    "x-api-key": "sk-ant-your-anthropic-key",
-  },
-});
-
-// Use OpenAI key for GPT models
-const openaiResponseWithHeader = await anthropic.messages.create({
-  model: "openai/gpt-4o-mini",
-  max_tokens: 1000,
-  messages: [{ role: "user", content: "Hello GPT!" }],
-  headers: {
-    "Authorization": "Bearer sk-your-openai-key",
-  },
 });
 ```
 
@@ -347,7 +246,7 @@ import time
 
 client = anthropic.Anthropic(
     base_url="http://localhost:8080/anthropic",
-    api_key="dummy-key"
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>"  # Replace with your actual Bifrost virtual key.
 )
 
 # Submit async request
@@ -384,7 +283,7 @@ import Anthropic from "@anthropic-ai/sdk";
 
 const anthropic = new Anthropic({
   baseURL: "http://localhost:8080/anthropic",
-  apiKey: "dummy-key",
+  apiKey: "<YOUR-BIFROST-VIRTUAL-KEY>", // Replace with your actual Bifrost virtual key.
 });
 
 // Submit async request

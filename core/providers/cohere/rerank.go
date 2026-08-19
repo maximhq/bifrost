@@ -4,7 +4,6 @@ import (
 	"sort"
 
 	"github.com/bytedance/sonic"
-	"github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"gopkg.in/yaml.v3"
 )
@@ -43,7 +42,7 @@ func (req *CohereRerankRequest) ToBifrostRerankRequest(ctx *schemas.BifrostConte
 		return nil
 	}
 
-	provider, model := schemas.ParseModelString(req.Model, utils.CheckAndSetDefaultProvider(ctx, schemas.Cohere))
+	provider, model := schemas.ParseModelString(req.Model, "")
 
 	bifrostReq := &schemas.BifrostRerankRequest{
 		Provider: provider,

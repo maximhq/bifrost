@@ -1,9 +1,12 @@
 import { RedactedDBKey, VirtualKey } from "@/lib/types/governance";
 import {
 	CostHistogramResponse,
+	DimensionRankingsResponse,
 	LatencyHistogramResponse,
 	LogEntry,
 	LogFilters,
+	LogSessionDetailResponse,
+	LogSessionSummaryResponse,
 	LogsHistogramResponse,
 	LogStats,
 	ModelHistogramResponse,
@@ -11,8 +14,12 @@ import {
 	Pagination,
 	ProviderCostHistogramResponse,
 	ProviderLatencyHistogramResponse,
+	ProviderThroughputHistogramResponse,
 	ProviderTokenHistogramResponse,
+	RankingDimension,
+	RecalcJobStatus,
 	RecalculateCostResponse,
+	ThroughputHistogramResponse,
 	TokenHistogramResponse,
 } from "@/lib/types/logs";
 import { baseApi } from "./baseApi";
@@ -22,11 +29,17 @@ import { RoutingRule } from "@/lib/types/routingRules";
 function buildFilterParams(filters: LogFilters): Record<string, string | number> {
 	const params: Record<string, string | number> = {};
 
+	if (filters.parent_request_id) {
+		params.parent_request_id = filters.parent_request_id;
+	}
 	if (filters.providers && filters.providers.length > 0) {
 		params.providers = filters.providers.join(",");
 	}
 	if (filters.models && filters.models.length > 0) {
 		params.models = filters.models.join(",");
+	}
+	if (filters.aliases && filters.aliases.length > 0) {
+		params.aliases = filters.aliases.join(",");
 	}
 	if (filters.status && filters.status.length > 0) {
 		params.status = filters.status.join(",");
@@ -46,14 +59,42 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	if (filters.routing_engine_used && filters.routing_engine_used.length > 0) {
 		params.routing_engine_used = filters.routing_engine_used.join(",");
 	}
-	if (filters.start_time) params.start_time = filters.start_time;
-	if (filters.end_time) params.end_time = filters.end_time;
+	if (filters.stop_reasons && filters.stop_reasons.length > 0) {
+		params.stop_reasons = filters.stop_reasons.join(",");
+	}
+	if (filters.period) {
+		params.period = filters.period;
+	} else {
+		if (filters.start_time) params.start_time = filters.start_time;
+		if (filters.end_time) params.end_time = filters.end_time;
+	}
 	if (filters.min_latency !== undefined) params.min_latency = filters.min_latency;
 	if (filters.max_latency !== undefined) params.max_latency = filters.max_latency;
 	if (filters.min_tokens !== undefined) params.min_tokens = filters.min_tokens;
 	if (filters.max_tokens !== undefined) params.max_tokens = filters.max_tokens;
 	if (filters.missing_cost_only) params.missing_cost_only = "true";
+	if (filters.cache_hit_types && filters.cache_hit_types.length > 0) {
+		params.cache_hit_types = filters.cache_hit_types.join(",");
+	}
 	if (filters.content_search) params.content_search = filters.content_search;
+	if (filters.user_ids && filters.user_ids.length > 0) {
+		params.user_ids = filters.user_ids.join(",");
+	}
+	if (filters.team_ids && filters.team_ids.length > 0) {
+		params.team_ids = filters.team_ids.join(",");
+	}
+	if (filters.customer_ids && filters.customer_ids.length > 0) {
+		params.customer_ids = filters.customer_ids.join(",");
+	}
+	if (filters.business_unit_ids && filters.business_unit_ids.length > 0) {
+		params.business_unit_ids = filters.business_unit_ids.join(",");
+	}
+	if (filters.apps && filters.apps.length > 0) {
+		params.apps = JSON.stringify(filters.apps);
+	}
+	if (filters.user_agents && filters.user_agents.length > 0) {
+		params.user_agents = JSON.stringify(filters.user_agents);
+	}
 	if (filters.metadata_filters) {
 		for (const [key, value] of Object.entries(filters.metadata_filters)) {
 			params[`metadata_${key}`] = value;
@@ -61,6 +102,16 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	}
 
 	return params;
+}
+
+/**
+ * Row-cap params shared by the ranking endpoints. `all` wins over `limit`: the
+ * backend ignores a limit when all=true so exports are never truncated.
+ */
+function buildRankingLimitParams(limit?: number, all?: boolean): Record<string, string | number> {
+	if (all) return { all: "true" };
+	if (limit !== undefined) return { limit };
+	return {};
 }
 
 export const logsApi = baseApi.injectEndpoints({
@@ -76,60 +127,46 @@ export const logsApi = baseApi.injectEndpoints({
 			{
 				filters: LogFilters;
 				pagination: Pagination;
+				/** Grouped view: hide fallback-child rows so each chain lists as its root */
+				rootsOnly?: boolean;
 			}
 		>({
-			query: ({ filters, pagination }) => {
-				const params: Record<string, string | number> = {
+			query: ({ filters, pagination, rootsOnly }) => ({
+				url: "/logs",
+				params: {
 					limit: pagination.limit,
 					offset: pagination.offset,
 					sort_by: pagination.sort_by,
 					order: pagination.order,
-				};
+					...(rootsOnly ? { roots_only: "true" } : {}),
+					...buildFilterParams(filters),
+				},
+			}),
+			providesTags: ["Logs"],
+		}),
 
-				// Add filters to params if they exist
-				if (filters.providers && filters.providers.length > 0) {
-					params.providers = filters.providers.join(",");
-				}
-				if (filters.models && filters.models.length > 0) {
-					params.models = filters.models.join(",");
-				}
-				if (filters.status && filters.status.length > 0) {
-					params.status = filters.status.join(",");
-				}
-				if (filters.objects && filters.objects.length > 0) {
-					params.objects = filters.objects.join(",");
-				}
-				if (filters.selected_key_ids && filters.selected_key_ids.length > 0) {
-					params.selected_key_ids = filters.selected_key_ids.join(",");
-				}
-				if (filters.virtual_key_ids && filters.virtual_key_ids.length > 0) {
-					params.virtual_key_ids = filters.virtual_key_ids.join(",");
-				}
-				if (filters.routing_rule_ids && filters.routing_rule_ids.length > 0) {
-					params.routing_rule_ids = filters.routing_rule_ids.join(",");
-				}
-				if (filters.routing_engine_used && filters.routing_engine_used.length > 0) {
-					params.routing_engine_used = filters.routing_engine_used.join(",");
-				}
-				if (filters.start_time) params.start_time = filters.start_time;
-				if (filters.end_time) params.end_time = filters.end_time;
-				if (filters.min_latency !== undefined) params.min_latency = filters.min_latency;
-				if (filters.max_latency !== undefined) params.max_latency = filters.max_latency;
-				if (filters.min_tokens !== undefined) params.min_tokens = filters.min_tokens;
-				if (filters.max_tokens !== undefined) params.max_tokens = filters.max_tokens;
-				if (filters.missing_cost_only) params.missing_cost_only = "true";
-				if (filters.content_search) params.content_search = filters.content_search;
-				if (filters.metadata_filters) {
-					for (const [key, value] of Object.entries(filters.metadata_filters)) {
-						params[`metadata_${key}`] = value;
-					}
-				}
+		getLogSessionById: builder.query<
+			LogSessionDetailResponse,
+			{
+				sessionId: string;
+				pagination: Pick<Pagination, "limit" | "offset" | "order">;
+			}
+		>({
+			query: ({ sessionId, pagination }) => ({
+				url: `/logs/sessions/${encodeURIComponent(sessionId)}`,
+				params: {
+					limit: pagination.limit,
+					offset: pagination.offset,
+					order: pagination.order,
+				},
+			}),
+			providesTags: ["Logs"],
+		}),
 
-				return {
-					url: "/logs",
-					params,
-				};
-			},
+		getLogSessionSummaryById: builder.query<LogSessionSummaryResponse, string>({
+			query: (sessionId) => ({
+				url: `/logs/sessions/${encodeURIComponent(sessionId)}/summary`,
+			}),
 			providesTags: ["Logs"],
 		}),
 
@@ -140,53 +177,10 @@ export const logsApi = baseApi.injectEndpoints({
 				filters: LogFilters;
 			}
 		>({
-			query: ({ filters }) => {
-				const params: Record<string, string | number> = {};
-
-				// Add filters to params if they exist
-				if (filters.providers && filters.providers.length > 0) {
-					params.providers = filters.providers.join(",");
-				}
-				if (filters.models && filters.models.length > 0) {
-					params.models = filters.models.join(",");
-				}
-				if (filters.status && filters.status.length > 0) {
-					params.status = filters.status.join(",");
-				}
-				if (filters.objects && filters.objects.length > 0) {
-					params.objects = filters.objects.join(",");
-				}
-				if (filters.selected_key_ids && filters.selected_key_ids.length > 0) {
-					params.selected_key_ids = filters.selected_key_ids.join(",");
-				}
-				if (filters.virtual_key_ids && filters.virtual_key_ids.length > 0) {
-					params.virtual_key_ids = filters.virtual_key_ids.join(",");
-				}
-				if (filters.routing_rule_ids && filters.routing_rule_ids.length > 0) {
-					params.routing_rule_ids = filters.routing_rule_ids.join(",");
-				}
-				if (filters.routing_engine_used && filters.routing_engine_used.length > 0) {
-					params.routing_engine_used = filters.routing_engine_used.join(",");
-				}
-				if (filters.start_time) params.start_time = filters.start_time;
-				if (filters.end_time) params.end_time = filters.end_time;
-				if (filters.min_latency !== undefined) params.min_latency = filters.min_latency;
-				if (filters.max_latency !== undefined) params.max_latency = filters.max_latency;
-				if (filters.min_tokens !== undefined) params.min_tokens = filters.min_tokens;
-				if (filters.max_tokens !== undefined) params.max_tokens = filters.max_tokens;
-				if (filters.missing_cost_only) params.missing_cost_only = "true";
-				if (filters.content_search) params.content_search = filters.content_search;
-				if (filters.metadata_filters) {
-					for (const [key, value] of Object.entries(filters.metadata_filters)) {
-						params[`metadata_${key}`] = value;
-					}
-				}
-
-				return {
-					url: "/logs/stats",
-					params,
-				};
-			},
+			query: ({ filters }) => ({
+				url: "/logs/stats",
+				params: buildFilterParams(filters),
+			}),
 			providesTags: ["Logs"],
 		}),
 
@@ -260,6 +254,34 @@ export const logsApi = baseApi.injectEndpoints({
 			providesTags: ["Logs"],
 		}),
 
+		// Get throughput (tokens/sec) histogram
+		getLogsThroughputHistogram: builder.query<
+			ThroughputHistogramResponse,
+			{
+				filters: LogFilters;
+			}
+		>({
+			query: ({ filters }) => ({
+				url: "/logs/histogram/throughput",
+				params: buildFilterParams(filters),
+			}),
+			providesTags: ["Logs"],
+		}),
+
+		// Get provider throughput (tokens/sec) histogram with provider breakdown
+		getLogsProviderThroughputHistogram: builder.query<
+			ProviderThroughputHistogramResponse,
+			{
+				filters: LogFilters;
+			}
+		>({
+			query: ({ filters }) => ({
+				url: "/logs/histogram/throughput/by-provider",
+				params: buildFilterParams(filters),
+			}),
+			providesTags: ["Logs"],
+		}),
+
 		// Get provider cost histogram with provider breakdown
 		getLogsProviderCostHistogram: builder.query<
 			ProviderCostHistogramResponse,
@@ -302,16 +324,36 @@ export const logsApi = baseApi.injectEndpoints({
 			providesTags: ["Logs"],
 		}),
 
-		// Get model rankings with trends
+		// Get model rankings with trends.
+		// `limit` caps the number of ranked rows (backend default: 100); `all`
+		// returns every ranked entity and is what the dashboard export uses.
 		getModelRankings: builder.query<
 			ModelRankingsResponse,
 			{
 				filters: LogFilters;
+				limit?: number;
+				all?: boolean;
 			}
 		>({
-			query: ({ filters }) => ({
+			query: ({ filters, limit, all }) => ({
 				url: "/logs/rankings",
-				params: buildFilterParams(filters),
+				params: { ...buildFilterParams(filters), ...buildRankingLimitParams(limit, all) },
+			}),
+			providesTags: ["Logs"],
+		}),
+
+		getDimensionRankings: builder.query<
+			DimensionRankingsResponse,
+			{
+				filters: LogFilters;
+				dimension: RankingDimension;
+				limit?: number;
+				all?: boolean;
+			}
+		>({
+			query: ({ filters, dimension, limit, all }) => ({
+				url: "/logs/rankings/by-dimension",
+				params: { ...buildFilterParams(filters), dimension, ...buildRankingLimitParams(limit, all) },
 			}),
 			providesTags: ["Logs"],
 		}),
@@ -322,19 +364,42 @@ export const logsApi = baseApi.injectEndpoints({
 			providesTags: ["Logs"],
 		}),
 
-		// Get available models
+		// Get available filter data. Pass `dimensions` to fetch only a subset of
+		// dropdowns — the backend runs only those SELECT DISTINCTs and caches the
+		// subset independently. Omitting `dimensions` returns everything (used by
+		// any caller that needs the full bundle).
 		getAvailableFilterData: builder.query<
 			{
-				models: string[];
-				selected_keys: RedactedDBKey[];
-				virtual_keys: VirtualKey[];
-				routing_rules: RoutingRule[];
-				routing_engines: string[];
-				metadata_keys: Record<string, string[]>;
+				models?: string[];
+				aliases?: string[];
+				selected_keys?: RedactedDBKey[];
+				virtual_keys?: VirtualKey[];
+				routing_rules?: RoutingRule[];
+				routing_engines?: string[];
+				stop_reasons?: string[];
+				apps?: string[];
+				user_agents?: string[];
+				teams?: { id: string; name: string }[];
+				customers?: { id: string; name: string }[];
+				users?: { id: string; name: string }[];
+				business_units?: { id: string; name: string }[];
+				metadata_keys?: Record<string, string[]>;
 			},
-			void
+			{ dimensions?: string[]; q?: string } | void
 		>({
-			query: () => "/logs/filterdata",
+			query: (arg) => {
+				const dims = arg && "dimensions" in arg ? arg.dimensions : undefined;
+				const q = arg && "q" in arg ? arg.q : undefined;
+				const params = new URLSearchParams();
+				if (dims && dims.length > 0) {
+					params.set("dimensions", [...dims].sort().join(","));
+				}
+				if (q) {
+					params.set("q", q);
+				}
+				const qs = params.toString();
+				return qs ? `/logs/filterdata?${qs}` : "/logs/filterdata";
+			},
 			providesTags: ["Logs"],
 		}),
 
@@ -357,6 +422,30 @@ export const logsApi = baseApi.injectEndpoints({
 			invalidatesTags: ["Logs"],
 		}),
 
+		// Status of a background cost-recalculation job. Intended to be polled with a
+		// pollingInterval while a job is active; omit id to get the latest in-flight job.
+		getRecalculateCostStatus: builder.query<RecalcJobStatus, { id?: string } | void>({
+			query: (arg) => ({
+				url: "/logs/recalculate-cost/status",
+				params: arg?.id ? { id: arg.id } : {},
+			}),
+		}),
+
+		// Stop a running cost recalculation. Costs already recomputed are kept; the job
+		// simply stops walking the window. Omit id to cancel whichever job is in flight.
+		// Resolves with the job's post-cancel status so the caller can settle its UI.
+		cancelRecalculateCostJob: builder.mutation<RecalcJobStatus, { id?: string } | void>({
+			query: (arg) => ({
+				url: "/logs/recalculate-cost/cancel",
+				method: "POST",
+				params: arg?.id ? { id: arg.id } : {},
+			}),
+			// A cancelled job still committed costs for every row it got through, so
+			// every Logs-tagged query (stats, histograms, filter data) is stale — same
+			// as for the start mutation above.
+			invalidatesTags: ["Logs"],
+		}),
+
 		// Get a single log entry by ID (includes raw_request and raw_response)
 		getLogById: builder.query<LogEntry, string>({
 			query: (id) => `/logs/${encodeURIComponent(id)}`,
@@ -376,8 +465,12 @@ export const {
 	useGetLogsProviderCostHistogramQuery,
 	useGetLogsProviderTokenHistogramQuery,
 	useGetLogsProviderLatencyHistogramQuery,
+	useGetLogsThroughputHistogramQuery,
+	useGetLogsProviderThroughputHistogramQuery,
+	useGetLogSessionSummaryByIdQuery,
 	useGetDroppedRequestsQuery,
 	useGetAvailableFilterDataQuery,
+	useLazyGetLogSessionByIdQuery,
 	useLazyGetLogsQuery,
 	useLazyGetLogsStatsQuery,
 	useLazyGetLogsHistogramQuery,
@@ -388,10 +481,18 @@ export const {
 	useLazyGetLogsProviderCostHistogramQuery,
 	useLazyGetLogsProviderTokenHistogramQuery,
 	useLazyGetLogsProviderLatencyHistogramQuery,
+	useLazyGetLogsThroughputHistogramQuery,
+	useLazyGetLogsProviderThroughputHistogramQuery,
+	useGetModelRankingsQuery,
+	useGetDimensionRankingsQuery,
 	useLazyGetModelRankingsQuery,
+	useLazyGetDimensionRankingsQuery,
 	useLazyGetDroppedRequestsQuery,
 	useLazyGetAvailableFilterDataQuery,
 	useDeleteLogsMutation,
 	useRecalculateLogCostsMutation,
+	useGetRecalculateCostStatusQuery,
+	useCancelRecalculateCostJobMutation,
 	useLazyGetLogByIdQuery,
+	useGetLogByIdQuery,
 } = logsApi;

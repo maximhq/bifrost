@@ -3,7 +3,6 @@ package anthropic
 import (
 	"fmt"
 
-	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -46,7 +45,7 @@ func ToAnthropicResponsesStreamError(bifrostErr *schemas.BifrostError) string {
 	anthropicErr := ToAnthropicChatCompletionError(bifrostErr)
 
 	// Marshal to JSON
-	jsonData, err := sonic.Marshal(anthropicErr)
+	jsonData, err := providerUtils.MarshalSorted(anthropicErr)
 	if err != nil {
 		return ""
 	}
@@ -55,7 +54,12 @@ func ToAnthropicResponsesStreamError(bifrostErr *schemas.BifrostError) string {
 	return fmt.Sprintf("event: error\ndata: %s\n\n", jsonData)
 }
 
-func parseAnthropicError(resp *fasthttp.Response, meta *providerUtils.RequestMetadata) *schemas.BifrostError {
+// ParseAnthropicError parses an error response that follows the Anthropic error envelope
+// ({"type":"error","error":{"type":...,"message":...}}) into a BifrostError. It is exported
+// because providers that front the Anthropic wire format without being Anthropic (for example
+// the Bedrock Mantle native-Anthropic surface, whose errors use this envelope rather than the
+// AWS JSON error shape bedrock-runtime returns) need the same parsing.
+func ParseAnthropicError(resp *fasthttp.Response) *schemas.BifrostError {
 	var errorResp AnthropicError
 	bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
 	if errorResp.Error != nil {
@@ -64,11 +68,6 @@ func parseAnthropicError(resp *fasthttp.Response, meta *providerUtils.RequestMet
 		}
 		bifrostErr.Error.Type = &errorResp.Error.Type
 		bifrostErr.Error.Message = errorResp.Error.Message
-	}
-	if meta != nil {
-		bifrostErr.ExtraFields.Provider = meta.Provider
-		bifrostErr.ExtraFields.ModelRequested = meta.Model
-		bifrostErr.ExtraFields.RequestType = meta.RequestType
 	}
 	return bifrostErr
 }

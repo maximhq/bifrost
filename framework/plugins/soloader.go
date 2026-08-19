@@ -3,20 +3,37 @@ package plugins
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"plugin"
 	"strings"
 
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// SharedObjectPluginLoader is the loader for shared object plugins
-type SharedObjectPluginLoader struct{}
+// SharedObjectPluginLoader is the loader for shared object plugins. The zero value is a
+// valid loader whose plugin downloads use the default, non-allowlisted SSRF-hardened
+// client; use NewSharedObjectPluginLoader to configure an allowlist.
+type SharedObjectPluginLoader struct {
+	downloadClient *http.Client
+}
 
-func openPlugin(dp *DynamicPlugin) (*plugin.Plugin, error) {
+// NewSharedObjectPluginLoader constructs a loader whose plugin-download client is
+// additionally permitted to reach the hosts/CIDRs in allow. allow may be nil for the
+// default (all private/loopback/CGNAT/link-local targets blocked).
+func NewSharedObjectPluginLoader(allow *network.Allowlist) *SharedObjectPluginLoader {
+	return &SharedObjectPluginLoader{downloadClient: NewPluginDownloadClient(allow)}
+}
+
+func (l *SharedObjectPluginLoader) openPlugin(dp *DynamicPlugin) (*plugin.Plugin, error) {
 	// Checking if path is URL or file path
 	if strings.HasPrefix(dp.Path, "http") {
+		client := l.downloadClient
+		if client == nil {
+			client = NewPluginDownloadClient(nil) // zero-value loader: safe default
+		}
 		// Download the file
-		tempPath, err := DownloadPlugin(dp.Path, ".so")
+		tempPath, err := DownloadPlugin(dp.Path, ".so", client)
 		if err != nil {
 			return nil, err
 		}
@@ -38,7 +55,7 @@ func (l *SharedObjectPluginLoader) LoadPlugin(path string, config any) (schemas.
 		Path: path,
 	}
 
-	pluginObj, err := openPlugin(dp)
+	pluginObj, err := l.openPlugin(dp)
 	if err != nil {
 		return nil, err
 	}
@@ -94,6 +111,15 @@ func (l *SharedObjectPluginLoader) LoadPlugin(path string, config any) (schemas.
 		}
 	}
 
+	// Optional: PreRequestHook — new .so plugins built against LLMPlugin can export this
+	// to participate in routing. Legacy plugins predating PreRequestHook keep working;
+	// DynamicPlugin's default PreRequestHook is a no-op passthrough.
+	if sym, err := pluginObj.Lookup("PreRequestHook"); err == nil {
+		if dp.preRequestHook, ok = sym.(func(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error); !ok {
+			return nil, fmt.Errorf("failed to cast PreRequestHook to expected signature")
+		}
+	}
+
 	// Optional: PreLLMHook (with backward compatibility for legacy PreHook)
 	if sym, err := pluginObj.Lookup("PreLLMHook"); err == nil {
 		if dp.preLLMHook, ok = sym.(func(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error)); !ok {
@@ -132,6 +158,23 @@ func (l *SharedObjectPluginLoader) LoadPlugin(path string, config any) (schemas.
 		}
 	}
 
+	// Optional: PreMCPConnectionHook (MCPConnectionPlugin — typed Connect hook).
+	// New .so plugins built against MCPConnectionPlugin can export this symbol to
+	// observe Connect events. Legacy plugins that don't export it keep working;
+	// DynamicPlugin's default PreMCPConnectionHook is a no-op passthrough.
+	if sym, err := pluginObj.Lookup("PreMCPConnectionHook"); err == nil {
+		if dp.preMCPConnectionHook, ok = sym.(func(ctx *schemas.BifrostContext, req *schemas.BifrostMCPConnectRequest) (*schemas.BifrostMCPConnectRequest, *schemas.MCPConnectionShortCircuit, error)); !ok {
+			return nil, fmt.Errorf("failed to cast PreMCPConnectionHook to expected signature")
+		}
+	}
+
+	// Optional: PostMCPConnectionHook (MCPConnectionPlugin — typed Connect hook).
+	if sym, err := pluginObj.Lookup("PostMCPConnectionHook"); err == nil {
+		if dp.postMCPConnectionHook, ok = sym.(func(ctx *schemas.BifrostContext, resp *schemas.BifrostMCPConnectResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostMCPConnectResponse, *schemas.BifrostError, error)); !ok {
+			return nil, fmt.Errorf("failed to cast PostMCPConnectionHook to expected signature")
+		}
+	}
+
 	// Optional: Inject (ObservabilityPlugin)
 	if sym, err := pluginObj.Lookup("Inject"); err == nil {
 		if dp.inject, ok = sym.(func(ctx context.Context, trace *schemas.Trace) error); !ok {
@@ -150,7 +193,7 @@ func (l *SharedObjectPluginLoader) VerifyBasePlugin(path string) (string, error)
 	dp := &DynamicPlugin{
 		Path: path,
 	}
-	pluginObj, err := openPlugin(dp)
+	pluginObj, err := l.openPlugin(dp)
 	if err != nil {
 		return "", err
 	}

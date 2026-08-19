@@ -1,13 +1,13 @@
 // Configuration types that match the Go backend structures
 
 import { KnownProvidersNames } from "@/lib/constants/logs";
-import { EnvVar } from "./schemas";
+import { SecretVar } from "./schemas";
 
 // Known provider names - all supported standard providers
 export type KnownProvider = (typeof KnownProvidersNames)[number];
 
 // Base provider names - all supported base providers
-export type BaseProvider = "openai" | "anthropic" | "cohere" | "gemini" | "bedrock" | "replicate";
+export type BaseProvider = "openai" | "anthropic" | "cohere" | "gemini" | "bedrock" | "replicate" | "fireworks";
 
 // Branded type for custom provider names to prevent collision with known providers
 export type CustomProviderName = string & { readonly __brand: "CustomProviderName" };
@@ -20,42 +20,94 @@ export const isKnownProvider = (provider: string): provider is KnownProvider => 
 	return KnownProvidersNames.includes(provider.toLowerCase() as KnownProvider);
 };
 
+// ModelFamily matching Go's schemas.ModelFamily — 1st-tier family routing enum
+export type ModelFamily =
+	| "anthropic"
+	| "openai"
+	| "mistral"
+	| "cohere"
+	| "gemini"
+	| "gemma"
+	| "llama"
+	| "imagen"
+	| "veo"
+	| "nova"
+	| "titan";
+
+export const ModelFamilyValues: ModelFamily[] = [
+	"anthropic",
+	"openai",
+	"mistral",
+	"cohere",
+	"gemini",
+	"gemma",
+	"llama",
+	"imagen",
+	"veo",
+	"nova",
+	"titan",
+];
+
+// AliasConfig matching Go's schemas.AliasConfig.
+// Go embeds AzureAliasCfg/VertexAliasCfg/BedrockAliasCfg/ReplicateAliasCfg as
+// pointer structs which flatten on the wire — sub-config fields live at the
+// top level of the JSON object.
+export interface AliasConfig {
+	model_id: string;
+	model_name?: string;
+	model_family?: ModelFamily;
+	description?: string;
+	region?: SecretVar;
+	// Azure overrides
+	api_version?: string;
+	anthropic_version?: string;
+	endpoint?: SecretVar;
+	// Shared per-alias project override (Vertex GCP project; Bedrock / Bedrock Mantle
+	// project sent via OpenAI-Project / anthropic-workspace-id). Kept top-level in Go
+	// so the flat project_id key doesn't collide across embedded sub-configs.
+	project_id?: SecretVar;
+	// Vertex overrides
+	project_number?: SecretVar;
+	force_single_region?: boolean;
+	// Bedrock overrides
+	inference_profile_arn?: SecretVar;
+	// Replicate overrides
+	use_deployments_endpoint?: boolean;
+	use_anthropic_endpoints?: boolean;
+}
+
 // AzureKeyConfig matching Go's schemas.AzureKeyConfig
 export interface AzureKeyConfig {
-	endpoint: EnvVar;
-	deployments?: Record<string, string> | string; // Allow string during editing
-	api_version?: EnvVar;
-	client_id?: EnvVar;
-	client_secret?: EnvVar;
-	tenant_id?: EnvVar;
+	endpoint: SecretVar;
+	client_id?: SecretVar;
+	client_secret?: SecretVar;
+	tenant_id?: SecretVar;
 	scopes?: string[];
 }
 
 export const DefaultAzureKeyConfig: AzureKeyConfig = {
-	endpoint: { value: "", env_var: "", from_env: false },
-	deployments: {},
-	api_version: { value: "2024-02-01", env_var: "", from_env: false },
-	client_id: { value: "", env_var: "", from_env: false },
-	client_secret: { value: "", env_var: "", from_env: false },
-	tenant_id: { value: "", env_var: "", from_env: false },
+	endpoint: { value: "", ref: "" },
+	client_id: { value: "", ref: "" },
+	client_secret: { value: "", ref: "" },
+	tenant_id: { value: "", ref: "" },
 	scopes: [],
 } as const satisfies Required<AzureKeyConfig>;
 
 // VertexKeyConfig matching Go's schemas.VertexKeyConfig
 export interface VertexKeyConfig {
-	project_id: EnvVar;
-	project_number?: EnvVar;
-	region: EnvVar;
-	auth_credentials?: EnvVar;
-	deployments?: Record<string, string> | string; // Allow string during editing
+	project_id: SecretVar;
+	project_number?: SecretVar;
+	region: SecretVar;
+	auth_credentials?: SecretVar;
+	force_single_region?: boolean;
 }
 
 export const DefaultVertexKeyConfig: VertexKeyConfig = {
-	project_id: { value: "", env_var: "", from_env: false },
-	project_number: { value: "", env_var: "", from_env: false },
-	region: { value: "", env_var: "", from_env: false },
-	auth_credentials: { value: "", env_var: "", from_env: false },
-	deployments: {},
+	project_id: { value: "", ref: "" },
+	project_number: { value: "", ref: "" },
+	region: { value: "", ref: "" },
+	auth_credentials: { value: "", ref: "" },
+	force_single_region: false,
 } as const satisfies Required<VertexKeyConfig>;
 
 export interface S3BucketConfig {
@@ -68,64 +120,128 @@ export interface BatchS3Config {
 	buckets?: S3BucketConfig[];
 }
 
+// BedrockEndpoints matching Go's schemas.BedrockEndpoints. Each value is an interface VPC
+// endpoint's DNS name, dialled instead of the public regional host for that AWS service.
+export interface BedrockEndpoints {
+	runtime?: SecretVar;
+	control_plane?: SecretVar;
+	mantle?: SecretVar;
+	agent_runtime?: SecretVar;
+	s3?: SecretVar;
+}
+
 // BedrockKeyConfig matching Go's schemas.BedrockKeyConfig
 export interface BedrockKeyConfig {
-	access_key?: EnvVar;
-	secret_key?: EnvVar;
-	session_token?: EnvVar;
-	region?: EnvVar;
-	arn?: EnvVar;
-	deployments?: Record<string, string> | string; // Allow string during editing
+	access_key?: SecretVar;
+	secret_key?: SecretVar;
+	session_token?: SecretVar;
+	region?: SecretVar;
+	arn?: SecretVar;
+	project_id?: SecretVar;
 	batch_s3_config?: BatchS3Config;
+	endpoints?: BedrockEndpoints;
 }
 
 // Default BedrockKeyConfig
 export const DefaultBedrockKeyConfig: BedrockKeyConfig = {
-	access_key: { value: "", env_var: "", from_env: false },
-	secret_key: { value: "", env_var: "", from_env: false },
-	session_token: undefined as unknown as EnvVar,
-	region: { value: "us-east-1", env_var: "", from_env: false },
-	arn: { value: "", env_var: "", from_env: false },
-	deployments: {},
+	access_key: { value: "", ref: "" },
+	secret_key: { value: "", ref: "" },
+	session_token: undefined as unknown as SecretVar,
+	region: { value: "us-east-1", ref: "" },
+	arn: { value: "", ref: "" },
+	project_id: { value: "", ref: "" },
 	batch_s3_config: undefined as unknown as BatchS3Config,
+	endpoints: undefined as unknown as BedrockEndpoints,
 } as const satisfies Required<BedrockKeyConfig>;
 
-// ReplicateKeyConfig matching Go's schemas.ReplicateKeyConfig
-export interface ReplicateKeyConfig {
-	deployments?: Record<string, string> | string; // Allow string during editing
+// BedrockMantleKeyConfig matching Go's schemas.BedrockMantleKeyConfig
+export interface BedrockMantleKeyConfig {
+	access_key?: SecretVar;
+	secret_key?: SecretVar;
+	session_token?: SecretVar;
+	region?: SecretVar;
+	role_arn?: SecretVar;
+	external_id?: SecretVar;
+	session_name?: SecretVar;
+	project_id?: SecretVar;
+	endpoints?: BedrockEndpoints;
 }
 
-// Default ReplicateKeyConfig
-export const DefaultReplicateKeyConfig: ReplicateKeyConfig = {
-	deployments: {},
-} as const satisfies Required<ReplicateKeyConfig>;
+// Default BedrockMantleKeyConfig
+export const DefaultBedrockMantleKeyConfig: BedrockMantleKeyConfig = {
+	access_key: { value: "", ref: "" },
+	secret_key: { value: "", ref: "" },
+	session_token: undefined as unknown as SecretVar,
+	region: { value: "us-east-1", ref: "" },
+	role_arn: undefined as unknown as SecretVar,
+	external_id: undefined as unknown as SecretVar,
+	session_name: undefined as unknown as SecretVar,
+	project_id: undefined as unknown as SecretVar,
+	endpoints: undefined as unknown as BedrockEndpoints,
+} as const satisfies Required<BedrockMantleKeyConfig>;
 
 // VLLMKeyConfig matching Go's schemas.VLLMKeyConfig
 export interface VLLMKeyConfig {
-	url: EnvVar;
+	url: SecretVar;
 	model_name: string;
 }
 
 // Default VLLMKeyConfig
 export const DefaultVLLMKeyConfig: VLLMKeyConfig = {
-	url: { value: "", env_var: "", from_env: false },
+	url: { value: "", ref: "" },
 	model_name: "",
 } as const satisfies Required<VLLMKeyConfig>;
+
+// ReplicateKeyConfig matching Go's schemas.ReplicateKeyConfig
+export interface ReplicateKeyConfig {
+	use_deployments_endpoint: boolean;
+}
+
+// Default ReplicateKeyConfig
+export const DefaultReplicateKeyConfig: ReplicateKeyConfig = {
+	use_deployments_endpoint: false,
+} as const satisfies Required<ReplicateKeyConfig>;
+
+// OllamaKeyConfig matching Go's schemas.OllamaKeyConfig
+export interface OllamaKeyConfig {
+	url: SecretVar;
+}
+
+// Default OllamaKeyConfig
+export const DefaultOllamaKeyConfig: OllamaKeyConfig = {
+	url: { value: "", ref: "" },
+} as const satisfies Required<OllamaKeyConfig>;
+
+// SGLKeyConfig matching Go's schemas.SGLKeyConfig
+export interface SGLKeyConfig {
+	url: SecretVar;
+}
+
+// Default SGLKeyConfig
+export const DefaultSGLKeyConfig: SGLKeyConfig = {
+	url: { value: "", ref: "" },
+} as const satisfies Required<SGLKeyConfig>;
 
 // Key structure matching Go's schemas.Key
 export interface ModelProviderKey {
 	id: string;
 	name: string;
-	value?: EnvVar;
+	value?: SecretVar;
 	models?: string[];
+	blacklisted_models?: string[];
 	weight: number;
 	enabled?: boolean;
 	use_for_batch_api?: boolean;
+	use_anthropic_endpoints?: boolean;
+	aliases?: Record<string, AliasConfig>;
 	azure_key_config?: AzureKeyConfig;
 	vertex_key_config?: VertexKeyConfig;
 	bedrock_key_config?: BedrockKeyConfig;
-	replicate_key_config?: ReplicateKeyConfig;
+	bedrock_mantle_key_config?: BedrockMantleKeyConfig;
 	vllm_key_config?: VLLMKeyConfig;
+	replicate_key_config?: ReplicateKeyConfig;
+	ollama_key_config?: OllamaKeyConfig;
+	sgl_key_config?: SGLKeyConfig;
 	config_hash?: string; // Present when config is synced from config.json
 	status?: "unknown" | "success" | "list_models_failed";
 	description?: string;
@@ -137,10 +253,10 @@ export const DefaultModelProviderKey: ModelProviderKey = {
 	name: "",
 	value: {
 		value: "",
-		env_var: "",
-		from_env: false,
+		ref: "",
 	},
 	models: [],
+	blacklisted_models: [],
 	weight: 1.0,
 	enabled: true,
 };
@@ -155,10 +271,14 @@ export interface NetworkConfig {
 	retry_backoff_initial: number; // Duration in milliseconds
 	retry_backoff_max: number; // Duration in milliseconds
 	insecure_skip_verify?: boolean;
-	ca_cert_pem?: string;
+	ca_cert_pem?: SecretVar;
 	stream_idle_timeout_in_seconds?: number;
+	keep_alive_timeout_in_seconds?: number;
 	max_conns_per_host?: number;
 	enforce_http2?: boolean;
+	http2_ping_interval_in_seconds?: number;
+	beta_header_overrides?: Record<string, boolean>;
+	allow_private_network?: boolean;
 }
 
 // ConcurrencyAndBufferSize matching Go's schemas.ConcurrencyAndBufferSize
@@ -173,10 +293,10 @@ export type ProxyType = "none" | "http" | "socks5" | "environment";
 // ProxyConfig matching Go's schemas.ProxyConfig
 export interface ProxyConfig {
 	type: ProxyType;
-	url?: string;
-	username?: string;
-	password?: string;
-	ca_cert_pem?: string;
+	url?: SecretVar;
+	username?: SecretVar;
+	password?: SecretVar;
+	ca_cert_pem?: SecretVar;
 }
 
 // Request types matching Go's schemas.RequestType
@@ -188,6 +308,10 @@ export type RequestType =
 	| "chat_completion_stream"
 	| "responses"
 	| "responses_stream"
+	| "responses_retrieve"
+	| "responses_delete"
+	| "responses_cancel"
+	| "responses_input_items"
 	| "embedding"
 	| "rerank"
 	| "speech"
@@ -199,6 +323,8 @@ export type RequestType =
 	| "image_edit"
 	| "image_edit_stream"
 	| "image_variation"
+	| "ocr"
+	| "ocr_stream"
 	| "video_generation"
 	| "video_retrieve"
 	| "video_download"
@@ -237,6 +363,10 @@ export interface AllowedRequests {
 	chat_completion_stream: boolean;
 	responses: boolean;
 	responses_stream: boolean;
+	responses_retrieve?: boolean;
+	responses_delete?: boolean;
+	responses_cancel?: boolean;
+	responses_input_items?: boolean;
 	embedding: boolean;
 	speech: boolean;
 	speech_stream: boolean;
@@ -247,6 +377,8 @@ export interface AllowedRequests {
 	image_edit: boolean;
 	image_edit_stream: boolean;
 	image_variation: boolean;
+	ocr?: boolean;
+	ocr_stream?: boolean;
 	count_tokens: boolean;
 	list_models: boolean;
 	rerank: boolean;
@@ -268,43 +400,13 @@ export interface CustomProviderConfig {
 	request_path_overrides?: Record<string, string>;
 }
 
-export type PricingOverrideMatchType = "exact" | "wildcard" | "regex";
-
-export interface ProviderPricingOverride {
-	model_pattern: string;
-	match_type: PricingOverrideMatchType;
-	request_types?: RequestType[];
-	input_cost_per_token?: number;
-	output_cost_per_token?: number;
-	input_cost_per_video_per_second?: number;
-	input_cost_per_audio_per_second?: number;
-	input_cost_per_character?: number;
-	output_cost_per_character?: number;
-	input_cost_per_token_above_128k_tokens?: number;
-	input_cost_per_character_above_128k_tokens?: number;
-	input_cost_per_image_above_128k_tokens?: number;
-	input_cost_per_video_per_second_above_128k_tokens?: number;
-	input_cost_per_audio_per_second_above_128k_tokens?: number;
-	output_cost_per_token_above_128k_tokens?: number;
-	output_cost_per_character_above_128k_tokens?: number;
-	input_cost_per_token_above_200k_tokens?: number;
-	output_cost_per_token_above_200k_tokens?: number;
-	cache_creation_input_token_cost_above_200k_tokens?: number;
-	cache_read_input_token_cost_above_200k_tokens?: number;
-	cache_read_input_token_cost?: number;
-	cache_creation_input_token_cost?: number;
-	input_cost_per_token_batches?: number;
-	output_cost_per_token_batches?: number;
-	input_cost_per_image_token?: number;
-	output_cost_per_image_token?: number;
-	input_cost_per_image?: number;
-	output_cost_per_image?: number;
-	cache_read_input_image_token_cost?: number;
+// OpenAIConfig holds OpenAI-specific provider configuration.
+export interface OpenAIConfig {
+	disable_store?: boolean;
 }
 
 // ProviderConfig matching Go's lib.ProviderConfig
 export interface ModelProviderConfig {
-	keys: ModelProviderKey[];
 	network_config?: NetworkConfig;
 	concurrency_and_buffer_size?: ConcurrencyAndBufferSize;
 	proxy_config?: ProxyConfig;
@@ -312,7 +414,7 @@ export interface ModelProviderConfig {
 	send_back_raw_response?: boolean;
 	store_raw_request_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
-	pricing_overrides?: ProviderPricingOverride[];
+	openai_config?: OpenAIConfig;
 	status?: "unknown" | "success" | "list_models_failed";
 	description?: string;
 }
@@ -333,7 +435,6 @@ export interface ListProvidersResponse {
 // AddProviderRequest matching Go's AddProviderRequest
 export interface AddProviderRequest {
 	provider: ModelProviderName;
-	keys: ModelProviderKey[];
 	network_config?: NetworkConfig;
 	concurrency_and_buffer_size?: ConcurrencyAndBufferSize;
 	proxy_config?: ProxyConfig;
@@ -341,20 +442,28 @@ export interface AddProviderRequest {
 	send_back_raw_response?: boolean;
 	store_raw_request_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
-	pricing_overrides?: ProviderPricingOverride[];
+	openai_config?: OpenAIConfig;
 }
 
 // UpdateProviderRequest matching Go's UpdateProviderRequest
 export interface UpdateProviderRequest {
-	keys: ModelProviderKey[];
 	network_config: NetworkConfig;
 	concurrency_and_buffer_size: ConcurrencyAndBufferSize;
-	proxy_config: ProxyConfig;
+	proxy_config?: ProxyConfig;
 	send_back_raw_request?: boolean;
 	send_back_raw_response?: boolean;
 	store_raw_request_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
-	pricing_overrides?: ProviderPricingOverride[];
+	openai_config?: OpenAIConfig;
+}
+
+export interface CreateProviderKeyRequest extends ModelProviderKey {}
+
+export interface UpdateProviderKeyRequest extends ModelProviderKey {}
+
+export interface ListProviderKeysResponse {
+	keys: ModelProviderKey[];
+	total: number;
 }
 
 // BifrostErrorResponse matching Go's schemas.BifrostError
@@ -381,14 +490,29 @@ export interface FrameworkConfig {
 	id: number;
 	pricing_url: string;
 	pricing_sync_interval: number;
+	model_parameters_url: string;
+	mcp_library_url?: string;
+	mcp_library_sync_interval?: number;
+	/** Seconds between background re-fetches of each provider's model list. 0 disables it. */
+	live_models_sync_interval?: number;
 }
+
+/** Seconds between background model-list refreshes when the user has not set one. */
+export const DEFAULT_LIVE_MODELS_SYNC_INTERVAL = 3600;
+/** Sentinel for "never refresh the model list in the background". */
+export const LIVE_MODELS_SYNC_DISABLED = 0;
+/** Server-side floor for a non-zero live models sync interval, in seconds. */
+export const MIN_LIVE_MODELS_SYNC_INTERVAL = 60;
 
 // Auth config
 export interface AuthConfig {
-	admin_username: EnvVar;
-	admin_password: EnvVar;
+	admin_username: SecretVar;
+	admin_password: SecretVar;
 	is_enabled: boolean;
-	disable_auth_on_inference?: boolean;
+	/** Write-only: required only when this PUT request creates the very first admin account
+	 *  (no admin account exists yet). Provided by the operator via setup_token in config.json
+	 *  or the BIFROST_SETUP_TOKEN env var. Never persisted or returned by GET /api/config. */
+	setup_token?: string;
 }
 
 // Global proxy type (for global proxy configuration, not per-provider)
@@ -445,6 +569,13 @@ export interface RestartRequiredConfig {
 }
 
 // Bifrost Config
+export type PluginSpanFilterMode = "include" | "exclude";
+
+export interface PluginSpanFilter {
+	mode: PluginSpanFilterMode;
+	plugins: string[];
+}
+
 export interface BifrostConfig {
 	client_config: CoreConfig;
 	framework_config: FrameworkConfig;
@@ -454,7 +585,18 @@ export interface BifrostConfig {
 	is_db_connected: boolean;
 	is_cache_connected: boolean;
 	is_logs_connected: boolean;
+	is_object_storage_connected?: boolean;
+	is_git_available: boolean;
 	auth_token?: string;
+	metadata?: Record<string, unknown>;
+	env_label?: string;
+}
+
+export interface CompatConfig {
+	convert_text_to_chat: boolean;
+	convert_chat_to_responses: boolean;
+	should_drop_params: boolean;
+	should_convert_params: boolean;
 }
 
 // Core Bifrost configuration types
@@ -464,23 +606,40 @@ export interface CoreConfig {
 	prometheus_labels: string[];
 	enable_logging: boolean;
 	disable_content_logging: boolean;
+	retain_content_in_object_storage: boolean;
+	allow_per_request_content_storage_override: boolean;
+	allow_per_request_raw_override: boolean;
+	allow_direct_keys: boolean;
 	disable_db_pings_in_health: boolean;
+	dump_errors_in_console_logs: boolean;
 	log_retention_days: number;
 	enforce_auth_on_inference: boolean;
-	allow_direct_keys: boolean;
+	dual_credential_conflict_behavior?: "error" | "prefer_vk" | "prefer_idp";
 	allowed_origins: string[];
 	allowed_headers: string[];
 	max_request_body_size_mb: number;
-	enable_litellm_fallbacks: boolean;
+	compat: CompatConfig;
 	mcp_agent_depth: number;
 	mcp_tool_execution_timeout: number;
 	mcp_code_mode_binding_level?: string;
 	mcp_tool_sync_interval: number;
+	mcp_disable_auto_tool_inject: boolean;
+	mcp_enable_temp_token_auth: boolean;
 	async_job_result_ttl: number;
 	required_headers: string[];
 	logging_headers: string[];
+	whitelisted_routes: string[];
 	hide_deleted_virtual_keys_in_filters: boolean;
+	routing_chain_max_depth: number;
 	header_filter_config?: GlobalHeaderFilterConfig;
+	mcp_external_client_url?: SecretVar;
+	mcp_server_auth_mode?: "headers" | "both" | "oauth";
+	oauth2_server_config?: {
+		issuer_url?: SecretVar;
+		auth_code_ttl?: number;
+		access_token_ttl?: number;
+		disable_vk_identity?: boolean;
+	};
 }
 
 export const DefaultCoreConfig: CoreConfig = {
@@ -489,38 +648,65 @@ export const DefaultCoreConfig: CoreConfig = {
 	prometheus_labels: [],
 	enable_logging: true,
 	disable_content_logging: false,
+	retain_content_in_object_storage: false,
+	allow_per_request_content_storage_override: false,
+	allow_per_request_raw_override: false,
+	allow_direct_keys: false,
 	disable_db_pings_in_health: false,
+	dump_errors_in_console_logs: false,
 	log_retention_days: 365,
 	enforce_auth_on_inference: false,
-	allow_direct_keys: false,
+	dual_credential_conflict_behavior: "prefer_idp",
 	allowed_origins: [],
 	max_request_body_size_mb: 100,
-	enable_litellm_fallbacks: false,
+	compat: { convert_text_to_chat: false, convert_chat_to_responses: false, should_drop_params: false, should_convert_params: false },
 	mcp_agent_depth: 10,
 	mcp_tool_execution_timeout: 30,
 	mcp_code_mode_binding_level: "server",
 	mcp_tool_sync_interval: 10,
+	mcp_disable_auto_tool_inject: false,
+	mcp_enable_temp_token_auth: false,
 	async_job_result_ttl: 3600,
 	allowed_headers: [],
 	required_headers: [],
 	logging_headers: [],
+	whitelisted_routes: [],
 	hide_deleted_virtual_keys_in_filters: false,
+	routing_chain_max_depth: 10,
 };
 
 // Semantic cache configuration types
-export interface CacheConfig {
-	provider: ModelProviderName;
-	keys: ModelProviderKey[];
-	embedding_model: string;
-	dimension: number;
-	ttl_seconds: number;
+interface BaseCacheConfig {
+	ttl: number;
 	threshold: number;
 	conversation_history_threshold?: number;
 	exclude_system_prompt?: boolean;
 	cache_by_model: boolean;
 	cache_by_provider: boolean;
+	vector_store_namespace?: string;
+	default_cache_key?: string;
 	created_at?: string;
 	updated_at?: string;
+}
+
+export interface DirectCacheConfig extends BaseCacheConfig {
+	dimension: 1;
+	provider?: undefined;
+	embedding_model?: undefined;
+}
+
+export interface ProviderBackedCacheConfig extends BaseCacheConfig {
+	provider: ModelProviderName;
+	embedding_model: string;
+	dimension: number;
+}
+
+export type CacheConfig = DirectCacheConfig | ProviderBackedCacheConfig;
+
+export interface EditorCacheConfig extends BaseCacheConfig {
+	provider?: ModelProviderName;
+	embedding_model?: string;
+	dimension?: number;
 }
 
 // Maxim configuration types

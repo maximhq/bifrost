@@ -4,6 +4,7 @@ import { getApiBaseUrl } from "@/lib/utils/port";
 import { createBaseQueryWithRefresh } from "@enterprise/lib/store/utils/baseQueryWithRefresh";
 import { clearOAuthStorage } from "@enterprise/lib/store/utils/tokenManager";
 import { createApi, fetchBaseQuery } from "@reduxjs/toolkit/query/react";
+import { getActiveTempToken, getSuppressGlobal401 } from "./tempToken";
 
 // Auth tokens are now stored in HTTP-only cookies (set by server)
 // No client-side token needed — handled by credentials: "include"
@@ -41,12 +42,25 @@ export const clearAuthStorage = () => {
 const baseQuery = fetchBaseQuery({
 	baseUrl: getApiBaseUrl(),
 	credentials: "include",
-	prepareHeaders: async (headers) => {
-		headers.set("Content-Type", "application/json");
+	prepareHeaders: async (headers, { arg }) => {
+		// Skip the JSON default for multipart/FormData uploads so the browser
+		// can set Content-Type with the multipart boundary itself (e.g. uploadSkillFile).
+		const isFormData = arg !== null && typeof arg === "object" && arg.body instanceof FormData;
+		if (!isFormData && !headers.has("Content-Type")) {
+			headers.set("Content-Type", "application/json");
+		}
 		// Automatically include token from localStorage in Authorization header
 		const token = await getTokenFromStorage();
 		if (token) {
 			headers.set("Authorization", `Bearer ${token}`);
+		}
+		// Attach a temp token when a TempTokenScope wrapper is mounted. The
+		// dashboard cookie (if present) still takes precedence on the server
+		// side; the temp token is the fallback that rescues unauthenticated
+		// browsers visiting a scoped page.
+		const tempToken = getActiveTempToken();
+		if (tempToken) {
+			headers.set("X-Bifrost-Temp-Token", tempToken);
 		}
 		return headers;
 	},
@@ -66,9 +80,16 @@ const baseQueryWithErrorHandling: typeof baseQueryWithRefresh = async (args: any
 
 		// Handle 401 for non-enterprise (no refresh available)
 		if (error?.status === 401 && !IS_ENTERPRISE) {
+			// When a TempTokenScope wrapper is active, the wrapped page handles
+			// its own 401 display (an "invalid/expired link" view). Skip the
+			// global redirect so the user stays on the page they opened.
+			if (getSuppressGlobal401()) {
+				return result;
+			}
 			clearAuthStorage();
 			if (typeof window !== "undefined" && !window.location.pathname.includes("/login")) {
-				window.location.href = "/login";
+				const goto = window.location.pathname + window.location.search;
+				window.location.href = `/login?goto=${encodeURIComponent(goto)}`;
 			}
 			return result;
 		}
@@ -134,6 +155,7 @@ export const baseApi = createApi({
 		"DebugStats",
 		"HealthCheck",
 		"DBKeys",
+		"ProviderKeys",
 		"Models",
 		"BaseModels",
 		"ModelConfigs",
@@ -152,14 +174,40 @@ export const baseApi = createApi({
 		"APIKeys",
 		"OAuth2Config",
 		"RoutingRules",
+		"PricingOverrides",
 		"MCPToolGroups",
 		"AuditLogs",
 		"UserGovernance",
 		"LargePayloadConfig",
+		"LoadBalancerConfig",
 		"Folders",
 		"Prompts",
 		"Versions",
 		"Sessions",
+		"AccessProfiles",
+		"BusinessUnits",
+		"PromptDeployments",
+		"AuthType",
+		"MCPSessions",
+		"MCPPerUserHeaderCredentials",
+		"MCPLibrary",
+		"FeatureFlags",
+		"ComplexityAnalyzerConfig",
+		"Skills",
+		"OAuth2Grants",
+		"UserAgentMappings",
+		"Branding",
+		"Devices",
+		"CircuitBreakerPolicies",
+		"CircuitBreakerState",
+		"AlertChannels",
+		"AlertRules",
+		"AlertHistory",
+		"WebhookEndpoints",
+		"WebhookDeliveries",
+		"EdgeApps",
+		"EdgeMCPServers",
+		"EdgeConfig",
 	],
 	endpoints: () => ({}),
 });

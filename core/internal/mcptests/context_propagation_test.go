@@ -259,9 +259,6 @@ func TestContext_ValueIsolation(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mockLLM.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	require.Nil(t, bifrostErr)
@@ -398,9 +395,6 @@ func TestContext_TimeoutPropagation(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mockLLM.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// May timeout or complete with partial results
@@ -494,9 +488,6 @@ func TestContext_RequestIDGeneration(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mockLLM.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	require.Nil(t, bifrostErr)
@@ -627,9 +618,6 @@ func TestContext_ConcurrentAccess(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mockLLM.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	require.Nil(t, bifrostErr)

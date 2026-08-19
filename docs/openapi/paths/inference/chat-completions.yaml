@@ -5,7 +5,7 @@ chat-completions:
     description: |
       Creates a completion for the provided messages. Supports streaming via SSE.
     tags:
-      - Chat Completions
+    - Chat Completions
     requestBody:
       required: true
       content:
@@ -26,3 +26,8 @@ chat-completions:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

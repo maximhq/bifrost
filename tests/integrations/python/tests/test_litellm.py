@@ -98,6 +98,15 @@ from .utils.parametrize import (
 LITELLM_EXCLUDED_PROVIDERS = ["bedrock", "cohere", "gemini"]
 
 
+def format_litellm_model(provider: str, model: str) -> str:
+    """Route every model through LiteLLM's OpenAI-compatible adapter.
+
+    LiteLLM strips the leading ``openai/`` before forwarding the request, leaving
+    Bifrost's required ``provider/model`` identifier in the wire payload.
+    """
+    return f"openai/{format_provider_model(provider, model)}"
+
+
 @pytest.fixture
 def test_config():
     """Test configuration"""
@@ -186,7 +195,7 @@ class TestLiteLLMIntegration:
             pytest.skip("No providers configured for this scenario")
         """Test Case 1: Simple chat interaction"""
         response = litellm.completion(
-            model=model,
+            model=format_litellm_model(provider, model),
             messages=SIMPLE_CHAT_MESSAGES,
             max_tokens=100,
         )
@@ -206,7 +215,7 @@ class TestLiteLLMIntegration:
             pytest.skip("No providers configured for this scenario")
         """Test Case 2: Multi-turn conversation"""
         response = litellm.completion(
-            model=model,
+            model=format_litellm_model(provider, model),
             messages=MULTI_TURN_MESSAGES,
             max_tokens=150,
         )
@@ -229,7 +238,7 @@ class TestLiteLLMIntegration:
         tools = convert_to_litellm_tools([WEATHER_TOOL])
 
         response = litellm.completion(
-            model=model,
+            model=format_litellm_model(provider, model),
             messages=SINGLE_TOOL_CALL_MESSAGES,
             tools=tools,
             max_tokens=100,
@@ -253,7 +262,7 @@ class TestLiteLLMIntegration:
         tools = convert_to_litellm_tools([WEATHER_TOOL, CALCULATOR_TOOL])
 
         response = litellm.completion(
-            model=model,
+            model=format_litellm_model(provider, model),
             messages=MULTIPLE_TOOL_CALL_MESSAGES,
             tools=tools,
             max_tokens=200,
@@ -279,7 +288,7 @@ class TestLiteLLMIntegration:
         tools = convert_to_litellm_tools([WEATHER_TOOL])
 
         response = litellm.completion(
-            model=model,
+            model=format_litellm_model(provider, model),
             messages=messages,
             tools=tools,
             max_tokens=100,
@@ -325,7 +334,7 @@ class TestLiteLLMIntegration:
         tools = convert_to_litellm_tools([CALCULATOR_TOOL])
 
         response = litellm.completion(
-            model=model,
+            model=format_litellm_model(provider, model),
             messages=[{"role": "user", "content": "Calculate 25 * 4 for me"}],
             tools=tools,
             tool_choice="auto",
@@ -348,7 +357,7 @@ class TestLiteLLMIntegration:
             pytest.skip("No providers configured for this scenario")
         """Test Case 7: Image analysis from URL"""
         response = litellm.completion(
-            model=model,
+            model=format_litellm_model(provider, model),
             messages=IMAGE_URL_MESSAGES,
             max_tokens=200,
         )
@@ -366,7 +375,7 @@ class TestLiteLLMIntegration:
             pytest.skip("No providers configured for this scenario")
         """Test Case 8: Image analysis from base64"""
         response = litellm.completion(
-            model=model,
+            model=format_litellm_model(provider, model),
             messages=IMAGE_BASE64_MESSAGES,
             max_tokens=200,
         )
@@ -384,7 +393,7 @@ class TestLiteLLMIntegration:
             pytest.skip("No providers configured for this scenario")
         """Test Case 9: Multiple image analysis"""
         response = litellm.completion(
-            model=model,
+            model=format_litellm_model(provider, model),
             messages=MULTIPLE_IMAGES_MESSAGES,
             max_tokens=300,
         )
@@ -412,7 +421,7 @@ class TestLiteLLMIntegration:
 
         # First, analyze the image
         response1 = litellm.completion(
-            model=model,
+            model=format_litellm_model(provider, model),
             messages=messages,
             tools=tools,
             max_tokens=300,
@@ -443,7 +452,11 @@ class TestLiteLLMIntegration:
                 )
 
             # Get final response after tool calls
-            final_response = litellm.completion(model=model, messages=messages, max_tokens=200)
+            final_response = litellm.completion(
+                model=format_litellm_model(provider, model),
+                messages=messages,
+                max_tokens=200,
+            )
 
             assert_valid_chat_response(final_response)
 
@@ -462,7 +475,7 @@ class TestLiteLLMIntegration:
         for model in integrations_to_test:
             try:
                 response = litellm.completion(
-                    model=model,
+                    model=format_litellm_model(provider, model),
                     messages=[{"role": "user", "content": "Hello, how are you?"}],
                     max_tokens=50,
                 )
@@ -525,7 +538,7 @@ class TestLiteLLMIntegration:
         """Test Case 13: Streaming chat completion"""
         # Test basic streaming
         stream = litellm.completion(
-            model=model,
+            model=format_litellm_model(provider, model),
             messages=STREAMING_CHAT_MESSAGES,
             max_tokens=200,
             stream=True,
@@ -542,7 +555,7 @@ class TestLiteLLMIntegration:
 
         # Test streaming with tool calls
         stream_with_tools = litellm.completion(
-            model=model,
+            model=format_litellm_model(provider, model),
             messages=STREAMING_TOOL_CALL_MESSAGES,
             max_tokens=150,
             tools=convert_to_litellm_tools([WEATHER_TOOL]),
@@ -766,7 +779,7 @@ class TestLiteLLMIntegration:
         for model in models_to_test:
             try:
                 response = litellm.completion(
-                    model=model,
+                    model=format_litellm_model(provider, model),
                     messages=[{"role": "user", "content": test_prompt}],
                     max_tokens=50,
                 )
@@ -801,7 +814,7 @@ class TestLiteLLMIntegration:
         try:
             # Count tokens using text parameter
             token_count = litellm.token_counter(
-                model=model,
+                model=format_litellm_model(provider, model),
                 text=INPUT_TOKENS_SIMPLE_TEXT,
             )
 
@@ -830,7 +843,7 @@ class TestLiteLLMIntegration:
         try:
             # Count tokens using messages parameter
             token_count = litellm.token_counter(
-                model=model,
+                model=format_litellm_model(provider, model),
                 messages=INPUT_TOKENS_WITH_SYSTEM,
             )
 
@@ -859,7 +872,7 @@ class TestLiteLLMIntegration:
         try:
             # Count tokens using text parameter with long text
             token_count = litellm.token_counter(
-                model=model,
+                model=format_litellm_model(provider, model),
                 text=INPUT_TOKENS_LONG_TEXT,
             )
 

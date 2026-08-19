@@ -135,9 +135,6 @@ func TestCodeMode_Agent_MultiTurn_CodeChaining(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Assertions
@@ -259,9 +256,6 @@ else:
 		originalReq,
 		initialResponse,
 		mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	require.Nil(t, agentErr)
@@ -357,9 +351,6 @@ else:
 		originalReq,
 		initialResponse,
 		mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	require.Nil(t, agentErr)
@@ -468,9 +459,6 @@ func TestCodeMode_Agent_MultiTurn_ContextFilterOverride(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	require.Nil(t, agentErr)
@@ -578,9 +566,6 @@ func TestCodeMode_Agent_MultiTurn_MaxDepth(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	require.Nil(t, agentErr)
@@ -689,9 +674,6 @@ func TestCodeMode_Agent_MultiTurn_ErrorRecovery(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mocker.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	require.Nil(t, agentErr)

@@ -213,6 +213,7 @@ func (cm *ChatMessage) ToResponsesToolMessage() *ResponsesMessage {
 					respBlocks[i].FileID = block.File.FileID
 					respBlocks[i].ResponsesInputMessageContentBlockFile = &ResponsesInputMessageContentBlockFile{
 						FileData: block.File.FileData,
+						FileURL:  block.File.FileURL,
 						Filename: block.File.Filename,
 						FileType: block.File.FileType,
 					}
@@ -395,6 +396,77 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 
 	var messages []ResponsesMessage
 
+	// Emit reasoning first so chat->responses->anthropic preserves reasoning content
+	// (Anthropic signatures, OpenAI encrypted/summary entries) for clients to echo back; see symmetric ToChatMessages buffering.
+	if cm.Role == ChatMessageRoleAssistant && cm.ChatAssistantMessage != nil {
+		am := cm.ChatAssistantMessage
+		if len(am.ReasoningDetails) > 0 {
+			var contentBlocks []ResponsesMessageContentBlock
+			var summaries []ResponsesReasoningSummary
+			var encryptedContent *string
+			for _, d := range am.ReasoningDetails {
+				switch d.Type {
+				case BifrostReasoningDetailsTypeText:
+					if d.Text != nil && *d.Text != "" {
+						contentBlocks = append(contentBlocks, ResponsesMessageContentBlock{
+							Type:      ResponsesOutputMessageContentTypeReasoning,
+							Text:      d.Text,
+							Signature: d.Signature,
+						})
+					}
+				case BifrostReasoningDetailsTypeSummary:
+					if d.Summary != nil {
+						summaries = append(summaries, ResponsesReasoningSummary{
+							Type: ResponsesReasoningContentBlockTypeSummaryText,
+							Text: *d.Summary,
+						})
+					}
+				case BifrostReasoningDetailsTypeEncrypted:
+					if d.Data != nil {
+						encryptedContent = d.Data
+					}
+				}
+			}
+			if len(contentBlocks) > 0 || len(summaries) > 0 || encryptedContent != nil {
+				reasoningType := ResponsesMessageTypeReasoning
+				reasoningRole := ResponsesInputMessageRoleAssistant
+				rm := ResponsesMessage{
+					ID:   new("rs_" + GetRandomString(50)),
+					Type: &reasoningType,
+					Role: &reasoningRole,
+				}
+				if len(contentBlocks) > 0 {
+					rm.Content = &ResponsesMessageContent{ContentBlocks: contentBlocks}
+				}
+				if len(summaries) > 0 || encryptedContent != nil {
+					rm.ResponsesReasoning = &ResponsesReasoning{
+						Summary:          summaries,
+						EncryptedContent: encryptedContent,
+					}
+				}
+				messages = append(messages, rm)
+			}
+		} else if am.Reasoning != nil && *am.Reasoning != "" {
+			// Fallback for providers that surface plain reasoning text only (e.g. DeepSeek).
+			reasoningType := ResponsesMessageTypeReasoning
+			reasoningRole := ResponsesInputMessageRoleAssistant
+			reasoningText := *am.Reasoning
+			messages = append(messages, ResponsesMessage{
+				ID:   new("rs_" + GetRandomString(50)),
+				Type: &reasoningType,
+				Role: &reasoningRole,
+				Content: &ResponsesMessageContent{
+					ContentBlocks: []ResponsesMessageContentBlock{
+						{
+							Type: ResponsesOutputMessageContentTypeReasoning,
+							Text: &reasoningText,
+						},
+					},
+				},
+			})
+		}
+	}
+
 	// Check if this is an assistant message with multiple tool calls that need expansion
 	if cm.ChatAssistantMessage != nil && cm.ChatAssistantMessage.ToolCalls != nil && len(cm.ChatAssistantMessage.ToolCalls) > 0 {
 		// Expand multiple tool calls into separate function_call items
@@ -545,7 +617,9 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 				if block.File != nil {
 					responseBlocks[i].ResponsesInputMessageContentBlockFile = &ResponsesInputMessageContentBlockFile{
 						FileData: block.File.FileData,
+						FileURL:  block.File.FileURL,
 						Filename: block.File.Filename,
+						FileType: block.File.FileType,
 					}
 					responseBlocks[i].FileID = block.File.FileID
 				}
@@ -571,6 +645,15 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 		rm.ResponsesToolMessage = &ResponsesToolMessage{}
 		if cm.ChatToolMessage.ToolCallID != nil {
 			rm.ResponsesToolMessage.CallID = cm.ChatToolMessage.ToolCallID
+		}
+
+		// The chat surface marks a failed tool result with a bool and carries no
+		// error text, so there is nothing to put in ResponsesToolMessage.Error.
+		// Status "incomplete" is the equivalent signal on this surface, and is
+		// what the Anthropic Responses converter already reads back as is_error
+		// (providers/anthropic/responses.go).
+		if cm.ChatToolMessage.IsError != nil && *cm.ChatToolMessage.IsError {
+			rm.Status = Ptr("incomplete")
 		}
 
 		// If tool output content exists, add it to function_call_output
@@ -641,9 +724,61 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 
 	var chatMessages []ChatMessage
 	var currentToolCalls []ChatAssistantMessageToolCall
+	var pendingReasoning strings.Builder
+	var pendingReasoningDetails []ChatReasoningDetails
+
+	// attachPendingReasoning carries the buffered reasoning onto the next assistant turn so multi-turn flows via the Responses→Chat fallback don't 400 on DeepSeek thinking mode.
+	attachPendingReasoning := func(msg *ChatAssistantMessage) {
+		if pendingReasoning.Len() == 0 && len(pendingReasoningDetails) == 0 {
+			return
+		}
+		if msg.Reasoning == nil && pendingReasoning.Len() > 0 {
+			text := pendingReasoning.String()
+			msg.Reasoning = &text
+		}
+		if len(pendingReasoningDetails) > 0 {
+			msg.ReasoningDetails = append(msg.ReasoningDetails, pendingReasoningDetails...)
+		}
+		pendingReasoning.Reset()
+		pendingReasoningDetails = nil
+	}
 
 	for _, rm := range rms {
 		if rm.Type != nil && *rm.Type == ResponsesMessageTypeReasoning {
+			// Buffer reasoning so it attaches to the next assistant message.
+			if rm.Content != nil {
+				for _, block := range rm.Content.ContentBlocks {
+					if block.Type == ResponsesOutputMessageContentTypeReasoning && block.Text != nil {
+						if pendingReasoning.Len() > 0 {
+							pendingReasoning.WriteByte('\n')
+						}
+						pendingReasoning.WriteString(*block.Text)
+						pendingReasoningDetails = append(pendingReasoningDetails, ChatReasoningDetails{
+							Index:     len(pendingReasoningDetails),
+							Type:      BifrostReasoningDetailsTypeText,
+							Text:      block.Text,
+							Signature: block.Signature,
+						})
+					}
+				}
+			}
+			if rm.ResponsesReasoning != nil {
+				for _, summary := range rm.ResponsesReasoning.Summary {
+					summaryText := summary.Text
+					pendingReasoningDetails = append(pendingReasoningDetails, ChatReasoningDetails{
+						Index:   len(pendingReasoningDetails),
+						Type:    BifrostReasoningDetailsTypeSummary,
+						Summary: &summaryText,
+					})
+				}
+				if rm.ResponsesReasoning.EncryptedContent != nil {
+					pendingReasoningDetails = append(pendingReasoningDetails, ChatReasoningDetails{
+						Index: len(pendingReasoningDetails),
+						Type:  BifrostReasoningDetailsTypeEncrypted,
+						Data:  rm.ResponsesReasoning.EncryptedContent,
+					})
+				}
+			}
 			continue
 		}
 
@@ -675,11 +810,13 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 		if len(currentToolCalls) > 0 {
 			// Create a copy of the slice to avoid shared slice header issues
 			toolCallsCopy := append([]ChatAssistantMessageToolCall(nil), currentToolCalls...)
+			assistant := &ChatAssistantMessage{
+				ToolCalls: toolCallsCopy,
+			}
+			attachPendingReasoning(assistant)
 			chatMessages = append(chatMessages, ChatMessage{
-				Role: ChatMessageRoleAssistant,
-				ChatAssistantMessage: &ChatAssistantMessage{
-					ToolCalls: toolCallsCopy,
-				},
+				Role:                 ChatMessageRoleAssistant,
+				ChatAssistantMessage: assistant,
 			})
 			currentToolCalls = nil // Reset for next batch
 		}
@@ -709,6 +846,15 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 				if rm.ResponsesToolMessage != nil && rm.ResponsesToolMessage.CallID != nil {
 					cm.ChatToolMessage = &ChatToolMessage{
 						ToolCallID: rm.ResponsesToolMessage.CallID,
+					}
+
+					// Both spellings the Responses surface uses for a failed tool
+					// result collapse to the chat surface's single bool. Mirrors
+					// the same pair the Anthropic Responses converter treats as
+					// is_error (providers/anthropic/responses.go).
+					if (rm.ResponsesToolMessage.Error != nil && *rm.ResponsesToolMessage.Error != "") ||
+						(rm.Status != nil && *rm.Status == "incomplete") {
+						cm.ChatToolMessage.IsError = Ptr(true)
 					}
 
 					// Extract content from ResponsesFunctionToolCallOutput if present
@@ -799,7 +945,9 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 					if block.ResponsesInputMessageContentBlockFile != nil {
 						chatBlocks[i].File = &ChatInputFile{
 							FileData: block.ResponsesInputMessageContentBlockFile.FileData,
+							FileURL:  block.ResponsesInputMessageContentBlockFile.FileURL,
 							Filename: block.ResponsesInputMessageContentBlockFile.Filename,
+							FileType: block.ResponsesInputMessageContentBlockFile.FileType,
 							FileID:   block.FileID,
 						}
 					}
@@ -818,6 +966,15 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 			}
 		}
 
+		// Attach any buffered reasoning to assistant turns (regardless of
+		// whether they also carry tool calls or just text content).
+		if cm.Role == ChatMessageRoleAssistant && (pendingReasoning.Len() > 0 || len(pendingReasoningDetails) > 0) {
+			if cm.ChatAssistantMessage == nil {
+				cm.ChatAssistantMessage = &ChatAssistantMessage{}
+			}
+			attachPendingReasoning(cm.ChatAssistantMessage)
+		}
+
 		chatMessages = append(chatMessages, cm)
 	}
 
@@ -825,11 +982,13 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 	if len(currentToolCalls) > 0 {
 		// Create a copy of the slice to avoid shared slice header issues
 		toolCallsCopy := append([]ChatAssistantMessageToolCall(nil), currentToolCalls...)
+		assistant := &ChatAssistantMessage{
+			ToolCalls: toolCallsCopy,
+		}
+		attachPendingReasoning(assistant)
 		chatMessages = append(chatMessages, ChatMessage{
-			Role: ChatMessageRoleAssistant,
-			ChatAssistantMessage: &ChatAssistantMessage{
-				ToolCalls: toolCallsCopy,
-			},
+			Role:                 ChatMessageRoleAssistant,
+			ChatAssistantMessage: assistant,
 		})
 	}
 
@@ -842,19 +1001,21 @@ func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
 	}
 
 	usage := &ResponsesResponseUsage{
-		InputTokens:  cu.PromptTokens,
-		OutputTokens: cu.CompletionTokens,
-		TotalTokens:  cu.TotalTokens,
-		Cost:         cu.Cost,
+		InputTokens:    cu.PromptTokens,
+		OutputTokens:   cu.CompletionTokens,
+		TotalTokens:    cu.TotalTokens,
+		Cost:           cu.Cost,
+		CostInUsdTicks: cu.CostInUsdTicks,
 	}
 
 	if cu.PromptTokensDetails != nil {
 		usage.InputTokensDetails = &ResponsesResponseInputTokens{
-			TextTokens:        cu.PromptTokensDetails.TextTokens,
-			AudioTokens:       cu.PromptTokensDetails.AudioTokens,
-			ImageTokens:       cu.PromptTokensDetails.ImageTokens,
-			CachedReadTokens:  cu.PromptTokensDetails.CachedReadTokens,
-			CachedWriteTokens: cu.PromptTokensDetails.CachedWriteTokens,
+			TextTokens:              cu.PromptTokensDetails.TextTokens,
+			AudioTokens:             cu.PromptTokensDetails.AudioTokens,
+			ImageTokens:             cu.PromptTokensDetails.ImageTokens,
+			CachedReadTokens:        cu.PromptTokensDetails.CachedReadTokens,
+			CachedWriteTokens:       cu.PromptTokensDetails.CachedWriteTokens,
+			CachedWriteTokenDetails: cu.PromptTokensDetails.CachedWriteTokenDetails,
 		}
 	}
 	if cu.CompletionTokensDetails != nil {
@@ -882,15 +1043,17 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 		CompletionTokens: ru.OutputTokens,
 		TotalTokens:      ru.TotalTokens,
 		Cost:             ru.Cost,
+		CostInUsdTicks:   ru.CostInUsdTicks,
 	}
 
 	if ru.InputTokensDetails != nil {
 		usage.PromptTokensDetails = &ChatPromptTokensDetails{
-			TextTokens:        ru.InputTokensDetails.TextTokens,
-			AudioTokens:       ru.InputTokensDetails.AudioTokens,
-			ImageTokens:       ru.InputTokensDetails.ImageTokens,
-			CachedReadTokens:  ru.InputTokensDetails.CachedReadTokens,
-			CachedWriteTokens: ru.InputTokensDetails.CachedWriteTokens,
+			TextTokens:              ru.InputTokensDetails.TextTokens,
+			AudioTokens:             ru.InputTokensDetails.AudioTokens,
+			ImageTokens:             ru.InputTokensDetails.ImageTokens,
+			CachedReadTokens:        ru.InputTokensDetails.CachedReadTokens,
+			CachedWriteTokens:       ru.InputTokensDetails.CachedWriteTokens,
+			CachedWriteTokenDetails: ru.InputTokensDetails.CachedWriteTokenDetails,
 		}
 	}
 	if ru.OutputTokensDetails != nil {
@@ -937,15 +1100,17 @@ func (cr *BifrostChatRequest) ToResponsesRequest() *BifrostResponsesRequest {
 	if cr.Params != nil {
 		brr.Params = &ResponsesParameters{
 			// Map common fields
-			ParallelToolCalls: cr.Params.ParallelToolCalls,
-			PromptCacheKey:    cr.Params.PromptCacheKey,
-			SafetyIdentifier:  cr.Params.SafetyIdentifier,
-			ServiceTier:       cr.Params.ServiceTier,
-			Store:             cr.Params.Store,
-			Temperature:       cr.Params.Temperature,
-			TopLogProbs:       cr.Params.TopLogProbs,
-			TopP:              cr.Params.TopP,
-			ExtraParams:       cr.Params.ExtraParams,
+			ParallelToolCalls:    cr.Params.ParallelToolCalls,
+			PromptCacheKey:       cr.Params.PromptCacheKey,
+			PromptCacheRetention: cr.Params.PromptCacheRetention,
+			PromptCacheOptions:   cr.Params.PromptCacheOptions,
+			SafetyIdentifier:     cr.Params.SafetyIdentifier,
+			ServiceTier:          cr.Params.ServiceTier,
+			Store:                cr.Params.Store,
+			Temperature:          cr.Params.Temperature,
+			TopLogProbs:          cr.Params.TopLogProbs,
+			TopP:                 cr.Params.TopP,
+			ExtraParams:          cr.Params.ExtraParams,
 
 			// Map specific fields
 			MaxOutputTokens: cr.Params.MaxCompletionTokens, // max_completion_tokens -> max_output_tokens
@@ -983,6 +1148,13 @@ func (cr *BifrostChatRequest) ToResponsesRequest() *BifrostResponsesRequest {
 			}
 		}
 
+		if format := ResponsesTextConfigFormatFromChatResponseFormat(cr.Params.ResponseFormat); format != nil {
+			if brr.Params.Text == nil {
+				brr.Params.Text = &ResponsesTextConfig{}
+			}
+			brr.Params.Text.Format = format
+		}
+
 		// Handle Verbosity
 		if cr.Params.Verbosity != nil {
 			if brr.Params.Text == nil {
@@ -1011,21 +1183,35 @@ func (brr *BifrostResponsesRequest) ToChatRequest() *BifrostChatRequest {
 
 	// Convert Input messages using existing ToChatMessages()
 	bcr.Input = ToChatMessages(brr.Input)
+
+	// The Responses API carries its system prompt in the top-level `instructions` field rather than
+	// as a message, and the Chat API has no equivalent - so without this it was dropped outright and
+	// the request still succeeded, just ignoring the instruction. OpenAI defines `instructions` as
+	// context inserted at the FRONT, so it leads even when Input already opens with a system turn.
+	if brr.Params != nil && brr.Params.Instructions != nil && *brr.Params.Instructions != "" {
+		bcr.Input = append([]ChatMessage{{
+			Role:    ChatMessageRoleSystem,
+			Content: &ChatMessageContent{ContentStr: brr.Params.Instructions},
+		}}, bcr.Input...)
+	}
+
 	normalizeDeveloperRoleForChatFallback(bcr.Input)
 
 	// Convert Parameters
 	if brr.Params != nil {
 		bcr.Params = &ChatParameters{
 			// Map common fields
-			ParallelToolCalls: brr.Params.ParallelToolCalls,
-			PromptCacheKey:    brr.Params.PromptCacheKey,
-			SafetyIdentifier:  brr.Params.SafetyIdentifier,
-			ServiceTier:       brr.Params.ServiceTier,
-			Store:             brr.Params.Store,
-			Temperature:       brr.Params.Temperature,
-			TopLogProbs:       brr.Params.TopLogProbs,
-			TopP:              brr.Params.TopP,
-			ExtraParams:       brr.Params.ExtraParams,
+			ParallelToolCalls:    brr.Params.ParallelToolCalls,
+			PromptCacheKey:       brr.Params.PromptCacheKey,
+			PromptCacheRetention: brr.Params.PromptCacheRetention,
+			PromptCacheOptions:   brr.Params.PromptCacheOptions,
+			SafetyIdentifier:     brr.Params.SafetyIdentifier,
+			ServiceTier:          brr.Params.ServiceTier,
+			Store:                brr.Params.Store,
+			Temperature:          brr.Params.Temperature,
+			TopLogProbs:          brr.Params.TopLogProbs,
+			TopP:                 brr.Params.TopP,
+			ExtraParams:          brr.Params.ExtraParams,
 
 			// Map specific fields
 			MaxCompletionTokens: brr.Params.MaxOutputTokens, // max_output_tokens -> max_completion_tokens
@@ -1055,6 +1241,10 @@ func (brr *BifrostResponsesRequest) ToChatRequest() *BifrostChatRequest {
 				Effort:    brr.Params.Reasoning.Effort,
 				MaxTokens: brr.Params.Reasoning.MaxTokens,
 			}
+		}
+
+		if rf := ChatResponseFormatFromResponsesFormat(brr.Params.Text.GetFormat()); rf != nil {
+			bcr.Params.ResponseFormat = rf
 		}
 
 		// Handle Verbosity from Text config
@@ -1146,12 +1336,24 @@ func sanitizeChatToolChoiceForFallback(toolChoice *ChatToolChoice, tools []ChatT
 func responsesStatusFromChatFinishReason(finishReason string) (status string, incompleteDetails *ResponsesResponseIncompleteDetails, mapped bool) {
 	switch finishReason {
 	case string(BifrostFinishReasonLength):
-		return "incomplete", &ResponsesResponseIncompleteDetails{Reason: "max_output_tokens"}, true
+		return "incomplete", &ResponsesResponseIncompleteDetails{Reason: ResponsesResponseIncompleteReasonMaxOutputTokens}, true
+	case "content_filter", "guardrail_intervened":
+		return "incomplete", &ResponsesResponseIncompleteDetails{Reason: ResponsesResponseIncompleteReasonContentFilter}, true
 	case string(BifrostFinishReasonStop), string(BifrostFinishReasonToolCalls):
 		return "completed", nil, true
 	default:
 		return "", nil, false
 	}
+}
+
+func responsesStopReasonFromChatFinishReason(finishReason *string) *string {
+	if finishReason == nil || *finishReason == "" {
+		return nil
+	}
+	if _, _, mapped := responsesStatusFromChatFinishReason(*finishReason); !mapped {
+		return nil
+	}
+	return Ptr(*finishReason)
 }
 
 func responsesTerminalFromChatFinishReason(finishReason *string) (eventType ResponsesStreamResponseType, status string, incompleteDetails *ResponsesResponseIncompleteDetails) {
@@ -1225,8 +1427,12 @@ func (cr *BifrostChatResponse) ToBifrostResponsesResponse() *BifrostResponsesRes
 		if status == "incomplete" {
 			responsesResp.Status = Ptr(status)
 			responsesResp.IncompleteDetails = incompleteDetails
+			responsesResp.StopReason = responsesStopReasonFromChatFinishReason(choice.FinishReason)
 			hasCompletedFinishReason = false
 			break
+		}
+		if responsesResp.StopReason == nil {
+			responsesResp.StopReason = responsesStopReasonFromChatFinishReason(choice.FinishReason)
 		}
 		hasCompletedFinishReason = true
 	}
@@ -1256,6 +1462,10 @@ func (responsesResp *BifrostResponsesResponse) ToBifrostChatResponse() *BifrostC
 		Citations:     responsesResp.Citations,
 		SearchResults: responsesResp.SearchResults,
 		Videos:        responsesResp.Videos,
+	}
+
+	if responsesResp.ID != nil {
+		chatResp.ID = *responsesResp.ID
 	}
 
 	// Create Choices from ResponsesResponse
@@ -1307,6 +1517,11 @@ type ChatToResponsesStreamState struct {
 	TextItemClosed        bool              // Whether text item has been closed
 	TextItemHasContent    bool              // Whether text item has received any content deltas
 	TextBuffer            strings.Builder   // Accumulated text deltas for output_text.done/content_part.done
+	TextOutputIndex       int               // Output index assigned to the text/message item
+	ReasoningItemAdded    bool              // Whether the reasoning item has been opened
+	ReasoningItemClosed   bool              // Whether the reasoning item has been closed
+	ReasoningOutputIndex  int               // Output index assigned to the reasoning item
+	ReasoningBuffer       strings.Builder   // Accumulated reasoning deltas for reasoning output_item.done
 	CurrentOutputIndex    int               // Current output index counter
 	ToolCallOutputIndices map[string]int    // Maps tool call ID to output index
 	SequenceNumber        int               // Monotonic sequence number across all chunks
@@ -1375,6 +1590,11 @@ func AcquireChatToResponsesStreamState() *ChatToResponsesStreamState {
 	state.TextItemClosed = false
 	state.TextItemHasContent = false
 	state.TextBuffer = strings.Builder{}
+	state.TextOutputIndex = 0
+	state.ReasoningItemAdded = false
+	state.ReasoningItemClosed = false
+	state.ReasoningOutputIndex = 0
+	state.ReasoningBuffer = strings.Builder{}
 	state.SequenceNumber = 0
 	return state
 }
@@ -1409,6 +1629,11 @@ func ReleaseChatToResponsesStreamState(state *ChatToResponsesStreamState) {
 		state.TextItemClosed = false
 		state.TextItemHasContent = false
 		state.TextBuffer = strings.Builder{}
+		state.TextOutputIndex = 0
+		state.ReasoningItemAdded = false
+		state.ReasoningItemClosed = false
+		state.ReasoningOutputIndex = 0
+		state.ReasoningBuffer = strings.Builder{}
 		state.SequenceNumber = 0
 		chatToResponsesStreamStatePool.Put(state)
 	}
@@ -1430,11 +1655,21 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 	// Convert first streaming choice to BifrostResponsesStreamResponse
 	// Note: Chat API typically has one choice per chunk in streaming
 	choice := cr.Choices[0]
-	if choice.ChatStreamResponseChoice == nil || choice.ChatStreamResponseChoice.Delta == nil {
-		return nil
+	var delta *ChatStreamResponseChoiceDelta
+	if choice.ChatStreamResponseChoice != nil {
+		delta = choice.ChatStreamResponseChoice.Delta
+	}
+	if delta == nil {
+		if choice.FinishReason == nil {
+			return nil
+		}
+		// Some OpenAI-compatible upstreams send their terminal chunk as
+		// {"delta":null,"finish_reason":"stop"} (or omit "delta" entirely).
+		// Fall through with an empty delta so the finish_reason handling below
+		// still runs and emits the Completed/Incomplete event with usage/stop_reason.
+		delta = &ChatStreamResponseChoiceDelta{}
 	}
 
-	delta := choice.ChatStreamResponseChoice.Delta
 	var responses []*BifrostResponsesStreamResponse
 
 	// Store message ID and model from first chunk
@@ -1480,12 +1715,103 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 	hasContent := delta.Content != nil && *delta.Content != ""
 	hasReasoning := delta.Reasoning != nil && *delta.Reasoning != ""
 
-	// Create output items if we have content OR reasoning (for reasoning-only models)
-	if hasContent || (hasReasoning && !state.TextItemAdded) {
-		// Text content delta (or reasoning-only response)
+	// closeReasoningItem brackets the reasoning block with an output_item.done so the
+	// reverse converters emit a content_block_stop. Called before the text/tool blocks
+	// open and at finish, so reasoning is fully closed before any other block starts —
+	// a delta for an unclosed/overlapping block makes strict clients drop the stream.
+	closeReasoningItem := func() {
+		if !state.ReasoningItemAdded || state.ReasoningItemClosed {
+			return
+		}
+		itemID := state.ItemIDs["reasoning"]
+		reasoningText := state.ReasoningBuffer.String()
+		reasoningType := ResponsesMessageTypeReasoning
+		role := ResponsesInputMessageRoleAssistant
+		doneItem := &ResponsesMessage{
+			Type: &reasoningType,
+			Role: &role,
+			Content: &ResponsesMessageContent{
+				ContentBlocks: []ResponsesMessageContentBlock{
+					{Type: ResponsesOutputMessageContentTypeReasoning, Text: &reasoningText},
+				},
+			},
+		}
+		if itemID != "" {
+			doneItem.ID = &itemID
+		}
+		responses = append(responses, &BifrostResponsesStreamResponse{
+			Type:           ResponsesStreamResponseTypeOutputItemDone,
+			SequenceNumber: state.SequenceNumber,
+			OutputIndex:    Ptr(state.ReasoningOutputIndex),
+			Item:           doneItem,
+			ExtraFields:    cr.ExtraFields,
+		})
+		state.SequenceNumber++
+		state.ReasoningItemClosed = true
+	}
+
+	// Reasoning streams before any text. Open a dedicated reasoning item so a proper
+	// content_block_start (type=thinking) precedes every thinking delta; a bare delta
+	// at an index no start opened makes strict clients (Claude Code) drop the stream.
+	// Skip once closed: a reasoning chunk resuming after text/tool would emit a delta past its stop.
+	if hasReasoning && !state.ReasoningItemClosed {
+		if !state.ReasoningItemAdded {
+			outputIndex := state.CurrentOutputIndex
+			state.CurrentOutputIndex++
+			var itemID string
+			if state.MessageID == nil {
+				itemID = fmt.Sprintf("item_%d_reasoning", outputIndex)
+			} else {
+				itemID = fmt.Sprintf("msg_%s_reasoning", *state.MessageID)
+			}
+			state.ItemIDs["reasoning"] = itemID
+			state.ReasoningOutputIndex = outputIndex
+
+			reasoningType := ResponsesMessageTypeReasoning
+			role := ResponsesInputMessageRoleAssistant
+			item := &ResponsesMessage{
+				ID:   &itemID,
+				Type: &reasoningType,
+				Role: &role,
+				Content: &ResponsesMessageContent{
+					ContentBlocks: []ResponsesMessageContentBlock{},
+				},
+			}
+			responses = append(responses, &BifrostResponsesStreamResponse{
+				Type:           ResponsesStreamResponseTypeOutputItemAdded,
+				SequenceNumber: state.SequenceNumber,
+				OutputIndex:    Ptr(outputIndex),
+				Item:           item,
+				ExtraFields:    cr.ExtraFields,
+			})
+			state.SequenceNumber++
+			state.ReasoningItemAdded = true
+		}
+
+		state.ReasoningBuffer.WriteString(*delta.Reasoning)
+		itemID := state.ItemIDs["reasoning"]
+		reasoningDelta := &BifrostResponsesStreamResponse{
+			Type:           ResponsesStreamResponseTypeReasoningSummaryTextDelta,
+			SequenceNumber: state.SequenceNumber,
+			OutputIndex:    Ptr(state.ReasoningOutputIndex),
+			Delta:          delta.Reasoning,
+			ExtraFields:    cr.ExtraFields,
+		}
+		if itemID != "" {
+			reasoningDelta.ItemID = &itemID
+		}
+		responses = append(responses, reasoningDelta)
+		state.SequenceNumber++
+	}
+
+	// Text content delta. Reasoning (if any) is closed first so blocks never overlap.
+	if hasContent {
+		closeReasoningItem()
+
 		if !state.TextItemAdded {
-			// Add text item if not already added
-			outputIndex := 0
+			outputIndex := state.CurrentOutputIndex
+			state.CurrentOutputIndex++
+			state.TextOutputIndex = outputIndex
 			// Generate stable ID for text item
 			var itemID string
 			if state.MessageID == nil {
@@ -1540,36 +1866,25 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			state.SequenceNumber++
 		}
 
-		// Emit text delta - at least one is required for lifecycle validation
-		// Even for reasoning-only responses, we emit an empty delta on the first chunk
-		if hasContent || (!state.TextItemHasContent && (hasReasoning || hasContent)) {
-			itemID := state.ItemIDs["text"]
+		itemID := state.ItemIDs["text"]
+		contentDelta := *delta.Content
+		state.TextBuffer.WriteString(contentDelta)
 
-			var contentDelta string
-			if hasContent {
-				contentDelta = *delta.Content
-				state.TextBuffer.WriteString(contentDelta)
-			} else {
-				// For reasoning-only responses, emit empty delta on first chunk
-				contentDelta = ""
-			}
-
-			response := &BifrostResponsesStreamResponse{
-				Type:           ResponsesStreamResponseTypeOutputTextDelta,
-				SequenceNumber: state.SequenceNumber,
-				OutputIndex:    Ptr(0),
-				ContentIndex:   Ptr(0),
-				Delta:          &contentDelta,
-				LogProbs:       []ResponsesOutputMessageContentTextLogProb{},
-				ExtraFields:    cr.ExtraFields,
-			}
-			if itemID != "" {
-				response.ItemID = &itemID
-			}
-			responses = append(responses, response)
-			state.SequenceNumber++
-			state.TextItemHasContent = true
+		response := &BifrostResponsesStreamResponse{
+			Type:           ResponsesStreamResponseTypeOutputTextDelta,
+			SequenceNumber: state.SequenceNumber,
+			OutputIndex:    Ptr(state.TextOutputIndex),
+			ContentIndex:   Ptr(0),
+			Delta:          &contentDelta,
+			LogProbs:       []ResponsesOutputMessageContentTextLogProb{},
+			ExtraFields:    cr.ExtraFields,
 		}
+		if itemID != "" {
+			response.ItemID = &itemID
+		}
+		responses = append(responses, response)
+		state.SequenceNumber++
+		state.TextItemHasContent = true
 	}
 
 	if len(delta.ToolCalls) > 0 {
@@ -1595,9 +1910,11 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 		// Check if this is a new tool call (only when ID is present)
 		if toolCall.ID != nil && *toolCall.ID != "" {
 			if _, exists := state.ToolCallOutputIndices[toolCallID]; !exists {
+				// Close reasoning item so its thinking block is bracketed before the tool block.
+				closeReasoningItem()
 				// Close text item if still open and has content
 				if state.TextItemAdded && !state.TextItemClosed && state.TextItemHasContent {
-					outputIndex := 0
+					outputIndex := state.TextOutputIndex
 					itemID := state.ItemIDs["text"]
 
 					finalText := state.TextBuffer.String()
@@ -1736,19 +2053,6 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 		}
 	}
 
-	if delta.Reasoning != nil && *delta.Reasoning != "" {
-		// Reasoning/thought content delta (for models that support reasoning)
-		response := &BifrostResponsesStreamResponse{
-			Type:           ResponsesStreamResponseTypeReasoningSummaryTextDelta,
-			SequenceNumber: state.SequenceNumber,
-			OutputIndex:    Ptr(0),
-			Delta:          delta.Reasoning,
-			ExtraFields:    cr.ExtraFields,
-		}
-		responses = append(responses, response)
-		state.SequenceNumber++
-	}
-
 	if delta.Refusal != nil && *delta.Refusal != "" {
 		// Refusal delta
 		response := &BifrostResponsesStreamResponse{
@@ -1766,9 +2070,13 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 	if choice.FinishReason != nil {
 		terminalEventType, terminalStatus, terminalIncompleteDetails := responsesTerminalFromChatFinishReason(choice.FinishReason)
 
+		// Close reasoning item if the stream ends while it is still open (reasoning-only
+		// or reasoning cut short), so the thinking block is bracketed by a content_block_stop.
+		closeReasoningItem()
+
 		// Close text item if still open (regardless of whether it has content, to support reasoning-only responses)
 		if state.TextItemAdded && !state.TextItemClosed {
-			outputIndex := 0
+			outputIndex := state.TextOutputIndex
 			itemID := state.ItemIDs["text"]
 
 			finalText := state.TextBuffer.String()
@@ -1909,6 +2217,7 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			CreatedAt:         state.CreatedAt,
 			Usage:             usage,
 			Status:            &responseStatus,
+			StopReason:        responsesStopReasonFromChatFinishReason(choice.FinishReason),
 			IncompleteDetails: terminalIncompleteDetails,
 		}
 
@@ -1916,6 +2225,27 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			response.Model = *state.Model
 		}
 		var allOutput []ResponsesMessage
+
+		// Reasoning first (output index 0), mirroring the non-streaming converter's ordering.
+		if state.ReasoningItemAdded {
+			reasoningType := ResponsesMessageTypeReasoning
+			role := ResponsesInputMessageRoleAssistant
+			reasoningText := state.ReasoningBuffer.String()
+			itemID := state.ItemIDs["reasoning"]
+			rMsg := ResponsesMessage{
+				Type: &reasoningType,
+				Role: &role,
+				Content: &ResponsesMessageContent{
+					ContentBlocks: []ResponsesMessageContentBlock{
+						{Type: ResponsesOutputMessageContentTypeReasoning, Text: &reasoningText},
+					},
+				},
+			}
+			if itemID != "" {
+				rMsg.ID = &itemID
+			}
+			allOutput = append(allOutput, rMsg)
+		}
 
 		if state.TextItemAdded {
 			statusFinal := terminalStatus
@@ -2012,4 +2342,371 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 	}
 
 	return responses
+}
+
+// ToBifrostChatResponse converts a BifrostResponsesStreamResponse chunk to a BifrostChatResponse (chat.completion.chunk).
+func (rsr *BifrostResponsesStreamResponse) ToBifrostChatResponse() *BifrostChatResponse {
+	if rsr == nil {
+		return nil
+	}
+
+	extraFields := rsr.ExtraFields
+	extraFields.RequestType = ChatCompletionStreamRequest
+
+	resp := &BifrostChatResponse{
+		Object:        "chat.completion.chunk",
+		ExtraFields:   extraFields,
+		SearchResults: rsr.SearchResults,
+		Videos:        rsr.Videos,
+		Citations:     rsr.Citations,
+	}
+
+	if rsr.Response != nil {
+		if rsr.Response.ID != nil {
+			resp.ID = *rsr.Response.ID
+		}
+		resp.Created = rsr.Response.CreatedAt
+		resp.Model = rsr.Response.Model
+	}
+
+	switch rsr.Type {
+	case ResponsesStreamResponseTypeOutputTextDelta:
+		resp.Choices = []BifrostResponseChoice{
+			{
+				Index: 0,
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{
+					Delta: &ChatStreamResponseChoiceDelta{
+						Content: rsr.Delta,
+					},
+				},
+			},
+		}
+		return resp
+
+	case ResponsesStreamResponseTypeReasoningSummaryTextDelta:
+		resp.Choices = []BifrostResponseChoice{
+			{
+				Index: 0,
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{
+					Delta: &ChatStreamResponseChoiceDelta{
+						Reasoning: rsr.Delta,
+					},
+				},
+			},
+		}
+		return resp
+
+	case ResponsesStreamResponseTypeRefusalDelta:
+		resp.Choices = []BifrostResponseChoice{
+			{
+				Index: 0,
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{
+					Delta: &ChatStreamResponseChoiceDelta{
+						Refusal: rsr.Refusal,
+					},
+				},
+			},
+		}
+		return resp
+
+	case ResponsesStreamResponseTypeOutputItemAdded:
+		if rsr.Item == nil || rsr.Item.Type == nil {
+			resp.Choices = []BifrostResponseChoice{
+				{
+					Index: 0,
+					ChatStreamResponseChoice: &ChatStreamResponseChoice{
+						Delta: &ChatStreamResponseChoiceDelta{},
+					},
+				},
+			}
+			return resp
+		}
+
+		switch *rsr.Item.Type {
+		case ResponsesMessageTypeFunctionCall:
+			if rsr.Item.ResponsesToolMessage == nil {
+				resp.Choices = []BifrostResponseChoice{
+					{
+						Index: 0,
+						ChatStreamResponseChoice: &ChatStreamResponseChoice{
+							Delta: &ChatStreamResponseChoiceDelta{},
+						},
+					},
+				}
+				return resp
+			}
+			funcType := "function"
+			var idx uint16
+			if rsr.OutputIndex != nil && *rsr.OutputIndex > 0 {
+				idx = uint16(*rsr.OutputIndex - 1)
+			}
+			resp.Choices = []BifrostResponseChoice{
+				{
+					Index: 0,
+					ChatStreamResponseChoice: &ChatStreamResponseChoice{
+						Delta: &ChatStreamResponseChoiceDelta{
+							ToolCalls: []ChatAssistantMessageToolCall{
+								{
+									Index: idx,
+									Type:  &funcType,
+									ID:    rsr.Item.ResponsesToolMessage.CallID,
+									Function: ChatAssistantMessageToolCallFunction{
+										Name: rsr.Item.ResponsesToolMessage.Name,
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+			return resp
+
+		case ResponsesMessageTypeMessage:
+			role := "assistant"
+			resp.Choices = []BifrostResponseChoice{
+				{
+					Index: 0,
+					ChatStreamResponseChoice: &ChatStreamResponseChoice{
+						Delta: &ChatStreamResponseChoiceDelta{
+							Role: &role,
+						},
+					},
+				},
+			}
+			return resp
+
+		default:
+			// reasoning, file_search_call, web_search_call, etc. — no chat equivalent,
+			// actual content arrives via separate delta events.
+			resp.Choices = []BifrostResponseChoice{
+				{
+					Index: 0,
+					ChatStreamResponseChoice: &ChatStreamResponseChoice{
+						Delta: &ChatStreamResponseChoiceDelta{},
+					},
+				},
+			}
+			return resp
+		}
+
+	case ResponsesStreamResponseTypeFunctionCallArgumentsDelta:
+		if rsr.Delta == nil {
+			resp.Choices = []BifrostResponseChoice{
+				{
+					Index: 0,
+					ChatStreamResponseChoice: &ChatStreamResponseChoice{
+						Delta: &ChatStreamResponseChoiceDelta{},
+					},
+				},
+			}
+			return resp
+		}
+		var idx uint16
+		if rsr.OutputIndex != nil && *rsr.OutputIndex > 0 {
+			idx = uint16(*rsr.OutputIndex - 1)
+		}
+
+		resp.Choices = []BifrostResponseChoice{
+			{
+				Index: 0,
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{
+					Delta: &ChatStreamResponseChoiceDelta{
+						ToolCalls: []ChatAssistantMessageToolCall{
+							{
+								Index: idx,
+								Function: ChatAssistantMessageToolCallFunction{
+									Arguments: *rsr.Delta,
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+		return resp
+
+	case ResponsesStreamResponseTypeCompleted, ResponsesStreamResponseTypeIncomplete:
+		finishReason := string(BifrostFinishReasonStop)
+		if rsr.Type == ResponsesStreamResponseTypeIncomplete {
+			finishReason = string(BifrostFinishReasonLength)
+		}
+		resp.Choices = []BifrostResponseChoice{
+			{
+				Index:        0,
+				FinishReason: &finishReason,
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{
+					Delta: &ChatStreamResponseChoiceDelta{},
+				},
+			},
+		}
+		if rsr.Response != nil {
+			if rsr.Response.Usage != nil {
+				resp.Usage = rsr.Response.Usage.ToBifrostLLMUsage()
+			}
+			// Check for tool_calls finish reason
+			if rsr.Type == ResponsesStreamResponseTypeCompleted {
+				for _, output := range rsr.Response.Output {
+					if output.Type != nil && *output.Type == ResponsesMessageTypeFunctionCall {
+						finishReason = string(BifrostFinishReasonToolCalls)
+						resp.Choices[0].FinishReason = &finishReason
+						break
+					}
+				}
+			}
+		}
+		return resp
+
+	default:
+		// Lifecycle events (created, in_progress, content_part.added/done, output_text.done,
+		// output_item.done, function_call_arguments.done, etc.) → empty chat chunk with no content.
+		resp.Choices = []BifrostResponseChoice{
+			{
+				Index: 0,
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{
+					Delta: &ChatStreamResponseChoiceDelta{},
+				},
+			},
+		}
+		return resp
+	}
+}
+
+// =============================================================================
+// RESPONSE CONVERSION METHODS
+// =============================================================================
+
+// ToBifrostTextCompletionResponse converts a BifrostChatResponse to a BifrostTextCompletionResponse
+func (cr *BifrostChatResponse) ToBifrostTextCompletionResponse() *BifrostTextCompletionResponse {
+	if cr == nil {
+		return nil
+	}
+
+	if len(cr.Choices) == 0 {
+		return &BifrostTextCompletionResponse{
+			ID:                cr.ID,
+			Model:             cr.Model,
+			Created:           cr.Created,
+			Object:            "text_completion",
+			SystemFingerprint: cr.SystemFingerprint,
+			Usage:             cr.Usage,
+			ExtraFields: BifrostResponseExtraFields{
+				RequestType:             TextCompletionRequest,
+				ChunkIndex:              cr.ExtraFields.ChunkIndex,
+				Provider:                cr.ExtraFields.Provider,
+				OriginalModelRequested:  cr.ExtraFields.OriginalModelRequested,
+				Latency:                 cr.ExtraFields.Latency,
+				RawResponse:             cr.ExtraFields.RawResponse,
+				CacheDebug:              cr.ExtraFields.CacheDebug,
+				GuardrailDebug:          cr.ExtraFields.GuardrailDebug,
+				ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,
+			},
+		}
+	}
+
+	choice := cr.Choices[0]
+
+	// Handle streaming response choice
+	if choice.ChatStreamResponseChoice != nil && choice.ChatStreamResponseChoice.Delta != nil {
+		return &BifrostTextCompletionResponse{
+			ID:                cr.ID,
+			Model:             cr.Model,
+			Created:           cr.Created,
+			Object:            "text_completion",
+			SystemFingerprint: cr.SystemFingerprint,
+			Choices: []BifrostResponseChoice{
+				{
+					Index: 0,
+					TextCompletionResponseChoice: &TextCompletionResponseChoice{
+						Text: choice.ChatStreamResponseChoice.Delta.Content,
+					},
+					FinishReason: choice.FinishReason,
+					LogProbs:     choice.LogProbs,
+				},
+			},
+			Usage: cr.Usage,
+			ExtraFields: BifrostResponseExtraFields{
+				RequestType:             TextCompletionRequest,
+				ChunkIndex:              cr.ExtraFields.ChunkIndex,
+				Provider:                cr.ExtraFields.Provider,
+				OriginalModelRequested:  cr.ExtraFields.OriginalModelRequested,
+				Latency:                 cr.ExtraFields.Latency,
+				RawResponse:             cr.ExtraFields.RawResponse,
+				CacheDebug:              cr.ExtraFields.CacheDebug,
+				GuardrailDebug:          cr.ExtraFields.GuardrailDebug,
+				ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,
+			},
+		}
+	}
+
+	// Handle non-streaming response choice
+	if choice.ChatNonStreamResponseChoice != nil {
+		msg := choice.ChatNonStreamResponseChoice.Message
+		var textContent *string
+		if msg != nil && msg.Content != nil {
+			if msg.Content.ContentStr != nil {
+				textContent = msg.Content.ContentStr
+			} else if len(msg.Content.ContentBlocks) > 0 {
+				var sb strings.Builder
+				for _, block := range msg.Content.ContentBlocks {
+					if block.Text != nil {
+						sb.WriteString(*block.Text)
+					}
+				}
+				if sb.Len() > 0 {
+					s := sb.String()
+					textContent = &s
+				}
+			}
+		}
+		return &BifrostTextCompletionResponse{
+			ID:                cr.ID,
+			Model:             cr.Model,
+			Created:           cr.Created,
+			Object:            "text_completion",
+			SystemFingerprint: cr.SystemFingerprint,
+			Choices: []BifrostResponseChoice{
+				{
+					Index: 0,
+					TextCompletionResponseChoice: &TextCompletionResponseChoice{
+						Text: textContent,
+					},
+					FinishReason: choice.FinishReason,
+					LogProbs:     choice.LogProbs,
+				},
+			},
+			Usage: cr.Usage,
+			ExtraFields: BifrostResponseExtraFields{
+				RequestType:             TextCompletionRequest,
+				ChunkIndex:              cr.ExtraFields.ChunkIndex,
+				Provider:                cr.ExtraFields.Provider,
+				OriginalModelRequested:  cr.ExtraFields.OriginalModelRequested,
+				Latency:                 cr.ExtraFields.Latency,
+				RawResponse:             cr.ExtraFields.RawResponse,
+				CacheDebug:              cr.ExtraFields.CacheDebug,
+				GuardrailDebug:          cr.ExtraFields.GuardrailDebug,
+				ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,
+			},
+		}
+	}
+
+	// Fallback case - return basic response structure
+	return &BifrostTextCompletionResponse{
+		ID:                cr.ID,
+		Model:             cr.Model,
+		Created:           cr.Created,
+		Object:            "text_completion",
+		SystemFingerprint: cr.SystemFingerprint,
+		Usage:             cr.Usage,
+		ExtraFields: BifrostResponseExtraFields{
+			RequestType:             TextCompletionRequest,
+			ChunkIndex:              cr.ExtraFields.ChunkIndex,
+			Provider:                cr.ExtraFields.Provider,
+			OriginalModelRequested:  cr.ExtraFields.OriginalModelRequested,
+			Latency:                 cr.ExtraFields.Latency,
+			RawResponse:             cr.ExtraFields.RawResponse,
+			CacheDebug:              cr.ExtraFields.CacheDebug,
+			GuardrailDebug:          cr.ExtraFields.GuardrailDebug,
+			ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,
+		},
+	}
 }

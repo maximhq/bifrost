@@ -1,0 +1,116 @@
+---
+title: "v1.5.14"
+description: "v1.5.14 changelog - 2026-06-16"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.5.14
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.5.14
+    docker run -p 8080:8080 maximhq/bifrost:v1.5.14
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.5.14">
+## ✨ Features
+
+- **Skills Repository** — Added a full skills repository: dashboard UI with security warnings, navigation and access state, config-based registry, and management/serving APIs.
+- **OpenCode Gateway Providers** — Added support for OpenCode gateway providers (Go, Zen) (thanks [@neta79](https://github.com/neta79)!)
+- **Advisor Tool Compatibility** — Added advisor tool compatibility for Claude.
+- **Environment Label Banner** — Added an environment label banner to the sidebar so the active environment is visible at a glance (thanks [@alexef](https://github.com/alexef)!)
+- **Datadog Plugin Host/Port** — Added host and port configuration support for the Datadog plugin.
+- **Postgres Password Command** — Added support for sourcing the Postgres password from a command (thanks [@dani29](https://github.com/dani29)!)
+- **MCP Library Cleanup** — Custom MCP library entries are now hard-deleted and remote ones tombstoned.
+
+## 🐞 Fixed
+
+- **Config File-Wins Sync** — Plugins, governance entities, and client config now force file-wins sync when `source_of_truth=config.json`.
+- **Skills API Response Bloat** — Cleared backend response bloat on skills APIs and adjusted the orphan-cleanup grace period.
+- **Bedrock Tool Result Order** — Preserved `tool_result` order to match parallel `tool_use` blocks (thanks [@alexef](https://github.com/alexef)!)
+- **Bedrock Cache TTL** — Set TTL in Bedrock cache points.
+- **Gemini/Vertex Batch Conversion** — Fixed request conversion for Gemini/Vertex batch requests.
+- **Routing-Pinned Key ID** — Commit the routing-pinned key ID to the reserved `BifrostContextKeyAPIKeyID` after `PreRequestHook` unblock.
+- **Responses max_output_tokens** — Preserved `max_output_tokens` on Responses requests (thanks [@webagil-kevin](https://github.com/webagil-kevin)!)
+- **VK Provider Blacklist Migration** — Run the VK provider blacklist migration before backfill (thanks [@nnNyx](https://github.com/nnNyx)!)
+- **Ranking Trends Accuracy** — Stopped double-counting the boundary hour in matview ranking trends and gated ranking readers on the fresh-aggregate matview window.
+- **Logstore Migrations** — Fixed duplicate migration runs for the logstore and added logging across all migrations.
+- **MCP Usage Guide Button** — Fixed styling of the "Connect agent" trigger button in the MCP usage guide.
+
+</Update>
+<Update label="Core" description="1.5.20">
+- feat: add OpenCode gateway providers (Go, Zen) (thanks [@neta79](https://github.com/neta79)!)
+- feat: add advisor tool compatibility for Claude
+- fix(bedrock): preserve tool_result order to match parallel tool_use blocks (thanks [@alexef](https://github.com/alexef)!)
+- fix: preserve request conversion for Gemini/Vertex batch requests
+- fix(bedrock): set TTL in cache points
+- fix: commit routing-pinned key ID to reserved BifrostContextKeyAPIKeyID after PreRequestHook unblock
+
+</Update>
+<Update label="Framework" description="1.3.20">
+- feat: add skills repository data model and config store support
+- feat: add object store prefix listing for skill cleanup
+- feat: hard-delete custom MCP library entries and tombstone remote ones
+- feat: improve skills repository UI with security warning, dropdown state, and copy fixes
+- feat: add Postgres password command support (thanks [@dani29](https://github.com/dani29)!)
+- fix: skills APIs backend response bloat clearing and orphan cleanup grace period change
+- fix: stop double counting boundary hour in matview ranking trends
+- fix: gate ranking readers on fresh-aggregate matview window
+- fix(configstore): run VK provider blacklist migration before backfill (thanks [@nnNyx](https://github.com/nnNyx)!)
+- fix: fixing duplicate migration runs for logstore
+- fix: read supports web search in datasheet
+- chore: add logging for all migrations and structured lifecycle logging to postgres configstore/logstore initialization
+- chore: upgraded core to v1.5.20
+
+</Update>
+<Update label="compat" description="0.1.19">
+- fix(compat): preserve max_output_tokens on Responses requests (thanks [@webagil-kevin](https://github.com/webagil-kevin)!)
+- chore: upgraded core to v1.5.20 and framework to v1.3.20
+
+</Update>
+<Update label="governance" description="1.5.20">
+- fix: commit routing-pinned key ID to reserved BifrostContextKeyAPIKeyID after PreRequestHook unblock
+- chore: upgraded core to v1.5.20 and framework to v1.3.20
+
+</Update>
+<Update label="jsonparser" description="1.5.20">
+- chore: upgraded core to v1.5.20 and framework to v1.3.20
+
+</Update>
+<Update label="logging" description="1.5.20">
+- fix: update write kickoff based on last activity
+- chore: upgraded core to v1.5.20 and framework to v1.3.20
+
+</Update>
+<Update label="maxim" description="1.6.20">
+- chore: upgraded core to v1.5.20 and framework to v1.3.20
+
+</Update>
+<Update label="mocker" description="1.5.20">
+- chore: upgraded core to v1.5.20 and framework to v1.3.20
+
+</Update>
+<Update label="modelcatalogresolver" description="1.0.1">
+- chore: upgraded core to v1.5.20 and framework to v1.3.20
+
+</Update>
+<Update label="otel" description="1.2.21">
+- chore: upgraded core to v1.5.20 and framework to v1.3.20
+
+</Update>
+<Update label="prompts" description="1.0.20">
+- chore: upgraded core to v1.5.20 and framework to v1.3.20
+
+</Update>
+<Update label="semanticcache" description="1.5.20">
+- chore: upgraded core to v1.5.20 and framework to v1.3.20
+
+</Update>
+<Update label="telemetry" description="1.5.20">
+- chore: upgraded core to v1.5.20 and framework to v1.3.20
+
+</Update>

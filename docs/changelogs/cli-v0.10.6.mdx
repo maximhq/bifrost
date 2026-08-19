@@ -1,0 +1,11 @@
+---
+title: "v0.10.6"
+description: "v0.10.6 changelog - 2026-06-17"
+---
+
+<Update label="Bifrost CLI" description="v0.10.6">
+- fix: Claude Code now launches in its normal terminal mode instead of forcing `CLAUDE_CODE_SIMPLE=1`
+- fix: Shift+Tab is forwarded to child CLIs instead of being consumed by Bifrost tab switching, preserving Claude Code shortcuts while keeping plain `Ctrl+Tab` for tab cycling
+- fix: sticky tab-bar errors now always let `Esc` clear the error before scroll mode, quit confirmation, or other overlays can consume the key
+
+</Update>

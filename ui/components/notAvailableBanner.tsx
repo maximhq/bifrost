@@ -1,6 +1,5 @@
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Database } from "lucide-react";
-import Link from "next/link";
 
 const NotAvailableBanner = () => {
 	return (
@@ -15,14 +14,15 @@ const NotAvailableBanner = () => {
 						<div>The UI requires a database connection to store configuration data, but no database is currently configured.</div>
 						<div className="text-muted-foreground">
 							To enable the UI, please add the database settings to your config.json (see{" "}
-							<Link
+							<a
 								href="https://www.getmaxim.ai/bifrost/docs/quickstart/gateway/setting-up#two-configuration-modes"
 								target="_blank"
 								rel="noopener noreferrer"
 								className="font-medium underline underline-offset-2"
+								data-testid="config-store-documentation-link"
 							>
 								documentation
-							</Link>
+							</a>
 							).
 						</div>
 					</AlertDescription>

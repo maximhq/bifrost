@@ -34,7 +34,10 @@ func BuildEnv(spec LaunchSpec) ([]string, error) {
 	vk := strings.TrimSpace(spec.VirtualKey)
 	if vk != "" {
 		env = append(env, spec.Harness.APIKeyEnv+"="+vk)
-	} 	
+		if spec.Harness.AuthTokenEnv != "" {
+			env = append(env, spec.Harness.AuthTokenEnv+"="+vk)
+		}
+	}
 	model := strings.TrimSpace(spec.Model)
 	if model != "" {
 		env = append(env, "BIFROST_MODEL="+model)

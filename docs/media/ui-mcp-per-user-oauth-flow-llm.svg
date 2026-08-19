@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="750" viewBox="0 0 900 750" role="img" aria-labelledby="title desc">
+  <title id="title">Per-user OAuth flow sequence diagram for LLM calls</title>
+  <desc id="desc">Sequence diagram showing Your App, Bifrost, End User, and Upstream Service across a per-user OAuth authentication flow for LLM tool access.</desc>
+
+  <defs>
+    <marker id="arrow-grey" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 4 L 0 8 z" fill="#6B7280" />
+    </marker>
+    <marker id="arrow-orange" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 4 L 0 8 z" fill="#EA580C" />
+    </marker>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 4 L 0 8 z" fill="#2563EB" />
+    </marker>
+    <marker id="arrow-green" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 4 L 0 8 z" fill="#15803D" />
+    </marker>
+    <style>
+      .bg { fill: #FFFFFF; }
+      .actor { font: 600 16px "Helvetica Neue", Helvetica, Arial, sans-serif; fill: #111827; text-anchor: middle; }
+      .label { font: 14px "Helvetica Neue", Helvetica, Arial, sans-serif; fill: #111827; text-anchor: middle; }
+      .note { font: 13px "Helvetica Neue", Helvetica, Arial, sans-serif; fill: #374151; text-anchor: middle; }
+      .num { font: 11px "Helvetica Neue", Helvetica, Arial, sans-serif; fill: #6B7280; text-anchor: middle; dominant-baseline: middle; }
+      .lane { stroke: #C7CDD4; stroke-width: 1.5; stroke-dasharray: 2 7; }
+      .arrow-grey { stroke: #6B7280; stroke-width: 2.2; fill: none; marker-end: url(#arrow-grey); }
+      .arrow-orange { stroke: #EA580C; stroke-width: 2.2; fill: none; stroke-dasharray: 7 5; marker-end: url(#arrow-orange); }
+      .arrow-blue { stroke: #2563EB; stroke-width: 2.2; fill: none; marker-end: url(#arrow-blue); }
+      .arrow-green { stroke: #15803D; stroke-width: 2.2; fill: none; marker-end: url(#arrow-green); }
+      .step { fill: #FFFFFF; stroke: #BFC5CC; stroke-width: 1.5; }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="900" height="750" />
+
+  <text class="actor" x="120" y="40">Your App</text>
+  <text class="actor" x="340" y="40">Bifrost</text>
+  <text class="actor" x="560" y="40">End User</text>
+  <text class="actor" x="780" y="40">Upstream Service</text>
+
+  <line class="lane" x1="120" y1="68" x2="120" y2="720" />
+  <line class="lane" x1="340" y1="68" x2="340" y2="720" />
+  <line class="lane" x1="560" y1="68" x2="560" y2="720" />
+  <line class="lane" x1="780" y1="68" x2="780" y2="720" />
+
+  <line class="arrow-grey" x1="120" y1="110" x2="340" y2="110" />
+  <text class="label" x="230" y="102">POST /v1/chat/completions + identity header</text>
+  <circle class="step" cx="230" cy="110" r="12" />
+  <text class="num" x="230" y="110">1</text>
+
+  <text class="note" x="340" y="162">no token found for user + service</text>
+  <circle class="step" cx="290" cy="158" r="12" />
+  <text class="num" x="290" y="158">2</text>
+
+  <line class="arrow-orange" x1="340" y1="210" x2="120" y2="210" />
+  <text class="label" x="230" y="202">mcp_auth_required + authorize_url</text>
+  <circle class="step" cx="230" cy="210" r="12" />
+  <text class="num" x="230" y="210">3</text>
+
+  <line class="arrow-blue" x1="120" y1="290" x2="560" y2="290" />
+  <text class="label" x="340" y="282">present auth URL</text>
+  <circle class="step" cx="340" cy="290" r="12" />
+  <text class="num" x="340" y="290">4</text>
+
+  <line class="arrow-blue" x1="560" y1="370" x2="780" y2="370" />
+  <text class="label" x="670" y="362">grant access</text>
+  <circle class="step" cx="670" cy="370" r="12" />
+  <text class="num" x="670" y="370">5</text>
+
+  <line class="arrow-green" x1="780" y1="450" x2="340" y2="450" />
+  <text class="label" x="560" y="442">token saved to identity</text>
+  <circle class="step" cx="560" cy="450" r="12" />
+  <text class="num" x="560" y="450">6</text>
+
+  <line class="arrow-grey" x1="120" y1="530" x2="340" y2="530" />
+  <text class="label" x="230" y="522">POST /v1/chat/completions retry</text>
+  <circle class="step" cx="230" cy="530" r="12" />
+  <text class="num" x="230" y="530">7</text>
+
+  <line class="arrow-green" x1="340" y1="610" x2="780" y2="610" />
+  <text class="label" x="560" y="602">tool call + user token</text>
+  <circle class="step" cx="560" cy="610" r="12" />
+  <text class="num" x="560" y="610">8</text>
+
+  <line class="arrow-green" x1="780" y1="680" x2="340" y2="680" />
+  <line class="arrow-green" x1="340" y1="710" x2="120" y2="710" />
+  <text class="label" x="450" y="672">result ✓</text>
+  <circle class="step" cx="450" cy="695" r="12" />
+  <text class="num" x="450" y="695">9</text>
+</svg>

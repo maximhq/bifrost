@@ -1,0 +1,199 @@
+{
+  "info": {
+    "name": "Bifrost V1 - Virtual Key Auth",
+    "description": "Virtual key authentication tests for inference endpoints. Self-provisions a VK, runs inference with/without VK, tests rejection cases, and cleans up.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "provider",
+      "value": "openai",
+      "type": "string"
+    },
+    {
+      "key": "chat_model",
+      "value": "gpt-4o",
+      "type": "string"
+    },
+    {
+      "key": "embedding_model",
+      "value": "text-embedding-3-small",
+      "type": "string"
+    },
+    {
+      "key": "responses_model",
+      "value": "gpt-4o",
+      "type": "string"
+    },
+    {
+      "key": "vk_value",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "enforce_auth",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Setup",
+      "item": [
+        {
+          "name": "Create Virtual Key",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var timestamp = Date.now();",
+                  "var uniqueName = 'VK Auth Test ' + timestamp;",
+                  "pm.request.body.raw = JSON.stringify({name: uniqueName, provider_configs: [{provider: 'openai', weight: 1.0, allowed_models: ['*'], key_ids: ['*']}]});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Create VK returns 200 or 201', function() { pm.expect(code).to.be.oneOf([200, 201]); });",
+                  "if (code === 200 || code === 201) {",
+                  "  var jsonData = pm.response.json();",
+                  "  var vk = (jsonData && (jsonData.virtual_key || jsonData)) || null;",
+                  "  pm.test('VK has id and value', function() {",
+                  "    pm.expect(vk).to.be.an('object');",
+                  "    pm.expect(vk.id).to.be.a('string').and.not.be.empty;",
+                  "    pm.expect(vk.value).to.be.a('string').and.not.be.empty;",
+                  "    pm.expect(vk.value).to.match(/^sk-bf-/);",
+                  "  });",
+                  "  pm.collectionVariables.set('vk_id', vk.id);",
+                  "  pm.collectionVariables.set('vk_value', vk.value);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"VK Auth Test\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Teardown - Deactivate",
+      "item": [
+        {
+          "name": "Deactivate Virtual Key",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Deactivate VK returns 2xx', function() { pm.expect(code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"is_active\": false}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_id}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Teardown - Delete",
+      "item": [
+        {
+          "name": "Delete Virtual Key",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Delete VK returns 2xx', function() { pm.expect(code).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_id}}"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

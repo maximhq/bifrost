@@ -1,260 +1,379 @@
-"use client"
-
-import { Button } from "@/components/ui/button"
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { getErrorMessage } from "@/lib/store/apis/baseApi";
 import { useCompleteOAuthFlowMutation, useLazyGetOAuthConfigStatusQuery } from "@/lib/store/apis/mcpApi";
-import { Loader2 } from "lucide-react"
-import { useCallback, useEffect, useRef, useState } from "react"
+import { AlertTriangle, CheckCircle2, ExternalLink, KeyRound, Loader2, RefreshCw, ShieldCheck, XCircle } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { IconWrap, InfoBox, StepDots, UiVariant } from "./authorizerUi";
 
 interface OAuth2AuthorizerProps {
-	open: boolean
-	onClose: () => void
-	onSuccess: () => void
-	onError: (error: string) => void
-	authorizeUrl: string
-	oauthConfigId: string
-	mcpClientId: string
+	open: boolean;
+	onClose: () => void;
+	onSuccess: () => void;
+	onError: (error: string) => void;
+	onConflict?: (error: string) => void;
+	authorizeUrl: string;
+	oauthConfigId: string;
+	mcpClientId: string;
+	isPerUserOauth?: boolean;
+	// A popup the caller already opened synchronously (before any await), to
+	// preserve the triggering click's transient user-activation. When
+	// present, openPopup navigates this handle instead of calling
+	// window.open itself — a fresh window.open after an awaited network
+	// round-trip risks the browser blocking it outright.
+	initialPopup?: Window | null;
+	// True when this dialog is redoing consent for an already-verified client
+	// (the "Refresh admin credential" action), as opposed to the first-time
+	// bootstrap verification. Only affects the confirm-step copy.
+	isReauthorize?: boolean;
 }
+
+type Status = "confirm" | "polling" | "blocked" | "success" | "failed";
+
+const STATUS_ICON: Record<Status, { variant: UiVariant; icon: React.ReactNode }> = {
+	confirm: { variant: "muted", icon: <ShieldCheck className="size-4" /> },
+	polling: { variant: "info", icon: <Loader2 className="size-4 animate-spin" /> },
+	blocked: { variant: "warning", icon: <AlertTriangle className="size-4" /> },
+	success: { variant: "success", icon: <CheckCircle2 className="size-4" /> },
+	failed: { variant: "danger", icon: <XCircle className="size-4" /> },
+};
+
+// ── Main component ────────────────────────────────────────────────────────────
 
 export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 	open,
 	onClose,
 	onSuccess,
 	onError,
+	onConflict,
 	authorizeUrl,
 	oauthConfigId,
-	mcpClientId,
+	isPerUserOauth,
+	initialPopup,
+	isReauthorize,
 }) => {
-	const [status, setStatus] = useState<"pending" | "polling" | "success" | "failed">("pending")
-	const [errorMessage, setErrorMessage] = useState<string | null>(null)
-	const popupRef = useRef<Window | null>(null)
-	const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
+	// Both auth types start on the confirm step and only open the popup from a
+	// direct onClick: window.open() called from anywhere else (e.g. an effect
+	// reacting to an async fetch resolving) loses the browser's "user
+	// activation" and gets silently popup-blocked.
+	const [status, setStatus] = useState<Status>("confirm");
+	const [errorMessage, setErrorMessage] = useState<string | null>(null);
+	const popupRef = useRef<Window | null>(null);
+	const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+	const isCompletingRef = useRef(false);
+	const cancelledRef = useRef(false);
+	// initialPopup is only good for one use — a retry must open a fresh
+	// window rather than re-navigating a handle already spent on a prior
+	// (blocked or failed) attempt.
+	const initialPopupConsumedRef = useRef(false);
 
-	// RTK Query hooks
-	const [getOAuthStatus] = useLazyGetOAuthConfigStatusQuery()
-	const [completeOAuth] = useCompleteOAuthFlowMutation()
+	const [getOAuthStatus] = useLazyGetOAuthConfigStatusQuery();
+	const [completeOAuth] = useCompleteOAuthFlowMutation();
 
-	// Stop polling
+	const authorizationHost = useMemo(() => {
+		try {
+			return new URL(authorizeUrl).host;
+		} catch {
+			return "the OAuth provider";
+		}
+	}, [authorizeUrl]);
+
 	const stopPolling = useCallback(() => {
 		if (pollIntervalRef.current) {
-			clearInterval(pollIntervalRef.current)
-			pollIntervalRef.current = null
+			clearInterval(pollIntervalRef.current);
+			pollIntervalRef.current = null;
 		}
-	}, [])
+	}, []);
 
-	// Handle successful OAuth completion
 	const handleOAuthComplete = useCallback(async () => {
-		// Close popup if still open
-		if (popupRef.current && !popupRef.current.closed) {
-			popupRef.current.close()
-		}
-
-		// Call complete-oauth endpoint using RTK Query mutation
-		// Use oauthConfigId instead of mcpClientId for multi-instance support
+		if (cancelledRef.current || isCompletingRef.current) return;
+		isCompletingRef.current = true;
+		if (popupRef.current && !popupRef.current.closed) popupRef.current.close();
 		try {
-			await completeOAuth(oauthConfigId).unwrap()
-			setStatus("success")
-			onSuccess()
-			setTimeout(() => {
-				onClose()
-			}, 1000)
+			await completeOAuth(oauthConfigId).unwrap();
+			if (cancelledRef.current) return;
+			setStatus("success");
+			onSuccess();
 		} catch (error) {
-			const errMsg = getErrorMessage(error)
-			setStatus("failed")
-			setErrorMessage(errMsg)
-			onError(errMsg)
+			if (cancelledRef.current) return;
+			const errMsg = getErrorMessage(error);
+			if ((error as any)?.status === 409 && onConflict) {
+				setStatus("confirm");
+				setErrorMessage(null);
+				isCompletingRef.current = false;
+				onConflict(errMsg);
+				return;
+			}
+			setStatus("failed");
+			setErrorMessage(errMsg);
+			onError(errMsg);
 		}
-	}, [oauthConfigId, completeOAuth, onSuccess, onClose, onError])
+	}, [oauthConfigId, completeOAuth, onSuccess, onError, onConflict]);
 
-	// Handle OAuth failure
-	const handleOAuthFailed = useCallback((reason: string) => {
-		stopPolling()
-		if (popupRef.current && !popupRef.current.closed) {
-			popupRef.current.close()
-		}
-		setStatus("failed")
-		setErrorMessage(reason)
-		onError(reason)
-	}, [stopPolling, onError])
+	const handleOAuthFailed = useCallback(
+		(reason: string) => {
+			stopPolling();
+			if (popupRef.current && !popupRef.current.closed) popupRef.current.close();
+			if (cancelledRef.current) return;
+			setStatus("failed");
+			setErrorMessage(reason);
+			onError(reason);
+		},
+		[stopPolling, onError],
+	);
 
-	// Check OAuth status (called by postMessage or polling)
 	const checkOAuthStatus = useCallback(async () => {
+		if (cancelledRef.current) return;
 		try {
-			const result = await getOAuthStatus(oauthConfigId).unwrap()
-
+			const result = await getOAuthStatus(oauthConfigId).unwrap();
+			if (cancelledRef.current) return;
 			if (result.status === "authorized") {
-				stopPolling()
-				await handleOAuthComplete()
+				stopPolling();
+				await handleOAuthComplete();
 			} else if (result.status === "failed" || result.status === "expired") {
-				handleOAuthFailed(`Authorization ${result.status}`)
+				handleOAuthFailed(`Authorization ${result.status}`);
 			}
 		} catch (error) {
-			console.error("Error checking OAuth status:", error)
+			console.error("Error checking OAuth status:", error);
 		}
-	}, [oauthConfigId, getOAuthStatus, stopPolling, handleOAuthComplete, handleOAuthFailed])
+	}, [oauthConfigId, getOAuthStatus, stopPolling, handleOAuthComplete, handleOAuthFailed]);
 
-	// Poll OAuth status
 	const startPolling = useCallback(() => {
-		// Clear any existing interval
-		if (pollIntervalRef.current) {
-			clearInterval(pollIntervalRef.current)
-		}
-
+		if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
 		pollIntervalRef.current = setInterval(async () => {
-			// Check if popup is still open
 			if (popupRef.current && popupRef.current.closed) {
-				// Popup closed - check status before assuming cancellation
-				// (OAuth callback page closes the popup after success)
 				try {
-					const result = await getOAuthStatus(oauthConfigId).unwrap()
+					const result = await getOAuthStatus(oauthConfigId).unwrap();
 					if (result.status === "authorized") {
-						stopPolling()
-						await handleOAuthComplete()
+						stopPolling();
+						await handleOAuthComplete();
 					} else if (result.status === "failed" || result.status === "expired") {
-						stopPolling()
-						handleOAuthFailed("Authorization failed")
+						stopPolling();
+						handleOAuthFailed("Authorization failed");
 					}
-					// pending or other non-terminal: let polling continue
 				} catch {
-					// transient fetch error: let polling continue
+					// transient error — let polling continue
 				}
-				return
+				return;
 			}
+			await checkOAuthStatus();
+		}, 2000);
+	}, [checkOAuthStatus, getOAuthStatus, handleOAuthComplete, handleOAuthFailed, oauthConfigId, stopPolling]);
 
-			await checkOAuthStatus()
-		}, 2000) // Poll every 2 seconds
-	}, [checkOAuthStatus, handleOAuthFailed])
-
-	// Open popup and start polling
 	const openPopup = useCallback(() => {
-		// Close any existing popup
-		if (popupRef.current && !popupRef.current.closed) {
-			popupRef.current.close()
+		isCompletingRef.current = false;
+		cancelledRef.current = false;
+		if (popupRef.current && !popupRef.current.closed) popupRef.current.close();
+
+		const width = 600;
+		const height = 700;
+		const left = window.screen.width / 2 - width / 2;
+		const top = window.screen.height / 2 - height / 2;
+
+		let popup: Window | null = null;
+		if (!initialPopupConsumedRef.current && initialPopup && !initialPopup.closed) {
+			initialPopupConsumedRef.current = true;
+			popup = initialPopup;
+			try {
+				popup.location.href = authorizeUrl;
+			} catch {
+				popup = null;
+			}
+		} else {
+			popup = window.open(
+				authorizeUrl,
+				"oauth_popup",
+				`width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`,
+			);
 		}
 
-		// Open OAuth popup
-		const width = 600
-		const height = 700
-		const left = window.screen.width / 2 - width / 2
-		const top = window.screen.height / 2 - height / 2
+		if (!popup || popup.closed) {
+			popupRef.current = null;
+			setStatus("blocked");
+			return;
+		}
 
-		popupRef.current = window.open(
-			authorizeUrl,
-			"oauth_popup",
-			`width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`,
-		)
+		popupRef.current = popup;
+		setStatus("polling");
+		startPolling();
+	}, [authorizeUrl, startPolling, initialPopup]);
 
-		setStatus("polling")
-
-		// Start polling OAuth status
-		startPolling()
-	}, [authorizeUrl, startPolling])
-
-	// Listen for postMessage from OAuth callback popup
 	useEffect(() => {
 		const handleMessage = (event: MessageEvent) => {
-			// Verify message is from OAuth callback
+			if (event.source !== popupRef.current || event.origin !== window.location.origin) return;
 			if (event.data?.type === "oauth_success") {
-				// Trigger immediate status check; stopPolling is called inside
-				// checkOAuthStatus only after a confirmed terminal state, so
-				// transient fetch errors still allow polling to continue.
-				checkOAuthStatus()
+				void checkOAuthStatus();
+				return;
 			}
-		}
+			if (event.data?.type === "oauth_failed") {
+				handleOAuthFailed(event.data.error ?? "OAuth flow failed");
+			}
+		};
+		window.addEventListener("message", handleMessage);
+		return () => window.removeEventListener("message", handleMessage);
+	}, [checkOAuthStatus, handleOAuthFailed]);
 
-		window.addEventListener("message", handleMessage)
-		return () => {
-			window.removeEventListener("message", handleMessage)
-		}
-	}, [checkOAuthStatus])
-
-	// Open popup when dialog opens
-	useEffect(() => {
-		if (open && status === "pending") {
-			openPopup()
-		}
-	}, [open, status, openPopup])
-
-	// Cleanup on unmount
 	useEffect(() => {
 		return () => {
-			stopPolling()
-			if (popupRef.current && !popupRef.current.closed) {
-				popupRef.current.close()
-			}
-		}
-	}, [stopPolling])
+			stopPolling();
+			if (popupRef.current && !popupRef.current.closed) popupRef.current.close();
+		};
+	}, [stopPolling]);
 
 	const handleRetry = () => {
-		setStatus("pending")
-		setErrorMessage(null)
-		openPopup()
-	}
+		setErrorMessage(null);
+		isCompletingRef.current = false;
+		setStatus("confirm");
+	};
 
 	const handleCancel = () => {
-		stopPolling()
-		if (popupRef.current && !popupRef.current.closed) {
-			popupRef.current.close()
-		}
-		onClose()
-	}
+		cancelledRef.current = true;
+		stopPolling();
+		isCompletingRef.current = false;
+		if (popupRef.current && !popupRef.current.closed) popupRef.current.close();
+		onClose();
+	};
+
+	const isPerUserReauth = isPerUserOauth && isReauthorize;
+
+	const titles: Record<Status, string> = {
+		confirm: isPerUserReauth ? "Refresh admin credential" : "Authorize connection",
+		polling: "Waiting for authorization",
+		blocked: "Popup blocked",
+		success: "Connection authorized",
+		failed: "Authorization failed",
+	};
+
+	const subtitles: Record<Status, string> = {
+		confirm: isPerUserReauth
+			? "Sign in again to renew Bifrost's own discovery credential."
+			: "Sign in to verify the OAuth setup and discover available tools.",
+		polling: "Complete sign-in in the popup window to continue.",
+		blocked: "Allow popups for this site, then try again.",
+		success: "OAuth authorization completed successfully.",
+		failed: "The OAuth flow did not complete.",
+	};
 
 	return (
-		<Dialog open={open}>
-			<DialogContent className="sm:max-w-md" onPointerDownOutside={(e) => e.preventDefault()} onEscapeKeyDown={(e) => e.preventDefault()}>
-				<DialogHeader>
-					<DialogTitle>OAuth Authorization</DialogTitle>
-					<DialogDescription>
-						{status === "pending" && "Opening authorization window..."}
-						{status === "polling" && "Waiting for authorization..."}
-						{status === "success" && "Authorization successful!"}
-						{status === "failed" && "Authorization failed"}
-					</DialogDescription>
+		<Dialog
+			open={open}
+			onOpenChange={(next) => {
+				if (!next) handleCancel();
+			}}
+		>
+			<DialogContent
+				className="gap-0 overflow-hidden p-0 sm:max-w-md"
+				onPointerDownOutside={(e) => {
+					e.preventDefault();
+					handleCancel();
+				}}
+				onEscapeKeyDown={(e) => {
+					e.preventDefault();
+					handleCancel();
+				}}
+			>
+				{/* Header */}
+				<DialogHeader className="border-b px-5 py-4 text-left">
+					<div className="flex items-start gap-3">
+						<IconWrap variant={STATUS_ICON[status].variant} icon={STATUS_ICON[status].icon} />
+						<div className="min-w-0 space-y-0.5">
+							<DialogTitle className="text-sm leading-snug font-medium">{titles[status]}</DialogTitle>
+							<DialogDescription className="text-xs leading-relaxed">{subtitles[status]}</DialogDescription>
+						</div>
+					</div>
 				</DialogHeader>
 
-				<div className="flex flex-col items-center justify-center space-y-4">
+				{/* Body */}
+				<div className="space-y-3 px-5 py-4">
+					{/* Confirm */}
+					{status === "confirm" && (
+						<>
+							<InfoBox icon={<KeyRound className="size-4" />}>
+								<p>
+									We'll open <strong>{authorizationHost}</strong> to {isPerUserReauth ? "renew" : "verify"} the OAuth setup
+									{isPerUserReauth ? "" : " and discover available tools"}.
+								</p>
+								<p className="text-muted-foreground/80 text-xs">
+									{isPerUserReauth
+										? "This only affects Bifrost's own sign-in used for periodic tool discovery. Each end user's OAuth session is separate and unaffected; you only need to do this if the admin credential badge shows it's expired, but re-running it any time is safe."
+										: "Bifrost keeps this sign-in on file to periodically refresh the available tool list. Each user still authenticates individually when they use this server; this credential is never used for their requests."}
+								</p>
+							</InfoBox>
+							<div className="flex justify-end gap-2">
+								<Button size="sm" variant="outline" onClick={handleCancel} data-testid="per-user-oauth-cancel">
+									Cancel
+								</Button>
+								<Button size="sm" onClick={openPopup} data-testid="per-user-oauth-confirm">
+									<ExternalLink className="size-3.5" />
+									Continue
+								</Button>
+							</div>
+						</>
+					)}
+
+					{/* Polling */}
 					{status === "polling" && (
 						<>
-							<Loader2 className="text-secondary-foreground h-4 w-4 animate-spin" />
-							<p className="text-muted-foreground text-sm">Please complete authorization in the popup window</p>
-						</>
-					)}
-
-					{status === "success" && (
-						<>
-							<div className="flex h-12 w-12 items-center justify-center rounded-full bg-green-100">
-								<svg className="h-6 w-6 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-									<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-								</svg>
+							<InfoBox icon={<Loader2 className="size-4 animate-spin" />}>
+								<p>This dialog will update automatically once the provider redirects back.</p>
+								<p className="text-muted-foreground/80 text-xs">Keep the popup open until authorization is complete.</p>
+							</InfoBox>
+							<div className="flex items-center justify-between">
+								<StepDots active={2} total={3} />
+								<Button size="sm" variant="outline" onClick={handleCancel} data-testid="oauth-polling-cancel-btn">
+									Cancel
+								</Button>
 							</div>
-							<p className="text-sm text-green-600">MCP server connected successfully!</p>
 						</>
 					)}
 
+					{/* Blocked */}
+					{status === "blocked" && (
+						<>
+							<InfoBox variant="warning" icon={<AlertTriangle className="size-4" />}>
+								<p>Your browser prevented the authorization window from opening.</p>
+								<p className="text-xs opacity-80">Enable popups for this site in your browser settings, then try again.</p>
+							</InfoBox>
+							<div className="flex justify-end gap-2">
+								<Button size="sm" variant="outline" onClick={handleCancel} data-testid="oauth-pending-cancel-btn">
+									Cancel
+								</Button>
+								<Button size="sm" onClick={openPopup} data-testid="oauth-open-window-btn">
+									<ExternalLink className="size-3.5" />
+									Open authorization
+								</Button>
+							</div>
+						</>
+					)}
+
+					{/* Success */}
+					{status === "success" && (
+						<InfoBox variant="success" icon={<CheckCircle2 className="size-4" />}>
+							<p className="font-medium">Finishing setup and syncing available tools.</p>
+							<p className="text-xs opacity-80">You can close this dialog; setup will complete in the background.</p>
+						</InfoBox>
+					)}
+
+					{/* Failed */}
 					{status === "failed" && (
 						<>
-							<div className="flex h-12 w-12 items-center justify-center rounded-full bg-red-100">
-								<svg className="h-6 w-6 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-									<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-								</svg>
+							<InfoBox variant="danger" icon={<XCircle className="size-4" />}>
+								<p className="font-medium">Authorization did not complete.</p>
+								<p className="text-xs opacity-80">{errorMessage ?? "Check your OAuth provider configuration or try again."}</p>
+							</InfoBox>
+							<div className="flex justify-end gap-2">
+								<Button size="sm" variant="outline" onClick={handleCancel} data-testid="oauth-failed-close-btn">
+									Close
+								</Button>
+								<Button size="sm" onClick={handleRetry} data-testid="oauth-failed-retry-btn">
+									<RefreshCw className="size-3.5" />
+									Retry
+								</Button>
 							</div>
-							<p className="text-sm text-red-600">{errorMessage || "An error occurred"}</p>
-							<Button onClick={handleRetry} variant="outline">
-								Retry
-							</Button>
 						</>
 					)}
 				</div>
-
-				{status === "polling" && (
-					<div className="flex justify-end space-x-2">
-						<Button onClick={handleCancel} variant="outline">
-							Cancel
-						</Button>
-					</div>
-				)}
 			</DialogContent>
 		</Dialog>
-	)
-}
+	);
+};

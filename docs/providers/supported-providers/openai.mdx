@@ -14,6 +14,7 @@ OpenAI is the **baseline schema** for Bifrost. When using OpenAI directly, param
 |-----------|---------------|-----------|----------|
 | Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
 | Responses API | ✅ | ✅ | `/v1/responses` |
+| Responses Lifecycle | ✅ | ✅ | `/v1/responses/{response_id}` |
 | Text Completions | ✅ | ✅ | `/v1/completions` |
 | Embeddings | ✅ | - | `/v1/embeddings` |
 | Speech (TTS) | ✅ | ✅ | `/v1/audio/speech` |
@@ -24,7 +25,70 @@ OpenAI is the **baseline schema** for Bifrost. When using OpenAI directly, param
 | Files | ✅ | - | `/v1/files` |
 | Batch | ✅ | - | `/v1/batches` |
 | Video Generation | ✅ | - | `/v1/videos` |
+| Context Compaction | ✅ | - | `/v1/responses/compact` |
 | List Models | ✅ | - | `/v1/models` |
+
+## Setup & Configuration
+
+Configure OpenAI as a provider.
+
+<Tabs>
+<Tab title="Web UI">
+
+![OpenAI provider dashboard](../../media/provider-dashboard-openai.png)
+
+1. Navigate to **Models** > **Model Providers**. Look for **OpenAI** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **OpenAI**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.OPENAI_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "openai-key-1",
+          "value": "env.OPENAI_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ],
+      "openai_config": {
+        "disable_store": false
+      }
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.OpenAI:
+    return []schemas.Key{{
+        Name:   "openai-key-1",
+        Value:  *schemas.NewSecretVar("env.OPENAI_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+Optional provider settings include `network_config` for timeouts, retries, proxy/TLS settings, and `openai_config.disable_store` to force `store=false` on outgoing OpenAI requests.
 
 ---
 
@@ -129,7 +193,72 @@ This conversion ensures compatibility across different model architectures for t
 
 **Response:** Includes `id`, `status` (`completed`, `incomplete`, `pending`, `error`), `output` array with message content, and token `usage`.
 
-**Streaming:** Server-Sent Events with types: `response.created`, `response.in_progress`, `response.output_item.added`, `response.content_part.added`, `response.output_text.delta`, `response.function_call_arguments.delta`, `response.completed`, `response.incomplete`. `stream_options: { include_usage: true }` is set by default for all streaming calls.
+**Streaming:** Server-Sent Events. `stream_options: { include_usage: true }` is set by default for all streaming calls. Each event carries a `type` field ([`ResponsesStreamResponseType`](https://github.com/maximhq/bifrost/blob/main/core/schemas/responses.go#L3039)) with one of the following values:
+
+| Category | Event Types |
+|----------|-------------|
+| Response lifecycle | `response.created`, `response.queued`, `response.in_progress`, `response.completed`, `response.failed`, `response.incomplete` |
+| Output items & content | `response.output_item.added`, `response.output_item.done`, `response.content_part.added`, `response.content_part.done`, `response.output_text.delta`, `response.output_text.done` |
+| Refusals & annotations | `response.refusal.delta`, `response.refusal.done`, `response.output_text.annotation.added`, `response.output_text.annotation.done` |
+| Function & custom tool calls | `response.function_call_arguments.delta`, `response.function_call_arguments.done`, `response.custom_tool_call_input.delta`, `response.custom_tool_call_input.done` |
+| File search | `response.file_search_call.in_progress`, `response.file_search_call.searching`, `response.file_search_call.results.added`, `response.file_search_call.results.completed` |
+| Web search | `response.web_search_call.in_progress`, `response.web_search_call.searching`, `response.web_search_call.completed`, `response.web_search_call.results.added`, `response.web_search_call.results.completed` |
+| Web fetch | `response.web_fetch_call.in_progress`, `response.web_fetch_call.fetching`, `response.web_fetch_call.completed` |
+| Reasoning summaries | `response.reasoning_summary_part.added`, `response.reasoning_summary_part.done`, `response.reasoning_summary_text.delta`, `response.reasoning_summary_text.done` |
+| Image generation | `response.image_generation_call.in_progress`, `response.image_generation_call.generating`, `response.image_generation_call.partial_image`, `response.image_generation_call.completed` |
+| MCP | `response.mcp_call_arguments.delta`, `response.mcp_call_arguments.done`, `response.mcp_call.in_progress`, `response.mcp_call.completed`, `response.mcp_call.failed`, `response.mcp_list_tools.in_progress`, `response.mcp_list_tools.completed`, `response.mcp_list_tools.failed` |
+| Code interpreter | `response.code_interpreter_call.in_progress`, `response.code_interpreter_call.interpreting`, `response.code_interpreter_call.completed`, `response.code_interpreter_call_code.delta`, `response.code_interpreter_call_code.done` |
+| Keepalive & errors | `response.ping` (sent by few providers, e.g. Anthropic), `error` |
+
+## Response Lifecycle
+
+Manage stored and background responses after creation (requests made with `store: true` or `background: true`). All lifecycle operations accept an optional `provider` query parameter (defaults to `openai`); providers that do not implement these operations return an unsupported operation error.
+
+<Note>
+When multiple API keys are configured for the provider, pin key selection on lifecycle calls (for example, with the `x-bf-api-key-id` header, see [Request Options](/providers/request-options)) so they hit the same upstream account as the create call that produced the `response_id`.
+</Note>
+
+### Retrieve Response
+
+GET `/v1/responses/{response_id}` - Retrieve a stored response ([docs](https://platform.openai.com/docs/api-reference/responses/get))
+
+**Query Parameters**
+
+| Parameter | Type | Required | Notes |
+|-----------|------|----------|-------|
+| `include` | array | ❌ | Additional fields to include (repeat the parameter for multiple values) |
+| `starting_after` | int | ❌ | Sequence number of the event after which to start the response |
+| `include_obfuscation` | bool | ❌ | Whether to include obfuscation on the response |
+| `stream` | bool | ❌ | When `true`, replays the stored response as SSE events |
+
+**Response:** The full response object, same shape as `POST /v1/responses`. With `stream=true`, the same SSE event stream as `POST /v1/responses` with `stream: true`.
+
+### Delete Response
+
+DELETE `/v1/responses/{response_id}` - Delete a stored response ([docs](https://platform.openai.com/docs/api-reference/responses/delete))
+
+**Response:** [`BifrostResponsesDeleteResponse`](https://github.com/maximhq/bifrost/blob/main/core/schemas/responses.go#L126) with `id`, `object`, and `deleted: true`.
+
+### Cancel Response
+
+POST `/v1/responses/{response_id}/cancel` - Cancel an in-flight response ([docs](https://platform.openai.com/docs/api-reference/responses/cancel)). Only responses created with `background: true` can be cancelled.
+
+**Response:** The full response object, same shape as `POST /v1/responses`.
+
+### List Input Items
+
+GET `/v1/responses/{response_id}/input_items` - List the input items of a response ([docs](https://platform.openai.com/docs/api-reference/responses/input-items))
+
+**Query Parameters**
+
+| Parameter | Type | Required | Notes |
+|-----------|------|----------|-------|
+| `after` | string | ❌ | Pagination cursor (item ID to list items after) |
+| `include` | array | ❌ | Additional fields to include (repeat the parameter for multiple values) |
+| `limit` | int | ❌ | Results per page |
+| `order` | string | ❌ | asc or desc |
+
+**Response:** [`BifrostResponsesInputItemsResponse`](https://github.com/maximhq/bifrost/blob/main/core/schemas/responses.go#L134) with `object: "list"`, `data` (array of input items), `has_more`, `first_id`, `last_id`. Cursor-based pagination with `has_more` flag.
 
 ---
 
@@ -477,7 +606,7 @@ GET `/v1/models` - Lists available models with metadata. Model IDs in Bifrost re
 | `seconds` | string | ❌ | Duration in seconds |
 | `size` | string | ❌ | Resolution: `720x1280` (default), `1280x720`, `1024x1792`, `1792x1024` |
 
-**Response**: [`BifrostVideoGenerationResponse`](https://github.com/maximhq/bifrost/blob/main/core/schemas/videos.go) — `id`, `status`, `model`, `prompt`, `created_at`
+**Response**: [`BifrostVideoGenerationResponse`](https://github.com/maximhq/bifrost/blob/main/core/schemas/videos.go) - `id`, `status`, `model`, `prompt`, `created_at`
 
 **Job Statuses**: `queued` → `in_progress` → `completed` / `failed`
 
@@ -490,6 +619,27 @@ GET `/v1/models` - Lists available models with metadata. Model IDs in Bifrost re
 | Delete | `DELETE /v1/videos/{id}` | Removes video job |
 | List jobs | `GET /v1/videos` | Query params: `after`, `limit`, `order` |
 | Remix | `POST /v1/videos/{id}/remix` | Body: `{"prompt": "..."}` |
+
+---
+
+# 14. Context Compaction
+
+Compresses a conversation into an opaque encrypted item that can be reused in future Responses API calls, reducing token costs for long-running conversations.
+
+**Request Parameters**
+
+| Parameter | Type | Required | Notes |
+|-----------|------|----------|-------|
+| `model` | string | ✅ | Model identifier |
+| `input` | string/array | ✅* | Conversation to compact. Required unless `previous_response_id` is set. Accepts the same format as the Responses API `input` field, including prior compaction items (`type: "response.compaction"`). |
+| `previous_response_id` | string | ✅* | ID of a previously stored response to compact instead of sending full input. |
+| `instructions` | string | ❌ | System instructions preserved across the compacted context. |
+| `prompt_cache_key` | string | ❌ | Prompt caching key. |
+| `prompt_cache_retention` | string | ❌ | Cache retention duration. |
+| `service_tier` | string | ❌ | Service tier preference. |
+| `fallbacks` | array | ❌ | Bifrost fallback model list. |
+
+**Endpoint**: `POST /v1/responses/compact`
 
 ---
 

@@ -3,13 +3,20 @@ package tables
 import "github.com/maximhq/bifrost/core/network"
 
 const (
-	ConfigAdminUsernameKey          = "admin_username"
-	ConfigAdminPasswordKey          = "admin_password"
-	ConfigIsAuthEnabledKey          = "is_auth_enabled"
-	ConfigDisableAuthOnInferenceKey = "disable_auth_on_inference"
-	ConfigProxyKey                  = "proxy_config"
-	ConfigRestartRequiredKey        = "restart_required"
-	ConfigHeaderFilterKey           = "header_filter_config"
+	ConfigAdminUsernameKey = "admin_username"
+	ConfigAdminPasswordKey = "admin_password"
+	ConfigIsAuthEnabledKey = "is_auth_enabled"
+	ConfigProxyKey         = "proxy_config"
+	// ConfigComplexityAnalyzerConfigKey stores the persisted analyzer config JSON.
+	ConfigComplexityAnalyzerConfigKey = "complexity_analyzer_config"
+	ConfigRestartRequiredKey          = "restart_required"
+	ConfigHeaderFilterKey             = "header_filter_config"
+)
+
+// Keys for the ClientConfig.MetadataJSON blob.
+// These live inside the metadata JSON map on config_client, not as governance_config rows.
+const (
+	MetadataKeyOnboardingDismissed = "onboarding_dismissed"
 )
 
 // RestartRequiredConfig represents the restart required configuration
@@ -27,7 +34,7 @@ type GlobalProxyConfig struct {
 	Username      string                  `json:"username,omitempty"`        // Optional authentication username
 	Password      string                  `json:"password,omitempty"`        // Optional authentication password
 	NoProxy       string                  `json:"no_proxy,omitempty"`        // Comma-separated list of hosts to bypass proxy
-	Timeout       int                     `json:"timeout,omitempty"`         // Connection timeout in seconds
+	Timeout       int                     `json:"timeout"`                   // Connection timeout in seconds
 	SkipTLSVerify bool                    `json:"skip_tls_verify,omitempty"` // Skip TLS certificate verification
 	// Entity enablement flags
 	EnableForSCIM      bool `json:"enable_for_scim"`      // Enable proxy for SCIM requests (enterprise only)

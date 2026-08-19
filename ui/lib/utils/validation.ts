@@ -1,5 +1,5 @@
 import { PROVIDER_SUPPORTED_REQUESTS } from "../constants/config";
-import { BaseProvider, KnownProvider } from "../types/config";
+import { BaseProvider } from "../types/config";
 
 export interface ValidationRule {
 	isValid: boolean;
@@ -166,7 +166,13 @@ export function isRedacted(value: string): boolean {
 	}
 
 	// Check if it's an environment variable reference
-	if (value.startsWith("env.")) {
+	if (value.startsWith("env.") || value.startsWith("vault.")) {
+		return true;
+	}
+
+	// Check for fixed sentinels returned by backend secret redaction.
+	const normalizedValue = value.toLowerCase();
+	if (normalizedValue === "<redacted>" || normalizedValue === "[redacted]") {
 		return true;
 	}
 
@@ -184,6 +190,24 @@ export function isRedacted(value: string): boolean {
 	}
 
 	return false;
+}
+
+const PASSWORD_REQUIREMENTS = [
+	{ label: "at least 12 characters", test: (password: string) => password.length >= 12 },
+	{ label: "one uppercase letter", test: (password: string) => /[A-Z]/.test(password) },
+	{ label: "one lowercase letter", test: (password: string) => /[a-z]/.test(password) },
+	{ label: "one number", test: (password: string) => /\d/.test(password) },
+	{ label: "one special character", test: (password: string) => /[^A-Za-z0-9]/.test(password) },
+];
+
+/**
+ * Returns the password-policy requirements that are not satisfied.
+ * Existing credentials are skipped only when the caller explicitly confirms
+ * that the password field has not been edited.
+ */
+export function getPasswordPolicyFailures(password?: string, isUnchanged = false): string[] {
+	if (!password || isUnchanged) return [];
+	return PASSWORD_REQUIREMENTS.filter((requirement) => !requirement.test(password)).map((requirement) => requirement.label);
 }
 
 /**
@@ -216,7 +240,7 @@ export function isValidVertexAuthCredentials(value: string): boolean {
 	}
 
 	// If environment variable, validate format
-	if (value.startsWith("env.")) {
+	if (value.startsWith("env.") || value.startsWith("vault.")) {
 		return value.length > 4;
 	}
 
@@ -230,37 +254,26 @@ export function isValidVertexAuthCredentials(value: string): boolean {
 }
 
 /**
- * Validates deployments configuration
- * @param value - The deployments value (object or string)
- * @returns true if valid (redacted, or valid JSON object)
+ * Validates the deployments (aliases) map: every entry must have a non-empty
+ * trimmed deployment name and a non-empty trimmed model_id. An empty map is
+ * also considered valid (the field is optional at the form level).
  */
-export function isValidDeployments(value: Record<string, string> | string | undefined): boolean {
-	if (!value) {
+export function isValidAliases(value: Record<string, { model_id?: string }> | undefined | null): boolean {
+	if (value == null || typeof value !== "object") {
 		return false;
 	}
-
-	// If it's already an object, check if it has entries
-	if (typeof value === "object") {
-		return Object.keys(value).length > 0;
-	}
-
-	// If it's a string, check for redaction or valid JSON
-	if (typeof value === "string") {
-		// If redacted, consider it valid (backend has the real value)
-		if (isRedacted(value)) {
-			return true;
+	for (const [name, cfg] of Object.entries(value)) {
+		if (!name || !name.trim()) {
+			return false;
 		}
-
-		// Try to parse as JSON
-		try {
-			const parsed = JSON.parse(value);
-			return typeof parsed === "object" && parsed !== null && Object.keys(parsed).length > 0;
-		} catch {
+		if (!cfg || typeof cfg !== "object") {
+			return false;
+		}
+		if (!cfg.model_id || !cfg.model_id.trim()) {
 			return false;
 		}
 	}
-
-	return false;
+	return true;
 }
 
 /**

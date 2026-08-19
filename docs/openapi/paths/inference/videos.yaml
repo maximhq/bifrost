@@ -9,7 +9,7 @@ video-generation:
       that returns immediately with a job ID. Use the retrieve endpoint to check the status
       and get the video URL when generation is complete.
     tags:
-      - Videos
+    - Videos
     requestBody:
       required: true
       content:
@@ -29,6 +29,11 @@ video-generation:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
   get:
     operationId: videoList
     summary: List video generation jobs
@@ -36,39 +41,39 @@ video-generation:
       Lists video generation jobs for a specific provider. Results are paginated
       and can be filtered using query parameters.
     tags:
-      - Videos
+    - Videos
     parameters:
-      - name: provider
-        in: query
-        required: true
-        schema:
-          type: string
-        description: Provider name (e.g., "openai", "gemini")
-      - name: after
-        in: query
-        required: false
-        schema:
-          type: string
-        description: Cursor for pagination - ID of the last item from the previous page
-      - name: limit
-        in: query
-        required: false
-        schema:
-          type: integer
-          minimum: 1
-          maximum: 100
-          default: 20
-        description: Maximum number of results to return
-      - name: order
-        in: query
-        required: false
-        schema:
-          type: string
-          enum:
-            - "asc"
-            - "desc"
-          default: "desc"
-        description: Sort order by creation time
+    - name: provider
+      in: query
+      required: true
+      schema:
+        type: string
+      description: Provider name (e.g., "openai", "gemini")
+    - name: after
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Cursor for pagination - ID of the last item from the previous page
+    - name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+      description: Maximum number of results to return
+    - name: order
+      in: query
+      required: false
+      schema:
+        type: string
+        enum:
+        - "asc"
+        - "desc"
+        default: "desc"
+      description: Sort order by creation time
     responses:
       '200':
         description: Successful response. Returns a paginated list of video generation jobs.
@@ -81,6 +86,11 @@ video-generation:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 video-by-id:
   get:
     operationId: videoRetrieve
@@ -90,14 +100,14 @@ video-by-id:
       Use this endpoint to poll for completion status after creating a video generation job.
       When the status is "completed", the response will include a URL to download the video.
     tags:
-      - Videos
+    - Videos
     parameters:
-      - name: video_id
-        in: path
-        required: true
-        schema:
-          type: string
-        description: Video ID in format `id:provider` (e.g., `video_abc123:openai`)
+    - name: video_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Video ID in format `id:provider` (e.g., `video_abc123:openai`)
     responses:
       '200':
         description: Successful response. Returns the video generation job details.
@@ -115,6 +125,11 @@ video-by-id:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
   delete:
     operationId: videoDelete
     summary: Delete a video generation job
@@ -122,14 +137,14 @@ video-by-id:
       Deletes a video generation job and its associated assets.
       This operation cannot be undone.
     tags:
-      - Videos
+    - Videos
     parameters:
-      - name: video_id
-        in: path
-        required: true
-        schema:
-          type: string
-        description: Video ID in format `id:provider` (e.g., `video_abc123:openai`)
+    - name: video_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Video ID in format `id:provider` (e.g., `video_abc123:openai`)
     responses:
       '200':
         description: Successful response. Returns deletion confirmation.
@@ -148,6 +163,11 @@ video-by-id:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 video-download:
   get:
     operationId: videoDownload
@@ -157,24 +177,24 @@ video-download:
       The video must have a status of "completed" to be downloadable.
       Returns the raw video file (typically MP4 format).
     tags:
-      - Videos
+    - Videos
     parameters:
-      - name: video_id
-        in: path
-        required: true
-        schema:
-          type: string
-        description: Video ID in format `id:provider` (e.g., `video_abc123:openai`)
-      - name: variant
-        in: query
-        required: false
-        schema:
-          type: string
-          enum:
-            - "video"
-            - "thumbnail"
-            - "spritesheet"
-        description: Variant of the video content to download (provider-specific)
+    - name: video_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Video ID in format `id:provider` (e.g., `video_abc123:openai`)
+    - name: variant
+      in: query
+      required: false
+      schema:
+        type: string
+        enum:
+        - "video"
+        - "thumbnail"
+        - "spritesheet"
+      description: Variant of the video content to download (provider-specific)
     responses:
       '200':
         description: Successful response. Returns the video file as binary content.
@@ -198,6 +218,11 @@ video-download:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 video-delete:
   delete:
     operationId: videoDelete
@@ -206,14 +231,14 @@ video-delete:
       Deletes a video generation job and its associated assets.
       This operation cannot be undone.
     tags:
-      - Videos
+    - Videos
     parameters:
-      - name: video_id
-        in: path
-        required: true
-        schema:
-          type: string
-        description: Video ID in format `id:provider` (e.g., `video_abc123:openai`)
+    - name: video_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Video ID in format `id:provider` (e.g., `video_abc123:openai`)
     responses:
       '200':
         description: Successful response. Returns deletion confirmation.
@@ -232,6 +257,11 @@ video-delete:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 video-remix:
   post:
     operationId: videoRemix
@@ -241,14 +271,14 @@ video-remix:
       The source video must have a status of "completed" to be remixed.
       Returns a new video generation job that can be polled for completion.
     tags:
-      - Videos
+    - Videos
     parameters:
-      - name: video_id
-        in: path
-        required: true
-        schema:
-          type: string
-        description: Video ID in format `id:provider` (e.g., `video_abc123:openai`)
+    - name: video_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Video ID in format `id:provider` (e.g., `video_abc123:openai`)
     requestBody:
       required: true
       content:
@@ -274,3 +304,8 @@ video-remix:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

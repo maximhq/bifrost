@@ -96,7 +96,7 @@ Bifrost Gateway provides enterprise-grade AI infrastructure with these core capa
 ### Enterprise Features
 
 - **[Clustering](https://docs.getbifrost.ai/enterprise/clustering)** - Multi-node deployment with shared state
-- **[SSO Integration](https://docs.getbifrost.ai/features/sso-with-google-github)** - Google, GitHub authentication
+- **[User Provisioning (OIDC)](https://docs.getbifrost.ai/enterprise/user-provisioning)** - OAuth 2.0 / OIDC login with background directory sync
 - **[Vault Support](https://docs.getbifrost.ai/enterprise/vault-support)** - Secure API key management
 - **[Custom Analytics](https://docs.getbifrost.ai/features/observability)** - Detailed usage insights and monitoring
 - **[In-VPC Deployments](https://docs.getbifrost.ai/enterprise/invpc-deployments)** - Private cloud deployment options

@@ -12,7 +12,8 @@ export const Selectors = {
   providers: {
     // Sidebar list
     providerList: '[data-testid="provider-list"]',
-    providerItem: (name: string) => `[data-testid="provider-item-${name.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}"]`,
+    providerItem: (name: string) =>
+      `[data-testid="provider-item-${name.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}"]`,
     addProviderBtn: '[data-testid="add-provider-btn"]',
     /** Add New Provider dropdown > Custom provider... (opens custom provider sheet) */
     addProviderOptionCustom: '[data-testid="add-provider-option-custom"]',
@@ -22,7 +23,7 @@ export const Selectors = {
     addKeyBtn: '[data-testid="add-key-btn"]',
     keysTable: '[data-testid="keys-table"]',
     keyRow: (name: string) => `[data-testid="key-row-${name}"]`,
-    
+
     // Key form
     keyForm: {
       container: '[data-testid="key-form"]',
@@ -33,7 +34,7 @@ export const Selectors = {
       saveBtn: '[data-testid="key-save-btn"]',
       cancelBtn: '[data-testid="key-cancel-btn"]',
     },
-    
+
     // Custom provider sheet
     customProviderSheet: {
       container: '[data-testid="custom-provider-sheet"]',
@@ -51,14 +52,14 @@ export const Selectors = {
     table: '[data-testid="vk-table"]',
     row: (name: string) => `[data-testid="vk-row-${name}"]`,
     createBtn: '[data-testid="create-vk-btn"]',
-    
+
     // Sheet/Form
     sheet: {
-      container: '[data-testid="vk-sheet"]',
+      container: '[data-testid="vk-sheet-content"]',
       nameInput: '[data-testid="vk-name-input"]',
       descriptionInput: '[data-testid="vk-description-input"]',
       isActiveToggle: '[data-testid="vk-is-active-toggle"]',
-      
+
       // Provider configs
       providerSelect: '[data-testid="vk-provider-select"]',
 
@@ -66,7 +67,7 @@ export const Selectors = {
       entityTypeSelect: '[data-testid="vk-entity-type-select"]',
       teamSelect: '[data-testid="vk-team-select"]',
       customerSelect: '[data-testid="vk-customer-select"]',
-      
+
       // Actions
       saveBtn: '[data-testid="vk-save-btn"]',
       cancelBtn: '[data-testid="vk-cancel-btn"]',
@@ -99,4 +100,4 @@ export const Selectors = {
     confirmBtn: '[data-testid="dialog-confirm-btn"]',
     cancelBtn: '[data-testid="dialog-cancel-btn"]',
   },
-}
+};

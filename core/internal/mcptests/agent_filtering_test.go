@@ -1,6 +1,7 @@
 package mcptests
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -56,9 +57,6 @@ func TestAgent_ToolAllowedNotAutoExecute(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mockLLM.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	require.Nil(t, bifrostErr)
@@ -118,9 +116,6 @@ func TestAgent_ToolAllowedAndAutoExecute(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mockLLM.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	require.Nil(t, bifrostErr)
@@ -173,9 +168,6 @@ func TestAgent_ToolNotAllowed(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mockLLM.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	require.Nil(t, bifrostErr)
@@ -234,9 +226,6 @@ func TestAgent_ToolNotInAutoExecuteList(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mockLLM.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	require.Nil(t, bifrostErr)
@@ -306,9 +295,6 @@ func TestAgent_ComplexFiltering_Scenario1(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mockLLM.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	require.Nil(t, bifrostErr)
@@ -373,9 +359,6 @@ func TestAgent_ComplexFiltering_Scenario2(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mockLLM.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	require.Nil(t, bifrostErr)
@@ -439,9 +422,6 @@ func TestAgent_ComplexFiltering_Scenario3(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mockLLM.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	require.Nil(t, bifrostErr)
@@ -496,9 +476,6 @@ func TestAgent_ComplexFiltering_ContextOverride(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mockLLM.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	require.Nil(t, bifrostErr)
@@ -531,7 +508,7 @@ func TestAgent_FilteringWithMultipleClients(t *testing.T) {
 	tempConfig := GetTemperatureMCPClientConfig("")
 	tempConfig.ToolsToAutoExecute = []string{} // Not auto-executed
 
-	err = manager.AddClient(&tempConfig)
+	err = manager.AddClient(context.Background(), &tempConfig)
 	if err != nil {
 		t.Skipf("Skipping test - temperature server not available: %v", err)
 		return
@@ -552,7 +529,7 @@ func TestAgent_FilteringWithMultipleClients(t *testing.T) {
 					ID:   schemas.Ptr("call-2"),
 					Type: schemas.Ptr("function"),
 					Function: schemas.ChatAssistantMessageToolCallFunction{
-						Name: schemas.Ptr("bifrostInternal-get_temperature"),
+						Name:      schemas.Ptr("bifrostInternal-get_temperature"),
 						Arguments: `{"location": "New York"}`,
 					},
 				},
@@ -581,9 +558,6 @@ func TestAgent_FilteringWithMultipleClients(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mockLLM.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	require.Nil(t, bifrostErr)
@@ -620,7 +594,7 @@ func TestAgent_ToolConflictInAgentMode(t *testing.T) {
 	tempConfig := GetTemperatureMCPClientConfig("")
 	tempConfig.ToolsToAutoExecute = []string{} // Not auto
 
-	err = manager.AddClient(&tempConfig)
+	err = manager.AddClient(context.Background(), &tempConfig)
 	if err != nil {
 		t.Skipf("Skipping test - temperature server not available: %v", err)
 		return
@@ -638,7 +612,7 @@ func TestAgent_ToolConflictInAgentMode(t *testing.T) {
 					ID:   schemas.Ptr("call-1"),
 					Type: schemas.Ptr("function"),
 					Function: schemas.ChatAssistantMessageToolCallFunction{
-						Name: schemas.Ptr("bifrostInternal-get_temperature"),
+						Name:      schemas.Ptr("bifrostInternal-get_temperature"),
 						Arguments: `{"location": "New York"}`,
 					},
 				},
@@ -668,9 +642,6 @@ func TestAgent_ToolConflictInAgentMode(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mockLLM.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	require.Nil(t, bifrostErr)
@@ -757,9 +728,6 @@ func TestAgent_AllAutoExecuteScenarios(t *testing.T) {
 				originalReq,
 				initialResponse,
 				mockLLM.MakeChatRequest,
-				func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-					return manager.ExecuteToolCall(ctx, request)
-				},
 			)
 
 			if scenario.ShouldAutoExecute {
@@ -830,9 +798,6 @@ func TestAgent_Filtering_ChatFormat(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mockLLM.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	require.Nil(t, bifrostErr)
@@ -859,7 +824,7 @@ func TestAgent_Filtering_ResponsesFormat(t *testing.T) {
 			CreateResponsesResponseWithToolCalls([]schemas.ResponsesToolMessage{
 				{
 					CallID:    schemas.Ptr("call-1"),
-					Name: schemas.Ptr("bifrostInternal-echo"),
+					Name:      schemas.Ptr("bifrostInternal-echo"),
 					Arguments: schemas.Ptr(`{"message": "responses format"}`),
 				},
 			}),
@@ -889,9 +854,6 @@ func TestAgent_Filtering_ResponsesFormat(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mockLLM.MakeResponsesRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	require.Nil(t, bifrostErr)

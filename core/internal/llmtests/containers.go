@@ -4,10 +4,18 @@ package llmtests
 import (
 	"context"
 	"testing"
+	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// containerDeadline returns a 60-second absolute deadline from now.
+// Container operations should complete quickly; this prevents indefinite
+// hangs when an Azure (or other provider) endpoint does not respond.
+func containerDeadline() time.Time {
+	return time.Now().Add(60 * time.Second)
+}
 
 // RunContainerCreateTest tests the container create functionality
 func RunContainerCreateTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) {
@@ -24,7 +32,7 @@ func RunContainerCreateTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			Name:     "bifrost-test-container",
 		}
 
-		bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+		bfCtx := schemas.NewBifrostContext(ctx, containerDeadline())
 		response, err := client.ContainerCreateRequest(bfCtx, request)
 
 		if err != nil {
@@ -73,7 +81,7 @@ func RunContainerListTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 			Limit:    10,
 		}
 
-		bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+		bfCtx := schemas.NewBifrostContext(ctx, containerDeadline())
 		response, err := client.ContainerListRequest(bfCtx, request)
 
 		if err != nil {
@@ -109,7 +117,7 @@ func RunContainerRetrieveTest(t *testing.T, client *bifrost.Bifrost, ctx context
 			Name:     "bifrost-test-container-retrieve",
 		}
 
-		bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+		bfCtx := schemas.NewBifrostContext(ctx, containerDeadline())
 		createResponse, createErr := client.ContainerCreateRequest(bfCtx, createRequest)
 
 		if createErr != nil {
@@ -174,7 +182,7 @@ func RunContainerDeleteTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			Name:     "bifrost-test-container-delete",
 		}
 
-		bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+		bfCtx := schemas.NewBifrostContext(ctx, containerDeadline())
 		createResponse, createErr := client.ContainerCreateRequest(bfCtx, createRequest)
 
 		if createErr != nil {
@@ -227,7 +235,7 @@ func RunContainerUnsupportedTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 	t.Run("ContainerUnsupported", func(t *testing.T) {
 		t.Logf("[RUNNING] Container Unsupported test for provider: %s", testConfig.Provider)
 
-		bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+		bfCtx := schemas.NewBifrostContext(ctx, containerDeadline())
 
 		// Test ContainerCreate returns unsupported
 		createRequest := &schemas.BifrostContainerCreateRequest{
@@ -262,7 +270,7 @@ func RunContainerFileCreateTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 	t.Run("ContainerFileCreate", func(t *testing.T) {
 		t.Logf("[RUNNING] Container File Create test for provider: %s", testConfig.Provider)
 
-		bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+		bfCtx := schemas.NewBifrostContext(ctx, containerDeadline())
 
 		// First, create a container to hold the file
 		containerRequest := &schemas.BifrostContainerCreateRequest{
@@ -348,7 +356,7 @@ func RunContainerFileListTest(t *testing.T, client *bifrost.Bifrost, ctx context
 	t.Run("ContainerFileList", func(t *testing.T) {
 		t.Logf("[RUNNING] Container File List test for provider: %s", testConfig.Provider)
 
-		bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+		bfCtx := schemas.NewBifrostContext(ctx, containerDeadline())
 
 		// First, create a container
 		containerRequest := &schemas.BifrostContainerCreateRequest{
@@ -453,7 +461,7 @@ func RunContainerFileRetrieveTest(t *testing.T, client *bifrost.Bifrost, ctx con
 	t.Run("ContainerFileRetrieve", func(t *testing.T) {
 		t.Logf("[RUNNING] Container File Retrieve test for provider: %s", testConfig.Provider)
 
-		bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+		bfCtx := schemas.NewBifrostContext(ctx, containerDeadline())
 
 		// First, create a container
 		containerRequest := &schemas.BifrostContainerCreateRequest{
@@ -562,7 +570,7 @@ func RunContainerFileContentTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 	t.Run("ContainerFileContent", func(t *testing.T) {
 		t.Logf("[RUNNING] Container File Content test for provider: %s", testConfig.Provider)
 
-		bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+		bfCtx := schemas.NewBifrostContext(ctx, containerDeadline())
 
 		// First, create a container
 		containerRequest := &schemas.BifrostContainerCreateRequest{
@@ -672,7 +680,7 @@ func RunContainerFileDeleteTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 	t.Run("ContainerFileDelete", func(t *testing.T) {
 		t.Logf("[RUNNING] Container File Delete test for provider: %s", testConfig.Provider)
 
-		bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+		bfCtx := schemas.NewBifrostContext(ctx, containerDeadline())
 
 		// First, create a container
 		containerRequest := &schemas.BifrostContainerCreateRequest{
@@ -777,7 +785,7 @@ func RunContainerFileUnsupportedTest(t *testing.T, client *bifrost.Bifrost, ctx 
 	t.Run("ContainerFileUnsupported", func(t *testing.T) {
 		t.Logf("[RUNNING] Container File Unsupported test for provider: %s", testConfig.Provider)
 
-		bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+		bfCtx := schemas.NewBifrostContext(ctx, containerDeadline())
 
 		// Test ContainerFileCreate returns unsupported
 		testContent := []byte("Test content")

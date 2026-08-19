@@ -1,17 +1,22 @@
-clear-by-request-id:
+clear-by-cache-id:
   delete:
-    operationId: clearCacheByRequestId
-    summary: Clear cache by request ID
-    description: Clears cache entries associated with a specific request ID.
+    operationId: clearCacheByCacheId
+    summary: Clear cache entry by cache ID
+    description: |
+      Deletes a single cache entry by its storage ID. Read the cache ID from
+      `extra_fields.cache_debug.cache_id` on a prior response — it is populated
+      on both cache hits and cache misses.
     tags:
       - Cache
     parameters:
-      - name: requestId
+      - name: cacheId
         in: path
         required: true
-        description: Request ID to clear cache for
+        description: Storage ID of the cache entry to delete
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Cache cleared successfully
@@ -38,6 +43,8 @@ clear-by-cache-key:
         description: Cache key to clear
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Cache cleared successfully

@@ -14,7 +14,7 @@ files-upload:
       Note: Direct file content download is not supported by Gemini Files API.
       Use the file.uri field from the response to access uploaded files.
     tags:
-      - GenAI Integration
+    - GenAI Integration
     requestBody:
       required: true
       content:
@@ -44,6 +44,11 @@ files-upload:
             schema:
               $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 files:
   get:
     operationId: geminiListFiles
@@ -51,18 +56,18 @@ files:
     description: |
       Lists uploaded files in Google Gemini API format.
     tags:
-      - GenAI Integration
+    - GenAI Integration
     parameters:
-      - name: pageSize
-        in: query
-        schema:
-          type: integer
-        description: Maximum number of files to return
-      - name: pageToken
-        in: query
-        schema:
-          type: string
-        description: Page token for pagination
+    - name: pageSize
+      in: query
+      schema:
+        type: integer
+      description: Maximum number of files to return
+    - name: pageToken
+      in: query
+      schema:
+        type: string
+      description: Page token for pagination
     responses:
       '200':
         description: Successful response
@@ -83,6 +88,11 @@ files:
             schema:
               $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 files-by-id:
   get:
     operationId: geminiRetrieveFile
@@ -94,14 +104,14 @@ files-by-id:
       download is not supported by Gemini Files API. Use the file.uri
       field from the response to access the file content.
     tags:
-      - GenAI Integration
+    - GenAI Integration
     parameters:
-      - name: file_id
-        in: path
-        required: true
-        schema:
-          type: string
-        description: File ID
+    - name: file_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: File ID
     responses:
       '200':
         description: Successful response
@@ -121,20 +131,25 @@ files-by-id:
           application/json:
             schema:
               $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
   delete:
     operationId: geminiDeleteFile
     summary: Delete file (Gemini format)
     description: |
       Deletes a file in Google Gemini API format.
     tags:
-      - GenAI Integration
+    - GenAI Integration
     parameters:
-      - name: file_id
-        in: path
-        required: true
-        schema:
-          type: string
-        description: File ID to delete
+    - name: file_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: File ID to delete
     responses:
       '200':
         description: Successful response (empty)
@@ -154,3 +169,8 @@ files-by-id:
           application/json:
             schema:
               $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

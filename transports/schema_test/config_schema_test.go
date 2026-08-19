@@ -3,11 +3,14 @@ package schema_test
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
@@ -106,7 +109,7 @@ func TestSchemaLogsStorePortType(t *testing.T) {
 			t.Fatal("could not find logs_store postgres port type in schema")
 		}
 		if portType != "string" {
-			t.Errorf("logs_store.config.port type = %q, want %q (Go code uses *schemas.EnvVar)", portType, "string")
+			t.Errorf("logs_store.config.port type = %q, want %q (Go code uses *schemas.SecretVar)", portType, "string")
 		}
 	})
 
@@ -116,7 +119,7 @@ func TestSchemaLogsStorePortType(t *testing.T) {
 			t.Fatal("could not find config_store postgres port type in schema")
 		}
 		if portType != "string" {
-			t.Errorf("config_store.config.port type = %q, want %q (Go code uses *schemas.EnvVar)", portType, "string")
+			t.Errorf("config_store.config.port type = %q, want %q (Go code uses *schemas.SecretVar)", portType, "string")
 		}
 	})
 
@@ -130,6 +133,196 @@ func TestSchemaLogsStorePortType(t *testing.T) {
 			t.Errorf("port type mismatch: logs_store=%q, config_store=%q", logsPortType, configPortType)
 		}
 	})
+}
+
+func TestSchemaPostgresPasswordCommand(t *testing.T) {
+	compiled := compileSchema(t)
+
+	config := `{
+		"config_store": {
+			"enabled": true,
+			"type": "postgres",
+			"config": {
+				"host": "db.example.com",
+				"port": "5432",
+				"user": "bifrost",
+				"password_command": {
+					"command": "aws",
+					"args": ["rds", "generate-db-auth-token"],
+					"timeout": "10s"
+				},
+				"db_name": "bifrost",
+				"ssl_mode": "require",
+				"conn_max_lifetime": "10m"
+			}
+		},
+		"logs_store": {
+			"enabled": true,
+			"type": "postgres",
+			"config": {
+				"host": "db.example.com",
+				"port": "5432",
+				"user": "bifrost",
+				"password_command": {
+					"command": "aws",
+					"args": ["rds", "generate-db-auth-token"],
+					"timeout": "10s"
+				},
+				"db_name": "bifrost",
+				"ssl_mode": "require",
+				"conn_max_lifetime": "10m"
+			}
+		}
+	}`
+
+	if err := validateConfig(t, compiled, config); err != nil {
+		t.Fatalf("postgres password_command config should be valid, got: %v", err)
+	}
+}
+
+func TestSchemaPostgresPasswordCommandValidation(t *testing.T) {
+	compiled := compileSchema(t)
+
+	tests := []struct {
+		name   string
+		config string
+	}{
+		{
+			name: "config_store rejects password and password_command together",
+			config: postgresStoreConfig("config_store", `"password": "secret",
+				"password_command": {"command": "aws"}`),
+		},
+		{
+			name: "logs_store rejects password and password_command together",
+			config: postgresStoreConfig("logs_store", `"password": "secret",
+				"password_command": {"command": "aws"}`),
+		},
+		{
+			name:   "config_store rejects empty password command",
+			config: postgresStoreConfig("config_store", `"password_command": {"command": ""}`),
+		},
+		{
+			name:   "config_store rejects inline args in password command",
+			config: postgresStoreConfig("config_store", `"password_command": {"command": "aws rds"}`),
+		},
+		{
+			name:   "config_store rejects zero password command timeout",
+			config: postgresStoreConfig("config_store", `"password_command": {"command": "aws", "timeout": "0s"}`),
+		},
+		{
+			name:   "logs_store rejects zero password command timeout",
+			config: postgresStoreConfig("logs_store", `"password_command": {"command": "aws", "timeout": "0s"}`),
+		},
+		{
+			name: "config_store rejects zero conn max lifetime",
+			config: postgresStoreConfig("config_store", `"password_command": {"command": "aws"},
+				"conn_max_lifetime": "0s"`),
+		},
+		{
+			name: "logs_store rejects zero conn max lifetime",
+			config: postgresStoreConfig("logs_store", `"password_command": {"command": "aws"},
+				"conn_max_lifetime": "0s"`),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := validateConfig(t, compiled, tt.config); err == nil {
+				t.Fatal("config should be invalid")
+			}
+		})
+	}
+}
+
+func TestSchemaLogsStoreWriterConfig(t *testing.T) {
+	compiled := compileSchema(t)
+
+	validConfig := `{
+		"logs_store": {
+			"enabled": true,
+			"type": "sqlite",
+			"config": {
+				"path": "/tmp/logs.db"
+			},
+			"writer": {
+				"max_batch_size": 500,
+				"batch_interval": "2s",
+				"max_batch_bytes": 1048576,
+				"write_queue_capacity": 2000,
+				"deferred_usage_concurrency": 3
+			}
+		}
+	}`
+	if err := validateConfig(t, compiled, validConfig); err != nil {
+		t.Fatalf("logs_store.writer config should be valid, got: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		writer string
+	}{
+		{
+			name:   "rejects zero max batch size",
+			writer: `"max_batch_size": 0`,
+		},
+		{
+			name:   "rejects zero batch interval",
+			writer: `"batch_interval": "0s"`,
+		},
+		{
+			name:   "rejects zero max batch bytes",
+			writer: `"max_batch_bytes": 0`,
+		},
+		{
+			name:   "rejects zero write queue capacity",
+			writer: `"write_queue_capacity": 0`,
+		},
+		{
+			name:   "rejects zero deferred usage concurrency",
+			writer: `"deferred_usage_concurrency": 0`,
+		},
+		{
+			name:   "rejects unknown writer field",
+			writer: `"unknown": 1`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := fmt.Sprintf(`{
+				"logs_store": {
+					"enabled": true,
+					"type": "sqlite",
+					"config": {
+						"path": "/tmp/logs.db"
+					},
+					"writer": {
+						%s
+					}
+				}
+			}`, tt.writer)
+			if err := validateConfig(t, compiled, config); err == nil {
+				t.Fatal("config should be invalid")
+			}
+		})
+	}
+}
+
+func postgresStoreConfig(storeName string, passwordFields string) string {
+	return fmt.Sprintf(`{
+		"%s": {
+			"enabled": true,
+			"type": "postgres",
+			"config": {
+				"host": "db.example.com",
+				"port": "5432",
+				"user": "bifrost",
+				%s,
+				"db_name": "bifrost",
+				"ssl_mode": "require"
+			}
+		}
+	}`, storeName, passwordFields)
 }
 
 // compileSchema loads and compiles the config.schema.json for validation tests.
@@ -165,21 +358,188 @@ func validateConfig(t *testing.T, schema *jsonschema.Schema, configJSON string) 
 	return schema.Validate(v)
 }
 
-func TestSchemaVertexKeyDeployments(t *testing.T) {
-	schemaPath := getSchemaPath(t)
-	data, err := os.ReadFile(schemaPath)
-	if err != nil {
-		t.Fatalf("failed to read schema: %v", err)
-	}
-	var schema map[string]interface{}
-	if err := json.Unmarshal(data, &schema); err != nil {
-		t.Fatalf("failed to parse schema: %v", err)
+// TestSchemaGuardrailRuleTarget verifies explicit MCP targets without breaking legacy LLM rules.
+func TestSchemaGuardrailRuleTarget(t *testing.T) {
+	compiled := compileSchema(t)
+
+	tests := []struct {
+		name      string
+		target    string
+		wantError bool
+	}{
+		{name: "explicit MCP target is valid", target: `,"target":"mcp"`},
+		{name: "omitted target remains valid", target: ""},
+		{name: "unknown target is rejected", target: `,"target":"agent"`, wantError: true},
 	}
 
-	t.Run("vertex_key $def includes deployments field", func(t *testing.T) {
-		_, found := navigateJSON(schema, "$defs", "vertex_key", "allOf", 1, "properties", "vertex_key_config", "properties", "deployments")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := fmt.Sprintf(`{
+				"guardrails_config": {
+					"guardrail_rules": [{
+						"id": 1,
+						"name": "MCP rule",
+						"enabled": true,
+						"cel_expression": "true",
+						"apply_to": "input"%s
+					}]
+				}
+			}`, tt.target)
+
+			err := validateConfig(t, compiled, config)
+			if tt.wantError && err == nil {
+				t.Fatal("config should be invalid")
+			}
+			if !tt.wantError && err != nil {
+				t.Fatalf("config should be valid, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestSchemaSCIMConfigValidation(t *testing.T) {
+	compiled := compileSchema(t)
+
+	tests := []struct {
+		name      string
+		config    string
+		wantError bool
+	}{
+		{
+			name:   "disabled okta with empty config is valid",
+			config: `{"scim_config":{"enabled":false,"provider":"okta","config":{}}}`,
+		},
+		{
+			name:   "disabled entra with empty config is valid",
+			config: `{"scim_config":{"enabled":false,"provider":"entra","config":{}}}`,
+		},
+		{
+			name:   "disabled keycloak with empty config is valid",
+			config: `{"scim_config":{"enabled":false,"provider":"keycloak","config":{}}}`,
+		},
+		{
+			name:      "enabled okta with empty config is invalid",
+			config:    `{"scim_config":{"enabled":true,"provider":"okta","config":{}}}`,
+			wantError: true,
+		},
+		{
+			name:      "enabled entra with empty config is invalid",
+			config:    `{"scim_config":{"enabled":true,"provider":"entra","config":{}}}`,
+			wantError: true,
+		},
+		{
+			name:      "enabled keycloak with empty config is invalid",
+			config:    `{"scim_config":{"enabled":true,"provider":"keycloak","config":{}}}`,
+			wantError: true,
+		},
+		{
+			name: "enabled keycloak with required config is valid",
+			config: `{
+				"scim_config": {
+					"enabled": true,
+					"provider": "keycloak",
+					"config": {
+						"serverUrl": "https://keycloak.company.com",
+						"realm": "bifrost-prod",
+						"clientId": "bifrost",
+						"clientSecret": "env.KEYCLOAK_CLIENT_SECRET"
+					}
+				}
+			}`,
+		},
+		{
+			name:      "enabled generic with empty config is invalid",
+			config:    `{"scim_config":{"enabled":true,"provider":"generic","config":{}}}`,
+			wantError: true,
+		},
+		{
+			name:      "enabled zitadel with empty config is invalid",
+			config:    `{"scim_config":{"enabled":true,"provider":"zitadel","config":{}}}`,
+			wantError: true,
+		},
+		{
+			name:   "enabled zitadel with required config is valid",
+			config: `{"scim_config":{"enabled":true,"provider":"zitadel","config":{"domain":"acme.zitadel.cloud","clientId":"bifrost"}}}`,
+		},
+		{
+			name:      "enabled google with empty config is invalid",
+			config:    `{"scim_config":{"enabled":true,"provider":"google","config":{}}}`,
+			wantError: true,
+		},
+		{
+			name:   "enabled google with required config is valid",
+			config: `{"scim_config":{"enabled":true,"provider":"google","config":{"domain":"company.com","clientId":"bifrost"}}}`,
+		},
+		{
+			name:      "enabled google with credentialMode env but no serviceAccountEnvVar is invalid",
+			config:    `{"scim_config":{"enabled":true,"provider":"google","config":{"domain":"company.com","clientId":"bifrost","credentialMode":"env"}}}`,
+			wantError: true,
+		},
+		{
+			name:      "enabled sailpoint with empty config is invalid",
+			config:    `{"scim_config":{"enabled":true,"provider":"sailpoint","config":{}}}`,
+			wantError: true,
+		},
+		{
+			name:   "enabled sailpoint with required config is valid",
+			config: `{"scim_config":{"enabled":true,"provider":"sailpoint","config":{"product":"isc","tenant":"acme"}}}`,
+		},
+		{
+			name:      "unknown provider is rejected",
+			config:    `{"scim_config":{"enabled":true,"provider":"pingfederate","config":{}}}`,
+			wantError: true,
+		},
+		{
+			name: "enabled generic with required config is valid",
+			config: `{
+				"scim_config": {
+					"enabled": true,
+					"provider": "generic",
+					"config": {
+						"issuerUrl": "https://idp.company.com",
+						"clientId": "bifrost"
+					}
+				}
+			}`,
+		},
+		{
+			name: "enabled generic with claim SCIM attributes is valid",
+			config: `{
+				"scim_config": {
+					"enabled": true,
+					"provider": "generic",
+					"config": {
+						"issuerUrl": "https://idp.company.com",
+						"clientId": "bifrost",
+						"claimScimAttributes": {
+							"department": {"attributeType": "user", "attributeValue": "department"}
+						}
+					}
+				}
+			}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateConfig(t, compiled, tt.config)
+			if tt.wantError && err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !tt.wantError && err != nil {
+				t.Fatalf("expected config to validate, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestSchemaKeyAliases(t *testing.T) {
+	schema := loadSchema(t)
+
+	t.Run("base_key $def includes aliases field", func(t *testing.T) {
+		_, found := navigateJSON(schema, "$defs", "base_key", "properties", "aliases")
 		if !found {
-			t.Error("$defs/vertex_key is missing 'deployments' property — vertex provider uses getModelDeployment() on every request")
+			t.Error("$defs/base_key is missing 'aliases' property — aliases replaced per-provider deployments maps")
 		}
 	})
 
@@ -190,30 +550,60 @@ func TestSchemaVertexKeyDeployments(t *testing.T) {
 		}
 	})
 
-	t.Run("vertex config with deployments validates successfully", func(t *testing.T) {
+	t.Run("vertex_key_config does not include deployments field", func(t *testing.T) {
+		_, found := navigateJSON(schema, "$defs", "vertex_key", "allOf", 1, "properties", "vertex_key_config", "properties", "deployments")
+		if found {
+			t.Error("$defs/vertex_key still has 'deployments' in vertex_key_config — deployments were moved to top-level key aliases")
+		}
+	})
+
+	t.Run("key with aliases validates successfully", func(t *testing.T) {
 		compiled := compileSchema(t)
 		config := `{
 			"providers": {
 				"vertex": {
 					"keys": [{
-						"key_id": "test",
 						"name": "test",
 						"value": "",
 						"weight": 1,
 						"models": ["gemini-2.0-flash"],
+						"aliases": {"gemini-2.0-flash": "gemini-2.0-flash-001"},
 						"vertex_key_config": {
 							"project_id": "my-project",
 							"region": "us-central1",
 							"auth_credentials": "",
-							"project_number": "123456",
-							"deployments": {"gemini-2.0-flash": "gemini-2.0-flash-001"}
+							"project_number": "123456"
 						}
 					}]
 				}
 			}
 		}`
 		if err := validateConfig(t, compiled, config); err != nil {
-			t.Errorf("vertex config with deployments should be valid, got: %v", err)
+			t.Errorf("key with aliases should be valid, got: %v", err)
+		}
+	})
+
+	t.Run("azure key with aliases validates successfully", func(t *testing.T) {
+		compiled := compileSchema(t)
+		config := `{
+			"providers": {
+				"azure": {
+					"keys": [{
+						"name": "test",
+						"value": "my-api-key",
+						"weight": 1,
+						"models": ["gpt-4o"],
+						"aliases": {"gpt-4o": "gpt-4o-deployment"},
+						"azure_key_config": {
+							"endpoint": "https://my-resource.openai.azure.com",
+							"api_version": "2024-02-01"
+						}
+					}]
+				}
+			}
+		}`
+		if err := validateConfig(t, compiled, config); err != nil {
+			t.Errorf("azure key with aliases should be valid, got: %v", err)
 		}
 	})
 }
@@ -272,6 +662,8 @@ func TestSchemaClientMCPFields(t *testing.T) {
 		"mcp_tool_execution_timeout",
 		"mcp_code_mode_binding_level",
 		"mcp_tool_sync_interval",
+		"mcp_disable_auto_tool_inject",
+		"mcp_enable_temp_token_auth",
 	}
 	for _, field := range fields {
 		t.Run("client has "+field, func(t *testing.T) {
@@ -290,7 +682,9 @@ func TestSchemaClientMCPFields(t *testing.T) {
 				"mcp_agent_depth": 5,
 				"mcp_tool_execution_timeout": 60,
 				"mcp_code_mode_binding_level": "server",
-				"mcp_tool_sync_interval": 10
+				"mcp_tool_sync_interval": 10,
+				"mcp_disable_auto_tool_inject": false,
+				"mcp_enable_temp_token_auth": true
 			}
 		}`
 		if err := validateConfig(t, compiled, config); err != nil {
@@ -430,6 +824,18 @@ func TestSchemaMCPToolManagerCodeMode(t *testing.T) {
 		if err := validateConfig(t, compiled, config); err != nil {
 			t.Errorf("tool_manager_config with code_mode_binding_level should be valid, got: %v", err)
 		}
+		var root struct {
+			MCP schemas.MCPConfig `json:"mcp"`
+		}
+		if err := json.Unmarshal([]byte(config), &root); err != nil {
+			t.Errorf("failed to unmarshal mcp config: %v", err)
+		}
+		if root.MCP.ToolManagerConfig == nil {
+			t.Fatal("tool_manager_config missing after unmarshal")
+		}
+		if root.MCP.ToolManagerConfig.ToolExecutionTimeout.D() != 30*time.Second {
+			t.Errorf("tool_execution_timeout should be 30 seconds, got: %v", root.MCP.ToolManagerConfig.ToolExecutionTimeout.D())
+		}
 	})
 }
 
@@ -441,7 +847,9 @@ func TestSchemaMCPClientConfigFields(t *testing.T) {
 		"is_code_mode_client",
 		"connection_string",
 		"auth_type",
-		"oauth_config_id",
+		// config.json declares OAuth inline via `oauth_config`; the
+		// `oauth_config_id` FK is assigned server-side and is not settable here.
+		"oauth_config",
 		"headers",
 		"tools_to_execute",
 		"tools_to_auto_execute",
@@ -563,4 +971,274 @@ func TestSchemaAllowedOriginsWildcard(t *testing.T) {
 			t.Errorf("allowed_origins with '*' should be valid, got: %v", err)
 		}
 	})
+}
+
+func TestSchemaBedrockKeyConfigSTSFields(t *testing.T) {
+	schema := loadSchema(t)
+
+	stsFields := []string{"role_arn", "external_id", "session_name"}
+	for _, field := range stsFields {
+		t.Run("$defs/bedrock_key has "+field, func(t *testing.T) {
+			_, found := navigateJSON(schema, "$defs", "bedrock_key", "allOf", 1, "properties", "bedrock_key_config", "properties", field)
+			if !found {
+				t.Errorf("$defs/bedrock_key bedrock_key_config is missing '%s' — BedrockKeyConfig Go struct defines this field for STS AssumeRole", field)
+			}
+		})
+	}
+
+	t.Run("$defs/bedrock_key has batch_s3_config", func(t *testing.T) {
+		_, found := navigateJSON(schema, "$defs", "bedrock_key", "allOf", 1, "properties", "bedrock_key_config", "properties", "batch_s3_config")
+		if !found {
+			t.Error("$defs/bedrock_key bedrock_key_config is missing 'batch_s3_config' — BedrockKeyConfig Go struct defines this field for batch operations")
+		}
+	})
+
+	t.Run("bedrock config with STS fields validates successfully", func(t *testing.T) {
+		compiled := compileSchema(t)
+		config := `{
+			"providers": {
+				"bedrock": {
+					"keys": [
+						{
+							"name": "cross-account",
+							"weight": 1,
+							"models": ["us.anthropic.claude-sonnet-4-20250514-v1:0"],
+							"bedrock_key_config": {
+								"region": "us-west-2",
+								"role_arn": "arn:aws:iam::123456789012:role/BedrockAccessRole",
+								"session_name": "bifrost-cross-account",
+								"external_id": "my-external-id"
+							}
+						}
+					]
+				}
+			}
+		}`
+		if err := validateConfig(t, compiled, config); err != nil {
+			t.Errorf("bedrock config with STS AssumeRole fields should be valid, got: %v", err)
+		}
+	})
+
+	t.Run("bedrock config with batch_s3_config validates successfully", func(t *testing.T) {
+		compiled := compileSchema(t)
+		config := `{
+			"providers": {
+				"bedrock": {
+					"keys": [
+						{
+							"name": "batch-key",
+							"weight": 1,
+							"models": ["us.anthropic.claude-sonnet-4-20250514-v1:0"],
+							"bedrock_key_config": {
+								"region": "us-east-1",
+								"batch_s3_config": {
+									"buckets": [
+										{"bucket_name": "my-batch-bucket", "prefix": "bifrost/", "is_default": true},
+										{"bucket_name": "my-secondary-bucket"}
+									]
+								}
+							}
+						}
+					]
+				}
+			}
+		}`
+		if err := validateConfig(t, compiled, config); err != nil {
+			t.Errorf("bedrock config with batch_s3_config should be valid, got: %v", err)
+		}
+	})
+
+	t.Run("bedrock config with unknown fields is rejected", func(t *testing.T) {
+		compiled := compileSchema(t)
+		config := `{
+			"providers": {
+				"bedrock": {
+					"keys": [
+						{
+							"name": "bad-key",
+							"weight": 1,
+							"models": ["us.anthropic.claude-sonnet-4-20250514-v1:0"],
+							"bedrock_key_config": {
+								"region": "us-east-1",
+								"unknown_field": "should-fail"
+							}
+						}
+					]
+				}
+			}
+		}`
+		if err := validateConfig(t, compiled, config); err == nil {
+			t.Error("bedrock config with unknown fields should fail schema validation (additionalProperties: false)")
+		}
+	})
+}
+
+// TestSchemaLiveModelsSyncInterval pins the 0-or->=60 contract on
+// framework.pricing.live_models_sync_interval. This schema is the source of
+// truth users author against, so it has to reject the same values the config
+// API rejects (ConfigHandler.updateConfig) and the file resolver silently
+// clamps (ResolveFrameworkPricingConfig). A bare "minimum": 0 accepted 1-59
+// and left the user with a config that validated and then behaved as 60.
+func TestSchemaLiveModelsSyncInterval(t *testing.T) {
+	compiled := compileSchema(t)
+
+	tests := []struct {
+		name      string
+		value     string
+		wantError bool
+	}{
+		{name: "zero disables the background refresh", value: "0"},
+		{name: "the minimum enabled interval is accepted", value: "60"},
+		{name: "the default is accepted", value: "3600"},
+		{name: "below the minimum but above zero is rejected", value: "59", wantError: true},
+		{name: "one second is rejected", value: "1", wantError: true},
+		{name: "negative is rejected", value: "-1", wantError: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := `{"framework":{"pricing":{"live_models_sync_interval":` + tt.value + `}}}`
+			err := validateConfig(t, compiled, config)
+			if tt.wantError && err == nil {
+				t.Errorf("live_models_sync_interval=%s should be rejected, got no error", tt.value)
+			}
+			if !tt.wantError && err != nil {
+				t.Errorf("live_models_sync_interval=%s should be valid, got: %v", tt.value, err)
+			}
+		})
+	}
+}
+
+// TestSchemaBudgetQuarterStartMonth pins the schema to the value range the Go
+// layer actually accepts. BudgetResetConfig.QuarterStartMonth is a plain int, so
+// an omitted quarter_start_month and an explicit 0 are indistinguishable after
+// unmarshal - validateBudget therefore has to treat 0 as "unset", and the schema
+// has to let that value through or config.json rejects a value the runtime
+// documents as valid and handles correctly.
+func TestSchemaBudgetQuarterStartMonth(t *testing.T) {
+	compiled := compileSchema(t)
+
+	budgetConfig := func(resetConfig string) string {
+		return `{
+			"governance": {
+				"budgets": [{
+					"id": "b-1",
+					"max_limit": 100,
+					"reset_duration": "1Q",
+					"reset_config": ` + resetConfig + `
+				}]
+			}
+		}`
+	}
+
+	t.Run("explicit zero is accepted as the unset value", func(t *testing.T) {
+		if err := validateConfig(t, compiled, budgetConfig(`{"quarter_start_month": 0}`)); err != nil {
+			t.Errorf("quarter_start_month 0 is documented as January and accepted by validateBudget, so the schema must accept it, got: %v", err)
+		}
+	})
+
+	t.Run("an omitted quarter start is accepted", func(t *testing.T) {
+		if err := validateConfig(t, compiled, budgetConfig(`{}`)); err != nil {
+			t.Errorf("an empty reset_config should be valid, got: %v", err)
+		}
+	})
+
+	t.Run("the 1-12 range still validates", func(t *testing.T) {
+		for _, month := range []int{1, 4, 7, 10, 12} {
+			cfg := budgetConfig(fmt.Sprintf(`{"quarter_start_month": %d}`, month))
+			if err := validateConfig(t, compiled, cfg); err != nil {
+				t.Errorf("quarter_start_month %d should be valid, got: %v", month, err)
+			}
+		}
+	})
+
+	t.Run("out of range months are still rejected", func(t *testing.T) {
+		for _, month := range []int{-1, 13} {
+			cfg := budgetConfig(fmt.Sprintf(`{"quarter_start_month": %d}`, month))
+			if err := validateConfig(t, compiled, cfg); err == nil {
+				t.Errorf("quarter_start_month %d is outside 1-12 and must be rejected", month)
+			}
+		}
+	})
+
+	// $defs/budget_line is a second copy of the same shape, reached through
+	// customers, access profiles and provider configs. A budget written there
+	// deserializes into the same Go struct, so the two copies have to agree on
+	// which values they accept.
+	t.Run("the budget_line copy accepts the same range", func(t *testing.T) {
+		lineConfig := func(month string) string {
+			return `{
+				"governance": {
+					"customers": [{
+						"id": "c-1",
+						"name": "Acme",
+						"budgets": [{
+							"id": "b-1",
+							"max_limit": 100,
+							"reset_duration": "1Q",
+							"reset_config": {"quarter_start_month": ` + month + `}
+						}]
+					}]
+				}
+			}`
+		}
+
+		if err := validateConfig(t, compiled, lineConfig("0")); err != nil {
+			t.Errorf("quarter_start_month 0 must be accepted here exactly as it is under governance.budgets, got: %v", err)
+		}
+		if err := validateConfig(t, compiled, lineConfig("4")); err != nil {
+			t.Errorf("quarter_start_month 4 should be valid, got: %v", err)
+		}
+		if err := validateConfig(t, compiled, lineConfig("13")); err == nil {
+			t.Error("quarter_start_month 13 is outside 1-12 and must be rejected")
+		}
+	})
+}
+
+// TestSchemaResetConfigRequiresQuarterlyDuration pins the quarterly-only rule the
+// reset_config description already states. validateResetConfig rejects a quarter
+// definition on any non-quarterly duration, so without this constraint a
+// config.json passes schema validation and only fails later at reconciliation -
+// the slowest possible place to learn the file is wrong.
+func TestSchemaResetConfigRequiresQuarterlyDuration(t *testing.T) {
+	compiled := compileSchema(t)
+
+	// governance.budgets and $defs/budget_line are separate copies of the same
+	// shape, so both need the constraint and both are checked here.
+	scopes := map[string]func(string) string{
+		"governance.budgets": func(budget string) string {
+			return `{"governance": {"budgets": [` + budget + `]}}`
+		},
+		"$defs/budget_line via customers": func(budget string) string {
+			return `{"governance": {"customers": [{"id": "c-1", "name": "Acme", "budgets": [` + budget + `]}]}}`
+		},
+	}
+
+	for name, wrap := range scopes {
+		t.Run(name, func(t *testing.T) {
+			quarterly := `{"id": "b-1", "max_limit": 100, "reset_duration": "1Q", "reset_config": {"quarter_start_month": 4}}`
+			if err := validateConfig(t, compiled, wrap(quarterly)); err != nil {
+				t.Errorf("reset_config on a 1Q budget must stay valid, got: %v", err)
+			}
+
+			for _, duration := range []string{"1M", "1h", "1Y"} {
+				cfg := wrap(`{"id": "b-1", "max_limit": 100, "reset_duration": "` + duration + `", "reset_config": {"quarter_start_month": 4}}`)
+				if err := validateConfig(t, compiled, cfg); err == nil {
+					t.Errorf("reset_config with reset_duration %q must be rejected: validateResetConfig refuses it at reconciliation", duration)
+				}
+			}
+
+			// A quarter definition with no duration at all is the same mistake with
+			// the evidence missing, so it has to be rejected too.
+			orphan := wrap(`{"id": "b-1", "max_limit": 100, "reset_config": {"quarter_start_month": 4}}`)
+			if err := validateConfig(t, compiled, orphan); err == nil {
+				t.Error("reset_config with no reset_duration must be rejected")
+			}
+
+			// Budgets without a quarter definition are unaffected by the constraint.
+			plain := wrap(`{"id": "b-1", "max_limit": 100, "reset_duration": "1M"}`)
+			if err := validateConfig(t, compiled, plain); err != nil {
+				t.Errorf("a budget with no reset_config must stay valid on any duration, got: %v", err)
+			}
+		})
+	}
 }

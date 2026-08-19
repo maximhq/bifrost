@@ -1,0 +1,38 @@
+{{- /*
+Create pod-discovery RBAC only when all of these are true:
+1) rbac.podDiscovery.enabled
+2) cluster mode is enabled
+3) cluster discovery is enabled
+4) discovery type is kubernetes
+*/ -}}
+{{- if and .Values.rbac.podDiscovery.enabled .Values.bifrost.cluster.enabled .Values.bifrost.cluster.discovery.enabled (eq .Values.bifrost.cluster.discovery.type "kubernetes") -}}
+{{- $podDiscoveryRoleName := printf "%s-pod-discovery" (include "bifrost.fullname" . | trunc 49 | trimSuffix "-") -}}
+{{- $discoveryNamespace := .Values.bifrost.cluster.discovery.k8sNamespace | default .Release.Namespace -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $podDiscoveryRoleName }}
+  namespace: {{ $discoveryNamespace }}
+  labels:
+    {{- include "bifrost.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $podDiscoveryRoleName }}
+  namespace: {{ $discoveryNamespace }}
+  labels:
+    {{- include "bifrost.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "bifrost.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $podDiscoveryRoleName }}
+{{- end -}}

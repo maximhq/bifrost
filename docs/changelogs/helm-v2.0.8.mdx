@@ -1,0 +1,19 @@
+---
+title: "v2.0.8"
+description: "Helm v2.0.8 changelog - 2026-02-19"
+---
+
+<Update label="Bifrost Helm" description="v2.0.8">
+
+## Changelog
+
+- Added comprehensive config field coverage for all `config.schema.json` fields
+- Added Pinecone vector store support (external only) with secret injection
+- Added governance routing rules template support
+- Added OTEL metrics fields (metrics_enabled, metrics_endpoint, metrics_push_interval)
+- Added advanced Redis connection pool fields (pool_size, timeouts, idle conns, etc.)
+- Added Weaviate timeout and className fields
+- Expanded values.yaml with commented examples for all provider types (Azure, Vertex, Bedrock), network config, concurrency, proxy config, and governance entities
+- Added helm config field validation CI test (246 assertions covering all config.schema.json fields)
+
+</Update>

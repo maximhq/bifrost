@@ -365,6 +365,93 @@ func TestExtractAttachmentsFromRequest_TextCompletion(t *testing.T) {
 	}
 }
 
+func TestExtractAttachmentsFromRequest_ImageGenerationInputImagesUrl(t *testing.T) {
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ImageGenerationRequest,
+		ImageGenerationRequest: &schemas.BifrostImageGenerationRequest{
+			Input: &schemas.ImageGenerationInput{Prompt: "make it pop"},
+			Params: &schemas.ImageGenerationParameters{
+				InputImages: []string{testImageURL},
+			},
+		},
+	}
+	attachments := ExtractAttachmentsFromRequest(req)
+	if len(attachments) != 1 {
+		t.Fatalf("expected 1 attachment, got %d", len(attachments))
+	}
+	ua, ok := attachments[0].(*logging.UrlAttachment)
+	if !ok {
+		t.Fatalf("expected *logging.UrlAttachment, got %T", attachments[0])
+	}
+	if ua.URL != testImageURL {
+		t.Errorf("expected URL %q, got %q", testImageURL, ua.URL)
+	}
+}
+
+func TestExtractAttachmentsFromRequest_ImageGenerationInputImagesDataURL(t *testing.T) {
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ImageGenerationStreamRequest,
+		ImageGenerationRequest: &schemas.BifrostImageGenerationRequest{
+			Input: &schemas.ImageGenerationInput{Prompt: "variation"},
+			Params: &schemas.ImageGenerationParameters{
+				InputImages: []string{testImageBase64},
+			},
+		},
+	}
+	attachments := ExtractAttachmentsFromRequest(req)
+	if len(attachments) != 1 {
+		t.Fatalf("expected 1 attachment, got %d", len(attachments))
+	}
+	if _, ok := attachments[0].(*logging.FileDataAttachment); !ok {
+		t.Errorf("expected *logging.FileDataAttachment, got %T", attachments[0])
+	}
+}
+
+func TestExtractAttachmentsFromRequest_ImageGenerationInputImagesRawBase64(t *testing.T) {
+	idx := strings.Index(testImageBase64, ";base64,")
+	if idx == -1 {
+		t.Fatal("invalid testImageBase64 format")
+	}
+	rawB64 := testImageBase64[idx+8:]
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ImageGenerationRequest,
+		ImageGenerationRequest: &schemas.BifrostImageGenerationRequest{
+			Input: &schemas.ImageGenerationInput{Prompt: "edit"},
+			Params: &schemas.ImageGenerationParameters{
+				InputImages: []string{rawB64},
+			},
+		},
+	}
+	attachments := ExtractAttachmentsFromRequest(req)
+	if len(attachments) != 1 {
+		t.Fatalf("expected 1 attachment, got %d", len(attachments))
+	}
+	fda, ok := attachments[0].(*logging.FileDataAttachment)
+	if !ok {
+		t.Fatalf("expected *logging.FileDataAttachment, got %T", attachments[0])
+	}
+	if fda.MimeType != "image/jpeg" {
+		t.Errorf("expected image/jpeg from DetectContentType, got %q", fda.MimeType)
+	}
+	if len(fda.Data) == 0 {
+		t.Error("expected non-empty decoded image bytes")
+	}
+}
+
+func TestExtractAttachmentsFromRequest_ImageGenerationNoInputImages(t *testing.T) {
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ImageGenerationRequest,
+		ImageGenerationRequest: &schemas.BifrostImageGenerationRequest{
+			Input:  &schemas.ImageGenerationInput{Prompt: "text only"},
+			Params: &schemas.ImageGenerationParameters{},
+		},
+	}
+	attachments := ExtractAttachmentsFromRequest(req)
+	if len(attachments) != 0 {
+		t.Fatalf("expected 0 attachments, got %d", len(attachments))
+	}
+}
+
 func TestExtractAttachmentsFromRequest_NilRequest(t *testing.T) {
 	attachments := ExtractAttachmentsFromRequest(nil)
 	if attachments != nil {

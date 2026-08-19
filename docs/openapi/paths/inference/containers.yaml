@@ -5,7 +5,7 @@ containers:
     description: |
       Creates a new container for storing files and data.
     tags:
-      - Containers
+    - Containers
     requestBody:
       required: true
       content:
@@ -23,39 +23,44 @@ containers:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
   get:
     operationId: listContainers
     summary: List containers
     description: |
       Lists containers for a provider.
     tags:
-      - Containers
+    - Containers
     parameters:
-      - name: provider
-        in: query
-        required: true
-        description: Provider to list containers for
-        schema:
-          $ref: '../../schemas/inference/common.yaml#/ModelProvider'
-      - name: limit
-        in: query
-        description: Maximum number of containers to return (1-100, default 20)
-        schema:
-          type: integer
-          minimum: 1
-          limit: 200
-          maximum: 100
-      - name: after
-        in: query
-        description: Cursor for pagination
-        schema:
-          type: string
-      - name: order
-        in: query
-        description: Sort order (asc/desc)
-        schema:
-          type: string
-          enum: [asc, desc]
+    - name: provider
+      in: query
+      required: true
+      description: Provider to list containers for
+      schema:
+        $ref: '../../schemas/inference/common.yaml#/ModelProvider'
+    - name: limit
+      in: query
+      description: Maximum number of containers to return (1-100, default 20)
+      schema:
+        type: integer
+        minimum: 1
+        limit: 200
+        maximum: 100
+    - name: after
+      in: query
+      description: Cursor for pagination
+      schema:
+        type: string
+    - name: order
+      in: query
+      description: Sort order (asc/desc)
+      schema:
+        type: string
+        enum: [asc, desc]
     responses:
       '200':
         description: Successful response
@@ -68,6 +73,11 @@ containers:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 containers-by-id:
   get:
     operationId: retrieveContainer
@@ -75,20 +85,20 @@ containers-by-id:
     description: |
       Retrieves a specific container by ID.
     tags:
-      - Containers
+    - Containers
     parameters:
-      - name: container_id
-        in: path
-        required: true
-        description: The ID of the container to retrieve
-        schema:
-          type: string
-      - name: provider
-        in: query
-        required: true
-        description: The provider of the container
-        schema:
-          $ref: '../../schemas/inference/common.yaml#/ModelProvider'
+    - name: container_id
+      in: path
+      required: true
+      description: The ID of the container to retrieve
+      schema:
+        type: string
+    - name: provider
+      in: query
+      required: true
+      description: The provider of the container
+      schema:
+        $ref: '../../schemas/inference/common.yaml#/ModelProvider'
     responses:
       '200':
         description: Successful response
@@ -100,26 +110,31 @@ containers-by-id:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
   delete:
     operationId: deleteContainer
     summary: Delete a container
     description: |
       Deletes a container.
     tags:
-      - Containers
+    - Containers
     parameters:
-      - name: container_id
-        in: path
-        required: true
-        description: The ID of the container to delete
-        schema:
-          type: string
-      - name: provider
-        in: query
-        required: true
-        description: The provider of the container
-        schema:
-          $ref: '../../schemas/inference/common.yaml#/ModelProvider'
+    - name: container_id
+      in: path
+      required: true
+      description: The ID of the container to delete
+      schema:
+        type: string
+    - name: provider
+      in: query
+      required: true
+      description: The provider of the container
+      schema:
+        $ref: '../../schemas/inference/common.yaml#/ModelProvider'
     responses:
       '200':
         description: Successful response
@@ -136,6 +151,11 @@ containers-by-id:
 # CONTAINER FILES ENDPOINTS
 # =============================================================================
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 container-files:
   post:
     operationId: createContainerFile
@@ -144,20 +164,20 @@ container-files:
       Creates a new file in a container. You can either upload file content directly
       via multipart/form-data or reference an existing file by its ID.
     tags:
-      - Containers
+    - Containers
     parameters:
-      - name: container_id
-        in: path
-        required: true
-        description: The ID of the container
-        schema:
-          type: string
-      - name: provider
-        in: query
-        required: true
-        description: The provider of the container
-        schema:
-          $ref: '../../schemas/inference/common.yaml#/ModelProvider'
+    - name: container_id
+      in: path
+      required: true
+      description: The ID of the container
+      schema:
+        type: string
+    - name: provider
+      in: query
+      required: true
+      description: The provider of the container
+      schema:
+        $ref: '../../schemas/inference/common.yaml#/ModelProvider'
     requestBody:
       required: true
       content:
@@ -178,44 +198,49 @@ container-files:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
   get:
     operationId: listContainerFiles
     summary: List files in a container
     description: |
       Lists all files in a container.
     tags:
-      - Containers
+    - Containers
     parameters:
-      - name: container_id
-        in: path
-        required: true
-        description: The ID of the container
-        schema:
-          type: string
-      - name: provider
-        in: query
-        required: true
-        description: The provider of the container
-        schema:
-          $ref: '../../schemas/inference/common.yaml#/ModelProvider'
-      - name: limit
-        in: query
-        description: Maximum number of files to return
-        schema:
-          type: integer
-          minimum: 1
-          maximum: 100
-      - name: after
-        in: query
-        description: Cursor for pagination
-        schema:
-          type: string
-      - name: order
-        in: query
-        description: Sort order (asc/desc)
-        schema:
-          type: string
-          enum: [asc, desc]
+    - name: container_id
+      in: path
+      required: true
+      description: The ID of the container
+      schema:
+        type: string
+    - name: provider
+      in: query
+      required: true
+      description: The provider of the container
+      schema:
+        $ref: '../../schemas/inference/common.yaml#/ModelProvider'
+    - name: limit
+      in: query
+      description: Maximum number of files to return
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+    - name: after
+      in: query
+      description: Cursor for pagination
+      schema:
+        type: string
+    - name: order
+      in: query
+      description: Sort order (asc/desc)
+      schema:
+        type: string
+        enum: [asc, desc]
     responses:
       '200':
         description: Successful response
@@ -228,6 +253,11 @@ container-files:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 container-files-by-id:
   get:
     operationId: retrieveContainerFile
@@ -235,26 +265,26 @@ container-files-by-id:
     description: |
       Retrieves metadata for a specific file in a container.
     tags:
-      - Containers
+    - Containers
     parameters:
-      - name: container_id
-        in: path
-        required: true
-        description: The ID of the container
-        schema:
-          type: string
-      - name: file_id
-        in: path
-        required: true
-        description: The ID of the file
-        schema:
-          type: string
-      - name: provider
-        in: query
-        required: true
-        description: The provider of the container
-        schema:
-          $ref: '../../schemas/inference/common.yaml#/ModelProvider'
+    - name: container_id
+      in: path
+      required: true
+      description: The ID of the container
+      schema:
+        type: string
+    - name: file_id
+      in: path
+      required: true
+      description: The ID of the file
+      schema:
+        type: string
+    - name: provider
+      in: query
+      required: true
+      description: The provider of the container
+      schema:
+        $ref: '../../schemas/inference/common.yaml#/ModelProvider'
     responses:
       '200':
         description: Successful response
@@ -266,32 +296,37 @@ container-files-by-id:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
   delete:
     operationId: deleteContainerFile
     summary: Delete a file from a container
     description: |
       Deletes a file from a container.
     tags:
-      - Containers
+    - Containers
     parameters:
-      - name: container_id
-        in: path
-        required: true
-        description: The ID of the container
-        schema:
-          type: string
-      - name: file_id
-        in: path
-        required: true
-        description: The ID of the file to delete
-        schema:
-          type: string
-      - name: provider
-        in: query
-        required: true
-        description: The provider of the container
-        schema:
-          $ref: '../../schemas/inference/common.yaml#/ModelProvider'
+    - name: container_id
+      in: path
+      required: true
+      description: The ID of the container
+      schema:
+        type: string
+    - name: file_id
+      in: path
+      required: true
+      description: The ID of the file to delete
+      schema:
+        type: string
+    - name: provider
+      in: query
+      required: true
+      description: The provider of the container
+      schema:
+        $ref: '../../schemas/inference/common.yaml#/ModelProvider'
     responses:
       '200':
         description: Successful response
@@ -304,6 +339,11 @@ container-files-by-id:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 container-files-content:
   get:
     operationId: getContainerFileContent
@@ -311,26 +351,26 @@ container-files-content:
     description: |
       Downloads the content of a file from a container.
     tags:
-      - Containers
+    - Containers
     parameters:
-      - name: container_id
-        in: path
-        required: true
-        description: The ID of the container
-        schema:
-          type: string
-      - name: file_id
-        in: path
-        required: true
-        description: The ID of the file
-        schema:
-          type: string
-      - name: provider
-        in: query
-        required: true
-        description: The provider of the container
-        schema:
-          $ref: '../../schemas/inference/common.yaml#/ModelProvider'
+    - name: container_id
+      in: path
+      required: true
+      description: The ID of the container
+      schema:
+        type: string
+    - name: file_id
+      in: path
+      required: true
+      description: The ID of the file
+      schema:
+        type: string
+    - name: provider
+      in: query
+      required: true
+      description: The provider of the container
+      schema:
+        $ref: '../../schemas/inference/common.yaml#/ModelProvider'
     responses:
       '200':
         description: Successful response
@@ -343,3 +383,8 @@ container-files-content:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

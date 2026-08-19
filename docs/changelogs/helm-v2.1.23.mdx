@@ -1,0 +1,22 @@
+---
+title: "v2.1.23"
+description: "Helm v2.1.23 changelog - 2026-06-12"
+---
+
+<Update label="Bifrost Helm" description="v2.1.23">
+
+## Changelog
+
+- Introduced `bifrost.governance.complexityAnalyzerConfig` for complexity router boundaries/keywords; renders into `governance.complexity_analyzer_config`.
+- `pluginSpanFilter` (`mode`/`plugins`) is now supported in OTEL config (single- and multi-profile), with a shared `$defs` definition reused across OTEL, Datadog, and BigQuery connectors.
+- Brought `plugin_span_filter` support to the Datadog plugin config.
+- New `bigquery` plugin defintion: `project_id`, `dataset_id`, `table_id`, `location`, `service_account_key`, `create_table_if_not_exists`, `flush_interval_seconds`, `buffer_size`, `custom_labels`, `disable_content_logging`, `request_headers`, `plugin_span_filter`.
+- Extended Datadog plugin with `ml_app`, `dogstatsd_addr`, `enable_metrics`, `enable_llm_obs`, `agentless`, `api_key` (required when agentless), and `site`. Credentials support `env.VAR_NAME`.
+- `key_ids` is now accepted in nested provider config inside virtual providers. Use `["*"]` for all keys; empty/omitted denies all (v2 default).
+- New `kafka` plugin definition: requires `brokers` + `topic`; optional SASL, TLS, `compression`, `batch_size`, `flush_interval_ms`, `auto_create_topic`, `disable_content_logging`, `plugin_span_filter`.
+- New `pubsub` plugin definition: requires `project_id` + `topic_id`; optional `service_account_key` (or ADC), `auto_create_topic`, `disable_content_logging`, `plugin_span_filter`.
+- Introduced `bifrost.framework.pricing.mcpLibraryUrl` and `mcpLibrarySyncInterval` for configuring a custom MCP server catalog.
+- `ingress` now accepts a named map where each key produces a separate `Ingress` named `<release>-<key>`. Legacy `ingress.enabled` shape is unchanged.
+- Configurable HTTP server read buffer size via `bifrost.server.readBufferSize` (controls header-reading buffer; default 65536 bytes). Maps to `server.read_buffer_size` in config.json.
+
+</Update>

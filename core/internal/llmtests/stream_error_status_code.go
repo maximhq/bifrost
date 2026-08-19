@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"testing"
+	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -23,10 +24,10 @@ func RunStreamErrorStatusCodeTest(t *testing.T, client *bifrost.Bifrost, ctx con
 		return
 	}
 
-	// Skip providers that perform deployment-based key selection.
-	// These providers validate model→deployment mapping during key selection,
-	// which means invalid models fail BEFORE reaching the provider API.
-	// Since no HTTP request is made, there's no provider status code to propagate.
+	// Skip providers that validate the model during key selection (deployment
+	// mapping, or an allowlist as Fireworks builds its model list from config).
+	// These reject invalid models BEFORE reaching the provider API, so no HTTP
+	// request is made and there's no provider status code to propagate.
 	deploymentBasedProviders := map[schemas.ModelProvider]bool{
 		schemas.Azure:       true,
 		schemas.Bedrock:     true,
@@ -34,6 +35,7 @@ func RunStreamErrorStatusCodeTest(t *testing.T, client *bifrost.Bifrost, ctx con
 		schemas.Replicate:   true,
 		schemas.VLLM:        true,
 		schemas.HuggingFace: true,
+		schemas.Fireworks:   true,
 	}
 	if deploymentBasedProviders[testConfig.Provider] {
 		t.Logf("Skipping StreamErrorStatusCode for %s (deployment-based key selection validates models before API call)", testConfig.Provider)
@@ -121,11 +123,15 @@ func RunStreamErrorStatusCodeTest(t *testing.T, client *bifrost.Bifrost, ctx con
 			stream, bifrostErr := client.ResponsesStreamRequest(bfCtx, request)
 
 			if bifrostErr == nil {
-				if stream != nil {
-					for range stream {
-					}
+				streamName := "responses stream"
+				var timedOut bool
+				bifrostErr, timedOut = waitForStreamError(t, stream, streamName)
+				if timedOut {
+					t.Fatalf("❌ Timed out waiting for invalid-model error on %s", streamName)
 				}
-				t.Fatal("❌ Expected error for invalid model in responses stream request, but got nil")
+				if bifrostErr == nil {
+					t.Fatal("❌ Expected error for invalid model in responses stream request, but got nil")
+				}
 			}
 
 			if bifrostErr.StatusCode == nil {
@@ -143,4 +149,33 @@ func RunStreamErrorStatusCodeTest(t *testing.T, client *bifrost.Bifrost, ctx con
 			t.Logf("✅ Responses stream error for invalid model returned status code %d (provider: %s)", statusCode, testConfig.Provider)
 		})
 	})
+}
+
+func waitForStreamError(t *testing.T, stream chan *schemas.BifrostStreamChunk, streamName string) (*schemas.BifrostError, bool) {
+	t.Helper()
+
+	if stream == nil {
+		return nil, false
+	}
+
+	timeout := time.NewTimer(10 * time.Second)
+	defer timeout.Stop()
+
+	for {
+		select {
+		case chunk, ok := <-stream:
+			if !ok {
+				return nil, false
+			}
+			if chunk == nil {
+				continue
+			}
+			if chunk.BifrostError != nil {
+				return chunk.BifrostError, false
+			}
+		case <-timeout.C:
+			t.Logf("⚠️ Timed out waiting for streamed error on %s", streamName)
+			return nil, true
+		}
+	}
 }

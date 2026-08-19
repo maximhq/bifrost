@@ -8,14 +8,14 @@ converse:
     description: |
       Sends messages using AWS Bedrock Converse-compatible format via PydanticAI.
     tags:
-      - PydanticAI Integration
+    - PydanticAI Integration
     parameters:
-      - name: modelId
-        in: path
-        required: true
-        schema:
-          type: string
-        description: Model ID
+    - name: modelId
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Model ID
     requestBody:
       required: true
       content:
@@ -42,6 +42,11 @@ converse:
             schema:
               $ref: '../../../schemas/integrations/bedrock/common.yaml#/BedrockError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 converse-stream:
   post:
     operationId: pydanticaiBedrockConverseStream
@@ -49,14 +54,14 @@ converse-stream:
     description: |
       Streams messages using AWS Bedrock Converse-compatible format via PydanticAI.
     tags:
-      - PydanticAI Integration
+    - PydanticAI Integration
     parameters:
-      - name: modelId
-        in: path
-        required: true
-        schema:
-          type: string
-        description: Model ID
+    - name: modelId
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Model ID
     requestBody:
       required: true
       content:
@@ -82,3 +87,8 @@ converse-stream:
           application/json:
             schema:
               $ref: '../../../schemas/integrations/bedrock/common.yaml#/BedrockError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

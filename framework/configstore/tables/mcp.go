@@ -13,24 +13,77 @@ import (
 
 // TableMCPClient represents an MCP client configuration in the database
 type TableMCPClient struct {
-	ID                     uint            `gorm:"primaryKey;autoIncrement" json:"id"` // ID is used as the internal primary key and is also accessed by public methods, so it must be present.
-	ClientID               string          `gorm:"type:varchar(255);uniqueIndex;not null" json:"client_id"`
-	Name                   string          `gorm:"type:varchar(255);uniqueIndex;not null" json:"name"`
-	IsCodeModeClient       bool            `gorm:"default:false" json:"is_code_mode_client"`         // Whether the client is a code mode client
-	ConnectionType         string          `gorm:"type:varchar(20);not null" json:"connection_type"` // schemas.MCPConnectionType
-	ConnectionString       *schemas.EnvVar `gorm:"type:text" json:"connection_string,omitempty"`
-	StdioConfigJSON        *string         `gorm:"type:text" json:"-"`                              // JSON serialized schemas.MCPStdioConfig
-	ToolsToExecuteJSON     string          `gorm:"type:text" json:"-"`                              // JSON serialized []string
-	ToolsToAutoExecuteJSON string          `gorm:"type:text" json:"-"`                              // JSON serialized []string
-	HeadersJSON            string          `gorm:"type:text" json:"-"`                              // JSON serialized map[string]string
-	IsPingAvailable        *bool           `gorm:"default:true" json:"is_ping_available,omitempty"` // Whether the MCP server supports ping for health checks
-	ToolPricingJSON        string          `gorm:"type:text" json:"-"`                              // JSON serialized map[string]float64
-	ToolSyncInterval       int             `gorm:"default:0" json:"tool_sync_interval"`             // Per-client tool sync interval in minutes (0 = use global, -1 = disabled)
+	ID                      uint               `gorm:"primaryKey;autoIncrement" json:"id"` // ID is used as the internal primary key and is also accessed by public methods, so it must be present.
+	ClientID                string             `gorm:"type:varchar(255);uniqueIndex;not null" json:"client_id"`
+	Name                    string             `gorm:"type:varchar(255);uniqueIndex;not null" json:"name"`
+	IsCodeModeClient        bool               `gorm:"default:false" json:"is_code_mode_client"`         // Whether the client is a code mode client
+	ConnectionType          string             `gorm:"type:varchar(20);not null" json:"connection_type"` // schemas.MCPConnectionType
+	ConnectionString        *schemas.SecretVar `gorm:"type:text" json:"connection_string,omitempty"`
+	StdioConfigJSON         *string            `gorm:"type:text" json:"-"`                              // JSON serialized schemas.MCPStdioConfig
+	TLSConfigJSON           *string            `gorm:"type:text" json:"-"`                              // JSON serialized schemas.MCPTLSConfig
+	ToolsToExecuteJSON      string             `gorm:"type:text" json:"-"`                              // JSON serialized []string
+	ToolsToAutoExecuteJSON  string             `gorm:"type:text" json:"-"`                              // JSON serialized []string
+	HeadersJSON             string             `gorm:"type:text" json:"-"`                              // JSON serialized map[string]string
+	AllowedExtraHeadersJSON string             `gorm:"type:text" json:"-"`                              // JSON serialized []string
+	IsPingAvailable         *bool              `gorm:"default:true" json:"is_ping_available,omitempty"` // Whether the MCP server supports ping for health checks
+	// NeedsSessionStickiness: nil/false = per-call connection (the default
+	// for newly created clients); true = persistent shared connection
+	// (today's only behavior — every pre-existing row is explicitly
+	// backfilled to true by the migration, so this default only applies to
+	// clients created after this column existed). Ignored/always-true for
+	// non-http connection types.
+	//
+	// Deliberately no `gorm:"default:..."` tag: a DB-level default would
+	// make ADD COLUMN's fast-default mechanism return that value for every
+	// pre-existing row immediately, so the migration's `WHERE
+	// needs_session_stickiness IS NULL` backfill would never match anything.
+	// Leaving the column plain-nullable is what lets the migration tell
+	// "pre-existing, needs backfill" (NULL) apart from "explicitly set".
+	NeedsSessionStickiness *bool  `json:"needs_session_stickiness,omitempty"`
+	ToolPricingJSON        string `gorm:"type:text" json:"-"`                      // JSON serialized map[string]float64
+	ToolSyncInterval       int    `gorm:"default:0" json:"tool_sync_interval"`     // Per-client tool sync interval in seconds (0 = use global, negative = disabled)
+	ToolExecutionTimeout   int    `gorm:"default:0" json:"tool_execution_timeout"` // Per-client tool execution timeout in seconds (0 = use global from tool_manager_config)
+
+	// Per-user OAuth: discovered tools persisted so they survive restart
+	DiscoveredToolsJSON string `gorm:"type:text" json:"-"` // JSON serialized map[string]schemas.ChatTool
+	ToolNameMappingJSON string `gorm:"type:text" json:"-"` // JSON serialized map[string]string
 
 	// OAuth authentication fields
-	AuthType      string            `gorm:"type:varchar(20);default:'headers'" json:"auth_type"`                         // "none", "headers", "oauth"
+	AuthType      string            `gorm:"type:varchar(20);default:'headers'" json:"auth_type"`                         // "none", "headers", "oauth", "per_user_oauth", "per_user_headers", "token_exchange"
 	OauthConfigID *string           `gorm:"type:varchar(255);index;constraint:OnDelete:CASCADE" json:"oauth_config_id"`  // Foreign key to oauth_configs.ID with CASCADE delete
 	OauthConfig   *TableOauthConfig `gorm:"foreignKey:OauthConfigID;references:ID;constraint:OnDelete:CASCADE" json:"-"` // Gorm relationship
+
+	// Per-user-headers schema: admin-declared list of header *names* that each
+	// caller must supply. Empty/null for all other auth types. Used by both
+	// the resolver (intersect with persisted user values) and by
+	// utils.StaticConfigHeaders (strip from plugin-visible static headers).
+	PerUserHeaderKeysJSON string `gorm:"type:text" json:"-"` // JSON serialized []string
+
+	// Token-exchange configuration (audience/scopes + the exchange
+	// application's client credentials) for auth_type='token_exchange'. NULL
+	// for all other auth types. Carries a client secret, so it is encrypted
+	// at rest like the other credential-bearing columns; the exchange
+	// endpoint and grant shape come from the deployment's identity-provider
+	// integration at exchange time.
+	TokenExchangeJSON *string `gorm:"type:text" json:"-"` // JSON serialized schemas.MCPTokenExchangeConfig
+
+	AllowOnAllVirtualKeys bool `gorm:"default:false" json:"allow_on_all_virtual_keys"` // Whether to allow the MCP client to run on all virtual keys
+	Disabled              bool `gorm:"default:false" json:"disabled"`                  // Whether the client is intentionally disabled
+
+	// PendingOAuthConfigJSON stashes the inline `oauth_config` block from
+	// config.json for shared-OAuth MCP clients (auth_type='oauth') that have
+	// not yet been authorized by an admin. NULL on UI-created clients and on
+	// rows whose OAuth has already been authorized — cleared by the OAuth
+	// callback once oauth_configs.status='authorized'.
+	//
+	// Deserialised into PendingOAuthConfig by AfterFind; serialised back by
+	// BeforeSave. Wire-side it surfaces as `oauth_config` (UI form parity).
+	//
+	// The column name is pinned explicitly: GORM's naming strategy would
+	// otherwise derive pending_o_auth_config_json from the Go field name,
+	// breaking the add-column migration and every raw map update that
+	// addresses the column as pending_oauth_config_json.
+	PendingOAuthConfigJSON *string `gorm:"column:pending_oauth_config_json;type:text" json:"-"`
 
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
@@ -42,11 +95,18 @@ type TableMCPClient struct {
 	UpdatedAt time.Time `gorm:"index;not null" json:"updated_at"`
 
 	// Virtual fields for runtime use (not stored in DB)
-	StdioConfig        *schemas.MCPStdioConfig   `gorm:"-" json:"stdio_config,omitempty"`
-	ToolsToExecute     []string                  `gorm:"-" json:"tools_to_execute"`
-	ToolsToAutoExecute []string                  `gorm:"-" json:"tools_to_auto_execute"`
-	Headers            map[string]schemas.EnvVar `gorm:"-" json:"headers"`
-	ToolPricing        map[string]float64        `gorm:"-" json:"tool_pricing"`
+	StdioConfig               *schemas.MCPStdioConfig         `gorm:"-" json:"stdio_config,omitempty"`
+	TLSConfig                 *schemas.MCPTLSConfig           `gorm:"-" json:"tls_config,omitempty"`
+	ToolsToExecute            schemas.WhiteList               `gorm:"-" json:"tools_to_execute"`
+	ToolsToAutoExecute        schemas.WhiteList               `gorm:"-" json:"tools_to_auto_execute"`
+	Headers                   map[string]schemas.SecretVar    `gorm:"-" json:"headers"`
+	AllowedExtraHeaders       schemas.WhiteList               `gorm:"-" json:"allowed_extra_headers"`
+	ToolPricing               map[string]float64              `gorm:"-" json:"tool_pricing"`
+	DiscoveredTools           map[string]schemas.ChatTool     `gorm:"-" json:"-"`
+	DiscoveredToolNameMapping map[string]string               `gorm:"-" json:"-"`
+	PerUserHeaderKeys         []string                        `gorm:"-" json:"per_user_header_keys"`
+	TokenExchange             *schemas.MCPTokenExchangeConfig `gorm:"-" json:"token_exchange,omitempty"` // Runtime mirror of TokenExchangeJSON
+	PendingOAuthConfig        *schemas.OAuth2Config           `gorm:"-" json:"oauth_config,omitempty"`   // Runtime mirror of PendingOAuthConfigJSON
 }
 
 // TableName sets the table name for each model
@@ -67,7 +127,21 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 		c.StdioConfigJSON = nil
 	}
 
+	if c.TLSConfig != nil {
+		data, err := c.TLSConfig.MarshalForStorage()
+		if err != nil {
+			return err
+		}
+		config := string(data)
+		c.TLSConfigJSON = &config
+	} else {
+		c.TLSConfigJSON = nil
+	}
+
 	if c.ToolsToExecute != nil {
+		if err := c.ToolsToExecute.Validate(); err != nil {
+			return fmt.Errorf("invalid tools_to_execute: %w", err)
+		}
 		data, err := json.Marshal(c.ToolsToExecute)
 		if err != nil {
 			return err
@@ -78,6 +152,9 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 	}
 
 	if c.ToolsToAutoExecute != nil {
+		if err := c.ToolsToAutoExecute.Validate(); err != nil {
+			return fmt.Errorf("invalid tools_to_auto_execute: %w", err)
+		}
 		data, err := json.Marshal(c.ToolsToAutoExecute)
 		if err != nil {
 			return err
@@ -90,8 +167,8 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 	if c.Headers != nil {
 		headersToSerialize := make(map[string]string, len(c.Headers))
 		for key, value := range c.Headers {
-			if value.IsFromEnv() {
-				headersToSerialize[key] = value.EnvVar
+			if value.IsFromSecret() {
+				headersToSerialize[key] = value.GetRawRef()
 			} else {
 				headersToSerialize[key] = value.GetValue()
 			}
@@ -105,6 +182,19 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 		c.HeadersJSON = "{}"
 	}
 
+	if c.AllowedExtraHeaders != nil {
+		if err := c.AllowedExtraHeaders.Validate(); err != nil {
+			return fmt.Errorf("invalid allowed_extra_headers: %w", err)
+		}
+		data, err := json.Marshal(c.AllowedExtraHeaders)
+		if err != nil {
+			return err
+		}
+		c.AllowedExtraHeadersJSON = string(data)
+	} else {
+		c.AllowedExtraHeadersJSON = "[]"
+	}
+
 	if c.ToolPricing != nil {
 		data, err := json.Marshal(c.ToolPricing)
 		if err != nil {
@@ -115,11 +205,62 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 		c.ToolPricingJSON = "{}"
 	}
 
+	if c.DiscoveredTools != nil {
+		data, err := json.Marshal(c.DiscoveredTools)
+		if err != nil {
+			return err
+		}
+		c.DiscoveredToolsJSON = string(data)
+	}
+
+	if c.DiscoveredToolNameMapping != nil {
+		data, err := json.Marshal(c.DiscoveredToolNameMapping)
+		if err != nil {
+			return err
+		}
+		c.ToolNameMappingJSON = string(data)
+	}
+
+	if c.PerUserHeaderKeys != nil {
+		data, err := json.Marshal(c.PerUserHeaderKeys)
+		if err != nil {
+			return err
+		}
+		c.PerUserHeaderKeysJSON = string(data)
+	} else {
+		c.PerUserHeaderKeysJSON = ""
+	}
+
+	if c.TokenExchange != nil {
+		data, err := json.Marshal(c.TokenExchange)
+		if err != nil {
+			return err
+		}
+		s := string(data)
+		c.TokenExchangeJSON = &s
+	} else {
+		c.TokenExchangeJSON = nil
+	}
+
+	// Persist the inline `oauth_config` block. Rehydrated by AfterFind so
+	// the initiate-verification endpoint can feed it to InitiateOAuthFlow
+	// the same way the UI Create handler does.
+	if c.PendingOAuthConfig != nil {
+		data, err := json.Marshal(c.PendingOAuthConfig)
+		if err != nil {
+			return err
+		}
+		s := string(data)
+		c.PendingOAuthConfigJSON = &s
+	} else {
+		c.PendingOAuthConfigJSON = nil
+	}
+
 	// Encrypt sensitive fields after serialization.
 	// Always set EncryptionStatus when encryption is enabled so the startup
 	// batch pass does not re-process this row indefinitely.
 	if encrypt.IsEnabled() {
-		if c.ConnectionString != nil && !c.ConnectionString.IsFromEnv() && c.ConnectionString.GetValue() != "" {
+		if c.ConnectionString != nil && !c.ConnectionString.IsFromSecret() && c.ConnectionString.GetValue() != "" {
 			// Copy to avoid encrypting the shared ConnectionString through the pointer
 			cs := *c.ConnectionString
 			enc, err := encrypt.Encrypt(cs.Val)
@@ -136,6 +277,24 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 			}
 			c.HeadersJSON = enc
 		}
+		// The stash can carry an inline OAuth client_secret — encrypt it at
+		// rest like the other credential-bearing columns.
+		if c.PendingOAuthConfigJSON != nil && *c.PendingOAuthConfigJSON != "" {
+			enc, err := encrypt.Encrypt(*c.PendingOAuthConfigJSON)
+			if err != nil {
+				return fmt.Errorf("failed to encrypt mcp pending oauth config: %w", err)
+			}
+			c.PendingOAuthConfigJSON = &enc
+		}
+		// The token-exchange block carries the exchange application's
+		// client_secret — same treatment.
+		if c.TokenExchangeJSON != nil && *c.TokenExchangeJSON != "" {
+			enc, err := encrypt.Encrypt(*c.TokenExchangeJSON)
+			if err != nil {
+				return fmt.Errorf("failed to encrypt mcp token exchange config: %w", err)
+			}
+			c.TokenExchangeJSON = &enc
+		}
 		c.EncryptionStatus = EncryptionStatusEncrypted
 	}
 
@@ -145,7 +304,7 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 // AfterFind is a GORM hook that decrypts the connection string and headers (if encrypted)
 // and deserializes JSON columns back into runtime structs after reading from the database.
 func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
-	if c.EncryptionStatus == "encrypted" {
+	if c.EncryptionStatus == EncryptionStatusEncrypted {
 		if c.HeadersJSON != "" && c.HeadersJSON != "{}" {
 			decrypted, err := encrypt.Decrypt(c.HeadersJSON)
 			if err != nil {
@@ -153,12 +312,26 @@ func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 			}
 			c.HeadersJSON = decrypted
 		}
-		if c.ConnectionString != nil && !c.ConnectionString.IsFromEnv() && c.ConnectionString.GetValue() != "" {
+		if c.ConnectionString != nil && !c.ConnectionString.IsFromSecret() && c.ConnectionString.GetValue() != "" {
 			decrypted, err := encrypt.Decrypt(c.ConnectionString.Val)
 			if err != nil {
 				return fmt.Errorf("failed to decrypt mcp connection string: %w", err)
 			}
 			c.ConnectionString.Val = decrypted
+		}
+		if c.TokenExchangeJSON != nil && *c.TokenExchangeJSON != "" {
+			decrypted, err := encrypt.Decrypt(*c.TokenExchangeJSON)
+			if err != nil {
+				return fmt.Errorf("failed to decrypt mcp token exchange config: %w", err)
+			}
+			c.TokenExchangeJSON = &decrypted
+		}
+		if c.PendingOAuthConfigJSON != nil && *c.PendingOAuthConfigJSON != "" {
+			decrypted, err := encrypt.Decrypt(*c.PendingOAuthConfigJSON)
+			if err != nil {
+				return fmt.Errorf("failed to decrypt mcp pending oauth config: %w", err)
+			}
+			c.PendingOAuthConfigJSON = &decrypted
 		}
 	}
 	if c.StdioConfigJSON != nil {
@@ -167,6 +340,13 @@ func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 			return err
 		}
 		c.StdioConfig = &config
+	}
+	if c.TLSConfigJSON != nil {
+		var config schemas.MCPTLSConfig
+		if err := sonic.Unmarshal([]byte(*c.TLSConfigJSON), &config); err != nil {
+			return err
+		}
+		c.TLSConfig = &config
 	}
 	if c.ToolsToExecuteJSON != "" {
 		if err := sonic.Unmarshal([]byte(c.ToolsToExecuteJSON), &c.ToolsToExecute); err != nil {
@@ -183,11 +363,48 @@ func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 			return err
 		}
 	}
-
+	if c.AllowedExtraHeadersJSON != "" {
+		if err := sonic.Unmarshal([]byte(c.AllowedExtraHeadersJSON), &c.AllowedExtraHeaders); err != nil {
+			return err
+		}
+	}
 	if c.ToolPricingJSON != "" {
 		if err := json.Unmarshal([]byte(c.ToolPricingJSON), &c.ToolPricing); err != nil {
 			return err
 		}
 	}
+	if c.DiscoveredToolsJSON != "" {
+		if err := sonic.Unmarshal([]byte(c.DiscoveredToolsJSON), &c.DiscoveredTools); err != nil {
+			return err
+		}
+	}
+	if c.ToolNameMappingJSON != "" {
+		if err := sonic.Unmarshal([]byte(c.ToolNameMappingJSON), &c.DiscoveredToolNameMapping); err != nil {
+			return err
+		}
+	}
+	if c.PerUserHeaderKeysJSON != "" {
+		if err := sonic.Unmarshal([]byte(c.PerUserHeaderKeysJSON), &c.PerUserHeaderKeys); err != nil {
+			return err
+		}
+	}
+	if c.TokenExchangeJSON != nil && *c.TokenExchangeJSON != "" {
+		var cfg schemas.MCPTokenExchangeConfig
+		if err := sonic.Unmarshal([]byte(*c.TokenExchangeJSON), &cfg); err != nil {
+			return err
+		}
+		c.TokenExchange = &cfg
+	}
+	if c.PendingOAuthConfigJSON != nil && *c.PendingOAuthConfigJSON != "" {
+		var cfg schemas.OAuth2Config
+		if err := sonic.Unmarshal([]byte(*c.PendingOAuthConfigJSON), &cfg); err != nil {
+			return err
+		}
+		c.PendingOAuthConfig = &cfg
+	}
 	return nil
 }
+
+// VaultPathKey implements schemas.VaultPathKeyer so the global GORM vault
+// callback can compute the vault base path for this model automatically.
+func (c *TableMCPClient) VaultPathKey() string { return c.ClientID }

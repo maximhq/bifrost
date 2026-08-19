@@ -25,7 +25,7 @@ func TestAgent_MaxDepthEnforcement(t *testing.T) {
 	// Update tool manager config to set MaxAgentDepth = 5
 	manager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
 		MaxAgentDepth:        5,
-		ToolExecutionTimeout: 30 * time.Second,
+		ToolExecutionTimeout: schemas.Duration(30 * time.Second),
 	})
 
 	ctx := createTestContext()
@@ -76,9 +76,6 @@ func TestAgent_MaxDepthEnforcement(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mockLLM.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	require.Nil(t, err)
@@ -100,7 +97,7 @@ func TestAgent_MaxDepthCustomValue(t *testing.T) {
 	// Set MaxAgentDepth = 3
 	manager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
 		MaxAgentDepth:        3,
-		ToolExecutionTimeout: 30 * time.Second,
+		ToolExecutionTimeout: schemas.Duration(30 * time.Second),
 	})
 
 	ctx := createTestContext()
@@ -143,9 +140,6 @@ func TestAgent_MaxDepthCustomValue(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mockLLM.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	require.Nil(t, err)
@@ -166,7 +160,7 @@ func TestAgent_MaxDepthReached_ChatFormat(t *testing.T) {
 
 	manager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
 		MaxAgentDepth:        2,
-		ToolExecutionTimeout: 30 * time.Second,
+		ToolExecutionTimeout: schemas.Duration(30 * time.Second),
 	}) // Max depth = 2
 
 	ctx := createTestContext()
@@ -206,9 +200,6 @@ func TestAgent_MaxDepthReached_ChatFormat(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mockLLM.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	require.Nil(t, err)
@@ -226,7 +217,7 @@ func TestAgent_MaxDepthReached_ResponsesFormat(t *testing.T) {
 
 	manager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
 		MaxAgentDepth:        2,
-		ToolExecutionTimeout: 30 * time.Second,
+		ToolExecutionTimeout: schemas.Duration(30 * time.Second),
 	}) // Max depth = 2
 
 	ctx := createTestContext()
@@ -273,9 +264,6 @@ func TestAgent_MaxDepthReached_ResponsesFormat(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mockLLM.MakeResponsesRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	require.Nil(t, err)
@@ -301,7 +289,7 @@ func TestAgent_MaxDepth_CodeMode(t *testing.T) {
 	manager := setupMCPManager(t, codeModeClient, httpClient)
 	manager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
 		MaxAgentDepth:        3,
-		ToolExecutionTimeout: 30 * time.Second,
+		ToolExecutionTimeout: schemas.Duration(30 * time.Second),
 	}) // Max depth = 3
 
 	ctx := createTestContext()
@@ -364,9 +352,6 @@ func TestAgent_MaxDepth_CodeMode(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mockLLM.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	require.Nil(t, err)
@@ -387,7 +372,7 @@ func TestAgent_MaxDepth_CodeMode_ChatFormat(t *testing.T) {
 	manager := setupMCPManager(t, codeModeClient, httpClient)
 	manager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
 		MaxAgentDepth:        2,
-		ToolExecutionTimeout: 30 * time.Second,
+		ToolExecutionTimeout: schemas.Duration(30 * time.Second),
 	})
 
 	ctx := createTestContext()
@@ -439,9 +424,6 @@ func TestAgent_MaxDepth_CodeMode_ChatFormat(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mockLLM.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	require.Nil(t, err)
@@ -461,7 +443,7 @@ func TestAgent_MaxDepth_CodeMode_ResponsesFormat(t *testing.T) {
 	manager := setupMCPManager(t, codeModeClient, httpClient)
 	manager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
 		MaxAgentDepth:        2,
-		ToolExecutionTimeout: 30 * time.Second,
+		ToolExecutionTimeout: schemas.Duration(30 * time.Second),
 	})
 
 	ctx := createTestContext()
@@ -508,9 +490,6 @@ func TestAgent_MaxDepth_CodeMode_ResponsesFormat(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mockLLM.MakeResponsesRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	require.Nil(t, err)
@@ -589,9 +568,6 @@ func TestAgent_Timeout(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mockLLM.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// MUST have timeout error
@@ -654,9 +630,6 @@ func TestAgent_TimeoutDuringExecution(t *testing.T) {
 		},
 		mockLLM.chatResponses[0],
 		mockLLM.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// MUST timeout during execution
@@ -703,10 +676,7 @@ func TestAgent_Timeout_ChatFormat(t *testing.T) {
 	_, bifrostErr := manager.CheckAndExecuteAgentForChatRequest(ctx,
 		&schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o",
 			Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Test")}}}},
-		mockLLM.chatResponses[0], mockLLM.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		})
+		mockLLM.chatResponses[0], mockLLM.MakeChatRequest)
 
 	require.NotNil(t, bifrostErr, "Chat format timeout not enforced!")
 	t.Logf("✅ Chat format timeout enforced: %v", bifrostErr.Error)
@@ -752,10 +722,7 @@ func TestAgent_Timeout_ResponsesFormat(t *testing.T) {
 		&schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "gpt-4o",
 			Input: []schemas.ResponsesMessage{{Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
 				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Test")}}}},
-		mockLLM.responsesResponses[0], mockLLM.MakeResponsesRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		})
+		mockLLM.responsesResponses[0], mockLLM.MakeResponsesRequest)
 
 	require.NotNil(t, bifrostErr, "Responses format timeout not enforced!")
 	t.Logf("✅ Responses format timeout enforced: %v", bifrostErr.Error)
@@ -814,9 +781,6 @@ func TestAgent_ErrorPropagation(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mockLLM.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Error should be propagated, or tool result should contain error
@@ -881,9 +845,6 @@ func TestAgent_ErrorInMiddleOfLoop(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mockLLM.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// First tool should have executed successfully
@@ -936,9 +897,6 @@ func TestAgent_LLMError(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mockLLM.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// LLM error should be returned
@@ -965,7 +923,7 @@ func TestAgent_MaxDepthAndTimeout(t *testing.T) {
 	// Set both max depth and timeout
 	manager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
 		MaxAgentDepth:        3,
-		ToolExecutionTimeout: 5 * time.Second,
+		ToolExecutionTimeout: schemas.Duration(5 * time.Second),
 	}) // Max depth = 3, timeout = 5 seconds
 
 	ctx := createTestContext()
@@ -1008,9 +966,6 @@ func TestAgent_MaxDepthAndTimeout(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mockLLM.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Whichever limit hits first should stop the agent
@@ -1039,7 +994,7 @@ func TestAgent_MaxDepthZero(t *testing.T) {
 	// Set max depth = 0 (should not allow any iterations)
 	manager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
 		MaxAgentDepth:        0,
-		ToolExecutionTimeout: 30 * time.Second,
+		ToolExecutionTimeout: schemas.Duration(30 * time.Second),
 	})
 
 	ctx := createTestContext()
@@ -1073,9 +1028,6 @@ func TestAgent_MaxDepthZero(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mockLLM.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	// Should return immediately with tool calls
@@ -1133,9 +1085,6 @@ func TestAgent_ParallelToolExecution(t *testing.T) {
 		originalReq,
 		initialResponse,
 		mockLLM.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	require.Nil(t, err)
@@ -1156,7 +1105,7 @@ func TestAgent_IterationTracking(t *testing.T) {
 
 	manager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
 		MaxAgentDepth:        10,
-		ToolExecutionTimeout: 30 * time.Second,
+		ToolExecutionTimeout: schemas.Duration(30 * time.Second),
 	})
 
 	ctx := createTestContext()
@@ -1198,9 +1147,6 @@ func TestAgent_IterationTracking(t *testing.T) {
 		originalReq,
 		initialResponse,
 		trackingMockLLM.MakeChatRequest,
-		func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-			return manager.ExecuteToolCall(ctx, request)
-		},
 	)
 
 	require.Nil(t, err)

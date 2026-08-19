@@ -1,7 +1,7 @@
 import { createSlice, PayloadAction } from "@reduxjs/toolkit";
 
 // Define the shape of our app state
-export interface AppState {	
+export interface AppState {
 	// UI State
 	sidebarCollapsed: boolean;
 	theme: "light" | "dark" | "system";

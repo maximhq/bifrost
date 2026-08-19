@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/maximhq/bifrost/core/mcp/credstore"
 	"github.com/maximhq/bifrost/core/schemas"
 
 	"github.com/mark3labs/mcp-go/server"
@@ -21,13 +22,11 @@ const (
 	BifrostMCPClientKey                 = "bifrostInternal" // Key for internal Bifrost client in clientMap
 	MCPLogPrefix                        = "[Bifrost MCP]"   // Consistent logging prefix
 	MCPClientConnectionEstablishTimeout = 30 * time.Second  // Timeout for MCP client connection establishment
-
-	// Context keys for client filtering in requests
-	// NOTE: []string is used for both keys, and by default all clients/tools are included (when nil).
-	// If "*" is present, all clients/tools are included, and [] means no clients/tools are included.
-	// Request context filtering takes priority over client config - context can override client exclusions.
-	MCPContextKeyIncludeClients schemas.BifrostContextKey = "mcp-include-clients" // Context key for whitelist client filtering
-	MCPContextKeyIncludeTools   schemas.BifrostContextKey = "mcp-include-tools"   // Context key for whitelist tool filtering (Note: toolName should be in "clientName-toolName" format for individual tools, or "clientName-*" for wildcard)
+	// MCPSharedAuthRetryReconnectBudget is the longest a failing shared-connection
+	// tool call waits for the reconnect it triggered before surfacing the original
+	// auth failure. The reconnect itself keeps running in the background when the
+	// budget elapses. Also capped by the calling request's own remaining deadline.
+	MCPSharedAuthRetryReconnectBudget = 10 * time.Second
 )
 
 // ============================================================================
@@ -38,17 +37,111 @@ const (
 // It provides a bridge between Bifrost and various MCP servers, supporting
 // both local tool hosting and external MCP server connections.
 type MCPManager struct {
-	ctx                  context.Context
-	logger               schemas.Logger                     // Logger instance for this manager
-	oauth2Provider       schemas.OAuth2Provider             // Provider for OAuth2 functionality
-	toolsManager         *ToolsManager                      // Handler for MCP tools
-	server               *server.MCPServer                  // Local MCP server instance for hosting tools (STDIO-based)
-	clientMap            map[string]*schemas.MCPClientState // Map of MCP client names to their configurations
-	mu                   sync.RWMutex                       // Read-write mutex for thread-safe operations
-	serverRunning        bool                               // Track whether local MCP server is running
-	healthMonitorManager *HealthMonitorManager              // Manager for client health monitors
-	toolSyncManager      *ToolSyncManager                   // Manager for periodic tool synchronization
-	reconnectingClients  sync.Map                           // Tracks in-flight reconnect attempts per client ID (map[string]bool)
+	ctx                 context.Context
+	logger              schemas.Logger                     // Logger instance for this manager
+	credStore           schemas.MCPCredentialStore         // Resolves credentials per-call for MCP tool execution
+	toolsManager        *ToolsManager                      // Handler for MCP tools
+	server              *server.MCPServer                  // Local MCP server instance for hosting tools (STDIO-based)
+	clientMap           map[string]*schemas.MCPClientState // Map of MCP client names to their configurations
+	mu                  sync.RWMutex                       // Read-write mutex for thread-safe operations
+	serverRunning       bool                               // Track whether local MCP server is running
+	checkerManager      *ConnectionCheckerManager          // Manager for per-client periodic connection checkers (liveness + discovery refresh, drives Healthy/Unstable/NeedsReauth)
+	reconnectingClients sync.Map                           // Tracks in-flight exclusive client operations per client ID (map[string]*inflightClientOp); waiters join via AwaitReconnect
+	bootClientConfigs   []*schemas.MCPClientConfig         // Client configs supplied at construction, dialed by ConnectConfiguredClients
+	connectOnce         sync.Once                          // Ensures ConnectConfiguredClients dials the boot configs exactly once
+
+	// Plugin pipeline access for connect/ping/list_tools hooks. nil-safe — gates short-circuit
+	// to the underlying op when no pipeline is configured. Also used by ToolsManager for the
+	// existing execute-tool hooks.
+	pluginPipelineProvider func() PluginPipeline
+	releasePluginPipeline  func(pipeline PluginPipeline)
+
+	// stateChangeCallback, if set, is invoked whenever a client's live
+	// connection state changes via a path with no admin-API call site of its
+	// own for a caller to observe the change through: reactive connect-
+	// failure classification (failConnectAttempt) and the periodic
+	// connection checker's own transitions (ClientConnectionChecker.setState).
+	// Deliberately NOT fired from admin-driven transitions
+	// (CloseAndMarkNeedsReauth, DisableClient/EnableClient, UpdateClient) —
+	// those already have their own return value/call site for a caller to
+	// react to, so firing here too would just be a redundant second signal
+	// for the same change. nil-safe: OSS behaves identically whether a
+	// callback is registered or not.
+	//
+	// No cross-transition ordering guarantee: each call site commits its
+	// state change under m.mu, then invokes cb after releasing it (a
+	// registered callback may do arbitrary work, including I/O, which must
+	// never run while holding m.mu — see the two call sites' own comments).
+	// Two transitions committed in quick succession from different
+	// goroutines can therefore have their callback invocations observed out
+	// of commit order. A consumer that needs to track a client's presumed
+	// current state across every event would need its own sequencing; one
+	// that only reacts to a specific newState value in an idempotent way
+	// (the only kind of consumer this exists for today) is unaffected.
+	stateChangeCallback func(clientID, name string, oldState, newState schemas.MCPConnectionState)
+
+	// toolsChangeCallback, if set, is invoked whenever a client's tool
+	// map/name mapping is freshly (re)discovered — connectToMCPClient's
+	// initial dial or reconnect, SetClientTools (per-call clients' own
+	// discovery, called both internally and by admin-verify HTTP handlers),
+	// and the periodic connection checker's writeBackTools (both the sticky
+	// and per-call variants). Deliberately NOT fired when AddClient restores
+	// an already-known tool set from a config that was just read back out of
+	// the DB (clientmanager.go's per-call restore branch) — nothing changed
+	// in that case, so there is nothing new to persist.
+	//
+	// core/mcp has no DB access of its own; this is the seam a caller (the
+	// transport layer) uses to persist the fresh result, mirroring
+	// stateChangeCallback's own role for state transitions. Fired outside
+	// m.mu for the same reason: a registered callback may do arbitrary work,
+	// including I/O.
+	toolsChangeCallback func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string)
+}
+
+// SetStateChangeCallback registers cb to be invoked on every reactive
+// (non-admin-driven) client state transition — see the stateChangeCallback
+// field doc for exactly which transitions that covers. Pass nil to clear a
+// previously registered callback. Safe to call at any time; takes effect on
+// the next transition.
+func (m *MCPManager) SetStateChangeCallback(cb func(clientID, name string, oldState, newState schemas.MCPConnectionState)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.stateChangeCallback = cb
+}
+
+// SetToolsChangeCallback registers cb to be invoked whenever a client's tool
+// map is freshly (re)discovered — see the toolsChangeCallback field doc for
+// exactly which paths that covers. Pass nil to clear a previously registered
+// callback. Safe to call at any time; takes effect on the next discovery.
+func (m *MCPManager) SetToolsChangeCallback(cb func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.toolsChangeCallback = cb
+}
+
+// toolsChangedCallback compares tools/toolNameMapping's content hash against
+// clientState.LastToolsHash — gating the funnel to genuine changes only, so
+// a rediscovery that returns byte-identical tools (the common case on most
+// periodic ticks and reconnects) doesn't re-trigger a registered callback's
+// work (DB persist, external MCP server resync). On a genuine change,
+// updates the stored hash and returns a closure that invokes the callback;
+// returns nil if nothing changed or no callback is registered.
+//
+// Must be called with m.mu (or the checker's c.manager.mu — the same
+// mutex) already held; the returned closure must be invoked AFTER releasing
+// the lock, per toolsChangeCallback's own field doc.
+func (m *MCPManager) toolsChangedCallback(clientState *schemas.MCPClientState, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) func() {
+	hash := computeToolsHash(tools, toolNameMapping)
+	if clientState.LastToolsHash == hash {
+		return nil
+	}
+	clientState.LastToolsHash = hash
+	cb := m.toolsChangeCallback
+	if cb == nil {
+		return nil
+	}
+	name := clientState.Name
+	return func() { cb(clientID, name, tools, toolNameMapping) }
 }
 
 // MCPToolFunction is a generic function type for handling tool calls with typed arguments.
@@ -64,7 +157,10 @@ type MCPToolFunction[T any] func(args T) (string, error)
 // Parameters:
 //   - ctx: Context for the MCP manager
 //   - config: MCP configuration including server port and client configs
-//   - oauth2Provider: OAuth2 provider for authentication
+//   - credStore: CredentialStore that resolves per-call credentials (Bearer
+//     tokens, static headers, user-submitted headers) and signals whether
+//     each client requires an ephemeral upstream connection. Pass nil only
+//     in tests where credential resolution is irrelevant.
 //   - logger: Logger instance for structured logging (uses default if nil)
 //   - codeMode: Optional CodeMode implementation for code execution (e.g., Starlark).
 //     Pass nil if code mode is not needed. The CodeMode's dependencies will be
@@ -72,25 +168,31 @@ type MCPToolFunction[T any] func(args T) (string, error)
 //
 // Returns:
 //   - *MCPManager: Initialized manager instance
-func NewMCPManager(ctx context.Context, config schemas.MCPConfig, oauth2Provider schemas.OAuth2Provider, logger schemas.Logger, codeMode CodeMode) *MCPManager {
+func NewMCPManager(ctx context.Context, config schemas.MCPConfig, credStore schemas.MCPCredentialStore, logger schemas.Logger, codeMode CodeMode) *MCPManager {
 	if logger == nil {
 		logger = defaultLogger
+	}
+	// Default to a provider-less CredentialStore so tests (and callers that
+	// don't wire OAuth / per-user-headers) get a working store: static /
+	// headers / none resolvers stay functional, per-user resolvers cleanly
+	// error on use.
+	if credStore == nil {
+		credStore = credstore.NewCredStore(nil, nil, logger)
 	}
 	// Set default values
 	if config.ToolManagerConfig == nil {
 		config.ToolManagerConfig = &schemas.MCPToolManagerConfig{
-			ToolExecutionTimeout: schemas.DefaultToolExecutionTimeout,
+			ToolExecutionTimeout: schemas.Duration(schemas.DefaultToolExecutionTimeout),
 			MaxAgentDepth:        schemas.DefaultMaxAgentDepth,
 		}
 	}
 	// Creating new instance
 	manager := &MCPManager{
-		ctx:                  ctx,
-		logger:               logger,
-		clientMap:            make(map[string]*schemas.MCPClientState),
-		healthMonitorManager: NewHealthMonitorManager(),
-		toolSyncManager:      NewToolSyncManager(config.ToolSyncInterval),
-		oauth2Provider:       oauth2Provider,
+		ctx:            ctx,
+		logger:         logger,
+		clientMap:      make(map[string]*schemas.MCPClientState),
+		checkerManager: NewConnectionCheckerManager(config.ToolSyncInterval),
+		credStore:      credStore,
 	}
 	// Convert plugin pipeline provider functions to the interface expected by ToolsManager
 	var pluginPipelineProvider func() PluginPipeline
@@ -110,7 +212,9 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, oauth2Provider
 		}
 	}
 
-	manager.toolsManager = NewToolsManager(config.ToolManagerConfig, manager, config.FetchNewRequestIDFunc, pluginPipelineProvider, releasePluginPipeline, logger)
+	manager.pluginPipelineProvider = pluginPipelineProvider
+	manager.releasePluginPipeline = releasePluginPipeline
+	manager.toolsManager = NewToolsManager(config.ToolManagerConfig, manager, config.FetchNewRequestIDFunc, credStore, logger)
 
 	// Set up CodeMode if provided - inject dependencies after manager is created
 	if codeMode != nil {
@@ -119,45 +223,100 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, oauth2Provider
 		manager.toolsManager.SetCodeMode(codeMode)
 	}
 
-	// Process client configs: create client map entries and establish connections
-	if len(config.ClientConfigs) > 0 {
-		// Add clients in parallel
-		wg := sync.WaitGroup{}
-		wg.Add(len(config.ClientConfigs))
-		for _, clientConfig := range config.ClientConfigs {
-			go func(clientConfig *schemas.MCPClientConfig) {
-				defer wg.Done()
-				if err := manager.AddClient(clientConfig); err != nil {
-					manager.logger.Warn("%s Failed to register MCP client %s: %v", MCPLogPrefix, clientConfig.Name, err)
-					// Retain the entry in Disconnected state and start a health monitor to
-					// recover it automatically. On startup, a connection failure is likely
-					// transient (e.g. autoscaling cold start) — the client was previously
-					// configured and should be recovered without user intervention.
-					manager.mu.Lock()
-					if _, exists := manager.clientMap[clientConfig.ID]; !exists {
-						manager.clientMap[clientConfig.ID] = &schemas.MCPClientState{
-							Name:            clientConfig.Name,
-							ExecutionConfig: clientConfig,
-							State:           schemas.MCPConnectionStateDisconnected,
-							ToolMap:         make(map[string]schemas.ChatTool),
-							ToolNameMapping: make(map[string]string),
-							ConnectionInfo: &schemas.MCPClientConnectionInfo{
-								Type: clientConfig.ConnectionType,
-							},
-						}
-					} else {
-						manager.clientMap[clientConfig.ID].State = schemas.MCPConnectionStateDisconnected
-					}
-					manager.mu.Unlock()
-					monitor := NewClientHealthMonitor(manager, clientConfig.ID, DefaultHealthCheckInterval, clientConfig.IsPingAvailable, manager.logger)
-					manager.healthMonitorManager.StartMonitoring(monitor)
-				}
-			}(clientConfig)
-		}
-		wg.Wait()
-	}
+	// Retain client configs for an explicit dial via ConnectConfiguredClients.
+	// Construction no longer connects: callers dial after every plugin is
+	// registered so PreMCPConnectionHook sees the full plugin set (otherwise a
+	// connect issued during Init would run against the point-in-time plugin
+	// snapshot and silently skip plugins registered afterwards).
+	manager.bootClientConfigs = config.ClientConfigs
 	manager.logger.Info(MCPLogPrefix + " MCP Manager initialized")
 	return manager
+}
+
+// ConnectConfiguredClients dials the MCP clients supplied at construction time
+// (MCPConfig.ClientConfigs). It is separated from NewMCPManager so the caller can
+// run it only after all plugins are registered, ensuring every PreMCPConnectionHook
+// participates in the connection. Safe to call once after construction; clients are
+// dialed in parallel and a failed client is retained in the Unstable state with a
+// connection checker that recovers it automatically.
+func (m *MCPManager) ConnectConfiguredClients(ctx context.Context) {
+	m.connectOnce.Do(func() {
+		m.connectConfiguredClients(ctx)
+	})
+}
+
+// connectConfiguredClients performs the actual dial. It is invoked exactly once via
+// m.connectOnce, guarding against accidental repeat invocations (e.g. a double-Bootstrap
+// or a future code path) that would otherwise re-dial every boot config.
+func (m *MCPManager) connectConfiguredClients(ctx context.Context) {
+	if len(m.bootClientConfigs) == 0 {
+		return
+	}
+	if ctx == nil {
+		ctx = m.ctx
+	}
+	// Add clients in parallel
+	wg := sync.WaitGroup{}
+	wg.Add(len(m.bootClientConfigs))
+	for _, clientConfig := range m.bootClientConfigs {
+		go func(clientConfig *schemas.MCPClientConfig) {
+			defer wg.Done()
+			if err := m.AddClient(ctx, clientConfig); err != nil {
+				m.logger.Warn("%s Failed to register MCP client %s: %v", MCPLogPrefix, clientConfig.Name, err)
+				// Retain the entry in Unstable state and start a connection checker to
+				// recover it automatically. On startup, a connection failure is likely
+				// transient (e.g. autoscaling cold start) — the client was previously
+				// configured and should be recovered without user intervention.
+				m.mu.Lock()
+				if _, exists := m.clientMap[clientConfig.ID]; !exists {
+					m.clientMap[clientConfig.ID] = &schemas.MCPClientState{
+						Name:            clientConfig.Name,
+						ExecutionConfig: clientConfig,
+						State:           schemas.MCPConnectionStateUnstable,
+						ToolMap:         make(map[string]schemas.ChatTool),
+						ToolNameMapping: make(map[string]string),
+						ConnectionInfo: &schemas.MCPClientConnectionInfo{
+							Type: clientConfig.ConnectionType,
+						},
+					}
+				} else {
+					m.clientMap[clientConfig.ID].State = schemas.MCPConnectionStateUnstable
+				}
+				m.mu.Unlock()
+				isPingAvailable := true
+				if clientConfig.IsPingAvailable != nil {
+					isPingAvailable = *clientConfig.IsPingAvailable
+				}
+				syncInterval := ResolveToolSyncInterval(clientConfig, m.checkerManager.GetGlobalInterval())
+				checker := NewClientConnectionChecker(m, clientConfig.ID, syncInterval, isPingAvailable, m.logger)
+				m.checkerManager.StartChecking(checker)
+			}
+		}(clientConfig)
+	}
+	wg.Wait()
+}
+
+// SetPluginPipeline updates the plugin pipeline provider and release function on the manager's
+// ToolsManager and CodeMode. Call this after attaching an externally-created MCPManager to a Bifrost
+// instance so that nested tool calls in code mode can run through Bifrost's plugin hooks.
+func (manager *MCPManager) SetPluginPipeline(provider func() PluginPipeline, release func(PluginPipeline)) {
+	manager.pluginPipelineProvider = provider
+	manager.releasePluginPipeline = release
+}
+
+// GetPluginPipeline returns a plugin pipeline from the provider, or nil if no provider is configured.
+func (manager *MCPManager) GetPluginPipeline() PluginPipeline {
+	if manager.pluginPipelineProvider != nil {
+		return manager.pluginPipelineProvider()
+	}
+	return nil
+}
+
+// ReleasePluginPipeline releases a plugin pipeline back to the pool via the configured release function.
+func (manager *MCPManager) ReleasePluginPipeline(pipeline PluginPipeline) {
+	if manager.releasePluginPipeline != nil {
+		manager.releasePluginPipeline(pipeline)
+	}
 }
 
 // AddToolsToRequest parses available MCP tools from the context and adds them to the request.
@@ -170,29 +329,12 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, oauth2Provider
 //
 // Returns:
 //   - *schemas.BifrostRequest: The request with tools added
-func (m *MCPManager) AddToolsToRequest(ctx context.Context, req *schemas.BifrostRequest) *schemas.BifrostRequest {
+func (m *MCPManager) AddToolsToRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) *schemas.BifrostRequest {
 	return m.toolsManager.ParseAndAddToolsToRequest(ctx, req)
 }
 
-func (m *MCPManager) GetAvailableTools(ctx context.Context) []schemas.ChatTool {
+func (m *MCPManager) GetAvailableTools(ctx *schemas.BifrostContext) []schemas.ChatTool {
 	return m.toolsManager.GetAvailableTools(ctx)
-}
-
-// ExecuteToolCall executes a single tool call and returns the result.
-// This is the primary tool executor and is used by both Chat Completions and Responses APIs.
-//
-// The method accepts an MCP request containing either a ChatAssistantMessageToolCall or
-// ResponsesToolMessage, and returns the appropriate result format based on the request type.
-//
-// Parameters:
-//   - ctx: Context for the tool execution
-//   - request: The MCP request containing the tool call (ChatAssistantMessageToolCall or ResponsesToolMessage)
-//
-// Returns:
-//   - *schemas.BifrostMCPResponse: The result response containing tool execution output (ChatMessage or ResponsesMessage)
-//   - error: Any error that occurred during tool execution
-func (m *MCPManager) ExecuteToolCall(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-	return m.toolsManager.ExecuteTool(ctx, request)
 }
 
 // UpdateToolManagerConfig updates the configuration for the tool manager.
@@ -231,7 +373,6 @@ func (m *MCPManager) CheckAndExecuteAgentForChatRequest(
 	req *schemas.BifrostChatRequest,
 	response *schemas.BifrostChatResponse,
 	makeReq func(ctx *schemas.BifrostContext, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError),
-	executeTool func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error),
 ) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	if makeReq == nil {
 		return nil, &schemas.BifrostError{
@@ -246,8 +387,9 @@ func (m *MCPManager) CheckAndExecuteAgentForChatRequest(
 		m.logger.Debug("No tool calls detected, returning response")
 		return response, nil
 	}
-	// Execute agent mode
-	return m.toolsManager.ExecuteAgentForChatRequest(ctx, req, response, makeReq, executeTool)
+	// Execute agent mode. The agent's tool executions go through the plugin gate
+	// internally via m.executeToolForAgent — no external callback injection needed.
+	return m.toolsManager.ExecuteAgentForChatRequest(ctx, req, response, makeReq, m.executeToolForAgent)
 }
 
 // CheckAndExecuteAgentForResponsesRequest checks if the responses response contains tool calls,
@@ -283,7 +425,6 @@ func (m *MCPManager) CheckAndExecuteAgentForResponsesRequest(
 	req *schemas.BifrostResponsesRequest,
 	response *schemas.BifrostResponsesResponse,
 	makeReq func(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError),
-	executeTool func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error),
 ) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	if makeReq == nil {
 		return nil, &schemas.BifrostError{
@@ -298,8 +439,8 @@ func (m *MCPManager) CheckAndExecuteAgentForResponsesRequest(
 		m.logger.Debug("No tool calls detected, returning response")
 		return response, nil
 	}
-	// Execute agent mode
-	return m.toolsManager.ExecuteAgentForResponsesRequest(ctx, req, response, makeReq, executeTool)
+	// Execute agent mode. Tool executions go through the plugin gate internally.
+	return m.toolsManager.ExecuteAgentForResponsesRequest(ctx, req, response, makeReq, m.executeToolForAgent)
 }
 
 // Cleanup performs cleanup of all MCP resources including clients and local server.
@@ -310,11 +451,8 @@ func (m *MCPManager) CheckAndExecuteAgentForResponsesRequest(
 // Returns:
 //   - error: Always returns nil, but maintains error interface for consistency
 func (m *MCPManager) Cleanup() error {
-	// Stop all health monitors first
-	m.healthMonitorManager.StopAll()
-
-	// Stop all tool syncers
-	m.toolSyncManager.StopAll()
+	// Stop all connection checkers first
+	m.checkerManager.StopAll()
 
 	m.mu.Lock()
 	defer m.mu.Unlock()

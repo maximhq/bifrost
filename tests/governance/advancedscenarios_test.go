@@ -24,10 +24,10 @@ func TestVKSwitchTeamAfterBudgetExhaustion(t *testing.T) {
 		Path:   "/api/governance/teams",
 		Body: CreateTeamRequest{
 			Name: team1Name,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      team1Budget,
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 
@@ -46,10 +46,10 @@ func TestVKSwitchTeamAfterBudgetExhaustion(t *testing.T) {
 		Path:   "/api/governance/teams",
 		Body: CreateTeamRequest{
 			Name: team2Name,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      team2Budget,
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 
@@ -68,8 +68,9 @@ func TestVKSwitchTeamAfterBudgetExhaustion(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name:   vkName,
-			TeamID: &team1ID,
+			Name:            vkName,
+			ProviderConfigs: defaultProviderConfigs(),
+			TeamID:          &team1ID,
 		},
 	})
 
@@ -189,10 +190,10 @@ func TestVKSwitchCustomerAfterBudgetExhaustion(t *testing.T) {
 		Path:   "/api/governance/customers",
 		Body: CreateCustomerRequest{
 			Name: customer1Name,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      customer1Budget,
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 
@@ -211,10 +212,10 @@ func TestVKSwitchCustomerAfterBudgetExhaustion(t *testing.T) {
 		Path:   "/api/governance/customers",
 		Body: CreateCustomerRequest{
 			Name: customer2Name,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      customer2Budget,
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 
@@ -233,8 +234,9 @@ func TestVKSwitchCustomerAfterBudgetExhaustion(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name:       vkName,
-			CustomerID: &customer1ID,
+			Name:            vkName,
+			ProviderConfigs: defaultProviderConfigs(),
+			CustomerID:      &customer1ID,
 		},
 	})
 
@@ -350,10 +352,10 @@ func TestHierarchicalChainBudgetSwitch(t *testing.T) {
 		Path:   "/api/governance/customers",
 		Body: CreateCustomerRequest{
 			Name: customer1Name,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      0.01, // $0.01 - most restrictive
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 
@@ -372,10 +374,10 @@ func TestHierarchicalChainBudgetSwitch(t *testing.T) {
 		Body: CreateTeamRequest{
 			Name:       team1Name,
 			CustomerID: &customer1ID,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      100.0, // High budget - customer is limiting
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 
@@ -393,10 +395,10 @@ func TestHierarchicalChainBudgetSwitch(t *testing.T) {
 		Path:   "/api/governance/customers",
 		Body: CreateCustomerRequest{
 			Name: customer2Name,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      100.0, // High budget
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 
@@ -415,10 +417,10 @@ func TestHierarchicalChainBudgetSwitch(t *testing.T) {
 		Body: CreateTeamRequest{
 			Name:       team2Name,
 			CustomerID: &customer2ID,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      100.0, // High budget
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 
@@ -437,8 +439,9 @@ func TestHierarchicalChainBudgetSwitch(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name:   vkName,
-			TeamID: &team1ID,
+			Name:            vkName,
+			ProviderConfigs: defaultProviderConfigs(),
+			TeamID:          &team1ID,
 		},
 	})
 
@@ -550,11 +553,12 @@ func TestVKBudgetUpdateAfterExhaustion(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name: vkName,
-			Budget: &BudgetRequest{
+			Name:            vkName,
+			ProviderConfigs: defaultProviderConfigs(),
+			Budgets: []BudgetRequest{{
 				MaxLimit:      initialBudget,
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 
@@ -621,10 +625,10 @@ func TestVKBudgetUpdateAfterExhaustion(t *testing.T) {
 		Method: "PUT",
 		Path:   "/api/governance/virtual-keys/" + vkID,
 		Body: UpdateVirtualKeyRequest{
-			Budget: &UpdateBudgetRequest{
-				MaxLimit:      &newBudget,
-				ResetDuration: &resetDuration,
-			},
+			Budgets: []BudgetRequest{{
+				MaxLimit:      newBudget,
+				ResetDuration: resetDuration,
+			}},
 		},
 	})
 
@@ -674,10 +678,10 @@ func TestTeamBudgetUpdateAfterExhaustion(t *testing.T) {
 		Path:   "/api/governance/teams",
 		Body: CreateTeamRequest{
 			Name: teamName,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      initialBudget,
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 
@@ -694,8 +698,9 @@ func TestTeamBudgetUpdateAfterExhaustion(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name:   vkName,
-			TeamID: &teamID,
+			Name:            vkName,
+			ProviderConfigs: defaultProviderConfigs(),
+			TeamID:          &teamID,
 		},
 	})
 
@@ -762,10 +767,10 @@ func TestTeamBudgetUpdateAfterExhaustion(t *testing.T) {
 		Method: "PUT",
 		Path:   "/api/governance/teams/" + teamID,
 		Body: UpdateTeamRequest{
-			Budget: &UpdateBudgetRequest{
-				MaxLimit:      &newBudget,
-				ResetDuration: &resetDuration,
-			},
+			Budgets: &[]BudgetRequest{{
+				MaxLimit:      newBudget,
+				ResetDuration: resetDuration,
+			}},
 		},
 	})
 
@@ -815,10 +820,10 @@ func TestCustomerBudgetUpdateAfterExhaustion(t *testing.T) {
 		Path:   "/api/governance/customers",
 		Body: CreateCustomerRequest{
 			Name: customerName,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      initialBudget,
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 
@@ -853,8 +858,9 @@ func TestCustomerBudgetUpdateAfterExhaustion(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name:   vkName,
-			TeamID: &teamID,
+			Name:            vkName,
+			ProviderConfigs: defaultProviderConfigs(),
+			TeamID:          &teamID,
 		},
 	})
 
@@ -921,10 +927,10 @@ func TestCustomerBudgetUpdateAfterExhaustion(t *testing.T) {
 		Method: "PUT",
 		Path:   "/api/governance/customers/" + customerID,
 		Body: UpdateCustomerRequest{
-			Budget: &UpdateBudgetRequest{
-				MaxLimit:      &newBudget,
-				ResetDuration: &resetDuration,
-			},
+			Budgets: []BudgetRequest{{
+				MaxLimit:      newBudget,
+				ResetDuration: resetDuration,
+			}},
 		},
 	})
 
@@ -976,12 +982,14 @@ func TestProviderConfigBudgetUpdateAfterExhaustion(t *testing.T) {
 			Name: vkName,
 			ProviderConfigs: []ProviderConfigRequest{
 				{
-					Provider: "openai",
-					Weight:   1.0,
-					Budget: &BudgetRequest{
+					Provider:      "openai",
+					Weight:        float64Ptr(1.0),
+					AllowedModels: []string{"*"},
+					KeyIDs:        []string{"*"},
+					Budgets: []BudgetRequest{{
 						MaxLimit:      initialBudget,
 						ResetDuration: "1h",
-					},
+					}},
 				},
 			},
 		},
@@ -1005,8 +1013,10 @@ func TestProviderConfigBudgetUpdateAfterExhaustion(t *testing.T) {
 		Path:   "/api/governance/virtual-keys?from_memory=true",
 	})
 
-	virtualKeysMap := getDataResp.Body["virtual_keys"].(map[string]interface{})
-	vkData := virtualKeysMap[vkValue].(map[string]interface{})
+	vkData := FindListItem(t, getDataResp.Body, "virtual_keys", "value", vkValue)
+	if vkData == nil {
+		t.Fatalf("VK not found in in-memory store")
+	}
 	providerConfigs := vkData["provider_configs"].([]interface{})
 	providerConfig := providerConfigs[0].(map[string]interface{})
 	providerConfigID := uint(providerConfig["id"].(float64))
@@ -1063,13 +1073,15 @@ func TestProviderConfigBudgetUpdateAfterExhaustion(t *testing.T) {
 		Body: UpdateVirtualKeyRequest{
 			ProviderConfigs: []ProviderConfigRequest{
 				{
-					ID:       &providerConfigID,
-					Provider: "openai",
-					Weight:   1.0,
-					Budget: &BudgetRequest{
+					ID:            &providerConfigID,
+					Provider:      "openai",
+					Weight:        float64Ptr(1.0),
+					AllowedModels: []string{"*"},
+					KeyIDs:        []string{"*"},
+					Budgets: []BudgetRequest{{
 						MaxLimit:      newBudget,
 						ResetDuration: "1h",
-					},
+					}},
 				},
 			},
 		},
@@ -1122,22 +1134,24 @@ func TestVKDeletionCascadeComplete(t *testing.T) {
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
 			Name: vkName,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      10.0,
 				ResetDuration: "1h",
-			},
+			}},
 			RateLimit: &CreateRateLimitRequest{
 				TokenMaxLimit:      &tokenLimit,
 				TokenResetDuration: &tokenResetDuration,
 			},
 			ProviderConfigs: []ProviderConfigRequest{
 				{
-					Provider: "openai",
-					Weight:   1.0,
-					Budget: &BudgetRequest{
+					Provider:      "openai",
+					Weight:        float64Ptr(1.0),
+					AllowedModels: []string{"*"},
+					KeyIDs:        []string{"*"},
+					Budgets: []BudgetRequest{{
 						MaxLimit:      5.0,
 						ResetDuration: "1h",
-					},
+					}},
 					RateLimit: &CreateRateLimitRequest{
 						TokenMaxLimit:      &tokenLimit,
 						TokenResetDuration: &tokenResetDuration,
@@ -1165,41 +1179,40 @@ func TestVKDeletionCascadeComplete(t *testing.T) {
 		Path:   "/api/governance/virtual-keys?from_memory=true",
 	})
 
-	virtualKeysMap1 := getDataResp1.Body["virtual_keys"].(map[string]interface{})
-
 	getBudgetsResp1 := MakeRequest(t, APIRequest{
 		Method: "GET",
 		Path:   "/api/governance/budgets?from_memory=true",
 	})
-
-	budgetsMap1 := getBudgetsResp1.Body["budgets"].(map[string]interface{})
 
 	getRateLimitsResp1 := MakeRequest(t, APIRequest{
 		Method: "GET",
 		Path:   "/api/governance/rate-limits?from_memory=true",
 	})
 
-	rateLimitsMap1 := getRateLimitsResp1.Body["rate_limits"].(map[string]interface{})
-
 	// Verify VK exists
-	_, vkExists := virtualKeysMap1[vkValue]
-	if !vkExists {
+	vkData1 := FindListItem(t, getDataResp1.Body, "virtual_keys", "value", vkValue)
+	if vkData1 == nil {
 		t.Fatalf("VK not found in in-memory store")
 	}
 
-	vkData1 := virtualKeysMap1[vkValue].(map[string]interface{})
-	vkBudgetID := vkData1["budget_id"].(string)
+	vkBudgetID := FirstBudgetID(vkData1)
+	if vkBudgetID == "" {
+		t.Fatalf("VK has no embedded budget in in-memory store")
+	}
 	vkRateLimitID := vkData1["rate_limit_id"].(string)
 	providerConfigs := vkData1["provider_configs"].([]interface{})
 	pc := providerConfigs[0].(map[string]interface{})
-	pcBudgetID := pc["budget_id"].(string)
+	pcBudgetID := FirstBudgetID(pc)
+	if pcBudgetID == "" {
+		t.Fatalf("provider config has no embedded budget in in-memory store")
+	}
 	pcRateLimitID := pc["rate_limit_id"].(string)
 
 	// Verify all resources exist in memory
-	_, vkBudgetExists := budgetsMap1[vkBudgetID]
-	_, vkRateLimitExists := rateLimitsMap1[vkRateLimitID]
-	_, pcBudgetExists := budgetsMap1[pcBudgetID]
-	_, pcRateLimitExists := rateLimitsMap1[pcRateLimitID]
+	vkBudgetExists := FindListItem(t, getBudgetsResp1.Body, "budgets", "id", vkBudgetID) != nil
+	vkRateLimitExists := FindListItem(t, getRateLimitsResp1.Body, "rate_limits", "id", vkRateLimitID) != nil
+	pcBudgetExists := FindListItem(t, getBudgetsResp1.Body, "budgets", "id", pcBudgetID) != nil
+	pcRateLimitExists := FindListItem(t, getRateLimitsResp1.Body, "rate_limits", "id", pcRateLimitID) != nil
 
 	if !vkBudgetExists || !vkRateLimitExists || !pcBudgetExists || !pcRateLimitExists {
 		t.Fatalf("Not all resources found in memory before deletion")
@@ -1227,39 +1240,33 @@ func TestVKDeletionCascadeComplete(t *testing.T) {
 		Path:   "/api/governance/virtual-keys?from_memory=true",
 	})
 
-	virtualKeysMap2 := getDataResp2.Body["virtual_keys"].(map[string]interface{})
-
 	getBudgetsResp2 := MakeRequest(t, APIRequest{
 		Method: "GET",
 		Path:   "/api/governance/budgets?from_memory=true",
 	})
-
-	budgetsMap2 := getBudgetsResp2.Body["budgets"].(map[string]interface{})
 
 	getRateLimitsResp2 := MakeRequest(t, APIRequest{
 		Method: "GET",
 		Path:   "/api/governance/rate-limits?from_memory=true",
 	})
 
-	rateLimitsMap2 := getRateLimitsResp2.Body["rate_limits"].(map[string]interface{})
-
 	// VK should be gone
-	_, vkStillExists := virtualKeysMap2[vkValue]
+	vkStillExists := FindListItem(t, getDataResp2.Body, "virtual_keys", "value", vkValue) != nil
 	if vkStillExists {
 		t.Fatalf("VK still exists in memory after deletion")
 	}
 
 	// Budgets should be gone
-	_, vkBudgetStillExists := budgetsMap2[vkBudgetID]
-	_, pcBudgetStillExists := budgetsMap2[pcBudgetID]
+	vkBudgetStillExists := FindListItem(t, getBudgetsResp2.Body, "budgets", "id", vkBudgetID) != nil
+	pcBudgetStillExists := FindListItem(t, getBudgetsResp2.Body, "budgets", "id", pcBudgetID) != nil
 	if vkBudgetStillExists || pcBudgetStillExists {
 		t.Fatalf("Budgets should be cascade-deleted: VK budget exists=%v, PC budget exists=%v",
 			vkBudgetStillExists, pcBudgetStillExists)
 	}
 
 	// Rate limits should be gone
-	_, vkRateLimitStillExists := rateLimitsMap2[vkRateLimitID]
-	_, pcRateLimitStillExists := rateLimitsMap2[pcRateLimitID]
+	vkRateLimitStillExists := FindListItem(t, getRateLimitsResp2.Body, "rate_limits", "id", vkRateLimitID) != nil
+	pcRateLimitStillExists := FindListItem(t, getRateLimitsResp2.Body, "rate_limits", "id", pcRateLimitID) != nil
 	if vkRateLimitStillExists || pcRateLimitStillExists {
 		t.Logf("Note: Rate limits may still exist in memory (orphaned) - this is acceptable")
 	}
@@ -1285,10 +1292,10 @@ func TestTeamDeletionDeletesBudget(t *testing.T) {
 		Path:   "/api/governance/teams",
 		Body: CreateTeamRequest{
 			Name: teamName,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      100.0,
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 
@@ -1307,20 +1314,23 @@ func TestTeamDeletionDeletesBudget(t *testing.T) {
 		Path:   "/api/governance/teams?from_memory=true",
 	})
 
-	teamsMap1 := getTeamsResp1.Body["teams"].(map[string]interface{})
-
 	getBudgetsResp1 := MakeRequest(t, APIRequest{
 		Method: "GET",
 		Path:   "/api/governance/budgets?from_memory=true",
 	})
 
-	budgetsMap1 := getBudgetsResp1.Body["budgets"].(map[string]interface{})
+	teamData1 := FindListItem(t, getTeamsResp1.Body, "teams", "id", teamID)
+	if teamData1 == nil {
+		t.Fatalf("Team %s not found in memory before deletion", teamID)
+	}
+	// Teams now expose a `budgets` array instead of a single `budget_id`.
+	budgetsList, ok := teamData1["budgets"].([]interface{})
+	if !ok || len(budgetsList) == 0 {
+		t.Fatalf("Team %s has no budgets in memory before deletion", teamID)
+	}
+	budgetID := budgetsList[0].(map[string]interface{})["id"].(string)
 
-	teamData1 := teamsMap1[teamID].(map[string]interface{})
-	budgetID := teamData1["budget_id"].(string)
-
-	_, budgetExists := budgetsMap1[budgetID]
-	if !budgetExists {
+	if FindListItem(t, getBudgetsResp1.Body, "budgets", "id", budgetID) == nil {
 		t.Fatalf("Budget not found in memory before deletion")
 	}
 
@@ -1346,9 +1356,7 @@ func TestTeamDeletionDeletesBudget(t *testing.T) {
 		Path:   "/api/governance/teams?from_memory=true",
 	})
 
-	teamsMap2 := getTeamsResp2.Body["teams"].(map[string]interface{})
-
-	_, teamStillExists := teamsMap2[teamID]
+	teamStillExists := FindListItem(t, getTeamsResp2.Body, "teams", "id", teamID) != nil
 	if teamStillExists {
 		t.Fatalf("Team still exists in memory after deletion")
 	}
@@ -1365,9 +1373,7 @@ func TestTeamDeletionDeletesBudget(t *testing.T) {
 		t.Fatalf("Failed to get budgets from memory: status %d", getBudgetsResp2.StatusCode)
 	}
 
-	budgetsMap2 := getBudgetsResp2.Body["budgets"].(map[string]interface{})
-
-	_, budgetStillExists := budgetsMap2[budgetID]
+	budgetStillExists := FindListItem(t, getBudgetsResp2.Body, "budgets", "id", budgetID) != nil
 	if budgetStillExists {
 		t.Fatalf("Budget %s still exists in memory after team deletion", budgetID)
 	}
@@ -1389,10 +1395,10 @@ func TestCustomerDeletionDeletesBudget(t *testing.T) {
 		Path:   "/api/governance/customers",
 		Body: CreateCustomerRequest{
 			Name: customerName,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      100.0,
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 
@@ -1411,20 +1417,21 @@ func TestCustomerDeletionDeletesBudget(t *testing.T) {
 		Path:   "/api/governance/customers?from_memory=true",
 	})
 
-	customersMap1 := getCustomersResp1.Body["customers"].(map[string]interface{})
-
 	getBudgetsResp1 := MakeRequest(t, APIRequest{
 		Method: "GET",
 		Path:   "/api/governance/budgets?from_memory=true",
 	})
 
-	budgetsMap1 := getBudgetsResp1.Body["budgets"].(map[string]interface{})
+	customerData1 := FindListItem(t, getCustomersResp1.Body, "customers", "id", customerID)
+	if customerData1 == nil {
+		t.Fatalf("Customer %s not found in memory before deletion", customerID)
+	}
+	budgetID := FirstBudgetID(customerData1)
+	if budgetID == "" {
+		t.Fatalf("customer has no embedded budget in in-memory store")
+	}
 
-	customerData1 := customersMap1[customerID].(map[string]interface{})
-	budgetID := customerData1["budget_id"].(string)
-
-	_, budgetExists := budgetsMap1[budgetID]
-	if !budgetExists {
+	if FindListItem(t, getBudgetsResp1.Body, "budgets", "id", budgetID) == nil {
 		t.Fatalf("Budget not found in memory before deletion")
 	}
 
@@ -1450,9 +1457,7 @@ func TestCustomerDeletionDeletesBudget(t *testing.T) {
 		Path:   "/api/governance/customers?from_memory=true",
 	})
 
-	customersMap2 := getCustomersResp2.Body["customers"].(map[string]interface{})
-
-	_, customerStillExists := customersMap2[customerID]
+	customerStillExists := FindListItem(t, getCustomersResp2.Body, "customers", "id", customerID) != nil
 	if customerStillExists {
 		t.Fatalf("Customer still exists in memory after deletion")
 	}
@@ -1469,9 +1474,7 @@ func TestCustomerDeletionDeletesBudget(t *testing.T) {
 		t.Fatalf("Failed to get budgets from memory: status %d", getBudgetsResp2.StatusCode)
 	}
 
-	budgetsMap2 := getBudgetsResp2.Body["budgets"].(map[string]interface{})
-
-	_, budgetStillExists := budgetsMap2[budgetID]
+	budgetStillExists := FindListItem(t, getBudgetsResp2.Body, "budgets", "id", budgetID) != nil
 	if budgetStillExists {
 		t.Fatalf("Budget still exists in memory after customer deletion")
 	}
@@ -1513,8 +1516,9 @@ func TestTeamDeletionSetsVKTeamIDToNil(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name:   vkName,
-			TeamID: &teamID,
+			Name:            vkName,
+			ProviderConfigs: defaultProviderConfigs(),
+			TeamID:          &teamID,
 		},
 	})
 
@@ -1536,8 +1540,10 @@ func TestTeamDeletionSetsVKTeamIDToNil(t *testing.T) {
 		Path:   "/api/governance/virtual-keys?from_memory=true",
 	})
 
-	virtualKeysMap1 := getDataResp1.Body["virtual_keys"].(map[string]interface{})
-	vkData1 := virtualKeysMap1[vkValue].(map[string]interface{})
+	vkData1 := FindListItem(t, getDataResp1.Body, "virtual_keys", "value", vkValue)
+	if vkData1 == nil {
+		t.Fatalf("VK not found in in-memory store")
+	}
 
 	teamIDFromVK1, hasTeamID := vkData1["team_id"].(string)
 	if !hasTeamID || teamIDFromVK1 != teamID {
@@ -1566,10 +1572,8 @@ func TestTeamDeletionSetsVKTeamIDToNil(t *testing.T) {
 		Path:   "/api/governance/virtual-keys?from_memory=true",
 	})
 
-	virtualKeysMap2 := getDataResp2.Body["virtual_keys"].(map[string]interface{})
-
-	vkData2, vkStillExists := virtualKeysMap2[vkValue].(map[string]interface{})
-	if !vkStillExists {
+	vkData2 := FindListItem(t, getDataResp2.Body, "virtual_keys", "value", vkValue)
+	if vkData2 == nil {
 		t.Fatalf("VK should still exist after team deletion")
 	}
 
@@ -1611,8 +1615,9 @@ func TestCustomerDeletionSetsVKCustomerIDToNil(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name:       vkName,
-			CustomerID: &customerID,
+			Name:            vkName,
+			ProviderConfigs: defaultProviderConfigs(),
+			CustomerID:      &customerID,
 		},
 	})
 
@@ -1634,8 +1639,10 @@ func TestCustomerDeletionSetsVKCustomerIDToNil(t *testing.T) {
 		Path:   "/api/governance/virtual-keys?from_memory=true",
 	})
 
-	virtualKeysMap1 := getDataResp1.Body["virtual_keys"].(map[string]interface{})
-	vkData1 := virtualKeysMap1[vkValue].(map[string]interface{})
+	vkData1 := FindListItem(t, getDataResp1.Body, "virtual_keys", "value", vkValue)
+	if vkData1 == nil {
+		t.Fatalf("VK not found in in-memory store")
+	}
 
 	customerIDFromVK1, hasCustomerID := vkData1["customer_id"].(string)
 	if !hasCustomerID || customerIDFromVK1 != customerID {
@@ -1664,10 +1671,8 @@ func TestCustomerDeletionSetsVKCustomerIDToNil(t *testing.T) {
 		Path:   "/api/governance/virtual-keys?from_memory=true",
 	})
 
-	virtualKeysMap2 := getDataResp2.Body["virtual_keys"].(map[string]interface{})
-
-	vkData2, vkStillExists := virtualKeysMap2[vkValue].(map[string]interface{})
-	if !vkStillExists {
+	vkData2 := FindListItem(t, getDataResp2.Body, "virtual_keys", "value", vkValue)
+	if vkData2 == nil {
 		t.Fatalf("VK should still exist after customer deletion")
 	}
 

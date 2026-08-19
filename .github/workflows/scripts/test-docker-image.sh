@@ -96,7 +96,13 @@ if [ -z "$NETWORK_NAME" ] || [ "$NETWORK_NAME" = "null" ]; then
   NETWORK_NAME="tests_bifrost_network"
 fi
 
-# Generate config.json with all providers and Postgres stores
+# Generate config.json with all providers and Postgres stores.
+# NOTE: postgres host is hard-coded to 172.28.0.16 (the pinned bridge IP from
+# tests/docker-compose.yml) instead of the hostname "postgres" because
+# harden-runner interferes with Docker's embedded DNS at 127.0.0.11:53 even
+# when that endpoint is in allowed-endpoints. Using the IP directly bypasses
+# DNS and goes through the iptables forward chain where harden-runner's
+# allow-list (which includes 172.28.0.16:5432) works correctly.
 echo ""
 echo "=== Generating config.json ==="
 cat > "$CONFIG_FILE" << 'CONFIGEOF'
@@ -175,7 +181,7 @@ cat > "$CONFIG_FILE" << 'CONFIGEOF'
     "enabled": true,
     "type": "postgres",
     "config": {
-      "host": "postgres",
+      "host": "172.28.0.16",
       "port": "5432",
       "user": "bifrost",
       "password": "bifrost_password",
@@ -187,7 +193,7 @@ cat > "$CONFIG_FILE" << 'CONFIGEOF'
     "enabled": true,
     "type": "postgres",
     "config": {
-      "host": "postgres",
+      "host": "172.28.0.16",
       "port": "5432",
       "user": "bifrost",
       "password": "bifrost_password",
@@ -210,10 +216,8 @@ cat > "$CONFIG_FILE" << 'CONFIGEOF'
     "initial_pool_size": 300,
     "allowed_origins": ["http://localhost:3000", "https://localhost:3000"],
     "enable_logging": true,
-    "enforce_governance_header": false,
-    "allow_direct_keys": false,
-    "max_request_body_size_mb": 100,
-    "enable_litellm_fallbacks": false
+    "enforce_auth_on_inference": false,
+    "max_request_body_size_mb": 100
   },
   "encryption_key": ""
 }
@@ -288,13 +292,13 @@ fi
 
 # echo pwd: $(pwd)
 # # Run the E2E API test scripts (marked as flaky - failures are logged but don't block)
-# if ! ./tests/e2e/api/run-newman-tests.sh; then
-#   echo "WARNING: run-newman-tests.sh failed (flaky test - continuing)"
+# if ! ./tests/e2e/api/runners/run-newman-inference-tests.sh; then
+#   echo "WARNING: runners/run-newman-inference-tests.sh failed (flaky test - continuing)"
 # fi
 # if ! ./tests/e2e/api/run-all-integrations.sh; then
 #   echo "WARNING: run-all-integrations.sh failed (flaky test - continuing)"
 # fi
-# if ! ./tests/e2e/api/run-newman-api-tests.sh; then
+# if ! ./tests/e2e/api/runners/run-newman-api-tests.sh; then
 #   echo "WARNING: run-newman-api-tests.sh failed (flaky test - continuing)"
 # fi
 

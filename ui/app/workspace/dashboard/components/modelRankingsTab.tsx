@@ -1,18 +1,27 @@
-"use client";
-
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import ProviderIcons, { type ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import type { ModelHistogramResponse, ModelRankingEntry, ModelRankingsResponse } from "@/lib/types/logs";
-import { ArrowDown, ArrowUp, ArrowUpDown, Minus } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
+import { COMPACT_NUMBER_FORMAT, formatCompactNumber as formatNumber } from "@/lib/utils/numbers";
+import NumberFlow from "@number-flow/react";
+import { memo, useCallback, useMemo, useState } from "react";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { formatFullTimestamp, formatTimestamp, getModelColor } from "../utils/chartUtils";
+import {
+	displayModelLabel,
+	formatFullTimestamp,
+	formatTimestamp,
+	formatTokensPerSecond,
+	getModelColor,
+	OTHER_SERIES_COLOR,
+	OTHER_SERIES_KEY,
+	pickTopSeries,
+} from "../utils/chartUtils";
 import { ChartCard } from "./charts/chartCard";
 import { ChartErrorBoundary } from "./charts/chartErrorBoundary";
+import { formatCost, SortableHeader, TrendBadge } from "./rankingsShared";
 
-type SortField = "total_requests" | "success_rate" | "total_tokens" | "total_cost" | "avg_latency";
+type SortField = "total_requests" | "success_rate" | "total_tokens" | "total_cost" | "avg_latency" | "throughput";
 type SortOrder = "asc" | "desc";
 
 interface ModelRankingsTabProps {
@@ -24,88 +33,13 @@ interface ModelRankingsTabProps {
 	endTime: number;
 }
 
-function formatNumber(value: number): string {
-	if (value >= 1_000_000_000_000) return `${(value / 1_000_000_000_000).toFixed(2)}T`;
-	if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(2)}B`;
-	if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-	if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
-	return value.toLocaleString();
-}
-
-function formatCost(value: number): string {
-	if (value >= 1) return `$${value.toFixed(2)}`;
-	if (value >= 0.01) return `$${value.toFixed(3)}`;
-	if (value > 0) return `$${value.toFixed(4)}`;
-	return "$0.00";
-}
-
 function formatLatency(ms: number): string {
 	if (ms >= 1000) return `${(ms / 1000).toFixed(2)}s`;
 	return `${ms.toFixed(0)}ms`;
 }
 
-function TrendBadge({ value, positiveIsGood = true, isNew = false }: { value: number; positiveIsGood?: boolean; isNew?: boolean }) {
-	if (isNew) {
-		return (
-			<span className="inline-flex items-center gap-0.5 text-xs font-medium text-blue-600 dark:text-blue-400">
-				new
-			</span>
-		);
-	}
-
-	if (value === 0) {
-		return (
-			<span className="text-muted-foreground inline-flex items-center gap-0.5 text-xs">
-				<Minus className="h-3 w-3" />
-			</span>
-		);
-	}
-
-	const isPositive = value > 0;
-	const isGood = positiveIsGood ? isPositive : !isPositive;
-	return (
-		<span
-			className={`inline-flex items-center gap-0.5 text-xs font-medium ${isGood ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}
-		>
-			{isPositive ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />}
-			{Math.abs(value).toFixed(1)}%
-		</span>
-	);
-}
-
-function SortableHeader({
-	label,
-	field,
-	currentSort,
-	currentOrder,
-	onSort,
-}: {
-	label: string;
-	field: SortField;
-	currentSort: SortField;
-	currentOrder: SortOrder;
-	onSort: (field: SortField) => void;
-}) {
-	const isActive = currentSort === field;
-	const ariaSort = isActive ? (currentOrder === "asc" ? "ascending" : "descending") : "none";
-	return (
-		<button type="button" data-testid={`sort-${field}-btn`} aria-sort={ariaSort} className="hover:text-foreground inline-flex items-center gap-1 transition-colors" onClick={() => onSort(field)}>
-			{label}
-			{isActive ? (
-				currentOrder === "desc" ? (
-					<ArrowDown className="h-3 w-3" />
-				) : (
-					<ArrowUp className="h-3 w-3" />
-				)
-			) : (
-				<ArrowUpDown className="text-muted-foreground h-3 w-3" />
-			)}
-		</button>
-	);
-}
-
 // Tooltip for the usage share chart
-function UsageShareTooltip({ active, payload, models }: any) {
+function UsageShareTooltip({ active, payload, models, modelLabels }: any) {
 	if (!active || !payload || !payload.length) return null;
 	const data = payload[0]?.payload;
 	if (!data) return null;
@@ -117,11 +51,15 @@ function UsageShareTooltip({ active, payload, models }: any) {
 				{models.map((model: string, idx: number) => {
 					const val = data[`model_${idx}`];
 					if (!val || val === 0) return null;
+					const isOther = model === OTHER_SERIES_KEY;
+					const isUnnamed = !isOther && model === "";
 					return (
-						<div key={model} className="flex items-center justify-between gap-4">
+						<div key={model || `__unnamed_${idx}`} className="flex items-center justify-between gap-4">
 							<span className="flex items-center gap-1.5">
-								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: getModelColor(idx) }} />
-								<span className="max-w-[140px] truncate text-zinc-600 dark:text-zinc-400">{model}</span>
+								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: isOther ? OTHER_SERIES_COLOR : getModelColor(idx) }} />
+								<span className={`max-w-[140px] truncate text-zinc-600 dark:text-zinc-400${isUnnamed ? " italic" : ""}`}>
+									{displayModelLabel(model, modelLabels)}
+								</span>
 							</span>
 							<span className="font-medium">{val.toLocaleString()}</span>
 						</div>
@@ -137,12 +75,14 @@ function TopModelsChart({
 	modelData,
 	loadingModels,
 	rankingsData,
+	modelLabels,
 	startTime,
 	endTime,
 }: {
 	modelData: ModelHistogramResponse | null;
 	loadingModels: boolean;
 	rankingsData: ModelRankingsResponse | null;
+	modelLabels: Record<string, string>;
 	startTime: number;
 	endTime: number;
 }) {
@@ -151,20 +91,45 @@ function TopModelsChart({
 			return { chartData: [], displayModels: [] };
 		}
 
-		const models = [...(modelData.models || [])].sort((a, b) => a.localeCompare(b));
+		const allModels = modelData.models || [];
+		// Pick top-N by total request count, then sort the chosen labels alphabetically
+		// for legend stability. Other goes at the end.
+		const top = pickTopSeries(modelData.buckets, allModels, (b, m) => b.by_model?.[m]?.total ?? 0);
+		const hasOther = top.length < allModels.length;
+		const sortedTop = [...top].sort((a, b) => a.localeCompare(b));
+		const models = hasOther ? [...sortedTop, OTHER_SERIES_KEY] : sortedTop;
+		const topSet = new Set(sortedTop);
+
 		const processed = modelData.buckets.map((bucket, index) => {
 			const item: any = {
 				...bucket,
 				index,
 				formattedTime: formatTimestamp(bucket.timestamp, modelData.bucket_size_seconds),
 			};
+			let otherTotal = 0;
+			if (hasOther && bucket.by_model) {
+				for (const model of allModels) {
+					if (!topSet.has(model)) otherTotal += bucket.by_model[model]?.total ?? 0;
+				}
+			}
 			for (const [modelIdx, model] of models.entries()) {
-				item[`model_${modelIdx}`] = bucket.by_model?.[model]?.total || 0;
+				item[`model_${modelIdx}`] = model === OTHER_SERIES_KEY ? otherTotal : (bucket.by_model?.[model]?.total ?? 0);
 			}
 			return item;
 		});
 
 		return { chartData: processed, displayModels: models };
+	}, [modelData]);
+
+	const grandTotal = useMemo(() => {
+		if (!modelData?.buckets) return null;
+		let sum = 0;
+		const models = modelData.models || [];
+		for (const b of modelData.buckets) {
+			if (!b.by_model) continue;
+			for (const m of models) sum += b.by_model[m]?.total ?? 0;
+		}
+		return sum;
 	}, [modelData]);
 
 	// Compute totals per model for the ranked legend (aggregate across providers)
@@ -187,7 +152,15 @@ function TopModelsChart({
 	}, [rankingsData, displayModels]);
 
 	return (
-		<ChartCard title="Top Models" loading={loadingModels} testId="dashboard-rankings-top-models" height="100%">
+		<ChartCard
+			title="Top Models"
+			loading={loadingModels}
+			testId="dashboard-rankings-top-models"
+			className="z-[1] h-full"
+			totalLabel="Total"
+			total={grandTotal !== null ? <NumberFlow value={grandTotal} format={COMPACT_NUMBER_FORMAT} /> : undefined}
+			totalTooltip={grandTotal !== null ? grandTotal.toLocaleString("en-US") : undefined}
+		>
 			<div style={{ height: 200, marginBottom: 6 }}>
 				{chartData.length > 0 ? (
 					<ChartErrorBoundary resetKey={`${startTime}-${endTime}-${chartData.length}`}>
@@ -213,13 +186,16 @@ function TopModelsChart({
 									domain={[0, (dataMax: number) => Math.max(dataMax, 1)]}
 									allowDataOverflow={false}
 								/>
-								<Tooltip content={<UsageShareTooltip models={displayModels} />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
+								<Tooltip
+									content={<UsageShareTooltip models={displayModels} modelLabels={modelLabels} />}
+									cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }}
+								/>
 								{displayModels.map((model, idx) => (
 									<Bar
 										key={model}
 										dataKey={`model_${idx}`}
 										stackId="models"
-										fill={getModelColor(idx)}
+										fill={model === OTHER_SERIES_KEY ? OTHER_SERIES_COLOR : getModelColor(idx)}
 										fillOpacity={0.9}
 										isAnimationActive={false}
 										barSize={30}
@@ -241,7 +217,7 @@ function TopModelsChart({
 							<div key={m.model} className="flex items-center gap-2 text-sm">
 								<span className="text-muted-foreground w-4 text-right text-xs">{idx + 1}.</span>
 								<span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(m.colorIdx) }} />
-								<span className="min-w-0 flex-1 truncate font-medium">{m.model}</span>
+								<span className="min-w-0 flex-1 truncate font-medium">{displayModelLabel(m.model, modelLabels)}</span>
 								<span className="shrink-0 text-right text-xs tabular-nums">
 									<span className="font-medium">{formatNumber(m.total)}</span>
 									<span className="text-muted-foreground ml-1">{m.pct.toFixed(1)}%</span>
@@ -255,7 +231,7 @@ function TopModelsChart({
 	);
 }
 
-export function ModelRankingsTab({ rankingsData, loading, modelData, loadingModels, startTime, endTime }: ModelRankingsTabProps) {
+function ModelRankingsTabImpl({ rankingsData, loading, modelData, loadingModels, startTime, endTime }: ModelRankingsTabProps) {
 	const [sortField, setSortField] = useState<SortField>("total_requests");
 	const [sortOrder, setSortOrder] = useState<SortOrder>("desc");
 
@@ -280,6 +256,14 @@ export function ModelRankingsTab({ rankingsData, loading, modelData, loadingMode
 		});
 	}, [rankingsData, sortField, sortOrder]);
 
+	const modelLabels = useMemo(() => {
+		const labels: Record<string, string> = {};
+		for (const r of rankingsData?.rankings ?? []) {
+			if (r.canonical_model_name) labels[r.model] = r.canonical_model_name;
+		}
+		return labels;
+	}, [rankingsData]);
+
 	return (
 		<div className="flex flex-col gap-4">
 			{/* Top Models chart */}
@@ -287,6 +271,7 @@ export function ModelRankingsTab({ rankingsData, loading, modelData, loadingMode
 				modelData={modelData}
 				loadingModels={loadingModels}
 				rankingsData={rankingsData}
+				modelLabels={modelLabels}
 				startTime={startTime}
 				endTime={endTime}
 			/>
@@ -352,6 +337,15 @@ export function ModelRankingsTab({ rankingsData, loading, modelData, loadingMode
 										onSort={handleSort}
 									/>
 								</TableHead>
+								<TableHead className="text-right">
+									<SortableHeader
+										label="Throughput"
+										field="throughput"
+										currentSort={sortField}
+										currentOrder={sortOrder}
+										onSort={handleSort}
+									/>
+								</TableHead>
 							</TableRow>
 						</TableHeader>
 						<TableBody>
@@ -365,7 +359,10 @@ export function ModelRankingsTab({ rankingsData, loading, modelData, loadingMode
 											) : (
 												<span className="text-muted-foreground shrink-0 text-xs">{entry.provider}</span>
 											)}
-											<span className="font-medium">{entry.model}</span>
+											<span className="font-medium">{displayModelLabel(entry.model, modelLabels)}</span>
+											{entry.canonical_model_name && entry.canonical_model_name !== entry.model && (
+												<span className="text-muted-foreground truncate font-mono text-xs">{entry.model}</span>
+											)}
 										</div>
 									</TableCell>
 									<TableCell className="text-right">
@@ -405,6 +402,12 @@ export function ModelRankingsTab({ rankingsData, loading, modelData, loadingMode
 											<TrendBadge value={entry.trend.latency_trend} positiveIsGood={false} isNew={!entry.trend.has_previous_period} />
 										</div>
 									</TableCell>
+									<TableCell className="text-right">
+										<div className="flex items-center justify-end gap-2">
+											<span>{formatTokensPerSecond(entry.throughput)}</span>
+											<TrendBadge value={entry.trend.throughput_trend} isNew={!entry.trend.has_previous_period} />
+										</div>
+									</TableCell>
 								</TableRow>
 							))}
 						</TableBody>
@@ -414,3 +417,4 @@ export function ModelRankingsTab({ rankingsData, loading, modelData, loadingMode
 		</div>
 	);
 }
+export const ModelRankingsTab = memo(ModelRankingsTabImpl);

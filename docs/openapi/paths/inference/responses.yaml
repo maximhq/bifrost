@@ -5,7 +5,7 @@ responses:
     description: |
       Creates a response using the OpenAI Responses API format. Supports streaming via SSE.
     tags:
-      - Responses
+    - Responses
     requestBody:
       required: true
       content:
@@ -26,3 +26,259 @@ responses:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+  get:
+    operationId: createResponseWebSocket
+    summary: Responses API over WebSocket
+    description: |
+      Upgrades the connection to a WebSocket and runs the OpenAI Responses API
+      in WebSocket Mode. Clients send `response.create` events on the socket and
+      receive streamed events through the standard inference pipeline (PreLLMHook,
+      key selection, provider call, PostLLMHook).
+
+      Auth is identical to the HTTP POST variant — Bearer/Basic/Virtual Key/API Key
+      may be supplied as request headers on the upgrade request. The OpenAI SDK can
+      also pass an API key via the `openai-insecure-api-key.<key>` WebSocket
+      subprotocol.
+
+      This GET endpoint shares its path with the POST inference endpoint; route
+      selection is based on the `Upgrade: websocket` request header.
+    tags:
+    - Responses
+    parameters:
+      - name: Upgrade
+        in: header
+        required: true
+        description: Must be `websocket`
+        schema:
+          type: string
+          enum: [websocket]
+      - name: Sec-WebSocket-Protocol
+        in: header
+        required: false
+        description: |
+          Optional WebSocket subprotocol. Use `openai-insecure-api-key.<key>` to
+          authenticate when headers cannot be supplied by the client.
+        schema:
+          type: string
+    responses:
+      '101':
+        description: Switching Protocols — WebSocket upgrade succeeded
+      '401':
+        description: Authentication failed
+      '429':
+        description: Maximum concurrent WebSocket connections reached
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+responses-by-id:
+  get:
+    operationId: retrieveResponse
+    summary: Retrieve a response
+    description: |
+      Retrieves a stored response by ID.
+    tags:
+    - Responses
+    parameters:
+    - name: response_id
+      in: path
+      required: true
+      description: The ID of the response to retrieve
+      schema:
+        type: string
+    - name: provider
+      in: query
+      description: Provider the response was created with (defaults to `openai`)
+      schema:
+        $ref: '../../schemas/inference/common.yaml#/ModelProvider'
+    - name: include
+      in: query
+      description: Additional fields to include (repeatable)
+      schema:
+        type: array
+        items:
+          type: string
+    - name: starting_after
+      in: query
+      description: Sequence number of the event after which to start the response
+      schema:
+        type: integer
+    - name: include_obfuscation
+      in: query
+      description: Whether to include obfuscation on the response
+      schema:
+        type: boolean
+    - name: stream
+      in: query
+      description: When `true`, replays the stored response as SSE events instead of a single JSON object
+      schema:
+        type: boolean
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/responses.yaml#/ResponsesResponse'
+          text/event-stream:
+            schema:
+              $ref: '../../schemas/inference/responses.yaml#/ResponsesStreamResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+  delete:
+    operationId: deleteResponse
+    summary: Delete a response
+    description: |
+      Deletes a stored response.
+    tags:
+    - Responses
+    parameters:
+    - name: response_id
+      in: path
+      required: true
+      description: The ID of the response to delete
+      schema:
+        type: string
+    - name: provider
+      in: query
+      description: Provider the response was created with (defaults to `openai`)
+      schema:
+        $ref: '../../schemas/inference/common.yaml#/ModelProvider'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/responses.yaml#/BifrostResponsesDeleteResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+responses-cancel:
+  post:
+    operationId: cancelResponse
+    summary: Cancel a response
+    description: |
+      Cancels an in-flight response. Only responses created with `background: true`
+      can be cancelled.
+    tags:
+    - Responses
+    parameters:
+    - name: response_id
+      in: path
+      required: true
+      description: The ID of the response to cancel
+      schema:
+        type: string
+    - name: provider
+      in: query
+      description: Provider the response was created with (defaults to `openai`)
+      schema:
+        $ref: '../../schemas/inference/common.yaml#/ModelProvider'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/responses.yaml#/ResponsesResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+responses-input-items:
+  get:
+    operationId: listResponseInputItems
+    summary: List response input items
+    description: |
+      Lists the input items of a stored response.
+    tags:
+    - Responses
+    parameters:
+    - name: response_id
+      in: path
+      required: true
+      description: The ID of the response
+      schema:
+        type: string
+    - name: provider
+      in: query
+      description: Provider the response was created with (defaults to `openai`)
+      schema:
+        $ref: '../../schemas/inference/common.yaml#/ModelProvider'
+    - name: after
+      in: query
+      description: Cursor for pagination (item ID to list items after)
+      schema:
+        type: string
+    - name: include
+      in: query
+      description: Additional fields to include (repeatable)
+      schema:
+        type: array
+        items:
+          type: string
+    - name: limit
+      in: query
+      description: Maximum number of input items to return
+      schema:
+        type: integer
+        minimum: 1
+    - name: order
+      in: query
+      description: Sort order
+      schema:
+        type: string
+        enum: [asc, desc]
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/responses.yaml#/BifrostResponsesInputItemsResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

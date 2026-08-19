@@ -9,10 +9,11 @@ import (
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
-// sanitizeMessagesForHuggingFace removes unsupported ChatAssistantMessage fields
-// from chat messages. HuggingFace's OpenAI-compatible API doesn't support fields
+// sanitizeMessagesForHuggingFace removes unsupported fields from chat messages.
+// HuggingFace's OpenAI-compatible API doesn't support ChatAssistantMessage fields
 // like reasoning_details, reasoning, annotations, audio, and refusal.
 // Only ToolCalls is preserved from ChatAssistantMessage.
+// Tool messages also lose is_error, which has no OpenAI-wire equivalent.
 func sanitizeMessagesForHuggingFace(messages []schemas.ChatMessage) []schemas.ChatMessage {
 	sanitized := make([]schemas.ChatMessage, len(messages))
 	for i, msg := range messages {
@@ -21,6 +22,13 @@ func sanitizeMessagesForHuggingFace(messages []schemas.ChatMessage) []schemas.Ch
 			Role:            msg.Role,
 			Content:         msg.Content,
 			ChatToolMessage: msg.ChatToolMessage,
+		}
+		// The OpenAI-compatible wire has no tool-error field; strip is_error.
+		// Clone first — ChatToolMessage is shared with the caller's input.
+		if msg.ChatToolMessage != nil && msg.ChatToolMessage.IsError != nil {
+			toolMsgCopy := *msg.ChatToolMessage
+			toolMsgCopy.IsError = nil
+			sanitized[i].ChatToolMessage = &toolMsgCopy
 		}
 		// Only preserve ToolCalls from ChatAssistantMessage
 		if msg.ChatAssistantMessage != nil && len(msg.ChatAssistantMessage.ToolCalls) > 0 {
@@ -76,18 +84,24 @@ func ToHuggingFaceChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) 
 			hfReq.TopP = params.TopP
 		}
 
-		// Handle response format
+		// Handle response format (direct type assertion to avoid marshal→unmarshal round-trip)
 		if params.ResponseFormat != nil {
-			// Convert the response format to HuggingFace format
-			responseFormatJSON, err := sonic.Marshal(params.ResponseFormat)
-			if err != nil {
-				return nil, fmt.Errorf("failed to convert ResponseFormat (marshal): %w", err)
+			var hfRF *HuggingFaceResponseFormat
+			if rf, ok := schemas.ParseChatResponseFormat(params.ResponseFormat); ok {
+				hfRF = &HuggingFaceResponseFormat{Type: rf.Type}
+				// HuggingFaceJSONSchema keeps the schema as raw JSON, so decoding
+				// the wrapper carries the client's schema bytes through untouched.
+				if jsBytes := rf.RawJSONSchema(); len(jsBytes) > 0 {
+					var hfSchema HuggingFaceJSONSchema
+					if err := sonic.Unmarshal(jsBytes, &hfSchema); err != nil {
+						return nil, fmt.Errorf("failed to unmarshal json_schema: %w", err)
+					}
+					hfRF.JSONSchema = &hfSchema
+				}
+			} else if converted, err := schemas.ConvertViaJSON[HuggingFaceResponseFormat](*params.ResponseFormat); err == nil {
+				hfRF = &converted
 			}
-			var hfResponseFormat HuggingFaceResponseFormat
-			if err := sonic.Unmarshal(responseFormatJSON, &hfResponseFormat); err != nil {
-				return nil, fmt.Errorf("failed to convert ResponseFormat (unmarshal): %w", err)
-			}
-			hfReq.ResponseFormat = &hfResponseFormat
+			hfReq.ResponseFormat = hfRF
 		}
 
 		// Handle stream options

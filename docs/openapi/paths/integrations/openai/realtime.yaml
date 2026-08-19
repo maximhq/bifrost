@@ -1,0 +1,164 @@
+# OpenAI Integration - Realtime/WebSocket Aliases
+#
+# These operations are OpenAI-prefixed aliases for the canonical realtime
+# endpoints documented under the Realtime tag. The handler behaviour is
+# identical; SDK clients targeting `/openai/v1/*` reach the same handlers.
+
+realtime:
+  get:
+    operationId: openaiRealtimeWebSocket
+    summary: WebSocket Realtime (OpenAI alias)
+    description: |
+      OpenAI-prefixed alias of `GET /v1/realtime`. WebSocket upgrade endpoint
+      for OpenAI Realtime; selects the model via the `model` query parameter
+      (Azure GA) or `deployment` (preview).
+    tags:
+    - OpenAI Integration
+    parameters:
+    - name: model
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: deployment
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: Upgrade
+      in: header
+      required: true
+      schema:
+        type: string
+        enum: [websocket]
+    - name: Sec-WebSocket-Protocol
+      in: header
+      required: false
+      schema:
+        type: string
+    responses:
+      '101':
+        description: WebSocket connection established.
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '401':
+        description: Unauthorized.
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+realtime-calls:
+  post:
+    operationId: openaiRealtimeCall
+    summary: WebRTC Realtime SDP exchange (OpenAI alias)
+    description: |
+      OpenAI-prefixed alias of `POST /v1/realtime/calls`. Performs the WebRTC
+      SDP exchange for OpenAI Realtime calls. Accepts either multipart form
+      data with `sdp` + `session` parts (GA) or a raw SDP body (legacy).
+    tags:
+    - OpenAI Integration
+    requestBody:
+      required: true
+      content:
+        multipart/form-data:
+          schema:
+            type: object
+            properties:
+              sdp:
+                type: string
+                description: WebRTC offer SDP.
+              session:
+                type: string
+                description: JSON-encoded session configuration.
+        application/sdp:
+          schema:
+            type: string
+            description: Raw WebRTC offer SDP (legacy form).
+    responses:
+      '200':
+        description: WebRTC answer SDP.
+        content:
+          application/sdp:
+            schema:
+              type: string
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+realtime-client-secrets:
+  post:
+    operationId: openaiRealtimeClientSecret
+    summary: Create realtime client secret (OpenAI alias)
+    description: |
+      OpenAI-prefixed alias of `POST /v1/realtime/client_secrets`. Mints an
+      ephemeral client secret used to authorize a downstream Realtime client.
+    tags:
+    - OpenAI Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: true
+            description: OpenAI client-secret request payload.
+    responses:
+      '200':
+        description: Ephemeral client secret payload.
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+realtime-sessions:
+  post:
+    operationId: openaiRealtimeSession
+    summary: Create realtime session (OpenAI alias)
+    description: |
+      OpenAI-prefixed alias of `POST /v1/realtime/sessions`. Creates a
+      pre-configured realtime session that can be joined by clients.
+    tags:
+    - OpenAI Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: true
+            description: OpenAI realtime session configuration.
+    responses:
+      '200':
+        description: Realtime session payload.
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

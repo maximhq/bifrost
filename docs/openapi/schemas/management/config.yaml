@@ -31,18 +31,42 @@ ClientConfig:
     disable_content_logging:
       type: boolean
       description: Whether content logging is disabled
+    allow_per_request_content_storage_override:
+      type: boolean
+      default: false
+      description: Allow individual requests to override content storage via the x-bf-disable-content-logging header or context key. When false (default), per-request overrides are ignored.
+    allow_per_request_raw_override:
+      type: boolean
+      default: false
+      description: Allow individual requests to override raw request/response visibility via the x-bf-send-back-raw-request and x-bf-send-back-raw-response headers. When false (default), provider-level settings are authoritative and per-request overrides are ignored.
+    enforce_auth_on_inference:
+      type: boolean
+      description: Whether to enforce virtual key authentication on inference requests
     enforce_governance_header:
       type: boolean
-      description: Whether to enforce governance header
-    allow_direct_keys:
-      type: boolean
-      description: Whether to allow direct API keys
+      deprecated: true
+      description: "Deprecated: use enforce_auth_on_inference instead"
     max_request_body_size_mb:
       type: integer
       description: Maximum request body size in MB
-    enable_litellm_fallbacks:
-      type: boolean
-      description: Whether LiteLLM fallbacks are enabled
+    compat:
+      type: object
+      description: Compat plugin configuration
+      properties:
+        convert_text_to_chat:
+          type: boolean
+          description: Convert text completion requests to chat
+        convert_chat_to_responses:
+          type: boolean
+          description: Convert chat completion requests to responses
+        should_drop_params:
+          type: boolean
+          description: Drop unsupported parameters based on model catalog
+        should_convert_params:
+          type: boolean
+          default: false
+          description: Converts model parameter values that are not supported by the model
+      additionalProperties: false
     log_retention_days:
       type: integer
       description: Number of days to retain logs
@@ -54,6 +78,14 @@ ClientConfig:
     mcp_tool_execution_timeout:
       type: integer
       description: Timeout for MCP tool execution in seconds
+    mcp_tool_sync_interval:
+      type: integer
+      description: >
+        Global tool-list sync interval in minutes for MCP clients. Applies to
+        clients whose per-client tool_sync_interval is 0 or omitted; a
+        per-client positive value overrides it and a per-client negative value
+        disables syncing for that client. When 0 or unset, a 10-minute default
+        applies.
     mcp_code_mode_binding_level:
       type: string
       description: Binding level for MCP code mode
@@ -67,6 +99,75 @@ ClientConfig:
       items:
         type: string
       description: Headers to capture in log metadata. Values are extracted from incoming requests and stored in the metadata field of log entries. Case-insensitive matching. No restart required.
+    mcp_external_client_url:
+      oneOf:
+        - type: string
+          description: Plain URL or env var reference (e.g. "env.MY_VAR")
+        - type: object
+          properties:
+            value:
+              type: string
+            env_var:
+              type: string
+            from_env:
+              type: boolean
+          additionalProperties: false
+      description: >
+        Public base URL Bifrost uses as the redirect_uri when acting as an OAuth client to
+        upstream MCP servers (Notion, Jira, etc.). Set when Bifrost's callback endpoint is
+        reached via a different URL than its server-side metadata. Supports env var syntax
+        ("env.MY_VAR").
+    mcp_server_auth_mode:
+      type: string
+      enum: [headers, both, oauth]
+      default: headers
+      description: >
+        How /mcp authenticates inbound MCP clients. 'headers' (default): VK/api-key/session
+        headers only, discovery disabled. 'both': accepts header credentials and Bifrost-issued
+        JWTs, discovery enabled. 'oauth': Bifrost JWTs only — disables VK/header MCP access.
+    oauth2_server_config:
+      type: object
+      description: >
+        OAuth2 authorization server settings for /mcp. Only relevant when mcp_server_auth_mode
+        is 'both' or 'oauth'.
+      properties:
+        issuer_url:
+          oneOf:
+            - type: string
+              description: Plain URL or env var reference (e.g. "env.MY_VAR")
+            - type: object
+              properties:
+                value:
+                  type: string
+                env_var:
+                  type: string
+                from_env:
+                  type: boolean
+              additionalProperties: false
+          description: >
+            Stable public URL advertised as the OAuth2 AS issuer in discovery documents and the
+            JWT iss claim. Required for multi-host deployments; single-host can omit it (falls
+            back to the request Host header). Supports env var syntax ("env.MY_VAR").
+        auth_code_ttl:
+          type: integer
+          minimum: 1
+          maximum: 900
+          default: 300
+          description: Lifetime of the single-use authorization code in seconds (default 300, max 900 = 15 minutes).
+        access_token_ttl:
+          type: integer
+          minimum: 1
+          default: 600
+          description: Lifetime of the issued JWT Bearer token in seconds (default 600).
+        disable_vk_identity:
+          type: boolean
+          default: false
+          description: >
+            Require identity-provider login: virtual-key identity is removed from the consent
+            flow, and existing virtual-key-mode grants are rejected at /mcp and denied on refresh.
+            Only meaningful when mcp_server_auth_mode is 'oauth' and an identity provider is
+            configured. Anonymous session identity is governed separately by enforce_auth_on_inference.
+      additionalProperties: false
 
 FrameworkConfig:
   type: object
@@ -96,6 +197,8 @@ AuthConfig:
       type: boolean
     disable_auth_on_inference:
       type: boolean
+      deprecated: true
+      description: "Deprecated and ignored. Use client_config.enforce_auth_on_inference instead."
 
 HeaderFilterConfig:
   type: object
@@ -158,6 +261,10 @@ GetConfigResponse:
       $ref: '#/FrameworkConfig'
     auth_config:
       $ref: '#/AuthConfig'
+      description: >-
+        Absent when no admin account has been configured yet (first-time setup).
+        Once an admin account exists, this is always present. Available starting
+        in Bifrost 2.0.0-prerelease3; earlier versions always returned this field.
     is_db_connected:
       type: boolean
     is_cache_connected:
@@ -178,4 +285,25 @@ UpdateConfigRequest:
     framework_config:
       $ref: '#/FrameworkConfig'
     auth_config:
-      $ref: '#/AuthConfig'
+      allOf:
+        - $ref: '#/AuthConfig'
+        - type: object
+          properties:
+            setup_token:
+              type: string
+              description: >-
+                Available starting in Bifrost 2.0.0-prerelease3. Bootstrap token,
+                required only when this request creates the very first admin
+                account (i.e. no admin account exists yet). Must match the setup
+                token configured by the operator via setup_token in config.json
+                (or the BIFROST_SETUP_TOKEN environment variable); never
+                persisted or returned by GET /api/config. If the operator hasn't
+                configured a setup token, requests that would create the first
+                admin account are rejected until they do. Once an admin account
+                exists, this field is ignored.
+  example:
+    auth_config:
+      admin_username: admin
+      admin_password: env.BIFROST_ADMIN_PASSWORD
+      is_enabled: true
+      setup_token: <your-setup-token>

@@ -4,15 +4,18 @@ import (
 	"testing"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/vectorstore"
 )
 
 // TestStreamingCacheBasicFunctionality tests streaming response caching
 func TestStreamingCacheBasicFunctionality(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
-	ctx := CreateContextWithCacheKey("test-stream-value")
+	ctx := CreateContextWithCacheKey(t, "test-stream-value")
 
 	// Create a test streaming request
 	testRequest := CreateStreamingChatRequest(
@@ -27,7 +30,7 @@ func TestStreamingCacheBasicFunctionality(t *testing.T) {
 	start1 := time.Now()
 	stream1, err1 := setup.Client.ChatCompletionStreamRequest(ctx, testRequest)
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 
 	var responses1 []schemas.BifrostChatResponse
@@ -115,10 +118,11 @@ func TestStreamingCacheBasicFunctionality(t *testing.T) {
 
 // TestStreamingVsNonStreaming tests that streaming and non-streaming requests are cached separately
 func TestStreamingVsNonStreaming(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
-	ctx := CreateContextWithCacheKey("stream-vs-non-test")
+	ctx := CreateContextWithCacheKey(t, "stream-vs-non-test")
 
 	prompt := "What is the meaning of life?"
 
@@ -127,7 +131,7 @@ func TestStreamingVsNonStreaming(t *testing.T) {
 	nonStreamRequest := CreateBasicChatRequest(prompt, 0.5, 50)
 	nonStreamResponse, err1 := setup.Client.ChatCompletionRequest(ctx, nonStreamRequest)
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 
 	WaitForCache(setup.Plugin)
@@ -182,12 +186,110 @@ func TestStreamingVsNonStreaming(t *testing.T) {
 	t.Log("✅ Streaming vs non-streaming test completed!")
 }
 
+// chunkStreamPlugin is a test-only LLMPlugin that short-circuits
+// ChatCompletionStreamRequest with a genuine multi-chunk stream via
+// LLMPluginShortCircuit.Stream — the same mechanism real streaming providers
+// use (see e.g. core/providers/openai/openai.go). The shared mocker plugin
+// (getMockedBifrostClient) only ever short-circuits with a single complete
+// Response, so it can never exercise the semantic cache's multi-chunk
+// ordering/replay path; this plugin fills that gap for
+// TestStreamingChunkOrdering. Any request type other than
+// ChatCompletionStreamRequest passes through untouched to the next plugin
+// (mocker).
+type chunkStreamPlugin struct {
+	chunks []string
+}
+
+func (p *chunkStreamPlugin) GetName() string { return "chunk-stream-test-plugin" }
+func (p *chunkStreamPlugin) Cleanup() error  { return nil }
+
+func (p *chunkStreamPlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
+}
+
+func (p *chunkStreamPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	if req.RequestType != schemas.ChatCompletionStreamRequest {
+		return req, nil, nil
+	}
+
+	_, model, _ := req.GetRequestFields()
+	// Root() unwraps past this call's plugin-scoped context, which is released
+	// (and unsafe to retain) the instant PreLLMHook returns — the goroutine
+	// below outlives that.
+	root := ctx.Root()
+	streamCh := make(chan *schemas.BifrostStreamChunk)
+
+	go func() {
+		defer close(streamCh)
+		for i, piece := range p.chunks {
+			if i > 0 {
+				// Real streaming providers are paced by network I/O between
+				// chunks, which in practice gives each chunk's async cache-write
+				// goroutine (main.go PostLLMHook) time to finish appending before
+				// the next chunk's PostLLMHook fires. Sending back-to-back with no
+				// delay at all removes that natural pacing and reliably wins a
+				// real race in the plugin: the final chunk's write goroutine can
+				// flush (and latch IsComplete) before an earlier chunk's goroutine
+				// has appended, silently dropping it from the cached entry. This
+				// sleep restores realistic pacing so the test exercises chunk
+				// ordering/replay rather than that unrelated, already-tracked race.
+				time.Sleep(20 * time.Millisecond)
+			}
+			delta := &schemas.ChatStreamResponseChoiceDelta{Content: bifrost.Ptr(piece)}
+			if i == 0 {
+				delta.Role = bifrost.Ptr("assistant")
+			}
+			choice := schemas.BifrostResponseChoice{
+				Index:                    0,
+				ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{Delta: delta},
+			}
+			resp := &schemas.BifrostChatResponse{
+				Model:       model,
+				Choices:     []schemas.BifrostResponseChoice{choice},
+				ExtraFields: schemas.BifrostResponseExtraFields{ChunkIndex: i},
+			}
+
+			isLast := i == len(p.chunks)-1
+			if isLast {
+				resp.Choices[0].FinishReason = bifrost.Ptr("stop")
+				resp.Usage = &schemas.BifrostLLMUsage{
+					PromptTokens:     10,
+					CompletionTokens: len(p.chunks),
+					TotalTokens:      10 + len(p.chunks),
+				}
+				// Must be set before the send below — this is the same
+				// set-before-send ordering real provider streaming code
+				// uses, so the consumer only observes it once it dequeues
+				// this last chunk (see semanticcache/main.go PostLLMHook).
+				root.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			}
+
+			streamCh <- &schemas.BifrostStreamChunk{BifrostChatResponse: resp}
+		}
+	}()
+
+	return req, &schemas.LLMPluginShortCircuit{Stream: streamCh}, nil
+}
+
+func (p *chunkStreamPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, bifrostErr, nil
+}
+
 // TestStreamingChunkOrdering tests that cached streaming responses maintain proper chunk ordering
 func TestStreamingChunkOrdering(t *testing.T) {
-	setup := NewTestSetup(t)
+	t.Parallel()
+	chunkPlugin := &chunkStreamPlugin{
+		chunks: []string{
+			"2, 3, 5, 7, ",
+			"and 11 are ",
+			"the first five ",
+			"prime numbers.",
+		},
+	}
+	setup := NewTestSetupWithVectorStore(t, getDefaultTestConfig(), vectorstore.VectorStoreTypeWeaviate, chunkPlugin)
 	defer setup.Cleanup()
 
-	ctx := CreateContextWithCacheKey("chunk-order-test")
+	ctx := CreateContextWithCacheKey(t, "chunk-order-test")
 
 	// Request that should generate multiple chunks
 	testRequest := CreateStreamingChatRequest(
@@ -199,7 +301,7 @@ func TestStreamingChunkOrdering(t *testing.T) {
 	t.Log("Making first streaming request to establish cache...")
 	stream1, err1 := setup.Client.ChatCompletionStreamRequest(ctx, testRequest)
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Fatalf("First streaming request failed: %v", err1)
 	}
 
 	var originalChunks []schemas.BifrostChatResponse
@@ -212,8 +314,10 @@ func TestStreamingChunkOrdering(t *testing.T) {
 		}
 	}
 
-	if len(originalChunks) < 2 {
-		t.Skipf("Need at least 2 chunks to test ordering, got %d", len(originalChunks))
+	// chunkStreamPlugin deterministically emits len(chunkPlugin.chunks)
+	// chunks — this is no longer at any provider's discretion.
+	if len(originalChunks) != len(chunkPlugin.chunks) {
+		t.Fatalf("Expected %d chunks from the test plugin, got %d", len(chunkPlugin.chunks), len(originalChunks))
 	}
 
 	t.Logf("Original stream had %d chunks", len(originalChunks))
@@ -273,10 +377,11 @@ func TestStreamingChunkOrdering(t *testing.T) {
 
 // TestSpeechSynthesisStreaming tests speech synthesis streaming caching
 func TestSpeechSynthesisStreaming(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
-	ctx := CreateContextWithCacheKey("speech-stream-test")
+	ctx := CreateContextWithCacheKey(t, "speech-stream-test")
 
 	// Create speech synthesis request
 	speechRequest := CreateSpeechRequest(
@@ -290,7 +395,7 @@ func TestSpeechSynthesisStreaming(t *testing.T) {
 	duration1 := time.Since(start1)
 
 	if err1 != nil {
-		return // Test will be skipped by retry function
+		t.Skipf("upstream request error, skipping test: %v", err1)
 	}
 
 	if response1 == nil {

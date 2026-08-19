@@ -1,0 +1,71 @@
+# Enterprise overlay: governance organization bootstrap.
+# Includes sample customer, teams, business units, and a virtual key.
+bifrost:
+  governance:
+    # Organization-wide and BU-scoped budgets.
+    budgets:
+      - id: "budget-org-global"
+        max_limit: 5000
+        reset_duration: "1M"
+      - id: "budget-bu-platform"
+        max_limit: 2000
+        reset_duration: "1M"
+      - id: "budget-bu-security"
+        max_limit: 1500
+        reset_duration: "1M"
+
+    # Organization-wide and team-scoped throttling.
+    rateLimits:
+      - id: "rl-org-default"
+        token_max_limit: 1000000
+        token_reset_duration: "1d"
+        request_max_limit: 50000
+        request_reset_duration: "1h"
+      - id: "rl-power-users"
+        token_max_limit: 300000
+        token_reset_duration: "1d"
+        request_max_limit: 15000
+        request_reset_duration: "1h"
+
+    # Top-level business customer record.
+    customers:
+      - id: "customer-enterprise-org"
+        name: "Enterprise Org"
+        budget_id: "budget-org-global"
+        rate_limit_id: "rl-org-default"
+
+    # Team structure under the customer.
+    # profile/config/claims are metadata blocks frequently used with SSO/SCIM mappings.
+    # This file intentionally avoids implying users can be created from config.json.
+    teams:
+      - id: "team-platform-core"
+        name: "Platform Core"
+        customer_id: "customer-enterprise-org"
+        budget_id: "budget-bu-platform"
+        rate_limit_id: "rl-power-users"
+        profile:
+          business_units:
+            - id: "bu-platform"
+              name: "Platform Engineering"
+            - id: "bu-security"
+              name: "Security Engineering"
+
+    # Virtual key bound to platform team.
+    virtualKeys:
+      - id: "vk-enterprise-platform"
+        name: "Enterprise Platform Key"
+        description: "Governance-specific virtual key bound to platform team"
+        value: "sk-bf-enterprise-platform"
+        is_active: true
+        team_id: "team-platform-core"
+        rate_limit_id: "rl-power-users"
+        provider_configs:
+          - provider: "openai"
+            weight: 0.7
+            allowed_models:
+              - "gpt-4o-mini"
+              - "gpt-4o"
+          - provider: "anthropic"
+            weight: 0.3
+            allowed_models:
+              - "claude-3-5-sonnet-latest"

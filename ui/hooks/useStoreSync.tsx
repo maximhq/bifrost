@@ -1,5 +1,3 @@
-"use client";
-
 import { baseApi } from "@/lib/store/apis/baseApi";
 import { useAppDispatch } from "@/lib/store/hooks";
 import { useEffect } from "react";

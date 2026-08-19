@@ -103,9 +103,9 @@ bifrost/
 │   ├── mocker/                    # Mock responses for testing
 │   ├── jsonparser/                # JSON extraction utilities
 │   ├── maxim/                     # Maxim observability
-│   └── litellmcompat/             # LiteLLM SDK compatibility (HTTP transport)
+│   └── compat/                    # LiteLLM SDK compatibility (HTTP transport)
 │
-├── ui/                            # Next.js web interface
+├── ui/                            # React + vite web interface
 │   ├── app/workspace/             # Feature pages (20+ workspace sections)
 │   ├── components/                # Shared React components
 │   └── lib/                       # Constants, utilities, types
@@ -164,6 +164,10 @@ make test-core DEBUG=1                   # With Delve debugger on :2345
 make test-mcp                            # All MCP tests
 make test-mcp TESTCASE=TestAgentLoop     # Specific test
 make test-mcp TYPE=agent                 # By category (agent|tool|connection|codemode)
+
+# Framework tests (require local backing services — bring them up FIRST)
+docker compose -f tests/docker-compose.yml up -d   # postgres, weaviate, qdrant, pinecone, and the 4 redis variants
+make test-framework                                # All framework packages
 
 # Plugin tests
 make test-plugins                        # All plugins
@@ -245,6 +249,13 @@ ctx.WithValue(key, value)    // Chainable variant
 
 **Gotcha**: `BlockRestrictedWrites()` silently drops writes to reserved keys. This prevents plugins from accidentally overwriting internal state.
 
+**Hard rule — never store stream-sized data in `BifrostContext`.** Context holds small handles only: IDs, durations, booleans, interface pointers. Any per-request state that scales with stream content (chunk buffers, accumulated payloads, replay queues, large per-request slices/maps) must live in a top-level manager keyed by `RequestID`, not in `ctx`. Reference implementations:
+
+- `framework/streaming.Accumulator` — owns a `sync.Map` of per-stream `StreamAccumulator` entries keyed by `RequestID`. Only `BifrostContextKeyAccumulatorID` (the ID string) is stored on the context; the chunk buffers live in the manager. The pause/resume gate (`gate.go`) extends the same per-stream entry with a state machine — again, **no buffer in ctx**.
+- The `Tracer` interface (in ctx as a small pointer) is the access path for plugins/providers to reach managers without putting bulky data on the context itself.
+
+When in doubt: if your new ctx key would hold a slice/map that grows with request content, route the storage through a manager and keep only the ID in ctx.
+
 ---
 
 ## Core Patterns
@@ -288,10 +299,18 @@ func NewProvider(config schemas.ProviderConfig) (*Provider, error) {
         MaxConnsPerHost:     config.NetworkConfig.MaxConnsPerHost, // configurable, default 5000
         MaxIdleConnDuration: 30 * time.Second,
     }
-    return &Provider{client: client, ...}, nil
+    // After ConfigureProxy/ConfigureDialer/ConfigureTLS, build a sibling client
+    // for streaming. BuildStreamingClient zeros ReadTimeout/WriteTimeout/MaxConnDuration
+    // so streams aren't killed by fasthttp's whole-response deadline; per-chunk idle
+    // is enforced at the app layer via NewIdleTimeoutReader.
+    streamingClient := providerUtils.BuildStreamingClient(client)
+    return &Provider{client: client, streamingClient: streamingClient, ...}, nil
 }
 ```
-**Note:** Bedrock uses `net/http` (not fasthttp) with HTTP/2 support. Its `http.Transport` is configured with `ForceAttemptHTTP2: true` and `MaxConnsPerHost` from `NetworkConfig` to allow multiple HTTP/2 connections when the server's per-connection stream limit (100 for AWS Bedrock) is reached.
+
+**Streaming vs unary client:** Every provider holds two clients — `client` for unary requests (`ReadTimeout=30s` bounds the whole response) and `streamingClient` for SSE / EventStream / chunked paths (`ReadTimeout=0`; the per-chunk `NewIdleTimeoutReader` is the only governor). Pass `provider.streamingClient` to every `Handle*Streaming` / `Handle*StreamRequest` helper and to direct `Do` calls inside `*Stream` methods. For new providers, apply the same pattern — missing the switch means streams get killed at 30s.
+
+**Note:** Bedrock uses `net/http` (not fasthttp) with HTTP/2 support. Its `http.Transport` is configured with `ForceAttemptHTTP2: true` and `MaxConnsPerHost` from `NetworkConfig` to allow multiple HTTP/2 connections when the server's per-connection stream limit (100 for AWS Bedrock) is reached. Use `providerUtils.BuildStreamingHTTPClient(client)` to derive the streaming variant — it shares the base `Transport` (safe for concurrent reuse) but clears `Client.Timeout`.
 
 ### The Provider Interface
 
@@ -467,6 +486,8 @@ Bifrost uses `github.com/valyala/fasthttp` for provider HTTP calls. The API is d
 
 JSON marshaling in hot paths uses `github.com/bytedance/sonic` for performance. `core/schemas/` uses standard `encoding/json` for custom marshaling (e.g., `NetworkConfig`). Don't mix them accidentally.
 
+For reading or writing a **single field** (or a handful) inside a larger raw JSON payload, prefer `github.com/tidwall/gjson`/`github.com/tidwall/sjson` over decoding into `map[string]interface{}` and re-encoding — the shared helpers `providerUtils.GetJSONField`/`SetRawJSONField`/`DeleteJSONField`/`JSONFieldExists`/`GetJSONSubtree` (`core/providers/utils/utils.go`) wrap these and should be reused where the path is a lookup on an already-in-scope `[]byte`/`json.RawMessage`. Full-document decode into a map/struct is still correct when you need the whole shape (e.g. re-marshaling an entire object to normalize it) — the point is not to round-trip an entire object through a `map[string]interface{}` just to inspect one key. When marshaling back out, always use `providerUtils.MarshalSorted` (never a raw `sonic.Marshal`/`json.Marshal`), since unsorted map keys reorder nondeterministically and break prompt-cache-relevant byte stability.
+
 ### 14. Atomic Pointer for Hot Config Reload
 
 `Bifrost` uses `atomic.Pointer` for providers and plugins lists. On updates: create new slice → atomically swap pointer. **Never mutate the slice in place** — concurrent readers would see partial state.
@@ -486,6 +507,31 @@ E2E tests depend on `data-testid` attributes. Convention: `data-testid="<entity>
 ### 18. E2E Tests — Never Marshal Payloads to Maps
 
 In `tests/e2e/core/`, **never marshal API payloads to a `Record`/`Map`/plain-object and then re-serialize**. Field ordering matters for backend validation and snapshot comparisons. Construct payloads as object literals with fields in the intended order and pass directly to Playwright's `request.post({ data })`. Avoid `Object.fromEntries()`, `JSON.parse(JSON.stringify(...))` round-trips, or destructuring into an intermediate `Record<string, unknown>` — these can silently reorder fields.
+
+### 19. Framework Tests Need `tests/docker-compose.yml`, Not `framework/docker-compose.yml`
+
+`make test-framework` fails ~30 tests in `framework/vectorstore` with no services running. Bring the stack up first:
+
+```bash
+docker compose -f tests/docker-compose.yml up -d
+```
+
+Two compose files define overlapping services on the **same host ports** (9000, 6379, 6334, 5081), so only one can run at a time. Use the `tests/` one:
+
+| | `tests/docker-compose.yml` | `framework/docker-compose.yml` |
+|---|---|---|
+| Redis | plain 6379, **TLS 6380, cluster 7000, cluster-TLS 7100** | plain 6379 only |
+| TLS certs | `redis-certs-init` writes `tests/redis-certs/` | none |
+| Weaviate | 1.32.4, pins `CLUSTER_ADVERTISE_ADDR` | 1.25.0, no advertise addr |
+
+The differences are load-bearing, not cosmetic:
+
+- `redis_test.go` dials **6380** and **7100** for the TLS and TLS-cluster client tests, and `readTestCACert` reads `tests/redis-certs/ca.crt`. The `framework/` file provides neither, so 5 tests fail against it.
+- Weaviate's memberlist aborts startup with `Failed to get final advertise address: No private IP address found` unless `CLUSTER_ADVERTISE_ADDR` is set ([weaviate#7474](https://github.com/weaviate/weaviate/issues/7474)). The `tests/` file pins a static IP; the `framework/` file does not, so its Weaviate crash-loops and 4 more tests fail.
+
+Note that `qdrant` and `pinecone` report `(unhealthy)` in `docker compose ps` under the `framework/` file because those images have no `wget` for the healthcheck. The services themselves are fine, so ignore that specific signal and probe the port instead.
+
+Only `framework/vectorstore` needs any of this. Every other framework package passes with nothing running.
 
 ---
 
@@ -508,6 +554,42 @@ In `tests/e2e/core/`, **never marshal API payloads to a `Record`/`Map`/plain-obj
 ---
 
 ## Testing
+
+### Bug fixes: red before green
+
+Before writing a fix, add (or extend) a test that reproduces the bug and confirm it fails for the expected reason — a wrong assertion, not a compile error or an unrelated panic. Only then implement the fix, and confirm the same test now passes. For bugs reachable through `make run-provider-harness-test`, add the harness regression case (see `.claude/skills/harness-test-writer/SKILL.md`) alongside Go-level tests: Go tests give a fast, free red/green loop while coding; the harness case is the live end-to-end pin, expected red pre-fix and green post-fix, validated structurally (`augment-provider-harness.mjs` / `filter-collection.mjs`) without needing a live paid run during development.
+
+### Every `core/` change ships with a provider-harness case
+
+Any change under `core/` that a client can observe on the wire must land together with a case in `tests/e2e/api/collections/provider-harness.json` (see `.claude/skills/harness-test-writer/SKILL.md`). This covers new features and refactors, not only bug fixes — the rule in the previous section is the narrower instance of this one.
+
+`core/` is the only layer every transport, integration and provider funnels through, so its behaviour is what the harness exists to pin. A Go unit test proves the function does what you meant; only the harness proves the bytes a real client sends still come back correct through the whole stack. The gap between those two is where regressions live: a fail-soft that fires on one request shape and silently skips a sibling shape passes every unit test it has.
+
+Write the case so it is **red before the change and green after**, and validate it structurally while developing — no live paid run needed:
+
+```bash
+node tests/e2e/api/runners/augment-provider-harness.mjs --source tests/e2e/api/collections/provider-harness.json --out tmp/harness-augmented.json
+node tests/e2e/api/runners/filter-collection.mjs --source tmp/harness-augmented.json --out tmp/filtered.json --feature "<keyword>"
+```
+
+Insert into the collection surgically (a script that splices the new object in, never a whole-file reserialize) — the file is ~50k lines and a reformat buries the actual change.
+
+The narrow exemptions: changes with no wire-visible effect (comments, internal renames, log lines) and behaviour no HTTP request can reach. If a change is exempt, say so explicitly in the PR rather than leaving the omission unexplained.
+
+### Always prefer `make test-core` over raw `go test` for provider-level tests
+
+The `make test-core` target is the canonical harness for provider tests — it wires up env vars from `.env` (provider API keys), invokes the per-provider `{provider}_test.go` entrypoint in `core/providers/<provider>/`, and routes through the shared `core/internal/llmtests/` scenario suite that validates end-to-end behavior (including streaming).
+
+Running bare `go test ./core/providers/<provider>/...` only executes unit tests and skips the llmtests scenarios — so it won't catch regressions in streaming, tool-calling, or provider-specific response shapes.
+
+```bash
+make test-core PROVIDER=anthropic TESTCASE=TestChatCompletionStream   # exact test
+make test-core PROVIDER=openai PATTERN=Stream                          # substring match
+make test-core PROVIDER=bedrock                                        # all scenarios for one provider
+make test-core DEBUG=1 PROVIDER=gemini TESTCASE=TestResponsesStream    # attach Delve on :2345
+```
+
+`PATTERN` and `TESTCASE` are mutually exclusive. Provider name must match a directory under `core/providers/` (e.g. `anthropic`, `openai`, `bedrock`, `vertex`, `azure`, `gemini`, `cohere`, `mistral`, `groq`, etc.).
 
 ### LLM Tests (`core/internal/llmtests/`)
 
@@ -641,10 +723,300 @@ Systematically address unresolved PR review comments. Uses GraphQL to get unreso
 ## Code Style
 
 - **Go**: `gofmt`/`goimports`. No custom linter config.
-- **TypeScript/React**: Prettier. Next.js App Router.
+- **TypeScript/React**: Oxfmt. TanStack Router.
 - **JSON tags**: `snake_case` matching provider API conventions.
 - **Error strings**: Lowercase, no trailing punctuation (Go convention).
 - **Provider types**: Prefixed with provider name in PascalCase (`AnthropicChatRequest`, `GeminiEmbeddingResponse`).
 - **Converter functions**: Pure — no side effects, no logging, no HTTP.
 - **Pool names**: Descriptive string passed to `pool.New()` (e.g., `"channel-message"`, `"response-stream"`).
 - **Context keys**: Use `BifrostContextKey` type. Custom plugins should define their own key types to avoid collisions.
+- **Go filenames**: No underscores. The only permitted underscore is the `_test.go` suffix. Examples: `pluginpipeline.go`, `pluginpipeline_test.go` — never `plugin_pipeline.go` or `plugin_pipeline_race_test.go`. Concatenate words (lowercase, no separators) for multi-word filenames.
+
+# Frontend Code Guidelines & Patterns
+
+This document defines the standards, structure, and best practices for writing frontend code in this project.
+
+---
+
+## Tech Stack
+
+- **React** (with Vite)
+- **TypeScript**
+- **@tanstack/react-router** (type-safe routing)
+- **Tailwind CSS v4**
+- **Radix UI** (primitives)
+- **Local UI component library** (`ui/components/ui/`) built on Radix primitives
+
+---
+
+## Folder Structure
+
+```text
+
+/ui
+├── app                # Routes & pages
+├── components        # Shared components
+│   └── ui            # Core design system components
+├── hooks             # Custom React hooks
+├── lib               # Utilities, helpers, shared logic
+└── app/enterprise    # Enterprise-specific code (via symlink)
+
+```
+
+### Rules
+
+- All frontend code must live inside `/ui`
+- Routes and pages → `ui/app`
+- Shared/reusable components → `ui/components`
+- Core UI primitives → `ui/components/ui`
+- Utilities and libraries → `ui/lib`
+- Custom hooks → `ui/hooks`
+
+---
+
+## Libraries & Usage
+
+### Core Libraries
+
+- `react` → UI library
+- `typescript` → Type safety
+- `tailwindcss` → Styling
+- `@tanstack/react-router` → Routing
+
+### UI & Visualization
+
+- `@radix-ui/react-*` → UI primitives
+- `ui/components/ui/*` → Project's Radix-based component system
+- `recharts` → Charts
+- `monaco-editor` → Code editor
+
+### Utilities
+
+- `date-fns` → Date/time formatting
+- `nuqs` → Query param state management
+
+### Tooling
+
+- `Oxfmt` → Code formatting
+- `vitest` → Testing
+
+---
+
+## Routing Convention
+
+For every new route:
+
+```text
+
+ui/app/<route-name>/
+├── layout.tsx   # Route definition using createFileRoute
+├── page.tsx     # Page content
+└── views/       # Optional: route-specific components
+
+```
+
+### Rules
+
+- Folder name must match route name
+- Always use `createFileRoute` in `layout.tsx`
+- `page.tsx` should only handle composition (not heavy logic)
+- Route-specific components go inside `views/`
+
+---
+
+## Component Guidelines
+
+### Reusability First
+
+- Always check if similar components/functions already exist
+- Prefer extending or refactoring existing code over duplication
+- Only create new components if reuse is not feasible
+
+---
+
+### Component Placement
+
+- Shared → `ui/components`
+- Route-specific → `views/` inside route folder
+
+---
+
+### Entity Selectors — never hand-roll an entity picker
+
+Any UI that lets a user pick an existing entity (virtual key, team, customer, user, business unit, …) **must** go through `ui/components/entitySelectors/`. Do not build a new `Select`/`Combobox` + `useState` + debounce + fetch stack for this — that pattern was already duplicated across surfaces and consolidated here.
+
+**Use an existing selector** — import it and pass one of the three modes:
+
+```tsx
+import { VirtualKeySelector } from "@/components/entitySelectors/virtualKeySelector";
+
+<VirtualKeySelector value={id} onChange={setId} fallbackOption={{ value: row.id, label: row.name }} />   // single
+<VirtualKeySelector multiple value={ids} onChange={setIds} />                                            // multi (chips inside the control)
+<VirtualKeySelector mode="add" onSelect={(o) => appendRow(o)} />                                         // fire-and-forget add
+```
+
+Available today: `virtualKeySelector`, `teamSelector`, `customerSelector` (OSS); `userSelector`, `businessUnitSelector` (enterprise — reached via registry, see below).
+
+**Always pass `fallbackOption` / `fallbackOptions`** when editing an existing row. Selectors fetch nothing until the popover opens, so a preselected id renders as a raw UUID otherwise.
+
+**Adding a selector for a new entity** — write a thin wrapper, never a new picker. Copy `customerSelector.tsx` (the simplest one) and change only what genuinely differs: the list query, the by-id label resolver, and the label/description fields. The wrapper must:
+
+1. Call `useEntitySelectorSearch()` for open/search/debounce state, and pass `skip` to the RTK Query hook — nothing is fetched until the picker opens.
+2. `useMemo` the `options` array. Multi mode feeds it to react-select as `defaultOptions`, which re-syncs on identity change and will loop if the identity churns.
+3. Ship a `LabelResolver` component (`EntityLabelResolverProps`) that fetches one entity by id and calls `onResolved` — this is what keeps selected-but-unfetched ids from rendering as UUIDs.
+4. Type its props as `OwnProps & EntitySelectorModeProps` and extend `EntitySelectorCommonProps`, so all three modes and the shared prop surface come for free.
+5. Default `limit` to `ENTITY_SELECTOR_PAGE_SIZE`; expose a `filters` prop only if the endpoint supports server-side scoping.
+6. Search is **server-side** — never fetch a page and filter it client-side.
+
+Do not edit `entitySelector.tsx` to accommodate one surface. It only carries behaviour identical across every entity; per-entity differences belong in the wrapper, per-surface differences in props (`trigger`, `triggerClassName`, `excludeIds`, `noPortal`, `className`).
+
+**OSS ↔ enterprise placement.** `entitySelector.tsx` and any selector whose API is OSS live in `ui/components/entitySelectors/`. A selector for an enterprise-only API lives in `bifrost-enterprise/enterprise-ui/app/components/entitySelectors/` and OSS must never import it directly — OSS reaches it through a runtime registry (`ui/lib/registries/userPicker.tsx`, `ui/lib/registries/modelLimitScopes.tsx`), with an empty fallback under `ui/app/_fallbacks/enterprise/` so OSS-only builds simply hide the option. Keep single mode prop-compatible with the registry contract (`{ value, onChange, disabled, fallbackOption }`) so the selector can be registered as-is.
+
+---
+
+### JSX & Rendering
+
+- Avoid deeply nested conditional rendering
+- Break complex UI into smaller components
+- Keep components readable and maintainable
+
+---
+
+### Lists & Keys
+
+- Always use **stable, unique keys**
+- Never use array index as key (unless unavoidable)
+
+---
+
+## React Best Practices
+
+- Avoid unnecessary or unstable dependencies in hooks
+- Prevent infinite loops in `useEffect`
+- Keep dependency arrays accurate and minimal
+- Prefer derived state over duplicated state
+
+---
+
+## State Management
+
+### Priority Order
+
+1. Query Params (`nuqs`) → for persistent/shareable state
+2. Local State → for UI-only state
+3. Redux → only when truly necessary
+
+---
+
+### Query Params (`nuqs`)
+
+- Use for state that should persist across refresh/navigation
+- Use proper parsers like `parseAsString` or `parseAsInteger`
+- Do NOT mix query param state with local/redux state
+- Follow a single consistent pattern across the codebase
+
+---
+
+### Redux
+
+- Use only when global/shared state is required
+- Avoid unnecessary slices
+- Prefer simpler alternatives when possible
+
+---
+
+### RTK Query (`@reduxjs/toolkit/query`)
+
+- Use for API calls and caching
+- Use **granular tags** for cache invalidation
+- Avoid invalidating entire datasets unnecessarily
+- Implement **optimistic updates** where applicable
+
+---
+
+## Forms
+
+We use:
+
+- `react-hook-form`
+- `zod v4` (for schema validation)
+
+### Rules
+
+- Always define a Zod schema
+- Include meaningful validation messages
+- Prefer **inline field errors** (not toast notifications)
+- Use `refine` / `superRefine` for complex validation
+- Store schemas in: `ui/lib/types/schemas.ts`
+
+---
+
+## Tables
+
+- Use `@tanstack/react-table` **only for large/complex datasets**
+- For simple tables → build custom lightweight components
+- Prioritize performance over abstraction
+
+---
+
+## ⚡ Performance Guidelines
+
+- Lazy load heavy or rarely-used libraries
+- Avoid unnecessary re-renders
+- Split large components into smaller ones
+- Keep bundle size minimal
+
+---
+
+## Dependency Rules
+
+- Do NOT add new dependencies unless absolutely necessary
+- Always pin exact versions (no `^` or `~`)
+- Prefer existing libraries in the codebase
+
+---
+
+## TypeScript Guidelines
+
+- Avoid using `any` unless absolutely unavoidable
+- Prefer strict typing and inference
+- Define reusable types in shared locations
+
+---
+
+## Code Quality & Formatting
+
+After writing code:
+
+```bash
+cd ui && npm run format
+````
+
+Then verify build:
+
+```bash
+cd ui && npm run build
+```
+
+* Code must pass formatting and build checks
+* Follow consistent naming and structure conventions
+
+---
+
+## Anti-Patterns to Avoid
+
+* Duplicate components without considering reuse
+* Mixing multiple state management approaches unnecessarily
+* Overusing Redux
+* Using unstable hook dependencies
+* Adding heavy libraries for simple use cases
+* Poorly structured or deeply nested JSX
+
+---
+
+## Summary
+
+* Prioritize **reusability, performance, and consistency**
+* Follow **strict folder structure and routing conventions**
+* Use **the right tool for the right problem**
+* Keep code **simple, predictable, and maintainable**

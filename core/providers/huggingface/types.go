@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/bytedance/sonic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -120,10 +121,10 @@ const (
 // containing the `function` key and `type` field.
 func (t HuggingFaceToolChoice) MarshalJSON() ([]byte, error) {
 	if t.EnumValue != nil {
-		return sonic.Marshal(*t.EnumValue)
+		return providerUtils.MarshalSorted(*t.EnumValue)
 	}
 	if t.Function != nil {
-		return sonic.Marshal(struct {
+		return providerUtils.MarshalSorted(struct {
 			Type     string                          `json:"type"`
 			Function *schemas.ChatToolChoiceFunction `json:"function"`
 		}{
@@ -226,10 +227,10 @@ func (i *InputsCustomType) UnmarshalJSON(data []byte) error {
 
 func (i InputsCustomType) MarshalJSON() ([]byte, error) {
 	if len(i.Texts) > 0 {
-		return sonic.Marshal(i.Texts)
+		return providerUtils.MarshalSorted(i.Texts)
 	}
 	if i.Text != nil {
-		return sonic.Marshal(*i.Text)
+		return providerUtils.MarshalSorted(*i.Text)
 	}
 	return []byte("null"), nil
 }
@@ -326,10 +327,10 @@ type HuggingFaceTranscriptionEarlyStopping struct {
 // MarshalJSON implements custom JSON marshaling for HuggingFaceTranscriptionEarlyStopping
 func (e HuggingFaceTranscriptionEarlyStopping) MarshalJSON() ([]byte, error) {
 	if e.BoolValue != nil {
-		return sonic.Marshal(*e.BoolValue)
+		return providerUtils.MarshalSorted(*e.BoolValue)
 	}
 	if e.StringValue != nil {
-		return sonic.Marshal(*e.StringValue)
+		return providerUtils.MarshalSorted(*e.StringValue)
 	}
 	return []byte("null"), nil
 }

@@ -1,0 +1,173 @@
+---
+title: "Alerting"
+description: "Define CEL-based alert rules over governance metrics and dispatch notifications to Slack, Microsoft Teams, PagerDuty, and webhooks when budgets or rate limits cross your thresholds."
+icon: "bell"
+keywords: ["alerting", "alerts", "notifications", "monitoring", "slack", "pagerduty", "webhook", "cel", "budget", "rate limit"]
+---
+
+## Overview
+
+**Alerting** in Bifrost Enterprise evaluates [CEL](https://github.com/google/cel-spec) expressions against live governance metrics - budgets and rate limits - and dispatches notifications through [alert channels](/enterprise/alerting/alert-channels) when a threshold is crossed. Rules are scoped to virtual keys, teams, or customers and can optionally target a specific budget.
+
+Every evaluation and delivery attempt is recorded in [alert history](/enterprise/alerting/alert-history) so you can audit what fired, what was skipped by cooldowns, and what failed to deliver.
+
+Open **Alerting** in the Bifrost dashboard to manage rules, channels, and history.
+
+<Frame>
+  <img src="/media/alerting/alerting-rules-list.png" alt="Alert Rules list in the Bifrost dashboard showing rule name, scope, and condition columns" />
+</Frame>
+
+### Key features
+
+| Feature | Description |
+| --- | --- |
+| **CEL-based rules** | Express conditions as CEL expressions over governance metrics, including compound conditions with `&&` and `\|\|`. |
+| **Governance scopes** | Scope rules to a specific virtual key, team, or customer. |
+| **Budget targeting** | Optionally target a specific budget ID so the rule only evaluates against that budget. |
+| **Multiple channels** | Notify Slack, Microsoft Teams, PagerDuty, or any HTTP webhook. |
+| **Periodic evaluation** | Rules are evaluated on a 60-second sweep against current governance snapshots. |
+| **Leader-aware** | In a cluster, only the leader evaluates and dispatches, avoiding duplicate alerts. |
+| **Cooldowns** | Per-rule and optional per-channel cooldowns prevent alert storms. |
+| **Alert history** | Every evaluation outcome is recorded with the rule, scope, metrics, and delivery status. |
+
+---
+
+## How it works
+
+Bifrost evaluates alert rules on a periodic sweep and dispatches notifications subject to cooldowns.
+
+<Steps>
+  <Step title="Governance snapshots are collected">
+    The alert engine reads the current governance state - budget consumption and rate limit usage - from the in-memory governance store. This includes per-budget spend versus its limit and per-rate-limit request and token usage versus their configured maximums.
+  </Step>
+  <Step title="Rules are evaluated">
+    Each enabled rule's CEL expression is evaluated against the governance metrics for its scope. If the rule has a `target_type` of `"budget"` and a specific `target_id`, only metrics for that budget are used. If no target is specified, the expression is evaluated against every budget in the scope.
+  </Step>
+  <Step title="Cooldowns are applied">
+    When a rule matches, its cooldown suppresses repeat notifications for the same rule, scope, and target. Bifrost checks compact successful-send state in the shared key-value store. Channels can define their own optional cooldown on top of the rule cooldown.
+  </Step>
+  <Step title="Notifications are dispatched">
+    The rule's channels are notified. Every outcome - `sent`, `failed`, or `skipped` - is written to [alert history](/enterprise/alerting/alert-history).
+  </Step>
+</Steps>
+
+---
+
+## CEL variables
+
+Each rule's CEL expression can reference the following variables, which are populated from the current governance snapshot:
+
+| Variable | Type | Meaning |
+| --- | --- | --- |
+| `budget_usage_percent` | `double` | Percentage of the budget consumed (`budget_spent / budget_limit * 100`). |
+| `budget_spent` | `double` | Absolute dollars spent against the budget. |
+| `rate_limit_request_usage_percent` | `double` | Percentage of the request rate limit consumed. |
+| `request_usage` | `int` | Absolute request count consumed. |
+| `rate_limit_token_usage_percent` | `double` | Percentage of the token rate limit consumed. |
+| `token_usage` | `int` | Absolute token count consumed. |
+| `scope_type` | `string` | The rule's scope type (`virtual_key`, `team`, or `customer`). |
+| `scope_id` | `string` | The rule's scope ID. |
+| `target_type` | `string` | The target type (`"budget"`) if the rule targets a specific budget; empty string otherwise. |
+| `target_id` | `string` | The target budget ID if the rule targets a specific budget; empty string otherwise. |
+
+<Note>
+It's advisable to set `scope_type`, `scope_id`, and `target_type`/`target_id` through the UI's **Scope Type**, **Scope ID**, and **Evaluate On** fields or through `config.json` rather than the condition builder.
+</Note>
+
+<Note>
+When a rule does not target a specific budget, the engine evaluates the expression once per budget in the scope. Each evaluation receives the `target_type` and `target_id` for that budget along with its `budget_spent` and `budget_limit`. Rate limit variables (`request_usage`, `token_usage`, and their limits) are populated from the scope's highest-utilization rate limits.
+</Note>
+
+Commonly used operators include `==`, `!=`, `>`, `<`, `>=`, and `<=`, combinable with `&&` and `||`. The engine places no restriction beyond that on the standard CEL function library — arithmetic, ternary (`?:`), `in`, and string functions like `.contains()`, `.matches()`, and `size()` are all valid as long as the expression evaluates to a boolean. See [Alert Rules](/enterprise/alerting/alert-rules) for CEL expression examples.
+
+---
+
+## Scopes
+
+Every rule must specify a scope type and a scope ID. The following scopes are supported:
+
+| Scope | Description |
+| --- | --- |
+| `virtual_key` | A specific virtual key. |
+| `team` | A specific team. |
+| `customer` | A specific customer. |
+
+A scope ID is required. There are no wildcard or global scopes.
+
+---
+
+## Budget targeting
+
+In addition to the scope, a rule can optionally target a specific governance object. The only supported target type is `"budget"`.
+
+| Behavior | `target_type` | `target_id` |
+| --- | --- | --- |
+| Evaluate all budgets in scope | Not set (or `null`) | Not set (or `null`) |
+| Evaluate a specific budget | `"budget"` | The budget's ID |
+
+When a target is set, only metrics for that specific budget are evaluated. Rate limit variables are still populated from the scope's active rate limits.
+
+---
+
+## Cooldowns
+
+Alerting uses a dual-layer cooldown system to prevent alert storms:
+
+- **Rule cooldown**: Suppresses repeat notifications for the same rule, scope, and target until the cooldown window elapses. Default is 60 seconds. The cooldown window is measured from the latest successful send for that rule and target.
+- **Channel cooldown**: An optional per-channel cooldown that suppresses a channel after it receives any alert. Default is 0 seconds (no suppression). Useful when one channel (such as PagerDuty) should be notified less frequently than another (such as Slack) for the same rule.
+
+Cooldowns are enforced from compact state in Bifrost's shared key-value store. Successful deliveries update that state before their [alert history](/enterprise/alerting/alert-history) row is appended. On startup, leadership changes, or relevant rule configuration changes, Bifrost rebuilds the required state with bounded aggregate reads from alert history.
+
+---
+
+## Clustering behavior
+
+When Bifrost runs as a [cluster](/enterprise/clustering), only the leader node evaluates rules and dispatches notifications. Successful-send state is shared through the cluster key-value store. A newly elected leader recovers and reconciles that state before its first scheduled dispatch. When a node loses leadership, its alerting engine stops until leadership is regained.
+
+No additional configuration is required; leader-aware alerting activates automatically in cluster mode.
+
+---
+
+## Configuration
+
+Webhook network behavior is configured through the `alerting` section of `config.json`. Channels and rules can also be managed via the Web UI or API.
+
+```json
+{
+  "alerting": {
+    "webhook_network": {
+      "allow_http": false,
+      "allow_private_network": false
+    }
+  }
+}
+```
+
+For declaring channels and rules statically in `config.json`, see the relevant pages: [Alert Rules](/enterprise/alerting/alert-rules#configjson) and [Alert Channels](/enterprise/alerting/alert-channels#configjson).
+
+### Configuration fields
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `webhook_network.allow_http` | boolean | `false` | When `true`, permits `http://` URLs for Slack, Microsoft Teams, and generic webhook channels. PagerDuty always uses its fixed HTTPS endpoint. |
+| `webhook_network.allow_private_network` | boolean | `false` | When `true`, permits webhook destinations on RFC1918 private networks. Link-local and unspecified addresses remain blocked. |
+
+<Warning>
+Leaving `webhook_network.allow_http` and `webhook_network.allow_private_network` at `false` is strongly recommended. Enabling these weakens SSRF and TLS protections. See [Alert Channels](/enterprise/alerting/alert-channels#security) for details.
+</Warning>
+
+---
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Alert Channels" icon="megaphone" href="/enterprise/alerting/alert-channels">
+    Configure where alerts are delivered: Slack, Microsoft Teams, PagerDuty, and webhooks.
+  </Card>
+  <Card title="Alert Rules" icon="gavel" href="/enterprise/alerting/alert-rules">
+    Define the conditions, scopes, and channels that trigger alerts.
+  </Card>
+  <Card title="Alert History" icon="clock-rotate-left" href="/enterprise/alerting/alert-history">
+    Review delivered notifications, skipped alerts, and failed delivery attempts.
+  </Card>
+</CardGroup>

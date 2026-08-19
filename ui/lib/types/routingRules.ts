@@ -19,10 +19,11 @@ export interface RoutingRule {
 	cel_expression: string;
 	targets: RoutingTarget[];
 	fallbacks?: string[];
-	scope: "global" | "team" | "customer" | "virtual_key";
+	scope: "global" | "team" | "customer" | "virtual_key" | "user";
 	scope_id?: string;
 	priority: number;
 	enabled: boolean;
+	chain_rule: boolean;
 	query?: RuleGroupType;
 	created_at: string;
 	updated_at: string;
@@ -38,6 +39,7 @@ export interface CreateRoutingRuleRequest {
 	scope_id?: string;
 	priority: number;
 	enabled?: boolean;
+	chain_rule?: boolean;
 	query?: RuleGroupType;
 }
 
@@ -80,6 +82,7 @@ export interface RoutingRuleFormData {
 	scope_id: string;
 	priority: number;
 	enabled: boolean;
+	chain_rule: boolean;
 	query?: RuleGroupType;
 	isDirty?: boolean;
 }
@@ -89,6 +92,9 @@ export enum RoutingRuleScope {
 	Team = "team",
 	Customer = "customer",
 	VirtualKey = "virtual_key",
+	// Not part of ROUTING_RULE_SCOPES: the sheet offers it only when a user
+	// picker is registered (builds with a user directory).
+	User = "user",
 }
 
 export const ROUTING_RULE_SCOPES = [
@@ -115,5 +121,6 @@ export const DEFAULT_ROUTING_RULE_FORM_DATA: RoutingRuleFormData = {
 	scope_id: "",
 	priority: 0,
 	enabled: true,
+	chain_rule: false,
 	isDirty: false,
 };

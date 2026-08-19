@@ -1,4 +1,3 @@
-"use client";
 import React, { useMemo, useState } from "react";
 import { CustomDropdown } from "./dropdown";
 import { DropdownOption } from "./types";

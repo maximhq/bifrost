@@ -24,7 +24,11 @@ export function DeleteFolderDialog() {
 					</AlertDialogDescription>
 				</AlertDialogHeader>
 				<AlertDialogFooter>
-					<AlertDialogCancel data-testid="delete-folder-cancel" onClick={() => setDeleteFolderDialog({ open: false })} disabled={isDeletingFolder}>
+					<AlertDialogCancel
+						data-testid="delete-folder-cancel"
+						onClick={() => setDeleteFolderDialog({ open: false })}
+						disabled={isDeletingFolder}
+					>
 						Cancel
 					</AlertDialogCancel>
 					<AlertDialogAction data-testid="delete-folder-confirm" onClick={handleDeleteFolder} disabled={isDeletingFolder}>
@@ -50,7 +54,11 @@ export function DeletePromptDialog() {
 					</AlertDialogDescription>
 				</AlertDialogHeader>
 				<AlertDialogFooter>
-					<AlertDialogCancel data-testid="delete-prompt-cancel" onClick={() => setDeletePromptDialog({ open: false })} disabled={isDeletingPrompt}>
+					<AlertDialogCancel
+						data-testid="delete-prompt-cancel"
+						onClick={() => setDeletePromptDialog({ open: false })}
+						disabled={isDeletingPrompt}
+					>
 						Cancel
 					</AlertDialogCancel>
 					<AlertDialogAction data-testid="delete-prompt-confirm" onClick={handleDeletePrompt} disabled={isDeletingPrompt}>

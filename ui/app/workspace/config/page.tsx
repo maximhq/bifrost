@@ -1,20 +1,18 @@
-"use client";
-
 import { NoPermissionView } from "@/components/noPermissionView";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { useRouter } from "next/navigation";
+import { useNavigate } from "@tanstack/react-router";
 import { useEffect } from "react";
 
 export default function ConfigPage() {
-	const router = useRouter();
+	const navigate = useNavigate();
 	// Check permission
 	const hasConfigAccess = useRbac(RbacResource.Settings, RbacOperation.View);
 
 	useEffect(() => {
 		if (hasConfigAccess) {
-			router.replace("/workspace/config/client-settings");
+			navigate({ to: "/workspace/config/client-settings", replace: true });
 		}
-	}, [hasConfigAccess, router]);
+	}, [hasConfigAccess, navigate]);
 
 	if (!hasConfigAccess) {
 		return <NoPermissionView entity="configuration" />;

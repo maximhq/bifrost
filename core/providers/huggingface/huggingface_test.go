@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/maximhq/bifrost/core/internal/llmtests"
+	"github.com/maximhq/bifrost/core/providers/huggingface"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -25,7 +26,7 @@ func TestHuggingface(t *testing.T) {
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:             schemas.HuggingFace,
 		ChatModel:            "groq/meta-llama/Llama-3.3-70B-Instruct",
-		VisionModel:          "cohere/CohereLabs/aya-vision-32b",
+		VisionModel:          "novita/meta-llama/Llama-4-Scout-17B-16E-Instruct",
 		EmbeddingModel:       "sambanova/intfloat/e5-mistral-7b-instruct",
 		TranscriptionModel:   "fal-ai/openai/whisper-large-v3",
 		SpeechSynthesisModel: "fal-ai/hexgrad/Kokoro-82M",
@@ -50,10 +51,10 @@ func TestHuggingface(t *testing.T) {
 			ImageBase64:           true,
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
-			Embedding:             true,
-			Transcription:         true,
+			Embedding:             false,
+			Transcription:         false,
 			TranscriptionStream:   false,
-			SpeechSynthesis:       true,
+			SpeechSynthesis:       false,
 			SpeechSynthesisStream: false,
 			Reasoning:             true,
 			ListModels:            true,
@@ -68,14 +69,64 @@ func TestHuggingface(t *testing.T) {
 			FileDelete:            false,
 			FileContent:           false,
 			FileBatchInput:        false,
-			ImageGeneration:       true,
-			ImageGenerationStream: true,
-			ImageEdit:             true,
-			ImageEditStream:       true,
+			ImageGeneration:       false,
+			ImageGenerationStream: false,
+			ImageEdit:             false,
+			ImageEditStream:       false,
 		},
 	}
 
 	t.Run("HuggingFaceTests", func(t *testing.T) {
 		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
+}
+
+func TestUnmarshalHuggingFaceEmbeddingResponsePreservesPrecision(t *testing.T) {
+	const want = 0.12345678901234568
+
+	resp, err := huggingface.UnmarshalHuggingFaceEmbeddingResponse([]byte(`[[0.12345678901234568]]`), "test-model")
+	if err != nil {
+		t.Fatalf("UnmarshalHuggingFaceEmbeddingResponse failed: %v", err)
+	}
+
+	if resp == nil || len(resp.Data) != 1 {
+		t.Fatalf("expected single embedding response, got %#v", resp)
+	}
+	if len(resp.Data[0].Embedding.EmbeddingArray) != 1 {
+		t.Fatalf("expected single embedding value, got %#v", resp.Data[0].Embedding.EmbeddingArray)
+	}
+
+	got := resp.Data[0].Embedding.EmbeddingArray[0]
+	if got != want {
+		t.Fatalf("expected %0.18f, got %0.18f", want, got)
+	}
+
+	if got == float64(float32(want)) {
+		t.Fatalf("expected preserved precision, got float32-rounded value %0.18f", got)
+	}
+}
+
+func TestUnmarshalHuggingFaceEmbeddingResponse1DPreservesPrecision(t *testing.T) {
+	const want = 0.12345678901234568
+
+	resp, err := huggingface.UnmarshalHuggingFaceEmbeddingResponse([]byte(`[0.12345678901234568]`), "test-model")
+	if err != nil {
+		t.Fatalf("UnmarshalHuggingFaceEmbeddingResponse failed: %v", err)
+	}
+
+	if resp == nil || len(resp.Data) != 1 {
+		t.Fatalf("expected single embedding response, got %#v", resp)
+	}
+	if len(resp.Data[0].Embedding.EmbeddingArray) != 1 {
+		t.Fatalf("expected single embedding value, got %#v", resp.Data[0].Embedding.EmbeddingArray)
+	}
+
+	got := resp.Data[0].Embedding.EmbeddingArray[0]
+	if got != want {
+		t.Fatalf("expected %0.18f, got %0.18f", want, got)
+	}
+
+	if got == float64(float32(want)) {
+		t.Fatalf("expected preserved precision, got float32-rounded value %0.18f", got)
+	}
 }

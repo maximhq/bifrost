@@ -6,7 +6,7 @@ allowed-tools: Read, Grep, Glob, Bash, Edit, Write, WebSearch, WebFetch, mcp__co
 
 # Bifrost Documentation Writer
 
-Write, update, and review Mintlify MDX documentation for Bifrost features. Performs thorough codebase research across both the Next.js UI and Go backend, validates config.json examples against the schema, and follows established documentation conventions.
+Write, update, and review Mintlify MDX documentation for Bifrost features. Performs thorough codebase research across both the React UI and Go backend, validates config.json examples against the schema, and follows established documentation conventions.
 
 ## Usage
 
@@ -103,7 +103,7 @@ Read the doc and cross-reference against the current codebase to identify:
 
 ### 2a. Explore the UI Code
 
-The UI is a Next.js application. Feature pages live under `ui/app/workspace/<feature>/`.
+The UI is a React + Vite + TanStack Router application. Feature pages live under `ui/app/workspace/<feature>/`.
 
 ```bash
 # List the feature directory structure
@@ -176,7 +176,7 @@ grep -n 'func.*create\|func.*update\|func.*delete\|func.*get' transports/bifrost
 | `plugins.go` | `/api/plugins` | CRUD plugins |
 | `config.go` | `/api/config` | GET/PUT config |
 | `config.go` | `/api/proxy-config` | GET/PUT proxy config |
-| `cache.go` | `/api/cache/clear/{requestId}` | DELETE cache |
+| `cache.go` | `/api/cache/clear/{cacheId}` | DELETE cache |
 | `session.go` | `/api/session/*` | Login/logout/auth check |
 | `oauth2.go` | `/api/oauth/*` | OAuth callback/status |
 
@@ -222,7 +222,7 @@ print(json.dumps(defn, indent=2))
 - `config_store` - Config store backend (file, postgres)
 - `logs_store` - Log store backend (file, postgres)
 - `cluster_config` - Cluster/multinode configuration
-- `saml_config` - SAML/SSO configuration
+- `scim_config` - SCIM/SSO configuration
 - `load_balancer_config` - Adaptive load balancer
 - `guardrails_config` - Guardrails configuration
 - `plugins` - Plugin configurations
@@ -237,7 +237,7 @@ print(json.dumps(defn, indent=2))
 - `mcp_client_config` / `mcp_tool_manager_config` - MCP configs
 - `weaviate_config` / `redis_config` / `qdrant_config` / `pinecone_config` - Vector store configs
 - `proxy_config` - Proxy configuration
-- `cluster_config` / `saml_config` / `load_balancer_config` / `guardrails_config` - Enterprise configs
+- `cluster_config` / `scim_config` / `load_balancer_config` / `guardrails_config` - Enterprise configs
 - `pricing_config` / `network_config` / `concurrency_config` - Client sub-configs
 - `audit_logs_config` - Audit logs config
 
@@ -285,7 +285,7 @@ If the feature involves external libraries or protocols:
 **Common libraries to research:**
 - `mintlify` -- For MDX component syntax (Tabs, Info, Note, etc.)
 - `mark3labs/mcp-go` -- For MCP-related features
-- `next.js` -- For UI architecture context
+- `react` -- For UI architecture context
 - Provider SDKs -- For provider-specific features
 
 ### 3b. Use WebSearch for Additional Context
@@ -785,7 +785,7 @@ bifrost/
 │   ├── contributing/                  # Developer contribution guides
 │   ├── benchmarking/                  # Performance benchmarks
 │   └── changelogs/                    # Version changelogs
-├── ui/                                # Next.js UI application
+├── ui/                                # React + Vite UI application
 │   └── app/workspace/                 # Feature pages
 │       ├── providers/                 # Provider management
 │       ├── virtual-keys/              # Virtual key management

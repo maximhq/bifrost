@@ -1,38 +1,49 @@
-"use client";
-
 import {
 	ArrowUpRight,
+	BadgeCheck,
+	BadgeInfo,
+	BookOpenText,
 	BookUser,
 	Boxes,
 	BoxIcon,
 	BugIcon,
 	Building,
+	Building2,
 	ChartColumnBig,
 	ChevronsLeftRightEllipsis,
-	CircleDollarSign,
+	CircuitBoard,
 	Construction,
 	DatabaseZap,
+	Flag,
 	FlaskConical,
 	FolderGit,
+	Gavel,
+	GitCompareArrows,
 	Globe,
+	Hexagon,
+	History,
 	KeyRound,
 	Landmark,
+	LaptopMinimalCheck,
 	LayoutGrid,
 	LogOut,
 	Logs,
+	Megaphone,
 	Network,
+	Palette,
 	PanelLeftClose,
+	PanelLeftOpen,
+	Plug,
 	Puzzle,
-	Router,
 	ScrollText,
 	Search,
 	SearchCheck,
 	Settings,
 	Settings2Icon,
 	ShieldCheck,
-	ShieldUser,
 	Shuffle,
-	SquareTerminal,
+	Siren,
+	SlidersHorizontal,
 	Telescope,
 	ToolCase,
 	TrendingUp,
@@ -41,6 +52,7 @@ import {
 	Users,
 	Wallet,
 	WalletCards,
+	Webhook,
 } from "lucide-react";
 
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -59,20 +71,19 @@ import {
 	SidebarMenuSubItem,
 	useSidebar,
 } from "@/components/ui/sidebar";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { HIDDEN_UNTIL_NAV_COOKIE, REMIND_LATER_COOKIE, useOnboardingChecklist } from "@/hooks/useOnboardingChecklist";
 import { useWebSocket } from "@/hooks/useWebSocket";
-import { IS_ENTERPRISE, TRIAL_EXPIRY } from "@/lib/constants/config";
+import { IS_ENTERPRISE } from "@/lib/constants/config";
+import { useBranding } from "@/lib/hooks/useBranding";
 import { useGetCoreConfigQuery, useGetLatestReleaseQuery, useGetVersionQuery, useLogoutMutation } from "@/lib/store";
-import { cn } from "@/lib/utils";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import type { UserInfo } from "@enterprise/lib/store/utils/tokenManager";
 import { getUserInfo } from "@enterprise/lib/store/utils/tokenManager";
 import { BooksIcon, DiscordLogoIcon, GithubLogoIcon } from "@phosphor-icons/react";
+import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 import { ChevronRight } from "lucide-react";
-import moment from "moment";
 import { useTheme } from "next-themes";
-import Image from "next/image";
-import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useCookies } from "react-cookie";
 import { ThemeToggle } from "./themeToggle";
@@ -81,6 +92,10 @@ import { PromoCardStack } from "./ui/promoCardStack";
 
 // Cookie name for dismissing production setup card
 const PRODUCTION_SETUP_DISMISSED_COOKIE = "bifrost_production_setup_dismissed";
+// Closing the "setup checklist incomplete" promo card only snoozes that card
+// for a day — separate from the widget's own hidden/snoozed cookies, so it
+// doesn't affect whether the floating widget itself reappears on next nav.
+const ONBOARDING_CARD_DISMISSED_COOKIE = "bifrost_onboarding_card_dismissed";
 
 // Custom MCP Icon Component
 const MCPIcon = ({ className }: { className?: string }) => (
@@ -139,14 +154,14 @@ const productionSetupHelpCard = {
 			<br />
 			<br />
 			Book a demo with our team{" "}
-			<Link
+			<a
 				href="https://calendly.com/maximai/bifrost-demo?utm_source=bfd_sdbr"
 				target="_blank"
 				className="text-primary font-medium underline"
 				rel="noopener noreferrer"
 			>
 				here
-			</Link>
+			</a>
 			.
 		</>
 	),
@@ -163,12 +178,35 @@ interface SidebarItem {
 	hasAccess: boolean;
 	subItems?: SidebarItem[];
 	tag?: string;
+	new?: boolean;
 	isExternal?: boolean;
 	queryParam?: string; // Optional: for tab-based subitems (e.g., "client-settings")
 }
 
 const getSidebarItemHref = (item: Pick<SidebarItem, "url" | "queryParam">) => {
 	return item.queryParam ? `${item.url}?tab=${item.queryParam}` : item.url;
+};
+
+const slug = (s: string) => s.toLowerCase().replace(/\s+/g, "-");
+
+const TimeFilterPages = new Set(["/workspace/dashboard", "/workspace/logs", "/workspace/mcp-logs"]);
+
+const preserveTimeFilters = (baseHref: string, subItemUrl: string, pathname: string, search: string): string => {
+	if (TimeFilterPages.has(subItemUrl) && TimeFilterPages.has(pathname)) {
+		const currentParams = new URLSearchParams(search);
+		const startTime = currentParams.get("start_time");
+		const endTime = currentParams.get("end_time");
+		const period = currentParams.get("period");
+		if ((startTime && endTime) || period) {
+			const params = new URLSearchParams();
+			if (startTime) params.set("start_time", startTime);
+			if (endTime) params.set("end_time", endTime);
+			if (period) params.set("period", period);
+			const sep = baseHref.includes("?") ? "&" : "?";
+			return `${baseHref}${sep}${params.toString()}`;
+		}
+	}
+	return baseHref;
 };
 
 const SidebarItemView = ({
@@ -179,11 +217,10 @@ const SidebarItemView = ({
 	isExpanded,
 	onToggle,
 	pathname,
-	router,
+	search,
 	isSidebarCollapsed,
 	expandSidebar,
 	highlightedUrl,
-	prefetchRoute,
 }: {
 	item: SidebarItem;
 	isActive: boolean;
@@ -192,17 +229,42 @@ const SidebarItemView = ({
 	isExpanded?: boolean;
 	onToggle?: () => void;
 	pathname: string;
-	router: ReturnType<typeof useRouter>;
+	search: string;
 	isSidebarCollapsed: boolean;
 	expandSidebar: () => void;
 	highlightedUrl?: string;
-	prefetchRoute: (url: string) => void;
 }) => {
+	const [flyoutOpen, setFlyoutOpen] = useState(false);
+	const flyoutCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+	const openFlyout = () => {
+		if (flyoutCloseTimer.current) clearTimeout(flyoutCloseTimer.current);
+		setFlyoutOpen(true);
+	};
+	const closeFlyout = () => {
+		if (flyoutCloseTimer.current) clearTimeout(flyoutCloseTimer.current);
+		flyoutCloseTimer.current = setTimeout(() => {
+			setFlyoutOpen(false);
+			flyoutCloseTimer.current = null;
+		}, 80);
+	};
+	useEffect(() => {
+		return () => {
+			if (flyoutCloseTimer.current) clearTimeout(flyoutCloseTimer.current);
+		};
+	}, []);
 	const hasSubItems = "subItems" in item && item.subItems && item.subItems.length > 0;
+	const isRouteMatch = (url: string) => {
+		// Exact-match base paths that have sibling tab routes nested under them, so the base
+		// tab isn't also highlighted when a child tab (e.g. /settings) is active.
+		if (url === "/workspace/custom-pricing" || url === "/workspace/adaptive-routing") return pathname === url;
+		// Avoid double-highlighting with "/workspace/mcp-registry/library"
+		if (url === "/workspace/mcp-registry") return !pathname.startsWith("/workspace/mcp-registry/library") && pathname.startsWith(url);
+		return pathname.startsWith(url);
+	};
 	const isAnySubItemActive =
 		hasSubItems &&
 		item.subItems?.some((subItem) => {
-			return pathname.startsWith(subItem.url);
+			return isRouteMatch(subItem.url);
 		});
 
 	const handleClick = (e: React.MouseEvent) => {
@@ -221,107 +283,207 @@ const SidebarItemView = ({
 		}
 	};
 
-	const openInNewTab = (url: string) => {
-		window.open(url, "_blank", "noopener,noreferrer");
-	};
-
-	const handleNavigation = (url: string, e?: React.MouseEvent) => {
-		if (isExternal || e?.metaKey || e?.ctrlKey) {
-			openInNewTab(url);
-			return;
-		}
-		router.push(url);
-	};
-
-	const handleSubItemClick = (subItem: SidebarItem, e?: React.MouseEvent) => {
-		const url = getSidebarItemHref(subItem);
-		if (e?.metaKey || e?.ctrlKey) {
-			openInNewTab(url);
-			return;
-		}
-		router.push(url);
-	};
-
 	const isHighlighted = !hasSubItems && highlightedUrl === item.url;
+
+	const buttonClassName = `group/nav-item relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${isHighlighted
+		? "bg-sidebar-accent text-accent-foreground border-primary/20"
+		: isActive || isAnySubItemActive
+			? "bg-sidebar-accent text-primary border-primary/20"
+			: item.hasAccess
+				? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
+				: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+		} `;
+
+	const innerContent = (
+		<div className="flex w-full items-center justify-between">
+			<div className="flex w-full items-center gap-2">
+				<item.icon className={`h-4 w-4 shrink-0 ${isActive || isAnySubItemActive ? "text-primary" : "text-muted-foreground"}`} />
+				<span className={`text-sm group-data-[collapsible=icon]:hidden ${isActive || isAnySubItemActive ? "font-medium" : "font-normal"}`}>
+					{item.title}
+				</span>
+				{item.tag && (
+					<Badge variant="secondary" className="text-muted-foreground ml-auto text-xs group-data-[collapsible=icon]:hidden">
+						{item.tag}
+					</Badge>
+				)}
+			</div>
+			{hasSubItems && (
+				<ChevronRight
+					className={`h-4 w-4 transition-transform duration-200 group-data-[collapsible=icon]:hidden ${isExpanded ? "rotate-90" : ""}`}
+				/>
+			)}
+			{!hasSubItems && item.url === "/logs" && isWebSocketConnected && (
+				<div className="h-2 w-2 animate-pulse rounded-full bg-green-800 dark:bg-green-200" />
+			)}
+			{isExternal && <ArrowUpRight className="text-muted-foreground h-4 w-4 group-data-[collapsible=icon]:hidden" size={16} />}
+		</div>
+	);
+
+	// Render strategy:
+	//   - Items with sub-items: <button> (toggle, not navigation)
+	//   - Leaf items, no access: <button> (disabled-style, non-clickable)
+	//   - Leaf items, external:  <a target="_blank">
+	//   - Leaf items, internal:  TanStack <Link> with preload-on-hover
+	let menuButton: React.ReactNode;
+	if (hasSubItems) {
+		menuButton = (
+			<SidebarMenuButton
+				tooltip={isSidebarCollapsed ? undefined : item.title}
+				className={buttonClassName}
+				onClick={handleClick}
+				data-testid={`sidebar-item-btn-${slug(item.title)}`}
+			>
+				{innerContent}
+			</SidebarMenuButton>
+		);
+	} else if (!item.hasAccess) {
+		menuButton = (
+			<SidebarMenuButton tooltip={item.title} data-nav-url={item.url} className={buttonClassName}>
+				{innerContent}
+			</SidebarMenuButton>
+		);
+	} else if (isExternal) {
+		menuButton = (
+			<SidebarMenuButton asChild tooltip={item.title} className={buttonClassName}>
+				<a
+					href={item.url}
+					target="_blank"
+					rel="noopener noreferrer"
+					data-nav-url={item.url}
+					onClick={isSidebarCollapsed ? (e: React.MouseEvent) => e.stopPropagation() : undefined}
+				>
+					{innerContent}
+				</a>
+			</SidebarMenuButton>
+		);
+	} else {
+		menuButton = (
+			<SidebarMenuButton asChild tooltip={item.title} className={buttonClassName}>
+				<Link
+					to={item.url}
+					preload="intent"
+					data-nav-url={item.url}
+					onClick={isSidebarCollapsed ? (e: React.MouseEvent) => e.stopPropagation() : undefined}
+				>
+					{innerContent}
+				</Link>
+			</SidebarMenuButton>
+		);
+	}
 
 	return (
 		<SidebarMenuItem key={item.title}>
-			<SidebarMenuButton
-				tooltip={item.title}
-				data-nav-url={!hasSubItems ? item.url : undefined}
-				className={`relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${
-					isHighlighted
-						? "bg-sidebar-accent text-accent-foreground border-primary/20"
-						: isActive || isAnySubItemActive
-							? "bg-sidebar-accent text-primary border-primary/20"
-							: item.hasAccess
-								? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
-								: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-				} `}
-				onClick={hasSubItems ? handleClick : item.hasAccess ? (e) => handleNavigation(item.url, e) : undefined}
-				onMouseEnter={!hasSubItems && item.hasAccess ? () => prefetchRoute(item.url) : undefined}
-				onFocus={!hasSubItems && item.hasAccess ? () => prefetchRoute(item.url) : undefined}
-			>
-				<div className="flex w-full items-center justify-between">
-					<div className="flex w-full items-center gap-2">
-						<item.icon className={`h-4 w-4 shrink-0 ${isActive || isAnySubItemActive ? "text-primary" : "text-muted-foreground"}`} />
-						<span
-							className={`text-sm group-data-[collapsible=icon]:hidden ${isActive || isAnySubItemActive ? "font-medium" : "font-normal"}`}
-						>
-							{item.title}
-						</span>
-						{item.tag && (
-							<Badge variant="secondary" className="text-muted-foreground ml-auto text-xs group-data-[collapsible=icon]:hidden">
-								{item.tag}
-							</Badge>
-						)}
-					</div>
-					{hasSubItems && (
-						<ChevronRight
-							className={`h-4 w-4 transition-transform duration-200 group-data-[collapsible=icon]:hidden ${isExpanded ? "rotate-90" : ""}`}
-						/>
-					)}
-					{!hasSubItems && item.url === "/logs" && isWebSocketConnected && (
-						<div className="h-2 w-2 animate-pulse rounded-full bg-green-800 dark:bg-green-200" />
-					)}
-					{isExternal && <ArrowUpRight className="text-muted-foreground h-4 w-4 group-data-[collapsible=icon]:hidden" size={16} />}
-				</div>
-			</SidebarMenuButton>
+			{isSidebarCollapsed && hasSubItems ? (
+				<Popover open={flyoutOpen} onOpenChange={setFlyoutOpen}>
+					<PopoverTrigger asChild onMouseEnter={openFlyout} onMouseLeave={closeFlyout}>
+						<div data-testid={`sidebar-flyout-trigger-${slug(item.title)}`}>{menuButton}</div>
+					</PopoverTrigger>
+					<PopoverContent
+						side="right"
+						align="start"
+						sideOffset={8}
+						className="w-48 p-1"
+						onMouseEnter={openFlyout}
+						onMouseLeave={closeFlyout}
+						data-testid={`sidebar-flyout-content-${slug(item.title)}`}
+					>
+						<div className="text-muted-foreground px-2 py-1.5 text-xs font-medium">{item.title}</div>
+						{item.subItems?.map((subItem) => {
+							const baseHref = getSidebarItemHref(subItem);
+							const href = preserveTimeFilters(baseHref, subItem.url, pathname, search);
+							const isSubItemActive = subItem.queryParam ? pathname === subItem.url : isRouteMatch(subItem.url);
+							const SubItemIcon = subItem.icon;
+							const subSlug = slug(subItem.title);
+							const inner = (
+								<div className="flex items-center gap-2">
+									{SubItemIcon && <SubItemIcon className={`h-3.5 w-3.5 ${isSubItemActive ? "text-primary" : "text-muted-foreground"}`} />}
+									<span className={`text-sm ${isSubItemActive ? "text-primary font-medium" : "text-slate-500 dark:text-zinc-400"}`}>
+										{subItem.title}
+									</span>
+									{subItem.tag && (
+										<Badge variant="secondary" className="text-muted-foreground ml-auto text-xs">
+											{subItem.tag}
+										</Badge>
+									)}
+								</div>
+							);
+							return (
+								<div key={subItem.title} data-testid={`sidebar-flyout-subitem-${subSlug}`} onClick={() => setFlyoutOpen(false)}>
+									{subItem.hasAccess === false ? (
+										<div
+											data-testid={`sidebar-subitem-disabled-${subSlug}`}
+											className="text-muted-foreground hover:bg-destructive/5 flex h-7 cursor-not-allowed items-center rounded-sm px-2"
+										>
+											{inner}
+										</div>
+									) : (
+										<Link
+											to={href}
+											preload="intent"
+											data-testid={`sidebar-subitem-link-${subSlug}`}
+											className={`flex h-7 items-center rounded-sm px-2 ${isSubItemActive ? "bg-sidebar-accent" : "hover:bg-sidebar-accent"}`}
+										>
+											{inner}
+										</Link>
+									)}
+								</div>
+							);
+						})}
+					</PopoverContent>
+				</Popover>
+			) : (
+				menuButton
+			)}
 			{hasSubItems && isExpanded && (
 				<SidebarMenuSub className="border-sidebar-border mt-1 ml-4 space-y-0.5 border-l pl-2">
 					{item.subItems?.map((subItem: SidebarItem) => {
-						const subItemHref = getSidebarItemHref(subItem);
+						const baseHref = getSidebarItemHref(subItem);
+						const subItemHref = preserveTimeFilters(baseHref, subItem.url, pathname, search);
 						// For query param based subitems, check if tab matches
-						const isSubItemActive = subItem.queryParam ? pathname === subItem.url : pathname.startsWith(subItem.url);
-						const isSubItemHighlighted = highlightedUrl === subItemHref;
+						const isSubItemActive = subItem.queryParam ? pathname === subItem.url : isRouteMatch(subItem.url);
+						const isSubItemHighlighted = highlightedUrl ? subItemHref.startsWith(highlightedUrl) : false;
 						const SubItemIcon = subItem.icon;
+						const subItemClassName = `h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${isSubItemHighlighted
+							? "bg-sidebar-accent text-accent-foreground"
+							: isSubItemActive
+								? "bg-sidebar-accent text-primary font-medium"
+								: subItem.hasAccess === false
+									? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+									: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
+							}`;
+						const subInner = (
+							<div className="flex w-full items-center gap-2">
+								{SubItemIcon && <SubItemIcon className={`h-3.5 w-3.5 ${isSubItemActive ? "text-primary" : "text-muted-foreground"}`} />}
+								<span className={`text-sm ${isSubItemActive ? "font-medium" : "font-normal"}`}>{subItem.title}</span>
+								{subItem.tag && (
+									<Badge variant="secondary" className="text-muted-foreground ml-auto text-xs">
+										{subItem.tag}
+									</Badge>
+								)}
+							</div>
+						);
 						return (
 							<SidebarMenuSubItem key={subItem.title}>
-								<SidebarMenuSubButton
-									data-nav-url={subItemHref}
-									className={`h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${
-										isSubItemHighlighted
-											? "bg-sidebar-accent text-accent-foreground"
-											: isSubItemActive
-												? "bg-sidebar-accent text-primary font-medium"
-												: subItem.hasAccess === false
-													? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-													: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
-									}`}
-									onClick={(e) => (subItem.hasAccess === false ? undefined : handleSubItemClick(subItem, e))}
-									onMouseEnter={subItem.hasAccess === false ? undefined : () => prefetchRoute(getSidebarItemHref(subItem))}
-									onFocus={subItem.hasAccess === false ? undefined : () => prefetchRoute(getSidebarItemHref(subItem))}
-								>
-									<div className="flex w-full items-center gap-2">
-										{SubItemIcon && <SubItemIcon className={`h-3.5 w-3.5 ${isSubItemActive ? "text-primary" : "text-muted-foreground"}`} />}
-										<span className={`text-sm ${isSubItemActive ? "font-medium" : "font-normal"}`}>{subItem.title}</span>
-										{subItem.tag && (
-											<Badge variant="secondary" className="text-muted-foreground ml-auto text-xs">
-												{subItem.tag}
-											</Badge>
-										)}
-									</div>
-								</SidebarMenuSubButton>
+								{subItem.hasAccess === false ? (
+									<SidebarMenuSubButton
+										data-nav-url={subItemHref}
+										data-testid={`sidebar-subitem-disabled-${slug(subItem.title)}`}
+										className={subItemClassName}
+									>
+										{subInner}
+									</SidebarMenuSubButton>
+								) : (
+									<SidebarMenuSubButton asChild className={subItemClassName}>
+										<Link
+											to={subItemHref}
+											preload="intent"
+											data-nav-url={subItemHref}
+											data-testid={`sidebar-subitem-link-${slug(subItem.title)}`}
+										>
+											{subInner}
+										</Link>
+									</SidebarMenuSubButton>
+								)}
 							</SidebarMenuSubItem>
 						);
 					})}
@@ -367,13 +529,17 @@ const compareVersions = (v1: string, v2: string): number => {
 		if (prereleaseNum1 > prereleaseNum2) return 1;
 		if (prereleaseNum1 < prereleaseNum2) return -1;
 	}
-
 	return 0;
 };
 
 export default function AppSidebar() {
-	const pathname = usePathname();
-	const router = useRouter();
+	const pathname = useLocation({ select: (l) => l.pathname });
+	const search = useLocation({ select: (l) => l.searchStr ?? "" });
+	const tsNavigate = useNavigate();
+	// Wrapper that accepts arbitrary string URLs (TanStack Router's `to` is
+	// strictly typed, but our sidebar items come from a runtime config).
+	const navigate = useCallback((url: string) => tsNavigate({ to: url as string }), [tsNavigate]);
+	const { state: sidebarState, toggleSidebar } = useSidebar();
 	const [mounted, setMounted] = useState(false);
 	const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
 	const [areCardsEmpty, setAreCardsEmpty] = useState(false);
@@ -381,34 +547,89 @@ export default function AppSidebar() {
 	const [searchQuery, setSearchQuery] = useState("");
 	const [focusedIndex, setFocusedIndex] = useState(-1);
 	const searchInputRef = useRef<HTMLInputElement>(null);
-	const [cookies, setCookie] = useCookies([PRODUCTION_SETUP_DISMISSED_COOKIE]);
+	const [cookies, setCookie, removeCookie] = useCookies([
+		PRODUCTION_SETUP_DISMISSED_COOKIE,
+		HIDDEN_UNTIL_NAV_COOKIE,
+		REMIND_LATER_COOKIE,
+		ONBOARDING_CARD_DISMISSED_COOKIE,
+	]);
 	const isProductionSetupDismissed = !!cookies[PRODUCTION_SETUP_DISMISSED_COOKIE];
+	const isOnboardingCardDismissed = !!cookies[ONBOARDING_CARD_DISMISSED_COOKIE];
 	const { data: latestRelease } = useGetLatestReleaseQuery(undefined, {
 		skip: !mounted, // Only fetch after component is mounted
 	});
 	const hasLogsAccess = useRbac(RbacResource.Logs, RbacOperation.View);
 	const hasObservabilityAccess = useRbac(RbacResource.Observability, RbacOperation.View);
+	// Alerting is currently surfaced under the existing governance permission
+	// until enterprise alerting gets its own RBAC resource.
+	const hasAlertingAccess = useRbac(RbacResource.Governance, RbacOperation.View);
+	const hasDashboardAccess = useRbac(RbacResource.Dashboard, RbacOperation.View);
 	const hasModelProvidersAccess = useRbac(RbacResource.ModelProvider, RbacOperation.View);
 	const hasMCPGatewayAccess = useRbac(RbacResource.MCPGateway, RbacOperation.View);
+	const hasMCPToolGroupsAccess = useRbac(RbacResource.MCPToolGroups, RbacOperation.View);
+	const hasMCPLogsAccess = useRbac(RbacResource.MCPLogs, RbacOperation.View);
 	const hasPluginsAccess = useRbac(RbacResource.Plugins, RbacOperation.View);
 	const hasUsersAccess = useRbac(RbacResource.Users, RbacOperation.View);
 	const hasUserProvisioningAccess = useRbac(RbacResource.UserProvisioning, RbacOperation.View);
 	const hasAuditLogsAccess = useRbac(RbacResource.AuditLogs, RbacOperation.View);
 	const hasCustomersAccess = useRbac(RbacResource.Customers, RbacOperation.View);
 	const hasTeamsAccess = useRbac(RbacResource.Teams, RbacOperation.View);
+	const hasBusinessUnitsAccess = useRbac(RbacResource.UserProvisioning, RbacOperation.View);
 	const hasRbacAccess = useRbac(RbacResource.RBAC, RbacOperation.View);
 	const hasVirtualKeysAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.View);
-	const hasGovernanceAccess = useRbac(RbacResource.Governance, RbacOperation.View);
+	const hasGovernanceLegacyAccess = useRbac(RbacResource.Governance, RbacOperation.View);
 	const hasRoutingRulesAccess = useRbac(RbacResource.RoutingRules, RbacOperation.View);
 	const hasGuardrailsProvidersAccess = useRbac(RbacResource.GuardrailsProviders, RbacOperation.View);
 	const hasGuardrailsConfigAccess = useRbac(RbacResource.GuardrailsConfig, RbacOperation.View);
+	const hasCircuitBreakerAccess = useRbac(RbacResource.CircuitBreaker, RbacOperation.View);
 	const hasClusterConfigAccess = useRbac(RbacResource.Cluster, RbacOperation.View);
 	const isAdaptiveRoutingAllowed = useRbac(RbacResource.AdaptiveRouter, RbacOperation.View);
 	const hasSettingsAccess = useRbac(RbacResource.Settings, RbacOperation.View);
+	const hasFeatureFlagsAccess = useRbac(RbacResource.FeatureFlags, RbacOperation.View);
+	const hasAPIKeyAccess = useRbac(RbacResource.APIKeys, RbacOperation.View);
 	const hasPromptRepositoryAccess = useRbac(RbacResource.PromptRepository, RbacOperation.View);
-	const hasPromptDeploymentStrategyAccess = useRbac(RbacResource.PromptDeploymentStrategy, RbacOperation.View);
+	const hasSkillsRepositoryAccess = useRbac(RbacResource.SkillsRepository, RbacOperation.View);
+	const hasDevicesAccess = useRbac(RbacResource.Devices, RbacOperation.View);
+	const hasInventoryAccess = useRbac(RbacResource.Inventory, RbacOperation.View);
+	const hasEdgeConfigAccess = useRbac(RbacResource.EdgeConfig, RbacOperation.View);
+	const hasAnyEdgeControlAccess = hasDevicesAccess || hasInventoryAccess || hasEdgeConfigAccess;
+	const hasAccessProfilesAccess = useRbac(RbacResource.AccessProfiles, RbacOperation.View);
+	const hasAnyGovernanceAccess =
+		hasVirtualKeysAccess ||
+		hasTeamsAccess ||
+		hasUsersAccess ||
+		hasCustomersAccess ||
+		hasBusinessUnitsAccess ||
+		hasRbacAccess ||
+		hasAccessProfilesAccess ||
+		hasGovernanceLegacyAccess;
 	const { data: coreConfig } = useGetCoreConfigQuery({});
 	const isDbConnected = coreConfig?.is_db_connected ?? false;
+	const envLabel = coreConfig?.env_label ?? null;
+
+	// Same completion logic the floating OnboardingWidget uses — shared so the
+	// two surfaces can't disagree on what counts as "done".
+	const {
+		steps: onboardingSteps,
+		skippedIds: onboardingSkippedIds,
+		checklistReady: onboardingChecklistReady,
+		isDismissedForAll: isOnboardingDismissedForAll,
+	} = useOnboardingChecklist({ skip: !isDbConnected });
+	const onboardingDoneCount = onboardingSteps.filter((step) => step.complete || onboardingSkippedIds.includes(step.id)).length;
+	const isOnboardingIncomplete = onboardingChecklistReady && onboardingDoneCount < onboardingSteps.length;
+	// The widget itself hides via these two cookies (X close / "Remind me
+	// later"); "I accept the risk - hide for everyone" is a deliberate
+	// permanent opt-out and should not resurrect this card.
+	const showOnboardingResumeCard =
+		isDbConnected &&
+		isOnboardingIncomplete &&
+		!isOnboardingDismissedForAll &&
+		!isOnboardingCardDismissed &&
+		(!!cookies[HIDDEN_UNTIL_NAV_COOKIE] || !!cookies[REMIND_LATER_COOKIE]);
+	const handleResumeOnboarding = useCallback(() => {
+		removeCookie(HIDDEN_UNTIL_NAV_COOKIE, { path: "/" });
+		removeCookie(REMIND_LATER_COOKIE, { path: "/" });
+	}, [removeCookie]);
 
 	const items = useMemo(
 		() => [
@@ -424,7 +645,7 @@ export default function AppSidebar() {
 						url: "/workspace/dashboard",
 						icon: ChartColumnBig,
 						description: "Dashboard",
-						hasAccess: hasObservabilityAccess,
+						hasAccess: hasDashboardAccess,
 					},
 					{
 						title: "LLM Logs",
@@ -438,7 +659,7 @@ export default function AppSidebar() {
 						url: "/workspace/mcp-logs",
 						icon: MCPIcon,
 						description: "MCP tool execution logs",
-						hasAccess: hasLogsAccess,
+						hasAccess: hasMCPLogsAccess,
 					},
 					{
 						title: "Connectors",
@@ -481,8 +702,8 @@ export default function AppSidebar() {
 						title: "Budgets & Limits",
 						url: "/workspace/model-limits",
 						icon: Wallet,
-						description: "Model limits",
-						hasAccess: hasGovernanceAccess,
+						description: "Budgets and rate limits",
+						hasAccess: hasGovernanceLegacyAccess,
 					},
 					{
 						title: "Routing Rules",
@@ -492,10 +713,31 @@ export default function AppSidebar() {
 						hasAccess: hasRoutingRulesAccess,
 					},
 					{
-						title: "Pricing config",
+						title: "Complexity Router",
+						url: "/workspace/complexity-router",
+						icon: GitCompareArrows,
+						description: "Complexity tier routing",
+						hasAccess: hasRoutingRulesAccess,
+					},
+					{
+						title: "Circuit Breaker",
+						url: "/workspace/circuit-breaker",
+						icon: CircuitBoard,
+						description: "Automatic fallback when primary endpoints fail",
+						hasAccess: hasCircuitBreakerAccess,
+					},
+					{
+						title: "Pricing Overrides",
+						url: "/workspace/custom-pricing/overrides",
+						icon: SlidersHorizontal,
+						description: "Scoped pricing overrides",
+						hasAccess: hasSettingsAccess,
+					},
+					{
+						title: "Model Settings",
 						url: "/workspace/custom-pricing",
-						icon: CircleDollarSign,
-						description: "Pricing configuration",
+						icon: Settings,
+						description: "Model and routing configuration",
 						hasAccess: hasSettingsAccess,
 					},
 				],
@@ -505,7 +747,7 @@ export default function AppSidebar() {
 				icon: MCPIcon,
 				description: "MCP configuration",
 				url: "/workspace/mcp-gateway",
-				hasAccess: hasMCPGatewayAccess,
+				hasAccess: hasMCPGatewayAccess || hasMCPToolGroupsAccess,
 				subItems: [
 					{
 						title: "MCP Catalog",
@@ -515,17 +757,31 @@ export default function AppSidebar() {
 						hasAccess: hasMCPGatewayAccess,
 					},
 					{
-						title: "Tool groups",
-						url: "/workspace/mcp-tool-groups",
-						icon: ToolCase,
-						description: "MCP tool groups",
+						title: "MCP Library",
+						url: "/workspace/mcp-registry/library",
+						icon: Boxes,
+						description: "Install curated MCP servers",
 						hasAccess: hasMCPGatewayAccess,
 					},
 					{
-						title: "Auth Config",
-						url: "/workspace/mcp-auth-config",
-						icon: ShieldUser,
-						description: "MCP auth config",
+						title: "Tool Groups",
+						url: "/workspace/mcp-tool-groups",
+						icon: ToolCase,
+						description: "Tool Groups",
+						hasAccess: hasMCPToolGroupsAccess,
+					},
+					{
+						title: "Auth Sessions",
+						url: "/workspace/mcp-sessions",
+						icon: KeyRound,
+						description: "Per-user OAuth sessions",
+						hasAccess: hasMCPGatewayAccess,
+					},
+					{
+						title: "OAuth Grants",
+						url: "/workspace/oauth-grants",
+						icon: ShieldCheck,
+						description: "Downstream OAuth grants",
 						hasAccess: hasMCPGatewayAccess,
 					},
 					{
@@ -545,11 +801,41 @@ export default function AppSidebar() {
 				hasAccess: hasPluginsAccess,
 			},
 			{
+				title: "Alerting",
+				url: "/workspace/alerting",
+				icon: Siren,
+				description: "Manage alert channels, rules, and history",
+				hasAccess: hasAlertingAccess,
+				subItems: [
+					{
+						title: "Channels",
+						url: "/workspace/alerting/channels",
+						icon: Megaphone,
+						description: "Configure notification channels",
+						hasAccess: hasAlertingAccess,
+					},
+					{
+						title: "Rules",
+						url: "/workspace/alerting/rules",
+						icon: Gavel,
+						description: "Define alerting rules",
+						hasAccess: hasAlertingAccess,
+					},
+					{
+						title: "History",
+						url: "/workspace/alerting/history",
+						icon: History,
+						description: "Review alert delivery history",
+						hasAccess: hasAlertingAccess,
+					},
+				],
+			},
+			{
 				title: "Governance",
 				url: "/workspace/governance",
 				icon: Landmark,
 				description: "Virtual keys, users, teams, customers & roles",
-				hasAccess: hasGovernanceAccess,
+				hasAccess: hasAnyGovernanceAccess,
 				subItems: [
 					{
 						title: "Virtual Keys",
@@ -573,6 +859,13 @@ export default function AppSidebar() {
 						hasAccess: hasTeamsAccess,
 					},
 					{
+						title: "Business Units",
+						url: "/workspace/governance/business-units",
+						icon: Building2,
+						description: "Manage business units",
+						hasAccess: hasBusinessUnitsAccess,
+					},
+					{
 						title: "Customers",
 						url: "/workspace/governance/customers",
 						icon: WalletCards,
@@ -592,6 +885,13 @@ export default function AppSidebar() {
 						icon: UserRoundCheck,
 						description: "User roles and permissions",
 						hasAccess: hasRbacAccess,
+					},
+					{
+						title: "Access Profiles",
+						url: "/workspace/governance/access-profiles",
+						icon: ShieldCheck,
+						description: "Manage access profiles for roles",
+						hasAccess: hasAccessProfilesAccess,
 					},
 					{
 						title: "Audit Logs",
@@ -626,6 +926,43 @@ export default function AppSidebar() {
 				],
 			},
 			{
+				title: "Webhooks",
+				url: "/workspace/webhooks",
+				icon: Webhook,
+				description: "Async job webhook endpoints",
+				hasAccess: hasGovernanceLegacyAccess,
+			},
+			{
+				title: "Edge Control",
+				icon: Hexagon,
+				description: "Edge device management",
+				url: "/workspace/edge-control",
+				hasAccess: hasAnyEdgeControlAccess,
+				subItems: [
+					{
+						title: "Devices",
+						url: "/workspace/edge-control/devices",
+						icon: LaptopMinimalCheck,
+						description: "Manage edge devices",
+						hasAccess: hasDevicesAccess,
+					},
+					{
+						title: "Approvals",
+						url: "/workspace/edge-control/inventory",
+						icon: BadgeCheck,
+						description: "Approve apps and MCP servers",
+						hasAccess: hasInventoryAccess,
+					},
+					{
+						title: "Edge Settings",
+						url: "/workspace/edge-control/config",
+						icon: Settings,
+						description: "Edge settings",
+						hasAccess: hasEdgeConfigAccess,
+					},
+				],
+			},
+			{
 				title: "Cluster Config",
 				url: "/workspace/cluster",
 				icon: Network,
@@ -636,36 +973,42 @@ export default function AppSidebar() {
 				title: "Adaptive Routing",
 				url: "/workspace/adaptive-routing",
 				icon: Shuffle,
-				description: "Manage adaptive load balancer",
+				description: "Manage adaptive routing",
 				hasAccess: isAdaptiveRoutingAllowed,
+				subItems: [
+					{
+						title: "Dashboard",
+						url: "/workspace/adaptive-routing",
+						icon: ChartColumnBig,
+						description: "Adaptive routing metrics",
+						hasAccess: isAdaptiveRoutingAllowed,
+					},
+					{
+						title: "Settings",
+						url: "/workspace/adaptive-routing/settings",
+						icon: Settings,
+						description: "Adaptive routing settings",
+						hasAccess: isAdaptiveRoutingAllowed,
+					},
+				],
 			},
 			...(isDbConnected
 				? [
-						{
-							title: "Prompt Repository",
-							url: "/workspace/prompt-repo",
-							icon: FolderGit,
-							description: "Prompt repository",
-							hasAccess: hasPromptRepositoryAccess || hasPromptDeploymentStrategyAccess,
-							subItems: [
-								{
-									title: "Prompts",
-									url: "/workspace/prompt-repo/prompts",
-									icon: SquareTerminal,
-									description: "Manage prompts",
-									hasAccess: hasPromptRepositoryAccess,
-									tag: "Beta",
-								},
-								{
-									title: "Deployments",
-									url: "/workspace/prompt-repo/deployments",
-									icon: Router,
-									description: "Manage deployment",
-									hasAccess: hasPromptDeploymentStrategyAccess,
-								},
-							],
-						},
-					]
+					{
+						title: "Prompt Repository",
+						url: "/workspace/prompt-repo",
+						icon: FolderGit,
+						description: "Prompt repository",
+						hasAccess: hasPromptRepositoryAccess,
+					},
+					{
+						title: "Skills Repository",
+						url: "/workspace/skills-repo",
+						icon: BookOpenText,
+						description: "Skills repository",
+						hasAccess: hasSkillsRepositoryAccess,
+					},
+				]
 				: []),
 			{
 				title: "Evals",
@@ -690,6 +1033,13 @@ export default function AppSidebar() {
 						hasAccess: hasSettingsAccess,
 					},
 					{
+						title: "Compatibility",
+						url: "/workspace/config/compatibility",
+						icon: Plug,
+						description: "Compatibility conversion settings",
+						hasAccess: hasSettingsAccess,
+					},
+					{
 						title: "Caching",
 						url: "/workspace/config/caching",
 						icon: DatabaseZap,
@@ -705,21 +1055,21 @@ export default function AppSidebar() {
 					},
 					...(IS_ENTERPRISE
 						? [
-								{
-									title: "Proxy",
-									url: "/workspace/config/proxy",
-									icon: Globe,
-									description: "Proxy configuration",
-									hasAccess: hasSettingsAccess,
-								},
-							]
+							{
+								title: "Proxy",
+								url: "/workspace/config/proxy",
+								icon: Globe,
+								description: "Proxy configuration",
+								hasAccess: hasSettingsAccess,
+							},
+						]
 						: []),
 					{
 						title: "API Keys",
 						url: "/workspace/config/api-keys",
 						icon: KeyRound,
 						description: "API keys management",
-						hasAccess: hasSettingsAccess,
+						hasAccess: hasAPIKeyAccess,
 					},
 					{
 						title: "Performance Tuning",
@@ -728,40 +1078,94 @@ export default function AppSidebar() {
 						description: "Performance tuning settings",
 						hasAccess: hasSettingsAccess,
 					},
+					{
+						title: "Feature Flags",
+						url: "/workspace/config/feature-flags",
+						icon: Flag,
+						description: "Toggle feature flags",
+						hasAccess: hasFeatureFlagsAccess,
+					},
+					...(IS_ENTERPRISE
+						? [
+							{
+								title: "Branding",
+								url: "/workspace/config/branding",
+								icon: Palette,
+								description: "Custom logo and icon",
+								hasAccess: hasSettingsAccess,
+							},
+							{
+								title: "License Info",
+								url: "/workspace/config/license",
+								icon: BadgeInfo,
+								description: "Enterprise license information",
+								hasAccess: hasSettingsAccess,
+							},
+						]
+						: []),
 				],
 			},
 		],
 		[
 			hasLogsAccess,
+			hasAPIKeyAccess,
 			hasObservabilityAccess,
+			hasAlertingAccess,
+			hasDashboardAccess,
 			hasModelProvidersAccess,
 			hasMCPGatewayAccess,
+			hasMCPToolGroupsAccess,
+			hasMCPLogsAccess,
 			hasPluginsAccess,
 			hasUsersAccess,
 			hasUserProvisioningAccess,
 			hasAuditLogsAccess,
 			hasCustomersAccess,
 			hasTeamsAccess,
+			hasBusinessUnitsAccess,
 			hasRbacAccess,
 			hasVirtualKeysAccess,
-			hasGovernanceAccess,
+			hasGovernanceLegacyAccess,
+			hasAnyGovernanceAccess,
 			hasRoutingRulesAccess,
 			hasGuardrailsProvidersAccess,
 			hasGuardrailsConfigAccess,
+			hasCircuitBreakerAccess,
 			hasClusterConfigAccess,
 			isAdaptiveRoutingAllowed,
 			hasSettingsAccess,
 			hasPromptRepositoryAccess,
-			hasPromptDeploymentStrategyAccess,
+			hasSkillsRepositoryAccess,
+			hasAccessProfilesAccess,
+			hasFeatureFlagsAccess,
+			hasDevicesAccess,
+			hasInventoryAccess,
+			hasEdgeConfigAccess,
+			hasAnyEdgeControlAccess,
 			isDbConnected,
 		],
 	);
 
+	const accessibleItems: SidebarItem[] = useMemo(() => {
+		return items
+			.map((item) => {
+				const hadSubItems = !!item.subItems?.length;
+				if (hadSubItems) {
+					const visibleSubItems = item.subItems!.filter((sub) => sub.hasAccess !== false);
+					if (visibleSubItems.length === 0) return null;
+					return { ...item, subItems: visibleSubItems, hasAccess: true };
+				}
+				if (item.hasAccess === false) return null;
+				return item;
+			})
+			.filter(Boolean) as SidebarItem[];
+	}, [items]);
+
 	const filteredItems: SidebarItem[] = useMemo(() => {
 		const query = searchQuery.trim().toLowerCase();
-		if (!query) return items;
+		if (!query) return accessibleItems;
 
-		return items
+		return accessibleItems
 			.map((item) => {
 				const parentMatches = item.title.toLowerCase().includes(query);
 				if (parentMatches) return item;
@@ -775,21 +1179,11 @@ export default function AppSidebar() {
 				return null;
 			})
 			.filter(Boolean) as SidebarItem[];
-	}, [items, searchQuery]);
+	}, [accessibleItems, searchQuery]);
 
 	const { data: version } = useGetVersionQuery();
 	const { resolvedTheme } = useTheme();
 	const [logout] = useLogoutMutation();
-
-	const prefetchRoute = useCallback(
-		(url: string) => {
-			if (!url.startsWith("/")) {
-				return;
-			}
-			router.prefetch(url);
-		},
-		[router],
-	);
 
 	// Get user info from localStorage (for enterprise SCIM OAuth)
 	const [userInfo, setUserInfo] = useState<UserInfo | null>(null);
@@ -817,8 +1211,12 @@ export default function AppSidebar() {
 	// Auto-expand items when their subitems are active
 	useEffect(() => {
 		const newExpandedItems = new Set<string>();
+		const isRouteMatch = (url: string) => {
+			if (url === "/workspace/custom-pricing" || url === "/workspace/adaptive-routing") return pathname === url;
+			return pathname.startsWith(url);
+		};
 		items.forEach((item) => {
-			if (item.subItems?.some((subItem) => pathname.startsWith(subItem.url))) {
+			if (item.subItems?.some((subItem) => isRouteMatch(subItem.url))) {
 				newExpandedItems.add(item.title);
 			}
 		});
@@ -864,7 +1262,12 @@ export default function AppSidebar() {
 
 	// Flat list of navigable items for keyboard navigation
 	const navigableItems = useMemo(() => {
-		const result: { title: string; url: string; queryParam?: string; isExternal?: boolean }[] = [];
+		const result: {
+			title: string;
+			url: string;
+			queryParam?: string;
+			isExternal?: boolean;
+		}[] = [];
 		for (const item of filteredItems) {
 			if (item.isExternal) {
 				if (item.hasAccess) result.push({ title: item.title, url: item.url, isExternal: true });
@@ -876,7 +1279,11 @@ export default function AppSidebar() {
 				if (searchQuery.trim() || expandedItems.has(item.title)) {
 					for (const sub of item.subItems!) {
 						if (sub.hasAccess === false) continue;
-						result.push({ title: sub.title, url: getSidebarItemHref(sub), queryParam: sub.queryParam });
+						result.push({
+							title: sub.title,
+							url: getSidebarItemHref(sub),
+							queryParam: sub.queryParam,
+						});
 					}
 				} else {
 					// Parent is collapsed - include parent as a toggle target
@@ -905,7 +1312,7 @@ export default function AppSidebar() {
 					if (target.isExternal || e.metaKey || e.ctrlKey) {
 						window.open(url, "_blank", "noopener,noreferrer");
 					} else {
-						router.push(url);
+						navigate(url);
 					}
 					setSearchQuery("");
 					setFocusedIndex(-1);
@@ -917,7 +1324,7 @@ export default function AppSidebar() {
 				searchInputRef.current?.blur();
 			}
 		},
-		[navigableItems, focusedIndex, router],
+		[navigableItems, focusedIndex, navigate],
 	);
 
 	// Auto-scroll focused item into view
@@ -945,6 +1352,8 @@ export default function AppSidebar() {
 
 	const isActiveRoute = (url: string) => {
 		if (url === "/" && pathname === "/") return true;
+		// Avoid double-highlighting with "/workspace/custom-pricing/overrides"
+		if (url === "/workspace/custom-pricing") return pathname === url;
 		if (url !== "/" && pathname.startsWith(url)) {
 			if (url === "/workspace/config" && configExceptions.some((e) => pathname.startsWith(e))) {
 				return false;
@@ -954,14 +1363,15 @@ export default function AppSidebar() {
 		return false;
 	};
 
-	// Always render the light theme version for SSR to avoid hydration mismatch
-	const logoSrc = mounted && resolvedTheme === "dark" ? "/bifrost-logo-dark.png" : "/bifrost-logo.png";
-	const iconSrc = mounted && resolvedTheme === "dark" ? "/bifrost-icon-dark.png" : "/bifrost-icon.png";
+	// Always render the light theme version for SSR to avoid hydration mismatch.
+	// On a custom branding deployment useBranding returns the customer's assets
+	// instead, which are theme-agnostic.
+	const { logoSrc, iconSrc, logoAlt } = useBranding(mounted && resolvedTheme === "dark");
 
 	const { isConnected: isWebSocketConnected } = useWebSocket();
 
 	// New release image - based on theme
-	const newReleaseImage = mounted && resolvedTheme === "dark" ? "/images/new-release-image-dark.png" : "/images/new-release-image.png";
+	const newReleaseImage = mounted && resolvedTheme === "dark" ? "/images/new-release-image-dark.webp" : "/images/new-release-image.webp";
 
 	// Memoize promo cards array to prevent duplicates and unnecessary re-renders
 	const promoCards = useMemo(() => {
@@ -980,6 +1390,33 @@ export default function AppSidebar() {
 				variant: "warning" as const,
 			});
 		}
+		// Setup checklist dismissed (X / snoozed) while still incomplete —
+		// non-dismissible, same severity tier as restart-required.
+		if (showOnboardingResumeCard) {
+			const remainingSteps = onboardingSteps.length - onboardingDoneCount;
+			cards.push({
+				id: "onboarding-incomplete",
+				title: "Setup checklist incomplete",
+				description: (
+					<div className="flex h-full flex-col gap-2 text-xs text-amber-700 dark:text-amber-300/80">
+						<p>
+							{remainingSteps} setup step{remainingSteps === 1 ? "" : "s"} left. Not completing these steps keeps your Bifrost setup
+							vulnerable.
+						</p>
+						<button
+							type="button"
+							onClick={handleResumeOnboarding}
+							data-testid="onboarding-resume-btn"
+							className="text-primary mt-auto self-start pb-1 font-medium underline"
+						>
+							Resume setup
+						</button>
+					</div>
+				),
+				dismissible: true,
+				variant: "warning" as const,
+			});
+		}
 		if (showNewReleaseBanner && latestRelease) {
 			cards.push({
 				id: "new-release",
@@ -987,13 +1424,14 @@ export default function AppSidebar() {
 				description: (
 					<div className="flex h-full flex-col gap-2">
 						<img src={newReleaseImage} alt="Bifrost" className="h-[95px] rounded-md object-cover" />
-						<Link
+						<a
 							href={`https://docs.getbifrost.ai/changelogs/${latestRelease.name}`}
 							target="_blank"
+							rel="noopener noreferrer"
 							className="text-primary mt-auto pb-1 font-medium underline"
 						>
 							View release notes
-						</Link>
+						</a>
 					</div>
 				),
 				dismissible: true,
@@ -1004,7 +1442,18 @@ export default function AppSidebar() {
 			cards.push(productionSetupHelpCard);
 		}
 		return cards;
-	}, [coreConfig?.restart_required, showNewReleaseBanner, latestRelease, newReleaseImage, isProductionSetupDismissed, mounted]);
+	}, [
+		coreConfig?.restart_required,
+		showNewReleaseBanner,
+		latestRelease,
+		newReleaseImage,
+		isProductionSetupDismissed,
+		mounted,
+		showOnboardingResumeCard,
+		onboardingSteps.length,
+		onboardingDoneCount,
+		handleResumeOnboarding,
+	]);
 
 	// Reset areCardsEmpty when promoCards changes
 	useEffect(() => {
@@ -1013,7 +1462,10 @@ export default function AppSidebar() {
 		}
 	}, [promoCards]);
 
-	const hasPromoCards = promoCards.length > 0 && !areCardsEmpty;
+	// The promo card stack is hidden via CSS when collapsed (icon rail), so it
+	// shouldn't reserve vertical space there — otherwise the nav icon list
+	// gets squeezed into a shorter scroll area for a card nobody can see.
+	const hasPromoCards = promoCards.length > 0 && !areCardsEmpty && sidebarState !== "collapsed";
 	// When cards are present: 13rem (header 3rem + bottom section ~10rem)
 	// When no cards: 8rem (header 3rem + bottom section without cards ~5rem)
 	const sidebarGroupHeight = hasPromoCards ? "h-[calc(100vh-13rem)]" : "h-[calc(100vh-8rem)]";
@@ -1032,41 +1484,59 @@ export default function AppSidebar() {
 					expires: expiryDate,
 				});
 			}
+			if (cardId === "onboarding-incomplete") {
+				// If the widget itself is snoozed via "Remind me later", align the
+				// card's dismissal to that same date — otherwise the card would
+				// keep nagging on its own 1-day clock while the widget stays quiet
+				// for the full snooze period. Falls back to 1 day when the card is
+				// only up because of the widget's X close (no snooze date to match).
+				const remindAt = cookies[REMIND_LATER_COOKIE];
+				const remindAtDate = remindAt ? new Date(remindAt) : null;
+				const expiryDate = remindAtDate && !Number.isNaN(remindAtDate.getTime()) ? remindAtDate : new Date();
+				if (!remindAtDate || Number.isNaN(remindAtDate.getTime())) {
+					expiryDate.setDate(expiryDate.getDate() + 1);
+				}
+				setCookie(ONBOARDING_CARD_DISMISSED_COOKIE, "true", {
+					path: "/",
+					expires: expiryDate,
+				});
+			}
 		},
-		[setCookie],
+		[setCookie, cookies],
 	);
 
 	const handleLogout = async () => {
 		try {
 			setUserPopoverOpen(false);
 			await logout().unwrap();
-			router.push("/login");
-		} catch (error) {
+			navigate("/login");
+		} catch {
 			// Even if logout fails on server, redirect to login
-			router.push("/login");
+			navigate("/login");
 		}
 	};
-
-	const trialDaysRemaining = useMemo(() => {
-		if (IS_ENTERPRISE && TRIAL_EXPIRY) {
-			const daysRemaining = moment(TRIAL_EXPIRY).diff(moment(), "days");
-			return daysRemaining > 0 ? daysRemaining : 0;
-		}
-		return null;
-	}, []);
-
-	const { state: sidebarState, toggleSidebar } = useSidebar();
 
 	return (
 		<Sidebar collapsible="icon" className="overflow-y-clip border-none bg-transparent">
 			<SidebarHeader className="mt-1 ml-2 flex justify-between px-0 group-data-[collapsible=icon]:ml-0 group-data-[collapsible=icon]:h-auto">
 				{/* Expanded state: horizontal layout */}
 				<div className="flex h-10 w-full items-center justify-between px-1.5 group-data-[collapsible=icon]:hidden">
-					<Link href="/workspace/logs" className="group flex items-center gap-2 pl-2">
-						<Image className="h-[22px] w-auto" src={logoSrc} alt="Bifrost" width={70} height={70} />
+					<Link to="/workspace/logs" className="group flex items-center gap-2 pl-2">
+						{/* max-w caps an unusually wide uploaded logo so it cannot push the
+						    collapse button out of the header; object-contain preserves its
+						    aspect ratio within that box. */}
+						<img
+							className="h-[22px] w-auto max-w-[150px] object-contain"
+							src={logoSrc}
+							alt={logoAlt}
+							width={70}
+							height={70}
+						/>
 					</Link>
 					<button
 						onClick={toggleSidebar}
+						type="button"
+						data-testid="sidebar-collapse-btn"
 						className="text-muted-foreground hover:text-foreground hover:bg-sidebar-accent flex h-7 w-7 items-center justify-center rounded-md transition-colors"
 						aria-label="Collapse sidebar"
 					>
@@ -1078,9 +1548,33 @@ export default function AppSidebar() {
 					className="hidden w-full cursor-pointer flex-col items-center gap-2 py-2 group-data-[collapsible=icon]:flex"
 					onClick={toggleSidebar}
 				>
-					<Image className="h-[22px] w-auto" src={iconSrc} alt="Bifrost" width={22} height={22} />
+					<img
+						className="h-[22px] w-auto object-contain"
+						src={iconSrc}
+						alt={logoAlt}
+						width={22}
+						height={22}
+						style={{ width: 18 }}
+					/>
 				</div>
 			</SidebarHeader>
+			{envLabel && (
+				<div className="mx-2 -mt-1 mb-2">
+					{/* Expanded: full label text */}
+					<div className="flex items-center justify-center rounded-sm bg-amber-400/20 px-2 py-1 group-data-[collapsible=icon]:hidden">
+						<span className="font-mono text-[10px] font-semibold tracking-widest text-amber-700 dark:text-amber-400">{envLabel}</span>
+					</div>
+					{/* Collapsed: dot indicator */}
+					<div className="hidden justify-center group-data-[collapsible=icon]:flex">
+						<Tooltip>
+							<TooltipTrigger asChild>
+								<div className="h-1.5 w-1.5 rounded-full bg-amber-500 dark:bg-amber-400" />
+							</TooltipTrigger>
+							<TooltipContent side="right">{envLabel}</TooltipContent>
+						</Tooltip>
+					</div>
+				</div>
+			)}
 			<div className="mx-2 pb-1 group-data-[collapsible=icon]:hidden">
 				<div className="relative">
 					<Search className="text-muted-foreground absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2" />
@@ -1120,13 +1614,12 @@ export default function AppSidebar() {
 										isWebSocketConnected={isWebSocketConnected}
 										isExpanded={expandedItems.has(item.title)}
 										onToggle={() => toggleItem(item.title)}
-									pathname={pathname}
-									router={router}
-									isSidebarCollapsed={sidebarState === "collapsed"}
-									expandSidebar={() => toggleSidebar()}
-									highlightedUrl={highlightedUrl}
-									prefetchRoute={prefetchRoute}
-								/>
+										pathname={pathname}
+										search={search}
+										isSidebarCollapsed={sidebarState === "collapsed"}
+										expandSidebar={() => toggleSidebar()}
+										highlightedUrl={highlightedUrl}
+									/>
 								);
 							})}
 						</SidebarMenu>
@@ -1138,27 +1631,28 @@ export default function AppSidebar() {
 					</div>
 					<div className="flex flex-row">
 						<div className="mx-auto flex flex-row gap-4 group-data-[collapsible=icon]:flex-col group-data-[collapsible=icon]:gap-2">
-							{externalLinks.map((item, index) => (
-								<a
-									key={index}
-									href={item.url}
-									target="_blank"
-									rel="noopener noreferrer"
-									className="group flex w-full items-center justify-between"
-									title={item.title}
-								>
-									<div className="flex items-center space-x-3">
-										<item.icon
-											className="hover:text-primary text-muted-foreground h-5 w-5"
-											size={22}
-											weight="regular"
-											strokeWidth={item.strokeWidth}
-										/>
-									</div>
-								</a>
-							))}
+							{sidebarState !== "collapsed" &&
+								externalLinks.map((item, index) => (
+									<a
+										key={index}
+										href={item.url}
+										target="_blank"
+										rel="noopener noreferrer"
+										className="group flex w-full items-center justify-between"
+										title={item.title}
+									>
+										<div className="flex items-center space-x-3">
+											<item.icon
+												className="hover:text-primary text-muted-foreground h-5 w-5"
+												size={22}
+												weight="regular"
+												strokeWidth={item.strokeWidth}
+											/>
+										</div>
+									</a>
+								))}
 							<ThemeToggle />
-							{IS_ENTERPRISE && userInfo && (userInfo.name || userInfo.email) ? (
+							{IS_ENTERPRISE && userInfo ? (
 								<Popover open={userPopoverOpen} onOpenChange={setUserPopoverOpen}>
 									<PopoverTrigger asChild>
 										<button
@@ -1172,7 +1666,7 @@ export default function AppSidebar() {
 									<PopoverContent side="top" align="start" className="w-56 p-0">
 										<div className="flex flex-col">
 											<div className="px-4 py-3">
-												<p className="text-sm font-medium">{userInfo.name || userInfo.email || "User"}</p>
+												<p className="text-sm font-medium">{userInfo.name || userInfo.email || userInfo.preferred_username || "User"}</p>
 											</div>
 											<Separator />
 											<button
@@ -1186,7 +1680,7 @@ export default function AppSidebar() {
 										</div>
 									</PopoverContent>
 								</Popover>
-							) : isAuthEnabled && !IS_ENTERPRISE ? (
+							) : isAuthEnabled ? (
 								<div>
 									<button
 										className="hover:text-primary text-muted-foreground flex cursor-pointer items-center space-x-3 p-0.5"
@@ -1198,15 +1692,21 @@ export default function AppSidebar() {
 									</button>
 								</div>
 							) : null}
+							<div className="hidden w-full cursor-pointer flex-col items-center group-data-[collapsible=icon]:flex">
+								<button
+									onClick={toggleSidebar}
+									type="button"
+									data-testid="sidebar-expand-btn"
+									className="text-muted-foreground hover:text-foreground hover:bg-sidebar-accent flex cursor-pointer items-center justify-center rounded-md transition-colors"
+									aria-label="Expand sidebar"
+								>
+									<PanelLeftOpen className="h-4 w-4" />
+								</button>
+							</div>
 						</div>
 					</div>
 					<div className="mx-auto flex flex-col items-center gap-1 group-data-[collapsible=icon]:hidden">
 						<div className="font-mono text-xs">{version ?? ""}</div>
-						{trialDaysRemaining !== null && (
-							<div className={cn("text-xs", trialDaysRemaining < 3 ? "text-red-500" : "text-muted-foreground")}>
-								{trialDaysRemaining} {trialDaysRemaining === 1 ? "day" : "days"} remaining
-							</div>
-						)}
 					</div>
 				</div>
 			</SidebarContent>

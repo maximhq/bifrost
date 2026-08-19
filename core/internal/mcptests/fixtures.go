@@ -892,7 +892,7 @@ func GetSampleHTTPClientConfig(serverURL string) schemas.MCPClientConfig {
 		ID:                 "test-http-client",
 		Name:               "TestHTTPServer",
 		ConnectionType:     schemas.MCPConnectionTypeHTTP,
-		ConnectionString:   schemas.NewEnvVar(serverURL),
+		ConnectionString:   schemas.NewSecretVar(serverURL),
 		ToolsToExecute:     []string{"*"}, // Allow all tools
 		ToolsToAutoExecute: []string{},    // No auto-execute by default
 	}
@@ -904,7 +904,7 @@ func GetSampleSSEClientConfig(serverURL string) schemas.MCPClientConfig {
 		ID:                 "test-sse-client",
 		Name:               "TestSSEServer",
 		ConnectionType:     schemas.MCPConnectionTypeSSE,
-		ConnectionString:   schemas.NewEnvVar(serverURL),
+		ConnectionString:   schemas.NewSecretVar(serverURL),
 		ToolsToExecute:     []string{"*"},
 		ToolsToAutoExecute: []string{},
 	}
@@ -1091,7 +1091,7 @@ func GetSampleCodeModeClientConfig(t *testing.T, serverURL string) schemas.MCPCl
 		ID:                 "test-codemode-client",
 		Name:               "TestCodeModeServer",
 		ConnectionType:     schemas.MCPConnectionTypeHTTP,
-		ConnectionString:   schemas.NewEnvVar(serverURL),
+		ConnectionString:   schemas.NewSecretVar(serverURL),
 		IsCodeModeClient:   true,
 		ToolsToExecute:     []string{"*"},
 		ToolsToAutoExecute: []string{},
@@ -1421,8 +1421,8 @@ func (a *testAccount) GetKeysForProvider(ctx context.Context, providerKey schema
 	}
 	return []schemas.Key{
 		{
-			Value:  *schemas.NewEnvVar(apiKey),
-			Models: []string{}, // Empty means all models
+			Value:  *schemas.NewSecretVar(apiKey),
+			Models: schemas.WhiteList{"*"},
 			Weight: 1.0,
 		},
 	}, nil
@@ -1460,6 +1460,17 @@ func setupBifrost(t *testing.T) *bifrost.Bifrost {
 	return bifrostInstance
 }
 
+// noopPluginPipeline is a passthrough pipeline used in tests that don't need plugin hooks.
+type noopPluginPipeline struct{}
+
+func (n *noopPluginPipeline) RunMCPPreHooks(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, int) {
+	return req, nil, 0
+}
+
+func (n *noopPluginPipeline) RunMCPPostHooks(ctx *schemas.BifrostContext, mcpResp *schemas.BifrostMCPResponse, bifrostErr *schemas.BifrostError, runFrom int) (*schemas.BifrostMCPResponse, *schemas.BifrostError) {
+	return mcpResp, bifrostErr
+}
+
 // setupMCPManager creates an MCP manager for testing
 func setupMCPManager(t *testing.T, clientConfigs ...schemas.MCPClientConfig) *mcp.MCPManager {
 	t.Helper()
@@ -1472,9 +1483,14 @@ func setupMCPManager(t *testing.T, clientConfigs ...schemas.MCPClientConfig) *mc
 		clientConfigPtrs[i] = &clientConfigs[i]
 	}
 
-	// Create MCP config
+	// Create MCP config with a no-op plugin pipeline so that codemode tool calls
+	// work correctly even when no Bifrost instance is attached.
 	mcpConfig := &schemas.MCPConfig{
 		ClientConfigs: clientConfigPtrs,
+		PluginPipelineProvider: func() interface{} {
+			return &noopPluginPipeline{}
+		},
+		ReleasePluginPipeline: func(pipeline interface{}) {},
 	}
 
 	// Create Starlark CodeMode
@@ -1482,6 +1498,8 @@ func setupMCPManager(t *testing.T, clientConfigs ...schemas.MCPClientConfig) *mc
 
 	// Create MCP manager - dependencies are injected automatically
 	manager := mcp.NewMCPManager(context.Background(), *mcpConfig, nil, logger, codeMode)
+	// Construction no longer dials; connect the configured clients explicitly.
+	manager.ConnectConfiguredClients(context.Background())
 
 	// Cleanup
 	t.Cleanup(func() {
@@ -1502,9 +1520,9 @@ func setupMCPManager(t *testing.T, clientConfigs ...schemas.MCPClientConfig) *mc
 // TestConfig holds configuration for test execution
 type TestConfig struct {
 	HTTPServerURL string
-	HTTPHeaders   map[string]schemas.EnvVar
+	HTTPHeaders   map[string]schemas.SecretVar
 	SSEServerURL  string
-	SSEHeaders    map[string]schemas.EnvVar
+	SSEHeaders    map[string]schemas.SecretVar
 	APIKey        string
 	Provider      schemas.ModelProvider
 	Model         string
@@ -1532,9 +1550,9 @@ func GetTestConfig(t *testing.T) *TestConfig {
 // loadTestConfig loads the actual configuration
 func loadTestConfig() *TestConfig {
 	// Parse HTTP headers from environment variable
-	// The EnvVar type has a custom UnmarshalJSON that handles both simple strings
-	// and the full EnvVar schema: {"value": "...", "env_var": "...", "from_env": false}
-	httpHeaders := make(map[string]schemas.EnvVar)
+	// The SecretVar type has a custom UnmarshalJSON that handles both simple strings
+	// and the full SecretVar schema: {"value": "...", "env_var": "...", "from_env": false}
+	httpHeaders := make(map[string]schemas.SecretVar)
 	if headersJSON := os.Getenv(EnvMCPHTTPHeaders); headersJSON != "" {
 		if err := json.Unmarshal([]byte(headersJSON), &httpHeaders); err != nil {
 			// Log error but continue - headers are optional
@@ -1543,7 +1561,7 @@ func loadTestConfig() *TestConfig {
 	}
 
 	// Parse SSE headers from environment variable
-	sseHeaders := make(map[string]schemas.EnvVar)
+	sseHeaders := make(map[string]schemas.SecretVar)
 	if headersJSON := os.Getenv(EnvMCPSSEHeaders); headersJSON != "" {
 		if err := json.Unmarshal([]byte(headersJSON), &sseHeaders); err != nil {
 			// Log error but continue - headers are optional
@@ -1583,7 +1601,7 @@ func applyTestConfigHeaders(t *testing.T, clientConfig *schemas.MCPClientConfig)
 	// Apply HTTP headers if this is an HTTP connection and headers are configured
 	if clientConfig.ConnectionType == schemas.MCPConnectionTypeHTTP && len(config.HTTPHeaders) > 0 {
 		if clientConfig.Headers == nil {
-			clientConfig.Headers = make(map[string]schemas.EnvVar)
+			clientConfig.Headers = make(map[string]schemas.SecretVar)
 		}
 		for key, value := range config.HTTPHeaders {
 			clientConfig.Headers[key] = value
@@ -1593,7 +1611,7 @@ func applyTestConfigHeaders(t *testing.T, clientConfig *schemas.MCPClientConfig)
 	// Apply SSE headers if this is an SSE connection and headers are configured
 	if clientConfig.ConnectionType == schemas.MCPConnectionTypeSSE && len(config.SSEHeaders) > 0 {
 		if clientConfig.Headers == nil {
-			clientConfig.Headers = make(map[string]schemas.EnvVar)
+			clientConfig.Headers = make(map[string]schemas.SecretVar)
 		}
 		for key, value := range config.SSEHeaders {
 			clientConfig.Headers[key] = value
@@ -1677,7 +1695,7 @@ func GetSampleCodeModeAgentClientConfig(t *testing.T, serverURL string) schemas.
 		ID:                 "test-codemode-client",
 		Name:               "TestCodeModeServer",
 		ConnectionType:     schemas.MCPConnectionTypeHTTP,
-		ConnectionString:   schemas.NewEnvVar(serverURL),
+		ConnectionString:   schemas.NewSecretVar(serverURL),
 		IsCodeModeClient:   true,
 		ToolsToExecute:     []string{"*"},
 		ToolsToAutoExecute: []string{"executeToolCode", "listToolFiles", "readToolFile"},
@@ -1692,7 +1710,7 @@ func GetSampleHTTPClientConfigNoSpaces(serverURL string) schemas.MCPClientConfig
 		ID:                 "test-http-client",
 		Name:               "TestHTTPServer",
 		ConnectionType:     schemas.MCPConnectionTypeHTTP,
-		ConnectionString:   schemas.NewEnvVar(serverURL),
+		ConnectionString:   schemas.NewSecretVar(serverURL),
 		ToolsToExecute:     []string{"*"}, // Allow all tools
 		ToolsToAutoExecute: []string{},    // No auto-execute by default
 	}
@@ -1984,10 +2002,10 @@ func AssertExecutionTimeUnder(t *testing.T, fn func(), maxDuration time.Duration
 func CreateTestContextWithMCPFilter(includeClients []string, includeTools []string) *schemas.BifrostContext {
 	baseCtx := context.Background()
 	if includeClients != nil {
-		baseCtx = context.WithValue(baseCtx, mcp.MCPContextKeyIncludeClients, includeClients)
+		baseCtx = context.WithValue(baseCtx, schemas.MCPContextKeyIncludeClients, includeClients)
 	}
 	if includeTools != nil {
-		baseCtx = context.WithValue(baseCtx, mcp.MCPContextKeyIncludeTools, includeTools)
+		baseCtx = context.WithValue(baseCtx, schemas.MCPContextKeyIncludeTools, includeTools)
 	}
 	return schemas.NewBifrostContext(baseCtx, schemas.NoDeadline)
 }

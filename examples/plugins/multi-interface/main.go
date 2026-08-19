@@ -155,6 +155,11 @@ func HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest
 // LLMPlugin Interface
 // ============================================================================
 
+// PreRequestHook is the per-request routing phase. This example plugin doesn't route.
+func PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
+}
+
 // PreLLMHook is called before the LLM provider is invoked
 func PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	if !pluginConfig.EnableLLMHooks {

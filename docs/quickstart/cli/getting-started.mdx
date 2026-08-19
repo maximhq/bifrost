@@ -1,6 +1,6 @@
 ---
 title: "Bifrost CLI"
-description: "Launch any coding agent through Bifrost with a single command. Automatic configuration, model selection, and MCP integration — no environment variables needed."
+description: "Launch any coding agent through Bifrost with a single command. Automatic configuration, model selection, and MCP integration - no environment variables needed."
 icon: "laptop-code"
 ---
 
@@ -16,7 +16,7 @@ icon: "laptop-code"
 ></iframe>
 </Frame>
 
-Bifrost CLI is an interactive terminal tool that connects your favorite coding agents — Claude Code, Codex CLI, Gemini CLI, and Opencode — to your Bifrost gateway with zero manual configuration.
+Bifrost CLI is an interactive terminal tool that connects your favorite coding agents - Claude Code, Codex CLI, Gemini CLI, and Opencode - to your Bifrost gateway with zero manual configuration.
 
 Instead of setting environment variables, editing config files, and looking up provider paths, you just run `bifrost` and pick your agent, model, and go.
 
@@ -36,7 +36,7 @@ Instead of setting environment variables, editing config files, and looking up p
 npx -y @maximhq/bifrost-cli
 ```
 
-This downloads and runs the latest Bifrost CLI. No global install required — npx handles everything.
+This downloads and runs the latest Bifrost CLI. No global install required - npx handles everything.
 
 <Note>
 Bifrost CLI requires **Node.js 18+** (for npx) and a running Bifrost gateway. See [Gateway Setup](/quickstart/gateway/setting-up) if you haven't started one yet.
@@ -82,19 +82,19 @@ bifrost
 
 The CLI guides you through an interactive setup flow:
 
-**Step 1 — Base URL**
+**Step 1 - Base URL**
 
 Enter your Bifrost gateway URL. If you're running locally, this is typically `http://localhost:8080`.
 
 {/* TODO: Add screenshot of the base URL input screen */}
 
-**Step 2 — Virtual Key (optional)**
+**Step 2 - Virtual Key (optional)**
 
 If your Bifrost gateway has [virtual key authentication](/features/governance/virtual-keys) enabled, enter your virtual key here. Otherwise, press Enter to skip.
 
 {/* TODO: Add screenshot of the virtual key input screen */}
 
-**Step 3 — Choose a Harness**
+**Step 3 - Choose a Harness**
 
 Select which coding agent you want to launch. The CLI shows installation status and version for each:
 
@@ -111,17 +111,17 @@ If a harness isn't installed, the CLI will offer to install it via npm for you.
 
 {/* TODO: Add screenshot of the install confirmation dialog */}
 
-**Step 4 — Select a Model**
+**Step 4 - Select a Model**
 
 The CLI fetches available models from your Bifrost gateway and presents a searchable list. Type to filter, arrow keys to navigate:
 
 {/* TODO: Add screenshot of the model search/selection screen */}
 
 <Tip>
-You can type any model name manually — even if it's not in the list. Just type the full model identifier and press Enter.
+You can type any model name manually - even if it's not in the list. Just type the full model identifier and press Enter.
 </Tip>
 
-**Step 5 — Launch**
+**Step 5 - Launch**
 
 Review your configuration in the summary screen. Press Enter to launch, or use the shortcut keys to adjust any setting:
 
@@ -153,9 +153,9 @@ After launch, Bifrost CLI keeps you inside a tabbed terminal UI instead of exiti
 - The `Bifrost CLI` label and current CLI version
 - One tab per running or recent agent session
 - A status badge for each tab:
-  - `🧠` — the visible screen is actively changing, so the agent is still working
-  - `✅` — the session looks idle and ready
-  - `🔔` — the PTY emitted a real terminal alert
+  - `🧠` - the visible screen is actively changing, so the agent is still working
+  - `✅` - the session looks idle and ready
+  - `🔔` - the PTY emitted a real terminal alert
 
 Use `Ctrl+B` at any time to focus the tab bar. From tab mode you can:
 
@@ -219,7 +219,7 @@ This is useful when working across multiple Bifrost gateways or projects with di
 
 ## Switching Harnesses and Models
 
-The CLI handles all environment variables, API keys, and provider-specific configuration automatically — you never need to set them yourself. To change your setup, use the shortcut keys from the summary screen:
+The CLI handles all environment variables, API keys, and provider-specific configuration automatically - you never need to set them yourself. To change your setup, use the shortcut keys from the summary screen:
 
 {/* TODO: Add screenshot of the summary/ready-to-launch screen with shortcut keys highlighted */}
 
@@ -238,7 +238,7 @@ The CLI handles all environment variables, API keys, and provider-specific confi
 | `Enter` | Launch with current settings |
 | `q` | Quit |
 
-When you switch harnesses, the CLI reconfigures everything for the new agent — base URLs, API keys, model flags, and any agent-specific setup. You can switch as many times as you like before launching.
+When you switch harnesses, the CLI reconfigures everything for the new agent - base URLs, API keys, model flags, and any agent-specific setup. You can switch as many times as you like before launching.
 
 <Tip>
 After a session ends, the CLI returns to the summary screen with your previous configuration intact. Press `h` to switch agents or `m` to try a different model, then `Enter` to re-launch.
@@ -255,11 +255,11 @@ Bifrost CLI applies two OpenCode-specific behaviors automatically:
 
 The CLI is designed for iterative development sessions:
 
-1. **Launch** — Select your agent and model, press Enter
-2. **Work** — Use your agent as normal, all traffic routes through Bifrost
-3. **Switch** — Press `Ctrl+B` any time to open the tab bar and jump to another session or start a new one
-4. **Return** — When an agent exits (or you quit it), the CLI returns to the chooser with your previous configuration intact
-5. **Re-launch** — Change model, switch harness, or re-launch the same setup instantly
+1. **Launch** - Select your agent and model, press Enter
+2. **Work** - Use your agent as normal, all traffic routes through Bifrost
+3. **Switch** - Press `Ctrl+B` any time to open the tab bar and jump to another session or start a new one
+4. **Return** - When an agent exits (or you quit it), the CLI returns to the chooser with your previous configuration intact
+5. **Re-launch** - Change model, switch harness, or re-launch the same setup instantly
 
 Your last selections are remembered across sessions. The next time you run `bifrost`, you'll see the summary screen with your previous configuration ready to go. Press Enter to re-launch immediately, or adjust any setting.
 
@@ -283,7 +283,7 @@ Or select worktree mode from the TUI during the setup flow. The CLI passes the `
 
 When launching **Claude Code**, the CLI automatically registers Bifrost's MCP server endpoint (`/mcp`) so all your configured MCP tools are available inside the agent.
 
-If a virtual key is configured, the CLI sets up authenticated MCP access with the correct `Authorization` header — no manual `claude mcp add-json` commands needed.
+If a virtual key is configured, the CLI sets up authenticated MCP access with the correct `Authorization` header - no manual `claude mcp add-json` commands needed.
 
 For other harnesses, the CLI prints the MCP server URL so you can configure it manually in your agent's settings.
 
@@ -320,7 +320,7 @@ If the model list doesn't load, check that:
 
 ### Virtual key not persisting
 
-The CLI stores virtual keys in your OS keyring. On Linux, ensure `gnome-keyring` or `kwallet` is running. If keyring access fails, the CLI will log a warning but continue working — the key will need to be re-entered next session.
+The CLI stores virtual keys in your OS keyring. On Linux, ensure `gnome-keyring` or `kwallet` is running. If keyring access fails, the CLI will log a warning but continue working - the key will need to be re-entered next session.
 
 ## Next Steps
 

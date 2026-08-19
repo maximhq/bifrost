@@ -1,5 +1,15 @@
-import { AddProviderRequest, ListProvidersResponse, ModelProvider, ModelProviderName } from "@/lib/types/config";
-import { DBKey } from "@/lib/types/governance";
+import {
+	AddProviderRequest,
+	CreateProviderKeyRequest,
+	ListProviderKeysResponse,
+	ListProvidersResponse,
+	ModelProvider,
+	ModelProviderKey,
+	ModelProviderName,
+	UpdateProviderRequest,
+	UpdateProviderKeyRequest,
+} from "@/lib/types/config";
+import { DBKey, PricingOverrideMatchType, PricingOverridePatch, PricingOverrideScopeKind } from "@/lib/types/governance";
 import { baseApi } from "./baseApi";
 
 function sortProviders(a: ModelProvider, b: ModelProvider) {
@@ -13,7 +23,9 @@ function sortProviders(a: ModelProvider, b: ModelProvider) {
 export interface ModelResponse {
 	name: string;
 	provider: string;
+	is_deprecated?: boolean;
 	accessible_by_keys?: string[];
+	additional_attributes?: Record<string, string>;
 }
 
 export interface ListModelsResponse {
@@ -21,10 +33,78 @@ export interface ListModelsResponse {
 	total: number;
 }
 
+// ModelDetails is the shape returned by /api/models/details — used by the
+// model-catalog Models tab to list (model, provider) entries with their
+// additional_attributes.
+export interface ModelDetails {
+	name: string;
+	provider: string;
+	context_length?: number;
+	max_input_tokens?: number;
+	max_output_tokens?: number;
+	input_cost_per_token?: number;
+	output_cost_per_token?: number;
+	cache_creation_input_token_cost?: number;
+	cache_read_input_token_cost?: number;
+	architecture?: unknown;
+	additional_attributes?: Record<string, string>;
+	accessible_by_keys?: string[];
+	// Post-override value of each displayed cost, present only for the fields
+	// the applied override actually changes — render those struck through.
+	overridden_pricing?: ModelOverriddenPricing;
+	// Which override produced overridden_pricing.
+	applied_override_id?: string;
+	// Every override matching this model, including virtual-key/user/provider-key
+	// scoped ones that do NOT affect overridden_pricing (shown informationally).
+	// Resolve against ListModelDetailsResponse.pricing_overrides.
+	pricing_override_ids?: string[];
+}
+
+export interface ModelOverriddenPricing {
+	input_cost_per_token?: number;
+	output_cost_per_token?: number;
+	cache_creation_input_token_cost?: number;
+	cache_read_input_token_cost?: number;
+}
+
+// ModelPricingOverrideSummary mirrors PricingOverride but carries the patch
+// already parsed — /api/models/details returns an object where the governance
+// API returns a JSON string.
+export interface ModelPricingOverrideSummary {
+	id: string;
+	name: string;
+	scope_kind: PricingOverrideScopeKind;
+	user_id?: string;
+	virtual_key_id?: string;
+	provider_id?: string;
+	provider_key_id?: string;
+	match_type: PricingOverrideMatchType;
+	pattern: string;
+	request_types?: string[];
+	patch: PricingOverridePatch;
+}
+
+export interface ListModelDetailsResponse {
+	models: ModelDetails[];
+	total: number;
+	// Overrides referenced by any row, keyed by ID and deduplicated.
+	pricing_overrides?: Record<string, ModelPricingOverrideSummary>;
+}
+
+// ModelPricingAttributesEntry is the body element for PUT /api/models/catalog.
+// (model, provider) is the natural key on governance_model_pricing. An empty
+// or omitted additional_attributes clears the column for that row.
+export interface ModelPricingAttributesEntry {
+	model: string;
+	provider: string;
+	additional_attributes?: Record<string, string>;
+}
+
 export interface GetModelsRequest {
 	query?: string;
 	provider?: string;
 	keys?: string[];
+	vks?: string[];
 	limit?: number;
 	unfiltered?: boolean;
 }
@@ -63,6 +143,10 @@ export interface ListBaseModelsResponse {
 	models: string[];
 	total: number;
 }
+
+type UpdateProviderMutationArg = UpdateProviderRequest & {
+	name: ModelProviderName;
+};
 
 const DEFAULT_MODEL_PARAMETERS: ModelDatasheetResponse = {
 	mode: "chat",
@@ -108,6 +192,17 @@ export const providersApi = baseApi.injectEndpoints({
 			providesTags: (result, error, provider) => [{ type: "Providers", id: provider }],
 		}),
 
+		getProviderKeys: builder.query<ModelProviderKey[], string>({
+			query: (provider) => `/providers/${encodeURIComponent(provider)}/keys`,
+			transformResponse: (response: ListProviderKeysResponse) => response.keys ?? [],
+			providesTags: (result, error, provider) => [{ type: "ProviderKeys", id: provider }],
+		}),
+
+		getProviderKey: builder.query<ModelProviderKey, { provider: string; keyId: string }>({
+			query: ({ provider, keyId }) => `/providers/${encodeURIComponent(provider)}/keys/${encodeURIComponent(keyId)}`,
+			providesTags: (result, error, { provider }) => [{ type: "ProviderKeys", id: provider }],
+		}),
+
 		// Create new provider
 		createProvider: builder.mutation<ModelProvider, AddProviderRequest>({
 			query: (data) => ({
@@ -129,12 +224,13 @@ export const providersApi = baseApi.injectEndpoints({
 		}),
 
 		// Update existing provider
-		updateProvider: builder.mutation<ModelProvider, ModelProvider>({
-			query: (provider) => ({
-				url: `/providers/${encodeURIComponent(provider.name)}`,
+		updateProvider: builder.mutation<ModelProvider, UpdateProviderMutationArg>({
+			query: ({ name, ...body }) => ({
+				url: `/providers/${encodeURIComponent(name)}`,
 				method: "PUT",
-				body: provider,
+				body,
 			}),
+			invalidatesTags: (result, error, arg) => [{ type: "ProviderKeys", id: arg.name }, "DBKeys", "VirtualKeys"],
 			async onQueryStarted(arg, { dispatch, queryFulfilled }) {
 				try {
 					const { data: updatedProvider } = await queryFulfilled;
@@ -151,12 +247,110 @@ export const providersApi = baseApi.injectEndpoints({
 			},
 		}),
 
+		createProviderKey: builder.mutation<ModelProviderKey, { provider: string; key: CreateProviderKeyRequest }>({
+			query: ({ provider, key }) => ({
+				url: `/providers/${encodeURIComponent(provider)}/keys`,
+				method: "POST",
+				body: key,
+			}),
+			async onQueryStarted({ provider }, { dispatch, queryFulfilled }) {
+				try {
+					const { data: newKey } = await queryFulfilled;
+					dispatch(
+						providersApi.util.updateQueryData("getProviderKeys", provider, (draft) => {
+							const exists = draft.some((k) => k.id === newKey.id);
+							if (!exists) {
+								draft.push(newKey);
+							}
+						}),
+					);
+					dispatch(
+						providersApi.util.updateQueryData("getAllKeys", undefined, (draft) => {
+							const exists = draft.some((k) => k.key_id === newKey.id);
+							if (!exists) {
+								draft.push({
+									key_id: newKey.id,
+									name: newKey.name,
+									provider_id: "",
+									models: newKey.models ?? [],
+									provider: provider as ModelProviderName,
+								});
+							}
+						}),
+					);
+				} catch {}
+			},
+		}),
+
+		updateProviderKey: builder.mutation<ModelProviderKey, { provider: string; keyId: string; key: UpdateProviderKeyRequest }>({
+			query: ({ provider, keyId, key }) => ({
+				url: `/providers/${encodeURIComponent(provider)}/keys/${encodeURIComponent(keyId)}`,
+				method: "PUT",
+				body: key,
+			}),
+			async onQueryStarted({ provider, keyId }, { dispatch, queryFulfilled }) {
+				try {
+					const { data: updatedKey } = await queryFulfilled;
+					dispatch(
+						providersApi.util.updateQueryData("getProviderKeys", provider, (draft) => {
+							const index = draft.findIndex((key) => key.id === keyId);
+							if (index !== -1) {
+								draft[index] = updatedKey;
+							}
+						}),
+					);
+					dispatch(providersApi.util.updateQueryData("getProviderKey", { provider, keyId }, () => updatedKey));
+					dispatch(
+						providersApi.util.updateQueryData("getAllKeys", undefined, (draft) => {
+							const index = draft.findIndex((k) => k.key_id === keyId);
+							if (index !== -1) {
+								draft[index] = {
+									...draft[index],
+									name: updatedKey.name,
+									models: updatedKey.models ?? [],
+								};
+							}
+						}),
+					);
+				} catch {}
+			},
+		}),
+
+		deleteProviderKey: builder.mutation<ModelProviderKey, { provider: string; keyId: string }>({
+			query: ({ provider, keyId }) => ({
+				url: `/providers/${encodeURIComponent(provider)}/keys/${encodeURIComponent(keyId)}`,
+				method: "DELETE",
+			}),
+			async onQueryStarted({ provider, keyId }, { dispatch, queryFulfilled }) {
+				try {
+					await queryFulfilled;
+					dispatch(
+						providersApi.util.updateQueryData("getProviderKeys", provider, (draft) => {
+							const index = draft.findIndex((key) => key.id === keyId);
+							if (index !== -1) {
+								draft.splice(index, 1);
+							}
+						}),
+					);
+					dispatch(
+						providersApi.util.updateQueryData("getAllKeys", undefined, (draft) => {
+							const index = draft.findIndex((k) => k.key_id === keyId);
+							if (index !== -1) {
+								draft.splice(index, 1);
+							}
+						}),
+					);
+				} catch {}
+			},
+		}),
+
 		// Delete provider
 		deleteProvider: builder.mutation<ModelProviderName, string>({
 			query: (provider) => ({
 				url: `/providers/${encodeURIComponent(provider)}`,
 				method: "DELETE",
 			}),
+			invalidatesTags: ["VirtualKeys"],
 			async onQueryStarted(providerName, { dispatch, queryFulfilled }) {
 				try {
 					await queryFulfilled;
@@ -168,6 +362,68 @@ export const providersApi = baseApi.injectEndpoints({
 							}
 						}),
 					);
+					dispatch(
+						providersApi.util.updateQueryData("getProviderKeys", providerName, (draft) => {
+							draft.splice(0, draft.length);
+						}),
+					);
+					dispatch(
+						providersApi.util.updateQueryData("getAllKeys", undefined, (draft) => draft.filter((key) => key.provider !== providerName)),
+					);
+				} catch {}
+			},
+		}),
+
+		// Re-run model discovery across every enabled key of a provider. The
+		// catalog otherwise refreshes on the configured interval, so this is how
+		// an operator picks up a newly served model straight away.
+		//
+		// The server answers 409 when a refresh for the same provider is already
+		// running, which the caller surfaces rather than retrying.
+		refreshProviderModels: builder.mutation<ModelProviderKey[], string>({
+			query: (provider) => ({
+				url: `/providers/${encodeURIComponent(provider)}/refresh-models`,
+				method: "POST",
+			}),
+			transformResponse: (response: ListProviderKeysResponse) => response.keys ?? [],
+			// The provider's own key rows come back in the response and are
+			// patched in below. "DBKeys" covers getAllKeys, whose DBKey.models is
+			// the same per-key model list a refresh rewrites; without it the
+			// routing-rule, pricing-override and virtual-key pickers keep showing
+			// the pre-refresh models, since a query only refetches on a tag it
+			// provides itself.
+			invalidatesTags: ["Models", "DBKeys"],
+			async onQueryStarted(provider, { dispatch, queryFulfilled }) {
+				try {
+					const { data: refreshedKeys } = await queryFulfilled;
+					dispatch(providersApi.util.updateQueryData("getProviderKeys", provider, () => refreshedKeys));
+				} catch {}
+			},
+		}),
+
+		// Re-run model discovery for a single key.
+		refreshProviderKeyModels: builder.mutation<ModelProviderKey, { provider: string; keyId: string }>({
+			query: ({ provider, keyId }) => ({
+				url: `/providers/${encodeURIComponent(provider)}/keys/${encodeURIComponent(keyId)}/refresh-models`,
+				method: "POST",
+			}),
+			// See refreshProviderModels above for why "DBKeys" is invalidated
+			// alongside "Models".
+			invalidatesTags: ["Models", "DBKeys"],
+			async onQueryStarted({ provider, keyId }, { dispatch, queryFulfilled }) {
+				try {
+					const { data: refreshedKey } = await queryFulfilled;
+					// Patch in place so the discovery status icon repaints without
+					// a refetch, matching how updateProviderKey behaves.
+					dispatch(
+						providersApi.util.updateQueryData("getProviderKeys", provider, (draft) => {
+							const index = draft.findIndex((key) => key.id === keyId);
+							if (index !== -1) {
+								draft[index] = refreshedKey;
+							}
+						}),
+					);
+					dispatch(providersApi.util.updateQueryData("getProviderKey", { provider, keyId }, () => refreshedKey));
 				} catch {}
 			},
 		}),
@@ -180,11 +436,12 @@ export const providersApi = baseApi.injectEndpoints({
 
 		// Get models with optional filtering
 		getModels: builder.query<ListModelsResponse, GetModelsRequest>({
-			query: ({ query, provider, keys, limit, unfiltered }) => {
+			query: ({ query, provider, keys, vks, limit, unfiltered }) => {
 				const params = new URLSearchParams();
 				if (query) params.append("query", query);
 				if (provider) params.append("provider", provider);
 				if (keys && keys.length > 0) params.append("keys", keys.join(","));
+				if (vks && vks.length > 0) params.append("vks", vks.join(","));
 				if (limit !== undefined) params.append("limit", limit.toString());
 				if (unfiltered !== undefined) params.append("unfiltered", unfiltered.toString());
 				return `/models?${params.toString()}`;
@@ -218,23 +475,76 @@ export const providersApi = baseApi.injectEndpoints({
 				return { data: result.data as ModelDatasheetResponse };
 			},
 		}),
+
+		// List models with capability metadata + additional_attributes via the
+		// existing /api/models/details endpoint. Backs the model-catalog
+		// Models tab. Server filters by model-name substring (`query`) and by
+		// exact provider; the high default limit covers the typical catalog
+		// size (under 1500 rows).
+		getModelDetails: builder.query<
+			ListModelDetailsResponse,
+			{
+				query?: string;
+				provider?: string;
+				limit?: number;
+				offset?: number;
+				unfiltered?: boolean;
+			}
+		>({
+			query: ({ query, provider, limit, offset, unfiltered }) => {
+				const params = new URLSearchParams();
+				if (query) params.append("query", query);
+				if (provider) params.append("provider", provider);
+				if (limit !== undefined) params.append("limit", String(limit));
+				if (offset !== undefined && offset > 0) params.append("offset", String(offset));
+				if (unfiltered !== undefined) params.append("unfiltered", String(unfiltered));
+				const qs = params.toString();
+				return `/models/details${qs ? `?${qs}` : ""}`;
+			},
+			providesTags: ["Models"],
+		}),
+
+		// Batch upsert additional_attributes on existing pricing rows. The
+		// pricing row must already exist for each (model, provider); a missing
+		// row surfaces as a 400. An entry with an empty additional_attributes
+		// map clears the column for that row.
+		upsertModelCatalogEntries: builder.mutation<void, ModelPricingAttributesEntry[]>({
+			query: (entries) => ({
+				url: "/models/catalog",
+				method: "PUT",
+				body: entries,
+			}),
+			invalidatesTags: ["Models"],
+		}),
 	}),
 });
 
 export const {
 	useGetProvidersQuery,
 	useGetProviderQuery,
+	useGetProviderKeysQuery,
+	useGetProviderKeyQuery,
 	useCreateProviderMutation,
 	useUpdateProviderMutation,
+	useCreateProviderKeyMutation,
+	useUpdateProviderKeyMutation,
+	useDeleteProviderKeyMutation,
+	useRefreshProviderModelsMutation,
+	useRefreshProviderKeyModelsMutation,
 	useDeleteProviderMutation,
 	useGetAllKeysQuery,
 	useGetModelsQuery,
 	useGetBaseModelsQuery,
 	useLazyGetProvidersQuery,
 	useLazyGetProviderQuery,
+	useLazyGetProviderKeysQuery,
+	useLazyGetProviderKeyQuery,
 	useLazyGetAllKeysQuery,
 	useLazyGetModelsQuery,
 	useLazyGetBaseModelsQuery,
 	useGetModelParametersQuery,
 	useLazyGetModelParametersQuery,
+	useGetModelDetailsQuery,
+	useLazyGetModelDetailsQuery,
+	useUpsertModelCatalogEntriesMutation,
 } = providersApi;

@@ -1,7 +1,5 @@
-"use client";
-
 import type { LatencyHistogramResponse } from "@/lib/types/logs";
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { formatFullTimestamp, formatLatency, formatTimestamp, LATENCY_COLORS } from "../../utils/chartUtils";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
@@ -61,7 +59,7 @@ function CustomTooltip({ active, payload }: any) {
 	);
 }
 
-export function LatencyChart({ data, chartType, startTime, endTime }: LatencyChartProps) {
+function LatencyChartImpl({ data, chartType, startTime, endTime }: LatencyChartProps) {
 	const chartData = useMemo(() => {
 		if (!data?.buckets || !data.bucket_size_seconds) {
 			return [];
@@ -109,10 +107,38 @@ export function LatencyChart({ data, chartType, startTime, endTime }: LatencyCha
 							allowDataOverflow={false}
 						/>
 						<Tooltip content={<CustomTooltip />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
-						<Bar isAnimationActive={false} dataKey="avg_latency" fill={LATENCY_COLORS.avg} fillOpacity={0.9} barSize={8} radius={[2, 2, 0, 0]} />
-						<Bar isAnimationActive={false} dataKey="p90_latency" fill={LATENCY_COLORS.p90} fillOpacity={0.9} barSize={8} radius={[2, 2, 0, 0]} />
-						<Bar isAnimationActive={false} dataKey="p95_latency" fill={LATENCY_COLORS.p95} fillOpacity={0.9} barSize={8} radius={[2, 2, 0, 0]} />
-						<Bar isAnimationActive={false} dataKey="p99_latency" fill={LATENCY_COLORS.p99} fillOpacity={0.9} barSize={8} radius={[2, 2, 0, 0]} />
+						<Bar
+							isAnimationActive={false}
+							dataKey="avg_latency"
+							fill={LATENCY_COLORS.avg}
+							fillOpacity={0.9}
+							barSize={8}
+							radius={[2, 2, 0, 0]}
+						/>
+						<Bar
+							isAnimationActive={false}
+							dataKey="p90_latency"
+							fill={LATENCY_COLORS.p90}
+							fillOpacity={0.9}
+							barSize={8}
+							radius={[2, 2, 0, 0]}
+						/>
+						<Bar
+							isAnimationActive={false}
+							dataKey="p95_latency"
+							fill={LATENCY_COLORS.p95}
+							fillOpacity={0.9}
+							barSize={8}
+							radius={[2, 2, 0, 0]}
+						/>
+						<Bar
+							isAnimationActive={false}
+							dataKey="p99_latency"
+							fill={LATENCY_COLORS.p99}
+							fillOpacity={0.9}
+							barSize={8}
+							radius={[2, 2, 0, 0]}
+						/>
 					</BarChart>
 				) : (
 					<AreaChart {...commonProps}>
@@ -136,15 +162,44 @@ export function LatencyChart({ data, chartType, startTime, endTime }: LatencyCha
 							domain={[0, (dataMax: number) => Math.max(dataMax, 1)]}
 							allowDataOverflow={false}
 						/>
-						<Tooltip content={<CustomTooltip />} />
+						<Tooltip content={<CustomTooltip />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
 						{/* Render P99 first (behind), then overlay in descending order so Avg is in front */}
-						<Area isAnimationActive={false} type="monotone" dataKey="p99_latency" stroke={LATENCY_COLORS.p99} fill={LATENCY_COLORS.p99} fillOpacity={0.15} />
-						<Area isAnimationActive={false} type="monotone" dataKey="p95_latency" stroke={LATENCY_COLORS.p95} fill={LATENCY_COLORS.p95} fillOpacity={0.2} />
-						<Area isAnimationActive={false} type="monotone" dataKey="p90_latency" stroke={LATENCY_COLORS.p90} fill={LATENCY_COLORS.p90} fillOpacity={0.25} />
-						<Area isAnimationActive={false} type="monotone" dataKey="avg_latency" stroke={LATENCY_COLORS.avg} fill={LATENCY_COLORS.avg} fillOpacity={0.4} />
+						<Area
+							isAnimationActive={false}
+							type="monotone"
+							dataKey="p99_latency"
+							stroke={LATENCY_COLORS.p99}
+							fill={LATENCY_COLORS.p99}
+							fillOpacity={0.15}
+						/>
+						<Area
+							isAnimationActive={false}
+							type="monotone"
+							dataKey="p95_latency"
+							stroke={LATENCY_COLORS.p95}
+							fill={LATENCY_COLORS.p95}
+							fillOpacity={0.2}
+						/>
+						<Area
+							isAnimationActive={false}
+							type="monotone"
+							dataKey="p90_latency"
+							stroke={LATENCY_COLORS.p90}
+							fill={LATENCY_COLORS.p90}
+							fillOpacity={0.25}
+						/>
+						<Area
+							isAnimationActive={false}
+							type="monotone"
+							dataKey="avg_latency"
+							stroke={LATENCY_COLORS.avg}
+							fill={LATENCY_COLORS.avg}
+							fillOpacity={0.4}
+						/>
 					</AreaChart>
 				)}
 			</ResponsiveContainer>
 		</ChartErrorBoundary>
 	);
 }
+export const LatencyChart = memo(LatencyChartImpl);

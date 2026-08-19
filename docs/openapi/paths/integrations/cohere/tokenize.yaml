@@ -7,7 +7,7 @@ tokenize:
     description: |
       Tokenizes text using Cohere v1 API format.
     tags:
-      - Cohere Integration
+    - Cohere Integration
     requestBody:
       required: true
       content:
@@ -33,3 +33,8 @@ tokenize:
           application/json:
             schema:
               $ref: '../../../schemas/integrations/cohere/common.yaml#/CohereError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

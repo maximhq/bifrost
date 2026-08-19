@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -21,7 +22,7 @@ func TestConfigureDialer_SetsRetryIfErr(t *testing.T) {
 		t.Fatal("precondition: RetryIfErr should be nil on a new client")
 	}
 
-	ConfigureDialer(client)
+	ConfigureDialer(client, false)
 
 	if client.RetryIfErr == nil {
 		t.Fatal("ConfigureDialer should set RetryIfErr")
@@ -46,7 +47,7 @@ func TestConfigureDialer_SetsDial(t *testing.T) {
 		t.Fatal("precondition: Dial should be nil on a new client")
 	}
 
-	ConfigureDialer(client)
+	ConfigureDialer(client, false)
 
 	if client.Dial == nil {
 		t.Fatal("ConfigureDialer should set a Dial function")
@@ -66,7 +67,7 @@ func TestConfigureDialer_ComposesWithExistingDial(t *testing.T) {
 		return net.Dial("tcp", addr)
 	}
 
-	ConfigureDialer(client)
+	ConfigureDialer(client, false)
 
 	// Start a test server to connect to
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -106,10 +107,8 @@ func TestConfigureDialer_TCPKeepAliveEnabled(t *testing.T) {
 	// Test without existing dial (direct connection path)
 	t.Run("without_existing_dial", func(t *testing.T) {
 		client := &fasthttp.Client{}
-		ConfigureDialer(client)
+		ConfigureDialer(client, false)
 
-		// The Dial function should create connections with keepalive
-		// We can verify by making a connection and checking the TCP options
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
 		defer fasthttp.ReleaseRequest(req)
@@ -135,7 +134,7 @@ func TestConfigureDialer_TCPKeepAliveEnabled(t *testing.T) {
 			connFromProxy = conn
 			return conn, err
 		}
-		ConfigureDialer(client)
+		ConfigureDialer(client, false)
 
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
@@ -164,7 +163,7 @@ func TestConfigureDialer_TCPKeepAliveEnabled(t *testing.T) {
 // same client pointer it received (for chaining).
 func TestConfigureDialer_ReturnValue(t *testing.T) {
 	client := &fasthttp.Client{}
-	result := ConfigureDialer(client)
+	result := ConfigureDialer(client, false)
 	if result != client {
 		t.Error("ConfigureDialer should return the same client pointer")
 	}
@@ -180,8 +179,8 @@ func TestConfigureDialer_Idempotent(t *testing.T) {
 	defer server.Close()
 
 	client := &fasthttp.Client{}
-	ConfigureDialer(client)
-	ConfigureDialer(client) // called again
+	ConfigureDialer(client, false)
+	ConfigureDialer(client, false) // called again
 
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -231,7 +230,7 @@ func TestConfigureDialer_WithRetryOnStaleConnection(t *testing.T) {
 		MaxConnsPerHost:     10,
 	}
 	// Use ConfigureDialer (the function under test) instead of manually setting RetryIfErr
-	ConfigureDialer(client)
+	ConfigureDialer(client, false)
 
 	// First request: establish connection in pool
 	req := fasthttp.AcquireRequest()
@@ -293,6 +292,105 @@ func TestConfigureRetry_Deprecated(t *testing.T) {
 	}
 }
 
+// TestConfigureDialer_SSRFProtection verifies that the default (no-proxy) dial
+// path rejects connections to private, loopback, and link-local addresses before
+// any TCP socket is opened.
+func TestConfigureDialer_SSRFProtection(t *testing.T) {
+	tests := []struct {
+		name    string
+		addr    string
+		wantErr string
+	}{
+		// Unspecified addresses — IsPrivateIP rejects them via IsUnspecified()
+		{"0.0.0.0 all-zeros", "0.0.0.0:80", "unspecified IP"},
+
+		// RFC 1918 private ranges — LookupIP returns the literal IP, IsPrivateIP rejects it
+		{"10.x.x.x", "10.0.0.1:80", "private IP"},
+		{"172.16.x.x", "172.16.0.1:80", "private IP"},
+		{"192.168.x.x", "192.168.1.1:80", "private IP"},
+
+		// Link-local / cloud metadata
+		{"169.254.169.254 AWS metadata", "169.254.169.254:80", "link-local IP"},
+		{"169.254.x.x link-local", "169.254.1.1:80", "link-local IP"},
+
+		// IPv6 private
+		{"[fc00::1] unique-local", "[fc00::1]:80", "private IP"},
+		{"[fd00::1] unique-local", "[fd00::1]:80", "private IP"},
+
+		// Unspecified IPv6 long form — regression for bypass via 0:0:0:0:0:0:0:0
+		{"[0:0:0:0:0:0:0:0] unspecified long form", "[0:0:0:0:0:0:0:0]:80", "unspecified IP"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &fasthttp.Client{ReadTimeout: time.Second}
+			ConfigureDialer(client, false)
+			_, err := client.Dial(tt.addr)
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("expected error containing %q, got %q", tt.wantErr, err.Error())
+			}
+		})
+	}
+}
+
+// TestConfigureDialer_SSRFProxyBypass verifies that when an existingDial is set
+// (proxy path), SSRF checks are intentionally skipped — the proxy owns routing.
+func TestConfigureDialer_SSRFProxyBypass(t *testing.T) {
+	var proxyCalled bool
+	client := &fasthttp.Client{}
+	client.Dial = func(addr string) (net.Conn, error) {
+		proxyCalled = true
+		return nil, fmt.Errorf("proxy handled: %s", addr)
+	}
+	ConfigureDialer(client, false)
+
+	_, err := client.Dial("10.0.0.1:80")
+	if !proxyCalled {
+		t.Error("expected proxy dial to be called for private IP")
+	}
+	if err == nil || !strings.Contains(err.Error(), "proxy handled") {
+		t.Errorf("expected proxy error, got %v", err)
+	}
+}
+
+// TestConfigureDialer_SSRFZeroTimeout verifies that SSRF protection is active
+// even when ReadTimeout is 0 (context.Background() is used instead of WithTimeout).
+func TestConfigureDialer_SSRFZeroTimeout(t *testing.T) {
+	client := &fasthttp.Client{ReadTimeout: 0}
+	ConfigureDialer(client, false)
+
+	_, err := client.Dial("169.254.169.254:80")
+	if err == nil {
+		t.Fatal("expected SSRF rejection with zero ReadTimeout, got nil")
+	}
+	if !strings.Contains(err.Error(), "link-local IP") {
+		t.Errorf("expected 'link-local IP' error, got %q", err.Error())
+	}
+}
+
+// TestConfigureDialer_SSRFMultiIPAllFail verifies that when all resolved IPs
+// fail to connect, the last dial error is returned (not a generic message).
+func TestConfigureDialer_SSRFMultiIPAllFail(t *testing.T) {
+	// 192.0.2.0/24 is TEST-NET-1 (RFC 5737) — documentation-only, never routed.
+	// A connection attempt to it will fail (refused or timeout) without any
+	// private-IP rejection, letting us exercise the lastErr return path.
+	client := &fasthttp.Client{ReadTimeout: 200 * time.Millisecond}
+	ConfigureDialer(client, false)
+
+	_, err := client.Dial("192.0.2.1:9")
+	if err == nil {
+		t.Fatal("expected connection error for unroutable TEST-NET address")
+	}
+	// Must not be the generic "no usable address" sentinel — a real dial error
+	// was returned.
+	if strings.Contains(err.Error(), "no usable address resolved") {
+		t.Errorf("expected a real dial error, got generic sentinel: %v", err)
+	}
+}
+
 // TestConfigureDialer_DialError verifies that dial errors from the existing
 // dial function are properly propagated (not swallowed).
 func TestConfigureDialer_DialError(t *testing.T) {
@@ -302,7 +400,7 @@ func TestConfigureDialer_DialError(t *testing.T) {
 		return nil, expectedErr
 	}
 
-	ConfigureDialer(client)
+	ConfigureDialer(client, false)
 
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -337,9 +435,14 @@ func TestStaleConnectionRetryIfErr_WrappedErrors(t *testing.T) {
 			wantRetry: true,
 		},
 		{
+			name:      "wrapped broken pipe",
+			err:       fmt.Errorf("during POST: %w", fmt.Errorf("write tcp 10.0.0.1:53374->10.0.0.2:30000: write: broken pipe")),
+			wantRetry: true,
+		},
+		{
 			name:      "ErrConnectionClosed from fasthttp",
 			err:       fasthttp.ErrConnectionClosed,
-			wantRetry: false, // Not matched - this error appears AFTER the retry loop
+			wantRetry: true, // Explicitly matched to stay correct if future fasthttp versions surface it inside the retry loop
 		},
 	}
 

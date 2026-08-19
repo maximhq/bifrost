@@ -1,0 +1,30 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "version": 2,
+  "config_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "../../examples/configs/withlocalpricingfiles/config.db"
+    }
+  },
+  "framework": {
+    "pricing": {
+      "pricing_url": "file://../../examples/configs/withlocalpricingfiles/pricing.json",
+      "pricing_sync_interval": 86400,
+      "model_parameters_url": "file://../../examples/configs/withlocalpricingfiles/model-parameters.json"
+    }
+  },
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "openai-key-1",
+          "value": "env.OPENAI_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ]
+    }
+  }
+}

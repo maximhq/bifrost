@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,6 +31,17 @@ func GetRandomString(length int) string {
 		b[i] = letters[randomSource.Intn(len(letters))]
 	}
 	return string(b)
+}
+
+// SecretVarAsString returns the wire form used when serializing *SecretVar as a string.
+func SecretVarAsString(e *SecretVar) string {
+	if e == nil {
+		return ""
+	}
+	if e.IsFromSecret() {
+		return e.ref
+	}
+	return e.GetValue()
 }
 
 // knownProvidersMu protects concurrent access to knownProviders.
@@ -130,7 +142,9 @@ func ParseFallbacks(fallbacks []string) []Fallback {
 
 // dataURIRegex is a precompiled regex for matching data URI format patterns.
 // It matches patterns like: data:image/png;base64,iVBORw0KGgo...
-var dataURIRegex = regexp.MustCompile(`^data:([^;]+)(;base64)?,(.+)$`)
+// Group 1 is the header (media type plus any parameters, e.g. ";charset=utf-8;base64"),
+// group 2 the payload.
+var dataURIRegex = regexp.MustCompile(`^data:([^,]*),([\s\S]+)$`)
 
 // base64Regex is a precompiled regex for matching base64 strings.
 // It matches strings containing only valid base64 characters with optional padding.
@@ -163,10 +177,28 @@ type URLTypeInfo struct {
 	DataURLWithoutPrefix *string // URL without the prefix (eg data:image/png;base64,iVBORw0KGgo...)
 }
 
-// SanitizeImageURL sanitizes and validates an image URL.
-// It handles both data URLs and regular HTTP/HTTPS URLs.
-// It also detects raw base64 image data and adds proper data URL headers.
+// defaultImageURLSchemes is the historical allowlist enforced by SanitizeImageURL.
+// Provider-specific code paths that need to accept additional schemes (e.g. Vertex's
+// gs://) must use SanitizeImageURLWithAllowedSchemes with an explicit list.
+var defaultImageURLSchemes = []string{"http", "https"}
+
+// SanitizeImageURL sanitizes and normalizes an image URL.
+// It handles both data URLs and regular URLs, accepting only http/https for non-data
+// URLs. Callers that need to accept provider-specific schemes (e.g. gs://) must use
+// SanitizeImageURLWithAllowedSchemes.
 func SanitizeImageURL(rawURL string) (string, error) {
+	return sanitizeImageURL(rawURL, defaultImageURLSchemes)
+}
+
+// SanitizeImageURLWithAllowedSchemes sanitizes and normalizes an image URL, then
+// validates regular URL schemes against the target provider's allowlist. Passing an
+// empty list is treated as "no non-data URL is acceptable" — call SanitizeImageURL
+// if you want the default http/https policy.
+func SanitizeImageURLWithAllowedSchemes(rawURL string, allowedSchemes ...string) (string, error) {
+	return sanitizeImageURL(rawURL, allowedSchemes)
+}
+
+func sanitizeImageURL(rawURL string, allowedSchemes []string) (string, error) {
 	if rawURL == "" {
 		return rawURL, fmt.Errorf("URL cannot be empty")
 	}
@@ -177,7 +209,7 @@ func SanitizeImageURL(rawURL string) (string, error) {
 	// Check if it's already a proper data URL
 	if strings.HasPrefix(rawURL, "data:") {
 		// Validate data URL format
-		if !dataURIRegex.MatchString(rawURL) {
+		if _, _, _, ok := ParseDataURL(rawURL); !ok {
 			return rawURL, fmt.Errorf("invalid data URL format")
 		}
 		return rawURL, nil
@@ -201,9 +233,22 @@ func SanitizeImageURL(rawURL string) (string, error) {
 		return rawURL, fmt.Errorf("invalid URL format: %w", err)
 	}
 
-	// Validate scheme
-	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
-		return rawURL, fmt.Errorf("URL must use http or https scheme")
+	if parsedURL.Scheme == "" {
+		return rawURL, fmt.Errorf("URL must have a valid scheme")
+	}
+
+	if len(allowedSchemes) == 0 {
+		return rawURL, fmt.Errorf("URL scheme %q is not allowed: no schemes permitted", parsedURL.Scheme)
+	}
+	allowed := false
+	for _, scheme := range allowedSchemes {
+		if strings.EqualFold(parsedURL.Scheme, scheme) {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return rawURL, fmt.Errorf("URL scheme %q is not allowed; expected one of: %s", parsedURL.Scheme, strings.Join(allowedSchemes, ", "))
 	}
 
 	// Validate host
@@ -224,21 +269,41 @@ func ExtractURLTypeInfo(sanitizedURL string) URLTypeInfo {
 	return extractRegularURLInfo(sanitizedURL)
 }
 
+// ParseDataURL splits a data URL (data:[<mediatype>][;<param>=<value>][;base64],<data>)
+// into its media type, base64 flag and payload. Media type parameters such as
+// ";charset=utf-8" are dropped from mediaType and the payload is returned as-is
+// (still base64-encoded when isBase64 is true, percent-encoded otherwise).
+// ok is false when the input is not a data URL carrying both a media type and a payload.
+func ParseDataURL(dataURL string) (mediaType string, isBase64 bool, payload string, ok bool) {
+	matches := dataURIRegex.FindStringSubmatch(dataURL)
+	if len(matches) != 3 {
+		return "", false, "", false
+	}
+
+	segments := strings.Split(matches[1], ";")
+	mediaType = strings.ToLower(strings.TrimSpace(segments[0]))
+	if mediaType == "" {
+		return "", false, "", false
+	}
+	for _, segment := range segments[1:] {
+		if strings.EqualFold(strings.TrimSpace(segment), "base64") {
+			isBase64 = true
+		}
+	}
+
+	return mediaType, isBase64, matches[2], true
+}
+
 // extractDataURLInfo extracts information from a data URL
 func extractDataURLInfo(dataURL string) URLTypeInfo {
-	// Parse data URL: data:[<mediatype>][;base64],<data>
-	matches := dataURIRegex.FindStringSubmatch(dataURL)
-
-	if len(matches) != 4 {
+	mediaType, isBase64, payload, ok := ParseDataURL(dataURL)
+	if !ok {
 		return URLTypeInfo{Type: ImageContentTypeBase64}
 	}
 
-	mediaType := matches[1]
-	isBase64 := matches[2] == ";base64"
-
 	dataURLWithoutPrefix := dataURL
 	if isBase64 {
-		dataURLWithoutPrefix = dataURL[len("data:")+len(mediaType)+len(";base64,"):]
+		dataURLWithoutPrefix = payload
 	}
 
 	info := URLTypeInfo{
@@ -633,6 +698,22 @@ func SafeExtractOrderedMap(value interface{}) (*OrderedMap, bool) {
 		return nil, false
 	case OrderedMap:
 		return &v, true
+	case json.RawMessage:
+		// Schemas forwarded verbatim are carried as raw JSON; decode on demand,
+		// preserving the key order of the document.
+		//
+		// The object-shape check comes first because OrderedMap.UnmarshalJSON accepts the
+		// null literal by design -- it clears the map and returns no error. Without this,
+		// a null raw schema decoded "successfully" into an empty map and reported ok, so
+		// callers treating ok as "a schema was present" got an empty one rather than a miss.
+		if strings.TrimSpace(string(v)) == "" || strings.TrimSpace(string(v))[0] != '{' {
+			return nil, false
+		}
+		decoded := NewOrderedMap()
+		if err := decoded.UnmarshalJSON(v); err != nil {
+			return nil, false
+		}
+		return decoded, true
 	}
 	return nil, false
 }
@@ -715,6 +796,10 @@ func DeepCopyChatMessage(original ChatMessage) ChatMessage {
 					copyURL := *annotation.URLCitation.URL
 					copyAnnotation.URLCitation.URL = &copyURL
 				}
+				if annotation.URLCitation.Text != nil {
+					copyText := *annotation.URLCitation.Text
+					copyAnnotation.URLCitation.Text = &copyText
+				}
 				if annotation.URLCitation.Sources != nil {
 					copySources := *annotation.URLCitation.Sources
 					copyAnnotation.URLCitation.Sources = &copySources
@@ -749,6 +834,9 @@ func DeepCopyChatMessage(original ChatMessage) ChatMessage {
 					copyName := *toolCall.Function.Name
 					copyToolCall.Function.Name = &copyName
 				}
+				if len(toolCall.ExtraContent) > 0 {
+					copyToolCall.ExtraContent = append(json.RawMessage(nil), toolCall.ExtraContent...)
+				}
 				copy.ChatAssistantMessage.ToolCalls[i] = copyToolCall
 			}
 		}
@@ -776,6 +864,10 @@ func deepCopyChatContentBlock(original ChatContentBlock) ChatContentBlock {
 	if original.ImageURLStruct != nil {
 		copyImage := ChatInputImage{
 			URL: original.ImageURLStruct.URL,
+		}
+		if original.ImageURLStruct.FileID != nil {
+			copyFileID := *original.ImageURLStruct.FileID
+			copyImage.FileID = &copyFileID
 		}
 		if original.ImageURLStruct.Detail != nil {
 			copyDetail := *original.ImageURLStruct.Detail
@@ -820,6 +912,12 @@ func deepCopyChatContentBlock(original ChatContentBlock) ChatContentBlock {
 func DeepCopyChatTool(original ChatTool) ChatTool {
 	copyTool := ChatTool{
 		Type: original.Type,
+		// Anthropic server tools (shape 3) carry their identity at the top level:
+		// Name for computer/text_editor/bash/memory/web_* tools, MCPServerName for
+		// mcp_toolset. Copying these is required or the cloned request loses the
+		// tool's identity (e.g. Bedrock rejects a server tool with no name).
+		Name:          original.Name,
+		MCPServerName: original.MCPServerName,
 	}
 
 	// Deep copy Function if present
@@ -834,48 +932,37 @@ func DeepCopyChatTool(original ChatTool) ChatTool {
 		}
 
 		if original.Function.Parameters != nil {
-			copyParams := &ToolFunctionParameters{
-				Type:     original.Function.Parameters.Type,
-				keyOrder: original.Function.Parameters.keyOrder,
-			}
-
-			if original.Function.Parameters.Description != nil {
-				copyParamDesc := *original.Function.Parameters.Description
-				copyParams.Description = &copyParamDesc
-			}
-
-			if original.Function.Parameters.Required != nil {
-				copyParams.Required = make([]string, len(original.Function.Parameters.Required))
-				copy(copyParams.Required, original.Function.Parameters.Required)
-			}
-
-			if original.Function.Parameters.Properties != nil {
-				// Deep copy preserving insertion order
-				copyProps := NewOrderedMapWithCapacity(original.Function.Parameters.Properties.Len())
-				original.Function.Parameters.Properties.Range(func(k string, v interface{}) bool {
-					copyProps.Set(k, DeepCopy(v))
-					return true
-				})
-				copyParams.Properties = copyProps
-			}
-
-			if original.Function.Parameters.Enum != nil {
-				copyParams.Enum = make([]string, len(original.Function.Parameters.Enum))
-				copy(copyParams.Enum, original.Function.Parameters.Enum)
-			}
-
-			if original.Function.Parameters.AdditionalProperties != nil {
-				copyAdditionalProps := *original.Function.Parameters.AdditionalProperties
-				copyParams.AdditionalProperties = &copyAdditionalProps
-			}
-
-			copyTool.Function.Parameters = copyParams
+			copyTool.Function.Parameters = DeepCopyToolFunctionParameters(original.Function.Parameters)
 		}
 
 		if original.Function.Strict != nil {
 			copyStrict := *original.Function.Strict
 			copyTool.Function.Strict = &copyStrict
 		}
+	}
+
+	// Deep copy Annotations if present
+	if original.Annotations != nil {
+		copyAnnotations := &MCPToolAnnotations{
+			Title: original.Annotations.Title,
+		}
+		if original.Annotations.ReadOnlyHint != nil {
+			v := *original.Annotations.ReadOnlyHint
+			copyAnnotations.ReadOnlyHint = &v
+		}
+		if original.Annotations.DestructiveHint != nil {
+			v := *original.Annotations.DestructiveHint
+			copyAnnotations.DestructiveHint = &v
+		}
+		if original.Annotations.IdempotentHint != nil {
+			v := *original.Annotations.IdempotentHint
+			copyAnnotations.IdempotentHint = &v
+		}
+		if original.Annotations.OpenWorldHint != nil {
+			v := *original.Annotations.OpenWorldHint
+			copyAnnotations.OpenWorldHint = &v
+		}
+		copyTool.Annotations = copyAnnotations
 	}
 
 	// Deep copy Custom if present
@@ -913,7 +1000,288 @@ func DeepCopyChatTool(original ChatTool) ChatTool {
 		copyTool.CacheControl = copyCacheControl
 	}
 
+	// Anthropic-native per-tool flags (promoted to the neutral layer).
+	if original.DeferLoading != nil {
+		v := *original.DeferLoading
+		copyTool.DeferLoading = &v
+	}
+	if original.AllowedCallers != nil {
+		copyTool.AllowedCallers = append([]string(nil), original.AllowedCallers...)
+	}
+	if original.InputExamples != nil {
+		copyTool.InputExamples = make([]ChatToolInputExample, len(original.InputExamples))
+		for i, ex := range original.InputExamples {
+			copyEx := ChatToolInputExample{}
+			if ex.Input != nil {
+				copyEx.Input = append(json.RawMessage(nil), ex.Input...)
+			}
+			if ex.Description != nil {
+				d := *ex.Description
+				copyEx.Description = &d
+			}
+			copyTool.InputExamples[i] = copyEx
+		}
+	}
+	if original.EagerInputStreaming != nil {
+		v := *original.EagerInputStreaming
+		copyTool.EagerInputStreaming = &v
+	}
+
+	// web_search_* and web_fetch_* variant fields.
+	if original.MaxUses != nil {
+		v := *original.MaxUses
+		copyTool.MaxUses = &v
+	}
+	if original.AllowedDomains != nil {
+		copyTool.AllowedDomains = append([]string(nil), original.AllowedDomains...)
+	}
+	if original.BlockedDomains != nil {
+		copyTool.BlockedDomains = append([]string(nil), original.BlockedDomains...)
+	}
+	if original.UserLocation != nil {
+		copyLoc := &ChatToolUserLocation{}
+		if original.UserLocation.Type != nil {
+			v := *original.UserLocation.Type
+			copyLoc.Type = &v
+		}
+		if original.UserLocation.City != nil {
+			v := *original.UserLocation.City
+			copyLoc.City = &v
+		}
+		if original.UserLocation.Region != nil {
+			v := *original.UserLocation.Region
+			copyLoc.Region = &v
+		}
+		if original.UserLocation.Country != nil {
+			v := *original.UserLocation.Country
+			copyLoc.Country = &v
+		}
+		if original.UserLocation.Timezone != nil {
+			v := *original.UserLocation.Timezone
+			copyLoc.Timezone = &v
+		}
+		copyTool.UserLocation = copyLoc
+	}
+
+	// web_fetch_* only.
+	if original.MaxContentTokens != nil {
+		v := *original.MaxContentTokens
+		copyTool.MaxContentTokens = &v
+	}
+	if original.Citations != nil {
+		copyCitations := &ChatToolCitationsConfig{}
+		if original.Citations.Enabled != nil {
+			v := *original.Citations.Enabled
+			copyCitations.Enabled = &v
+		}
+		copyTool.Citations = copyCitations
+	}
+	if original.UseCache != nil {
+		v := *original.UseCache
+		copyTool.UseCache = &v
+	}
+
+	// computer_* variant fields.
+	if original.DisplayWidthPx != nil {
+		v := *original.DisplayWidthPx
+		copyTool.DisplayWidthPx = &v
+	}
+	if original.DisplayHeightPx != nil {
+		v := *original.DisplayHeightPx
+		copyTool.DisplayHeightPx = &v
+	}
+	if original.DisplayNumber != nil {
+		v := *original.DisplayNumber
+		copyTool.DisplayNumber = &v
+	}
+	if original.EnableZoom != nil {
+		v := *original.EnableZoom
+		copyTool.EnableZoom = &v
+	}
+
+	// text_editor_* variant field.
+	if original.MaxCharacters != nil {
+		v := *original.MaxCharacters
+		copyTool.MaxCharacters = &v
+	}
+
+	// mcp_toolset variant fields (MCPServerName is copied in the literal above).
+	if original.DefaultConfig != nil {
+		copyTool.DefaultConfig = deepCopyChatMCPToolsetConfig(original.DefaultConfig)
+	}
+	if original.Configs != nil {
+		copyTool.Configs = make(map[string]*ChatMCPToolsetConfig, len(original.Configs))
+		for k, v := range original.Configs {
+			copyTool.Configs[k] = deepCopyChatMCPToolsetConfig(v)
+		}
+	}
+
 	return copyTool
+}
+
+// deepCopyChatMCPToolsetConfig creates a deep copy of a ChatMCPToolsetConfig
+// (mcp_toolset default/per-server config), or returns nil if the input is nil.
+func deepCopyChatMCPToolsetConfig(original *ChatMCPToolsetConfig) *ChatMCPToolsetConfig {
+	if original == nil {
+		return nil
+	}
+	copyConfig := &ChatMCPToolsetConfig{}
+	if original.Enabled != nil {
+		v := *original.Enabled
+		copyConfig.Enabled = &v
+	}
+	if original.DeferLoading != nil {
+		v := *original.DeferLoading
+		copyConfig.DeferLoading = &v
+	}
+	return copyConfig
+}
+
+// DeepCopyToolFunctionParameters creates a deep copy of ToolFunctionParameters,
+// preserving all JSON Schema fields so references and validation metadata are
+// not dropped during tool cloning.
+func DeepCopyToolFunctionParameters(original *ToolFunctionParameters) *ToolFunctionParameters {
+	if original == nil {
+		return nil
+	}
+
+	copyParams := &ToolFunctionParameters{
+		Type:                original.Type,
+		keyOrder:            JSONKeyOrder{keys: append([]string(nil), original.keyOrder.keys...)},
+		explicitEmptyObject: original.explicitEmptyObject,
+	}
+
+	if original.Description != nil {
+		copyParamDesc := *original.Description
+		copyParams.Description = &copyParamDesc
+	}
+	if original.Required != nil {
+		copyParams.Required = append([]string(nil), original.Required...)
+	}
+	if original.Properties != nil {
+		copyParams.Properties = deepCopyOrderedMap(original.Properties)
+	}
+	if original.AdditionalProperties != nil {
+		copyAdditionalProps := AdditionalPropertiesStruct{}
+		if original.AdditionalProperties.AdditionalPropertiesBool != nil {
+			b := *original.AdditionalProperties.AdditionalPropertiesBool
+			copyAdditionalProps.AdditionalPropertiesBool = &b
+		}
+		if original.AdditionalProperties.AdditionalPropertiesMap != nil {
+			copyAdditionalProps.AdditionalPropertiesMap = deepCopyOrderedMap(original.AdditionalProperties.AdditionalPropertiesMap)
+		}
+		copyParams.AdditionalProperties = &copyAdditionalProps
+	}
+	if original.Enum != nil {
+		copyParams.Enum = append([]string(nil), original.Enum...)
+	}
+	if original.Defs != nil {
+		copyParams.Defs = deepCopyOrderedMap(original.Defs)
+	}
+	if original.Definitions != nil {
+		copyParams.Definitions = deepCopyOrderedMap(original.Definitions)
+	}
+	if original.Ref != nil {
+		ref := *original.Ref
+		copyParams.Ref = &ref
+	}
+	if original.Items != nil {
+		copyParams.Items = deepCopyOrderedMap(original.Items)
+	}
+	if original.MinItems != nil {
+		minItems := *original.MinItems
+		copyParams.MinItems = &minItems
+	}
+	if original.MaxItems != nil {
+		maxItems := *original.MaxItems
+		copyParams.MaxItems = &maxItems
+	}
+	copyParams.AnyOf = deepCopyOrderedMapSlice(original.AnyOf)
+	copyParams.OneOf = deepCopyOrderedMapSlice(original.OneOf)
+	copyParams.AllOf = deepCopyOrderedMapSlice(original.AllOf)
+	if original.Format != nil {
+		format := *original.Format
+		copyParams.Format = &format
+	}
+	if original.Pattern != nil {
+		pattern := *original.Pattern
+		copyParams.Pattern = &pattern
+	}
+	if original.MinLength != nil {
+		minLength := *original.MinLength
+		copyParams.MinLength = &minLength
+	}
+	if original.MaxLength != nil {
+		maxLength := *original.MaxLength
+		copyParams.MaxLength = &maxLength
+	}
+	if original.Minimum != nil {
+		minimum := *original.Minimum
+		copyParams.Minimum = &minimum
+	}
+	if original.Maximum != nil {
+		maximum := *original.Maximum
+		copyParams.Maximum = &maximum
+	}
+	if original.Title != nil {
+		title := *original.Title
+		copyParams.Title = &title
+	}
+	copyParams.Default = DeepCopy(original.Default)
+	if original.Nullable != nil {
+		nullable := *original.Nullable
+		copyParams.Nullable = &nullable
+	}
+
+	return copyParams
+}
+
+func deepCopyOrderedMap(original *OrderedMap) *OrderedMap {
+	if original == nil {
+		return nil
+	}
+	copyMap := NewOrderedMapWithCapacity(original.Len())
+	original.Range(func(k string, v interface{}) bool {
+		copyMap.Set(k, deepCopySchemaValue(v))
+		return true
+	})
+	return copyMap
+}
+
+func deepCopyOrderedMapSlice(original []OrderedMap) []OrderedMap {
+	if original == nil {
+		return nil
+	}
+	copied := make([]OrderedMap, len(original))
+	for i := range original {
+		if copyMap := deepCopyOrderedMap(&original[i]); copyMap != nil {
+			copied[i] = *copyMap
+		}
+	}
+	return copied
+}
+
+func deepCopySchemaValue(original interface{}) interface{} {
+	switch v := original.(type) {
+	case *OrderedMap:
+		return deepCopyOrderedMap(v)
+	case OrderedMap:
+		return deepCopyOrderedMap(&v)
+	case map[string]interface{}:
+		copied := make(map[string]interface{}, len(v))
+		for key, value := range v {
+			copied[key] = deepCopySchemaValue(value)
+		}
+		return copied
+	case []interface{}:
+		copied := make([]interface{}, len(v))
+		for i, value := range v {
+			copied[i] = deepCopySchemaValue(value)
+		}
+		return copied
+	default:
+		return DeepCopy(v)
+	}
 }
 
 // DeepCopyResponsesMessage creates a deep copy of a ResponsesMessage
@@ -936,9 +1304,35 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 		copy.Status = &copyStatus
 	}
 
+	if original.Phase != nil {
+		copy.Phase = new(string)
+		*copy.Phase = *original.Phase
+	}
+
 	if original.Role != nil {
 		copyRole := *original.Role
 		copy.Role = &copyRole
+	}
+
+	// Deep copy Author and Recipient (multi-agent collab_tool_call items).
+	// json.RawMessage is a []byte slice; copy the bytes so callers don't share
+	// (and mutate) the underlying array.
+	if original.Author != nil {
+		copy.Author = append(json.RawMessage(nil), original.Author...)
+	}
+	if original.Recipient != nil {
+		copy.Recipient = append(json.RawMessage(nil), original.Recipient...)
+	}
+	if original.ToolSearchOutputTools != nil {
+		copy.ToolSearchOutputTools = append(json.RawMessage(nil), original.ToolSearchOutputTools...)
+	}
+	if original.AdditionalTools != nil {
+		copy.AdditionalTools = append(json.RawMessage(nil), original.AdditionalTools...)
+	}
+	// Raw-preserved items re-marshal from these bytes; without them the copy
+	// falls back to a field-by-field encode and loses the item's payload.
+	if original.rawPreserved != nil {
+		copy.rawPreserved = append([]byte(nil), original.rawPreserved...)
 	}
 
 	if original.Content != nil {
@@ -975,6 +1369,16 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 		if original.ResponsesToolMessage.Arguments != nil {
 			copyArguments := *original.ResponsesToolMessage.Arguments
 			copy.ResponsesToolMessage.Arguments = &copyArguments
+		}
+
+		if original.ResponsesToolMessage.Namespace != nil {
+			copyNamespace := *original.ResponsesToolMessage.Namespace
+			copy.ResponsesToolMessage.Namespace = &copyNamespace
+		}
+
+		if original.ResponsesToolMessage.Execution != nil {
+			copyExecution := *original.ResponsesToolMessage.Execution
+			copy.ResponsesToolMessage.Execution = &copyExecution
 		}
 
 		if original.ResponsesToolMessage.Error != nil {
@@ -1048,6 +1452,15 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 			}
 		}
 
+		if original.ResponsesToolMessage.Caller != nil {
+			copyCaller := *original.ResponsesToolMessage.Caller
+			if original.ResponsesToolMessage.Caller.ToolID != nil {
+				copyToolID := *original.ResponsesToolMessage.Caller.ToolID
+				copyCaller.ToolID = &copyToolID
+			}
+			copy.ResponsesToolMessage.Caller = &copyCaller
+		}
+
 		// Deep copy embedded tool call structs (simplified version - add more as needed)
 		if original.ResponsesToolMessage.ResponsesFileSearchToolCall != nil {
 			copyToolCall := *original.ResponsesToolMessage.ResponsesFileSearchToolCall
@@ -1059,6 +1472,23 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 				}
 			}
 			copy.ResponsesToolMessage.ResponsesFileSearchToolCall = &copyToolCall
+		}
+
+		if original.ResponsesToolMessage.ResponsesWebFetchCall != nil {
+			copyCall := *original.ResponsesToolMessage.ResponsesWebFetchCall
+			if original.ResponsesToolMessage.ResponsesWebFetchCall.Document != nil {
+				docCopy := *original.ResponsesToolMessage.ResponsesWebFetchCall.Document
+				if original.ResponsesToolMessage.ResponsesWebFetchCall.Document.Source != nil {
+					srcCopy := *original.ResponsesToolMessage.ResponsesWebFetchCall.Document.Source
+					docCopy.Source = &srcCopy
+				}
+				if original.ResponsesToolMessage.ResponsesWebFetchCall.Document.Citations != nil {
+					citationsCopy := *original.ResponsesToolMessage.ResponsesWebFetchCall.Document.Citations
+					docCopy.Citations = &citationsCopy
+				}
+				copyCall.Document = &docCopy
+			}
+			copy.ResponsesToolMessage.ResponsesWebFetchCall = &copyCall
 		}
 
 		// Add other embedded tool calls as needed...
@@ -1088,6 +1518,17 @@ func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock)
 	if original.Text != nil {
 		copyText := *original.Text
 		copy.Text = &copyText
+	}
+
+	// Reasoning replay fields: Signature and EncryptedContent are echoed back
+	// verbatim to the provider, so they must survive the deep copy.
+	if original.Signature != nil {
+		copy.Signature = new(string)
+		*copy.Signature = *original.Signature
+	}
+	if original.EncryptedContent != nil {
+		copy.EncryptedContent = new(string)
+		*copy.EncryptedContent = *original.EncryptedContent
 	}
 
 	// Deep copy ResponsesInputMessageContentBlockImage
@@ -1238,14 +1679,87 @@ func IsNovaModel(model string) bool {
 	return strings.Contains(model, "nova")
 }
 
+func IsNova2Model(model string) bool {
+	return strings.Contains(model, "nova-2") && (strings.Contains(model, "lite") || strings.Contains(model, "sonic"))
+}
+
+// IsGLMModel checks if the model is a Z.AI GLM model.
+func IsGLMModel(model string) bool {
+	return strings.Contains(model, "glm")
+}
+
 // IsAnthropicModel checks if the model is an Anthropic model.
 func IsAnthropicModel(model string) bool {
 	return strings.Contains(model, "anthropic.") || strings.Contains(model, "claude")
 }
 
+// IsOpenAIModel checks if the model is an OpenAI model.
+func IsOpenAIModel(model string) bool {
+	if strings.Contains(model, "gpt-") || strings.Contains(model, "text-embedding-") {
+		return true
+	}
+	// OpenAI reasoning families (o1, o3, o4, ...). Match the bare id or a
+	// version-suffixed variant (e.g. "o3", "o4-mini", "o1-preview") while
+	// avoiding false matches on substrings like "co1" or "model-o3x".
+	return isOpenAIReasoningModel(model)
+}
+
+// isOpenAIReasoningModel reports whether model names an OpenAI o-series
+// reasoning model. It strips any provider prefix (e.g. "openai/o3") and matches
+// an "o" followed by a single digit, where the next character is either end of
+// string or a "-" separator, so "o3" and "o4-mini" match but "co1" and "o3x"
+// do not.
+func isOpenAIReasoningModel(model string) bool {
+	name := model
+	if idx := strings.LastIndexAny(name, "/:"); idx >= 0 {
+		name = name[idx+1:]
+	}
+	if len(name) < 2 || name[0] != 'o' || name[1] < '0' || name[1] > '9' {
+		return false
+	}
+	return len(name) == 2 || name[2] == '-'
+}
+
+// IsAzureModelRouter reports whether model is Azure's model-router model.
+func IsAzureModelRouter(model string) bool {
+	return strings.Contains(model, "model-router")
+}
+
+// IsElevenlabsSoundModel checks if the model targets ElevenLabs' text-to-sound
+// effects API (POST /v1/sound-generation, e.g. "eleven_text_to_sound_v2")
+// rather than text-to-speech. These models are not tied to a voice.
+func IsElevenlabsSoundModel(model string) bool {
+	return strings.Contains(model, "eleven_text_to_sound")
+}
+
+// BedrockModelSupportsCachePoints reports whether the Bedrock model supports
+// explicit prompt-caching cache points in the Converse API request.
+func BedrockModelSupportsCachePoints(model string) bool {
+	return IsAnthropicModel(model) || IsNovaModel(model)
+}
+
+// BedrockModelSupportsExtendedCacheTTL reports whether the Bedrock model supports
+// the 1h (extended) prompt-caching TTL. This is Anthropic-only; other cache-point
+// models (e.g. Nova) support caching but only the default 5m TTL and 400 with
+// "Extended TTL prompt caching is only supported for Anthropic models".
+func BedrockModelSupportsExtendedCacheTTL(model string) bool {
+	return IsAnthropicModel(model)
+}
+
 // IsMistralModel checks if the model is a Mistral or Codestral model.
 func IsMistralModel(model string) bool {
 	return strings.Contains(model, "mistral") || strings.Contains(model, "codestral")
+}
+
+// IsLlamaModel checks if the model is a Meta Llama model.
+//
+// Used by the Bedrock provider to gate tool_choice handling: Bedrock Converse
+// rejects toolConfig.toolChoice.tool on Meta Llama variants with HTTP 400
+// ("This model doesn't support the toolConfig.toolChoice.tool field"). See
+// AWS docs for the per-model tool_choice support matrix:
+// https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolChoice.html
+func IsLlamaModel(model string) bool {
+	return strings.Contains(model, "llama")
 }
 
 func IsGeminiModel(model string) bool {
@@ -1256,9 +1770,31 @@ func IsVeoModel(model string) bool {
 	return strings.Contains(model, "veo")
 }
 
+func IsGemmaModel(model string) bool {
+	return strings.Contains(model, "gemma")
+}
+
 // IsImagenModel checks if the model is an Imagen model.
 func IsImagenModel(model string) bool {
 	return strings.Contains(strings.ToLower(model), "imagen")
+}
+
+// IsCohereModel checks if the model is a Cohere model. Matches the Bedrock
+// identifier prefix ("cohere.embed-*", "cohere.command-*") which is the wire
+// shape that flows through alias resolution.
+func IsCohereModel(model string) bool {
+	return strings.Contains(model, "cohere")
+}
+
+// IsTitanModel checks if the model is an Amazon Titan model. Matches the
+// Bedrock identifier prefix ("amazon.titan-*").
+func IsTitanModel(model string) bool {
+	return strings.Contains(model, "titan")
+}
+
+// IsGrokModel checks if the model is an xAI Grok model.
+func IsGrokModel(model string) bool {
+	return strings.Contains(model, "grok")
 }
 
 // List of grok reasoning models
@@ -1269,6 +1805,72 @@ var grokReasoningModels = []string{
 	"grok-4-fast-reasoning",
 	"grok-4-1-fast-reasoning",
 	"grok-code-fast-1",
+}
+
+// grokDateSuffixRe matches xAI's 4-digit MMDD release suffix, e.g. "grok-4-0709".
+// SplitModelAndVersion does not cover this: it only knows 8-digit Anthropic dates
+// and "v"-prefixed tags, both of which deliberately skip bare 4-digit segments.
+var grokDateSuffixRe = regexp.MustCompile(`-\d{4}$`)
+
+// normalizeGrokModel reduces a model id to the bare xAI model name so it can be
+// compared exactly rather than by substring. Substring matching is what made the
+// reasoning_effort rule misfire: "grok-4" is a prefix of "grok-4.5", "grok-4.6"
+// and "grok-4.20-*", so a rule written for the grok-4 leaf silently captured the
+// entire later lineup.
+func normalizeGrokModel(model string) string {
+	m := strings.ToLower(strings.TrimSpace(model))
+	// Drop any routing prefix, e.g. "xai/grok-4.6" or "openrouter/x-ai/grok-4.6".
+	if idx := strings.LastIndex(m, "/"); idx != -1 {
+		m = m[idx+1:]
+	}
+	m = strings.TrimSuffix(m, "-latest")
+	return grokDateSuffixRe.ReplaceAllString(m, "")
+}
+
+// grokModelsWithoutReasoningEffort lists the Grok reasoning models that do NOT
+// accept reasoning_effort. This is a deny-list on purpose: xAI ships new models
+// far faster than this list can be maintained, and the two failure modes are not
+// symmetric. Sending effort to a model that rejects it surfaces as a 400 the
+// caller can see and act on; silently dropping it yields a successful response at
+// the wrong reasoning depth, wrong cost and wrong latency, with no signal at all.
+// Fail open, and only list models we have positively confirmed reject it.
+//
+// Confirmed to SUPPORT reasoning_effort (https://docs.x.ai/docs/guides/reasoning):
+//   - grok-4.6            low | medium | high (default) | xhigh
+//   - grok-4.5            low | medium | high (default); xhigh is coerced to high upstream
+//   - grok-4.20-multi-agent  low | medium | high | xhigh (selects agent count, not depth)
+var grokModelsWithoutReasoningEffort = map[string]struct{}{
+	"grok-3":                  {}, // not a reasoning model; xAI lists it separately from them
+	"grok-4":                  {},
+	"grok-4-fast-reasoning":   {},
+	"grok-4-1-fast-reasoning": {},
+	"grok-code-fast-1":        {},
+}
+
+// SupportsGrokReasoningEffort reports whether a Grok model accepts reasoning_effort.
+// Unknown models are allowed through; see grokModelsWithoutReasoningEffort.
+func SupportsGrokReasoningEffort(model string) bool {
+	_, denied := grokModelsWithoutReasoningEffort[normalizeGrokModel(model)]
+	return !denied
+}
+
+// grokModelsWithXHighReasoningEffort lists the Grok models that accept the "xhigh"
+// effort tier. Unlike the deny-list above this is an allow-list, because the safe
+// fallback here is a real value ("high") rather than dropping the field: a model
+// that does not know "xhigh" would 400 on it.
+//
+// grok-4.5 is deliberately absent. xAI documents it as accepting "xhigh" but
+// treating it as "high", so downgrading locally matches upstream behaviour exactly
+// while keeping the request honest about what it asked for.
+var grokModelsWithXHighReasoningEffort = map[string]struct{}{
+	"grok-4.6":              {},
+	"grok-4.20-multi-agent": {},
+}
+
+// SupportsGrokXHighReasoningEffort reports whether a Grok model accepts effort "xhigh".
+func SupportsGrokXHighReasoningEffort(model string) bool {
+	_, ok := grokModelsWithXHighReasoningEffort[normalizeGrokModel(model)]
+	return ok
 }
 
 // IsGrokReasoningModel checks if the given model is a grok reasoning model
@@ -1356,6 +1958,76 @@ func SplitModelAndVersion(id string) (base, version string) {
 func BaseModelName(id string) string {
 	base, _ := SplitModelAndVersion(id)
 	return base
+}
+
+// CanonicalEntitySet returns id/name arrays as deduped, id-sorted, comma-joined
+// strings so the same set always yields the same pair. Empty set → "","". For
+// low-count dimensions (a user's teams), not unbounded sets.
+func CanonicalEntitySet(ids, names []string) (idsCSV, namesCSV string) {
+	if len(ids) == 0 {
+		return "", ""
+	}
+	type pair struct{ id, name string }
+	seen := make(map[string]struct{}, len(ids))
+	pairs := make([]pair, 0, len(ids))
+	for i, id := range ids {
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		name := ""
+		if i < len(names) {
+			name = names[i]
+		}
+		pairs = append(pairs, pair{id, name})
+	}
+	sort.Slice(pairs, func(i, j int) bool { return pairs[i].id < pairs[j].id })
+	idList := make([]string, len(pairs))
+	nameList := make([]string, len(pairs))
+	for i, p := range pairs {
+		idList[i] = p.id
+		nameList[i] = p.name
+	}
+	return strings.Join(idList, ","), strings.Join(nameList, ",")
+}
+
+// modelVendorPrefixRe matches a leading "<letters>." segment (us., anthropic.),
+// never a digit-dotted one, so "gpt-3.5-turbo" is left intact.
+var modelVendorPrefixRe = regexp.MustCompile(`^[a-z][a-z-]*\.`)
+
+// bedrockVersionSuffixRe matches a trailing Bedrock version suffix (":0", "-v1:0").
+var bedrockVersionSuffixRe = regexp.MustCompile(`(-v\d+)?:\d+$`)
+
+// NormalizeModelName strips Bedrock vendor/region prefixes, version suffixes, and
+// trailing date suffixes so the same model doesn't split across series. Preserves
+// digit-dotted names ("gpt-3.5-turbo") and fine-tune ids ("ft:...").
+//
+//	"us.anthropic.claude-opus-4-20250101-v1:0" → "claude-opus-4"
+//	"gpt-4o-mini-2024-07-18"                    → "gpt-4o-mini"
+func NormalizeModelName(model string) string {
+	// Trim so blank/whitespace-only collapses to "" and stray spaces are dropped.
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return model
+	}
+	// Strip vendor/region prefixes; loop to remove both (e.g. "us.anthropic.").
+	for {
+		stripped := modelVendorPrefixRe.ReplaceAllString(model, "")
+		if stripped == model || stripped == "" {
+			break
+		}
+		model = stripped
+	}
+	// Fine-tune ids: trailing segment is an id, not a version. Return as-is so
+	// BaseModelName doesn't strip a date-like custom suffix.
+	if strings.HasPrefix(model, "ft:") {
+		return model
+	}
+	model = bedrockVersionSuffixRe.ReplaceAllString(model, "")
+	return BaseModelName(model)
 }
 
 // SameBaseModel reports whether two model ids refer to the same base model,

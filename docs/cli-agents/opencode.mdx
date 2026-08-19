@@ -8,6 +8,10 @@ icon: "codepen"
 
 ![Opencode with Bifrost](../media/opencode-with-bifrost.png)
 
+<Note>
+If your Allowed Headers are already set to `*`, you can skip this note. If not and you face issues integrating Bifrost with OpenCode, try switching to `*` or adding the specific headers required by your client. By default, Bifrost whitelists: `Content-Type`, `Authorization`, `X-Requested-With`, `X-Stainless-Timeout`, and `X-Api-Key`.
+</Note>
+
 ## Setup
 
 ### 1. Configure OpenCode to work with Bifrost
@@ -77,7 +81,7 @@ When Bifrost has [virtual key authentication](/features/governance/virtual-keys)
 }
 ```
 
-This lets you enforce usage limits, budgets, and access control per user or environment. For team deployments, create a separate virtual key for each team — each key can have its own rate limits, budgets, and provider access rules configured in the Bifrost dashboard.
+This lets you enforce usage limits, budgets, and access control per user or environment. For team deployments, create a separate virtual key for each team - each key can have its own rate limits, budgets, and provider access rules configured in the Bifrost dashboard.
 
 ## Model Selection
 
@@ -152,21 +156,21 @@ You can configure models from different providers with per-model options:
 
 Bifrost supports the following providers with the `provider/model-name` format:
 
-`openai`, `azure`, `gemini`, `vertex`, `bedrock`, `mistral`, `groq`, `cerebras`, `cohere`, `perplexity`, `xai`, `ollama`, `openrouter`, `huggingface`, `nebius`, `parasail`, `replicate`, `vllm`, `sgl`
+`openai`, `azure`, `gemini`, `vertex`, `bedrock`, `mistral`, `groq`, `cerebras`, `deepseek`, `cohere`, `perplexity`, `xai`, `ollama`, `openrouter`, `huggingface`, `nebius`, `parasail`, `replicate`, `vllm`, `sgl`
 
 <Warning>
 Non-native models **must support tool use** for OpenCode to work properly. OpenCode relies on tool calling for file operations, terminal commands, and code editing. Models without tool use support will fail on most operations.
 </Warning>
 
 <Note>
-OpenCode connects to Bifrost via a single endpoint. Bifrost handles routing to the correct provider based on the model name — no per-provider configuration needed.
+OpenCode connects to Bifrost via a single endpoint. Bifrost handles routing to the correct provider based on the model name - no per-provider configuration needed.
 </Note>
 
 ## Observability
 
-All OpenCode traffic through Bifrost is logged. Monitor it at `http://localhost:8080/logs` — filter by provider, model, or search through conversation content to track usage.
+All OpenCode traffic through Bifrost is logged. Monitor it at `http://localhost:8080/logs` - filter by provider, model, or search through conversation content to track usage.
 
 ## Next Steps
 
-- [Provider Configuration](/quickstart/gateway/provider-configuration) — Configure AI providers in Bifrost
-- [Virtual Keys](/features/governance/virtual-keys) — Set up usage limits and access control
+- [Provider Configuration](/quickstart/gateway/provider-configuration) - Configure AI providers in Bifrost
+- [Virtual Keys](/features/governance/virtual-keys) - Set up usage limits and access control

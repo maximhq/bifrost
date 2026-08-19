@@ -1,48 +1,61 @@
-"use client";
-
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { EnvVarInput } from "@/components/ui/envVarInput";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { SecretVarInput } from "@/components/ui/secretVarInput";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } from "@/lib/store";
 import { AuthConfig, CoreConfig, DefaultCoreConfig } from "@/lib/types/config";
-import { EnvVar } from "@/lib/types/schemas";
+import { SecretVar } from "@/lib/types/schemas";
 import { parseArrayFromText } from "@/lib/utils/array";
-import { validateOrigins } from "@/lib/utils/validation";
+import { getPasswordPolicyFailures, validateOrigins } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { AlertTriangle, Info } from "lucide-react";
-import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useGetAuthTypeQuery } from "@enterprise/lib/store/apis/scimApi";
+import { AlertTriangle, Loader2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 export default function SecurityView() {
 	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
 	const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true });
+	const { data: authType, isLoading: authTypeLoading, error: authTypeError } = useGetAuthTypeQuery(undefined, { skip: !IS_ENTERPRISE });
 	const config = bifrostConfig?.client_config;
 	const [updateCoreConfig, { isLoading }] = useUpdateCoreConfigMutation();
 	const [localConfig, setLocalConfig] = useState<CoreConfig>(DefaultCoreConfig);
-	const hideAuthDashboard = IS_ENTERPRISE;
+	const showPasswordSection = !IS_ENTERPRISE || (!authTypeLoading && !authTypeError && authType?.type !== "sso");
+	const passwordInputRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null);
+	const passwordUnchangedRef = useRef(true);
 
 	const [localValues, setLocalValues] = useState<{
 		allowed_origins: string;
 		allowed_headers: string;
 		required_headers: string;
+		whitelisted_routes: string;
 	}>({
 		allowed_origins: "",
 		allowed_headers: "",
 		required_headers: "",
+		whitelisted_routes: "",
 	});
 
 	const [authConfig, setAuthConfig] = useState<AuthConfig>({
-		admin_username: { value: "", env_var: "", from_env: false },
-		admin_password: { value: "", env_var: "", from_env: false },
+		admin_username: { value: "", ref: "" },
+		admin_password: { value: "", ref: "" },
 		is_enabled: false,
-		disable_auth_on_inference: false,
 	});
+	const [passwordError, setPasswordError] = useState("");
+	const [setupToken, setSetupToken] = useState("");
+	const [setupTokenErrorMessage, setSetupTokenErrorMessage] = useState<string | null>(null);
+	// No admin account has ever been created on this instance yet. The very first
+	// PUT /api/config that creates one must include the setup token the operator
+	// configured via setup_token in config.json (or BIFROST_SETUP_TOKEN), so this
+	// field only needs to show up that once.
+	const isFirstTimeSetup = !bifrostConfig?.auth_config;
 
 	useEffect(() => {
 		if (bifrostConfig && config) {
@@ -51,9 +64,11 @@ export default function SecurityView() {
 				allowed_origins: config?.allowed_origins?.join(", ") || "",
 				allowed_headers: config?.allowed_headers?.join(", ") || "",
 				required_headers: config?.required_headers?.join(", ") || "",
+				whitelisted_routes: config?.whitelisted_routes?.join(", ") || "",
 			});
 		}
 		if (bifrostConfig?.auth_config) {
+			passwordUnchangedRef.current = true;
 			setAuthConfig(bifrostConfig.auth_config);
 		}
 	}, [config, bifrostConfig]);
@@ -70,27 +85,40 @@ export default function SecurityView() {
 
 		const usernameChanged =
 			authConfig.admin_username?.value !== bifrostConfig?.auth_config?.admin_username?.value ||
-			authConfig.admin_username?.env_var !== bifrostConfig?.auth_config?.admin_username?.env_var ||
-			authConfig.admin_username?.from_env !== bifrostConfig?.auth_config?.admin_username?.from_env;
+			authConfig.admin_username?.ref !== bifrostConfig?.auth_config?.admin_username?.ref ||
+			authConfig.admin_username?.type !== bifrostConfig?.auth_config?.admin_username?.type;
 		const passwordChanged =
 			authConfig.admin_password?.value !== bifrostConfig?.auth_config?.admin_password?.value ||
-			authConfig.admin_password?.env_var !== bifrostConfig?.auth_config?.admin_password?.env_var ||
-			authConfig.admin_password?.from_env !== bifrostConfig?.auth_config?.admin_password?.from_env;
-		const authChanged =
-			authConfig.is_enabled !== bifrostConfig?.auth_config?.is_enabled ||
-			usernameChanged ||
-			passwordChanged ||
-			authConfig.disable_auth_on_inference !== bifrostConfig?.auth_config?.disable_auth_on_inference;
+			authConfig.admin_password?.ref !== bifrostConfig?.auth_config?.admin_password?.ref ||
+			authConfig.admin_password?.type !== bifrostConfig?.auth_config?.admin_password?.type;
+		const authChanged = showPasswordSection
+			? authConfig.is_enabled !== bifrostConfig?.auth_config?.is_enabled || usernameChanged || passwordChanged
+			: false;
 
 		const localRequired = localConfig.required_headers?.slice().sort().join(",");
 		const serverRequired = config.required_headers?.slice().sort().join(",");
 		const requiredChanged = localRequired !== serverRequired;
 
+		const localWhitelistedRoutes = localConfig.whitelisted_routes?.slice().sort().join(",");
+		const serverWhitelistedRoutes = config.whitelisted_routes?.slice().sort().join(",");
+		const whitelistedRoutesChanged = localWhitelistedRoutes !== serverWhitelistedRoutes;
+
 		const enforceAuthOnInferenceChanged = localConfig.enforce_auth_on_inference !== config.enforce_auth_on_inference;
 		const allowDirectKeysChanged = localConfig.allow_direct_keys !== config.allow_direct_keys;
+		const dualCredentialConflictBehaviorChanged =
+			(localConfig.dual_credential_conflict_behavior || "prefer_idp") !== (config.dual_credential_conflict_behavior || "prefer_idp");
 
-		return originsChanged || headersChanged || requiredChanged || authChanged || enforceAuthOnInferenceChanged || allowDirectKeysChanged;
-	}, [config, localConfig, authConfig, bifrostConfig]);
+		return (
+			originsChanged ||
+			headersChanged ||
+			requiredChanged ||
+			whitelistedRoutesChanged ||
+			authChanged ||
+			enforceAuthOnInferenceChanged ||
+			allowDirectKeysChanged ||
+			dualCredentialConflictBehaviorChanged
+		);
+	}, [config, localConfig, authConfig, bifrostConfig, showPasswordSection]);
 
 	const needsRestart = useMemo(() => {
 		if (!config) return false;
@@ -123,6 +151,11 @@ export default function SecurityView() {
 		setLocalConfig((prev) => ({ ...prev, required_headers: parseArrayFromText(value) }));
 	}, []);
 
+	const handleWhitelistedRoutesChange = useCallback((value: string) => {
+		setLocalValues((prev) => ({ ...prev, whitelisted_routes: value }));
+		setLocalConfig((prev) => ({ ...prev, whitelisted_routes: parseArrayFromText(value) }));
+	}, []);
+
 	const handleConfigChange = useCallback((field: keyof CoreConfig, value: boolean) => {
 		setLocalConfig((prev) => ({ ...prev, [field]: value }));
 	}, []);
@@ -131,11 +164,12 @@ export default function SecurityView() {
 		setAuthConfig((prev) => ({ ...prev, is_enabled: checked }));
 	}, []);
 
-	const handleDisableAuthOnInferenceToggle = useCallback((checked: boolean) => {
-		setAuthConfig((prev) => ({ ...prev, disable_auth_on_inference: checked }));
-	}, []);
-
-	const handleAuthFieldChange = useCallback((field: "admin_username" | "admin_password", value: EnvVar) => {
+	const handleAuthFieldChange = useCallback((field: "admin_username" | "admin_password", value: SecretVar) => {
+		if (field === "admin_password") {
+			passwordUnchangedRef.current = false;
+			const passwordPolicyFailures = !value.ref && value.value ? getPasswordPolicyFailures(value.value, false) : [];
+			setPasswordError(passwordPolicyFailures.length > 0 ? `Password must include ${passwordPolicyFailures.join(", ")}.` : "");
+		}
 		setAuthConfig((prev) => ({ ...prev, [field]: value }));
 	}, []);
 
@@ -149,18 +183,50 @@ export default function SecurityView() {
 				);
 				return;
 			}
-			const hasUsername = authConfig.admin_username?.value || authConfig.admin_username?.env_var;
-			const hasPassword = authConfig.admin_password?.value || authConfig.admin_password?.env_var;
+			const hasUsername = authConfig.admin_username?.value || authConfig.admin_username?.ref;
+			const hasPassword = authConfig.admin_password?.value || authConfig.admin_password?.ref;
+			const passwordPolicyFailures =
+				showPasswordSection && authConfig.is_enabled && !authConfig.admin_password?.ref && authConfig.admin_password?.value
+					? getPasswordPolicyFailures(authConfig.admin_password.value, passwordUnchangedRef.current)
+					: [];
+
+			if (passwordPolicyFailures.length > 0) {
+				setPasswordError(`Password must include ${passwordPolicyFailures.join(", ")}.`);
+				passwordInputRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+				passwordInputRef.current?.focus({ preventScroll: true });
+				return;
+			}
+			if (isFirstTimeSetup && authConfig.is_enabled && !setupToken.trim()) {
+				setSetupTokenErrorMessage(
+					"Enter the setup token configured by your operator to create the first admin account. It's set via setup_token in config.json or the BIFROST_SETUP_TOKEN environment variable.",
+				);
+				return;
+			}
+			setPasswordError("");
+
 			await updateCoreConfig({
 				...bifrostConfig!,
 				client_config: localConfig,
-				auth_config: authConfig.is_enabled && hasUsername && hasPassword ? authConfig : { ...authConfig, is_enabled: false },
+				...(showPasswordSection
+					? {
+						auth_config: {
+							...(authConfig.is_enabled && hasUsername && hasPassword ? authConfig : { ...authConfig, is_enabled: false }),
+							...(isFirstTimeSetup ? { setup_token: setupToken.trim() } : {}),
+						},
+					}
+					: {}),
 			}).unwrap();
+			setSetupToken("");
 			toast.success("Security settings updated successfully.");
 		} catch (error) {
-			toast.error(getErrorMessage(error));
+			const message = getErrorMessage(error);
+			if (isFirstTimeSetup && message.toLowerCase().includes("setup token")) {
+				setSetupTokenErrorMessage(message);
+			} else {
+				toast.error(message);
+			}
 		}
-	}, [bifrostConfig, localConfig, authConfig, updateCoreConfig]);
+	}, [bifrostConfig, localConfig, authConfig, showPasswordSection, updateCoreConfig, isFirstTimeSetup, setupToken]);
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-4">
@@ -170,29 +236,25 @@ export default function SecurityView() {
 			</div>
 
 			<div className="space-y-4">
-				{authConfig.is_enabled && !authConfig.disable_auth_on_inference && (
-					<Alert variant="default" className="border-blue-20">
-						<Info className="h-4 w-4 text-blue-600" />
-						<AlertDescription>
-							You will need to use Basic Auth for all your inference calls (including MCP tool execution). You can disable it below. Check{" "}
-							<Link href="/workspace/config/api-keys" className="text-md text-primary underline">
-								API Keys
-							</Link>
-						</AlertDescription>
-					</Alert>
-				)}
-				{authConfig.is_enabled && authConfig.disable_auth_on_inference && (
-					<Alert variant="default" className="border-blue-20">
-						<Info className="h-4 w-4 text-blue-600" />
-						<AlertDescription>
-							Authentication is disabled for inference calls. Only dashboard, admin API and MCP tool execution calls require authentication.
-						</AlertDescription>
-					</Alert>
-				)}
 				{/* Password Protect the Dashboard */}
-				{!hideAuthDashboard && (
+				{IS_ENTERPRISE && authTypeLoading ? (
+					<div className="flex items-center justify-center rounded-sm border p-8" data-testid="security-auth-type-loading">
+						<Loader2 className="text-muted-foreground h-5 w-5 animate-spin" aria-hidden />
+						<span className="sr-only">Loading authentication settings</span>
+					</div>
+				) : null}
+				{IS_ENTERPRISE && !authTypeLoading && authTypeError ? (
+					<Alert variant="destructive" data-testid="security-auth-type-error">
+						<AlertTriangle className="h-4 w-4" />
+						<AlertDescription>
+							Could not load authentication type. Dashboard password settings are hidden until this request succeeds.{" "}
+							{getErrorMessage(authTypeError)}
+						</AlertDescription>
+					</Alert>
+				) : null}
+				{showPasswordSection && (
 					<div>
-						<div className="space-y-4 rounded-lg border p-4">
+						<div className="space-y-4 rounded-sm border p-4">
 							<div className="flex items-center justify-between">
 								<div className="space-y-0.5">
 									<Label htmlFor="auth-enabled" className="text-sm font-medium">
@@ -208,7 +270,7 @@ export default function SecurityView() {
 							<div className="space-y-4">
 								<div className="space-y-2">
 									<Label htmlFor="admin-username">Username</Label>
-									<EnvVarInput
+									<SecretVarInput
 										id="admin-username"
 										type="text"
 										placeholder="Enter admin username or env.VAR_NAME"
@@ -219,49 +281,61 @@ export default function SecurityView() {
 								</div>
 								<div className="space-y-2">
 									<Label htmlFor="admin-password">Password</Label>
-									<EnvVarInput
+									<SecretVarInput
+										ref={passwordInputRef}
 										id="admin-password"
+										aria-invalid={!!passwordError}
+										aria-describedby={passwordError ? "admin-password-error" : undefined}
 										type="password"
 										placeholder="Enter admin password or env.VAR_NAME"
 										value={authConfig.admin_password}
 										disabled={!authConfig.is_enabled}
 										onChange={(value) => handleAuthFieldChange("admin_password", value)}
 									/>
+									<p className="text-muted-foreground text-xs">
+										Use at least 12 characters with uppercase, lowercase, number, and special character. Env var references are accepted.
+									</p>
+									{passwordError ? (
+										<p id="admin-password-error" className="text-destructive text-xs" role="alert">
+											{passwordError}
+										</p>
+									) : null}
 								</div>
-								<div className="flex items-center justify-between">
-									<div className="space-y-0.5">
-										<Label htmlFor="disable-auth-inference" className="text-sm font-medium">
-											Disable authentication on inference calls
-										</Label>
-										<p className="text-muted-foreground text-sm">
-											When enabled, inference API calls (chat completions, embeddings, etc.) will not require authentication. Dashboard and
-											admin API calls will still require authentication.
+								{isFirstTimeSetup && authConfig.is_enabled ? (
+									<div className="space-y-2">
+										<Label htmlFor="setup-token">Setup token</Label>
+										<Input
+											id="setup-token"
+											data-testid="security-setup-token-input"
+											type="password"
+											autoComplete="off"
+											placeholder="Paste the setup token configured by your operator"
+											value={setupToken}
+											onChange={(e) => setSetupToken(e.target.value)}
+										/>
+										<p className="text-muted-foreground text-xs">
+											No admin account exists yet, so this instance is reachable without a password. To finish setup, ask your
+											operator for the setup token configured via <code>setup_token</code> in <code>config.json</code> (or the{" "}
+											<code>BIFROST_SETUP_TOKEN</code> environment variable) and paste it here.
 										</p>
 									</div>
-									<Switch
-										id="disable-auth-inference"
-										className="ml-5"
-										checked={authConfig.disable_auth_on_inference ?? false}
-										disabled={!authConfig.is_enabled}
-										onCheckedChange={handleDisableAuthOnInferenceToggle}
-									/>
-								</div>
+								) : null}
 							</div>
 						</div>
 					</div>
 				)}
 				{/* Enable Auth on Inference */}
-				<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 					<div className="space-y-0.5">
 						<label htmlFor="enforce-auth-on-inference" className="text-sm font-medium">
-						{IS_ENTERPRISE ? "Enable Auth on Inference" : "Enforce Virtual Keys on Inference"}
+							{IS_ENTERPRISE ? "Enable Auth on Inference" : "Enforce Virtual Keys on Inference"}
 						</label>
 						<p className="text-muted-foreground text-sm">
 							{IS_ENTERPRISE
 								? "Require authentication (virtual key, API key, or user token) for all inference endpoints."
 								: "Require a virtual key for all inference requests."}{" "}
 							See{" "}
-							<Link
+							<a
 								href="https://docs.getbifrost.ai/features/governance/virtual-keys"
 								target="_blank"
 								rel="noopener noreferrer"
@@ -269,7 +343,7 @@ export default function SecurityView() {
 								data-testid="security-virtual-keys-docs-link"
 							>
 								documentation
-							</Link>{" "}
+							</a>{" "}
 							for details.
 						</p>
 					</div>
@@ -280,27 +354,59 @@ export default function SecurityView() {
 						onCheckedChange={(checked) => handleConfigChange("enforce_auth_on_inference", checked)}
 					/>
 				</div>
-				{/* Allowed Origins */}
-				{needsRestart && <RestartWarning />}
+				{/* Dual Credential Conflict Behavior */}
+				{IS_ENTERPRISE && (
+					<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
+						<div className="space-y-0.5">
+							<label htmlFor="dual-credential-conflict-behavior" className="text-sm font-medium">
+								Dual Credential Conflict Behavior
+							</label>
+							<p className="text-muted-foreground text-sm">
+								How to handle inference requests that present both an identity provider access token (<b>Authorization: Bearer</b>) and a
+								virtual key (<b>x-bf-vk</b>). <b>Prefer IDP token</b> uses the user token for identity, <b>Prefer virtual key</b> drops the
+								IDP token and authenticates via the virtual key, and <b>Reject request</b> returns a 400 error.
+							</p>
+						</div>
+						<Select
+							value={localConfig.dual_credential_conflict_behavior || "prefer_idp"}
+							onValueChange={(value) =>
+								setLocalConfig((prev) => ({ ...prev, dual_credential_conflict_behavior: value as CoreConfig["dual_credential_conflict_behavior"] }))
+							}
+						>
+							<SelectTrigger id="dual-credential-conflict-behavior" data-testid="dual-credential-conflict-behavior-select" className="w-[180px]">
+								<SelectValue />
+							</SelectTrigger>
+							<SelectContent>
+								<SelectItem value="prefer_idp">Prefer IDP token</SelectItem>
+								<SelectItem value="prefer_vk">Prefer virtual key</SelectItem>
+								<SelectItem value="error">Reject request</SelectItem>
+							</SelectContent>
+						</Select>
+					</div>
+				)}
 				{/* Allow Direct API Keys */}
-				<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 					<div className="space-y-0.5">
 						<label htmlFor="allow-direct-keys" className="text-sm font-medium">
 							Allow Direct API Keys
 						</label>
 						<p className="text-muted-foreground text-sm">
-							Allow API keys to be passed directly in request headers (<b>Authorization</b>, <b>x-api-key</b>, or <b>x-goog-api-key</b>).
-							Bifrost will directly use the key.
+							When enabled, callers can pass a provider API key directly in the <b>Authorization</b>, <b>x-api-key</b>, or{" "}
+							<b>x-goog-api-key</b> header alongside <b>x-bf-direct-key: true</b>. Bifrost will use that key directly, bypassing the
+							registered key pool.
 						</p>
 					</div>
 					<Switch
 						id="allow-direct-keys"
+						data-testid="security-allow-direct-keys-switch"
 						checked={localConfig.allow_direct_keys}
 						onCheckedChange={(checked) => handleConfigChange("allow_direct_keys", checked)}
 					/>
 				</div>
+				{/* Allowed Origins */}
+				{needsRestart && <RestartWarning />}
 				<div>
-					<div className="space-y-2 rounded-lg border p-4">
+					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
 							<label htmlFor="allowed-origins" className="text-sm font-medium">
 								Allowed Origins
@@ -322,7 +428,7 @@ export default function SecurityView() {
 				</div>
 				{/* Allowed Headers */}
 				<div>
-					<div className="space-y-2 rounded-lg border p-4">
+					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
 							<label htmlFor="allowed-headers" className="text-sm font-medium">
 								Allowed Headers
@@ -340,7 +446,7 @@ export default function SecurityView() {
 				</div>
 				{/* Required Headers */}
 				<div>
-					<div className="space-y-2 rounded-lg border p-4">
+					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
 							<label htmlFor="required-headers" className="text-sm font-medium">
 								Required Headers
@@ -360,12 +466,53 @@ export default function SecurityView() {
 						/>
 					</div>
 				</div>
+				{/* Whitelisted Routes */}
+				<div>
+					<div className="space-y-2 rounded-sm border p-4">
+						<div className="space-y-0.5">
+							<label htmlFor="whitelisted-routes" className="text-sm font-medium">
+								Whitelisted Routes
+							</label>
+							<p className="text-muted-foreground text-sm">
+								Comma-separated list of routes that bypass the auth middleware. Requests to these routes will not require authentication.
+								System routes like <b>/health</b>, <b>/api/session/login</b>, and <b>/api/session/is-auth-enabled</b> are always whitelisted
+								regardless of this setting.
+							</p>
+						</div>
+						<Textarea
+							id="whitelisted-routes"
+							data-testid="whitelisted-routes-textarea"
+							className="h-24"
+							placeholder="/api/custom-webhook, /api/public-endpoint"
+							value={localValues.whitelisted_routes}
+							onChange={(e) => handleWhitelistedRoutesChange(e.target.value)}
+						/>
+					</div>
+				</div>
 			</div>
-			<div className="flex justify-end pt-2">
+			<div className="bg-card sticky bottom-0 flex justify-end py-2">
 				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>
 					{isLoading ? "Saving..." : "Save Changes"}
 				</Button>
 			</div>
+			<Dialog open={!!setupTokenErrorMessage} onOpenChange={(open) => !open && setSetupTokenErrorMessage(null)}>
+				<DialogContent data-testid="setup-token-error-dialog">
+					<DialogHeader>
+						<DialogTitle>Setup token required</DialogTitle>
+						<DialogDescription>{setupTokenErrorMessage}</DialogDescription>
+					</DialogHeader>
+					<DialogFooter>
+						<Button variant="outline" onClick={() => setSetupTokenErrorMessage(null)} data-testid="setup-token-error-close">
+							Close
+						</Button>
+						<Button asChild data-testid="setup-token-error-view-docs">
+							<a href="https://docs.getbifrost.ai/quickstart/gateway/setting-up-auth" target="_blank" rel="noopener noreferrer">
+								View docs
+							</a>
+						</Button>
+					</DialogFooter>
+				</DialogContent>
+			</Dialog>
 		</div>
 	);
 }

@@ -180,7 +180,7 @@ func ReorderJSONKeys(data []byte, order []string) ([]byte, error) {
 			buf.WriteByte(',')
 		}
 		first = false
-		keyBytes, _ := Marshal(key)
+		keyBytes, _ := MarshalSorted(key)
 		buf.Write(keyBytes)
 		buf.WriteByte(':')
 		buf.Write(val)
@@ -196,7 +196,7 @@ func ReorderJSONKeys(data []byte, order []string) ([]byte, error) {
 			buf.WriteByte(',')
 		}
 		first = false
-		keyBytes, _ := Marshal(kv.key)
+		keyBytes, _ := MarshalSorted(kv.key)
 		buf.Write(keyBytes)
 		buf.WriteByte(':')
 		buf.Write(kv.val)

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "vector_store": {
+    "enabled": true,
+    "type": "redis",
+    "config": {
+      "addr": "env.REDIS_ADDR",
+      "username": "env.REDIS_USERNAME",
+      "password": "env.REDIS_PASSWORD",
+      "db": 0,
+      "use_tls": true,
+      "insecure_skip_verify": false,
+      "ca_cert_pem": "env.REDIS_CA_CERT_PEM",
+      "cluster_mode": true
+    }
+  },
+  "plugins": [
+    {
+      "enabled": true,
+      "name": "semantic_cache",
+      "config": {
+        "dimension": 1,
+        "ttl": 300,
+        "threshold": 0.8,
+        "default_cache_key": "valkey-repro-cache",
+        "vector_store_namespace": "ValkeySemanticCacheRepro"
+      }
+    }
+  ]
+}

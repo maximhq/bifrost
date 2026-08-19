@@ -1,5 +1,3 @@
-"use client";
-
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -62,8 +60,7 @@ export default function ObservabilityView() {
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-4">
-			<div className="flex items-center justify-between">
-			</div>
+			<div className="flex items-center justify-between"></div>
 
 			<Alert variant="destructive">
 				<AlertTriangle className="h-4 w-4" />
@@ -76,7 +73,7 @@ export default function ObservabilityView() {
 			<div className="space-y-4">
 				{/* Prometheus Labels */}
 				<div>
-					<div className="space-y-2 rounded-lg border p-4">
+					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
 							<label htmlFor="prometheus-labels" className="text-sm font-medium">
 								Prometheus Labels
@@ -94,7 +91,7 @@ export default function ObservabilityView() {
 					{needsRestart && <RestartWarning />}
 				</div>
 			</div>
-			<div className="pt-2 flex justify-end">
+			<div className="flex justify-end pt-2">
 				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>
 					{isLoading ? "Saving..." : "Save Changes"}
 				</Button>

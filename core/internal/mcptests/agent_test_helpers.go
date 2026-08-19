@@ -131,11 +131,11 @@ func SetupAgentTest(t *testing.T, config AgentTestConfig) (*mcp.MCPManager, *Dyn
 
 	// Create context with filtering
 	baseCtx := context.Background()
-	if len(config.ClientFiltering) > 0 {
-		baseCtx = context.WithValue(baseCtx, mcp.MCPContextKeyIncludeClients, config.ClientFiltering)
+	if config.ClientFiltering != nil {
+		baseCtx = context.WithValue(baseCtx, schemas.MCPContextKeyIncludeClients, config.ClientFiltering)
 	}
-	if len(config.ToolFiltering) > 0 {
-		baseCtx = context.WithValue(baseCtx, mcp.MCPContextKeyIncludeTools, config.ToolFiltering)
+	if config.ToolFiltering != nil {
+		baseCtx = context.WithValue(baseCtx, schemas.MCPContextKeyIncludeTools, config.ToolFiltering)
 	}
 	ctx := schemas.NewBifrostContext(baseCtx, schemas.NoDeadline)
 
@@ -192,11 +192,11 @@ func SetupAgentTestWithClients(t *testing.T, config AgentTestConfig, customClien
 
 	// Create context with filtering
 	baseCtx := context.Background()
-	if len(config.ClientFiltering) > 0 {
-		baseCtx = context.WithValue(baseCtx, mcp.MCPContextKeyIncludeClients, config.ClientFiltering)
+	if config.ClientFiltering != nil {
+		baseCtx = context.WithValue(baseCtx, schemas.MCPContextKeyIncludeClients, config.ClientFiltering)
 	}
-	if len(config.ToolFiltering) > 0 {
-		baseCtx = context.WithValue(baseCtx, mcp.MCPContextKeyIncludeTools, config.ToolFiltering)
+	if config.ToolFiltering != nil {
+		baseCtx = context.WithValue(baseCtx, schemas.MCPContextKeyIncludeTools, config.ToolFiltering)
 	}
 	ctx := schemas.NewBifrostContext(baseCtx, schemas.NoDeadline)
 
@@ -624,9 +624,6 @@ func RunAgentScenario(t *testing.T, scenario AgentScenario) {
 			req,
 			initialResponse,
 			mocker.MakeChatRequest,
-			func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-				return manager.ExecuteToolCall(ctx, request)
-			},
 		)
 
 		// Run assertions
@@ -678,9 +675,6 @@ func SimpleAgentTest(t *testing.T, name string, config AgentTestConfig, response
 			req,
 			initialResponse,
 			mocker.MakeChatRequest,
-			func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-				return manager.ExecuteToolCall(ctx, request)
-			},
 		)
 
 		assertions(t, response, bifrostErr, mocker)

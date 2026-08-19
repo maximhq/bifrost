@@ -267,28 +267,54 @@ func (a *App) Run(ctx context.Context) error {
 	case <-time.After(4 * time.Second):
 	}
 
-	// Enter tabbed mode — draws chrome, opens chooser, runs tabs.
-	err = runtime.RunTabbed(ctx, a.out, a.errOut, a.opts.Version, updateVersion, func(tabCtx context.Context, notify func(runtime.TabNoticeLevel, string), tabBarLine func() string, stdinReader io.Reader, seed *runtime.LaunchSpec) (*runtime.LaunchSpec, error) {
-		return chooseAndPrepare(tabCtx, notify, tabBarLine, stdinReader, message, afterSession, seed)
-	})
-
-	if errors.Is(err, runtime.ErrUpdateRequested) {
-		if err := update.RunSelfUpdate(a.opts.Version); err != nil {
-			return fmt.Errorf("update failed: %w", err)
-		}
-		// Re-exec with the updated binary.
-		execPath, err := os.Executable()
+	if updateVersion != "" {
+		shouldUpdate, err := tui.RunConfirmUpdateIO(a.bootHeader, updateVersion, a.in, a.out)
 		if err != nil {
-			fmt.Fprintf(a.out, "Updated successfully. Please restart bifrost.\n")
+			return err
+		}
+		if shouldUpdate {
+			if err := update.RunSelfUpdate(a.opts.Version); err != nil {
+				return fmt.Errorf("update failed: %w", err)
+			}
+			execPath, err := os.Executable()
+			if err != nil {
+				fmt.Fprintf(a.out, "Updated successfully. Please restart bifrost.\n")
+				return nil
+			}
+			return reexecSelf(execPath, os.Args, os.Environ())
+		}
+		updateVersion = ""
+	}
+
+	for {
+		// Enter tabbed mode — draws chrome, opens chooser, runs tabs.
+		err = runtime.RunTabbed(ctx, a.out, a.errOut, a.opts.Version, updateVersion, func(tabCtx context.Context, notify func(runtime.TabNoticeLevel, string), tabBarLine func() string, stdinReader io.Reader, seed *runtime.LaunchSpec) (*runtime.LaunchSpec, error) {
+			return chooseAndPrepare(tabCtx, notify, tabBarLine, stdinReader, message, afterSession, seed)
+		})
+
+		if errors.Is(err, runtime.ErrUpdateRequested) {
+			if err := update.RunSelfUpdate(a.opts.Version); err != nil {
+				return fmt.Errorf("update failed: %w", err)
+			}
+			// Re-exec with the updated binary.
+			execPath, err := os.Executable()
+			if err != nil {
+				fmt.Fprintf(a.out, "Updated successfully. Please restart bifrost.\n")
+				return nil
+			}
+			return reexecSelf(execPath, os.Args, os.Environ())
+		}
+
+		if errors.Is(err, runtime.ErrQuit) {
 			return nil
 		}
-		return reexecSelf(execPath, os.Args, os.Environ())
-	}
+		if err != nil {
+			return err
+		}
 
-	if errors.Is(err, runtime.ErrQuit) {
-		return nil
+		message = ""
+		afterSession = true
 	}
-	return err
 }
 
 // loadStateAndConfig loads configuration from saved state from the last run

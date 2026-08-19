@@ -1,0 +1,333 @@
+---
+title: "Alerting"
+description: "Configure Bifrost Enterprise alert channels, rules, history retention, and webhook network controls in Helm"
+icon: "bell"
+---
+
+<Note>
+Alerting is an **enterprise-only** feature and requires the enterprise Bifrost image.
+</Note>
+
+Helm renders `bifrost.alerting` into the generated `config.json` that Bifrost loads at startup. Use this page when you want alert channels and rules managed from values files.
+
+For the runtime behavior and UI workflow, see [Alerting](/enterprise/alerting/overview), [Alert Rules](/enterprise/alerting/alert-rules), [Alert Channels](/enterprise/alerting/alert-channels), and [Alert History](/enterprise/alerting/alert-history).
+
+<Note>
+Alert rules evaluate governance metrics. Define the referenced virtual keys, teams, customers, budgets, and rate limits under [`bifrost.governance`](/deployment-guides/helm/governance), or create them through the Web UI or API before the rule is evaluated.
+</Note>
+
+---
+
+## Quick example
+
+Create Kubernetes secrets for channel credentials and expose them as environment variables to the Bifrost pod:
+
+```bash
+kubectl create secret generic bifrost-alerting-secrets \
+  --from-literal=slack-webhook-url='https://hooks.slack.com/services/T000/B000/XXXX' \
+  --from-literal=teams-webhook-url='https://example.webhook.office.com/workflows/XXXX' \
+  --from-literal=pagerduty-routing-key='pd-routing-key' \
+  --from-literal=webhook-url='https://hooks.example.com/alerts' \
+  --from-literal=webhook-token='secret-token'
+```
+
+Reference those values from your Helm values file:
+
+```yaml
+env:
+  - name: SLACK_WEBHOOK_URL
+    valueFrom:
+      secretKeyRef:
+        name: bifrost-alerting-secrets
+        key: slack-webhook-url
+  - name: TEAMS_WEBHOOK_URL
+    valueFrom:
+      secretKeyRef:
+        name: bifrost-alerting-secrets
+        key: teams-webhook-url
+  - name: PAGERDUTY_ROUTING_KEY
+    valueFrom:
+      secretKeyRef:
+        name: bifrost-alerting-secrets
+        key: pagerduty-routing-key
+  - name: ALERT_WEBHOOK_URL
+    valueFrom:
+      secretKeyRef:
+        name: bifrost-alerting-secrets
+        key: webhook-url
+  - name: ALERT_WEBHOOK_TOKEN
+    valueFrom:
+      secretKeyRef:
+        name: bifrost-alerting-secrets
+        key: webhook-token
+
+bifrost:
+  alerting:
+    history_retention_days: 365
+    evaluation_interval_seconds: 10
+    webhook_network:
+      allow_http: false
+      allow_private_network: false
+
+    channels:
+      - id: "slack-platform"
+        name: "Platform Slack"
+        type: "slack"
+        enabled: true
+        config:
+          webhook_url: "env.SLACK_WEBHOOK_URL"
+        cooldown_seconds: 60
+
+      - id: "pagerduty-prod"
+        name: "Production PagerDuty"
+        type: "pagerduty"
+        enabled: true
+        config:
+          routing_key: "env.PAGERDUTY_ROUTING_KEY"
+
+      - id: "ops-webhook"
+        name: "Ops webhook"
+        type: "webhook"
+        enabled: true
+        config:
+          url: "env.ALERT_WEBHOOK_URL"
+          headers:
+            X-Alert-Token: "env.ALERT_WEBHOOK_TOKEN"
+
+    rules:
+      - id: "vk-budget-80"
+        name: "Virtual key budget at 80%"
+        enabled: true
+        scope_type: "virtual_key"
+        scope_id: "vk-platform"
+        cel_expression: "budget_usage_percent >= 80.0"
+        channel_ids: ["slack-platform"]
+        cooldown_seconds: 300
+
+      - id: "team-requests-90"
+        name: "Team request limit at 90%"
+        enabled: true
+        scope_type: "team"
+        scope_id: "team-platform"
+        cel_expression: "rate_limit_request_usage_percent >= 90.0"
+        channel_ids: ["slack-platform", "ops-webhook"]
+        notify_once_per_reset_cycle: true
+```
+
+Apply the values:
+
+```bash
+helm upgrade bifrost bifrost/bifrost --reuse-values -f alerting-values.yaml
+```
+
+---
+
+## Top-level fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `bifrost.alerting.history_retention_days` | integer | `365` | Days to retain alert history. Set `0` to disable retention pruning. |
+| `bifrost.alerting.evaluation_interval_seconds` | integer | `60` | Seconds between rule evaluations. Use `5` to `10` for one-minute budget or rate-limit reset windows. |
+| `bifrost.alerting.webhook_network` | object | See below | Outbound URL validation controls for webhook-based channels. |
+| `bifrost.alerting.channels` | array | `[]` | Declarative notification destinations. |
+| `bifrost.alerting.rules` | array | `[]` | Declarative CEL rules evaluated against governance metrics. |
+
+<Note>
+Alerting samples the current governance counters at this interval. Keep `evaluation_interval_seconds` comfortably below the shortest configured budget or rate-limit reset duration so a brief threshold breach is observed before governance resets the counter.
+</Note>
+
+### Webhook network controls
+
+```yaml
+bifrost:
+  alerting:
+    webhook_network:
+      allow_http: false
+      allow_private_network: false
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `allow_http` | `false` | Allow Slack, Microsoft Teams, and generic webhook channels to use `http://` URLs. PagerDuty always uses its fixed HTTPS endpoint. |
+| `allow_private_network` | `false` | Allow webhook destinations on RFC1918 private networks. Link-local and unspecified addresses remain blocked. |
+
+<Warning>
+Keep both webhook network controls disabled for production unless you are intentionally sending alerts to trusted internal endpoints. Enabling them weakens TLS and SSRF protections.
+</Warning>
+
+---
+
+## Channels
+
+Each channel needs a stable `id`, a display `name`, a `type`, an `enabled` flag, and a type-specific `config`.
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `id` | Yes | Stable channel ID. Rules reference this ID in `channel_ids`. |
+| `name` | Yes | Operator-facing channel name. |
+| `description` | No | Optional description. |
+| `type` | Yes | `slack`, `microsoft_teams`, `pagerduty`, or `webhook`. |
+| `enabled` | Yes | Whether this channel can receive notifications. |
+| `cooldown_seconds` | No | Minimum seconds between sends for this channel. Set `0` for no channel-level cooldown. |
+| `config` | Conditional | Required for every supported channel type. |
+
+### Channel config
+
+Credential and endpoint fields support `env.VAR_NAME` references. Bifrost resolves the value from the pod environment at startup.
+
+| Channel type | Required config | Notes |
+|--------------|-----------------|-------|
+| `slack` | Exactly one of `webhook_url` or `url` | Slack incoming webhook URL. |
+| `microsoft_teams` | Exactly one of `webhook_url` or `url` | Teams incoming webhook or Workflows URL. |
+| `pagerduty` | Exactly one of `routing_key` or `integration_key` | PagerDuty Events API v2 integration key. |
+| `webhook` | Exactly one of `url` or `webhook_url` | Generic webhook URL. Optional `headers` values also support `env.VAR_NAME`. |
+
+<Note>
+For each alias pair, provide exactly one key. For example, use either `webhook_url` or `url` for Slack, not both.
+</Note>
+
+```yaml
+bifrost:
+  alerting:
+    channels:
+      - id: "teams-ops"
+        name: "Ops Teams"
+        type: "microsoft_teams"
+        enabled: true
+        config:
+          webhook_url: "env.TEAMS_WEBHOOK_URL"
+
+      - id: "pagerduty-prod"
+        name: "Production PagerDuty"
+        type: "pagerduty"
+        enabled: true
+        config:
+          routing_key: "env.PAGERDUTY_ROUTING_KEY"
+```
+
+---
+
+## Rules
+
+Rules evaluate CEL expressions against governance metrics collected for a virtual key, team, or customer.
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `id` | Yes | Stable rule ID. |
+| `name` | Yes | Operator-facing rule name. |
+| `description` | No | Optional description. |
+| `enabled` | Yes | Whether this rule is evaluated. |
+| `scope_type` | Yes | `virtual_key`, `team`, or `customer`. |
+| `scope_id` | Yes | ID of the scoped virtual key, team, or customer. |
+| `cel_expression` | Yes | CEL expression that evaluates to a boolean. |
+| `query` | No | Optional UI query-builder representation of `cel_expression`. |
+| `cooldown_seconds` | No | Minimum seconds between notifications for this rule. Default is `60`. Set `0` to disable rule-level cooldown. |
+| `notify_once_per_reset_cycle` | No | When `true`, notify at most once per matched budget or rate-limit reset cycle. |
+| `channel_ids` | Yes | One or more alert channel IDs. |
+| `target_type` | Conditional | Use `budget` with `target_id` to evaluate one specific budget. |
+| `target_id` | Conditional | Required when `target_type` is set. |
+
+### Scopes and targets
+
+Every rule must have a scope. A rule can either evaluate all budgets for that scope or target one budget explicitly.
+
+| Behavior | `target_type` | `target_id` |
+|----------|---------------|-------------|
+| Evaluate all budgets in the scope | Omit | Omit |
+| Evaluate one budget | `budget` | Budget ID |
+
+`target_type` and `target_id` must be provided together.
+
+### CEL examples
+
+```python
+# Any budget in the scope reaches 80%
+budget_usage_percent >= 80.0
+```
+
+```python
+# Request rate limit reaches 90%
+rate_limit_request_usage_percent >= 90.0
+```
+
+```python
+# Either budget or token rate limit is exhausted
+budget_usage_percent >= 100.0 || rate_limit_token_usage_percent >= 100.0
+```
+
+For the complete variable list, see [Alerting CEL variables](/enterprise/alerting/overview#cel-variables).
+
+---
+
+## Specific budget example
+
+Use `target_type: "budget"` and `target_id` when a rule should evaluate one budget instead of every budget in the scope.
+
+```yaml
+bifrost:
+  alerting:
+    rules:
+      - id: "vk-platform-monthly-budget-90"
+        name: "Platform monthly budget at 90%"
+        enabled: true
+        scope_type: "virtual_key"
+        scope_id: "vk-platform"
+        target_type: "budget"
+        target_id: "budget-platform-monthly"
+        cel_expression: "budget_usage_percent >= 90.0"
+        channel_ids: ["pagerduty-prod"]
+        cooldown_seconds: 600
+```
+
+---
+
+## Reset-cycle notifications
+
+Set `notify_once_per_reset_cycle` when you want one notification per budget or rate-limit reset window, instead of repeated sends based on a cooldown.
+
+```yaml
+bifrost:
+  alerting:
+    rules:
+      - id: "team-token-limit-cycle"
+        name: "Team token limit per reset cycle"
+        enabled: true
+        scope_type: "team"
+        scope_id: "team-platform"
+        cel_expression: "rate_limit_token_usage_percent >= 90.0"
+        channel_ids: ["slack-platform"]
+        notify_once_per_reset_cycle: true
+```
+
+This is useful for rate limits and recurring budgets because the same condition can remain true until the reset window rolls over.
+
+---
+
+## Clusters
+
+In a Bifrost Enterprise cluster, only the leader evaluates alert rules and writes alert history. Followers can serve inference traffic and update shared governance usage, but they do not dispatch duplicate alerts.
+
+No extra alerting configuration is required for cluster mode. Configure clustering separately under [`bifrost.cluster`](/deployment-guides/helm/cluster).
+
+---
+
+## Validation
+
+The Helm values schema validates alerting configuration during template rendering and install or upgrade operations. It checks channel types, required channel config, exact-one alias pairs, required `channel_ids`, and the `target_type` / `target_id` pairing.
+
+```bash
+helm template bifrost bifrost/bifrost -f alerting-values.yaml >/tmp/bifrost-rendered.yaml
+```
+
+---
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Alerting overview" icon="bell" href="/enterprise/alerting/overview">
+    Learn how alert evaluation, cooldowns, history, and clustering work.
+  </Card>
+  <Card title="Governance in Helm" icon="shield" href="/deployment-guides/helm/governance">
+    Define the virtual keys, teams, customers, budgets, and rate limits that alert rules evaluate.
+  </Card>
+</CardGroup>

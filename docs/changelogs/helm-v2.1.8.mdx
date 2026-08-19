@@ -1,0 +1,14 @@
+---
+title: "v2.1.8"
+description: "Helm v2.1.8 changelog - 2026-04-26"
+---
+
+<Update label="Bifrost Helm" description="v2.1.8">
+
+## Changelog
+
+- Added provider key backward compatibility in Helm rendering:
+  - If `bifrost.providers.<provider>.keys[].id` is omitted and `name` is present, Helm now auto-populates `id = name`.
+  - This preserves legacy values files that only defined key names while still supporting `governance.virtualKeys[].provider_configs[].key_ids`.
+
+</Update>

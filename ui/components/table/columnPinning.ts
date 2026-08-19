@@ -1,5 +1,3 @@
-"use client";
-
 import { Column, ColumnPinningState } from "@tanstack/react-table";
 import { CSSProperties, useLayoutEffect, useRef, useState } from "react";
 
@@ -90,5 +88,7 @@ export function buildPinStyle<T>(column: Column<T>, offsets: Map<string, number>
  * CSS class for the shadow on the last left-pinned or first right-pinned column.
  * Uses an `after` pseudo-element so it isn't clipped by overflow on the table container.
  */
-export const PIN_SHADOW_LEFT = "after:pointer-events-none after:absolute after:top-0 after:-right-6 after:h-full after:w-6 after:shadow-[inset_6px_0_6px_-6px_rgba(0,0,0,0.15)] dark:after:shadow-[inset_6px_0_6px_-6px_rgba(0,0,0,0.5)]";
-export const PIN_SHADOW_RIGHT = "before:pointer-events-none before:absolute before:top-0 before:-left-6 before:h-full before:w-6 before:shadow-[inset_-6px_0_6px_-6px_rgba(0,0,0,0.15)] dark:before:shadow-[inset_-6px_0_6px_-6px_rgba(0,0,0,0.5)]";
+export const PIN_SHADOW_LEFT =
+	"after:pointer-events-none after:absolute after:top-0 after:-right-6 after:h-full after:w-6 after:shadow-[inset_6px_0_6px_-6px_rgba(0,0,0,0.15)] dark:after:shadow-[inset_6px_0_6px_-6px_rgba(0,0,0,0.5)]";
+export const PIN_SHADOW_RIGHT =
+	"before:pointer-events-none before:absolute before:top-0 before:-left-6 before:h-full before:w-6 before:shadow-[inset_-6px_0_6px_-6px_rgba(0,0,0,0.15)] dark:before:shadow-[inset_-6px_0_6px_-6px_rgba(0,0,0,0.5)]";

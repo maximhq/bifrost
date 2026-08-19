@@ -20,10 +20,15 @@ locals {
     {}
   )
 
+  # Schema precedence: explicit schema_url var > $schema already in base config > public default.
+  # Only fall through to the public URL when the base config has no $schema, so a mirrored-schema
+  # setup provided via config_json/config_json_file is never silently rewritten.
+  schema_url = coalesce(var.schema_url, try(local.base_config["$schema"], null), "https://www.getbifrost.ai/schema")
+
   # Terraform variable overrides (non-null values only)
   overrides = {
     for k, v in {
-      "$schema"            = "https://www.getbifrost.ai/schema"
+      "$schema"            = local.schema_url
       encryption_key       = var.encryption_key
       auth_config          = var.auth_config
       client               = var.client
@@ -35,7 +40,7 @@ locals {
       config_store         = var.config_store
       logs_store           = var.logs_store
       cluster_config       = var.cluster_config
-      saml_config          = var.saml_config
+      scim_config          = var.scim_config
       load_balancer_config = var.load_balancer_config
       guardrails_config    = var.guardrails_config
       plugins              = var.plugins

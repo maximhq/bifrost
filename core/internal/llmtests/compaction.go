@@ -172,3 +172,190 @@ func RunCompactionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Contex
 		})
 	})
 }
+
+// RunExternalCompactionTest tests OpenAI's /v1/responses/compact endpoint via
+// bifrost.CompactionRequest. It validates:
+//  1. The response object is "response.compaction"
+//  2. The output array contains at least one compaction item (type=="compaction")
+//  3. Usage token counts are present
+//  4. The compacted output can be fed back into a subsequent ResponsesRequest
+func RunExternalCompactionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) {
+	if !testConfig.Scenarios.ExternalCompaction {
+		t.Logf("ExternalCompaction not supported for provider %s", testConfig.Provider)
+		return
+	}
+
+	model := testConfig.ExternalCompactionModel
+	if model == "" {
+		model = "gpt-4o"
+	}
+
+	t.Run("ExternalCompaction", func(t *testing.T) {
+		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+			t.Parallel()
+		}
+
+		// Build a short conversation to compact. Real-world use needs >50k tokens to
+		// benefit, but the endpoint accepts any length — we verify the mechanics here.
+		conversation := []schemas.ResponsesMessage{
+			CreateBasicResponsesMessage("What is the capital of France?"),
+			{
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+				Content: &schemas.ResponsesMessageContent{
+					ContentStr: schemas.Ptr("The capital of France is Paris."),
+				},
+			},
+			CreateBasicResponsesMessage("What is the capital of Germany?"),
+			{
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+				Content: &schemas.ResponsesMessageContent{
+					ContentStr: schemas.Ptr("The capital of Germany is Berlin."),
+				},
+			},
+			CreateBasicResponsesMessage("Summarize the two capitals we discussed."),
+		}
+
+		t.Run("BasicCompaction", func(t *testing.T) {
+			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+
+			req := &schemas.BifrostCompactionRequest{
+				Provider: testConfig.Provider,
+				Model:    model,
+				Input:    conversation,
+			}
+
+			resp, err := client.CompactionRequest(bfCtx, req)
+			if err != nil {
+				t.Fatalf("CompactionRequest failed: %s", GetErrorMessage(err))
+			}
+			if resp == nil {
+				t.Fatal("Expected non-nil CompactionResponse")
+			}
+
+			// object must be "response.compaction"
+			if resp.Object != "response.compaction" {
+				t.Errorf("Expected object=%q, got %q", "response.compaction", resp.Object)
+			}
+
+			// Usage must be present with non-zero input tokens
+			if resp.Usage == nil {
+				t.Error("Expected non-nil usage")
+			} else {
+				if resp.Usage.InputTokens == 0 {
+					t.Error("Expected non-zero input_tokens in usage")
+				}
+				t.Logf("usage: input=%d output=%d total=%d",
+					resp.Usage.InputTokens, resp.Usage.OutputTokens, resp.Usage.TotalTokens)
+			}
+
+			// Output must be non-empty and contain at least one compaction item
+			if len(resp.Output) == 0 {
+				t.Fatal("Expected non-empty output array")
+			}
+			hasCompactionItem := false
+			for _, item := range resp.Output {
+				if item.Type != nil && *item.Type == schemas.ResponsesMessageTypeCompaction {
+					hasCompactionItem = true
+					// Compaction items carry encrypted_content via ResponsesReasoning (not Content)
+					if item.ResponsesReasoning == nil || item.ResponsesReasoning.EncryptedContent == nil {
+						t.Error("Compaction item missing encrypted_content")
+					}
+				}
+			}
+			if !hasCompactionItem {
+				t.Errorf("Expected at least one output item with type=%q; output had %d item(s)",
+					schemas.ResponsesMessageTypeCompaction, len(resp.Output))
+			}
+
+			t.Logf("BasicCompaction passed: object=%s, %d output items", resp.Object, len(resp.Output))
+		})
+
+		t.Run("CompactedOutputUsableInFollowUp", func(t *testing.T) {
+			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+
+			// Step 1: compact the conversation
+			compactReq := &schemas.BifrostCompactionRequest{
+				Provider: testConfig.Provider,
+				Model:    model,
+				Input:    conversation,
+			}
+			compactResp, err := client.CompactionRequest(bfCtx, compactReq)
+			if err != nil {
+				t.Fatalf("CompactionRequest failed: %s", GetErrorMessage(err))
+			}
+			if compactResp == nil || len(compactResp.Output) == 0 {
+				t.Fatal("Empty compaction response; cannot test follow-up")
+			}
+
+			// Step 2: append a new user message to the compacted output and call /responses
+			followUpInput := append(compactResp.Output, CreateBasicResponsesMessage("Which of those two cities is further north?"))
+
+			bfCtx2 := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			followUpResp, followUpErr := client.ResponsesRequest(bfCtx2, &schemas.BifrostResponsesRequest{
+				Provider: testConfig.Provider,
+				Model:    model,
+				Input:    followUpInput,
+				Params:   &schemas.ResponsesParameters{MaxOutputTokens: bifrost.Ptr(100)},
+			})
+			if followUpErr != nil {
+				t.Fatalf("Follow-up ResponsesRequest with compacted input failed: %s", GetErrorMessage(followUpErr))
+			}
+			if followUpResp == nil {
+				t.Fatal("Expected non-nil follow-up response")
+			}
+
+			content := GetResponsesContent(followUpResp)
+			if content == "" {
+				t.Error("Expected non-empty follow-up response content")
+			}
+
+			t.Logf("CompactedOutputUsableInFollowUp passed: follow-up content=%s", content)
+		})
+
+		t.Run("CompactionWithInstructions", func(t *testing.T) {
+			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			instructions := "Always respond in formal English."
+
+			req := &schemas.BifrostCompactionRequest{
+				Provider:     testConfig.Provider,
+				Model:        model,
+				Input:        conversation,
+				Instructions: &instructions,
+			}
+
+			resp, err := client.CompactionRequest(bfCtx, req)
+			if err != nil {
+				t.Fatalf("CompactionRequest with instructions failed: %s", GetErrorMessage(err))
+			}
+			if resp == nil {
+				t.Fatal("Expected non-nil response")
+			}
+			if resp.Object != "response.compaction" {
+				t.Errorf("Expected object=%q, got %q", "response.compaction", resp.Object)
+			}
+
+			t.Logf("CompactionWithInstructions passed: %d output items", len(resp.Output))
+		})
+
+		t.Run("CompactionMultiTurnWithTimeout", func(t *testing.T) {
+			timeoutCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+			defer cancel()
+			bfCtx := schemas.NewBifrostContext(timeoutCtx, schemas.NoDeadline)
+
+			req := &schemas.BifrostCompactionRequest{
+				Provider: testConfig.Provider,
+				Model:    model,
+				Input:    conversation,
+			}
+
+			resp, err := client.CompactionRequest(bfCtx, req)
+			if err != nil {
+				t.Fatalf("Timed CompactionRequest failed: %s", GetErrorMessage(err))
+			}
+			if resp == nil || resp.Object != "response.compaction" {
+				t.Fatalf("Unexpected response: %+v", resp)
+			}
+			t.Logf("CompactionMultiTurnWithTimeout passed in time")
+		})
+	})
+}

@@ -32,6 +32,7 @@ var (
 	batchSize    = flag.Int("batch", 1000, "Batch size for inserts")
 	targetSizeGB = flag.Float64("size", 17.5, "Target size in GB (will adjust row size)")
 	logType      = flag.String("type", "llm", "Log type to generate: llm or mcp")
+	invalidMeta  = flag.Bool("invalid-metadata", false, "When set, all logs will have invalid JSON metadata")
 )
 
 // Providers and models for variety
@@ -55,6 +56,18 @@ var validMetadataValues = []string{
 	`{"user_id": "user-123", "session": "sess-abc"}`,
 	`{"source": "web", "region": "us-east-1", "tier": "premium"}`,
 	`{"app": "mobile", "os": "ios", "release": "2.4.1"}`,
+}
+
+// invalidMetadataValues are malformed JSON strings used when --invalid-metadata is set.
+var invalidMetadataValues = []string{
+	`{"environment": "production", "version":}`,
+	`{"team": "backend", "project"`,
+	`{not_quoted_key: "value"}`,
+	`{"key": "value",}`,
+	`{"nested": {"a": 1, "b": [2, 3}}}`,
+	`just plain text, not json at all`,
+	`<xml>not json</xml>`,
+	`{"unterminated": "string value`,
 }
 
 // MCP tool names and server labels for MCP log generation
@@ -322,6 +335,7 @@ func main() {
 	fmt.Println("🚀 Bifrost Logs Population Script")
 	fmt.Println("==================================")
 	fmt.Printf("Log Type: %s\n", *logType)
+	fmt.Printf("Invalid Metadata: %v\n", *invalidMeta)
 	fmt.Printf("Database Type: %s\n", *dbType)
 	fmt.Printf("Target Rows: %d\n", *numRows)
 	fmt.Printf("Target Size: %.2f GB\n", *targetSizeGB)
@@ -628,8 +642,10 @@ func generateLog(index int, targetSize int) logstore.Log {
 		log.ErrorDetails = string(errorJSON)
 	}
 
-	// Assign metadata: ~15% of logs get valid JSON metadata.
-	if rand.Float32() < 0.15 {
+	// Assign metadata: all invalid when --invalid-metadata is set, otherwise ~15% valid.
+	if *invalidMeta {
+		log.Metadata = new(invalidMetadataValues[rand.Intn(len(invalidMetadataValues))])
+	} else if rand.Float32() < 0.15 {
 		log.Metadata = new(validMetadataValues[rand.Intn(len(validMetadataValues))])
 	}
 
@@ -696,10 +712,11 @@ func generateMCPLog(index int) logstore.MCPToolLog {
 		log.ErrorDetails = string(errorJSON)
 	}
 
-	// ~15% get metadata
-	if rand.Float32() < 0.15 {
-		m := validMetadataValues[rand.Intn(len(validMetadataValues))]
-		log.Metadata = m
+	// Assign metadata: all invalid when --invalid-metadata is set, otherwise ~15% valid.
+	if *invalidMeta {
+		log.Metadata = invalidMetadataValues[rand.Intn(len(invalidMetadataValues))]
+	} else if rand.Float32() < 0.15 {
+		log.Metadata = validMetadataValues[rand.Intn(len(validMetadataValues))]
 	}
 
 	// ~50% linked to an LLM request

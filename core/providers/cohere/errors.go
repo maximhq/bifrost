@@ -6,7 +6,7 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-func parseCohereError(resp *fasthttp.Response, meta *providerUtils.RequestMetadata) *schemas.BifrostError {
+func parseCohereError(resp *fasthttp.Response) *schemas.BifrostError {
 	var errorResp CohereError
 	bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
 	bifrostErr.Type = &errorResp.Type
@@ -17,10 +17,9 @@ func parseCohereError(resp *fasthttp.Response, meta *providerUtils.RequestMetada
 	if errorResp.Code != nil {
 		bifrostErr.Error.Code = errorResp.Code
 	}
-	if meta != nil {
-		bifrostErr.ExtraFields.Provider = meta.Provider
-		bifrostErr.ExtraFields.ModelRequested = meta.Model
-		bifrostErr.ExtraFields.RequestType = meta.RequestType
+	if errorResp.Type != "" && bifrostErr.Error.Type == nil {
+		typeCopy := errorResp.Type
+		bifrostErr.Error.Type = &typeCopy
 	}
 	return bifrostErr
 }

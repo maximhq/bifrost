@@ -22,9 +22,15 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*Coh
 
 	// Convert messages to Cohere v2 format
 	var cohereMessages []CohereMessage
+
 	for _, msg := range messages {
+		role := string(msg.Role)
+		// Cohere has no support for role "developer", so we treat it as "system"
+		if msg.Role == schemas.ChatMessageRoleDeveloper {
+			role = string(schemas.ChatMessageRoleSystem)
+		}
 		cohereMsg := CohereMessage{
-			Role: string(msg.Role),
+			Role: role,
 		}
 
 		// Convert content
@@ -68,7 +74,12 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*Coh
 				}
 
 				// Arguments is a string, not a pointer, so it's safe to access directly
-				functionArguments = toolCall.Function.Arguments
+				// Default to "{}" if empty to ensure the field is always present.
+				if toolCall.Function.Arguments == "" {
+					functionArguments = "{}"
+				} else {
+					functionArguments = toolCall.Function.Arguments
+				}
 
 				cohereToolCall := CohereToolCall{
 					ID:   toolCall.ID,
@@ -89,6 +100,11 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*Coh
 		}
 
 		cohereMessages = append(cohereMessages, cohereMsg)
+	}
+
+	// If only a single system message is present, convert it to a user message (since openai allows it).
+	if len(cohereMessages) == 1 && (cohereMessages[0].Role == string(schemas.ChatMessageRoleSystem)) {
+		cohereMessages[0].Role = string(schemas.ChatMessageRoleUser)
 	}
 
 	cohereReq.Messages = cohereMessages
@@ -118,7 +134,7 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*Coh
 				cohereReq.Thinking = thinking
 			} else if bifrostReq.Params.Reasoning.Effort != nil {
 				if *bifrostReq.Params.Reasoning.Effort != "none" {
-					maxCompletionTokens := DefaultCompletionMaxTokens
+					maxCompletionTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Model, DefaultCompletionMaxTokens)
 					if bifrostReq.Params.MaxCompletionTokens != nil {
 						maxCompletionTokens = *bifrostReq.Params.MaxCompletionTokens
 					}
@@ -234,7 +250,7 @@ func (req *CohereChatRequest) ToBifrostChatRequest(ctx *schemas.BifrostContext) 
 		return nil
 	}
 
-	provider, model := schemas.ParseModelString(req.Model, providerUtils.CheckAndSetDefaultProvider(ctx, schemas.Cohere))
+	provider, model := schemas.ParseModelString(req.Model, "")
 
 	bifrostReq := &schemas.BifrostChatRequest{
 		Provider: provider,
@@ -276,8 +292,15 @@ func (req *CohereChatRequest) ToBifrostChatRequest(ctx *schemas.BifrostContext) 
 				Effort: schemas.Ptr("none"),
 			}
 		} else {
+			// Enabled is how "think, effort unspecified" is expressed. Effort was previously set
+			// to "auto", which is not a value that field accepts ("none" | "minimal" | "low" |
+			// "medium" | "high" | "xhigh"), so it reached providers verbatim and they rejected it:
+			//   openai:  Invalid value: 'auto'. Supported values are: 'low', 'medium', 'high'...
+			//   bedrock: unknown variant `auto`, expected one of `low`, `medium`, `high`...
+			// Cohere states no effort, so none is invented here; the budget carries the intent and
+			// the downstream model-aware mapping derives an effort where it needs one.
 			bifrostReq.Params.Reasoning = &schemas.ChatReasoning{
-				Effort: schemas.Ptr("auto"),
+				Enabled: schemas.Ptr(true),
 			}
 			if req.Thinking.TokenBudget != nil {
 				bifrostReq.Params.Reasoning.MaxTokens = req.Thinking.TokenBudget
@@ -365,11 +388,8 @@ func (response *CohereChatResponse) ToBifrostChatResponse(model string) *schemas
 				ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{},
 			},
 		},
-		Created: int(time.Now().Unix()),
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.ChatCompletionRequest,
-			Provider:    schemas.Cohere,
-		},
+		Created:     int(time.Now().Unix()),
+		ExtraFields: schemas.BifrostResponseExtraFields{},
 	}
 
 	// Convert messages

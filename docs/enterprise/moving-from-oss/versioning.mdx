@@ -1,0 +1,67 @@
+---
+title: "Versioning"
+description: "Why Enterprise and OSS use independent version numbers, and how to find the OSS base each Enterprise release is built on."
+icon: "code-branch"
+---
+
+Bifrost ships two release trains that share code but not version numbers. Read this page once when you start working with Enterprise - it prevents the single most common version-pinning mistake.
+
+## Two independent tracks
+
+| Track | Version format | Latest example | Cadence | Source of truth |
+|---|---|---|---|---|
+| **OSS** | `vMAJOR.MINOR.PATCH` | `v1.5.4` | Patches every 2 - 3 days, minor every 3 - 4 weeks | [OSS release cadence](/release-cadence), [OSS changelogs](/changelogs/v1.5.4) |
+| **Enterprise** | `vMAJOR.MINOR.PATCH` | `v1.4.3` | Same cadence, independent numbering | [Enterprise release cadence](/enterprise/release-cadence), [Enterprise changelogs](/changelogs/ent-v1.4.3) |
+
+Both tracks use the **same `vX.Y.Z` format**, but the numbers are on independent counters. There is no digit-for-digit correspondence between Enterprise `v1.4.3` and OSS `v1.4.3` (or any other version pair). Always qualify the version with "Enterprise" or "OSS" in writing so readers know which track you mean.
+
+<Note>
+The `ent-` prefix you see in changelog URLs like `/changelogs/ent-v1.4.3` is a directory-disambiguation convention only - the changelogs for both tracks share the same `/changelogs/` folder, so Enterprise filenames carry the prefix. The version itself is just `v1.4.3`.
+</Note>
+
+<Warning>
+**The single most common mistake:** assuming Enterprise `v1.X.Y` rides on OSS `v1.X.Y`. It does not. Enterprise `v1.4.0` is built on OSS `v1.5.0`. Enterprise `v1.4.3` is built on OSS `transports/v1.5.4`. Always check the Enterprise changelog or migration guide for the OSS base. Never derive it from the Enterprise version number.
+</Warning>
+
+## How Enterprise pins its OSS base
+
+Every Enterprise release pins a specific OSS `transports/vX.Y.Z` version as its base. The OSS base provides the gateway core (request handling, provider implementations, plugin runtime, MCP gateway); Enterprise layers clustering, identity, governance, and audit on top of that exact base.
+
+The pinned OSS base is reported in two authoritative places:
+
+1. **Enterprise changelog header.** Each [Enterprise changelog](/changelogs/ent-v1.4.3) names the OSS base in its opening paragraph. Look for a phrase like `clean OSS base of transports/v1.5.4`.
+2. **Enterprise migration guides.** Major-version migration guides like [Enterprise v1.4.0](/enterprise/migration-guides/v1.4.0) state the OSS base explicitly and link to the corresponding [OSS migration guide](/migration-guides/v1.5.0), so you can apply both layers of breaking changes in one pass.
+
+If you cannot find the OSS base for a given Enterprise version, the changelog is the source of truth - the documentation site is not.
+
+## Reading the docs against the right base
+
+This split affects how you should navigate documentation:
+
+- **Provider, plugin, and feature docs.** OSS feature docs (e.g. [Virtual Keys](/features/governance/virtual-keys), [Routing](/features/governance/routing), [Streaming](/quickstart/gateway/streaming)) describe the **current** OSS behavior. Whatever OSS base your Enterprise release pins, those features ship in your Enterprise build with the same semantics.
+- **Breaking changes.** Always read the **Enterprise migration guide** for your target Enterprise version first. It bundles its own breaking changes with the inherited OSS breaking changes from the pinned OSS base. Reading the OSS migration guide standalone misses the Enterprise-specific items and may surface OSS changes that don't apply to the OSS base Enterprise pins.
+- **Patch decisions.** Patches on the Enterprise track ship every 2 - 3 days, but the OSS base usually only moves when a new minor is rebased. A patch on Enterprise `v1.4.3` is typically on the same OSS base as Enterprise `v1.4.2` unless the changelog explicitly calls out a rebase.
+
+## Concrete mapping (snapshot)
+
+| Enterprise version | Built on OSS |
+|---|---|
+| `v1.4.3` | `transports/v1.5.4` |
+| `v1.4.2` | `transports/v1.5.x` (see changelog) |
+| `v1.4.0` | `v1.5.0` |
+| `v1.3.x` | OSS `v1.4.x` series |
+
+This table goes out of date the moment a new Enterprise release ships. Use the [Enterprise changelogs](/changelogs/ent-v1.4.3) as the live source of truth.
+
+## How to pin versions safely
+
+- **Pin the Enterprise version**, not the OSS version. Pinning OSS does not pin Enterprise; pinning Enterprise transitively pins the OSS base it was built against.
+- **Pin the Helm chart version**, not just the image tag. The chart constrains image, schema, and config compatibility together.
+- **Don't mix bases.** Running OSS images alongside Enterprise images in the same cluster is unsupported, even if the OSS version "looks like" the Enterprise base. The Enterprise base is a clean cut of the OSS transports module at a specific commit; it is not interchangeable with the standalone OSS image at the same version tag.
+
+## Quick reference
+
+- **I have Enterprise `v1.X.Y` - what OSS base does it use?** Read the [Enterprise changelog](/changelogs/ent-v1.4.3) for that version.
+- **A teammate on OSS asked about feature X - is it in my Enterprise?** Yes. Every OSS feature ships in Enterprise. Cadence may differ by a release.
+- **I see a breaking change in OSS - does it affect my Enterprise?** Only when the next Enterprise release rebases onto that OSS version. The [Enterprise migration guide](/enterprise/migration-guides/v1.4.0) for that target version lists every inherited OSS breaking change alongside Enterprise-specific ones.
+- **I'm pinning in CI - what should I pin?** The Enterprise Helm chart version (preferred) or the Enterprise image tag. Do not pin the OSS image when you intend to run Enterprise.

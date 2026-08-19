@@ -1,0 +1,10 @@
+{
+  "name": "bifrost-ci-tools",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Pinned CI-only CLI tooling (newman). Not published, not part of the product build. Installed with `npm ci` so package-lock.json's integrity hashes are enforced, which is what OpenSSF Scorecard's Pinned-Dependencies check requires; a bare `npm install -g newman@x` pins the version but verifies nothing.",
+  "dependencies": {
+    "newman": "6.2.1",
+    "newman-reporter-htmlextra": "1.23.1"
+  }
+}

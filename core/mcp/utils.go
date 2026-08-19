@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,17 +19,93 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// computeToolsHash returns a stable content hash of a tool map + name
+// mapping, used to gate the tools-change funnel (SetClientTools,
+// connectToMCPClient, writeBackTools) to genuine changes only — a
+// rediscovery that returns byte-identical tools (the common case on most
+// periodic ticks and reconnects) must not re-trigger a registered
+// callback's work (DB persist, external MCP server resync). json.Marshal
+// sorts map string keys, so this is deterministic regardless of the maps'
+// iteration order; errors are treated as "never matches" (marshal failure
+// on these plain data types isn't expected, but must never panic or block
+// a genuine discovery result from being recorded).
+func computeToolsHash(tools map[string]schemas.ChatTool, toolNameMapping map[string]string) string {
+	h := sha256.New()
+	if data, err := json.Marshal(tools); err == nil {
+		h.Write(data)
+	}
+	h.Write([]byte{0}) // separator so {"a":"b"} tools + {} mapping can't collide with {} tools + {"a":"b"} mapping
+	if data, err := json.Marshal(toolNameMapping); err == nil {
+		h.Write(data)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 // RetryConfig defines the retry behavior with exponential backoff
 type RetryConfig struct {
 	MaxRetries     int           // Maximum number of retry attempts (not including the initial attempt)
 	InitialBackoff time.Duration // Initial backoff duration
 	MaxBackoff     time.Duration // Maximum backoff duration
+	// IsRetryable classifies an attempt's error as worth retrying or not.
+	// Nil defaults to isTransientError (connect-shaped: unrecognized errors
+	// default to retryable). ToolCallRetryConfig overrides this with
+	// isTransientToolCallError (the opposite default — see its doc comment).
+	IsRetryable func(error) bool
 }
 
-var DefaultRetryConfig = RetryConfig{
+// ConnectRetryConfig backs every connection-establishment step — the shared
+// persistent dial (connectToMCPClient) and the ephemeral per-call connect
+// (AcquireClientConn's per-user/per-call branch) alike. Nothing user-facing
+// is blocked synchronously on this in the shared case, and in the per-call
+// case it's a one-time cost paid before the tool call runs — generous
+// retries are the right tradeoff here.
+var ConnectRetryConfig = RetryConfig{
 	MaxRetries:     5,
 	InitialBackoff: 1 * time.Second,
 	MaxBackoff:     30 * time.Second,
+}
+
+// PerCallConnectRetryConfig backs the ephemeral per-call connect+init steps
+// (AcquireClientConn's per-user/per-call branch) — distinct from both of the
+// other two configs, not a reuse of either. It runs synchronously in front
+// of a live tool call with no separate budget wrapper (unlike
+// ConnectRetryConfig's shared dial, mostly background/setup), so it can't
+// afford ConnectRetryConfig's full ~31s-worst-case schedule. But establishing
+// a connection has no side effects on the upstream — safe to retry harder
+// than the tool call that follows it, which might not be idempotent — so
+// it's more generous than ToolCallRetryConfig, not just a copy of it.
+var PerCallConnectRetryConfig = RetryConfig{
+	MaxRetries:     3,
+	InitialBackoff: 250 * time.Millisecond,
+	MaxBackoff:     1 * time.Second,
+}
+
+// ProbeRetryConfig backs the periodic connection checker's own
+// heartbeat/list_tools calls (ClientConnectionChecker). Nothing is waiting
+// synchronously on this — it's a background tick — but it now carries more
+// weight than it used to: with no outer consecutive-failure counter behind
+// it, a single check's own retry-with-backoff is what absorbs an ordinary
+// transient blip before the client is marked Unstable at all. Generous
+// enough for that, short of ConnectRetryConfig's full schedule.
+var ProbeRetryConfig = RetryConfig{
+	MaxRetries:     3,
+	InitialBackoff: 500 * time.Millisecond,
+	MaxBackoff:     4 * time.Second,
+}
+
+// ToolCallRetryConfig backs the live tool-call invocation itself
+// (executeToolInternal's CallTool). Deliberately the lightest of the three —
+// a caller is waiting synchronously on this, and unlike a bare connect, the
+// call itself may not be safe to retry blindly (non-idempotent tools), so it
+// trades retry depth for latency: a couple of quick attempts to ride out a
+// genuine blip, nothing more. Uses isTransientToolCallError, not the default
+// isTransientError, so an unrecognized (likely application-level) failure
+// is never retried — see that function's doc comment.
+var ToolCallRetryConfig = RetryConfig{
+	MaxRetries:     2,
+	InitialBackoff: 200 * time.Millisecond,
+	MaxBackoff:     200 * time.Millisecond,
+	IsRetryable:    isTransientToolCallError,
 }
 
 // GetClientForTool safely finds a client that has the specified tool.
@@ -65,19 +143,34 @@ func (m *MCPManager) GetToolPerClient(ctx context.Context) map[string][]schemas.
 	var includeClients []string
 
 	// Extract client filtering from request context
-	if existingIncludeClients, ok := ctx.Value(MCPContextKeyIncludeClients).([]string); ok && existingIncludeClients != nil {
+	if existingIncludeClients, ok := ctx.Value(schemas.MCPContextKeyIncludeClients).([]string); ok && existingIncludeClients != nil {
 		includeClients = existingIncludeClients
 	}
 
 	m.logger.Debug("%s GetToolPerClient: Total clients in manager: %d, Filter: %v", MCPLogPrefix, len(m.clientMap), includeClients)
 
-	tools := make(map[string][]schemas.ChatTool)
+	// Collect and sort client names for deterministic tool ordering
+	clientNames := make([]string, 0, len(m.clientMap))
+	clientsByName := make(map[string]*schemas.MCPClientState, len(m.clientMap))
 	for _, client := range m.clientMap {
-		// Use client name as the key (not ID)
-		clientName := client.ExecutionConfig.Name
+		name := client.ExecutionConfig.Name
+		clientNames = append(clientNames, name)
+		clientsByName[name] = client
+	}
+	slices.Sort(clientNames)
+
+	tools := make(map[string][]schemas.ChatTool)
+	for _, clientName := range clientNames {
+		client := clientsByName[clientName]
 		clientID := client.ExecutionConfig.ID
 
 		m.logger.Debug("%s Evaluating client %s (ID: %s) for tools", MCPLogPrefix, clientName, clientID)
+
+		// Skip intentionally disabled clients
+		if client.State == schemas.MCPConnectionStateDisabled {
+			m.logger.Debug("%s Skipping disabled MCP client %s", MCPLogPrefix, clientName)
+			continue
+		}
 
 		// Apply client filtering logic - check both ID and Name for compatibility
 		if !shouldIncludeClient(clientName, includeClients, m.logger) {
@@ -85,12 +178,19 @@ func (m *MCPManager) GetToolPerClient(ctx context.Context) map[string][]schemas.
 			continue
 		}
 
-		// Add all tools from this client
+		// Collect and sort tool names for deterministic ordering
+		toolNames := make([]string, 0, len(client.ToolMap))
+		for toolName := range client.ToolMap {
+			toolNames = append(toolNames, toolName)
+		}
+		slices.Sort(toolNames)
+
 		// FILTERING HIERARCHY (restrictive, not permissive):
 		// 1. Client-level configuration (ToolsToExecute) - Global allow-list, most restrictive
 		// 2. Request context (MCPContextKeyIncludeTools) - Can only further narrow, not expand
 		// Context filtering CANNOT override client configuration - it can only be more restrictive.
-		for toolName, tool := range client.ToolMap {
+		for _, toolName := range toolNames {
+			tool := client.ToolMap[toolName]
 			// First check: Client configuration is the global allow-list
 			// If client config blocks a tool, it CANNOT be overridden by context
 			if shouldSkipToolForConfig(toolName, client.ExecutionConfig) {
@@ -177,34 +277,14 @@ func isTransientError(err error) bool {
 		}
 	}
 
-	// Transient errors that SHOULD be retried
-	transientErrors := []string{
-		// Network errors
-		"connection refused", "connection reset", "broken pipe",
-		"network is unreachable", "no route to host",
-		// Timeout errors
-		"timeout", "deadline exceeded", "i/o timeout",
-		// DNS errors
-		"no such host", "name resolution failed",
-		// HTTP errors
-		"503", "502", "504", "429", "500", // Service Unavailable, Bad Gateway, Gateway Timeout, Too Many Requests, Internal Server Error
-		// Connection errors
-		"connection error", "connection lost", "connection failed",
-		// I/O errors
-		"i/o error", "read error", "write error",
-		// Temporary errors
-		"temporary failure", "try again",
-	}
-
-	for _, transientErr := range transientErrors {
+	for _, transientErr := range transientErrorSubstrings {
 		if strings.Contains(strings.ToLower(errStr), transientErr) {
 			return true
 		}
 	}
 
 	// Check for net.Error types (timeout-related errors)
-	var netErr net.Error
-	if errors.As(err, &netErr) {
+	if netErr, ok := errors.AsType[net.Error](err); ok {
 		// Timeout errors are transient and should be retried
 		if netErr.Timeout() {
 			return true
@@ -212,8 +292,99 @@ func isTransientError(err error) bool {
 	}
 
 	// Default: treat as transient to be safe (connection-related errors)
-	// This ensures we retry unknown errors that are likely transient
+	// This ensures we retry unknown errors that are likely transient — the
+	// right default for connection-establishment callers, where an
+	// unrecognized failure is still usually infra-related. NOT the right
+	// default for a tool call already past a live connection — see
+	// isTransientToolCallError below, which shares the same substring list
+	// but flips this default.
 	return true
+}
+
+// transientErrorSubstrings is the shared substring list both isTransientError
+// (connection-establishment, default-retry-unknown) and
+// isTransientToolCallError (tool calls, default-don't-retry-unknown) match
+// against — one source of truth for what "looks like a transport blip" means,
+// even though the two callers apply opposite defaults to anything outside it.
+var transientErrorSubstrings = []string{
+	// Network errors
+	"connection refused", "connection reset", "broken pipe",
+	"network is unreachable", "no route to host",
+	// Timeout errors
+	"timeout", "deadline exceeded", "i/o timeout",
+	// DNS errors
+	"no such host", "name resolution failed",
+	// HTTP errors
+	"503", "502", "504", "429", "500", // Service Unavailable, Bad Gateway, Gateway Timeout, Too Many Requests, Internal Server Error
+	// Connection errors
+	"connection error", "connection lost", "connection failed",
+	// I/O errors
+	"i/o error", "read error", "write error",
+	// Temporary errors
+	"temporary failure", "try again",
+}
+
+// isTransientToolCallError is ToolCallRetryConfig's classifier: a live tool
+// call already has a working connection (AcquireClientConn succeeded to get
+// here), so an error at this point is either a genuine transport blip
+// (matches transientErrorSubstrings — worth one quick retry) or something
+// application-level (a tool's own business-logic failure, bad arguments, a
+// panic in the tool implementation) that retrying can't fix and might
+// actively harm if the tool isn't idempotent. Unlike isTransientError, this
+// does NOT default to true for unrecognized text — only a positive match
+// against known transport-failure shapes triggers a retry; everything else
+// (including net.Error timeouts, which isTransientError treats as transient
+// but which already have "timeout"/"deadline exceeded" in the substring list
+// above anyway) goes straight through as non-retryable.
+func isTransientToolCallError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := strings.ToLower(err.Error())
+	// Auth failures are checked first, before the transient substring scan:
+	// error text like "401 unauthorized: try again" would otherwise match
+	// "try again" below and get retried, contradicting the non-retryable
+	// auth-failure rule this classifier exists to enforce for tool calls.
+	if isAuthFailureErrorText(errStr) {
+		return false
+	}
+	for _, transientErr := range transientErrorSubstrings {
+		if strings.Contains(errStr, transientErr) {
+			return true
+		}
+	}
+	return false
+}
+
+// isAuthFailureErrorText reports whether a raw upstream tool-call error looks
+// like an auth rejection (401/403/unauthorized/forbidden). mcp-go flattens
+// HTTP status codes into a plain error string by the time a CallTool error
+// reaches toolmanager.go — no typed status field survives — so, like
+// isTransientError above, substring matching on the same class of text is
+// the only option.
+//
+// This is deliberately not a reuse of isTransientError: that function matches
+// this exact substring class too, but as a PERMANENT signal (don't retry) for
+// its connection-establishment callers — the opposite polarity needed here,
+// where the same text is the POSITIVE trigger for a forced-refresh-and-retry.
+// A tool call that reaches this point already has a live, previously-healthy
+// connection (AcquireClientConn already succeeded once), so a 401/403 here
+// means the upstream server is actively rejecting a credential Bifrost's own
+// bookkeeping still considers valid — worth reacting to, not giving up on.
+//
+// This is also distinct from schemas.ErrOAuth2TokenExpired-based
+// classification (see connectToMCPClient), which fires only after Bifrost's
+// own refresh logic already ran and classified a credential as permanently
+// dead. A raw CallTool error never goes through that classification at all —
+// it's the upstream server's rejection text verbatim, not Bifrost's.
+func isAuthFailureErrorText(errStr string) bool {
+	lower := strings.ToLower(errStr)
+	for _, needle := range []string{"401", "403", "unauthorized", "forbidden"} {
+		if strings.Contains(lower, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 // ExecuteWithRetry executes a function with exponential backoff retry logic.
@@ -236,6 +407,10 @@ func ExecuteWithRetry(
 ) error {
 	var lastErr error
 	backoff := config.InitialBackoff
+	isRetryable := config.IsRetryable
+	if isRetryable == nil {
+		isRetryable = isTransientError
+	}
 
 	for attempt := 0; attempt <= config.MaxRetries; attempt++ {
 		// Check context before attempting
@@ -252,7 +427,7 @@ func ExecuteWithRetry(
 		}
 
 		// Check if error is transient - if not, fail immediately without retrying
-		if !isTransientError(lastErr) {
+		if !isRetryable(lastErr) {
 			logger.Debug("%s permanent error (not retrying): %v", MCPLogPrefix, lastErr)
 			return lastErr
 		}
@@ -282,10 +457,21 @@ func ExecuteWithRetry(
 	return lastErr
 }
 
-// retrieveExternalTools retrieves and filters tools from an external MCP server without holding locks.
-// Uses exponential backoff retry logic (5 retries, 1-30 seconds) for tool retrieval.
-// Returns both the tools map and a name mapping (sanitized_name -> original_mcp_name) for tool execution.
-func retrieveExternalTools(ctx context.Context, client *client.Client, clientName string, logger schemas.Logger) (map[string]schemas.ChatTool, map[string]string, error) {
+// listToolsResult captures the full outcome of retrieveExternalToolsDetailed so the
+// plugin gate can expose RawToolCount and SkippedTools to plugins.
+type listToolsResult struct {
+	tools           map[string]schemas.ChatTool
+	toolNameMapping map[string]string
+	rawCount        int
+	skipped         []schemas.SkippedMCPTool
+}
+
+// retrieveExternalToolsDetailed retrieves and filters tools from an external MCP server
+// without holding locks. Uses exponential backoff retry logic (5 retries, 1-30 seconds)
+// for tool retrieval. Returns the full result so the plugin gate can surface RawToolCount
+// and SkippedTools. All callers should go through MCPManager.runListToolsWithHooks rather
+// than calling this directly — the gate wraps this with PreMCPHook/PostMCPHook.
+func retrieveExternalToolsDetailed(ctx context.Context, client *client.Client, clientName string, logger schemas.Logger) (*listToolsResult, error) {
 	// Get available tools from external server with retry logic
 	listRequest := mcp.ListToolsRequest{
 		PaginatedRequest: mcp.PaginatedRequest{
@@ -296,7 +482,7 @@ func retrieveExternalTools(ctx context.Context, client *client.Client, clientNam
 	}
 
 	var toolsResponse *mcp.ListToolsResult
-	retryConfig := DefaultRetryConfig
+	retryConfig := ConnectRetryConfig
 	err := ExecuteWithRetry(
 		ctx,
 		func() error {
@@ -308,15 +494,19 @@ func retrieveExternalTools(ctx context.Context, client *client.Client, clientNam
 		logger,
 	)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to list tools after %d retries: %v", retryConfig.MaxRetries, err)
+		return nil, fmt.Errorf("failed to list tools after %d retries: %v", retryConfig.MaxRetries, err)
 	}
 
 	if toolsResponse == nil {
-		return make(map[string]schemas.ChatTool), make(map[string]string), nil // No tools available
+		return &listToolsResult{
+			tools:           make(map[string]schemas.ChatTool),
+			toolNameMapping: make(map[string]string),
+		}, nil
 	}
 
 	tools := make(map[string]schemas.ChatTool)
 	toolNameMapping := make(map[string]string) // Maps sanitized_name -> original_mcp_name
+	var skipped []schemas.SkippedMCPTool
 
 	// toolsResponse is already a ListToolsResult
 	for _, mcpTool := range toolsResponse.Tools {
@@ -324,6 +514,10 @@ func retrieveExternalTools(ctx context.Context, client *client.Client, clientNam
 		validationName := strings.ReplaceAll(mcpTool.Name, "-", "_")
 		if err := validateNormalizedToolName(validationName); err != nil {
 			logger.Warn("%s Skipping MCP tool %q: %v", MCPLogPrefix, mcpTool.Name, err)
+			skipped = append(skipped, schemas.SkippedMCPTool{
+				OriginalName: mcpTool.Name,
+				Reason:       err.Error(),
+			})
 			continue
 		}
 
@@ -343,7 +537,12 @@ func retrieveExternalTools(ctx context.Context, client *client.Client, clientNam
 		toolNameMapping[sanitizedToolName] = mcpTool.Name
 	}
 
-	return tools, toolNameMapping, nil
+	return &listToolsResult{
+		tools:           tools,
+		toolNameMapping: toolNameMapping,
+		rawCount:        len(toolsResponse.Tools),
+		skipped:         skipped,
+	}, nil
 }
 
 // shouldIncludeClient determines if a client should be included based on filtering rules.
@@ -381,12 +580,12 @@ func shouldSkipToolForConfig(toolName string, config *schemas.MCPClientConfig) b
 	// If ToolsToExecute is specified (not nil), apply filtering
 	if config.ToolsToExecute != nil {
 		// Handle empty array [] - means no tools are allowed
-		if len(config.ToolsToExecute) == 0 {
+		if config.ToolsToExecute.IsEmpty() {
 			return true // No tools allowed
 		}
 
 		// Handle wildcard "*" - if present, all tools are allowed
-		if slices.Contains(config.ToolsToExecute, "*") {
+		if config.ToolsToExecute.IsUnrestricted() {
 			return false // All tools allowed
 		}
 
@@ -396,7 +595,7 @@ func shouldSkipToolForConfig(toolName string, config *schemas.MCPClientConfig) b
 		unprefixedToolName := stripClientPrefix(toolName, config.Name)
 
 		// Check if specific tool is in the allowed list
-		return !slices.Contains(config.ToolsToExecute, unprefixedToolName) // Tool not in allowed list
+		return !config.ToolsToExecute.Contains(unprefixedToolName) // Tool not in allowed list
 	}
 
 	return true // Tool is skipped (nil is treated as [] - no tools)
@@ -413,12 +612,12 @@ func canAutoExecuteTool(toolName string, config *schemas.MCPClientConfig) bool {
 	// If ToolsToAutoExecute is specified (not nil), apply filtering
 	if config.ToolsToAutoExecute != nil {
 		// Handle empty array [] - means no tools are auto-executed
-		if len(config.ToolsToAutoExecute) == 0 {
+		if config.ToolsToAutoExecute.IsEmpty() {
 			return false // No tools auto-executed
 		}
 
 		// Handle wildcard "*" - if present, all tools are auto-executed
-		if slices.Contains(config.ToolsToAutoExecute, "*") {
+		if config.ToolsToAutoExecute.IsUnrestricted() {
 			return true // All tools auto-executed
 		}
 
@@ -428,7 +627,7 @@ func canAutoExecuteTool(toolName string, config *schemas.MCPClientConfig) bool {
 		unprefixedToolName := stripClientPrefix(toolName, config.Name)
 
 		// Check if specific tool is in the auto-execute list
-		return slices.Contains(config.ToolsToAutoExecute, unprefixedToolName)
+		return config.ToolsToAutoExecute.Contains(unprefixedToolName)
 	}
 
 	return false // Tool is not auto-executed (nil is treated as [] - no tools)
@@ -439,7 +638,7 @@ func canAutoExecuteTool(toolName string, config *schemas.MCPClientConfig) bool {
 // Context filtering can only NARROW the tools available, NOT expand beyond client configuration.
 // This is checked AFTER client-level filtering (shouldSkipToolForConfig).
 func shouldSkipToolForRequest(ctx context.Context, clientName, toolName string) bool {
-	includeTools := ctx.Value(MCPContextKeyIncludeTools)
+	includeTools := ctx.Value(schemas.MCPContextKeyIncludeTools)
 
 	if includeTools != nil {
 		// Try []string first (preferred type)
@@ -487,6 +686,46 @@ func convertMCPToolToBifrostSchema(mcpTool *mcp.Tool, logger schemas.Logger) sch
 		// object schemas to always have a properties field, even if empty
 		properties = schemas.NewOrderedMap()
 	}
+
+	// Preserve JSON Schema definitions ($defs). The MCP SDK already folds legacy
+	// "definitions" into Defs on unmarshal, so we only need to handle Defs here.
+	// Without this, any $ref pointing at #/$defs/... rides along inside Properties
+	// while the definitions it targets are dropped, leaving a dangling $ref that
+	// providers reject (e.g. Vertex Gemini returns INVALID_ARGUMENT).
+	var defs *schemas.OrderedMap
+	if len(mcpTool.InputSchema.Defs) > 0 {
+		// Normalize array schemas inside each definition, mirroring the fix applied
+		// to Properties above.
+		FixArraySchemas(mcpTool.InputSchema.Defs, logger)
+
+		orderedDefs := schemas.NewOrderedMapWithCapacity(len(mcpTool.InputSchema.Defs))
+		for k, v := range mcpTool.InputSchema.Defs {
+			orderedDefs.Set(k, v)
+		}
+		defs = orderedDefs
+	}
+
+	// Preserve MCP tool annotations if any are set.
+	// Clone bool pointers so Bifrost's copy is independent of the upstream mcp.Tool lifetime.
+	var annotations *schemas.MCPToolAnnotations
+	a := mcpTool.Annotations
+	if a.Title != "" || a.ReadOnlyHint != nil || a.DestructiveHint != nil || a.IdempotentHint != nil || a.OpenWorldHint != nil {
+		cloneBool := func(b *bool) *bool {
+			if b == nil {
+				return nil
+			}
+			v := *b
+			return &v
+		}
+		annotations = &schemas.MCPToolAnnotations{
+			Title:           a.Title,
+			ReadOnlyHint:    cloneBool(a.ReadOnlyHint),
+			DestructiveHint: cloneBool(a.DestructiveHint),
+			IdempotentHint:  cloneBool(a.IdempotentHint),
+			OpenWorldHint:   cloneBool(a.OpenWorldHint),
+		}
+	}
+
 	return schemas.ChatTool{
 		Type: schemas.ChatToolTypeFunction,
 		Function: &schemas.ChatToolFunction{
@@ -496,8 +735,10 @@ func convertMCPToolToBifrostSchema(mcpTool *mcp.Tool, logger schemas.Logger) sch
 				Type:       mcpTool.InputSchema.Type,
 				Properties: properties,
 				Required:   mcpTool.InputSchema.Required,
+				Defs:       defs,
 			},
 		},
+		Annotations: annotations,
 	}
 }
 
@@ -521,7 +762,7 @@ func extractTextFromMCPResponse(toolResponse *mcp.CallToolResult, toolName strin
 			result.WriteString(fmt.Sprintf("[Embedded Resource Response: %s]\n", content.Type))
 		default:
 			// Fallback: try to extract from map structure
-			if jsonBytes, err := json.Marshal(contentBlock); err == nil {
+			if jsonBytes, err := schemas.MarshalSorted(contentBlock); err == nil {
 				var contentMap map[string]interface{}
 				if json.Unmarshal(jsonBytes, &contentMap) == nil {
 					if text, ok := contentMap["text"].(string); ok {
@@ -542,15 +783,22 @@ func extractTextFromMCPResponse(toolResponse *mcp.CallToolResult, toolName strin
 }
 
 // createToolResponseMessage creates a tool response message with the execution result.
-func createToolResponseMessage(toolCall schemas.ChatAssistantMessageToolCall, responseText string) *schemas.ChatMessage {
+// isError carries the MCP protocol's own tool-failure signal (mcp.CallToolResult.IsError),
+// which reports that the tool ran and failed -- distinct from a transport-level error.
+func createToolResponseMessage(toolCall schemas.ChatAssistantMessageToolCall, responseText string, isError bool) *schemas.ChatMessage {
+	toolMsg := &schemas.ChatToolMessage{
+		ToolCallID: toolCall.ID,
+	}
+	if isError {
+		toolMsg.IsError = schemas.Ptr(true)
+	}
+
 	return &schemas.ChatMessage{
 		Role: schemas.ChatMessageRoleTool,
 		Content: &schemas.ChatMessageContent{
 			ContentStr: &responseText,
 		},
-		ChatToolMessage: &schemas.ChatToolMessage{
-			ToolCallID: toolCall.ID,
-		},
+		ChatToolMessage: toolMsg,
 	}
 }
 
@@ -582,6 +830,30 @@ func validateMCPClientConfig(config *schemas.MCPClientConfig) error {
 		// InProcess can be provided programmatically or created automatically.
 	default:
 		return fmt.Errorf("unknown connection type '%s' in client '%s'", config.ConnectionType, config.Name)
+	}
+	if config.AuthType == schemas.MCPAuthTypePerUserHeaders {
+		if len(config.PerUserHeaderKeys) == 0 {
+			return fmt.Errorf("per_user_header_keys is required (non-empty) for per_user_headers auth type in client '%s'", config.Name)
+		}
+		for i, key := range config.PerUserHeaderKeys {
+			if strings.TrimSpace(key) == "" {
+				return fmt.Errorf("per_user_header_keys[%d] is empty in client '%s'", i, config.Name)
+			}
+		}
+		if config.OauthConfigID != nil && *config.OauthConfigID != "" {
+			return fmt.Errorf("oauth_config_id must not be set for per_user_headers auth type in client '%s'", config.Name)
+		}
+	}
+	if config.AuthType == schemas.MCPAuthTypeTokenExchange {
+		if config.TokenExchange == nil || strings.TrimSpace(config.TokenExchange.Audience) == "" {
+			return fmt.Errorf("token_exchange.audience is required (non-empty) for token_exchange auth type in client '%s'", config.Name)
+		}
+		if !config.TokenExchange.UseIdPCredentials && strings.TrimSpace(config.TokenExchange.ClientID.GetValue()) == "" && !config.TokenExchange.ClientID.IsFromSecret() {
+			return fmt.Errorf("token_exchange.client_id is required (non-empty) for token_exchange auth type in client '%s' unless use_idp_credentials is set", config.Name)
+		}
+		if config.OauthConfigID != nil && *config.OauthConfigID != "" {
+			return fmt.Errorf("oauth_config_id must not be set for token_exchange auth type in client '%s'", config.Name)
+		}
 	}
 	return nil
 }
@@ -754,6 +1026,7 @@ func hasToolCallsForChatResponse(response *schemas.BifrostChatResponse) bool {
 		if choice.FinishReason != nil && *choice.FinishReason == "tool_calls" {
 			return true
 		}
+
 		// Check if message has tool calls regardless of finish_reason.
 		// Some providers (e.g. Gemini) return finish_reason "stop" even when tool calls are present,
 		// so we cannot rely solely on finish_reason to detect tool calls.
@@ -818,17 +1091,17 @@ func stripClientPrefix(prefixedToolName, clientName string) string {
 //
 // Parameters:
 //   - sanitizedToolName: Sanitized tool name (e.g., "notion_search")
-//   - client: The MCP client state containing the name mapping
+//   - toolNameMapping: Map of sanitized tool names to original MCP tool names
 //
 // Returns:
 //   - string: Original MCP tool name (e.g., "notion-search"), or sanitizedToolName if not found in mapping
-func getOriginalToolName(sanitizedToolName string, client *schemas.MCPClientState) string {
-	if client == nil || client.ToolNameMapping == nil {
+func getOriginalToolName(sanitizedToolName string, toolNameMapping map[string]string) string {
+	if toolNameMapping == nil {
 		return sanitizedToolName
 	}
 
 	// Look up the original MCP name in the mapping
-	if originalName, exists := client.ToolNameMapping[sanitizedToolName]; exists {
+	if originalName, exists := toolNameMapping[sanitizedToolName]; exists {
 		return originalName
 	}
 

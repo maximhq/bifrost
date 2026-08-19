@@ -1,186 +1,92 @@
-"use client";
-
-import { FilterPopover } from "@/components/filters/filterPopover";
+import { LogsFilterSidebar } from "@/components/filters/logsFilterSidebar";
 import { DateTimePickerWithRange } from "@/components/ui/datePickerWithRange";
+import { ScrollArea } from "@/components/ui/scrollArea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-	useGetMCPAvailableFilterDataQuery,
-	useLazyGetLogsCostHistogramQuery,
-	useLazyGetLogsHistogramQuery,
-	useLazyGetLogsLatencyHistogramQuery,
-	useLazyGetLogsModelHistogramQuery,
-	useLazyGetLogsProviderCostHistogramQuery,
-	useLazyGetLogsProviderLatencyHistogramQuery,
-	useLazyGetLogsProviderTokenHistogramQuery,
-	useLazyGetLogsTokenHistogramQuery,
-	useLazyGetMCPCostHistogramQuery,
-	useLazyGetMCPHistogramQuery,
-	useLazyGetMCPTopToolsQuery,
-	useLazyGetModelRankingsQuery,
-} from "@/lib/store";
-import type {
-	CostHistogramResponse,
-	LatencyHistogramResponse,
-	LogFilters,
-	LogsHistogramResponse,
-	MCPCostHistogramResponse,
-	MCPHistogramResponse,
-	MCPToolLogFilters,
-	MCPTopToolsResponse,
-	ModelHistogramResponse,
-	ModelRankingsResponse,
-	ProviderCostHistogramResponse,
-	ProviderLatencyHistogramResponse,
-	ProviderTokenHistogramResponse,
-	TokenHistogramResponse,
-} from "@/lib/types/logs";
+import { useTimezonePreference } from "@/lib/hooks/useTimezonePreference";
+import { parseAsSafeArrayOf } from "@/lib/queryParamsParser";
+import { useGetMCPAvailableFilterDataQuery } from "@/lib/store";
+import type { LogFilters, MCPToolLogFilters } from "@/lib/types/logs";
 import { dateUtils } from "@/lib/types/logs";
-import { parseAsInteger, parseAsString, useQueryStates } from "nuqs";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { getRangeForPeriod, TIME_PERIODS } from "@/lib/utils/timeRange";
+import { useLocation } from "@tanstack/react-router";
+import { parseAsBoolean, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
+import { type RefObject, useCallback, useMemo, useRef, useState } from "react";
 import { type ChartType } from "./components/charts/chartTypeToggle";
 import { ModelFilterSelect } from "./components/charts/modelFilterSelect";
-import { MCPTab } from "./components/mcpTab";
-import { ModelRankingsTab } from "./components/modelRankingsTab";
-import { OverviewTab } from "./components/overviewTab";
-import { ProviderUsageTab } from "./components/providerUsageTab";
+import { ExportPopover } from "./components/exportPopover";
+import { type DimensionRankingsTabViewHandle, DimensionRankingsTabView } from "./components/tabViews/dimensionRankingsTabView";
+import { type MCPTabViewHandle, MCPTabView } from "./components/tabViews/mcpTabView";
+import { type ModelRankingsTabViewHandle, ModelRankingsTabView } from "./components/tabViews/modelRankingsTabView";
+import { type OverviewTabViewHandle, OverviewTabView } from "./components/tabViews/overviewTabView";
+import { type ProviderUsageTabViewHandle, ProviderUsageTabView } from "./components/tabViews/providerUsageTabView";
+import { type DashboardData, type DashboardTab, type ExportTab, DASHBOARD_EXPORT_TABS } from "./utils/exportUtils";
 
-// Type-safe parser for chart type URL state
 const toChartType = (value: string): ChartType => (value === "line" ? "line" : "bar");
 
-// Calculate default timestamps once at module level
-const DEFAULT_END_TIME = Math.floor(Date.now() / 1000);
-const DEFAULT_START_TIME = (() => {
-	const date = new Date();
-	date.setHours(date.getHours() - 24);
-	return Math.floor(date.getTime() / 1000);
-})();
-
-// Predefined time periods
-const TIME_PERIODS = [
-	{ label: "Last hour", value: "1h" },
-	{ label: "Last 6 hours", value: "6h" },
-	{ label: "Last 24 hours", value: "24h" },
-	{ label: "Last 7 days", value: "7d" },
-	{ label: "Last 30 days", value: "30d" },
-];
-
-const parseCsvParam = (value: string): string[] => (value ? value.split(",").filter(Boolean) : []);
-const sanitizeSeriesLabels = (values?: string[]): string[] => {
-	if (!values) return [];
-	const trimmedValues = values.map((value) => value.trim()).filter((value) => value.length > 0);
-
-	return [...new Set(trimmedValues)];
-};
-
-function getTimeRangeFromPeriod(period: string): { start: number; end: number } {
-	const now = Math.floor(Date.now() / 1000);
-	switch (period) {
-		case "1h":
-			return { start: now - 3600, end: now };
-		case "6h":
-			return { start: now - 6 * 3600, end: now };
-		case "24h":
-			return { start: now - 24 * 3600, end: now };
-		case "7d":
-			return { start: now - 7 * 24 * 3600, end: now };
-		case "30d":
-			return { start: now - 30 * 24 * 3600, end: now };
-		default:
-			return { start: now - 24 * 3600, end: now };
-	}
-}
+/** Wait two frames: one for React to commit, one for the browser to lay the result out. */
+const nextFrames = () =>
+	new Promise<void>((resolve) => {
+		requestAnimationFrame(() => {
+			requestAnimationFrame(() => resolve());
+		});
+	});
 
 export default function DashboardPage() {
-	// Data states - Overview
-	const [histogramData, setHistogramData] = useState<LogsHistogramResponse | null>(null);
-	const [tokenData, setTokenData] = useState<TokenHistogramResponse | null>(null);
-	const [costData, setCostData] = useState<CostHistogramResponse | null>(null);
-	const [modelData, setModelData] = useState<ModelHistogramResponse | null>(null);
-	const [latencyData, setLatencyData] = useState<LatencyHistogramResponse | null>(null);
-	const [providerCostData, setProviderCostData] = useState<ProviderCostHistogramResponse | null>(null);
-	const [providerTokenData, setProviderTokenData] = useState<ProviderTokenHistogramResponse | null>(null);
-	const [providerLatencyData, setProviderLatencyData] = useState<ProviderLatencyHistogramResponse | null>(null);
-
-	// Data states - MCP
-	const [mcpHistogramData, setMcpHistogramData] = useState<MCPHistogramResponse | null>(null);
-	const [mcpCostData, setMcpCostData] = useState<MCPCostHistogramResponse | null>(null);
-	const [mcpTopToolsData, setMcpTopToolsData] = useState<MCPTopToolsResponse | null>(null);
-
-	// Data states - Rankings
-	const [rankingsData, setRankingsData] = useState<ModelRankingsResponse | null>(null);
-
-	// Loading states - Overview
-	const [loadingHistogram, setLoadingHistogram] = useState(true);
-	const [loadingTokens, setLoadingTokens] = useState(true);
-	const [loadingCost, setLoadingCost] = useState(true);
-	const [loadingModels, setLoadingModels] = useState(true);
-	const [loadingLatency, setLoadingLatency] = useState(true);
-	const [loadingProviderCost, setLoadingProviderCost] = useState(true);
-	const [loadingProviderTokens, setLoadingProviderTokens] = useState(true);
-	const [loadingProviderLatency, setLoadingProviderLatency] = useState(true);
-
-	// Loading states - MCP
-	const [loadingMcpHistogram, setLoadingMcpHistogram] = useState(true);
-	const [loadingMcpCost, setLoadingMcpCost] = useState(true);
-	const [loadingMcpTopTools, setLoadingMcpTopTools] = useState(true);
-
-	// Loading states - Rankings
-	const [loadingRankings, setLoadingRankings] = useState(true);
-
-	// RTK Query lazy hooks - Overview
-	const [triggerHistogram] = useLazyGetLogsHistogramQuery({});
-	const [triggerTokens] = useLazyGetLogsTokenHistogramQuery();
-	const [triggerCost] = useLazyGetLogsCostHistogramQuery();
-	const [triggerModels] = useLazyGetLogsModelHistogramQuery();
-	const [triggerLatency] = useLazyGetLogsLatencyHistogramQuery();
-	const [triggerProviderCost] = useLazyGetLogsProviderCostHistogramQuery();
-	const [triggerProviderTokens] = useLazyGetLogsProviderTokenHistogramQuery();
-	const [triggerProviderLatency] = useLazyGetLogsProviderLatencyHistogramQuery();
-
-	// RTK Query lazy hooks - MCP
-	const [triggerMcpHistogram] = useLazyGetMCPHistogramQuery();
-	const [triggerMcpCost] = useLazyGetMCPCostHistogramQuery();
-	const [triggerMcpTopTools] = useLazyGetMCPTopToolsQuery();
-
-	// RTK Query lazy hooks - Rankings
-	const [triggerRankings] = useLazyGetModelRankingsQuery();
-
 	// MCP filter data
 	const { data: mcpFilterData } = useGetMCPAvailableFilterDataQuery();
 
-	// URL state management
+	const defaultTimeRange = useMemo(() => dateUtils.getDefaultTimeRange(), []);
+
+	const [timezone, setTimezone] = useTimezonePreference();
+
+	const { search } = useLocation();
+	const hasExplicitTimeRange = (search as Record<string, unknown>)?.start_time && (search as Record<string, unknown>)?.end_time;
+
 	const [urlState, setUrlState] = useQueryStates(
 		{
-			start_time: parseAsInteger.withDefault(DEFAULT_START_TIME),
-			end_time: parseAsInteger.withDefault(DEFAULT_END_TIME),
-			period: parseAsString.withDefault("24h"),
+			period: parseAsString.withDefault(hasExplicitTimeRange ? "" : "1h").withOptions({ clearOnDefault: false }),
+			start_time: parseAsInteger.withDefault(defaultTimeRange.startTime),
+			end_time: parseAsInteger.withDefault(defaultTimeRange.endTime),
 			tab: parseAsString.withDefault("overview"),
-			virtual_key_ids: parseAsString.withDefault(""),
-			providers: parseAsString.withDefault(""),
-			models: parseAsString.withDefault(""),
-			selected_key_ids: parseAsString.withDefault(""),
-			objects: parseAsString.withDefault(""),
-			status: parseAsString.withDefault(""),
-			routing_rule_ids: parseAsString.withDefault(""),
-			routing_engine_used: parseAsString.withDefault(""),
-			missing_cost_only: parseAsString.withDefault("false"),
+			virtual_key_ids: parseAsSafeArrayOf.withDefault([]),
+			providers: parseAsSafeArrayOf.withDefault([]),
+			models: parseAsSafeArrayOf.withDefault([]),
+			selected_key_ids: parseAsSafeArrayOf.withDefault([]),
+			objects: parseAsSafeArrayOf.withDefault([]),
+			status: parseAsSafeArrayOf.withDefault([]),
+			routing_rule_ids: parseAsSafeArrayOf.withDefault([]),
+			routing_engine_used: parseAsSafeArrayOf.withDefault([]),
+			stop_reasons: parseAsSafeArrayOf.withDefault([]),
+			cache_hit_types: parseAsSafeArrayOf.withDefault([]),
+			missing_cost_only: parseAsBoolean.withDefault(false),
+			metadata_filters: parseAsString.withDefault(""),
 			volume_chart: parseAsString.withDefault("bar"),
 			token_chart: parseAsString.withDefault("bar"),
 			cost_chart: parseAsString.withDefault("bar"),
 			model_chart: parseAsString.withDefault("bar"),
 			latency_chart: parseAsString.withDefault("bar"),
+			throughput_chart: parseAsString.withDefault("bar"),
 			cost_model: parseAsString.withDefault("all"),
 			usage_model: parseAsString.withDefault("all"),
 			provider_cost_chart: parseAsString.withDefault("bar"),
 			provider_token_chart: parseAsString.withDefault("bar"),
 			provider_latency_chart: parseAsString.withDefault("bar"),
+			provider_throughput_chart: parseAsString.withDefault("bar"),
 			provider_cost_provider: parseAsString.withDefault("all"),
 			provider_token_provider: parseAsString.withDefault("all"),
 			provider_latency_provider: parseAsString.withDefault("all"),
+			provider_throughput_provider: parseAsString.withDefault("all"),
 			mcp_volume_chart: parseAsString.withDefault("bar"),
 			mcp_cost_chart: parseAsString.withDefault("bar"),
 			mcp_tool_names: parseAsString.withDefault(""),
 			mcp_server_labels: parseAsString.withDefault(""),
+			parent_request_id: parseAsString.withDefault(""),
+			user_ids: parseAsSafeArrayOf.withDefault([]),
+			team_ids: parseAsSafeArrayOf.withDefault([]),
+			customer_ids: parseAsSafeArrayOf.withDefault([]),
+			business_unit_ids: parseAsSafeArrayOf.withDefault([]),
+			aliases: parseAsSafeArrayOf.withDefault([]),
+			apps: parseAsSafeArrayOf.withDefault([]),
 		},
 		{
 			history: "push",
@@ -188,330 +94,204 @@ export default function DashboardPage() {
 		},
 	);
 
-	// Parse filter arrays from URL state
-	const selectedProviders = useMemo(() => parseCsvParam(urlState.providers), [urlState.providers]);
-	const selectedModels = useMemo(() => parseCsvParam(urlState.models), [urlState.models]);
-	const selectedKeyIds = useMemo(() => parseCsvParam(urlState.selected_key_ids), [urlState.selected_key_ids]);
-	const selectedVirtualKeyIds = useMemo(() => parseCsvParam(urlState.virtual_key_ids), [urlState.virtual_key_ids]);
-	const selectedTypes = useMemo(() => parseCsvParam(urlState.objects), [urlState.objects]);
-	const selectedStatuses = useMemo(() => parseCsvParam(urlState.status), [urlState.status]);
-	const selectedRoutingRuleIds = useMemo(() => parseCsvParam(urlState.routing_rule_ids), [urlState.routing_rule_ids]);
-	const selectedRoutingEngines = useMemo(() => parseCsvParam(urlState.routing_engine_used), [urlState.routing_engine_used]);
-	const missingCostOnly = useMemo(() => urlState.missing_cost_only === "true", [urlState.missing_cost_only]);
+	// Parse string-backed MCP filter values from URL state
+	const selectedMcpToolNames = useMemo(() => (urlState.mcp_tool_names ? [urlState.mcp_tool_names] : []), [urlState.mcp_tool_names]);
+	const selectedMcpServerLabels = useMemo(
+		() => (urlState.mcp_server_labels ? [urlState.mcp_server_labels] : []),
+		[urlState.mcp_server_labels],
+	);
 
-	// MCP filter arrays
-	const selectedMcpToolNames = useMemo(() => parseCsvParam(urlState.mcp_tool_names), [urlState.mcp_tool_names]);
-	const selectedMcpServerLabels = useMemo(() => parseCsvParam(urlState.mcp_server_labels), [urlState.mcp_server_labels]);
+	const metadataFilters = useMemo(() => {
+		if (!urlState.metadata_filters) return undefined;
+		try {
+			return JSON.parse(urlState.metadata_filters) as Record<string, string>;
+		} catch {
+			return undefined;
+		}
+	}, [urlState.metadata_filters]);
 
-	// Derived filter for API calls
 	const filters: LogFilters = useMemo(
 		() => ({
-			start_time: dateUtils.toISOString(urlState.start_time),
-			end_time: dateUtils.toISOString(urlState.end_time),
-			...(selectedProviders.length > 0 && { providers: selectedProviders }),
-			...(selectedModels.length > 0 && { models: selectedModels }),
-			...(selectedKeyIds.length > 0 && { selected_key_ids: selectedKeyIds }),
-			...(selectedVirtualKeyIds.length > 0 && { virtual_key_ids: selectedVirtualKeyIds }),
-			...(selectedTypes.length > 0 && { objects: selectedTypes }),
-			...(selectedStatuses.length > 0 && { status: selectedStatuses }),
-			...(selectedRoutingRuleIds.length > 0 && { routing_rule_ids: selectedRoutingRuleIds }),
-			...(selectedRoutingEngines.length > 0 && { routing_engine_used: selectedRoutingEngines }),
-			...(missingCostOnly && { missing_cost_only: true }),
+			...(urlState.period
+				? { period: urlState.period }
+				: {
+						start_time: dateUtils.toISOString(urlState.start_time),
+						end_time: dateUtils.toISOString(urlState.end_time),
+					}),
+			...(urlState.providers.length > 0 && { providers: urlState.providers }),
+			...(urlState.models.length > 0 && { models: urlState.models }),
+			...(urlState.selected_key_ids.length > 0 && { selected_key_ids: urlState.selected_key_ids }),
+			...(urlState.virtual_key_ids.length > 0 && {
+				virtual_key_ids: urlState.virtual_key_ids,
+			}),
+			...(urlState.objects.length > 0 && { objects: urlState.objects }),
+			...(urlState.status.length > 0 && { status: urlState.status }),
+			...(urlState.routing_rule_ids.length > 0 && {
+				routing_rule_ids: urlState.routing_rule_ids,
+			}),
+			...(urlState.routing_engine_used.length > 0 && {
+				routing_engine_used: urlState.routing_engine_used,
+			}),
+			...(urlState.stop_reasons.length > 0 && { stop_reasons: urlState.stop_reasons }),
+			...(urlState.cache_hit_types.length > 0 && { cache_hit_types: urlState.cache_hit_types }),
+			...(urlState.missing_cost_only && { missing_cost_only: true }),
+			...(metadataFilters &&
+				Object.keys(metadataFilters).length > 0 && {
+					metadata_filters: metadataFilters,
+				}),
+			...(urlState.parent_request_id && { parent_request_id: urlState.parent_request_id }),
+			...(urlState.user_ids.length > 0 && { user_ids: urlState.user_ids }),
+			...(urlState.team_ids.length > 0 && { team_ids: urlState.team_ids }),
+			...(urlState.customer_ids.length > 0 && { customer_ids: urlState.customer_ids }),
+			...(urlState.business_unit_ids.length > 0 && { business_unit_ids: urlState.business_unit_ids }),
+			...(urlState.aliases.length > 0 && { aliases: urlState.aliases }),
+			...(urlState.apps.length > 0 && { apps: urlState.apps }),
 		}),
 		[
+			urlState.period,
 			urlState.start_time,
 			urlState.end_time,
-			selectedProviders,
-			selectedModels,
-			selectedKeyIds,
-			selectedVirtualKeyIds,
-			selectedTypes,
-			selectedStatuses,
-			selectedRoutingRuleIds,
-			selectedRoutingEngines,
-			missingCostOnly,
+			urlState.parent_request_id,
+			urlState.providers,
+			urlState.models,
+			urlState.selected_key_ids,
+			urlState.virtual_key_ids,
+			urlState.objects,
+			urlState.status,
+			urlState.routing_rule_ids,
+			urlState.routing_engine_used,
+			urlState.stop_reasons,
+			urlState.cache_hit_types,
+			urlState.missing_cost_only,
+			metadataFilters,
+			urlState.user_ids,
+			urlState.team_ids,
+			urlState.customer_ids,
+			urlState.business_unit_ids,
+			urlState.aliases,
+			urlState.apps,
 		],
 	);
 
-	// MCP filters
 	const mcpFilters: MCPToolLogFilters = useMemo(
 		() => ({
-			start_time: dateUtils.toISOString(urlState.start_time),
-			end_time: dateUtils.toISOString(urlState.end_time),
-			...(selectedMcpToolNames.length > 0 && { tool_names: selectedMcpToolNames }),
-			...(selectedMcpServerLabels.length > 0 && { server_labels: selectedMcpServerLabels }),
+			...(urlState.period
+				? { period: urlState.period }
+				: {
+						start_time: dateUtils.toISOString(urlState.start_time),
+						end_time: dateUtils.toISOString(urlState.end_time),
+					}),
+			...(selectedMcpToolNames.length > 0 && {
+				tool_names: selectedMcpToolNames,
+			}),
+			...(selectedMcpServerLabels.length > 0 && {
+				server_labels: selectedMcpServerLabels,
+			}),
+			...(urlState.status.length > 0 && { status: urlState.status }),
+			...(urlState.virtual_key_ids.length > 0 && {
+				virtual_key_ids: urlState.virtual_key_ids,
+			}),
 		}),
-		[urlState.start_time, urlState.end_time, selectedMcpToolNames, selectedMcpServerLabels],
+		[
+			urlState.period,
+			urlState.start_time,
+			urlState.end_time,
+			selectedMcpToolNames,
+			selectedMcpServerLabels,
+			urlState.status,
+			urlState.virtual_key_ids,
+		],
 	);
 
-	// Date range for picker
-	const dateRange = useMemo(
-		() => ({
-			from: dateUtils.fromUnixTimestamp(urlState.start_time),
-			to: dateUtils.fromUnixTimestamp(urlState.end_time),
-		}),
-		[urlState.start_time, urlState.end_time],
-	);
+	// Tab view refs for export data aggregation
+	const overviewRef = useRef<OverviewTabViewHandle>(null);
+	const providerRef = useRef<ProviderUsageTabViewHandle>(null);
+	const mcpRef = useRef<MCPTabViewHandle>(null);
+	const modelRankingsRef = useRef<ModelRankingsTabViewHandle>(null);
+	const teamRankingsRef = useRef<DimensionRankingsTabViewHandle>(null);
+	const customerRankingsRef = useRef<DimensionRankingsTabViewHandle>(null);
+	const buRankingsRef = useRef<DimensionRankingsTabViewHandle>(null);
+	const userRankingsRef = useRef<DimensionRankingsTabViewHandle>(null);
+	const virtualKeyRankingsRef = useRef<DimensionRankingsTabViewHandle>(null);
+	const appRankingsRef = useRef<DimensionRankingsTabViewHandle>(null);
 
-	// Model lists for each chart's legend (must match what the chart component actually renders)
-	const costModels = useMemo(() => sanitizeSeriesLabels(costData?.models), [costData?.models]);
-	const usageModels = useMemo(() => sanitizeSeriesLabels(modelData?.models), [modelData?.models]);
+	const allRefs = [
+		overviewRef,
+		providerRef,
+		mcpRef,
+		modelRankingsRef,
+		teamRankingsRef,
+		customerRankingsRef,
+		buRankingsRef,
+		userRankingsRef,
+		virtualKeyRankingsRef,
+		appRankingsRef,
+	];
 
-	// Available models for filter dropdowns (union of both sources)
-	const availableModels = useMemo(() => {
-		return sanitizeSeriesLabels([...(costData?.models ?? []), ...(modelData?.models ?? [])]);
-	}, [costData?.models, modelData?.models]);
-
-	// Available providers for provider chart filter dropdowns
-	const availableProviders = useMemo(() => {
-		return sanitizeSeriesLabels([
-			...(providerCostData?.providers ?? []),
-			...(providerTokenData?.providers ?? []),
-			...(providerLatencyData?.providers ?? []),
-		]);
-	}, [providerCostData?.providers, providerTokenData?.providers, providerLatencyData?.providers]);
-
-	// Provider lists for each chart's legend
-	const providerCostProviders = useMemo(() => sanitizeSeriesLabels(providerCostData?.providers), [providerCostData?.providers]);
-	const providerTokenProviders = useMemo(() => sanitizeSeriesLabels(providerTokenData?.providers), [providerTokenData?.providers]);
-	const providerLatencyProviders = useMemo(() => sanitizeSeriesLabels(providerLatencyData?.providers), [providerLatencyData?.providers]);
-
-	// Fetch Overview tab data (5 calls)
-	const fetchOverviewData = useCallback(async () => {
-		setLoadingHistogram(true);
-		setLoadingTokens(true);
-		setLoadingCost(true);
-		setLoadingModels(true);
-		setLoadingLatency(true);
-
-		const fetchFilters = { filters };
-
-		const [
-			histogramResult,
-			tokenResult,
-			costResult,
-			modelResult,
-			latencyResult,
-		] = await Promise.all([
-			triggerHistogram(fetchFilters, false),
-			triggerTokens(fetchFilters, false),
-			triggerCost(fetchFilters, false),
-			triggerModels(fetchFilters, false),
-			triggerLatency(fetchFilters, false),
-		]);
-
-		setHistogramData(histogramResult.data ?? null);
-		setLoadingHistogram(false);
-		setTokenData(tokenResult.data ?? null);
-		setLoadingTokens(false);
-		setCostData(costResult.data ?? null);
-		setLoadingCost(false);
-		setModelData(modelResult.data ?? null);
-		setLoadingModels(false);
-		setLatencyData(latencyResult.data ?? null);
-		setLoadingLatency(false);
-	}, [
-		filters,
-		triggerHistogram,
-		triggerTokens,
-		triggerCost,
-		triggerModels,
-		triggerLatency,
-	]);
-
-	// Fetch Provider Usage tab data (3 calls)
-	const fetchProviderData = useCallback(async () => {
-		setLoadingProviderCost(true);
-		setLoadingProviderTokens(true);
-		setLoadingProviderLatency(true);
-
-		const fetchFilters = { filters };
-
-		const [
-			providerCostResult,
-			providerTokenResult,
-			providerLatencyResult,
-		] = await Promise.all([
-			triggerProviderCost(fetchFilters, false),
-			triggerProviderTokens(fetchFilters, false),
-			triggerProviderLatency(fetchFilters, false),
-		]);
-
-		setProviderCostData(providerCostResult.data ?? null);
-		setLoadingProviderCost(false);
-		setProviderTokenData(providerTokenResult.data ?? null);
-		setLoadingProviderTokens(false);
-		setProviderLatencyData(providerLatencyResult.data ?? null);
-		setLoadingProviderLatency(false);
-	}, [
-		filters,
-		triggerProviderCost,
-		triggerProviderTokens,
-		triggerProviderLatency,
-	]);
-
-	// Fetch MCP data
-	const fetchMcpData = useCallback(async () => {
-		setLoadingMcpHistogram(true);
-		setLoadingMcpCost(true);
-		setLoadingMcpTopTools(true);
-
-		const fetchFilters = { filters: mcpFilters };
-
-		const [mcpHistResult, mcpCostResult, mcpTopToolsResult] = await Promise.all([
-			triggerMcpHistogram(fetchFilters, false),
-			triggerMcpCost(fetchFilters, false),
-			triggerMcpTopTools(fetchFilters, false),
-		]);
-
-		setMcpHistogramData(mcpHistResult.data ?? null);
-		setLoadingMcpHistogram(false);
-		setMcpCostData(mcpCostResult.data ?? null);
-		setLoadingMcpCost(false);
-		setMcpTopToolsData(mcpTopToolsResult.data ?? null);
-		setLoadingMcpTopTools(false);
-	}, [mcpFilters, triggerMcpHistogram, triggerMcpCost, triggerMcpTopTools]);
-
-	// Fetch Rankings data
-	const fetchRankingsData = useCallback(async () => {
-		setLoadingRankings(true);
-		const result = await triggerRankings({ filters }, false);
-		setRankingsData(result.data ?? null);
-		setLoadingRankings(false);
-	}, [filters, triggerRankings]);
-
-	// --- Lazy-load refs: each tab fetches only once per filter change ---
-	const overviewFetchedRef = useRef(false);
-	const overviewLoadingRef = useRef(false);
-	const overviewGenRef = useRef(0);
-
-	const providerFetchedRef = useRef(false);
-	const providerLoadingRef = useRef(false);
-	const providerGenRef = useRef(0);
-
-	const mcpFetchedRef = useRef(false);
-	const mcpLoadingRef = useRef(false);
-	const mcpGenRef = useRef(0);
-
-	const rankingsFetchedRef = useRef(false);
-	const rankingsLoadingRef = useRef(false);
-	const rankingsGenRef = useRef(0);
-
-	const ensureOverviewDataLoaded = useCallback(async () => {
-		if (overviewFetchedRef.current || overviewLoadingRef.current) return;
-		const gen = overviewGenRef.current;
-		overviewLoadingRef.current = true;
-		try {
-			await fetchOverviewData();
-			if (gen === overviewGenRef.current) overviewFetchedRef.current = true;
-		} finally {
-			if (gen === overviewGenRef.current) overviewLoadingRef.current = false;
+	const getDashboardData = useCallback((): DashboardData => {
+		const merged: Partial<DashboardData> = {};
+		for (const r of allRefs) {
+			if (r.current) Object.assign(merged, r.current.getData());
 		}
-	}, [fetchOverviewData]);
+		return {
+			histogramData: null,
+			tokenData: null,
+			costData: null,
+			modelData: null,
+			latencyData: null,
+			providerCostData: null,
+			providerTokenData: null,
+			providerLatencyData: null,
+			rankingsData: null,
+			teamRankingsData: null,
+			customerRankingsData: null,
+			buRankingsData: null,
+			userRankingsData: null,
+			virtualKeyRankingsData: null,
+			appRankingsData: null,
+			mcpHistogramData: null,
+			mcpCostData: null,
+			mcpTopToolsData: null,
+			...merged,
+		};
+	}, []);
 
-	const ensureProviderDataLoaded = useCallback(async () => {
-		if (providerFetchedRef.current || providerLoadingRef.current) return;
-		const gen = providerGenRef.current;
-		providerLoadingRef.current = true;
-		try {
-			await fetchProviderData();
-			if (gen === providerGenRef.current) providerFetchedRef.current = true;
-		} finally {
-			if (gen === providerGenRef.current) providerLoadingRef.current = false;
-		}
-	}, [fetchProviderData]);
+	// Which scope the in-flight export covers; null when not exporting.
+	// "all" force-mounts every tab, a single tab exports only what is open.
+	const [exportScope, setExportScope] = useState<ExportTab | null>(null);
+	const exportingAll = exportScope === "all";
+	/** True while this tab is part of the running export, so rankings render their uncapped snapshot. */
+	const isExportingTab = (tab: DashboardTab) => exportingAll || exportScope === tab;
 
-	const ensureMcpDataLoaded = useCallback(async () => {
-		if (mcpFetchedRef.current || mcpLoadingRef.current) return;
-		const gen = mcpGenRef.current;
-		mcpLoadingRef.current = true;
-		try {
-			await fetchMcpData();
-			if (gen === mcpGenRef.current) mcpFetchedRef.current = true;
-		} finally {
-			if (gen === mcpGenRef.current) mcpLoadingRef.current = false;
-		}
-	}, [fetchMcpData]);
+	const handlePreloadData = useCallback(async (scope: ExportTab) => {
+		// For an all-tabs export, force-mount every tab before loading: Radix
+		// unmounts inactive TabsContent, so an inactive tab view has no ref yet
+		// and would never load its export snapshot - the report would only cover
+		// the tab that happened to be open. A single-tab export deliberately
+		// skips this, so only the open tab's data reaches the export.
+		setExportScope(scope);
+		await nextFrames();
 
-	const ensureRankingsDataLoaded = useCallback(async () => {
-		if (rankingsFetchedRef.current || rankingsLoadingRef.current) return;
-		const gen = rankingsGenRef.current;
-		rankingsLoadingRef.current = true;
-		try {
-			await fetchRankingsData();
-			if (gen === rankingsGenRef.current) rankingsFetchedRef.current = true;
-		} finally {
-			if (gen === rankingsGenRef.current) rankingsLoadingRef.current = false;
-		}
-	}, [fetchRankingsData]);
+		const refsByTab: Record<DashboardTab, RefObject<{ loadData: () => Promise<void> } | null>> = {
+			overview: overviewRef,
+			"provider-usage": providerRef,
+			mcp: mcpRef,
+			rankings: modelRankingsRef,
+			"team-rankings": teamRankingsRef,
+			"customer-rankings": customerRankingsRef,
+			"bu-rankings": buRankingsRef,
+			"user-rankings": userRankingsRef,
+			"virtual-key-rankings": virtualKeyRankingsRef,
+			"app-rankings": appRankingsRef,
+		};
 
-	// Reset all lazy-load flags when filters change (not on tab switch)
-	useEffect(() => {
-		overviewFetchedRef.current = false;
-		overviewLoadingRef.current = false;
-		overviewGenRef.current += 1;
-		providerFetchedRef.current = false;
-		providerLoadingRef.current = false;
-		providerGenRef.current += 1;
-		rankingsFetchedRef.current = false;
-		rankingsLoadingRef.current = false;
-		rankingsGenRef.current += 1;
-	}, [filters]);
+		const refs = scope === "all" ? allRefs : [refsByTab[scope]];
+		await Promise.all(refs.map((r) => r.current?.loadData()));
 
-	useEffect(() => {
-		mcpFetchedRef.current = false;
-		mcpLoadingRef.current = false;
-		mcpGenRef.current += 1;
-	}, [mcpFilters]);
-
-	// Fetch current tab's data when filters change or tab switches
-	// The ensure* functions are no-ops if data is already loaded for the current filters
-	useEffect(() => {
-		const tab = urlState.tab || "overview";
-		if (tab === "overview") void ensureOverviewDataLoaded();
-		else if (tab === "provider-usage") void ensureProviderDataLoaded();
-		else if (tab === "rankings") void ensureRankingsDataLoaded();
-		else if (tab === "mcp") void ensureMcpDataLoaded();
-	}, [urlState.tab, ensureOverviewDataLoaded, ensureProviderDataLoaded, ensureRankingsDataLoaded, ensureMcpDataLoaded]);
-
-	// Warm other tabs in the background after 150ms
-	useEffect(() => {
-		const tab = urlState.tab || "overview";
-		const timeoutId = window.setTimeout(() => {
-			if (tab !== "overview") void ensureOverviewDataLoaded();
-			if (tab !== "provider-usage") void ensureProviderDataLoaded();
-			if (tab !== "mcp") void ensureMcpDataLoaded();
-			if (tab !== "rankings") void ensureRankingsDataLoaded();
-		}, 150);
-		return () => window.clearTimeout(timeoutId);
-	}, [urlState.tab, ensureOverviewDataLoaded, ensureProviderDataLoaded, ensureMcpDataLoaded, ensureRankingsDataLoaded]);
-
-	// Handle time period change
-	const handlePeriodChange = useCallback(
-		(period: string | undefined) => {
-			if (!period) return;
-			const { start, end } = getTimeRangeFromPeriod(period);
-			setUrlState({
-				start_time: start,
-				end_time: end,
-				period,
-			});
-		},
-		[setUrlState],
-	);
-
-	// Handle custom date range change
-	const handleDateRangeChange = useCallback(
-		(range: { from?: Date; to?: Date }) => {
-			if (!range.from || !range.to) return;
-			setUrlState({
-				start_time: dateUtils.toUnixTimestamp(range.from),
-				end_time: dateUtils.toUnixTimestamp(range.to),
-				period: "", // Clear period when custom range is selected
-			});
-		},
-		[setUrlState],
-	);
+		// Let the loaded snapshots commit before the caller reads getData() or
+		// captures the DOM.
+		await nextFrames();
+	}, []);
 
 	// Tab change handler
 	const handleTabChange = useCallback(
@@ -527,45 +307,20 @@ export default function DashboardPage() {
 	const handleCostChartToggle = useCallback((type: ChartType) => setUrlState({ cost_chart: type }), [setUrlState]);
 	const handleModelChartToggle = useCallback((type: ChartType) => setUrlState({ model_chart: type }), [setUrlState]);
 	const handleLatencyChartToggle = useCallback((type: ChartType) => setUrlState({ latency_chart: type }), [setUrlState]);
-
-	// Filter change handler for FilterPopover
-	const handleFilterChange = useCallback(
-		(key: keyof LogFilters, values: string[] | boolean) => {
-			const urlKeyMap: Partial<Record<keyof LogFilters, string>> = {
-				providers: "providers",
-				models: "models",
-				selected_key_ids: "selected_key_ids",
-				virtual_key_ids: "virtual_key_ids",
-				objects: "objects",
-				status: "status",
-				routing_rule_ids: "routing_rule_ids",
-				routing_engine_used: "routing_engine_used",
-				missing_cost_only: "missing_cost_only",
-			};
-			const urlKey = urlKeyMap[key];
-			if (!urlKey) return;
-			if (typeof values === "boolean") {
-				setUrlState({ [urlKey]: String(values) });
-			} else {
-				setUrlState({ [urlKey]: values.join(",") });
-			}
-		},
-		[setUrlState],
-	);
-
+	const handleThroughputChartToggle = useCallback((type: ChartType) => setUrlState({ throughput_chart: type }), [setUrlState]);
 	const handleProviderCostChartToggle = useCallback((type: ChartType) => setUrlState({ provider_cost_chart: type }), [setUrlState]);
 	const handleProviderTokenChartToggle = useCallback((type: ChartType) => setUrlState({ provider_token_chart: type }), [setUrlState]);
 	const handleProviderLatencyChartToggle = useCallback((type: ChartType) => setUrlState({ provider_latency_chart: type }), [setUrlState]);
-
-	// MCP chart type toggles
+	const handleProviderThroughputChartToggle = useCallback(
+		(type: ChartType) => setUrlState({ provider_throughput_chart: type }),
+		[setUrlState],
+	);
 	const handleMcpVolumeChartToggle = useCallback((type: ChartType) => setUrlState({ mcp_volume_chart: type }), [setUrlState]);
 	const handleMcpCostChartToggle = useCallback((type: ChartType) => setUrlState({ mcp_cost_chart: type }), [setUrlState]);
 
-	// Model filter changes
+	// Model / provider filter changes
 	const handleCostModelChange = useCallback((model: string) => setUrlState({ cost_model: model }), [setUrlState]);
 	const handleUsageModelChange = useCallback((model: string) => setUrlState({ usage_model: model }), [setUrlState]);
-
-	// Provider filter changes
 	const handleProviderCostProviderChange = useCallback(
 		(provider: string) => setUrlState({ provider_cost_provider: provider }),
 		[setUrlState],
@@ -578,195 +333,431 @@ export default function DashboardPage() {
 		(provider: string) => setUrlState({ provider_latency_provider: provider }),
 		[setUrlState],
 	);
-
-	// MCP filter change handlers
-	const handleMcpToolNameChange = useCallback(
-		(toolName: string) => {
-			const current = parseCsvParam(urlState.mcp_tool_names);
-			const updated = current.includes(toolName) ? current.filter((t) => t !== toolName) : [...current, toolName];
-			setUrlState({ mcp_tool_names: updated.join(",") });
-		},
-		[urlState.mcp_tool_names, setUrlState],
+	const handleProviderThroughputProviderChange = useCallback(
+		(provider: string) => setUrlState({ provider_throughput_provider: provider }),
+		[setUrlState],
 	);
 
-	const handleMcpServerLabelChange = useCallback(
-		(label: string) => {
-			const current = parseCsvParam(urlState.mcp_server_labels);
-			const updated = current.includes(label) ? current.filter((l) => l !== label) : [...current, label];
-			setUrlState({ mcp_server_labels: updated.join(",") });
+	// Adapter: converts a full LogFilters object to dashboard URL state
+	const setFilters = useCallback(
+		(newFilters: LogFilters) => {
+			// The sidebar/header only manage dimension filters, never the time range: in
+			// period mode `newFilters` carries no start/end, so only touch time when an
+			// explicit range is actually provided — otherwise we'd clear the active period.
+			const hasExplicitTime = !!newFilters.start_time && !!newFilters.end_time;
+			const newStartTime = hasExplicitTime ? dateUtils.toUnixTimestamp(new Date(newFilters.start_time!)) : undefined;
+			const newEndTime = hasExplicitTime ? dateUtils.toUnixTimestamp(new Date(newFilters.end_time!)) : undefined;
+			const timeChanged = hasExplicitTime && (newStartTime !== urlState.start_time || newEndTime !== urlState.end_time);
+			setUrlState({
+				...(timeChanged && { period: "", start_time: newStartTime, end_time: newEndTime }),
+				providers: newFilters.providers || [],
+				models: newFilters.models || [],
+				selected_key_ids: newFilters.selected_key_ids || [],
+				virtual_key_ids: newFilters.virtual_key_ids || [],
+				objects: newFilters.objects || [],
+				status: newFilters.status || [],
+				routing_rule_ids: newFilters.routing_rule_ids || [],
+				routing_engine_used: newFilters.routing_engine_used || [],
+				stop_reasons: newFilters.stop_reasons || [],
+				cache_hit_types: newFilters.cache_hit_types || [],
+				missing_cost_only: newFilters.missing_cost_only ?? false,
+				metadata_filters:
+					newFilters.metadata_filters && Object.keys(newFilters.metadata_filters).length > 0
+						? JSON.stringify(newFilters.metadata_filters)
+						: "",
+				parent_request_id: newFilters.parent_request_id || "",
+				user_ids: newFilters.user_ids || [],
+				team_ids: newFilters.team_ids || [],
+				customer_ids: newFilters.customer_ids || [],
+				business_unit_ids: newFilters.business_unit_ids || [],
+				aliases: newFilters.aliases || [],
+				apps: newFilters.apps || [],
+			});
 		},
-		[urlState.mcp_server_labels, setUrlState],
+		[setUrlState, urlState.start_time, urlState.end_time],
 	);
+
+	// Date range for picker
+	const dateRange = useMemo(
+		() => ({
+			from: dateUtils.fromUnixTimestamp(urlState.start_time),
+			to: dateUtils.fromUnixTimestamp(urlState.end_time),
+		}),
+		[urlState.start_time, urlState.end_time],
+	);
+
+	const handlePeriodChange = useCallback(
+		(period: string | undefined) => {
+			if (!period) return;
+			const { from, to } = getRangeForPeriod(period);
+			setUrlState({
+				period,
+				start_time: Math.floor(from.getTime() / 1000),
+				end_time: Math.floor(to.getTime() / 1000),
+			});
+		},
+		[setUrlState],
+	);
+
+	const handleDateRangeChange = useCallback(
+		(range: { from?: Date; to?: Date }) => {
+			if (!range.from || !range.to) return;
+			setUrlState({
+				period: "",
+				start_time: dateUtils.toUnixTimestamp(range.from),
+				end_time: dateUtils.toUnixTimestamp(range.to),
+			});
+		},
+		[setUrlState],
+	);
+
+	// PDF export mode
+	const dashboardMinHeightRef = useRef<string>("");
+	const hiddenTabsRef = useRef<HTMLElement[]>([]);
+
+	const handlePdfExport = useCallback(
+		async (scope: ExportTab): Promise<{ element: HTMLElement; label: string }[]> => {
+			// Enters export mode, force-mounts the scoped tabs and waits for the
+			// loaded snapshots to render.
+			await handlePreloadData(scope);
+
+			// Only an all-tabs export has hidden sections to reveal; a single-tab
+			// export captures the section already on screen.
+			if (scope === "all") {
+				const hiddenTabs = document.querySelectorAll<HTMLElement>('[data-slot="tabs-content"][hidden]');
+				hiddenTabsRef.current = Array.from(hiddenTabs);
+				for (const tab of hiddenTabs) {
+					tab.removeAttribute("hidden");
+					tab.style.display = "block";
+				}
+			}
+
+			const dashboardEl = document.getElementById("dashboard-root");
+			if (dashboardEl) {
+				dashboardMinHeightRef.current = dashboardEl.style.minHeight;
+				dashboardEl.style.minHeight = "0";
+			}
+
+			window.dispatchEvent(new Event("resize"));
+			await nextFrames();
+
+			const tabs = scope === "all" ? DASHBOARD_EXPORT_TABS : DASHBOARD_EXPORT_TABS.filter((t) => t.value === scope);
+			return tabs
+				.map(({ sectionId, label }) => ({ element: document.getElementById(sectionId), label }))
+				.filter((s): s is { element: HTMLElement; label: string } => s.element !== null);
+		},
+		[handlePreloadData],
+	);
+
+	const handleExportDone = useCallback(() => {
+		const dashboardEl = document.getElementById("dashboard-root");
+		if (dashboardEl) {
+			dashboardEl.style.minHeight = dashboardMinHeightRef.current;
+		}
+
+		for (const tab of hiddenTabsRef.current) {
+			tab.setAttribute("hidden", "");
+			tab.style.display = "";
+		}
+		hiddenTabsRef.current = [];
+
+		setExportScope(null);
+	}, []);
+
+	const activeTab = (urlState.tab || "overview") as DashboardTab;
 
 	return (
-		<div className="mx-auto flex h-full min-h-[calc(100vh-100px)] w-full flex-col gap-4">
-			{/* Header with time filter */}
-			<div className="flex items-center justify-between">
-				<div className="flex items-center gap-2">
-					<h1 className="text-lg font-semibold">Dashboard</h1>
+		<div id="dashboard-root" className="no-padding-parent no-border-parent bg-background flex h-[calc(100vh_-_16px)] w-full gap-3">
+			{/* Sidebar Filters */}
+			<LogsFilterSidebar filters={filters} onFiltersChange={setFilters} />
+
+			{/* Main Content */}
+			<ScrollArea className="bg-card flex min-w-0 flex-1 flex-col gap-4 rounded-l-md" viewportClassName="no-table">
+				{/* Header */}
+				<div className="flex items-center justify-between p-4">
+					<div className="flex items-center gap-2">
+						<h1 className="text-lg font-semibold">Dashboard</h1>
+					</div>
+					<div className="flex items-center gap-2">
+						<ExportPopover
+							getData={getDashboardData}
+							activeTab={activeTab}
+							onPreloadData={handlePreloadData}
+							onPdfExport={handlePdfExport}
+							onExportDone={handleExportDone}
+						/>
+						{activeTab === "mcp" && mcpFilterData && (
+							<div className="flex items-center gap-1">
+								{(mcpFilterData.tool_names?.length ?? 0) > 0 && (
+									<ModelFilterSelect
+										models={mcpFilterData.tool_names ?? []}
+										selectedModel={selectedMcpToolNames.length === 1 ? selectedMcpToolNames[0] : "all"}
+										onModelChange={(value) => {
+											if (value === "all") {
+												setUrlState({ mcp_tool_names: "" });
+											} else {
+												setUrlState({ mcp_tool_names: value });
+											}
+										}}
+										placeholder="All Tools"
+										data-testid="dashboard-mcp-tool-filter"
+									/>
+								)}
+								{(mcpFilterData.server_labels?.length ?? 0) > 0 && (
+									<ModelFilterSelect
+										models={mcpFilterData.server_labels ?? []}
+										selectedModel={selectedMcpServerLabels.length === 1 ? selectedMcpServerLabels[0] : "all"}
+										onModelChange={(value) => {
+											if (value === "all") {
+												setUrlState({ mcp_server_labels: "" });
+											} else {
+												setUrlState({ mcp_server_labels: value });
+											}
+										}}
+										placeholder="All Servers"
+										data-testid="dashboard-mcp-server-filter"
+									/>
+								)}
+							</div>
+						)}
+						<DateTimePickerWithRange
+							dateTime={dateRange}
+							onDateTimeUpdate={handleDateRangeChange}
+							preDefinedPeriods={TIME_PERIODS}
+							predefinedPeriod={urlState.period || undefined}
+							onPredefinedPeriodChange={handlePeriodChange}
+							triggerTestId="dashboard-filter-daterange"
+							popupAlignment="end"
+							showTimezone
+							timezone={timezone}
+							onTimezoneChange={setTimezone}
+						/>
+					</div>
 				</div>
-				<div className="flex items-center gap-2">
-					{(urlState.tab === "overview" || urlState.tab === "provider-usage" || urlState.tab === "rankings") && (
-						<FilterPopover filters={filters} onFilterChange={handleFilterChange} />
-					)}
-					{urlState.tab === "mcp" && mcpFilterData && (
-						<div className="flex items-center gap-1">
-							{mcpFilterData.tool_names?.length > 0 && (
-								<ModelFilterSelect
-									models={mcpFilterData.tool_names}
-									selectedModel={selectedMcpToolNames.length === 1 ? selectedMcpToolNames[0] : "all"}
-									onModelChange={(value) => {
-										if (value === "all") {
-											setUrlState({ mcp_tool_names: "" });
-										} else {
-											setUrlState({ mcp_tool_names: value });
-										}
-									}}
-									placeholder="All Tools"
-									data-testid="dashboard-mcp-tool-filter"
-								/>
-							)}
-							{mcpFilterData.server_labels?.length > 0 && (
-								<ModelFilterSelect
-									models={mcpFilterData.server_labels}
-									selectedModel={selectedMcpServerLabels.length === 1 ? selectedMcpServerLabels[0] : "all"}
-									onModelChange={(value) => {
-										if (value === "all") {
-											setUrlState({ mcp_server_labels: "" });
-										} else {
-											setUrlState({ mcp_server_labels: value });
-										}
-									}}
-									placeholder="All Servers"
-									data-testid="dashboard-mcp-server-filter"
-								/>
-							)}
+
+				<div className="p-4">
+					{/* Tabs */}
+					<Tabs value={activeTab} onValueChange={handleTabChange}>
+						<div className="mb-2 max-w-full overflow-x-auto">
+							<TabsList className="w-max min-w-max">
+								<TabsTrigger className="shrink-0" value="overview" data-testid="dashboard-tab-overview">
+									Overview
+								</TabsTrigger>
+								<TabsTrigger className="shrink-0" value="provider-usage" data-testid="dashboard-tab-provider-usage">
+									Provider Usage
+								</TabsTrigger>
+								<TabsTrigger className="shrink-0" value="rankings" data-testid="dashboard-tab-rankings">
+									Model Rankings
+								</TabsTrigger>
+								<TabsTrigger className="shrink-0" value="mcp" data-testid="dashboard-tab-mcp">
+									MCP usage
+								</TabsTrigger>
+								<TabsTrigger className="shrink-0" value="team-rankings" data-testid="dashboard-tab-team-rankings">
+									Team Rankings
+								</TabsTrigger>
+								<TabsTrigger className="shrink-0" value="user-rankings" data-testid="dashboard-tab-user-rankings">
+									User Rankings
+								</TabsTrigger>
+								<TabsTrigger className="shrink-0" value="virtual-key-rankings" data-testid="dashboard-tab-virtual-key-rankings">
+									Virtual Key Rankings
+								</TabsTrigger>
+								<TabsTrigger className="shrink-0" value="customer-rankings" data-testid="dashboard-tab-customer-rankings">
+									Customer Rankings
+								</TabsTrigger>
+								<TabsTrigger className="shrink-0" value="bu-rankings" data-testid="dashboard-tab-bu-rankings">
+									BU Rankings
+								</TabsTrigger>
+								<TabsTrigger value="app-rankings" data-testid="dashboard-tab-app-rankings">
+									App Rankings
+								</TabsTrigger>
+							</TabsList>
 						</div>
-					)}
-					<DateTimePickerWithRange
-						dateTime={dateRange}
-						onDateTimeUpdate={handleDateRangeChange}
-						preDefinedPeriods={TIME_PERIODS}
-						predefinedPeriod={urlState.period || undefined}
-						onPredefinedPeriodChange={handlePeriodChange}
-						triggerTestId="dashboard-filter-daterange"
-						popupAlignment="end"
-					/>
+						{/* Overview Tab */}
+						<TabsContent value="overview" {...(exportingAll && { forceMount: true })}>
+							<div id="dashboard-section-overview">
+								<OverviewTabView
+									ref={overviewRef}
+									filters={filters}
+									active={activeTab === "overview" || exportingAll}
+									startTime={urlState.start_time}
+									endTime={urlState.end_time}
+									volumeChartType={toChartType(urlState.volume_chart)}
+									tokenChartType={toChartType(urlState.token_chart)}
+									costChartType={toChartType(urlState.cost_chart)}
+									modelChartType={toChartType(urlState.model_chart)}
+									latencyChartType={toChartType(urlState.latency_chart)}
+									throughputChartType={toChartType(urlState.throughput_chart)}
+									costModel={urlState.cost_model}
+									usageModel={urlState.usage_model}
+									onVolumeChartToggle={handleVolumeChartToggle}
+									onTokenChartToggle={handleTokenChartToggle}
+									onCostChartToggle={handleCostChartToggle}
+									onModelChartToggle={handleModelChartToggle}
+									onLatencyChartToggle={handleLatencyChartToggle}
+									onThroughputChartToggle={handleThroughputChartToggle}
+									onCostModelChange={handleCostModelChange}
+									onUsageModelChange={handleUsageModelChange}
+								/>
+							</div>
+						</TabsContent>
+
+						{/* Provider Usage Tab */}
+						<TabsContent value="provider-usage" {...(exportingAll && { forceMount: true })}>
+							<div id="dashboard-section-provider-usage">
+								<ProviderUsageTabView
+									ref={providerRef}
+									filters={filters}
+									active={activeTab === "provider-usage" || exportingAll}
+									startTime={urlState.start_time}
+									endTime={urlState.end_time}
+									providerCostChartType={toChartType(urlState.provider_cost_chart)}
+									providerTokenChartType={toChartType(urlState.provider_token_chart)}
+									providerLatencyChartType={toChartType(urlState.provider_latency_chart)}
+									providerThroughputChartType={toChartType(urlState.provider_throughput_chart)}
+									providerCostProvider={urlState.provider_cost_provider}
+									providerTokenProvider={urlState.provider_token_provider}
+									providerLatencyProvider={urlState.provider_latency_provider}
+									providerThroughputProvider={urlState.provider_throughput_provider}
+									onProviderCostChartToggle={handleProviderCostChartToggle}
+									onProviderTokenChartToggle={handleProviderTokenChartToggle}
+									onProviderLatencyChartToggle={handleProviderLatencyChartToggle}
+									onProviderThroughputChartToggle={handleProviderThroughputChartToggle}
+									onProviderCostProviderChange={handleProviderCostProviderChange}
+									onProviderTokenProviderChange={handleProviderTokenProviderChange}
+									onProviderLatencyProviderChange={handleProviderLatencyProviderChange}
+									onProviderThroughputProviderChange={handleProviderThroughputProviderChange}
+								/>
+							</div>
+						</TabsContent>
+
+						{/* Model Rankings Tab */}
+						<TabsContent value="rankings" {...(exportingAll && { forceMount: true })}>
+							<div id="dashboard-section-rankings">
+								<ModelRankingsTabView
+									ref={modelRankingsRef}
+									filters={filters}
+									active={activeTab === "rankings" || exportingAll}
+									startTime={urlState.start_time}
+									endTime={urlState.end_time}
+									pdfMode={isExportingTab("rankings")}
+								/>
+							</div>
+						</TabsContent>
+
+						{/* MCP Tab */}
+						<TabsContent value="mcp" {...(exportingAll && { forceMount: true })}>
+							<div id="dashboard-section-mcp">
+								<MCPTabView
+									ref={mcpRef}
+									filters={mcpFilters}
+									active={activeTab === "mcp" || exportingAll}
+									startTime={urlState.start_time}
+									endTime={urlState.end_time}
+									mcpVolumeChartType={toChartType(urlState.mcp_volume_chart)}
+									mcpCostChartType={toChartType(urlState.mcp_cost_chart)}
+									onMcpVolumeChartToggle={handleMcpVolumeChartToggle}
+									onMcpCostChartToggle={handleMcpCostChartToggle}
+								/>
+							</div>
+						</TabsContent>
+
+						{/* Team Rankings Tab */}
+						<TabsContent value="team-rankings" {...(exportingAll && { forceMount: true })}>
+							<div id="dashboard-section-team-rankings">
+								<DimensionRankingsTabView
+									ref={teamRankingsRef}
+									filters={filters}
+									active={activeTab === "team-rankings" || exportingAll}
+									dimension="team"
+									dimensionLabel="Team"
+									testIdPrefix="dashboard-team-rankings"
+									dataKey="teamRankingsData"
+									pdfMode={isExportingTab("team-rankings")}
+								/>
+							</div>
+						</TabsContent>
+
+						{/* Customer Rankings Tab */}
+						<TabsContent value="customer-rankings" {...(exportingAll && { forceMount: true })}>
+							<div id="dashboard-section-customer-rankings">
+								<DimensionRankingsTabView
+									ref={customerRankingsRef}
+									filters={filters}
+									active={activeTab === "customer-rankings" || exportingAll}
+									dimension="customer"
+									dimensionLabel="Customer"
+									testIdPrefix="dashboard-customer-rankings"
+									dataKey="customerRankingsData"
+									pdfMode={isExportingTab("customer-rankings")}
+								/>
+							</div>
+						</TabsContent>
+
+						{/* Business Unit Rankings Tab */}
+						<TabsContent value="bu-rankings" {...(exportingAll && { forceMount: true })}>
+							<div id="dashboard-section-bu-rankings">
+								<DimensionRankingsTabView
+									ref={buRankingsRef}
+									filters={filters}
+									active={activeTab === "bu-rankings" || exportingAll}
+									dimension="business_unit"
+									dimensionLabel="Business Unit"
+									testIdPrefix="dashboard-bu-rankings"
+									dataKey="buRankingsData"
+									pdfMode={isExportingTab("bu-rankings")}
+								/>
+							</div>
+						</TabsContent>
+
+						{/* User Rankings Tab */}
+						<TabsContent value="user-rankings" {...(exportingAll && { forceMount: true })}>
+							<div id="dashboard-section-user-rankings">
+								<DimensionRankingsTabView
+									ref={userRankingsRef}
+									filters={filters}
+									active={activeTab === "user-rankings" || exportingAll}
+									dimension="user"
+									dimensionLabel="User"
+									testIdPrefix="dashboard-user-rankings"
+									dataKey="userRankingsData"
+									pdfMode={isExportingTab("user-rankings")}
+								/>
+							</div>
+						</TabsContent>
+
+						{/* Virtual Key Rankings Tab */}
+						<TabsContent value="virtual-key-rankings" {...(exportingAll && { forceMount: true })}>
+							<div id="dashboard-section-virtual-key-rankings">
+								<DimensionRankingsTabView
+									ref={virtualKeyRankingsRef}
+									filters={filters}
+									active={activeTab === "virtual-key-rankings" || exportingAll}
+									dimension="virtual_key"
+									dimensionLabel="Virtual Key"
+									testIdPrefix="dashboard-virtual-key-rankings"
+									dataKey="virtualKeyRankingsData"
+									pdfMode={isExportingTab("virtual-key-rankings")}
+								/>
+							</div>
+						</TabsContent>
+						{/* App Rankings Tab */}
+						<TabsContent value="app-rankings" {...(isExportingTab("app-rankings") && { forceMount: true })}>
+							<div id="dashboard-section-app-rankings">
+								<DimensionRankingsTabView
+									ref={appRankingsRef}
+									filters={filters}
+									active={activeTab === "app-rankings" || isExportingTab("app-rankings")}
+									dimension="app"
+									dimensionLabel="App"
+									testIdPrefix="dashboard-app-rankings"
+									dataKey="appRankingsData"
+									pdfMode={isExportingTab("app-rankings")}
+								/>
+							</div>
+						</TabsContent>
+					</Tabs>
 				</div>
-			</div>
-
-			{/* Tabs */}
-			<Tabs value={urlState.tab} onValueChange={handleTabChange}>
-				<TabsList className="mb-2">
-					<TabsTrigger value="overview" data-testid="dashboard-tab-overview">
-						Overview
-					</TabsTrigger>
-					<TabsTrigger value="provider-usage" data-testid="dashboard-tab-provider-usage">
-						Provider Usage
-					</TabsTrigger>
-					<TabsTrigger value="rankings" data-testid="dashboard-tab-rankings">
-						Model Rankings
-					</TabsTrigger>
-					<TabsTrigger value="mcp" data-testid="dashboard-tab-mcp">
-						MCP usage
-					</TabsTrigger>
-				</TabsList>
-
-				{/* Overview Tab */}
-				<TabsContent value="overview">
-					<OverviewTab
-						histogramData={histogramData}
-						tokenData={tokenData}
-						costData={costData}
-						modelData={modelData}
-						latencyData={latencyData}
-						loadingHistogram={loadingHistogram}
-						loadingTokens={loadingTokens}
-						loadingCost={loadingCost}
-						loadingModels={loadingModels}
-						loadingLatency={loadingLatency}
-						startTime={urlState.start_time}
-						endTime={urlState.end_time}
-						volumeChartType={toChartType(urlState.volume_chart)}
-						tokenChartType={toChartType(urlState.token_chart)}
-						costChartType={toChartType(urlState.cost_chart)}
-						modelChartType={toChartType(urlState.model_chart)}
-						latencyChartType={toChartType(urlState.latency_chart)}
-						costModel={urlState.cost_model}
-						usageModel={urlState.usage_model}
-						costModels={costModels}
-						usageModels={usageModels}
-						availableModels={availableModels}
-						onVolumeChartToggle={handleVolumeChartToggle}
-						onTokenChartToggle={handleTokenChartToggle}
-						onCostChartToggle={handleCostChartToggle}
-						onModelChartToggle={handleModelChartToggle}
-						onLatencyChartToggle={handleLatencyChartToggle}
-						onCostModelChange={handleCostModelChange}
-						onUsageModelChange={handleUsageModelChange}
-					/>
-				</TabsContent>
-
-				{/* Provider Usage Tab */}
-				<TabsContent value="provider-usage">
-					<ProviderUsageTab
-						providerCostData={providerCostData}
-						providerTokenData={providerTokenData}
-						providerLatencyData={providerLatencyData}
-						loadingProviderCost={loadingProviderCost}
-						loadingProviderTokens={loadingProviderTokens}
-						loadingProviderLatency={loadingProviderLatency}
-						startTime={urlState.start_time}
-						endTime={urlState.end_time}
-						providerCostChartType={toChartType(urlState.provider_cost_chart)}
-						providerTokenChartType={toChartType(urlState.provider_token_chart)}
-						providerLatencyChartType={toChartType(urlState.provider_latency_chart)}
-						providerCostProvider={urlState.provider_cost_provider}
-						providerTokenProvider={urlState.provider_token_provider}
-						providerLatencyProvider={urlState.provider_latency_provider}
-						availableProviders={availableProviders}
-						providerCostProviders={providerCostProviders}
-						providerTokenProviders={providerTokenProviders}
-						providerLatencyProviders={providerLatencyProviders}
-						onProviderCostChartToggle={handleProviderCostChartToggle}
-						onProviderTokenChartToggle={handleProviderTokenChartToggle}
-						onProviderLatencyChartToggle={handleProviderLatencyChartToggle}
-						onProviderCostProviderChange={handleProviderCostProviderChange}
-						onProviderTokenProviderChange={handleProviderTokenProviderChange}
-						onProviderLatencyProviderChange={handleProviderLatencyProviderChange}
-					/>
-				</TabsContent>
-
-				{/* Model Rankings Tab */}
-				<TabsContent value="rankings">
-					<ModelRankingsTab
-						rankingsData={rankingsData}
-						loading={loadingRankings}
-						modelData={modelData}
-						loadingModels={loadingModels}
-						startTime={urlState.start_time}
-						endTime={urlState.end_time}
-					/>
-				</TabsContent>
-
-				{/* MCP Tab */}
-				<TabsContent value="mcp">
-					<MCPTab
-						mcpHistogramData={mcpHistogramData}
-						mcpCostData={mcpCostData}
-						mcpTopToolsData={mcpTopToolsData}
-						loadingMcpHistogram={loadingMcpHistogram}
-						loadingMcpCost={loadingMcpCost}
-						loadingMcpTopTools={loadingMcpTopTools}
-						startTime={urlState.start_time}
-						endTime={urlState.end_time}
-						mcpVolumeChartType={toChartType(urlState.mcp_volume_chart)}
-						mcpCostChartType={toChartType(urlState.mcp_cost_chart)}
-						onMcpVolumeChartToggle={handleMcpVolumeChartToggle}
-						onMcpCostChartToggle={handleMcpCostChartToggle}
-					/>
-				</TabsContent>
-			</Tabs>
+			</ScrollArea>
 		</div>
 	);
 }

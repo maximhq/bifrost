@@ -1,7 +1,6 @@
 package semanticcache
 
 import (
-	"context"
 	"strings"
 	"testing"
 	"time"
@@ -13,12 +12,13 @@ import (
 
 // TestSemanticCacheBasicFlow tests the complete semantic cache flow
 func TestSemanticCacheBasicFlow(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	ctx.SetValue(CacheKey, "test-cache-enabled")
-	
+	ctx := newBaseTestContext()
+	ctx.SetValue(CacheKey, keyForTest(t, "test-cache-enabled"))
+
 	// Test request
 	request := &schemas.BifrostRequest{
 		RequestType: schemas.ChatCompletionRequest,
@@ -75,9 +75,9 @@ func TestSemanticCacheBasicFlow(t *testing.T) {
 				},
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				Provider:       schemas.OpenAI,
-				ModelRequested: "gpt-4o-mini",
-				RequestType:    schemas.ChatCompletionRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4o-mini",
+				RequestType:            schemas.ChatCompletionRequest,
 			},
 		},
 	}
@@ -107,8 +107,8 @@ func TestSemanticCacheBasicFlow(t *testing.T) {
 	t.Log("Testing second identical request (expecting cache hit)...")
 
 	// Reset context for second request
-	ctx2 := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	ctx2.SetValue(CacheKey, "test-cache-enabled")
+	ctx2 := newBaseTestContext()
+	ctx2.SetValue(CacheKey, keyForTest(t, "test-cache-enabled"))
 
 	modifiedReq2, shortCircuit2, err := setup.Plugin.PreLLMHook(ctx2, request)
 	if err != nil {
@@ -158,11 +158,12 @@ func TestSemanticCacheBasicFlow(t *testing.T) {
 
 // TestSemanticCacheStrictFiltering tests that the cache respects parameter differences
 func TestSemanticCacheStrictFiltering(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	ctx.SetValue(CacheKey, "test-cache-enabled")
+	ctx := newBaseTestContext()
+	ctx.SetValue(CacheKey, keyForTest(t, "test-cache-enabled"))
 
 	// Base request
 	baseRequest := &schemas.BifrostRequest{
@@ -213,9 +214,9 @@ func TestSemanticCacheStrictFiltering(t *testing.T) {
 				},
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				Provider:       schemas.OpenAI,
-				ModelRequested: "gpt-4o-mini",
-				RequestType:    schemas.ChatCompletionRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4o-mini",
+				RequestType:            schemas.ChatCompletionRequest,
 			},
 		},
 	}
@@ -231,8 +232,8 @@ func TestSemanticCacheStrictFiltering(t *testing.T) {
 	// Second request with different temperature - should be cache miss
 	t.Log("Testing second request with temperature=0.5 (expecting cache miss)...")
 
-	ctx2 := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	ctx2.SetValue(CacheKey, "test-cache-enabled")
+	ctx2 := newBaseTestContext()
+	ctx2.SetValue(CacheKey, keyForTest(t, "test-cache-enabled"))
 
 	modifiedRequest := &schemas.BifrostRequest{
 		RequestType: schemas.ChatCompletionRequest,
@@ -268,8 +269,8 @@ func TestSemanticCacheStrictFiltering(t *testing.T) {
 	// Third request with different model - should be cache miss
 	t.Log("Testing third request with different model (expecting cache miss)...")
 
-	ctx3 := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	ctx3.SetValue(CacheKey, "test-cache-enabled")
+	ctx3 := newBaseTestContext()
+	ctx3.SetValue(CacheKey, keyForTest(t, "test-cache-enabled"))
 
 	modifiedRequest2 := &schemas.BifrostRequest{
 		RequestType: schemas.ChatCompletionRequest,
@@ -306,11 +307,12 @@ func TestSemanticCacheStrictFiltering(t *testing.T) {
 
 // TestSemanticCacheStreamingFlow tests streaming response caching
 func TestSemanticCacheStreamingFlow(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)		
-	ctx.SetValue(CacheKey, "test-cache-enabled")
+	ctx := newBaseTestContext()
+	ctx.SetValue(CacheKey, keyForTest(t, "test-cache-enabled"))
 
 	request := &schemas.BifrostRequest{
 		RequestType: schemas.ChatCompletionStreamRequest,
@@ -356,9 +358,19 @@ func TestSemanticCacheStreamingFlow(t *testing.T) {
 
 	for i, chunk := range chunks {
 		var finishReason *string
-		if i == len(chunks)-1 {
+		isFinal := i == len(chunks)-1
+		if isFinal {
 			finishReason = bifrost.Ptr("stop")
 		}
+
+		// Bifrost's stream pipeline sets this on the final chunk before
+		// invoking PostLLMHook (see core/bifrost.go where it stamps
+		// BifrostContextKeyStreamEndIndicator=true). The cache plugin's
+		// PostLLMHook flushes the accumulator only when IsFinalChunk(ctx)
+		// returns true, so a hand-rolled stream simulation must mirror
+		// that — otherwise the entry is never written and the second
+		// request misses.
+		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, isFinal)
 
 		chunkResponse := &schemas.BifrostResponse{
 			ChatResponse: &schemas.BifrostChatResponse{
@@ -375,10 +387,10 @@ func TestSemanticCacheStreamingFlow(t *testing.T) {
 					},
 				},
 				ExtraFields: schemas.BifrostResponseExtraFields{
-					Provider:       schemas.OpenAI,
-					ModelRequested: "gpt-4o-mini",
-					RequestType:    schemas.ChatCompletionStreamRequest,
-					ChunkIndex:     i,
+					Provider:               schemas.OpenAI,
+					OriginalModelRequested: "gpt-4o-mini",
+					RequestType:            schemas.ChatCompletionStreamRequest,
+					ChunkIndex:             i,
 				},
 			},
 		}
@@ -395,8 +407,8 @@ func TestSemanticCacheStreamingFlow(t *testing.T) {
 	// Test cache retrieval for streaming
 	t.Log("Testing streaming cache retrieval...")
 
-	ctx2 := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	ctx2.SetValue(CacheKey, "test-cache-enabled")
+	ctx2 := newBaseTestContext()
+	ctx2.SetValue(CacheKey, keyForTest(t, "test-cache-enabled"))
 
 	_, shortCircuit2, err := setup.Plugin.PreLLMHook(ctx2, request)
 	if err != nil {
@@ -404,10 +416,8 @@ func TestSemanticCacheStreamingFlow(t *testing.T) {
 	}
 
 	if shortCircuit2 == nil {
-		t.Log("⚠️ Expected streaming cache hit, but got cache miss - this may be expected with the new unified storage")
-		return
+		t.Fatal("expected streaming cache hit on identical second request after the first stream was fully accumulated and stored")
 	}
-
 	if shortCircuit2.Stream == nil {
 		t.Fatal("Cache hit but stream is nil")
 	}
@@ -434,12 +444,13 @@ func TestSemanticCacheStreamingFlow(t *testing.T) {
 
 // TestSemanticCache_NoCacheWhenKeyMissing verifies cache is disabled when cache key is missing from context
 func TestSemanticCache_NoCacheWhenKeyMissing(t *testing.T) {
+	t.Parallel()
 	t.Log("Testing cache behavior when cache key is missing...")
 
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx := newBaseTestContext()
 	// Don't set the cache key - cache should be disabled
 
 	request := &schemas.BifrostRequest{
@@ -473,12 +484,13 @@ func TestSemanticCache_NoCacheWhenKeyMissing(t *testing.T) {
 
 // TestSemanticCache_CustomTTLHandling verifies cache respects custom TTL values from context
 func TestSemanticCache_CustomTTLHandling(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
 	// Configure plugin with custom TTL key
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	ctx.SetValue(CacheKey, "test-cache-enabled")
+	ctx := newBaseTestContext()
+	ctx.SetValue(CacheKey, keyForTest(t, "test-cache-enabled"))
 	ctx.SetValue(CacheTTLKey, 1*time.Minute) // Custom TTL
 
 	request := &schemas.BifrostRequest{
@@ -524,9 +536,9 @@ func TestSemanticCache_CustomTTLHandling(t *testing.T) {
 				},
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				Provider:       schemas.OpenAI,
-				ModelRequested: "gpt-4o-mini",
-				RequestType:    schemas.ChatCompletionRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4o-mini",
+				RequestType:            schemas.ChatCompletionRequest,
 			},
 		},
 	}
@@ -538,20 +550,37 @@ func TestSemanticCache_CustomTTLHandling(t *testing.T) {
 
 	WaitForCache(setup.Plugin)
 
-	t.Log("✅ Custom TTL configuration test passed!")
+	// Read back: a second identical request must hit AND the entry's TTL
+	// must reflect the per-request override (1 minute), not the plugin
+	// default (5 minutes). expires_at is exposed via cache_debug isn't
+	// directly readable, but we can confirm the entry is present.
+	ctx2 := newBaseTestContext()
+	ctx2.SetValue(CacheKey, keyForTest(t, "test-cache-enabled"))
+	ctx2.SetValue(CacheTTLKey, 1*time.Minute)
+	_, sc2, err := setup.Plugin.PreLLMHook(ctx2, request)
+	if err != nil {
+		t.Fatalf("Second PreLLMHook failed: %v", err)
+	}
+	if sc2 == nil || sc2.Response == nil {
+		t.Fatal("expected cache hit on second identical request with custom TTL")
+	}
+	if cd := sc2.Response.GetExtraFields().CacheDebug; cd == nil || !cd.CacheHit {
+		t.Fatal("expected CacheDebug.CacheHit=true on hit")
+	}
+	t.Log("✅ Custom TTL configuration test passed (entry written and retrievable)")
 }
 
 // TestSemanticCache_CustomThresholdHandling verifies cache respects custom similarity threshold from context
 func TestSemanticCache_CustomThresholdHandling(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
-	// Configure plugin with custom threshold key
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)	
-	ctx.SetValue(CacheKey, "test-cache-enabled")
-	ctx.SetValue(CacheThresholdKey, 0.95) // Very high threshold
-
-	request := &schemas.BifrostRequest{
+	// Seed an entry with the DEFAULT threshold (0.8) so a follow-up
+	// request can attempt semantic search against it.
+	seedCtx := newBaseTestContext()
+	seedCtx.SetValue(CacheKey, keyForTest(t, "threshold-seed"))
+	seedReq := &schemas.BifrostRequest{
 		RequestType: schemas.ChatCompletionRequest,
 		ChatRequest: &schemas.BifrostChatRequest{
 			Provider: schemas.OpenAI,
@@ -567,21 +596,57 @@ func TestSemanticCache_CustomThresholdHandling(t *testing.T) {
 		},
 	}
 
-	// Test that custom threshold is used (this would need semantic search to be fully testable)
-	_, shortCircuit, err := setup.Plugin.PreLLMHook(ctx, request)
+	_, sc1, err := setup.Plugin.PreLLMHook(seedCtx, seedReq)
 	if err != nil {
-		t.Fatalf("PreLLMHook failed: %v", err)
+		t.Fatalf("seed PreLLMHook failed: %v", err)
 	}
-
-	if shortCircuit != nil {
-		t.Fatal("Expected cache miss with high threshold, but got cache hit")
+	if sc1 != nil {
+		t.Fatal("Expected initial cache miss")
 	}
+	seedRes := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			ID: "threshold-test",
+			Choices: []schemas.BifrostResponseChoice{{
+				ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+					Message: &schemas.ChatMessage{
+						Role:    "assistant",
+						Content: &schemas.ChatMessageContent{ContentStr: bifrost.Ptr("seed response")},
+					},
+				},
+			}},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				Provider: schemas.OpenAI, OriginalModelRequested: "gpt-4o-mini", RequestType: schemas.ChatCompletionRequest,
+			},
+		},
+	}
+	if _, _, err := setup.Plugin.PostLLMHook(seedCtx, seedRes, nil); err != nil {
+		t.Fatalf("seed PostLLMHook failed: %v", err)
+	}
+	WaitForCache(setup.Plugin)
 
-	t.Log("✅ Custom threshold configuration test passed!")
+	// Identical-content request with a HIGH threshold (0.95) MUST still hit
+	// via the direct path (direct hashing ignores threshold). Threshold only
+	// gates semantic search; a same-input request matches the deterministic
+	// directCacheID regardless. This proves the override doesn't break direct.
+	hitCtx := newBaseTestContext()
+	hitCtx.SetValue(CacheKey, keyForTest(t, "threshold-seed"))
+	hitCtx.SetValue(CacheThresholdKey, 0.95)
+	_, sc2, err := setup.Plugin.PreLLMHook(hitCtx, seedReq)
+	if err != nil {
+		t.Fatalf("hit PreLLMHook failed: %v", err)
+	}
+	if sc2 == nil || sc2.Response == nil {
+		t.Fatal("expected direct cache hit even with high threshold (direct ignores threshold)")
+	}
+	if cd := sc2.Response.GetExtraFields().CacheDebug; cd == nil || cd.HitType == nil || *cd.HitType != string(CacheTypeDirect) {
+		t.Fatalf("expected hit_type=direct, got cache_debug=%+v", cd)
+	}
+	t.Log("✅ Custom threshold override tracked through PreLLMHook without breaking direct path")
 }
 
 // TestSemanticCache_ProviderModelCachingFlags verifies cache behavior with provider/model caching flags
 func TestSemanticCache_ProviderModelCachingFlags(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
@@ -589,8 +654,8 @@ func TestSemanticCache_ProviderModelCachingFlags(t *testing.T) {
 	setup.Config.CacheByProvider = bifrost.Ptr(false)
 	setup.Config.CacheByModel = bifrost.Ptr(false)
 
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	ctx.SetValue(CacheKey, "test-cache-enabled")
+	ctx := newBaseTestContext()
+	ctx.SetValue(CacheKey, keyForTest(t, "test-cache-enabled"))
 
 	request1 := &schemas.BifrostRequest{
 		RequestType: schemas.ChatCompletionRequest,
@@ -635,9 +700,9 @@ func TestSemanticCache_ProviderModelCachingFlags(t *testing.T) {
 				},
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				Provider:       schemas.OpenAI,
-				ModelRequested: "gpt-4o-mini",
-				RequestType:    schemas.ChatCompletionRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4o-mini",
+				RequestType:            schemas.ChatCompletionRequest,
 			},
 		},
 	}
@@ -666,29 +731,36 @@ func TestSemanticCache_ProviderModelCachingFlags(t *testing.T) {
 		},
 	}
 
-	ctx2 := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	ctx2.SetValue(CacheKey, "test-cache-enabled")
+	ctx2 := newBaseTestContext()
+	ctx2.SetValue(CacheKey, keyForTest(t, "test-cache-enabled"))
 
 	_, shortCircuit2, err := setup.Plugin.PreLLMHook(ctx2, request2)
 	if err != nil {
 		t.Fatalf("Second PreLLMHook failed: %v", err)
 	}
 
-	// With provider/model caching disabled, we might get cache hits across different providers/models
-	// This behavior depends on the exact implementation of hash generation
-	t.Logf("Cache behavior with disabled provider/model flags: hit=%v", shortCircuit2 != nil)
-
-	t.Log("✅ Provider/model caching flags test passed!")
+	// CacheByProvider=false + CacheByModel=false means provider and model are
+	// stripped from the directCacheID input. Same content + same cache_key
+	// must produce the SAME directCacheID, so the second request MUST hit
+	// even though it specifies a completely different provider/model.
+	if shortCircuit2 == nil || shortCircuit2.Response == nil {
+		t.Fatal("expected cache hit across providers/models when CacheByProvider+CacheByModel=false")
+	}
+	if cd := shortCircuit2.Response.GetExtraFields().CacheDebug; cd == nil || !cd.CacheHit {
+		t.Fatalf("expected CacheDebug.CacheHit=true, got %+v", cd)
+	}
+	t.Log("✅ CacheByProvider=false + CacheByModel=false correctly shares entries across providers/models")
 }
 
 // TestSemanticCache_ConfigurationEdgeCases verifies edge cases in configuration handling
 func TestSemanticCache_ConfigurationEdgeCases(t *testing.T) {
+	t.Parallel()
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
 	// Test with invalid TTL type in context
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	ctx.SetValue(CacheKey, "test-cache-enabled")
+	ctx := newBaseTestContext()
+	ctx.SetValue(CacheKey, keyForTest(t, "test-cache-enabled"))
 	ctx.SetValue(CacheTTLKey, "not-a-duration") // Invalid TTL type
 
 	request := &schemas.BifrostRequest{
@@ -712,25 +784,63 @@ func TestSemanticCache_ConfigurationEdgeCases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PreLLMHook failed with invalid TTL: %v", err)
 	}
-
 	if shortCircuit != nil {
 		t.Fatal("Unexpected cache hit with invalid TTL")
 	}
 
-	// Test with invalid threshold type
-	ctx2 := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	ctx2.SetValue(CacheKey, "test-cache-enabled")
-	ctx2.SetValue(CacheThresholdKey, "not-a-float") // Invalid threshold type
+	// Plugin must FALL BACK to its default TTL — verify by writing then
+	// reading the entry. If the invalid TTL caused caching to silently
+	// disable, the second request would miss.
+	res := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			ID: "edge-ttl",
+			Choices: []schemas.BifrostResponseChoice{{
+				ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+					Message: &schemas.ChatMessage{Role: "assistant", Content: &schemas.ChatMessageContent{ContentStr: bifrost.Ptr("ok")}},
+				},
+			}},
+			ExtraFields: schemas.BifrostResponseExtraFields{Provider: schemas.OpenAI, OriginalModelRequested: "gpt-4o-mini", RequestType: schemas.ChatCompletionRequest},
+		},
+	}
+	if _, _, err := setup.Plugin.PostLLMHook(ctx, res, nil); err != nil {
+		t.Fatalf("PostLLMHook failed: %v", err)
+	}
+	WaitForCache(setup.Plugin)
 
-	// Should handle invalid threshold gracefully
-	_, shortCircuit2, err := setup.Plugin.PreLLMHook(ctx2, request)
+	ctxRead := newBaseTestContext()
+	ctxRead.SetValue(CacheKey, keyForTest(t, "test-cache-enabled"))
+	ctxRead.SetValue(CacheTTLKey, "not-a-duration")
+	if _, sc, err := setup.Plugin.PreLLMHook(ctxRead, request); err != nil {
+		t.Fatalf("read PreLLMHook failed: %v", err)
+	} else if sc == nil {
+		t.Fatal("expected cache hit — invalid TTL should have fallen back to default and entry should be retrievable")
+	}
+
+	// Test with invalid threshold type — same expectation: fallback works.
+	ctx2 := newBaseTestContext()
+	ctx2.SetValue(CacheKey, keyForTest(t, "test-cache-threshold-edge"))
+	ctx2.SetValue(CacheThresholdKey, "not-a-float")
+
+	_, sc2, err := setup.Plugin.PreLLMHook(ctx2, request)
 	if err != nil {
 		t.Fatalf("PreLLMHook failed with invalid threshold: %v", err)
 	}
+	if sc2 != nil {
+		t.Fatal("Unexpected cache hit on first call with invalid threshold")
+	}
+	if _, _, err := setup.Plugin.PostLLMHook(ctx2, res, nil); err != nil {
+		t.Fatalf("PostLLMHook failed: %v", err)
+	}
+	WaitForCache(setup.Plugin)
 
-	if shortCircuit2 != nil {
-		t.Fatal("Unexpected cache hit with invalid threshold")
+	ctx2Read := newBaseTestContext()
+	ctx2Read.SetValue(CacheKey, keyForTest(t, "test-cache-threshold-edge"))
+	ctx2Read.SetValue(CacheThresholdKey, "still-not-a-float")
+	if _, sc, err := setup.Plugin.PreLLMHook(ctx2Read, request); err != nil {
+		t.Fatalf("threshold read PreLLMHook failed: %v", err)
+	} else if sc == nil {
+		t.Fatal("expected cache hit — invalid threshold should have fallen back to default")
 	}
 
-	t.Log("✅ Configuration edge cases test passed!")
+	t.Log("✅ Configuration edge cases test passed (invalid TTL/threshold fall back gracefully)")
 }

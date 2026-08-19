@@ -1,13 +1,22 @@
 # AWS Bedrock - Batch Inference Endpoints
 
-batch-jobs:
+batch-job-create:
   post:
     operationId: bedrockCreateBatchJob
     summary: Create batch inference job (Bedrock format)
     description: |
       Creates a batch inference job using AWS Bedrock format.
+      Routes to native Bedrock by default; set `x-model-provider` to route the
+      job to another provider (`openai`, `gemini`, etc.).
     tags:
-      - Bedrock Integration
+    - Bedrock Integration
+    parameters:
+    - name: x-model-provider
+      in: header
+      required: false
+      schema:
+        type: string
+      description: Optional provider override for cross-provider batch routing.
     requestBody:
       required: true
       content:
@@ -33,35 +42,49 @@ batch-jobs:
           application/json:
             schema:
               $ref: '../../../schemas/integrations/bedrock/common.yaml#/BedrockError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+batch-jobs-list:
   get:
     operationId: bedrockListBatchJobs
     summary: List batch inference jobs (Bedrock format)
     description: |
       Lists batch inference jobs using AWS Bedrock format.
     tags:
-      - Bedrock Integration
+    - Bedrock Integration
     parameters:
-      - name: maxResults
-        in: query
-        schema:
-          type: integer
-        description: Maximum number of results to return
-      - name: nextToken
-        in: query
-        schema:
-          type: string
-        description: Token for pagination
-      - name: statusEquals
-        in: query
-        schema:
-          type: string
-          enum: [Submitted, InProgress, Completed, Failed, Stopping, Stopped, PartiallyCompleted, Expired, Validating, Scheduled]
-        description: Filter by status
-      - name: nameContains
-        in: query
-        schema:
-          type: string
-        description: Filter by job name containing this string
+    - name: maxResults
+      in: query
+      schema:
+        type: integer
+      description: Maximum number of results to return
+    - name: nextToken
+      in: query
+      schema:
+        type: string
+      description: Token for pagination
+    - name: statusEquals
+      in: query
+      schema:
+        type: string
+        enum: [Submitted, InProgress, Completed, Failed, Stopping, Stopped, PartiallyCompleted, Expired, Validating,
+            Scheduled]
+      description: Filter by status
+    - name: nameContains
+      in: query
+      schema:
+        type: string
+      description: Filter by job name containing this string
+    - name: x-model-provider
+      in: header
+      required: false
+      schema:
+        type: string
+      description: Optional provider override for cross-provider batch routing.
     responses:
       '200':
         description: Successful response
@@ -81,6 +104,11 @@ batch-jobs:
           application/json:
             schema:
               $ref: '../../../schemas/integrations/bedrock/common.yaml#/BedrockError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
 
 batch-job-by-id:
   get:
@@ -89,14 +117,23 @@ batch-job-by-id:
     description: |
       Retrieves a batch inference job using AWS Bedrock format.
     tags:
-      - Bedrock Integration
+    - Bedrock Integration
     parameters:
-      - name: jobIdentifier
-        in: path
-        required: true
-        schema:
-          type: string
-        description: Job identifier
+    - name: job_arn
+      in: path
+      required: true
+      schema:
+        type: string
+      description: |
+        Bedrock job ARN (URL-encoded). For non-Bedrock providers, the
+        `arn:aws:bedrock:us-east-1:444444444444:batch:` prefix is stripped
+        automatically before routing.
+    - name: x-model-provider
+      in: header
+      required: false
+      schema:
+        type: string
+      description: Optional provider override for cross-provider batch routing.
     responses:
       '200':
         description: Successful response
@@ -117,21 +154,36 @@ batch-job-by-id:
             schema:
               $ref: '../../../schemas/integrations/bedrock/common.yaml#/BedrockError'
 
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
 batch-job-cancel:
   post:
     operationId: bedrockCancelBatchJob
     summary: Cancel batch inference job (Bedrock format)
     description: |
-      Cancels a batch inference job using AWS Bedrock format.
+      Stops a batch inference job using AWS Bedrock format.
     tags:
-      - Bedrock Integration
+    - Bedrock Integration
     parameters:
-      - name: jobIdentifier
-        in: path
-        required: true
-        schema:
-          type: string
-        description: Job identifier to cancel
+    - name: job_arn
+      in: path
+      required: true
+      schema:
+        type: string
+      description: |
+        Bedrock job ARN to stop (URL-encoded). For non-Bedrock providers, the
+        `arn:aws:bedrock:us-east-1:444444444444:batch:` prefix is stripped
+        automatically before routing.
+    - name: x-model-provider
+      in: header
+      required: false
+      schema:
+        type: string
+      description: Optional provider override for cross-provider batch routing.
     responses:
       '200':
         description: Successful response
@@ -151,3 +203,8 @@ batch-job-cancel:
           application/json:
             schema:
               $ref: '../../../schemas/integrations/bedrock/common.yaml#/BedrockError'
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

@@ -1,3 +1,30 @@
+plugins-builtins:
+  get:
+    operationId: listBuiltinPlugins
+    summary: List built-in plugin names
+    description: |
+      Returns the canonical list of built-in plugin names available in this Bifrost build.
+      Use this to discover which plugins can be enabled without supplying a custom binary.
+    tags:
+      - Plugins
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Built-in plugin names retrieved successfully
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                plugins:
+                  type: array
+                  description: Canonical names of built-in plugins
+                  items:
+                    type: string
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
 plugins:
   get:
     operationId: listPlugins
@@ -9,6 +36,8 @@ plugins:
       The `types` array in the status shows which interfaces the plugin implements (llm, mcp, http).
     tags:
       - Plugins
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -22,7 +51,16 @@ plugins:
   post:
     operationId: createPlugin
     summary: Create a new plugin
-    description: Creates a new plugin with the specified configuration.
+    description: |
+      Creates a new plugin with the specified configuration.
+      Setting `path` on a non-builtin plugin loads native code (a .so, via dlopen) into the
+      gateway process and requires genuine admin authentication - it is refused with 403 if
+      dashboard authentication is disabled or unconfigured, even though other management
+      endpoints remain reachable in that state. Only `http`/`https` URLs are fetched for
+      remote paths, and by default only ones resolving to a public address; private,
+      loopback, link-local, and CGNAT addresses are additionally allowed if explicitly
+      listed in the deploy-time `server.plugin_download_private_allowlist` config. Local
+      filesystem paths are unaffected.
     tags:
       - Plugins
     requestBody:
@@ -31,6 +69,8 @@ plugins:
         application/json:
           schema:
             $ref: '../../schemas/management/plugins.yaml#/CreatePluginRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '201':
         description: Plugin created successfully
@@ -40,6 +80,10 @@ plugins:
               $ref: '../../schemas/management/plugins.yaml#/PluginResponse'
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '403':
+        description: >-
+          A non-builtin path was supplied and dashboard authentication is disabled or
+          unconfigured (the request was not genuinely authenticated)
       '409':
         description: Plugin already exists
         content:
@@ -67,6 +111,8 @@ plugins:
         description: Plugin display name (the config field `name`, not the internal `actualName` from GetName())
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -92,6 +138,14 @@ plugins:
       Updates a plugin's configuration. Will reload or stop the plugin based on enabled status.
       The response `actualName` field shows the plugin name from GetName() (used as the map key),
       which may differ from the display name (`name`).
+      Setting `path` on a non-builtin plugin loads native code (a .so, via dlopen) into the
+      gateway process and requires genuine admin authentication - it is refused with 403 if
+      dashboard authentication is disabled or unconfigured, even though other management
+      endpoints remain reachable in that state. Only `http`/`https` URLs are fetched for
+      remote paths, and by default only ones resolving to a public address; private,
+      loopback, link-local, and CGNAT addresses are additionally allowed if explicitly
+      listed in the deploy-time `server.plugin_download_private_allowlist` config. Local
+      filesystem paths are unaffected.
     tags:
       - Plugins
     parameters:
@@ -107,6 +161,8 @@ plugins:
         application/json:
           schema:
             $ref: '../../schemas/management/plugins.yaml#/UpdatePluginRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Plugin updated successfully
@@ -116,6 +172,10 @@ plugins:
               $ref: '../../schemas/management/plugins.yaml#/PluginResponse'
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '403':
+        description: >-
+          A non-builtin path was supplied and dashboard authentication is disabled or
+          unconfigured (the request was not genuinely authenticated)
       '404':
         description: Plugin not found
         content:
@@ -138,6 +198,8 @@ plugins:
         description: Plugin display name (the config field `name`, not the internal `actualName` from GetName())
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Plugin deleted successfully

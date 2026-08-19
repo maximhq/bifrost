@@ -1,5 +1,3 @@
-"use client";
-
 import { cn } from "@/lib/utils";
 import { X } from "lucide-react";
 import React, { useEffect, useState } from "react";
@@ -39,7 +37,7 @@ export function PromoCardStack({ cards, className = "", onCardsEmpty, onDismiss 
 	useEffect(() => {
 		// Skip syncing while animating to prevent interrupting dismiss animation
 		if (isAnimating) return;
-		
+
 		// Sort so non-dismissible cards appear at the top, excluding dismissed cards
 		const sortedCards = [...cards]
 			.filter((card) => !dismissedIdsRef.current.has(card.id))
@@ -112,10 +110,12 @@ export function PromoCardStack({ cards, className = "", onCardsEmpty, onDismiss 
 								card.variant === "warning" && "border-amber-500/50 bg-amber-50 dark:border-amber-500/70 dark:bg-amber-950/20",
 							)}
 						>
-							<CardHeader className={cn(
-								"flex-shrink-0 p-1 text-sm font-medium",
-								card.variant === "warning" ? "text-amber-800 dark:text-amber-400" : "text-muted-foreground",
-							)}>
+							<CardHeader
+								className={cn(
+									"flex-shrink-0 p-1 text-sm font-medium",
+									card.variant === "warning" ? "text-amber-800 dark:text-amber-400" : "text-muted-foreground",
+								)}
+							>
 								<div className="flex items-start justify-between">
 									<div className="min-w-0 flex-1">{typeof card.title === "string" ? card.title : card.title}</div>
 									{card.dismissible !== false && isTopCard && (

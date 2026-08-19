@@ -1,0 +1,15 @@
+---
+title: "v2.1.25"
+description: "Helm v2.1.25 changelog - 2026-06-25"
+---
+
+<Update label="Bifrost Helm" description="v2.1.25">
+
+## Changelog
+
+- `evaluation_mode` for guardrail rules (`bifrost.guardrails.rules[].evaluation_mode`): `bundled` (default, evaluate all turns together) or `per_turn` (evaluate each turn independently).
+- `group_traces_by_session` for the OTEL and Datadog plugin configs. When `true`, requests sharing the same `x-bf-session-id` header are grouped into a single trace; an inbound W3C `traceparent` always takes priority. Defaults to `false`.
+- `storage.configStore.vaultStore` in `values.yaml` with full commented-out examples for `aws-secrets-manager`, `gcp-secret-manager`, and `hashicorp-vault`. `accessMode: read_and_write` stores plaintext config fields as vault secrets; `read_only` (default) only resolves existing `vault.<path>` references.
+- `dns_names` in cluster discovery config now accepts `env.VAR_NAME` references in addition to literal hostnames, consistent with other secret-bearing fields across the chart.
+
+</Update>

@@ -2,18 +2,21 @@ package handlers
 
 import (
 	"bytes"
-	"compress/zlib"
 	"compress/gzip"
+	"compress/zlib"
+	"context"
 	cryptoRand "crypto/rand"
 	"encoding/json"
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/andybalholm/brotli"
 	"github.com/klauspost/compress/zstd"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -35,7 +38,7 @@ func (m *mockLogger) LogHTTPRequest(level schemas.LogLevel, msg string) schemas.
 // TestCorsMiddleware_LocalhostOrigins tests that localhost origins are always allowed
 func TestCorsMiddleware_LocalhostOrigins(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{},
 		},
 	}
@@ -60,7 +63,7 @@ func TestCorsMiddleware_LocalhostOrigins(t *testing.T) {
 				nextCalled = true
 			}
 
-			middleware := CorsMiddleware(config)
+			middleware := NewCorsMiddleware(config).Middleware()
 			handler := middleware(next)
 			handler(ctx)
 
@@ -71,7 +74,7 @@ func TestCorsMiddleware_LocalhostOrigins(t *testing.T) {
 			if string(ctx.Response.Header.Peek("Access-Control-Allow-Methods")) != "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD" {
 				t.Errorf("Access-Control-Allow-Methods header not set correctly")
 			}
-			if string(ctx.Response.Header.Peek("Access-Control-Allow-Headers")) != "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout" {
+			if string(ctx.Response.Header.Peek("Access-Control-Allow-Headers")) != "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout, X-Api-Key, X-OpenAI-Agents-SDK, X-Operation-ID" {
 				t.Errorf("Access-Control-Allow-Headers header not set correctly")
 			}
 			if string(ctx.Response.Header.Peek("Access-Control-Allow-Credentials")) != "true" {
@@ -93,7 +96,7 @@ func TestCorsMiddleware_LocalhostOrigins(t *testing.T) {
 func TestCorsMiddleware_ConfiguredOrigins(t *testing.T) {
 	allowedOrigin := "https://example.com"
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{allowedOrigin},
 		},
 	}
@@ -106,7 +109,7 @@ func TestCorsMiddleware_ConfiguredOrigins(t *testing.T) {
 		nextCalled = true
 	}
 
-	middleware := CorsMiddleware(config)
+	middleware := NewCorsMiddleware(config).Middleware()
 	handler := middleware(next)
 	handler(ctx)
 
@@ -124,7 +127,7 @@ func TestCorsMiddleware_ConfiguredOrigins(t *testing.T) {
 // TestCorsMiddleware_NonAllowedOrigins tests that non-allowed origins don't get CORS headers
 func TestCorsMiddleware_NonAllowedOrigins(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{"https://allowed.com"},
 		},
 	}
@@ -137,7 +140,7 @@ func TestCorsMiddleware_NonAllowedOrigins(t *testing.T) {
 		nextCalled = true
 	}
 
-	middleware := CorsMiddleware(config)
+	middleware := NewCorsMiddleware(config).Middleware()
 	handler := middleware(next)
 	handler(ctx)
 
@@ -155,7 +158,7 @@ func TestCorsMiddleware_NonAllowedOrigins(t *testing.T) {
 // TestCorsMiddleware_PreflightAllowedOrigin tests OPTIONS preflight requests for allowed origins
 func TestCorsMiddleware_PreflightAllowedOrigin(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{"https://example.com"},
 		},
 	}
@@ -169,7 +172,7 @@ func TestCorsMiddleware_PreflightAllowedOrigin(t *testing.T) {
 		nextCalled = true
 	}
 
-	middleware := CorsMiddleware(config)
+	middleware := NewCorsMiddleware(config).Middleware()
 	handler := middleware(next)
 	handler(ctx)
 
@@ -192,7 +195,7 @@ func TestCorsMiddleware_PreflightAllowedOrigin(t *testing.T) {
 // TestCorsMiddleware_PreflightNonAllowedOrigin tests OPTIONS preflight requests for non-allowed origins
 func TestCorsMiddleware_PreflightNonAllowedOrigin(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{"https://allowed.com"},
 		},
 	}
@@ -206,7 +209,7 @@ func TestCorsMiddleware_PreflightNonAllowedOrigin(t *testing.T) {
 		nextCalled = true
 	}
 
-	middleware := CorsMiddleware(config)
+	middleware := NewCorsMiddleware(config).Middleware()
 	handler := middleware(next)
 	handler(ctx)
 
@@ -229,7 +232,7 @@ func TestCorsMiddleware_PreflightNonAllowedOrigin(t *testing.T) {
 // TestCorsMiddleware_PreflightLocalhost tests OPTIONS preflight requests for localhost
 func TestCorsMiddleware_PreflightLocalhost(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{},
 		},
 	}
@@ -243,7 +246,7 @@ func TestCorsMiddleware_PreflightLocalhost(t *testing.T) {
 		nextCalled = true
 	}
 
-	middleware := CorsMiddleware(config)
+	middleware := NewCorsMiddleware(config).Middleware()
 	handler := middleware(next)
 	handler(ctx)
 
@@ -266,7 +269,7 @@ func TestCorsMiddleware_PreflightLocalhost(t *testing.T) {
 // TestCorsMiddleware_NoOriginHeader tests behavior when no Origin header is present
 func TestCorsMiddleware_NoOriginHeader(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{},
 		},
 	}
@@ -279,7 +282,7 @@ func TestCorsMiddleware_NoOriginHeader(t *testing.T) {
 		nextCalled = true
 	}
 
-	middleware := CorsMiddleware(config)
+	middleware := NewCorsMiddleware(config).Middleware()
 	handler := middleware(next)
 	handler(ctx)
 
@@ -408,6 +411,69 @@ func TestChainMiddlewares_MiddlewareCanModifyContext(t *testing.T) {
 
 	chained := lib.ChainMiddlewares(handler, middleware)
 	chained(ctx)
+}
+
+func TestIsInferenceWSEndpoint(t *testing.T) {
+	paths := []string{
+		"/v1/responses",
+		"/v1/realtime",
+		"/responses",
+		"/realtime",
+		"/openai/v1/responses",
+		"/openai/responses",
+		"/openai/openai/responses",
+		"/openai/v1/realtime",
+		"/openai/realtime",
+		"/openai/openai/realtime",
+	}
+
+	for _, path := range paths {
+		if !isInferenceWSEndpoint(path) {
+			t.Fatalf("expected inference websocket path %s to be recognized", path)
+		}
+	}
+
+	if isInferenceWSEndpoint("/api/ws") {
+		t.Fatal("dashboard websocket path should not be treated as inference websocket")
+	}
+	if isInferenceWSEndpoint("/openai/chat/completions") {
+		t.Fatal("non-websocket OpenAI path should not be treated as inference websocket")
+	}
+}
+
+func TestIsRealtimeTransportEndpoint(t *testing.T) {
+	paths := []string{
+		"/v1/realtime",
+		"/realtime",
+		"/openai/realtime",
+		"/openai/v1/realtime",
+		"/openai/openai/realtime",
+		"/v1/realtime/calls",
+		"/realtime/calls",
+		"/openai/realtime/calls",
+		"/openai/v1/realtime/calls",
+		"/openai/openai/realtime/calls",
+	}
+
+	for _, path := range paths {
+		if !isRealtimeTransportEndpoint(path) {
+			t.Fatalf("expected realtime transport path %s to be recognized", path)
+		}
+	}
+
+	nonTransportPaths := []string{
+		"/v1/realtime/client_secrets",
+		"/v1/realtime/sessions",
+		"/openai/v1/realtime/client_secrets",
+		"/openai/v1/realtime/sessions",
+		"/v1/chat/completions",
+	}
+
+	for _, path := range nonTransportPaths {
+		if isRealtimeTransportEndpoint(path) {
+			t.Fatalf("did not expect non-transport path %s to be recognized", path)
+		}
+	}
 }
 
 // Testlib.ChainMiddlewares_ShortCircuit tests that when a middleware writes a response
@@ -569,8 +635,8 @@ func TestAuthMiddleware_DisabledAuthConfig(t *testing.T) {
 
 	am := &AuthMiddleware{}
 	am.UpdateAuthConfig(&configstore.AuthConfig{
-		AdminUserName: schemas.NewEnvVar("admin"),
-		AdminPassword: schemas.NewEnvVar("password"),
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar("password"),
 		IsEnabled:     false,
 	})
 
@@ -598,8 +664,8 @@ func TestAuthMiddleware_EnabledAuthConfig_NoAuth(t *testing.T) {
 
 	am := &AuthMiddleware{}
 	am.UpdateAuthConfig(&configstore.AuthConfig{
-		AdminUserName: schemas.NewEnvVar("admin"),
-		AdminPassword: schemas.NewEnvVar("hashedpassword"),
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar("hashedpassword"),
 		IsEnabled:     true,
 	})
 
@@ -624,14 +690,58 @@ func TestAuthMiddleware_EnabledAuthConfig_NoAuth(t *testing.T) {
 	}
 }
 
+func TestAuthMiddleware_SkillsPublicServeManagementSplit(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	am := &AuthMiddleware{}
+	am.UpdateAuthConfig(&configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar("hashedpassword"),
+		IsEnabled:     true,
+	})
+
+	t.Run("serve routes bypass auth", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI("/api/skills/serve/my-skill.git/info/refs?service=git-upload-pack")
+
+		nextCalled := false
+		handler := am.APIMiddleware()(func(ctx *fasthttp.RequestCtx) {
+			nextCalled = true
+		})
+		handler(ctx)
+
+		if !nextCalled {
+			t.Fatal("expected public skills serving route to bypass auth")
+		}
+	})
+
+	t.Run("management routes require auth", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI("/api/skills")
+
+		nextCalled := false
+		handler := am.APIMiddleware()(func(ctx *fasthttp.RequestCtx) {
+			nextCalled = true
+		})
+		handler(ctx)
+
+		if nextCalled {
+			t.Fatal("expected skills management route to require auth")
+		}
+		if ctx.Response.StatusCode() != fasthttp.StatusUnauthorized {
+			t.Fatalf("expected %d, got %d", fasthttp.StatusUnauthorized, ctx.Response.StatusCode())
+		}
+	})
+}
+
 // TestAuthMiddleware_WhitelistedRoutes tests that whitelisted routes bypass auth
 func TestAuthMiddleware_WhitelistedRoutes(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	am := &AuthMiddleware{}
 	am.UpdateAuthConfig(&configstore.AuthConfig{
-		AdminUserName: schemas.NewEnvVar("admin"),
-		AdminPassword: schemas.NewEnvVar("hashedpassword"),
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar("hashedpassword"),
 		IsEnabled:     true,
 	})
 
@@ -663,6 +773,166 @@ func TestAuthMiddleware_WhitelistedRoutes(t *testing.T) {
 	}
 }
 
+// TestAuthMiddleware_APIMiddleware_DevPrefixDoesNotMatchDevices guards against the
+// prefix-matching bug where the "/api/dev" whitelist prefix (intended for the dev pprof
+// routes under "/api/dev/pprof") also matched "/api/devices", silently bypassing auth on
+// the edge-control devices route. With the trailing-slash fix, "/api/dev/pprof" must still
+// bypass auth while "/api/devices" must NOT.
+func TestAuthMiddleware_APIMiddleware_DevPrefixDoesNotMatchDevices(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	am := &AuthMiddleware{}
+	am.UpdateAuthConfig(&configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar("hashedpassword"),
+		IsEnabled:     true,
+	})
+
+	cases := []struct {
+		name           string
+		uri            string
+		wantNextCalled bool // true => route is whitelisted (auth bypassed)
+	}{
+		{name: "dev pprof is whitelisted", uri: "/api/dev/pprof", wantNextCalled: true},
+		{name: "dev pprof subpath is whitelisted", uri: "/api/dev/pprof/goroutines", wantNextCalled: true},
+		{name: "devices is NOT whitelisted", uri: "/api/devices?limit=25&offset=0", wantNextCalled: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetRequestURI(tc.uri)
+
+			nextCalled := false
+			next := func(ctx *fasthttp.RequestCtx) { nextCalled = true }
+
+			am.APIMiddleware()(next)(ctx)
+
+			if nextCalled != tc.wantNextCalled {
+				t.Fatalf("route %q: nextCalled = %v, want %v (status %d)", tc.uri, nextCalled, tc.wantNextCalled, ctx.Response.StatusCode())
+			}
+			// A non-whitelisted route with no credentials must be rejected, not passed through.
+			if !tc.wantNextCalled && ctx.Response.StatusCode() != fasthttp.StatusUnauthorized {
+				t.Fatalf("route %q: expected 401 for unauthenticated non-whitelisted route, got %d", tc.uri, ctx.Response.StatusCode())
+			}
+		})
+	}
+}
+
+func TestAuthMiddleware_InferenceMiddleware_RealtimeTransportBypassesAuth(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	am := &AuthMiddleware{}
+	am.UpdateAuthConfig(&configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar("hashedpassword"),
+		IsEnabled:     true,
+	})
+	routes := []string{
+		"/v1/realtime",
+		"/openai/v1/realtime",
+		"/v1/realtime/calls?model=gpt-realtime",
+		"/openai/v1/realtime/calls?model=gpt-realtime",
+	}
+
+	for _, route := range routes {
+		t.Run(route, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetRequestURI(route)
+
+			nextCalled := false
+			next := func(ctx *fasthttp.RequestCtx) {
+				nextCalled = true
+			}
+
+			handler := am.InferenceMiddleware()(next)
+			handler(ctx)
+
+			if !nextCalled {
+				t.Fatalf("expected realtime transport route %s to bypass auth", route)
+			}
+		})
+	}
+}
+
+// TestAuthMiddleware_InferenceMiddleware_DelegatesAuthToGovernance verifies that the
+// inference middleware passes every inference request through — including realtime minting
+// endpoints and credential-less requests — even with dashboard auth enabled. Inference
+// authentication is owned by the governance plugin downstream (the authoritative VK
+// validator), not by this dashboard-auth middleware. Re-introducing a credential check
+// here would reject virtual-key callers and break inference auth, so the middleware must
+// never short-circuit an inference request.
+func TestAuthMiddleware_InferenceMiddleware_DelegatesAuthToGovernance(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	am := &AuthMiddleware{}
+	am.UpdateAuthConfig(&configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar("hashedpassword"),
+		IsEnabled:     true,
+	})
+
+	cases := []struct {
+		name      string
+		uri       string
+		headerKey string
+		headerVal string
+	}{
+		{name: "chat completion with virtual key", uri: "/v1/chat/completions", headerKey: "x-bf-vk", headerVal: "sk-bf-abc123"},
+		{name: "chat completion without credentials", uri: "/v1/chat/completions"},
+		{name: "realtime minting (client_secrets)", uri: "/v1/realtime/client_secrets"},
+		{name: "realtime minting (sessions)", uri: "/openai/v1/realtime/sessions"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetRequestURI(tc.uri)
+			if tc.headerKey != "" {
+				ctx.Request.Header.Set(tc.headerKey, tc.headerVal)
+			}
+
+			nextCalled := false
+			next := func(ctx *fasthttp.RequestCtx) { nextCalled = true }
+
+			am.InferenceMiddleware()(next)(ctx)
+
+			if !nextCalled {
+				t.Fatalf("expected inference request %q to pass the middleware (governance enforces auth downstream), got %d", tc.name, ctx.Response.StatusCode())
+			}
+		})
+	}
+}
+
+// TestAuthMiddleware_APIMiddleware_VirtualKeyDoesNotBypass guards against the privilege-
+// escalation loophole: a virtual key must never grant access to admin/dashboard routes.
+func TestAuthMiddleware_APIMiddleware_VirtualKeyDoesNotBypass(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	am := &AuthMiddleware{}
+	am.UpdateAuthConfig(&configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar("hashedpassword"),
+		IsEnabled:     true,
+	})
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/api/config")
+	ctx.Request.Header.Set("x-bf-vk", "sk-bf-abc123")
+
+	nextCalled := false
+	next := func(ctx *fasthttp.RequestCtx) { nextCalled = true }
+
+	am.APIMiddleware()(next)(ctx)
+
+	if nextCalled {
+		t.Fatal("virtual key must not bypass auth on admin/dashboard routes")
+	}
+	if ctx.Response.StatusCode() != fasthttp.StatusUnauthorized {
+		t.Fatalf("expected %d for admin route with VK, got %d", fasthttp.StatusUnauthorized, ctx.Response.StatusCode())
+	}
+}
+
 // TestAuthMiddleware_UpdateAuthConfig_NilToEnabled tests updating auth config from nil to enabled
 func TestAuthMiddleware_UpdateAuthConfig_NilToEnabled(t *testing.T) {
 	SetLogger(&mockLogger{})
@@ -689,8 +959,8 @@ func TestAuthMiddleware_UpdateAuthConfig_NilToEnabled(t *testing.T) {
 
 	// Now enable auth
 	am.UpdateAuthConfig(&configstore.AuthConfig{
-		AdminUserName: schemas.NewEnvVar("admin"),
-		AdminPassword: schemas.NewEnvVar("hashedpassword"),
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar("hashedpassword"),
 		IsEnabled:     true,
 	})
 
@@ -709,6 +979,70 @@ func TestAuthMiddleware_UpdateAuthConfig_NilToEnabled(t *testing.T) {
 	}
 }
 
+// TestAuthMiddleware_BootstrapToken_NoAdminNoToken tests that CheckBootstrapToken fails
+// closed when no admin account exists yet and no setup token was configured at boot (e.g.
+// the operator hasn't set setup_token / BIFROST_SETUP_TOKEN) — the very first admin account
+// cannot be created until the operator configures one.
+func TestAuthMiddleware_BootstrapToken_NoAdminNoToken(t *testing.T) {
+	am := &AuthMiddleware{}
+
+	if am.CheckBootstrapToken("") {
+		t.Error("CheckBootstrapToken should reject when no admin exists and no setup token is configured")
+	}
+	if am.CheckBootstrapToken("anything") {
+		t.Error("CheckBootstrapToken should reject when no admin exists and no setup token is configured")
+	}
+}
+
+// TestAuthMiddleware_BootstrapToken_AdminExists tests that CheckBootstrapToken allows any
+// value through once an admin account already exists, regardless of bootstrapToken state.
+func TestAuthMiddleware_BootstrapToken_AdminExists(t *testing.T) {
+	am := &AuthMiddleware{}
+	am.UpdateAuthConfig(&configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar("password"),
+		IsEnabled:     true,
+	})
+
+	if !am.CheckBootstrapToken("") {
+		t.Error("CheckBootstrapToken should allow through once an admin account exists")
+	}
+	if !am.CheckBootstrapToken("anything") {
+		t.Error("CheckBootstrapToken should allow through once an admin account exists")
+	}
+}
+
+// TestAuthMiddleware_BootstrapToken_ValidatesAndClears tests that once a bootstrap token is
+// set (simulating InitAuthMiddleware booting with a configured setup token and no admin
+// account yet), only the exact token validates, and creating the admin account — which sets
+// authConfig, mirroring BifrostHTTPServer.UpdateAuthConfig — permanently reopens the gate.
+func TestAuthMiddleware_BootstrapToken_ValidatesAndClears(t *testing.T) {
+	am := &AuthMiddleware{}
+	token := "test-bootstrap-token"
+	am.bootstrapToken.Store(&token)
+
+	if am.CheckBootstrapToken("") {
+		t.Error("CheckBootstrapToken should reject an empty token once a bootstrap token is set")
+	}
+	if am.CheckBootstrapToken("wrong-token") {
+		t.Error("CheckBootstrapToken should reject a mismatched token")
+	}
+	if !am.CheckBootstrapToken(token) {
+		t.Error("CheckBootstrapToken should accept the exact bootstrap token")
+	}
+
+	am.UpdateAuthConfig(&configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar("password"),
+		IsEnabled:     true,
+	})
+	am.ClearBootstrapToken()
+
+	if !am.CheckBootstrapToken("wrong-token") {
+		t.Error("CheckBootstrapToken should allow anything through once an admin account exists")
+	}
+}
+
 // TestAuthMiddleware_UpdateAuthConfig_EnabledToDisabled tests disabling auth after it was enabled
 func TestAuthMiddleware_UpdateAuthConfig_EnabledToDisabled(t *testing.T) {
 	SetLogger(&mockLogger{})
@@ -716,8 +1050,8 @@ func TestAuthMiddleware_UpdateAuthConfig_EnabledToDisabled(t *testing.T) {
 	am := &AuthMiddleware{}
 	// Start with auth enabled
 	am.UpdateAuthConfig(&configstore.AuthConfig{
-		AdminUserName: schemas.NewEnvVar("admin"),
-		AdminPassword: schemas.NewEnvVar("hashedpassword"),
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar("hashedpassword"),
 		IsEnabled:     true,
 	})
 
@@ -740,8 +1074,8 @@ func TestAuthMiddleware_UpdateAuthConfig_EnabledToDisabled(t *testing.T) {
 
 	// Now disable auth
 	am.UpdateAuthConfig(&configstore.AuthConfig{
-		AdminUserName: schemas.NewEnvVar("admin"),
-		AdminPassword: schemas.NewEnvVar("hashedpassword"),
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar("hashedpassword"),
 		IsEnabled:     false,
 	})
 
@@ -845,7 +1179,7 @@ func TestCorsMiddleware_DefaultHeaders(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{"https://example.com"},
 			AllowedHeaders: []string{}, // No custom headers
 		},
@@ -859,15 +1193,130 @@ func TestCorsMiddleware_DefaultHeaders(t *testing.T) {
 		nextCalled = true
 	}
 
-	middleware := CorsMiddleware(config)
+	middleware := NewCorsMiddleware(config).Middleware()
 	handler := middleware(next)
 	handler(ctx)
 
 	// Check default headers are set
-	expectedHeaders := "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout"
+	expectedHeaders := "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout, X-Api-Key, X-OpenAI-Agents-SDK, X-Operation-ID"
 	actualHeaders := string(ctx.Response.Header.Peek("Access-Control-Allow-Headers"))
 	if actualHeaders != expectedHeaders {
 		t.Errorf("Expected Access-Control-Allow-Headers to be %s, got %s", expectedHeaders, actualHeaders)
+	}
+
+	if !nextCalled {
+		t.Error("Next handler was not called")
+	}
+}
+
+// TestCorsMiddleware_WildcardHeaders_NonCredentialed tests that wildcard allowed headers
+// sets Access-Control-Allow-Headers to * for non-credentialed requests (wildcard origins).
+func TestCorsMiddleware_WildcardHeaders_NonCredentialed(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	config := &lib.Config{
+		ClientConfig: &configstore.ClientConfig{
+			AllowedOrigins: []string{"*"},
+			AllowedHeaders: []string{"*"},
+		},
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("Origin", "https://example.com")
+
+	nextCalled := false
+	next := func(ctx *fasthttp.RequestCtx) {
+		nextCalled = true
+	}
+
+	middleware := NewCorsMiddleware(config).Middleware()
+	handler := middleware(next)
+	handler(ctx)
+
+	// Non-credentialed: wildcard is valid per spec
+	actualHeaders := string(ctx.Response.Header.Peek("Access-Control-Allow-Headers"))
+	if actualHeaders != "*" {
+		t.Errorf("Expected Access-Control-Allow-Headers to be *, got %s", actualHeaders)
+	}
+
+	if !nextCalled {
+		t.Error("Next handler was not called")
+	}
+}
+
+// TestCorsMiddleware_WildcardHeaders_CredentialedPreflight tests that wildcard allowed headers
+// reflects Access-Control-Request-Headers for credentialed preflight requests instead of sending
+// the literal *, which browsers don't treat as a wildcard when credentials are present.
+func TestCorsMiddleware_WildcardHeaders_CredentialedPreflight(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	config := &lib.Config{
+		ClientConfig: &configstore.ClientConfig{
+			AllowedOrigins: []string{"https://example.com"},
+			AllowedHeaders: []string{"*"},
+		},
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("OPTIONS")
+	ctx.Request.Header.Set("Origin", "https://example.com")
+	ctx.Request.Header.Set("Access-Control-Request-Headers", "Authorization, X-Custom-Header")
+
+	next := func(ctx *fasthttp.RequestCtx) {
+		t.Error("Next handler should not be called for preflight")
+	}
+
+	middleware := NewCorsMiddleware(config).Middleware()
+	handler := middleware(next)
+	handler(ctx)
+
+	// Credentialed preflight: should reflect requested headers, not *
+	actualHeaders := string(ctx.Response.Header.Peek("Access-Control-Allow-Headers"))
+	if actualHeaders != "Authorization, X-Custom-Header" {
+		t.Errorf("Expected Access-Control-Allow-Headers to reflect requested headers, got %s", actualHeaders)
+	}
+
+	// Should also have credentials
+	creds := string(ctx.Response.Header.Peek("Access-Control-Allow-Credentials"))
+	if creds != "true" {
+		t.Errorf("Expected Access-Control-Allow-Credentials to be true, got %s", creds)
+	}
+}
+
+// TestCorsMiddleware_WildcardHeaders_CredentialedNonPreflight tests that wildcard allowed headers
+// uses defaults for credentialed non-preflight requests (no Access-Control-Request-Headers).
+func TestCorsMiddleware_WildcardHeaders_CredentialedNonPreflight(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	config := &lib.Config{
+		ClientConfig: &configstore.ClientConfig{
+			AllowedOrigins: []string{"https://example.com"},
+			AllowedHeaders: []string{"*"},
+		},
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("Origin", "https://example.com")
+
+	nextCalled := false
+	next := func(ctx *fasthttp.RequestCtx) {
+		nextCalled = true
+	}
+
+	middleware := NewCorsMiddleware(config).Middleware()
+	handler := middleware(next)
+	handler(ctx)
+
+	// Credentialed non-preflight: should use defaults (not *)
+	actualHeaders := string(ctx.Response.Header.Peek("Access-Control-Allow-Headers"))
+	defaultHeaders := []string{"Content-Type", "Authorization", "X-Requested-With", "X-Stainless-Timeout", "X-Api-Key"}
+	for _, header := range defaultHeaders {
+		if !containsHeader(actualHeaders, header) {
+			t.Errorf("Expected Access-Control-Allow-Headers to contain %s, got %s", header, actualHeaders)
+		}
+	}
+	if actualHeaders == "*" {
+		t.Error("Expected Access-Control-Allow-Headers to NOT be * for credentialed requests")
 	}
 
 	if !nextCalled {
@@ -880,7 +1329,7 @@ func TestCorsMiddleware_CustomHeaders(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{"https://example.com"},
 			AllowedHeaders: []string{"X-Custom-Header", "X-Another-Header"},
 		},
@@ -894,7 +1343,7 @@ func TestCorsMiddleware_CustomHeaders(t *testing.T) {
 		nextCalled = true
 	}
 
-	middleware := CorsMiddleware(config)
+	middleware := NewCorsMiddleware(config).Middleware()
 	handler := middleware(next)
 	handler(ctx)
 
@@ -925,7 +1374,7 @@ func TestCorsMiddleware_DuplicateHeaders(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{"https://example.com"},
 			// Include a header that's already in defaults
 			AllowedHeaders: []string{"Content-Type", "X-Custom-Header"},
@@ -940,7 +1389,7 @@ func TestCorsMiddleware_DuplicateHeaders(t *testing.T) {
 		nextCalled = true
 	}
 
-	middleware := CorsMiddleware(config)
+	middleware := NewCorsMiddleware(config).Middleware()
 	handler := middleware(next)
 	handler(ctx)
 
@@ -968,7 +1417,7 @@ func TestCorsMiddleware_CustomHeadersWithLocalhost(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{},
 			AllowedHeaders: []string{"X-Development-Header"},
 		},
@@ -982,7 +1431,7 @@ func TestCorsMiddleware_CustomHeadersWithLocalhost(t *testing.T) {
 		nextCalled = true
 	}
 
-	middleware := CorsMiddleware(config)
+	middleware := NewCorsMiddleware(config).Middleware()
 	handler := middleware(next)
 	handler(ctx)
 
@@ -1002,7 +1451,7 @@ func TestCorsMiddleware_CustomHeadersNotSetForNonAllowedOrigin(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			AllowedOrigins: []string{"https://allowed.com"},
 			AllowedHeaders: []string{"X-Custom-Header"},
 		},
@@ -1016,7 +1465,7 @@ func TestCorsMiddleware_CustomHeadersNotSetForNonAllowedOrigin(t *testing.T) {
 		nextCalled = true
 	}
 
-	middleware := CorsMiddleware(config)
+	middleware := NewCorsMiddleware(config).Middleware()
 	handler := middleware(next)
 	handler(ctx)
 
@@ -1153,7 +1602,7 @@ func TestFasthttpToHTTPRequest_PathParams(t *testing.T) {
 
 func TestRequestDecompressionMiddleware_SupportedEncodings(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			MaxRequestBodySizeMB: 10,
 		},
 	}
@@ -1209,7 +1658,7 @@ func TestRequestDecompressionMiddleware_SupportedEncodings(t *testing.T) {
 
 func TestRequestDecompressionMiddleware_InvalidCompressedBody(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			MaxRequestBodySizeMB: 10,
 		},
 	}
@@ -1245,7 +1694,7 @@ func TestRequestDecompressionMiddleware_InvalidCompressedBody(t *testing.T) {
 
 func TestRequestDecompressionMiddleware_UnsupportedEncoding(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			MaxRequestBodySizeMB: 10,
 		},
 	}
@@ -1281,7 +1730,7 @@ func TestRequestDecompressionMiddleware_UnsupportedEncoding(t *testing.T) {
 
 func TestRequestDecompressionMiddleware_DecompressedSizeLimit(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			MaxRequestBodySizeMB: 1,
 		},
 	}
@@ -1323,7 +1772,7 @@ func TestRequestDecompressionMiddleware_DecompressedSizeLimit(t *testing.T) {
 
 func TestRequestDecompressionMiddleware_EmptyBodyWithContentEncoding(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			MaxRequestBodySizeMB: 10,
 		},
 	}
@@ -1358,7 +1807,7 @@ func TestRequestDecompressionMiddleware_EmptyBodyWithContentEncoding(t *testing.
 
 func TestRequestDecompressionMiddleware_NoContentEncoding(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			MaxRequestBodySizeMB: 10,
 		},
 	}
@@ -1388,7 +1837,7 @@ func TestRequestDecompressionMiddleware_NoContentEncoding(t *testing.T) {
 
 func TestRequestDecompressionMiddleware_ExactSizeLimit(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			MaxRequestBodySizeMB: 1,
 		},
 	}
@@ -1465,7 +1914,7 @@ func TestShouldStreamDecompress(t *testing.T) {
 
 func TestRequestDecompressionMiddleware_StreamingPath_ChunkedGzip(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			MaxRequestBodySizeMB: 100,
 		},
 	}
@@ -1506,7 +1955,7 @@ func TestRequestDecompressionMiddleware_StreamingPath_ChunkedGzip(t *testing.T) 
 
 func TestRequestDecompressionMiddleware_StreamingPath_AllEncodings(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			MaxRequestBodySizeMB: 100,
 		},
 	}
@@ -1560,7 +2009,7 @@ func TestRequestDecompressionMiddleware_StreamingPath_AllEncodings(t *testing.T)
 
 func TestRequestDecompressionMiddleware_StreamingPath_InvalidBody(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			MaxRequestBodySizeMB: 100,
 		},
 	}
@@ -1589,7 +2038,7 @@ func TestRequestDecompressionMiddleware_StreamingPath_InvalidBody(t *testing.T) 
 
 func TestRequestDecompressionMiddleware_StreamingPath_UnsupportedEncoding(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			MaxRequestBodySizeMB: 100,
 		},
 	}
@@ -1617,7 +2066,7 @@ func TestRequestDecompressionMiddleware_StreamingPath_UnsupportedEncoding(t *tes
 
 func TestRequestDecompressionMiddleware_BufferedPath_SmallGzip(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			MaxRequestBodySizeMB: 10,
 		},
 	}
@@ -1657,7 +2106,7 @@ func TestRequestDecompressionMiddleware_BufferedPath_SmallGzip(t *testing.T) {
 
 func TestRequestDecompressionMiddleware_StreamingPath_LargeGzip(t *testing.T) {
 	config := &lib.Config{
-		ClientConfig: configstore.ClientConfig{
+		ClientConfig: &configstore.ClientConfig{
 			MaxRequestBodySizeMB: 100,
 		},
 	}
@@ -1764,4 +2213,255 @@ func zstdCompress(data []byte) ([]byte, error) {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+// captureTracePlugin is an ObservabilityPlugin that captures the root and llm.call
+// span timestamps from a flushed trace. Timestamps are copied synchronously inside
+// Inject because the tracer releases the pooled trace once Inject returns.
+type captureTracePlugin struct {
+	done      chan struct{}
+	rootStart time.Time
+	rootEnd   time.Time
+	llmEnd    time.Time
+	foundLLM  bool
+}
+
+func (p *captureTracePlugin) GetName() string { return "capture-trace" }
+func (p *captureTracePlugin) Cleanup() error  { return nil }
+func (p *captureTracePlugin) Inject(_ context.Context, trace *schemas.Trace) error {
+	defer close(p.done)
+	if trace == nil || trace.RootSpan == nil {
+		return nil
+	}
+	p.rootStart = trace.RootSpan.StartTime
+	p.rootEnd = trace.RootSpan.EndTime
+	for _, span := range trace.Spans {
+		if span != nil && span.Kind == schemas.SpanKindLLMCall {
+			p.llmEnd = span.EndTime
+			p.foundLLM = true
+		}
+	}
+	return nil
+}
+
+// TestTracingMiddleware_StreamingRootSpanEndsAfterLLMSpan asserts that for a deferred
+// (streaming) request the root HTTP span is ended by the trace completer — after the
+// stream drains — rather than at handler return. Before the fix the middleware ended
+// the root span in its defer, so the root closed before the deferred llm.call span,
+// making the child appear longer than its parent in trace viewers.
+func TestTracingMiddleware_StreamingRootSpanEndsAfterLLMSpan(t *testing.T) {
+	store := tracing.NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := tracing.NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	plugin := &captureTracePlugin{done: make(chan struct{})}
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin})
+
+	tm := NewTracingMiddleware(tracer)
+
+	var traceID, rootSpanID string
+	var completer func([]schemas.PluginLogEntry)
+	next := func(ctx *fasthttp.RequestCtx) {
+		traceID, _ = ctx.UserValue(schemas.BifrostContextKeyTraceID).(string)
+		rootSpanID, _ = ctx.UserValue(schemas.BifrostContextKeySpanID).(string)
+		completer, _ = ctx.UserValue(schemas.BifrostContextKeyTraceCompleter).(func([]schemas.PluginLogEntry))
+		// Mark this as a deferred (streaming) request so the middleware leaves the
+		// root span open for the completer to end.
+		ctx.SetUserValue(schemas.BifrostContextKeyDeferTraceCompletion, true)
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/openai/v1/chat/completions")
+	ctx.Request.Header.SetMethod("POST")
+	// Runs setup, next, and the middleware defer (which must NOT end the root span
+	// because the request is deferred).
+	tm.Middleware()(next)(ctx)
+
+	if traceID == "" {
+		t.Fatal("middleware did not set a trace ID")
+	}
+	if completer == nil {
+		t.Fatal("middleware did not set a trace completer")
+	}
+
+	// Simulate the provider goroutine: the deferred llm.call span ends mid-stream...
+	goCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID)
+	goCtx = context.WithValue(goCtx, schemas.BifrostContextKeySpanID, rootSpanID)
+	_, llmHandle := tracer.StartSpan(goCtx, "chat test-model", schemas.SpanKindLLMCall)
+	time.Sleep(10 * time.Millisecond)
+	tracer.EndSpan(llmHandle, schemas.SpanStatusOk, "")
+
+	// ...and the trace completer fires after the stream fully drains.
+	completer(nil)
+
+	select {
+	case <-plugin.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for trace injection")
+	}
+
+	if !plugin.foundLLM {
+		t.Fatal("llm.call span not found in flushed trace")
+	}
+	if plugin.rootEnd.IsZero() {
+		t.Fatal("root span EndTime is zero — it was never ended")
+	}
+	if plugin.rootEnd.Before(plugin.llmEnd) {
+		t.Fatalf("root span ended before llm.call span: root.EndTime=%v, llm.EndTime=%v", plugin.rootEnd, plugin.llmEnd)
+	}
+	if !plugin.rootEnd.After(plugin.rootStart) {
+		t.Fatalf("root span has non-positive duration: start=%v, end=%v", plugin.rootStart, plugin.rootEnd)
+	}
+}
+
+func TestCollectDimensionHeaders(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("X-BF-Dim-Environment", "prod")
+	ctx.Request.Header.Set("x-bf-dim-team", "ml")
+	ctx.Request.Header.Set("x-bf-dim-", "ignored")  // empty dimension name
+	ctx.Request.Header.Set("x-request-id", "req-1") // non-dimension header
+
+	dims := collectDimensionHeaders(ctx)
+	if len(dims) != 2 {
+		t.Fatalf("collectDimensionHeaders() = %v, want 2 entries", dims)
+	}
+	if dims["environment"] != "prod" || dims["team"] != "ml" {
+		t.Errorf("collectDimensionHeaders() = %v, want environment=prod team=ml", dims)
+	}
+
+	if got := collectDimensionHeaders(&fasthttp.RequestCtx{}); got != nil {
+		t.Errorf("collectDimensionHeaders(no dims) = %v, want nil", got)
+	}
+	if got := collectDimensionHeaders(nil); got != nil {
+		t.Errorf("collectDimensionHeaders(nil) = %v, want nil", got)
+	}
+}
+
+// TestTracingMiddleware_SetsCorrelationHeaders asserts that every traced response
+// carries x-request-id and x-bifrost-trace-id so callers can pivot a request into
+// its logs and trace in Grafana/Tempo/Loki (BF-1041).
+func TestTracingMiddleware_SetsCorrelationHeaders(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	store := tracing.NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := tracing.NewTracer(store, nil, nil)
+	defer tracer.Stop()
+	mw := NewTracingMiddleware(tracer).Middleware()
+
+	newCtx := func() *fasthttp.RequestCtx {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI("/openai/v1/chat/completions")
+		ctx.Request.Header.SetMethod("POST")
+		return ctx
+	}
+
+	t.Run("generates request id when absent", func(t *testing.T) {
+		ctx := newCtx()
+		mw(func(*fasthttp.RequestCtx) {})(ctx)
+
+		if got := string(ctx.Response.Header.Peek("x-bifrost-trace-id")); got == "" {
+			t.Error("expected x-bifrost-trace-id response header to be set")
+		}
+		if got := string(ctx.Response.Header.Peek("x-request-id")); got == "" {
+			t.Error("expected x-request-id response header to be set")
+		}
+	})
+
+	t.Run("echoes caller-supplied request id", func(t *testing.T) {
+		ctx := newCtx()
+		ctx.Request.Header.Set("x-request-id", "req-abc-123")
+		mw(func(*fasthttp.RequestCtx) {})(ctx)
+
+		if got := string(ctx.Response.Header.Peek("x-request-id")); got != "req-abc-123" {
+			t.Errorf("x-request-id = %q, want req-abc-123", got)
+		}
+		if got := string(ctx.Response.Header.Peek("x-bifrost-trace-id")); got == "" {
+			t.Error("expected x-bifrost-trace-id response header to be set")
+		}
+	})
+
+	t.Run("headers survive the error path", func(t *testing.T) {
+		ctx := newCtx()
+		mw(func(c *fasthttp.RequestCtx) {
+			SendError(c, fasthttp.StatusBadGateway, "boom")
+		})(ctx)
+
+		if ctx.Response.StatusCode() != fasthttp.StatusBadGateway {
+			t.Fatalf("status = %d, want %d", ctx.Response.StatusCode(), fasthttp.StatusBadGateway)
+		}
+		if got := string(ctx.Response.Header.Peek("x-bifrost-trace-id")); got == "" {
+			t.Error("expected x-bifrost-trace-id to survive the error path")
+		}
+		if got := string(ctx.Response.Header.Peek("x-request-id")); got == "" {
+			t.Error("expected x-request-id to survive the error path")
+		}
+	})
+}
+
+// captureLogEvent records the structured string fields emitted on the access log so
+// a test can assert which correlation keys were written.
+type captureLogEvent struct {
+	strFields map[string]string
+}
+
+func (c *captureLogEvent) Str(key, val string) schemas.LogEventBuilder {
+	c.strFields[key] = val
+	return c
+}
+func (c *captureLogEvent) Int(string, int) schemas.LogEventBuilder     { return c }
+func (c *captureLogEvent) Int64(string, int64) schemas.LogEventBuilder { return c }
+func (c *captureLogEvent) Send()                                       {}
+
+type captureLogger struct {
+	mockLogger
+	events []*captureLogEvent
+}
+
+func (l *captureLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuilder {
+	e := &captureLogEvent{strFields: map[string]string{}}
+	l.events = append(l.events, e)
+	return e
+}
+
+// TestTracingMiddleware_AccessLogIncludesRequestID asserts the stdout access log
+// carries both trace_id and request_id, so Loki can index on either (BF-1041).
+func TestTracingMiddleware_AccessLogIncludesRequestID(t *testing.T) {
+	logger := &captureLogger{}
+	SetLogger(logger)
+	defer SetLogger(&mockLogger{})
+
+	config := &lib.Config{
+		ClientConfig: &configstore.ClientConfig{
+			AllowedOrigins: []string{},
+		},
+	}
+	cors := NewCorsMiddleware(config).Middleware()
+
+	store := tracing.NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := tracing.NewTracer(store, nil, nil)
+	defer tracer.Stop()
+	tm := NewTracingMiddleware(tracer).Middleware()
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/openai/v1/chat/completions")
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("x-request-id", "req-xyz")
+
+	// CORS owns the access-log defer and wraps TracingMiddleware, so the trace_id
+	// UserValue and x-request-id header set by tracing are visible when it runs.
+	cors(tm(func(*fasthttp.RequestCtx) {}))(ctx)
+
+	if len(logger.events) != 1 {
+		t.Fatalf("access log events = %d, want 1", len(logger.events))
+	}
+	fields := logger.events[0].strFields
+	if got := fields["request_id"]; got != "req-xyz" {
+		t.Errorf("access log request_id = %q, want req-xyz", got)
+	}
+	if got := fields["trace_id"]; got == "" {
+		t.Error("expected access log to include a non-empty trace_id")
+	}
 }

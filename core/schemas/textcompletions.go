@@ -67,6 +67,7 @@ func (r *BifrostTextCompletionRequest) ToBifrostChatRequest() *BifrostChatReques
 type BifrostTextCompletionResponse struct {
 	ID                string                     `json:"id"`
 	Choices           []BifrostResponseChoice    `json:"choices"`
+	Created           int                        `json:"created,omitempty"` // The Unix timestamp (in seconds).
 	Model             string                     `json:"model"`
 	Object            string                     `json:"object"` // "text_completion" (same for text completion stream)
 	SystemFingerprint string                     `json:"system_fingerprint"`
@@ -94,9 +95,9 @@ func (t *TextCompletionInput) MarshalJSON() ([]byte, error) {
 		return nil, fmt.Errorf("text completion input must set exactly one of: prompt_str or prompt_array")
 	}
 	if t.PromptStr != nil {
-		return Marshal(*t.PromptStr)
+		return MarshalSorted(*t.PromptStr)
 	}
-	return Marshal(t.PromptArray)
+	return MarshalSorted(t.PromptArray)
 }
 
 func (t *TextCompletionInput) UnmarshalJSON(data []byte) error {
@@ -134,7 +135,7 @@ type TextCompletionParameters struct {
 
 	// Dynamic parameters that can be provider-specific, they are directly
 	// added to the request as is.
-	ExtraParams map[string]interface{} `json:"-"`
+	ExtraParams map[string]any `json:"-"`
 }
 
 // TextCompletionLogProb represents log probability information for text completion.

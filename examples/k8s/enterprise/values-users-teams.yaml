@@ -1,0 +1,130 @@
+# Enterprise overlay: team-oriented governance examples.
+# Purpose:
+# - Demonstrates customer -> team relationships
+# - Demonstrates team budgets/rate limits
+# - Demonstrates team-level business units
+# - Demonstrates virtual key assignment to different teams
+bifrost:
+  governance:
+    # Budget pools referenced by teams.
+    budgets:
+      - id: "budget-team-data-science"
+        max_limit: 1200
+        reset_duration: "1M"
+      - id: "budget-team-platform-ops"
+        max_limit: 1800
+        reset_duration: "1M"
+      - id: "budget-team-security-research"
+        max_limit: 1500
+        reset_duration: "1M"
+      - id: "budget-team-finops"
+        max_limit: 1000
+        reset_duration: "1M"
+      # Virtual-key-owned budget (requires runtime with VK-budget sync ordering fix).
+      - id: "budget-vk-platform-ops"
+        max_limit: 900
+        reset_duration: "1M"
+        virtual_key_id: "vk-platform-ops-secondary"
+
+    # Rate limit policies referenced by teams and virtual keys.
+    rateLimits:
+      - id: "rl-team-data-science"
+        token_max_limit: 180000
+        token_reset_duration: "1d"
+        request_max_limit: 8000
+        request_reset_duration: "1h"
+      - id: "rl-team-platform-ops"
+        token_max_limit: 250000
+        token_reset_duration: "1d"
+        request_max_limit: 12000
+        request_reset_duration: "1h"
+      - id: "rl-team-security-research"
+        token_max_limit: 220000
+        token_reset_duration: "1d"
+        request_max_limit: 10000
+        request_reset_duration: "1h"
+      - id: "rl-team-finops"
+        token_max_limit: 140000
+        token_reset_duration: "1d"
+        request_max_limit: 6000
+        request_reset_duration: "1h"
+
+    # Minimal customer registry for team ownership.
+    customers:
+      - id: "customer-enterprise-org"
+        name: "Enterprise Org"
+
+    # Team definitions:
+    # - customer_id links team to a customer
+    # - budget_id/rate_limit_id applies spend/throttle policy to that team
+    # - profile/config blocks are extensible metadata used by enterprise workflows
+    teams:
+      - id: "team-data-science"
+        name: "Data Science Team"
+        customer_id: "customer-enterprise-org"
+        budget_id: "budget-team-data-science"
+        rate_limit_id: "rl-team-data-science"
+        profile:
+          business_units:
+            - id: "bu-data"
+              name: "Data Business Unit"
+      - id: "team-platform-ops"
+        name: "Platform Ops Team"
+        customer_id: "customer-enterprise-org"
+        budget_id: "budget-team-platform-ops"
+        rate_limit_id: "rl-team-platform-ops"
+        profile:
+          business_units:
+            - id: "bu-platform-ops"
+              name: "Platform Operations"
+      - id: "team-security-research"
+        name: "Security Research Team"
+        customer_id: "customer-enterprise-org"
+        budget_id: "budget-team-security-research"
+        rate_limit_id: "rl-team-security-research"
+        profile:
+          business_units:
+            - id: "bu-security"
+              name: "Security Business Unit"
+      - id: "team-finops"
+        name: "FinOps Team"
+        customer_id: "customer-enterprise-org"
+        budget_id: "budget-team-finops"
+        rate_limit_id: "rl-team-finops"
+        profile:
+          business_units:
+            - id: "bu-finops"
+              name: "Finance Operations"
+
+    # Virtual keys mapped to specific teams.
+    # Team mapping is the practical way to scope budget policy per key.
+    virtualKeys:
+      - id: "vk-data-science-primary"
+        name: "Data Science Team Key"
+        description: "Virtual key for data science workloads"
+        value: "sk-bf-data-science-key"
+        is_active: true
+        team_id: "team-data-science"
+        rate_limit_id: "rl-team-data-science"
+        provider_configs:
+          - provider: "openai"
+            weight: 0.6
+            allowed_models:
+              - "gpt-4o-mini"
+              - "gpt-4o"
+          - provider: "anthropic"
+            weight: 0.4
+            allowed_models:
+              - "claude-3-5-sonnet-latest"
+      - id: "vk-platform-ops-secondary"
+        name: "Platform Ops Team Key"
+        description: "Second virtual key assigned to a different team"
+        value: "sk-bf-platform-ops-key"
+        is_active: true
+        team_id: "team-platform-ops"
+        rate_limit_id: "rl-team-platform-ops"
+        provider_configs:
+          - provider: "openai"
+            weight: 1
+            allowed_models:
+              - "gpt-4o-mini"

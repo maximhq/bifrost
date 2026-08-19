@@ -2,14 +2,17 @@ package bedrock
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 )
 
 // GetExtraParams implements the RequestBodyWithExtraParams interface
@@ -44,6 +47,17 @@ var bedrockInvokeRequestKnownFields = map[string]bool{
 	"message": true, "chat_history": true,
 	// AI21
 	"n": true, "frequency_penalty": true, "presence_penalty": true,
+	// Bedrock image gen / edit / variation (Titan/Nova Canvas)
+	"taskType": true, "textToImageParams": true, "imageVariationParams": true,
+	"inPaintingParams": true, "outPaintingParams": true, "backgroundRemovalParams": true,
+	"imageGenerationConfig": true,
+	// Stability AI image
+	"image": true, "mask": true, "negative_prompt": true,
+	"aspect_ratio": true, "output_format": true, "seed": true,
+	// Embeddings
+	"inputText": true, "texts": true, "input_type": true,
+	"normalize": true, "dimensions": true,
+	"embedding_types": true, "output_dimension": true, "inputs": true,
 	// Internal
 	"stream": true, "extra_params": true,
 }
@@ -73,7 +87,7 @@ func (r *BedrockInvokeRequest) UnmarshalJSON(data []byte) error {
 		// Try standard []BedrockMessage first
 		var standardMsgs []BedrockMessage
 		if err := sonic.Unmarshal(aux.Messages, &standardMsgs); err == nil {
-			r.Messages = standardMsgs
+			r.Messages = applyMessageContentCacheControl(standardMsgs, aux.Messages)
 		} else {
 			// Try AI21 format where content is a string
 			var rawMsgs []struct {
@@ -125,17 +139,193 @@ func (r *BedrockInvokeRequest) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// DetectInvokeRequestType determines the request type from raw JSON body
-// without full deserialization, keeping detection logic colocated with IsMessagesRequest.
-func DetectInvokeRequestType(body []byte) schemas.RequestType {
-	node, _ := sonic.Get(body, "messages")
-	if node.Exists() {
-		raw, err := node.Raw()
-		if err == nil && raw != "null" && raw != "[]" {
+// UnmarshalJSON implements custom JSON unmarshalling for BedrockContentBlock.
+// Bedrock's InvokeModel route passes Claude's native Anthropic Messages format
+// straight through, so content blocks may arrive in Anthropic's type-discriminated
+// shape (e.g. {"type":"tool_use","id",...}) instead of Converse's field-name-
+// discriminated shape ({"toolUse":{"toolUseId",...}}). A plain struct-tag unmarshal
+// leaves every field nil in that case without erroring. This detects the Anthropic
+// shape via its "type" field (absent from every valid Converse-shaped block) and
+// normalizes it into the Converse-shaped fields below; Converse-shaped and
+// plain-text input is left byte-for-byte equivalent to the previous behavior.
+func (b *BedrockContentBlock) UnmarshalJSON(data []byte) error {
+	type Alias BedrockContentBlock
+	aux := &struct {
+		Type   *string `json:"type,omitempty"`
+		Source *struct {
+			MediaType string `json:"media_type,omitempty"`
+			Data      string `json:"data,omitempty"`
+		} `json:"source,omitempty"`
+		ID        *string         `json:"id,omitempty"`
+		Name      *string         `json:"name,omitempty"`
+		Input     json.RawMessage `json:"input,omitempty"`
+		ToolUseID *string         `json:"tool_use_id,omitempty"`
+		Content   json.RawMessage `json:"content,omitempty"`
+		IsError   *bool           `json:"is_error,omitempty"`
+		Thinking  *string         `json:"thinking,omitempty"`
+		Signature *string         `json:"signature,omitempty"`
+		*Alias
+	}{
+		Alias: (*Alias)(b),
+	}
+
+	if err := sonic.Unmarshal(data, aux); err != nil {
+		return err
+	}
+
+	if aux.Type == nil {
+		// Already Converse-shaped (or a coincidentally-matching plain-text block).
+		return nil
+	}
+
+	switch *aux.Type {
+	case "image":
+		if aux.Source == nil || aux.Source.Data == "" {
+			return nil
+		}
+		format := "jpeg"
+		switch aux.Source.MediaType {
+		case "image/png":
+			format = "png"
+		case "image/gif":
+			format = "gif"
+		case "image/webp":
+			format = "webp"
+		}
+		imgData := aux.Source.Data
+		b.Image = &BedrockImageSource{
+			Format: format,
+			Source: BedrockImageSourceData{Bytes: &imgData},
+		}
+	case "tool_use":
+		if aux.ID == nil || aux.Name == nil {
+			return nil
+		}
+		b.ToolUse = &BedrockToolUse{
+			ToolUseID: *aux.ID,
+			Name:      *aux.Name,
+			Input:     aux.Input,
+		}
+	case "tool_result":
+		if aux.ToolUseID == nil {
+			return nil
+		}
+		content, err := normalizeAnthropicToolResultContent(aux.Content)
+		if err != nil {
+			return err
+		}
+		b.ToolResult = &BedrockToolResult{
+			ToolUseID: *aux.ToolUseID,
+			Content:   content,
+		}
+		if aux.IsError != nil && *aux.IsError {
+			b.ToolResult.Status = schemas.Ptr("error")
+		}
+	case "thinking":
+		if aux.Thinking == nil {
+			return nil
+		}
+		b.ReasoningContent = &BedrockReasoningContent{
+			ReasoningText: &BedrockReasoningContentText{
+				Text:      aux.Thinking,
+				Signature: aux.Signature,
+			},
+		}
+	}
+
+	return nil
+}
+
+// normalizeAnthropicToolResultContent decodes an Anthropic-native tool_result's
+// "content" field, which per Anthropic's API is either a plain string or an
+// array of content blocks. Array elements are decoded as []BedrockContentBlock,
+// so a nested image or tool_use inside a tool_result is normalized recursively
+// via BedrockContentBlock.UnmarshalJSON above.
+func normalizeAnthropicToolResultContent(raw json.RawMessage) ([]BedrockContentBlock, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+
+	var asString string
+	if err := sonic.Unmarshal(raw, &asString); err == nil {
+		return []BedrockContentBlock{{Text: &asString}}, nil
+	}
+
+	var blocks []BedrockContentBlock
+	if err := sonic.Unmarshal(raw, &blocks); err != nil {
+		return nil, err
+	}
+	return blocks, nil
+}
+
+// DetectInvokeRequestType determines the request type from raw JSON body and model ID
+// without full deserialization, keeping detection logic colocated with conversion methods.
+func DetectInvokeRequestType(body []byte, modelID string) schemas.RequestType {
+	// Messages → chat/responses path
+	if node, _ := sonic.Get(body, "messages"); node.Exists() {
+		if raw, err := node.Raw(); err == nil && raw != "null" && raw != "[]" {
 			return schemas.ResponsesRequest
+		}
+	}
+
+	// Titan uses "inputText" for both embeddings and text generation.
+	// Use the model ID to disambiguate: embedding models contain "embed".
+	if node, _ := sonic.Get(body, "inputText"); node.Exists() {
+		if strings.Contains(strings.ToLower(modelID), "embed") {
+			return schemas.EmbeddingRequest
 		}
 		return schemas.TextCompletionRequest
 	}
+
+	// Cohere embedding: text-only (texts), image-only (images), or mixed (inputs).
+	// Use model ID to identify embed models, then check for any non-empty payload field.
+	if strings.Contains(strings.ToLower(modelID), "embed") {
+		for _, field := range []string{"texts", "images", "inputs"} {
+			if node, _ := sonic.Get(body, field); node.Exists() {
+				if raw, err := node.Raw(); err == nil && raw != "null" && raw != "[]" {
+					return schemas.EmbeddingRequest
+				}
+			}
+		}
+	}
+
+	// taskType-based image routing
+	if taskNode, _ := sonic.Get(body, "taskType"); taskNode.Exists() {
+		taskType, _ := taskNode.String()
+		switch taskType {
+		case TaskTypeTextImage:
+			return schemas.ImageGenerationRequest
+		case TaskTypeImageVariation:
+			return schemas.ImageVariationRequest
+		case TaskTypeInpainting, TaskTypeOutpainting, TaskTypeBackgroundRemoval:
+			return schemas.ImageEditRequest
+		}
+	}
+
+	// URL-decode the model ID once for all model-name checks below
+	decodedModelID := modelID
+	if unescaped, err := url.PathUnescape(modelID); err == nil {
+		decodedModelID = unescaped
+	}
+
+	// Stability AI: supports both generation (prompt-only) and edit (image+prompt)
+	if isStabilityAIModel(decodedModelID) {
+		if node, _ := sonic.Get(body, "image"); node.Exists() {
+			return schemas.ImageEditRequest
+		}
+		return schemas.ImageGenerationRequest
+	}
+
+	// explicit image field -> edit request
+	if node, _ := sonic.Get(body, "image"); node.Exists() {
+		return schemas.ImageEditRequest
+	}
+
+	// Checked after all body-field and model-specific signals so it doesn't shadow known models.
+	if isPromptOnlyImageGenerationModel(decodedModelID) {
+		return schemas.ImageGenerationRequest
+	}
+
 	return schemas.TextCompletionRequest
 }
 
@@ -310,6 +500,382 @@ func (r *BedrockInvokeRequest) ToBifrostTextCompletionRequest(ctx *schemas.Bifro
 	return textReq.ToBifrostTextCompletionRequest(ctx)
 }
 
+// ToBifrostEmbeddingRequest converts the invoke request to a BifrostEmbeddingRequest.
+// Handles both Titan (inputText) and Cohere (texts) embedding formats.
+func (r *BedrockInvokeRequest) ToBifrostEmbeddingRequest(ctx *schemas.BifrostContext) *schemas.BifrostEmbeddingRequest {
+	modelID := r.ModelID
+	if unescaped, err := url.PathUnescape(r.ModelID); err == nil {
+		modelID = unescaped
+	}
+	provider, model := schemas.ParseModelString(modelID, "")
+	req := &schemas.BifrostEmbeddingRequest{
+		Provider: provider,
+		Model:    model,
+	}
+
+	if r.InputText != "" {
+		req.Input = &schemas.EmbeddingInput{Text: &r.InputText}
+	} else if len(r.Texts) > 0 {
+		req.Input = &schemas.EmbeddingInput{Texts: r.Texts}
+	}
+	// image-only (r.Images) or mixed (r.Inputs): req.Input stays nil; data flows via ExtraParams
+
+	extraParams := make(map[string]interface{})
+	// Forward known embedding-only params into ExtraParams so the provider can pick them up
+	if r.InputType != nil {
+		extraParams["input_type"] = *r.InputType
+	}
+	if r.Normalize != nil {
+		extraParams["normalize"] = *r.Normalize
+	}
+	if len(r.EmbeddingTypes) > 0 {
+		extraParams["embedding_types"] = r.EmbeddingTypes
+	}
+	if r.Truncate != nil {
+		extraParams["truncate"] = *r.Truncate
+	}
+	if len(r.Images) > 0 {
+		extraParams["images"] = r.Images
+	}
+	if len(r.Inputs) > 0 {
+		extraParams["inputs"] = r.Inputs
+	}
+	if r.MaxTokens != nil {
+		extraParams["max_tokens"] = *r.MaxTokens
+	}
+	// Merge any remaining extra params from the request
+	for k, v := range r.ExtraParams {
+		extraParams[k] = v
+	}
+
+	// output_dimension maps to Dimensions; prefer OutputDimension over Dimensions
+	dimensions := r.Dimensions
+	if r.OutputDimension != nil {
+		dimensions = r.OutputDimension
+	}
+	params := &schemas.EmbeddingParameters{
+		Dimensions: dimensions,
+	}
+	if len(extraParams) > 0 {
+		params.ExtraParams = extraParams
+	}
+	req.Params = params
+
+	return req
+}
+
+// ToBifrostImageGenerationRequest converts the invoke request to a BifrostImageGenerationRequest.
+// Handles Titan/Nova Canvas (taskType=TEXT_IMAGE with textToImageParams) and Stability AI (flat prompt fields).
+func (r *BedrockInvokeRequest) ToBifrostImageGenerationRequest(ctx *schemas.BifrostContext) *schemas.BifrostImageGenerationRequest {
+	modelID := r.ModelID
+	if unescaped, err := url.PathUnescape(r.ModelID); err == nil {
+		modelID = unescaped
+	}
+	provider, model := schemas.ParseModelString(modelID, "")
+	req := &schemas.BifrostImageGenerationRequest{
+		Provider: provider,
+		Model:    model,
+	}
+
+	params := &schemas.ImageGenerationParameters{
+		NegativePrompt: r.NegativePrompt,
+		AspectRatio:    r.AspectRatio,
+		N:              r.N,
+		OutputFormat:   r.OutputFormat,
+		Seed:           r.Seed,
+	}
+
+	if r.TextToImageParams != nil {
+		// Titan / Nova Canvas path
+		req.Input = &schemas.ImageGenerationInput{Prompt: r.TextToImageParams.Text}
+		if r.TextToImageParams.NegativeText != nil {
+			params.NegativePrompt = r.TextToImageParams.NegativeText
+		}
+		if r.TextToImageParams.Style != nil {
+			params.Style = r.TextToImageParams.Style
+		}
+		if cfg := r.ImageGenerationConfig; cfg != nil {
+			params.N = cfg.NumberOfImages
+			params.Seed = cfg.Seed
+			params.Quality = cfg.Quality
+			if cfg.Width != nil && cfg.Height != nil {
+				size := fmt.Sprintf("%dx%d", *cfg.Width, *cfg.Height)
+				params.Size = &size
+			}
+			if cfg.CfgScale != nil {
+				if params.ExtraParams == nil {
+					params.ExtraParams = make(map[string]interface{})
+				}
+				params.ExtraParams["cfgScale"] = *cfg.CfgScale
+			}
+		}
+	} else {
+		// Stability AI path — prompt comes from the top-level "prompt" field
+		req.Input = &schemas.ImageGenerationInput{Prompt: r.Prompt}
+	}
+
+	// Forward any remaining ExtraParams
+	if len(r.ExtraParams) > 0 {
+		if params.ExtraParams == nil {
+			params.ExtraParams = make(map[string]interface{})
+		}
+		for k, v := range r.ExtraParams {
+			params.ExtraParams[k] = v
+		}
+	}
+
+	req.Params = params
+	return req
+}
+
+// ToBifrostImageEditRequest converts the invoke request to a BifrostImageEditRequest.
+// Handles Titan/Nova Canvas (taskType in INPAINTING/OUTPAINTING/BACKGROUND_REMOVAL) and Stability AI (flat image/mask fields).
+func (r *BedrockInvokeRequest) ToBifrostImageEditRequest(ctx *schemas.BifrostContext) (*schemas.BifrostImageEditRequest, error) {
+	modelID := r.ModelID
+	if unescaped, err := url.PathUnescape(r.ModelID); err == nil {
+		modelID = unescaped
+	}
+	provider, model := schemas.ParseModelString(modelID, "")
+	req := &schemas.BifrostImageEditRequest{
+		Provider: provider,
+		Model:    model,
+	}
+	params := &schemas.ImageEditParameters{
+		NegativePrompt: r.NegativePrompt,
+		Seed:           r.Seed,
+	}
+
+	if r.TaskType != nil {
+		// Titan / Nova Canvas path
+		switch *r.TaskType {
+		case TaskTypeInpainting:
+			if r.InPaintingParams == nil {
+				return nil, fmt.Errorf("inPaintingParams required for INPAINTING task")
+			}
+			imgBytes, err := base64.StdEncoding.DecodeString(r.InPaintingParams.Image)
+			if err != nil {
+				return nil, fmt.Errorf("failed to decode inpainting image: %w", err)
+			}
+			req.Input = &schemas.ImageEditInput{
+				Images: []schemas.ImageInput{{Image: imgBytes}},
+				Prompt: r.InPaintingParams.Text,
+			}
+			params.Type = schemas.Ptr("inpainting")
+			if r.InPaintingParams.NegativeText != nil {
+				params.NegativePrompt = r.InPaintingParams.NegativeText
+			}
+			if r.InPaintingParams.MaskImage != nil {
+				maskBytes, err := base64.StdEncoding.DecodeString(*r.InPaintingParams.MaskImage)
+				if err != nil {
+					return nil, fmt.Errorf("failed to decode inpainting mask: %w", err)
+				}
+				params.Mask = maskBytes
+			}
+			if r.InPaintingParams.MaskPrompt != nil || r.InPaintingParams.ReturnMask != nil {
+				if params.ExtraParams == nil {
+					params.ExtraParams = make(map[string]interface{})
+				}
+				if r.InPaintingParams.MaskPrompt != nil {
+					params.ExtraParams["mask_prompt"] = *r.InPaintingParams.MaskPrompt
+				}
+				if r.InPaintingParams.ReturnMask != nil {
+					params.ExtraParams["return_mask"] = *r.InPaintingParams.ReturnMask
+				}
+			}
+
+		case TaskTypeOutpainting:
+			if r.OutPaintingParams == nil {
+				return nil, fmt.Errorf("outPaintingParams required for OUTPAINTING task")
+			}
+			imgBytes, err := base64.StdEncoding.DecodeString(r.OutPaintingParams.Image)
+			if err != nil {
+				return nil, fmt.Errorf("failed to decode outpainting image: %w", err)
+			}
+			req.Input = &schemas.ImageEditInput{
+				Images: []schemas.ImageInput{{Image: imgBytes}},
+				Prompt: r.OutPaintingParams.Text,
+			}
+			params.Type = schemas.Ptr("outpainting")
+			if r.OutPaintingParams.NegativeText != nil {
+				params.NegativePrompt = r.OutPaintingParams.NegativeText
+			}
+			if r.OutPaintingParams.MaskImage != nil {
+				maskBytes, err := base64.StdEncoding.DecodeString(*r.OutPaintingParams.MaskImage)
+				if err != nil {
+					return nil, fmt.Errorf("failed to decode outpainting mask: %w", err)
+				}
+				params.Mask = maskBytes
+			}
+			if r.OutPaintingParams.MaskPrompt != nil || r.OutPaintingParams.ReturnMask != nil || r.OutPaintingParams.OutPaintingMode != nil {
+				if params.ExtraParams == nil {
+					params.ExtraParams = make(map[string]interface{})
+				}
+				if r.OutPaintingParams.MaskPrompt != nil {
+					params.ExtraParams["mask_prompt"] = *r.OutPaintingParams.MaskPrompt
+				}
+				if r.OutPaintingParams.ReturnMask != nil {
+					params.ExtraParams["return_mask"] = *r.OutPaintingParams.ReturnMask
+				}
+				if r.OutPaintingParams.OutPaintingMode != nil {
+					params.ExtraParams["outpainting_mode"] = *r.OutPaintingParams.OutPaintingMode
+				}
+			}
+
+		case TaskTypeBackgroundRemoval:
+			if r.BackgroundRemovalParams == nil {
+				return nil, fmt.Errorf("backgroundRemovalParams required for BACKGROUND_REMOVAL task")
+			}
+			imgBytes, err := base64.StdEncoding.DecodeString(r.BackgroundRemovalParams.Image)
+			if err != nil {
+				return nil, fmt.Errorf("failed to decode background removal image: %w", err)
+			}
+			req.Input = &schemas.ImageEditInput{
+				Images: []schemas.ImageInput{{Image: imgBytes}},
+			}
+			params.Type = schemas.Ptr("background_removal")
+
+		default:
+			return nil, fmt.Errorf("unsupported taskType for image edit: %s", *r.TaskType)
+		}
+
+		// Map imageGenerationConfig fields into edit params (Titan/Nova Canvas only)
+		if cfg := r.ImageGenerationConfig; cfg != nil {
+			params.N = cfg.NumberOfImages
+			params.Seed = cfg.Seed
+			params.Quality = cfg.Quality
+			if cfg.Width != nil && cfg.Height != nil {
+				size := fmt.Sprintf("%dx%d", *cfg.Width, *cfg.Height)
+				params.Size = &size
+			}
+			if cfg.CfgScale != nil {
+				if params.ExtraParams == nil {
+					params.ExtraParams = make(map[string]interface{})
+				}
+				params.ExtraParams["cfgScale"] = *cfg.CfgScale
+			}
+		}
+	} else {
+		// Stability AI path
+		if r.Image == nil {
+			return nil, fmt.Errorf("image field is required for Stability AI image edit")
+		}
+		imgBytes, err := base64.StdEncoding.DecodeString(*r.Image)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode stability AI image: %w", err)
+		}
+		req.Input = &schemas.ImageEditInput{
+			Images: []schemas.ImageInput{{Image: imgBytes}},
+			Prompt: r.Prompt,
+		}
+		// Infer task type from model name
+		taskType, err := getStabilityAIEditTaskType(r.ModelID)
+		if err != nil {
+			return nil, fmt.Errorf("cannot determine Stability AI edit task: %w", err)
+		}
+		params.Type = &taskType
+		if r.Mask != nil {
+			maskBytes, err := base64.StdEncoding.DecodeString(*r.Mask)
+			if err != nil {
+				return nil, fmt.Errorf("failed to decode stability AI mask: %w", err)
+			}
+			params.Mask = maskBytes
+		}
+	}
+
+	if len(r.ExtraParams) > 0 {
+		if params.ExtraParams == nil {
+			params.ExtraParams = make(map[string]interface{}, len(r.ExtraParams))
+		}
+		for k, v := range r.ExtraParams {
+			params.ExtraParams[k] = v
+		}
+	}
+	req.Params = params
+	return req, nil
+}
+
+// ToBifrostImageVariationRequest converts the invoke request to a BifrostImageVariationRequest.
+// Reads from imageVariationParams (Titan/Nova Canvas format).
+func (r *BedrockInvokeRequest) ToBifrostImageVariationRequest(ctx *schemas.BifrostContext) (*schemas.BifrostImageVariationRequest, error) {
+	if r.ImageVariationParams == nil || len(r.ImageVariationParams.Images) == 0 {
+		return nil, fmt.Errorf("imageVariationParams.images is required for IMAGE_VARIATION")
+	}
+
+	primaryBytes, err := base64.StdEncoding.DecodeString(r.ImageVariationParams.Images[0])
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode primary variation image: %w", err)
+	}
+
+	modelID := r.ModelID
+	if unescaped, err := url.PathUnescape(r.ModelID); err == nil {
+		modelID = unescaped
+	}
+	provider, model := schemas.ParseModelString(modelID, "")
+	req := &schemas.BifrostImageVariationRequest{
+		Provider: provider,
+		Model:    model,
+		Input: &schemas.ImageVariationInput{
+			Image: schemas.ImageInput{Image: primaryBytes},
+		},
+	}
+
+	params := &schemas.ImageVariationParameters{}
+	extraParams := make(map[string]interface{})
+
+	// Additional images (index 1+) stored under "images" key for the provider
+	if len(r.ImageVariationParams.Images) > 1 {
+		additionalImages := make([][]byte, 0, len(r.ImageVariationParams.Images)-1)
+		for _, imgB64 := range r.ImageVariationParams.Images[1:] {
+			imgBytes, err := base64.StdEncoding.DecodeString(imgB64)
+			if err != nil {
+				return nil, fmt.Errorf("failed to decode additional variation image: %w", err)
+			}
+			additionalImages = append(additionalImages, imgBytes)
+		}
+		extraParams["images"] = additionalImages
+	}
+
+	// Text / negative text / similarity strength go to ExtraParams (provider reads them from there)
+	if r.ImageVariationParams.Text != nil {
+		extraParams["prompt"] = *r.ImageVariationParams.Text
+	}
+	if r.ImageVariationParams.NegativeText != nil {
+		extraParams["negativeText"] = *r.ImageVariationParams.NegativeText
+	}
+	if r.ImageVariationParams.SimilarityStrength != nil {
+		extraParams["similarityStrength"] = *r.ImageVariationParams.SimilarityStrength
+	}
+
+	// ImageGenerationConfig → N, Size, Seed, Quality, CfgScale
+	if cfg := r.ImageGenerationConfig; cfg != nil {
+		params.N = cfg.NumberOfImages
+		if cfg.Width != nil && cfg.Height != nil {
+			size := fmt.Sprintf("%dx%d", *cfg.Width, *cfg.Height)
+			params.Size = &size
+		}
+		if cfg.Seed != nil {
+			extraParams["seed"] = *cfg.Seed
+		}
+		if cfg.Quality != nil {
+			extraParams["quality"] = *cfg.Quality
+		}
+		if cfg.CfgScale != nil {
+			extraParams["cfgScale"] = *cfg.CfgScale
+		}
+	}
+
+	// Forward any remaining ExtraParams from the request body
+	for k, v := range r.ExtraParams {
+		extraParams[k] = v
+	}
+	if len(extraParams) > 0 {
+		params.ExtraParams = extraParams
+	}
+
+	req.Params = params
+	return req, nil
+}
+
 // buildCohereCommandRPrompt converts Cohere Command R's message + chat_history into a text prompt.
 func (r *BedrockInvokeRequest) buildCohereCommandRPrompt() string {
 	var sb strings.Builder
@@ -355,6 +921,13 @@ func (r *BedrockInvokeRequest) parseSystemMessages() []BedrockSystemMessage {
 					continue
 				}
 				result = append(result, msg)
+
+				// Anthropic-dialect blocks mark a breakpoint with a per-block "cache_control"
+				// instead of Converse's positional cachePoint entry; translate it the same
+				// way convertSystemMessages does for the Bifrost->Bedrock egress direction.
+				if cacheControl, ok := m["cache_control"].(map[string]interface{}); ok {
+					result = append(result, BedrockSystemMessage{CachePoint: newBedrockCachePoint(cacheControlTTL(cacheControl))})
+				}
 			}
 		}
 		return result
@@ -366,6 +939,60 @@ func (r *BedrockInvokeRequest) parseSystemMessages() []BedrockSystemMessage {
 	}
 
 	return nil
+}
+
+// cacheControlTTL extracts the optional "ttl" string from an Anthropic-dialect
+// cache_control map, e.g. {"type": "ephemeral", "ttl": "1h"}.
+func cacheControlTTL(cacheControl map[string]interface{}) *string {
+	if ttl, ok := cacheControl["ttl"].(string); ok {
+		return &ttl
+	}
+	return nil
+}
+
+// applyMessageContentCacheControl catches per-block "cache_control" markers that
+// BedrockContentBlock's UnmarshalJSON normalizes structurally but doesn't translate, since
+// Converse instead expects a positional cachePoint sibling entry — mirroring the same
+// translation parseSystemMessages and convertAnthropicTools already apply for system
+// messages and tools. Queries only the "cache_control" path per already-parsed block
+// directly via gjson — no intermediate parse of the raw messages JSON into a map or tree.
+func applyMessageContentCacheControl(msgs []BedrockMessage, raw json.RawMessage) []BedrockMessage {
+	for i := range msgs {
+		msgs[i].Content = injectContentBlockCachePoints(msgs[i].Content, raw, fmt.Sprintf("%d.content", i))
+	}
+	return msgs
+}
+
+// injectContentBlockCachePoints walks the already-parsed blocks by index and, for each one,
+// queries "<basePath>.<index>.cache_control" directly against the raw JSON via gjson. A block
+// carrying cache_control gets a trailing standalone CachePoint sibling appended after it.
+// Recurses into tool_result blocks first, whose own nested content array can carry an
+// independent cache_control breakpoint of its own.
+func injectContentBlockCachePoints(blocks []BedrockContentBlock, raw json.RawMessage, basePath string) []BedrockContentBlock {
+	result := make([]BedrockContentBlock, 0, len(blocks))
+	for j, block := range blocks {
+		blockPath := fmt.Sprintf("%s.%d", basePath, j)
+		if block.ToolResult != nil {
+			block.ToolResult.Content = injectContentBlockCachePoints(block.ToolResult.Content, raw, blockPath+".content")
+		}
+		result = append(result, block)
+		if cc := gjson.GetBytes(raw, blockPath+".cache_control"); cc.Exists() {
+			result = append(result, BedrockContentBlock{CachePoint: newBedrockCachePoint(cacheControlTTLFromJSON(cc))})
+		}
+	}
+	return result
+}
+
+// cacheControlTTLFromJSON extracts the optional "ttl" string from a gjson-parsed cache_control
+// object — the gjson equivalent of cacheControlTTL, which operates on the map[string]interface{}
+// shape parseSystemMessages/convertAnthropicTools already have on hand.
+func cacheControlTTLFromJSON(cacheControl gjson.Result) *string {
+	ttl := cacheControl.Get("ttl")
+	if !ttl.Exists() {
+		return nil
+	}
+	s := ttl.String()
+	return &s
 }
 
 // convertAnthropicTools converts Anthropic-format tools to Bedrock ToolConfig.
@@ -383,6 +1010,16 @@ func (r *BedrockInvokeRequest) convertAnthropicTools() *BedrockToolConfig {
 			continue
 		}
 
+		// tool_search_tool_* is a server tool for Anthropic's tool-search-tool beta,
+		// not an invocable function — and classic Bedrock can't support tool search
+		// at all (AWS restricts it to InvokeModel/InvokeModelWithResponseStream,
+		// never Converse; see ProviderFeatures[schemas.Bedrock].ToolSearch in the
+		// anthropic package). Skip it here rather than building a broken,
+		// schema-less "function" tool out of it.
+		if typeStr, ok := toolMap["type"].(string); ok && strings.HasPrefix(typeStr, "tool_search_tool_") {
+			continue
+		}
+
 		spec := &BedrockToolSpec{}
 		if name, ok := toolMap["name"].(string); ok {
 			spec.Name = name
@@ -396,6 +1033,15 @@ func (r *BedrockInvokeRequest) convertAnthropicTools() *BedrockToolConfig {
 		}
 
 		bedrockTools = append(bedrockTools, BedrockTool{ToolSpec: spec})
+
+		// Anthropic attaches cache_control to the tool itself; Converse instead expects a
+		// positional cachePoint element in toolConfig.tools. The downstream shared builder
+		// (BedrockConverseRequest.ToBifrostResponsesRequest) already knows how to read this —
+		// see responses.go's tool.CachePoint handling — including the Nova-family exclusion,
+		// so no extra gating is needed here.
+		if cacheControl, ok := toolMap["cache_control"].(map[string]interface{}); ok {
+			bedrockTools = append(bedrockTools, BedrockTool{CachePoint: newBedrockCachePoint(cacheControlTTL(cacheControl))})
+		}
 	}
 
 	if len(bedrockTools) == 0 {
@@ -448,9 +1094,16 @@ func ToBedrockInvokeMessagesResponse(ctx *schemas.BifrostContext, resp *schemas.
 		return nil, fmt.Errorf("bifrost response is nil")
 	}
 
-	model := resp.Model
-	if resp.ExtraFields.ModelRequested != "" {
-		model = resp.ExtraFields.ModelRequested
+	model := ""
+	if resp.Model != "" {
+		model = resp.Model
+	} else {
+		extraFields := resp.ExtraFields
+		if extraFields.ResolvedModelUsed != "" {
+			model = extraFields.ResolvedModelUsed
+		} else if extraFields.OriginalModelRequested != "" {
+			model = extraFields.OriginalModelRequested
+		}
 	}
 
 	// Nova models: delegate to existing ToBedrockConverseResponse (Nova InvokeModel matches Converse format)
@@ -465,6 +1118,101 @@ func ToBedrockInvokeMessagesResponse(ctx *schemas.BifrostContext, resp *schemas.
 
 	// Default: Anthropic Messages API format (most common InvokeModel + messages use case)
 	return toBedrockInvokeAnthropicResponse(resp, model), nil
+}
+
+func ToBedrockInvokeImagesResponse(ctx *schemas.BifrostContext, resp *schemas.BifrostImageGenerationResponse) (interface{}, error) {
+	if resp == nil {
+		return nil, fmt.Errorf("bifrost response is nil")
+	}
+
+	// If the provider stored the raw Bedrock response, return it verbatim (preserves seeds, finish_reasons, etc.)
+	if resp.ExtraFields.RawResponse != nil {
+		return resp.ExtraFields.RawResponse, nil
+	}
+
+	model := resp.Model
+	if model == "" {
+		if resp.ExtraFields.ResolvedModelUsed != "" {
+			model = resp.ExtraFields.ResolvedModelUsed
+		} else if resp.ExtraFields.OriginalModelRequested != "" {
+			model = resp.ExtraFields.OriginalModelRequested
+		}
+	}
+
+	// Stability AI models use the same BedrockImageGenerationResponse format as Titan/Nova Canvas
+	if isStabilityAIModel(model) {
+		return ToStabilityAIImageGenerationResponse(resp)
+	}
+
+	// Default: Titan Image Generator v1/v2, Nova Canvas — reconstruct from Bifrost data
+	result := &BedrockImageGenerationResponse{}
+	for _, d := range resp.Data {
+		result.Images = append(result.Images, d.B64JSON)
+	}
+	return result, nil
+}
+
+// ToBedrockEmbeddingInvokeResponse converts a BifrostEmbeddingResponse back to the native
+// Bedrock invoke API response format.
+// Single-embedding (Titan) responses use: {"embedding": [...], "inputTextTokenCount": N}
+// Multi-embedding (Cohere) responses use:  {"embeddings": [[...],[...]], "response_type": "embeddings_floats"}
+func ToBedrockEmbeddingInvokeResponse(ctx *schemas.BifrostContext, resp *schemas.BifrostEmbeddingResponse) (interface{}, error) {
+	if resp == nil {
+		return nil, fmt.Errorf("bifrost embedding response is nil")
+	}
+
+	// If the provider stored the raw Bedrock response, return it verbatim
+	if resp.ExtraFields.RawResponse != nil {
+		return resp.ExtraFields.RawResponse, nil
+	}
+
+	tokenCount := 0
+	if resp.Usage != nil {
+		tokenCount = resp.Usage.PromptTokens
+	}
+
+	if len(resp.Data) == 0 {
+		return &BedrockInvokeEmbeddingResp{InputTextTokenCount: tokenCount}, nil
+	}
+
+	// Use the resolved family to distinguish Cohere from Titan — not batch size.
+	// A single-input Cohere request must still return the Cohere envelope format.
+	model := resp.Model
+	if model == "" {
+		if resp.ExtraFields.ResolvedModelUsed != "" {
+			model = resp.ExtraFields.ResolvedModelUsed
+		} else if resp.ExtraFields.OriginalModelRequested != "" {
+			model = resp.ExtraFields.OriginalModelRequested
+		}
+	}
+
+	if schemas.IsCohereModelFamily(ctx, model) {
+		floats := make([][]float32, 0, len(resp.Data))
+		for _, d := range resp.Data {
+			float32Emb := make([]float32, len(d.Embedding.EmbeddingArray))
+			for i, v := range d.Embedding.EmbeddingArray {
+				float32Emb[i] = float32(v)
+			}
+			floats = append(floats, float32Emb)
+		}
+		return &BedrockInvokeCohereEmbeddingResp{
+			Embeddings:   floats,
+			ResponseType: "embeddings_floats",
+		}, nil
+	}
+
+	// Titan format
+	if resp.Data[0].Embedding.EmbeddingArray == nil {
+		return &BedrockInvokeEmbeddingResp{InputTextTokenCount: tokenCount}, nil
+	}
+	float32Emb := make([]float32, len(resp.Data[0].Embedding.EmbeddingArray))
+	for i, v := range resp.Data[0].Embedding.EmbeddingArray {
+		float32Emb[i] = float32(v)
+	}
+	return &BedrockInvokeEmbeddingResp{
+		Embedding:           float32Emb,
+		InputTextTokenCount: tokenCount,
+	}, nil
 }
 
 // toBedrockInvokeAnthropicResponse converts BifrostResponsesResponse to Anthropic Messages API format.
@@ -525,12 +1273,41 @@ func toBedrockInvokeAnthropicResponse(resp *schemas.BifrostResponsesResponse, mo
 		}
 		// Reasoning content
 		if item.ResponsesReasoning != nil {
-			for _, summary := range item.ResponsesReasoning.Summary {
-				if summary.Text != "" {
-					result.Content = append(result.Content, BedrockInvokeMessagesContentBlock{
-						Type:     "thinking",
-						Thinking: summary.Text,
-					})
+			// Bedrock-origin reasoning lives in Content.ContentBlocks (see
+			// convertSingleBedrockMessageToBifrostMessages) — ResponsesReasoning.Summary
+			// is OpenAI Responses-API shape and is always empty for Bedrock. Fall back
+			// to Summary whenever ContentBlocks yields no usable reasoning block, not
+			// merely when ContentBlocks is empty — a non-empty ContentBlocks containing
+			// no reasoning-type block would otherwise silently lose the Summary data.
+			emittedFromContentBlocks := false
+			if item.Content != nil {
+				for _, block := range item.Content.ContentBlocks {
+					// Only require Text != nil (matching convertBifrostReasoningToBedrockReasoning,
+					// the sibling egress function) — not non-empty. Bedrock can return a
+					// reasoning block with empty text but a real signature; requiring
+					// non-empty text here would drop the whole block, losing the
+					// signature a client needs to replay history on the next turn.
+					if block.Type == schemas.ResponsesOutputMessageContentTypeReasoning && block.Text != nil {
+						blk := BedrockInvokeMessagesContentBlock{
+							Type:     "thinking",
+							Thinking: *block.Text,
+						}
+						if sig := reasoningSignatureForBedrock(block.Signature); sig != nil {
+							blk.Signature = *sig
+						}
+						result.Content = append(result.Content, blk)
+						emittedFromContentBlocks = true
+					}
+				}
+			}
+			if !emittedFromContentBlocks {
+				for _, summary := range item.ResponsesReasoning.Summary {
+					if summary.Text != "" {
+						result.Content = append(result.Content, BedrockInvokeMessagesContentBlock{
+							Type:     "thinking",
+							Thinking: summary.Text,
+						})
+					}
 				}
 			}
 		}
@@ -553,9 +1330,12 @@ func toBedrockInvokeAnthropicResponse(resp *schemas.BifrostResponsesResponse, mo
 
 	// Usage
 	if resp.Usage != nil {
+		usage := buildBedrockTokenUsage(resp.Usage)
 		result.Usage = &BedrockInvokeMessagesUsage{
-			InputTokens:  resp.Usage.InputTokens,
-			OutputTokens: resp.Usage.OutputTokens,
+			InputTokens:              usage.InputTokens,
+			OutputTokens:             usage.OutputTokens,
+			CacheReadInputTokens:     usage.CacheReadInputTokens,
+			CacheCreationInputTokens: usage.CacheWriteInputTokens,
 		}
 	}
 
@@ -623,12 +1403,17 @@ func ToBedrockInvokeMessagesStreamResponse(ctx *schemas.BifrostContext, resp *sc
 	// final Completed event). Without checking resp.ExtraFields, early chunks would
 	// have model="" and Nova streams would be mis-routed through the Anthropic path.
 	model := ""
-	if resp.ExtraFields.ModelRequested != "" {
-		model = resp.ExtraFields.ModelRequested
-	} else if resp.Response != nil && resp.Response.ExtraFields.ModelRequested != "" {
-		model = resp.Response.ExtraFields.ModelRequested
-	} else if resp.Response != nil && resp.Response.Model != "" {
-		model = resp.Response.Model
+	if resp.Response != nil {
+		if resp.Response.Model != "" {
+			model = resp.Response.Model
+		} else {
+			extraFields := resp.Response.ExtraFields
+			if extraFields.ResolvedModelUsed != "" {
+				model = extraFields.ResolvedModelUsed
+			} else if extraFields.OriginalModelRequested != "" {
+				model = extraFields.OriginalModelRequested
+			}
+		}
 	}
 
 	// Nova models: delegate to existing converse stream response (same format)
@@ -644,30 +1429,42 @@ func ToBedrockInvokeMessagesStreamResponse(ctx *schemas.BifrostContext, resp *sc
 	}
 
 	// For Anthropic models (and default): serialize as Anthropic Messages API SSE events,
-	// then wrap in InvokeModelRawChunk
-	rawBytes, err := toAnthropicInvokeStreamBytes(resp)
+	// then wrap in InvokeModelRawChunks. Some Bifrost events map to multiple Anthropic events
+	// (e.g., Completed → message_delta + message_stop).
+	rawChunks, err := toAnthropicInvokeStreamBytes(resp)
 	if err != nil {
 		return "", nil, err
 	}
-	if rawBytes == nil {
+	if len(rawChunks) == 0 {
 		return "", nil, nil
 	}
 
 	bedrockEvent := &BedrockStreamEvent{
-		InvokeModelRawChunk: rawBytes,
+		InvokeModelRawChunks: rawChunks,
 	}
+
 	return "", bedrockEvent, nil
 }
 
 // toAnthropicInvokeStreamBytes converts a Bifrost stream event into raw bytes representing
-// the Anthropic Messages API streaming event JSON, suitable for wrapping in InvokeModelRawChunk.
-func toAnthropicInvokeStreamBytes(resp *schemas.BifrostResponsesStreamResponse) ([]byte, error) {
+// the Anthropic Messages API streaming event JSON, suitable for wrapping in InvokeModelRawChunks.
+// Returns a slice of byte slices since some Bifrost events map to multiple Anthropic events
+// (e.g., Completed → message_delta + message_stop).
+func toAnthropicInvokeStreamBytes(resp *schemas.BifrostResponsesStreamResponse) ([][]byte, error) {
 	var event interface{}
 
 	switch resp.Type {
 	case schemas.ResponsesStreamResponseTypeCreated:
-		// message_start — use ExtraFields.ModelRequested as fallback for early chunks
-		model := resp.ExtraFields.ModelRequested
+		// message_start — prefer resolved model for accurate family detection on early chunks
+		model := resp.ExtraFields.ResolvedModelUsed
+		if model == "" {
+			model = resp.ExtraFields.OriginalModelRequested
+		}
+		// message_start.usage is always emitted, even though Converse has no counts this
+		// early: Anthropic populates it on every real stream and strict clients treat it as
+		// required (@ai-sdk/anthropic's schema marks usage.input_tokens non-optional), so a
+		// missing key aborts the stream before the first token — see #5885. Zeros are the
+		// placeholder; the authoritative figures land on message_delta below.
 		msgStart := map[string]interface{}{
 			"type": "message_start",
 			"message": map[string]interface{}{
@@ -676,6 +1473,10 @@ func toAnthropicInvokeStreamBytes(resp *schemas.BifrostResponsesStreamResponse) 
 				"role":    "assistant",
 				"content": []interface{}{},
 				"model":   model,
+				"usage": map[string]interface{}{
+					"input_tokens":  0,
+					"output_tokens": 0,
+				},
 			},
 		}
 		if resp.Response != nil {
@@ -684,6 +1485,20 @@ func toAnthropicInvokeStreamBytes(resp *schemas.BifrostResponsesStreamResponse) 
 			}
 			if resp.Response.ID != nil {
 				msgStart["message"].(map[string]interface{})["id"] = *resp.Response.ID
+			}
+			if resp.Response.Usage != nil {
+				usage := buildBedrockTokenUsage(resp.Response.Usage)
+				usageMap := map[string]interface{}{
+					"input_tokens":  usage.InputTokens,
+					"output_tokens": usage.OutputTokens,
+				}
+				if usage.CacheReadInputTokens > 0 {
+					usageMap["cache_read_input_tokens"] = usage.CacheReadInputTokens
+				}
+				if usage.CacheWriteInputTokens > 0 {
+					usageMap["cache_creation_input_tokens"] = usage.CacheWriteInputTokens
+				}
+				msgStart["message"].(map[string]interface{})["usage"] = usageMap
 			}
 		}
 		event = msgStart
@@ -777,7 +1592,7 @@ func toAnthropicInvokeStreamBytes(resp *schemas.BifrostResponsesStreamResponse) 
 				"type":  "content_block_delta",
 				"index": idx,
 				"delta": map[string]interface{}{
-					"type":          "input_json_delta",
+					"type":         "input_json_delta",
 					"partial_json": *resp.Delta,
 				},
 			}
@@ -791,12 +1606,13 @@ func toAnthropicInvokeStreamBytes(resp *schemas.BifrostResponsesStreamResponse) 
 			idx = *resp.ContentIndex
 		}
 		if resp.Signature != nil {
+			// Anthropic emits the signature as its own event type, not nested inside
+			// thinking_delta — https://platform.claude.com/docs/en/build-with-claude/thinking#streaming-thinking
 			event = map[string]interface{}{
 				"type":  "content_block_delta",
 				"index": idx,
 				"delta": map[string]interface{}{
-					"type":      "thinking_delta",
-					"thinking":  "",
+					"type":      "signature_delta",
 					"signature": *resp.Signature,
 				},
 			}
@@ -813,8 +1629,7 @@ func toAnthropicInvokeStreamBytes(resp *schemas.BifrostResponsesStreamResponse) 
 			return nil, nil
 		}
 
-	case schemas.ResponsesStreamResponseTypeOutputItemDone,
-		schemas.ResponsesStreamResponseTypeContentPartDone:
+	case schemas.ResponsesStreamResponseTypeOutputItemDone:
 		idx := 0
 		if resp.ContentIndex != nil {
 			idx = *resp.ContentIndex
@@ -824,19 +1639,20 @@ func toAnthropicInvokeStreamBytes(resp *schemas.BifrostResponsesStreamResponse) 
 			"index": idx,
 		}
 
-	case schemas.ResponsesStreamResponseTypeOutputTextDone,
+	case schemas.ResponsesStreamResponseTypeContentPartDone,
+		schemas.ResponsesStreamResponseTypeOutputTextDone,
 		schemas.ResponsesStreamResponseTypeReasoningSummaryTextDone:
 		// Skip — the content_block_stop is emitted on OutputItemDone
 		return nil, nil
 
 	case schemas.ResponsesStreamResponseTypeCompleted:
-		// Emit message_delta + message_stop
+		// Emit message_delta + message_stop as two separate events
 		stopReason := "end_turn"
 		if resp.Response != nil && resp.Response.IncompleteDetails != nil {
 			stopReason = resp.Response.IncompleteDetails.Reason
 		}
 
-		// Build combined payload: message_delta data
+		// Build message_delta event
 		messageDelta := map[string]interface{}{
 			"type": "message_delta",
 			"delta": map[string]interface{}{
@@ -845,11 +1661,40 @@ func toAnthropicInvokeStreamBytes(resp *schemas.BifrostResponsesStreamResponse) 
 			},
 		}
 		if resp.Response != nil && resp.Response.Usage != nil {
-			messageDelta["usage"] = map[string]interface{}{
-				"output_tokens": resp.Response.Usage.OutputTokens,
+			// Bedrock Converse only reports usage on the terminal event (unlike native
+			// Anthropic, which also puts input_tokens on message_start) — see
+			// buildBedrockTokenUsage's doc comment. This is the only stream event where
+			// Bifrost has input/cache token counts for a Bedrock-backed call, so all of
+			// them are reported here rather than split across message_start/message_delta.
+			usage := buildBedrockTokenUsage(resp.Response.Usage)
+			usageMap := map[string]interface{}{
+				"input_tokens":  usage.InputTokens,
+				"output_tokens": usage.OutputTokens,
 			}
+			if usage.CacheReadInputTokens > 0 {
+				usageMap["cache_read_input_tokens"] = usage.CacheReadInputTokens
+			}
+			if usage.CacheWriteInputTokens > 0 {
+				usageMap["cache_creation_input_tokens"] = usage.CacheWriteInputTokens
+			}
+			messageDelta["usage"] = usageMap
 		}
-		event = messageDelta
+
+		// Build message_stop event
+		messageStop := map[string]interface{}{
+			"type": "message_stop",
+		}
+
+		// Marshal both events
+		deltaBytes, err := providerUtils.MarshalSorted(messageDelta)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal message_delta event: %w", err)
+		}
+		stopBytes, err := providerUtils.MarshalSorted(messageStop)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal message_stop event: %w", err)
+		}
+		return [][]byte{deltaBytes, stopBytes}, nil
 
 	default:
 		return nil, nil
@@ -859,9 +1704,9 @@ func toAnthropicInvokeStreamBytes(resp *schemas.BifrostResponsesStreamResponse) 
 		return nil, nil
 	}
 
-	bytes, err := providerUtils.MarshalSorted(event)
+	eventBytes, err := providerUtils.MarshalSorted(event)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal invoke stream event: %w", err)
 	}
-	return bytes, nil
+	return [][]byte{eventBytes}, nil
 }

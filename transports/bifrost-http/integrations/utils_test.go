@@ -2,13 +2,16 @@ package integrations
 
 import (
 	"context"
+	"io"
 	"strings"
 	"testing"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
+	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -44,6 +47,28 @@ func newTestGenericRouter() *GenericRouter {
 
 func newTestBifrostContext() *schemas.BifrostContext {
 	return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+}
+
+func TestExtractAndParseFallbacks_GeminiGenerationRequest(t *testing.T) {
+	router := newTestGenericRouter()
+	geminiReq := &gemini.GeminiGenerationRequest{
+		Model:     "gemini/gemini-3-flash-preview",
+		Fallbacks: []string{"vertex/gemini-3-flash-preview"},
+	}
+	bifrostReq := &schemas.BifrostRequest{
+		ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Provider: schemas.Gemini,
+			Model:    "gemini-3-flash-preview",
+		},
+	}
+
+	err := router.extractAndParseFallbacks(newTestBifrostContext(), geminiReq, bifrostReq)
+
+	require.NoError(t, err)
+	require.NotNil(t, bifrostReq.ResponsesRequest)
+	require.Len(t, bifrostReq.ResponsesRequest.Fallbacks, 1)
+	assert.Equal(t, schemas.Vertex, bifrostReq.ResponsesRequest.Fallbacks[0].Provider)
+	assert.Equal(t, "gemini-3-flash-preview", bifrostReq.ResponsesRequest.Fallbacks[0].Model)
 }
 
 // TestSendStreamError_PropagatesProviderStatusCode verifies that sendStreamError
@@ -274,4 +299,37 @@ func TestSendStreamError_ForwardsProviderHeaders(t *testing.T) {
 	assert.Equal(t, 400, ctx.Response.StatusCode())
 	assert.Equal(t, "req-123", string(ctx.Response.Header.Peek("x-amzn-requestid")))
 	assert.Equal(t, "ValidationException", string(ctx.Response.Header.Peek("x-amzn-errortype")))
+}
+
+// TestTryStreamLargeResponse_AppliesRoutedIdentityHeaders verifies that
+// large-response early returns (speech audio, transcription, image bytes)
+// carry the routed-identity headers even though they skip the common footer
+// in handleNonStreamingRequest that normally emits them.
+func TestTryStreamLargeResponse_AppliesRoutedIdentityHeaders(t *testing.T) {
+	router := newTestGenericRouter()
+	ctx := &fasthttp.RequestCtx{}
+	bifrostCtx := newTestBifrostContext()
+	bifrostCtx.SetValue(schemas.BifrostContextKeyLargeResponseMode, true)
+	bifrostCtx.SetValue(schemas.BifrostContextKeyLargeResponseReader, io.NopCloser(strings.NewReader("audio-bytes")))
+
+	extra := schemas.BifrostResponseExtraFields{
+		Provider:          schemas.OpenAI,
+		ResolvedModelUsed: "tts-1",
+		RequestType:       schemas.SpeechRequest,
+		RoutingInfo: schemas.RoutingInfo{
+			Provider: schemas.OpenAI,
+			Model:    "tts-1",
+			Key:      "openai-key",
+		},
+	}
+
+	handled := router.tryStreamLargeResponse(ctx, bifrostCtx, extra)
+
+	require.True(t, handled, "large response mode active — call must handle the response")
+	assert.Equal(t, "openai", string(ctx.Response.Header.Peek(lib.HeaderBifrostProvider)))
+	assert.Equal(t, "tts-1", string(ctx.Response.Header.Peek(lib.HeaderBifrostResolvedModel)))
+	assert.Equal(t, string(schemas.SpeechRequest), string(ctx.Response.Header.Peek(lib.HeaderBifrostRequestType)))
+	assert.Equal(t, "openai", string(ctx.Response.Header.Peek(lib.HeaderBifrostRoutingInfoProvider)))
+	assert.Equal(t, "tts-1", string(ctx.Response.Header.Peek(lib.HeaderBifrostRoutingInfoModel)))
+	assert.Equal(t, "openai-key", string(ctx.Response.Header.Peek(lib.HeaderBifrostRoutingInfoKey)))
 }

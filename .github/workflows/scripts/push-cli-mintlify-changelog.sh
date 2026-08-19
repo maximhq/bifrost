@@ -244,7 +244,7 @@ git add docs/docs.json
 git add "$CLI_CHANGELOG_PATH"
 git config user.name "github-actions[bot]"
 git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-git commit -m "Adds CLI changelog for v$VERSION --skip-pipeline"
+git commit -m "Adds CLI changelog for v$VERSION --skip-ci"
 git push origin "$CURRENT_BRANCH"
 
 echo "✅ Pushed CLI changelog for v$VERSION"

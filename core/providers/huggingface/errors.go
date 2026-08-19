@@ -10,17 +10,19 @@ import (
 )
 
 // parseHuggingFaceImageError parses HuggingFace error responses
-func parseHuggingFaceImageError(resp *fasthttp.Response, meta *providerUtils.RequestMetadata) *schemas.BifrostError {
+func parseHuggingFaceImageError(resp *fasthttp.Response) *schemas.BifrostError {
 	var errorResp HuggingFaceResponseError
 	bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
 
-	if strings.TrimSpace(errorResp.Type) != "" {
-		typeCopy := errorResp.Type
-		bifrostErr.Type = &typeCopy
-	}
-
 	if bifrostErr.Error == nil {
 		bifrostErr.Error = &schemas.ErrorField{}
+	}
+
+	if strings.TrimSpace(errorResp.Type) != "" {
+		bifrostErr.Type = schemas.Ptr(errorResp.Type)
+		if bifrostErr.Error.Type == nil {
+			bifrostErr.Error.Type = schemas.Ptr(errorResp.Type)
+		}
 	}
 
 	// Handle FastAPI validation errors
@@ -51,14 +53,6 @@ func parseHuggingFaceImageError(resp *fasthttp.Response, meta *providerUtils.Req
 		bifrostErr.Error.Message = errorResp.Message
 	} else if strings.TrimSpace(errorResp.Error) != "" {
 		bifrostErr.Error.Message = errorResp.Error
-	}
-
-	if meta != nil {
-		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			Provider:       meta.Provider,
-			ModelRequested: meta.Model,
-			RequestType:    meta.RequestType,
-		}
 	}
 
 	return bifrostErr

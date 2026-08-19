@@ -94,7 +94,7 @@ func ValidateChatResponse(t *testing.T, response *schemas.BifrostChatResponse, e
 	}
 
 	// Validate basic structure
-	validateChatBasicStructure(t, response, expectations, &result)
+	validateChatBasicStructure(t, response, expectations, &result, scenarioName)
 
 	// Validate content
 	validateChatContent(t, response, expectations, &result)
@@ -445,7 +445,19 @@ func ValidateCountTokensResponse(t *testing.T, response *schemas.BifrostCountTok
 // =============================================================================
 
 // validateChatBasicStructure checks the basic structure of the chat response
-func validateChatBasicStructure(t *testing.T, response *schemas.BifrostChatResponse, expectations ResponseExpectations, result *ValidationResult) {
+func validateChatBasicStructure(t *testing.T, response *schemas.BifrostChatResponse, expectations ResponseExpectations, result *ValidationResult, scenarioName string) {
+	// Object is a constant bifrost schema marker ("chat.completion" / "chat.completion.chunk").
+	// For streaming scenarios, per-chunk validation in chat_completion_stream.go covers this —
+	// the aggregated/consolidated response built by the harness is a synthetic construct and
+	// does not carry provider-originating semantics. Skip the check there to avoid asserting
+	// that the harness remembered to copy a constant forward.
+	if !strings.Contains(scenarioName, "Stream") {
+		if response.Object == "" {
+			result.Passed = false
+			result.Errors = append(result.Errors, "Object field is empty in chat completion response")
+		}
+	}
+
 	// Check choice count
 	if expectations.ExpectedChoiceCount > 0 {
 		actualCount := 0
@@ -572,17 +584,38 @@ func validateChatToolCalls(t *testing.T, response *schemas.BifrostChatResponse, 
 
 // validateChatTechnicalFields checks technical aspects of the chat response
 func validateChatTechnicalFields(t *testing.T, response *schemas.BifrostChatResponse, expectations ResponseExpectations, result *ValidationResult) {
+	// Strict checks: these fields must always be populated
+	if response.ExtraFields.RequestType == "" {
+		result.Passed = false
+		result.Errors = append(result.Errors, "ExtraFields.RequestType is empty")
+	}
+	if response.ExtraFields.Provider == "" {
+		result.Passed = false
+		result.Errors = append(result.Errors, "ExtraFields.Provider is empty")
+	}
+	if strings.TrimSpace(response.ExtraFields.OriginalModelRequested) == "" {
+		result.Passed = false
+		result.Errors = append(result.Errors, "ExtraFields.OriginalModelRequested is empty")
+	}
+	if strings.TrimSpace(response.ExtraFields.ResolvedModelUsed) == "" {
+		result.Passed = false
+		result.Errors = append(result.Errors, "ExtraFields.ResolvedModelUsed is empty")
+	}
+
 	// Check usage stats
 	if expectations.ShouldHaveUsageStats {
 		if response.Usage == nil {
-			result.Warnings = append(result.Warnings, "Expected usage statistics but not present")
+			result.Passed = false
+			result.Errors = append(result.Errors, fmt.Sprintf("Expected usage statistics but not present (provider: %s)", response.ExtraFields.Provider))
 		} else {
 			// Validate usage makes sense
 			if response.Usage.TotalTokens < response.Usage.PromptTokens {
-				result.Warnings = append(result.Warnings, "Total tokens less than prompt tokens")
+				result.Passed = false
+				result.Errors = append(result.Errors, fmt.Sprintf("Total tokens (%d) less than prompt tokens (%d)", response.Usage.TotalTokens, response.Usage.PromptTokens))
 			}
 			if response.Usage.TotalTokens < response.Usage.CompletionTokens {
-				result.Warnings = append(result.Warnings, "Total tokens less than completion tokens")
+				result.Passed = false
+				result.Errors = append(result.Errors, fmt.Sprintf("Total tokens (%d) less than completion tokens (%d)", response.Usage.TotalTokens, response.Usage.CompletionTokens))
 			}
 		}
 	}
@@ -590,14 +623,16 @@ func validateChatTechnicalFields(t *testing.T, response *schemas.BifrostChatResp
 	// Check timestamps
 	if expectations.ShouldHaveTimestamps {
 		if response.Created == 0 {
-			result.Warnings = append(result.Warnings, "Expected created timestamp but not present")
+			result.Passed = false
+			result.Errors = append(result.Errors, fmt.Sprintf("Expected created timestamp but not present (provider: %s)", response.ExtraFields.Provider))
 		}
 	}
 
 	// Check model field
 	if expectations.ShouldHaveModel {
 		if strings.TrimSpace(response.Model) == "" {
-			result.Warnings = append(result.Warnings, "Expected model field but not present or empty")
+			result.Passed = false
+			result.Errors = append(result.Errors, fmt.Sprintf("Expected model field but not present or empty (provider: %s)", response.ExtraFields.Provider))
 		}
 	}
 
@@ -766,28 +801,29 @@ func validateTextCompletionTechnicalFields(t *testing.T, response *schemas.Bifro
 	// Check usage stats
 	if expectations.ShouldHaveUsageStats {
 		if response.Usage == nil {
-			result.Warnings = append(result.Warnings, "Expected usage statistics but not present")
+			result.Passed = false
+			result.Errors = append(result.Errors, fmt.Sprintf("Expected usage statistics but not present (provider: %s)", response.ExtraFields.Provider))
 		} else {
 			// Validate usage makes sense
 			if response.Usage.TotalTokens < response.Usage.PromptTokens {
-				result.Warnings = append(result.Warnings, "Total tokens less than prompt tokens")
+				result.Passed = false
+				result.Errors = append(result.Errors, fmt.Sprintf("Total tokens (%d) less than prompt tokens (%d)", response.Usage.TotalTokens, response.Usage.PromptTokens))
 			}
 			if response.Usage.TotalTokens < response.Usage.CompletionTokens {
-				result.Warnings = append(result.Warnings, "Total tokens less than completion tokens")
+				result.Passed = false
+				result.Errors = append(result.Errors, fmt.Sprintf("Total tokens (%d) less than completion tokens (%d)", response.Usage.TotalTokens, response.Usage.CompletionTokens))
 			}
 		}
 	}
 
-	// Check timestamps - Text completion responses don't have a Created field
-	if expectations.ShouldHaveTimestamps {
-		// Text completion responses don't have timestamps, so skip this check
-		result.Warnings = append(result.Warnings, "Text completion responses don't support timestamp validation")
-	}
+	// Check timestamps - Text completion responses don't have a Created field in the schema
+	// so we skip timestamp validation for text completions regardless of the expectation
 
 	// Check model field
 	if expectations.ShouldHaveModel {
 		if strings.TrimSpace(response.Model) == "" {
-			result.Warnings = append(result.Warnings, "Expected model field but not present or empty")
+			result.Passed = false
+			result.Errors = append(result.Errors, fmt.Sprintf("Expected model field but not present or empty (provider: %s)", response.ExtraFields.Provider))
 		}
 	}
 
@@ -825,6 +861,12 @@ func collectTextCompletionResponseMetrics(response *schemas.BifrostTextCompletio
 
 // validateResponsesBasicStructure checks the basic structure of the Responses API response
 func validateResponsesBasicStructure(response *schemas.BifrostResponsesResponse, expectations ResponseExpectations, result *ValidationResult) {
+	// Check that Object field is not empty (should be "response")
+	if response.Object == "" {
+		result.Passed = false
+		result.Errors = append(result.Errors, "Object field is empty in responses response")
+	}
+
 	// Check choice count
 	if expectations.ExpectedChoiceCount > 0 {
 		actualCount := 0
@@ -841,7 +883,7 @@ func validateResponsesBasicStructure(response *schemas.BifrostResponsesResponse,
 	}
 
 	provider := response.ExtraFields.Provider
-	model := response.ExtraFields.ModelDeployment
+	model := response.ExtraFields.ResolvedModelUsed
 
 	// Verify top level status is present for OpenAI and Azure with  non-Claude models
 	if provider != "" && (provider == schemas.OpenAI || provider == schemas.Azure) && !strings.Contains(strings.ToLower(model), "claude") {
@@ -952,17 +994,45 @@ func validateResponsesToolCalls(t *testing.T, response *schemas.BifrostResponses
 
 // validateResponsesTechnicalFields checks technical aspects of the Responses API response
 func validateResponsesTechnicalFields(t *testing.T, response *schemas.BifrostResponsesResponse, expectations ResponseExpectations, result *ValidationResult) {
+	// Strict checks: these fields must always be populated
+	if response.ExtraFields.RequestType == "" {
+		result.Passed = false
+		result.Errors = append(result.Errors, "ExtraFields.RequestType is empty")
+	}
+	if response.ExtraFields.Provider == "" {
+		result.Passed = false
+		result.Errors = append(result.Errors, "ExtraFields.Provider is empty")
+	}
+	if strings.TrimSpace(response.ExtraFields.OriginalModelRequested) == "" {
+		result.Passed = false
+		result.Errors = append(result.Errors, "ExtraFields.OriginalModelRequested is empty")
+	}
+	if strings.TrimSpace(response.ExtraFields.ResolvedModelUsed) == "" {
+		result.Passed = false
+		result.Errors = append(result.Errors, "ExtraFields.ResolvedModelUsed is empty")
+	}
+
 	// Check usage stats
 	if expectations.ShouldHaveUsageStats {
 		if response.Usage == nil {
-			result.Warnings = append(result.Warnings, "Expected usage statistics but not present")
+			result.Passed = false
+			result.Errors = append(result.Errors, fmt.Sprintf("Expected usage statistics but not present (provider: %s)", response.ExtraFields.Provider))
 		}
 	}
 
 	// Check timestamps
 	if expectations.ShouldHaveTimestamps {
 		if response.CreatedAt == 0 {
-			result.Warnings = append(result.Warnings, "Expected created timestamp but not present")
+			result.Passed = false
+			result.Errors = append(result.Errors, fmt.Sprintf("Expected created timestamp but not present (provider: %s)", response.ExtraFields.Provider))
+		}
+	}
+
+	// Check model field
+	if expectations.ShouldHaveModel {
+		if strings.TrimSpace(response.Model) == "" {
+			result.Passed = false
+			result.Errors = append(result.Errors, fmt.Sprintf("Expected model field but not present or empty (provider: %s)", response.ExtraFields.Provider))
 		}
 	}
 
@@ -1187,6 +1257,14 @@ func validateImageGenerationFields(t *testing.T, response *schemas.BifrostImageG
 		// Note: Actual size validation would require downloading/decoding images
 	}
 
+	// Check model field
+	if expectations.ShouldHaveModel {
+		if strings.TrimSpace(response.Model) == "" {
+			result.Passed = false
+			result.Errors = append(result.Errors, fmt.Sprintf("Expected model field but not present or empty (provider: %s)", response.ExtraFields.Provider))
+		}
+	}
+
 	// Check latency field
 	if expectations.ShouldHaveLatency {
 		if response.ExtraFields.Latency <= 0 {
@@ -1229,6 +1307,49 @@ func collectImageGenerationResponseMetrics(response *schemas.BifrostImageGenerat
 // VALIDATION HELPER FUNCTIONS - EMBEDDING RESPONSE
 // =============================================================================
 
+// intFromProviderSpecific coerces provider-specific expectation values that may
+// be int, JSON float64, json.Number, or other numeric types into int.
+func intFromProviderSpecific(v any) (int, bool) {
+	switch n := v.(type) {
+	case int:
+		return n, true
+	case int8:
+		return int(n), true
+	case int16:
+		return int(n), true
+	case int32:
+		return int(n), true
+	case int64:
+		return int(n), true
+	case uint:
+		return int(n), true
+	case uint8:
+		return int(n), true
+	case uint16:
+		return int(n), true
+	case uint32:
+		return int(n), true
+	case uint64:
+		return int(n), true
+	case float32:
+		return int(n), true
+	case float64:
+		return int(n), true
+	case json.Number:
+		i, err := n.Int64()
+		if err != nil {
+			f, err2 := n.Float64()
+			if err2 != nil {
+				return 0, false
+			}
+			return int(f), true
+		}
+		return int(i), true
+	default:
+		return 0, false
+	}
+}
+
 // validateEmbeddingFields validates embedding responses
 func validateEmbeddingFields(t *testing.T, response *schemas.BifrostEmbeddingResponse, expectations ResponseExpectations, result *ValidationResult) {
 	// Check if response has embedding data
@@ -1236,6 +1357,39 @@ func validateEmbeddingFields(t *testing.T, response *schemas.BifrostEmbeddingRes
 		result.Passed = false
 		result.Errors = append(result.Errors, "Embedding response missing data")
 		return
+	}
+
+	// Check embedding count matches expected
+	if expectations.ProviderSpecific != nil {
+		if raw, exists := expectations.ProviderSpecific["expected_embedding_count"]; exists {
+			if expectedCount, ok := intFromProviderSpecific(raw); ok {
+				actualCount := len(response.Data)
+				// Also check for 2D arrays (some providers return single embedding with 2D array)
+				if actualCount == 1 && response.Data[0].Embedding.Embedding2DArray != nil {
+					actualCount = len(response.Data[0].Embedding.Embedding2DArray)
+				}
+				if actualCount != expectedCount {
+					result.Passed = false
+					result.Errors = append(result.Errors,
+						fmt.Sprintf("Expected %d embeddings, got %d", expectedCount, actualCount))
+				}
+			}
+		}
+	}
+
+	// Validate each embedding has non-empty vector data
+	for i, embedding := range response.Data {
+		hasData := false
+		if embedding.Embedding.EmbeddingArray != nil && len(embedding.Embedding.EmbeddingArray) > 0 {
+			hasData = true
+		}
+		if embedding.Embedding.Embedding2DArray != nil && len(embedding.Embedding.Embedding2DArray) > 0 {
+			hasData = true
+		}
+		if !hasData {
+			result.Passed = false
+			result.Errors = append(result.Errors, fmt.Sprintf("Embedding %d has no vector data", i))
+		}
 	}
 
 	// Check embedding dimensions
@@ -2199,51 +2353,55 @@ func logValidationResults(t *testing.T, result ValidationResult, scenarioName st
 	}
 }
 
-// countLogicalChoicesInResponsesAPI counts logical choices in Responses API format
-// Groups related messages (text + tool calls) as one logical choice to match Chat Completions API behavior
+// countLogicalChoicesInResponsesAPI collapses a native Responses output array
+// into the single logical assistant turn expected by shared llmtests.
 func countLogicalChoicesInResponsesAPI(messages []schemas.ResponsesMessage) int {
 	if len(messages) == 0 {
 		return 0
 	}
 
-	// For tool call scenarios, we typically have:
-	// 1. Text message (ResponsesMessageTypeMessage)
-	// 2. Tool call message(s) (ResponsesMessageTypeFunctionCall)
-	// These should count as 1 logical choice
-
-	hasTextMessage := false
-	hasToolCalls := false
-	hasSeparateMessages := false
+	hasAssistantTurn := false
+	nonInputItems := 0
 
 	for _, msg := range messages {
+		if msg.Role != nil {
+			switch *msg.Role {
+			case schemas.ResponsesInputMessageRoleUser, schemas.ResponsesInputMessageRoleSystem, schemas.ResponsesInputMessageRoleDeveloper:
+				// Native Responses output may include echoed input items; they are not model choices.
+				continue
+			}
+		}
+
+		nonInputItems++
+
 		if msg.Type != nil {
 			switch *msg.Type {
 			case schemas.ResponsesMessageTypeMessage:
-				hasTextMessage = true
-			case schemas.ResponsesMessageTypeFunctionCall:
-				hasToolCalls = true
-			case schemas.ResponsesMessageTypeReasoning, schemas.ResponsesMessageTypeRefusal:
-				hasSeparateMessages = true
+				if msg.Role == nil || *msg.Role == schemas.ResponsesInputMessageRoleAssistant {
+					hasAssistantTurn = true
+				}
+			case schemas.ResponsesMessageTypeReasoning,
+				schemas.ResponsesMessageTypeRefusal,
+				schemas.ResponsesMessageTypeFunctionCall,
+				schemas.ResponsesMessageTypeFileSearchCall,
+				schemas.ResponsesMessageTypeComputerCall,
+				schemas.ResponsesMessageTypeWebSearchCall,
+				schemas.ResponsesMessageTypeWebFetchCall,
+				schemas.ResponsesMessageTypeCodeInterpreterCall,
+				schemas.ResponsesMessageTypeLocalShellCall,
+				schemas.ResponsesMessageTypeMCPCall,
+				schemas.ResponsesMessageTypeCustomToolCall,
+				schemas.ResponsesMessageTypeImageGenerationCall,
+				schemas.ResponsesMessageTypeMCPListTools,
+				schemas.ResponsesMessageTypeMCPApprovalRequest:
+				hasAssistantTurn = true
 			}
 		}
 	}
 
-	// If we have both text and tool calls, count as 1 logical choice
-	// This matches the Chat Completions API behavior where both are in the same choice
-	if hasTextMessage && hasToolCalls {
-		return 1 + (func() int {
-			if hasSeparateMessages {
-				return 1 // Add 1 for reasoning/refusal messages
-			}
-			return 0
-		})()
-	}
-
-	// If only tool calls (no text), still count as 1 logical choice
-	if hasToolCalls && !hasTextMessage {
+	if hasAssistantTurn {
 		return 1
 	}
 
-	// If only text message(s) or other types, count actual messages
-	return len(messages)
+	return nonInputItems
 }

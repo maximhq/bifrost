@@ -85,28 +85,22 @@ func TestValidateHeaderFilterConfig(t *testing.T) {
 			errSubstr: "not allowed to be configured",
 		},
 		{
-			name: "wildcard matching security header rejected",
+			name: "wildcard matching security header allowed (runtime strips security headers)",
 			config: &configstoreTables.GlobalHeaderFilterConfig{
 				Allowlist: []string{"authorization*"},
 			},
-			wantErr:   true,
-			errSubstr: "not allowed to be configured",
 		},
 		{
-			name: "wildcard prefix matching security headers rejected",
+			name: "wildcard prefix matching security headers allowed (runtime strips security headers)",
 			config: &configstoreTables.GlobalHeaderFilterConfig{
 				Allowlist: []string{"x-api-*"},
 			},
-			wantErr:   true,
-			errSubstr: "not allowed to be configured",
 		},
 		{
-			name: "bare wildcard in allowlist rejected (matches all security headers)",
+			name: "bare wildcard in allowlist allowed (runtime strips security headers)",
 			config: &configstoreTables.GlobalHeaderFilterConfig{
 				Allowlist: []string{"*"},
 			},
-			wantErr:   true,
-			errSubstr: "not allowed to be configured",
 		},
 		// Invalid wildcard syntax
 		{

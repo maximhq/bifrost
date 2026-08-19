@@ -1,0 +1,91 @@
+image:
+  tag: "v1.5.0-prerelease5"
+
+storage:
+  mode: sqlite
+  persistence:
+    enabled: true
+    size: 2Gi
+
+bifrost:
+  providers:
+    openai:
+      keys:
+        - name: "openai-key"
+          value: "env.OPENAI_API_KEY"
+          weight: 1
+          models: ["gpt-4o-mini"]
+    anthropic:
+      keys:
+        - name: "anthropic-key"
+          value: "env.ANTHROPIC_API_KEY"
+          weight: 1
+          models: ["claude-3-5-sonnet-latest"]
+
+  governance:
+    budgets:
+      - id: "budget-provider-openai" # budget on provider level
+        max_limit: 600
+        reset_duration: "1M"
+      - id: "budget-provider-anthropic" # budget on provider level
+        max_limit: 500
+        reset_duration: "1M"
+      - id: "budget-model-gpt4o-mini" # budget on model level
+        max_limit: 120
+        reset_duration: "1M"
+      - id: "budget-model-claude-sonnet" # budget on model level
+        max_limit: 400
+        reset_duration: "1M"
+
+    rateLimits:
+      - id: "rl-provider-openai" # rate limit on provider level
+        token_max_limit: 120000
+        token_reset_duration: "1d"
+        request_max_limit: 2500
+        request_reset_duration: "1h"
+      - id: "rl-provider-anthropic" # rate limit on provider level
+        token_max_limit: 95000
+        token_reset_duration: "1d"
+        request_max_limit: 1800
+        request_reset_duration: "1h"
+      - id: "rl-model-gpt4o-mini" # rate limit on model level
+        token_max_limit: 40000
+        token_reset_duration: "1d"
+        request_max_limit: 800
+        request_reset_duration: "1h"
+      - id: "rl-model-claude-sonnet" # rate limit on model level
+        token_max_limit: 71000
+        token_reset_duration: "1d"
+        request_max_limit: 1300
+        request_reset_duration: "1h"
+
+    # Provider governance bindings (now synced to DB)
+    providers:
+      - name: "openai"
+        budget_id: "budget-provider-openai"
+        rate_limit_id: "rl-provider-openai"
+      - name: "anthropic"
+        budget_id: "budget-provider-anthropic"
+        rate_limit_id: "rl-provider-anthropic"
+
+    # Model-level governance bindings (now synced to DB)
+    modelConfigs:
+      - id: "mc-openai-mini"
+        model_name: "gpt-4o-mini"
+        provider: "openai"
+        budget_id: "budget-model-gpt4o-mini"
+        rate_limit_id: "rl-model-gpt4o-mini"
+      - id: "mc-anthropic-sonnet"
+        model_name: "claude-3-5-sonnet-latest"
+        provider: "anthropic"
+        budget_id: "budget-model-claude-sonnet"
+        rate_limit_id: "rl-model-claude-sonnet"
+
+  scim:
+    enabled: true
+    provider: "okta"
+    config:
+      issuerUrl: "https://integrator-1523006.okta.com"
+      clientId: "0oa11jbkbez54dxV8698"
+      clientSecret: "env.OKTA_CLIENT_SECRET"
+      apiToken: "env.OKTA_API_TOKEN"

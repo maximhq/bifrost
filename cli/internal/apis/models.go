@@ -22,6 +22,8 @@ type listModelsResp struct {
 	Data []Model `json:"data"`
 }
 
+// Client wraps HTTP calls to the Bifrost gateway API used by the CLI setup
+// flow.
 type Client struct {
 	http *http.Client
 }

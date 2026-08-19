@@ -104,10 +104,10 @@ func cursorChunkID(extras *schemas.BifrostResponseExtraFields) string {
 
 // cursorModel returns the best model name available from extra fields.
 func cursorModel(extras *schemas.BifrostResponseExtraFields) string {
-	if extras.ModelDeployment != "" {
-		return extras.ModelDeployment
+	if extras.ResolvedModelUsed != "" {
+		return extras.ResolvedModelUsed
 	}
-	return extras.ModelRequested
+	return extras.OriginalModelRequested
 }
 
 // convertResponsesStreamToChatChunk maps a Responses API stream event to a
@@ -812,6 +812,10 @@ func isEffectivelyEmptyContent(content *schemas.ResponsesMessageContent) bool {
 			if block.ResponsesInputMessageContentBlockFile != nil {
 				return false
 			}
+		case schemas.ResponsesInputMessageContentBlockTypeContainer:
+			if block.FileID != nil {
+				return false
+			}
 		case schemas.ResponsesInputMessageContentBlockTypeAudio:
 			if block.Audio != nil {
 				return false
@@ -1024,6 +1028,11 @@ func CreateCursorChatCompletionsRouteConfigs(pathPrefix string, handlerStore lib
 				ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 					return err
 				},
+			},
+			PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+				// Set the user agent to cursor for tool manager duplicate checks
+				bifrostCtx.SetValue(schemas.BifrostContextKeyUserAgent, schemas.Cursor.String())
+				return nil
 			},
 		})
 	}

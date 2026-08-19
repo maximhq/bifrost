@@ -1,7 +1,7 @@
 ---
 title: "Code Mode"
 sidebarTitle: "Code Mode"
-description: "AI writes Python to orchestrate tools. Reduces token usage by 50%+ when using multiple MCP servers."
+description: "AI writes Python to orchestrate tools. Reduces input token usage by up to 92.8% when using multiple MCP servers."
 icon: "code"
 ---
 
@@ -31,7 +31,27 @@ Compare a workflow across 5 MCP servers with ~100 tools:
 - Only 4 tools + definitions on-demand
 - Intermediate results processed in sandbox
 
-**Result: ~50% cost reduction + 30-40% faster execution**
+**Result: Up to 92.8% fewer input tokens, 92.2% lower estimated cost, and around 40% faster execution in large MCP deployments.**
+
+### Benchmark Results
+
+Bifrost Code Mode was benchmarked against classic MCP across three controlled rounds with increasing MCP footprint. Each round used the same query set with Code Mode off and on.
+
+| Round | MCP footprint | Pass rate, classic MCP | Pass rate, Code Mode | Input tokens, classic MCP | Input tokens, Code Mode | Input token change | Est. cost, classic MCP | Est. cost, Code Mode | Cost change |
+|-------|---------------|------------------------|----------------------|---------------------------|-------------------------|--------------------|------------------------|----------------------|-------------|
+| 1 | 96 tools / 6 servers | 64/64 (100%) | 64/64 (100%) | 19.9M | 8.3M | -58.2% | $104.04 | $46.06 | -55.7% |
+| 2 | 251 tools / 11 servers | 64/65 (98.5%) | 65/65 (100%) | 35.7M | 5.5M | -84.5% | $180.07 | $29.80 | -83.4% |
+| 3 | 508 tools / 16 servers | 65/65 (100%) | 65/65 (100%) | 75.1M | 5.4M | -92.8% | $377.00 | $29.00 | -92.2% |
+
+<Frame>
+  <img src="/media/mcp-codemode-tokens-diff.png" alt="Code Mode input token usage compared to classic MCP as tool count increases" />
+</Frame>
+
+At around 500 tools, Code Mode reduced average input tokens per query by roughly **14x**: from **1.15M** tokens to **83K** tokens. See the [Bifrost MCP Gateway benchmark writeup](https://www.getmaxim.ai/bifrost/blog/bifrost-mcp-gateway-access-control-cost-governance-and-92-lower-token-costs-at-scale), or explore the [complete benchmark report](https://github.com/maximhq/bifrost-benchmarking/blob/main/mcp-code-mode-benchmark/benchmark_report.md).
+
+<Frame>
+  <img src="/media/mcp-codemode-cost-diff.png" alt="Code Mode estimated cost compared to classic MCP as tool count increases" />
+</Frame>
 
 Code Mode provides four meta-tools to the AI:
 1. **`listToolFiles`** - Discover available MCP servers
@@ -125,37 +145,31 @@ graph LR
     style Response fill:#E8F5E9,stroke:#1B5E20,stroke-width:2.5px,color:#1A1A1A
 ```
 
-**Key insight:** All the complex orchestration happens inside the sandbox. The LLM only receives the final, compact result—not every intermediate step.
+**Key insight:** All the complex orchestration happens inside the sandbox. The LLM only receives the final, compact result, not every intermediate step.
 
 ---
 
 ## Why This Matters at Scale
 
-### Classic MCP with 5 servers (100 tools):
+Take a multi-step workflow such as looking up a customer, checking their order history, applying a discount, and sending a confirmation.
 
-```
-Turn 1: Prompt + search query + [100 tool definitions]
-Turn 2: Prompt + search result + [100 tool definitions]
-Turn 3: Prompt + channel list + [100 tool definitions]
-Turn 4: Prompt + video list + [100 tool definitions]
-Turn 5: Prompt + summaries + [100 tool definitions]
-Turn 6: Prompt + doc result + [100 tool definitions]
+### Classic MCP: every turn carries the full tool list
 
-Total: 6 LLM calls, ~600+ tokens in tool definitions alone
-```
+With classic MCP, every intermediate result returns to the model, and every next turn includes the complete set of available tool definitions again. As the number of connected MCP servers grows, the model keeps paying to reread the same tool catalog.
 
-### Code Mode with same 5 servers:
+<Frame>
+  <img src="/media/mcp-classic-flow.png" alt="Classic MCP flow where every model turn carries the full tool list and intermediate tool results" />
+</Frame>
 
-```
-Turn 1: Prompt + 4 tools (listToolFiles, readToolFile, getToolDocs, executeToolCode)
-Turn 2: Prompt + server list + 4 tools
-Turn 3: Prompt + selected definitions + 4 tools + [EXECUTES CODE]
-        [YouTube search, channel list, videos, summaries, doc creation all happen in sandbox]
-Turn 4: Prompt + final result + 4 tools
+### Code Mode: discover, write once, execute once
 
-Total: 3-4 LLM calls, ~50 tokens in tool definitions
-Result: 50% cost reduction, 3-4x fewer LLM round trips
-```
+With Code Mode, the model discovers the relevant stubs, writes a short orchestration script, and Bifrost runs the tool calls inside the Starlark sandbox. The intermediate tool results stay inside the sandbox, and the model receives the compact final output.
+
+<Frame>
+  <img src="/media/mcp-codemode-flow.png" alt="Code Mode flow where the model reads tool stubs, writes code, and Bifrost executes the multi-tool workflow in a sandbox" />
+</Frame>
+
+This is why the savings grow with scale: classic MCP cost grows with every connected tool, while Code Mode cost is bounded by the files and documentation the model actually reads. In the benchmark rounds, this produced 3-4x fewer LLM round trips and input-token savings from **58.2%** to **92.8%** as tool count increased.
 
 ---
 
@@ -177,7 +191,7 @@ Code Mode must be enabled **per MCP client**. Once enabled, that client's tools 
   <img src="/media/ui-mcp-edit-server.png" alt="MCP Client Configuration" />
 </Frame>
 
-3. In the **Basic Information** section, toggle **Code Mode Client** to enabled
+3. In the **Basic Information** section, toggle **Code Mode Server** to enabled
 4. Click **Save Changes**
 
 Once enabled:
@@ -582,38 +596,13 @@ Bifrost provides detailed error messages with hints:
 
 ---
 
-## Real-World Impact Comparison
+## Why Savings Grow with Tool Count
 
-### Scenario: E-commerce Assistant with Multiple Services
+Classic MCP injects every available tool definition on every model turn. As you connect more servers, the repeated tool catalog dominates the input context, so cost rises with the size of your MCP footprint.
 
-**Setup:**
-- 10 MCP servers (product catalog, inventory, payments, shipping, chat, analytics, docs, images, calendar, notifications)
-- Average 15 tools per server = **150 total tools**
-- Complex multi-step task: "Find matching products, check inventory, compare prices, get shipping estimate, create quote"
+Code Mode keeps that catalog behind four meta-tools. The model discovers the relevant stub files, reads only the signatures and docs it needs, and executes the multi-tool workflow inside the sandbox. In the benchmark rounds above, that kept Code Mode input usage nearly flat while classic MCP grew from 19.9M to 75.1M input tokens.
 
-### Classic MCP Results
-
-| Metric | Value |
-|--------|-------|
-| LLM Turns | 8-10 |
-| Tokens in Tool Defs | ~2,400 per turn |
-| Avg Request Tokens | 4,000-5,000 |
-| Avg Total Cost | $3.20-4.00 |
-| Latency | 18-25 seconds |
-
-**Problem:** Most context goes to tool definitions. Model makes redundant tool calls. Every intermediate result travels back through the LLM.
-
-### Code Mode Results
-
-| Metric | Value |
-|--------|-------|
-| LLM Turns | 3-4 |
-| Tokens in Tool Defs | ~100-300 per turn |
-| Avg Request Tokens | 1,500-2,000 |
-| Avg Total Cost | $1.20-1.80 |
-| Latency | 8-12 seconds |
-
-**Benefit:** Model writes one Python script. All orchestration happens in sandbox. Only compact result returned to LLM.
+The effect is most visible at large scale: with **508 tools across 16 servers**, Code Mode cut input tokens from **75.1M to 5.4M** and estimated cost from **$377.00 to $29.00**, while preserving a **65/65 (100%)** pass rate.
 
 ---
 
@@ -623,7 +612,7 @@ Bifrost provides detailed error messages with hints:
   <Card title="Agent Mode" icon="robot" href="./agent-mode">
     Combine Code Mode with auto-execution
   </Card>
-  <Card title="MCP Gateway URL" icon="server" href="./gateway-url">
+  <Card title="MCP Gateway Mode" icon="server" href="./gateway">
     Expose your tools to external clients
   </Card>
 </CardGroup>

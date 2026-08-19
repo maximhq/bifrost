@@ -90,13 +90,13 @@ func (vi *SpeechVoiceInput) MarshalJSON() ([]byte, error) {
 	}
 
 	if vi.Voice != nil {
-		return Marshal(*vi.Voice)
+		return MarshalSorted(*vi.Voice)
 	}
 	if len(vi.MultiVoiceConfig) > 0 {
-		return Marshal(vi.MultiVoiceConfig)
+		return MarshalSorted(vi.MultiVoiceConfig)
 	}
 	// If both are nil, return null
-	return Marshal(nil)
+	return MarshalSorted(nil)
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for SpeechVoiceInput.
@@ -166,4 +166,8 @@ type SpeechUsage struct {
 	InputTokenDetails *SpeechUsageInputTokenDetails `json:"input_token_details,omitempty"`
 	OutputTokens      int                           `json:"output_tokens"`
 	TotalTokens       int                           `json:"total_tokens"`
+	// AudioSeconds is the generated audio duration in seconds. Populated for
+	// duration-based audio models (e.g. ElevenLabs sound effects) so per-second
+	// pricing can be applied; zero for token/character-billed TTS.
+	AudioSeconds int `json:"audio_seconds,omitempty"`
 }

@@ -9,8 +9,11 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-const MinimumReasoningMaxTokens = 1
-const DefaultCompletionMaxTokens = 4096 // Only used for relative reasoning max token calculation - not passed in body by default
+const (
+	MinimumReasoningMaxTokens  = 1
+	DefaultCompletionMaxTokens = 4096 // Only used for relative reasoning max token calculation - not passed in body by default
+)
+
 // Limits for tokenize input api call https://docs.cohere.com/reference/tokenize#request
 const (
 	cohereTokenizeMinTextLength = 1
@@ -197,8 +200,33 @@ const (
 
 // CohereResponseFormat represents the response format configuration for Cohere chat requests
 type CohereResponseFormat struct {
-	Type       CohereResponseFormatType `json:"type"`             // Required: Response format type
-	JSONSchema *interface{}             `json:"schema,omitempty"` // Optional: JSON schema for structured output (not used when type is "text")
+	Type CohereResponseFormatType `json:"type"` // Required: Response format type
+	// Optional: JSON schema for structured output (not used when type is "text").
+	// Cohere v2 names this field `json_schema` (docs.cohere.com/reference/chat); tagging only
+	// `schema` meant a real Cohere request lost its schema silently and the model answered
+	// with unconstrained - often markdown-fenced - JSON. UnmarshalJSON accepts both spellings.
+	JSONSchema *interface{} `json:"json_schema,omitempty"`
+}
+
+// UnmarshalJSON accepts both `json_schema` (Cohere's spelling) and the legacy `schema` alias.
+func (r *CohereResponseFormat) UnmarshalJSON(data []byte) error {
+	type alias CohereResponseFormat
+	aux := &struct {
+		*alias
+		SchemaAlias *interface{} `json:"schema,omitempty"`
+	}{alias: (*alias)(r)}
+
+	if err := sonic.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	// Keyed on PRESENCE of json_schema, not on whether it decoded to nil. *interface{} decodes an
+	// explicit `{"json_schema": null}` to nil, which is indistinguishable from the key being absent
+	// - so a nil check let the legacy `schema` alias override a caller who had explicitly sent null.
+	// Canonical spelling wins whenever it is present at all.
+	if !providerUtils.GetJSONField(data, "json_schema").Exists() && aux.SchemaAlias != nil {
+		r.JSONSchema = aux.SchemaAlias
+	}
+	return nil
 }
 
 // CohereResponseFormatType represents the type of response format
@@ -293,7 +321,7 @@ type CohereEmbeddingResponse struct {
 
 // CohereEmbeddingData represents the embeddings object with different types
 type CohereEmbeddingData struct {
-	Float   [][]float32 `json:"float,omitempty"`   // Float embeddings
+	Float   [][]float64 `json:"float,omitempty"`   // Float embeddings
 	Int8    [][]int8    `json:"int8,omitempty"`    // Int8 embeddings
 	Uint8   [][]uint8   `json:"uint8,omitempty"`   // Uint8 embeddings
 	Binary  [][]int8    `json:"binary,omitempty"`  // Binary embeddings
@@ -421,8 +449,8 @@ type CohereCitation struct {
 type CohereSource struct {
 	Type       CohereSourceType `json:"type"`                  // Source type ("tool" or "document")
 	ID         *string          `json:"id,omitempty"`          // Source ID (nullable)
-	ToolOutput *json.RawMessage  `json:"tool_output,omitempty"` // Tool output (for tool sources, json.RawMessage preserves key ordering)
-	Document   *json.RawMessage  `json:"document,omitempty"`    // Document data (for document sources, json.RawMessage preserves key ordering)
+	ToolOutput *json.RawMessage `json:"tool_output,omitempty"` // Tool output (for tool sources, json.RawMessage preserves key ordering)
+	Document   *json.RawMessage `json:"document,omitempty"`    // Document data (for document sources, json.RawMessage preserves key ordering)
 }
 
 // ==================== STREAMING TYPES ====================

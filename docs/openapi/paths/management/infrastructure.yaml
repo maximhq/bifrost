@@ -66,6 +66,11 @@ mcp-server:
                   oneOf:
                     - type: string
                     - type: integer
+    security:
+      - BearerAuth: []
+      - BasicAuth: []
+      - VirtualKeyAuth: []
+      - ApiKeyAuth: []
   get:
     operationId: mcpServerSSE
     summary: MCP protocol SSE stream
@@ -81,6 +86,11 @@ mcp-server:
           text/event-stream:
             schema:
               type: string
+    security:
+      - BearerAuth: []
+      - BasicAuth: []
+      - VirtualKeyAuth: []
+      - ApiKeyAuth: []
 
 metrics:
   get:
