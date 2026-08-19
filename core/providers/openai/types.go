@@ -256,11 +256,16 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 							blockCopy.CacheControl = nil
 						}
 						blockCopy.Citations = nil
-						// Strip FileType and FileURL from file block
-						if blockCopy.File != nil && (blockCopy.File.FileType != nil || blockCopy.File.FileURL != nil) {
+						// Strip file_type: it is a Bifrost extension, not part of any
+						// OpenAI-shaped wire format. file_url is deliberately NOT stripped.
+						// Dropping it produced {"type":"file","file":{}} and an upstream
+						// complaint about a missing file_id, hiding the fact that a source
+						// was discarded. Providers that cannot take a URL now say so by
+						// name, and any OpenAI-compatible endpoint that does accept one
+						// keeps working without a Bifrost change.
+						if blockCopy.File != nil && blockCopy.File.FileType != nil {
 							fileCopy := *blockCopy.File
 							fileCopy.FileType = nil
-							fileCopy.FileURL = nil
 							blockCopy.File = &fileCopy
 						}
 						contentCopy.ContentBlocks[j] = blockCopy
@@ -689,7 +694,7 @@ func hasFieldsToStripInChatMessage(msg OpenAIMessage, keepCacheControl bool) boo
 			if block.Citations != nil {
 				return true
 			}
-			if block.File != nil && (block.File.FileType != nil || block.File.FileURL != nil) {
+			if block.File != nil && block.File.FileType != nil {
 				return true
 			}
 		}
@@ -1134,8 +1139,9 @@ var ValidOpenAIVideoSizes = map[string]bool{
 
 // OpenAIVideoGenerationRequest is the request body for OpenAI video generation.
 type OpenAIVideoGenerationRequest struct {
-	Prompt         string `json:"prompt"`                    // Text prompt that describes the video to generate (max 32000, min 1)
-	InputReference []byte `json:"input_reference,omitempty"` // Optional image reference file that guides generation
+	Prompt         string  `json:"prompt"`                    // Text prompt that describes the video to generate (max 32000, min 1)
+	InputReference []byte  `json:"input_reference,omitempty"` // Optional image reference file that guides generation
+	VideoURI       *string `json:"video_uri,omitempty"`       // Optional source video for video-to-video
 
 	Model string `json:"model"` // Video generation model (defaults to sora-2)
 
@@ -1148,6 +1154,30 @@ type OpenAIVideoGenerationRequest struct {
 // GetExtraParams implements the ExtraParamsGetter interface
 func (req *OpenAIVideoGenerationRequest) GetExtraParams() map[string]interface{} {
 	return req.ExtraParams
+}
+
+// OpenAIVideoEditRequest is the request body for OpenAI video edits. The source video is either an
+// uploaded file, sent as multipart, or a reference to a completed video, sent as JSON.
+type OpenAIVideoEditRequest struct {
+	Prompt string                    `json:"prompt"` // Text prompt describing how to edit the source video
+	Video  OpenAIVideoEditVideoInput `json:"video"`  // Source video: uploaded bytes or a video reference
+
+	Model string `json:"model,omitempty"` // Inferred from the source video when it is referenced by ID
+
+	Fallbacks   []string               `json:"fallbacks,omitempty"`
+	ExtraParams map[string]interface{} `json:"-"`
+}
+
+// OpenAIVideoEditVideoInput is the "video" field, which is overloaded: a file part on a multipart
+// request, or an object carrying the ID of a completed video on a JSON one.
+type OpenAIVideoEditVideoInput struct {
+	ID    string `json:"id,omitempty"`
+	Bytes []byte `json:"-"`
+}
+
+// GetExtraParams implements the ExtraParamsGetter interface
+func (r *OpenAIVideoEditRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
 }
 
 // OpenAIVideoRemixRequest represents an OpenAI video remix request

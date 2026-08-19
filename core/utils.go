@@ -498,11 +498,13 @@ func isContainerRequestType(reqType schemas.RequestType) bool {
 		reqType == schemas.ContainerFileDeleteRequest
 }
 
-// isModellessVideoRequestType returns true if the given request type is a video request that does not require a model.
+// isModellessVideoRequestType returns true if the given request type is a video request that can
+// be served without a model. Callers gate on model == "", so video edit — which takes a model when
+// the source is uploaded and omits it when the source is an existing video ID — belongs here too.
 func isModellessVideoRequestType(reqType schemas.RequestType) bool {
 	switch reqType {
 	case schemas.VideoRetrieveRequest, schemas.VideoDownloadRequest, schemas.VideoListRequest,
-		schemas.VideoDeleteRequest, schemas.VideoRemixRequest:
+		schemas.VideoDeleteRequest, schemas.VideoRemixRequest, schemas.VideoEditRequest:
 		return true
 	default:
 		return false
@@ -727,7 +729,21 @@ func isPromptOptionalImageEditType(t *string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(*t))
 	normalized = strings.ReplaceAll(normalized, "-", "_")
 	return slices.Contains(
-		[]string{"background_removal", "remove_background", "remove_bg", "erase_object", "upscale_fast"},
+		[]string{"background_removal", "remove_background", "remove_bg", "erase_object", "upscale", "upscale_fast", "mask", "segmentation", "vectorize"},
+		normalized,
+	)
+}
+
+// isPromptOptionalVideoEditType returns true for video edit task types that are driven purely by
+// the source video and take no text prompt.
+func isPromptOptionalVideoEditType(t *string) bool {
+	if t == nil {
+		return false
+	}
+	normalized := strings.ToLower(strings.TrimSpace(*t))
+	normalized = strings.ReplaceAll(normalized, "-", "_")
+	return slices.Contains(
+		[]string{"background_removal", "remove_background", "remove_bg", "upscale"},
 		normalized,
 	)
 }

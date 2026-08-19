@@ -1,6 +1,7 @@
 package compat
 
 import (
+	"encoding/json"
 	"maps"
 	"slices"
 
@@ -354,6 +355,10 @@ func cloneAnyValue(value any) any {
 		return cloneAnySlice(typed)
 	case []string:
 		return slices.Clone(typed)
+	case json.RawMessage:
+		// Raw JSON (e.g. response_format off the wire) is a byte slice: copy it
+		// so the clone does not share a backing array with the original request.
+		return json.RawMessage(slices.Clone(typed))
 	case map[string]string:
 		cloned := make(map[string]string, len(typed))
 		maps.Copy(cloned, typed)

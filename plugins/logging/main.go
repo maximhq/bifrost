@@ -491,6 +491,7 @@ type InitialLogData struct {
 	ImageEditInput         *schemas.ImageEditInput
 	ImageVariationInput    *schemas.ImageVariationInput
 	VideoGenerationInput   *schemas.VideoGenerationInput
+	VideoEditInput         *schemas.VideoEditInput
 	Tools                  []schemas.ChatTool
 	RoutingEngineUsed      []string
 	Metadata               map[string]any
@@ -1023,6 +1024,21 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		case schemas.VideoGenerationRequest:
 			initialData.Params = req.VideoGenerationRequest.Params
 			initialData.VideoGenerationInput = req.VideoGenerationRequest.Input
+		case schemas.VideoEditRequest:
+			initialData.Params = req.VideoEditRequest.Params
+			input := req.VideoEditRequest.Input
+			if input != nil {
+				// An uploaded source video is the largest thing in the request by far, so drop the
+				// bytes past the threshold and keep the prompt and any reference.
+				reqThreshold, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadRequestThreshold).(int64)
+				if reqThreshold > 0 && int64(len(input.Video.Video)) > reqThreshold {
+					logInput := *input
+					logInput.Video.Video = nil
+					initialData.VideoEditInput = &logInput
+				} else {
+					initialData.VideoEditInput = input
+				}
+			}
 		case schemas.VideoRemixRequest:
 			initialData.Params = &schemas.VideoLogParams{
 				VideoID: req.VideoRemixRequest.ID,

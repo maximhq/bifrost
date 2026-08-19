@@ -395,7 +395,7 @@ func normalizeRequestType(reqType schemas.RequestType) string {
 		return "image_generation"
 	case schemas.ImageEditRequest, schemas.ImageEditStreamRequest:
 		return "image_edit"
-	case schemas.VideoGenerationRequest, schemas.VideoRemixRequest:
+	case schemas.VideoGenerationRequest, schemas.VideoRemixRequest, schemas.VideoEditRequest:
 		return "video_generation"
 	case schemas.OCRRequest:
 		return "ocr"

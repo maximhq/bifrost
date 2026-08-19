@@ -4796,8 +4796,31 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 						doc.Format = format
 					}
 
-					// URL-sourced document: fetch and inline the bytes (Bedrock Converse
-					// only accepts inline source bytes, not remote URLs).
+					// s3:// document: hand Converse the object reference instead of its
+					// bytes. See bedrockS3LocationFromURL; format must already be
+					// resolved above, since nothing is fetched here.
+					if file.FileURL != nil {
+						if s3Loc, ok := bedrockS3LocationFromURL(*file.FileURL); ok {
+							// Last resort: the object key's own extension, which the
+							// refusal below already instructs the caller to supply. See
+							// bedrockDocumentFormatFromPath; the chat path does the same.
+							if format == "" {
+								if resolved, ok := bedrockDocumentFormatFromPath(*file.FileURL); ok {
+									format = resolved
+									doc.Format = format
+								}
+							}
+							if format == "" {
+								return nil, fmt.Errorf("cannot determine document format for %q: set file_type or give the object a file extension", *file.FileURL)
+							}
+							doc.Source.S3Location = s3Loc
+							bedrockBlock.Document = doc
+							break
+						}
+					}
+
+					// URL-sourced document: fetch and inline the bytes. Converse has no
+					// url member on DocumentSource.
 					if file.FileURL != nil && *file.FileURL != "" {
 						fetchedMediaType, fetchedB64, fetchErr := providerUtils.FetchAndEncodeURL(ctx, *file.FileURL)
 						if fetchErr != nil {

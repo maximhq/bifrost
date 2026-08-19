@@ -305,6 +305,17 @@ jobs:
           # dl.google.com / packages.cloud.google.com / objects.githubusercontent.com
           # are the gcloud CLI install; oauth2.googleapis.com + accounts.google.com
           # are the service-account token exchange for the Vertex parity cells.
+          #
+          # www.berkshirehathaway.com hosts the PDF the document-input rows pass as
+          # document.source.type "url". Anthropic fetches such a URL server-side, but
+          # Bedrock/Vertex/Gemini/OpenAI/Azure have no url member on their document
+          # types, so Bifrost downloads it here and inlines the bytes - meaning the
+          # RUNNER needs egress to it. Omitting it fails 44 rows whose requests all
+          # go to 127.0.0.1, which reads as "PDF input is broken on five providers".
+          #
+          # discoveryengine.googleapis.com is the Vertex semantic-ranker backend for
+          # the rerank rows. Its host is built in Go rather than declared in
+          # config.json, so auditing the seeded provider config does not reveal it.
           allowed-endpoints: >
             127.0.0.1:8080
             7defe2860d5ee49a1e667e1eeea34b25.r2.cloudflarestorage.com:443
@@ -332,6 +343,7 @@ jobs:
             bedrock-runtime.us-east-1.amazonaws.com:443
             bedrock.us-east-1.amazonaws.com:443
             bifrost-batch-api-file-upload-testing.s3.us-east-1.amazonaws.com:443
+            discoveryengine.googleapis.com:443
             dl.google.com:443
             fal.media:443
             fonts.googleapis.com:443
@@ -357,6 +369,7 @@ jobs:
             storage.googleapis.com:443
             sum.golang.org:443
             us-central1-aiplatform.googleapis.com:443
+            www.berkshirehathaway.com:443
             www.getbifrost.ai:443
 
       - name: Checkout repository
@@ -380,8 +393,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y jq
 
-      - name: Install Newman
-        run: npm install -g newman@6.2.1 newman-reporter-htmlextra@1.23.1
+      # npm ci against .github/workflows/tools/package-lock.json, not `npm install -g`:
+      # the lockfile carries an integrity hash for newman and every transitive dep, which
+      # a bare version pin does not. Bin dir goes on PATH because the test scripts probe
+      # for newman with `command -v`.
+      - name: Install Newman (hash-pinned via lockfile)
+        run: |
+          npm ci --no-audit --no-fund
+          echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
+        working-directory: .github/workflows/tools
 
       - name: Set up gcloud CLI
         uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
@@ -434,7 +454,12 @@ jobs:
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           BEDROCK_GUARDRAIL_IDENTIFIER: ${{ secrets.BEDROCK_GUARDRAIL_IDENTIFIER }}
-          BEDROCK_GUARDRAIL_VERSION: ${{ secrets.BEDROCK_GUARDRAIL_VERSION }}
+          # Deliberately a variable, not a secret. Guardrail versions are short
+          # integers, and Actions masks a secret's value everywhere in the job
+          # log with no word boundary - a value of "1" redacts every "1" the
+          # harness prints, turning "fail 141" into "fail ***4***". Not
+          # sensitive, so vars.* (never auto-masked) is the right home.
+          BEDROCK_GUARDRAIL_VERSION: ${{ vars.BEDROCK_GUARDRAIL_VERSION }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
         run: ./.github/workflows/scripts/test-core.sh
@@ -524,6 +549,7 @@ jobs:
             bedrock-runtime.us-east-1.amazonaws.com:443
             bedrock.us-east-1.amazonaws.com:443
             bifrost-batch-api-file-upload-testing.s3.us-east-1.amazonaws.com:443
+            discoveryengine.googleapis.com:443
             dl.google.com:443
             fal.media:443
             fonts.googleapis.com:443
@@ -545,10 +571,12 @@ jobs:
             proxy.golang.org:443
             registry.npmjs.org:443
             release-assets.githubusercontent.com:443
+            releases.astral.sh:443
             router.huggingface.co:443
             storage.googleapis.com:443
             sum.golang.org:443
             us-central1-aiplatform.googleapis.com:443
+            www.berkshirehathaway.com:443
             www.getbifrost.ai:443
 
       - name: Checkout repository
@@ -563,6 +591,20 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "25"
+
+      # test-integrations.sh installs the Python suite with `uv sync --frozen`, and
+      # silently degrades to `pip install -e .` when uv is absent. That fallback cannot
+      # succeed here: tests/integrations/python is a dependency manifest, not a package,
+      # so setuptools' flat-layout discovery aborts on the two top-level run_*.py modules.
+      # Installing uv keeps the job on the locked, reproducible path. Pinned to the same
+      # action and version snyk.yml already uses; python-version matches
+      # tests/integrations/python/.python-version so CI resolves the interpreter a
+      # developer gets locally instead of downloading a second one.
+      - name: Install uv
+        uses: step-security/setup-uv@ccf0a26ce9117d9e99292b0ce953ea5d9ffe778e # v7.3.0
+        with:
+          version: "0.11.0"
+          python-version: "3.12"
 
       - name: Download prebuilt bifrost-http binary
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
@@ -579,9 +621,13 @@ jobs:
       - name: Build MCP test servers
         run: make setup-mcp-tests
 
-      - name: Run core integration tests
+      - name: Run core integration test files in parallel
         env:
           SKIP_GATEWAY_BUILD: "1"
+          # Ceiling on concurrently running test files. Set explicitly rather than
+          # left to the script's default so the release gate's provider-quota budget
+          # is visible and tunable here, next to the credentials it spends.
+          INTEGRATION_TEST_MAX_PARALLEL: "4"
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
@@ -619,7 +665,7 @@ jobs:
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
-        run: ./.github/workflows/scripts/test-integrations.sh
+        run: ./.github/workflows/scripts/test-integrations.sh --parallel-files
 
   test-core-unit:
     needs: [check-skip, detect-changes]
@@ -1552,8 +1598,15 @@ jobs:
         with:
           node-version: "25"
 
-      - name: Install Newman
-        run: npm install -g newman@6.2.1 newman-reporter-htmlextra@1.23.1
+      # npm ci against .github/workflows/tools/package-lock.json, not `npm install -g`:
+      # the lockfile carries an integrity hash for newman and every transitive dep, which
+      # a bare version pin does not. Bin dir goes on PATH because the test scripts probe
+      # for newman with `command -v`.
+      - name: Install Newman (hash-pinned via lockfile)
+        run: |
+          npm ci --no-audit --no-fund
+          echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
+        working-directory: .github/workflows/tools
 
       - name: Set up Docker Compose
         run: |
@@ -1906,8 +1959,15 @@ jobs:
         with:
           node-version: "25"
 
-      - name: Install Newman
-        run: npm install -g newman@6.2.1 newman-reporter-htmlextra@1.23.1
+      # npm ci against .github/workflows/tools/package-lock.json, not `npm install -g`:
+      # the lockfile carries an integrity hash for newman and every transitive dep, which
+      # a bare version pin does not. Bin dir goes on PATH because the test scripts probe
+      # for newman with `command -v`.
+      - name: Install Newman (hash-pinned via lockfile)
+        run: |
+          npm ci --no-audit --no-fund
+          echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
+        working-directory: .github/workflows/tools
 
       - name: Setup Docker Buildx
         uses: step-security/setup-buildx-action@f931205d68723ad9589fd2a7e2ece238bf9de341 # v4.0.0
@@ -2039,8 +2099,15 @@ jobs:
         with:
           node-version: "25"
 
-      - name: Install Newman
-        run: npm install -g newman@6.2.1 newman-reporter-htmlextra@1.23.1
+      # npm ci against .github/workflows/tools/package-lock.json, not `npm install -g`:
+      # the lockfile carries an integrity hash for newman and every transitive dep, which
+      # a bare version pin does not. Bin dir goes on PATH because the test scripts probe
+      # for newman with `command -v`.
+      - name: Install Newman (hash-pinned via lockfile)
+        run: |
+          npm ci --no-audit --no-fund
+          echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
+        working-directory: .github/workflows/tools
 
       - name: Setup Docker Buildx
         uses: step-security/setup-buildx-action@f931205d68723ad9589fd2a7e2ece238bf9de341 # v4.0.0

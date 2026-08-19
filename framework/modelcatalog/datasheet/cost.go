@@ -215,6 +215,14 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 	}
 	requestType := extraFields.RequestType
 
+	// A retrieve is a status read, not a generation. Providers that report the job's cost on the
+	// polled response (e.g. Runware, which echoes it on every getResponse once the task has
+	// succeeded) would otherwise be billed again on every poll, inflating logs, traces and
+	// governance budgets.
+	if requestType == schemas.VideoRetrieveRequest {
+		return 0
+	}
+
 	// Extract usage data from the response (passthrough and native paths unified)
 	input := extractCostInput(result)
 
@@ -332,7 +340,7 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 		cost = computeTranscriptionCost(pricing, input.usage, input.audioSeconds, input.audioTokenDetails, input.tier)
 	case schemas.ImageGenerationRequest, schemas.ImageEditRequest, schemas.ImageVariationRequest:
 		cost = computeImageCost(pricing, input.imageUsage, input.imageSize, input.imageQuality, input.tier)
-	case schemas.VideoGenerationRequest, schemas.VideoRemixRequest:
+	case schemas.VideoGenerationRequest, schemas.VideoRemixRequest, schemas.VideoEditRequest:
 		cost = computeVideoCost(pricing, input.usage, input.videoSeconds, input.tier)
 	case schemas.OCRRequest:
 		cost = computeOCRCost(pricing, input.ocrProcessedPages, input.ocrIsAnnotated)

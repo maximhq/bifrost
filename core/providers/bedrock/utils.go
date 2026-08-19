@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"mime"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"strings"
 
 	"github.com/bytedance/sonic"
 	"github.com/cespare/xxhash/v2"
+	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 
 	"github.com/maximhq/bifrost/core/providers/anthropic"
@@ -76,6 +78,22 @@ func resolveBedrockRegion(ctx *schemas.BifrostContext, key schemas.Key, model st
 		return key.BedrockKeyConfig.Region.GetValue()
 	}
 	return DefaultBedrockRegion
+}
+
+// awsPartitionForRegion returns the ARN partition a region belongs to. AWS defines
+// exactly three: "aws", "aws-cn" (China) and "aws-us-gov" (GovCloud US) -- see
+// https://docs.aws.amazon.com/IAM/latest/UserGuide/reference-arns.html. Defaulting
+// to "aws" for everything would build an ARN that is well-formed but wrong in the
+// two partitions where it matters, and the failure would only surface at runtime.
+func awsPartitionForRegion(region string) string {
+	switch {
+	case strings.HasPrefix(region, "us-gov-"):
+		return "aws-us-gov"
+	case strings.HasPrefix(region, "cn-"):
+		return "aws-cn"
+	default:
+		return "aws"
+	}
 }
 
 // resolveBedrockHost returns the host to dial for an AWS endpoint service: the configured VPC
@@ -1333,8 +1351,38 @@ func convertContentBlock(ctx context.Context, block schemas.ChatContentBlock) ([
 			documentSource.Format = format
 		}
 
-		// URL-sourced document: fetch and inline the bytes (Bedrock Converse only
-		// accepts inline source bytes, not remote URLs).
+		// s3:// document: hand Converse the object reference. Bytes and s3Location are
+		// alternative members of the same DocumentSource union, and Converse reads the
+		// object itself, so there is nothing to download here. Format has to come from
+		// the declared type / filename resolved above -- there is no Content-Type to
+		// refine it from.
+		if block.File.FileURL != nil {
+			if s3Loc, ok := bedrockS3LocationFromURL(*block.File.FileURL); ok {
+				// Last resort: the object key's own extension. Nothing is downloaded for
+				// an s3:// reference, so there is no Content-Type to read and no bytes to
+				// sniff -- the key is the only signal left, and the refusal below already
+				// tells the caller to use it. bedrockImageFormatFromPath does the same for
+				// the image twin.
+				if format == "" {
+					if resolved, ok := bedrockDocumentFormatFromPath(*block.File.FileURL); ok {
+						format = resolved
+						documentSource.Format = format
+					}
+				}
+				if format == "" {
+					return nil, fmt.Errorf("cannot determine document format for %q: set file_type or give the object a file extension", *block.File.FileURL)
+				}
+				documentSource.Source.S3Location = s3Loc
+				return []BedrockContentBlock{
+					{
+						Document: documentSource,
+					},
+				}, nil
+			}
+		}
+
+		// URL-sourced document: fetch and inline the bytes. Converse has no url member
+		// on DocumentSource, so an http(s) reference must travel as bytes.
 		if block.File.FileURL != nil && *block.File.FileURL != "" {
 			fetchedMediaType, fetchedB64, fetchErr := providerUtils.FetchAndEncodeURL(ctx, *block.File.FileURL)
 			if fetchErr != nil {
@@ -1410,12 +1458,69 @@ func convertContentBlock(ctx context.Context, block schemas.ChatContentBlock) ([
 	}
 }
 
+// bedrockImageFormatFromPath derives a Converse image format from a URI's extension.
+// Only needed on the s3Location path: nothing is downloaded there, so there is no
+// Content-Type to read the format from, and Converse requires one on every image block.
+// The four names are the formats Converse accepts.
+// bedrockDocumentFormatFromPath resolves a Converse document format from a URL's
+// object key, which is the only signal left for an s3:// reference: nothing is
+// downloaded, so there is no Content-Type and no bytes to sniff.
+//
+// The extension is handed to bedrockDocumentFormat rather than matched here, so the
+// two paths cannot disagree about which formats Converse accepts -- that function
+// already takes a bare extension and owns the vocabulary.
+func bedrockDocumentFormatFromPath(rawURL string) (string, bool) {
+	path := rawURL
+	if i := strings.IndexAny(path, "?#"); i >= 0 {
+		path = path[:i]
+	}
+	ext := strings.TrimPrefix(filepath.Ext(path), ".")
+	if ext == "" {
+		return "", false
+	}
+	format, _, ok := bedrockDocumentFormat(ext)
+	return format, ok
+}
+
+func bedrockImageFormatFromPath(rawURL string) (string, error) {
+	path := rawURL
+	if i := strings.IndexAny(path, "?#"); i >= 0 {
+		path = path[:i]
+	}
+	switch strings.ToLower(strings.TrimPrefix(filepath.Ext(path), ".")) {
+	case "png":
+		return "png", nil
+	case "gif":
+		return "gif", nil
+	case "webp":
+		return "webp", nil
+	case "jpg", "jpeg":
+		return "jpeg", nil
+	default:
+		return "", fmt.Errorf("cannot determine image format for %q: bedrock requires png, jpeg, gif or webp, and an s3:// reference carries no content type", rawURL)
+	}
+}
+
 // convertImageToBedrockSource converts a Bifrost image URL to Bedrock image source.
-// Bedrock Converse requires inline base64 bytes - it does not accept remote URLs.
-// For data: URLs (already base64), use the bytes directly. For http(s) URLs, fetch
-// the image and inline it via fetchImageFromURL. The ctx is propagated to the
-// fetch so request cancellation/deadlines abort in-flight downloads.
+// Converse has no url member on ImageSource, so an http(s) reference must travel as
+// bytes: data: URLs are used directly, http(s) URLs are fetched and inlined. s3:// is
+// the exception -- Converse resolves those itself via the s3Location union member. The
+// ctx is propagated to the fetch so request cancellation/deadlines abort in-flight
+// downloads.
 func convertImageToBedrockSource(ctx context.Context, imageURL string) (*BedrockImageSource, error) {
+	// Checked before sanitizing: SanitizeImageURL runs the default http/https allowlist
+	// and would reject s3:// outright.
+	if s3Loc, ok := bedrockS3LocationFromURL(imageURL); ok {
+		format, err := bedrockImageFormatFromPath(imageURL)
+		if err != nil {
+			return nil, err
+		}
+		return &BedrockImageSource{
+			Format: format,
+			Source: BedrockImageSourceData{S3Location: s3Loc},
+		}, nil
+	}
+
 	sanitizedURL, err := schemas.SanitizeImageURL(imageURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sanitize image URL: %w", err)
@@ -1477,33 +1582,16 @@ func convertResponseFormatToTool(
 		return nil, nil
 	}
 
-	responseFormatMap, ok := schemas.SafeExtractOrderedMap(*params.ResponseFormat)
-	if !ok || responseFormatMap == nil {
+	rf, ok := schemas.ParseChatResponseFormat(params.ResponseFormat)
+	if !ok || rf.Type != "json_schema" || !rf.HasJSONSchema() {
 		return nil, nil
 	}
 
-	// Check if type is "json_schema"
-	formatTypeRaw, ok := responseFormatMap.Get("type")
-	if !ok {
-		return nil, nil
-	}
-	formatType, ok := schemas.SafeExtractString(formatTypeRaw)
-	if !ok || formatType != "json_schema" {
-		return nil, nil
-	}
-
-	// Extract json_schema object
-	jsonSchemaRaw, ok := responseFormatMap.Get("json_schema")
-	if !ok {
-		return nil, nil
-	}
-	jsonSchemaObj, ok := schemas.SafeExtractOrderedMap(jsonSchemaRaw)
-	if !ok || jsonSchemaObj == nil {
-		return nil, nil
-	}
-
-	schemaObj, ok := jsonSchemaObj.Get("schema")
-	if !ok {
+	// Bedrock carries a tool's input schema as raw JSON, so the client's schema
+	// bytes go through untouched: no re-encoding, no key reordering, no numeric
+	// precision loss.
+	schemaBytes := rf.RawSchema()
+	if len(schemaBytes) == 0 {
 		return nil, nil
 	}
 
@@ -1512,24 +1600,15 @@ func convertResponseFormatToTool(
 	// Converse's inconsistent support across Claude variants.
 
 	// Extract name and schema
-	toolNameRaw, hasName := jsonSchemaObj.Get("name")
-	toolName, ok := schemas.SafeExtractString(toolNameRaw)
-	if !hasName || !ok || toolName == "" {
+	toolName, ok := rf.Name()
+	if !ok || toolName == "" {
 		toolName = "json_response"
 	}
 
 	// Extract description from schema if available
 	description := "Returns structured JSON output"
-	if schemaMap, ok := schemas.SafeExtractOrderedMap(schemaObj); ok && schemaMap != nil {
-		if descRaw, hasDesc := schemaMap.Get("description"); hasDesc {
-			if desc, ok := schemas.SafeExtractString(descRaw); ok && desc != "" {
-				description = desc
-			}
-		}
-	} else if schemaMap, ok := schemaObj.(map[string]interface{}); ok {
-		if desc, ok := schemaMap["description"].(string); ok && desc != "" {
-			description = desc
-		}
+	if desc := gjson.GetBytes(schemaBytes, "description"); desc.Type == gjson.String && desc.String() != "" {
+		description = desc.String()
 	}
 
 	// set bifrost context key structured output tool name
@@ -1537,16 +1616,12 @@ func convertResponseFormatToTool(
 	ctx.SetValue(schemas.BifrostContextKeyStructuredOutputToolName, toolName)
 
 	// Create the Bedrock tool
-	schemaObjBytes, err := providerUtils.MarshalSorted(schemaObj)
-	if err != nil {
-		return nil, nil
-	}
 	return &BedrockTool{
 		ToolSpec: &BedrockToolSpec{
 			Name:        toolName,
 			Description: schemas.Ptr(description),
 			InputSchema: BedrockToolInputSchema{
-				JSON: json.RawMessage(schemaObjBytes),
+				JSON: schemaBytes,
 			},
 		},
 	}, nil

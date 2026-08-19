@@ -4,9 +4,14 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.35
+**Latest Version:** 2.1.36
 
 ## Changelog
+
+### 2.1.36
+
+- Added `bifrost.scim.config.claimsSyncMode` (`both` default, or `scim`) to every SCIM/SSO provider — selects, when SCIM is enabled, whether IdP login/refresh claims still drive role/team/business-unit/profile sync and JIT user creation (`both`) or SCIM is the sole source of truth (`scim`). Renders into the provider's `claimsSyncMode`.
+- Made `bifrost.scim.config.apiToken` optional for the Okta provider — removed it from the Okta config `required` set (it was contradicting the docs, which describe the API token as optional and only needed for 24-hour background user/group reconciliation). SCIM validation now requires only `issuerUrl`, `clientId`, and `clientSecret`.
 
 ### 2.1.35
 

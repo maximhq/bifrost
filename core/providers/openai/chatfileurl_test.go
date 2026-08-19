@@ -13,15 +13,19 @@ import (
 // A document block arrives as {"type":"document","source":{"type":"url","url":...}} and
 // ChatContentBlock.UnmarshalJSON normalizes it to File.FileURL, documented as
 // "provider fetches at convert time" (schemas/chatcompletions.go). Chat Completions does not
-// accept file_url - only file_id, or file_data as a base64 data URI with a filename - so
-// OpenAIChatRequest.MarshalJSON strips FileURL. Nothing ever fetched it, so the block went out
-// as an empty object and the document vanished:
+// accept file_url - only file_id, or file_data as a base64 data URI with a filename - and
+// OpenAIChatRequest.MarshalJSON used to strip FileURL. Nothing ever fetched it, so the block
+// went out as an empty object and the document vanished:
 //
 //	raw_request: {"type":"file","file":{}}
 //	azure 400:   Missing required parameter: 'messages[0].content[0].file.file_id'
 //
 // Harness cells 47.10.A and 47.10.C. Shapes B and D (Responses API) passed throughout, because
 // file_url IS valid there - which is why only the two chat shapes failed.
+//
+// Two things fix that. ResolveChatFileURLs fetches http(s) sources and inlines them as
+// file_data, and MarshalJSON no longer strips file_url - so a source Bifrost cannot fetch
+// reaches the provider intact and is refused by name instead of disappearing.
 
 func TestBuildChatFileFromFetch_ProducesDataURIAndFilename(t *testing.T) {
 	data, name := buildChatFileFromFetch("application/pdf", "QkFTRTY0",
@@ -218,4 +222,36 @@ func TestResolveChatFileURLs_ReportsFetchFailure(t *testing.T) {
 		"the error should name the document that could not be fetched")
 	assert.Contains(t, err.Error(), "messages[0].content[0]",
 		"and locate it in the request, since a message can carry several documents")
+}
+
+// TestResolveChatFileURLsForwardsUnfetchableSchemes: bifrost inlines only what it can
+// download. A scheme it cannot fetch stays on the block and now survives marshalling, so
+// the provider answers for itself instead of receiving {"type":"file","file":{}} and
+// complaining about a missing file_id while the source is silently gone.
+func TestResolveChatFileURLsForwardsUnfetchableSchemes(t *testing.T) {
+	for _, rawURL := range []string{"s3://my-bucket/doc.pdf", "gs://my-bucket/doc.pdf"} {
+		t.Run(rawURL, func(t *testing.T) {
+			req := &OpenAIChatRequest{Messages: []OpenAIMessage{{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+					{
+						Type: schemas.ChatContentBlockTypeFile,
+						File: &schemas.ChatInputFile{FileURL: schemas.Ptr(rawURL)},
+					},
+				}},
+			}}}
+
+			require.NoError(t, ResolveChatFileURLs(nil, schemas.OpenAI, req))
+
+			file := req.Messages[0].Content.ContentBlocks[0].File
+			require.NotNil(t, file.FileURL)
+			assert.Equal(t, rawURL, *file.FileURL, "the reference must survive for the provider to judge")
+			assert.Nil(t, file.FileData, "bifrost must not have fetched anything")
+
+			// The whole point: it has to reach the wire, not vanish at marshal time.
+			body, err := req.MarshalJSON()
+			require.NoError(t, err)
+			assert.Contains(t, string(body), rawURL, "file_url must not be silently stripped")
+		})
+	}
 }
