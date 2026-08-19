@@ -327,6 +327,87 @@ func providerNetworkOverrideFromContext(ctx context.Context) *schemas.ProviderNe
 	return override.NetworkConfig
 }
 
+var autoInitializedPrivateClients sync.Map // map[*fasthttp.Client]*fasthttp.Client
+
+// clientForProviderOverride returns a private-capable transport only when an
+// auto-initialized provider's request-scoped BaseURL explicitly opts into RFC
+// 1918 access. The shared provider client remains public-only, so concurrent
+// requests cannot inherit another request's private-network capability.
+func clientForProviderOverride(ctx context.Context, client *fasthttp.Client) *fasthttp.Client {
+	if ctx == nil || client == nil {
+		return client
+	}
+	autoInitialized, _ := ctx.Value(schemas.BifrostContextKeyAutoInitializedProvider).(bool)
+	if !autoInitialized {
+		return client
+	}
+	override, ok := ctx.Value(schemas.BifrostContextKeyProviderOverride).(*schemas.ProviderOverride)
+	if !ok || override == nil || override.BaseURL == "" {
+		return client
+	}
+	if override.NetworkConfig == nil || override.NetworkConfig.AllowPrivateNetwork == nil || !*override.NetworkConfig.AllowPrivateNetwork {
+		return client
+	}
+	// Some providers deliberately create a fresh streaming client per request.
+	// Do not retain those ephemeral clients in the process-wide cache.
+	if client.StreamResponseBody {
+		privateClient := CloneFastHTTPClientConfig(client)
+		configureAutoInitializedPrivateDial(privateClient)
+		return privateClient
+	}
+	if cached, ok := autoInitializedPrivateClients.Load(client); ok {
+		return cached.(*fasthttp.Client)
+	}
+	privateClient := CloneFastHTTPClientConfig(client)
+	configureAutoInitializedPrivateDial(privateClient)
+	actual, _ := autoInitializedPrivateClients.LoadOrStore(client, privateClient)
+	return actual.(*fasthttp.Client)
+}
+
+// configureAutoInitializedPrivateDial installs a direct dialer that permits
+// RFC 1918 addresses but still rejects unspecified and link-local metadata
+// targets. Auto-init configs cannot contain a proxy, so replacing the base
+// dialer does not bypass operator routing.
+func configureAutoInitializedPrivateDial(client *fasthttp.Client) {
+	dialTimeout := client.ReadTimeout
+	if dialTimeout <= 0 {
+		dialTimeout = time.Duration(schemas.DynamicProviderTransportTimeoutCeilingInSeconds) * time.Second
+	}
+	keepAliveCfg := net.KeepAliveConfig{Enable: true, Idle: 10 * time.Second, Interval: 5 * time.Second, Count: 3}
+	client.DialTimeout = nil
+	client.Dial = func(addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, err
+		}
+		resolveCtx, cancel := context.WithTimeout(context.Background(), dialTimeout)
+		defer cancel()
+		ips, err := net.DefaultResolver.LookupIP(resolveCtx, "ip", host)
+		if err != nil {
+			return nil, err
+		}
+		dialer := &net.Dialer{Timeout: dialTimeout, KeepAliveConfig: keepAliveCfg}
+		var lastErr error
+		for _, ip := range ips {
+			switch {
+			case ip.IsUnspecified():
+				return nil, fmt.Errorf("connection to unspecified IP %s is not allowed", ip)
+			case network.IsLinkLocal(ip):
+				return nil, fmt.Errorf("connection to link-local IP %s is not allowed", ip)
+			}
+			conn, dialErr := dialer.Dial("tcp", net.JoinHostPort(ip.String(), port))
+			if dialErr == nil {
+				return conn, nil
+			}
+			lastErr = dialErr
+		}
+		if lastErr != nil {
+			return nil, lastErr
+		}
+		return nil, fmt.Errorf("no usable address resolved for %s", host)
+	}
+}
+
 // EffectiveNetworkConfigFromContext applies request-scoped network overrides to
 // a provider NetworkConfig. Nil override fields leave the provider config intact.
 func EffectiveNetworkConfigFromContext(ctx context.Context, base schemas.NetworkConfig) schemas.NetworkConfig {
@@ -495,6 +576,7 @@ func applyRequestTimeoutOverride(ctx context.Context, req *fasthttp.Request) {
 // via Request.SetTimeout; deadline hits surface as HTTP 504.
 func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) (time.Duration, *schemas.BifrostError, func()) {
 	applyRequestTimeoutOverride(ctx, req)
+	client = clientForProviderOverride(ctx, client)
 	return makeRequestWithDoFunc(ctx, func() error { return client.Do(req, resp) })
 }
 
@@ -502,6 +584,7 @@ func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 // maxRedirects HTTP redirects automatically (equivalent to curl's -L flag).
 func MakeRequestWithContextFollowRedirects(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response, maxRedirects int) (time.Duration, *schemas.BifrostError, func()) {
 	applyRequestTimeoutOverride(ctx, req)
+	client = clientForProviderOverride(ctx, client)
 	return makeRequestWithDoFunc(ctx, func() error { return client.DoRedirects(req, resp, maxRedirects) })
 }
 
@@ -517,6 +600,7 @@ func MakeRequestWithContextFollowRedirects(ctx context.Context, client *fasthttp
 // Returns client.Do's error untouched so callers keep their own error
 // classification and latency bookkeeping.
 func DoStreamingRequest(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) error {
+	client = clientForProviderOverride(ctx, client)
 	startTime := time.Now()
 	err := client.Do(req, resp)
 	schemas.AddUpstreamLatency(ctx, time.Since(startTime))
@@ -1044,10 +1128,13 @@ func SetExtraHeaders(ctx context.Context, req *fasthttp.Request, extraHeaders ma
 		setExtraHeadersMap(req, override.ExtraHeaders, skipHeaders)
 	}
 	setExtraHeadersMap(req, extraHeaders, skipHeaders)
-	// Give priority to extra headers in the context
+	// Caller-supplied context headers have the lowest precedence: they may add
+	// new headers, but cannot replace provider auth, trusted plugin overrides,
+	// or static provider configuration.
 	if extraHeaders, ok := (ctx).Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); ok {
 		for k, values := range filterHeaders(extraHeaders) {
-			if shouldSkipHeader(textproto.CanonicalMIMEHeaderKey(k), skipHeaders) {
+			canonicalKey := textproto.CanonicalMIMEHeaderKey(k)
+			if shouldSkipHeader(canonicalKey, skipHeaders) || len(req.Header.Peek(canonicalKey)) > 0 {
 				continue
 			}
 			for i, v := range values {
@@ -1775,10 +1862,12 @@ func SetExtraHeadersHTTP(ctx context.Context, req *http.Request, extraHeaders ma
 	}
 	setExtraHeadersHTTPMap(req, extraHeaders, skipHeaders)
 
-	// Give priority to extra headers in the context
+	// Caller-supplied context headers have the lowest precedence; see the
+	// fasthttp variant above for the trust-boundary rationale.
 	if extraHeaders, ok := (ctx).Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); ok {
 		for k, values := range filterHeaders(extraHeaders) {
-			if shouldSkipHeader(textproto.CanonicalMIMEHeaderKey(k), skipHeaders) {
+			canonicalKey := textproto.CanonicalMIMEHeaderKey(k)
+			if shouldSkipHeader(canonicalKey, skipHeaders) || req.Header.Get(canonicalKey) != "" {
 				continue
 			}
 			for i, v := range values {
