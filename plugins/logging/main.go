@@ -1826,7 +1826,18 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			// provider-supplied breakdown.
 			if entry.TokenUsageParsed != nil && entry.TokenUsageParsed.Cost == nil {
 				entry.TokenUsageParsed.Cost = breakdown
+			} else if entry.TokenUsageParsed == nil {
+				// No usage carrier: OCRUsageInfo has no tokens, so OCR is never
+				// aliased into TokenUsageParsed. SerializeFields skips its cost
+				// block when TokenUsageParsed is nil, so denormalize the split
+				// directly here for the columns to reconcile to the cost column.
+				entry.InputCost = breakdown.InputCost
+				entry.OutputCost = breakdown.OutputCost
+				entry.AdditionalCost = breakdown.AdditionalCost
 			}
+			// Speech / transcription / OCR usage is not aliased into
+			// TokenUsageParsed, so write the split onto the native response too.
+			attachCostToNativeUsage(result, breakdown)
 		}
 		if bifrostErr == nil &&
 			requestType == schemas.BatchResultsRequest &&

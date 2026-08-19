@@ -599,6 +599,15 @@ func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, resul
 		} else {
 			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 		}
+	case result.SpeechResponse != nil && result.SpeechResponse.Usage != nil:
+		usage = &schemas.BifrostLLMUsage{
+			PromptTokens:     result.SpeechResponse.Usage.InputTokens,
+			CompletionTokens: result.SpeechResponse.Usage.OutputTokens,
+			TotalTokens:      result.SpeechResponse.Usage.TotalTokens,
+		}
+		if usage.TotalTokens == 0 {
+			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+		}
 	case result.ImageGenerationResponse != nil && result.ImageGenerationResponse.Usage != nil:
 		usage = &schemas.BifrostLLMUsage{}
 		usage.PromptTokens = result.ImageGenerationResponse.Usage.InputTokens
@@ -1855,16 +1864,54 @@ func normalizeLogRequestType(object string) schemas.RequestType {
 
 // attachCostBreakdown fills entry.TokenUsageParsed.Cost with the per-category
 // cost split (input / output / cache) computed from result, so log detail views
-// can surface it alongside the total. It is a no-op when pricing is
-// unavailable, usage is missing, or a breakdown is already present (e.g.
-// provider-supplied or already attached on the non-streaming path).
+// can surface it alongside the total, and also writes it onto the native typed
+// usage for modalities not aliased into TokenUsageParsed (speech, transcription,
+// OCR) so their client-facing responses carry cost too. A provider-supplied
+// breakdown already present on either target is preserved.
 func (p *LoggerPlugin) attachCostBreakdown(ctx *schemas.BifrostContext, entry *logstore.Log, result *schemas.BifrostResponse) {
-	if p.pricingManager == nil || result == nil || entry.TokenUsageParsed == nil || entry.TokenUsageParsed.Cost != nil {
+	if p.pricingManager == nil || result == nil {
 		return
 	}
 	pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
-	if breakdown := p.pricingManager.CalculateCostBreakdown(result, pricingScopes); breakdown != nil {
+	breakdown := p.pricingManager.CalculateCostBreakdown(result, pricingScopes)
+	if breakdown == nil {
+		return
+	}
+	if entry.TokenUsageParsed != nil && entry.TokenUsageParsed.Cost == nil {
 		entry.TokenUsageParsed.Cost = breakdown
+	} else if entry.TokenUsageParsed == nil {
+		// No usage carrier (e.g. OCR: OCRUsageInfo has no tokens, so it is never
+		// aliased into TokenUsageParsed). SerializeFields skips its cost block when
+		// TokenUsageParsed is nil, so denormalize the split directly here for the
+		// columns to reconcile to the cost column.
+		entry.InputCost = breakdown.InputCost
+		entry.OutputCost = breakdown.OutputCost
+		entry.AdditionalCost = breakdown.AdditionalCost
+	}
+	attachCostToNativeUsage(result, breakdown)
+}
+
+// attachCostToNativeUsage writes the cost breakdown onto the native typed usage
+// for speech, transcription, and OCR responses. Unlike chat/embedding (whose
+// usage pointer is aliased into TokenUsageParsed and thus already carries cost),
+// these modalities build a separate usage object, so the client-facing response
+// would otherwise never see cost. No-op when the usage slot is absent or a
+// provider already supplied a breakdown.
+func attachCostToNativeUsage(result *schemas.BifrostResponse, breakdown *schemas.BifrostCost) {
+	if result == nil || breakdown == nil {
+		return
+	}
+	switch {
+	case result.SpeechResponse != nil && result.SpeechResponse.Usage != nil && result.SpeechResponse.Usage.Cost == nil:
+		result.SpeechResponse.Usage.Cost = breakdown
+	case result.SpeechStreamResponse != nil && result.SpeechStreamResponse.Usage != nil && result.SpeechStreamResponse.Usage.Cost == nil:
+		result.SpeechStreamResponse.Usage.Cost = breakdown
+	case result.TranscriptionResponse != nil && result.TranscriptionResponse.Usage != nil && result.TranscriptionResponse.Usage.Cost == nil:
+		result.TranscriptionResponse.Usage.Cost = breakdown
+	case result.TranscriptionStreamResponse != nil && result.TranscriptionStreamResponse.Usage != nil && result.TranscriptionStreamResponse.Usage.Cost == nil:
+		result.TranscriptionStreamResponse.Usage.Cost = breakdown
+	case result.OCRResponse != nil && result.OCRResponse.UsageInfo != nil && result.OCRResponse.UsageInfo.Cost == nil:
+		result.OCRResponse.UsageInfo.Cost = breakdown
 	}
 }
 
