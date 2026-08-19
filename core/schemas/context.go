@@ -11,47 +11,110 @@ import (
 
 var NoDeadline time.Time
 
-// reservedKeys is a set (not a slice) so the per-write guard is O(1) instead of a
-// linear interface-equality scan; the guard runs on every restricted write, per
-// chunk on streams. Keyed by BifrostContextKey (not any) so isReservedKey can
-// assert the type before indexing: SetValue/ClearValue/GetAndSetValue accept any,
-// and indexing a map with a non-comparable key (slice, map, func) would panic.
+// reservedKeys are the context keys Bifrost owns. While a plugin hook batch is running core blocks
+// writes to them (see mayWrite), so a plugin cannot rewrite what the request has already settled
+// about itself.
+//
+// Reserved is the default rather than the last word. A deployment can hand one of these keys to the
+// plugin that settles the fact it carries — see RegisterReservedKeyWriter — because that plugin has to
+// record its answer from inside its own hook, which is exactly where the block applies. Which plugin
+// that is depends on the deployment, so nothing here names one.
+//
+// A set (not a slice) so the per-write guard is O(1) instead of a linear interface-equality scan;
+// the guard runs on every restricted write, per chunk on streams. Keyed by BifrostContextKey (not
+// any) so isReservedKey can assert the type before indexing: SetValue/ClearValue/GetAndSetValue
+// accept any, and indexing a map with a non-comparable key (slice, map, func) would panic.
 var reservedKeys = map[BifrostContextKey]struct{}{
-	BifrostContextKeyVirtualKey:              {},
-	BifrostContextKeyAPIKeyName:              {},
-	BifrostContextKeyAPIKeyID:                {},
-	BifrostContextKeyDirectKey:               {},
-	BifrostContextKeyRequestID:               {},
-	BifrostContextKeyFallbackRequestID:       {},
-	BifrostContextKeySelectedKeyID:           {},
-	BifrostContextKeySelectedKeyName:         {},
-	BifrostContextKeyNumberOfRetries:         {},
-	BifrostContextKeyFallbackIndex:           {},
-	BifrostContextKeySkipKeySelection:        {},
-	BifrostContextKeyPassthroughHeaders:      {},
-	BifrostContextKeySkipBudgetAndRateLimits: {},
-	BifrostContextKeySkipProviderCheck:       {},
-	BifrostContextKeySkipModelCheck:          {},
-	BifrostContextKeyURLPath:                 {},
-	BifrostContextKeyDeferTraceCompletion:    {},
-	BifrostContextKeyAttemptTrail:            {},
-	BifrostContextKeyStreamGated:             {},
-	BifrostContextKeyMCPHealthCheckRequest:   {},
-	BifrostContextKeyUpstreamLatency:         {},
-	BifrostContextKeyStreamOverhead:          {},
-	BifrostContextKeyRoutingInfo:             {},
-	BifrostContextKeyMCPInboundBearer:        {},
+	BifrostContextKeyVirtualKey:                {},
+	BifrostContextKeyAPIKeyName:                {},
+	BifrostContextKeyAPIKeyID:                  {},
+	BifrostContextKeyDirectKey:                 {},
+	BifrostContextKeyRequestID:                 {},
+	BifrostContextKeyFallbackRequestID:         {},
+	BifrostContextKeySelectedKeyID:             {},
+	BifrostContextKeySelectedKeyName:           {},
+	BifrostContextKeyNumberOfRetries:           {},
+	BifrostContextKeyFallbackIndex:             {},
+	BifrostContextKeySkipKeySelection:          {},
+	BifrostContextKeyPassthroughHeaders:        {},
+	BifrostContextKeySkipBudgetAndRateLimits:   {},
+	BifrostContextKeySkipProviderCheck:         {},
+	BifrostContextKeySkipModelCheck:            {},
+	BifrostContextKeyURLPath:                   {},
+	BifrostContextKeyDeferTraceCompletion:      {},
+	BifrostContextKeyAttemptTrail:              {},
+	BifrostContextKeyStreamGated:               {},
+	BifrostContextKeyMCPHealthCheckRequest:     {},
+	BifrostContextKeyUpstreamLatency:           {},
+	BifrostContextKeyStreamOverhead:            {},
+	BifrostContextKeyRoutingInfo:               {},
+	BifrostContextKeyMCPInboundBearer:          {},
+	BifrostContextKeyGovernanceEffectiveAccess: {},
 }
 
-// isReservedKey reports whether key is a reserved context key whose writes are
-// blocked while blockRestrictedWrites is set. Non-BifrostContextKey keys (which
-// may be non-comparable) are never reserved and must not reach the map index.
+// isReservedKey reports whether key is one Bifrost owns. The type assertion is what makes the map
+// index safe: the write paths accept any, and indexing with a non-comparable key would panic.
 func isReservedKey(key any) bool {
 	contextKey, ok := key.(BifrostContextKey)
 	if !ok {
 		return false
 	}
 	_, ok = reservedKeys[contextKey]
+	return ok
+}
+
+// reservedKeyWriters records which plugins a deployment has allowed to write which reserved keys. It is
+// replaced whole rather than mutated, so a write on the request path reads it without taking a lock;
+// reservedKeyWritersMu only serializes the registrations themselves.
+var (
+	reservedKeyWriters   atomic.Pointer[map[any]map[string]struct{}]
+	reservedKeyWritersMu sync.Mutex
+)
+
+// RegisterReservedKeyWriter allows the plugin registered under pluginName to write the given reserved
+// context keys from inside its own hooks, where a write to them is otherwise dropped.
+//
+// This is how a deployment says which plugin owns a fact rather than merely reads it. A plugin that
+// settles something about a request — what it may reach, what pays for it — has to record its answer
+// where everything downstream will read it, and it runs inside a hook to do so. Naming it here lets it
+// through while leaving every other plugin in the same batch unable to rewrite what it settled.
+//
+// The grant is per plugin name because the name is what a hook runs under, so a deployment that swaps
+// in its own implementation of a built-in names its own plugin instead. Call this while wiring plugins,
+// before the first request is served: a request already in flight reads whatever was registered when it
+// started. Naming a key that is not reserved does nothing, since such a key was never guarded.
+func RegisterReservedKeyWriter(pluginName string, keys ...BifrostContextKey) {
+	if pluginName == "" || len(keys) == 0 {
+		return
+	}
+	reservedKeyWritersMu.Lock()
+	defer reservedKeyWritersMu.Unlock()
+	next := make(map[any]map[string]struct{})
+	if current := reservedKeyWriters.Load(); current != nil {
+		for key, writers := range *current {
+			copied := make(map[string]struct{}, len(writers))
+			for name := range writers {
+				copied[name] = struct{}{}
+			}
+			next[key] = copied
+		}
+	}
+	for _, key := range keys {
+		if next[key] == nil {
+			next[key] = make(map[string]struct{})
+		}
+		next[key][pluginName] = struct{}{}
+	}
+	reservedKeyWriters.Store(&next)
+}
+
+// mayWriteReservedKey reports whether the plugin named pluginName holds a deployment's grant for key.
+func mayWriteReservedKey(key any, pluginName string) bool {
+	granted := reservedKeyWriters.Load()
+	if granted == nil {
+		return false
+	}
+	_, ok := (*granted)[key][pluginName]
 	return ok
 }
 
@@ -392,12 +455,17 @@ func (bc *BifrostContext) MCPIdentity(mode MCPAuthMode) string {
 // For scoped contexts, delegates to the root context via valueDelegate.
 // This is thread-safe and can be called concurrently.
 func (bc *BifrostContext) SetValue(key, value any) {
+	bc.setValue(key, value, bc.pluginScope)
+}
+
+// setValue carries the scope the write was made from down to the root, because the root is where the
+// values and the block live and a scoped context is where the plugin making the write is known.
+func (bc *BifrostContext) setValue(key, value any, writer *string) {
 	if bc.valueDelegate != nil {
-		bc.valueDelegate.SetValue(key, value)
+		bc.valueDelegate.setValue(key, value, writer)
 		return
 	}
-	// Check if the key is a reserved key
-	if bc.blockRestrictedWrites.Load() && isReservedKey(key) {
+	if !bc.mayWrite(key, writer) {
 		// we silently drop writes for these reserved keys
 		return
 	}
@@ -407,6 +475,21 @@ func (bc *BifrostContext) SetValue(key, value any) {
 		bc.userValues = make(map[any]any, 16)
 	}
 	bc.userValues[key] = value
+}
+
+// mayWrite reports whether a write to key, made from the plugin scope named by writer, is allowed.
+//
+// A reserved key is guarded only while a hook batch is running, which is the window plugins run in;
+// outside it a write is core's or the transport's own and is left alone. Inside it the writers are the
+// plugins the deployment named for that key, and only those — a write carrying no plugin scope is
+// refused too, since core makes its own guarded writes through setReservedValue rather than through
+// here, and a plugin reaching the request's context outside its own scope is not distinguishable from
+// one that never had a scope.
+func (bc *BifrostContext) mayWrite(key any, writer *string) bool {
+	if !bc.blockRestrictedWrites.Load() || !isReservedKey(key) {
+		return true
+	}
+	return writer != nil && mayWriteReservedKey(key, *writer)
 }
 
 // setReservedValue writes a Bifrost-owned reserved key, bypassing the
@@ -439,12 +522,17 @@ func (bc *BifrostContext) SetRoutingInfoSnapshot(ri RoutingInfo) {
 // ClearValue clears a value from the internal userValues map.
 // For scoped contexts, delegates to the root context via valueDelegate.
 func (bc *BifrostContext) ClearValue(key any) {
+	bc.clearValue(key, bc.pluginScope)
+}
+
+// clearValue carries the scope the clear was made from down to the root, for the reason setValue does:
+// erasing what a request settled about itself is a write like any other.
+func (bc *BifrostContext) clearValue(key any, writer *string) {
 	if bc.valueDelegate != nil {
-		bc.valueDelegate.ClearValue(key)
+		bc.valueDelegate.clearValue(key, writer)
 		return
 	}
-	// Check if the key is a reserved key
-	if bc.blockRestrictedWrites.Load() && isReservedKey(key) {
+	if !bc.mayWrite(key, writer) {
 		// we silently drop writes for these reserved keys
 		return
 	}
@@ -458,13 +546,19 @@ func (bc *BifrostContext) ClearValue(key any) {
 // GetAndSetValue gets a value from the internal userValues map and sets it.
 // For scoped contexts, delegates to the root context via valueDelegate.
 func (bc *BifrostContext) GetAndSetValue(key any, value any) any {
+	return bc.getAndSetValue(key, value, bc.pluginScope)
+}
+
+// getAndSetValue carries the scope the write was made from down to the root, as setValue does. A
+// refused swap still answers with what stands, so a caller reads the value it was not allowed to
+// replace rather than nothing at all.
+func (bc *BifrostContext) getAndSetValue(key any, value any, writer *string) any {
 	if bc.valueDelegate != nil {
-		return bc.valueDelegate.GetAndSetValue(key, value)
+		return bc.valueDelegate.getAndSetValue(key, value, writer)
 	}
 	bc.valuesMu.Lock()
 	defer bc.valuesMu.Unlock()
-	// Check if the key is a reserved key
-	if bc.blockRestrictedWrites.Load() && isReservedKey(key) {
+	if !bc.mayWrite(key, writer) {
 		// we silently drop writes for these reserved keys
 		return bc.userValues[key]
 	}

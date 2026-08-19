@@ -10,6 +10,11 @@ import "github.com/maximhq/bifrost/core/schemas"
 // The pair below stays the sanctioned way in and out. Reading through EffectiveAccessFromContext
 // keeps the type assertion in one place, and writing through RecordEffectiveAccess keeps the
 // no-access-is-not-empty-access rule in one place.
+//
+// The key is reserved, so recording only lands from a plugin the deployment named as its writer — see
+// schemas.RegisterReservedKeyWriter. That is what makes resolved access answer to one plugin: the rest
+// of a hook batch can read what the request may reach but cannot rewrite it, so nothing widens access
+// after the layer that resolved it has settled the question.
 
 // EffectiveAccessFromContext returns the access resolved for this attempt, or nil when none
 // has been: a request that carries no grant, one on a path that runs before resolution, or an
