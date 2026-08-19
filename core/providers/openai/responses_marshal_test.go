@@ -205,6 +205,24 @@ func TestNormalizeOpenAIReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestNormalizeReasoningEffortPreservesXHighForOpenAICompatibleProviders(t *testing.T) {
+	tests := []schemas.ModelProvider{
+		schemas.VLLM,
+		schemas.Ollama,
+		schemas.SGL,
+		schemas.ModelProvider("gpustack-rtxpro-6000"),
+	}
+
+	for _, provider := range tests {
+		t.Run(string(provider), func(t *testing.T) {
+			caps := schemas.ResolveModelCaps(provider, "qwen/qwen3.8-27b")
+			if got := normalizeReasoningEffort(provider, caps, schemas.ReasoningEffortXHigh); got != schemas.ReasoningEffortXHigh {
+				t.Fatalf("normalizeReasoningEffort(%q, xhigh) = %q, want xhigh", provider, got)
+			}
+		})
+	}
+}
+
 func TestOpenAIResponsesRequest_MarshalJSON_InputStringForm(t *testing.T) {
 	tests := []struct {
 		name        string
