@@ -58,6 +58,10 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 					funcCopy := *tool.Function
 					funcCopy.Parameters = tool.Function.Parameters.Normalized()
 					normalizedTools[i].Function = &funcCopy
+					// The by-value copy carried over any precomputed serialized cache
+					// (shared MCP tools cache it at the source). Drop it so MarshalJSON
+					// re-emits from the normalized params instead of the stale bytes.
+					normalizedTools[i].InvalidateSerialized()
 				}
 			}
 			openaiReq.ChatParameters.Tools = normalizedTools

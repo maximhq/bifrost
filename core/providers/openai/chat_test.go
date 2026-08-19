@@ -80,6 +80,70 @@ func TestToOpenAIChatRequest_ToolNormalization(t *testing.T) {
 	}
 }
 
+// TestToOpenAIChatRequest_InvalidatesStaleSerializedCache guards the fix for a
+// shared MCP tool carrying a precomputed serialized cache. Those tools are
+// injected into the request by value, so the cache rides along with the copy.
+// ToOpenAIChatRequest replaces Function.Parameters with the normalized form; if
+// it left the stale cache in place, ChatTool.MarshalJSON would return the
+// pre-normalized bytes and silently defeat the normalization for exactly the
+// tools it is meant to help.
+func TestToOpenAIChatRequest_InvalidatesStaleSerializedCache(t *testing.T) {
+	// Items is a structural schema field Normalized() canonicalizes (unlike
+	// Properties, whose order is preserved). Its keys are inserted out of the
+	// canonical order (type, description, then alphabetical) so Normalized()
+	// reorders them, making the cached (un-normalized) bytes differ from the
+	// normalized output.
+	params := &schemas.ToolFunctionParameters{
+		Type: "array",
+		Items: schemas.NewOrderedMapFromPairs(
+			schemas.KV("enum", []interface{}{"celsius", "fahrenheit"}),
+			schemas.KV("description", "A unit"),
+			schemas.KV("type", "string"),
+		),
+	}
+
+	tool := schemas.ChatTool{
+		Type:     "function",
+		Function: &schemas.ChatToolFunction{Name: "get_weather", Parameters: params},
+	}
+	// Simulate the MCP source caching the pre-normalized bytes.
+	require.NoError(t, tool.EnsureSerialized())
+	staleJSON, err := schemas.Marshal(tool)
+	require.NoError(t, err)
+
+	// Expected wire form: the same tool normalized, with no cache.
+	expTool := schemas.ChatTool{
+		Type:     "function",
+		Function: &schemas.ChatToolFunction{Name: "get_weather", Parameters: params.Normalized()},
+	}
+	expJSON, err := schemas.Marshal(expTool)
+	require.NoError(t, err)
+
+	// Setup guard: the case is only meaningful if normalization changes the bytes.
+	require.NotEqual(t, string(staleJSON), string(expJSON),
+		"test setup: normalized form must differ from the cached form")
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser}},
+		Params:   &schemas.ChatParameters{Tools: []schemas.ChatTool{tool}},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+	result := ToOpenAIChatRequest(ctx, bifrostReq)
+	require.NotNil(t, result)
+
+	gotJSON, err := schemas.Marshal(result.ChatParameters.Tools[0])
+	require.NoError(t, err)
+
+	require.Equal(t, string(expJSON), string(gotJSON),
+		"converted tool must marshal from normalized params, not the stale serialized cache")
+	require.NotEqual(t, string(staleJSON), string(gotJSON),
+		"converted tool must not emit the pre-normalized cached bytes")
+}
+
 func TestToOpenAIChatRequest_PreservesN(t *testing.T) {
 	req := &schemas.BifrostChatRequest{
 		Provider: schemas.OpenAI,
