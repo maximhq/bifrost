@@ -71,11 +71,10 @@ func TestReasoningDetails_SynthesizedFromPlainReasoningContent(t *testing.T) {
 	require.Nil(t, detail.Signature)
 }
 
-// TestReasoningDetails_RoundTripsBackToOpenAIMessages covers the response
-// direction: ReasoningDetails set on a Bifrost message must be copied back
-// onto the OpenAI wire message (needed by OpenAI-compatible upstreams like
-// OpenRouter that accept reasoning replay).
-func TestReasoningDetails_RoundTripsBackToOpenAIMessages(t *testing.T) {
+// TestReasoningDetails_RemainInboundOnly preserves current dev's wire contract:
+// structured details accepted by the OpenAI-compatible ingress are retained in
+// the neutral Bifrost schema but are not emitted to OpenAI-family providers.
+func TestReasoningDetails_RemainInboundOnly(t *testing.T) {
 	signature := "sig123"
 	text := "some thinking"
 	messages := []schemas.ChatMessage{
@@ -92,6 +91,5 @@ func TestReasoningDetails_RoundTripsBackToOpenAIMessages(t *testing.T) {
 	openaiMessages := ConvertBifrostMessagesToOpenAIMessages(messages)
 	require.Len(t, openaiMessages, 1)
 	require.NotNil(t, openaiMessages[0].OpenAIChatAssistantMessage)
-	require.Len(t, openaiMessages[0].OpenAIChatAssistantMessage.ReasoningDetails, 1)
-	require.Equal(t, signature, *openaiMessages[0].OpenAIChatAssistantMessage.ReasoningDetails[0].Signature)
+	require.Empty(t, openaiMessages[0].OpenAIChatAssistantMessage.ReasoningDetails)
 }

@@ -235,11 +235,10 @@ func ConvertBifrostMessagesToOpenAIMessages(messages []schemas.ChatMessage) []Op
 				toolCalls = cloned
 			}
 			openaiMessages[i].OpenAIChatAssistantMessage = &OpenAIChatAssistantMessage{
-				Refusal:          message.ChatAssistantMessage.Refusal,
-				Reasoning:        message.ChatAssistantMessage.Reasoning,
-				ReasoningDetails: message.ChatAssistantMessage.ReasoningDetails,
-				Annotations:      message.ChatAssistantMessage.Annotations,
-				ToolCalls:        toolCalls,
+				Refusal:     message.ChatAssistantMessage.Refusal,
+				Reasoning:   message.ChatAssistantMessage.Reasoning,
+				Annotations: message.ChatAssistantMessage.Annotations,
+				ToolCalls:   toolCalls,
 			}
 		}
 	}
