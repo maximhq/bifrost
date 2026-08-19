@@ -475,7 +475,7 @@ export default function DashboardPage() {
 			<LogsFilterSidebar filters={filters} onFiltersChange={setFilters} />
 
 			{/* Main Content */}
-			<ScrollArea className="bg-card flex min-w-0 flex-1 flex-col gap-4 rounded-l-md" viewportClassName="no-table">
+			<ScrollArea className="bg-card flex min-w-0 flex-1 flex-col gap-4 rounded-md border" viewportClassName="no-table">
 				<div className="p-4">
 					{/* Tabs */}
 					<Tabs value={activeTab} onValueChange={handleTabChange}>

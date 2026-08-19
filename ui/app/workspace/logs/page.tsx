@@ -568,18 +568,8 @@ export default function LogsPage() {
 	}, [userAgentMappingsData?.mappings]);
 
 	const columns = useMemo(
-<<<<<<< HEAD
-<<<<<<< HEAD
 		() => createColumns(handleDelete, hasDeleteAccess, metadataKeys, customAppIcons, grouped),
 		[customAppIcons, handleDelete, hasDeleteAccess, metadataKeys, grouped],
-=======
-		() => createColumns(handleDelete, hasDeleteAccess, metadataKeys, customAppIcons),
-		[customAppIcons, handleDelete, hasDeleteAccess, metadataKeys],
->>>>>>> 061d01944 (V2.0.0 (#4365))
-=======
-		() => createColumns(handleDelete, hasDeleteAccess, metadataKeys, customAppIcons),
-		[customAppIcons, handleDelete, hasDeleteAccess, metadataKeys],
->>>>>>> f4a637df4 (V2.0.0 (#4365))
 	);
 
 	const columnIds = useMemo(
@@ -756,7 +746,7 @@ export default function LogsPage() {
 					<LogsFilterSidebar filters={filters} onFiltersChange={setFilters} />
 
 					{/* Main Content */}
-					<div className="bg-card flex min-w-0 flex-1 flex-col gap-2 overflow-hidden rounded-l-md p-4 pb-2">
+					<div className="bg-card flex min-w-0 flex-1 flex-col gap-2 overflow-hidden rounded-md border p-4 pb-2">
 						<div className="shrink-0">
 							<LogsHeaderView
 								filters={filters}

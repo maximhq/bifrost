@@ -161,7 +161,7 @@ export default function MCPLibraryPage() {
 				<MCPLibraryFilterSidebar filters={filters} onFiltersChange={setFilters} />
 
 				{/* Main Content */}
-				<div className="bg-card min-h-full w-full rounded-l-md md:h-full">
+				<div className="bg-card min-h-full w-full rounded-md border md:h-full">
 					<div className="flex min-h-full flex-col gap-4 p-4 pb-2 md:h-full">
 						{/* Search + Actions */}
 						<div className="-mx-2 flex flex-col gap-3 px-2 py-2 sm:flex-row sm:items-center">
