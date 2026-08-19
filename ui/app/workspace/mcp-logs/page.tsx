@@ -442,7 +442,7 @@ export default function MCPLogsPage() {
 					<MCPFilterSidebar filters={filters} onFiltersChange={setFilters} />
 
 					{/* Main Content */}
-					<div className="bg-card flex min-w-0 flex-1 flex-col gap-2 overflow-hidden rounded-l-md">
+					<div className="bg-card flex min-w-0 flex-1 flex-col gap-2 overflow-hidden rounded-md border">
 						<div className="p-4 pb-0">
 							<McpHeaderView
 								filters={filters}

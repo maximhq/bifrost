@@ -2201,6 +2201,51 @@ append_dynamic_columns_postgres() {
     echo "UPDATE logs SET server_side_fallback_model = NULL WHERE id = 'log-migration-test-001';" >> "$output_file"
     echo "UPDATE logs SET server_side_fallback_model = 'gpt-4-turbo' WHERE id = 'log-migration-test-002';" >> "$output_file"
     echo "UPDATE logs SET server_side_fallback_model = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
+  # v1.6.4 columns
+  # -------------------------------------------------------------------------
+
+  # config_keys.vertex_force_single_region (added in v1.6.4 via add_vertex_force_single_region_column - nullable bool)
+  if column_exists_postgres "config_keys" "vertex_force_single_region"; then
+    echo "UPDATE config_keys SET vertex_force_single_region = NULL WHERE name = 'migration-test-key-openai';" >> "$output_file"
+    echo "UPDATE config_keys SET vertex_force_single_region = NULL WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+  fi
+
+  # config_keys.bedrock_project_id, bedrock_mantle_project_id (added in v1.6.4 via add_bedrock_project_id_columns - nullable text SecretVars)
+  for bedrock_proj_col in bedrock_project_id bedrock_mantle_project_id; do
+    if column_exists_postgres "config_keys" "$bedrock_proj_col"; then
+      echo "UPDATE config_keys SET $bedrock_proj_col = NULL WHERE name = 'migration-test-key-openai';" >> "$output_file"
+      echo "UPDATE config_keys SET $bedrock_proj_col = NULL WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+    fi
+  done
+
+  # governance_model_pricing flex/272k cache-creation tiers (added in v1.6.4 via
+  # add_flex_and_cache_creation_272k_pricing_columns), fast-mode cache pricing
+  # (add_fast_mode_cache_pricing_columns), and inference geo multiplier
+  # (add_inference_geo_multiplier_column) - all nullable float64
+  for pricing_col in \
+    input_cost_per_token_flex_above_272k_tokens \
+    output_cost_per_token_flex_above_272k_tokens \
+    cache_read_input_token_cost_flex_above_272k_tokens \
+    cache_creation_input_token_cost_above_272k_tokens \
+    cache_creation_input_token_cost_flex \
+    cache_creation_input_token_cost_flex_above_272k_tokens \
+    cache_creation_input_token_cost_priority \
+    cache_creation_input_token_cost_fast \
+    cache_creation_input_token_cost_above_1hr_fast \
+    cache_read_input_token_cost_fast \
+    inference_geo_us_multiplier; do
+    if column_exists_postgres "governance_model_pricing" "$pricing_col"; then
+      echo "UPDATE governance_model_pricing SET $pricing_col = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET $pricing_col = NULL WHERE id = 2;" >> "$output_file"
+    fi
+  done
+
+  # logs.redaction_mapping (added in v1.6.4 via logs_add_redaction_mapping_column -
+  # nullable text, stores the encrypted reversible redaction mapping)
+  if column_exists_postgres "logs" "redaction_mapping"; then
+    echo "UPDATE logs SET redaction_mapping = NULL WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET redaction_mapping = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
+    echo "UPDATE logs SET redaction_mapping = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
   fi
 
   # -------------------------------------------------------------------------
