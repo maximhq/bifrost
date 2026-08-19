@@ -411,9 +411,22 @@ func (provider *OpenRouterProvider) Embedding(ctx *schemas.BifrostContext, key s
 	)
 }
 
-// Speech is not supported by the OpenRouter provider.
+// Speech performs a text-to-speech request to the OpenRouter API.
 func (provider *OpenRouterProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechRequest, provider.GetProviderKey())
+	return openai.HandleOpenAISpeechRequest(
+		ctx,
+		provider.client,
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/audio/speech"),
+		request,
+		key,
+		provider.networkConfig.ExtraHeaders,
+		nil,
+		provider.GetProviderKey(),
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		nil,
+		provider.logger,
+	)
 }
 
 // Rerank is not supported by the OpenRouter provider.
@@ -431,9 +444,21 @@ func (provider *OpenRouterProvider) SpeechStream(ctx *schemas.BifrostContext, po
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechStreamRequest, provider.GetProviderKey())
 }
 
-// Transcription is not supported by the OpenRouter provider.
+// Transcription performs a speech-to-text request to the OpenRouter API.
 func (provider *OpenRouterProvider) Transcription(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionRequest, provider.GetProviderKey())
+	return openai.HandleOpenAITranscriptionRequest(
+		ctx,
+		provider.client,
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/audio/transcriptions"),
+		request,
+		key,
+		provider.networkConfig.ExtraHeaders,
+		nil,
+		provider.GetProviderKey(),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		nil,
+		provider.logger,
+	)
 }
 
 // TranscriptionStream is not supported by the OpenRouter provider.
