@@ -11,6 +11,7 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 ### Upcoming
 
 - Added `bifrost.plugins.splunk` — the Splunk HTTP Event Collector (HEC) observability connector (Enterprise): one flattened event per request to `events_index` plus the derived metric set to `metrics_index`, with TLS (`ca_cert` / `insecure_skip_verify`), a content toggle (`disable_content_logging`), request-header capture, and indexer acknowledgement (`indexer_ack`, `ack_poll_interval_ms`, `ack_timeout_ms`, `max_ack_attempts`). Renders into the `splunk` plugin config.
+- Removed the `version` field from every plugin (`bifrost.plugins.telemetry`, `logging`, `governance`, `maxim`, `semanticCache`, `otel`, `datadog`, `bigquery`, `kafka`, `pubsub`, and `bifrost.plugins.custom[]`). Plugin versioning is gone from Bifrost, so the field is no longer rendered into `config.json` or validated. Remove it from your values file; a leftover `version` key is ignored. (`bifrost.plugins.datadog.config.version`, the Datadog service version tag, is unaffected.)
 
 ### 2.1.36
 

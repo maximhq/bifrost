@@ -598,11 +598,9 @@ bifrost:
       # disableAutoToolInject: false    # Disable automatic MCP tool injection
 
   # Plugins configuration
-  # Plugin version must be >= 1 (schema minimum). Use values > 1 to force DB-backed plugin config replacement on upgrade.
   plugins:
     telemetry:
       enabled: false
-      version: 1
       config:
         custom_labels: []
         # push_gateway:
@@ -617,14 +615,12 @@ bifrost:
 
     logging:
       enabled: false
-      version: 1
       config:
         disable_content_logging: false
         logging_headers: []
 
     governance:
       enabled: false
-      version: 1
       config:
         is_vk_mandatory: false
         required_headers: []
@@ -632,7 +628,6 @@ bifrost:
 
     maxim:
       enabled: false
-      version: 1
       config:
         api_key: ""
         log_repo_id: ""
@@ -643,7 +638,6 @@ bifrost:
 
     semanticCache:
       enabled: false
-      version: 1
       config:
         # Semantic caching mode (dimension > 1): requires provider, keys, and embedding_model
         # Direct caching mode (dimension: 1): hash-based exact matching, no embedding provider needed
@@ -661,7 +655,6 @@ bifrost:
 
     otel:
       enabled: false
-      version: 1
       config:
         # plugin_span_filter:         # Optional: filter which plugin hook spans are exported
         #   mode: "include"           # "include" or "exclude"
@@ -723,9 +716,8 @@ bifrost:
         # request_headers: []
     datadog:
       enabled: false
-      version: 1
       config:
-        service_name: "bifrost"  # Service name reported to Datadog (supports env.VAR_NAME)
+        service_name: "bifrost" # Service name reported to Datadog (supports env.VAR_NAME)
         # Datadog Agent address. Supports env.VAR_NAME references — e.g. set
         # agent_addr: "env.DD_AGENT_ADDR" and inject DD_AGENT_ADDR via the
         # top-level `env:` (e.g. from status.hostIP for a node-local agent DaemonSet).
@@ -739,8 +731,8 @@ bifrost:
         # agent_port: "8126"
         # dogstatsd_host: "env.DD_AGENT_HOST"
         # dogstatsd_port: "8125"
-        env: ""                     # Environment tag, e.g. production (supports env.VAR_NAME)
-        version: ""                 # Service version tag (supports env.VAR_NAME)
+        env: "" # Environment tag, e.g. production (supports env.VAR_NAME)
+        version: "" # Service version tag (supports env.VAR_NAME)
         custom_tags: {}
         enable_traces: true
         # ml_app: ""                  # ML app name for LLM Observability (defaults to service_name, supports env.VAR_NAME)
@@ -759,7 +751,6 @@ bifrost:
 
     bigquery:
       enabled: false
-      version: 1
       config:
         project_id: "" # GCP project ID (required when enabled)
         dataset_id: "bifrost_traces"
@@ -778,7 +769,6 @@ bifrost:
 
     kafka:
       enabled: false
-      version: 1
       config:
         brokers: [] # Kafka broker addresses (required when enabled)
         topic: "" # Topic to publish traces to (required when enabled)
@@ -801,7 +791,6 @@ bifrost:
 
     pubsub:
       enabled: false
-      version: 1
       config:
         project_id: "" # GCP project ID (required when enabled)
         topic_id: "" # Pub/Sub topic ID (required when enabled)
@@ -815,7 +804,6 @@ bifrost:
 
     splunk:
       enabled: false
-      version: 1
       config:
         endpoint: "" # HEC base URL, e.g. https://localhost:8088 (required when enabled). Supports env.VAR_NAME.
         token: "" # HEC token (required when enabled). Supports env.VAR_NAME — e.g. "env.SPLUNK_HEC_TOKEN".
@@ -845,7 +833,6 @@ bifrost:
       # - name: "my-custom-plugin"
       #   enabled: true
       #   path: "/plugins/my-plugin.so"
-      #   version: 1 # must be >= 1; increase to force DB-backed plugin config replacement
       #   config:
       #     key: value
 
