@@ -1,4 +1,4 @@
-package governance
+package rules
 
 import (
 	"sync"
