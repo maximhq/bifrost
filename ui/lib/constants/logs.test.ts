@@ -19,4 +19,8 @@ describe("logs constants", () => {
 	it("maps versioned user agents as a fallback for older rows", () => {
 		expect(mapUserAgentToApp("claude-cli/2.1.168 (external, cli)").name).toBe("Claude Code");
 	});
+	it("maps the shared OpenCode desktop and TUI user agent", () => {
+		expect(mapUserAgentToApp("opencode/1.17.10 ai-sdk/provider-utils/3.0.20 runtime/bun/1.3.5").name).toBe("OpenCode");
+		expect(mapAppToClientApp("OpenCode").icon).toBe("/images/opencode.png");
+	});
 });

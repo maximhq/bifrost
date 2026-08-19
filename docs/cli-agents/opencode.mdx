@@ -1,10 +1,12 @@
 ---
-title: "Opencode"
-description: "Use Opencode with Bifrost to access any AI provider through a terminal-based coding assistant with virtual keys and observability."
+title: "OpenCode"
+description: "Use OpenCode Desktop, TUI, and IDE extensions with Bifrost to access any AI provider through a coding assistant with virtual keys and observability."
 icon: "codepen"
 ---
 
-[Opencode](https://github.com/sst/opencode) is an AI-powered coding application that supports OpenAI-compatible APIs. By pointing it at Bifrost, you get access to any provider/model in your Bifrost configuration, plus governance features like virtual keys, built-in observability, and per-model options for reasoning effort, thinking budget, and more.
+[OpenCode](https://github.com/anomalyco/opencode) is an AI-powered coding application with a [desktop GUI](https://opencode.ai/download), a terminal UI, and IDE extensions. It supports OpenAI-compatible APIs. By pointing it at Bifrost, you get access to any provider/model in your Bifrost configuration, plus governance features like virtual keys, built-in observability, and per-model options for reasoning effort, thinking budget, and more.
+
+OpenCode's clients use the same backend and provider configuration. They also send the same `opencode/<version>` User-Agent, so Bifrost reports their traffic under the shared **OpenCode** app label.
 
 ![Opencode with Bifrost](../media/opencode-with-bifrost.png)
 
@@ -14,19 +16,40 @@ If your Allowed Headers are already set to `*`, you can skip this note. If not a
 
 ## Setup
 
-### 1. Configure OpenCode to work with Bifrost
+### OpenCode Desktop (GUI)
 
-OpenCode uses a JSON config file (`opencode.json`) to configure providers. Point your provider's `baseURL` to Bifrost.
+The [OpenCode Desktop app](https://opencode.ai/download) can point at Bifrost as a custom OpenAI-compatible provider. No JSON editing is required for this setup.
 
-### Using OpenAI-compatible endpoint
+1. Open OpenCode Desktop and go to **Settings** (gear icon) → **Providers**.
+2. Scroll to **Custom provider** and click **Connect**.
+3. Fill in the provider details:
 
-Route OpenAI and other providers through Bifrost's OpenAI endpoint:
+   | Field | Value |
+   |-------|-------|
+   | **Provider ID** | `bifrost` (lowercase letters, numbers, hyphens, or underscores) |
+   | **Display name** | `Bifrost` |
+   | **Base URL** | `http://localhost:8080/openai` (or your deployed host, e.g. `https://bifrost.example.com/openai`) |
+   | **API key** | Your Bifrost virtual key |
+   | **Models** | Add each Bifrost model ID you plan to select, including any `small_model`; for example, `openai/gpt-5` / `GPT-5` and `anthropic/claude-haiku-4-5` / `Claude Haiku 4.5` |
+
+4. Click **Submit**, then pick a Bifrost-routed model in the chat and send a test message.
+
+The custom provider uses OpenCode's OpenAI-compatible adapter. Bifrost still routes model IDs such as `anthropic/...`, `gemini/...`, and `bedrock/...` to their native providers.
+
+### Config file (TUI and shared config)
+
+OpenCode supports both `opencode.json` and `opencode.jsonc`. Put a user-wide configuration at `~/.config/opencode/opencode.json` (including on Windows), or put `opencode.json` in a project root for project-specific settings.
+
+### Using Bifrost's OpenAI-compatible endpoint
+
+Define a custom `bifrost` provider. The outer `bifrost/` in the default model is OpenCode's provider ID; the remainder is the model ID Bifrost receives and routes:
 
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
   "provider": {
-    "openai": {
+    "bifrost": {
+      "npm": "@ai-sdk/openai-compatible",
       "name": "Bifrost",
       "options": {
         "baseURL": "http://localhost:8080/openai",
@@ -35,34 +58,12 @@ Route OpenAI and other providers through Bifrost's OpenAI endpoint:
       "models": {
         "openai/gpt-5": {},
         "anthropic/claude-sonnet-4-5-20250929": {},
+        "anthropic/claude-haiku-4-5": {},
         "gemini/gemini-2.5-pro": {}
       }
     }
   },
-  "model": "openai/gpt-5"
-}
-```
-
-### Using Anthropic endpoint
-
-Route Anthropic models through Bifrost's Anthropic endpoint:
-
-```jsonc
-{
-  "$schema": "https://opencode.ai/config.json",
-  "provider": {
-    "anthropic": {
-      "name": "Bifrost",
-      "options": {
-        "baseURL": "http://localhost:8080/anthropic/v1",
-        "apiKey": "your-bifrost-key"
-      },
-      "models": {
-        "anthropic/claude-sonnet-4-5-20250929": {}
-      }
-    }
-  },
-  "model": "anthropic/claude-sonnet-4-5-20250929"
+  "model": "bifrost/openai/gpt-5"
 }
 ```
 
@@ -89,12 +90,12 @@ Set your default models in `opencode.json`:
 
 ```jsonc
 {
-  "model": "openai/gpt-5",
-  "small_model": "anthropic/claude-haiku-4-5"
+  "model": "bifrost/openai/gpt-5",
+  "small_model": "bifrost/anthropic/claude-haiku-4-5"
 }
 ```
 
-Switch models in the TUI with <key>ctrl</key>+<key>p</key>
+Switch models with `/models` in the TUI (or <key>ctrl</key>+<key>x</key>, then <key>m</key> with the default keybindings).
 
 ![Opencode model selection](../media/opencode-model-selection.png)
 
@@ -104,13 +105,13 @@ Switch models in the TUI with <key>ctrl</key>+<key>p</key>
 
 ## Using Multiple Providers
 
-Bifrost routes requests to the correct provider based on the model name. Use the `provider/model-name` format to access any configured provider through the single OpenAI endpoint:
+Bifrost routes requests based on its model ID. In OpenCode, select `bifrost/<bifrost-model-id>`; OpenCode removes its `bifrost/` provider prefix before sending the request. For example:
 
 ```
-anthropic/claude-sonnet-4-5-20250929
-openai/gpt-5
-gemini/gemini-2.5-pro
-mistral/mistral-large-latest
+bifrost/anthropic/claude-sonnet-4-5-20250929
+bifrost/openai/gpt-5
+bifrost/gemini/gemini-2.5-pro
+bifrost/mistral/mistral-large-latest
 ```
 
 You can configure models from different providers with per-model options:
@@ -118,10 +119,9 @@ You can configure models from different providers with per-model options:
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
-  "theme": "opencode",
-  "autoupdate": true,
   "provider": {
-    "openai": {
+    "bifrost": {
+      "npm": "@ai-sdk/openai-compatible",
       "name": "Bifrost",
       "options": {
         "baseURL": "http://localhost:8080/openai",

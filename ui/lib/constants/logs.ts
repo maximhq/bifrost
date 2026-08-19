@@ -184,6 +184,7 @@ const userAgentAppMatchers: { identifiers: string[]; app: ClientApp }[] = [
 	{ identifiers: ["kilo"], app: { name: "Kilo Code", icon: "/images/kilo-code.png" } },
 	{ identifiers: ["roo"], app: { name: "Roo Code", icon: "/images/roo-code.png" } },
 	{ identifiers: ["cline"], app: { name: "Cline", icon: "/images/cline.png" } },
+	// Desktop, TUI, and IDE clients share the opencode/<version> wire format.
 	{ identifiers: ["opencode"], app: { name: "OpenCode", icon: "/images/opencode.png" } },
 	{ identifiers: ["windsurf"], app: { name: "Windsurf", icon: "/images/windsurf.png" } },
 	{ identifiers: ["gemini", "geminicli"], app: { name: "Gemini CLI", icon: "/images/gemini-cli.png" } },

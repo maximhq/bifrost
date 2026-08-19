@@ -30,7 +30,8 @@ var (
 	RooCode = UserAgentIdentifiers{"roo"}
 	// Cline identifies requests from Cline clients.
 	Cline = UserAgentIdentifiers{"cline"}
-	// OpenCode identifies requests from OpenCode clients.
+	// OpenCode identifies requests from OpenCode clients. The desktop app, TUI,
+	// and IDE extensions use the same backend, which emits "opencode/<version>".
 	OpenCode = UserAgentIdentifiers{"opencode"}
 	// Windsurf identifies requests from Windsurf clients.
 	Windsurf = UserAgentIdentifiers{"windsurf"}
