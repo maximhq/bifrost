@@ -2399,37 +2399,70 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 type ResponsesToChatStreamState struct {
 	toolCallIndexes map[int]uint16
 	nextToolIndex   uint16
-	// lastToolIndex is the ordinal handed out most recently. Chunks that omit
-	// output_index cannot name a new item, so they continue this tool call.
+	// lastToolIndex is the ordinal handed out most recently. Argument deltas
+	// that omit output_index cannot name a new item, so they continue this tool
+	// call; an output_item.added without one still opens a new item.
 	lastToolIndex uint16
 }
 
-func (state *ResponsesToChatStreamState) toolCallIndex(outputIndex *int) uint16 {
-	if state == nil {
-		// Stateless legacy conversion: only correct when function-call items
-		// are the sole output items of the Responses stream.
-		var idx uint16
-		if outputIndex != nil && *outputIndex > 0 {
-			idx = uint16(*outputIndex - 1)
-		}
-		return idx
+// legacyToolCallIndex is the stateless conversion used when no stream state is
+// held: only correct when function-call items are the sole output items of the
+// Responses stream.
+func legacyToolCallIndex(outputIndex *int) uint16 {
+	var idx uint16
+	if outputIndex != nil && *outputIndex > 0 {
+		idx = uint16(*outputIndex - 1)
 	}
+	return idx
+}
 
-	if outputIndex == nil {
-		return state.lastToolIndex
-	}
+// toolCallIndexFor looks up or allocates the dense tool-call ordinal for a
+// concrete output_index.
+func (state *ResponsesToChatStreamState) toolCallIndexFor(outputIndex int) uint16 {
 	if state.toolCallIndexes == nil {
 		state.toolCallIndexes = make(map[int]uint16)
 	}
-	if idx, ok := state.toolCallIndexes[*outputIndex]; ok {
+	if idx, ok := state.toolCallIndexes[outputIndex]; ok {
 		state.lastToolIndex = idx
 		return idx
 	}
 	idx := state.nextToolIndex
-	state.toolCallIndexes[*outputIndex] = idx
+	state.toolCallIndexes[outputIndex] = idx
 	state.nextToolIndex++
 	state.lastToolIndex = idx
 	return idx
+}
+
+// toolCallIndexForNewItem maps an output_item.added chunk. An added event
+// always names a NEW output item, so a nil output_index (out-of-spec
+// third-party SSE; in-tree providers always set it) still allocates the next
+// dense ordinal instead of reusing the previous item's.
+func (state *ResponsesToChatStreamState) toolCallIndexForNewItem(outputIndex *int) uint16 {
+	if state == nil {
+		return legacyToolCallIndex(outputIndex)
+	}
+	if outputIndex == nil {
+		idx := state.nextToolIndex
+		state.nextToolIndex++
+		state.lastToolIndex = idx
+		return idx
+	}
+	return state.toolCallIndexFor(*outputIndex)
+}
+
+// toolCallIndexForContinuation maps a function_call_arguments.delta chunk. A
+// delta cannot name a new item, so nil continues the open tool call.
+// Limitation (unobserved in-tree): a stream that omits output_index on
+// output_item.added but supplies it on the following deltas would need
+// item-ID keyed state to associate them.
+func (state *ResponsesToChatStreamState) toolCallIndexForContinuation(outputIndex *int) uint16 {
+	if state == nil {
+		return legacyToolCallIndex(outputIndex)
+	}
+	if outputIndex == nil {
+		return state.lastToolIndex
+	}
+	return state.toolCallIndexFor(*outputIndex)
 }
 
 // ToBifrostChatResponse converts a BifrostResponsesStreamResponse chunk to a BifrostChatResponse (chat.completion.chunk).
@@ -2535,7 +2568,7 @@ func (rsr *BifrostResponsesStreamResponse) ToBifrostChatResponseWithState(state 
 				return resp
 			}
 			funcType := "function"
-			idx := state.toolCallIndex(rsr.OutputIndex)
+			idx := state.toolCallIndexForNewItem(rsr.OutputIndex)
 			resp.Choices = []BifrostResponseChoice{
 				{
 					Index: 0,
@@ -2597,7 +2630,7 @@ func (rsr *BifrostResponsesStreamResponse) ToBifrostChatResponseWithState(state 
 			}
 			return resp
 		}
-		idx := state.toolCallIndex(rsr.OutputIndex)
+		idx := state.toolCallIndexForContinuation(rsr.OutputIndex)
 
 		resp.Choices = []BifrostResponseChoice{
 			{

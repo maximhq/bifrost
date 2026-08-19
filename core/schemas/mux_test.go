@@ -1564,3 +1564,59 @@ func TestResponsesToChatStreamNilOutputIndexContinuesLastToolCall(t *testing.T) 
 		t.Fatalf("trailing argument delta got index %d, want 1", got)
 	}
 }
+
+// An output_item.added always names a NEW output item, so one that omits
+// output_index (out-of-spec third-party Responses SSE) must still allocate the
+// next dense ordinal instead of reusing the previous item's — otherwise it
+// collides with the next explicitly-indexed item.
+func TestResponsesToChatStreamNilOutputIndexOnItemAddedAllocatesFreshOrdinal(t *testing.T) {
+	functionType := ResponsesMessageTypeFunctionCall
+	added := func(state *ResponsesToChatStreamState, callID string, outputIndex *int) uint16 {
+		resp := (&BifrostResponsesStreamResponse{
+			Type:        ResponsesStreamResponseTypeOutputItemAdded,
+			OutputIndex: outputIndex,
+			Item: &ResponsesMessage{
+				Type: &functionType,
+				ResponsesToolMessage: &ResponsesToolMessage{
+					CallID: Ptr(callID),
+					Name:   Ptr("tool_" + callID),
+				},
+			},
+		}).ToBifrostChatResponseWithState(state)
+		return resp.Choices[0].ChatStreamResponseChoice.Delta.ToolCalls[0].Index
+	}
+	argsDelta := func(state *ResponsesToChatStreamState, outputIndex *int) uint16 {
+		resp := (&BifrostResponsesStreamResponse{
+			Type:        ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
+			OutputIndex: outputIndex,
+			Delta:       Ptr(`{"value":1}`),
+		}).ToBifrostChatResponseWithState(state)
+		return resp.Choices[0].ChatStreamResponseChoice.Delta.ToolCalls[0].Index
+	}
+
+	t.Run("nil-added first", func(t *testing.T) {
+		state := &ResponsesToChatStreamState{}
+		if got := added(state, "call-1", nil); got != 0 {
+			t.Fatalf("index-less first tool-call index = %d, want 0", got)
+		}
+		if got := argsDelta(state, nil); got != 0 {
+			t.Fatalf("argument delta for the open call got index %d, want 0", got)
+		}
+		if got := added(state, "call-2", Ptr(1)); got != 1 {
+			t.Fatalf("second tool-call index = %d, want 1 (must not collide with the index-less item)", got)
+		}
+		if got := argsDelta(state, Ptr(1)); got != 1 {
+			t.Fatalf("second call's argument delta got index %d, want 1", got)
+		}
+	})
+
+	t.Run("explicit first", func(t *testing.T) {
+		state := &ResponsesToChatStreamState{}
+		if got := added(state, "call-1", Ptr(0)); got != 0 {
+			t.Fatalf("first tool-call index = %d, want 0", got)
+		}
+		if got := added(state, "call-2", nil); got != 1 {
+			t.Fatalf("index-less second tool-call index = %d, want 1 (a new item must allocate)", got)
+		}
+	})
+}
