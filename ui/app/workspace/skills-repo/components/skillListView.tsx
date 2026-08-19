@@ -414,7 +414,9 @@ export function SkillsListView({
 			{/* Header */}
 			{/* Search + All-skills version + Actions */}
 			<div className="mb-4 flex shrink-0 flex-col gap-3 md:flex-row md:items-center">
-				<PageTitle title="Skills Repository">Manage Agent Skills for distribution to AI coding assistants</PageTitle>
+				<PageTitle title="Skills Repository" beta>
+					Manage Agent Skills for distribution to AI coding assistants
+				</PageTitle>
 				<div className="relative w-full flex-1 md:max-w-sm">
 					<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 					<Input
@@ -480,9 +482,6 @@ export function SkillsListView({
 					)}
 				</div>
 				<div className="flex shrink-0 items-center gap-2 md:ml-auto">
-					{/* The title now lives in the topbar; the beta marker stays on the
-					    page so it reads next to the actions it qualifies. */}
-					<Badge aria-label="Skills Repository is in beta">Beta</Badge>
 					<div className="grid grid-cols-3 items-center gap-2 md:flex">
 						{isGitAvailable ? (
 							<MarketplacePopover />

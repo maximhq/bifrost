@@ -789,7 +789,7 @@ export default function VirtualKeysTable({
 				{/* Toolbar: Search + Filters + Actions */}
 				<div className="mb-4 flex shrink-0 flex-wrap items-center gap-3">
 					<PageTitle title="Virtual Keys">Manage virtual keys, their permissions, budgets, and rate limits.</PageTitle>
-					<div className="relative w-full max-w-sm flex-1 basis-full sm:basis-auto">
+					<div className="relative w-full max-w-sm min-w-0 flex-1 basis-full sm:min-w-[180px] sm:basis-auto">
 						<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 						<Input
 							aria-label="Search virtual keys by name"
@@ -802,13 +802,13 @@ export default function VirtualKeysTable({
 					</div>
 					{/* Both filters search server-side and resolve their own label for a
 					    value restored from the URL, so the page fetches no entity lists. */}
-					<div className="flex w-full items-center gap-1 sm:w-auto" data-testid="vk-customer-filter">
+					<div className="flex w-full min-w-0 items-center gap-1 sm:w-auto sm:max-w-[250px] sm:flex-1" data-testid="vk-customer-filter">
 						<CustomerSelector
 							value={customerFilter}
 							onChange={onCustomerFilterChange}
 							placeholder="All Customers"
 							triggerClassName="h-9"
-							className="w-full sm:w-[250px]"
+							className="w-full min-w-0"
 						/>
 						<FilterClearButton
 							show={!!customerFilter}
@@ -818,13 +818,13 @@ export default function VirtualKeysTable({
 						/>
 					</div>
 					{customerFilter && teamFilter && <span className="text-muted-foreground text-xs font-medium">or</span>}
-					<div className="flex w-full items-center gap-1 sm:w-auto" data-testid="vk-team-filter">
+					<div className="flex w-full min-w-0 items-center gap-1 sm:w-auto sm:max-w-[250px] sm:flex-1" data-testid="vk-team-filter">
 						<TeamSelector
 							value={teamFilter}
 							onChange={onTeamFilterChange}
 							placeholder="All Teams"
 							triggerClassName="h-9"
-							className="w-full sm:w-[250px]"
+							className="w-full min-w-0"
 						/>
 						<FilterClearButton
 							show={!!teamFilter}
@@ -837,13 +837,13 @@ export default function VirtualKeysTable({
 						<span className="text-muted-foreground text-xs font-medium">or</span>
 					)}
 					{UserPicker && (
-						<div className="flex w-full items-center gap-1 sm:w-auto" data-testid="vk-user-filter">
+						<div className="flex w-full min-w-0 items-center gap-1 sm:w-auto sm:max-w-[250px] sm:flex-1" data-testid="vk-user-filter">
 							<UserPicker
 								value={userFilter}
 								onChange={onUserFilterChange}
 								placeholder="All Users"
 								triggerClassName="h-9"
-								className="w-full sm:w-[250px]"
+								className="w-full min-w-0"
 							/>
 							<FilterClearButton
 								show={!!userFilter}
@@ -854,7 +854,7 @@ export default function VirtualKeysTable({
 						</div>
 					)}
 
-					<div className="flex flex-wrap items-center gap-2 sm:ml-auto">
+					<div className="flex w-full flex-wrap items-center gap-2 sm:ml-auto sm:w-auto sm:shrink-0 sm:flex-nowrap">
 						{selectedCount > 0 && (
 							<Button
 								variant="outline"

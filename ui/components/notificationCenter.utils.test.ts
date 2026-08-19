@@ -17,32 +17,22 @@ describe("isNotificationsUnavailable", () => {
 
 describe("shouldHideNotificationTrigger", () => {
 	const state = (overrides: Partial<Parameters<typeof shouldHideNotificationTrigger>[0]> = {}) =>
-		shouldHideNotificationTrigger({ open: false, isLoading: false, isError: false, count: 0, ...overrides });
+		shouldHideNotificationTrigger({ open: false, isLoading: false, ...overrides });
+
+	it("hides only while the first load is still in flight", () => {
+		expect(state({ isLoading: true })).toBe(true);
+	});
 
 	// The regression: a first load that fails leaves nothing to fall back on, so
 	// hiding the trigger here makes the tray's "Try again" unreachable and the
 	// feed silently stays empty until the user reloads the page.
-	it("keeps a failed empty load reachable so it can be retried", () => {
-		expect(state({ isError: true })).toBe(false);
-	});
-
-	it("hides while the first load is still in flight", () => {
-		expect(state({ isLoading: true })).toBe(true);
-		// A retry in flight after a failure must not flip the trigger back off.
-		expect(state({ isLoading: true, open: true, isError: true })).toBe(false);
-	});
-
-	it("hides a genuinely empty deployment", () => {
-		expect(state()).toBe(true);
-	});
-
-	it("shows the trigger once there is anything to open", () => {
-		expect(state({ count: 3 })).toBe(false);
-		expect(state({ count: 3, isError: true })).toBe(false);
+	it("keeps a settled empty feed reachable so it can be retried", () => {
+		expect(state()).toBe(false);
 	});
 
 	it("stays mounted while the popover is open, whatever the feed says", () => {
 		expect(state({ open: true })).toBe(false);
+		// A retry in flight behind an open popover must not yank the trigger away.
 		expect(state({ open: true, isLoading: true })).toBe(false);
 	});
 });

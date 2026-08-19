@@ -130,7 +130,7 @@ export default function Topbar() {
 				<h1 className="hidden truncate text-lg font-semibold md:block">{title}</h1>
 				{/* Anchor for <PageTitle>'s description popover. Pages portal into
 				    this node, so the topbar never has to know their content. */}
-				<span ref={setDescriptionSlot} className="hidden shrink-0 items-center md:flex" />
+				<span ref={setDescriptionSlot} className="hidden shrink-0 items-center gap-2 md:flex" />
 			</div>
 
 			{/* Theme stays a first-class topbar control rather than a menu entry —
