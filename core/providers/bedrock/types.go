@@ -896,10 +896,11 @@ type BedrockMetadataEvent struct {
 
 // BedrockTitanEmbeddingRequest represents a Bedrock Titan embedding request
 type BedrockTitanEmbeddingRequest struct {
-	InputText   string                 `json:"inputText"`            // Required: Text to embed
-	Dimensions  *int                   `json:"dimensions,omitempty"` // Optional: 256, 512, or 1024 (titan-embed-text-v2 only)
-	Normalize   *bool                  `json:"normalize,omitempty"`  // Optional: normalize the embedding
-	ExtraParams map[string]interface{} `json:"-"`
+	InputText      string                 `json:"inputText"`                // Required: Text to embed
+	Dimensions     *int                   `json:"dimensions,omitempty"`     // Optional: 256, 512, or 1024 (titan-embed-text-v2 only)
+	Normalize      *bool                  `json:"normalize,omitempty"`      // Optional: normalize the embedding
+	EmbeddingTypes []string               `json:"embeddingTypes,omitempty"` // Optional: "float" and/or "binary" (titan-embed-text-v2 only)
+	ExtraParams    map[string]interface{} `json:"-"`
 }
 
 // GetExtraParams implements the RequestBodyWithExtraParams interface
@@ -909,8 +910,15 @@ func (req *BedrockTitanEmbeddingRequest) GetExtraParams() map[string]interface{}
 
 // BedrockTitanEmbeddingResponse represents a Bedrock Titan embedding response
 type BedrockTitanEmbeddingResponse struct {
-	Embedding           []float64 `json:"embedding"`           // The embedding vector
-	InputTextTokenCount int       `json:"inputTextTokenCount"` // Number of tokens in input
+	Embedding           []float64                     `json:"embedding"`                  // The default float embedding vector
+	EmbeddingsByType    *BedrockTitanEmbeddingsByType `json:"embeddingsByType,omitempty"` // Requested float and/or binary vectors
+	InputTextTokenCount int                           `json:"inputTextTokenCount"`        // Number of tokens in input
+}
+
+// BedrockTitanEmbeddingsByType is returned when Titan V2 embeddingTypes is set.
+type BedrockTitanEmbeddingsByType struct {
+	Float  []float64 `json:"float,omitempty"`
+	Binary []int8    `json:"binary,omitempty"`
 }
 
 // BedrockCohereEmbeddingContentBlock represents a single content block in a mixed input
@@ -1339,14 +1347,15 @@ type BedrockInvokeRequest struct {
 
 	// ==================== EMBEDDINGS ====================
 
-	InputText       string                        `json:"inputText,omitempty"`        // Titan embed
-	Texts           []string                      `json:"texts,omitempty"`            // Cohere embed
-	InputType       *string                       `json:"input_type,omitempty"`       // Cohere embed
-	Normalize       *bool                         `json:"normalize,omitempty"`        // Titan embed v2
-	Dimensions      *int                          `json:"dimensions,omitempty"`       // Titan embed v2
-	EmbeddingTypes  []string                      `json:"embedding_types,omitempty"`  // Cohere embed: ["float","int8","uint8","binary","ubinary"]
-	OutputDimension *int                          `json:"output_dimension,omitempty"` // Cohere embed: 256, 512, 1024, 1536
-	Inputs          []BedrockCohereEmbeddingInput `json:"inputs,omitempty"`           // Cohere embed: mixed text+image inputs
+	InputText           string                        `json:"inputText,omitempty"`        // Titan embed
+	Texts               []string                      `json:"texts,omitempty"`            // Cohere embed
+	InputType           *string                       `json:"input_type,omitempty"`       // Cohere embed
+	Normalize           *bool                         `json:"normalize,omitempty"`        // Titan embed v2
+	Dimensions          *int                          `json:"dimensions,omitempty"`       // Titan embed v2
+	EmbeddingTypes      []string                      `json:"embedding_types,omitempty"`  // Cohere embed: ["float","int8","uint8","binary","ubinary"]
+	TitanEmbeddingTypes []string                      `json:"embeddingTypes,omitempty"`   // Titan V2 embed: ["float","binary"]
+	OutputDimension     *int                          `json:"output_dimension,omitempty"` // Cohere embed: 256, 512, 1024, 1536
+	Inputs              []BedrockCohereEmbeddingInput `json:"inputs,omitempty"`           // Cohere embed: mixed text+image inputs
 
 	// ==================== INTERNAL ====================
 	Stream      bool                   `json:"-"`

@@ -2106,6 +2106,15 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 		}
 		bifrostResponse = titanResp.ToBifrostEmbeddingResponse()
 		bifrostResponse.Model = request.Model
+		// Titan V2 can return more than one representation under embeddingsByType.
+		// Preserve that native payload so the InvokeModel compatibility route can
+		// return every requested encoding without flattening or dropping one.
+		if titanResp.EmbeddingsByType != nil {
+			var rawResponseData interface{}
+			if err := sonic.Unmarshal(rawResponse, &rawResponseData); err == nil {
+				bifrostResponse.ExtraFields.RawResponse = rawResponseData
+			}
+		}
 
 	case "cohere":
 		var cohereResp BedrockCohereEmbeddingResponse

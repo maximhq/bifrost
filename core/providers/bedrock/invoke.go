@@ -57,7 +57,8 @@ var bedrockInvokeRequestKnownFields = map[string]bool{
 	// Embeddings
 	"inputText": true, "texts": true, "input_type": true,
 	"normalize": true, "dimensions": true,
-	"embedding_types": true, "output_dimension": true, "inputs": true,
+	"embedding_types": true, "embeddingTypes": true,
+	"output_dimension": true, "inputs": true,
 	// Internal
 	"stream": true, "extra_params": true,
 }
@@ -530,6 +531,9 @@ func (r *BedrockInvokeRequest) ToBifrostEmbeddingRequest(ctx *schemas.BifrostCon
 	}
 	if len(r.EmbeddingTypes) > 0 {
 		extraParams["embedding_types"] = r.EmbeddingTypes
+	}
+	if len(r.TitanEmbeddingTypes) > 0 {
+		extraParams["embeddingTypes"] = r.TitanEmbeddingTypes
 	}
 	if r.Truncate != nil {
 		extraParams["truncate"] = *r.Truncate

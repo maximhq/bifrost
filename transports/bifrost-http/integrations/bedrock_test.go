@@ -3,6 +3,7 @@ package integrations
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -242,6 +243,146 @@ func Test_createBedrockInvokeRouteConfig(t *testing.T) {
 	reqInstance := route.GetRequestTypeInstance(context.Background())
 	_, ok := reqInstance.(*bedrock.BedrockInvokeRequest)
 	assert.True(t, ok, "GetRequestTypeInstance should return *bedrock.BedrockInvokeRequest")
+}
+
+func TestBedrockInvokeEmbeddingResponseLangChainCohereAlias(t *testing.T) {
+	handlerStore := &mockHandlerStore{}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	response := &schemas.BifrostEmbeddingResponse{
+		Model: "cohere.embed-english-v3",
+		Data: []schemas.EmbeddingData{
+			{
+				Index:  0,
+				Object: "embedding",
+				Embedding: schemas.EmbeddingStruct{
+					EmbeddingArray: []float64{0.25, 0.75},
+				},
+			},
+		},
+		Object: "list",
+	}
+
+	bedrockRoute := createBedrockInvokeRouteConfig("/bedrock", handlerStore)
+	bedrockResult, err := bedrockRoute.EmbeddingResponseConverter(ctx, response)
+	require.NoError(t, err)
+	bedrockJSON, err := json.Marshal(bedrockResult)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{
+		"embeddings":[[0.25,0.75]],
+		"response_type":"embeddings_floats"
+	}`, string(bedrockJSON), "native Bedrock must retain the AWS Cohere envelope")
+
+	langChainRoute := withLangChainBedrockEmbeddingCompatibility([]RouteConfig{createBedrockInvokeRouteConfig("/langchain", handlerStore)})[0]
+	langChainResult, err := langChainRoute.EmbeddingResponseConverter(ctx, response)
+	require.NoError(t, err)
+	langChainJSON, err := json.Marshal(langChainResult)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{
+		"embedding":[0.25,0.75],
+		"embeddings":[[0.25,0.75]],
+		"response_type":"embeddings_floats"
+	}`, string(langChainJSON), "LangChain needs singular embedding while native clients retain embeddings")
+}
+
+func TestBedrockInvokeTypedCohereResponseLangChainAlias(t *testing.T) {
+	handlerStore := &mockHandlerStore{}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	raw := map[string]interface{}{
+		"id":            "embed-id",
+		"response_type": "embeddings_by_type",
+		"embeddings": map[string]interface{}{
+			"int8": []interface{}{[]interface{}{float64(1), float64(-1)}},
+		},
+	}
+	response := &schemas.BifrostEmbeddingResponse{
+		Model: "cohere.embed-v4:0",
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RawResponse: raw,
+		},
+	}
+
+	langChainRoute := withLangChainBedrockEmbeddingCompatibility([]RouteConfig{createBedrockInvokeRouteConfig("/langchain", handlerStore)})[0]
+	result, err := langChainRoute.EmbeddingResponseConverter(ctx, response)
+	require.NoError(t, err)
+	resultJSON, err := json.Marshal(result)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{
+		"id":"embed-id",
+		"response_type":"embeddings_by_type",
+		"embedding":[1,-1],
+		"embeddings":{"int8":[[1,-1]]}
+	}`, string(resultJSON))
+	assert.NotContains(t, raw, "embedding", "the stored native raw response must not be mutated")
+}
+
+func TestBedrockInvokeEmbeddingResponseLangChainLeavesTitanUnchanged(t *testing.T) {
+	handlerStore := &mockHandlerStore{}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	response := &schemas.BifrostEmbeddingResponse{
+		Model: "amazon.titan-embed-text-v2:0",
+		Data: []schemas.EmbeddingData{
+			{
+				Index:  0,
+				Object: "embedding",
+				Embedding: schemas.EmbeddingStruct{
+					EmbeddingArray: []float64{0.25, 0.75},
+				},
+			},
+		},
+		Object: "list",
+	}
+
+	langChainRoute := withLangChainBedrockEmbeddingCompatibility([]RouteConfig{createBedrockInvokeRouteConfig("/langchain", handlerStore)})[0]
+	result, err := langChainRoute.EmbeddingResponseConverter(ctx, response)
+	require.NoError(t, err)
+	_, ok := result.(*bedrock.BedrockInvokeEmbeddingResp)
+	assert.True(t, ok)
+}
+
+func TestBedrockInvokeRawEmbeddingResponseLangChainLeavesNonCohereUnchanged(t *testing.T) {
+	handlerStore := &mockHandlerStore{}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	raw := map[string]interface{}{
+		"embeddings": []interface{}{[]interface{}{float64(0.25), float64(0.75)}},
+		"kind":       "non-cohere",
+	}
+	response := &schemas.BifrostEmbeddingResponse{
+		Model: "amazon.titan-embed-text-v2:0",
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RawResponse: raw,
+		},
+	}
+
+	langChainRoute := withLangChainBedrockEmbeddingCompatibility([]RouteConfig{createBedrockInvokeRouteConfig("/langchain", handlerStore)})[0]
+	result, err := langChainRoute.EmbeddingResponseConverter(ctx, response)
+	require.NoError(t, err)
+	assert.Equal(t, raw, result)
+	assert.NotContains(t, raw, "embedding")
+}
+
+func TestBedrockInvokeTypedCohereResponseUsesResolvedModelForAlias(t *testing.T) {
+	handlerStore := &mockHandlerStore{}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	raw := map[string]interface{}{
+		"response_type": "embeddings_by_type",
+		"embeddings": map[string]interface{}{
+			"float": []interface{}{[]interface{}{float64(0.25), float64(0.75)}},
+		},
+	}
+	response := &schemas.BifrostEmbeddingResponse{
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			ResolvedModelUsed: "cohere.embed-v4:0",
+			RawResponse:       raw,
+		},
+	}
+
+	langChainRoute := withLangChainBedrockEmbeddingCompatibility([]RouteConfig{createBedrockInvokeRouteConfig("/langchain", handlerStore)})[0]
+	result, err := langChainRoute.EmbeddingResponseConverter(ctx, response)
+	require.NoError(t, err)
+	resultMap, ok := result.(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, []interface{}{float64(0.25), float64(0.75)}, resultMap["embedding"])
+	assert.NotContains(t, raw, "embedding")
 }
 
 func Test_createBedrockInvokeWithResponseStreamRouteConfig(t *testing.T) {

@@ -37,7 +37,7 @@ func ToBedrockTitanEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest)
 	}
 
 	// Validate that only single text input is provided for Titan models
-	if bifrostReq.Input.Text == nil && len(bifrostReq.Input.Texts) == 0 {
+	if bifrostReq.Input == nil || (bifrostReq.Input.Text == nil && len(bifrostReq.Input.Texts) == 0) {
 		return nil, fmt.Errorf("no input text provided for embedding")
 	}
 
@@ -61,11 +61,20 @@ func ToBedrockTitanEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest)
 				titanReq.Normalize = &b
 			}
 		}
-		// Forward remaining extra params (excluding normalize which is now a first-class field)
+		embeddingTypesExtracted := false
+		if rawEmbeddingTypes, exists := bifrostReq.Params.ExtraParams["embeddingTypes"]; exists {
+			if embeddingTypes, ok := schemas.SafeExtractStringSlice(rawEmbeddingTypes); ok {
+				titanReq.EmbeddingTypes = embeddingTypes
+				embeddingTypesExtracted = true
+			}
+		}
+		// Forward remaining extra params. Keep an invalid embeddingTypes value in
+		// ExtraParams so passthrough mode preserves the caller's request and lets
+		// Bedrock return its native validation error instead of silently dropping it.
 		if len(bifrostReq.Params.ExtraParams) > 0 {
 			extra := make(map[string]interface{})
 			for k, v := range bifrostReq.Params.ExtraParams {
-				if k != "normalize" {
+				if k != "normalize" && !(k == "embeddingTypes" && embeddingTypesExtracted) {
 					extra[k] = v
 				}
 			}
@@ -86,20 +95,22 @@ func (response *BedrockTitanEmbeddingResponse) ToBifrostEmbeddingResponse() *sch
 
 	bifrostResponse := &schemas.BifrostEmbeddingResponse{
 		Object: "list",
-		Data: []schemas.EmbeddingData{
-			{
-				Index:  0,
-				Object: "embedding",
-				Embedding: schemas.EmbeddingStruct{
-					EmbeddingArray: response.Embedding,
-				},
-			},
-		},
 		Usage: &schemas.BifrostLLMUsage{
 			PromptTokens: response.InputTextTokenCount,
 			TotalTokens:  response.InputTextTokenCount,
 		},
 	}
+
+	data := schemas.EmbeddingData{Index: 0, Object: "embedding"}
+	switch {
+	case response.Embedding != nil:
+		data.Embedding.EmbeddingArray = response.Embedding
+	case response.EmbeddingsByType != nil && response.EmbeddingsByType.Float != nil:
+		data.Embedding.EmbeddingArray = response.EmbeddingsByType.Float
+	case response.EmbeddingsByType != nil && response.EmbeddingsByType.Binary != nil:
+		data.Embedding.EmbeddingInt8Array = response.EmbeddingsByType.Binary
+	}
+	bifrostResponse.Data = []schemas.EmbeddingData{data}
 
 	return bifrostResponse
 }
@@ -142,7 +153,7 @@ func ToBedrockCohereEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest
 			}
 		}
 		if v, ok := extra["embedding_types"]; ok {
-			if ss, ok := v.([]string); ok {
+			if ss, ok := schemas.SafeExtractStringSlice(v); ok {
 				req.EmbeddingTypes = ss
 				delete(extra, "embedding_types")
 			}
