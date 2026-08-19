@@ -2315,6 +2315,61 @@ func TestTracingMiddleware_StreamingRootSpanEndsAfterLLMSpan(t *testing.T) {
 	}
 }
 
+// TestTracingMiddleware_StoresDimAttributesOnTrace verifies that the
+// TracingMiddleware lands x-bf-dim-* headers on TraceAttrDimensions so
+// observability plugins can propagate them onto child spans when enabled.
+func TestTracingMiddleware_StoresDimAttributesOnTrace(t *testing.T) {
+	store := tracing.NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := tracing.NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	tm := NewTracingMiddleware(tracer)
+
+	var capturedTraceID string
+	var capturedDims map[string]string
+	next := func(ctx *fasthttp.RequestCtx) {
+		traceID, _ := ctx.UserValue(schemas.BifrostContextKeyTraceID).(string)
+		capturedTraceID = traceID
+		if trace := store.GetTrace(traceID); trace != nil {
+			if dims, ok := trace.Attributes[schemas.TraceAttrDimensions].(map[string]string); ok {
+				capturedDims = dims
+			}
+		}
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/openai/v1/chat/completions")
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("x-bf-dim-customer_id", "acme")
+	ctx.Request.Header.Set("x-bf-dim-environment", "prod")
+	ctx.Request.Header.Set("x-bf-dim-method", "should-be-skipped")
+	ctx.Request.Header.Set("x-bf-dim-path", "should-be-skipped")
+
+	tm.Middleware()(next)(ctx)
+
+	if capturedTraceID == "" {
+		t.Fatal("middleware did not set a trace ID")
+	}
+	if capturedDims == nil {
+		t.Fatal("trace.Attributes[bifrost.dimensions] was missing")
+	}
+	if got := capturedDims["customer_id"]; got != "acme" {
+		t.Errorf("dims[customer_id] = %v, want %q", got, "acme")
+	}
+	if got := capturedDims["environment"]; got != "prod" {
+		t.Errorf("dims[environment] = %v, want %q", got, "prod")
+	}
+	// Reserved suffixes stay in the nested map for connectors; OTEL export
+	// skips them so they never become child-span attributes.
+	if _, ok := capturedDims["method"]; !ok {
+		t.Error("expected reserved dim 'method' to be stored on TraceAttrDimensions")
+	}
+	if _, ok := capturedDims["path"]; !ok {
+		t.Error("expected reserved dim 'path' to be stored on TraceAttrDimensions")
+	}
+}
+
 func TestCollectDimensionHeaders(t *testing.T) {
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.Set("X-BF-Dim-Environment", "prod")

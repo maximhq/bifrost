@@ -1453,6 +1453,9 @@ false
 {{- if hasKey $inputConfig "disable_root_span_content" }}
 {{- $_ := set $otelConfig "disable_root_span_content" $inputConfig.disable_root_span_content }}
 {{- end }}
+{{- if hasKey $inputConfig "propagate_trace_attributes" }}
+{{- $_ := set $otelConfig "propagate_trace_attributes" $inputConfig.propagate_trace_attributes }}
+{{- end }}
 {{- if hasKey $inputConfig "request_headers" }}
 {{- $_ := set $otelConfig "request_headers" $inputConfig.request_headers }}
 {{- end }}

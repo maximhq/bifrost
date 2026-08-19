@@ -122,6 +122,11 @@ type Profile struct {
 	// content, tool definitions, and tool call arguments/results are dropped from span attributes.
 	DisableContentLogging bool `json:"disable_content_logging,omitempty"`
 
+	// PropagateTraceAttributes controls whether x-bf-dim-* dimensions stored on the trace
+	// (TraceAttrDimensions) are merged onto every exported span. When false (default),
+	// these attributes are only present on the root span via the standard span-attribute mechanism.
+	PropagateTraceAttributes bool `json:"propagate_trace_attributes,omitempty"`
+
 	// GroupTracesBySession, when true, groups all requests sharing the same x-bf-session-id
 	// header into a single OTEL trace: every span adopts a session-derived trace ID and each
 	// request's root span becomes a top-level sibling under one synthetic session parent
@@ -251,25 +256,26 @@ func hoistSpanFilter(data []byte) *PluginSpanFilter {
 // flattened to plain strings ("env.VAR_NAME" or the literal value) for DB/config-file
 // persistence.
 type profileForStorage struct {
-	Enabled                bool              `json:"enabled"`
-	TracesEnabled          bool              `json:"traces_enabled"`
-	ServiceName            string            `json:"service_name"`
-	CollectorURL           string            `json:"collector_url"`
-	Headers                map[string]string `json:"headers,omitempty"`
-	TraceHeaders           map[string]string `json:"trace_headers,omitempty"`
-	MetricsHeaders         map[string]string `json:"metrics_headers,omitempty"`
-	TraceType              TraceType         `json:"trace_type"`
-	Protocol               Protocol          `json:"protocol"`
-	TLSCACert              string            `json:"tls_ca_cert,omitempty"`
-	Insecure               bool              `json:"insecure"`
-	ExportTimeout          int               `json:"export_timeout,omitempty"`
-	MetricsEnabled         bool              `json:"metrics_enabled"`
-	MetricsEndpoint        string            `json:"metrics_endpoint,omitempty"`
-	MetricsPushInterval    int               `json:"metrics_push_interval,omitempty"`
-	RequestHeaders         []string          `json:"request_headers,omitempty"`
-	DisableContentLogging  bool              `json:"disable_content_logging,omitempty"`
-	GroupTracesBySession   bool              `json:"group_traces_by_session,omitempty"`
-	DisableRootSpanContent bool              `json:"disable_root_span_content,omitempty"`
+	Enabled                  bool              `json:"enabled"`
+	TracesEnabled            bool              `json:"traces_enabled"`
+	ServiceName              string            `json:"service_name"`
+	CollectorURL             string            `json:"collector_url"`
+	Headers                  map[string]string `json:"headers,omitempty"`
+	TraceHeaders             map[string]string `json:"trace_headers,omitempty"`
+	MetricsHeaders           map[string]string `json:"metrics_headers,omitempty"`
+	TraceType                TraceType         `json:"trace_type"`
+	Protocol                 Protocol          `json:"protocol"`
+	TLSCACert                string            `json:"tls_ca_cert,omitempty"`
+	Insecure                 bool              `json:"insecure"`
+	ExportTimeout            int               `json:"export_timeout,omitempty"`
+	MetricsEnabled           bool              `json:"metrics_enabled"`
+	MetricsEndpoint          string            `json:"metrics_endpoint,omitempty"`
+	MetricsPushInterval      int               `json:"metrics_push_interval,omitempty"`
+	RequestHeaders           []string          `json:"request_headers,omitempty"`
+	DisableContentLogging    bool              `json:"disable_content_logging,omitempty"`
+	PropagateTraceAttributes bool              `json:"propagate_trace_attributes,omitempty"`
+	GroupTracesBySession     bool              `json:"group_traces_by_session,omitempty"`
+	DisableRootSpanContent   bool              `json:"disable_root_span_content,omitempty"`
 }
 
 // configForStorage is the persisted wrapper shape.
@@ -292,25 +298,26 @@ func (c *Config) MarshalForStorage() ([]byte, error) {
 			continue
 		}
 		out.Profiles = append(out.Profiles, profileForStorage{
-			Enabled:                p.Enabled,
-			TracesEnabled:          p.TracesEnabled,
-			ServiceName:            p.ServiceName,
-			CollectorURL:           schemas.SecretVarAsString(p.CollectorURL),
-			Headers:                p.Headers,
-			TraceHeaders:           p.TraceHeaders,
-			MetricsHeaders:         p.MetricsHeaders,
-			TraceType:              p.TraceType,
-			Protocol:               p.Protocol,
-			TLSCACert:              p.TLSCACert,
-			Insecure:               p.Insecure,
-			ExportTimeout:          p.ExportTimeout,
-			MetricsEnabled:         p.MetricsEnabled,
-			MetricsEndpoint:        schemas.SecretVarAsString(p.MetricsEndpoint),
-			MetricsPushInterval:    p.MetricsPushInterval,
-			RequestHeaders:         p.RequestHeaders,
-			DisableContentLogging:  p.DisableContentLogging,
-			GroupTracesBySession:   p.GroupTracesBySession,
-			DisableRootSpanContent: p.DisableRootSpanContent,
+			Enabled:                  p.Enabled,
+			TracesEnabled:            p.TracesEnabled,
+			ServiceName:              p.ServiceName,
+			CollectorURL:             schemas.SecretVarAsString(p.CollectorURL),
+			Headers:                  p.Headers,
+			TraceHeaders:             p.TraceHeaders,
+			MetricsHeaders:           p.MetricsHeaders,
+			TraceType:                p.TraceType,
+			Protocol:                 p.Protocol,
+			TLSCACert:                p.TLSCACert,
+			Insecure:                 p.Insecure,
+			ExportTimeout:            p.ExportTimeout,
+			MetricsEnabled:           p.MetricsEnabled,
+			MetricsEndpoint:          schemas.SecretVarAsString(p.MetricsEndpoint),
+			MetricsPushInterval:      p.MetricsPushInterval,
+			RequestHeaders:           p.RequestHeaders,
+			DisableContentLogging:    p.DisableContentLogging,
+			PropagateTraceAttributes: p.PropagateTraceAttributes,
+			GroupTracesBySession:     p.GroupTracesBySession,
+			DisableRootSpanContent:   p.DisableRootSpanContent,
 		})
 	}
 	return sonic.Marshal(out)
@@ -383,15 +390,16 @@ func hideResolvedEnvValue(v *schemas.SecretVar) *schemas.SecretVar {
 // plus an optional metrics exporter, along with the per-profile identity (service name)
 // used when converting traces for this destination.
 type otelTarget struct {
-	serviceName            string
-	url                    string
-	traceType              TraceType
-	client                 OtelClient
-	metricsExporter        *MetricsExporter
-	requestHeaders         []string
-	disableContentLogging  bool
-	groupTracesBySession   bool
-	disableRootSpanContent bool
+	serviceName              string
+	url                      string
+	traceType                TraceType
+	client                   OtelClient
+	metricsExporter          *MetricsExporter
+	requestHeaders           []string
+	disableContentLogging    bool
+	propagateTraceAttributes bool
+	groupTracesBySession     bool
+	disableRootSpanContent   bool
 
 	// exportTimeout bounds a single Emit. See Profile.ExportTimeout.
 	exportTimeout time.Duration
@@ -579,13 +587,14 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 	}
 
 	target := &otelTarget{
-		serviceName:            serviceName,
-		traceType:              profile.TraceType,
-		requestHeaders:         slices.Clone(profile.RequestHeaders),
-		disableContentLogging:  profile.DisableContentLogging,
-		groupTracesBySession:   profile.GroupTracesBySession,
-		disableRootSpanContent: profile.DisableRootSpanContent,
-		exportTimeout:          exportTimeout,
+		serviceName:              serviceName,
+		traceType:                profile.TraceType,
+		requestHeaders:           slices.Clone(profile.RequestHeaders),
+		disableContentLogging:    profile.DisableContentLogging,
+		propagateTraceAttributes: profile.PropagateTraceAttributes,
+		groupTracesBySession:     profile.GroupTracesBySession,
+		disableRootSpanContent:   profile.DisableRootSpanContent,
+		exportTimeout:            exportTimeout,
 	}
 
 	// Build the trace client only when traces are enabled; Inject skips a nil client.
@@ -840,7 +849,7 @@ func (p *OtelPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
 			if t.client == nil || t.breakerOpen() {
 				return
 			}
-			resourceSpan := p.convertTraceToResourceSpan(t.serviceName, trace, t.requestHeaders, t.disableContentLogging, t.groupTracesBySession, t.disableRootSpanContent)
+			resourceSpan := p.convertTraceToResourceSpan(t.serviceName, trace, t.requestHeaders, t.disableContentLogging, t.propagateTraceAttributes, t.groupTracesBySession, t.disableRootSpanContent)
 			// The caller passes context.Background(), so this deadline is the only bound
 			// on the export — and the only bound at all on the gRPC path.
 			emitCtx, cancel := context.WithTimeout(ctx, t.exportTimeout)
