@@ -292,6 +292,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_add_upstream_and_overhead_latency_columns"}, run: migrationAddUpstreamAndOverheadLatencyColumns},
 	{IDs: []string{"logs_add_batch_debug_column"}, run: migrationAddBatchDebugColumn},
 	{IDs: []string{"logs_add_cost_breakdown_columns"}, run: migrationAddCostBreakdownColumns},
+	{IDs: []string{"logs_recreate_matviews_with_cost_breakdown"}, run: migrationRecreateMatViewsWithCostBreakdown},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -3498,6 +3499,34 @@ func migrationRecreateMatViewsWithUserAgentColumn(ctx context.Context, db *gorm.
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while recreating matviews with app column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationRecreateMatViewsWithCostBreakdown is a marker migration: the actual
+// rebuild of mv_logs_hourly (now carrying total_input_cost / total_output_cost /
+// total_additional_cost alongside total_cost) happens on the next PostgreSQL
+// startup via ensureMatViews / repairMatViewShapes, which detect the new required
+// columns and drop+recreate the drifted view. The rebuild is deferred to startup
+// (not done inline here) to avoid heavy AccessExclusiveLock churn during rolling
+// deploys on large logs tables.
+func migrationRecreateMatViewsWithCostBreakdown(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_recreate_matviews_with_cost_breakdown",
+		Migrate: func(tx *gorm.DB) error {
+			// No-op: the drifted mv_logs_hourly is dropped and recreated on the
+			// next startup by repairMatViewShapes once it sees the new columns.
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// No rollback needed — ensureMatViews recreates on next startup.
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while recreating matviews with cost breakdown columns: %s", err.Error())
 	}
 	return nil
 }

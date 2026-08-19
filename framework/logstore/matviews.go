@@ -71,6 +71,11 @@ SELECT
     COALESCE(SUM(total_tokens), 0) AS total_tokens,
     COALESCE(SUM(cached_read_tokens), 0) AS total_cached_read_tokens,
     COALESCE(SUM(cost), 0) AS total_cost,
+    -- Per-category cost split, denormalized on the logs rows, so quota/usage can
+    -- surface input vs output vs additional (guardrail/MCP) alongside the total.
+    COALESCE(SUM(input_cost), 0) AS total_input_cost,
+    COALESCE(SUM(output_cost), 0) AS total_output_cost,
+    COALESCE(SUM(additional_cost), 0) AS total_additional_cost,
     -- Cache-hit measures precomputed from cache_debug so /api/logs/stats can
     -- serve them from the hybrid instead of a full-window raw scan. Safe to
     -- materialize: cache_debug is written with the terminal status and never
@@ -145,6 +150,9 @@ var mvLogsHourlyRequiredColumns = []string{
 	"total_tokens",
 	"total_cached_read_tokens",
 	"total_cost",
+	"total_input_cost",
+	"total_output_cost",
+	"total_additional_cost",
 	"avg_overhead",
 	"p90_overhead",
 	"p95_overhead",
@@ -2291,6 +2299,9 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 		AvgLatency         float64        `gorm:"column:avg_lat"`
 		TotalTokens        int64          `gorm:"column:total_tkns"`
 		TotalCost          float64        `gorm:"column:total_cost"`
+		InputCost          float64        `gorm:"column:total_input_cost"`
+		OutputCost         float64        `gorm:"column:total_output_cost"`
+		AdditionalCost     float64        `gorm:"column:total_additional_cost"`
 		TPCompletionTokens int64          `gorm:"column:tp_completion_tokens"`
 		TPLatencyMs        float64        `gorm:"column:tp_latency_ms"`
 	}
@@ -2305,6 +2316,9 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 		CASE WHEN SUM(count) > 0 THEN SUM(avg_latency * count) / SUM(count) ELSE 0 END AS avg_lat,
 		SUM(total_tokens) AS total_tkns,
 		SUM(total_cost) AS total_cost,
+		SUM(total_input_cost) AS total_input_cost,
+		SUM(total_output_cost) AS total_output_cost,
+		SUM(total_additional_cost) AS total_additional_cost,
 		COALESCE(SUM(CASE WHEN status = 'success' THEN throughput_completion_tokens ELSE 0 END), 0) AS tp_completion_tokens,
 		COALESCE(SUM(CASE WHEN status = 'success' THEN throughput_latency_ms ELSE 0 END), 0) AS tp_latency_ms
 	`).Group("model, provider").
@@ -2372,15 +2386,18 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 			successRate = float64(r.SuccessCount) / float64(r.Total) * 100
 		}
 		entry := ModelRankingEntry{
-			Model:         r.Model,
-			Provider:      r.Provider,
-			TotalRequests: r.Total,
-			SuccessCount:  r.SuccessCount,
-			SuccessRate:   successRate,
-			TotalTokens:   r.TotalTokens,
-			TotalCost:     r.TotalCost,
-			AvgLatency:    r.AvgLatency,
-			Throughput:    tokensPerSecond(r.TPCompletionTokens, r.TPLatencyMs),
+			Model:          r.Model,
+			Provider:       r.Provider,
+			TotalRequests:  r.Total,
+			SuccessCount:   r.SuccessCount,
+			SuccessRate:    successRate,
+			TotalTokens:    r.TotalTokens,
+			TotalCost:      r.TotalCost,
+			InputCost:      r.InputCost,
+			OutputCost:     r.OutputCost,
+			AdditionalCost: r.AdditionalCost,
+			AvgLatency:     r.AvgLatency,
+			Throughput:     tokensPerSecond(r.TPCompletionTokens, r.TPLatencyMs),
 		}
 		if r.CanonicalName.Valid {
 			entry.CanonicalModelName = &r.CanonicalName.String

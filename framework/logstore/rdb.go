@@ -2577,9 +2577,13 @@ func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilter
 		COALESCE(SUM(CASE WHEN status = 'success' AND latency > 0 THEN completion_tokens ELSE 0 END), 0) as tp_completion_tokens,
 		COALESCE(SUM(CASE WHEN status = 'success' AND latency > 0 THEN latency ELSE 0 END), 0) as tp_latency_ms
 	`
-	// Only the current-period query scans canonical_name; keeping it out of the
-	// shared clause spares the previous-period query a discarded aggregate.
-	currentSelectClause := "MAX(NULLIF(canonical_model_name, '')) as canonical_name," + selectClause
+	// Only the current-period query scans canonical_name and the per-category cost
+	// split; keeping them out of the shared clause spares the previous-period
+	// query aggregates it discards (trend compares totals only).
+	currentSelectClause := "MAX(NULLIF(canonical_model_name, '')) as canonical_name," + selectClause + `,
+		COALESCE(SUM(input_cost), 0) as total_input_cost,
+		COALESCE(SUM(output_cost), 0) as total_output_cost,
+		COALESCE(SUM(additional_cost), 0) as total_additional_cost`
 
 	// Query current period
 	currentQuery := s.ScopedDB(ctx).Model(&Log{})
@@ -2595,6 +2599,9 @@ func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilter
 		SuccessCount       int64           `gorm:"column:success_count"`
 		TotalTokens        sql.NullInt64   `gorm:"column:total_tokens"`
 		TotalCost          sql.NullFloat64 `gorm:"column:total_cost"`
+		InputCost          sql.NullFloat64 `gorm:"column:total_input_cost"`
+		OutputCost         sql.NullFloat64 `gorm:"column:total_output_cost"`
+		AdditionalCost     sql.NullFloat64 `gorm:"column:total_additional_cost"`
 		AvgLatency         sql.NullFloat64 `gorm:"column:avg_latency"`
 		TPCompletionTokens int64           `gorm:"column:tp_completion_tokens"`
 		TPLatencyMs        float64         `gorm:"column:tp_latency_ms"`
@@ -2678,14 +2685,17 @@ func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilter
 	rankings := make([]ModelRankingWithTrend, len(currentResults))
 	for i, r := range currentResults {
 		entry := ModelRankingEntry{
-			Model:         r.Model,
-			Provider:      r.Provider,
-			TotalRequests: r.TotalRequests,
-			SuccessCount:  r.SuccessCount,
-			TotalTokens:   r.TotalTokens.Int64,
-			TotalCost:     r.TotalCost.Float64,
-			AvgLatency:    r.AvgLatency.Float64,
-			Throughput:    tokensPerSecond(r.TPCompletionTokens, r.TPLatencyMs),
+			Model:          r.Model,
+			Provider:       r.Provider,
+			TotalRequests:  r.TotalRequests,
+			SuccessCount:   r.SuccessCount,
+			TotalTokens:    r.TotalTokens.Int64,
+			TotalCost:      r.TotalCost.Float64,
+			InputCost:      r.InputCost.Float64,
+			OutputCost:     r.OutputCost.Float64,
+			AdditionalCost: r.AdditionalCost.Float64,
+			AvgLatency:     r.AvgLatency.Float64,
+			Throughput:     tokensPerSecond(r.TPCompletionTokens, r.TPLatencyMs),
 		}
 		if r.CanonicalName.Valid {
 			entry.CanonicalModelName = &r.CanonicalName.String
