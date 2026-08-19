@@ -216,11 +216,6 @@ type ComplexitySemanticConfig struct {
 	// level because the fallback is meaningless without a primary — the LLM
 	// classifier only ever runs after a semantic non-answer.
 	//
-	// Session note: an LLM-classified turn carries no similarity score, so
-	// with a positive session switch_min_similarity it can never move a
-	// session tier (except through always_allow_escalation). That is
-	// deliberate: the LLM speaks exactly on the turns semantic was least
-	// confident about, which are the wrong turns to let re-pin a session.
 	Fallback string `json:"fallback,omitempty"`
 }
 
@@ -555,6 +550,51 @@ func (c *ComplexityLLMConfig) Validate() error {
 	return nil
 }
 
+// ComplexitySessionConfig controls monotonic complexity-tier retention across
+// requests belonging to the same session.
+//
+// When enabled, Bifrost retains the highest tier reached across normally
+// sequential session turns during the built-in inactivity window. Overlapping
+// requests for the same session are best-effort because the runtime KV contract
+// exposes separate reads and writes. The window is a routing-state retention
+// policy and is intentionally independent of provider prompt-cache TTLs.
+type ComplexitySessionConfig struct {
+	Enabled bool `json:"enabled"`
+}
+
+// UnmarshalJSON rejects unknown fields so misspelled session settings cannot be
+// accepted while silently leaving session routing disabled.
+func (c *ComplexitySessionConfig) UnmarshalJSON(data []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	for field := range fields {
+		if field != "enabled" {
+			return fmt.Errorf("unknown complexity session field %q", field)
+		}
+	}
+
+	var decoded struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	if decoded.Enabled == nil {
+		return fmt.Errorf("complexity session config requires enabled")
+	}
+	c.Enabled = *decoded.Enabled
+	return nil
+}
+
+func (c *ComplexitySessionConfig) normalized() *ComplexitySessionConfig {
+	if c == nil {
+		return nil
+	}
+	return &ComplexitySessionConfig{Enabled: c.Enabled}
+}
+
 // ComplexityAnalyzerConfigHashes tracks the config.json hash for each editable
 // analyzer section. It is persisted with the config row, but not exposed through
 // API responses or config.json.
@@ -570,7 +610,8 @@ type ComplexityAnalyzerConfigHashes struct {
 	// LLMSettings covers the llm block (provider, model, timeout, prompt,
 	// history window, budgets flag). The fallback selector rides the
 	// SemanticSettings hash: it is a field of the semantic block.
-	LLMSettings string `json:"llm_settings,omitempty"`
+	LLMSettings     string `json:"llm_settings,omitempty"`
+	SessionSettings string `json:"session_settings,omitempty"`
 }
 
 type legacyComplexityAnalyzerConfigHashes struct {
@@ -640,7 +681,10 @@ type ComplexityAnalyzerConfig struct {
 	// when Semantic.Fallback selects "llm". It may be present while the
 	// fallback says "none": the block is retained so toggling the fallback
 	// never loses settings.
-	LLM          *ComplexityLLMConfig           `json:"llm,omitempty"`
+	LLM *ComplexityLLMConfig `json:"llm,omitempty"`
+	// Session enables the built-in monotonic session tier. It is separate from
+	// semantic message_history_count: no message or turn history is persisted.
+	Session      *ComplexitySessionConfig       `json:"session,omitempty"`
 	ConfigHashes ComplexityAnalyzerConfigHashes `json:"-"`
 	// EmbeddingFingerprint is reserved for config-store implementations that
 	// persist routing state. The semantic classifier verifies a VectorStore-side
@@ -695,6 +739,7 @@ type complexitySemanticConfigRecord struct {
 	Keywords             ComplexityEditableKeywordConfig `json:"keywords"`
 	Semantic             *ComplexitySemanticConfig       `json:"semantic,omitempty"`
 	LLM                  *ComplexityLLMConfig            `json:"llm,omitempty"`
+	Session              *ComplexitySessionConfig        `json:"session,omitempty"`
 	ConfigHashes         complexitySemanticRowHashes     `json:"_config_hashes,omitempty"`
 	EmbeddingFingerprint string                          `json:"_embedding_fingerprint,omitempty"`
 }
@@ -707,6 +752,7 @@ type complexitySemanticRowHashes struct {
 	ComplexKeywords  string `json:"complex_keywords,omitempty"`
 	SemanticSettings string `json:"semantic_settings,omitempty"`
 	LLMSettings      string `json:"llm_settings,omitempty"`
+	SessionSettings  string `json:"session_settings,omitempty"`
 }
 
 // LLMFallbackEnabled reports whether a semantic non-answer should be retried
@@ -717,6 +763,11 @@ func (c *ComplexityAnalyzerConfig) LLMFallbackEnabled() bool {
 	return c != nil && c.Semantic != nil &&
 		c.Semantic.Fallback == ComplexitySemanticFallbackLLM &&
 		c.LLM != nil
+}
+
+// SessionRoutingEnabled reports whether monotonic session-tier retention is enabled.
+func (c *ComplexityAnalyzerConfig) SessionRoutingEnabled() bool {
+	return c != nil && c.Session != nil && c.Session.Enabled
 }
 
 // Validate checks that the config is internally consistent.
@@ -755,6 +806,9 @@ func (c *ComplexityAnalyzerConfig) Validate() error {
 	if c.Semantic != nil && c.Semantic.Fallback == ComplexitySemanticFallbackLLM && c.LLM == nil {
 		return fmt.Errorf("semantic fallback %q requires an llm config block", ComplexitySemanticFallbackLLM)
 	}
+	if c.SessionRoutingEnabled() && c.Semantic == nil {
+		return fmt.Errorf("complexity session routing requires a semantic config block")
+	}
 	return nil
 }
 
@@ -776,6 +830,7 @@ func (c *ComplexityAnalyzerConfig) Normalized() ComplexityAnalyzerConfig {
 		},
 		Semantic:             c.Semantic.normalized(),
 		LLM:                  c.LLM.normalized(),
+		Session:              c.Session.normalized(),
 		ConfigHashes:         c.ConfigHashes,
 		EmbeddingFingerprint: c.EmbeddingFingerprint,
 	}
@@ -854,6 +909,7 @@ func MergeComplexityAnalyzerConfig(base, file *ComplexityAnalyzerConfig) (*Compl
 		},
 		Semantic:             mergeComplexitySemanticConfig(normalizedBase.Semantic, normalizedFile.Semantic),
 		LLM:                  mergeComplexityLLMConfig(normalizedBase.LLM, normalizedFile.LLM),
+		Session:              mergeComplexitySessionConfig(normalizedBase.Session, normalizedFile.Session),
 		ConfigHashes:         normalizedFile.ConfigHashes,
 		EmbeddingFingerprint: normalizedBase.EmbeddingFingerprint,
 	}
@@ -876,6 +932,15 @@ func mergeComplexitySemanticConfig(base, file *ComplexitySemanticConfig) *Comple
 // mergeComplexityLLMConfig overlays the file llm settings. A nil file section
 // keeps the base untouched.
 func mergeComplexityLLMConfig(base, file *ComplexityLLMConfig) *ComplexityLLMConfig {
+	if file == nil {
+		return base.normalized()
+	}
+	return file.normalized()
+}
+
+// mergeComplexitySessionConfig overlays file session settings. A nil file
+// section keeps the persisted setting untouched.
+func mergeComplexitySessionConfig(base, file *ComplexitySessionConfig) *ComplexitySessionConfig {
 	if file == nil {
 		return base.normalized()
 	}
@@ -934,6 +999,14 @@ func MergeComplexityAnalyzerConfigByHashes(base, file *ComplexityAnalyzerConfig)
 		if merged.LLM == nil || merged.ConfigHashes.LLMSettings != normalizedFile.ConfigHashes.LLMSettings {
 			merged.LLM = normalizedFile.LLM.normalized()
 			merged.ConfigHashes.LLMSettings = normalizedFile.ConfigHashes.LLMSettings
+		}
+	}
+	// Session follows the same optional-section rule: omission means no file
+	// opinion, while an explicit enabled=false is a real override.
+	if normalizedFile.Session != nil {
+		if merged.Session == nil || merged.ConfigHashes.SessionSettings != normalizedFile.ConfigHashes.SessionSettings {
+			merged.Session = normalizedFile.Session.normalized()
+			merged.ConfigHashes.SessionSettings = normalizedFile.ConfigHashes.SessionSettings
 		}
 	}
 	normalizedMerged := merged.Normalized()
@@ -1019,12 +1092,14 @@ func encodeComplexitySemanticConfigRow(config ComplexityAnalyzerConfig) ([]byte,
 		Keywords: config.Keywords,
 		Semantic: config.Semantic,
 		LLM:      config.LLM,
+		Session:  config.Session,
 		ConfigHashes: complexitySemanticRowHashes{
 			SimpleKeywords:   config.ConfigHashes.SimpleKeywords,
 			MediumKeywords:   config.ConfigHashes.MediumKeywords,
 			ComplexKeywords:  config.ConfigHashes.ComplexKeywords,
 			SemanticSettings: config.ConfigHashes.SemanticSettings,
 			LLMSettings:      config.ConfigHashes.LLMSettings,
+			SessionSettings:  config.ConfigHashes.SessionSettings,
 		},
 		EmbeddingFingerprint: config.EmbeddingFingerprint,
 	}
@@ -1045,11 +1120,13 @@ func applyComplexitySemanticConfigRow(base *ComplexityAnalyzerConfig, row *compl
 	combined.Keywords = row.Keywords
 	combined.Semantic = row.Semantic
 	combined.LLM = row.LLM
+	combined.Session = row.Session
 	combined.ConfigHashes.SimpleKeywords = row.ConfigHashes.SimpleKeywords
 	combined.ConfigHashes.MediumKeywords = row.ConfigHashes.MediumKeywords
 	combined.ConfigHashes.ComplexKeywords = row.ConfigHashes.ComplexKeywords
 	combined.ConfigHashes.SemanticSettings = row.ConfigHashes.SemanticSettings
 	combined.ConfigHashes.LLMSettings = row.ConfigHashes.LLMSettings
+	combined.ConfigHashes.SessionSettings = row.ConfigHashes.SessionSettings
 	combined.EmbeddingFingerprint = row.EmbeddingFingerprint
 	return &combined
 }

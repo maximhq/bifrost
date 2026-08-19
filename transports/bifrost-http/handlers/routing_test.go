@@ -149,6 +149,12 @@ func TestComplexityAnalyzerConfigPutPersistsAndReloads(t *testing.T) {
 	cfg.TierBoundaries.SimpleMedium = 0.12
 	cfg.TierBoundaries.MediumComplex = 0.34
 	cfg.Keywords.MediumKeywords = []string{" Function ", "api", "API"}
+	cfg.Semantic = &complexity.SemanticConfig{
+		Provider:       "openai",
+		EmbeddingModel: "text-embedding-3-small",
+		MinSimilarity:  0.65,
+	}
+	cfg.Session = &complexity.SessionConfig{Enabled: true}
 
 	ctx := newTestRequestCtx(testComplexityAnalyzerPayload(t, cfg))
 	handler.updateComplexityAnalyzerConfig(ctx)
@@ -169,6 +175,12 @@ func TestComplexityAnalyzerConfigPutPersistsAndReloads(t *testing.T) {
 	}
 	if stored == nil || len(stored.Keywords.MediumKeywords) != 2 {
 		t.Fatalf("expected normalized stored keywords, got %+v", stored)
+	}
+	if stored.Semantic == nil || stored.Semantic.MinSimilarity != 0.65 {
+		t.Fatalf("expected semantic threshold to persist, got %+v", stored.Semantic)
+	}
+	if stored.Session == nil || !stored.Session.Enabled {
+		t.Fatalf("expected enabled session config to persist, got %+v", stored.Session)
 	}
 }
 

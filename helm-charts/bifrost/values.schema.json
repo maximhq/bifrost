@@ -2159,8 +2159,20 @@
             },
             "complexityAnalyzerConfig": {
               "type": ["object", "null"],
-              "description": "Runtime configuration for complexity_tier CEL routing. Renders into governance.complexity_analyzer_config in config.json. Semantic (embedding-based) classification is the primary mechanism — without the semantic block no complexity_tier is published. The optional llm block is a chat-completion fallback engaged only when semantic.fallback is 'llm'.",
+              "description": "Runtime configuration for complexity_tier CEL routing. Renders into governance.complexity_analyzer_config in config.json. Semantic (embedding-based) classification is the primary mechanism — without the semantic block no complexity_tier is published. The optional llm block is a chat-completion fallback engaged only when semantic.fallback is 'llm'. The optional session block retains the highest tier observed for a session.",
               "properties": {
+                "session": {
+                  "type": "object",
+                  "description": "Session-aware complexity routing. Retains the highest observed tier across normally sequential turns for 24 hours of inactivity. Overlapping requests for the same session are best-effort and resolve by last writer wins.",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean",
+                      "description": "Enable monotonic session tier retention. Requires semantic complexity classification; default: false."
+                    }
+                  },
+                  "required": ["enabled"],
+                  "additionalProperties": false
+                },
                 "semantic": {
                   "type": "object",
                   "description": "Embedding-based (semantic) complexity classification settings. Presence of this block enables the classifier; it embeds the per-tier keyword lists as reference phrases.",
@@ -2374,6 +2386,44 @@
                   ]
                 }
               },
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "session": {
+                        "properties": {
+                          "enabled": {
+                            "const": true
+                          }
+                        },
+                        "required": ["enabled"]
+                      }
+                    },
+                    "required": ["session"]
+                  },
+                  "then": {
+                    "required": ["semantic"]
+                  }
+                },
+                {
+                  "if": {
+                    "properties": {
+                      "semantic": {
+                        "properties": {
+                          "fallback": {
+                            "const": "llm"
+                          }
+                        },
+                        "required": ["fallback"]
+                      }
+                    },
+                    "required": ["semantic"]
+                  },
+                  "then": {
+                    "required": ["llm"]
+                  }
+                }
+              ],
               "required": ["keywords"],
               "additionalProperties": false
             }

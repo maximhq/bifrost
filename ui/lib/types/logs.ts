@@ -670,7 +670,7 @@ export interface LogFilters {
 	status?: string[];
 	stop_reasons?: string[]; // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
 	complexity_tiers?: string[]; // For filtering by routing complexity tier (SIMPLE, MEDIUM, COMPLEX)
-	complexity_mechanisms?: string[]; // For filtering by complexity classification mechanism (semantic, llm, skipped)
+	complexity_mechanisms?: string[]; // For filtering by complexity decision mechanism (semantic, llm, session, skipped)
 	objects?: string[]; // For filtering by request type (chat.completion, text.completion, embedding)
 	start_time?: string; // RFC3339 format
 	end_time?: string; // RFC3339 format

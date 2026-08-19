@@ -56,11 +56,12 @@ LogEntry:
       nullable: true
     complexity_mechanism:
       type: string
-      description: How the complexity tier was classified (semantic for the embedding-based classifier, or skipped when classification was demanded but produced no tier)
+      enum: [semantic, llm, session, skipped]
+      description: How the effective complexity tier was determined. session means retained session state supplied the tier; skipped means classification was demanded but produced no tier.
       nullable: true
     complexity_score:
       type: number
-      description: Similarity score of the nearest reference phrase behind the tier
+      description: Similarity score of the nearest reference phrase behind the tier. Absent for llm, session, and skipped decisions.
       nullable: true
     stream:
       type: boolean

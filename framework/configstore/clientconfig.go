@@ -1317,6 +1317,14 @@ func GenerateComplexityAnalyzerConfigHashes(config *ComplexityAnalyzerConfig) (C
 		hashes.LLMSettings = settingsHash
 	}
 
+	if normalized.Session != nil {
+		settingsHash, err := hashComplexityValue(normalized.Session)
+		if err != nil {
+			return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash session settings: %w", err)
+		}
+		hashes.SessionSettings = settingsHash
+	}
+
 	return hashes, nil
 }
 

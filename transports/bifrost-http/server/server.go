@@ -1093,8 +1093,7 @@ func (s *BifrostHTTPServer) ReloadComplexityAnalyzerConfig(ctx context.Context, 
 	if err != nil {
 		return fmt.Errorf("routing plugin not found: %w", err)
 	}
-	routingPlugin.ReloadComplexityAnalyzerConfig(config)
-	return nil
+	return routingPlugin.ReloadComplexityAnalyzerConfig(config)
 }
 
 // ReloadRoutingRule reloads a routing rule from the database into the routing plugin's rule cache

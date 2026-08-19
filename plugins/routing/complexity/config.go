@@ -38,8 +38,7 @@ const (
 // tier. They surface in request logs (complexity_mechanism column) so admins can
 // see how each routing decision was classified. "skipped" means classification
 // was demanded but produced no tier (unsupported input, no signal, or the
-// analyzer is disabled). Future classifiers add their own values here
-// (e.g. "llm").
+// analyzer is disabled).
 //
 // "lexical" is not here: the keyword scorer no longer publishes a tier, so
 // nothing writes that value. It never reached a log either — the
@@ -49,10 +48,13 @@ const (
 	MechanismSemantic = "semantic"
 	// MechanismLLM means the chat-completion classifier published the tier.
 	MechanismLLM = "llm"
+	// MechanismSession means a previously established session tier determined
+	// the effective tier for this turn. The current classifier either produced
+	// no tier, proposed a lower tier, or was intentionally skipped at COMPLEX.
+	MechanismSession = "session"
 	// MechanismSkipped means classification was demanded by a routing rule but
 	// produced no tier.
 	MechanismSkipped = "skipped"
-
 )
 
 // Default boundaries are retained for the dormant lexical analyzer and its
@@ -74,6 +76,9 @@ type SemanticConfig = configstore.ComplexitySemanticConfig
 
 // LLMConfig is the chat-completion classifier configuration.
 type LLMConfig = configstore.ComplexityLLMConfig
+
+// SessionConfig controls monotonic complexity-tier retention across requests.
+type SessionConfig = configstore.ComplexitySessionConfig
 
 // AnalyzerConfig is the runtime configuration for the complexity analyzer.
 type AnalyzerConfig = configstore.ComplexityAnalyzerConfig

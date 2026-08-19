@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scrollArea";
 import { TagInput } from "@/components/ui/tagInput";
 import { Textarea } from "@/components/ui/textarea";
+import { Switch } from "@/components/ui/switch";
 import { EmbeddingSupportedProviders } from "@/lib/constants/logs";
 import { getErrorMessage, useGetCoreConfigQuery, useGetProvidersQuery } from "@/lib/store";
 import { useGetAllKeysQuery } from "@/lib/store/apis/providersApi";
@@ -24,12 +25,7 @@ import {
 	useResetComplexityAnalyzerConfigMutation,
 	useUpdateComplexityAnalyzerConfigMutation,
 } from "@/lib/store/apis/governanceApi";
-import {
-	AnalyzerConfig,
-	KeywordListKey,
-	MAX_LLM_PROMPT_CHARACTERS,
-	TIER_PHRASE_LIST_DEFINITIONS,
-} from "@/lib/types/complexityRouter";
+import { KeywordListKey, MAX_LLM_PROMPT_CHARACTERS, TIER_PHRASE_LIST_DEFINITIONS } from "@/lib/types/complexityRouter";
 import { ModelProvider } from "@/lib/types/config";
 import { DBKey } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
@@ -39,15 +35,10 @@ import { ExternalLink, Info, LoaderCircle, RotateCcw, Save, Settings2, TriangleA
 import { useEffect, useMemo, useState } from "react";
 import { Controller, useForm } from "react-hook-form";
 import { toast } from "sonner";
-import {
-	AnalyzerFormValues,
-	analyzerConfigSchema,
-	DEFAULT_FORM_VALUES,
-	toFormValues,
-} from "./formSchema";
+import { AnalyzerFormValues, analyzerConfigSchema, DEFAULT_FORM_VALUES, toAnalyzerPayload, toFormValues } from "./formSchema";
 import { ClassifierStatusBadge } from "./views/classifierStatusBadge";
 import EmbeddingConfigSheet from "./views/embeddingConfigSheet";
-import { SectionHeading } from "./views/formPrimitives";
+import { FieldLabel, SectionHeading } from "./views/formPrimitives";
 
 // Embedding-capable providers gate this page, matching the local cache screen's
 // rule: built-ins are listed in EmbeddingSupportedProviders, custom providers
@@ -137,6 +128,7 @@ export default function ComplexityRouterPage() {
 
 	const liveSemantic = watch("semantic");
 	const liveLLM = watch("llm");
+	const liveSession = watch("session");
 	const liveKeywords = watch("keywords");
 
 	// Narrows the model list to what this provider's enabled keys can actually
@@ -316,16 +308,10 @@ export default function ComplexityRouterPage() {
 		// operator never opened. Nothing here removes it on purpose: the provider
 		// select has no clear option, and Restore defaults goes through its own
 		// endpoint.
-		const semantic = values.semantic.provider && values.semantic.embedding_model ? values.semantic : (data?.semantic ?? undefined);
-		// The llm block follows the same half-filled fallback as semantic: its
-		// controls also live in a sheet, so a save made without opening it must
-		// not silently drop a working block.
-		const llm = values.llm.provider && values.llm.model ? values.llm : (data?.llm ?? undefined);
-		const payload: AnalyzerConfig = {
-			keywords: values.keywords,
-			...(semantic ? { semantic } : {}),
-			...(llm ? { llm } : {}),
-		};
+		// The helper preserves saved sheet-only settings and omits session when
+		// disabled. Nil is already the wire-level disabled state; avoiding the
+		// additive field keeps unrelated edits compatible with older gateways.
+		const payload = toAnalyzerPayload(values, data);
 		updateConfig(payload)
 			.unwrap()
 			.then((res) => {
@@ -378,7 +364,7 @@ export default function ComplexityRouterPage() {
 	}
 
 	const keywordErrors = errors.keywords;
-	const hasErrors = Boolean(keywordErrors || errors.semantic || errors.llm);
+	const hasErrors = Boolean(keywordErrors || errors.semantic || errors.llm || errors.session);
 	const canSave = canUpdate && isDirty && !isResetting && !(isSubmitted && hasErrors);
 
 	// Rendered on the page and again inside the sheet: the re-embed cost is a
@@ -430,9 +416,9 @@ export default function ComplexityRouterPage() {
 						<div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-end">
 							<PageTitle title="Complexity Router" beta>
 								Each request is embedded and takes the tier of the nearest reference phrase, filling the{" "}
-								<code className="bg-muted rounded-sm px-1 py-0.5 font-mono text-xs">complexity_tier</code> field that routing rules
-								target.
+								<code className="bg-muted rounded-sm px-1 py-0.5 font-mono text-xs">complexity_tier</code> field that routing rules target.
 								{isLLMFallbackEnabled ? " Requests matching no phrase confidently fall back to the LLM classifier." : ""}
+								{liveSession.enabled ? " Session-aware routing keeps the highest tier reached during the active session." : ""}
 							</PageTitle>
 
 							{/* Status and embedding setup ride in the header rather than as
@@ -458,7 +444,11 @@ export default function ComplexityRouterPage() {
 									<Settings2 className="size-3.5" />
 									{isClassifierConfigured ? "Edit embedding configuration" : "Configure embedding"}
 									{hasUnsavedEmbeddingConfigChanges && (
-										<span className="size-1.5 rounded-full bg-amber-500" role="status" aria-label="Unsaved embedding configuration changes" />
+										<span
+											className="size-1.5 rounded-full bg-amber-500"
+											role="status"
+											aria-label="Unsaved embedding configuration changes"
+										/>
 									)}
 								</Button>
 								<Button asChild variant="outline" size="sm" data-testid="complexity-router-docs-link">
@@ -515,7 +505,9 @@ export default function ComplexityRouterPage() {
 											<Controller
 												control={control}
 												name={`keywords.${key}` as const}
-												rules={{ validate: (value) => (value.length > 0 ? true : `${label} phrases cannot be empty`) }}
+												rules={{
+													validate: (value) => (value.length > 0 ? true : `${label} phrases cannot be empty`),
+												}}
 												render={({ field }) => (
 													<div className="space-y-2 p-4 pl-5">
 														<div className="flex items-center justify-between">
@@ -550,6 +542,37 @@ export default function ComplexityRouterPage() {
 							</div>
 						</div>
 
+						{/* ── Session-aware routing ── */}
+						<div className="bg-card flex items-center justify-between gap-6 rounded-sm border p-4">
+							<div className="space-y-1">
+								<FieldLabel htmlFor="complexity-router-session-enabled">Session-aware routing</FieldLabel>
+								<p className="text-muted-foreground max-w-3xl text-xs leading-relaxed">
+									Keep each session at its highest complexity tier for 24 hours of inactivity. Harder turns can move up; easier turns stay
+									put to reduce model changes. Requests without a session ID route independently.
+								</p>
+								{errors.session?.enabled && (
+									<p id="complexity-router-session-enabled-error" className="text-destructive text-xs">
+										{errors.session.enabled.message}
+									</p>
+								)}
+							</div>
+							<Controller
+								control={control}
+								name="session.enabled"
+								render={({ field }) => (
+									<Switch
+										id="complexity-router-session-enabled"
+										data-testid="complexity-router-session-enabled-switch"
+										checked={field.value}
+										onCheckedChange={field.onChange}
+										disabled={!canUpdate}
+										aria-invalid={errors.session?.enabled ? true : undefined}
+										aria-describedby={errors.session?.enabled ? "complexity-router-session-enabled-error" : undefined}
+									/>
+								)}
+							/>
+						</div>
+
 						{/* ── Fallback Classification Prompt ── */}
 						{/* A second tuning surface below the phrase lists rather than a
 						    field in the embedding sheet: prompt text needs width and
@@ -559,7 +582,7 @@ export default function ComplexityRouterPage() {
 							<div className="space-y-3">
 								<SectionHeading
 									title="Fallback Classification Prompt"
-									description="Guides the fallback model when a request matches no phrase confidently. Pick the model in the embedding configuration sheet."
+									description="Customize the classification model's system prompt; a default is provided when no phrase matches."
 									aside={
 										<Button
 											type="button"

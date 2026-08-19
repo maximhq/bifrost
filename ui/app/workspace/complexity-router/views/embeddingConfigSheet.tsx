@@ -429,8 +429,8 @@ export default function EmbeddingConfigSheet({
 										</InfoTip>
 									</div>
 									<p className="text-muted-foreground -mt-3 text-xs leading-relaxed">
-										The chat model asked to name a tier when semantic classification cannot. API keys are inherited from the provider&apos;s
-										main configuration.
+										This model assigns a complexity tier when no reference phrase matches confidently. API keys come from the
+										provider&apos;s main configuration.
 									</p>
 
 									{/* The cost of this classifier is latency, and it is paid on every
@@ -439,8 +439,8 @@ export default function EmbeddingConfigSheet({
 									<Alert variant="warning" data-testid="complexity-router-llm-latency-callout">
 										<TriangleAlert className="h-4 w-4" />
 										<AlertDescription>
-											A request that reaches this fallback waits on one completion from this model before it is routed. Pick a small, fast
-											model; the timeout below caps the wait, and a timed-out classification skips complexity routing for that request.
+											Pick a small, fast model. The timeout limits how long classification can delay the request. If it times out,
+											complexity routing is skipped for that request.
 										</AlertDescription>
 									</Alert>
 
@@ -602,10 +602,7 @@ export default function EmbeddingConfigSheet({
 												step={1}
 												disabled={!canUpdate || !isLLMConfigured}
 												aria-invalid={llmErrors?.message_history_count ? true : undefined}
-												className={cn(
-													"font-mono",
-													llmErrors?.message_history_count && "border-destructive focus-visible:ring-destructive",
-												)}
+												className={cn("font-mono", llmErrors?.message_history_count && "border-destructive focus-visible:ring-destructive")}
 												{...register("llm.message_history_count", { valueAsNumber: true })}
 											/>
 											{llmErrors?.message_history_count && (
@@ -613,34 +610,11 @@ export default function EmbeddingConfigSheet({
 											)}
 										</div>
 									</div>
-
-									{/* Fallback classifier budget attribution */}
-									<div className="flex items-center justify-between gap-6">
-										<FieldLabel
-											htmlFor="llm-count-toward-budgets"
-											tooltip="Bills each classification completion to the same budgets as the request that triggered it. Cost is always reported to telemetry either way."
-										>
-											Count classification cost toward budgets
-										</FieldLabel>
-										<Controller
-											control={control}
-											name="llm.count_toward_budgets"
-											render={({ field }) => (
-												<Switch
-													id="llm-count-toward-budgets"
-													data-testid="complexity-router-llm-budgets-switch"
-													checked={field.value ?? false}
-													onCheckedChange={field.onChange}
-													disabled={!canUpdate || !isLLMConfigured}
-												/>
-											)}
-										/>
-									</div>
 								</div>
 							)}
 
 							{/* Embedding budget attribution */}
-							<div className="flex items-center justify-between gap-6 border-t pt-4">
+							<div className="flex items-center justify-between gap-6">
 								<FieldLabel
 									htmlFor="semantic-count-toward-budgets"
 									tooltip="Bills each classification embedding to the same budgets as the request that triggered it, and warmup embeddings to the provider and model budgets. Cost is always reported to telemetry either way."
@@ -661,6 +635,31 @@ export default function EmbeddingConfigSheet({
 									)}
 								/>
 							</div>
+
+							{/* Fallback classifier budget attribution */}
+							{isLLMFallbackSelected && (
+								<div className="flex items-center justify-between gap-6 border-t pt-4">
+									<FieldLabel
+										htmlFor="llm-count-toward-budgets"
+										tooltip="Bills each classification completion to the same budgets as the request that triggered it. Cost is always reported to telemetry either way."
+									>
+										Count classification cost toward budgets
+									</FieldLabel>
+									<Controller
+										control={control}
+										name="llm.count_toward_budgets"
+										render={({ field }) => (
+											<Switch
+												id="llm-count-toward-budgets"
+												data-testid="complexity-router-llm-budgets-switch"
+												checked={field.value ?? false}
+												onCheckedChange={field.onChange}
+												disabled={!canUpdate || !isLLMConfigured}
+											/>
+										)}
+									/>
+								</div>
+							)}
 
 							{warning}
 						</>

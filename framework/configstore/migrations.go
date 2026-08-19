@@ -468,7 +468,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_needs_session_stickiness_column"}, run: migrationAddNeedsSessionStickinessColumn},
 	{IDs: []string{"add_bedrock_endpoints_columns"}, run: migrationAddBedrockEndpointsColumns},
 	{IDs: []string{"add_cost_per_request_pricing_column"}, run: migrationAddCostPerRequestPricingColumn},
-	{IDs: []string{backfillDefaultComplexityExemplarsMigrationID}, run: migrationBackfillDefaultComplexityExemplars},
+	{IDs: []string{"backfill_default_complexity_exemplars_v2"}, run: migrationBackfillDefaultComplexityExemplars},
 	{IDs: []string{"add_notifications_table"}, run: migrationAddNotificationsTable},
 	{IDs: []string{"add_batch_jobs_table"}, run: migrationAddBatchJobsTable},
 	{IDs: []string{"add_image_megapixel_tier_pricing_columns"}, run: migrationAddImageMegapixelTierPricingColumns},
@@ -12058,18 +12058,6 @@ func readComplexityConfigRow(tx *gorm.DB, key string) (string, error) {
 	return strings.TrimSpace(entry.Value), nil
 }
 
-// backfillDefaultComplexityExemplarsMigrationID is shared by the migration and
-// its registry entry on purpose. configstoreMigrationSteps is what the pending
-// check reads, and triggerMigrations skips the entire run when nothing is
-// pending — so a registry entry naming a different ID than the migration writes
-// does not just mislabel the step, it can stop every migration from running.
-//
-// The ID is versioned because this migration was retargeted after the lexical
-// and semantic configs moved into separate rows. Installations that ran the
-// original never wrote a semantic row, and the migrator skips by ID, so reusing
-// the old one would leave them with no exemplars at all.
-const backfillDefaultComplexityExemplarsMigrationID = "backfill_default_complexity_exemplars_v2"
-
 // preSplitComplexityAnalyzerRow is an analyzer row written before the lexical
 // and semantic configs moved into separate rows.
 type preSplitComplexityAnalyzerRow struct {
@@ -12147,7 +12135,7 @@ func complexityConfigFromPreSplitAnalyzerRow(data []byte) (preSplitComplexityAna
 // exemplars to persisted complexity configurations created before those
 // defaults existed. Existing phrases and tier assignments always win.
 func migrationBackfillDefaultComplexityExemplars(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
-	migrationName := backfillDefaultComplexityExemplarsMigrationID
+	migrationName := "backfill_default_complexity_exemplars_v2"
 	logger.Info("[configstore] starting migration %s", migrationName)
 	defer logger.Info("[configstore] finished migration %s", migrationName)
 
