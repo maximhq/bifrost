@@ -403,3 +403,146 @@ func TestCustomOpenAIRerankLargePayloadStreamsBody(t *testing.T) {
 		t.Fatalf("expected two rerank results from passthrough response, got %#v", response)
 	}
 }
+
+// TestCustomOpenAIRerankSendsStringArrayToLlamaCppStyleUpstream reproduces
+// https://github.com/maximhq/bifrost/issues/5258: a llama.cpp-hosted
+// qwen3-reranker-4b (added to Bifrost as a custom OpenAI-compatible
+// provider) rejects the {"text": "..."} object-array form Bifrost used to
+// send, only accepting a plain string array for "documents" - matching
+// Cohere v2 / vLLM's spec. Bifrost must send plain strings when a document
+// carries no id/meta, and only fall back to the object form when it does.
+func TestCustomOpenAIRerankSendsStringArrayToLlamaCppStyleUpstream(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("failed to read request body: %v", err)
+		}
+
+		// llama.cpp-style strict decoding: "documents" MUST be []string.
+		var payload struct {
+			Documents []string `json:"documents"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"\"documents\" must be a non-empty string array"}}`))
+			return
+		}
+		if len(payload.Documents) != 3 {
+			t.Fatalf("expected 3 string documents, got %#v", payload.Documents)
+		}
+		if payload.Documents[0] != "Paris is the capital of France." {
+			t.Fatalf("expected plain string document, got %q", payload.Documents[0])
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"rr-llamacpp",
+			"results":[
+				{"index":0,"relevance_score":0.95},
+				{"index":1,"relevance_score":0.1},
+				{"index":2,"relevance_score":0.6}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL},
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			CustomProviderKey: "OrionServer",
+			BaseProviderType:  schemas.OpenAI,
+			AllowedRequests:   &schemas.AllowedRequests{Rerank: true},
+		},
+	}, testNoopLogger{})
+
+	response, bifrostErr := provider.Rerank(
+		schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		schemas.Key{Value: *schemas.NewSecretVar("test-key")},
+		&schemas.BifrostRerankRequest{
+			Model: "qwen3-reranker-4b",
+			Query: "What is the capital of France?",
+			Documents: []schemas.RerankDocument{
+				{Text: "Paris is the capital of France."},
+				{Text: "Berlin is the capital of Germany."},
+				{Text: "The Eiffel Tower is in Paris."},
+			},
+		},
+	)
+	if bifrostErr != nil {
+		t.Fatalf("expected rerank against llama.cpp-style upstream to succeed, got %v", bifrostErr)
+	}
+	if response == nil || len(response.Results) != 3 {
+		t.Fatalf("expected three rerank results, got %#v", response)
+	}
+	if response.Results[0].RelevanceScore != 0.95 {
+		t.Fatalf("expected top result relevance 0.95, got %#v", response.Results[0])
+	}
+}
+
+// TestCustomOpenAIRerankPreservesIDAndMetaAsObject ensures that once any
+// document in the request carries an id or metadata, the whole "documents"
+// array is sent as structured objects (never a mix of strings and objects),
+// since the bare-string wire form can't carry that data and some strict
+// string-array upstreams reject a "documents" array containing any
+// non-string element.
+func TestCustomOpenAIRerankPreservesIDAndMetaAsObject(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("failed to read request body: %v", err)
+		}
+		var payload struct {
+			Documents []json.RawMessage `json:"documents"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("failed to parse request body: %v", err)
+		}
+		if len(payload.Documents) != 2 {
+			t.Fatalf("expected 2 documents, got %d", len(payload.Documents))
+		}
+		var first map[string]interface{}
+		if err := json.Unmarshal(payload.Documents[0], &first); err != nil {
+			t.Fatalf("expected first document to be an object (uniform with second), got %s: %v", payload.Documents[0], err)
+		}
+		if first["text"] != "plain document" {
+			t.Fatalf("expected first document text to be preserved, got %#v", first)
+		}
+		var withID map[string]interface{}
+		if err := json.Unmarshal(payload.Documents[1], &withID); err != nil {
+			t.Fatalf("expected second document to be an object, got %s: %v", payload.Documents[1], err)
+		}
+		if withID["id"] != "doc-2" {
+			t.Fatalf("expected id to be preserved on object-form document, got %#v", withID)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"rr-mixed","results":[{"index":0,"relevance_score":0.5},{"index":1,"relevance_score":0.4}]}`))
+	}))
+	defer server.Close()
+
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL},
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			CustomProviderKey: "hawk",
+			BaseProviderType:  schemas.OpenAI,
+			AllowedRequests:   &schemas.AllowedRequests{Rerank: true},
+		},
+	}, testNoopLogger{})
+
+	docID := "doc-2"
+	_, bifrostErr := provider.Rerank(
+		schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		schemas.Key{Value: *schemas.NewSecretVar("test-key")},
+		&schemas.BifrostRerankRequest{
+			Model: "zerank-2",
+			Query: "q",
+			Documents: []schemas.RerankDocument{
+				{Text: "plain document"},
+				{Text: "document with id", ID: &docID},
+			},
+		},
+	)
+	if bifrostErr != nil {
+		t.Fatalf("expected rerank to succeed, got %v", bifrostErr)
+	}
+}
