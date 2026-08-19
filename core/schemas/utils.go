@@ -698,6 +698,22 @@ func SafeExtractOrderedMap(value interface{}) (*OrderedMap, bool) {
 		return nil, false
 	case OrderedMap:
 		return &v, true
+	case json.RawMessage:
+		// Schemas forwarded verbatim are carried as raw JSON; decode on demand,
+		// preserving the key order of the document.
+		//
+		// The object-shape check comes first because OrderedMap.UnmarshalJSON accepts the
+		// null literal by design -- it clears the map and returns no error. Without this,
+		// a null raw schema decoded "successfully" into an empty map and reported ok, so
+		// callers treating ok as "a schema was present" got an empty one rather than a miss.
+		if strings.TrimSpace(string(v)) == "" || strings.TrimSpace(string(v))[0] != '{' {
+			return nil, false
+		}
+		decoded := NewOrderedMap()
+		if err := decoded.UnmarshalJSON(v); err != nil {
+			return nil, false
+		}
+		return decoded, true
 	}
 	return nil, false
 }

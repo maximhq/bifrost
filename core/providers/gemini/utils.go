@@ -1253,23 +1253,17 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 		}
 	}
 	// Handle response_format to response_schema conversion
-	if params.ResponseFormat != nil {
-		formatMap, ok := (*params.ResponseFormat).(map[string]interface{})
-		if ok {
-			formatType, typeOk := formatMap["type"].(string)
-			if typeOk {
-				switch formatType {
-				case "json_schema":
-					// OpenAI Structured Outputs: {"type": "json_schema", "json_schema": {...}}
-					if schemaMap := extractSchemaMapFromResponseFormat(params.ResponseFormat); schemaMap != nil {
-						config.ResponseMIMEType = "application/json"
-						config.ResponseJSONSchema = schemaMap
-					}
-				case "json_object":
-					// Maps to Gemini's responseMimeType without schema
-					config.ResponseMIMEType = "application/json"
-				}
+	if rf, ok := schemas.ParseChatResponseFormat(params.ResponseFormat); ok {
+		switch rf.Type {
+		case "json_schema":
+			// OpenAI Structured Outputs: {"type": "json_schema", "json_schema": {...}}
+			if schemaMap := extractSchemaMapFromResponseFormat(params.ResponseFormat); schemaMap != nil {
+				config.ResponseMIMEType = "application/json"
+				config.ResponseJSONSchema = schemaMap
 			}
+		case "json_object":
+			// Maps to Gemini's responseMimeType without schema
+			config.ResponseMIMEType = "application/json"
 		}
 	}
 	if params.ExtraParams != nil {
@@ -2837,22 +2831,19 @@ func normalizeOrderedSchemaForGemini(om *schemas.OrderedMap) *schemas.OrderedMap
 // structure. The schema may be a plain map or an order-preserving OrderedMap (e.g. when built
 // from a Responses request); the result is used with ResponseJSONSchema.
 func extractSchemaMapFromResponseFormat(responseFormat *interface{}) interface{} {
-	formatMap, ok := (*responseFormat).(map[string]interface{})
-	if !ok {
+	rf, ok := schemas.ParseChatResponseFormat(responseFormat)
+	if !ok || rf.Type != "json_schema" {
 		return nil
 	}
 
-	formatType, ok := formatMap["type"].(string)
-	if !ok || formatType != "json_schema" {
-		return nil
+	// normalizeSchemaForGemini only rewrites union `type` arrays; on a schema
+	// without any, it is an identity transform. Detect that case and hand Gemini
+	// the client's own bytes instead of a re-encoding of them.
+	if raw := rf.RawSchema(); len(raw) > 0 && !schemaNeedsGeminiNormalization(raw) {
+		return raw
 	}
 
-	jsonSchemaObj, ok := formatMap["json_schema"].(map[string]interface{})
-	if !ok {
-		return nil
-	}
-
-	schemaObj, ok := jsonSchemaObj["schema"]
+	schemaObj, ok := rf.Schema()
 	if !ok {
 		return nil
 	}
@@ -3066,4 +3057,82 @@ func mimeTypeFromURI(uri string) string {
 		return ""
 	}
 	return uriExtensionMIMETypes[strings.ToLower(uri[dot:])]
+}
+
+// schemaNeedsGeminiNormalization reports whether a raw JSON Schema contains any
+// `type` whose value is an array (e.g. ["string","null"]). That is the only
+// construct normalizeSchemaForGemini rewrites, so a schema without one can be
+// forwarded byte for byte instead of being decoded and re-encoded.
+func schemaNeedsGeminiNormalization(raw []byte) bool {
+	return resultNeedsGeminiNormalization(gjson.ParseBytes(raw))
+}
+
+// geminiTypeArrayNeedsRewrite reports whether normalizeSchemaForGemini would actually
+// change an array-valued "type", rather than reproduce it.
+//
+// The distinction matters because flagging every type array kept the very common nullable
+// shape ["string","null"] off the raw-bytes fast path, for a rewrite that reproduces the
+// same two entries -- and the decode/re-encode round trip that came with it reformatted
+// unrelated numeric literals elsewhere in the schema (1.50 arriving as 1.5).
+//
+// It mirrors extractTypesFromValue, which silently drops non-string entries: if any are
+// present the normalizer's output cannot equal the input, so that forces a rewrite too.
+func geminiTypeArrayNeedsRewrite(value gjson.Result) bool {
+	stringEntries, nonNull, foreign := 0, 0, 0
+	value.ForEach(func(_, entry gjson.Result) bool {
+		if entry.Type != gjson.String {
+			foreign++
+			return true
+		}
+		stringEntries++
+		if entry.String() != "null" {
+			nonNull++
+		}
+		return true
+	})
+
+	if foreign > 0 {
+		// Dropped by extractTypesFromValue, so the rewritten array differs from the input.
+		return true
+	}
+	if stringEntries <= 1 {
+		// normalizeSchemaForGemini's entire type block is guarded by len(types) > 1.
+		return false
+	}
+	if nonNull > 1 {
+		return true // multiple non-null types are rebuilt as anyOf
+	}
+	if nonNull == 0 {
+		return true // an all-null array collapses to the "null" scalar
+	}
+	// One non-null type beside null is rewritten to exactly two entries, so it is the
+	// identity only when the input already had exactly those two.
+	return stringEntries != 2
+}
+
+func resultNeedsGeminiNormalization(result gjson.Result) bool {
+	needs := false
+	switch {
+	case result.IsObject():
+		result.ForEach(func(key, value gjson.Result) bool {
+			if key.String() == "type" && value.IsArray() && geminiTypeArrayNeedsRewrite(value) {
+				needs = true
+				return false
+			}
+			if resultNeedsGeminiNormalization(value) {
+				needs = true
+				return false
+			}
+			return true
+		})
+	case result.IsArray():
+		result.ForEach(func(_, value gjson.Result) bool {
+			if resultNeedsGeminiNormalization(value) {
+				needs = true
+				return false
+			}
+			return true
+		})
+	}
+	return needs
 }
