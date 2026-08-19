@@ -41,6 +41,7 @@ type Config struct {
 type InMemoryStore interface {
 	GetConfiguredProviders() map[schemas.ModelProvider]configstore.ProviderConfig
 	GetMCPClientsAllowingAllVirtualKeys() map[string]string // clientID → clientName
+	GetMCPClientNames() map[string]string                   // clientID → clientName, every client
 }
 
 type BaseGovernancePlugin interface {
