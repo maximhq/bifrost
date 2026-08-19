@@ -75,6 +75,7 @@ func newPluginForMCPStamping(t *testing.T, vk *configstoreTables.TableVirtualKey
 // mirroring what lib/ctx.go stamps from the x-bf-mcp-include-tools and
 // x-bf-mcp-include-clients request headers.
 func newPreRequestCtx(includeTools, includeClients []string) *schemas.BifrostContext {
+	// Only the key: these tests exercise PreRequestHook, which is what resolves access.
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyVirtualKey, mcpTestVKValue)
 	if includeTools != nil {
@@ -202,7 +203,7 @@ func TestPreRequestHookMCP_BothFilters_PrunedListWins(t *testing.T) {
 }
 
 // ============================================================================
-// Grant-shape edge cases
+// grants.Grant-shape edge cases
 // ============================================================================
 
 // A key with no MCP configs at all has an empty effective grant. When include-clients
@@ -219,7 +220,7 @@ func TestPreRequestHookMCP_NoGrants_IncludeClients_StampsDenyAll(t *testing.T) {
 }
 
 // Same deny-all outcome as the no-configs case, but through a different path in
-// computeMCPIncludeTools: here the key has an explicit MCP config for the client whose
+// the include-tools list: here the key has an explicit MCP config for the client whose
 // tools list is empty, exercising the ToolsToExecute.IsEmpty guard that skips the
 // client without emitting any grant entries.
 func TestPreRequestHookMCP_ExplicitEmptyGrant_IncludeClients_StampsDenyAll(t *testing.T) {
@@ -405,4 +406,72 @@ func TestPreRequestHookMCP_LargePayload_AutoInjectOff_NoFilters_StampsNothing(t 
 	tools := stampedIncludeTools(t, p, ctx, newChatRequest())
 	assert.Nil(t, tools)
 	assert.Equal(t, "openai/gpt-4o", metadata.Model, "provider-prefixed model must survive routing unchanged")
+}
+
+// mcpToolCall is a tool-execution request for toolName, the shape PreMCPHook gates on.
+func mcpToolCall(toolName string) *schemas.BifrostMCPRequest {
+	return &schemas.BifrostMCPRequest{
+		RequestType: schemas.MCPRequestTypeChatToolCall,
+		ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{
+			Function: schemas.ChatAssistantMessageToolCallFunction{Name: &toolName},
+		},
+	}
+}
+
+// Executing a tool is gated on the request's access, not on the credential it presented. Whether the
+// caller may be here at all was settled by evaluation, which reads it off the grant; this step asks only
+// about the tool being executed now, which is the one thing evaluation cannot have checked — the tools it
+// sees are the ones already injected into the request.
+func TestPreMCPHookGatesTheToolOnAccess(t *testing.T) {
+	vk := buildVKForMCPStamping([]string{"read_file"})
+
+	t.Run("a tool the access grants is executed", func(t *testing.T) {
+		plugin := newAccessTestPlugin(t, vk, nil)
+
+		_, shortCircuit, err := plugin.PreMCPHook(newPreRequestCtx(nil, nil), mcpToolCall("sentry-read_file"))
+
+		require.NoError(t, err)
+		assert.Nil(t, shortCircuit)
+	})
+
+	t.Run("a tool it does not grant is refused, naming what refused", func(t *testing.T) {
+		plugin := newAccessTestPlugin(t, vk, nil)
+
+		_, shortCircuit, err := plugin.PreMCPHook(newPreRequestCtx(nil, nil), mcpToolCall("sentry-delete_project"))
+
+		require.NoError(t, err)
+		require.NotNil(t, shortCircuit)
+		require.NotNil(t, shortCircuit.Error.Type)
+		assert.Equal(t, string(DecisionMCPToolBlocked), *shortCircuit.Error.Type)
+		assert.Contains(t, shortCircuit.Error.Error.Message, "sentry-delete_project")
+		assert.Contains(t, shortCircuit.Error.Error.Message, vk.Name,
+			"a refusal has to name what refused, whatever kind of grant it was")
+	})
+
+	t.Run("a request that presented nothing may execute any tool", func(t *testing.T) {
+		// It carries unrestricted access, so the tool check passes rather than being skipped. Skipping it
+		// on the absence of a key is what made this a question about credentials instead of about access.
+		plugin := newAccessTestPlugin(t, vk, nil)
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+		_, shortCircuit, err := plugin.PreMCPHook(ctx, mcpToolCall("any-client-any_tool"))
+
+		require.NoError(t, err)
+		assert.Nil(t, shortCircuit)
+	})
+
+	t.Run("a credential that resolves to nothing is refused by evaluation", func(t *testing.T) {
+		// Not by a second read of the credential: that would answer a question the grant already settled,
+		// from a source that could disagree with it.
+		plugin := newAccessTestPlugin(t, vk, nil)
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-revoked")
+
+		_, shortCircuit, err := plugin.PreMCPHook(ctx, mcpToolCall("sentry-read_file"))
+
+		require.NoError(t, err)
+		require.NotNil(t, shortCircuit)
+		require.NotNil(t, shortCircuit.Error.Type)
+		assert.Equal(t, string(DecisionAccessNotFound), *shortCircuit.Error.Type)
+	})
 }

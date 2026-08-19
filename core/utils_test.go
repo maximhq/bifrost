@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/network"
+	"github.com/maximhq/bifrost/core/schemas"
 )
 
 func TestValidateExternalURL(t *testing.T) {
@@ -350,3 +351,42 @@ func TestIsPrivateIP(t *testing.T) {
 	}
 }
 
+// Failing over starts a fresh attempt, so the state the previous attempt resolved for itself must not
+// survive into it. Resolved governance access is cleared with the rest, which is only safe because
+// what re-resolving it needs — the presented credential, the caller's identity — is not.
+func TestClearCtxForFallback(t *testing.T) {
+	cleared := []schemas.BifrostContextKey{
+		schemas.BifrostContextKeyAPIKeyID,
+		schemas.BifrostContextKeyAPIKeyName,
+		schemas.BifrostContextKeyGovernanceIncludeOnlyKeys,
+		schemas.BifrostContextKeyGovernanceEffectiveAccess,
+		schemas.BifrostContextKeyChangeRequestType,
+		schemas.BifrostContextKeyAttemptTrail,
+		schemas.BifrostContextKeyStreamEndIndicator,
+		schemas.BifrostContextKeyConnectionClosed,
+		schemas.BifrostContextKeySupportsAssistantPrefill,
+	}
+	// Clearing resolved access is pointless if the next attempt cannot resolve it again.
+	preserved := []schemas.BifrostContextKey{
+		schemas.BifrostContextKeyVirtualKey,
+		schemas.BifrostContextKeyUserID,
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	for _, key := range append(append([]schemas.BifrostContextKey{}, cleared...), preserved...) {
+		ctx.SetValue(key, "set")
+	}
+
+	clearCtxForFallback(ctx)
+
+	for _, key := range cleared {
+		if ctx.Value(key) != nil {
+			t.Errorf("%v survived into the next attempt", key)
+		}
+	}
+	for _, key := range preserved {
+		if ctx.Value(key) == nil {
+			t.Errorf("%v was cleared, leaving the next attempt unable to resolve its own access", key)
+		}
+	}
+}
