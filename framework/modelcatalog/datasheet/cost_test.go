@@ -3974,6 +3974,26 @@ func TestCalculateCostForUsage_MatchesCalculateCost(t *testing.T) {
 	assert.Equal(t, respCost, usageCost, "bare-usage cost must equal full-response cost")
 }
 
+// TestCalculateCostBreakdownForUsage_CarriesSplit verifies the breakdown variant
+// returns the same total as the scalar path and carries the input/output split
+// so bare-usage billing can denormalize per category.
+func TestCalculateCostBreakdownForUsage_CarriesSplit(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
+	})
+
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500}
+
+	bd := s.CalculateCostBreakdownForUsage(usage, schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, nil)
+	require.NotNil(t, bd)
+	// 1000*0.000005 input, 500*0.000015 output.
+	assert.InDelta(t, 0.005, bd.InputCost, 1e-12)
+	assert.InDelta(t, 0.0075, bd.OutputCost, 1e-12)
+	assert.InDelta(t, bd.TotalCost, bd.InputCost+bd.OutputCost+bd.AdditionalCost, 1e-12)
+	// Total matches the scalar path exactly.
+	assert.Equal(t, s.CalculateCostForUsage(usage, schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, nil), bd.TotalCost)
+}
+
 // TestCalculateCostForUsage_NilUsageIsZero verifies the helper bills nothing
 // when there is no usage (e.g. a failure that consumed no tokens).
 func TestCalculateCostForUsage_NilUsageIsZero(t *testing.T) {

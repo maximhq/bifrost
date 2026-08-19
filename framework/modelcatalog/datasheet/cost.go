@@ -81,10 +81,25 @@ func (s *Store) CalculateCostBreakdown(result *schemas.BifrostResponse, scopes *
 // cancelled request via BifrostError.ExtraFields.BilledUsage: the
 // provider consumed tokens, so we must charge for them even though there is no
 // success response to read. It mirrors CalculateCost's compute path so success
-// and failure billing use identical rates. Returns 0 when usage is nil.
+// and failure billing use identical rates. Returns 0 when usage is nil. A thin
+// wrapper over CalculateCostBreakdownForUsage returning only the total, so both
+// paths compute cost identically.
 func (s *Store) CalculateCostForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *LookupScopes) float64 {
-	if usage == nil {
+	breakdown := s.CalculateCostBreakdownForUsage(usage, provider, model, requestType, scopes)
+	if breakdown == nil {
 		return 0
+	}
+	return breakdown.TotalCost
+}
+
+// CalculateCostBreakdownForUsage mirrors CalculateCostForUsage but returns the
+// full per-category breakdown instead of only the total, so callers billing a
+// bare usage object (failed/cancelled requests) can denormalize the input /
+// output / additional split, not just the scalar total. Returns nil when there
+// is no cost to record.
+func (s *Store) CalculateCostBreakdownForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *LookupScopes) *schemas.BifrostCost {
+	if usage == nil {
+		return nil
 	}
 
 	var lookupScopes LookupScopes
@@ -94,7 +109,7 @@ func (s *Store) CalculateCostForUsage(usage *schemas.BifrostLLMUsage, provider s
 
 	// If the provider already computed cost, trust it (matches calculateBaseCost).
 	if usage.Cost != nil && usage.Cost.TotalCost > 0 {
-		return usage.Cost.TotalCost
+		return usage.Cost
 	}
 
 	// Apply the served tier (fast mode / data residency) carried on the usage so
@@ -102,7 +117,7 @@ func (s *Store) CalculateCostForUsage(usage *schemas.BifrostLLMUsage, provider s
 	input := costInput{usage: usage}
 	input.tier = tierFromResponse(nil, usage.Speed, usage.InferenceGeo)
 
-	breakdown := s.computeCostFromInput(
+	return s.computeCostFromInput(
 		input,
 		schemas.RoutingInfo{
 			Provider:                provider,
@@ -112,10 +127,6 @@ func (s *Store) CalculateCostForUsage(usage *schemas.BifrostLLMUsage, provider s
 		normalizeStreamRequestType(requestType),
 		lookupScopes,
 	)
-	if breakdown == nil {
-		return 0
-	}
-	return breakdown.TotalCost
 }
 
 // CalculateGuardrailCost computes judge cost when no parent response is available.

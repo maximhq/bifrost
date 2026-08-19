@@ -255,15 +255,22 @@ func (p *LoggerPlugin) applyErrorBillingFromBilledUsage(ctx *schemas.BifrostCont
 		return
 	}
 	if entry.TokenUsageParsed == nil {
-		entry.TokenUsageParsed = billed
+		usageCopy := *billed
+		entry.TokenUsageParsed = &usageCopy
 		entry.PromptTokens = billed.PromptTokens
 		entry.CompletionTokens = billed.CompletionTokens
 		entry.TotalTokens = billed.TotalTokens
 	}
 	if entry.Cost == nil && p.pricingManager != nil {
 		pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
-		if cost := p.pricingManager.CalculateCostForUsage(billed, schemas.ModelProvider(entry.Provider), entry.Model, requestType, pricingScopes); cost > 0 {
-			entry.Cost = &cost
+		if bd := p.pricingManager.CalculateCostBreakdownForUsage(billed, schemas.ModelProvider(entry.Provider), entry.Model, requestType, pricingScopes); bd != nil && bd.TotalCost > 0 {
+			total := bd.TotalCost
+			entry.Cost = &total
+			// Attach the breakdown to the stored usage so SerializeFields
+			// denormalizes the input/output/additional split, not just the total.
+			if entry.TokenUsageParsed != nil && entry.TokenUsageParsed.Cost == nil {
+				entry.TokenUsageParsed.Cost = bd
+			}
 		}
 	}
 }
@@ -285,21 +292,43 @@ func (p *LoggerPlugin) applyInternalCallCosts(ctx *schemas.BifrostContext, entry
 		return
 	}
 	pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
-	var cost float64
+	var cacheCost, guardrailCost float64
 	if cacheDebug, ok := schemas.CacheDebugFromContext(ctx); ok {
-		cost += p.pricingManager.CalculateCacheEmbeddingCost(cacheDebug, pricingScopes)
+		cacheCost = p.pricingManager.CalculateCacheEmbeddingCost(cacheDebug, pricingScopes)
 	}
 	if guardrailDebug != nil {
-		cost += p.pricingManager.CalculateGuardrailCost(guardrailDebug, pricingScopes)
+		guardrailCost = p.pricingManager.CalculateGuardrailCost(guardrailDebug, pricingScopes)
 	}
+	cost := cacheCost + guardrailCost
 	if cost <= 0 {
 		return
 	}
 	if entry.Cost == nil {
 		entry.Cost = &cost
-		return
+	} else {
+		*entry.Cost += cost
 	}
-	*entry.Cost += cost
+
+	// Denormalize the split too: the cache embedding lookup is an input cost, the
+	// guardrail judge call an additional one. When a usage carrier exists, merge
+	// onto its breakdown (SerializeFields denormalizes from there); otherwise
+	// there is no carrier to synthesize (that would suppress the deferred-usage
+	// watcher), so write the split columns directly.
+	sidecar := &schemas.BifrostCost{TotalCost: cost}
+	if cacheCost > 0 {
+		sidecar.InputCost = cacheCost
+		sidecar.InputCostDetails = &schemas.InputCostDetails{TextCost: cacheCost}
+	}
+	if guardrailCost > 0 {
+		sidecar.AdditionalCost = guardrailCost
+		sidecar.AdditionalCostDetails = &schemas.AdditionalCostDetails{GuardrailCost: guardrailCost}
+	}
+	if entry.TokenUsageParsed != nil {
+		entry.TokenUsageParsed.Cost = entry.TokenUsageParsed.Cost.Add(sidecar)
+	} else {
+		entry.InputCost += cacheCost
+		entry.AdditionalCost += guardrailCost
+	}
 }
 
 const (
