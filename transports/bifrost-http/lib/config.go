@@ -5402,6 +5402,26 @@ func (c *Config) GetAllowOnAllVirtualKeysClients() map[string]string {
 	return result
 }
 
+// GetMCPClientNames returns every configured MCP client's name, keyed by client ID.
+//
+// Tool patterns are matched by client name while grants are held by client ID, so anything building a
+// grant from stored client IDs needs the mapping between them. Read-only snapshot; do not mutate.
+func (c *Config) GetMCPClientNames() map[string]string {
+	c.muMCP.RLock()
+	defer c.muMCP.RUnlock()
+
+	if c.MCPConfig == nil {
+		return nil
+	}
+	result := make(map[string]string, len(c.MCPConfig.ClientConfigs))
+	for _, client := range c.MCPConfig.ClientConfigs {
+		if client != nil && client.ID != "" && client.Name != "" {
+			result[client.ID] = client.Name
+		}
+	}
+	return result
+}
+
 // GetPluginOrder returns the names of all base plugins in their sorted placement order.
 // This method is lock-free and safe for concurrent access from hot paths.
 // Do not modify the returned slice; it is a shared snapshot and must be treated read-only.
