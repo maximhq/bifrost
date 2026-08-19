@@ -310,6 +310,18 @@
         "default_request_timeout_in_seconds": 300
       }
     },
+    "runware": {
+      "keys": [
+        {
+          "name": "Runware API Key",
+          "value": "env.RUNWARE_API_KEY",
+          "weight": 1
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
     "runway": {
       "keys": [
         {
