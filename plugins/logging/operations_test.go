@@ -1609,6 +1609,92 @@ func TestStoreOrEnqueueRetryPreservesAllEntries(t *testing.T) {
 	}
 }
 
+// injectAndCollect runs Inject and returns the enqueued entries keyed by ID.
+func injectAndCollect(t *testing.T, entries []*logstore.Log, upstreamMs, overheadMs float64) map[string]*logstore.Log {
+	t.Helper()
+	plugin := &LoggerPlugin{
+		logger:     testLogger{},
+		writeQueue: make(chan *writeQueueEntry, len(entries)),
+	}
+	traceID := "trace-overhead-order"
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+	for _, e := range entries {
+		plugin.storeOrEnqueueEntry(ctx, e, nil)
+	}
+	trace := &schemas.Trace{
+		TraceID: traceID,
+		RootSpan: &schemas.Span{
+			Attributes: map[string]any{
+				schemas.AttrBifrostUpstreamDurationMs: upstreamMs,
+				schemas.AttrBifrostOverheadDurationMs: overheadMs,
+			},
+		},
+	}
+	if err := plugin.Inject(context.Background(), trace); err != nil {
+		t.Fatalf("Inject() error = %v", err)
+	}
+	out := make(map[string]*logstore.Log, len(entries))
+	for len(plugin.writeQueue) > 0 {
+		qe := <-plugin.writeQueue
+		out[qe.log.ID] = qe.log
+	}
+	if len(out) != len(entries) {
+		t.Fatalf("expected %d enqueued entries, got %d", len(entries), len(out))
+	}
+	return out
+}
+
+// TestInject_StampsOverheadOnLatestTimestampRow guards against positional selection:
+// a concurrent list_models fan-out appends entries under one trace in nondeterministic
+// completion order, so request-level upstream/overhead must land on the latest-Timestamp
+// row, not "whichever slice position happened to be last". Here the latest row is the
+// middle one, so a positional "last" would stamp the wrong entry.
+func TestInject_StampsOverheadOnLatestTimestampRow(t *testing.T) {
+	base := time.Now().UTC()
+	got := injectAndCollect(t, []*logstore.Log{
+		{ID: "a", Provider: "openai", Timestamp: base},
+		{ID: "b", Provider: "anthropic", Timestamp: base.Add(2 * time.Second)}, // latest, but middle
+		{ID: "c", Provider: "gemini", Timestamp: base.Add(1 * time.Second)},    // positional last
+	}, 10, 5)
+
+	b := got["b"]
+	if b.UpstreamLatency == nil || *b.UpstreamLatency != 10 {
+		t.Fatalf("entry b UpstreamLatency = %v, want 10", b.UpstreamLatency)
+	}
+	if b.OverheadLatency == nil || *b.OverheadLatency != 5 {
+		t.Fatalf("entry b OverheadLatency = %v, want 5", b.OverheadLatency)
+	}
+	if b.Latency == nil || *b.Latency != 15 {
+		t.Fatalf("entry b Latency = %v, want 15 (upstream+overhead)", b.Latency)
+	}
+	for _, id := range []string{"a", "c"} {
+		if e := got[id]; e.UpstreamLatency != nil || e.OverheadLatency != nil {
+			t.Fatalf("entry %s must not carry request-level latency: up=%v ov=%v", id, e.UpstreamLatency, e.OverheadLatency)
+		}
+	}
+}
+
+// TestInject_OverheadTieBrokenByID pins determinism when timestamps collide (the
+// realistic fan-out case): the highest ID wins, so the target row is stable across runs.
+func TestInject_OverheadTieBrokenByID(t *testing.T) {
+	ts := time.Now().UTC()
+	got := injectAndCollect(t, []*logstore.Log{
+		{ID: "id-c", Provider: "openai", Timestamp: ts},
+		{ID: "id-a", Provider: "anthropic", Timestamp: ts},
+		{ID: "id-b", Provider: "gemini", Timestamp: ts},
+	}, 8, 2)
+
+	if e := got["id-c"]; e.OverheadLatency == nil || *e.OverheadLatency != 2 {
+		t.Fatalf("highest ID id-c should carry overhead, got %v", e.OverheadLatency)
+	}
+	for _, id := range []string{"id-a", "id-b"} {
+		if e := got[id]; e.UpstreamLatency != nil || e.OverheadLatency != nil {
+			t.Fatalf("entry %s must not carry request-level latency", id)
+		}
+	}
+}
+
 func TestConvertToProcessedStreamResponseUsesResponsesStreamTypeForWebSocketResponses(t *testing.T) {
 	result := &schemas.StreamAccumulatorResult{
 		RequestID:      "req-ws-3000",

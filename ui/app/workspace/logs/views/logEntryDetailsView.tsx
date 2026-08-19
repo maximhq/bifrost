@@ -1,4 +1,6 @@
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { Info } from "lucide-react";
 
 interface Props {
 	className?: string;
@@ -7,6 +9,7 @@ interface Props {
 	valueClassName?: string;
 	label: string;
 	value: React.ReactNode | null;
+	tooltip?: string;
 	hideExpandable?: boolean;
 	orientation?: "horizontal" | "vertical";
 	align?: "left" | "right";
@@ -27,8 +30,18 @@ export default function LogEntryDetailsView(props: Props) {
 		>
 			<div className={props.containerClassName}>
 				{props.label !== "" && (
-					<div className="text-muted-foreground flex shrink-0 flex-row items-center gap-2 pb-2 text-xs font-medium">
+					<div className="text-muted-foreground flex shrink-0 flex-row items-center gap-1.5 pb-2 text-xs font-medium">
 						{props.label.toUpperCase().replace(/_/g, " ")}
+						{props.tooltip && (
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<Info className="text-muted-foreground/60 hover:text-muted-foreground h-3 w-3 cursor-help" />
+								</TooltipTrigger>
+								<TooltipContent sideOffset={6} className="max-w-xs">
+									{props.tooltip}
+								</TooltipContent>
+							</Tooltip>
+						)}
 					</div>
 				)}
 				<div
