@@ -4998,8 +4998,11 @@ func (bifrost *Bifrost) getProviderByKey(providerKey schemas.ModelProvider) sche
 	}
 	// Could happen when provider is not initialized yet, check if provider config exists in account and if so, initialize it
 	config, err := bifrost.account.GetConfigForProvider(providerKey)
+	if err != nil {
+		return nil
+	}
 	autoInitialized := config == nil
-	if err != nil || config == nil {
+	if config == nil {
 		if slices.Contains(dynamicallyConfigurableProviders, providerKey) {
 			autoInitialized = true
 			bifrost.logger.Info(fmt.Sprintf("initializing provider %s with default config", providerKey))
@@ -5550,6 +5553,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		return resp, finalErr, effectiveReq
 	}
 
+	ctx.ClearValue(schemas.BifrostContextKeyAutoInitializedProvider)
 	pq, err := bifrost.getProviderQueue(provider)
 	if err != nil {
 		bifrostErr := newBifrostError(err)
@@ -5557,7 +5561,6 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		resp, finalErr := bifrost.finalizeAfterPreHookErr(ctx, pipeline, preCount, req.RequestType, provider, model, bifrostErr)
 		return resp, finalErr, effectiveReq
 	}
-	ctx.ClearValue(schemas.BifrostContextKeyAutoInitializedProvider)
 	if pq.autoInitialized {
 		ctx.SetValue(schemas.BifrostContextKeyAutoInitializedProvider, true)
 	}
@@ -5941,13 +5944,13 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		return finalizeStream(bifrostErr)
 	}
 
+	ctx.ClearValue(schemas.BifrostContextKeyAutoInitializedProvider)
 	pq, err := bifrost.getProviderQueue(provider)
 	if err != nil {
 		bifrostErr := newBifrostError(err)
 		bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
 		return finalizeStream(bifrostErr)
 	}
-	ctx.ClearValue(schemas.BifrostContextKeyAutoInitializedProvider)
 	if pq.autoInitialized {
 		ctx.SetValue(schemas.BifrostContextKeyAutoInitializedProvider, true)
 	}
