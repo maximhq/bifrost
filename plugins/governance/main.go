@@ -1035,6 +1035,12 @@ func (p *GovernancePlugin) PreRequestHook(ctx *schemas.BifrostContext, req *sche
 //   - *schemas.LLMPluginShortCircuit: The plugin short circuit if the request is not allowed
 //   - error: Any error that occurred during processing
 func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	// Governance attribution is admission-scoped. Always shadow values inherited
+	// from an earlier fallback/turn (including the empty result) before doing
+	// any validation, so a rejected attempt cannot be logged against stale IDs.
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceBudgetIDs, []string{})
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceRateLimitIDs, []string{})
+
 	// Validate required headers are present
 	if headerErr := p.validateRequiredHeaders(ctx); headerErr != nil {
 		return req, &schemas.LLMPluginShortCircuit{Error: headerErr}, nil
@@ -1061,6 +1067,26 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 		}, nil
 	}
 
+	// Snapshot the applicable governance entities immediately after admission. Logging
+	// consumes these IDs only when it builds a terminal log row, but collecting
+	// them here has three important properties:
+	//   - ordinary stream chunks do no repeated hierarchy traversal or allocation;
+	//   - attribution reflects the policy snapshot used for admission, even if
+	//     governance configuration is hot-reloaded while a stream is in flight;
+	//   - PostLLMHook ordering does not determine whether logging can see the IDs.
+	// PreLLMHook runs again for fallbacks, and the empty values written above make
+	// an attempt with no applicable IDs replace (rather than inherit) the prior one.
+	effectiveVK := virtualKeyValue
+	if bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipVirtualKeyUsageTracking) {
+		effectiveVK = ""
+	}
+	// Batch-create requests commonly omit a top-level model because each
+	// input-file row carries its own model; the store still returns
+	// provider/VK hierarchy IDs when model is empty.
+	budgetIDs, rateLimitIDs := p.store.CollectApplicableGovernanceIDs(ctx, effectiveVK, userID, provider, model)
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceBudgetIDs, budgetIDs)
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceRateLimitIDs, rateLimitIDs)
+
 	return req, nil, nil
 }
 
@@ -1081,6 +1107,21 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 
 	// Extract request type, provider, and model
 	requestType, provider, requestedModel, _ := bifrost.GetResponseFields(result, err)
+	isFinalChunk := bifrost.IsFinalChunk(ctx)
+
+	// The governance worker only settles terminal usage. Ordinary intermediate
+	// chunks have no work to do here; returning before context extraction,
+	// pricing-scope construction, and goroutine creation keeps the per-chunk path
+	// allocation-free. This also covers stream errors whose provider path omitted
+	// the stream-end indicator: usage tracking already ignores those calls, while
+	// the next plugin in the post chain (logging) still observes the attribution
+	// snapshot created in PreLLMHook. Realtime is deliberately excluded because
+	// its PostLLMHook runs once per complete turn rather than per transport delta.
+	if bifrost.IsStreamRequestType(requestType) &&
+		requestType != schemas.RealtimeRequest &&
+		!isFinalChunk {
+		return result, err, nil
+	}
 
 	// Extract governance information
 	virtualKey := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
@@ -1092,8 +1133,6 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		// filter models which are not supported on this virtual key
 		result.ListModelsResponse.Data = p.filterModelsForVirtualKey(ctx, result.ListModelsResponse.Data, virtualKey)
 	}
-
-	isFinalChunk := bifrost.IsFinalChunk(ctx)
 
 	// Build pricing scopes from context using the governance VK ID (not the raw VK token)
 	pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(provider))
@@ -1107,18 +1146,6 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	}
 	// If effectiveVK is empty, it will be passed as empty string to postHookWorker
 	// The tracker will handle empty virtual keys gracefully by only updating provider-level and model-level usage
-	// Collect the affected budget and rate-limit IDs synchronously (fast in-memory
-	// lookups) and attach them to the context. Batch-create requests commonly omit
-	// a top-level model because each input-file row carries its own model; the
-	// store still returns provider/VK hierarchy IDs when requestedModel is empty.
-	budgetIDs, rateLimitIDs := p.store.CollectApplicableGovernanceIDs(ctx, effectiveVK, userID, provider, requestedModel)
-	if len(budgetIDs) > 0 {
-		ctx.SetValue(schemas.BifrostContextKeyGovernanceBudgetIDs, budgetIDs)
-	}
-	if len(rateLimitIDs) > 0 {
-		ctx.SetValue(schemas.BifrostContextKeyGovernanceRateLimitIDs, rateLimitIDs)
-	}
-
 	if requestedModel != "" {
 		// Attempt number distinguishes physical provider calls within one
 		// logical request so each token-consuming attempt bills exactly once.
