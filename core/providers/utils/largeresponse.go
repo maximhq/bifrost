@@ -146,8 +146,8 @@ func FinalizeResponseWithLargeDetection(
 		if err != nil {
 			return nil, false, NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
 		}
-		// Copy body before caller releases resp
-		return append([]byte(nil), body...), false, nil
+		// CheckAndDecodeBody already returns an owned copy, safe after release.
+		return body, false, nil
 	}
 
 	contentLength := resp.Header.ContentLength()
@@ -170,7 +170,7 @@ func FinalizeResponseWithLargeDetection(
 		if err != nil {
 			return nil, false, NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
 		}
-		return append([]byte(nil), body...), false, nil
+		return body, false, nil
 	}
 
 	// Unknown Content-Length (chunked transfer encoding) — buffer up to responseThreshold
@@ -217,7 +217,7 @@ func FinalizeResponseWithLargeDetection(
 		if err != nil {
 			return nil, false, NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
 		}
-		return append([]byte(nil), body...), false, nil
+		return body, false, nil
 	}
 
 	// Known large response (Content-Length > threshold) — prefetch first 64KB for
@@ -232,7 +232,7 @@ func FinalizeResponseWithLargeDetection(
 		if err != nil {
 			return nil, false, NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
 		}
-		return append([]byte(nil), body...), false, nil
+		return body, false, nil
 	}
 
 	// Decompress on-the-fly if provider returned gzip-encoded response.
