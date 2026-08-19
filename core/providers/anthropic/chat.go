@@ -696,7 +696,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 				}
 			} else if reasoningParams.Effort != nil && *reasoningParams.Effort != "none" {
 				effort := MapBifrostEffortToAnthropic(*reasoningParams.Effort)
-				if SupportsAdaptiveThinking(capModel) {
+				if schemas.ShouldUseAdaptiveThinking(ctx, SupportsAdaptiveThinking(capModel), IsAdaptiveOnlyThinkingModel(capModel)) {
 					// Opus 4.6+ and Opus 4.7+: adaptive thinking + native effort
 					anthropicReq.Thinking = &AnthropicThinking{Type: "adaptive"}
 					setEffortOnOutputConfig(anthropicReq, effort)
