@@ -9861,18 +9861,70 @@
               "name": "Adaptive thinking (Sonnet 5)",
               "request": {
                 "method": "POST",
-                "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"}],
-                "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-sonnet-5\",\n  \"max_tokens\": 16000,\n  \"thinking\": { \"type\": \"adaptive\" },\n  \"messages\": [{\"role\":\"user\",\"content\":\"Solve: integral of x^2 * e^(-x) dx from 0 to infinity. Show steps.\"}]\n}"},
-                "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-api-key",
+                    "value": "{{anthropicKey}}"
+                  },
+                  {
+                    "key": "anthropic-version",
+                    "value": "2023-06-01"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"claude-sonnet-5\",\n  \"max_tokens\": 16000,\n  \"thinking\": { \"type\": \"adaptive\" },\n  \"messages\": [{\"role\":\"user\",\"content\":\"Solve: integral of x^2 * e^(-x) dx from 0 to infinity. Show steps.\"}]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/anthropic/v1/messages",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "anthropic",
+                    "v1",
+                    "messages"
+                  ]
+                }
               }
             },
             {
               "name": "Adaptive thinking + effort=high (Sonnet 5)",
               "request": {
                 "method": "POST",
-                "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"}],
-                "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-sonnet-5\",\n  \"max_tokens\": 16000,\n  \"thinking\": { \"type\": \"adaptive\" },\n  \"output_config\": { \"effort\": \"high\" },\n  \"messages\": [{\"role\":\"user\",\"content\":\"Solve: integral of x^2 * e^(-x) dx from 0 to infinity. Show steps.\"}]\n}"},
-                "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-api-key",
+                    "value": "{{anthropicKey}}"
+                  },
+                  {
+                    "key": "anthropic-version",
+                    "value": "2023-06-01"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"claude-sonnet-5\",\n  \"max_tokens\": 16000,\n  \"thinking\": { \"type\": \"adaptive\" },\n  \"output_config\": { \"effort\": \"high\" },\n  \"messages\": [{\"role\":\"user\",\"content\":\"Solve: integral of x^2 * e^(-x) dx from 0 to infinity. Show steps.\"}]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/anthropic/v1/messages",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "anthropic",
+                    "v1",
+                    "messages"
+                  ]
+                }
               }
             },
             {
@@ -10070,18 +10122,78 @@
               "name": "Computer use - Sonnet 5 canonical (new-gen tools, computer-use-2025-11-24)",
               "request": {
                 "method": "POST",
-                "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"},{"key":"anthropic-beta","value":"computer-use-2025-11-24"}],
-                "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-sonnet-5\",\n  \"max_tokens\": 4096,\n  \"tools\": [\n    { \"type\": \"computer_20251124\", \"name\": \"computer\", \"display_width_px\": 1024, \"display_height_px\": 768, \"display_number\": 1 },\n    { \"type\": \"bash_20250124\", \"name\": \"bash\" },\n    { \"type\": \"text_editor_20250728\", \"name\": \"str_replace_based_edit_tool\" }\n  ],\n  \"messages\": [{\"role\":\"user\",\"content\":\"Take a screenshot of the desktop.\"}]\n}"},
-                "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-api-key",
+                    "value": "{{anthropicKey}}"
+                  },
+                  {
+                    "key": "anthropic-version",
+                    "value": "2023-06-01"
+                  },
+                  {
+                    "key": "anthropic-beta",
+                    "value": "computer-use-2025-11-24"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"claude-sonnet-5\",\n  \"max_tokens\": 4096,\n  \"tools\": [\n    { \"type\": \"computer_20251124\", \"name\": \"computer\", \"display_width_px\": 1024, \"display_height_px\": 768, \"display_number\": 1 },\n    { \"type\": \"bash_20250124\", \"name\": \"bash\" },\n    { \"type\": \"text_editor_20250728\", \"name\": \"str_replace_based_edit_tool\" }\n  ],\n  \"messages\": [{\"role\":\"user\",\"content\":\"Take a screenshot of the desktop.\"}]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/anthropic/v1/messages",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "anthropic",
+                    "v1",
+                    "messages"
+                  ]
+                }
               }
             },
             {
               "name": "Computer use - Sonnet 5 + old-gen tools (Bifrost auto-upgrades)",
               "request": {
                 "method": "POST",
-                "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-api-key","value":"{{anthropicKey}}"},{"key":"anthropic-version","value":"2023-06-01"},{"key":"anthropic-beta","value":"computer-use-2025-11-24"}],
-                "body": {"mode":"raw","raw":"{\n  \"model\": \"claude-sonnet-5\",\n  \"max_tokens\": 4096,\n  \"tools\": [\n    { \"type\": \"computer_20250124\", \"name\": \"computer\", \"display_width_px\": 1024, \"display_height_px\": 768, \"display_number\": 1 },\n    { \"type\": \"bash_20250124\", \"name\": \"bash\" },\n    { \"type\": \"text_editor_20250124\", \"name\": \"str_replace_editor\" }\n  ],\n  \"messages\": [{\"role\":\"user\",\"content\":\"Take a screenshot of the desktop.\"}]\n}"},
-                "url": {"raw":"{{baseUrl}}/anthropic/v1/messages","host":["{{baseUrl}}"],"path":["anthropic","v1","messages"]}
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-api-key",
+                    "value": "{{anthropicKey}}"
+                  },
+                  {
+                    "key": "anthropic-version",
+                    "value": "2023-06-01"
+                  },
+                  {
+                    "key": "anthropic-beta",
+                    "value": "computer-use-2025-11-24"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"claude-sonnet-5\",\n  \"max_tokens\": 4096,\n  \"tools\": [\n    { \"type\": \"computer_20250124\", \"name\": \"computer\", \"display_width_px\": 1024, \"display_height_px\": 768, \"display_number\": 1 },\n    { \"type\": \"bash_20250124\", \"name\": \"bash\" },\n    { \"type\": \"text_editor_20250124\", \"name\": \"str_replace_editor\" }\n  ],\n  \"messages\": [{\"role\":\"user\",\"content\":\"Take a screenshot of the desktop.\"}]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/anthropic/v1/messages",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "anthropic",
+                    "v1",
+                    "messages"
+                  ]
+                }
               }
             },
             {
@@ -11833,22 +11945,78 @@
             },
             {
               "name": "anthropic/claude-sonnet-5",
-              "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Function call: get_weather invoked with city argument', function () { var j = pm.response.json(); var tc = null; if (j.choices && j.choices[0] && j.choices[0].message && Array.isArray(j.choices[0].message.tool_calls) && j.choices[0].message.tool_calls.length) { tc = j.choices[0].message.tool_calls[0]; } pm.expect(tc, 'no tool_calls in response').to.not.be.null; pm.expect(tc.function && tc.function.name).to.equal('get_weather'); var a; try { a = JSON.parse(tc.function.arguments); } catch (e) { pm.expect.fail('arguments not JSON: ' + e.message); return; } pm.expect(a).to.have.property('city').that.is.a('string'); }); }"]}}],
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if (pm.response.code < 400) { pm.test('Function call: get_weather invoked with city argument', function () { var j = pm.response.json(); var tc = null; if (j.choices && j.choices[0] && j.choices[0].message && Array.isArray(j.choices[0].message.tool_calls) && j.choices[0].message.tool_calls.length) { tc = j.choices[0].message.tool_calls[0]; } pm.expect(tc, 'no tool_calls in response').to.not.be.null; pm.expect(tc.function && tc.function.name).to.equal('get_weather'); var a; try { a = JSON.parse(tc.function.arguments); } catch (e) { pm.expect.fail('arguments not JSON: ' + e.message); return; } pm.expect(a).to.have.property('city').that.is.a('string'); }); }"
+                    ]
+                  }
+                }
+              ],
               "request": {
                 "method": "POST",
-                "header": [{"key":"Content-Type","value":"application/json"}],
-                "body": {"mode":"raw","raw":"{\n  \"model\": \"anthropic/claude-sonnet-5\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Weather in Lagos, Nigeria?\"}],\n  \"tools\": [{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}]\n}"},
-                "url": {"raw":"{{baseUrl}}/v1/chat/completions","host":["{{baseUrl}}"],"path":["v1","chat","completions"]}
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Weather in Lagos, Nigeria?\"}],\n  \"tools\": [{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/chat/completions",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "chat",
+                    "completions"
+                  ]
+                }
               }
             },
             {
               "name": "bedrock/global.anthropic.claude-sonnet-5",
-              "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code < 400) { pm.test('Function call: get_weather invoked with city argument', function () { var j = pm.response.json(); var tc = null; if (j.choices && j.choices[0] && j.choices[0].message && Array.isArray(j.choices[0].message.tool_calls) && j.choices[0].message.tool_calls.length) { tc = j.choices[0].message.tool_calls[0]; } pm.expect(tc, 'no tool_calls in response').to.not.be.null; pm.expect(tc.function && tc.function.name).to.equal('get_weather'); var a; try { a = JSON.parse(tc.function.arguments); } catch (e) { pm.expect.fail('arguments not JSON: ' + e.message); return; } pm.expect(a).to.have.property('city').that.is.a('string'); }); }"]}}],
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if (pm.response.code < 400) { pm.test('Function call: get_weather invoked with city argument', function () { var j = pm.response.json(); var tc = null; if (j.choices && j.choices[0] && j.choices[0].message && Array.isArray(j.choices[0].message.tool_calls) && j.choices[0].message.tool_calls.length) { tc = j.choices[0].message.tool_calls[0]; } pm.expect(tc, 'no tool_calls in response').to.not.be.null; pm.expect(tc.function && tc.function.name).to.equal('get_weather'); var a; try { a = JSON.parse(tc.function.arguments); } catch (e) { pm.expect.fail('arguments not JSON: ' + e.message); return; } pm.expect(a).to.have.property('city').that.is.a('string'); }); }"
+                    ]
+                  }
+                }
+              ],
               "request": {
                 "method": "POST",
-                "header": [{"key":"Content-Type","value":"application/json"}],
-                "body": {"mode":"raw","raw":"{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-5\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Weather in Lagos, Nigeria?\"}],\n  \"tools\": [{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}]\n}"},
-                "url": {"raw":"{{baseUrl}}/v1/chat/completions","host":["{{baseUrl}}"],"path":["v1","chat","completions"]}
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-5\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Weather in Lagos, Nigeria?\"}],\n  \"tools\": [{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/chat/completions",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "chat",
+                    "completions"
+                  ]
+                }
               }
             },
             {
@@ -12044,18 +12212,54 @@
               "name": "anthropic/claude-sonnet-5",
               "request": {
                 "method": "POST",
-                "header": [{"key":"Content-Type","value":"application/json"}],
-                "body": {"mode":"raw","raw":"{\n  \"model\": \"anthropic/claude-sonnet-5\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Count 1-5.\"}],\n  \"stream\": true\n}"},
-                "url": {"raw":"{{baseUrl}}/v1/chat/completions","host":["{{baseUrl}}"],"path":["v1","chat","completions"]}
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Count 1-5.\"}],\n  \"stream\": true\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/chat/completions",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "chat",
+                    "completions"
+                  ]
+                }
               }
             },
             {
               "name": "bedrock/global.anthropic.claude-sonnet-5",
               "request": {
                 "method": "POST",
-                "header": [{"key":"Content-Type","value":"application/json"}],
-                "body": {"mode":"raw","raw":"{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-5\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Count 1-5.\"}],\n  \"stream\": true\n}"},
-                "url": {"raw":"{{baseUrl}}/v1/chat/completions","host":["{{baseUrl}}"],"path":["v1","chat","completions"]}
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-5\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Count 1-5.\"}],\n  \"stream\": true\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/chat/completions",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "chat",
+                    "completions"
+                  ]
+                }
               }
             },
             {
@@ -48422,17 +48626,17 @@
                   "  if (body.output && body.output.length) {",
                   "    var input = [{ type: 'message', role: 'user', content: \"Work out 17 * 23 step by step, then give just the number.\" }]",
                   "      .concat(body.output);",
-        "    // Cohere's API has no encrypted-reasoning field, so a Cohere response",
-        "    // never carries encrypted_content on its own - which means a replay",
-        "    // built purely from its output would exercise none of the marker path",
-        "    // and the leak assertion below would pass vacuously. A client CAN send",
-        "    // one (replaying reasoning captured elsewhere), and that is the shape",
-        "    // under test, so attach a deterministic token to the reasoning items.",
-        "    for (var i = 0; i < input.length; i++) {",
-        "      if (input[i] && input[i].type === 'reasoning' && !input[i].encrypted_content) {",
-        "        input[i].encrypted_content = 'bifrost-e2e-encrypted-reasoning-5982';",
-        "      }",
-        "    }",
+                  "    // Cohere's API has no encrypted-reasoning field, so a Cohere response",
+                  "    // never carries encrypted_content on its own - which means a replay",
+                  "    // built purely from its output would exercise none of the marker path",
+                  "    // and the leak assertion below would pass vacuously. A client CAN send",
+                  "    // one (replaying reasoning captured elsewhere), and that is the shape",
+                  "    // under test, so attach a deterministic token to the reasoning items.",
+                  "    for (var i = 0; i < input.length; i++) {",
+                  "      if (input[i] && input[i].type === 'reasoning' && !input[i].encrypted_content) {",
+                  "        input[i].encrypted_content = 'bifrost-e2e-encrypted-reasoning-5982';",
+                  "      }",
+                  "    }",
                   "    pm.collectionVariables.set('cohereReasoningReplayInput5982', JSON.stringify(input));",
                   "  }",
                   "} catch (e) {}"
@@ -128347,11 +128551,141 @@
       ]
     },
     {
-      "name": "49. output_config.effort Independent of thinking",
-      "description": "output_config.effort and thinking are independent controls on the Anthropic Messages API. Per https://platform.claude.com/docs/en/build-with-claude/effort, effort \"doesn't require thinking to be enabled\" and \"affects all tokens in the response\" including text and tool calls; its canonical Basic usage example sends output_config.effort with no thinking parameter at all.\n\nBifrost read output_config.effort only inside `if req.Thinking != nil` (core/providers/anthropic/responses.go), so an effort-only request silently lost the effort, and a thinking:{type:\"disabled\"} request had its effort overwritten with \"none\". Both still returned 200, which is why the pre-existing effort cases in folders 10 and 12 never caught it - they exercise the request shape but assert nothing about it.\n\nFixing it by synthesizing thinking:{type:\"adaptive\"} would be wrong: per https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting the default when `thinking` is omitted differs by model - Opus 5 and Sonnet 5 default it On, while Opus 4.6/4.7/4.8 and Sonnet 4.6 default it Off - so injecting adaptive turns thinking on against the caller's request on half the family, bills thinking tokens they never asked for, and invalidates their cached prefix. Only the model can resolve the absence, so the absence is what Bifrost forwards.\n\nThat per-model default table is the oracle these cases use: thinking-block presence in the response is the observable that distinguishes 'forwarded the absence' from 'invented a thinking parameter'. Anthropic never echoes effort back, so it cannot be asserted directly.",
+      "name": "49. Gemini Server-Side Tool Invocations + thoughtSignature Fidelity (PR #6071)",
+      "description": "PR #6071 (server-side tool call support) with PR #6065/#6066 (tool combination).\n\nWhen toolConfig.includeServerSideToolInvocations is enabled, Gemini reports built-in tools it ran\nitself as toolCall/toolResponse part pairs instead of the older text + groundingMetadata shape.\nBefore PR #6071 those parts were silently dropped: the response still returned 200 with plausible\ntext, so no status assertion can pin this — the parts themselves have to be inspected. The\nthoughtSignature bytes riding on those parts matter independently: Gemini rejects a follow-up turn\nthat replays the assistant content without them.\n\nThe /genai surface reaches Gemini three different ways, which are three different code paths:\n  - bare model name (gemini-3.6-flash)      -> Gemini converter path\n  - vertex/ prefix (vertex/gemini-2.5-flash) -> Vertex converter path (never passes through)\n  - gemini/ prefix (gemini/gemini-3.6-flash) -> raw body passthrough (explicitGemini, genai.go)\nAll three are covered here, streaming and non-streaming, because they share no conversion code.\n\nCases:\n  1/2. Gemini converter, non-streaming and SSE: toolCall/toolResponse parts survive, stay id-paired,\n       and keep thoughtSignature.\n  3/4. Vertex converter on a PRE-Gemini-3 model (2.5), non-streaming and SSE: tool combination did\n       not exist before Gemini 3, and Vertex rejects the mix outright with 400 \"Multiple tools are\n       supported only when they are all search tools\". Bifrost must therefore still drop googleSearch\n       and keep the declarations there, so a 2xx with a functionCall is the pin.\n  5/6. Vertex converter on Gemini 3.6, non-streaming and SSE: the same request keeps BOTH tool kinds,\n       which is what PR #6066 set out to allow. Together with 3/4 this pins the version boundary in\n       both directions -- the original PR #6066 gate keyed on provider alone and 400d every 2.5 call.\n  7.   Gemini raw passthrough: the same parts survive the non-converting path byte-for-byte.\n  8.   Multi-turn replay: the assistant turn captured in case 1 is sent back in contents. Gemini\n       validates thoughtSignature server-side, so a 2xx here proves the signatures round-tripped\n       intact. Skips itself if case 1 captured nothing.",
       "item": [
         {
-          "name": "anthropic/claude-opus-4-7 · output_config.effort without thinking must not enable thinking",
+          "name": "gemini-3.6-flash genai server-side toolCall parts + thoughtSignature survive conversion (/genai generateContent) - PR #6071",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Who won the 2024 Ballon d'Or? Use Google Search and answer in one short sentence.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"googleSearch\": {}\n    }\n  ],\n  \"toolConfig\": {\n    \"includeServerSideToolInvocations\": true\n  },\n  \"generationConfig\": {\n    \"maxOutputTokens\": 512\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini-3.6-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini-3.6-flash:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Clear the replay capture before any early return below can skip past it, so case 8",
+                  "// can never replay a turn captured by an earlier run. newman starts from the file and",
+                  "// has no such state, but Postman keeps collection variables and the collection is run",
+                  "// both ways.",
+                  "pm.collectionVariables.unset('ss6071Turn1Parts');",
+                  "pm.collectionVariables.unset('ss6071Turn1Captured');",
+                  "pm.collectionVariables.unset('ss6071Turn1Ran');",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('genai server-side toolCall: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var raw = pm.response.text();",
+                  "var body = pm.response.json() || {};",
+                  "var parts = [];",
+                  "var searched = false;",
+                  "(body.candidates || []).forEach(function (cand) {",
+                  "  ((cand.content && cand.content.parts) || []).forEach(function (p) { parts.push(p); });",
+                  "  var gm = cand.groundingMetadata;",
+                  "  if (gm && ((gm.webSearchQueries || []).length || (gm.groundingChunks || []).length)) { searched = true; }",
+                  "  ((cand.content && cand.content.parts) || []).forEach(function (p) { if (p.toolCall) { searched = true; } });",
+                  "});",
+                  "var toolCalls = [];",
+                  "var toolResponses = [];",
+                  "var unsigned = [];",
+                  "parts.forEach(function (p) {",
+                  "  if (p.toolCall) {",
+                  "    toolCalls.push(p.toolCall);",
+                  "    if (!p.thoughtSignature) { unsigned.push('toolCall:' + (p.toolCall.id || '?')); }",
+                  "  }",
+                  "  if (p.toolResponse) {",
+                  "    toolResponses.push(p.toolResponse);",
+                  "    if (!p.thoughtSignature) { unsigned.push('toolResponse:' + (p.toolResponse.id || '?')); }",
+                  "  }",
+                  "});",
+                  "pm.test('genai server-side toolCall: server-side toolCall parts are not dropped (regression PR #6071)', function () {",
+                  "  if (!searched) { return; }",
+                  "  pm.expect(toolCalls.length, 'model searched (grounding present) but zero toolCall parts came back - server-side parts were dropped: ' + raw.slice(0, 900)).to.be.above(0);",
+                  "});",
+                  "pm.test('genai server-side toolCall: every server-side tool part retains its thoughtSignature (regression PR #6071)', function () {",
+                  "  pm.expect(unsigned.join(','), 'parts lost thoughtSignature - Gemini rejects replay without it').to.eql('');",
+                  "});",
+                  "pm.test('genai server-side toolCall: each toolCall is paired with a toolResponse by id', function () {",
+                  "  if (!toolCalls.length) { return; }",
+                  "  var respIds = {};",
+                  "  toolResponses.forEach(function (r) { respIds[r.id] = true; });",
+                  "  var unpaired = [];",
+                  "  toolCalls.forEach(function (c) { if (!respIds[c.id]) { unpaired.push(c.id); } });",
+                  "  pm.expect(unpaired.join(','), 'toolCall ids with no matching toolResponse').to.eql('');",
+                  "});",
+                  "// Reached the model, so case 8 skipping itself is no longer legitimate.",
+                  "pm.collectionVariables.set('ss6071Turn1Ran', 'true');",
+                  "// Capture the assistant turn for the replay case further down this folder.",
+                  "var cands = body.candidates || [];",
+                  "var turnParts = (cands[0] && cands[0].content && cands[0].content.parts) || [];",
+                  "var hasSigned = false;",
+                  "turnParts.forEach(function (p) { if (p.thoughtSignature) { hasSigned = true; } });",
+                  "if (turnParts.length && hasSigned) {",
+                  "  pm.collectionVariables.set('ss6071Turn1Parts', JSON.stringify(turnParts));",
+                  "  pm.collectionVariables.set('ss6071Turn1Captured', 'true');",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini-3.6-flash genai server-side toolCall parts + thoughtSignature survive streaming (/genai SSE) - PR #6071",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Who won the 2024 Ballon d'Or? Use Google Search and answer in one short sentence.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"googleSearch\": {}\n    }\n  ],\n  \"toolConfig\": {\n    \"includeServerSideToolInvocations\": true\n  },\n  \"generationConfig\": {\n    \"maxOutputTokens\": 512\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini-3.6-flash:streamGenerateContent?alt=sse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini-3.6-flash:streamGenerateContent"
+              ],
+              "query": [
+                {
+                  "key": "alt",
+                  "value": "sse"
+                }
+              ]
+            }
+          },
           "event": [
             {
               "listen": "test",
@@ -128359,47 +128693,94 @@
                 "type": "text/javascript",
                 "exec": [
                   "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
-                  "pm.test('request succeeded', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400); });",
-                  "pm.test('no thinking block returned', function () { var j = pm.response.json(); var blocks = Array.isArray(j.content) ? j.content : []; var thinking = blocks.filter(function (b) { return b.type === 'thinking' || b.type === 'redacted_thinking'; }); pm.expect(thinking.length, 'bifrost synthesized a thinking parameter the caller never sent (opus 4.7 defaults thinking off): ' + pm.response.text()).to.equal(0); });"
+                  "pm.test('genai stream server-side toolCall: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var raw = pm.response.text();",
+                  "var chunks = [];",
+                  "raw.split('\\n').forEach(function (line) {",
+                  "  var t = line.trim();",
+                  "  if (t.indexOf('data:') !== 0) { return; }",
+                  "  var payload = t.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  try { chunks.push(JSON.parse(payload)); } catch (e) {}",
+                  "});",
+                  "pm.test('genai stream server-side toolCall: SSE chunks parsed', function () {",
+                  "  pm.expect(chunks.length, 'no SSE data chunks: ' + raw.slice(0, 500)).to.be.above(0);",
+                  "});",
+                  "var parts = [];",
+                  "var searched = false;",
+                  "chunks.forEach(function (c) {",
+                  "  (c.candidates || []).forEach(function (cand) {",
+                  "    ((cand.content && cand.content.parts) || []).forEach(function (p) {",
+                  "      parts.push(p);",
+                  "      if (p.toolCall) { searched = true; }",
+                  "    });",
+                  "    var gm = cand.groundingMetadata;",
+                  "    if (gm && ((gm.webSearchQueries || []).length || (gm.groundingChunks || []).length)) { searched = true; }",
+                  "  });",
+                  "});",
+                  "var toolCalls = [];",
+                  "var toolResponses = [];",
+                  "var unsigned = [];",
+                  "parts.forEach(function (p) {",
+                  "  if (p.toolCall) {",
+                  "    toolCalls.push(p.toolCall);",
+                  "    if (!p.thoughtSignature) { unsigned.push('toolCall:' + (p.toolCall.id || '?')); }",
+                  "  }",
+                  "  if (p.toolResponse) {",
+                  "    toolResponses.push(p.toolResponse);",
+                  "    if (!p.thoughtSignature) { unsigned.push('toolResponse:' + (p.toolResponse.id || '?')); }",
+                  "  }",
+                  "});",
+                  "pm.test('genai stream server-side toolCall: server-side toolCall parts are not dropped (regression PR #6071)', function () {",
+                  "  if (!searched) { return; }",
+                  "  pm.expect(toolCalls.length, 'model searched (grounding present) but zero toolCall parts came back - server-side parts were dropped: ' + raw.slice(0, 900)).to.be.above(0);",
+                  "});",
+                  "pm.test('genai stream server-side toolCall: every server-side tool part retains its thoughtSignature (regression PR #6071)', function () {",
+                  "  pm.expect(unsigned.join(','), 'parts lost thoughtSignature - Gemini rejects replay without it').to.eql('');",
+                  "});",
+                  "pm.test('genai stream server-side toolCall: each toolCall is paired with a toolResponse by id', function () {",
+                  "  if (!toolCalls.length) { return; }",
+                  "  var respIds = {};",
+                  "  toolResponses.forEach(function (r) { respIds[r.id] = true; });",
+                  "  var unpaired = [];",
+                  "  toolCalls.forEach(function (c) { if (!respIds[c.id]) { unpaired.push(c.id); } });",
+                  "  pm.expect(unpaired.join(','), 'toolCall ids with no matching toolResponse').to.eql('');",
+                  "});"
                 ]
               }
             }
-          ],
+          ]
+        },
+        {
+          "name": "vertex/gemini-2.5-flash genai mixed tools: googleSearch dropped for pre-Gemini-3 model (/genai generateContent) - PR #6071",
           "request": {
             "method": "POST",
             "header": [
               {
                 "key": "Content-Type",
                 "value": "application/json"
-              },
-              {
-                "key": "x-api-key",
-                "value": "{{anthropicKey}}"
-              },
-              {
-                "key": "anthropic-version",
-                "value": "2023-06-01"
               }
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"claude-opus-4-7\",\n  \"max_tokens\": 1024,\n  \"output_config\": {\n    \"effort\": \"medium\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is 1+1? Answer in one word.\"\n    }\n  ]\n}"
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Call the get_weather function for Tokyo. You must use the function to answer.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"functionDeclarations\": [\n        {\n          \"name\": \"get_weather\",\n          \"description\": \"Get the current weather for a city\",\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"city\": {\n                \"type\": \"string\",\n                \"description\": \"City name\"\n              }\n            },\n            \"required\": [\n              \"city\"\n            ]\n          }\n        }\n      ]\n    },\n    {\n      \"googleSearch\": {}\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 256\n  }\n}"
             },
             "url": {
-              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-2.5-flash:generateContent",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
-                "anthropic",
-                "v1",
-                "messages"
+                "genai",
+                "v1beta",
+                "models",
+                "vertex/gemini-2.5-flash:generateContent"
               ]
             }
-          }
-        },
-        {
-          "name": "anthropic/claude-opus-5 · output_config.effort without thinking keeps the model default thinking on",
+          },
           "event": [
             {
               "listen": "test",
@@ -128407,47 +128788,75 @@
                 "type": "text/javascript",
                 "exec": [
                   "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
-                  "pm.test('request succeeded', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400); });",
-                  "pm.test('thinking block returned', function () { var j = pm.response.json(); var blocks = Array.isArray(j.content) ? j.content : []; var thinking = blocks.filter(function (b) { return b.type === 'thinking' || b.type === 'redacted_thinking'; }); pm.expect(thinking.length, 'omitting thinking must forward the absence so opus 5 applies its own on-by-default, not suppress thinking: ' + pm.response.text()).to.be.above(0); });"
+                  "pm.test('vertex 2.5 mixed tools: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var raw = pm.response.text();",
+                  "var body = pm.response.json() || {};",
+                  "var parts = [];",
+                  "var searched = false;",
+                  "(body.candidates || []).forEach(function (cand) {",
+                  "  ((cand.content && cand.content.parts) || []).forEach(function (p) { parts.push(p); });",
+                  "  var gm = cand.groundingMetadata;",
+                  "  if (gm && ((gm.webSearchQueries || []).length || (gm.groundingChunks || []).length)) { searched = true; }",
+                  "  ((cand.content && cand.content.parts) || []).forEach(function (p) { if (p.toolCall) { searched = true; } });",
+                  "});",
+                  "pm.test('vertex 2.5 mixed tools: functionDeclarations survive alongside googleSearch without the flag (regression PR #6066)', function () {",
+                  "  var calls = [];",
+                  "  parts.forEach(function (p) { if (p.functionCall && p.functionCall.name === 'get_weather') { calls.push(p.functionCall); } });",
+                  "  pm.expect(calls.length, 'no get_weather functionCall - declarations were dropped when googleSearch was present: ' + raw.slice(0, 900)).to.be.above(0);",
+                  "});",
+                  "pm.test('vertex 2.5 mixed tools: pre-Gemini-3 model is not sent both tool kinds (regression PR #6066)', function () {",
+                  "  // Vertex answers 'Multiple tools are supported only when they are all search tools'",
+                  "  // with a 400 when both kinds reach a model that cannot combine them.",
+                  "  pm.expect(raw.indexOf('all search tools'), 'both tool kinds were sent to a model that rejects the mix: ' + raw.slice(0, 500)).to.equal(-1);",
+                  "});",
+                  "pm.test('vertex 2.5 mixed tools: signed parts keep their thoughtSignature', function () {",
+                  "  var lost = [];",
+                  "  parts.forEach(function (p) {",
+                  "    if ((p.toolCall || p.toolResponse) && !p.thoughtSignature) { lost.push(JSON.stringify(p).slice(0, 120)); }",
+                  "  });",
+                  "  pm.expect(lost.join(' | '), 'server-side tool parts lost thoughtSignature').to.eql('');",
+                  "});"
                 ]
               }
             }
-          ],
+          ]
+        },
+        {
+          "name": "vertex/gemini-2.5-flash genai mixed tools: googleSearch dropped for pre-Gemini-3 model streaming (/genai SSE) - PR #6071",
           "request": {
             "method": "POST",
             "header": [
               {
                 "key": "Content-Type",
                 "value": "application/json"
-              },
-              {
-                "key": "x-api-key",
-                "value": "{{anthropicKey}}"
-              },
-              {
-                "key": "anthropic-version",
-                "value": "2023-06-01"
               }
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"claude-opus-5\",\n  \"max_tokens\": 16000,\n  \"output_config\": {\n    \"effort\": \"high\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Solve: integral of x^2 * e^(-x) dx from 0 to infinity. Show every step.\"\n    }\n  ]\n}"
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Call the get_weather function for Tokyo. You must use the function to answer.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"functionDeclarations\": [\n        {\n          \"name\": \"get_weather\",\n          \"description\": \"Get the current weather for a city\",\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"city\": {\n                \"type\": \"string\",\n                \"description\": \"City name\"\n              }\n            },\n            \"required\": [\n              \"city\"\n            ]\n          }\n        }\n      ]\n    },\n    {\n      \"googleSearch\": {}\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 256\n  }\n}"
             },
             "url": {
-              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-2.5-flash:streamGenerateContent?alt=sse",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
-                "anthropic",
-                "v1",
-                "messages"
+                "genai",
+                "v1beta",
+                "models",
+                "vertex/gemini-2.5-flash:streamGenerateContent"
+              ],
+              "query": [
+                {
+                  "key": "alt",
+                  "value": "sse"
+                }
               ]
             }
-          }
-        },
-        {
-          "name": "anthropic/claude-opus-5 · thinking disabled + output_config.effort low keeps both",
+          },
           "event": [
             {
               "listen": "test",
@@ -128455,47 +128864,83 @@
                 "type": "text/javascript",
                 "exec": [
                   "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
-                  "pm.test('request succeeded', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400); });",
-                  "pm.test('no thinking block returned', function () { var j = pm.response.json(); var blocks = Array.isArray(j.content) ? j.content : []; var thinking = blocks.filter(function (b) { return b.type === 'thinking' || b.type === 'redacted_thinking'; }); pm.expect(thinking.length, 'caller explicitly disabled thinking; opus 5 accepts disabled at effort high or below: ' + pm.response.text()).to.equal(0); });"
+                  "pm.test('vertex 2.5 stream mixed tools: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var raw = pm.response.text();",
+                  "var chunks = [];",
+                  "raw.split('\\n').forEach(function (line) {",
+                  "  var t = line.trim();",
+                  "  if (t.indexOf('data:') !== 0) { return; }",
+                  "  var payload = t.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  try { chunks.push(JSON.parse(payload)); } catch (e) {}",
+                  "});",
+                  "pm.test('vertex 2.5 stream mixed tools: SSE chunks parsed', function () {",
+                  "  pm.expect(chunks.length, 'no SSE data chunks: ' + raw.slice(0, 500)).to.be.above(0);",
+                  "});",
+                  "var parts = [];",
+                  "var searched = false;",
+                  "chunks.forEach(function (c) {",
+                  "  (c.candidates || []).forEach(function (cand) {",
+                  "    ((cand.content && cand.content.parts) || []).forEach(function (p) {",
+                  "      parts.push(p);",
+                  "      if (p.toolCall) { searched = true; }",
+                  "    });",
+                  "    var gm = cand.groundingMetadata;",
+                  "    if (gm && ((gm.webSearchQueries || []).length || (gm.groundingChunks || []).length)) { searched = true; }",
+                  "  });",
+                  "});",
+                  "pm.test('vertex 2.5 stream mixed tools: functionDeclarations survive alongside googleSearch without the flag (regression PR #6066)', function () {",
+                  "  var calls = [];",
+                  "  parts.forEach(function (p) { if (p.functionCall && p.functionCall.name === 'get_weather') { calls.push(p.functionCall); } });",
+                  "  pm.expect(calls.length, 'no get_weather functionCall - declarations were dropped when googleSearch was present: ' + raw.slice(0, 900)).to.be.above(0);",
+                  "});",
+                  "pm.test('vertex 2.5 stream mixed tools: pre-Gemini-3 model is not sent both tool kinds (regression PR #6066)', function () {",
+                  "  // Vertex answers 'Multiple tools are supported only when they are all search tools'",
+                  "  // with a 400 when both kinds reach a model that cannot combine them.",
+                  "  pm.expect(raw.indexOf('all search tools'), 'both tool kinds were sent to a model that rejects the mix: ' + raw.slice(0, 500)).to.equal(-1);",
+                  "});",
+                  "pm.test('vertex 2.5 stream mixed tools: signed parts keep their thoughtSignature', function () {",
+                  "  var lost = [];",
+                  "  parts.forEach(function (p) {",
+                  "    if ((p.toolCall || p.toolResponse) && !p.thoughtSignature) { lost.push(JSON.stringify(p).slice(0, 120)); }",
+                  "  });",
+                  "  pm.expect(lost.join(' | '), 'server-side tool parts lost thoughtSignature').to.eql('');",
+                  "});"
                 ]
               }
             }
-          ],
+          ]
+        },
+        {
+          "name": "vertex/gemini-3.6-flash genai mixed googleSearch + functionDeclarations both survive (/genai generateContent) - PR #6071",
           "request": {
             "method": "POST",
             "header": [
               {
                 "key": "Content-Type",
                 "value": "application/json"
-              },
-              {
-                "key": "x-api-key",
-                "value": "{{anthropicKey}}"
-              },
-              {
-                "key": "anthropic-version",
-                "value": "2023-06-01"
               }
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"claude-opus-5\",\n  \"max_tokens\": 1024,\n  \"thinking\": {\n    \"type\": \"disabled\"\n  },\n  \"output_config\": {\n    \"effort\": \"low\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is 1+1? Answer in one word.\"\n    }\n  ]\n}"
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Call the get_weather function for Tokyo. You must use the function to answer.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"functionDeclarations\": [\n        {\n          \"name\": \"get_weather\",\n          \"description\": \"Get the current weather for a city\",\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"city\": {\n                \"type\": \"string\",\n                \"description\": \"City name\"\n              }\n            },\n            \"required\": [\n              \"city\"\n            ]\n          }\n        }\n      ]\n    },\n    {\n      \"googleSearch\": {}\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 256\n  }\n}"
             },
             "url": {
-              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-3.6-flash:generateContent",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
-                "anthropic",
-                "v1",
-                "messages"
+                "genai",
+                "v1beta",
+                "models",
+                "vertex/gemini-3.6-flash:generateContent"
               ]
             }
-          }
-        },
-        {
-          "name": "anthropic/claude-opus-5 · thinking adaptive + output_config.effort unchanged",
+          },
           "event": [
             {
               "listen": "test",
@@ -128503,103 +128948,35 @@
                 "type": "text/javascript",
                 "exec": [
                   "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
-                  "pm.test('request succeeded', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400); });",
-                  "pm.test('thinking block returned', function () { var j = pm.response.json(); var blocks = Array.isArray(j.content) ? j.content : []; var thinking = blocks.filter(function (b) { return b.type === 'thinking' || b.type === 'redacted_thinking'; }); pm.expect(thinking.length, 'adaptive thinking with effort is the path that already worked and must not regress: ' + pm.response.text()).to.be.above(0); });"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "x-api-key",
-                "value": "{{anthropicKey}}"
-              },
-              {
-                "key": "anthropic-version",
-                "value": "2023-06-01"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"model\": \"claude-opus-5\",\n  \"max_tokens\": 16000,\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"output_config\": {\n    \"effort\": \"medium\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Solve: integral of x^2 * e^(-x) dx from 0 to infinity. Show every step.\"\n    }\n  ]\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/anthropic/v1/messages",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "anthropic",
-                "v1",
-                "messages"
-              ]
-            }
-          }
-        }
-      ]
-    },
-    {
-      "name": "50. xAI reasoning_effort Forwarding (grok-4.5 / grok-4.6 / grok-4.20-multi-agent)",
-      "description": "Pins that reasoning_effort actually reaches xAI for the models that support it.\n\nBug: applyXAICompatibility (core/providers/openai/chat.go) and the /v1/responses\nequivalent only allowed reasoning_effort through for grok-3-mini, matched with\nstrings.Contains. Because \"grok-4\" is a substring of \"grok-4.5\", \"grok-4.6\" and\n\"grok-4.20-*\", the entire current xAI lineup was classified as reasoning-capable\nand then had its effort silently nil-ed. xAI documents low/medium/high/xhigh as\nsupported on grok-4.6 and low/medium/high on grok-4.5\n(https://docs.x.ai/docs/guides/reasoning).\n\nSecond bug found while writing these rows: filterOpenAISpecificParameters runs\nnormalizeReasoningEffort BEFORE the xAI compat pass, and its xhigh allow-list only\nmatched gpt-5.x, so grok-4.6 xhigh was downgraded to high even after the deny-list\nwas corrected.\n\nWhy the probe rows look odd: a dropped reasoning_effort still returns 200 with\nreasoning content, so the regression is invisible to a normal assertion. The probe\nrows send a deliberately invalid effort value and REQUIRE a 4xx - the value passes\nthrough Bifrost untouched (normalizeOpenAIReasoningEffort defaults to returning it),\nso only xAI can reject it. A 2xx means the field never left the gateway.\nThose rows carry the [EXPECT-4XX] name tag, which flips the collection-level status\nassertion from 2xx to 4xx for them (same idiom as [PREVIEW] / [SKIP]).\n\nExisting coverage (47.5.x, 47.6.x, 48.1.x) all uses xai/grok-4-0709, which is on the\ndeny-list, so none of it exercises the preserve path.",
-      "item": [
-        {
-          "name": "50.1 [EXPECT-4XX] native /v1/chat/completions -> xai/grok-4.6 invalid reasoning_effort",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"model\": \"xai/grok-4.6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 16,\n  \"reasoning_effort\": \"__bogus_effort__\"\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/v1/chat/completions",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "chat",
-                "completions"
-              ]
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "// A dropped reasoning_effort still returns 200 with reasoning content, so \"did it",
-                  "// work\" is not observable directly. This row inverts the question: send a value",
-                  "// xAI must reject and require the rejection. 200 here == Bifrost ate the field.",
-                  "// NOTE: a 4xx is the PASS signature - it must not be added to the infra guard.",
-                  "// The range is 400-499, not a pinned 400: xAI documents 422 for \"a field in the",
-                  "// POST request body has an invalid format\" alongside 400 for general request",
-                  "// problems (https://docs.x.ai/developers/debugging), and an invalid effort enum is",
-                  "// exactly that. This row proves the field REACHED xAI; only a 2xx falsifies it, so",
-                  "// pinning one code would test xAI's error taxonomy instead. Matches the",
-                  "// collection-level [EXPECT-4XX] assertion, which already uses the same range.",
-                  "if ([401, 403, 404, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
-                  "pm.test('reasoning_effort reached xAI (invalid value rejected upstream)', function () {",
-                  "  pm.expect(pm.response.code, 'expected a 4xx from xAI; a 2xx means Bifrost stripped ' +",
-                  "    'reasoning_effort before the upstream call: ' + pm.response.text().slice(0, 500))",
-                  "    .to.be.within(400, 499);",
+                  "pm.test('vertex 3.6 mixed tools: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                   "});",
-                  "pm.test('rejection names the offending parameter', function () {",
-                  "  var t = (pm.response.text() || \"\").toLowerCase();",
-                  "  pm.expect(/effort|reasoning|invalid/.test(t), 'unexpected 4xx body: ' +",
-                  "    pm.response.text().slice(0, 500)).to.be.true;",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var raw = pm.response.text();",
+                  "var body = pm.response.json() || {};",
+                  "var parts = [];",
+                  "var searched = false;",
+                  "(body.candidates || []).forEach(function (cand) {",
+                  "  ((cand.content && cand.content.parts) || []).forEach(function (p) { parts.push(p); });",
+                  "  var gm = cand.groundingMetadata;",
+                  "  if (gm && ((gm.webSearchQueries || []).length || (gm.groundingChunks || []).length)) { searched = true; }",
+                  "  ((cand.content && cand.content.parts) || []).forEach(function (p) { if (p.toolCall) { searched = true; } });",
+                  "});",
+                  "pm.test('vertex 3.6 mixed tools: functionDeclarations survive alongside googleSearch without the flag (regression PR #6066)', function () {",
+                  "  var calls = [];",
+                  "  parts.forEach(function (p) { if (p.functionCall && p.functionCall.name === 'get_weather') { calls.push(p.functionCall); } });",
+                  "  pm.expect(calls.length, 'no get_weather functionCall - declarations were dropped when googleSearch was present: ' + raw.slice(0, 900)).to.be.above(0);",
+                  "});",
+                  "pm.test('vertex 3.6 mixed tools: googleSearch survives too when the model supports tool combination', function () {",
+                  "  if (!searched) { return; }",
+                  "  pm.expect(searched, 'model searched, so googleSearch reached the wire alongside the declarations').to.be.true;",
+                  "});",
+                  "pm.test('vertex 3.6 mixed tools: signed parts keep their thoughtSignature', function () {",
+                  "  var lost = [];",
+                  "  parts.forEach(function (p) {",
+                  "    if ((p.toolCall || p.toolResponse) && !p.thoughtSignature) { lost.push(JSON.stringify(p).slice(0, 120)); }",
+                  "  });",
+                  "  pm.expect(lost.join(' | '), 'server-side tool parts lost thoughtSignature').to.eql('');",
                   "});"
                 ]
               }
@@ -128607,7 +128984,7 @@
           ]
         },
         {
-          "name": "50.2 [EXPECT-4XX] native /v1/responses -> xai/grok-4.6 invalid reasoning effort",
+          "name": "vertex/gemini-3.6-flash genai mixed googleSearch + functionDeclarations both survive streaming (/genai SSE) - PR #6071",
           "request": {
             "method": "POST",
             "header": [
@@ -128618,16 +128995,24 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"xai/grok-4.6\",\n  \"input\": \"hi\",\n  \"max_output_tokens\": 16,\n  \"reasoning\": {\n    \"effort\": \"__bogus_effort__\"\n  }\n}"
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Call the get_weather function for Tokyo. You must use the function to answer.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"functionDeclarations\": [\n        {\n          \"name\": \"get_weather\",\n          \"description\": \"Get the current weather for a city\",\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"city\": {\n                \"type\": \"string\",\n                \"description\": \"City name\"\n              }\n            },\n            \"required\": [\n              \"city\"\n            ]\n          }\n        }\n      ]\n    },\n    {\n      \"googleSearch\": {}\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 256\n  }\n}"
             },
             "url": {
-              "raw": "{{baseUrl}}/v1/responses",
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-3.6-flash:streamGenerateContent?alt=sse",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
-                "v1",
-                "responses"
+                "genai",
+                "v1beta",
+                "models",
+                "vertex/gemini-3.6-flash:streamGenerateContent"
+              ],
+              "query": [
+                {
+                  "key": "alt",
+                  "value": "sse"
+                }
               ]
             }
           },
@@ -128637,26 +129022,50 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// A dropped reasoning_effort still returns 200 with reasoning content, so \"did it",
-                  "// work\" is not observable directly. This row inverts the question: send a value",
-                  "// xAI must reject and require the rejection. 200 here == Bifrost ate the field.",
-                  "// NOTE: a 4xx is the PASS signature - it must not be added to the infra guard.",
-                  "// The range is 400-499, not a pinned 400: xAI documents 422 for \"a field in the",
-                  "// POST request body has an invalid format\" alongside 400 for general request",
-                  "// problems (https://docs.x.ai/developers/debugging), and an invalid effort enum is",
-                  "// exactly that. This row proves the field REACHED xAI; only a 2xx falsifies it, so",
-                  "// pinning one code would test xAI's error taxonomy instead. Matches the",
-                  "// collection-level [EXPECT-4XX] assertion, which already uses the same range.",
-                  "if ([401, 403, 404, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
-                  "pm.test('reasoning_effort reached xAI (invalid value rejected upstream)', function () {",
-                  "  pm.expect(pm.response.code, 'expected a 4xx from xAI; a 2xx means Bifrost stripped ' +",
-                  "    'reasoning_effort before the upstream call: ' + pm.response.text().slice(0, 500))",
-                  "    .to.be.within(400, 499);",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('vertex 3.6 stream mixed tools: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                   "});",
-                  "pm.test('rejection names the offending parameter', function () {",
-                  "  var t = (pm.response.text() || \"\").toLowerCase();",
-                  "  pm.expect(/effort|reasoning|invalid/.test(t), 'unexpected 4xx body: ' +",
-                  "    pm.response.text().slice(0, 500)).to.be.true;",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var raw = pm.response.text();",
+                  "var chunks = [];",
+                  "raw.split('\\n').forEach(function (line) {",
+                  "  var t = line.trim();",
+                  "  if (t.indexOf('data:') !== 0) { return; }",
+                  "  var payload = t.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  try { chunks.push(JSON.parse(payload)); } catch (e) {}",
+                  "});",
+                  "pm.test('vertex 3.6 stream mixed tools: SSE chunks parsed', function () {",
+                  "  pm.expect(chunks.length, 'no SSE data chunks: ' + raw.slice(0, 500)).to.be.above(0);",
+                  "});",
+                  "var parts = [];",
+                  "var searched = false;",
+                  "chunks.forEach(function (c) {",
+                  "  (c.candidates || []).forEach(function (cand) {",
+                  "    ((cand.content && cand.content.parts) || []).forEach(function (p) {",
+                  "      parts.push(p);",
+                  "      if (p.toolCall) { searched = true; }",
+                  "    });",
+                  "    var gm = cand.groundingMetadata;",
+                  "    if (gm && ((gm.webSearchQueries || []).length || (gm.groundingChunks || []).length)) { searched = true; }",
+                  "  });",
+                  "});",
+                  "pm.test('vertex 3.6 stream mixed tools: functionDeclarations survive alongside googleSearch without the flag (regression PR #6066)', function () {",
+                  "  var calls = [];",
+                  "  parts.forEach(function (p) { if (p.functionCall && p.functionCall.name === 'get_weather') { calls.push(p.functionCall); } });",
+                  "  pm.expect(calls.length, 'no get_weather functionCall - declarations were dropped when googleSearch was present: ' + raw.slice(0, 900)).to.be.above(0);",
+                  "});",
+                  "pm.test('vertex 3.6 stream mixed tools: googleSearch survives too when the model supports tool combination', function () {",
+                  "  if (!searched) { return; }",
+                  "  pm.expect(searched, 'model searched, so googleSearch reached the wire alongside the declarations').to.be.true;",
+                  "});",
+                  "pm.test('vertex 3.6 stream mixed tools: signed parts keep their thoughtSignature', function () {",
+                  "  var lost = [];",
+                  "  parts.forEach(function (p) {",
+                  "    if ((p.toolCall || p.toolResponse) && !p.thoughtSignature) { lost.push(JSON.stringify(p).slice(0, 120)); }",
+                  "  });",
+                  "  pm.expect(lost.join(' | '), 'server-side tool parts lost thoughtSignature').to.eql('');",
                   "});"
                 ]
               }
@@ -128664,7 +129073,7 @@
           ]
         },
         {
-          "name": "50.3 native /v1/chat/completions -> xai/grok-4.6 reasoning_effort xhigh preserved",
+          "name": "gemini/gemini-3.6-flash genai raw passthrough preserves server-side toolCall parts (/genai generateContent) - PR #6071",
           "request": {
             "method": "POST",
             "header": [
@@ -128675,17 +129084,18 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"xai/grok-4.6\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"A farmer has 47 sheep. Each night one third of the flock (rounded down) escapes, and each morning he recovers 5. How many sheep after the 3rd morning? Show your working.\"\n    }\n  ],\n  \"max_tokens\": 2048,\n  \"reasoning_effort\": \"xhigh\"\n}"
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Who won the 2024 Ballon d'Or? Use Google Search and answer in one short sentence.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"googleSearch\": {}\n    }\n  ],\n  \"toolConfig\": {\n    \"includeServerSideToolInvocations\": true\n  },\n  \"generationConfig\": {\n    \"maxOutputTokens\": 512\n  }\n}"
             },
             "url": {
-              "raw": "{{baseUrl}}/v1/chat/completions",
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-3.6-flash:generateContent",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
-                "v1",
-                "chat",
-                "completions"
+                "genai",
+                "v1beta",
+                "models",
+                "gemini/gemini-3.6-flash:generateContent"
               ]
             }
           },
@@ -128695,22 +129105,48 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// Guards the other direction: the deny-list must not become so broad that it",
-                  "// strips valid efforts again, and the value must not be rejected upstream.",
-                  "// xhigh is grok-4.6-only; it must not be downgraded to high by the shared normalizer.",
-                  "if ([401, 403, 404, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
-                  "var j; try { j = pm.response.json(); } catch (e) {",
-                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
-                  "pm.test('grok-4.6 accepted the reasoning_effort request', function () {",
-                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.be.below(400);",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('genai passthrough server-side toolCall: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                   "});",
-                  "var m = (((j.choices || [])[0] || {}).message) || {};",
-                  "var rt = (((j.usage || {}).completion_tokens_details) || {}).reasoning_tokens || 0;",
-                  "pm.test('reasoning surfaced', function () {",
-                  "  var think = !!(m.reasoning_content || m.reasoning || m.thinking ||",
-                  "    (m.reasoning_details && m.reasoning_details.length) || rt > 0);",
-                  "  pm.expect(think, 'no reasoning content and no reasoning tokens: ' +",
-                  "    pm.response.text().slice(0, 500)).to.be.true;",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var raw = pm.response.text();",
+                  "var body = pm.response.json() || {};",
+                  "var parts = [];",
+                  "var searched = false;",
+                  "(body.candidates || []).forEach(function (cand) {",
+                  "  ((cand.content && cand.content.parts) || []).forEach(function (p) { parts.push(p); });",
+                  "  var gm = cand.groundingMetadata;",
+                  "  if (gm && ((gm.webSearchQueries || []).length || (gm.groundingChunks || []).length)) { searched = true; }",
+                  "  ((cand.content && cand.content.parts) || []).forEach(function (p) { if (p.toolCall) { searched = true; } });",
+                  "});",
+                  "var toolCalls = [];",
+                  "var toolResponses = [];",
+                  "var unsigned = [];",
+                  "parts.forEach(function (p) {",
+                  "  if (p.toolCall) {",
+                  "    toolCalls.push(p.toolCall);",
+                  "    if (!p.thoughtSignature) { unsigned.push('toolCall:' + (p.toolCall.id || '?')); }",
+                  "  }",
+                  "  if (p.toolResponse) {",
+                  "    toolResponses.push(p.toolResponse);",
+                  "    if (!p.thoughtSignature) { unsigned.push('toolResponse:' + (p.toolResponse.id || '?')); }",
+                  "  }",
+                  "});",
+                  "pm.test('genai passthrough server-side toolCall: server-side toolCall parts are not dropped (regression PR #6071)', function () {",
+                  "  if (!searched) { return; }",
+                  "  pm.expect(toolCalls.length, 'model searched (grounding present) but zero toolCall parts came back - server-side parts were dropped: ' + raw.slice(0, 900)).to.be.above(0);",
+                  "});",
+                  "pm.test('genai passthrough server-side toolCall: every server-side tool part retains its thoughtSignature (regression PR #6071)', function () {",
+                  "  pm.expect(unsigned.join(','), 'parts lost thoughtSignature - Gemini rejects replay without it').to.eql('');",
+                  "});",
+                  "pm.test('genai passthrough server-side toolCall: each toolCall is paired with a toolResponse by id', function () {",
+                  "  if (!toolCalls.length) { return; }",
+                  "  var respIds = {};",
+                  "  toolResponses.forEach(function (r) { respIds[r.id] = true; });",
+                  "  var unpaired = [];",
+                  "  toolCalls.forEach(function (c) { if (!respIds[c.id]) { unpaired.push(c.id); } });",
+                  "  pm.expect(unpaired.join(','), 'toolCall ids with no matching toolResponse').to.eql('');",
                   "});"
                 ]
               }
@@ -128718,7 +129154,7 @@
           ]
         },
         {
-          "name": "50.4 native /v1/chat/completions -> xai/grok-4.5 reasoning_effort low preserved",
+          "name": "gemini-3.6-flash genai replays server-side toolCall turn with thoughtSignature (/genai generateContent) - PR #6071",
           "request": {
             "method": "POST",
             "header": [
@@ -128729,152 +129165,64 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"xai/grok-4.5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"A farmer has 47 sheep. Each night one third of the flock (rounded down) escapes, and each morning he recovers 5. How many sheep after the 3rd morning? Show your working.\"\n    }\n  ],\n  \"max_tokens\": 2048,\n  \"reasoning_effort\": \"low\"\n}"
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [ { \"text\": \"Who won the 2024 Ballon d'Or? Use Google Search and answer in one short sentence.\" } ]\n    },\n    {\n      \"role\": \"model\",\n      \"parts\": {{ss6071Turn1Parts}}\n    },\n    {\n      \"role\": \"user\",\n      \"parts\": [ { \"text\": \"In one short sentence, what year was that award first given?\" } ]\n    }\n  ],\n  \"tools\": [ { \"googleSearch\": {} } ],\n  \"toolConfig\": { \"includeServerSideToolInvocations\": true },\n  \"generationConfig\": { \"maxOutputTokens\": 256 }\n}"
             },
             "url": {
-              "raw": "{{baseUrl}}/v1/chat/completions",
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini-3.6-flash:generateContent",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
-                "v1",
-                "chat",
-                "completions"
+                "genai",
+                "v1beta",
+                "models",
+                "gemini-3.6-flash:generateContent"
               ]
             }
           },
           "event": [
             {
-              "listen": "test",
+              "listen": "prerequest",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// Guards the other direction: the deny-list must not become so broad that it",
-                  "// strips valid efforts again, and the value must not be rejected upstream.",
-                  "// grok-4.5 supports low/medium/high but not xhigh.",
-                  "if ([401, 403, 404, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
-                  "var j; try { j = pm.response.json(); } catch (e) {",
-                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
-                  "pm.test('grok-4.5 accepted the reasoning_effort request', function () {",
-                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.be.below(400);",
-                  "});",
-                  "var m = (((j.choices || [])[0] || {}).message) || {};",
-                  "var rt = (((j.usage || {}).completion_tokens_details) || {}).reasoning_tokens || 0;",
-                  "pm.test('reasoning surfaced', function () {",
-                  "  var think = !!(m.reasoning_content || m.reasoning || m.thinking ||",
-                  "    (m.reasoning_details && m.reasoning_details.length) || rt > 0);",
-                  "  pm.expect(think, 'no reasoning content and no reasoning tokens: ' +",
-                  "    pm.response.text().slice(0, 500)).to.be.true;",
-                  "});"
+                  "// Keep the body valid JSON when the capturing case did not run (PROVIDER/FEATURE",
+                  "// filtering, or the model simply did not search). The test below then skips itself.",
+                  "if (!pm.collectionVariables.get('ss6071Turn1Parts')) {",
+                  "  pm.collectionVariables.set('ss6071Turn1Parts', JSON.stringify([{ text: 'Rodri won the 2024 Ballon d\\'Or.' }]));",
+                  "  pm.collectionVariables.set('ss6071Turn1Captured', 'false');",
+                  "}"
                 ]
               }
-            }
-          ]
-        },
-        {
-          "name": "50.5 native /v1/chat/completions -> xai/grok-4-0709 reasoning_effort still stripped",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"model\": \"xai/grok-4-0709\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 2048,\n  \"reasoning_effort\": \"high\"\n}"
             },
-            "url": {
-              "raw": "{{baseUrl}}/v1/chat/completions",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "chat",
-                "completions"
-              ]
-            }
-          },
-          "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// Deny-list guard, the mirror image of the probe rows. grok-4-0709 normalizes to",
-                  "// grok-4, which does NOT accept reasoning_effort, so Bifrost must keep stripping it.",
-                  "// If someone later empties the deny-list \"to simplify\", the effort reaches xAI and",
-                  "// this row goes red with a 4xx.",
-                  "// NOTE: max_tokens is 2048, not a token-shaving 16. grok-4 is a reasoning model and",
-                  "// a 16-token budget produced no response at all - the request hung ~54s and came back",
-                  "// 503, which is upstream noise rather than the thing this row pins. 2048 matches the",
-                  "// budget every other passing grok-4-0709 reasoning row in this collection uses.",
-                  "if ([401, 403, 404, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
-                  "pm.test('effort stripped for deny-listed grok-4 (no upstream 400)', function () {",
-                  "  pm.expect(pm.response.code, 'expected 2xx; a 400 means reasoning_effort was ' +",
-                  "    'forwarded to a model that rejects it: ' + pm.response.text().slice(0, 500))",
-                  "    .to.be.below(400);",
-                  "});"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "50.6 native /v1/chat/completions -> xai/grok-4.20-multi-agent reasoning_effort xhigh preserved",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"model\": \"xai/grok-4.20-multi-agent\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"A farmer has 47 sheep. Each night one third of the flock (rounded down) escapes, and each morning he recovers 5. How many sheep after the 3rd morning? Show your working.\"\n    }\n  ],\n  \"max_tokens\": 2048,\n  \"reasoning_effort\": \"xhigh\"\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/v1/chat/completions",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "chat",
-                "completions"
-              ]
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "// The second entry in grokModelsWithXHighReasoningEffort (core/schemas/utils.go).",
-                  "// grok-4.6 is covered by 50.3; without this row that allow-list entry has nothing",
-                  "// behind it, and a wrong entry there is not a silent downgrade - it is an upstream",
-                  "// 400, because a model that does not know xhigh rejects the value outright.",
-                  "// On this model reasoning_effort selects how many agents collaborate rather than",
-                  "// reasoning depth (https://docs.x.ai/docs/guides/reasoning), so xhigh is the most",
-                  "// expensive row in this folder. It stays because the alternative is claiming",
-                  "// coverage the folder does not have.",
-                  "if ([401, 403, 404, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
-                  "var j; try { j = pm.response.json(); } catch (e) {",
-                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
-                  "pm.test('grok-4.20-multi-agent accepted the reasoning_effort request', function () {",
-                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.be.below(400);",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var captured = pm.collectionVariables.get('ss6071Turn1Captured');",
+                  "var ran = pm.collectionVariables.get('ss6071Turn1Ran');",
+                  "// Skipping is only legitimate when the capturing case never ran (provider or feature",
+                  "// filtering). If it ran and still produced nothing to replay, this folder's premise",
+                  "// went untested - fail loudly rather than pass green on zero coverage.",
+                  "pm.test('genai replay: the capturing case produced a signed assistant turn to replay', function () {",
+                  "  if (ran !== 'true') { return; }",
+                  "  pm.expect(captured, 'the capture case returned 2xx but no part carried a thoughtSignature, so there was nothing to replay').to.eql('true');",
                   "});",
-                  "var m = (((j.choices || [])[0] || {}).message) || {};",
-                  "var rt = (((j.usage || {}).completion_tokens_details) || {}).reasoning_tokens || 0;",
-                  "pm.test('reasoning surfaced', function () {",
-                  "  var think = !!(m.reasoning_content || m.reasoning || m.thinking ||",
-                  "    (m.reasoning_details && m.reasoning_details.length) || rt > 0);",
-                  "  pm.expect(think, 'no reasoning content and no reasoning tokens: ' +",
-                  "    pm.response.text().slice(0, 500)).to.be.true;",
+                  "if (captured !== 'true') { return; }",
+                  "// No 400 guard on purpose: Gemini validates thoughtSignature server-side, so a 400",
+                  "// here is exactly the regression - the replayed signatures were mangled or dropped.",
+                  "pm.test('genai replay: replaying the server-side tool turn with thoughtSignature is accepted (regression PR #6071)', function () {",
+                  "  pm.expect(pm.response.code, 'replay rejected - thoughtSignature did not survive the round-trip: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('genai replay: model answered the follow-up turn', function () {",
+                  "  var text = '';",
+                  "  ((pm.response.json() || {}).candidates || []).forEach(function (cand) {",
+                  "    ((cand.content && cand.content.parts) || []).forEach(function (p) { if (p.text) { text += p.text; } });",
+                  "  });",
+                  "  pm.expect(text.length, 'no text in replay response: ' + pm.response.text().slice(0, 500)).to.be.above(0);",
                   "});"
                 ]
               }

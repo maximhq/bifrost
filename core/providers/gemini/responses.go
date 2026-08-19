@@ -318,6 +318,13 @@ func (response *GenerateContentResponse) ToResponsesBifrostResponsesResponse() *
 		if candidate.AvgLogprobs != 0 {
 			extraFields["avgLogprobs"] = candidate.AvgLogprobs
 		}
+		// Server-side tool parts have no lossless home in Bifrost's OpenAI-shaped schema
+		// (the web_search_call item keeps the queries, but not the raw tool response or the
+		// thoughtSignature Gemini requires back on replay). Carry them verbatim so the
+		// native GenAI response can be reproduced exactly.
+		if parts := serverSideToolParts(candidate); len(parts) > 0 {
+			extraFields["serverSideToolParts"] = parts
+		}
 		if len(extraFields) > 0 {
 			bifrostResp.ProviderExtraFields = extraFields
 		}
@@ -363,6 +370,21 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 		geminiResp.CreateTime = time.Unix(int64(bifrostResp.CreatedAt), 0)
 	}
 
+	// Server-side tool parts (toolCall/toolResponse) preserved verbatim at parse time.
+	// They are replayed ahead of the generated content, reproducing Gemini's own ordering,
+	// and they already carry their thoughtSignatures -- so the reasoning items derived from
+	// those same signatures must not emit duplicate signature-only parts below.
+	var preservedToolParts []*Part
+	preservedToolSignatures := map[string]bool{}
+	if bifrostResp.ProviderExtraFields != nil {
+		preservedToolParts = extractServerSideToolParts(bifrostResp.ProviderExtraFields["serverSideToolParts"])
+		for _, part := range preservedToolParts {
+			if len(part.ThoughtSignature) > 0 {
+				preservedToolSignatures[base64.StdEncoding.EncodeToString(part.ThoughtSignature)] = true
+			}
+		}
+	}
+
 	// Convert output messages to candidates
 	if len(bifrostResp.Output) > 0 {
 		candidates := []*Candidate{}
@@ -381,7 +403,14 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 		for i := range bifrostResp.Output {
 			msg := &bifrostResp.Output[i]
 			if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeWebSearchCall {
-				lastWebSearchCall = msg
+				// Grounding's sources are merged onto the FIRST search call on the forward
+				// path, so with two or more rounds the last item carries none and rebuilding
+				// groundingMetadata from it drops groundingChunks entirely. Prefer the item
+				// that actually holds sources; fall back to the last when none does, which
+				// is the single-round case where first and last are the same message.
+				if lastWebSearchCall == nil || !webSearchCallHasSources(lastWebSearchCall) {
+					lastWebSearchCall = msg
+				}
 				consumedIndices[i] = true
 			}
 			// Collect annotations (typically in message after web search)
@@ -578,7 +607,7 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 				}
 				if msg.ResponsesReasoning.EncryptedContent != nil {
 					decodedSig := thoughtSignatureFromEncryptedContent(msg.ResponsesReasoning.EncryptedContent)
-					if decodedSig != nil {
+					if decodedSig != nil && !preservedToolSignatures[base64.StdEncoding.EncodeToString(decodedSig)] {
 						currentParts = append(currentParts, &Part{
 							ThoughtSignature: decodedSig,
 						})
@@ -587,7 +616,15 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 			}
 		}
 
-		// Add the last candidate if we have parts
+		// Add the last candidate if we have parts.
+		//
+		// The preserved array is Gemini's own parts in Gemini's own order, so replaying it
+		// reproduces the interleaving exactly. Prepending only the tool parts put them ahead
+		// of text the model had emitted first, which reorders the thought_signature context
+		// Gemini validates on replay.
+		if len(preservedToolParts) > 0 {
+			currentParts = mergePreservedGeminiParts(preservedToolParts, currentParts)
+		}
 		if len(currentParts) > 0 {
 			candidate := &Candidate{
 				Index: int32(len(candidates)),
@@ -905,7 +942,12 @@ func ToGeminiResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 		return nil
 	case schemas.ResponsesStreamResponseTypeOutputItemAdded:
 		if bifrostResp.Item != nil && bifrostResp.Item.ResponsesReasoning != nil {
-			if sig := thoughtSignatureFromEncryptedContent(bifrostResp.Item.ResponsesReasoning.EncryptedContent); sig != nil {
+			// A server-side toolCall/toolResponse part travels whole on the item. Re-emit it
+			// verbatim: it already carries the same thoughtSignature the reasoning item
+			// encodes, so emitting both would hand the client the signature twice.
+			if native := nativePartsFromItem(bifrostResp.Item); len(native) > 0 {
+				candidate.Content.Parts = append(candidate.Content.Parts, native...)
+			} else if sig := thoughtSignatureFromEncryptedContent(bifrostResp.Item.ResponsesReasoning.EncryptedContent); sig != nil {
 				candidate.Content.Parts = append(candidate.Content.Parts, &Part{ThoughtSignature: sig})
 			}
 		}
@@ -924,7 +966,9 @@ func ToGeminiResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 				state.ToolCallIDs[outputIndex] = *bifrostResp.Item.ResponsesToolMessage.CallID
 			}
 		}
-		return nil
+		// Fall through to the emptiness check below rather than returning unconditionally:
+		// this case builds reasoning/native parts above, and returning nil here discarded
+		// them, so thoughtSignatures never reached a /genai SSE client at all.
 
 	case schemas.ResponsesStreamResponseTypeOutputItemDone:
 		return nil
@@ -1065,6 +1109,21 @@ type GeminiResponsesStreamState struct {
 
 	// Web search tracking
 	HasEmittedWebSearch bool // Whether web_search_call events have been emitted
+	// Server-side searches reported by the model itself via toolCall/toolResponse parts,
+	// one entry per round in the order the model ran them. Recorded as they stream in and
+	// emitted as one web_search_call item each at finish, so the model's own call IDs and
+	// per-round queries win over the grounding-derived ones without emitting a search twice.
+	// A model may search several times in a single response, so this cannot collapse to a
+	// single call ID -- the non-streaming converter keys its items the same way.
+	ServerSearchRounds []GeminiServerSearchRound
+}
+
+// GeminiServerSearchRound is one server-side search the model reported running, identified
+// by the tool call ID Gemini assigned it.
+type GeminiServerSearchRound struct {
+	CallID       string
+	Queries      []string
+	ImageQueries []string
 }
 
 // geminiResponsesStreamStatePool provides a pool for Gemini responses stream state objects.
@@ -1141,6 +1200,7 @@ func (state *GeminiResponsesStreamState) flush() {
 	state.HasStartedText = false
 	state.HasStartedToolCall = false
 	state.HasEmittedWebSearch = false
+	state.ServerSearchRounds = nil
 	state.TextBuffer.Reset()
 }
 
@@ -1243,8 +1303,9 @@ func (response *GenerateContentResponse) ToBifrostResponsesStream(sequenceNumber
 		// Only close if we've actually started emitting content (text, tool calls, etc.)
 		// This prevents emitting response.completed for empty chunks with just finishReason
 		if candidate.FinishReason != "" && len(state.ItemIDs) > 0 {
-			// Check for grounding metadata (web search results)
-			if candidate.GroundingMetadata != nil && !state.HasEmittedWebSearch {
+			// Check for grounding metadata (web search results), or a server-side search the
+			// model reported itself via toolCall parts.
+			if (candidate.GroundingMetadata != nil || len(state.ServerSearchRounds) > 0) && !state.HasEmittedWebSearch {
 				// Emit web search events before closing
 				webSearchResponses := emitWebSearchFromGroundingMetadata(
 					candidate.GroundingMetadata,
@@ -1278,6 +1339,26 @@ func processGeminiPart(part *Part, state *GeminiResponsesStreamState, sequenceNu
 	case part.FunctionCall != nil:
 		// Function call
 		responses = append(responses, processGeminiFunctionCallPart(part, state, sequenceNumber)...)
+
+	case part.ToolCall != nil:
+		// Server-side tool invocation. The search events are emitted at finish, where
+		// grounding metadata supplies the sources, so only record the round here. Each call
+		// is kept separately -- a model that searches twice must produce two items, not one
+		// merged one. The part also carries a thoughtSignature, which still has to reach
+		// the client.
+		if isSearchToolType(part.ToolCall.ToolType) {
+			queries := toolCallSearchQueries(part.ToolCall)
+			round := GeminiServerSearchRound{CallID: part.ToolCall.ID, Queries: queries}
+			if strings.EqualFold(part.ToolCall.ToolType, "GOOGLE_SEARCH_IMAGE") {
+				round.ImageQueries = queries
+			}
+			state.ServerSearchRounds = append(state.ServerSearchRounds, round)
+		}
+		responses = append(responses, processGeminiThoughtSignaturePart(part, state, sequenceNumber)...)
+
+	case part.ToolResponse != nil:
+		// Result of a server-side call; carries no data Bifrost models beyond its signature.
+		responses = append(responses, processGeminiThoughtSignaturePart(part, state, sequenceNumber)...)
 
 	case part.ThoughtSignature != nil:
 		// Encrypted reasoning content (thoughtSignature)
@@ -1480,6 +1561,12 @@ func processGeminiThoughtSignaturePart(part *Part, state *GeminiResponsesStreamS
 	// Convert thoughtSignature to string
 	thoughtSig := base64.StdEncoding.EncodeToString(part.ThoughtSignature)
 
+	// A server-side toolCall/toolResponse part reaches here for its signature, but the
+	// part itself has no lossless home in the canonical schema. Carry it verbatim so the
+	// native GenAI stream can re-emit it instead of a bare signature-only part -- riding
+	// on this item keeps it in Gemini's original part order.
+	nativeParts := nativePartPayload(part)
+
 	// Emit output_item.added for reasoning with encrypted content
 	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 		Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
@@ -1494,6 +1581,7 @@ func processGeminiThoughtSignaturePart(part *Part, state *GeminiResponsesStreamS
 				Summary:          []schemas.ResponsesReasoningSummary{},
 				EncryptedContent: &thoughtSig,
 			},
+			ProviderNativeParts: nativeParts,
 		},
 	})
 
@@ -1513,10 +1601,37 @@ func processGeminiThoughtSignaturePart(part *Part, state *GeminiResponsesStreamS
 				Summary:          []schemas.ResponsesReasoningSummary{},
 				EncryptedContent: &thoughtSig,
 			},
+			ProviderNativeParts: nativeParts,
 		},
 	})
 
 	return responses
+}
+
+// nativePartPayload serializes a server-side tool part so a native-surface integration can
+// replay it byte-for-byte. Returns nil for parts the canonical schema already represents
+// losslessly, so only toolCall/toolResponse pay the marshal cost.
+func nativePartPayload(part *Part) json.RawMessage {
+	if part == nil || (part.ToolCall == nil && part.ToolResponse == nil) {
+		return nil
+	}
+	encoded, err := sonic.Marshal([]*Part{part})
+	if err != nil {
+		return nil
+	}
+	return json.RawMessage(encoded)
+}
+
+// nativePartsFromItem recovers the parts stashed by nativePartPayload.
+func nativePartsFromItem(item *schemas.ResponsesMessage) []*Part {
+	if item == nil || len(item.ProviderNativeParts) == 0 {
+		return nil
+	}
+	var parts []*Part
+	if err := sonic.Unmarshal(item.ProviderNativeParts, &parts); err != nil {
+		return nil
+	}
+	return parts
 }
 
 // processGeminiFunctionCallPart handles function call parts
@@ -2677,6 +2792,205 @@ func convertGeminiToolConfigToToolChoice(toolConfig *ToolConfig) *schemas.Respon
 	}
 }
 
+// serverSideToolParts returns the candidate's whole parts array verbatim when it contains
+// server-side tool parts, and nil otherwise.
+//
+// Capturing the full array rather than only the toolCall/toolResponse parts is what makes
+// the order restorable. Gemini interleaves text, tool and thought parts freely, and
+// thought_signature carries positional context that is invalidated by reordering -- but the
+// reverse path rebuilds its parts from Bifrost's Responses items, which are a different
+// shape and count, so a tool part's original index has nothing to be restored into. Keeping
+// the original array means the native GenAI path can replay it exactly as Gemini sent it.
+func serverSideToolParts(candidate *Candidate) []*Part {
+	if candidate == nil || candidate.Content == nil {
+		return nil
+	}
+	hasToolPart := false
+	for _, part := range candidate.Content.Parts {
+		if part != nil && (part.ToolCall != nil || part.ToolResponse != nil) {
+			hasToolPart = true
+			break
+		}
+	}
+	if !hasToolPart {
+		return nil
+	}
+	parts := make([]*Part, 0, len(candidate.Content.Parts))
+	for _, part := range candidate.Content.Parts {
+		if part != nil {
+			parts = append(parts, part)
+		}
+	}
+	return parts
+}
+
+// extractServerSideToolParts recovers the parts stashed by serverSideToolParts. Handles both
+// the in-memory pointers (normal path) and the JSON-decoded form, matching how the other
+// ProviderExtraFields values are read back.
+func extractServerSideToolParts(v any) []*Part {
+	if v == nil {
+		return nil
+	}
+	if parts, ok := v.([]*Part); ok {
+		return parts
+	}
+	b, err := sonic.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	var parts []*Part
+	if err := sonic.Unmarshal(b, &parts); err != nil {
+		return nil
+	}
+	return parts
+}
+
+// geminiCallIDWithoutSignature strips the thought-signature suffix Bifrost encodes into a
+// call ID ("name_ts_base64sig"), so the same call compares equal whether it came off the
+// preserved Gemini part or was rebuilt from a Bifrost item.
+func geminiCallIDWithoutSignature(callID string) string {
+	if idx := strings.Index(callID, thoughtSignatureSeparator); idx != -1 {
+		return callID[:idx]
+	}
+	return callID
+}
+
+// geminiPartIdentity returns a comparison key for a Gemini part, used to tell whether a
+// rebuilt part is a lossy re-derivation of one already present in the preserved array.
+// Parts that carry no identifying content return "" and are always treated as distinct.
+func geminiPartIdentity(part *Part) string {
+	if part == nil {
+		return ""
+	}
+	switch {
+	case part.ToolCall != nil:
+		return "tc:" + geminiCallIDWithoutSignature(part.ToolCall.ID) + ":" + part.ToolCall.ToolType
+	case part.ToolResponse != nil:
+		return "tr:" + geminiCallIDWithoutSignature(part.ToolResponse.ID) + ":" + part.ToolResponse.ToolType
+	case part.FunctionCall != nil:
+		return "fc:" + geminiCallIDWithoutSignature(part.FunctionCall.ID) + ":" + part.FunctionCall.Name
+	case part.Text != "":
+		if part.Thought {
+			return "th:" + part.Text
+		}
+		return "tx:" + part.Text
+	case len(part.ThoughtSignature) > 0:
+		return "ts:" + base64.StdEncoding.EncodeToString(part.ThoughtSignature)
+	}
+	return ""
+}
+
+// mergePreservedGeminiParts replays Gemini's original parts in their original order, then
+// appends any rebuilt part the original does not already account for.
+//
+// The preserved array wins on ordering because it is what Gemini actually sent -- the
+// rebuilt parts are derived from Bifrost's Responses items, which lose the interleaving.
+// Rebuilt parts with no counterpart in the original are still appended rather than dropped,
+// so anything added downstream (a plugin rewriting content, an item Bifrost models that
+// Gemini did not send as its own part) survives instead of being silently discarded.
+func mergePreservedGeminiParts(preserved, rebuilt []*Part) []*Part {
+	seen := make(map[string]bool, len(preserved))
+	for _, part := range preserved {
+		if id := geminiPartIdentity(part); id != "" {
+			seen[id] = true
+		}
+	}
+
+	merged := make([]*Part, 0, len(preserved)+len(rebuilt))
+	merged = append(merged, preserved...)
+	for _, part := range rebuilt {
+		id := geminiPartIdentity(part)
+		if id != "" && seen[id] {
+			continue
+		}
+		if id != "" {
+			seen[id] = true
+		}
+		merged = append(merged, part)
+	}
+	return merged
+}
+
+// webSearchCallHasSources reports whether a web_search_call item carries the grounding
+// sources that rebuilding Gemini's groundingChunks depends on.
+func webSearchCallHasSources(msg *schemas.ResponsesMessage) bool {
+	if msg == nil || msg.ResponsesToolMessage == nil || msg.ResponsesToolMessage.Action == nil {
+		return false
+	}
+	action := msg.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction
+	return action != nil && len(action.Sources) > 0
+}
+
+// firstSearchCallIndex returns the lowest message index among the server-side search calls,
+// i.e. the item grounding metadata should be merged onto. Takes the indices directly rather
+// than a keyed map so ID-less rounds, which never enter that map, are still considered.
+func firstSearchCallIndex(indices []int) (int, bool) {
+	first, found := 0, false
+	for _, idx := range indices {
+		if !found || idx < first {
+			first, found = idx, true
+		}
+	}
+	return first, found
+}
+
+// reasoningFromThoughtSignature builds the encrypted-reasoning item for a part that carries
+// a thoughtSignature. Server-side toolCall/toolResponse parts carry one too, and Gemini
+// requires signatures back on replay, so they must not be lost just because the part matched
+// a more specific case than the thoughtSignature one.
+func reasoningFromThoughtSignature(part *Part) (schemas.ResponsesMessage, bool) {
+	if part == nil || len(part.ThoughtSignature) == 0 {
+		return schemas.ResponsesMessage{}, false
+	}
+	thoughtSig := base64.StdEncoding.EncodeToString(part.ThoughtSignature)
+	return schemas.ResponsesMessage{
+		Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+		ResponsesReasoning: &schemas.ResponsesReasoning{
+			Summary:          []schemas.ResponsesReasoningSummary{},
+			EncryptedContent: &thoughtSig,
+		},
+	}, true
+}
+
+// toolCallSearchQueries extracts Google Search's queries from a server-side tool call's args
+// ({"queries": ["...", ...]}). Returns nil when the shape is anything else.
+func toolCallSearchQueries(call *ToolCall) []string {
+	if call == nil || call.Args == nil {
+		return nil
+	}
+	raw, ok := call.Args["queries"].([]any)
+	if !ok {
+		return nil
+	}
+	queries := make([]string, 0, len(raw))
+	for _, q := range raw {
+		if s, ok := q.(string); ok && s != "" {
+			queries = append(queries, s)
+		}
+	}
+	if len(queries) == 0 {
+		return nil
+	}
+	return queries
+}
+
+// newWebSearchActionFromToolCall maps a server-side Google Search invocation onto the neutral
+// web_search_call action. Sources are not available here — they arrive in groundingMetadata
+// and are merged onto this item afterwards.
+func newWebSearchActionFromToolCall(call *ToolCall) *schemas.ResponsesWebSearchToolCallAction {
+	action := &schemas.ResponsesWebSearchToolCallAction{Type: "search"}
+	queries := toolCallSearchQueries(call)
+	if len(queries) > 0 {
+		action.Queries = queries
+		action.Query = schemas.Ptr(queries[0])
+	}
+	if call != nil && strings.EqualFold(call.ToolType, "GOOGLE_SEARCH_IMAGE") {
+		action.ImageQueries = queries
+	}
+	return action
+}
+
 // textBlockOf returns the text content block of messages[idx], or nil when idx is
 // out of range or the message carries no text block.
 func textBlockOf(messages []schemas.ResponsesMessage, idx int) *schemas.ResponsesOutputMessageContentText {
@@ -2738,6 +3052,16 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 		// Index into messages of this candidate's first text message; grounding
 		// annotations are attached to it once all parts have been converted.
 		textMessageIdx := -1
+
+		// Index from server-side tool-call ID to the web_search_call item it opened.
+		searchCallIndexByID := map[string]int{}
+		// ToolCall.ID and ToolResponse.ID are both omitempty, so Gemini can leave them out.
+		// Those rounds cannot pair by ID -- they pair by position instead: this FIFO holds
+		// the message indices of ID-less calls still waiting for their response.
+		var anonymousSearchCalls []int
+		// Every web_search_call item's index in emission order, keyed or not, so grounding
+		// metadata can find the first one regardless of whether IDs were present.
+		var searchCallIndices []int
 
 		for _, part := range candidate.Content.Parts {
 			// Handle different types of parts
@@ -2986,6 +3310,60 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 					Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
 				}
 				messages = append(messages, msg)
+			case part.ToolCall != nil:
+				// Server-side tool invocation (Google executed it; we only report it).
+				// The part also carries a thoughtSignature, so keep emitting the reasoning
+				// item the thoughtSignature case below would have produced.
+				if msg, ok := reasoningFromThoughtSignature(part); ok {
+					messages = append(messages, msg)
+				}
+				if !isSearchToolType(part.ToolCall.ToolType) {
+					// Unmapped built-in tool: preserved verbatim on the native path above,
+					// but Bifrost has no neutral item type for it.
+					break
+				}
+				// An ID-less round still needs a distinct item ID -- keying the map on ""
+				// would collapse every such round onto one entry, leaving all but the last
+				// stuck in_progress and every emitted item carrying an empty ID. Mirrors
+				// the streaming path's generateItemID("ws", outputIndex) fallback.
+				itemID := part.ToolCall.ID
+				if itemID == "" {
+					itemID = fmt.Sprintf("ws_%d", len(messages))
+					anonymousSearchCalls = append(anonymousSearchCalls, len(messages))
+				} else {
+					searchCallIndexByID[itemID] = len(messages)
+				}
+				searchCallIndices = append(searchCallIndices, len(messages))
+				messages = append(messages, schemas.ResponsesMessage{
+					ID:     schemas.Ptr(itemID),
+					Type:   schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall),
+					Status: schemas.Ptr("in_progress"),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						Action: &schemas.ResponsesToolMessageActionStruct{
+							ResponsesWebSearchToolCallAction: newWebSearchActionFromToolCall(part.ToolCall),
+						},
+					},
+				})
+
+			case part.ToolResponse != nil:
+				// Result of a server-side ToolCall — completes the item its ID opened.
+				if msg, ok := reasoningFromThoughtSignature(part); ok {
+					messages = append(messages, msg)
+				}
+				if part.ToolResponse.ID != "" {
+					if idx, ok := searchCallIndexByID[part.ToolResponse.ID]; ok && idx < len(messages) {
+						messages[idx].Status = schemas.Ptr("completed")
+					}
+				} else if len(anonymousSearchCalls) > 0 {
+					// No ID to match on: Gemini emits each round's response after its call,
+					// so the oldest still-open ID-less call is the one this completes.
+					idx := anonymousSearchCalls[0]
+					anonymousSearchCalls = anonymousSearchCalls[1:]
+					if idx < len(messages) {
+						messages[idx].Status = schemas.Ptr("completed")
+					}
+				}
+
 			case part.ThoughtSignature != nil:
 				// Handle thought signature
 				thoughtSig := base64.StdEncoding.EncodeToString(part.ThoughtSignature)
@@ -3033,7 +3411,30 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 				webSearchmessage.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction.Sources = sources
 			}
 
-			messages = append(messages, webSearchmessage)
+			// When the model reported the search itself via server-side toolCall parts, that
+			// item is authoritative — it carries the real call ID. Merge grounding's richer
+			// data (sources, and any queries the call did not spell out) onto it rather than
+			// emitting a second web_search_call for the same search.
+			if idx, ok := firstSearchCallIndex(searchCallIndices); ok && idx < len(messages) {
+				if existing := messages[idx].ResponsesToolMessage; existing != nil && existing.Action != nil {
+					if action := existing.Action.ResponsesWebSearchToolCallAction; action != nil {
+						if len(sources) > 0 {
+							action.Sources = sources
+						}
+						if len(action.Queries) == 0 {
+							action.Queries = candidate.GroundingMetadata.WebSearchQueries
+							if len(action.Queries) > 0 {
+								action.Query = schemas.Ptr(action.Queries[0])
+							}
+						}
+						if len(action.ImageQueries) == 0 {
+							action.ImageQueries = candidate.GroundingMetadata.ImageSearchQueries
+						}
+					}
+				}
+			} else {
+				messages = append(messages, webSearchmessage)
+			}
 
 			// create a annotations message for grounding supports
 			if len(candidate.GroundingMetadata.GroundingSupports) > 0 {
@@ -4168,98 +4569,130 @@ func emitWebSearchFromGroundingMetadata(
 ) []*schemas.BifrostResponsesStreamResponse {
 	var responses []*schemas.BifrostResponsesStreamResponse
 
-	if metadata == nil || (len(metadata.WebSearchQueries) == 0 && len(metadata.ImageSearchQueries) == 0) {
+	// A server-side toolCall is enough to emit an item even when grounding metadata is
+	// absent or query-less: the model told us it searched.
+	hasGroundingQueries := metadata != nil && (len(metadata.WebSearchQueries) > 0 || len(metadata.ImageSearchQueries) > 0)
+	if !hasGroundingQueries && len(state.ServerSearchRounds) == 0 {
 		return responses
 	}
 
-	outputIndex := state.nextOutputIndex()
-	itemID := state.generateItemID("ws", outputIndex)
-	state.ItemIDs[outputIndex] = itemID
-
-	// Build web search action
-	action := &schemas.ResponsesWebSearchToolCallAction{
-		Type:         "search",
-		Queries:      metadata.WebSearchQueries,
-		ImageQueries: metadata.ImageSearchQueries,
-	}
-	if len(metadata.WebSearchQueries) > 0 {
-		action.Query = &metadata.WebSearchQueries[0]
-	}
-
-	// Convert groundingChunks to sources
+	// Convert groundingChunks to sources. Grounding reports them for the response as a
+	// whole rather than per round, so they attach to the first item -- mirroring how
+	// convertGeminiCandidatesToResponsesOutput merges them onto the first search call.
 	var sources []schemas.ResponsesWebSearchToolCallActionSearchSource
-	for _, chunk := range metadata.GroundingChunks {
-		if source, ok := groundingChunkSource(chunk); ok {
-			sources = append(sources, source)
+	if metadata != nil {
+		for _, chunk := range metadata.GroundingChunks {
+			if source, ok := groundingChunkSource(chunk); ok {
+				sources = append(sources, source)
+			}
 		}
 	}
-	action.Sources = sources
 
-	// 1. output_item.added (web_search_call, in_progress)
-	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-		Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
-		SequenceNumber: sequenceNumber + len(responses),
-		OutputIndex:    &outputIndex,
-		Item: &schemas.ResponsesMessage{
-			ID:     &itemID,
-			Type:   schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall),
-			Status: schemas.Ptr("in_progress"),
-			ResponsesToolMessage: &schemas.ResponsesToolMessage{
-				Action: &schemas.ResponsesToolMessageActionStruct{
-					ResponsesWebSearchToolCallAction: &schemas.ResponsesWebSearchToolCallAction{
-						Type: "search",
+	// One item per server-side round, in the order the model ran them. With no rounds
+	// reported, grounding metadata alone still yields the single legacy item.
+	rounds := state.ServerSearchRounds
+	if len(rounds) == 0 {
+		rounds = []GeminiServerSearchRound{{}}
+	}
+
+	for i, round := range rounds {
+		outputIndex := state.nextOutputIndex()
+		// Prefer the model's own tool-call ID so the item is traceable back to Gemini's call.
+		itemID := round.CallID
+		if itemID == "" {
+			itemID = state.generateItemID("ws", outputIndex)
+		}
+		state.ItemIDs[outputIndex] = itemID
+
+		// Queries reported by the server-side call take precedence. Grounding fills in only
+		// what the call did not spell out, and only for the first item -- its query list
+		// covers the whole response, so replaying it per round would attribute another
+		// round's queries to this one.
+		action := &schemas.ResponsesWebSearchToolCallAction{
+			Type:         "search",
+			Queries:      round.Queries,
+			ImageQueries: round.ImageQueries,
+		}
+		if i == 0 && metadata != nil {
+			if len(action.Queries) == 0 {
+				action.Queries = metadata.WebSearchQueries
+			}
+			if len(action.ImageQueries) == 0 {
+				action.ImageQueries = metadata.ImageSearchQueries
+			}
+			action.Sources = sources
+		}
+		if len(action.Queries) > 0 {
+			action.Query = &action.Queries[0]
+		}
+
+		// 1. output_item.added (web_search_call, in_progress)
+		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+			SequenceNumber: sequenceNumber + len(responses),
+			OutputIndex:    &outputIndex,
+			ItemID:         &itemID,
+			Item: &schemas.ResponsesMessage{
+				ID:     &itemID,
+				Type:   schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall),
+				Status: schemas.Ptr("in_progress"),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					Action: &schemas.ResponsesToolMessageActionStruct{
+						ResponsesWebSearchToolCallAction: &schemas.ResponsesWebSearchToolCallAction{
+							Type: "search",
+						},
 					},
 				},
 			},
-		},
-	})
+		})
 
-	// 2. web_search_call.in_progress
-	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-		Type:           schemas.ResponsesStreamResponseTypeWebSearchCallInProgress,
-		SequenceNumber: sequenceNumber + len(responses),
-		OutputIndex:    &outputIndex,
-		ItemID:         &itemID,
-	})
+		// 2. web_search_call.in_progress
+		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeWebSearchCallInProgress,
+			SequenceNumber: sequenceNumber + len(responses),
+			OutputIndex:    &outputIndex,
+			ItemID:         &itemID,
+		})
 
-	// 3. web_search_call.searching
-	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-		Type:           schemas.ResponsesStreamResponseTypeWebSearchCallSearching,
-		SequenceNumber: sequenceNumber + len(responses),
-		OutputIndex:    &outputIndex,
-		ItemID:         &itemID,
-	})
+		// 3. web_search_call.searching
+		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeWebSearchCallSearching,
+			SequenceNumber: sequenceNumber + len(responses),
+			OutputIndex:    &outputIndex,
+			ItemID:         &itemID,
+		})
 
-	// 4. web_search_call.completed
-	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-		Type:           schemas.ResponsesStreamResponseTypeWebSearchCallCompleted,
-		SequenceNumber: sequenceNumber + len(responses),
-		OutputIndex:    &outputIndex,
-		ItemID:         &itemID,
-	})
+		// 4. web_search_call.completed
+		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeWebSearchCallCompleted,
+			SequenceNumber: sequenceNumber + len(responses),
+			OutputIndex:    &outputIndex,
+			ItemID:         &itemID,
+		})
 
-	// 5. output_item.done (with full action including sources)
-	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-		Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
-		SequenceNumber: sequenceNumber + len(responses),
-		OutputIndex:    &outputIndex,
-		ItemID:         &itemID,
-		Item: &schemas.ResponsesMessage{
-			ID:     &itemID,
-			Type:   schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall),
-			Status: schemas.Ptr("completed"),
-			ResponsesToolMessage: &schemas.ResponsesToolMessage{
-				Action: &schemas.ResponsesToolMessageActionStruct{
-					ResponsesWebSearchToolCallAction: action,
+		// 5. output_item.done (with full action including sources)
+		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+			SequenceNumber: sequenceNumber + len(responses),
+			OutputIndex:    &outputIndex,
+			ItemID:         &itemID,
+			Item: &schemas.ResponsesMessage{
+				ID:     &itemID,
+				Type:   schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall),
+				Status: schemas.Ptr("completed"),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					Action: &schemas.ResponsesToolMessageActionStruct{
+						ResponsesWebSearchToolCallAction: action,
+					},
 				},
 			},
-		},
-	})
+		})
+	}
 
 	state.HasEmittedWebSearch = true
 
 	// Emit rendered content if present
-	if metadata.SearchEntryPoint != nil && metadata.SearchEntryPoint.RenderedContent != "" {
+	if metadata != nil && metadata.SearchEntryPoint != nil && metadata.SearchEntryPoint.RenderedContent != "" {
 		renderedIndex := state.nextOutputIndex()
 		renderedItemID := state.generateItemID("rc", renderedIndex)
 		state.ItemIDs[renderedIndex] = renderedItemID
