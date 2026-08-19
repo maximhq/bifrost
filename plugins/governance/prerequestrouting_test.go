@@ -38,7 +38,7 @@ func TestRunPreRequestRouting_ExplicitProviderPrefixSkipsLoadBalancing(t *testin
 
 	for range 20 {
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-		got, err := p.runPreRequestRouting(ctx, vk, false, "openai/gpt-4o", schemas.ChatCompletionRequest)
+		got, err := p.runPreRequestRouting(ctx, vk, "openai/gpt-4o", schemas.ChatCompletionRequest)
 		require.NoError(t, err)
 		assert.Equal(t, "openai/gpt-4o", got)
 	}
@@ -53,7 +53,7 @@ func TestRunPreRequestRouting_UnprefixedModelLoadBalances(t *testing.T) {
 	p := newPreRequestRoutingPlugin(t, vk)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
-	got, err := p.runPreRequestRouting(ctx, vk, false, "gpt-4o", schemas.ChatCompletionRequest)
+	got, err := p.runPreRequestRouting(ctx, vk, "gpt-4o", schemas.ChatCompletionRequest)
 	require.NoError(t, err)
 	assert.Equal(t, "openai/gpt-4o", got)
 }
@@ -68,7 +68,7 @@ func TestRunPreRequestRouting_UnknownPrefixIsTreatedAsModelNamespace(t *testing.
 	p := newPreRequestRoutingPlugin(t, vk)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
-	got, err := p.runPreRequestRouting(ctx, vk, false, "meta-llama/llama-3.1-8b-instant", schemas.ChatCompletionRequest)
+	got, err := p.runPreRequestRouting(ctx, vk, "meta-llama/llama-3.1-8b-instant", schemas.ChatCompletionRequest)
 	require.NoError(t, err)
 	assert.Equal(t, "groq/meta-llama/llama-3.1-8b-instant", got)
 }

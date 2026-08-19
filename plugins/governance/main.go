@@ -9,7 +9,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -19,7 +18,6 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/mcpcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
-	"github.com/maximhq/bifrost/plugins/governance/complexity"
 )
 
 // PluginName is the name of the governance plugin
@@ -29,8 +27,6 @@ const (
 	governanceRejectedContextKey schemas.BifrostContextKey = "bf-governance-rejected"
 
 	VirtualKeyPrefix = "sk-bf-"
-
-	noComplexitySignalLog = "Complexity analysis skipped: no configured complexity signal matched the latest user message; continuing with existing routing path"
 )
 
 // Config is the configuration for the governance plugin
@@ -39,7 +35,6 @@ type Config struct {
 	RequiredHeaders       *[]string `json:"required_headers"` // Pointer to live config slice; changes are reflected immediately without restart
 	IsEnterprise          bool      `json:"is_enterprise"`
 	DisableAutoToolInject *bool     `json:"disable_auto_tool_inject"`
-	RoutingChainMaxDepth  *int      `json:"routing_chain_max_depth"` // Pointer to live config value; changes are reflected immediately without restart
 }
 
 type InMemoryStore interface {
@@ -71,7 +66,6 @@ type GovernancePlugin struct {
 	store    GovernanceStore // Pure data access layer
 	resolver *BudgetResolver // Pure decision engine for hierarchical governance
 	tracker  *UsageTracker   // Business logic owner (updates, resets, persistence)
-	engine   *RoutingEngine  // Routing engine for dynamic routing
 
 	// Dependencies
 	configStore  configstore.ConfigStore
@@ -88,8 +82,6 @@ type GovernancePlugin struct {
 	requiredHeaders       *[]string // pointer to live config slice; lowercased at check time
 	isEnterprise          bool
 	disableAutoToolInject *bool
-
-	complexityAnalyzer atomic.Pointer[complexity.ComplexityAnalyzer]
 }
 
 // Init initializes and returns a governance plugin instance.
@@ -155,16 +147,10 @@ func Init(
 	var isVkMandatory *bool
 	var requiredHeaders *[]string
 	var disableAutoToolInject *bool
-	var routingChainMaxDepth *int
 	if config != nil {
 		isVkMandatory = config.IsVkMandatory
 		requiredHeaders = config.RequiredHeaders
 		disableAutoToolInject = config.DisableAutoToolInject
-		routingChainMaxDepth = config.RoutingChainMaxDepth
-	}
-	if routingChainMaxDepth == nil {
-		defaultDepth := DefaultRoutingChainMaxDepth
-		routingChainMaxDepth = &defaultDepth
 	}
 
 	newStoreStart := time.Now()
@@ -213,12 +199,6 @@ func Init(
 		}
 	}
 
-	// 5. Routing engine (dynamically routing requests based on routing rules)
-	engine, err := NewRoutingEngine(governanceStore, logger, routingChainMaxDepth)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize routing engine: %w", err)
-	}
-
 	ctx, cancelFunc := context.WithCancel(ctx)
 	plugin := &GovernancePlugin{
 		ctx:                   ctx,
@@ -226,7 +206,6 @@ func Init(
 		store:                 governanceStore,
 		resolver:              resolver,
 		tracker:               tracker,
-		engine:                engine,
 		configStore:           configStore,
 		modelCatalog:          modelCatalog,
 		mcpCatalog:            mcpCatalog,
@@ -238,7 +217,6 @@ func Init(
 		disableAutoToolInject: disableAutoToolInject,
 		inMemoryStore:         inMemoryStore,
 	}
-	plugin.storeComplexityAnalyzerConfig(resolveAnalyzerConfigFromStoreOrArg(ctx, logger, configStore, governanceConfig))
 	return plugin, nil
 }
 
@@ -280,23 +258,13 @@ func InitFromStore(
 	var isVkMandatory *bool
 	var requiredHeaders *[]string
 	var disableAutoToolInject *bool
-	var routingChainMaxDepth *int
 	if config != nil {
 		isVkMandatory = config.IsVkMandatory
 		requiredHeaders = config.RequiredHeaders
 		disableAutoToolInject = config.DisableAutoToolInject
-		routingChainMaxDepth = config.RoutingChainMaxDepth
-	}
-	if routingChainMaxDepth == nil {
-		defaultDepth := DefaultRoutingChainMaxDepth
-		routingChainMaxDepth = &defaultDepth
 	}
 	resolver := NewBudgetResolver(governanceStore, modelCatalog, logger, inMemoryStore)
 	tracker := NewUsageTracker(ctx, governanceStore, resolver, configStore, logger)
-	engine, err := NewRoutingEngine(governanceStore, logger, routingChainMaxDepth)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize routing engine: %w", err)
-	}
 	// Perform startup reset check for any expired limits from downtime
 	// Use distributed lock to prevent race condition when multiple instances boot simultaneously
 	if configStore != nil {
@@ -321,7 +289,6 @@ func InitFromStore(
 		store:                 governanceStore,
 		resolver:              resolver,
 		tracker:               tracker,
-		engine:                engine,
 		configStore:           configStore,
 		modelCatalog:          modelCatalog,
 		mcpCatalog:            mcpCatalog,
@@ -333,59 +300,12 @@ func InitFromStore(
 		isEnterprise:          config != nil && config.IsEnterprise,
 		disableAutoToolInject: disableAutoToolInject,
 	}
-	plugin.storeComplexityAnalyzerConfig(resolveAnalyzerConfigFromStoreOrArg(ctx, logger, configStore, nil))
 	return plugin, nil
 }
 
 // GetName returns the name of the plugin
 func (p *GovernancePlugin) GetName() string {
 	return PluginName
-}
-
-// ReloadComplexityAnalyzerConfig swaps the analyzer used by complexity_tier routing.
-func (p *GovernancePlugin) ReloadComplexityAnalyzerConfig(config *complexity.AnalyzerConfig) {
-	p.storeComplexityAnalyzerConfig(config)
-}
-
-func (p *GovernancePlugin) storeComplexityAnalyzerConfig(config *complexity.AnalyzerConfig) {
-	resolved, err := complexity.ValidateAndNormalize(config)
-	if err != nil {
-		if p.logger != nil {
-			p.logger.Warn("invalid complexity analyzer config, using defaults: %v", err)
-		}
-		defaults := complexity.DefaultAnalyzerConfig()
-		resolved = &defaults
-	}
-	p.complexityAnalyzer.Store(complexity.NewComplexityAnalyzerWithConfig(resolved))
-}
-
-func resolveAnalyzerConfigFromStoreOrArg(
-	ctx context.Context,
-	logger schemas.Logger,
-	configStore configstore.ConfigStore,
-	governanceConfig *configstore.GovernanceConfig,
-) *complexity.AnalyzerConfig {
-	if governanceConfig != nil && governanceConfig.ComplexityAnalyzerConfig != nil {
-		cfg, err := complexity.ValidateAndNormalize(governanceConfig.ComplexityAnalyzerConfig)
-		if err != nil {
-			if logger != nil {
-				logger.Warn("invalid complexity analyzer config from governance config: %v", err)
-			}
-		} else if cfg != nil {
-			return cfg
-		}
-	}
-	if configStore != nil {
-		cfg, err := configStore.GetComplexityAnalyzerConfig(ctx)
-		if err != nil {
-			if logger != nil {
-				logger.Warn("failed to load complexity analyzer config from store: %v", err)
-			}
-		} else if cfg != nil {
-			return cfg
-		}
-	}
-	return nil
 }
 
 // UpdateEnforceAuthOnInference updates the enforce auth on inference config
@@ -405,11 +325,11 @@ func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req
 }
 
 // runPreRequestRouting wraps a model string in a synthetic BifrostRequest, runs the same
-// applyRoutingRules + loadBalanceProvider helpers used by the main PreRequestHook path, and
-// returns the resolved model (provider-prefixed when a provider was selected, plain model
-// otherwise). Used by PreRequestHook's large-payload branch where req.Model is empty because
-// the body wasn't parsed.
-func (p *GovernancePlugin) runPreRequestRouting(ctx *schemas.BifrostContext, virtualKey *configstoreTables.TableVirtualKey, hasRoutingRules bool, modelIn string, requestType schemas.RequestType) (string, error) {
+// loadBalanceProvider helper used by the main PreRequestHook path, and returns the resolved
+// model (provider-prefixed when a provider was selected, plain model otherwise). Used by
+// PreRequestHook's large-payload branch where req.Model is empty because the body wasn't
+// parsed.
+func (p *GovernancePlugin) runPreRequestRouting(ctx *schemas.BifrostContext, virtualKey *configstoreTables.TableVirtualKey, modelIn string, requestType schemas.RequestType) (string, error) {
 	// Parse a provider-prefixed model string the same way the transport does for
 	// body-having requests, so an explicit prefix like "openai/gpt-4o" lands in
 	// ChatRequest.Provider and load balancing honors the caller's routing intent.
@@ -417,12 +337,6 @@ func (p *GovernancePlugin) runPreRequestRouting(ctx *schemas.BifrostContext, vir
 	synthetic := &schemas.BifrostRequest{
 		RequestType: requestType,
 		ChatRequest: &schemas.BifrostChatRequest{Provider: providerIn, Model: parsedModel},
-	}
-
-	if hasRoutingRules {
-		if _, err := p.applyRoutingRules(ctx, synthetic, virtualKey); err != nil {
-			return modelIn, err
-		}
 	}
 
 	if virtualKey != nil {
@@ -672,129 +586,6 @@ func (p *GovernancePlugin) publishRoutingAllowlist(ctx *schemas.BifrostContext, 
 		}
 	}
 	ctx.SetValue(schemas.BifrostContextKeyRoutingAllowedProviders, allowed)
-}
-
-// applyRoutingRules evaluates routing rules against req and mutates
-// req.Provider/req.Model/req.Fallbacks when a rule matches. Returns the matched RoutingDecision
-// (nil if no rule matched). Integrations normalize req.Model (and Provider when applicable) before
-// the BifrostRequest reaches this point.
-func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, virtualKey *configstoreTables.TableVirtualKey) (*RoutingDecision, error) {
-	provider, model, _ := req.GetRequestFields()
-	if model == "" {
-		return nil, nil
-	}
-
-	requestType := string(req.RequestType)
-	headers, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
-	queryParams, _ := ctx.Value(schemas.BifrostContextKeyRequestQuery).(map[string]string)
-
-	// Set up lazy complexity computation; only runs if a rule references complexity_tier.
-	var computeComplexity func() *complexity.ComplexityResult
-	if analyzer := p.complexityAnalyzer.Load(); analyzer != nil {
-		computeComplexity = func() *complexity.ComplexityResult {
-			input, ok := buildComplexityInput(req)
-			if !ok {
-				if p.logger != nil {
-					p.logger.Debug("[Governance] Complexity analysis skipped: unsupported request type")
-				}
-				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo, "Complexity analysis skipped: no supported text-bearing input detected")
-				return nil
-			}
-
-			result := analyzer.Analyze(input)
-			if result == nil {
-				if p.logger != nil {
-					p.logger.Debug("[Governance] %s", noComplexitySignalLog)
-				}
-				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelDebug, noComplexitySignalLog)
-				return nil
-			}
-			if p.logger != nil {
-				p.logger.Debug(
-					"[Governance] Complexity analysis details: tier=%s score=%.2f words=%d",
-					result.Tier,
-					result.Score,
-					result.WordCount,
-				)
-			}
-			ctx.AppendRoutingEngineLog(
-				schemas.RoutingEngineRoutingRule,
-				schemas.LogLevelInfo,
-				fmt.Sprintf("Complexity: tier=%s score=%.2f words=%d", result.Tier, result.Score, result.WordCount),
-			)
-			return result
-		}
-	}
-
-	routingCtx := &RoutingContext{
-		VirtualKey:               virtualKey,
-		UserID:                   bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID),
-		Provider:                 provider,
-		Model:                    model,
-		RequestType:              requestType,
-		Headers:                  headers,
-		QueryParams:              queryParams,
-		BudgetAndRateLimitStatus: p.store.GetBudgetAndRateLimitStatus(ctx, model, provider, virtualKey, nil, nil, nil),
-		computeComplexity:        computeComplexity,
-	}
-
-	p.logger.Debug("[PreRequestHook] Built routing context: provider=%s, model=%s, requestType=%s, vk=%v",
-		provider, model, requestType, virtualKey != nil)
-
-	// Evaluate routing rules
-	decision, err := p.engine.EvaluateRoutingRules(ctx, routingCtx)
-	if err != nil {
-		p.logger.Error("failed to evaluate routing rules: %v", err)
-		ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelError, fmt.Sprintf("Routing rule evaluation error: %v", err))
-		return nil, nil
-	}
-	if decision == nil {
-		return nil, nil
-	}
-
-	p.logger.Debug("[Governance] Routing rule matched: %s", decision.MatchedRuleName)
-
-	if decision.Provider != "" {
-		req.SetProvider(schemas.ModelProvider(decision.Provider))
-	}
-	if decision.Model != "" {
-		req.SetModel(decision.Model)
-	}
-
-	schemas.AppendToContextList(ctx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineRoutingRule)
-
-	// Add fallbacks if present; fill in the incoming model for fallbacks that omit it
-	if len(decision.Fallbacks) > 0 {
-		resolvedFallbacks := make([]schemas.Fallback, 0, len(decision.Fallbacks))
-		for _, fb := range decision.Fallbacks {
-			fbProvider, fbModel := schemas.ParseModelString(fb, "")
-			trimmedFbProvider := strings.TrimSpace(string(fbProvider))
-			trimmedFbModel := strings.TrimSpace(fbModel)
-			if trimmedFbProvider == "" {
-				continue
-			}
-			if trimmedFbModel == "" && model != "" {
-				trimmedFbModel = model
-			}
-			resolvedFallbacks = append(resolvedFallbacks, schemas.Fallback{
-				Provider: schemas.ModelProvider(trimmedFbProvider),
-				Model:    trimmedFbModel,
-			})
-		}
-		req.SetFallbacks(resolvedFallbacks)
-	}
-
-	// Pin specific API key by ID if the routing rule specifies one. This uses a dedicated,
-	// non-reserved context key (not BifrostContextKeyAPIKeyID): routing runs inside
-	// PreRequestHook, where core blocks writes to reserved key-selection keys, so a write to
-	// the caller-pin key would be silently dropped. Key selection reads this routing pin first
-	// and resolves it against the configured key pool.
-	if decision.KeyID != "" {
-		ctx.SetValue(schemas.BifrostContextKeyRoutingPinnedAPIKeyID, decision.KeyID)
-	}
-
-	p.logger.Debug("[Governance] Applied routing decision: provider=%s, model=%s, keyID=%s, fallbacks=%v", decision.Provider, decision.Model, decision.KeyID, decision.Fallbacks)
-	return decision, nil
 }
 
 // computeMCPIncludeTools builds the MCP include-tools list for a virtual key. Returns the list
@@ -1202,8 +993,10 @@ func (p *GovernancePlugin) isMCPToolAllowedByVKWith(vk *configstoreTables.TableV
 	return false
 }
 
-// PreRequestHook is the per-request governance phase. It runs for both normal body-having
-// requests (route on req.Model) and large-payload streaming requests (route on
+// PreRequestHook is the per-request governance phase: it stamps the virtual key's scope on
+// ctx, publishes the key's provider allowlist, load balances across the key's provider
+// configs, and narrows the MCP tool list. It runs for both normal body-having requests
+// (routing on req.Model) and large-payload streaming requests (routing on
 // LargePayloadMetadata.Model from ctx — the body is opaque mid-stream, so routing is
 // constrained to same-protocol-family targets that the upstream provider can hydrate
 // from the rewritten metadata).
@@ -1216,18 +1009,13 @@ func (p *GovernancePlugin) PreRequestHook(ctx *schemas.BifrostContext, req *sche
 	}
 
 	virtualKeyValue := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
-	hasRoutingRules := p.store.HasRoutingRules(ctx)
-	if virtualKeyValue == "" && !hasRoutingRules {
+	if virtualKeyValue == "" {
 		return nil
 	}
 
-	var virtualKey *configstoreTables.TableVirtualKey
-	if virtualKeyValue != "" {
-		var ok bool
-		virtualKey, ok = p.store.GetVirtualKey(ctx, virtualKeyValue)
-		if !ok || virtualKey == nil || !virtualKey.IsActiveValue() || virtualKey.IsExpiredAt(time.Now().UTC()) {
-			return nil
-		}
+	virtualKey, ok := p.store.GetVirtualKey(ctx, virtualKeyValue)
+	if !ok || virtualKey == nil || !virtualKey.IsActiveValue() || virtualKey.IsExpiredAt(time.Now().UTC()) {
+		return nil
 	}
 
 	stampGovernanceCtxFromVK(ctx, virtualKey)
@@ -1239,7 +1027,7 @@ func (p *GovernancePlugin) PreRequestHook(ctx *schemas.BifrostContext, req *sche
 	// reads metadata.Model when it rewrites the model field in the body prefix, so
 	// mutating it here is what propagates the routing decision to the upstream call.
 	if metadata, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadMetadata).(*schemas.LargePayloadMetadata); metadata != nil && metadata.Model != "" {
-		newModel, err := p.runPreRequestRouting(ctx, virtualKey, hasRoutingRules, metadata.Model, req.RequestType)
+		newModel, err := p.runPreRequestRouting(ctx, virtualKey, metadata.Model, req.RequestType)
 		if err != nil {
 			return err
 		}
@@ -1251,38 +1039,30 @@ func (p *GovernancePlugin) PreRequestHook(ctx *schemas.BifrostContext, req *sche
 		return nil
 	}
 
-	if hasRoutingRules {
-		if _, err := p.applyRoutingRules(ctx, req, virtualKey); err != nil {
-			return err
-		}
-	}
-
 	// Publish the VK provider allowlist for the (post routing-rules) model so downstream routing
 	// layers (load balancing, model-catalog resolution) and core enforcement intersect their
 	// candidates with it — a later layer must not select a provider the VK forbids for this model.
 	_, routedModel, _ := req.GetRequestFields()
 	p.publishRoutingAllowlist(ctx, virtualKey, routedModel)
 
-	if virtualKey != nil {
-		if err := p.loadBalanceProvider(ctx, req, virtualKey); err != nil {
-			return err
-		}
+	if err := p.loadBalanceProvider(ctx, req, virtualKey); err != nil {
+		return err
+	}
 
-		// A caller-provided include-tools list can only narrow the virtual key's
-		// tool grant, never expand it — prune entries the key does not allow.
-		includeToolsProvided := p.pruneMCPIncludeToolsFromContext(ctx, virtualKey)
+	// A caller-provided include-tools list can only narrow the virtual key's
+	// tool grant, never expand it — prune entries the key does not allow.
+	includeToolsProvided := p.pruneMCPIncludeToolsFromContext(ctx, virtualKey)
 
-		p.cfgMutex.RLock()
-		autoInjectDisabled := p.disableAutoToolInject != nil && *p.disableAutoToolInject
-		p.cfgMutex.RUnlock()
-		// An include-clients filter opts the request into tool injection even when
-		// auto-injection is disabled (see ParseAndAddToolsToRequest in core/mcp), so
-		// the key's allowlist must be stamped on every path where injection can run.
-		includeClientsPresent := ctx.Value(schemas.MCPContextKeyIncludeClients) != nil
-		if !includeToolsProvided && (!autoInjectDisabled || includeClientsPresent) {
-			if tools := p.computeMCPIncludeTools(virtualKey); tools != nil {
-				ctx.SetValue(schemas.MCPContextKeyIncludeTools, tools)
-			}
+	p.cfgMutex.RLock()
+	autoInjectDisabled := p.disableAutoToolInject != nil && *p.disableAutoToolInject
+	p.cfgMutex.RUnlock()
+	// An include-clients filter opts the request into tool injection even when
+	// auto-injection is disabled (see ParseAndAddToolsToRequest in core/mcp), so
+	// the key's allowlist must be stamped on every path where injection can run.
+	includeClientsPresent := ctx.Value(schemas.MCPContextKeyIncludeClients) != nil
+	if !includeToolsProvided && (!autoInjectDisabled || includeClientsPresent) {
+		if tools := p.computeMCPIncludeTools(virtualKey); tools != nil {
+			ctx.SetValue(schemas.MCPContextKeyIncludeTools, tools)
 		}
 	}
 

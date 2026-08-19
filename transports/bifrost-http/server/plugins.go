@@ -14,6 +14,7 @@ import (
 	"github.com/maximhq/bifrost/plugins/modelcatalogresolver"
 	"github.com/maximhq/bifrost/plugins/otel"
 	"github.com/maximhq/bifrost/plugins/prompts"
+	"github.com/maximhq/bifrost/plugins/routing"
 	"github.com/maximhq/bifrost/plugins/semanticcache"
 	"github.com/maximhq/bifrost/plugins/telemetry"
 	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
@@ -97,6 +98,20 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 		return governance.Init(ctx, governanceConfig, logger, bifrostConfig.ConfigStore,
 			bifrostConfig.GovernanceConfig, bifrostConfig.ModelCatalog,
 			bifrostConfig.MCPCatalog, inMemoryStore)
+
+	case routing.PluginName:
+		routingConfig, err := MarshalPluginConfig[routing.Config](pluginConfig)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal routing plugin config: %w", err)
+		}
+		// Routing rules read the virtual key and its live budget/rate-limit usage, so the
+		// governance plugin must already be registered when this runs.
+		governancePlugin, err := lib.FindPluginAs[governance.BaseGovernancePlugin](bifrostConfig, governancePluginNameFromContext(ctx))
+		if err != nil {
+			return nil, fmt.Errorf("routing plugin requires the governance plugin: %w", err)
+		}
+		return routing.Init(ctx, routingConfig, logger, bifrostConfig.ConfigStore,
+			governancePlugin.GetGovernanceStore())
 
 	case maxim.PluginName:
 		maximConfig, err := MarshalPluginConfig[maxim.Config](pluginConfig)
@@ -213,39 +228,51 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 	}
 	s.Config.SetPluginOrderInfo(logging.PluginName, builtinPlacement, schemas.Ptr(3))
 
-	// 4. Governance (if enabled and not enterprise)
+	// 5. Governance (if enabled and not enterprise)
 	if ctx.Value(schemas.BifrostContextKeyIsEnterprise) == nil {
 		config := &governance.Config{
 			IsVkMandatory:         &s.Config.ClientConfig.EnforceAuthOnInference,
 			RequiredHeaders:       &s.Config.ClientConfig.RequiredHeaders,
 			DisableAutoToolInject: &s.Config.ClientConfig.MCPDisableAutoToolInject,
-			RoutingChainMaxDepth:  &s.Config.ClientConfig.RoutingChainMaxDepth,
 		}
 		s.registerPluginWithStatus(ctx, governance.PluginName, nil, config, false)
 	} else {
 		s.markPluginDisabled(governance.PluginName)
 	}
-	s.Config.SetPluginOrderInfo(governance.PluginName, builtinPlacement, schemas.Ptr(4))
+	s.Config.SetPluginOrderInfo(governance.PluginName, builtinPlacement, schemas.Ptr(5))
 
-	// 5. OTEL (if configured in PluginConfigs)
+	// 4. Routing rules (registered after governance because it reads the governance store,
+	// but ordered ahead of it: a matched rule decides provider/model/key before the virtual
+	// key's own provider configs are load balanced over).
+	if s.Config.IsPluginLoaded(s.getGovernancePluginName()) {
+		config := &routing.Config{
+			ChainMaxDepth: &s.Config.ClientConfig.RoutingChainMaxDepth,
+		}
+		s.registerPluginWithStatus(ctx, routing.PluginName, nil, config, false)
+	} else {
+		s.markPluginDisabled(routing.PluginName)
+	}
+	s.Config.SetPluginOrderInfo(routing.PluginName, builtinPlacement, schemas.Ptr(4))
+
+	// 6. OTEL (if configured in PluginConfigs)
 	otelConfig := s.getPluginConfig(otel.PluginName)
 	if otelConfig != nil && otelConfig.Enabled {
 		s.registerPluginWithStatus(ctx, otel.PluginName, nil, otelConfig.Config, false)
 	} else {
 		s.markPluginDisabled(otel.PluginName)
 	}
-	s.Config.SetPluginOrderInfo(otel.PluginName, builtinPlacement, schemas.Ptr(5))
+	s.Config.SetPluginOrderInfo(otel.PluginName, builtinPlacement, schemas.Ptr(6))
 
-	// 6. Semantic Cache (if configured in PluginConfigs)
+	// 7. Semantic Cache (if configured in PluginConfigs)
 	semanticCacheConfig := s.getPluginConfig(semanticcache.PluginName)
 	if semanticCacheConfig != nil && semanticCacheConfig.Enabled {
 		s.registerPluginWithStatus(ctx, semanticcache.PluginName, nil, semanticCacheConfig.Config, false)
 	} else {
 		s.markPluginDisabled(semanticcache.PluginName)
 	}
-	s.Config.SetPluginOrderInfo(semanticcache.PluginName, builtinPlacement, schemas.Ptr(6))
+	s.Config.SetPluginOrderInfo(semanticcache.PluginName, builtinPlacement, schemas.Ptr(7))
 
-	// 7. Compat (if any compat feature is enabled in ClientConfig)
+	// 8. Compat (if any compat feature is enabled in ClientConfig)
 	cc := s.Config.ClientConfig.Compat
 	compatCfg := &compat.Config{
 		ConvertTextToChat:      cc.ConvertTextToChat,
@@ -254,18 +281,18 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 		ShouldConvertParams:    cc.ShouldConvertParams,
 	}
 	s.registerPluginWithStatus(ctx, compat.PluginName, nil, compatCfg, false)
-	s.Config.SetPluginOrderInfo(compat.PluginName, builtinPlacement, schemas.Ptr(7))
+	s.Config.SetPluginOrderInfo(compat.PluginName, builtinPlacement, schemas.Ptr(8))
 
-	// 8. Maxim (if configured in PluginConfigs)
+	// 9. Maxim (if configured in PluginConfigs)
 	maximConfig := s.getPluginConfig(maxim.PluginName)
 	if maximConfig != nil && maximConfig.Enabled {
 		s.registerPluginWithStatus(ctx, maxim.PluginName, nil, maximConfig.Config, false)
 	} else {
 		s.markPluginDisabled(maxim.PluginName)
 	}
-	s.Config.SetPluginOrderInfo(maxim.PluginName, builtinPlacement, schemas.Ptr(8))
+	s.Config.SetPluginOrderInfo(maxim.PluginName, builtinPlacement, schemas.Ptr(9))
 
-	// 9. ModelCatalogResolver (last routing layer — fills req.Provider from catalog only when
+	// 10. ModelCatalogResolver (last routing layer — fills req.Provider from catalog only when
 	// no earlier routing plugin (governance routing rules, governance VK LB, enterprise LB)
 	// already set one. CEL rules can still match on provider == "" because this runs last.
 	// Requires a model catalog; only register when one is configured.

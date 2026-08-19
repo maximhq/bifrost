@@ -1,4 +1,4 @@
-package governance
+package complexity
 
 import (
 	"testing"
@@ -36,7 +36,7 @@ func TestBuildComplexityInput_ChatTextMessages(t *testing.T) {
 		},
 	}
 
-	input, ok := buildComplexityInput(req)
+	input, ok := BuildInput(req)
 	require.True(t, ok)
 	assert.Equal(t, "Compare them to Lamport clocks", input.LastUserText)
 	assert.Equal(t, []string{"Explain vector clocks"}, input.PriorUserTexts)
@@ -52,7 +52,7 @@ func TestBuildComplexityInput_TextCompletionPrompt(t *testing.T) {
 		},
 	}
 
-	input, ok := buildComplexityInput(req)
+	input, ok := BuildInput(req)
 	require.True(t, ok)
 	assert.Equal(t, prompt, input.LastUserText)
 }
@@ -70,7 +70,7 @@ func TestBuildComplexityInput_TextCompletionPromptArraySkipped(t *testing.T) {
 		},
 	}
 
-	input, ok := buildComplexityInput(req)
+	input, ok := BuildInput(req)
 	require.False(t, ok)
 	assert.Empty(t, input.LastUserText)
 }
@@ -112,7 +112,7 @@ func TestBuildComplexityInput_ResponsesInputTextBlocks(t *testing.T) {
 		},
 	}
 
-	input, ok := buildComplexityInput(req)
+	input, ok := BuildInput(req)
 	require.True(t, ok)
 	assert.Equal(t, "Can you explain the changes?", input.LastUserText)
 	assert.Equal(t, []string{"I changed the retry policy and circuit breaker thresholds."}, input.PriorUserTexts)
@@ -177,7 +177,7 @@ func TestBuildComplexityInput_SupportsStreamingRequestTypes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			input, ok := buildComplexityInput(tt.req)
+			input, ok := BuildInput(tt.req)
 			require.True(t, ok)
 			assert.Equal(t, tt.wantLastUser, input.LastUserText)
 			assert.Equal(t, tt.wantSystem, input.SystemText)
@@ -210,7 +210,7 @@ func TestBuildComplexityInput_ResponsesOutputTextTypedUserBlocks(t *testing.T) {
 		},
 	}
 
-	input, ok := buildComplexityInput(req)
+	input, ok := BuildInput(req)
 	require.True(t, ok)
 	assert.Equal(t, "Explain encryption", input.LastUserText)
 	assert.Equal(t, "You are a coding agent", input.SystemText)
@@ -232,7 +232,7 @@ func TestBuildComplexityInput_SkipsUnsupportedRequestTypesEvenWhenTextIsPresent(
 		},
 	}
 
-	input, ok := buildComplexityInput(req)
+	input, ok := BuildInput(req)
 	require.False(t, ok)
 	assert.Empty(t, input.LastUserText)
 }
@@ -285,7 +285,7 @@ func TestBuildComplexityInput_ExtractsTextFromMixedModalityUserContent(t *testin
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			input, ok := buildComplexityInput(tt.req)
+			input, ok := BuildInput(tt.req)
 			require.True(t, ok)
 			assert.Equal(t, tt.wantText, input.LastUserText)
 		})
@@ -335,7 +335,7 @@ func TestBuildComplexityInput_SkipsUserContentWithoutText(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			input, ok := buildComplexityInput(tt.req)
+			input, ok := BuildInput(tt.req)
 			require.False(t, ok)
 			assert.Empty(t, input.LastUserText)
 		})
