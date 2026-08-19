@@ -214,8 +214,17 @@ func (provider *BedrockProvider) mantleResponses(
 	key schemas.Key,
 	request *schemas.BifrostResponsesRequest,
 ) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	canonicalModel := schemas.ResolveCanonicalModel(ctx, request.Model)
+	if !schemas.ResolveModelCaps(provider.GetProviderKey(), canonicalModel).SupportsResponsesEndpoint(true) {
+		chatResponse, bifrostErr := provider.mantleChatCompletions(ctx, key, request.ToChatRequest())
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+		return chatResponse.ToBifrostResponsesResponse(), nil
+	}
+
 	region := resolveBedrockRegion(ctx, key, request.Model)
-	url := mantleOpenAIURL(bedrockEndpoints(key.BedrockKeyConfig), region, schemas.ResolveCanonicalModel(ctx, request.Model), "responses")
+	url := mantleOpenAIURL(bedrockEndpoints(key.BedrockKeyConfig), region, canonicalModel, "responses")
 
 	// SigV4 (empty key value): sign the exact body the handler builds via a signer closure.
 	// Bearer (key has a value): no signer; auth flows through the Authorization header.
@@ -252,8 +261,14 @@ func (provider *BedrockProvider) mantleResponsesStream(
 	key schemas.Key,
 	request *schemas.BifrostResponsesRequest,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	canonicalModel := schemas.ResolveCanonicalModel(ctx, request.Model)
+	if !schemas.ResolveModelCaps(provider.GetProviderKey(), canonicalModel).SupportsResponsesEndpoint(true) {
+		ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
+		return provider.mantleChatCompletionsStream(ctx, postHookRunner, postHookSpanFinalizer, key, request.ToChatRequest())
+	}
+
 	region := resolveBedrockRegion(ctx, key, request.Model)
-	url := mantleOpenAIURL(bedrockEndpoints(key.BedrockKeyConfig), region, schemas.ResolveCanonicalModel(ctx, request.Model), "responses")
+	url := mantleOpenAIURL(bedrockEndpoints(key.BedrockKeyConfig), region, canonicalModel, "responses")
 
 	// SigV4 (empty key value): sign the exact body the handler builds via a signer closure.
 	// Bearer (key has a value): no signer; auth flows through the Authorization header.
