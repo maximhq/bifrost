@@ -2,6 +2,7 @@ package logstore
 
 import (
 	"fmt"
+	"strconv"
 	"time"
 	"unicode/utf8"
 
@@ -43,6 +44,7 @@ var payloadFields = []string{
 	"video_list_output",
 	"video_delete_output",
 	"cache_debug",
+	"guardrail_debug",
 	"token_usage",
 	"error_details",
 	"raw_request",
@@ -55,7 +57,7 @@ var payloadFields = []string{
 // ExtractPayload reads the serialized TEXT payload fields from a Log into a map.
 // The map keys are the DB column names.
 func ExtractPayload(l *Log) map[string]string {
-	m := make(map[string]string, len(payloadFields)+1)
+	m := make(map[string]string, len(payloadFields)+25)
 	m["input_history"] = l.InputHistory
 	m["responses_input_history"] = l.ResponsesInputHistory
 	m["output_message"] = l.OutputMessage
@@ -83,6 +85,7 @@ func ExtractPayload(l *Log) map[string]string {
 	m["video_list_output"] = l.VideoListOutput
 	m["video_delete_output"] = l.VideoDeleteOutput
 	m["cache_debug"] = l.CacheDebug
+	m["guardrail_debug"] = l.GuardrailDebug
 	m["token_usage"] = l.TokenUsage
 	m["error_details"] = l.ErrorDetails
 	m["raw_request"] = l.RawRequest
@@ -99,7 +102,43 @@ func ExtractPayload(l *Log) map[string]string {
 	if l.Metadata != nil && *l.Metadata != "" {
 		m["metadata"] = *l.Metadata
 	}
+	m["provider"] = l.Provider
+	m["model"] = l.Model
+	m["status"] = l.Status
+	m["timestamp"] = l.Timestamp.Format(time.RFC3339Nano)
+	m["selected_key_id"] = l.SelectedKeyID
+	m["selected_key_name"] = l.SelectedKeyName
+	putIfPresent(m, "virtual_key_id", l.VirtualKeyID)
+	putIfPresent(m, "virtual_key_name", l.VirtualKeyName)
+	putIfPresent(m, "user_id", l.UserID)
+	putIfPresent(m, "user_name", l.UserName)
+	putIfPresent(m, "team_id", l.TeamID)
+	putIfPresent(m, "team_name", l.TeamName)
+	putIfPresent(m, "team_ids", l.TeamIDs)
+	putIfPresent(m, "team_names", l.TeamNames)
+	putIfPresent(m, "customer_id", l.CustomerID)
+	putIfPresent(m, "customer_name", l.CustomerName)
+	putIfPresent(m, "customer_ids", l.CustomerIDs)
+	putIfPresent(m, "customer_names", l.CustomerNames)
+	putIfPresent(m, "business_unit_id", l.BusinessUnitID)
+	putIfPresent(m, "business_unit_name", l.BusinessUnitName)
+	putIfPresent(m, "business_unit_ids", l.BusinessUnitIDs)
+	putIfPresent(m, "business_unit_names", l.BusinessUnitNames)
+	if l.Cost != nil {
+		m["cost"] = strconv.FormatFloat(*l.Cost, 'f', -1, 64)
+	}
+	if l.Latency != nil {
+		m["latency"] = strconv.FormatFloat(*l.Latency, 'f', -1, 64)
+	}
 	return m
+}
+
+// putIfPresent sets the key only when v is non-nil and non-empty, so absent
+// attribution stays absent rather than becoming an empty string.
+func putIfPresent(m map[string]string, key string, v *string) {
+	if v != nil && *v != "" {
+		m[key] = *v
+	}
 }
 
 // ClearPayload zeros out both the TEXT payload columns and the Parsed virtual
@@ -186,6 +225,7 @@ func ClearPayload(l *Log) {
 	l.VideoListOutput = ""
 	l.VideoDeleteOutput = ""
 	l.CacheDebug = ""
+	l.GuardrailDebug = ""
 	l.TokenUsage = ""
 	l.ErrorDetails = ""
 	l.RawRequest = ""
@@ -222,6 +262,7 @@ func ClearPayload(l *Log) {
 	l.VideoListOutputParsed = nil
 	l.VideoDeleteOutputParsed = nil
 	l.CacheDebugParsed = nil
+	l.GuardrailDebugParsed = nil
 	l.TokenUsageParsed = nil
 	l.ErrorDetailsParsed = nil
 }
@@ -315,6 +356,9 @@ func MergePayloadFromJSON(l *Log, data []byte) error {
 	if v, ok := m["cache_debug"]; ok && v != "" {
 		l.CacheDebug = v
 	}
+	if v, ok := m["guardrail_debug"]; ok && v != "" {
+		l.GuardrailDebug = v
+	}
 	if v, ok := m["token_usage"]; ok && v != "" {
 		l.TokenUsage = v
 	}
@@ -399,6 +443,7 @@ func MarshalMCPToolLogPayload(l *MCPToolLog) ([]byte, error) {
 func MergeMCPToolLogPayloadFromJSON(l *MCPToolLog, data []byte) error {
 	hasObject := l.HasObject
 	virtualKey := l.VirtualKey
+	redactionMapping := l.RedactionMapping
 
 	var payload MCPToolLog
 	if err := sonic.Unmarshal(data, &payload); err != nil {
@@ -410,6 +455,7 @@ func MergeMCPToolLogPayloadFromJSON(l *MCPToolLog, data []byte) error {
 	*l = payload
 	l.HasObject = hasObject
 	l.VirtualKey = virtualKey
+	l.RedactionMapping = redactionMapping
 	return nil
 }
 
@@ -868,6 +914,9 @@ func clearPayloadField(l *Log, name string) {
 	case "cache_debug":
 		l.CacheDebug = ""
 		l.CacheDebugParsed = nil
+	case "guardrail_debug":
+		l.GuardrailDebug = ""
+		l.GuardrailDebugParsed = nil
 	case "token_usage":
 		l.TokenUsage = ""
 		l.TokenUsageParsed = nil

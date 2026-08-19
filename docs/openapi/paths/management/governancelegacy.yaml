@@ -1,0 +1,503 @@
+legacy-virtual-key-users:
+  get:
+    $ref: './governanceextensions.yaml#/virtual-key-users/get'
+    operationId: listVirtualKeyUsersLegacy
+    x-bifrost-successor: '/api/governance/virtual-keys/{vk_id}/users'
+    x-bifrost-removal: following-major-release
+  post:
+    $ref: './governanceextensions.yaml#/virtual-key-users/post'
+    operationId: attachVirtualKeyUsersLegacy
+    x-bifrost-successor: '/api/governance/virtual-keys/{vk_id}/users'
+    x-bifrost-removal: following-major-release
+
+legacy-virtual-key-user:
+  delete:
+    $ref: './governanceextensions.yaml#/virtual-key-user/delete'
+    operationId: detachVirtualKeyUserLegacy
+    x-bifrost-successor: '/api/governance/virtual-keys/{vk_id}/users/{user_id}'
+    x-bifrost-removal: following-major-release
+
+legacy-team-customers:
+  get:
+    $ref: './governanceextensions.yaml#/team-customers/get'
+    operationId: listTeamCustomersLegacy
+    x-bifrost-successor: '/api/governance/teams/{team_id}/customers'
+    x-bifrost-removal: following-major-release
+  post:
+    $ref: './governanceextensions.yaml#/team-customers/post'
+    operationId: attachTeamCustomerLegacy
+    x-bifrost-successor: '/api/governance/teams/{team_id}/customers'
+    x-bifrost-removal: following-major-release
+
+legacy-team-customer:
+  delete:
+    $ref: './governanceextensions.yaml#/team-customer/delete'
+    operationId: detachTeamCustomerLegacy
+    x-bifrost-successor: '/api/governance/teams/{team_id}/customers/{customer_id}'
+    x-bifrost-removal: following-major-release
+
+legacy-customer-teams:
+  get:
+    $ref: './governanceextensions.yaml#/customer-teams/get'
+    operationId: listCustomerTeamsLegacy
+    x-bifrost-successor: '/api/governance/customers/{customer_id}/teams'
+    x-bifrost-removal: following-major-release
+
+legacy-roles:
+  get:
+    $ref: './rbac.yaml#/roles/get'
+    operationId: listRolesLegacy
+    x-bifrost-successor: '/api/governance/rbac/roles'
+    x-bifrost-removal: following-major-release
+  post:
+    $ref: './rbac.yaml#/roles/post'
+    operationId: createRoleLegacy
+    x-bifrost-successor: '/api/governance/rbac/roles'
+    x-bifrost-removal: following-major-release
+
+legacy-roles-by-id:
+  get:
+    $ref: './rbac.yaml#/roles-by-id/get'
+    operationId: getRoleLegacy
+    x-bifrost-successor: '/api/governance/rbac/roles/{role_id}'
+    x-bifrost-removal: following-major-release
+  put:
+    $ref: './rbac.yaml#/roles-by-id/put'
+    operationId: updateRoleLegacy
+    x-bifrost-successor: '/api/governance/rbac/roles/{role_id}'
+    x-bifrost-removal: following-major-release
+  delete:
+    $ref: './rbac.yaml#/roles-by-id/delete'
+    operationId: deleteRoleLegacy
+    x-bifrost-successor: '/api/governance/rbac/roles/{role_id}'
+    x-bifrost-removal: following-major-release
+
+legacy-role-permissions:
+  get:
+    $ref: './rbac.yaml#/roles-permissions/get'
+    operationId: getRolePermissionsLegacy
+    x-bifrost-successor: '/api/governance/rbac/roles/{role_id}/permissions'
+    x-bifrost-removal: following-major-release
+  put:
+    $ref: './rbac.yaml#/roles-permissions/put'
+    operationId: updateRolePermissionsLegacy
+    x-bifrost-successor: '/api/governance/rbac/roles/{role_id}/permissions'
+    x-bifrost-removal: following-major-release
+
+legacy-resources:
+  get:
+    $ref: './rbac.yaml#/resources/get'
+    operationId: listResourcesLegacy
+    x-bifrost-successor: '/api/governance/rbac/resources'
+    x-bifrost-removal: following-major-release
+
+legacy-operations:
+  get:
+    $ref: './rbac.yaml#/operations/get'
+    operationId: listOperationsLegacy
+    x-bifrost-successor: '/api/governance/rbac/operations'
+    x-bifrost-removal: following-major-release
+
+legacy-permissions:
+  get:
+    $ref: './rbac.yaml#/permissions/get'
+    operationId: listPermissionsLegacy
+    x-bifrost-successor: '/api/governance/rbac/permissions'
+    x-bifrost-removal: following-major-release
+
+legacy-users:
+  get:
+    $ref: './users.yaml#/users/get'
+    operationId: listUsersLegacy
+    x-bifrost-successor: '/api/governance/users'
+    x-bifrost-removal: following-major-release
+    parameters:
+      - name: page
+        in: query
+        description: Legacy 1-based page number
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+      - name: limit
+        in: query
+        description: Number of users per page (max 100)
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+      - name: search
+        in: query
+        description: Search by name or email
+        schema:
+          type: string
+      - name: team_id
+        in: query
+        description: Filter by team ID
+        schema:
+          type: string
+      - name: business_unit_id
+        in: query
+        description: Filter by business unit ID
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Legacy paginated response
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [users, total, page, limit, total_pages, has_more]
+              properties:
+                users:
+                  type: array
+                  items:
+                    $ref: '../../schemas/management/users.yaml#/UserObject'
+                total:
+                  type: integer
+                page:
+                  type: integer
+                limit:
+                  type: integer
+                total_pages:
+                  type: integer
+                has_more:
+                  type: boolean
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+  post:
+    $ref: './users.yaml#/users/post'
+    operationId: createUserLegacy
+    x-bifrost-successor: '/api/governance/users'
+    x-bifrost-removal: following-major-release
+
+legacy-users-by-id:
+  get:
+    $ref: './users.yaml#/users-by-id/get'
+    operationId: getUserLegacy
+    x-bifrost-successor: '/api/governance/users/{user_id}'
+    x-bifrost-removal: following-major-release
+  delete:
+    $ref: './users.yaml#/users-by-id/delete'
+    operationId: deleteUserLegacy
+    x-bifrost-successor: '/api/governance/users/{user_id}'
+    x-bifrost-removal: following-major-release
+
+legacy-users-me-permissions:
+  get:
+    $ref: './users.yaml#/users-me-permissions/get'
+    operationId: getCurrentUserPermissionsLegacy
+    x-bifrost-successor: '/api/governance/users/me/permissions'
+    x-bifrost-removal: following-major-release
+
+legacy-users-role:
+  put:
+    $ref: './users.yaml#/users-role/put'
+    operationId: assignUserRoleLegacy
+    x-bifrost-successor: '/api/governance/users/{user_id}/role'
+    x-bifrost-removal: following-major-release
+
+legacy-users-teams:
+  get:
+    $ref: './users.yaml#/users-teams/get'
+    operationId: getUserTeamsLegacy
+    x-bifrost-successor: '/api/governance/users/{user_id}/teams'
+    x-bifrost-removal: following-major-release
+  put:
+    $ref: './users.yaml#/users-teams/put'
+    operationId: updateUserTeamsLegacy
+    x-bifrost-successor: '/api/governance/users/{user_id}/teams'
+    x-bifrost-removal: following-major-release
+
+legacy-users-email-virtual-keys:
+  get:
+    $ref: './users.yaml#/users-email-virtual-keys/get'
+    operationId: getUserVirtualKeysByEmailLegacy
+    x-bifrost-successor: '/api/governance/users/email/{email}/virtual-keys'
+    x-bifrost-removal: following-major-release
+
+legacy-users-by-email:
+  get:
+    $ref: './users.yaml#/users-by-email/get'
+    operationId: getUserByEmailLegacy
+    x-bifrost-successor: '/api/governance/users/email/{email}'
+    x-bifrost-removal: following-major-release
+
+legacy-teams:
+  get:
+    $ref: './governance.yaml#/teams/get'
+    operationId: listTeamsLegacy
+    x-bifrost-successor: '/api/governance/teams'
+    x-bifrost-removal: following-major-release
+    parameters:
+      - name: page
+        in: query
+        description: Legacy 1-based page number
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+      - name: limit
+        in: query
+        description: Number of teams per page (max 100)
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+      - name: search
+        in: query
+        description: Search by team name
+        schema:
+          type: string
+      - name: include
+        in: query
+        description: Set to `business_unit` to include business-unit associations
+        schema:
+          type: string
+          enum: [business_unit]
+    responses:
+      '200':
+        description: Legacy paginated response
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [teams, total, page, limit]
+              properties:
+                teams:
+                  type: array
+                  items:
+                    $ref: '../../schemas/management/governance.yaml#/Team'
+                total:
+                  type: integer
+                page:
+                  type: integer
+                limit:
+                  type: integer
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+  post:
+    $ref: './governance.yaml#/teams/post'
+    operationId: createTeamLegacy
+    x-bifrost-successor: '/api/governance/teams'
+    x-bifrost-removal: following-major-release
+
+legacy-teams-by-id:
+  get:
+    $ref: './governance.yaml#/teams-by-id/get'
+    operationId: getTeamLegacy
+    x-bifrost-successor: '/api/governance/teams/{team_id}'
+    x-bifrost-removal: following-major-release
+  put:
+    $ref: './governance.yaml#/teams-by-id/put'
+    operationId: updateTeamLegacy
+    x-bifrost-successor: '/api/governance/teams/{team_id}'
+    x-bifrost-removal: following-major-release
+  delete:
+    $ref: './governance.yaml#/teams-by-id/delete'
+    operationId: deleteTeamLegacy
+    x-bifrost-successor: '/api/governance/teams/{team_id}'
+    x-bifrost-removal: following-major-release
+
+legacy-team-members:
+  get:
+    $ref: './users.yaml#/team-members/get'
+    operationId: getTeamMembersLegacy
+    x-bifrost-successor: '/api/governance/teams/{team_id}/members'
+    x-bifrost-removal: following-major-release
+  post:
+    $ref: './users.yaml#/team-members/post'
+    operationId: addTeamMemberLegacy
+    x-bifrost-successor: '/api/governance/teams/{team_id}/members'
+    x-bifrost-removal: following-major-release
+
+legacy-team-member-by-id:
+  delete:
+    $ref: './users.yaml#/team-member-by-id/delete'
+    operationId: removeTeamMemberLegacy
+    x-bifrost-successor: '/api/governance/teams/{team_id}/members/{user_id}'
+    x-bifrost-removal: following-major-release
+
+legacy-access-profiles:
+  get:
+    $ref: './accessprofiles.yaml#/access-profiles/get'
+    operationId: listAccessProfilesLegacy
+    x-bifrost-successor: '/api/governance/access-profiles'
+    x-bifrost-removal: following-major-release
+  post:
+    $ref: './accessprofiles.yaml#/access-profiles/post'
+    operationId: createAccessProfileLegacy
+    x-bifrost-successor: '/api/governance/access-profiles'
+    x-bifrost-removal: following-major-release
+
+legacy-access-profiles-by-id:
+  get:
+    $ref: './accessprofiles.yaml#/access-profiles-by-id/get'
+    operationId: getAccessProfileLegacy
+    x-bifrost-successor: '/api/governance/access-profiles/{profile_id}'
+    x-bifrost-removal: following-major-release
+  put:
+    $ref: './accessprofiles.yaml#/access-profiles-by-id/put'
+    operationId: updateAccessProfileLegacy
+    x-bifrost-successor: '/api/governance/access-profiles/{profile_id}'
+    x-bifrost-removal: following-major-release
+  delete:
+    $ref: './accessprofiles.yaml#/access-profiles-by-id/delete'
+    operationId: deleteAccessProfileLegacy
+    x-bifrost-successor: '/api/governance/access-profiles/{profile_id}'
+    x-bifrost-removal: following-major-release
+
+legacy-access-profiles-activate:
+  put:
+    $ref: './accessprofiles.yaml#/access-profiles-activate/put'
+    operationId: activateAccessProfileLegacy
+    x-bifrost-successor: '/api/governance/access-profiles/{profile_id}/activate'
+    x-bifrost-removal: following-major-release
+
+legacy-access-profiles-deactivate:
+  put:
+    $ref: './accessprofiles.yaml#/access-profiles-deactivate/put'
+    operationId: deactivateAccessProfileLegacy
+    x-bifrost-successor: '/api/governance/access-profiles/{profile_id}/deactivate'
+    x-bifrost-removal: following-major-release
+
+legacy-access-profiles-clone:
+  post:
+    $ref: './accessprofiles.yaml#/access-profiles-clone/post'
+    operationId: cloneAccessProfileLegacy
+    x-bifrost-successor: '/api/governance/access-profiles/{profile_id}/clone'
+    x-bifrost-removal: following-major-release
+
+legacy-access-profiles-propagate:
+  post:
+    $ref: './accessprofiles.yaml#/access-profiles-propagate/post'
+    operationId: propagateAccessProfileLegacy
+    x-bifrost-successor: '/api/governance/access-profiles/{profile_id}/propagate'
+    x-bifrost-removal: following-major-release
+
+legacy-access-profiles-roles:
+  post:
+    $ref: './accessprofiles.yaml#/access-profiles-roles/post'
+    operationId: attachAccessProfileRolesLegacy
+    x-bifrost-successor: '/api/governance/access-profiles/{profile_id}/roles'
+    x-bifrost-removal: following-major-release
+
+legacy-access-profiles-role-by-id:
+  delete:
+    $ref: './accessprofiles.yaml#/access-profiles-role-by-id/delete'
+    operationId: detachAccessProfileRoleLegacy
+    x-bifrost-successor: '/api/governance/access-profiles/{profile_id}/roles/{role_id}'
+    x-bifrost-removal: following-major-release
+
+legacy-access-profiles-versions:
+  get:
+    $ref: './accessprofiles.yaml#/access-profiles-versions/get'
+    operationId: listAccessProfileVersionsLegacy
+    x-bifrost-successor: '/api/governance/access-profiles/{profile_id}/versions'
+    x-bifrost-removal: following-major-release
+
+legacy-access-profiles-version-by-number:
+  get:
+    $ref: './accessprofiles.yaml#/access-profiles-version-by-number/get'
+    operationId: getAccessProfileVersionLegacy
+    x-bifrost-successor: '/api/governance/access-profiles/{profile_id}/versions/{version}'
+    x-bifrost-removal: following-major-release
+
+legacy-access-profiles-audit-logs-by-id:
+  get:
+    $ref: './accessprofiles.yaml#/access-profiles-audit-logs-by-id/get'
+    operationId: getAccessProfileAuditLogsLegacy
+    x-bifrost-successor: '/api/governance/access-profiles/{profile_id}/audit-logs'
+    x-bifrost-removal: following-major-release
+
+legacy-access-profiles-audit-logs-all:
+  get:
+    $ref: './accessprofiles.yaml#/access-profiles-audit-logs-all/get'
+    operationId: getAllAccessProfileAuditLogsLegacy
+    x-bifrost-successor: '/api/governance/access-profiles/audit-logs'
+    x-bifrost-removal: following-major-release
+
+legacy-users-access-profiles:
+  get:
+    $ref: './accessprofiles.yaml#/users-access-profiles/get'
+    operationId: getUserAccessProfilesLegacy
+    x-bifrost-successor: '/api/governance/users/{user_id}/access-profiles'
+    x-bifrost-removal: following-major-release
+
+legacy-user-virtual-keys:
+  get:
+    $ref: './governanceextensions.yaml#/user-virtual-keys/get'
+    operationId: listUserVirtualKeysLegacy
+    x-bifrost-successor: '/api/governance/users/{user_id}/virtual-keys'
+    x-bifrost-removal: following-major-release
+
+legacy-user-access-profile-budget-override:
+  put:
+    $ref: './accessprofiles.yaml#/users-access-profile-budget-override/put'
+    operationId: updateUserAccessProfileBudgetOverrideLegacy
+    x-bifrost-successor: '/api/governance/users/{user_id}/access-profiles/{profile_id}/budgets/{budget_id}/override'
+    x-bifrost-removal: following-major-release
+  delete:
+    $ref: './accessprofiles.yaml#/users-access-profile-budget-override/delete'
+    operationId: deleteUserAccessProfileBudgetOverrideLegacy
+    x-bifrost-successor: '/api/governance/users/{user_id}/access-profiles/{profile_id}/budgets/{budget_id}/override'
+    x-bifrost-removal: following-major-release
+
+legacy-users-access-profile-by-id:
+  delete:
+    $ref: './accessprofiles.yaml#/users-access-profile-by-id/delete'
+    operationId: detachUserAccessProfileLegacy
+    x-bifrost-successor: '/api/governance/users/{user_id}/access-profiles/{profile_id}'
+    x-bifrost-removal: following-major-release
+
+legacy-users-access-profile-virtual-keys:
+  post:
+    $ref: './accessprofiles.yaml#/users-access-profile-virtual-keys/post'
+    operationId: addUserAccessProfileVirtualKeyLegacy
+    x-bifrost-successor: '/api/governance/users/{user_id}/access-profiles/{profile_id}/virtual-keys'
+    x-bifrost-removal: following-major-release
+
+legacy-users-access-profile-virtual-key-by-id:
+  delete:
+    $ref: './accessprofiles.yaml#/users-access-profile-virtual-key-by-id/delete'
+    operationId: deleteUserAccessProfileVirtualKeyLegacy
+    x-bifrost-successor: '/api/governance/users/{user_id}/access-profiles/virtual-keys/{vk_id}'
+    x-bifrost-removal: following-major-release
+
+legacy-audit-logs:
+  get:
+    $ref: './auditlogs.yaml#/audit-logs/get'
+    operationId: getAuditLogsLegacy
+    x-bifrost-successor: '/api/governance/audit-logs'
+    x-bifrost-removal: following-major-release
+
+legacy-audit-logs-filterdata:
+  get:
+    $ref: './auditlogs.yaml#/audit-logs-filterdata/get'
+    operationId: getAuditLogsFilterDataLegacy
+    x-bifrost-successor: '/api/governance/audit-logs/filterdata'
+    x-bifrost-removal: following-major-release
+
+legacy-audit-logs-export:
+  get:
+    $ref: './auditlogs.yaml#/audit-logs-export/get'
+    operationId: exportAuditLogsLegacy
+    x-bifrost-successor: '/api/governance/audit-logs/export'
+    x-bifrost-removal: following-major-release
+
+legacy-audit-logs-by-id:
+  get:
+    $ref: './auditlogs.yaml#/audit-logs-by-id/get'
+    operationId: getAuditLogByIdLegacy
+    x-bifrost-successor: '/api/governance/audit-logs/{id}'
+    x-bifrost-removal: following-major-release
+
+legacy-audit-logs-verify:
+  get:
+    $ref: './auditlogs.yaml#/audit-logs-verify/get'
+    operationId: verifyAuditLogSignatureLegacy
+    x-bifrost-successor: '/api/governance/audit-logs/{id}/verify'
+    x-bifrost-removal: following-major-release

@@ -56,6 +56,9 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 		&tables.TablePromptSessionMessage{},
 		&tables.TableOauthUserSession{},
 		&tables.TableOauthUserToken{},
+		&tables.TableOauthToken{},
+		&tables.TableMCPOauthToken{},
+		&tables.TableMCPOauthFlow{},
 		&tables.TableMCPPerUserHeaderCredential{},
 		&tables.TableMCPPerUserHeaderFlow{},
 		&tables.TableOAuth2RefreshToken{},
@@ -749,6 +752,46 @@ func TestUpdateBudget(t *testing.T) {
 	assert.Equal(t, 200.0, result.MaxLimit)
 }
 
+// TestUpdateBudgetPreservesRuntimeCounters verifies a configuration-shaped update
+// cannot clobber the runtime-owned counters.
+//
+// CurrentUsage and LastReset are advanced by the governance dump path, never by
+// config.json, which is why GenerateBudgetHash deliberately excludes them. A
+// source_of_truth=config.json startup force-sync replays the file row through
+// UpdateBudget with those fields at their Go zero values, so UpdateBudget must
+// carry the persisted values forward the same way it already does for the
+// override grant and the owner FKs.
+func TestUpdateBudgetPreservesRuntimeCounters(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	lastReset := time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC)
+	require.NoError(t, store.CreateBudget(ctx, &tables.TableBudget{
+		ID:            "budget-runtime-counters",
+		MaxLimit:      100.0,
+		ResetDuration: "1h",
+		CurrentUsage:  42.5,
+		LastReset:     lastReset,
+	}))
+
+	// The shape config.json produces: configuration-owned fields only, with the
+	// runtime counters absent and therefore zero.
+	require.NoError(t, store.UpdateBudget(ctx, &tables.TableBudget{
+		ID:            "budget-runtime-counters",
+		MaxLimit:      200.0,
+		ResetDuration: "1h",
+	}))
+
+	result, err := store.GetBudget(ctx, "budget-runtime-counters")
+	require.NoError(t, err)
+	assert.Equal(t, 200.0, result.MaxLimit, "configuration-owned max_limit must follow the file")
+	assert.Equal(t, "1h", result.ResetDuration, "configuration-owned reset_duration must follow the file")
+	assert.Equal(t, 42.5, result.CurrentUsage, "runtime-owned current_usage must survive a config-shaped update")
+	assert.True(t, result.LastReset.Equal(lastReset),
+		"runtime-owned last_reset must survive a config-shaped update: got %s, want %s",
+		result.LastReset.UTC(), lastReset)
+}
+
 // TestCreateBudgetWithOverride verifies finite and permanent override state round-trips through the config store.
 func TestCreateBudgetWithOverride(t *testing.T) {
 	store := setupRDBTestStore(t)
@@ -876,7 +919,7 @@ func TestUpdateBudgetOverrideAnchorsAtCalendarPeriodStart(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, updated.OverrideAnchorReset)
 
-	wantAnchor := tables.GetCalendarPeriodStart("1d", time.Now())
+	wantAnchor := tables.GetCalendarPeriodStart("1d", time.Now(), tables.QuarterStartNotApplicable)
 	assert.True(t, updated.OverrideAnchorReset.Equal(wantAnchor),
 		"calendar-aligned grant anchor should be midnight UTC today: got %s, want %s",
 		updated.OverrideAnchorReset.UTC(), wantAnchor.UTC())
@@ -991,6 +1034,56 @@ func TestUpdateRateLimit(t *testing.T) {
 	result, err := store.GetRateLimit(ctx, "rate-limit-update")
 	require.NoError(t, err)
 	assert.Equal(t, int64(200000), *result.TokenMaxLimit)
+}
+
+// TestUpdateRateLimitPreservesRuntimeCounters is the rate-limit counterpart of
+// TestUpdateBudgetPreservesRuntimeCounters: the same startup force-sync replays
+// the file-shaped rate limit, and the token/request counters are runtime-owned
+// for the same reason (GenerateRateLimitHash excludes them).
+func TestUpdateRateLimitPreservesRuntimeCounters(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	tokenMax := int64(100000)
+	tokenDuration := "1h"
+	requestMax := int64(500)
+	requestDuration := "1h"
+	tokenLastReset := time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC)
+	requestLastReset := time.Date(2026, time.August, 1, 0, 30, 0, 0, time.UTC)
+
+	require.NoError(t, store.CreateRateLimit(ctx, &tables.TableRateLimit{
+		ID:                   "rate-limit-runtime-counters",
+		TokenMaxLimit:        &tokenMax,
+		TokenResetDuration:   &tokenDuration,
+		TokenCurrentUsage:    1234,
+		TokenLastReset:       tokenLastReset,
+		RequestMaxLimit:      &requestMax,
+		RequestResetDuration: &requestDuration,
+		RequestCurrentUsage:  56,
+		RequestLastReset:     requestLastReset,
+	}))
+
+	newTokenMax := int64(200000)
+	require.NoError(t, store.UpdateRateLimit(ctx, &tables.TableRateLimit{
+		ID:                   "rate-limit-runtime-counters",
+		TokenMaxLimit:        &newTokenMax,
+		TokenResetDuration:   &tokenDuration,
+		RequestMaxLimit:      &requestMax,
+		RequestResetDuration: &requestDuration,
+	}))
+
+	result, err := store.GetRateLimit(ctx, "rate-limit-runtime-counters")
+	require.NoError(t, err)
+	require.NotNil(t, result.TokenMaxLimit)
+	assert.Equal(t, int64(200000), *result.TokenMaxLimit, "configuration-owned token_max_limit must follow the file")
+	assert.Equal(t, int64(1234), result.TokenCurrentUsage, "runtime-owned token_current_usage must survive a config-shaped update")
+	assert.Equal(t, int64(56), result.RequestCurrentUsage, "runtime-owned request_current_usage must survive a config-shaped update")
+	assert.True(t, result.TokenLastReset.Equal(tokenLastReset),
+		"runtime-owned token_last_reset must survive a config-shaped update: got %s, want %s",
+		result.TokenLastReset.UTC(), tokenLastReset)
+	assert.True(t, result.RequestLastReset.Equal(requestLastReset),
+		"runtime-owned request_last_reset must survive a config-shaped update: got %s, want %s",
+		result.RequestLastReset.UTC(), requestLastReset)
 }
 
 // =============================================================================
@@ -1554,6 +1647,153 @@ func TestCreateVirtualKeyProviderConfig_WithKeys(t *testing.T) {
 	err = store.DB().Preload("Keys").First(&configWithKeys, "id = ?", configs[0].ID).Error
 	require.NoError(t, err)
 	assert.Len(t, configWithKeys.Keys, 1)
+}
+
+// TestReplaceVirtualKeyProviderConfigsPreservesParity verifies bulk replacement keeps nested ownership and key associations.
+func TestReplaceVirtualKeyProviderConfigsPreservesParity(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.UpdateProvidersConfig(ctx, map[schemas.ModelProvider]ProviderConfig{
+		"openai": {Keys: []schemas.Key{{ID: "replacement-key", Name: "replacement-key", Value: *schemas.NewSecretVar("secret"), Weight: 1}}},
+	}))
+	vk := &tables.TableVirtualKey{ID: "vk-replace-pcs", Name: "replace", Value: *schemas.NewSecretVar("vk-replace"), IsActive: schemas.Ptr(true)}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+	oldRateLimit := &tables.TableRateLimit{ID: "old-pc-rate-limit"}
+	require.NoError(t, store.CreateRateLimit(ctx, oldRateLimit))
+	old := &tables.TableVirtualKeyProviderConfig{VirtualKeyID: vk.ID, Provider: "anthropic", RateLimitID: &oldRateLimit.ID, RateLimit: oldRateLimit, Budgets: []tables.TableBudget{{ID: "old-pc-budget", MaxLimit: 1, ResetDuration: "1h"}}}
+	require.NoError(t, store.CreateVirtualKeyProviderConfig(ctx, old))
+
+	newRateLimit := &tables.TableRateLimit{ID: "new-pc-rate-limit"}
+	tx := store.DB().WithContext(ctx).Begin()
+	require.NoError(t, tx.Error)
+	err := store.ReplaceVirtualKeyProviderConfigs(ctx, vk.ID, []tables.TableVirtualKeyProviderConfig{{
+		Provider: "openai", Keys: []tables.TableKey{{KeyID: "replacement-key"}},
+		Budgets: []tables.TableBudget{{ID: "new-pc-budget", MaxLimit: 10, ResetDuration: "1d"}}, RateLimitID: &newRateLimit.ID, RateLimit: newRateLimit,
+	}}, tx)
+	require.NoError(t, err)
+	require.NoError(t, tx.Commit().Error)
+
+	var configs []tables.TableVirtualKeyProviderConfig
+	require.NoError(t, store.DB().Preload("Keys").Preload("Budgets").Preload("RateLimit").Where("virtual_key_id = ?", vk.ID).Find(&configs).Error)
+	require.Len(t, configs, 1)
+	require.Equal(t, "openai", configs[0].Provider)
+	require.Len(t, configs[0].Keys, 1)
+	require.Equal(t, "replacement-key", configs[0].Keys[0].KeyID)
+	require.Len(t, configs[0].Budgets, 1)
+	require.Equal(t, "new-pc-budget", configs[0].Budgets[0].ID)
+	require.NotNil(t, configs[0].RateLimit)
+	require.Equal(t, newRateLimit.ID, configs[0].RateLimit.ID)
+	for _, id := range []string{"old-pc-budget", "old-pc-rate-limit"} {
+		var count int64
+		table := (&tables.TableBudget{}).TableName()
+		if id == "old-pc-rate-limit" {
+			table = (&tables.TableRateLimit{}).TableName()
+		}
+		require.NoError(t, store.DB().Table(table).Where("id = ?", id).Count(&count).Error)
+		require.Zero(t, count)
+	}
+}
+
+// TestReplaceVirtualKeyProviderConfigsRollsBackOnUnresolvedKey verifies replacement remains atomic on resolution failure.
+func TestReplaceVirtualKeyProviderConfigsRollsBackOnUnresolvedKey(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	vk := &tables.TableVirtualKey{ID: "vk-replace-rollback", Name: "rollback", Value: *schemas.NewSecretVar("vk-rollback"), IsActive: schemas.Ptr(true)}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+	require.NoError(t, store.CreateVirtualKeyProviderConfig(ctx, &tables.TableVirtualKeyProviderConfig{VirtualKeyID: vk.ID, Provider: "anthropic"}))
+
+	tx := store.DB().WithContext(ctx).Begin()
+	require.NoError(t, tx.Error)
+	err := store.ReplaceVirtualKeyProviderConfigs(ctx, vk.ID, []tables.TableVirtualKeyProviderConfig{{Provider: "openai", Keys: []tables.TableKey{{KeyID: "missing"}}}}, tx)
+	require.Error(t, err)
+	require.NoError(t, tx.Rollback().Error)
+	configs, listErr := store.GetVirtualKeyProviderConfigs(ctx, vk.ID)
+	require.NoError(t, listErr)
+	require.Len(t, configs, 1)
+	require.Equal(t, "anthropic", configs[0].Provider)
+}
+
+// TestReplaceVirtualKeyProviderConfigsResolvesKeysByName verifies bulk replacement
+// accepts the config-file reference forms that CreateVirtualKeyProviderConfig
+// accepts: a name with no KeyID, and a KeyID that misses but carries a usable name.
+func TestReplaceVirtualKeyProviderConfigsResolvesKeysByName(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.UpdateProvidersConfig(ctx, map[schemas.ModelProvider]ProviderConfig{
+		"openai":    {Keys: []schemas.Key{{ID: "openai-key-id", Name: "openai-name", Value: *schemas.NewSecretVar("s1"), Weight: 1}}},
+		"anthropic": {Keys: []schemas.Key{{ID: "anthropic-key-id", Name: "anthropic-name", Value: *schemas.NewSecretVar("s2"), Weight: 1}}},
+	}))
+	vk := &tables.TableVirtualKey{ID: "vk-replace-by-name", Name: "by-name", Value: *schemas.NewSecretVar("vk-by-name"), IsActive: schemas.Ptr(true)}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+
+	tx := store.DB().WithContext(ctx).Begin()
+	require.NoError(t, tx.Error)
+	require.NoError(t, store.ReplaceVirtualKeyProviderConfigs(ctx, vk.ID, []tables.TableVirtualKeyProviderConfig{
+		// Name only, no KeyID — the config-file form.
+		{Provider: "openai", Keys: []tables.TableKey{{Name: "openai-name"}}},
+		// KeyID that does not resolve, but the name does — the fallback path.
+		{Provider: "anthropic", Keys: []tables.TableKey{{KeyID: "stale-id", Name: "anthropic-name"}}},
+	}, tx))
+	require.NoError(t, tx.Commit().Error)
+
+	var configs []tables.TableVirtualKeyProviderConfig
+	require.NoError(t, store.DB().Preload("Keys").Where("virtual_key_id = ?", vk.ID).Order("provider").Find(&configs).Error)
+	require.Len(t, configs, 2)
+	// Resolution is scoped per provider, so each config must land on its own
+	// provider's key rather than whichever row happened to match the name first.
+	require.Equal(t, "anthropic", configs[0].Provider)
+	require.Len(t, configs[0].Keys, 1)
+	require.Equal(t, "anthropic-key-id", configs[0].Keys[0].KeyID)
+	require.Equal(t, "openai", configs[1].Provider)
+	require.Len(t, configs[1].Keys, 1)
+	require.Equal(t, "openai-key-id", configs[1].Keys[0].KeyID)
+}
+
+// TestReplaceVirtualKeyProviderConfigsReportsEveryUnresolvedKey verifies a blank
+// reference is aggregated with the others rather than short-circuiting the scan.
+func TestReplaceVirtualKeyProviderConfigsReportsEveryUnresolvedKey(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	vk := &tables.TableVirtualKey{ID: "vk-replace-unresolved", Name: "unresolved", Value: *schemas.NewSecretVar("vk-unresolved"), IsActive: schemas.Ptr(true)}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+
+	tx := store.DB().WithContext(ctx).Begin()
+	require.NoError(t, tx.Error)
+	err := store.ReplaceVirtualKeyProviderConfigs(ctx, vk.ID, []tables.TableVirtualKeyProviderConfig{
+		{Provider: "openai", Keys: []tables.TableKey{{}, {KeyID: "missing-id"}, {Name: "missing-name"}}},
+	}, tx)
+	require.NoError(t, tx.Rollback().Error)
+	var unresolvedErr *ErrUnresolvedKeys
+	require.ErrorAs(t, err, &unresolvedErr)
+	require.ElementsMatch(t, []string{"key[0]", "key_id=missing-id", "name=missing-name"}, unresolvedErr.Identifiers)
+}
+
+// TestReplaceVirtualKeyProviderConfigsChunksInserts verifies replacement crosses both bounded insert sizes.
+func TestReplaceVirtualKeyProviderConfigsChunksInserts(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	vk := &tables.TableVirtualKey{ID: "vk-replace-chunks", Name: "chunks", Value: *schemas.NewSecretVar("vk-chunks"), IsActive: schemas.Ptr(true)}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+	configs := make([]tables.TableVirtualKeyProviderConfig, 101)
+	for i := range configs {
+		configs[i] = tables.TableVirtualKeyProviderConfig{Provider: fmt.Sprintf("provider-%03d", i)}
+	}
+	createStatements := 0
+	callbackName := "test:count-provider-config-inserts"
+	require.NoError(t, store.DB().Callback().Create().After("gorm:create").Register(callbackName, func(db *gorm.DB) {
+		if db.Statement.Table == (&tables.TableVirtualKeyProviderConfig{}).TableName() {
+			createStatements++
+		}
+	}))
+	t.Cleanup(func() { _ = store.DB().Callback().Create().Remove(callbackName) })
+	tx := store.DB().WithContext(ctx).Begin()
+	require.NoError(t, tx.Error)
+	require.NoError(t, store.ReplaceVirtualKeyProviderConfigs(ctx, vk.ID, configs, tx))
+	require.NoError(t, tx.Commit().Error)
+	var count int64
+	require.NoError(t, store.DB().Model(&tables.TableVirtualKeyProviderConfig{}).Where("virtual_key_id = ?", vk.ID).Count(&count).Error)
+	require.Equal(t, int64(101), count)
+	require.Equal(t, 2, createStatements, "101 configs should use two bounded insert statements instead of 101 row inserts")
 }
 
 func TestCreateVirtualKeyProviderConfig_UnresolvedKeys(t *testing.T) {

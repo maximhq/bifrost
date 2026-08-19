@@ -27,13 +27,16 @@ export enum RbacResource {
 	RoutingRules = "RoutingRules",
 	PromptRepository = "PromptRepository",
 	PromptDeploymentStrategy = "PromptDeploymentStrategy",
-	SkillsRepository = "SkillsRepository",
 	AccessProfiles = "AccessProfiles",
 	APIKeys = "APIKeys",
 	Inference = "Inference",
 	Metrics = "Metrics",
 	FeatureFlags = "FeatureFlags",
 	CircuitBreaker = "CircuitBreaker",
+	Devices = "Devices",
+	Inventory = "Inventory",
+	EdgeConfig = "EdgeConfig",
+	SkillsRepository = "SkillsRepository",
 }
 
 // RBAC Operation Names (must match backend definitions)

@@ -8,13 +8,15 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
+import { parseAsSafeString } from "@/lib/queryParamsParser";
 import { ModelDetails, useGetModelDetailsQuery, useGetProvidersQuery } from "@/lib/store";
 import { KnownProvider } from "@/lib/types/config";
-import { formatTokenPriceCompact } from "@/lib/utils/numbers";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { ChevronLeft, ChevronRight, Edit, Search } from "lucide-react";
+import { useQueryStates } from "nuqs";
 import { useEffect, useMemo, useState } from "react";
 import AttributeSheet from "./attributeSheet";
+import OverriddenPrice from "./overriddenPrice";
 
 const PAGE_SIZE = 25;
 
@@ -48,11 +50,23 @@ interface AttributesTabProps {
 export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 	const hasUpdateAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
 
-	const [search, setSearch] = useState("");
-	const [providerFilter, setProviderFilter] = useState<string>("");
+	// Search and provider filter live in the URL so they survive a refresh and
+	// can be shared as a link. Replace rather than push so typing doesn't fill
+	// browser history with one entry per keystroke.
+	const [urlState, setUrlState] = useQueryStates(
+		{
+			search: parseAsSafeString.withDefault(""),
+			provider: parseAsSafeString.withDefault(""),
+		},
+		{ history: "replace" },
+	);
+	const { search, provider: providerFilter } = urlState;
+
 	const [offset, setOffset] = useState(0);
 	const [editing, setEditing] = useState<ModelDetails | null>(null);
 
+	// Only the query is debounced — the input itself stays URL-driven so it
+	// echoes keystrokes immediately.
 	const debouncedSearch = useDebouncedValue(search, 300);
 
 	// Reset to first page when filters change
@@ -74,6 +88,7 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 
 	const models = data?.models ?? [];
 	const totalCount = data?.total ?? 0;
+	const overridesById = useMemo(() => data?.pricing_overrides ?? {}, [data?.pricing_overrides]);
 
 	// Snap offset back when total shrinks past current page
 	useEffect(() => {
@@ -87,9 +102,9 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 	useEffect(() => {
 		if (!providerFilter || !providersData) return;
 		if (!providersData.some((p) => p.name === providerFilter)) {
-			setProviderFilter("");
+			setUrlState({ provider: null });
 		}
-	}, [providersData, providerFilter]);
+	}, [providersData, providerFilter, setUrlState]);
 
 	if (isLoading && !data) return <FullPageLoader />;
 
@@ -106,7 +121,7 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 
 	return (
 		<>
-			{editing && <AttributeSheet model={editing} onClose={() => setEditing(null)} />}
+			{editing && <AttributeSheet model={editing} overrides={overridesById} onClose={() => setEditing(null)} />}
 
 			<div className="flex min-h-0 w-full grow flex-col overflow-hidden">
 				<div className="mb-4 flex shrink-0 items-center justify-between">
@@ -123,12 +138,12 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 							aria-label="Search models"
 							placeholder="Search by model name..."
 							value={search}
-							onChange={(e) => setSearch(e.target.value)}
+							onChange={(e) => setUrlState({ search: e.target.value || null })}
 							className="pl-9"
 							data-testid="model-catalog-search-input"
 						/>
 					</div>
-					<Select value={providerFilter || "__all__"} onValueChange={(v) => setProviderFilter(v === "__all__" ? "" : v)}>
+					<Select value={providerFilter || "__all__"} onValueChange={(v) => setUrlState({ provider: v === "__all__" ? null : v })}>
 						<SelectTrigger className="w-[200px]" data-testid="model-catalog-provider-filter">
 							<SelectValue placeholder="All providers" />
 						</SelectTrigger>
@@ -149,13 +164,13 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 							<TableRow className="hover:bg-transparent">
 								<TableHead className="w-[116px] font-medium">Provider</TableHead>
 								<TableHead className="font-medium">Model</TableHead>
-								<TableHead className="w-[72px] px-2 text-right font-medium">Input</TableHead>
-								<TableHead className="w-[76px] px-2 text-right font-medium">Output</TableHead>
-								<TableHead className="w-[86px] px-2 text-right font-medium">Cache Write</TableHead>
-								<TableHead className="w-[80px] px-2 text-right font-medium">Cache Read</TableHead>
+								<TableHead className="w-[104px] px-2 text-right font-medium">Input</TableHead>
+								<TableHead className="w-[104px] px-2 text-right font-medium">Output</TableHead>
+								<TableHead className="w-[112px] px-2 text-right font-medium">Cache Write</TableHead>
+								<TableHead className="w-[108px] px-2 text-right font-medium">Cache Read</TableHead>
 								<TableHead className="font-medium">Description</TableHead>
 								<TableHead className="w-[68px] font-medium">Other</TableHead>
-								<TableHead className="w-[40px] px-1"></TableHead>
+								<TableHead className="w-[80px] px-1"></TableHead>
 							</TableRow>
 						</TableHeader>
 						<TableBody>
@@ -172,6 +187,8 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 									const attrs = m.additional_attributes ?? {};
 									const extraKeys = Object.keys(attrs).filter((k) => k !== "description");
 									const testKey = `${toTestIdPart(m.name)}-${toTestIdPart(m.provider)}`;
+									const overrideName = m.applied_override_id ? overridesById[m.applied_override_id]?.name : undefined;
+									const overrideCount = m.pricing_override_ids?.length ?? 0;
 									return (
 										<TableRow key={`${m.provider}|${m.name}`} data-testid={`model-catalog-row-${testKey}`}>
 											<TableCell className="py-3">
@@ -184,34 +201,63 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 												{m.name}
 											</TableCell>
 											<TableCell className="px-2 py-3 text-right font-mono text-sm">
-												{formatTokenPriceCompact(m.input_cost_per_token)}
+												<OverriddenPrice
+													variant="compact"
+													base={m.input_cost_per_token}
+													override={m.overridden_pricing?.input_cost_per_token}
+													overrideName={overrideName}
+												/>
 											</TableCell>
 											<TableCell className="px-2 py-3 text-right font-mono text-sm">
-												{formatTokenPriceCompact(m.output_cost_per_token)}
+												<OverriddenPrice
+													variant="compact"
+													base={m.output_cost_per_token}
+													override={m.overridden_pricing?.output_cost_per_token}
+													overrideName={overrideName}
+												/>
 											</TableCell>
 											<TableCell className="px-2 py-3 text-right font-mono text-sm">
-												{formatTokenPriceCompact(m.cache_creation_input_token_cost)}
+												<OverriddenPrice
+													variant="compact"
+													base={m.cache_creation_input_token_cost}
+													override={m.overridden_pricing?.cache_creation_input_token_cost}
+													overrideName={overrideName}
+												/>
 											</TableCell>
 											<TableCell className="px-2 py-3 text-right font-mono text-sm">
-												{formatTokenPriceCompact(m.cache_read_input_token_cost)}
+												<OverriddenPrice
+													variant="compact"
+													base={m.cache_read_input_token_cost}
+													override={m.overridden_pricing?.cache_read_input_token_cost}
+													overrideName={overrideName}
+												/>
 											</TableCell>
 											<TableCell className="py-3">
 												<DescriptionCell description={attrs.description} />
 											</TableCell>
 											<TableCell className="py-3">
-												{extraKeys.length === 0 ? (
+												{extraKeys.length === 0 && !overrideCount ? (
 													<span className="text-muted-foreground text-sm">—</span>
 												) : (
-													<Badge variant="secondary">
-														{extraKeys.length} {extraKeys.length === 1 ? "attribute" : "attributes"}
-													</Badge>
+													<div className="flex flex-wrap gap-1 pr-4">
+														{extraKeys.length > 0 && (
+															<Badge variant="secondary">
+																{extraKeys.length} {extraKeys.length === 1 ? "attribute" : "attributes"}
+															</Badge>
+														)}
+														{overrideCount > 0 && (
+															<Badge variant="outline" data-testid={`model-catalog-override-badge-${testKey}`}>
+																{overrideCount} {overrideCount === 1 ? "override" : "overrides"}
+															</Badge>
+														)}
+													</div>
 												)}
 											</TableCell>
 											<TableCell className="px-1 py-3">
 												<Button
 													variant="ghost"
 													size="icon"
-													className="h-7 w-7"
+													className="ml-6 h-7 w-7"
 													disabled={!hasUpdateAccess}
 													onClick={() => setEditing(m)}
 													aria-label={`Edit attributes for ${m.name}`}

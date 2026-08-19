@@ -229,6 +229,24 @@ func capabilityIntPtr(v int) *int { return &v }
 
 func capabilityBoolPtr(v bool) *bool { return &v }
 
+// TestExtractSupportedParams_StopSpellings guards both datasheet spellings of the
+// stop parameter. Anthropic rows use stop_sequences and Bedrock's Nova/Titan rows use
+// the Converse camelCase stopSequences; compat's dropUnsupportedParams gates only on
+// the neutral "stop", so a spelling that fails to map makes the model silently lose
+// its stop sequences and run to end_turn.
+func TestExtractSupportedParams_StopSpellings(t *testing.T) {
+	for _, id := range []string{"stop", "stop_sequences", "stopSequences"} {
+		t.Run(id, func(t *testing.T) {
+			parsed := &modelParametersParseResult{ModelParameters: []struct {
+				ID string `json:"id"`
+			}{{ID: id}}}
+			if got := extractSupportedParams(parsed); !slices.Contains(got, "stop") {
+				t.Errorf("model_parameters id %q must yield supported param \"stop\", got %v", id, got)
+			}
+		})
+	}
+}
+
 // TestExtractSupportedParams_WebSearch guards the two web-search keys: the
 // model_parameters "web_search" id and the supports_web_search flag must each
 // yield both web_search (responses-path tool) and web_search_options (chat-path

@@ -96,6 +96,35 @@ Runs entirely in-process with no external dependency. Uses the embedded default 
 `ignored_secret_keywords` is optional. It suppresses a detection when the matched secret value contains one of the listed substrings. Keep these values narrow so real leaked credentials are not hidden.
 
 </Tab>
+<Tab title="Prompt Guardrails">
+
+Uses a configured Bifrost LLM provider and model to evaluate text against a natural-language policy. The judge model must support Chat Completions or the Responses API, plus `response_format`. Bifrost prefers Chat Completions when the model supports both.
+
+```json
+{
+  "guardrails_config": {
+    "guardrail_providers": [
+      {
+        "id": 3,
+        "provider_name": "prompt-guardrail",
+        "policy_name": "block-medical-diagnoses",
+        "enabled": true,
+        "timeout": 30,
+        "config": {
+          "judge_provider": "openai",
+          "judge_model": "gpt-4o-mini",
+          "rule": "Block responses that provide a definitive medical diagnosis for an individual.",
+          "max_output_tokens": 200
+        }
+      }
+    ]
+  }
+}
+```
+
+Prompt Guardrails returns binary allow or block decisions. It adds judge-model latency and token cost, and it does not inspect image pixels or binary files. See [Prompt Guardrails](/enterprise/guardrails/prompt-guardrails) for model requirements, verification, failure behavior, and policy-writing guidance.
+
+</Tab>
 <Tab title="Presidio">
 
 Calls a Microsoft Presidio Analyzer service for PII detection. Use `action: "redact"` to apply Bifrost-managed redaction to Presidio findings.
@@ -389,7 +418,7 @@ Calls CrowdStrike AIDR's `guard_chat_completions` endpoint for policy-driven AI 
           "base_url": "env.GRAYSWAN_BASE_URL",
           "reasoning_mode": "standard",
           "violation_threshold": 0.7,
-          "policy_id": "",
+          "policy_id": "YOUR_GRAYSWAN_POLICY_ID",
           "policy_ids": [],
           "rules": {},
           "sampling_rate": 100
@@ -469,7 +498,7 @@ Calls Repello Argus prompt and response analysis endpoints. The configured Argus
 | Field | Required | Description |
 |-------|----------|-------------|
 | `id` | Yes | Unique integer ID - referenced by rules via `provider_config_ids` |
-| `provider_name` | Yes | Backend: `"regex"`, `"secrets"`, `"presidio"`, `"azure-pii"`, `"bedrock"`, `"azure"`, `"model-armor"`, `"crowdstrike-aidr"`, `"patronus-ai"`, `"grayswan"`, `"lakera"`, `"repelloai-argus"` |
+| `provider_name` | Yes | Backend: `"regex"`, `"secrets"`, `"prompt-guardrail"`, `"presidio"`, `"azure-pii"`, `"bedrock"`, `"azure"`, `"model-armor"`, `"crowdstrike-aidr"`, `"patronus-ai"`, `"grayswan"`, `"lakera"`, `"repelloai-argus"` |
 | `policy_name` | Yes | Human-readable policy label |
 | `enabled` | Yes | `true` to activate |
 | `timeout` | No | Execution timeout in seconds |
@@ -600,7 +629,7 @@ Any field marked **env.\* supported** accepts a bare `"env.VAR_NAME"` string in 
 | `base_url` | No | Yes | Custom API base URL (uses Gray Swan default if unset) |
 | `reasoning_mode` | No | Yes | `"standard"` \| `"fast"` \| `"off"` (default: `"standard"`) |
 | `violation_threshold` | No | **Plain only** | `0.0`–`1.0`; higher = more permissive (default: `0.5`) |
-| `policy_id` | No | **Plain only** | Single policy ID string |
+| `policy_id` | Yes | **Plain only** | Required Gray Swan policy ID string |
 | `policy_ids` | No | **Plain only** | Multiple policy IDs (string array) |
 | `rules` | No | **Plain only** | Inline rule map (`{ "rule_name": "description" }`) |
 | `sampling_rate` | No | **Plain only** | `0`–`100`; percentage of requests to evaluate (default: `100`) |
@@ -646,23 +675,52 @@ Any field marked **env.\* supported** accepts a bare `"env.VAR_NAME"` string in 
 | `redaction_strategy` | No | **Plain only** | `replace` \| `mask` \| `hash` (default: `replace`) |
 | `redaction_mode` | No | **Plain only** | `runtime` \| `logs_only` \| `runtime_reversible` (default: `runtime`) |
 
+### Prompt Guardrails
+
+| Field | Required | env.\* supported | Notes |
+|-------|----------|-----------------|-------|
+| `judge_provider` | Yes | **Plain only** | Configured Bifrost provider used for the judge request |
+| `judge_model` | Yes | **Plain only** | Judge model; must support Chat Completions or the Responses API, plus `response_format` |
+| `rule` | Yes | **Plain only** | Natural-language policy to evaluate |
+| `prompt_template` | No | **Plain only** | Custom system-prompt template; must contain `{{rule}}` and must not contain `{{content}}` |
+| `timeout` | No | **Plain only** | Judge-request timeout in seconds (default: `30`) |
+| `max_output_tokens` | No | **Plain only** | Judge response limit from `1` to `1024` (default: `200`) |
+
 ---
 
 ## Rules
 
-Rules are CEL expressions that fire when their condition matches. Available CEL variables:
+Rules are CEL expressions that fire when their condition matches. Set `target` to `"llm"` or `"mcp"` to select the request boundary the rule guards. The target defaults to `"llm"` when omitted.
 
 For block-capable streaming output rules, `stream_replay_event_interval_ms` sets the delay between consecutive buffered events after the response is allowed. It defaults to `0`, which sends all buffered events immediately; the dashboard initializes it to `25` when pacing is enabled. When multiple matched block-capable rules specify different positive values, Bifrost uses the largest interval.
+
+All targets expose these request identity variables:
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| `headers` | `map<string,string>` | HTTP request headers |
+| `virtual_key` | `string` | Virtual key ID |
+| `customer` | `string` | Customer ID |
+| `team` | `string` | Team ID |
+| `user` | `string` | User ID |
+
+LLM rules additionally expose:
 
 | Variable | Type | Description |
 |----------|------|-------------|
 | `model` | `string` | Model name from the request |
 | `provider` | `string` | Provider name (e.g. `"openai"`) |
-| `headers` | `map<string,string>` | HTTP request headers |
 | `params` | `map<string,string>` | Query parameters |
-| `customer` | `string` | Customer ID |
-| `team` | `string` | Team ID |
-| `user` | `string` | User ID |
+
+MCP rules additionally expose:
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| `mcp_client` | `string` | Name of the MCP client executing the tool |
+| `mcp_tool` | `string` | Name of the MCP tool being executed |
+| `mcp_arguments` | `map<string,dyn>` | Parsed tool arguments, with values preserving their JSON types |
+
+Target-specific variables are isolated. For example, `model` is unavailable to MCP rules, and `mcp_tool` is unavailable to LLM rules.
 
 ```json
 {
@@ -673,6 +731,7 @@ For block-capable streaming output rules, `stream_replay_event_interval_ms` sets
         "name": "block-secrets-input",
         "description": "Block prompts containing credentials",
         "enabled": true,
+        "target": "llm",
         "cel_expression": "true",
         "apply_to": "input",
         "sampling_rate": 100,
@@ -683,6 +742,7 @@ For block-capable streaming output rules, `stream_replay_event_interval_ms` sets
         "id": 102,
         "name": "content-safety-gpt4o-output",
         "enabled": true,
+        "target": "llm",
         "cel_expression": "model == 'gpt-4o'",
         "apply_to": "output",
         "sampling_rate": 100,
@@ -694,11 +754,23 @@ For block-capable streaming output rules, `stream_replay_event_interval_ms` sets
         "id": 103,
         "name": "grayswan-openai-partial",
         "enabled": true,
+        "target": "llm",
         "cel_expression": "provider == 'openai'",
         "apply_to": "input",
         "sampling_rate": 50,
         "timeout": 20,
         "provider_config_ids": [5]
+      },
+      {
+        "id": 104,
+        "name": "protect-github-issue-creation",
+        "enabled": true,
+        "target": "mcp",
+        "cel_expression": "mcp_client == 'github' && mcp_tool == 'create_issue'",
+        "apply_to": "input",
+        "sampling_rate": 100,
+        "timeout": 10,
+        "provider_config_ids": [1]
       }
     ]
   }
@@ -713,11 +785,14 @@ For block-capable streaming output rules, `stream_replay_event_interval_ms` sets
 | `name` | Yes | Human-readable name |
 | `description` | No | Optional description |
 | `enabled` | Yes | `true` to activate |
+| `target` | No | `"llm"` (default) or `"mcp"` |
 | `cel_expression` | Yes | CEL boolean expression. `"true"` matches every request |
-| `apply_to` | Yes | `"input"`, `"output"`, or `"both"` |
+| `apply_to` | Yes | `"input"`, `"output"`, or `"both"`. For MCP rules, input is the tool arguments and output is the tool result |
 | `sampling_rate` | No | `0`–`100`; percentage of requests to evaluate (default: `100`) |
 | `timeout` | No | Rule timeout in seconds |
 | `provider_config_ids` | No | `id` values of providers to invoke when this rule matches. Multiple providers run in parallel |
+
+`max_turns_to_send`, `evaluation_mode`, and `stream_replay_event_interval_ms` configure LLM conversation and streaming behavior. They do not change MCP tool execution behavior.
 
 ---
 

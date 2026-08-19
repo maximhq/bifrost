@@ -16,6 +16,14 @@ func (mc *ModelCatalog) GetModelCapabilityEntryForModel(model string, provider s
 	return mc.datasheet.GetCapabilityEntry(model, provider)
 }
 
+// GetCatalogPricingOverrides returns the scoped pricing overrides relevant to
+// a management-catalog row: the global/provider-scope winner for mode (the
+// pricing the UI shows as overridden) plus every override matching
+// (model, provider) for informational display.
+func (mc *ModelCatalog) GetCatalogPricingOverrides(model string, provider schemas.ModelProvider, mode string) CatalogPricingOverrides {
+	return mc.datasheet.CatalogPricingOverrides(model, provider, mode)
+}
+
 // IsRequestTypeSupported preserves the historical (model, provider,
 // requestType) signature; provider is ignored (the underlying datasheet
 // index is keyed by model only).
@@ -54,6 +62,16 @@ func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse, scopes *P
 // a failed/cancelled request (BifrostError.ExtraFields.BilledUsage).
 func (mc *ModelCatalog) CalculateCostForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *PricingLookupScopes) float64 {
 	return mc.datasheet.CalculateCostForUsage(usage, provider, model, requestType, (*datasheet.LookupScopes)(scopes))
+}
+
+// CalculateGuardrailCost computes the aggregate cost of guardrail judge calls.
+func (mc *ModelCatalog) CalculateGuardrailCost(debug *schemas.BifrostGuardrailDebug, scopes *PricingLookupScopes) float64 {
+	return mc.datasheet.CalculateGuardrailCost(debug, (*datasheet.LookupScopes)(scopes))
+}
+
+// CalculateCacheEmbeddingCost computes the semantic-cache embedding lookup cost.
+func (mc *ModelCatalog) CalculateCacheEmbeddingCost(debug *schemas.BifrostCacheDebug, scopes *PricingLookupScopes) float64 {
+	return mc.datasheet.CalculateCacheEmbeddingCost(debug, (*datasheet.LookupScopes)(scopes))
 }
 
 // UpsertModelPricingAttributes writes additional_attributes for every row

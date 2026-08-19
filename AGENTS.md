@@ -486,6 +486,8 @@ Bifrost uses `github.com/valyala/fasthttp` for provider HTTP calls. The API is d
 
 JSON marshaling in hot paths uses `github.com/bytedance/sonic` for performance. `core/schemas/` uses standard `encoding/json` for custom marshaling (e.g., `NetworkConfig`). Don't mix them accidentally.
 
+For reading or writing a **single field** (or a handful) inside a larger raw JSON payload, prefer `github.com/tidwall/gjson`/`github.com/tidwall/sjson` over decoding into `map[string]interface{}` and re-encoding — the shared helpers `providerUtils.GetJSONField`/`SetRawJSONField`/`DeleteJSONField`/`JSONFieldExists`/`GetJSONSubtree` (`core/providers/utils/utils.go`) wrap these and should be reused where the path is a lookup on an already-in-scope `[]byte`/`json.RawMessage`. Full-document decode into a map/struct is still correct when you need the whole shape (e.g. re-marshaling an entire object to normalize it) — the point is not to round-trip an entire object through a `map[string]interface{}` just to inspect one key. When marshaling back out, always use `providerUtils.MarshalSorted` (never a raw `sonic.Marshal`/`json.Marshal`), since unsorted map keys reorder nondeterministically and break prompt-cache-relevant byte stability.
+
 ### 14. Atomic Pointer for Hot Config Reload
 
 `Bifrost` uses `atomic.Pointer` for providers and plugins lists. On updates: create new slice → atomically swap pointer. **Never mutate the slice in place** — concurrent readers would see partial state.
@@ -552,6 +554,27 @@ Only `framework/vectorstore` needs any of this. Every other framework package pa
 ---
 
 ## Testing
+
+### Bug fixes: red before green
+
+Before writing a fix, add (or extend) a test that reproduces the bug and confirm it fails for the expected reason — a wrong assertion, not a compile error or an unrelated panic. Only then implement the fix, and confirm the same test now passes. For bugs reachable through `make run-provider-harness-test`, add the harness regression case (see `.claude/skills/harness-test-writer/SKILL.md`) alongside Go-level tests: Go tests give a fast, free red/green loop while coding; the harness case is the live end-to-end pin, expected red pre-fix and green post-fix, validated structurally (`augment-provider-harness.mjs` / `filter-collection.mjs`) without needing a live paid run during development.
+
+### Every `core/` change ships with a provider-harness case
+
+Any change under `core/` that a client can observe on the wire must land together with a case in `tests/e2e/api/collections/provider-harness.json` (see `.claude/skills/harness-test-writer/SKILL.md`). This covers new features and refactors, not only bug fixes — the rule in the previous section is the narrower instance of this one.
+
+`core/` is the only layer every transport, integration and provider funnels through, so its behaviour is what the harness exists to pin. A Go unit test proves the function does what you meant; only the harness proves the bytes a real client sends still come back correct through the whole stack. The gap between those two is where regressions live: a fail-soft that fires on one request shape and silently skips a sibling shape passes every unit test it has.
+
+Write the case so it is **red before the change and green after**, and validate it structurally while developing — no live paid run needed:
+
+```bash
+node tests/e2e/api/runners/augment-provider-harness.mjs --source tests/e2e/api/collections/provider-harness.json --out tmp/harness-augmented.json
+node tests/e2e/api/runners/filter-collection.mjs --source tmp/harness-augmented.json --out tmp/filtered.json --feature "<keyword>"
+```
+
+Insert into the collection surgically (a script that splices the new object in, never a whole-file reserialize) — the file is ~50k lines and a reformat buries the actual change.
+
+The narrow exemptions: changes with no wire-visible effect (comments, internal renames, log lines) and behaviour no HTTP request can reach. If a change is exempt, say so explicitly in the PR rather than leaving the omission unexplained.
 
 ### Always prefer `make test-core` over raw `go test` for provider-level tests
 

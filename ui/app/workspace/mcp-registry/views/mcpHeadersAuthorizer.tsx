@@ -1,19 +1,20 @@
-// MCPHeadersAuthorizer mirrors OAuth2Authorizer's UI/UX for the per-user-
-// headers create flow: same Dialog shell, same wording structure, same
-// state machine (confirm → input → testing → success/failed), same Cancel /
-// Continue affordances. The divergence is that the verify step is a values
-// form filled inline (no upstream redirect/popup), and the create call is
-// a single POST /api/mcp/client where the server runs verify + discover +
+// MCPHeadersAuthorizer mirrors OAuth2Authorizer's dialog chrome for the
+// per-user-headers create/refresh flow: same bordered icon header, same
+// InfoBox body copy, same Cancel / Continue footer, built from the shared
+// pieces in authorizerUi.tsx. The divergence is that the verify step is a
+// values form filled inline (no upstream redirect/popup), so there's an
+// extra "input" step between confirm and testing, and the create call is a
+// single POST /api/mcp/client where the server runs verify + discover +
 // persist atomically. Mirrors per-user OAuth where the admin's temp access
 // token plays the analogous role.
 
 import HeadersForm from "@/components/headersForm";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { getErrorMessage, useCreateMCPClientMutation } from "@/lib/store";
-import { CreateMCPClientRequest } from "@/lib/types/mcp";
-import { Loader2 } from "lucide-react";
+import { getErrorMessage } from "@/lib/store";
+import { CheckCircle2, KeyRound, Loader2, RefreshCw, ShieldCheck, XCircle } from "lucide-react";
 import React, { useEffect, useRef, useState } from "react";
+import { IconWrap, InfoBox, StepDots, UiVariant } from "./authorizerUi";
 
 interface MCPHeadersAuthorizerProps {
 	open: boolean;
@@ -21,14 +22,40 @@ interface MCPHeadersAuthorizerProps {
 	onSuccess: () => void;
 	onError: (error: string) => void;
 	onConflict?: (error: string) => void;
-	// Full payload the parent has already assembled. The dialog adds
-	// user_headers (collected inline) and POSTs once.
-	payload: CreateMCPClientRequest;
 	// Required key schema, rendered as the form's input fields.
 	perUserHeaderKeys: string[];
+	// Called with the collected sample values once the admin submits the
+	// form. The handler decides what endpoint to hit (Create flow's
+	// /api/mcp/client vs bootstrap's /api/mcp/client/{id}/verify-headers).
+	// Throw to surface a failure in the dialog.
+	submitHandler: (values: Record<string, string>) => Promise<void>;
 }
 
 type Status = "confirm" | "input" | "testing" | "success" | "failed";
+
+const STATUS_ICON: Record<Status, { variant: UiVariant; icon: React.ReactNode }> = {
+	confirm: { variant: "muted", icon: <ShieldCheck className="size-4" /> },
+	input: { variant: "muted", icon: <KeyRound className="size-4" /> },
+	testing: { variant: "info", icon: <Loader2 className="size-4 animate-spin" /> },
+	success: { variant: "success", icon: <CheckCircle2 className="size-4" /> },
+	failed: { variant: "danger", icon: <XCircle className="size-4" /> },
+};
+
+const titles: Record<Status, string> = {
+	confirm: "Test header configuration",
+	input: "Enter sample values",
+	testing: "Verifying connection",
+	success: "Connection verified",
+	failed: "Verification failed",
+};
+
+const subtitles: Record<Status, string> = {
+	confirm: "Verify your header setup to discover available tools.",
+	input: "Enter sample values to verify the connection.",
+	testing: "Checking your headers and discovering available tools.",
+	success: "Header verification completed successfully.",
+	failed: "The verification did not complete.",
+};
 
 export const MCPHeadersAuthorizer: React.FC<MCPHeadersAuthorizerProps> = ({
 	open,
@@ -36,16 +63,14 @@ export const MCPHeadersAuthorizer: React.FC<MCPHeadersAuthorizerProps> = ({
 	onSuccess,
 	onError,
 	onConflict,
-	payload,
 	perUserHeaderKeys,
+	submitHandler,
 }) => {
 	const [status, setStatus] = useState<Status>("confirm");
 	const [errorMessage, setErrorMessage] = useState<string | null>(null);
 	// Set to true when the user cancels so in-flight async callbacks do not
 	// invoke onSuccess / onError / onClose after the dialog is dismissed.
 	const cancelledRef = useRef(false);
-
-	const [createMCPClient] = useCreateMCPClientMutation();
 
 	// Reset state every time the dialog opens so a retry from a previous
 	// session doesn't carry over.
@@ -65,7 +90,7 @@ export const MCPHeadersAuthorizer: React.FC<MCPHeadersAuthorizerProps> = ({
 		if (cancelledRef.current) return;
 		setStatus("testing");
 		try {
-			await createMCPClient({ ...payload, user_headers: values }).unwrap();
+			await submitHandler(values);
 			if (cancelledRef.current) return;
 			setStatus("success");
 			onSuccess();
@@ -98,13 +123,11 @@ export const MCPHeadersAuthorizer: React.FC<MCPHeadersAuthorizerProps> = ({
 		<Dialog
 			open={open}
 			onOpenChange={(nextOpen) => {
-				if (!nextOpen) {
-					handleCancel();
-				}
+				if (!nextOpen) handleCancel();
 			}}
 		>
 			<DialogContent
-				className="sm:max-w-md"
+				className="gap-0 overflow-hidden p-0 sm:max-w-md"
 				onPointerDownOutside={(e) => {
 					e.preventDefault();
 					handleCancel();
@@ -114,46 +137,53 @@ export const MCPHeadersAuthorizer: React.FC<MCPHeadersAuthorizerProps> = ({
 					handleCancel();
 				}}
 			>
-				<DialogHeader>
-					<DialogTitle>{status === "confirm" ? "Test Header Configuration" : "Header Authorization"}</DialogTitle>
-					<DialogDescription>
-						{status === "confirm" && "A one-time test is needed to verify your header setup."}
-						{status === "input" && "Enter sample values to verify the connection."}
-						{status === "testing" && "Verifying connection..."}
-						{status === "success" && "Verification successful!"}
-						{status === "failed" && "Verification failed"}
-					</DialogDescription>
+				{/* Header */}
+				<DialogHeader className="border-b px-5 py-4 text-left">
+					<div className="flex items-start gap-3">
+						<IconWrap variant={STATUS_ICON[status].variant} icon={STATUS_ICON[status].icon} />
+						<div className="min-w-0 space-y-0.5">
+							<DialogTitle className="text-sm leading-snug font-medium">{titles[status]}</DialogTitle>
+							<DialogDescription className="text-xs leading-relaxed">{subtitles[status]}</DialogDescription>
+						</div>
+					</div>
 				</DialogHeader>
 
-				<div className="flex flex-col space-y-4">
+				{/* Body */}
+				<div className="space-y-3 px-5 py-4">
+					{/* Confirm */}
 					{status === "confirm" && (
 						<>
-							<div className="text-muted-foreground space-y-3 text-sm">
+							<InfoBox icon={<KeyRound className="size-4" />}>
 								<p>
-									To set up this MCP server, we need to verify that your header configuration is correct and discover the available tools.
+									To set up this MCP server, we need to verify that your header configuration is correct and discover the
+									available tools.
 								</p>
-								<p>
-									You will be asked to provide sample values for the required headers. This is a <strong>one-time test</strong> to confirm
-									the setup works. Your sample values will <strong>not</strong> be stored or used for any other purpose.
+								<p className="text-muted-foreground/80 text-xs">
+									You will be asked to provide sample values for the required headers. Bifrost keeps these values on file to
+									periodically refresh the available tool list; they are never used for real end-user requests. Once verified,
+									each user will submit their own header values when they use this MCP server.
 								</p>
-								<p>Once verified, each user will submit their own header values when they use this MCP server.</p>
-							</div>
-							<div className="flex w-full justify-end space-x-2">
-								<Button onClick={handleCancel} variant="outline" data-testid="per-user-headers-cancel">
+							</InfoBox>
+							<div className="flex justify-end gap-2">
+								<Button size="sm" variant="outline" onClick={handleCancel} data-testid="per-user-headers-cancel">
 									Cancel
 								</Button>
-								<Button onClick={handleConfirm} data-testid="per-user-headers-confirm">
-									Continue with Test
+								<Button size="sm" onClick={handleConfirm} data-testid="per-user-headers-confirm">
+									Continue
 								</Button>
 							</div>
 						</>
 					)}
 
+					{/* Input */}
 					{status === "input" && (
 						<>
-							<p className="text-muted-foreground text-sm">
-								These values are used only for this verification. They are <strong>not</strong> persisted.
-							</p>
+							<InfoBox icon={<KeyRound className="size-4" />}>
+								<p>
+									These values verify the connection now and are kept on file so Bifrost can periodically refresh the available
+									tool list. Each user still submits their own values when they use this server.
+								</p>
+							</InfoBox>
 							<HeadersForm
 								requiredKeys={perUserHeaderKeys}
 								onSubmit={handleRunTest}
@@ -164,38 +194,44 @@ export const MCPHeadersAuthorizer: React.FC<MCPHeadersAuthorizerProps> = ({
 						</>
 					)}
 
+					{/* Testing */}
 					{status === "testing" && (
 						<>
-							<div className="flex flex-col items-center space-y-2">
-								<Loader2 className="text-secondary-foreground h-4 w-4 animate-spin" />
-								<p className="text-muted-foreground text-sm">Verifying connection and discovering tools...</p>
+							<InfoBox icon={<Loader2 className="size-4 animate-spin" />}>
+								<p>Checking your headers against the server and discovering available tools.</p>
+								<p className="text-muted-foreground/80 text-xs">This only takes a moment.</p>
+							</InfoBox>
+							<div className="flex items-center justify-end">
+								<StepDots active={2} total={3} />
 							</div>
 						</>
 					)}
 
+					{/* Success */}
 					{status === "success" && (
-						<div className="flex flex-col items-center space-y-2">
-							<div className="flex h-12 w-12 items-center justify-center rounded-full bg-green-100">
-								<svg className="h-6 w-6 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-									<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-								</svg>
-							</div>
-							<p className="text-sm text-green-600">MCP server connected successfully!</p>
-						</div>
+						<InfoBox variant="success" icon={<CheckCircle2 className="size-4" />}>
+							<p className="font-medium">Header configuration verified.</p>
+							<p className="text-xs opacity-80">You can close this dialog.</p>
+						</InfoBox>
 					)}
 
+					{/* Failed */}
 					{status === "failed" && (
-						<div className="flex flex-col items-center space-y-2">
-							<div className="flex h-12 w-12 items-center justify-center rounded-full bg-red-100">
-								<svg className="h-6 w-6 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-									<path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-								</svg>
+						<>
+							<InfoBox variant="danger" icon={<XCircle className="size-4" />}>
+								<p className="font-medium">Verification did not complete.</p>
+								<p className="text-xs opacity-80">{errorMessage ?? "Check your header values and try again."}</p>
+							</InfoBox>
+							<div className="flex justify-end gap-2">
+								<Button size="sm" variant="outline" onClick={handleCancel} data-testid="mcp-headers-authorizer-close-btn">
+									Close
+								</Button>
+								<Button size="sm" onClick={handleRetry} data-testid="mcp-headers-authorizer-retry-btn">
+									<RefreshCw className="size-3.5" />
+									Retry
+								</Button>
 							</div>
-							<p className="text-sm text-red-600">{errorMessage || "An error occurred"}</p>
-							<Button onClick={handleRetry} variant="outline" data-testid="mcp-headers-authorizer-retry-btn">
-								Retry
-							</Button>
-						</div>
+						</>
 					)}
 				</div>
 			</DialogContent>

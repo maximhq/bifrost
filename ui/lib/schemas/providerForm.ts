@@ -43,6 +43,7 @@ const NetworkConfigSchema = z
 		keep_alive_timeout_in_seconds: z.number().int().min(1).max(3600).optional(),
 		max_conns_per_host: z.number().int().min(1).max(10000).optional(),
 		enforce_http2: z.boolean().optional(),
+		http2_ping_interval_in_seconds: z.number().int().min(0).max(3600).optional(),
 	})
 	.refine((v) => v.retry_backoff_initial <= v.retry_backoff_max, {
 		message: "Initial backoff must be <= max backoff",
@@ -104,6 +105,22 @@ const BatchS3ConfigSchema = z.object({
 	buckets: z.array(S3BucketConfigSchema).optional(),
 });
 
+// A VPC endpoint value must be a DNS name, so it always contains a dot. The check exists to
+// catch a pasted endpoint ID, which resolves to nothing: AWS appends a random string to the ID
+// that the DNS name carries and the ID does not.
+const VPCEndpointHostSchema = z
+	.string()
+	.refine((v) => v.trim() === "" || v.includes("."), "Enter the endpoint's DNS name from the VPC console, not its ID")
+	.optional();
+
+const BedrockEndpointsSchema = z.object({
+	runtime: VPCEndpointHostSchema,
+	control_plane: VPCEndpointHostSchema,
+	mantle: VPCEndpointHostSchema,
+	agent_runtime: VPCEndpointHostSchema,
+	s3: VPCEndpointHostSchema,
+});
+
 const BedrockKeyConfigSchema = z
 	.object({
 		access_key: z.string(),
@@ -117,6 +134,7 @@ const BedrockKeyConfigSchema = z
 		arn: z.string().optional(),
 		project_id: z.string().optional(),
 		batch_s3_config: BatchS3ConfigSchema.optional(),
+		endpoints: BedrockEndpointsSchema.optional(),
 	})
 	.refine(
 		(data) => {
@@ -154,6 +172,7 @@ const BedrockMantleKeyConfigSchema = z
 		external_id: z.string().optional(),
 		session_name: z.string().optional(),
 		project_id: z.string().optional(),
+		endpoints: BedrockEndpointsSchema.optional(),
 	})
 	.refine(
 		(data) => {

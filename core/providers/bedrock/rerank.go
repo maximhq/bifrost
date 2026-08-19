@@ -8,6 +8,31 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// resolveBedrockRerankModelARN returns the foundation-model ARN to put in a rerank
+// request body. Bedrock's Rerank API is the one Bedrock surface that names its model
+// by ARN rather than by bare ID (its docs' own example is
+// "arn:aws:bedrock:us-east-1::foundation-model/cohere.rerank-v3-5:0"), so a caller
+// passing the same bare ID that works on every other route had no way through.
+// Bifrost already resolves a region for each Bedrock call, so it builds the ARN here
+// instead of pushing that asymmetry onto callers.
+//
+// An identifier that is already an ARN is returned untouched: it may name an
+// inference profile or a cross-account model that this function could not rebuild.
+// An empty identifier stays empty so the caller reports the missing model itself.
+func resolveBedrockRerankModelARN(ctx *schemas.BifrostContext, key schemas.Key, model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" || strings.HasPrefix(model, "arn:") {
+		return model
+	}
+
+	region := resolveBedrockRegion(ctx, key, model)
+	// resolveBedrockRegion reads a "<region>/<model>" prefix but leaves it in place;
+	// it must not survive into the ARN's resource segment.
+	_, bareModel := parseBedrockRegionAndModel(model)
+
+	return fmt.Sprintf("arn:%s:bedrock:%s::foundation-model/%s", awsPartitionForRegion(region), region, bareModel)
+}
+
 // ToBedrockRerankRequest converts a Bifrost rerank request into Bedrock Agent Runtime format.
 func ToBedrockRerankRequest(bifrostReq *schemas.BifrostRerankRequest, modelARN string) (*BedrockRerankRequest, error) {
 	if bifrostReq == nil {

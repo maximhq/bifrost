@@ -436,7 +436,7 @@ func TestGovernanceStore_MultiBudget_ResolverBlocksOnBudgetExceeded(t *testing.T
 	resolver := NewBudgetResolver(store, nil, logger, nil)
 	ctx := &schemas.BifrostContext{}
 
-	result := resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false)
+	result := resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false, false)
 	assertDecision(t, DecisionBudgetExceeded, result)
 	assert.Contains(t, result.Reason, "budget exceeded")
 }
@@ -463,7 +463,7 @@ func TestGovernanceStore_MultiBudget_ResolverAllowsUnderLimit(t *testing.T) {
 	resolver := NewBudgetResolver(store, nil, logger, nil)
 	ctx := &schemas.BifrostContext{}
 
-	result := resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false)
+	result := resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false, false)
 	assertDecision(t, DecisionAllow, result)
 }
 
@@ -496,7 +496,7 @@ func TestGovernanceStore_MultiBudget_UsageDrivesBlockAfterRequests(t *testing.T)
 	require.NoError(t, err)
 
 	ctx := &schemas.BifrostContext{}
-	result := resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false)
+	result := resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false, false)
 	assertDecision(t, DecisionAllow, result)
 
 	// Request 2: $0.80 — still fine ($1.60 total)
@@ -505,7 +505,7 @@ func TestGovernanceStore_MultiBudget_UsageDrivesBlockAfterRequests(t *testing.T)
 	require.NoError(t, err)
 
 	ctx = &schemas.BifrostContext{}
-	result = resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false)
+	result = resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false, false)
 	assertDecision(t, DecisionAllow, result)
 
 	// Request 3: $0.80 — pushes hourly to $2.40 > $2.00 limit → blocked
@@ -514,7 +514,7 @@ func TestGovernanceStore_MultiBudget_UsageDrivesBlockAfterRequests(t *testing.T)
 	require.NoError(t, err)
 
 	ctx = &schemas.BifrostContext{}
-	result = resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false)
+	result = resolver.EvaluateVirtualKeyRequest(ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false, false)
 	assertDecision(t, DecisionBudgetExceeded, result)
 	assert.Contains(t, result.Reason, "budget exceeded")
 

@@ -1075,6 +1075,69 @@ func TestResolver_EvaluateModelAndProviderRequest_ProviderOnly_NoModel(t *testin
 	assertDecision(t, DecisionAllow, result)
 }
 
+// TestGovernancePlugin_EvaluateGovernanceRequest_SkipFlagBypassesProviderBudget pins the
+// read-only exemption for list models: an exhausted provider budget blocks inference but
+// must not block the metadata call, which consumes no quota.
+func TestGovernancePlugin_EvaluateGovernanceRequest_SkipFlagBypassesProviderBudget(t *testing.T) {
+	logger := NewMockLogger()
+	budget := buildBudgetWithUsage("budget1", 100.0, 100.0, "1h") // At limit
+	provider := buildProviderWithGovernance("openai", budget, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		Providers: []configstoreTables.TableProvider{*provider},
+		Budgets:   []configstoreTables.TableBudget{*budget},
+	}, nil)
+	require.NoError(t, err)
+
+	plugin := &GovernancePlugin{store: store, resolver: NewBudgetResolver(store, nil, logger, nil)}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, bifrostErr := plugin.EvaluateGovernanceRequest(ctx, &EvaluationRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4",
+	}, schemas.ChatCompletionRequest)
+	require.NotNil(t, bifrostErr)
+	require.NotNil(t, bifrostErr.StatusCode)
+	assert.Equal(t, 402, *bifrostErr.StatusCode)
+
+	ctx.SetValue(schemas.BifrostContextKeySkipBudgetAndRateLimits, true)
+	result, bifrostErr := plugin.EvaluateGovernanceRequest(ctx, &EvaluationRequest{
+		Provider: schemas.OpenAI,
+	}, schemas.ListModelsRequest)
+	require.Nil(t, bifrostErr)
+	assertDecision(t, DecisionAllow, result)
+}
+
+// TestGovernancePlugin_EvaluateGovernanceRequest_SkipFlagBypassesProviderRateLimit is the
+// rate-limit counterpart to the provider-budget exemption above.
+func TestGovernancePlugin_EvaluateGovernanceRequest_SkipFlagBypassesProviderRateLimit(t *testing.T) {
+	logger := NewMockLogger()
+	rateLimit := buildRateLimitWithUsage("rl1", 10000, 10000, 1000, 0) // Tokens at max
+	provider := buildProviderWithGovernance("openai", nil, rateLimit)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		Providers:  []configstoreTables.TableProvider{*provider},
+		RateLimits: []configstoreTables.TableRateLimit{*rateLimit},
+	}, nil)
+	require.NoError(t, err)
+
+	plugin := &GovernancePlugin{store: store, resolver: NewBudgetResolver(store, nil, logger, nil)}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, bifrostErr := plugin.EvaluateGovernanceRequest(ctx, &EvaluationRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4",
+	}, schemas.ChatCompletionRequest)
+	require.NotNil(t, bifrostErr)
+	require.NotNil(t, bifrostErr.StatusCode)
+	assert.Equal(t, 429, *bifrostErr.StatusCode)
+
+	ctx.SetValue(schemas.BifrostContextKeySkipBudgetAndRateLimits, true)
+	result, bifrostErr := plugin.EvaluateGovernanceRequest(ctx, &EvaluationRequest{
+		Provider: schemas.OpenAI,
+	}, schemas.ListModelsRequest)
+	require.Nil(t, bifrostErr)
+	assertDecision(t, DecisionAllow, result)
+}
+
 func TestResolver_EvaluateModelAndProviderRequest_ModelOnly_NoProvider(t *testing.T) {
 	logger := NewMockLogger()
 	budget := buildBudget("budget1", 100.0, "1h")

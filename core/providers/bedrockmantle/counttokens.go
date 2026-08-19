@@ -15,8 +15,8 @@ import (
 // bedrock-mantle host. This is the only token-counting path available for Claude models that
 // have no Region-specific bedrock-runtime endpoint (models launching cross-Region-inference
 // only), which is why it is not redundant with the bedrock provider's Converse count-tokens.
-func mantleAnthropicCountTokensURL(region string) string {
-	return fmt.Sprintf("https://bedrock-mantle.%s.api.aws/anthropic/v1/messages/count_tokens", region)
+func mantleAnthropicCountTokensURL(endpoints *schemas.BedrockEndpoints, region string) string {
+	return fmt.Sprintf("https://%s/anthropic/v1/messages/count_tokens", mantleHost(endpoints, region))
 }
 
 // CountTokens counts the input tokens a request would consume, using the native-Anthropic
@@ -39,7 +39,7 @@ func (provider *BedrockMantleProvider) CountTokens(ctx *schemas.BifrostContext, 
 	}
 
 	region := provider.resolveRegion(ctx, key, request.Model)
-	url := mantleAnthropicCountTokensURL(region)
+	url := mantleAnthropicCountTokensURL(mantleEndpoints(key.BedrockMantleKeyConfig), region)
 	// The region addresses the host, the bare id goes in the body.
 	_, bareModel := parseBedrockRegionAndModel(request.Model)
 

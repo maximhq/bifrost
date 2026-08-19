@@ -1,6 +1,7 @@
 package tables
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"time"
@@ -19,6 +20,21 @@ const (
 	// BudgetOverrideModeForever keeps an override active until it is explicitly removed.
 	BudgetOverrideModeForever BudgetOverrideMode = "forever"
 )
+
+// BudgetResetConfig carries per-budget settings that shape the reset window
+// beyond what the duration string alone can express.
+//
+// Persisted as a JSON blob rather than a dedicated column so a future window
+// setting (week start day, a timezone other than UTC) needs no migration.
+type BudgetResetConfig struct {
+	// QuarterStartMonth is the first month of Q1 as a 1-12 value, so an
+	// organisation whose fiscal year opens in April gets Apr-Jun / Jul-Sep /
+	// Oct-Dec / Jan-Mar. Zero means unset and reads back as January.
+	//
+	// Only meaningful for a "Q" duration; BeforeSave rejects it on any other
+	// window rather than persisting a setting that silently does nothing.
+	QuarterStartMonth int `json:"quarter_start_month,omitempty"`
+}
 
 // TableBudget defines spending limits with configurable reset periods
 type TableBudget struct {
@@ -67,6 +83,21 @@ type TableBudget struct {
 	// rewrites the whole table on its dump tick.
 	OverrideAnchorReset *time.Time `json:"override_anchor_reset,omitempty"`
 
+	// ResetConfigJSON holds ResetConfig as a JSON blob, serialized by BeforeSave
+	// and deserialized by AfterFind.
+	ResetConfigJSON string `gorm:"column:reset_config_json;type:text" json:"-"`
+
+	// ResetConfig carries window settings the duration string cannot express,
+	// currently the fiscal quarter start. Nil for every non-quarterly budget.
+	//
+	// AfterFind repopulating this is what makes a quarter definition agree across
+	// a cluster: the gossip path carries usage only, and a config change
+	// broadcasts nothing but an entity ID, which each peer answers by re-reading
+	// the row. A hook that failed to fire on a nested preload would leave every
+	// peer computing January quarters against a leader computing April ones,
+	// with no error anywhere to show for it.
+	ResetConfig *BudgetResetConfig `gorm:"-" json:"reset_config,omitempty"`
+
 	// Owner FKs: a budget belongs to at most one Team, VK, ProviderConfig, ModelConfig, or Customer
 	TeamID           *string `gorm:"type:varchar(255);index" json:"team_id,omitempty"`
 	VirtualKeyID     *string `gorm:"type:varchar(255);index" json:"virtual_key_id,omitempty"`
@@ -98,6 +129,78 @@ type TableBudget struct {
 // TableName sets the table name for each model
 func (TableBudget) TableName() string { return "governance_budgets" }
 
+// QuarterStartMonth returns the first month of Q1 for this budget, defaulting to
+// January when no quarter definition is configured.
+//
+// Safe on a nil receiver and a nil ResetConfig so every window call site can read
+// it unconditionally. That matters more than convenience: a call site that
+// skipped the read on nil would compute a January boundary for an April-start
+// budget, and the two would disagree only for the six months of the year when
+// the quarters happen not to coincide.
+func (b *TableBudget) QuarterStartMonth() time.Month {
+	if b == nil {
+		return time.January
+	}
+	return b.ResetConfig.QuarterStart()
+}
+
+// QuarterStart returns the configured first month of Q1, defaulting to January
+// for a nil config, an unset month, or a month outside 1-12.
+//
+// Defined on the config rather than only on the budget so a caller comparing an
+// old definition against a new one - the reconciler deciding whether a quarter
+// boundary moved - can read both through the same normalisation. Comparing the
+// raw ints instead would report a change between an unset config and an explicit
+// January, which are the same window.
+func (c *BudgetResetConfig) QuarterStart() time.Month {
+	if c == nil {
+		return time.January
+	}
+	if c.QuarterStartMonth < int(time.January) || c.QuarterStartMonth > int(time.December) {
+		return time.January
+	}
+	return time.Month(c.QuarterStartMonth)
+}
+
+// IsQuarterlyDuration reports whether a duration string denotes a quarter window.
+func IsQuarterlyDuration(duration string) bool {
+	return duration != "" && duration[len(duration)-1] == 'Q'
+}
+
+// validateResetConfig checks the quarter definition is in range and attached to a
+// window that actually has quarters.
+func (b *TableBudget) validateResetConfig() error {
+	if b.ResetConfig == nil {
+		return nil
+	}
+	if !IsQuarterlyDuration(b.ResetDuration) {
+		return fmt.Errorf("reset_config is only valid on a quarterly reset duration, got: %s", b.ResetDuration)
+	}
+	// Zero means unset and reads back as January, so only an out-of-range
+	// non-zero value is an error.
+	if month := b.ResetConfig.QuarterStartMonth; month != 0 && (month < int(time.January) || month > int(time.December)) {
+		return fmt.Errorf("quarter_start_month must be between 1 and 12, got: %d", month)
+	}
+	return nil
+}
+
+// AfterFind deserializes the reset config blob after a row is read.
+//
+// GORM fires this on preloaded associations too, which is what carries the
+// quarter definition to a cluster peer reloading a virtual key by ID.
+func (b *TableBudget) AfterFind(tx *gorm.DB) error {
+	if b.ResetConfigJSON == "" {
+		b.ResetConfig = nil
+		return nil
+	}
+	var cfg BudgetResetConfig
+	if err := json.Unmarshal([]byte(b.ResetConfigJSON), &cfg); err != nil {
+		return err
+	}
+	b.ResetConfig = &cfg
+	return nil
+}
+
 // WindowStart returns the budget's current reset-window boundary at or before
 // now: the calendar period for a calendar-aligned budget whose duration has a
 // calendar boundary, and the rolling lattice anchored on CreatedAt otherwise.
@@ -122,7 +225,7 @@ func (b *TableBudget) WindowStart(now time.Time) time.Time {
 		return b.LastReset
 	}
 	if b.IsCalendarAligned && IsCalendarAlignableDuration(b.ResetDuration) {
-		return GetCalendarPeriodStart(b.ResetDuration, now)
+		return GetCalendarPeriodStart(b.ResetDuration, now, b.QuarterStartMonth())
 	}
 	duration, err := ParseDuration(b.ResetDuration)
 	if err != nil || duration <= 0 {
@@ -133,6 +236,40 @@ func (b *TableBudget) WindowStart(now time.Time) time.Time {
 		anchor = b.LastReset
 	}
 	return RollingWindowStart(anchor, duration, now)
+}
+
+// AdoptCalendarAlignment re-anchors an already-open window onto the calendar grid
+// it has just been told to follow, and reports whether it moved.
+//
+// Called once, on the transition from rolling to calendar-aligned. Without it the
+// switch is destructive: the reset path resets whenever WindowStart(now) is after
+// LastReset, and for a freshly aligned budget WindowStart is the most recent
+// boundary, so any window that opened before that boundary is instantly due and
+// its usage is cleared. That is most of the month for a monthly budget.
+//
+// Moving LastReset up to the boundary makes the window current instead of overdue,
+// so nothing resets now and the first aligned reset lands on the next boundary.
+// The move is forward-only, which is the one direction every persistence path
+// allows: rewinding would re-open a window the cluster already treated as spent.
+// CurrentUsage is deliberately untouched - the operator asked to change a
+// schedule, not to forgive spend.
+//
+// Returns false, changing nothing, when the budget is not aligned, when its
+// duration has no calendar boundary (sub-day windows stay rolling), or when the
+// window already opened at or after the boundary and is therefore current.
+func (b *TableBudget) AdoptCalendarAlignment(now time.Time) bool {
+	if b == nil || !b.IsCalendarAligned || !IsCalendarAlignableDuration(b.ResetDuration) {
+		return false
+	}
+	// Read through WindowStart rather than GetCalendarPeriodStart directly so the
+	// boundary adopted here can never drift from the one the reset path compares
+	// against.
+	start := b.WindowStart(now)
+	if !start.After(b.LastReset) {
+		return false
+	}
+	b.LastReset = start
+	return true
 }
 
 // StampCalendarAlignment copies an owner's calendar-alignment flag onto the
@@ -278,6 +415,7 @@ func (b *TableBudget) WindowsSinceAnchor() int {
 			b.ResetDuration,
 			anchor.Add(boundaryJitterTolerance),
 			b.LastReset.Add(boundaryJitterTolerance),
+			b.QuarterStartMonth(),
 		)
 	}
 	duration, err := ParseDuration(b.ResetDuration)
@@ -385,7 +523,7 @@ func (b *TableBudget) BeforeSave(tx *gorm.DB) error {
 	if owners > 1 {
 		return fmt.Errorf("budget cannot have more than one owner (team/virtual key/provider config/model config/customer)")
 	}
-	// Validate that ResetDuration is in correct format (e.g., "30s", "5m", "1h", "1d", "1w", "1M", "1Y")
+	// Validate that ResetDuration is in correct format (e.g., "30s", "5m", "1h", "1d", "1w", "1M", "1Q", "1Y")
 	if d, err := ParseDuration(b.ResetDuration); err != nil {
 		return fmt.Errorf("invalid reset duration format: %s", b.ResetDuration)
 	} else if d <= 0 {
@@ -397,6 +535,19 @@ func (b *TableBudget) BeforeSave(tx *gorm.DB) error {
 	}
 	if err := b.validateOverride(); err != nil {
 		return err
+	}
+	if err := b.validateResetConfig(); err != nil {
+		return err
+	}
+	// Serialize last, so a rejected config is never written to the column.
+	if b.ResetConfig != nil {
+		data, err := json.Marshal(b.ResetConfig)
+		if err != nil {
+			return err
+		}
+		b.ResetConfigJSON = string(data)
+	} else {
+		b.ResetConfigJSON = ""
 	}
 
 	return nil
