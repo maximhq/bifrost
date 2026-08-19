@@ -118,6 +118,58 @@ ProviderConfig:
         $ref: '#/Budget'
     rate_limit:
       $ref: '#/RateLimit'
+    blacklisted_models:
+      type: array
+      items:
+        type: string
+      description: >-
+        Models blocked for this provider even if matched by allowed_models
+        (denylist wins). Use `["*"]` to block all; empty array or omitted
+        blocks none.
+    weight:
+      type: number
+      nullable: true
+      description: >-
+        Load-balancer seed weight for this provider. No fixed range is
+        enforced. Null opts out of the weight override for this provider;
+        it does not exclude the provider from routing.
+    model_budgets:
+      type: array
+      items:
+        $ref: '#/ProviderModelBudget'
+      description: >-
+        Per-model budgets and rate limits scoped to this provider. Each
+        entry targets one model and materializes as a user-scoped model
+        config on assignment.
+    key_ids:
+      type: array
+      items:
+        type: string
+      description: >-
+        Key IDs allowed for this provider config. Use `["*"]` to allow all
+        keys; specific IDs restrict access to those keys only. Empty-list
+        behavior follows the top-level config.json `version` setting: an
+        empty array or omitted value denies all keys under the default
+        `version: 2` semantics, but allows all keys under `version: 1`
+        (v1.4.x compat). Set `["*"]` explicitly to be unambiguous across
+        versions.
+
+ProviderModelBudget:
+  type: object
+  required:
+    - model_name
+  description: Per-model budget group under an access-profile provider config, with optional per-model rate limit.
+  properties:
+    model_name:
+      type: string
+      description: Model this budget group applies to (scoped to the parent provider).
+    budgets:
+      type: array
+      items:
+        $ref: '#/Budget'
+      description: Spend budgets for this model.
+    rate_limit:
+      $ref: '#/RateLimit'
 
 MCPToolGroupLink:
   type: object
