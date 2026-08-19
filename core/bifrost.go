@@ -5135,6 +5135,18 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 		tmp.Model = fallback.Model
 		fallbackReq.ImageGenerationRequest = &tmp
 	}
+	if req.ImageEditRequest != nil {
+		tmp := *req.ImageEditRequest
+		tmp.Provider = fallback.Provider
+		tmp.Model = fallback.Model
+		fallbackReq.ImageEditRequest = &tmp
+	}
+	if req.ImageVariationRequest != nil {
+		tmp := *req.ImageVariationRequest
+		tmp.Provider = fallback.Provider
+		tmp.Model = fallback.Model
+		fallbackReq.ImageVariationRequest = &tmp
+	}
 	if req.VideoGenerationRequest != nil {
 		tmp := *req.VideoGenerationRequest
 		tmp.Provider = fallback.Provider
