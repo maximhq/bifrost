@@ -2797,6 +2797,172 @@
             "if": {
               "properties": {
                 "name": {
+                  "const": "splunk"
+                }
+              }
+            },
+            "then": {
+              "required": ["config"],
+              "properties": {
+                "config": {
+                  "type": "object",
+                  "description": "Configuration for the Splunk HEC observability plugin (Enterprise)",
+                  "properties": {
+                    "endpoint": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "HEC base URL, e.g. https://localhost:8088. Do not include the /services/collector path (can use env. prefix)."
+                    },
+                    "token": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "HEC token, sent as the 'Authorization: Splunk <token>' header (can use env. prefix)."
+                    },
+                    "events_index": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Splunk event index for per-request events. Required when enable_events is true."
+                    },
+                    "metrics_index": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Splunk metrics index for derived metrics. Required when enable_metrics is true."
+                    },
+                    "source": {
+                      "type": "string",
+                      "description": "HEC source field on every event and metric",
+                      "default": "bifrost"
+                    },
+                    "sourcetype": {
+                      "type": "string",
+                      "description": "HEC sourcetype for events (metrics use bifrost:metric). Drives field extraction, so keep it stable.",
+                      "default": "bifrost:llm"
+                    },
+                    "host": {
+                      "type": "string",
+                      "description": "HEC host field (defaults to the server hostname)"
+                    },
+                    "enable_events": {
+                      "type": "boolean",
+                      "description": "Emit one flattened event per request to the event index (default: true)",
+                      "default": true
+                    },
+                    "enable_metrics": {
+                      "type": "boolean",
+                      "description": "Derive and emit the metric set to the metrics index (default: true)",
+                      "default": true
+                    },
+                    "disable_content_logging": {
+                      "type": "boolean",
+                      "description": "Strip request/response content from events (default: false)",
+                      "default": false
+                    },
+                    "ca_cert": {
+                      "type": "string",
+                      "description": "PEM-encoded CA certificate to verify the HEC server's TLS certificate (can use env. prefix)"
+                    },
+                    "insecure_skip_verify": {
+                      "type": "boolean",
+                      "description": "Disable TLS certificate verification. Development or isolated environments only; use ca_cert in production (default: false)",
+                      "default": false
+                    },
+                    "custom_fields": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      },
+                      "description": "Static key/value fields added to every event and metric"
+                    },
+                    "request_headers": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Request-header name patterns to capture onto events. Use an explicit allowlist of exact header names; wildcard patterns can capture credentials such as Authorization."
+                    },
+                    "batch_max_bytes": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "description": "Flush a HEC batch once its concatenated bodies reach this many bytes",
+                      "default": 524288
+                    },
+                    "flush_interval_ms": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "description": "Maximum time buffered events wait before a flush",
+                      "default": 1000
+                    },
+                    "post_workers": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 64,
+                      "description": "Concurrent HEC poster goroutines (capped at 64)",
+                      "default": 4
+                    },
+                    "indexer_ack": {
+                      "type": "boolean",
+                      "description": "Enable HEC indexer acknowledgement for confirmed delivery. Set when the HEC token has acknowledgement enabled (default: false).",
+                      "default": false
+                    },
+                    "ack_poll_interval_ms": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "description": "How often to poll Splunk for acknowledgement, in ms (only used when indexer_ack is true)",
+                      "default": 1000
+                    },
+                    "ack_timeout_ms": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "description": "How long an unacknowledged batch waits before the client resends it, in ms (only used when indexer_ack is true)",
+                      "default": 30000
+                    },
+                    "max_ack_attempts": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "description": "Maximum POST attempts per batch before it is dropped (only used when indexer_ack is true)",
+                      "default": 3
+                    }
+                  },
+                  "required": ["endpoint", "token"],
+                  "allOf": [
+                    {
+                      "if": {
+                        "properties": {
+                          "enable_events": {
+                            "not": {
+                              "const": false
+                            }
+                          }
+                        }
+                      },
+                      "then": {
+                        "required": ["events_index"]
+                      }
+                    },
+                    {
+                      "if": {
+                        "properties": {
+                          "enable_metrics": {
+                            "not": {
+                              "const": false
+                            }
+                          }
+                        }
+                      },
+                      "then": {
+                        "required": ["metrics_index"]
+                      }
+                    }
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "name": {
                   "const": "bigquery"
                 }
               }
