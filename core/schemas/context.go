@@ -3,6 +3,7 @@ package schemas
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -452,9 +453,13 @@ func (bc *BifrostContext) ClearValue(key any) {
 	}
 	bc.valuesMu.Lock()
 	defer bc.valuesMu.Unlock()
-	if bc.userValues != nil {
-		bc.userValues[key] = nil
+	if key != nil && !reflect.TypeOf(key).Comparable() {
+		return
 	}
+	if bc.userValues == nil {
+		bc.userValues = make(map[any]any)
+	}
+	bc.userValues[key] = nil
 }
 
 // GetAndSetValue gets a value from the internal userValues map and sets it.

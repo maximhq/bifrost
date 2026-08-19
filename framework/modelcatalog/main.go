@@ -153,34 +153,6 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 	}()
 
 	logger.Info("initializing model catalog...")
-	if configStore != nil {
-		// Lazy load on cache miss: providers may need params for models not
-		// covered by the startup bulk load (e.g. just-uploaded models). The
-		// bulk load still warms the common case so this only fires on misses.
-		providerUtils.SetCacheMissHandler(func(model string) *providerUtils.ModelParams {
-			missCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancel()
-			params, err := mc.datasheet.GetModelParametersByModel(missCtx, model)
-			if err != nil || params == nil {
-				return nil
-			}
-			var p struct {
-				MaxOutputTokens       *int  `json:"max_output_tokens"`
-				VertexMultiRegionOnly *bool `json:"vertex_multi_region_only"`
-			}
-			if err := json.Unmarshal([]byte(params.Data), &p); err != nil {
-				return nil
-			}
-			if p.MaxOutputTokens == nil && p.VertexMultiRegionOnly == nil {
-				return nil
-			}
-			return &providerUtils.ModelParams{
-				MaxOutputTokens:         p.MaxOutputTokens,
-				IsVertexMultiRegionOnly: p.VertexMultiRegionOnly,
-			}
-		})
-	}
-
 	if !automaticSyncEnabled {
 		logger.Info("automatic model catalog sync disabled; loading stored data only")
 		if configStore != nil {

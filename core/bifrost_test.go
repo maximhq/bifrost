@@ -5632,12 +5632,22 @@ func TestAutoInitDynamicProviderAllowsPrivateNetworkUpstreams(t *testing.T) {
 	server := &httptest.Server{
 		Listener: listener,
 		Config: &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			responseBody := mockOpenAIChatResponse("gpt-4o")
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write(mockOpenAIChatResponse("gpt-4o"))
+			w.Header().Set("Connection", "close")
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(responseBody)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(responseBody)
 		})},
 	}
 	server.Start()
 	t.Cleanup(server.Close)
+	probeClient := &http.Client{Timeout: time.Second}
+	probeResp, probeErr := probeClient.Get(server.URL) //nolint:gosec // local test server on a selected interface
+	if probeErr != nil {
+		t.Skipf("private interface is not locally routable on this test host: %v", probeErr)
+	}
+	_ = probeResp.Body.Close()
 
 	account := NewMockAccount()
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)

@@ -1153,6 +1153,9 @@ func (br *BifrostRequest) Clone() BifrostRequest {
 	case br.VideoGenerationRequest != nil:
 		tmp := *br.VideoGenerationRequest
 		clone.VideoGenerationRequest = &tmp
+	case br.VideoEditRequest != nil:
+		tmp := *br.VideoEditRequest
+		clone.VideoEditRequest = &tmp
 	case br.VideoRetrieveRequest != nil:
 		tmp := *br.VideoRetrieveRequest
 		clone.VideoRetrieveRequest = &tmp
