@@ -298,3 +298,20 @@ func TestExtractSupportedParams_WebSearchAbsent(t *testing.T) {
 		}
 	}
 }
+
+// TestExtractSupportedParams_NoneReasoningEffort guards the
+// supports_none_reasoning_effort flag: compat's dropUnsupportedParams uses it
+// to decide whether to force reasoning.effort to "none" (vs. dropping
+// reasoning entirely) for models that reason by default even when
+// reasoning_effort is omitted.
+func TestExtractSupportedParams_NoneReasoningEffort(t *testing.T) {
+	if got := extractSupportedParams(&schemas.ModelCapabilities{SupportsNoneReasoningEffort: capabilityBoolPtr(true)}); !slices.Contains(got, "supports_none_reasoning_effort") {
+		t.Errorf("expected supported params to contain \"supports_none_reasoning_effort\", got %v", got)
+	}
+	if got := extractSupportedParams(&schemas.ModelCapabilities{SupportsNoneReasoningEffort: capabilityBoolPtr(false)}); slices.Contains(got, "supports_none_reasoning_effort") {
+		t.Errorf("expected supported params to omit \"supports_none_reasoning_effort\", got %v", got)
+	}
+	if got := extractSupportedParams(&schemas.ModelCapabilities{}); slices.Contains(got, "supports_none_reasoning_effort") {
+		t.Errorf("expected supported params to omit \"supports_none_reasoning_effort\" when unset, got %v", got)
+	}
+}
