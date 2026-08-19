@@ -971,6 +971,20 @@ func TestListModelDetails_ResolvesCatalogPricing(t *testing.T) {
 			outputCost: 0.00000484,
 			cacheCost:  0.00000015,
 		},
+		{
+			name:     "Azure alias falls back to alias key",
+			provider: schemas.Azure,
+			model:    "gpt-4o",
+			alias:    &schemas.AliasConfig{ModelID: "my-deployment-123"},
+			pricingJSON: `{"azure/gpt-4o": {
+				"provider": "azure", "mode": "chat",
+				"input_cost_per_token": 0.0000025, "output_cost_per_token": 0.00001,
+				"cache_read_input_token_cost": 0.00000025
+			}}`,
+			inputCost:  0.0000025,
+			outputCost: 0.00001,
+			cacheCost:  0.00000025,
+		},
 	}
 
 	for _, test := range tests {
