@@ -70,11 +70,11 @@ function AlertDialogDescription({ className, ...props }: React.ComponentProps<ty
 }
 
 function AlertDialogAction({ className, ...props }: React.ComponentProps<typeof AlertDialogPrimitive.Action>) {
-	return <AlertDialogPrimitive.Action className={cn(buttonVariants({ variant: "destructive" }), className)} {...props} />;
+	return <AlertDialogPrimitive.Action className={cn(buttonVariants({ variant: "destructive" }), "cursor-pointer", className)} {...props} />;
 }
 
 function AlertDialogCancel({ className, ...props }: React.ComponentProps<typeof AlertDialogPrimitive.Cancel>) {
-	return <AlertDialogPrimitive.Cancel className={cn(buttonVariants({ variant: "outline" }), className)} {...props} />;
+	return <AlertDialogPrimitive.Cancel className={cn(buttonVariants({ variant: "outline" }), "cursor-pointer", className)} {...props} />;
 }
 
 export {
