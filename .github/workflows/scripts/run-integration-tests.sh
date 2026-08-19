@@ -257,7 +257,9 @@ echo ""
 echo "🧪 Running Python integration tests..."
 echo "="
 
-cd "$REPO_ROOT/tests/integrations"
+# .../integrations/python, not .../integrations: pyproject.toml and uv.lock live in the
+# python subdir (same path test-integrations.sh uses), so uv sync fails a level up.
+cd "$REPO_ROOT/tests/integrations/python"
 
 # Check if uv is available
 if command -v uv >/dev/null 2>&1; then
@@ -269,20 +271,12 @@ if command -v uv >/dev/null 2>&1; then
   TEST_EXIT_CODE=0
   uv run python run_all_tests.py --verbose || TEST_EXIT_CODE=$?
 else
-  echo "⚠️  uv not found, trying pip..."
-  
-  # Create virtual environment if needed
-  if [ ! -d ".venv" ]; then
-    python3 -m venv .venv
-  fi
-  
-  source .venv/bin/activate
-  pip install -q -e .
-  
-  echo ""
-  echo "🏃 Running tests..."
-  TEST_EXIT_CODE=0
-  python run_all_tests.py --verbose || TEST_EXIT_CODE=$?
+  # No pip fallback: `pip install -e .` ignores uv.lock and re-resolves every dependency
+  # at install time, so it silently runs against a different tree than the locked one -
+  # and it is not pinned, which is what Scorecard's Pinned-Dependencies check flags.
+  echo "❌ uv is required to install the Python integration suite (it is what pins uv.lock)." >&2
+  echo "   Install it: https://docs.astral.sh/uv/getting-started/installation/" >&2
+  exit 1
 fi
 
 echo ""

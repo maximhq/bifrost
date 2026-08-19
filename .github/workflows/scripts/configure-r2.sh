@@ -6,7 +6,11 @@ set -euo pipefail
 
 echo "⚙️ Configuring AWS CLI for R2..."
 
-pip install awscli
+# --require-hashes against a checked-in pin: a bare `pip install awscli` takes whatever
+# the index serves at run time, and this script then hands that build live R2 write
+# credentials. pip verifies every downloaded artifact against the committed hashes and
+# fails closed on a mismatch.
+pip install --disable-pip-version-check --require-hashes -r "$(dirname "${BASH_SOURCE[0]}")/../requirements/awscli.txt"
 
 # Clean and trim environment variables (removing any whitespace)
 R2_ENDPOINT="$(echo "$R2_ENDPOINT" | tr -d '[:space:]')"

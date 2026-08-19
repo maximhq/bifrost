@@ -603,9 +603,7 @@ func mergeResponsesMessages(dest *[]schemas.ResponsesMessage, template []schemas
 	for i := range template {
 		prefix = append(prefix, template[i].ToResponsesMessages()...)
 	}
-	cur := *dest
-	merged := make([]schemas.ResponsesMessage, 0, len(prefix)+len(cur))
-	merged = append(merged, prefix...)
-	merged = append(merged, cur...)
-	*dest = merged
+	// prefix is built fresh above, so appending onto it cannot clobber a caller's
+	// backing array - unlike mergeChatMessages, whose prefix is a parameter.
+	*dest = append(prefix, (*dest)...)
 }

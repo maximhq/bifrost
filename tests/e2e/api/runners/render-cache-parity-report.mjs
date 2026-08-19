@@ -33,7 +33,12 @@ const OUT = args.out || "tmp/harness-cache-parity.md";
 const HTML = args.html || "tmp/newman-report.html";
 
 const dir = dirname(GLOB);
-const pattern = new RegExp("^" + basename(GLOB).replace(/[.]/g, "\\.").replace(/\*/g, ".*") + "$");
+// Escape every regex metacharacter, then re-open only `*` as `.*`. Escaping just `.`
+// leaves `\ ( ) [ ] { } + ? ^ $ |` live, so a --glob containing any of them either
+// changes meaning silently or throws SyntaxError before a single fragment is read.
+const pattern = new RegExp(
+  "^" + basename(GLOB).replace(/[\\^$.*+?()[\]{}|]/g, "\\$&").replace(/\\\*/g, ".*") + "$"
+);
 const fragmentFiles = existsSync(dir) ? readdirSync(dir).filter((f) => pattern.test(f)) : [];
 
 const rows = [];

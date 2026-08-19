@@ -126,7 +126,14 @@ test("a signed URL embedded in a body has its credentials redacted", () => {
   });
   const [out] = redactItemsForPublic([{ idx: 0, name: "x", respBody: body }]);
   assert.ok(!out.respBody.includes(signature), `signed URL leaked from a body: ${out.respBody}`);
-  assert.ok(out.respBody.includes("bucket.s3.amazonaws.com"), "the host must stay legible");
+  // Assert the parsed host, not a substring of the raw body: a substring test would
+  // also pass on evil.com/?x=bucket.s3.amazonaws.com, and it is the host surviving
+  // redaction that this test is actually about.
+  assert.strictEqual(
+    new URL(JSON.parse(out.respBody).url).host,
+    "bucket.s3.amazonaws.com",
+    "the host must stay legible"
+  );
   assert.ok(
     out.respBody.includes("X-Amz-Algorithm=AWS4-HMAC-SHA256"),
     "non-credential parameters must survive"
@@ -142,7 +149,14 @@ test("a slash-escaped signed URL in a body is redacted", () => {
   const body = `{"url":"https:\\/\\/bucket.s3.amazonaws.com\\/report.json?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=${signature}"}`;
   const [out] = redactItemsForPublic([{ idx: 0, name: "x", respBody: body }]);
   assert.ok(!out.respBody.includes(signature), `slash-escaped signed URL leaked: ${out.respBody}`);
-  assert.ok(out.respBody.includes("bucket.s3.amazonaws.com"), "the host must stay legible");
+  // Assert the parsed host, not a substring of the raw body: a substring test would
+  // also pass on evil.com/?x=bucket.s3.amazonaws.com, and it is the host surviving
+  // redaction that this test is actually about.
+  assert.strictEqual(
+    new URL(JSON.parse(out.respBody).url).host,
+    "bucket.s3.amazonaws.com",
+    "the host must stay legible"
+  );
   assert.ok(out.respBody.includes("X-Amz-Algorithm=AWS4-HMAC-SHA256"), "non-credentials must survive");
   // The body has to stay parseable - redaction must not strip the JSON escaping.
   assert.doesNotThrow(() => JSON.parse(out.respBody), "redacted body must remain valid JSON");

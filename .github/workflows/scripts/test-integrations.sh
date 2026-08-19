@@ -286,13 +286,14 @@ install_python_dependencies() {
     uv sync --frozen --quiet
     PYTHON_TEST_COMMAND=(uv run pytest)
   else
-    echo "⚠️  uv not found, trying pip..."
-    if [ ! -d ".venv" ]; then
-      python3 -m venv .venv
-    fi
-    source .venv/bin/activate
-    pip install -q -e .
-    PYTHON_TEST_COMMAND=(pytest)
+    # No pip fallback: `pip install -e .` ignores uv.lock and re-resolves every dependency
+    # at install time, so it silently tests a different tree than CI does - and it is not
+    # pinned, which is what Scorecard's Pinned-Dependencies check flags. CI always has uv
+    # (the pinned step-security/setup-uv step), so this only fires locally; failing with
+    # the install command beats quietly diverging from the locked set.
+    echo "❌ uv is required to install the Python integration suite (it is what pins uv.lock)." >&2
+    echo "   Install it: https://docs.astral.sh/uv/getting-started/installation/" >&2
+    return 1
   fi
 }
 
