@@ -2693,6 +2693,10 @@ func (s *RDBLogStore) GetUserRankings(ctx context.Context, filters SearchFilters
 	currentQuery = s.applyFilters(currentQuery, filters)
 	currentQuery = currentQuery.Where("status IN ?", terminalLogStatuses)
 	currentQuery = currentQuery.Where("user_id IS NOT NULL AND user_id != ''")
+	// The People tab groups by user_id, so it needs the same ceiling as the
+	// user ranking dimension: a caller may hold a row without being allowed to
+	// see whose it is.
+	currentQuery = applyDimensionCeiling(ctx, currentQuery, dimensionReadSource{}, "user_id")
 
 	var currentResults []struct {
 		UserID        string          `gorm:"column:user_id"`
@@ -2828,6 +2832,7 @@ func (s *RDBLogStore) GetDimensionRankings(ctx context.Context, filters SearchFi
 	currentQuery := src.base(s.ScopedDB(ctx))
 	currentQuery = s.applyFilters(currentQuery, filters)
 	currentQuery = currentQuery.Where("status IN ?", terminalLogStatuses)
+	currentQuery = applyDimensionCeiling(ctx, currentQuery, src, idCol)
 	if !src.Bucketed {
 		currentQuery = currentQuery.Where(fmt.Sprintf("%s IS NOT NULL AND %s != ''", idCol, idCol))
 	}
@@ -2885,6 +2890,10 @@ func (s *RDBLogStore) GetDimensionRankings(ctx context.Context, filters SearchFi
 			attributedQuery := src.base(s.ScopedDB(ctx))
 			attributedQuery = s.applyFilters(attributedQuery, filters)
 			attributedQuery = attributedQuery.Where("status IN ?", terminalLogStatuses)
+			// Same ceiling as the rankings themselves: this total is the sum of
+			// the rows above, so counting attributions the caller may not be
+			// shown would make it disagree with them.
+			attributedQuery = applyDimensionCeiling(ctx, attributedQuery, src, idCol)
 			var attributed int64
 			if err := attributedQuery.Count(&attributed).Error; err != nil {
 				return nil, fmt.Errorf("failed to get attributed dimension ranking totals for %s: %w", dimension, err)
@@ -3582,6 +3591,7 @@ func (s *RDBLogStore) GetDimensionCostHistogram(ctx context.Context, filters Sea
 	baseQuery := src.base(s.ScopedDB(ctx))
 	baseQuery = s.applyFilters(baseQuery, filters)
 	baseQuery = baseQuery.Where("status IN ?", terminalLogStatuses)
+	baseQuery = applyDimensionCeiling(ctx, baseQuery, src, dimCol)
 	baseQuery = baseQuery.Where("cost IS NOT NULL AND cost > 0")
 
 	bucketExpr := unixBucketExpr(dialect, bucketSizeSeconds)
@@ -3684,6 +3694,7 @@ func (s *RDBLogStore) GetDimensionTokenHistogram(ctx context.Context, filters Se
 	baseQuery := src.base(s.ScopedDB(ctx))
 	baseQuery = s.applyFilters(baseQuery, filters)
 	baseQuery = baseQuery.Where("status IN ?", terminalLogStatuses)
+	baseQuery = applyDimensionCeiling(ctx, baseQuery, src, dimCol)
 
 	bucketExpr := unixBucketExpr(dialect, bucketSizeSeconds)
 
@@ -3807,6 +3818,7 @@ func (s *RDBLogStore) GetDimensionLatencyHistogram(ctx context.Context, filters 
 	baseQuery := src.base(s.ScopedDB(ctx))
 	baseQuery = s.applyFilters(baseQuery, filters)
 	baseQuery = baseQuery.Where("status IN ?", terminalLogStatuses)
+	baseQuery = applyDimensionCeiling(ctx, baseQuery, src, dimCol)
 	baseQuery = baseQuery.Where("latency IS NOT NULL")
 
 	bucketExpr := unixBucketExpr(dialect, bucketSizeSeconds)
@@ -4043,6 +4055,10 @@ func (s *RDBLogStore) GetDistinctKeyPairs(ctx context.Context, idCol, nameCol st
 	if query != "" {
 		q = s.applyLikeFilter(q, nameCol, query)
 	}
+	// A filter dropdown is a list of organisation names with no log row shown
+	// beside it, so it discloses the org chart directly. The row scope alone
+	// does not bound it: one visible row carrying two customers offers both.
+	q = applyDimensionCeiling(ctx, q, dimensionReadSource{}, idCol)
 	if err := q.Order("name ASC").Limit(limit).Find(&results).Error; err != nil {
 		return nil, fmt.Errorf("failed to get distinct key pairs (%s, %s): %w", idCol, nameCol, err)
 	}
@@ -5134,4 +5150,44 @@ func (s *RDBLogStore) DeleteExpiredWebhookDeliveries(ctx context.Context) (int64
 		}
 	}
 	return totalDeleted, nil
+}
+
+// applyDimensionCeiling bounds the values a grouped organisation column may
+// take to the ones the caller is allowed to be shown.
+//
+// This is deliberately separate from ScopedDB. ScopedDB decides which rows the
+// caller receives; this decides which ids those rows are allowed to put on a
+// chart. The two coincide only when every row carries exactly one organisation
+// per dimension, and the enterprise governance plugin records the sender's
+// whole hierarchy, so a single request from someone in two teams under
+// different customers carries both customers. Such a row is legitimately
+// visible to a teammate and still must not name the second customer.
+//
+// The column depends on how the read resolved: a fanned-out read exposes each
+// of the row's ids as dim_id, while a single-owner read groups the scalar
+// column directly. Passing the wrong one is a SQL error rather than a silent
+// hole, which is the failure mode to prefer.
+//
+// Rows with no id on this dimension are always kept. They aggregate into the
+// synthetic Unassigned bucket, which names no organisation and therefore
+// discloses nothing — dropping them would understate the caller's own totals
+// and make the rollup stop reconciling.
+func applyDimensionCeiling(ctx context.Context, q *gorm.DB, src dimensionReadSource, idCol string) *gorm.DB {
+	scope := queryscope.DimensionFromContext(ctx)
+	if scope == nil {
+		return q
+	}
+	allowed, bounded := scope(idCol)
+	if !bounded {
+		return q
+	}
+	col := idCol
+	if src.FannedOut {
+		col = "dim_id"
+	}
+	unowned := fmt.Sprintf("%s IS NULL OR %s = ''", col, col)
+	if len(allowed) == 0 {
+		return q.Where(unowned)
+	}
+	return q.Where(fmt.Sprintf("%s IN ? OR %s", col, unowned), allowed)
 }

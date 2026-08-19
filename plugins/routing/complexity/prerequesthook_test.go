@@ -1,4 +1,4 @@
-package governance
+package complexity_test
 
 import (
 	"context"
@@ -8,39 +8,35 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/plugins/routing"
+	"github.com/maximhq/bifrost/plugins/routing/rules"
 )
 
+func chatString(text string) *schemas.ChatMessageContent {
+	return &schemas.ChatMessageContent{ContentStr: &text}
+}
+
 func TestPreRequestHook_ComplexityAnalyzerFeedsCELVariable(t *testing.T) {
-	logger := NewMockLogger()
+	logger := rules.NewMockLogger()
 	provider := "openai"
 	model := "gpt-4o-mini"
 
-	plugin, err := Init(
-		context.Background(),
-		&Config{IsVkMandatory: boolPtr(false)},
-		logger,
-		nil,
-		&configstore.GovernanceConfig{
-			RoutingRules: []configstoreTables.TableRoutingRule{
-				{
-					ID:            "rule-1",
-					Name:          "Complexity Available",
-					CelExpression: `complexity_tier != ""`,
-					Targets: []configstoreTables.TableRoutingTarget{
-						{Provider: &provider, Model: &model, Weight: 1.0},
-					},
-					Enabled:  schemas.Ptr(true),
-					Scope:    "global",
-					Priority: 0,
-				},
-			},
+	ruleStore, err := rules.NewLocalStore(context.Background(), logger, nil)
+	require.NoError(t, err)
+	require.NoError(t, ruleStore.UpsertRule(context.Background(), &configstoreTables.TableRoutingRule{
+		ID:            "rule-1",
+		Name:          "Complexity Available",
+		CelExpression: `complexity_tier != ""`,
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: &provider, Model: &model, Weight: 1.0},
 		},
-		nil,
-		nil,
-		nil,
-	)
+		Enabled:  schemas.Ptr(true),
+		Scope:    "global",
+		Priority: 0,
+	}))
+
+	plugin, err := routing.InitFromStore(context.Background(), nil, logger, nil, ruleStore, routing.NewMockGovernance())
 	require.NoError(t, err)
 	defer func() {
 		require.NoError(t, plugin.Cleanup())
@@ -54,7 +50,7 @@ func TestPreRequestHook_ComplexityAnalyzerFeedsCELVariable(t *testing.T) {
 			Input: []schemas.ChatMessage{
 				{
 					Role:    schemas.ChatMessageRoleUser,
-					Content: complexityChatString("What is a vector database?"),
+					Content: chatString("What is a vector database?"),
 				},
 			},
 		},
@@ -73,34 +69,25 @@ func TestPreRequestHook_ComplexityAnalyzerFeedsCELVariable(t *testing.T) {
 }
 
 func TestPreRequestHook_ComplexitySkippedWhenNoRulesReferenceIt(t *testing.T) {
-	logger := NewMockLogger()
+	logger := rules.NewMockLogger()
 	provider := "openai"
 	model := "gpt-4o-mini"
 
-	plugin, err := Init(
-		context.Background(),
-		&Config{IsVkMandatory: boolPtr(false)},
-		logger,
-		nil,
-		&configstore.GovernanceConfig{
-			RoutingRules: []configstoreTables.TableRoutingRule{
-				{
-					ID:            "rule-1",
-					Name:          "Always match",
-					CelExpression: "true",
-					Targets: []configstoreTables.TableRoutingTarget{
-						{Provider: &provider, Model: &model, Weight: 1.0},
-					},
-					Enabled:  schemas.Ptr(true),
-					Scope:    "global",
-					Priority: 0,
-				},
-			},
+	ruleStore, err := rules.NewLocalStore(context.Background(), logger, nil)
+	require.NoError(t, err)
+	require.NoError(t, ruleStore.UpsertRule(context.Background(), &configstoreTables.TableRoutingRule{
+		ID:            "rule-1",
+		Name:          "Always match",
+		CelExpression: "true",
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: &provider, Model: &model, Weight: 1.0},
 		},
-		nil,
-		nil,
-		nil,
-	)
+		Enabled:  schemas.Ptr(true),
+		Scope:    "global",
+		Priority: 0,
+	}))
+
+	plugin, err := routing.InitFromStore(context.Background(), nil, logger, nil, ruleStore, routing.NewMockGovernance())
 	require.NoError(t, err)
 	defer func() {
 		require.NoError(t, plugin.Cleanup())
@@ -114,7 +101,7 @@ func TestPreRequestHook_ComplexitySkippedWhenNoRulesReferenceIt(t *testing.T) {
 			Input: []schemas.ChatMessage{
 				{
 					Role:    schemas.ChatMessageRoleUser,
-					Content: complexityChatString("Hello"),
+					Content: chatString("Hello"),
 				},
 			},
 		},

@@ -160,7 +160,8 @@ grep -n 'func.*create\|func.*update\|func.*delete\|func.*get' transports/bifrost
 | `governance.go` | `/api/governance/virtual-keys` | CRUD virtual keys |
 | `governance.go` | `/api/governance/teams` | CRUD teams |
 | `governance.go` | `/api/governance/customers` | CRUD customers |
-| `governance.go` | `/api/governance/routing-rules` | CRUD routing rules |
+| `routing.go` | `/api/routing/rules` | CRUD routing rules |
+| `routing.go` | `/api/routing/complexity-analyzer-config` | GET/PUT/reset complexity analyzer config |
 | `governance.go` | `/api/governance/model-configs` | CRUD model configs |
 | `governance.go` | `/api/governance/providers` | GET/PUT/DELETE provider governance |
 | `governance.go` | `/api/governance/budgets` | GET budgets |
