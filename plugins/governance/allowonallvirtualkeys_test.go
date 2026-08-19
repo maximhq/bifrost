@@ -24,6 +24,10 @@ func (m *mockInMemoryStore) GetMCPClientsAllowingAllVirtualKeys() map[string]str
 	return m.allowAllClients
 }
 
+func (m *mockInMemoryStore) GetMCPClientNames() map[string]string {
+	return m.allowAllClients
+}
+
 // accessFor builds the access a key carries on its own, with the given clients open to every
 // key. The rules these tests pin — an explicit config owning its client, an open client
 // granting everything, a wildcard pattern — now live in the grant and the fold, so they are
