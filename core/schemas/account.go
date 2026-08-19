@@ -596,7 +596,10 @@ func BuildRoutingInfo(ctx *BifrostContext, attemptProvider ModelProvider, attemp
 }
 
 // ResolveConfig returns the AliasConfig for the given user-facing model name,
-// or nil if no alias matches. Case-insensitive fallback matches Resolve.
+// or nil if no alias matches. An exact match wins; the case-insensitive
+// fallback picks the lexicographically smallest matching alias key so the
+// result is deterministic even when several keys differ only in case (a bare
+// map-range pick would flap between them across identical requests).
 func (ka KeyAliases) ResolveConfig(model string) *AliasConfig {
 	if ka == nil {
 		return nil
@@ -604,10 +607,15 @@ func (ka KeyAliases) ResolveConfig(model string) *AliasConfig {
 	if ac, ok := ka[model]; ok {
 		return &ac
 	}
-	for k, v := range ka {
-		if strings.EqualFold(k, model) {
-			return &v
+	bestKey, found := "", false
+	for k := range ka {
+		if strings.EqualFold(k, model) && (!found || k < bestKey) {
+			bestKey, found = k, true
 		}
+	}
+	if found {
+		ac := ka[bestKey]
+		return &ac
 	}
 	return nil
 }

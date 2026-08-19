@@ -5412,10 +5412,32 @@ func recoverFromTerminalError(
 		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 	}
 
+	// Queue-transfer and shutdown-drain producers build partial ExtraFields with
+	// no ResolvedModelUsed; complete them before hooks so post-hooks and the
+	// caller both observe full metadata. Worker errors and finishWithTerminalError
+	// arrivals are already fully stamped and are left untouched.
+	if originalErr.ExtraFields.ResolvedModelUsed == "" {
+		originalErr.PopulateExtraFields(requestType, provider, model, model)
+	}
+	// Snapshot the request-identity fields hooks may not change. Restoring this
+	// snapshot after hooks (instead of re-stamping with the caller-sent model)
+	// keeps the anti-tamper guarantee without clobbering the worker's
+	// alias-resolved ResolvedModelUsed or desyncing it from RoutingInfo.
+	snapProvider := originalErr.ExtraFields.Provider
+	snapOriginalModel := originalErr.ExtraFields.OriginalModelRequested
+	snapResolvedModel := originalErr.ExtraFields.ResolvedModelUsed
+	snapRouting := originalErr.ExtraFields.RoutingInfo
+
 	resp, postHookErr := pipeline.RunPostLLMHooks(ctx, nil, originalErr, preCount)
+	if postHookErr == nil && resp == nil {
+		// Hooks swallowed the error without a replacement response: the original
+		// error stays authoritative and gets the same post-hook restore below.
+		postHookErr = originalErr
+	}
 	if postHookErr != nil {
-		postHookErr.PopulateExtraFields(requestType, provider, model, model)
-	} else if resp != nil {
+		postHookErr.PopulateExtraFields(requestType, snapProvider, snapOriginalModel, snapResolvedModel)
+		postHookErr.PopulateRoutingInfo(snapRouting)
+	} else {
 		resp.PopulateExtraFields(requestType, provider, model, model)
 	}
 	drainAndAttachPluginLogs(ctx)
@@ -5426,10 +5448,7 @@ func recoverFromTerminalError(
 	if postHookErr != nil {
 		return nil, postHookErr
 	}
-	if resp != nil {
-		return resp, nil
-	}
-	return nil, originalErr
+	return resp, nil
 }
 
 // tryRequest is a generic function that handles common request processing logic
@@ -5496,9 +5515,6 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	}
 
 	provider, model, _ = preReq.GetRequestFields()
-	if bifrostErr := bifrost.enforceSingleToolConstraint(ctx, preReq); bifrostErr != nil {
-		return finishWithTerminalError(ctx, pipeline, bifrostErr, preCount, preReq.RequestType, provider, model)
-	}
 
 	msg := bifrost.getChannelMessage(*preReq)
 	msg.Context = ctx
@@ -5653,8 +5669,9 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 }
 
 // addMCPToolsToStreamRequest applies the normal MCP injection policy to streams.
-// Integrations that do not execute MCP tools use the standard context filters to
-// exclude clients before the request reaches core.
+// Transports whose downstream consumer cannot execute Bifrost MCP tools (e.g.
+// the Hume EVI CLM route, integrations/hume.go) opt out via the reserved
+// BifrostContextKeySkipMCPToolInjection flag, honored in ParseAndAddToolsToRequest.
 func (bifrost *Bifrost) addMCPToolsToStreamRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) *schemas.BifrostRequest {
 	if req == nil || bifrost.MCPManager == nil ||
 		req.RequestType == schemas.SpeechStreamRequest || req.RequestType == schemas.TranscriptionStreamRequest {
@@ -5836,13 +5853,6 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 	}
 
 	provider, model, _ = preReq.GetRequestFields()
-	if bifrostErr := bifrost.enforceSingleToolConstraint(ctx, preReq); bifrostErr != nil {
-		recoveredResp, recoveredErr := finishWithTerminalError(ctx, pipeline, bifrostErr, preCount, preReq.RequestType, provider, model)
-		if recoveredErr != nil {
-			return nil, recoveredErr
-		}
-		return newBifrostMessageChan(recoveredResp), nil
-	}
 
 	msg := bifrost.getChannelMessage(*preReq)
 	msg.Context = ctx
@@ -6980,6 +6990,13 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				// a concurrent request can then reuse it and overwrite RequestType.
 				// Reading req.RequestType inside the closure would observe the new request's type.
 				attemptRequestType := req.RequestType
+				// Serial-tool policy: enforced per attempt, after key selection and
+				// alias resolution, so it evaluates the exact wire model and fresh
+				// ResolvedAlias. Must stay BEFORE getPluginPipeline() — after it, a
+				// rejection would have to release the pipeline via finalizerOnce.
+				if constraintErr := enforceSerialToolConstraintOnAttempt(req.Context, provider.GetProviderKey(), baseProvider, originalModelRequested, resolvedModel, &req.BifrostRequest); constraintErr != nil {
+					return nil, constraintErr
+				}
 				pipeline := bifrost.getPluginPipeline()
 				postHookRunner := func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 					// Populate extra fields before RunPostLLMHooks so plugins (e.g. logging)
@@ -7042,6 +7059,12 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				}
 				req.SetModel(resolvedModel)
 				attemptRoutingInfo = schemas.BuildRoutingInfo(req.Context, provider.GetProviderKey(), originalModelRequested, k)
+				// Serial-tool policy: enforced per attempt, after key selection and
+				// alias resolution, so it evaluates the exact wire model and fresh
+				// ResolvedAlias.
+				if constraintErr := enforceSerialToolConstraintOnAttempt(req.Context, provider.GetProviderKey(), baseProvider, originalModelRequested, resolvedModel, &req.BifrostRequest); constraintErr != nil {
+					return nil, constraintErr
+				}
 				return bifrost.handleProviderRequest(provider, config, req, k, keys)
 			}, keyProvider, req.RequestType, provider.GetProviderKey(), model, &req.BifrostRequest, bifrost.logger)
 		}

@@ -109,6 +109,16 @@ func TestWorkerErrorPostHooksObserveResolvedModel(t *testing.T) {
 			require.NotNil(t, bifrostErr.StatusCode)
 			assert.Equal(t, http.StatusBadRequest, *bifrostErr.StatusCode)
 
+			// The caller-visible error must keep the worker's stamps too: the
+			// post-hook restore may not clobber ResolvedModelUsed back to the
+			// alias while RoutingInfo still names the target.
+			assert.Equal(t, "fast", bifrostErr.ExtraFields.OriginalModelRequested)
+			assert.Equal(t, "gpt-4o-mini-2024-07-18", bifrostErr.ExtraFields.ResolvedModelUsed,
+				"caller-visible error must keep the worker's alias-resolved model after post-hooks")
+			require.NotNil(t, bifrostErr.ExtraFields.RoutingInfo.ResolvedKeyAlias)
+			assert.Equal(t, "gpt-4o-mini-2024-07-18", bifrostErr.ExtraFields.RoutingInfo.ResolvedKeyAlias.ModelID,
+				"RoutingInfo and the deprecated triplet must agree on the caller-visible error")
+
 			require.Len(t, observer.seen, 1, "post-hook must run exactly once for the terminal error")
 			seen := observer.seen[0]
 			assert.Equal(t, "fast", seen.OriginalModelRequested)
@@ -148,7 +158,53 @@ func TestWorkerErrorKeepsOriginalErrorWhenPostHookReturnsNilNil(t *testing.T) {
 			require.NotNil(t, bifrostErr, "suppressed terminal error must remain authoritative")
 			require.NotNil(t, bifrostErr.StatusCode)
 			assert.Equal(t, http.StatusBadRequest, *bifrostErr.StatusCode)
+			assert.Equal(t, schemas.OpenAI, bifrostErr.ExtraFields.Provider)
+			assert.Equal(t, "fast", bifrostErr.ExtraFields.OriginalModelRequested)
+			assert.Equal(t, "gpt-4o-mini-2024-07-18", bifrostErr.ExtraFields.ResolvedModelUsed,
+				"swallowed worker error must escape with the resolved model intact")
 			require.Len(t, observer.seen, 1)
+		})
+	}
+}
+
+// Queue-transfer and shutdown-drain producers send errors whose ExtraFields
+// carry no ResolvedModelUsed and no RoutingInfo. recoverFromTerminalError must
+// complete that metadata before hooks run and keep it on the returned error,
+// whether hooks pass the error through or swallow it.
+func TestRecoverFromTerminalErrorFillsPartialProducerMetadata(t *testing.T) {
+	for _, suppress := range []bool{false, true} {
+		name := "pass-through"
+		if suppress {
+			name = "swallow"
+		}
+		t.Run(name, func(t *testing.T) {
+			observer := &terminalErrorObserver{suppress: suppress}
+			pipeline := &PluginPipeline{
+				logger:     NewNoOpLogger(),
+				tracer:     &schemas.NoOpTracer{},
+				llmPlugins: []schemas.LLMPlugin{observer},
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			// Mirrors the drainQueueWithErrors / shutdown-drain error shape:
+			// RequestType, Provider, OriginalModelRequested only.
+			partial := &schemas.BifrostError{
+				Error: &schemas.ErrorField{Message: "provider is shutting down"},
+				ExtraFields: schemas.BifrostErrorExtraFields{
+					RequestType:            schemas.ChatCompletionRequest,
+					Provider:               schemas.OpenAI,
+					OriginalModelRequested: "gpt-4o-mini",
+				},
+			}
+
+			resp, errOut := recoverFromTerminalError(ctx, pipeline, partial, 1,
+				schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o-mini")
+			assert.Nil(t, resp)
+			require.NotNil(t, errOut)
+			assert.Equal(t, "gpt-4o-mini", errOut.ExtraFields.ResolvedModelUsed,
+				"partial producer metadata must be completed on the returned error")
+			require.Len(t, observer.seen, 1)
+			assert.Equal(t, "gpt-4o-mini", observer.seen[0].ResolvedModelUsed,
+				"post-hooks must observe completed metadata")
 		})
 	}
 }

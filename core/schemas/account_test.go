@@ -689,3 +689,29 @@ func TestModelFamilyIsValid(t *testing.T) {
 		t.Fatal("nil ModelFamily should be invalid")
 	}
 }
+
+func TestKeyAliasesResolveConfigDeterministicCaseFold(t *testing.T) {
+	aliases := KeyAliases{
+		"Voice": {ModelID: "gpt-4o-mini"},
+		"VOICE": {ModelID: "o3-mini"},
+	}
+
+	// Exact match always wins over the case-insensitive fallback.
+	exact := aliases.ResolveConfig("Voice")
+	if exact == nil || exact.ModelID != "gpt-4o-mini" {
+		t.Fatalf("exact match = %+v, want ModelID gpt-4o-mini", exact)
+	}
+
+	// No exact match: the lexicographically smallest EqualFold key ("VOICE" <
+	// "Voice" byte-wise) must win on every call, not a random map-range pick.
+	for i := 0; i < 32; i++ {
+		got := aliases.ResolveConfig("voice")
+		if got == nil || got.ModelID != "o3-mini" {
+			t.Fatalf("iteration %d: case-fold match = %+v, want ModelID o3-mini (deterministic smallest key)", i, got)
+		}
+	}
+
+	if aliases.ResolveConfig("other") != nil {
+		t.Fatal("non-matching name must resolve to nil")
+	}
+}

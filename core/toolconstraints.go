@@ -9,29 +9,34 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// enforceSingleToolConstraint runs on the final provider-bound request, after
-// plugin processing. Transports whose downstream consumer accepts only one tool
-// call can opt into the policy without coupling core to an integration name.
-func (bifrost *Bifrost) enforceSingleToolConstraint(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) *schemas.BifrostError {
+// enforceSerialToolConstraintOnAttempt runs inside the worker's per-attempt
+// retry closure, after key selection and alias resolution, so it evaluates
+// exactly the wire model and ResolvedAlias the provider will see (a pre-flight
+// check would have to shadow key selection and alias resolution and inevitably
+// drift from them). Transports whose downstream consumer accepts only one tool
+// call per turn opt into the policy via the reserved
+// BifrostContextKeyRequireSerialToolCalls flag without coupling core to an
+// integration name.
+func enforceSerialToolConstraintOnAttempt(
+	ctx *schemas.BifrostContext,
+	provider, baseProvider schemas.ModelProvider,
+	requestedModel, resolvedModel string,
+	req *schemas.BifrostRequest,
+) *schemas.BifrostError {
 	requireSerial, _ := ctx.Value(schemas.BifrostContextKeyRequireSerialToolCalls).(bool)
 	if !requireSerial || req == nil || req.ChatRequest == nil || req.ChatRequest.Params == nil || len(req.ChatRequest.Params.Tools) == 0 {
 		return nil
 	}
 
-	provider, model, _ := req.GetRequestFields()
-	baseProvider := bifrost.baseProviderTypeFor(provider)
-	for _, candidate := range bifrost.serialToolCandidateModels(ctx, provider, model) {
-		if providerSupportsSingleToolControl(ctx, provider, baseProvider, candidate) {
-			continue
-		}
+	if !providerSupportsSingleToolControl(ctx, provider, baseProvider, resolvedModel) {
 		detail := ""
-		if candidate != model {
-			detail = fmt.Sprintf(" (key alias resolves to %q)", candidate)
+		if resolvedModel != requestedModel {
+			detail = fmt.Sprintf(" (key alias resolves to %q)", resolvedModel)
 		}
 		return providerUtils.NewBifrostBadRequestError(fmt.Sprintf(
 			"provider %q model %q cannot guarantee serial tool execution%s",
 			provider,
-			model,
+			requestedModel,
 			detail,
 		))
 	}

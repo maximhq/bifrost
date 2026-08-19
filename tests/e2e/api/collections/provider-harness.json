@@ -129503,6 +129503,113 @@
               ]
             }
           }
+        },
+        {
+          "name": "[EXPECT-4XX] vertex/1234567890 Hume serial tool stream rejects all-digit endpoint per attempt",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Pins core/toolconstraints.go: Vertex all-digit fine-tuned endpoint IDs route to the",
+                  "// Gemini request builder, which has no parallel_tool_calls field, so Bifrost must reject",
+                  "// the request with its serial-tool message (inverse of the catalog-absent forwarding row).",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('all-digit Vertex endpoint is rejected by the Bifrost serial-tool policy', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'expected the Bifrost serial-tool rejection: ' + body).to.include('cannot guarantee serial tool execution');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/1234567890\",\n  \"stream\": true,\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call emit_status exactly once with status ready.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"emit_status\",\n        \"description\": \"Emit one status.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"status\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"status\"\n          ]\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/hume/v1/chat/completions?custom_session_id=harness-hume-vertex-endpoint-{{$guid}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "hume",
+                "v1",
+                "chat",
+                "completions"
+              ],
+              "query": [
+                {
+                  "key": "custom_session_id",
+                  "value": "harness-hume-vertex-endpoint-{{$guid}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-4XX] openai/bifrost-harness-serial-alias Hume serial tool stream rejects alias resolving to o3-mini",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Pins core/toolconstraints.go alias resolution: the requested name is a key alias whose",
+                  "// target (o3-mini) is cataloged without parallel_tool_calls, so Bifrost rejects the",
+                  "// selected key's wire model. Requires the bifrost-harness-serial-alias alias on the",
+                  "// OpenAI key in tests/integrations/python/config.json.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('key alias resolving to a serial-incapable model is rejected', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'expected the Bifrost serial-tool rejection: ' + body).to.include('cannot guarantee serial tool execution');",
+                  "  // Alias-detail line: delete if the serial-tool enforcement ever drops the alias detail.",
+                  "  pm.expect(body, 'expected the alias-resolution detail: ' + body).to.include('key alias resolves to');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/bifrost-harness-serial-alias\",\n  \"stream\": true,\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call emit_status exactly once with status ready.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"emit_status\",\n        \"description\": \"Emit one status.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"status\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"status\"\n          ]\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/hume/v1/chat/completions?custom_session_id=harness-hume-serial-alias-{{$guid}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "hume",
+                "v1",
+                "chat",
+                "completions"
+              ],
+              "query": [
+                {
+                  "key": "custom_session_id",
+                  "value": "harness-hume-serial-alias-{{$guid}}"
+                }
+              ]
+            }
+          }
         }
       ]
     }

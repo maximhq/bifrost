@@ -356,6 +356,11 @@ func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyStreamEndIndicator)
 	ctx.ClearValue(schemas.BifrostContextKeyConnectionClosed)
 	ctx.ClearValue(schemas.BifrostContextKeySupportsAssistantPrefill)
+	// The previous attempt's key-alias resolution must not leak into the
+	// fallback: any pre-worker reader (plugin pre-hooks, family helpers) would
+	// otherwise classify the fallback model by the prior provider's alias. The
+	// worker re-stamps this per attempt either way.
+	ctx.ClearValue(schemas.BifrostContextKeyResolvedAlias)
 }
 
 // ClearContextForInternalRequest clears context state that is specific to the

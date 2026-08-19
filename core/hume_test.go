@@ -2,6 +2,10 @@ package bifrost
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -101,7 +105,7 @@ func newRejectedHumeConstraintRequest() *schemas.BifrostChatRequest {
 	}
 }
 
-func TestEnforceSingleToolConstraint(t *testing.T) {
+func TestEnforceSerialToolConstraintOnAttempt(t *testing.T) {
 	newRequest := func(provider schemas.ModelProvider, model string) *schemas.BifrostRequest {
 		return &schemas.BifrostRequest{
 			RequestType: schemas.ChatCompletionStreamRequest,
@@ -115,9 +119,7 @@ func TestEnforceSingleToolConstraint(t *testing.T) {
 		}
 	}
 
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	ctx.SetValue(schemas.BifrostContextKeyRequireSerialToolCalls, true)
-	ctx.SetValue(schemas.BifrostContextKeyModelCatalog, &humeModelCatalogStub{models: map[schemas.ModelProvider]map[string]*schemas.Model{
+	catalog := &humeModelCatalogStub{models: map[schemas.ModelProvider]map[string]*schemas.Model{
 		schemas.OpenAI: {
 			"gpt-4o-mini": {SupportedParameters: []string{"parallel_tool_calls"}},
 			"o3-mini":     {SupportedParameters: []string{"tools"}},
@@ -125,34 +127,48 @@ func TestEnforceSingleToolConstraint(t *testing.T) {
 		schemas.Gemini: {
 			"gemini-test": {SupportedParameters: []string{"parallel_tool_calls"}},
 		},
-	}})
+	}}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequireSerialToolCalls, true)
+	ctx.SetValue(schemas.BifrostContextKeyModelCatalog, catalog)
+
+	// withAlias builds a ctx carrying the ResolvedAlias exactly as the worker
+	// stamps it on the attempt before the policy runs.
+	withAlias := func(ra *schemas.ResolvedAlias) *schemas.BifrostContext {
+		aliasCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		aliasCtx.SetValue(schemas.BifrostContextKeyRequireSerialToolCalls, true)
+		aliasCtx.SetValue(schemas.BifrostContextKeyModelCatalog, catalog)
+		aliasCtx.SetValue(schemas.BifrostContextKeyResolvedAlias, ra)
+		return aliasCtx
+	}
 
 	t.Run("OpenAI model with wire support is constrained", func(t *testing.T) {
 		req := newRequest(schemas.OpenAI, "gpt-4o-mini")
-		require.Nil(t, (&Bifrost{}).enforceSingleToolConstraint(ctx, req))
+		require.Nil(t, enforceSerialToolConstraintOnAttempt(ctx, schemas.OpenAI, schemas.OpenAI, "gpt-4o-mini", "gpt-4o-mini", req))
 		require.NotNil(t, req.ChatRequest.Params.ParallelToolCalls)
 		assert.False(t, *req.ChatRequest.Params.ParallelToolCalls)
 	})
 
 	t.Run("Anthropic is translated by its request converter", func(t *testing.T) {
 		req := newRequest(schemas.Anthropic, "claude-sonnet-4-5")
-		require.Nil(t, (&Bifrost{}).enforceSingleToolConstraint(ctx, req))
+		require.Nil(t, enforceSerialToolConstraintOnAttempt(ctx, schemas.Anthropic, schemas.Anthropic, "claude-sonnet-4-5", "claude-sonnet-4-5", req))
 		require.NotNil(t, req.ChatRequest.Params.ParallelToolCalls)
 		assert.False(t, *req.ChatRequest.Params.ParallelToolCalls)
 	})
 
 	t.Run("unsupported OpenAI model is rejected instead of receiving an invalid field", func(t *testing.T) {
 		req := newRequest(schemas.OpenAI, "o3-mini")
-		err := (&Bifrost{}).enforceSingleToolConstraint(ctx, req)
+		err := enforceSerialToolConstraintOnAttempt(ctx, schemas.OpenAI, schemas.OpenAI, "o3-mini", "o3-mini", req)
 		require.NotNil(t, err)
 		assert.Contains(t, err.Error.Message, "cannot guarantee")
+		assert.NotContains(t, err.Error.Message, "key alias resolves to")
 		assert.Equal(t, schemas.Ptr(400), err.StatusCode)
 		assert.Nil(t, req.ChatRequest.Params.ParallelToolCalls)
 	})
 
 	t.Run("native provider without a wire mapping is rejected", func(t *testing.T) {
 		req := newRequest(schemas.Gemini, "gemini-test")
-		err := (&Bifrost{}).enforceSingleToolConstraint(ctx, req)
+		err := enforceSerialToolConstraintOnAttempt(ctx, schemas.Gemini, schemas.Gemini, "gemini-test", "gemini-test", req)
 		require.NotNil(t, err)
 		assert.Nil(t, req.ChatRequest.Params.ParallelToolCalls)
 	})
@@ -160,18 +176,14 @@ func TestEnforceSingleToolConstraint(t *testing.T) {
 	t.Run("provider-bound tools are constrained", func(t *testing.T) {
 		req := newRequest(schemas.OpenAI, "gpt-4o-mini")
 		req.ChatRequest.Params.ParallelToolCalls = nil
-		require.Nil(t, (&Bifrost{}).enforceSingleToolConstraint(ctx, req))
+		require.Nil(t, enforceSerialToolConstraintOnAttempt(ctx, schemas.OpenAI, schemas.OpenAI, "gpt-4o-mini", "gpt-4o-mini", req))
 		assert.Equal(t, schemas.Ptr(false), req.ChatRequest.Params.ParallelToolCalls)
 	})
 
 	t.Run("custom OpenAI-compatible provider uses its base provider capability", func(t *testing.T) {
 		customProvider := schemas.ModelProvider("custom-openai")
-		account := NewMockAccount()
-		account.configs[customProvider] = &schemas.ProviderConfig{CustomProviderConfig: &schemas.CustomProviderConfig{
-			BaseProviderType: schemas.OpenAI,
-		}}
 		req := newRequest(customProvider, "gpt-4o-mini")
-		require.Nil(t, (&Bifrost{account: account}).enforceSingleToolConstraint(ctx, req))
+		require.Nil(t, enforceSerialToolConstraintOnAttempt(ctx, customProvider, schemas.OpenAI, "gpt-4o-mini", "gpt-4o-mini", req))
 		assert.Equal(t, schemas.Ptr(false), req.ChatRequest.Params.ParallelToolCalls)
 	})
 
@@ -179,13 +191,13 @@ func TestEnforceSingleToolConstraint(t *testing.T) {
 		catalogAbsentCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		catalogAbsentCtx.SetValue(schemas.BifrostContextKeyRequireSerialToolCalls, true)
 		req := newRequest(schemas.Ollama, "local-model")
-		require.Nil(t, (&Bifrost{}).enforceSingleToolConstraint(catalogAbsentCtx, req))
+		require.Nil(t, enforceSerialToolConstraintOnAttempt(catalogAbsentCtx, schemas.Ollama, schemas.Ollama, "local-model", "local-model", req))
 		assert.Equal(t, schemas.Ptr(false), req.ChatRequest.Params.ParallelToolCalls)
 	})
 
 	t.Run("Vertex all-digit endpoint IDs route to the Gemini builder and are rejected", func(t *testing.T) {
 		req := newRequest(schemas.Vertex, "1234567890")
-		err := (&Bifrost{}).enforceSingleToolConstraint(ctx, req)
+		err := enforceSerialToolConstraintOnAttempt(ctx, schemas.Vertex, schemas.Vertex, "1234567890", "1234567890", req)
 		require.NotNil(t, err)
 		assert.Contains(t, err.Error.Message, "cannot guarantee")
 		assert.Nil(t, req.ChatRequest.Params.ParallelToolCalls)
@@ -193,30 +205,14 @@ func TestEnforceSingleToolConstraint(t *testing.T) {
 
 	t.Run("Vertex non-Gemini names still use the OpenAI wire", func(t *testing.T) {
 		req := newRequest(schemas.Vertex, "meta/llama-3.1-405b-instruct-maas")
-		require.Nil(t, (&Bifrost{}).enforceSingleToolConstraint(ctx, req))
+		require.Nil(t, enforceSerialToolConstraintOnAttempt(ctx, schemas.Vertex, schemas.Vertex, "meta/llama-3.1-405b-instruct-maas", "meta/llama-3.1-405b-instruct-maas", req))
 		assert.Equal(t, schemas.Ptr(false), req.ChatRequest.Params.ParallelToolCalls)
 	})
 
-	newAliasClient := func(provider schemas.ModelProvider, keys ...schemas.Key) *Bifrost {
-		account := NewMockAccount()
-		account.SetKeysForProvider(provider, keys)
-		return &Bifrost{account: account}
-	}
-	aliasKey := func(id string, enabled bool, models schemas.WhiteList, aliases schemas.KeyAliases) schemas.Key {
-		return schemas.Key{
-			ID:      id,
-			Value:   *schemas.NewSecretVar("sk-test"),
-			Enabled: schemas.Ptr(enabled),
-			Models:  models,
-			Aliases: aliases,
-		}
-	}
-
-	t.Run("key alias is checked against the model it resolves to", func(t *testing.T) {
-		client := newAliasClient(schemas.OpenAI, aliasKey("openai-alias", true, schemas.WhiteList{"*"},
-			schemas.KeyAliases{"voice": {ModelID: "o3-mini"}}))
+	t.Run("key alias to an unsupported model is rejected with the alias detail", func(t *testing.T) {
+		aliasCtx := withAlias(&schemas.ResolvedAlias{Key: "voice", Config: &schemas.AliasConfig{ModelID: "o3-mini"}})
 		req := newRequest(schemas.OpenAI, "voice")
-		err := client.enforceSingleToolConstraint(ctx, req)
+		err := enforceSerialToolConstraintOnAttempt(aliasCtx, schemas.OpenAI, schemas.OpenAI, "voice", "o3-mini", req)
 		require.NotNil(t, err)
 		assert.Contains(t, err.Error.Message, `model "voice" cannot guarantee serial tool execution (key alias resolves to "o3-mini")`)
 		assert.Equal(t, schemas.Ptr(400), err.StatusCode)
@@ -224,46 +220,71 @@ func TestEnforceSingleToolConstraint(t *testing.T) {
 	})
 
 	t.Run("key alias to a supported model is constrained", func(t *testing.T) {
-		client := newAliasClient(schemas.OpenAI, aliasKey("openai-alias", true, schemas.WhiteList{"*"},
-			schemas.KeyAliases{"fast": {ModelID: "gpt-4o-mini"}}))
+		aliasCtx := withAlias(&schemas.ResolvedAlias{Key: "fast", Config: &schemas.AliasConfig{ModelID: "gpt-4o-mini"}})
 		req := newRequest(schemas.OpenAI, "fast")
-		require.Nil(t, client.enforceSingleToolConstraint(ctx, req))
+		require.Nil(t, enforceSerialToolConstraintOnAttempt(aliasCtx, schemas.OpenAI, schemas.OpenAI, "fast", "gpt-4o-mini", req))
 		assert.Equal(t, schemas.Ptr(false), req.ChatRequest.Params.ParallelToolCalls)
 	})
 
-	t.Run("key alias to a Vertex Gemini model is rejected before the worker resolves it", func(t *testing.T) {
-		client := newAliasClient(schemas.Vertex, aliasKey("vertex-alias", true, schemas.WhiteList{"*"},
-			schemas.KeyAliases{"voice-fast": {ModelID: "gemini-2.5-flash"}}))
+	t.Run("key alias to a Vertex Gemini model is rejected", func(t *testing.T) {
+		aliasCtx := withAlias(&schemas.ResolvedAlias{Key: "voice-fast", Config: &schemas.AliasConfig{ModelID: "gemini-2.5-flash"}})
 		req := newRequest(schemas.Vertex, "voice-fast")
-		err := client.enforceSingleToolConstraint(ctx, req)
+		err := enforceSerialToolConstraintOnAttempt(aliasCtx, schemas.Vertex, schemas.Vertex, "voice-fast", "gemini-2.5-flash", req)
 		require.NotNil(t, err)
 		assert.Contains(t, err.Error.Message, `key alias resolves to "gemini-2.5-flash"`)
 		assert.Nil(t, req.ChatRequest.Params.ParallelToolCalls)
 	})
 
-	t.Run("aliases on keys that cannot serve the request are ignored", func(t *testing.T) {
-		client := newAliasClient(schemas.OpenAI,
-			aliasKey("disabled", false, schemas.WhiteList{"*"}, schemas.KeyAliases{"voice": {ModelID: "o3-mini"}}),
-			aliasKey("other-models", true, schemas.WhiteList{"gpt-4o-mini"}, schemas.KeyAliases{"voice": {ModelID: "o3-mini"}}),
-			aliasKey("serving", true, schemas.WhiteList{"*"}, schemas.KeyAliases{"voice": {ModelID: "gpt-4o-mini"}}),
-		)
-		req := newRequest(schemas.OpenAI, "voice")
-		require.Nil(t, client.enforceSingleToolConstraint(ctx, req))
+	t.Run("an unsupported requested name the key aliases away is not validated", func(t *testing.T) {
+		// The worker replaced the requested name with the alias target, so
+		// "o3-mini" never reaches the provider and its missing
+		// parallel_tool_calls support must not reject a request the target
+		// model can serve.
+		aliasCtx := withAlias(&schemas.ResolvedAlias{Key: "o3-mini", Config: &schemas.AliasConfig{ModelID: "gpt-4o-mini"}})
+		req := newRequest(schemas.OpenAI, "o3-mini")
+		require.Nil(t, enforceSerialToolConstraintOnAttempt(aliasCtx, schemas.OpenAI, schemas.OpenAI, "o3-mini", "gpt-4o-mini", req))
 		assert.Equal(t, schemas.Ptr(false), req.ChatRequest.Params.ParallelToolCalls)
 	})
 
-	t.Run("a direct key's alias takes precedence over configured keys", func(t *testing.T) {
-		client := newAliasClient(schemas.OpenAI, aliasKey("configured", true, schemas.WhiteList{"*"},
-			schemas.KeyAliases{"voice": {ModelID: "gpt-4o-mini"}}))
-		directCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-		directCtx.SetValue(schemas.BifrostContextKeyRequireSerialToolCalls, true)
-		directCtx.SetValue(schemas.BifrostContextKeyModelCatalog, ctx.Value(schemas.BifrostContextKeyModelCatalog))
-		directCtx.SetValue(schemas.BifrostContextKeyDirectKey, aliasKey("direct", true, schemas.WhiteList{"*"},
-			schemas.KeyAliases{"voice": {ModelID: "o3-mini"}}))
-		req := newRequest(schemas.OpenAI, "voice")
-		err := client.enforceSingleToolConstraint(directCtx, req)
+	t.Run("alias model_family gemini routes to the Gemini builder and is rejected", func(t *testing.T) {
+		// The alias's explicit family tier outranks any substring match on the
+		// wire model id: an opaque ModelID with model_family gemini uses the
+		// Gemini request builder, which has no parallel_tool_calls field.
+		aliasCtx := withAlias(&schemas.ResolvedAlias{Key: "voice", Config: &schemas.AliasConfig{
+			ModelID:     "my-tuned-flash",
+			ModelFamily: schemas.Ptr(schemas.ModelFamilyGemini),
+		}})
+		req := newRequest(schemas.Vertex, "voice")
+		err := enforceSerialToolConstraintOnAttempt(aliasCtx, schemas.Vertex, schemas.Vertex, "voice", "my-tuned-flash", req)
 		require.NotNil(t, err)
-		assert.Contains(t, err.Error.Message, `key alias resolves to "o3-mini"`)
+		assert.Contains(t, err.Error.Message, "cannot guarantee serial tool execution")
+		assert.Nil(t, req.ChatRequest.Params.ParallelToolCalls)
+	})
+
+	t.Run("alias model_family anthropic uses the Anthropic wire and is constrained", func(t *testing.T) {
+		aliasCtx := withAlias(&schemas.ResolvedAlias{Key: "voice", Config: &schemas.AliasConfig{
+			ModelID:     "arn:aws:bedrock:us-east-1::inference-profile/abc",
+			ModelFamily: schemas.Ptr(schemas.ModelFamilyAnthropic),
+		}})
+		req := newRequest(schemas.Vertex, "voice")
+		require.Nil(t, enforceSerialToolConstraintOnAttempt(aliasCtx, schemas.Vertex, schemas.Vertex, "voice", "arn:aws:bedrock:us-east-1::inference-profile/abc", req))
+		assert.Equal(t, schemas.Ptr(false), req.ChatRequest.Params.ParallelToolCalls)
+	})
+
+	t.Run("a fresh nil alias overrides a prior leg's family", func(t *testing.T) {
+		// Mimic a fallback attempt: the previous leg stamped an Anthropic
+		// alias, then this attempt's worker overwrote it with nil. The policy
+		// must classify the fallback model by its own name, not the stale
+		// alias family.
+		aliasCtx := withAlias(&schemas.ResolvedAlias{Key: "voice", Config: &schemas.AliasConfig{
+			ModelID:     "claude-sonnet-4-5",
+			ModelFamily: schemas.Ptr(schemas.ModelFamilyAnthropic),
+		}})
+		aliasCtx.SetValue(schemas.BifrostContextKeyResolvedAlias, nil)
+		req := newRequest(schemas.Vertex, "gemini-2.5-flash")
+		err := enforceSerialToolConstraintOnAttempt(aliasCtx, schemas.Vertex, schemas.Vertex, "gemini-2.5-flash", "gemini-2.5-flash", req)
+		require.NotNil(t, err, "a stale alias family must not let a Gemini-wire model through")
+		assert.Contains(t, err.Error.Message, "cannot guarantee serial tool execution")
 	})
 
 	t.Run("a cataloged unsupported name the key always aliases away is not validated", func(t *testing.T) {
@@ -313,7 +334,7 @@ func TestEnforceSingleToolConstraint(t *testing.T) {
 	t.Run("requests without the policy are unchanged", func(t *testing.T) {
 		otherCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		req := newRequest(schemas.OpenAI, "gpt-4o-mini")
-		require.Nil(t, (&Bifrost{}).enforceSingleToolConstraint(otherCtx, req))
+		require.Nil(t, enforceSerialToolConstraintOnAttempt(otherCtx, schemas.OpenAI, schemas.OpenAI, "gpt-4o-mini", "gpt-4o-mini", req))
 		assert.Nil(t, req.ChatRequest.Params.ParallelToolCalls)
 	})
 }
@@ -413,4 +434,197 @@ func TestUnaryConstraintKeepsOriginalErrorWhenPostHookReturnsNilNil(t *testing.T
 	assert.Nil(t, resp)
 	require.NotNil(t, bifrostErr)
 	assert.Contains(t, bifrostErr.Error.Message, "cannot guarantee serial tool execution")
+}
+
+// serialConstraintErrorObserver records, per attempt, the provider and message
+// of every terminal error post-hooks observe, so fallback-leg rejections are
+// visible even when the caller ultimately receives the primary attempt's error.
+type serialConstraintErrorObserver struct {
+	providers []schemas.ModelProvider
+	messages  []string
+}
+
+func (p *serialConstraintErrorObserver) GetName() string { return "serial-constraint-observer" }
+func (p *serialConstraintErrorObserver) Cleanup() error  { return nil }
+func (p *serialConstraintErrorObserver) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
+}
+func (p *serialConstraintErrorObserver) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+func (p *serialConstraintErrorObserver) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	if bifrostErr != nil {
+		p.providers = append(p.providers, bifrostErr.ExtraFields.Provider)
+		if bifrostErr.Error != nil {
+			p.messages = append(p.messages, bifrostErr.Error.Message)
+		} else {
+			p.messages = append(p.messages, "")
+		}
+	}
+	return resp, bifrostErr, nil
+}
+
+func newSerialConstraintChatRequest(provider schemas.ModelProvider, model string) *schemas.BifrostChatRequest {
+	return &schemas.BifrostChatRequest{
+		Provider: provider,
+		Model:    model,
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+		}},
+		Params: &schemas.ChatParameters{Tools: []schemas.ChatTool{{
+			Type:     schemas.ChatToolTypeFunction,
+			Function: &schemas.ChatToolFunction{Name: "emit_status"},
+		}}},
+	}
+}
+
+// The policy must judge the key the worker actually selected: an alias on a
+// key a pin excludes from selection may neither veto the request (false 400)
+// nor vouch for it.
+func TestSerialConstraintPinnedKeyIgnoresOtherAliases(t *testing.T) {
+	var mu sync.Mutex
+	var recordedBodies []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		recordedBodies = append(recordedBodies, string(body))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-1","object":"chat.completion","created":1,"model":"gpt-4o-mini","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, upstream.URL)
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{
+			ID:      "good",
+			Value:   *schemas.NewSecretVar("sk-good"),
+			Models:  schemas.WhiteList{"*"},
+			Aliases: schemas.KeyAliases{"voice": {ModelID: "gpt-4o-mini"}},
+		},
+		{
+			ID:      "bad",
+			Value:   *schemas.NewSecretVar("sk-bad"),
+			Models:  schemas.WhiteList{"*"},
+			Aliases: schemas.KeyAliases{"voice": {ModelID: "o3-mini"}},
+		},
+	})
+	client, initErr := Init(context.Background(), schemas.BifrostConfig{
+		Account: account,
+		Logger:  NewNoOpLogger(),
+		ModelCatalog: &humeModelCatalogStub{models: map[schemas.ModelProvider]map[string]*schemas.Model{
+			schemas.OpenAI: {
+				"gpt-4o-mini": {SupportedParameters: []string{"parallel_tool_calls"}},
+				"o3-mini":     {SupportedParameters: []string{"tools"}},
+			},
+		}},
+	})
+	require.NoError(t, initErr)
+	t.Cleanup(client.Shutdown)
+
+	t.Run("pin on a key with a supported alias target succeeds", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyRequireSerialToolCalls, true)
+		ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, "good")
+
+		resp, bifrostErr := client.ChatCompletionRequest(ctx, newSerialConstraintChatRequest(schemas.OpenAI, "voice"))
+		require.Nil(t, bifrostErr, "the other key's alias must not veto a pinned request")
+		require.NotNil(t, resp)
+
+		mu.Lock()
+		defer mu.Unlock()
+		require.Len(t, recordedBodies, 1)
+		assert.Contains(t, recordedBodies[0], `"parallel_tool_calls": false`)
+		assert.Contains(t, recordedBodies[0], `"model": "gpt-4o-mini"`)
+	})
+
+	t.Run("pin on a key with an unsupported alias target is rejected", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyRequireSerialToolCalls, true)
+		ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, "bad")
+
+		resp, bifrostErr := client.ChatCompletionRequest(ctx, newSerialConstraintChatRequest(schemas.OpenAI, "voice"))
+		assert.Nil(t, resp)
+		require.NotNil(t, bifrostErr)
+		assert.Contains(t, bifrostErr.Error.Message, `key alias resolves to "o3-mini"`)
+
+		mu.Lock()
+		defer mu.Unlock()
+		assert.Len(t, recordedBodies, 1, "the rejected request must never reach the upstream")
+	})
+}
+
+// A direct key bypasses the account pool unconditionally, so its alias must be
+// checked even when the key carries no Models allow-list.
+func TestSerialConstraintDirectKeyAliasIsChecked(t *testing.T) {
+	client := newHumeConstraintTestClient(t, &humeConstraintTracer{})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequireSerialToolCalls, true)
+	ctx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{
+		ID:      "direct",
+		Value:   *schemas.NewSecretVar("sk-direct"),
+		Aliases: schemas.KeyAliases{"voice": {ModelID: "o3-mini"}},
+	})
+
+	resp, bifrostErr := client.ChatCompletionRequest(ctx, newSerialConstraintChatRequest(schemas.OpenAI, "voice"))
+	assert.Nil(t, resp)
+	require.NotNil(t, bifrostErr)
+	assert.Contains(t, bifrostErr.Error.Message, `model "voice" cannot guarantee serial tool execution`)
+	assert.Contains(t, bifrostErr.Error.Message, `key alias resolves to "o3-mini"`)
+}
+
+// A fallback attempt must be judged by its own key's (non-)alias, not the
+// primary leg's: a stale Anthropic alias on the shared ctx previously let a
+// Vertex Gemini fallback slip past the policy entirely.
+func TestSerialConstraintFallbackUsesFreshAlias(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"invalid_request_error","message":"upstream rejected the request"}}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.Anthropic, 1, 1, upstream.URL)
+	account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{{
+		ID:      "anthropic-alias-key",
+		Value:   *schemas.NewSecretVar("sk-ant"),
+		Models:  schemas.WhiteList{"*"},
+		Aliases: schemas.KeyAliases{"voice": {ModelID: "claude-sonnet-4-5"}},
+	}})
+	account.AddProvider(schemas.Vertex, 1, 1)
+	account.SetKeysForProvider(schemas.Vertex, []schemas.Key{{
+		ID:              "vertex-key",
+		Value:           *schemas.NewSecretVar(""),
+		Models:          schemas.WhiteList{"*"},
+		VertexKeyConfig: &schemas.VertexKeyConfig{},
+	}})
+
+	observer := &serialConstraintErrorObserver{}
+	client, initErr := Init(context.Background(), schemas.BifrostConfig{
+		Account:    account,
+		Logger:     NewNoOpLogger(),
+		LLMPlugins: []schemas.LLMPlugin{observer},
+	})
+	require.NoError(t, initErr)
+	t.Cleanup(client.Shutdown)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequireSerialToolCalls, true)
+
+	request := newSerialConstraintChatRequest(schemas.Anthropic, "voice")
+	request.Fallbacks = []schemas.Fallback{{Provider: schemas.Vertex, Model: "gemini-2.5-flash"}}
+
+	resp, bifrostErr := client.ChatCompletionRequest(ctx, request)
+	assert.Nil(t, resp)
+	require.NotNil(t, bifrostErr, "when every leg fails the primary error is returned")
+
+	require.Len(t, observer.providers, 2, "post-hooks must observe the primary upstream error and the fallback rejection")
+	assert.Equal(t, schemas.Anthropic, observer.providers[0])
+	assert.Contains(t, observer.messages[0], "upstream rejected the request")
+	assert.Equal(t, schemas.Vertex, observer.providers[1])
+	assert.Contains(t, observer.messages[1], "cannot guarantee serial tool execution",
+		"the Vertex Gemini fallback must be rejected on its own merits, not passed via the primary leg's stale Anthropic alias")
 }
