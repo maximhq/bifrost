@@ -129465,6 +129465,7 @@
                   "// change (Bifrost 400 'cannot guarantee serial tool execution'), green after.",
                   "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
                   "pm.test('catalog-absent model reaches the provider instead of a Bifrost serial-tool rejection', function () {",
+                  "  pm.expect(pm.response.code, 'uncatalogued model must be rejected by the provider').to.be.within(400, 499);",
                   "  var body = pm.response.text() || '';",
                   "  pm.expect(body, 'Bifrost rejected the request pre-flight: ' + body).to.not.include('cannot guarantee serial tool execution');",
                   "});"
