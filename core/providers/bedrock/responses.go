@@ -3348,7 +3348,7 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 				result := pendingResults[callID]
 				resultBlocks = append(resultBlocks, BedrockContentBlock{
 					ToolResult: &BedrockToolResult{
-						ToolUseID: callID,
+						ToolUseID: bedrockAliasToolUseID(callID),
 						Content:   result.Content,
 						Status:    schemas.Ptr(result.Status),
 					},
@@ -3388,7 +3388,7 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 				if toolCall, exists := stateManager.toolCalls[callID]; exists {
 					toolUseBlock := &BedrockContentBlock{
 						ToolUse: &BedrockToolUse{
-							ToolUseID: toolCall.CallID,
+							ToolUseID: bedrockAliasToolUseID(toolCall.CallID),
 							Name:      toolCall.ToolName,
 						},
 					}
@@ -3542,7 +3542,7 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 						if toolCall, exists := stateManager.toolCalls[callID]; exists {
 							toolUseBlock := &BedrockContentBlock{
 								ToolUse: &BedrockToolUse{
-									ToolUseID: toolCall.CallID,
+									ToolUseID: bedrockAliasToolUseID(toolCall.CallID),
 									Name:      toolCall.ToolName,
 								},
 							}
@@ -3582,7 +3582,7 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 						result := pendingResults[callID]
 						resultBlocks = append(resultBlocks, BedrockContentBlock{
 							ToolResult: &BedrockToolResult{
-								ToolUseID: callID,
+								ToolUseID: bedrockAliasToolUseID(callID),
 								Content:   result.Content,
 								Status:    schemas.Ptr(result.Status),
 							},
@@ -3623,7 +3623,7 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 					if toolCall, exists := stateManager.toolCalls[callID]; exists {
 						toolUseBlock := &BedrockContentBlock{
 							ToolUse: &BedrockToolUse{
-								ToolUseID: toolCall.CallID,
+								ToolUseID: bedrockAliasToolUseID(toolCall.CallID),
 								Name:      toolCall.ToolName,
 							},
 						}
@@ -3665,7 +3665,7 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 					result := pendingResults[callID]
 					resultBlocks = append(resultBlocks, BedrockContentBlock{
 						ToolResult: &BedrockToolResult{
-							ToolUseID: callID,
+							ToolUseID: bedrockAliasToolUseID(callID),
 							Content:   result.Content,
 							Status:    schemas.Ptr(result.Status),
 						},
@@ -3742,7 +3742,7 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 			inputBytes, _ := json.Marshal(inputMap)
 			toolUseBlock := BedrockContentBlock{
 				ToolUse: &BedrockToolUse{
-					ToolUseID: callID,
+					ToolUseID: bedrockAliasToolUseID(callID),
 					Name:      string(BedrockSystemToolNovaGrounding),
 					Input:     json.RawMessage(inputBytes),
 					Type:      "server_tool_use",
@@ -3762,7 +3762,7 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 			resultType := BedrockNovaGroundingResultType
 			toolResultBlock := BedrockContentBlock{
 				ToolResult: &BedrockToolResult{
-					ToolUseID: callID,
+					ToolUseID: bedrockAliasToolUseID(callID),
 					Type:      &resultType,
 					Status:    schemas.Ptr("success"),
 					Content:   []BedrockContentBlock{{Text: &sourcesText}},
@@ -3788,7 +3788,7 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 			inputBytes, _ := json.Marshal(map[string]string{"snippet": code})
 			toolUseBlock := BedrockContentBlock{
 				ToolUse: &BedrockToolUse{
-					ToolUseID: toolUseID,
+					ToolUseID: bedrockAliasToolUseID(toolUseID),
 					Name:      string(BedrockSystemToolNovaCodeInterpreter),
 					Input:     json.RawMessage(inputBytes),
 					Type:      "server_tool_use",
@@ -3809,7 +3809,7 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 			resultType := BedrockNovaCodeInterpreterResultType
 			toolResultBlock := BedrockContentBlock{
 				ToolResult: &BedrockToolResult{
-					ToolUseID: toolUseID,
+					ToolUseID: bedrockAliasToolUseID(toolUseID),
 					Type:      &resultType,
 					Content:   []BedrockContentBlock{{Text: &execResultStr}},
 				},
