@@ -809,11 +809,23 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		} else {
 			syncSeconds = int64(modelcatalog.DefaultSyncInterval.Seconds())
 		}
+		// automatic_sync_enabled is config-file-only for now: it is the narrow
+		// air-gapped startup foundation for issues #2330 and #624, not yet the
+		// persisted/UI pricing-system toggle. Preserve it when an operator edits
+		// another framework field so a runtime URL/interval update cannot silently
+		// re-enable automatic network access.
+		h.store.Mu.RLock()
+		var automaticSyncEnabled *bool
+		if h.store.FrameworkConfig != nil && h.store.FrameworkConfig.Pricing != nil {
+			automaticSyncEnabled = h.store.FrameworkConfig.Pricing.AutomaticSyncEnabled
+		}
+		h.store.Mu.RUnlock()
 		updatedFrameworkConfig := &framework.FrameworkConfig{
 			Pricing: &modelcatalog.Config{
 				PricingURL:             frameworkConfig.PricingURL,
 				PricingSyncInterval:    &syncSeconds,
 				ModelParametersURL:     frameworkConfig.ModelParametersURL,
+				AutomaticSyncEnabled:   automaticSyncEnabled,
 				MCPLibraryURL:          frameworkConfig.MCPLibraryURL,
 				MCPLibrarySyncInterval: frameworkConfig.MCPLibrarySyncInterval,
 				LiveModelsSyncInterval: frameworkConfig.LiveModelsSyncInterval,

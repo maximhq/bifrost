@@ -30,6 +30,7 @@ type ModelCatalog struct {
 	configStore            configstore.ConfigStore
 	distributedLockManager *configstore.DistributedLockManager
 	logger                 schemas.Logger
+	automaticSyncEnabled   bool
 
 	datasheet *datasheet.Store
 	live      *live.Store
@@ -82,6 +83,10 @@ func resolveMCPLibrarySyncInterval(config *Config) time.Duration {
 }
 
 func Init(ctx context.Context, config *Config, configStore configstore.ConfigStore, logger schemas.Logger) (*ModelCatalog, error) {
+	automaticSyncEnabled := true
+	if config != nil && config.AutomaticSyncEnabled != nil {
+		automaticSyncEnabled = *config.AutomaticSyncEnabled
+	}
 	pricingURL := DefaultPricingURL
 	if config != nil && config.PricingURL != nil {
 		pricingURL = *config.PricingURL
@@ -109,6 +114,7 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 		mcpLibrarySyncInterval: mcpLibrarySyncInterval,
 		configStore:            configStore,
 		logger:                 logger,
+		automaticSyncEnabled:   automaticSyncEnabled,
 		distributedLockManager: configstore.NewDistributedLockManager(configStore, logger, configstore.WithDefaultTTL(30*time.Second)),
 		datasheet: datasheet.New(configStore, logger, datasheet.Config{
 			URL:                pricingURL,
@@ -147,6 +153,52 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 	}()
 
 	logger.Info("initializing model catalog...")
+	if configStore != nil {
+		// Lazy load on cache miss: providers may need params for models not
+		// covered by the startup bulk load (e.g. just-uploaded models). The
+		// bulk load still warms the common case so this only fires on misses.
+		providerUtils.SetCacheMissHandler(func(model string) *providerUtils.ModelParams {
+			missCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			params, err := mc.datasheet.GetModelParametersByModel(missCtx, model)
+			if err != nil || params == nil {
+				return nil
+			}
+			var p struct {
+				MaxOutputTokens       *int  `json:"max_output_tokens"`
+				VertexMultiRegionOnly *bool `json:"vertex_multi_region_only"`
+			}
+			if err := json.Unmarshal([]byte(params.Data), &p); err != nil {
+				return nil
+			}
+			if p.MaxOutputTokens == nil && p.VertexMultiRegionOnly == nil {
+				return nil
+			}
+			return &providerUtils.ModelParams{
+				MaxOutputTokens:         p.MaxOutputTokens,
+				IsVertexMultiRegionOnly: p.VertexMultiRegionOnly,
+			}
+		})
+	}
+
+	if !automaticSyncEnabled {
+		logger.Info("automatic model catalog sync disabled; loading stored data only")
+		if configStore != nil {
+			if err := mc.datasheet.LoadFromDB(ctx); err != nil {
+				return nil, fmt.Errorf("failed to load initial pricing data: %w", err)
+			}
+			if _, err := mc.datasheet.LoadModelParamsFromDB(ctx); err != nil {
+				return nil, fmt.Errorf("failed to load initial model parameters: %w", err)
+			}
+		}
+		mc.datasheet.MarkSynced(time.Now())
+		if err := mc.datasheet.LoadOverridesFromStore(ctx); err != nil {
+			return nil, fmt.Errorf("failed to load pricing overrides: %w", err)
+		}
+		initSucceeded = true
+		return mc, nil
+	}
+
 	if configStore != nil {
 		var wg sync.WaitGroup
 		var pricingErr, paramsErr error
@@ -345,6 +397,16 @@ func (mc *ModelCatalog) UpdateSyncConfig(ctx context.Context, config *Config) er
 		ModelParametersURL: modelParametersURL,
 		SyncInterval:       syncInterval,
 	})
+
+	automaticSyncEnabled := true
+	if config != nil && config.AutomaticSyncEnabled != nil {
+		automaticSyncEnabled = *config.AutomaticSyncEnabled
+	}
+	mc.automaticSyncEnabled = automaticSyncEnabled
+	if !automaticSyncEnabled {
+		mc.datasheet.MarkSynced(time.Now())
+		return mc.ReloadFromDB(ctx)
+	}
 
 	mc.syncCtx, mc.syncCancel = context.WithCancel(ctx)
 
