@@ -1690,6 +1690,12 @@ func IsGLMModel(model string) bool {
 	return strings.Contains(model, "glm")
 }
 
+// IsDeepSeekModel checks if the model is a DeepSeek model. Deployment names are
+// case-sensitive on some providers (Azure ships "DeepSeek-V3.1"), so match case-insensitively.
+func IsDeepSeekModel(model string) bool {
+	return strings.Contains(strings.ToLower(model), "deepseek")
+}
+
 // IsAnthropicModel checks if the model is an Anthropic model.
 func IsAnthropicModel(model string) bool {
 	return strings.Contains(model, "anthropic.") || strings.Contains(model, "claude")

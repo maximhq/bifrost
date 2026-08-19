@@ -7358,6 +7358,19 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		chatCompletionResponse.BackfillParams(req.BifrostRequest.ChatRequest)
 		response.ChatResponse = chatCompletionResponse
 	case schemas.ResponsesRequest:
+		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ChatCompletionRequest {
+			chatRequest := req.BifrostRequest.ResponsesRequest.ToChatRequest()
+			if chatRequest != nil {
+				chatCompletionResponse, bifrostError := provider.ChatCompletion(req.Context, key, chatRequest)
+				if bifrostError != nil {
+					return nil, bifrostError
+				}
+				responsesResponse := chatCompletionResponse.ToBifrostResponsesResponse()
+				responsesResponse.BackfillParams(req.BifrostRequest.ResponsesRequest)
+				response.ResponsesResponse = responsesResponse
+				break
+			}
+		}
 		responsesResponse, bifrostError := provider.Responses(req.Context, key, req.BifrostRequest.ResponsesRequest)
 		if bifrostError != nil {
 			return nil, bifrostError
@@ -7721,6 +7734,15 @@ func (bifrost *Bifrost) handleProviderStreamRequest(provider schemas.Provider, r
 		}
 		return provider.ChatCompletionStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.ChatRequest)
 	case schemas.ResponsesStreamRequest:
+		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ChatCompletionRequest {
+			chatRequest := req.BifrostRequest.ResponsesRequest.ToChatRequest()
+			if chatRequest != nil {
+				// The providers' chat streaming handler re-assembles Responses events from the
+				// chat chunks when this flag is set, so the caller still gets a Responses stream.
+				req.Context.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
+				return provider.ChatCompletionStream(req.Context, postHookRunner, postHookSpanFinalizer, key, chatRequest)
+			}
+		}
 		return provider.ResponsesStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.ResponsesRequest)
 	case schemas.ResponsesRetrieveStreamRequest:
 		lifecycle, ok := provider.(schemas.ResponsesLifecycleProvider)
