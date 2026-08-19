@@ -133529,6 +133529,173 @@
           ]
         }
       ]
+    },
+    {
+      "name": "56. Anthropic message_start.usage Omission on Stream Open (#5885 / PR #5907)",
+      "description": "Regression coverage for #5885 (fixed by PR #5907, db388c35c): strict Anthropic-dialect clients - @ai-sdk/anthropic, the official Anthropic Python SDK, and Claude Code (its subagent token-accounting path dereferences message.usage unguarded) - validate the very first SSE frame and crash with \"undefined is not an object (evaluating 'o.input_tokens')\" if message_start.message.usage is missing. Pre-fix, Bifrost's Anthropic-dialect SSE translators omitted usage from message_start whenever real token counts were not yet known at stream-open time (the normal case: OpenAI/xAI report usage only on the terminal event of their Responses API, and Bedrock Converse reports it only on its terminal event too), because a nil *AnthropicUsage silently vanished under Go's `usage,omitempty` JSON tag instead of serializing as an all-zero placeholder. Case 1 pins the OpenAI Responses API path (responses.go, the exact route in this report - gpt-model requests to /anthropic/v1/messages are always served via OpenAI's /v1/responses and translated back by toAnthropicResponsesStreamEvents). Case 2 pins the same converter against xAI's Responses-API-compatible upstream (the \"Grok\" half of the report). Case 3 pins the independent Bedrock Converse invoke-with-response-stream path (bedrock/invoke.go's toAnthropicInvokeStreamBytes), the route originally reported in #5885 and the one that broke Claude Code's Bedrock-backed subagents. All three assert message_start.message.usage is present as an object with numeric input_tokens/output_tokens, not merely that the stream completes.",
+      "item": [
+        {
+          "name": "openai/gpt-4o-mini /anthropic/v1/messages streaming: message_start carries usage - #5885",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('message_start carries usage object with input_tokens/output_tokens - #5885', function () {",
+                  "  pm.expect(pm.response.code, 'stream request failed: ' + pm.response.text()).to.be.below(400);",
+                  "  var body = pm.response.text() || '';",
+                  "  var lines = body.split(/\\r?\\n/);",
+                  "  var line = lines.filter(function (l) { return l.indexOf('data:') === 0 && l.indexOf('message_start') !== -1; })[0];",
+                  "  pm.expect(line, 'no message_start data line found in stream: ' + body.slice(0, 300)).to.be.a('string');",
+                  "  var frame = JSON.parse(line.replace(/^data:\\s*/, ''));",
+                  "  pm.expect(frame.message, 'message_start missing message object').to.be.an('object');",
+                  "  pm.expect(frame.message.usage, 'message_start.message.usage missing (regression of #5885 - strict Anthropic-dialect clients like @ai-sdk/anthropic, the official Anthropic Python SDK, and Claude Code subagents crash with \"undefined is not an object (evaluating \\'o.input_tokens\\')\" on this frame)').to.be.an('object');",
+                  "  pm.expect(frame.message.usage.input_tokens, 'usage.input_tokens must be a number').to.be.a('number');",
+                  "  pm.expect(frame.message.usage.output_tokens, 'usage.output_tokens must be a number').to.be.a('number');",
+                  "  pm.expect(frame.message.content, 'message_start.message.content must be an array').to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"max_tokens\":64,\"messages\":[{\"role\":\"user\",\"content\":\"Say OK.\"}],\"stream\":true}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "xai/grok-4-0709 /anthropic/v1/messages streaming: message_start carries usage - #5885",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('message_start carries usage object with input_tokens/output_tokens - #5885', function () {",
+                  "  pm.expect(pm.response.code, 'stream request failed: ' + pm.response.text()).to.be.below(400);",
+                  "  var body = pm.response.text() || '';",
+                  "  var lines = body.split(/\\r?\\n/);",
+                  "  var line = lines.filter(function (l) { return l.indexOf('data:') === 0 && l.indexOf('message_start') !== -1; })[0];",
+                  "  pm.expect(line, 'no message_start data line found in stream: ' + body.slice(0, 300)).to.be.a('string');",
+                  "  var frame = JSON.parse(line.replace(/^data:\\s*/, ''));",
+                  "  pm.expect(frame.message, 'message_start missing message object').to.be.an('object');",
+                  "  pm.expect(frame.message.usage, 'message_start.message.usage missing (regression of #5885 - strict Anthropic-dialect clients like @ai-sdk/anthropic, the official Anthropic Python SDK, and Claude Code subagents crash with \"undefined is not an object (evaluating \\'o.input_tokens\\')\" on this frame)').to.be.an('object');",
+                  "  pm.expect(frame.message.usage.input_tokens, 'usage.input_tokens must be a number').to.be.a('number');",
+                  "  pm.expect(frame.message.usage.output_tokens, 'usage.output_tokens must be a number').to.be.a('number');",
+                  "  pm.expect(frame.message.content, 'message_start.message.content must be an array').to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"xai/grok-4-0709\",\"max_tokens\":64,\"messages\":[{\"role\":\"user\",\"content\":\"Say OK.\"}],\"stream\":true}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock invoke-with-response-stream: message_start carries usage (Haiku 4.5) - #5885",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('invoke-with-response-stream succeeds - #5885', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('invoke-with-response-stream message_start carries usage (regression of #5885 - this route previously omitted message_start.message.usage entirely on Bedrock Converse, breaking @ai-sdk/anthropic, the official Anthropic Python SDK, and Claude Code subagents) - #5885', function () {",
+                  "  var rawText = pm.response.text() || '';",
+                  "  var b64Matches = rawText.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/g) || [];",
+                  "  pm.expect(b64Matches.length, 'expected at least one invoke-stream chunk event: ' + rawText.slice(0, 300)).to.be.above(0);",
+                  "  var events = b64Matches.map(function (m) {",
+                  "    var b64 = m.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/)[1];",
+                  "    try { return JSON.parse(Buffer.from(b64, 'base64').toString('utf8')); } catch (e) { return null; }",
+                  "  }).filter(function (e) { return e; });",
+                  "  var messageStart = events.filter(function (e) { return e.type === 'message_start'; })[0];",
+                  "  pm.expect(messageStart, 'expected a message_start event in the decoded stream: ' + JSON.stringify(events).slice(0, 500)).to.be.an('object');",
+                  "  pm.expect(messageStart.message, 'message_start missing message object').to.be.an('object');",
+                  "  pm.expect(messageStart.message.usage, 'message_start.message.usage missing').to.be.an('object');",
+                  "  pm.expect(messageStart.message.usage.input_tokens, 'usage.input_tokens must be a number').to.be.a('number');",
+                  "  pm.expect(messageStart.message.usage.output_tokens, 'usage.output_tokens must be a number').to.be.a('number');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"anthropic_version\":\"bedrock-2023-05-31\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"Say OK.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-haiku-4-5-20251001-v1:0/invoke-with-response-stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "invoke-with-response-stream"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }
