@@ -14,12 +14,12 @@ import (
 // matching must behave exactly as before.
 func TestIsModelAllowedForProvider_ExplicitList(t *testing.T) {
 	mc := &ModelCatalog{
-		datasheet:    datasheet.NewTestStore(map[string]string{"gpt-4o": "gpt-4o"}),
-		live:         live.New(nil),
-		keyconf:      keyconfig.New(nil),
-		providerMemo: make(map[string]providerMemoEntry),
-		done:         make(chan struct{}),
+		datasheet: datasheet.NewTestStore(map[string]string{"gpt-4o": "gpt-4o"}),
+		live:      live.New(nil),
+		keyconf:   keyconfig.New(nil),
+		done:      make(chan struct{}),
 	}
+	mc.initCaches()
 	// Give OpenAI a live catalog carrying a provider-prefixed entry, so the
 	// prefixed branch has something to match (ParseModelString only strips
 	// recognized provider prefixes, so this must be a real provider).

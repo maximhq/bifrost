@@ -7,6 +7,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/gencache"
 )
 
 // providersWithPartialListModels enumerates providers whose /v1/models response
@@ -24,7 +25,15 @@ var providersWithPartialListModels = map[schemas.ModelProvider]bool{
 // provider. Filtered live entries are authoritative when present (they were
 // pre-gated by ListModelsPipeline against the key's allow/block/aliases);
 // otherwise the datasheet view is filtered by the keyconfig aggregates.
+//
+// Memoized; returns a fresh clone the caller may mutate.
 func (mc *ModelCatalog) GetModelsForProvider(provider schemas.ModelProvider) []string {
+	return mc.modelsForProvider.GetOrCompute(string(provider), func() []string {
+		return mc.computeModelsForProvider(provider)
+	})
+}
+
+func (mc *ModelCatalog) computeModelsForProvider(provider schemas.ModelProvider) []string {
 	blacklisted := mc.keyconf.BlacklistedFor(provider)
 	allowed := mc.keyconf.AllowedFor(provider)
 
@@ -150,58 +159,50 @@ func (mc *ModelCatalog) GetDistinctBaseModelNames() []string {
 	return mc.datasheet.DistinctBaseModelNames()
 }
 
-// providerMemoEntry is a memoized GetProvidersForModel result and the
-// catalogGeneration it was computed under.
-type providerMemoEntry struct {
-	gen uint64
-	val []schemas.ModelProvider
-}
+// catalogMemoMaxEntries bounds each catalog memo: model/provider keys are
+// client-controlled, so an unbounded map is a memory-growth vector.
+const catalogMemoMaxEntries = 4096
 
-// providerMemoMaxEntries bounds the memo; model strings are client-controlled
-// and would otherwise grow it without limit. On overflow the map is flushed
-// and hot entries repopulate on demand.
-const providerMemoMaxEntries = 4096
-
-// catalogGeneration sums the three stores' write counters. Every write bumps
-// exactly one counter by one, so the sum strictly increases and no two
-// catalog states share a value.
+// catalogGeneration sums the three stores' write counters. Each write bumps one
+// counter by one, so the sum strictly increases: no two catalog states collide.
 func (mc *ModelCatalog) catalogGeneration() uint64 {
 	return mc.datasheet.WriteGen() + mc.keyconf.WriteGen() + mc.live.WriteGen()
 }
 
+// initCaches builds the memos. Every constructor must call it before use: the
+// cached getters deref the caches with no nil guard.
+func (mc *ModelCatalog) initCaches() {
+	mc.providersForModel = newProvidersForModelCache(mc)
+	mc.modelsForProvider = newModelsForProviderCache(mc)
+}
+
+// Clone-on-return: the resolver sorts the result in place.
+func newProvidersForModelCache(mc *ModelCatalog) *gencache.Cache[[]schemas.ModelProvider] {
+	return gencache.New(
+		mc.catalogGeneration,
+		catalogMemoMaxEntries,
+		gencache.WithClone(func(v []schemas.ModelProvider) []schemas.ModelProvider { return slices.Clone(v) }),
+		gencache.WithSkipStore(func(v []schemas.ModelProvider) bool { return len(v) == 0 }),
+	)
+}
+
+// catalogGeneration is a valid stamp here too: the list derives from the same
+// three stores. Clone-on-return: callers sort the result in place.
+func newModelsForProviderCache(mc *ModelCatalog) *gencache.Cache[[]string] {
+	return gencache.New(
+		mc.catalogGeneration,
+		catalogMemoMaxEntries,
+		gencache.WithClone(func(v []string) []string { return slices.Clone(v) }),
+		gencache.WithSkipStore(func(v []string) bool { return len(v) == 0 }),
+	)
+}
+
 // GetProvidersForModel returns every provider that can serve the model.
-// Memoized per model (bounded, empty results uncached); any store write
-// invalidates (see catalogGeneration). Returns a fresh clone the caller
-// may mutate.
+// Memoized; returns a fresh clone the caller may mutate.
 func (mc *ModelCatalog) GetProvidersForModel(model string) []schemas.ModelProvider {
-	gen := mc.catalogGeneration()
-
-	mc.providerMemoMu.RLock()
-	entry, ok := mc.providerMemo[model]
-	mc.providerMemoMu.RUnlock()
-	if ok && entry.gen == gen {
-		return slices.Clone(entry.val)
-	}
-
-	val := mc.computeProvidersForModel(model)
-	// Unknown models resolve to nothing; skipping memoising
-	if len(val) == 0 {
-		return val
-	}
-
-	// Stamp with the generation read before compute: a write during compute
-	// leaves the entry stale and the next call recomputes.
-	mc.providerMemoMu.Lock()
-	if mc.providerMemo == nil {
-		mc.providerMemo = make(map[string]providerMemoEntry)
-	}
-	if _, exists := mc.providerMemo[model]; !exists && len(mc.providerMemo) >= providerMemoMaxEntries {
-		mc.providerMemo = make(map[string]providerMemoEntry)
-	}
-	mc.providerMemo[model] = providerMemoEntry{gen: gen, val: val}
-	mc.providerMemoMu.Unlock()
-
-	return slices.Clone(val)
+	return mc.providersForModel.GetOrCompute(model, func() []schemas.ModelProvider {
+		return mc.computeProvidersForModel(model)
+	})
 }
 
 // computeProvidersForModel composes the uncached answer across stores,
