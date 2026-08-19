@@ -321,6 +321,8 @@ github.com/maximhq/bifrost/core v1.7.11 h1:9dhHNM9IN3DPM7q+Xhg06LW+WGITz9d9m0Rye
 github.com/maximhq/bifrost/core v1.7.11/go.mod h1:ftRe80M+N8GTP7OvEG2G4yNK0jr/s/T4XFSA/YuuOTA=
 github.com/maximhq/bifrost/core v1.7.12-0.20260816184414-8dc2459b11c0 h1:1yagsTFXzBKx0dQXCw0/WYX9q02BjRj/XlB9ub4nMKY=
 github.com/maximhq/bifrost/core v1.7.12-0.20260816184414-8dc2459b11c0/go.mod h1:ftRe80M+N8GTP7OvEG2G4yNK0jr/s/T4XFSA/YuuOTA=
+github.com/maximhq/bifrost/core v1.7.12 h1:2eEBT/nsK8D+UG6JWeKzmdrNWKuBGaFRh0DL42DgHvw=
+github.com/maximhq/bifrost/core v1.7.12/go.mod h1:ftRe80M+N8GTP7OvEG2G4yNK0jr/s/T4XFSA/YuuOTA=
 github.com/maximhq/bifrost/framework v1.5.9 h1:4Tl707fTKNTQckA8T7vyFjGCR+naursgkkzOSxxkOdU=
 github.com/maximhq/bifrost/framework v1.5.9/go.mod h1:yrKDQCI65jGmwGMICbyRSurWLG8z6qIpc6IJuBRUHCI=
 github.com/maximhq/bifrost/plugins/compat v0.1.35 h1:7fdut+aymZPnT345vSQlSWYTLWSRfPD2UyEsylvPCoc=

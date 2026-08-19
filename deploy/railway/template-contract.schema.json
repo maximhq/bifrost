@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://www.getbifrost.ai/schemas/railway-template-contract.json",
+  "title": "Bifrost Railway template contract",
+  "type": "object",
+  "required": ["platform", "template", "services"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "platform": { "const": "railway" },
+    "template": {
+      "type": "object",
+      "required": ["name", "slug", "owner", "visibility"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "slug": { "type": ["string", "null"], "minLength": 1 },
+        "owner": { "type": "string", "minLength": 1 },
+        "visibility": { "const": "public" },
+        "last_verified": { "type": ["string", "null"], "format": "date" }
+      },
+      "additionalProperties": false
+    },
+    "services": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["name", "image", "variables", "deploy", "volumes"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "image": { "type": "string", "minLength": 1 },
+          "image_auto_update": { "enum": ["daily", "disabled"] },
+          "variables": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "required": ["value", "sensitive"],
+              "properties": {
+                "value": { "type": "string" },
+                "sensitive": { "type": "boolean" }
+              },
+              "additionalProperties": false
+            }
+          },
+          "deploy": {
+            "type": "object",
+            "required": ["replicas", "healthcheck_path", "healthcheck_timeout_seconds", "draining_seconds", "overlap_seconds", "restart_policy"],
+            "properties": {
+              "replicas": { "type": "integer", "minimum": 1 },
+              "healthcheck_path": { "type": ["string", "null"] },
+              "healthcheck_timeout_seconds": { "type": "integer", "minimum": 1 },
+              "draining_seconds": { "type": "integer", "minimum": 0 },
+              "overlap_seconds": { "type": "integer", "minimum": 0 },
+              "restart_policy": { "enum": ["ON_FAILURE", "ALWAYS", "NEVER"] },
+              "public_port": { "type": ["integer", "null"], "minimum": 1 }
+            },
+            "additionalProperties": false
+          },
+          "volumes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["mount_path"],
+              "properties": {
+                "mount_path": { "type": "string", "pattern": "^/" }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

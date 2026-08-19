@@ -18,13 +18,24 @@ Start with [Bifrost Deployment Requirements](/deployment-guides/runtime-contract
 | Azure Kubernetes Service | [AKS](/deployment-guides/platforms/aks) | Deploy the Helm chart to an existing AKS cluster |
 | Amazon ECS | [ECS](/deployment-guides/ecs) | Run the Bifrost image as an ECS service |
 | Google Cloud Run | [Cloud Run](/deployment-guides/platforms/cloud-run) | Run one Bifrost service with PostgreSQL-backed storage |
-| Render | [Render](/deployment-guides/platforms/render) | Run one web service with a persistent disk or PostgreSQL |
-| Railway | [Railway](/deployment-guides/platforms/railway) | Run one service with a volume or PostgreSQL |
+| Render | [Render](/deployment-guides/platforms/render) | One-click free PostgreSQL evaluation or lowest-cost durable SQLite deployment |
+| Railway | [Railway](/deployment-guides/platforms/railway) | One-click PostgreSQL or persistent-volume SQLite deployment |
 | Fly.io | [Fly.io](/deployment-guides/fly) | Run one Machine with a Fly Volume or PostgreSQL |
 | Terraform | [Terraform module](/deployment-guides/k8s) | Create a supported cloud or Kubernetes deployment from code |
 | Docker or a VM | [Docker setup](/quickstart/gateway/setting-up#docker) | Run the image directly with a mounted data directory |
 
 The Kubernetes guides begin with an existing cluster. If you need to create a cluster, each page links to the cloud provider's setup documentation before continuing with the Bifrost installation.
+
+## Hosted one-click choices
+
+The Render and Railway templates all create one authenticated OSS replica, generate stable encryption and administrator secrets, expose `/health`, and reject anonymous inference.
+
+| Platform | PostgreSQL | SQLite |
+|---|---|---|
+| Render | Free 30-day evaluation with a sleeping web service and PostgreSQL 18 | Starter web service with a 1 GB `/app/data` disk |
+| Railway | Bifrost plus private TLS-required PostgreSQL 18 | Bifrost with a persistent `/app/data` volume and secure privilege dropping |
+
+Choose PostgreSQL when application replacement should be independent of Bifrost storage. Choose SQLite for a lower-resource single-instance deployment when brief disk-backed redeploy downtime is acceptable. These templates are not an Enterprise clustering topology.
 
 ## Choose where Bifrost stores data
 

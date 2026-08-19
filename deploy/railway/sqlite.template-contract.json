@@ -1,0 +1,44 @@
+{
+  "$schema": "./template-contract.schema.json",
+  "platform": "railway",
+  "template": {
+    "name": "Bifrost + SQLite",
+    "slug": null,
+    "owner": "Maxim AI's Projects",
+    "visibility": "public",
+    "last_verified": null
+  },
+  "services": [
+    {
+      "name": "Bifrost",
+      "image": "docker.io/maximhq/bifrost:latest",
+      "image_auto_update": "daily",
+      "variables": {
+        "APP_HOST": { "value": "0.0.0.0", "sensitive": false },
+        "APP_PORT": { "value": "8080", "sensitive": false },
+        "PORT": { "value": "8080", "sensitive": false },
+        "BIFROST_CONFIG": {
+          "value": "{\"$schema\":\"https://www.getbifrost.ai/schema\",\"version\":2,\"source_of_truth\":\"split\",\"encryption_key\":\"env.BIFROST_ENCRYPTION_KEY\",\"client\":{\"enforce_auth_on_inference\":true},\"governance\":{\"auth_config\":{\"admin_username\":\"admin\",\"admin_password\":\"env.BIFROST_ADMIN_PASSWORD\",\"is_enabled\":true}}}",
+          "sensitive": false
+        },
+        "BIFROST_ENCRYPTION_KEY": { "value": "${{secret()}}", "sensitive": true },
+        "BIFROST_ADMIN_PASSWORD": { "value": "${{secret()}}", "sensitive": true },
+        "RAILWAY_RUN_UID": { "value": "0", "sensitive": false },
+        "BIFROST_RUN_AS_UID": { "value": "1000", "sensitive": false },
+        "BIFROST_RUN_AS_GID": { "value": "0", "sensitive": false }
+      },
+      "deploy": {
+        "replicas": 1,
+        "healthcheck_path": "/health",
+        "healthcheck_timeout_seconds": 300,
+        "draining_seconds": 60,
+        "overlap_seconds": 0,
+        "restart_policy": "ON_FAILURE",
+        "public_port": 8080
+      },
+      "volumes": [
+        { "mount_path": "/app/data" }
+      ]
+    }
+  ]
+}

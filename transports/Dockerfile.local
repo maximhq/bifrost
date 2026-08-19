@@ -46,7 +46,10 @@
     go work use ./plugins/prompts && \
     go work use ./plugins/semanticcache && \
     go work use ./plugins/telemetry && \
-    go work use ./transports
+    go work use ./transports && \
+    go work edit -replace github.com/maximhq/bifrost/plugins/modelcatalogresolver=./plugins/modelcatalogresolver && \
+    grep -q 'plugins/modelcatalogresolver' go.work && \
+    test -f ./plugins/modelcatalogresolver/go.mod
 
   # Copy UI build output into transports
   COPY --from=ui-builder /app/out ./transports/bifrost-http/ui
@@ -72,7 +75,8 @@
   # musl: C standard library (required for CGO binaries)
   # libgcc: GCC runtime library
   # ca-certificates: For HTTPS connections
-  RUN apk add --no-cache musl libgcc ca-certificates zlib=1.3.2-r0
+  # su-exec: Drop privileges after repairing root-owned platform volumes
+  RUN apk add --no-cache musl libgcc ca-certificates zlib=1.3.2-r0 su-exec
 
   # Create data directory and set up user
   COPY --from=builder /app/main .

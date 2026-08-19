@@ -1,0 +1,66 @@
+name: Publish Render SQLite Blueprint Branch
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "deploy/render/render-sqlite.yaml"
+      - ".github/workflows/publish-render-sqlite-branch.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: publish-render-sqlite-branch
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            auth.docker.io:443
+            github.com:443
+            production.cloudflare.docker.com:443
+            registry-1.docker.io:443
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      # Hard release gate: the public deploy button consumes this branch directly,
+      # so it must never advance before maximhq/bifrost:latest resolves to the
+      # qualified release. Re-run via workflow_dispatch after the release ships.
+      - name: Verify public image release gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/workflows/scripts/verify-deployment-release.sh v1.6.12
+
+      - name: Publish generated branch
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          BLOB=$(git hash-object -w deploy/render/render-sqlite.yaml)
+          TREE=$(printf '100644 blob %s\trender.yaml\n' "$BLOB" | git mktree)
+          PARENT_ARGS=()
+          if PARENT=$(git ls-remote origin refs/heads/render-sqlite | awk '{print $1}') && [ -n "$PARENT" ]; then
+            PARENT_ARGS=(-p "$PARENT")
+          fi
+          COMMIT=$(printf 'chore: publish Render SQLite Blueprint from %s\n' "$SOURCE_SHA" | git commit-tree "$TREE" "${PARENT_ARGS[@]}")
+          git push --force origin "$COMMIT:refs/heads/render-sqlite"
+
+          PUBLISHED=$(git ls-remote origin refs/heads/render-sqlite | awk '{print $1}')
+          test "$PUBLISHED" = "$COMMIT"
+          git show "$PUBLISHED:render.yaml" > /tmp/published-render.yaml
+          cmp --silent deploy/render/render-sqlite.yaml /tmp/published-render.yaml

@@ -17,13 +17,17 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd -P)"
 
 
 # Setup Go workspace for CI (go.work is gitignored, must be regenerated)
+# shellcheck disable=SC1091 # Resolved relative to this script at runtime.
 source "$SCRIPT_DIR/setup-go-workspace.sh"
 
 PLATFORM=${1:-linux/amd64}
 ARCH=$(echo "$PLATFORM" | cut -d'/' -f2)
 IMAGE_TAG="bifrost-test:ci-${GITHUB_SHA:-local}-${ARCH}"
 CONTAINER_NAME="bifrost-test-${ARCH}"
+PRIVDROP_CONTAINER_NAME="${CONTAINER_NAME}-privdrop"
+PRIVDROP_VOLUME_NAME="${CONTAINER_NAME}-root-volume"
 TEST_PORT=8080
+PRIVDROP_TEST_PORT=8081
 DOCKER_COMPOSE_FILE="$REPO_ROOT/tests/docker-compose.yml"
 TEMP_DIR=$(mktemp -d)
 CONFIG_FILE="$TEMP_DIR/config.json"
@@ -40,6 +44,9 @@ cleanup() {
   echo "Stopping Bifrost container..."
   docker stop "${CONTAINER_NAME}" > /dev/null 2>&1 || true
   docker rm "${CONTAINER_NAME}" > /dev/null 2>&1 || true
+  docker stop "${PRIVDROP_CONTAINER_NAME}" > /dev/null 2>&1 || true
+  docker rm "${PRIVDROP_CONTAINER_NAME}" > /dev/null 2>&1 || true
+  docker volume rm "${PRIVDROP_VOLUME_NAME}" > /dev/null 2>&1 || true
   
   # Stop docker-compose services
   echo "Stopping docker-compose services..."
@@ -66,10 +73,234 @@ docker build \
 
 echo "Build complete: ${IMAGE_TAG}"
 
-# Start docker-compose services (Postgres, Weaviate, Redis, Qdrant)
 echo ""
-echo "=== Starting docker-compose services ==="
-docker compose -f "$DOCKER_COMPOSE_FILE" up -d
+echo "=== Testing entrypoint runtime contract ==="
+
+# Each negative check asserts the entrypoint rejects an invalid configuration and
+# exits. If a regression lets the configuration through, the entrypoint execs the
+# long-running server (see the trailing exec in transports/docker-entrypoint.sh) and
+# `docker run` never returns, so every invocation is bounded by `timeout`. Without it
+# the job hangs until GitHub's default 360-minute job timeout instead of failing with
+# the diagnostic below.
+ENTRYPOINT_CHECK_TIMEOUT=60
+entrypoint_check_count=0
+
+# GNU coreutils `timeout` is present on the ubuntu runners this script targets. Keep a
+# local macOS run working (Homebrew coreutils installs it as `gtimeout`) rather than
+# failing every check with "command not found".
+if command -v timeout > /dev/null 2>&1; then
+  TIMEOUT_BIN=timeout
+elif command -v gtimeout > /dev/null 2>&1; then
+  TIMEOUT_BIN=gtimeout
+else
+  TIMEOUT_BIN=""
+  echo "WARNING: no timeout(1) found - entrypoint checks will run unbounded"
+fi
+
+# Usage: assert_entrypoint_rejects <description> <expected-substring> [docker run args...]
+assert_entrypoint_rejects() {
+  local description="$1"
+  local expected="$2"
+  shift 2
+
+  entrypoint_check_count=$((entrypoint_check_count + 1))
+  local name="${CONTAINER_NAME}-reject-${entrypoint_check_count}"
+  local output status=0
+
+  # `timeout` signals the docker CLI, not the container, so name the container and
+  # force-remove it here: the cleanup trap only knows the fixed container names.
+  local -a runner=()
+  if [ -n "$TIMEOUT_BIN" ]; then
+    runner=("$TIMEOUT_BIN" "${ENTRYPOINT_CHECK_TIMEOUT}")
+  fi
+  output=$("${runner[@]}" docker run --rm \
+    --name "${name}" \
+    --platform "${PLATFORM}" \
+    "$@" \
+    "${IMAGE_TAG}" 2>&1) || status=$?
+  docker rm -f "${name}" > /dev/null 2>&1 || true
+
+  if [ "$status" -eq 124 ]; then
+    echo "ERROR: ${description}"
+    echo "       container did not exit within ${ENTRYPOINT_CHECK_TIMEOUT}s - the entrypoint"
+    echo "       accepted the configuration and started serving instead of rejecting it"
+    echo "$output"
+    exit 1
+  fi
+  if [ "$status" -eq 0 ]; then
+    echo "ERROR: ${description}"
+    exit 1
+  fi
+  if ! grep -q "$expected" <<<"$output"; then
+    echo "ERROR: ${description} - did not fail clearly (exit ${status})"
+    echo "$output"
+    exit 1
+  fi
+}
+
+assert_entrypoint_rejects \
+  "image accepted an incomplete UID/GID configuration" \
+  "BIFROST_RUN_AS_UID and BIFROST_RUN_AS_GID must be set together" \
+  -e BIFROST_RUN_AS_UID=1000
+
+assert_entrypoint_rejects \
+  "image accepted an invalid UID/GID configuration" \
+  "must be non-negative integers" \
+  -e BIFROST_RUN_AS_UID='1000:0' \
+  -e BIFROST_RUN_AS_GID=0
+
+assert_entrypoint_rejects \
+  "image accepted root as the privilege-drop target" \
+  "BIFROST_RUN_AS_UID must be a non-zero UID" \
+  --user 0:0 \
+  -e BIFROST_RUN_AS_UID=0 \
+  -e BIFROST_RUN_AS_GID=0
+
+assert_entrypoint_rejects \
+  "image accepted privilege dropping without a root entrypoint" \
+  "require the entrypoint to start as root" \
+  -e BIFROST_RUN_AS_UID=1000 \
+  -e BIFROST_RUN_AS_GID=0
+
+docker volume create "${PRIVDROP_VOLUME_NAME}" >/dev/null
+docker run --rm \
+  --platform "${PLATFORM}" \
+  --user 0:0 \
+  --entrypoint sh \
+  -v "${PRIVDROP_VOLUME_NAME}:/app/data" \
+  "${IMAGE_TAG}" \
+  -c 'chown -R 0:0 /app/data && chmod 0700 /app/data'
+
+# shellcheck disable=SC2016 # Literal JSON schema key and env references.
+INLINE_CONFIG='{"$schema":"https://www.getbifrost.ai/schema","version":2,"source_of_truth":"split","encryption_key":"env.BIFROST_ENCRYPTION_KEY","client":{"enforce_auth_on_inference":true},"providers":{"openai":{"keys":[{"name":"CI OpenAI key","value":"env.OPENAI_API_KEY","weight":1}]}},"governance":{"auth_config":{"admin_username":"admin","admin_password":"env.BIFROST_ADMIN_PASSWORD","is_enabled":true}}}'
+docker run -d \
+  --name "${PRIVDROP_CONTAINER_NAME}" \
+  --platform "${PLATFORM}" \
+  --user 0:0 \
+  -p ${PRIVDROP_TEST_PORT}:8080 \
+  -e APP_PORT=8080 \
+  -e APP_HOST=0.0.0.0 \
+  -e BIFROST_CONFIG="${INLINE_CONFIG}" \
+  -e BIFROST_ENCRYPTION_KEY=ci-test-encryption-key-32-bytes \
+  -e BIFROST_ADMIN_PASSWORD=ci-test-admin-password \
+  -e OPENAI_API_KEY=ci-test-provider-key \
+  -e BIFROST_RUN_AS_UID=1000 \
+  -e BIFROST_RUN_AS_GID=0 \
+  -v "${PRIVDROP_VOLUME_NAME}:/app/data" \
+  "${IMAGE_TAG}" >/dev/null
+
+MAX_WAIT=60
+ELAPSED=0
+while [ $ELAPSED -lt $MAX_WAIT ]; do
+  if curl -sf "http://localhost:${PRIVDROP_TEST_PORT}/health" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 2
+  ELAPSED=$((ELAPSED + 2))
+done
+if [ $ELAPSED -ge $MAX_WAIT ]; then
+  echo "ERROR: privilege-drop container did not become healthy"
+  docker logs "${PRIVDROP_CONTAINER_NAME}" 2>&1 | tail -100 || true
+  exit 1
+fi
+
+LOGIN_RESPONSE="$TEMP_DIR/privdrop-login.json"
+LOGIN_COOKIES="$TEMP_DIR/privdrop-login.cookies"
+LOGIN_STATUS=$(curl -sS -o "$LOGIN_RESPONSE" -w '%{http_code}' \
+  "http://localhost:${PRIVDROP_TEST_PORT}/api/session/login" \
+  -c "$LOGIN_COOKIES" \
+  -H 'Content-Type: application/json' \
+  --data '{"username":"admin","password":"ci-test-admin-password"}')
+if [ "$LOGIN_STATUS" != "200" ] || ! jq -e '.message == "Login successful"' "$LOGIN_RESPONSE" >/dev/null; then
+  echo "ERROR: generated administrator credentials failed with HTTP ${LOGIN_STATUS}"
+  cat "$LOGIN_RESPONSE"
+  exit 1
+fi
+
+VIRTUAL_KEY_RESPONSE="$TEMP_DIR/privdrop-virtual-key.json"
+VIRTUAL_KEY_STATUS=$(curl -sS -o "$VIRTUAL_KEY_RESPONSE" -w '%{http_code}' \
+  "http://localhost:${PRIVDROP_TEST_PORT}/api/governance/virtual-keys" \
+  -b "$LOGIN_COOKIES" \
+  -H 'Content-Type: application/json' \
+  --data '{"name":"CI deployment key"}')
+if [ "$VIRTUAL_KEY_STATUS" != "200" ] || ! jq -e '.message == "Virtual key created successfully"' "$VIRTUAL_KEY_RESPONSE" >/dev/null; then
+  echo "ERROR: authenticated virtual-key creation failed with HTTP ${VIRTUAL_KEY_STATUS}"
+  cat "$VIRTUAL_KEY_RESPONSE"
+  exit 1
+fi
+VIRTUAL_KEY_ID=$(jq -er '.virtual_key.id' "$VIRTUAL_KEY_RESPONSE")
+
+ANONYMOUS_STATUS=$(curl -sS -o /dev/null -w '%{http_code}' \
+  "http://localhost:${PRIVDROP_TEST_PORT}/v1/chat/completions" \
+  -H 'Content-Type: application/json' \
+  --data '{"model":"openai/gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}')
+if [ "$ANONYMOUS_STATUS" != "401" ]; then
+  echo "ERROR: anonymous inference returned HTTP ${ANONYMOUS_STATUS}, expected 401"
+  exit 1
+fi
+
+PID_UID=$(docker exec --user 0:0 "${PRIVDROP_CONTAINER_NAME}" awk '/^Uid:/{print $2}' /proc/1/status)
+if [ "$PID_UID" != "1000" ]; then
+  echo "ERROR: PID 1 runs as UID ${PID_UID}, expected 1000"
+  exit 1
+fi
+
+CONFIG_METADATA=$(docker exec --user 0:0 "${PRIVDROP_CONTAINER_NAME}" stat -c '%u:%g %a' /app/data/config.json)
+if [ "$CONFIG_METADATA" != "1000:0 600" ]; then
+  echo "ERROR: materialized config metadata is '${CONFIG_METADATA}', expected '1000:0 600'"
+  exit 1
+fi
+
+if ! PROCESS_ENV=$(docker exec --privileged --user 0:0 "${PRIVDROP_CONTAINER_NAME}" sh -c \
+  'tr "\0" "\n" </proc/1/environ'); then
+  echo "ERROR: could not inspect the Bifrost process environment"
+  exit 1
+fi
+if grep -q '^BIFROST_CONFIG=' <<<"$PROCESS_ENV"; then
+  echo "ERROR: BIFROST_CONFIG leaked into the Bifrost process environment"
+  exit 1
+fi
+
+docker restart "${PRIVDROP_CONTAINER_NAME}" >/dev/null
+ELAPSED=0
+while [ $ELAPSED -lt $MAX_WAIT ]; do
+  if curl -sf "http://localhost:${PRIVDROP_TEST_PORT}/health" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 2
+  ELAPSED=$((ELAPSED + 2))
+done
+if [ $ELAPSED -ge $MAX_WAIT ]; then
+  echo "ERROR: privilege-drop container did not become healthy after restart"
+  docker logs "${PRIVDROP_CONTAINER_NAME}" 2>&1 | tail -100 || true
+  exit 1
+fi
+
+PERSISTED_KEY_STATUS=$(curl -sS -o /dev/null -w '%{http_code}' \
+  "http://localhost:${PRIVDROP_TEST_PORT}/api/governance/virtual-keys/${VIRTUAL_KEY_ID}" \
+  -b "$LOGIN_COOKIES")
+if [ "$PERSISTED_KEY_STATUS" != "200" ]; then
+  echo "ERROR: virtual key did not survive container restart (HTTP ${PERSISTED_KEY_STATUS})"
+  exit 1
+fi
+
+CONFIG_METADATA=$(docker exec --user 0:0 "${PRIVDROP_CONTAINER_NAME}" stat -c '%u:%g %a' /app/data/config.json)
+if [ "$CONFIG_METADATA" != "1000:0 600" ]; then
+  echo "ERROR: restarted config metadata is '${CONFIG_METADATA}', expected '1000:0 600'"
+  exit 1
+fi
+
+docker stop "${PRIVDROP_CONTAINER_NAME}" >/dev/null
+docker rm "${PRIVDROP_CONTAINER_NAME}" >/dev/null
+docker volume rm "${PRIVDROP_VOLUME_NAME}" >/dev/null
+
+echo "Entrypoint runtime contract passed"
+
+# Start the PostgreSQL dependency used by this image smoke test. The broader
+# framework suite owns the remaining services in tests/docker-compose.yml.
+echo ""
+echo "=== Starting PostgreSQL ==="
+docker compose -f "$DOCKER_COMPOSE_FILE" up -d postgres
 
 # Wait for Postgres to be ready
 echo "Waiting for Postgres to be ready..."
@@ -281,6 +512,12 @@ if [ $HEALTH_OK -eq 0 ]; then
   echo "ERROR: Bifrost health check failed!"
   echo "Container logs:"
   docker logs "${CONTAINER_NAME}" 2>&1 | tail -100 || true
+  exit 1
+fi
+
+DEFAULT_PID_UID=$(docker exec "${CONTAINER_NAME}" awk '/^Uid:/{print $2}' /proc/1/status)
+if [ "$DEFAULT_PID_UID" != "1000" ]; then
+  echo "ERROR: default PID 1 runs as UID ${DEFAULT_PID_UID}, expected 1000"
   exit 1
 fi
 

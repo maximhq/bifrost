@@ -1,128 +1,88 @@
 ---
 title: "Railway"
-description: "Deploy the Bifrost container as a Railway service"
+description: "Deploy Bifrost to Railway with PostgreSQL or durable SQLite"
 icon: "train"
 ---
 
-Railway can run the public Bifrost image as a long-running service. The deployment below uses PostgreSQL so configuration and logs survive service replacement.
+Railway has two Maxim-maintained template contracts for a single OSS Bifrost replica. Both use `maximhq/bifrost:latest`, generate the encryption and administrator secrets, enable dashboard authentication, and reject anonymous inference.
 
 <Note>
-**Support level: Preview.** This guide is not continuously exercised against a live Railway project.
+The contracts use the container runtime introduced in Bifrost `v1.6.12` and were validated in the repository on August 18, 2026. Publish or update the public templates only after `maximhq/bifrost:latest` resolves to the qualified multi-architecture `v1.6.12` image.
 </Note>
 
-## Compatibility summary
+## Choose a deployment
 
-| Model | Compatibility | Constraint |
+| Choice | Storage | Cost and availability |
 |---|---|---|
-| Disposable one-replica evaluation | **Compatible** | Local data is not durable. |
-| One OSS replica with Railway volume and SQLite | **Preview with permission check** | SQLite is OSS-only. Railway mounts volumes as root; verify write access for container UID `1000`. |
-| One replica with external PostgreSQL 16+ | **Preview** | Fits ephemeral replacement when configuration is supplied at startup. |
-| Multiple OSS DB-managed replicas | **Not supported** | OSS live configuration does not synchronize. |
-| Enterprise mesh | **Unqualified** | The guide does not verify required peer TCP+UDP addressing; use no compatibility claim. |
+| PostgreSQL | Private PostgreSQL 18 service and persistent database volume | Railway bills compute, database, and storage usage. Bifrost can replace independently of its database. |
+| SQLite | One volume mounted at `/app/data` | Lower resource footprint, but a volume-backed deploy has a brief interruption and remains single-replica. |
 
-Bifrost Enterprise requires PostgreSQL 16 or later for both stores and does not support the SQLite alternative on this page.
+### PostgreSQL
 
-## Deploy Bifrost
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template/blue-dark?utm_medium=integration&utm_source=button&utm_campaign=bifrost)
 
-### Step 1: Create and link a Railway project
+The Maxim-owned `blue-dark` template provisions Bifrost and PostgreSQL 18. Both stores require TLS, configuration and logs persist in PostgreSQL, and the Bifrost service has no unnecessary volume or root-user override.
 
-```bash
-railway login
-railway init --name bifrost
-```
+The auditable dashboard contract is checked in at `deploy/railway/postgres.template-contract.json`. Railway templates are published from its dashboard because `railway.json` describes only one service and cannot create this complete multi-service template.
 
-### Step 2: Create the Bifrost service
+### SQLite
 
-```bash
-railway add \
-  --image docker.io/maximhq/bifrost:<BIFROST_VERSION> \
-  --variables 'APP_HOST=0.0.0.0' \
-  --variables 'APP_PORT=8080' \
-  --variables 'PORT=8080'
-```
+The Maxim-owned SQLite template is defined by `deploy/railway/sqlite.template-contract.json`. Its public button is deliberately release-gated: the assigned template slug must be recorded in that contract and on this page immediately after publication. Do not substitute an unowned or unverified community template.
 
-Create the file that Bifrost will load:
+The SQLite service attaches a volume at `/app/data`. Railway mounts volumes as root, so the template starts the container with `RAILWAY_RUN_UID=0`; the official entrypoint repairs the mounted directory and then launches Bifrost as `1000:0` using `BIFROST_RUN_AS_UID` and `BIFROST_RUN_AS_GID`. Bifrost—not the bootstrap shell—remains PID 1.
 
-```bash
-cat > config.json <<'JSON'
-{
-  "$schema": "https://www.getbifrost.ai/schema",
-  "encryption_key": "env.BIFROST_ENCRYPTION_KEY",
-  "setup_token": "env.BIFROST_SETUP_TOKEN",
-  "client": {
-    "enforce_auth_on_inference": true
-  },
-  "config_store": {
-    "enabled": true,
-    "type": "postgres",
-    "config": {"host": "env.PG_HOST", "port": "5432", "user": "env.PG_USER", "password": "env.PG_PASSWORD", "db_name": "env.PG_DATABASE", "ssl_mode": "require"}
-  },
-  "logs_store": {
-    "enabled": true,
-    "type": "postgres",
-    "config": {"host": "env.PG_HOST", "port": "5432", "user": "env.PG_USER", "password": "env.PG_PASSWORD", "db_name": "env.PG_DATABASE", "ssl_mode": "require"}
-  }
-}
-JSON
-```
+## Sign in and create a credential
 
-### Step 3: Supply configuration and secrets
+1. Deploy the selected template and generate a public domain for the Bifrost service.
+2. Open the service's **Variables** tab and reveal the generated `BIFROST_ADMIN_PASSWORD` value.
+3. Open the public domain and sign in with username `admin` and that password.
+4. Add an LLM provider credential, then create a [virtual key](/features/governance/virtual-keys) for API clients.
+
+`BIFROST_ADMIN_PASSWORD` remains operator-managed. A password changed only in the dashboard is reset from the service variable whenever Bifrost restarts. Rotate it by changing the Railway secret and deploying the staged change.
+
+Keep `BIFROST_ENCRYPTION_KEY` stable across restarts, deployments, backups, and restores. Losing or changing it can make persisted provider credentials unreadable.
+
+## Verify
 
 ```bash
-export BIFROST_CONFIG_B64="$(base64 < config.json | tr -d '\n')"
-read -r -s -p 'PostgreSQL password: ' PG_PASSWORD; echo
-read -r -s -p 'Bifrost encryption key: ' BIFROST_ENCRYPTION_KEY; echo
-read -r -s -p 'Bifrost setup token: ' BIFROST_SETUP_TOKEN; echo
-
-printf '%s' "$BIFROST_CONFIG_B64" | railway variable set BIFROST_CONFIG_B64 --stdin
-railway variable set 'PG_HOST=<POSTGRES_HOST>'
-railway variable set 'PG_USER=<POSTGRES_USER>'
-printf '%s' "$PG_PASSWORD" | railway variable set PG_PASSWORD --stdin
-railway variable set 'PG_DATABASE=<POSTGRES_DATABASE>'
-printf '%s' "$BIFROST_ENCRYPTION_KEY" | railway variable set BIFROST_ENCRYPTION_KEY --stdin
-printf '%s' "$BIFROST_SETUP_TOKEN" | railway variable set BIFROST_SETUP_TOKEN --stdin
-```
-
-In the service settings, set the start command to:
-
-```text
-/bin/sh -c 'printf "%s" "$BIFROST_CONFIG_B64" | base64 -d > /app/data/config.json && exec /app/docker-entrypoint.sh'
-```
-
-Set the health-check path to `/health` and deploy one replica. The configuration requires authentication on inference routes. If external access is needed, generate a public domain, use the configured setup token to [create the first admin account](/quickstart/gateway/setting-up-auth), and [create a virtual key](/features/governance/virtual-keys) before sending inference traffic or sharing the hostname with clients.
-
-### Step 4: Verify
-
-```bash
-railway logs
 curl --fail --show-error https://<RAILWAY_HOSTNAME>/health
+
+curl --silent --output /dev/null --write-out '%{http_code}\n' \
+  https://<RAILWAY_HOSTNAME>/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  --data '{"model":"openai/gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}'
 ```
 
-### One-click status
+`/health` must return `200`, and anonymous inference must return `401`. Complete the [deployment verification checklist](/deployment-guides/runtime-contract#verify-the-deployment), including non-streaming, streaming, and restart-persistence checks, before adding production traffic.
 
-Railway supports **Deploy on Railway** buttons only after a project is created and published as a Railway template. Bifrost does not currently have a verified Maxim-owned template ID, so this page does not fabricate a deploy link. Image-backed Railway templates also require an explicit process for testing and publishing each new Bifrost image version.
+For the SQLite template, also open the service shell as an operator and verify the runtime and persistent files:
 
-## SQLite storage alternative (OSS only)
+```bash
+awk '/^Uid:/{print $2}' /proc/1/status
+stat -c '%u:%g %a %n' /app/data /app/data/config.json
+```
 
-This alternative is available only for OSS Bifrost. For a single-instance SQLite deployment, create `config.json` from the [SQLite configuration](/deployment-guides/runtime-contract#sqlite), encode and inject it using Step 3, remove the PostgreSQL variables, and attach a Railway volume at `/app/data`.
+PID 1 must report UID `1000`; `/app/data` and its Bifrost files must be owned by `1000:0`, and `config.json` must have mode `600`.
 
-Before using the deployment, confirm that the mounted path is writable by container UID `1000`. Railway volumes can be root-owned; if the platform configuration cannot provide safe write access, use PostgreSQL instead. Keep one replica because SQLite files are not a replica-coordination mechanism.
+## Updates, scaling, and availability
 
-## Scaling and upgrades
-
-- OSS SQLite volume: one replica.
-- PostgreSQL-backed OSS configuration: one replica.
-- File-only OSS: multiple replicas only with identical immutable config and secrets.
-- Enterprise mesh: not qualified on this page; validate required peer networking or use release-qualified broker mode.
-
-Set `RAILWAY_DEPLOYMENT_DRAINING_SECONDS` to give Bifrost time after `SIGTERM`; the platform default is not a Bifrost guarantee. Pin versioned images and use Railway deployment history or the prior tag for rollback. Database migrations are not reversed automatically.
+- Both choices run one OSS replica. Do not scale them above one; OSS live configuration is not synchronized between processes.
+- The templates configure Railway to check `maximhq/bifrost:latest` for a changed image daily.
+- For controlled production rollouts, copy the template and replace `latest` with an immutable version tag or digest.
+- Both services allow 60 seconds of deployment draining. PostgreSQL Bifrost deployments use a short overlap; SQLite overlap is disabled because only one deployment can mount the volume.
+- Railway cannot run two deployments simultaneously for a service with a volume, so SQLite redeploys have a brief outage.
+- PostgreSQL users can scale database resources and storage independently. SQLite users can resize the volume and later migrate both stores to PostgreSQL.
+- Enterprise clustering is outside these templates; follow the [Enterprise deployment guidance](/enterprise/clustering).
 
 ## Troubleshooting
 
-- `service unavailable`: verify `PORT`, `APP_PORT`, target port, and `APP_HOST` are aligned.
-- Health timeout: inspect startup migration/database logs and adjust the deployment health timeout only after correcting connectivity.
-- `/app/data` permission error: the root-owned Railway volume is not writable by UID `1000`; use a safe ownership mechanism or PostgreSQL.
-- Configuration disappears: the deployment used ephemeral local storage.
-- Stream terminates during deploy: configure sufficient draining overlap and client retry behavior.
+- **Service is unavailable:** verify `APP_PORT=8080`, `PORT=8080`, the generated public domain, and the `/health` setting.
+- **`/health` times out:** inspect startup migrations and private PostgreSQL connectivity before increasing the health-check timeout.
+- **Anonymous inference succeeds:** do not expose the project; confirm the deployed `BIFROST_CONFIG` contains `client.enforce_auth_on_inference: true` and redeploy.
+- **Login fails after restart:** reveal the current `BIFROST_ADMIN_PASSWORD` service variable and use username `admin`; rotate the variable if needed.
+- **SQLite reports a permission error:** confirm `RAILWAY_RUN_UID=0`, `BIFROST_RUN_AS_UID=1000`, and `BIFROST_RUN_AS_GID=0`. Do not solve it by leaving Bifrost running as root.
+- **Configuration disappeared:** verify the SQLite volume is mounted at `/app/data`, or that both PostgreSQL stores are healthy.
+- **A stream ends during deployment:** verify the 60-second draining setting and use client retries for interrupted requests.
+- **A changed `latest` image is not active yet:** wait for the daily image check or redeploy the Bifrost service manually.
 
-See [Bifrost Deployment Requirements](/deployment-guides/runtime-contract), its [deployment verification checklist](/deployment-guides/runtime-contract#verify-the-deployment), and [Enterprise clustering](/enterprise/clustering) for the remaining operational guidance.
+See [Bifrost Deployment Requirements](/deployment-guides/runtime-contract) for the complete container, authentication, storage, and upgrade contract.

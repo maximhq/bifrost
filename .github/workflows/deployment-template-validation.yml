@@ -1,0 +1,113 @@
+name: Deployment Template Validation
+
+on:
+  pull_request:
+    paths:
+      - "render.yaml"
+      - "deploy/render/**"
+      - "deploy/railway/**"
+      - "transports/config.schema.json"
+      - "transports/docker-entrypoint.sh"
+      - "transports/docker-entrypoint_test.sh"
+      - ".github/workflows/scripts/test-docker-image.sh"
+      - "transports/Dockerfile"
+      - "transports/Dockerfile.local"
+      - "docs/deployment-guides/overview.mdx"
+      - "docs/deployment-guides/runtime-contract.mdx"
+      - "docs/deployment-guides/platforms/render.mdx"
+      - "docs/deployment-guides/platforms/railway.mdx"
+      - ".github/workflows/deployment-template-validation.yml"
+      - ".github/workflows/scripts/validate-deployment-templates.py"
+      - ".github/workflows/scripts/verify-deployment-release.sh"
+  push:
+    branches: ["main"]
+    paths:
+      - "render.yaml"
+      - "deploy/render/**"
+      - "deploy/railway/**"
+      - "transports/config.schema.json"
+      - "transports/docker-entrypoint.sh"
+      - "transports/docker-entrypoint_test.sh"
+      - ".github/workflows/scripts/test-docker-image.sh"
+      - "transports/Dockerfile"
+      - "transports/Dockerfile.local"
+      - "docs/deployment-guides/overview.mdx"
+      - "docs/deployment-guides/runtime-contract.mdx"
+      - "docs/deployment-guides/platforms/render.mdx"
+      - "docs/deployment-guides/platforms/railway.mdx"
+      - ".github/workflows/deployment-template-validation.yml"
+      - ".github/workflows/scripts/validate-deployment-templates.py"
+      - ".github/workflows/scripts/verify-deployment-release.sh"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            files.pythonhosted.org:443
+            api.github.com:443
+            api.render.com:443
+            auth.docker.io:443
+            github.com:443
+            objects.githubusercontent.com:443
+            pypi.org:443
+            production.cloudflare.docker.com:443
+            registry-1.docker.io:443
+            release-assets.githubusercontent.com:443
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install validators
+        run: |
+          python3 -m pip install --disable-pip-version-check PyYAML==6.0.3 jsonschema==4.26.0
+          curl -fsSL \
+            https://github.com/render-oss/cli/releases/download/v2.22.0/cli_2.22.0_linux_amd64.zip \
+            -o /tmp/render-cli.zip
+          unzip -q /tmp/render-cli.zip -d /tmp/render-cli
+          sudo install -m 0755 /tmp/render-cli/cli_v2.22.0 /usr/local/bin/render
+
+      - name: Validate repository contracts
+        run: python3 .github/workflows/scripts/validate-deployment-templates.py
+
+      - name: Validate entrypoint shell
+        run: |
+          shellcheck transports/docker-entrypoint.sh transports/docker-entrypoint_test.sh
+          sh transports/docker-entrypoint_test.sh
+
+      # The strict gate lives in publish-render-sqlite-branch.yml, which refuses to
+      # publish the public one-click branch before the qualified release exists. Here
+      # it only warns on pull requests: the PR that introduces the gated runtime
+      # contract necessarily precedes the release that satisfies it.
+      - name: Verify public image release gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if bash .github/workflows/scripts/verify-deployment-release.sh v1.6.12; then
+            exit 0
+          fi
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "::warning::maximhq/bifrost:latest does not resolve to the qualified v1.6.12 release yet; do not publish or update the public one-click templates until it does."
+            exit 0
+          fi
+          exit 1
+
+      - name: Validate Render Blueprints
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_WORKSPACE_ID: ${{ vars.RENDER_WORKSPACE_ID }}
+        run: |
+          if [ -z "$RENDER_API_KEY" ] || [ -z "$RENDER_WORKSPACE_ID" ]; then
+            echo "::notice::Render CLI semantic validation requires RENDER_API_KEY and RENDER_WORKSPACE_ID; repository schema validation completed."
+            exit 0
+          fi
+          render blueprints validate --workspace "$RENDER_WORKSPACE_ID" render.yaml
+          render blueprints validate --workspace "$RENDER_WORKSPACE_ID" deploy/render/render-sqlite.yaml

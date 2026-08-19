@@ -6,6 +6,8 @@ icon: "file-contract"
 
 This page describes the information your platform needs to run Bifrost. Use it together with the guide for [Kubernetes](/deployment-guides/helm), [EKS](/deployment-guides/platforms/eks), [GKE](/deployment-guides/platforms/gke), [AKS](/deployment-guides/platforms/aks), [ECS](/deployment-guides/ecs), or another container platform.
 
+For a single OSS replica, the [Render](/deployment-guides/platforms/render) and [Railway](/deployment-guides/platforms/railway) guides provide four one-click choices: PostgreSQL or persistent SQLite on either platform. PostgreSQL keeps state outside the Bifrost container; SQLite mounts durable `/app/data` storage and accepts brief disk-backed deployment downtime.
+
 ## What you will deploy
 
 Bifrost is distributed as a Linux container image:
@@ -103,10 +105,17 @@ The container has defaults for its basic runtime settings:
 | `LOG_LEVEL` | `info` | Process log level: `debug`, `info`, `warn`, or `error` |
 | `LOG_STYLE` | `json` | Process log format: `json` or `pretty` |
 | `GOMEMLIMIT` | Unset | Go runtime memory target; a common starting point is about 90% of the container memory limit |
+| `BIFROST_CONFIG` | Unset | Complete inline `config.json`; the entrypoint atomically writes it to `$APP_DIR/config.json` with mode `0600` on every start, then removes it from the Bifrost process environment |
+| `BIFROST_RUN_AS_UID` | Unset | Target UID for the standard Alpine image after a root-started entrypoint repairs `$APP_DIR`; must be paired with `BIFROST_RUN_AS_GID` |
+| `BIFROST_RUN_AS_GID` | Unset | Target GID paired with `BIFROST_RUN_AS_UID` |
 | `BIFROST_ENCRYPTION_KEY` | No generated value | Stable secret used to protect persisted sensitive configuration |
 | `BIFROST_SETUP_TOKEN` | Unset | Bootstrap secret used only to create the first admin account; `setup_token` in `config.json` can reference this variable |
 
 The official container entrypoint uses `APP_HOST`, `APP_PORT`, and `APP_DIR`. Use those names when configuring a container platform.
+
+`BIFROST_CONFIG` is suitable for platforms that supply configuration as an environment value instead of mounting a file. The write is atomic, occurs on every startup, and deliberately replaces the previous file so the platform definition remains authoritative. The file is private to its owner (`0600`), and the value is unset before Bifrost starts. Do not put provider keys directly in this JSON; use `env.VARIABLE_NAME` references so platforms can manage them as separate secrets.
+
+The standard image still starts as non-root `1000:0` when the run-as variables are absent. Set both run-as variables only when a platform mounts `/app/data` as root and can start the entrypoint as root. The entrypoint validates both values, repairs directory ownership, confirms the target user can write, and uses `su-exec` so Bifrost becomes PID 1 under the requested UID/GID. An incomplete, nonnumeric, non-root, or unsupported privilege-drop configuration exits before Bifrost starts. These variables are supported by the standard Alpine image, not the Red Hat runtime image.
 
 Provider keys and integration credentials can be referenced from `config.json` with `env.VARIABLE_NAME`. For example:
 
@@ -132,6 +141,29 @@ Provider keys and integration credentials can be referenced from `config.json` w
 Keep the encryption key stable across restarts, replicas, upgrades, backups, and restores. Losing or changing it can make persisted encrypted values unreadable.
 
 Configure `setup_token` before starting a deployment that does not have an admin account. It accepts a literal value, an `env.VARIABLE_NAME` reference, or a `vault.path` reference; `BIFROST_SETUP_TOKEN` is also used when `setup_token` is absent. The token is never persisted or logged, must be identical across replicas, and is required only when [creating the first admin account](/quickstart/gateway/setting-up-auth).
+
+### One-click administrator authentication
+
+The Render and Railway one-click templates retain Bifrost 1.6-compatible authentication instead of using the 2.0 setup-token flow:
+
+```json
+{
+  "source_of_truth": "split",
+  "encryption_key": "env.BIFROST_ENCRYPTION_KEY",
+  "client": {
+    "enforce_auth_on_inference": true
+  },
+  "governance": {
+    "auth_config": {
+      "admin_username": "admin",
+      "admin_password": "env.BIFROST_ADMIN_PASSWORD",
+      "is_enabled": true
+    }
+  }
+}
+```
+
+The platforms generate `BIFROST_ADMIN_PASSWORD`; the operator reveals that secret and signs in as `admin`. The environment variable remains authoritative across restarts. A password changed only in the UI is therefore reset from `BIFROST_ADMIN_PASSWORD` on the next start. Rotate it through the platform secret and redeploy. Requiring authentication on inference routes ensures clients must use a virtual key instead of accessing the public endpoint anonymously.
 
 Use [config.json](/deployment-guides/config-json) for application configuration and [Helm Values](/deployment-guides/helm/values) for Kubernetes configuration.
 

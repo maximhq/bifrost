@@ -1,0 +1,72 @@
+{
+  "$schema": "./template-contract.schema.json",
+  "platform": "railway",
+  "template": {
+    "name": "Bifrost + PostgreSQL",
+    "slug": "blue-dark",
+    "owner": "Maxim AI's Projects",
+    "visibility": "public",
+    "last_verified": null
+  },
+  "services": [
+    {
+      "name": "Bifrost",
+      "image": "docker.io/maximhq/bifrost:latest",
+      "image_auto_update": "daily",
+      "variables": {
+        "APP_HOST": { "value": "0.0.0.0", "sensitive": false },
+        "APP_PORT": { "value": "8080", "sensitive": false },
+        "PORT": { "value": "8080", "sensitive": false },
+        "BIFROST_CONFIG": {
+          "value": "{\"$schema\":\"https://www.getbifrost.ai/schema\",\"version\":2,\"source_of_truth\":\"split\",\"encryption_key\":\"env.BIFROST_ENCRYPTION_KEY\",\"client\":{\"enforce_auth_on_inference\":true},\"governance\":{\"auth_config\":{\"admin_username\":\"admin\",\"admin_password\":\"env.BIFROST_ADMIN_PASSWORD\",\"is_enabled\":true}},\"config_store\":{\"enabled\":true,\"type\":\"postgres\",\"config\":{\"host\":\"env.PG_HOST\",\"port\":\"env.PG_PORT\",\"user\":\"env.PG_USER\",\"password\":\"env.PG_PASSWORD\",\"db_name\":\"env.PG_DATABASE\",\"ssl_mode\":\"require\",\"max_open_conns\":20,\"max_idle_conns\":5}},\"logs_store\":{\"enabled\":true,\"type\":\"postgres\",\"config\":{\"host\":\"env.PG_HOST\",\"port\":\"env.PG_PORT\",\"user\":\"env.PG_USER\",\"password\":\"env.PG_PASSWORD\",\"db_name\":\"env.PG_DATABASE\",\"ssl_mode\":\"require\",\"max_open_conns\":20,\"max_idle_conns\":5}}}",
+          "sensitive": false
+        },
+        "BIFROST_ENCRYPTION_KEY": { "value": "${{secret()}}", "sensitive": true },
+        "BIFROST_ADMIN_PASSWORD": { "value": "${{secret()}}", "sensitive": true },
+        "PG_HOST": { "value": "${{Postgres.PGHOST}}", "sensitive": false },
+        "PG_PORT": { "value": "${{Postgres.PGPORT}}", "sensitive": false },
+        "PG_USER": { "value": "${{Postgres.PGUSER}}", "sensitive": false },
+        "PG_PASSWORD": { "value": "${{Postgres.PGPASSWORD}}", "sensitive": true },
+        "PG_DATABASE": { "value": "${{Postgres.PGDATABASE}}", "sensitive": false }
+      },
+      "deploy": {
+        "replicas": 1,
+        "healthcheck_path": "/health",
+        "healthcheck_timeout_seconds": 300,
+        "draining_seconds": 60,
+        "overlap_seconds": 10,
+        "restart_policy": "ON_FAILURE",
+        "public_port": 8080
+      },
+      "volumes": []
+    },
+    {
+      "name": "Postgres",
+      "image": "ghcr.io/railwayapp-templates/postgres-ssl:18",
+      "image_auto_update": "disabled",
+      "variables": {
+        "POSTGRES_DB": { "value": "bifrost", "sensitive": false },
+        "POSTGRES_USER": { "value": "postgres", "sensitive": false },
+        "POSTGRES_PASSWORD": { "value": "${{secret()}}", "sensitive": true },
+        "PGHOST": { "value": "${{RAILWAY_PRIVATE_DOMAIN}}", "sensitive": false },
+        "PGPORT": { "value": "5432", "sensitive": false },
+        "PGUSER": { "value": "${{POSTGRES_USER}}", "sensitive": false },
+        "PGPASSWORD": { "value": "${{POSTGRES_PASSWORD}}", "sensitive": true },
+        "PGDATABASE": { "value": "${{POSTGRES_DB}}", "sensitive": false },
+        "PGDATA": { "value": "/var/lib/postgresql/data/pgdata", "sensitive": false }
+      },
+      "deploy": {
+        "replicas": 1,
+        "healthcheck_path": null,
+        "healthcheck_timeout_seconds": 300,
+        "draining_seconds": 60,
+        "overlap_seconds": 0,
+        "restart_policy": "ON_FAILURE",
+        "public_port": null
+      },
+      "volumes": [
+        { "mount_path": "/var/lib/postgresql/data" }
+      ]
+    }
+  ]
+}

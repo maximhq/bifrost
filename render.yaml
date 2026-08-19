@@ -1,0 +1,98 @@
+# Bifrost one-click Render deployment: free PostgreSQL evaluation.
+# The free database expires 30 days after creation unless it is upgraded.
+services:
+  - type: web
+    name: bifrost
+    runtime: image
+    plan: free
+    autoDeploy: false
+    image:
+      url: docker.io/maximhq/bifrost:latest
+    numInstances: 1
+    healthCheckPath: /health
+    maxShutdownDelaySeconds: 60
+    envVars:
+      - key: APP_HOST
+        value: 0.0.0.0
+      - key: APP_PORT
+        value: "10000"
+      - key: PORT
+        value: "10000"
+      - key: BIFROST_CONFIG
+        value: |
+          {
+            "$schema": "https://www.getbifrost.ai/schema",
+            "version": 2,
+            "source_of_truth": "split",
+            "encryption_key": "env.BIFROST_ENCRYPTION_KEY",
+            "client": {
+              "enforce_auth_on_inference": true
+            },
+            "governance": {
+              "auth_config": {
+                "admin_username": "admin",
+                "admin_password": "env.BIFROST_ADMIN_PASSWORD",
+                "is_enabled": true
+              }
+            },
+            "config_store": {
+              "enabled": true,
+              "type": "postgres",
+              "config": {
+                "host": "env.PG_HOST",
+                "port": "env.PG_PORT",
+                "user": "env.PG_USER",
+                "password": "env.PG_PASSWORD",
+                "db_name": "env.PG_DATABASE",
+                "ssl_mode": "require",
+                "max_open_conns": 20,
+                "max_idle_conns": 5
+              }
+            },
+            "logs_store": {
+              "enabled": true,
+              "type": "postgres",
+              "config": {
+                "host": "env.PG_HOST",
+                "port": "env.PG_PORT",
+                "user": "env.PG_USER",
+                "password": "env.PG_PASSWORD",
+                "db_name": "env.PG_DATABASE",
+                "ssl_mode": "require",
+                "max_open_conns": 20,
+                "max_idle_conns": 5
+              }
+            }
+          }
+      - key: BIFROST_ENCRYPTION_KEY
+        generateValue: true
+      - key: BIFROST_ADMIN_PASSWORD
+        generateValue: true
+      - key: PG_HOST
+        fromDatabase:
+          name: bifrost-postgres
+          property: host
+      - key: PG_PORT
+        fromDatabase:
+          name: bifrost-postgres
+          property: port
+      - key: PG_USER
+        fromDatabase:
+          name: bifrost-postgres
+          property: user
+      - key: PG_PASSWORD
+        fromDatabase:
+          name: bifrost-postgres
+          property: password
+      - key: PG_DATABASE
+        fromDatabase:
+          name: bifrost-postgres
+          property: database
+
+databases:
+  - name: bifrost-postgres
+    plan: free
+    postgresMajorVersion: "18"
+    databaseName: bifrost
+    user: bifrost
+    ipAllowList: []
