@@ -33,7 +33,7 @@ const (
 
 // Pre-defined errors for provider operations
 const (
-	ErrProviderRequestTimedOut      = "request timed out (default is 300 seconds). You can increase it by setting the default_request_timeout_in_seconds in the network_config or in UI - Providers > Provider Name > Network Config."
+	ErrProviderRequestTimedOut      = "provider request timed out"
 	ErrRequestCancelled             = "request cancelled by caller"
 	ErrRequestBodyConversion        = "failed to convert bifrost request to the expected provider request body"
 	ErrProviderRequestMarshal       = "failed to marshal request body to JSON"

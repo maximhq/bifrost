@@ -293,14 +293,14 @@ func newBifrostCtxDoneError(ctx *schemas.BifrostContext, stage string) *schemas.
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		statusCode = 504
 		errorType = schemas.RequestTimedOut
-		message = fmt.Sprintf("request timed out %s: %v", stage, ctx.Err())
+		message = schemas.TimeoutSourceBifrostContextDeadline.SafeMessage()
 	} else {
 		statusCode = 499
 		errorType = schemas.RequestCancelled
 		message = fmt.Sprintf("request cancelled %s: %v", stage, ctx.Err())
 	}
 
-	return &schemas.BifrostError{
+	bifrostErr := &schemas.BifrostError{
 		IsBifrostError: true,
 		StatusCode:     &statusCode,
 		AllowFallbacks: new(false),
@@ -310,6 +310,17 @@ func newBifrostCtxDoneError(ctx *schemas.BifrostContext, stage string) *schemas.
 			Error:   ctx.Err(),
 		},
 	}
+	if errorType == schemas.RequestTimedOut {
+		elapsedMS := ctx.Elapsed().Milliseconds()
+		bifrostErr.ExtraFields.TimeoutSource = schemas.TimeoutSourceBifrostContextDeadline
+		bifrostErr.ExtraFields.ElapsedMS = elapsedMS
+		bifrostErr.ExtraFields.Latency = elapsedMS
+		bifrostErr.ExtraFields.UpstreamResponseReceived = schemas.Ptr(false)
+		if seconds, ok := ctx.Value(schemas.BifrostContextKeyConfiguredRequestTimeoutSeconds).(int); ok {
+			bifrostErr.ExtraFields.ConfiguredTimeoutSeconds = seconds
+		}
+	}
+	return bifrostErr
 }
 
 // newBifrostQueueFullError creates a 503 BifrostError for requests dropped
@@ -627,6 +638,58 @@ func RedactSensitiveString(s string) string {
 		return "[REDACTED]"
 	}
 	return s[:4] + "[REDACTED]" + s[len(s)-4:]
+}
+
+// safeNetworkErrorForLog returns an allowlisted diagnostic summary. It never
+// emits arbitrary transport text because errors may contain signed URLs,
+// credentials, request paths, headers, or proxy-generated sensitive details.
+func safeNetworkErrorForLog(err error) string {
+	if err == nil {
+		return ""
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) && urlErr.Err != nil {
+		return "URL request: " + safeNetworkErrorForLog(urlErr.Err)
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && opErr.Err != nil {
+		return "network operation: " + safeNetworkErrorForLog(opErr.Err)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "context deadline exceeded"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "context canceled"
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		if dnsErr.Timeout() {
+			return "DNS lookup timeout"
+		}
+		return "DNS lookup failed"
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return "network timeout"
+	}
+
+	lower := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(lower, "timeout") || strings.Contains(lower, "timed out"):
+		return "network timeout"
+	case strings.Contains(lower, "connection reset"):
+		return "connection reset by peer"
+	case strings.Contains(lower, "connection refused"):
+		return "connection refused"
+	case strings.Contains(lower, "broken pipe"):
+		return "broken pipe"
+	case strings.Contains(lower, "unexpected eof"):
+		return "unexpected EOF"
+	case lower == "eof" || strings.HasSuffix(lower, ": eof"):
+		return "EOF"
+	default:
+		return fmt.Sprintf("network transport error (%T)", err)
+	}
 }
 
 // externalURLDNSLookupTimeout bounds the DNS resolution in ValidateExternalURL. The

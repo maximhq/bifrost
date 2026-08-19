@@ -309,8 +309,90 @@ var noop = func() {}
 func SetErrorLatency(bifrostErr *schemas.BifrostError, latency time.Duration) *schemas.BifrostError {
 	if bifrostErr != nil {
 		bifrostErr.ExtraFields.Latency = latency.Milliseconds()
+		if bifrostErr.ExtraFields.TimeoutSource != "" {
+			bifrostErr.ExtraFields.ElapsedMS = latency.Milliseconds()
+		}
 	}
 	return bifrostErr
+}
+
+func configuredTimeoutSeconds(ctx context.Context, fallback time.Duration) int {
+	if ctx != nil {
+		if seconds, ok := ctx.Value(schemas.BifrostContextKeyConfiguredRequestTimeoutSeconds).(int); ok && seconds > 0 {
+			return seconds
+		}
+	}
+	if fallback > 0 {
+		return int(fallback / time.Second)
+	}
+	return 0
+}
+
+func setTimeoutMetadata(bifrostErr *schemas.BifrostError, source schemas.TimeoutSource, configuredSeconds int, elapsed time.Duration, responseReceived bool) *schemas.BifrostError {
+	if bifrostErr == nil {
+		return nil
+	}
+	bifrostErr.ExtraFields.TimeoutSource = source
+	bifrostErr.ExtraFields.ConfiguredTimeoutSeconds = configuredSeconds
+	bifrostErr.ExtraFields.ElapsedMS = elapsed.Milliseconds()
+	bifrostErr.ExtraFields.Latency = elapsed.Milliseconds()
+	bifrostErr.ExtraFields.UpstreamResponseReceived = schemas.Ptr(responseReceived)
+	return bifrostErr
+}
+
+func timeoutReachedConfiguredLimit(elapsed time.Duration, configuredSeconds int) bool {
+	if configuredSeconds <= 0 {
+		return false
+	}
+	configured := time.Duration(configuredSeconds) * time.Second
+	// Scheduling and timer granularity can report just below the configured
+	// boundary. Keep the tolerance small enough that a 27s failure can never be
+	// attributed to a 600s client timeout.
+	tolerance := configured / 20
+	if tolerance > time.Second {
+		tolerance = time.Second
+	}
+	return elapsed+tolerance >= configured
+}
+
+// ClassifyTransportError converts a request-level transport failure into safe,
+// structured timeout metadata. Providers use this for streaming setup errors so
+// they follow the same attribution and retry semantics as unary requests.
+func ClassifyTransportError(ctx context.Context, clientTimeout time.Duration, err error, elapsed time.Duration) *schemas.BifrostError {
+	configuredSeconds := configuredTimeoutSeconds(ctx, clientTimeout)
+	var netErr net.Error
+	isNetTimeout := errors.As(err, &netErr) && netErr.Timeout()
+	if ctx != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		bifrostErr := NewBifrostTimeoutError(schemas.TimeoutSourceBifrostContextDeadline.SafeMessage(), err)
+		return setTimeoutMetadata(bifrostErr, schemas.TimeoutSourceBifrostContextDeadline, configuredSeconds, elapsed, false)
+	}
+	if timeoutReachedConfiguredLimit(elapsed, configuredSeconds) && (errors.Is(err, fasthttp.ErrTimeout) || (isNetTimeout && err != context.DeadlineExceeded)) {
+		bifrostErr := NewBifrostTimeoutError(schemas.TimeoutSourceBifrostHTTPClient.SafeMessage(), err)
+		return setTimeoutMetadata(bifrostErr, schemas.TimeoutSourceBifrostHTTPClient, configuredSeconds, elapsed, false)
+	}
+
+	var source schemas.TimeoutSource
+	if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
+		source = schemas.TimeoutSourceUnknown
+	} else {
+		if isNetTimeout {
+			source = schemas.TimeoutSourceUpstreamConnection
+		} else {
+			var opErr *net.OpError
+			var dnsErr *net.DNSError
+			if errors.As(err, &opErr) || errors.As(err, &dnsErr) {
+				source = schemas.TimeoutSourceUpstreamDisconnect
+			}
+		}
+	}
+	if source == "" {
+		return SetErrorLatency(NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), elapsed)
+	}
+	bifrostErr := NewBifrostUpstreamConnectionError(source.SafeMessage(), err)
+	if source != schemas.TimeoutSourceUpstreamDisconnect {
+		bifrostErr.Error.Type = schemas.Ptr(schemas.RequestTimedOut)
+	}
+	return setTimeoutMetadata(bifrostErr, source, configuredSeconds, elapsed, false)
 }
 
 // makeRequestWithDoFunc is the shared core behind MakeRequestWithContext and
@@ -326,7 +408,7 @@ func SetErrorLatency(bifrostErr *schemas.BifrostError, latency time.Duration) *s
 // response objects. On the normal path it is a no-op. On the context-cancellation path it
 // blocks until the background goroutine finishes, preventing a data race between the
 // still-running goroutine and the caller's release of req/resp.
-func makeRequestWithDoFunc(ctx context.Context, do func() error) (time.Duration, *schemas.BifrostError, func()) {
+func makeRequestWithDoFunc(ctx context.Context, clientTimeout time.Duration, do func() error) (time.Duration, *schemas.BifrostError, func()) {
 	startTime := time.Now()
 	errChan := make(chan error, 1)
 
@@ -347,18 +429,9 @@ func makeRequestWithDoFunc(ctx context.Context, do func() error) (time.Duration,
 		// The caller MUST invoke this (via defer) before releasing req/resp to avoid
 		// a data race with the still-running goroutine.
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			statusCode := 504
-			errorType := schemas.RequestTimedOut
-			return latency, &schemas.BifrostError{
-				IsBifrostError: true,
-				StatusCode:     &statusCode,
-				Error: &schemas.ErrorField{
-					Type:    &errorType,
-					Message: fmt.Sprintf("Request timed out by context: %v", ctx.Err()),
-					Error:   ctx.Err(),
-				},
-				ExtraFields: schemas.BifrostErrorExtraFields{Latency: latency.Milliseconds()},
-			}, func() { <-errChan }
+			bifrostErr := NewBifrostTimeoutError(schemas.TimeoutSourceBifrostContextDeadline.SafeMessage(), ctx.Err())
+			setTimeoutMetadata(bifrostErr, schemas.TimeoutSourceBifrostContextDeadline, configuredTimeoutSeconds(ctx, clientTimeout), latency, false)
+			return latency, bifrostErr, func() { <-errChan }
 		}
 		statusCode := 499
 		errorType := schemas.RequestCancelled
@@ -390,23 +463,7 @@ func makeRequestWithDoFunc(ctx context.Context, do func() error) (time.Duration,
 					ExtraFields: schemas.BifrostErrorExtraFields{Latency: latency.Milliseconds()},
 				}, noop
 			}
-			// Check for timeout errors first before checking net.OpError to avoid misclassification.
-			if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-				return latency, SetErrorLatency(NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency), noop
-			}
-			// Check if error implements net.Error and has Timeout() == true.
-			var netErr net.Error
-			if errors.As(err, &netErr) && netErr.Timeout() {
-				return latency, SetErrorLatency(NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency), noop
-			}
-			// Check for DNS lookup and network errors after timeout checks.
-			var opErr *net.OpError
-			var dnsErr *net.DNSError
-			if errors.As(err, &opErr) || errors.As(err, &dnsErr) {
-				return latency, SetErrorLatency(NewBifrostUpstreamConnectionError(schemas.ErrProviderNetworkError, err), latency), noop
-			}
-			// The HTTP request itself failed (e.g., connection error, fasthttp timeout).
-			return latency, SetErrorLatency(NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), latency), noop
+			return latency, ClassifyTransportError(ctx, clientTimeout, err, latency), noop
 		}
 		// HTTP request was successful from fasthttp's perspective (err is nil).
 		// The caller should check resp.StatusCode() for HTTP-level errors (4xx, 5xx).
@@ -420,14 +477,14 @@ func makeRequestWithDoFunc(ctx context.Context, do func() error) (time.Duration,
 // path it blocks until the background client.Do goroutine finishes, preventing a data race
 // between the still-running goroutine and the caller's release of req/resp.
 func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) (time.Duration, *schemas.BifrostError, func()) {
-	latency, bifrostErr, wait := makeRequestWithDoFunc(ctx, func() error { return client.Do(req, resp) })
+	latency, bifrostErr, wait := makeRequestWithDoFunc(ctx, client.ReadTimeout, func() error { return client.Do(req, resp) })
 	return latency, bifrostErr, wait
 }
 
 // MakeRequestWithContextFollowRedirects is like MakeRequestWithContext but follows up to
 // maxRedirects HTTP redirects automatically (equivalent to curl's -L flag).
 func MakeRequestWithContextFollowRedirects(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response, maxRedirects int) (time.Duration, *schemas.BifrostError, func()) {
-	latency, bifrostErr, wait := makeRequestWithDoFunc(ctx, func() error { return client.DoRedirects(req, resp, maxRedirects) })
+	latency, bifrostErr, wait := makeRequestWithDoFunc(ctx, client.ReadTimeout, func() error { return client.DoRedirects(req, resp, maxRedirects) })
 	return latency, bifrostErr, wait
 }
 
@@ -1682,8 +1739,18 @@ func SetExtraHeadersHTTP(ctx context.Context, req *http.Request, extraHeaders ma
 // HTML detection only runs if JSON parsing fails to avoid expensive regex operations
 // on responses that are almost certainly valid JSON. errorResp must be a pointer to
 // the target struct for unmarshaling.
-func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.BifrostError {
+func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) (bifrostErr *schemas.BifrostError) {
 	statusCode := resp.StatusCode()
+	defer func() {
+		if statusCode != fasthttp.StatusGatewayTimeout || bifrostErr == nil {
+			return
+		}
+		bifrostErr.ExtraFields.TimeoutSource = schemas.TimeoutSourceUpstreamHTTP504
+		bifrostErr.ExtraFields.UpstreamResponseReceived = schemas.Ptr(true)
+		if bifrostErr.Error != nil {
+			bifrostErr.Error.Message = schemas.TimeoutSourceUpstreamHTTP504.SafeMessage()
+		}
+	}()
 
 	// Decode body
 	decodedBody, err := CheckAndDecodeBody(resp)
@@ -1806,8 +1873,14 @@ func EnrichError(
 		return bifrostErr
 	}
 
+	if len(latency) > 0 && bifrostErr.ExtraFields.TimeoutSource == schemas.TimeoutSourceUnknown && bifrostErr.Error != nil && bifrostErr.Error.Error != nil {
+		bifrostErr = ClassifyTransportError(ctx, 0, bifrostErr.Error.Error, latency[0])
+	}
 	if len(latency) > 0 {
 		SetErrorLatency(bifrostErr, latency[0])
+	}
+	if bifrostErr.ExtraFields.TimeoutSource != "" {
+		bifrostErr.ExtraFields.ConfiguredTimeoutSeconds = configuredTimeoutSeconds(ctx, 0)
 	}
 
 	if ShouldSendBackRawRequest(ctx, sendBackRawRequest) && len(requestBody) > 0 {
@@ -2196,6 +2269,7 @@ func NewBifrostOperationError(message string, err error) *schemas.BifrostError {
 func NewBifrostTimeoutError(message string, err error) *schemas.BifrostError {
 	statusCode := 504
 	errorType := schemas.RequestTimedOut
+	responseReceived := false
 	return &schemas.BifrostError{
 		IsBifrostError: true,
 		StatusCode:     &statusCode,
@@ -2203,6 +2277,10 @@ func NewBifrostTimeoutError(message string, err error) *schemas.BifrostError {
 			Message: message,
 			Type:    &errorType,
 			Error:   err,
+		},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			TimeoutSource:            schemas.TimeoutSourceUnknown,
+			UpstreamResponseReceived: &responseReceived,
 		},
 	}
 }
@@ -3078,6 +3156,11 @@ func SendStreamTruncatedError(
 	}
 
 	truncatedErr := NewBifrostUpstreamConnectionError(schemas.ErrProviderStreamTruncated, io.ErrUnexpectedEOF)
+	elapsed := time.Duration(0)
+	if startedAt, ok := ctx.Value(schemas.BifrostContextKeyStreamStartTime).(time.Time); ok {
+		elapsed = time.Since(startedAt)
+	}
+	setTimeoutMetadata(truncatedErr, schemas.TimeoutSourceUpstreamDisconnect, configuredTimeoutSeconds(ctx, 0), elapsed, true)
 
 	if ShouldSendBackRawRequest(ctx, false) && len(jsonBody) > 0 {
 		truncatedErr.ExtraFields.RawRequest = compactRawJSON(jsonBody)

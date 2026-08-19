@@ -2,6 +2,7 @@ package logging
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -67,6 +68,40 @@ func TestRawErrorDetailsPreservedWhenEnabled(t *testing.T) {
 	}
 	if !strings.Contains(entry.ErrorDetails, "RAW_REQUEST_MARKER") {
 		t.Error("serialized ErrorDetails should contain raw payloads when explicitly enabled")
+	}
+}
+
+func TestTimeoutErrorDetailsNeverPersistRawCauseOrPayloads(t *testing.T) {
+	err := errorWithRawPayloads()
+	err.Error.Error = errors.New("dial tcp secret.internal: timeout")
+	err.ExtraFields.TimeoutSource = schemas.TimeoutSourceUpstreamConnection
+	err.ExtraFields.ConfiguredTimeoutSeconds = 600
+	err.ExtraFields.ElapsedMS = 27_000
+	err.ExtraFields.UpstreamResponseReceived = schemas.Ptr(false)
+
+	sanitized := sanitizeErrorForLogging(err, true, true)
+	if sanitized.Error.Error != nil || sanitized.ExtraFields.RawRequest != nil || sanitized.ExtraFields.RawResponse != nil {
+		t.Fatal("timeout request records must not retain raw cause or payloads")
+	}
+	if sanitized.ExtraFields.TimeoutSource != schemas.TimeoutSourceUpstreamConnection || sanitized.ExtraFields.ElapsedMS != 27_000 {
+		t.Fatal("safe structured timeout metadata must be preserved")
+	}
+	if err.Error.Error == nil || err.ExtraFields.RawRequest == nil {
+		t.Fatal("sanitizer must not mutate the original error")
+	}
+}
+
+func TestTimeoutErrorDetailsNeverPersistUpstreamMessage(t *testing.T) {
+	err := errorWithRawPayloads()
+	err.Error.Message = "gateway timeout contacting https://user:secret@proxy.internal?X-Amz-Signature=top-secret"
+	err.ExtraFields.TimeoutSource = schemas.TimeoutSourceUpstreamHTTP504
+
+	sanitized := sanitizeErrorForLogging(err, true, true)
+	if sanitized.Error.Message != "upstream returned HTTP 504 Gateway Timeout" {
+		t.Fatalf("expected canonical timeout message, got %q", sanitized.Error.Message)
+	}
+	if err.Error.Message == sanitized.Error.Message {
+		t.Fatal("sanitizer must not mutate the original error")
 	}
 }
 

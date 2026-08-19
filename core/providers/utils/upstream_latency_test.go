@@ -31,7 +31,7 @@ func upstream(t *testing.T, ctx *schemas.BifrostContext) time.Duration {
 func TestMakeRequestWithDoFuncAccumulates(t *testing.T) {
 	ctx := accumCtx()
 
-	_, bifrostErr, wait := makeRequestWithDoFunc(ctx, func() error {
+	_, bifrostErr, wait := makeRequestWithDoFunc(ctx, 0, func() error {
 		time.Sleep(60 * time.Millisecond)
 		return nil
 	})
@@ -58,7 +58,7 @@ func TestMakeRequestWithDoFuncAccumulatesOnCancel(t *testing.T) {
 	}()
 
 	done := make(chan struct{})
-	_, bifrostErr, wait := makeRequestWithDoFunc(cancellable, func() error {
+	_, bifrostErr, wait := makeRequestWithDoFunc(cancellable, 0, func() error {
 		<-done
 		return nil
 	})
@@ -80,7 +80,7 @@ func TestUnaryAccumulatesAcrossAttempts(t *testing.T) {
 	ctx := accumCtx()
 
 	for range 3 {
-		_, _, wait := makeRequestWithDoFunc(ctx, func() error {
+		_, _, wait := makeRequestWithDoFunc(ctx, 0, func() error {
 			time.Sleep(30 * time.Millisecond)
 			return nil
 		})

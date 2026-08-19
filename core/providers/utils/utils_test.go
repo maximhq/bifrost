@@ -2149,3 +2149,25 @@ func TestProcessAndSendResponse_CompletesSpanWhenFinalSendFails(t *testing.T) {
 		t.Errorf("successful stream whose delivery failed should end as %q, got %q", schemas.SpanStatusOk, tracer.endStatus)
 	}
 }
+
+func TestHandleProviderAPIError_ClassifiesUpstreamHTTP504(t *testing.T) {
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(resp)
+	resp.SetStatusCode(fasthttp.StatusGatewayTimeout)
+	resp.SetBodyString(`{"error":{"message":"gateway timeout"}}`)
+
+	var errorResp map[string]any
+	bifrostErr := HandleProviderAPIError(resp, &errorResp)
+	if bifrostErr == nil {
+		t.Fatal("expected error")
+	}
+	if bifrostErr.ExtraFields.TimeoutSource != schemas.TimeoutSourceUpstreamHTTP504 {
+		t.Fatalf("timeout source = %q, want %q", bifrostErr.ExtraFields.TimeoutSource, schemas.TimeoutSourceUpstreamHTTP504)
+	}
+	if bifrostErr.ExtraFields.UpstreamResponseReceived == nil || !*bifrostErr.ExtraFields.UpstreamResponseReceived {
+		t.Fatal("expected upstream_response_received=true")
+	}
+	if bifrostErr.Error == nil || bifrostErr.Error.Message != "upstream returned HTTP 504 Gateway Timeout" {
+		t.Fatalf("expected canonical safe message, got %#v", bifrostErr.Error)
+	}
+}

@@ -199,6 +199,10 @@ const (
 // BifrostContextKey is a type for context keys used in Bifrost.
 type BifrostContextKey string
 
+// BifrostContextKeyConfiguredRequestTimeoutSeconds stores the provider HTTP
+// timeout for the current attempt. It is reserved for Bifrost internals.
+const BifrostContextKeyConfiguredRequestTimeoutSeconds BifrostContextKey = "bifrost-configured-request-timeout-seconds"
+
 // MCPAuthMode describes which identity dimension a per-user OAuth row is keyed by.
 // It is a derived view of context state at the point of token lookup, never
 // stored as a context key. Derived via BifrostContext.MCPAuthMode().
@@ -2040,6 +2044,10 @@ type BifrostErrorExtraFields struct {
 	ConvertedRequestType      RequestType           `json:"converted_request_type,omitempty"`
 	DroppedCompatPluginParams []string              `json:"dropped_compat_plugin_params,omitempty"`
 	Latency                   int64                 `json:"latency,omitempty"` // in milliseconds
+	TimeoutSource             TimeoutSource         `json:"timeout_source,omitempty"`
+	ConfiguredTimeoutSeconds  int                   `json:"configured_timeout_seconds,omitempty"`
+	ElapsedMS                 int64                 `json:"elapsed_ms,omitempty"`
+	UpstreamResponseReceived  *bool                 `json:"upstream_response_received,omitempty"`
 	KeyStatuses               []KeyStatus           `json:"key_statuses,omitempty"`
 	MCPAuthRequired           *MCPAuthRequiredError `json:"mcp_auth_required,omitempty"` // Set when a per-user MCP tool requires the caller to complete an inline auth flow (OAuth or headers)
 	// BilledUsage carries provider-reported token usage that was consumed even
@@ -2050,4 +2058,37 @@ type BifrostErrorExtraFields struct {
 	// the provider actually billed us for. Nil when the failure consumed no
 	// tokens (e.g. 401/403/429 before the model ran).
 	BilledUsage *BifrostLLMUsage `json:"billed_usage,omitempty"`
+}
+
+// TimeoutSource identifies which boundary reported a timeout without exposing
+// the underlying network error to API clients or persisted request records.
+type TimeoutSource string
+
+const (
+	TimeoutSourceBifrostContextDeadline TimeoutSource = "bifrost_context_deadline"
+	TimeoutSourceBifrostHTTPClient      TimeoutSource = "bifrost_http_client_timeout"
+	TimeoutSourceUpstreamConnection     TimeoutSource = "upstream_connection_timeout"
+	TimeoutSourceUpstreamDisconnect     TimeoutSource = "upstream_connection_error"
+	TimeoutSourceUpstreamHTTP504        TimeoutSource = "upstream_http_504"
+	TimeoutSourceUnknown                TimeoutSource = "unknown_timeout"
+)
+
+// SafeMessage returns the canonical client- and persistence-safe description
+// for a timeout source. Raw transport errors belong only in sanitized server
+// logs and must never be used as the public timeout message.
+func (source TimeoutSource) SafeMessage() string {
+	switch source {
+	case TimeoutSourceBifrostContextDeadline:
+		return "request exceeded the Bifrost context deadline"
+	case TimeoutSourceBifrostHTTPClient:
+		return "Bifrost HTTP client reached the configured provider timeout"
+	case TimeoutSourceUpstreamConnection:
+		return "upstream connection or proxy timed out before a response was received"
+	case TimeoutSourceUpstreamDisconnect:
+		return "upstream connection or proxy disconnected before a response was received"
+	case TimeoutSourceUpstreamHTTP504:
+		return "upstream returned HTTP 504 Gateway Timeout"
+	default:
+		return "request timed out for an unknown upstream reason"
+	}
 }

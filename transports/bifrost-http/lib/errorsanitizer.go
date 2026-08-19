@@ -16,9 +16,17 @@ func SanitizeBifrostErrorForClient(err *schemas.BifrostError) *schemas.BifrostEr
 	}
 
 	sanitized := *err
+	if err.ExtraFields.TimeoutSource != "" {
+		sanitized.ExtraFields.RawRequest = nil
+		sanitized.ExtraFields.RawResponse = nil
+	}
 	if err.Error != nil {
 		errorField := *err.Error
-		if shouldHideErrorDetails(err, err.Error) {
+		if err.ExtraFields.TimeoutSource != "" {
+			errorField.Message = err.ExtraFields.TimeoutSource.SafeMessage()
+			errorField.Error = nil
+			errorField.Param = nil
+		} else if shouldHideErrorDetails(err, err.Error) {
 			errorField.Message = ClientSafeInternalErrorMessage
 			errorField.Error = nil
 			errorField.Param = nil

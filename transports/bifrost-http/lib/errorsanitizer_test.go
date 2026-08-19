@@ -78,3 +78,53 @@ func TestSanitizeBifrostErrorForClientPreservesNonSensitiveServerMessage(t *test
 		t.Fatalf("expected non-sensitive server message to be preserved, got %q", sanitized.Error.Message)
 	}
 }
+
+func TestSanitizeBifrostTimeoutErrorKeepsMetadataAndHidesCause(t *testing.T) {
+	err := &schemas.BifrostError{
+		Error: &schemas.ErrorField{Message: "upstream connection timed out", Error: errors.New("dial tcp secret.internal: timeout"), Param: "secret"},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			TimeoutSource:            schemas.TimeoutSourceUpstreamConnection,
+			ConfiguredTimeoutSeconds: 600,
+			ElapsedMS:                27_000,
+			UpstreamResponseReceived: schemas.Ptr(false),
+			RawRequest:               "sensitive request",
+			RawResponse:              "sensitive upstream response",
+		},
+	}
+
+	sanitized := SanitizeBifrostErrorForClient(err)
+	if sanitized.Error.Error != nil || sanitized.Error.Param != nil {
+		t.Fatal("timeout cause and param must not be returned to clients")
+	}
+	if sanitized.ExtraFields.RawRequest != nil || sanitized.ExtraFields.RawResponse != nil {
+		t.Fatal("timeout payloads must not be returned to clients")
+	}
+	if sanitized.ExtraFields.TimeoutSource != schemas.TimeoutSourceUpstreamConnection || sanitized.ExtraFields.ConfiguredTimeoutSeconds != 600 {
+		t.Fatal("safe structured timeout metadata must be preserved")
+	}
+	if err.Error.Error == nil || err.ExtraFields.RawRequest == nil {
+		t.Fatal("sanitizer must not mutate the original error")
+	}
+}
+
+func TestSanitizeBifrostTimeoutErrorReplacesUpstreamMessage(t *testing.T) {
+	err := &schemas.BifrostError{
+		Error: &schemas.ErrorField{
+			Message: "gateway timeout contacting https://user:secret@proxy.internal?X-Amz-Signature=top-secret",
+		},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			TimeoutSource:            schemas.TimeoutSourceUpstreamHTTP504,
+			ConfiguredTimeoutSeconds: 600,
+			ElapsedMS:                27_000,
+			UpstreamResponseReceived: schemas.Ptr(true),
+		},
+	}
+
+	sanitized := SanitizeBifrostErrorForClient(err)
+	if sanitized.Error.Message != "upstream returned HTTP 504 Gateway Timeout" {
+		t.Fatalf("expected canonical timeout message, got %q", sanitized.Error.Message)
+	}
+	if err.Error.Message == sanitized.Error.Message {
+		t.Fatal("sanitizer must not mutate the original error")
+	}
+}

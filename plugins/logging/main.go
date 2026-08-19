@@ -153,12 +153,21 @@ func sanitizeErrorForLogging(err *schemas.BifrostError, contentLoggingEnabled, s
 	if err == nil {
 		return nil
 	}
-	if contentLoggingEnabled && shouldStoreRaw {
+	if contentLoggingEnabled && shouldStoreRaw && err.ExtraFields.TimeoutSource == "" {
 		return err
 	}
 	cloned := *err
-	cloned.ExtraFields.RawRequest = nil
-	cloned.ExtraFields.RawResponse = nil
+	if err.ExtraFields.TimeoutSource != "" || !contentLoggingEnabled || !shouldStoreRaw {
+		cloned.ExtraFields.RawRequest = nil
+		cloned.ExtraFields.RawResponse = nil
+	}
+	if err.ExtraFields.TimeoutSource != "" && err.Error != nil {
+		errorField := *err.Error
+		errorField.Message = err.ExtraFields.TimeoutSource.SafeMessage()
+		errorField.Error = nil
+		errorField.Param = nil
+		cloned.Error = &errorField
+	}
 	return &cloned
 }
 

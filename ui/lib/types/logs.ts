@@ -481,6 +481,19 @@ export interface BifrostError {
 	is_bifrost_error: boolean;
 	status_code?: number;
 	error: ErrorField;
+	extra_fields?: {
+		timeout_source?:
+			| "bifrost_context_deadline"
+			| "bifrost_http_client_timeout"
+			| "upstream_connection_timeout"
+			| "upstream_connection_error"
+			| "upstream_http_504"
+			| "unknown_timeout";
+		configured_timeout_seconds?: number;
+		elapsed_ms?: number;
+		upstream_response_received?: boolean;
+		[key: string]: unknown;
+	};
 }
 
 // Citation and Annotation types

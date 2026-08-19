@@ -166,6 +166,7 @@ func streamLargeResponseIfActive(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.B
 
 // SendSSEError sends an error in Server-Sent Events format
 func SendSSEError(ctx *fasthttp.RequestCtx, bifrostErr *schemas.BifrostError) {
+	bifrostErr = lib.SanitizeBifrostErrorForClient(bifrostErr)
 	errorJSON, err := json.Marshal(map[string]interface{}{
 		"error": bifrostErr,
 	})
