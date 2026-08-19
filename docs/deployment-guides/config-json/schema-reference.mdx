@@ -164,14 +164,38 @@ Enterprise-only. Defines access profile templates that can later be attached to 
     {
       "name": "platform-default",
       "description": "Default platform profile",
-      "is_active": true,
       "tags": ["platform", "default"],
+      "calendar_aligned": false,
+      "budgets": [
+        { "id": "monthly-cap", "max_limit": 500, "reset_duration": "1M" }
+      ],
+      "rate_limit": {
+        "id": "global-rl",
+        "token_max_limit": 1000000,
+        "token_reset_duration": "1d"
+      },
       "provider_configs": [
         {
           "provider_name": "openai",
-          "all_models_allowed": false,
-          "allowed_models": ["gpt-4o", "gpt-4o-mini"]
+          "allowed_models": ["gpt-4o", "gpt-4o-mini"],
+          "blacklisted_models": ["gpt-4o-realtime-preview"],
+          "weight": 1,
+          "key_ids": ["*"],
+          "budgets": [
+            { "id": "openai-monthly", "max_limit": 100, "reset_duration": "1M" }
+          ],
+          "model_budgets": [
+            {
+              "model_name": "gpt-4o",
+              "budgets": [
+                { "id": "gpt-4o-monthly", "max_limit": 20, "reset_duration": "1M" }
+              ]
+            }
+          ]
         }
+      ],
+      "mcp_tool_groups": [
+        { "tool_group_id": 1 }
       ],
       "mcp_servers": [
         { "mcp_server_id": "github" }
@@ -183,6 +207,42 @@ Enterprise-only. Defines access profile templates that can later be attached to 
   ]
 }
 ```
+
+Each profile object:
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `name` | string | Yes | - | Unique |
+| `description` | string | No | - | Free text |
+| `budgets` | array | No | - | Profile-wide spend caps (`budget_line` objects) |
+| `rate_limit` | object | No | - | Profile-wide token/request caps (`rate_limit_line`) |
+| `calendar_aligned` | boolean | No | `false` | Reset budgets/rate limits at calendar boundaries instead of rolling from creation time |
+| `provider_configs` | array | No | - | Per-provider access rules, see below |
+| `mcp_tool_groups` | array | No | - | `{ tool_group_id }` references to MCP Tool Groups |
+| `mcp_servers` | array | No | - | `{ mcp_server_id }` grants for entire MCP servers |
+| `mcp_tool_overrides` | array | No | - | `{ mcp_client_id, tool_name, action: "include"\|"exclude" }` per-tool overrides |
+
+Each `provider_configs[]` entry:
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `provider_name` | string | Yes | - | e.g. `openai`, `anthropic` |
+| `all_models_allowed` | boolean | No | `false` | Allow every model from this provider |
+| `allowed_models` | array | No | - | Explicit allowlist, ignored when `all_models_allowed` is true |
+| `blacklisted_models` | array | No | - | Denylist; wins over `allowed_models` even when `all_models_allowed` is true. `["*"]` blocks everything |
+| `weight` | number or null | No | `null` | Load-balancer seed weight, no fixed range. `null` opts out of the weight override for this provider without excluding it from routing |
+| `key_ids` | array | No | - | Provider key IDs this config may use. `["*"]` allows all; empty-array behavior follows the top-level [`version`](#version) setting |
+| `budgets` | array | No | - | Provider-wide spend caps (`budget_line` objects) |
+| `rate_limit` | object | No | - | Provider-wide token/request caps (`rate_limit_line`) |
+| `model_budgets` | array | No | - | Per-model budgets/limits scoped under this provider, see below |
+
+Each `model_budgets[]` entry:
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `model_name` | string | Yes | - | Scoped to the parent provider |
+| `budgets` | array | No | - | Spend caps for just this model (`budget_line` objects) |
+| `rate_limit` | object | No | - | Token/request caps for just this model (`rate_limit_line`) |
 
 ---
 

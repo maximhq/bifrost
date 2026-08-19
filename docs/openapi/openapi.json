@@ -51359,6 +51359,148 @@
                                       "readOnly": true
                                     }
                                   }
+                                },
+                                "blacklisted_models": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  },
+                                  "description": "Models blocked for this provider even if matched by allowed_models (denylist wins). Use `[\"*\"]` to block all; empty array or omitted blocks none."
+                                },
+                                "weight": {
+                                  "type": "number",
+                                  "nullable": true,
+                                  "description": "Load-balancer seed weight for this provider. No fixed range is enforced. Null opts out of the weight override for this provider; it does not exclude the provider from routing."
+                                },
+                                "model_budgets": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "required": [
+                                      "model_name"
+                                    ],
+                                    "description": "Per-model budget group under an access-profile provider config, with optional per-model rate limit.",
+                                    "properties": {
+                                      "model_name": {
+                                        "type": "string",
+                                        "description": "Model this budget group applies to (scoped to the parent provider)."
+                                      },
+                                      "budgets": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "object",
+                                          "required": [
+                                            "max_limit",
+                                            "reset_duration"
+                                          ],
+                                          "properties": {
+                                            "id": {
+                                              "type": "string",
+                                              "readOnly": true
+                                            },
+                                            "max_limit": {
+                                              "type": "number",
+                                              "description": "Cap in dollars (or tokens, depending on configured pricing)."
+                                            },
+                                            "reset_duration": {
+                                              "type": "string",
+                                              "enum": [
+                                                "1h",
+                                                "1d",
+                                                "1w",
+                                                "1M",
+                                                "1Q",
+                                                "1Y"
+                                              ],
+                                              "description": "Reset duration for a budget."
+                                            },
+                                            "reset_config": {
+                                              "type": "object",
+                                              "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (`1Q`); the API rejects it on any other window.",
+                                              "properties": {
+                                                "quarter_start_month": {
+                                                  "type": "integer",
+                                                  "minimum": 1,
+                                                  "maximum": 12,
+                                                  "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates: January, April, July and October all reset on calendar quarters and differ only in which quarter is labelled Q1."
+                                                }
+                                              },
+                                              "additionalProperties": false
+                                            },
+                                            "scope": {
+                                              "type": "string",
+                                              "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                            },
+                                            "current_usage": {
+                                              "type": "number",
+                                              "readOnly": true
+                                            },
+                                            "last_reset": {
+                                              "type": "string",
+                                              "format": "date-time",
+                                              "readOnly": true
+                                            }
+                                          }
+                                        },
+                                        "description": "Spend budgets for this model."
+                                      },
+                                      "rate_limit": {
+                                        "type": "object",
+                                        "properties": {
+                                          "id": {
+                                            "type": "string",
+                                            "readOnly": true
+                                          },
+                                          "token_max_limit": {
+                                            "type": "number",
+                                            "nullable": true
+                                          },
+                                          "token_reset_duration": {
+                                            "type": "string",
+                                            "enum": [
+                                              "1h",
+                                              "1d",
+                                              "1w",
+                                              "1M",
+                                              "1Y"
+                                            ],
+                                            "description": "Reset duration for a rate limit."
+                                          },
+                                          "request_max_limit": {
+                                            "type": "number",
+                                            "nullable": true
+                                          },
+                                          "request_reset_duration": {
+                                            "type": "string",
+                                            "enum": [
+                                              "1h",
+                                              "1d",
+                                              "1w",
+                                              "1M",
+                                              "1Y"
+                                            ],
+                                            "description": "Reset duration for a rate limit."
+                                          },
+                                          "token_current_usage": {
+                                            "type": "number",
+                                            "readOnly": true
+                                          },
+                                          "request_current_usage": {
+                                            "type": "number",
+                                            "readOnly": true
+                                          }
+                                        }
+                                      }
+                                    }
+                                  },
+                                  "description": "Per-model budgets and rate limits scoped to this provider. Each entry targets one model and materializes as a user-scoped model config on assignment."
+                                },
+                                "key_ids": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  },
+                                  "description": "Key IDs allowed for this provider config. Use `[\"*\"]` to allow all keys; specific IDs restrict access to those keys only. Empty-list behavior follows the top-level config.json `version` setting: an empty array or omitted value denies all keys under the default `version: 2` semantics, but allows all keys under `version: 1` (v1.4.x compat). Set `[\"*\"]` explicitly to be unambiguous across versions."
                                 }
                               }
                             }
@@ -51734,6 +51876,148 @@
                               "readOnly": true
                             }
                           }
+                        },
+                        "blacklisted_models": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "description": "Models blocked for this provider even if matched by allowed_models (denylist wins). Use `[\"*\"]` to block all; empty array or omitted blocks none."
+                        },
+                        "weight": {
+                          "type": "number",
+                          "nullable": true,
+                          "description": "Load-balancer seed weight for this provider. No fixed range is enforced. Null opts out of the weight override for this provider; it does not exclude the provider from routing."
+                        },
+                        "model_budgets": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "model_name"
+                            ],
+                            "description": "Per-model budget group under an access-profile provider config, with optional per-model rate limit.",
+                            "properties": {
+                              "model_name": {
+                                "type": "string",
+                                "description": "Model this budget group applies to (scoped to the parent provider)."
+                              },
+                              "budgets": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "required": [
+                                    "max_limit",
+                                    "reset_duration"
+                                  ],
+                                  "properties": {
+                                    "id": {
+                                      "type": "string",
+                                      "readOnly": true
+                                    },
+                                    "max_limit": {
+                                      "type": "number",
+                                      "description": "Cap in dollars (or tokens, depending on configured pricing)."
+                                    },
+                                    "reset_duration": {
+                                      "type": "string",
+                                      "enum": [
+                                        "1h",
+                                        "1d",
+                                        "1w",
+                                        "1M",
+                                        "1Q",
+                                        "1Y"
+                                      ],
+                                      "description": "Reset duration for a budget."
+                                    },
+                                    "reset_config": {
+                                      "type": "object",
+                                      "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (`1Q`); the API rejects it on any other window.",
+                                      "properties": {
+                                        "quarter_start_month": {
+                                          "type": "integer",
+                                          "minimum": 1,
+                                          "maximum": 12,
+                                          "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates: January, April, July and October all reset on calendar quarters and differ only in which quarter is labelled Q1."
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    },
+                                    "scope": {
+                                      "type": "string",
+                                      "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                    },
+                                    "current_usage": {
+                                      "type": "number",
+                                      "readOnly": true
+                                    },
+                                    "last_reset": {
+                                      "type": "string",
+                                      "format": "date-time",
+                                      "readOnly": true
+                                    }
+                                  }
+                                },
+                                "description": "Spend budgets for this model."
+                              },
+                              "rate_limit": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "type": "string",
+                                    "readOnly": true
+                                  },
+                                  "token_max_limit": {
+                                    "type": "number",
+                                    "nullable": true
+                                  },
+                                  "token_reset_duration": {
+                                    "type": "string",
+                                    "enum": [
+                                      "1h",
+                                      "1d",
+                                      "1w",
+                                      "1M",
+                                      "1Y"
+                                    ],
+                                    "description": "Reset duration for a rate limit."
+                                  },
+                                  "request_max_limit": {
+                                    "type": "number",
+                                    "nullable": true
+                                  },
+                                  "request_reset_duration": {
+                                    "type": "string",
+                                    "enum": [
+                                      "1h",
+                                      "1d",
+                                      "1w",
+                                      "1M",
+                                      "1Y"
+                                    ],
+                                    "description": "Reset duration for a rate limit."
+                                  },
+                                  "token_current_usage": {
+                                    "type": "number",
+                                    "readOnly": true
+                                  },
+                                  "request_current_usage": {
+                                    "type": "number",
+                                    "readOnly": true
+                                  }
+                                }
+                              }
+                            }
+                          },
+                          "description": "Per-model budgets and rate limits scoped to this provider. Each entry targets one model and materializes as a user-scoped model config on assignment."
+                        },
+                        "key_ids": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "description": "Key IDs allowed for this provider config. Use `[\"*\"]` to allow all keys; specific IDs restrict access to those keys only. Empty-list behavior follows the top-level config.json `version` setting: an empty array or omitted value denies all keys under the default `version: 2` semantics, but allows all keys under `version: 1` (v1.4.x compat). Set `[\"*\"]` explicitly to be unambiguous across versions."
                         }
                       }
                     }
@@ -52077,6 +52361,148 @@
                                     "readOnly": true
                                   }
                                 }
+                              },
+                              "blacklisted_models": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "Models blocked for this provider even if matched by allowed_models (denylist wins). Use `[\"*\"]` to block all; empty array or omitted blocks none."
+                              },
+                              "weight": {
+                                "type": "number",
+                                "nullable": true,
+                                "description": "Load-balancer seed weight for this provider. No fixed range is enforced. Null opts out of the weight override for this provider; it does not exclude the provider from routing."
+                              },
+                              "model_budgets": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "required": [
+                                    "model_name"
+                                  ],
+                                  "description": "Per-model budget group under an access-profile provider config, with optional per-model rate limit.",
+                                  "properties": {
+                                    "model_name": {
+                                      "type": "string",
+                                      "description": "Model this budget group applies to (scoped to the parent provider)."
+                                    },
+                                    "budgets": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "object",
+                                        "required": [
+                                          "max_limit",
+                                          "reset_duration"
+                                        ],
+                                        "properties": {
+                                          "id": {
+                                            "type": "string",
+                                            "readOnly": true
+                                          },
+                                          "max_limit": {
+                                            "type": "number",
+                                            "description": "Cap in dollars (or tokens, depending on configured pricing)."
+                                          },
+                                          "reset_duration": {
+                                            "type": "string",
+                                            "enum": [
+                                              "1h",
+                                              "1d",
+                                              "1w",
+                                              "1M",
+                                              "1Q",
+                                              "1Y"
+                                            ],
+                                            "description": "Reset duration for a budget."
+                                          },
+                                          "reset_config": {
+                                            "type": "object",
+                                            "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (`1Q`); the API rejects it on any other window.",
+                                            "properties": {
+                                              "quarter_start_month": {
+                                                "type": "integer",
+                                                "minimum": 1,
+                                                "maximum": 12,
+                                                "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates: January, April, July and October all reset on calendar quarters and differ only in which quarter is labelled Q1."
+                                              }
+                                            },
+                                            "additionalProperties": false
+                                          },
+                                          "scope": {
+                                            "type": "string",
+                                            "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                          },
+                                          "current_usage": {
+                                            "type": "number",
+                                            "readOnly": true
+                                          },
+                                          "last_reset": {
+                                            "type": "string",
+                                            "format": "date-time",
+                                            "readOnly": true
+                                          }
+                                        }
+                                      },
+                                      "description": "Spend budgets for this model."
+                                    },
+                                    "rate_limit": {
+                                      "type": "object",
+                                      "properties": {
+                                        "id": {
+                                          "type": "string",
+                                          "readOnly": true
+                                        },
+                                        "token_max_limit": {
+                                          "type": "number",
+                                          "nullable": true
+                                        },
+                                        "token_reset_duration": {
+                                          "type": "string",
+                                          "enum": [
+                                            "1h",
+                                            "1d",
+                                            "1w",
+                                            "1M",
+                                            "1Y"
+                                          ],
+                                          "description": "Reset duration for a rate limit."
+                                        },
+                                        "request_max_limit": {
+                                          "type": "number",
+                                          "nullable": true
+                                        },
+                                        "request_reset_duration": {
+                                          "type": "string",
+                                          "enum": [
+                                            "1h",
+                                            "1d",
+                                            "1w",
+                                            "1M",
+                                            "1Y"
+                                          ],
+                                          "description": "Reset duration for a rate limit."
+                                        },
+                                        "token_current_usage": {
+                                          "type": "number",
+                                          "readOnly": true
+                                        },
+                                        "request_current_usage": {
+                                          "type": "number",
+                                          "readOnly": true
+                                        }
+                                      }
+                                    }
+                                  }
+                                },
+                                "description": "Per-model budgets and rate limits scoped to this provider. Each entry targets one model and materializes as a user-scoped model config on assignment."
+                              },
+                              "key_ids": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "Key IDs allowed for this provider config. Use `[\"*\"]` to allow all keys; specific IDs restrict access to those keys only. Empty-list behavior follows the top-level config.json `version` setting: an empty array or omitted value denies all keys under the default `version: 2` semantics, but allows all keys under `version: 1` (v1.4.x compat). Set `[\"*\"]` explicitly to be unambiguous across versions."
                               }
                             }
                           }
@@ -52481,6 +52907,148 @@
                                     "readOnly": true
                                   }
                                 }
+                              },
+                              "blacklisted_models": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "Models blocked for this provider even if matched by allowed_models (denylist wins). Use `[\"*\"]` to block all; empty array or omitted blocks none."
+                              },
+                              "weight": {
+                                "type": "number",
+                                "nullable": true,
+                                "description": "Load-balancer seed weight for this provider. No fixed range is enforced. Null opts out of the weight override for this provider; it does not exclude the provider from routing."
+                              },
+                              "model_budgets": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "required": [
+                                    "model_name"
+                                  ],
+                                  "description": "Per-model budget group under an access-profile provider config, with optional per-model rate limit.",
+                                  "properties": {
+                                    "model_name": {
+                                      "type": "string",
+                                      "description": "Model this budget group applies to (scoped to the parent provider)."
+                                    },
+                                    "budgets": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "object",
+                                        "required": [
+                                          "max_limit",
+                                          "reset_duration"
+                                        ],
+                                        "properties": {
+                                          "id": {
+                                            "type": "string",
+                                            "readOnly": true
+                                          },
+                                          "max_limit": {
+                                            "type": "number",
+                                            "description": "Cap in dollars (or tokens, depending on configured pricing)."
+                                          },
+                                          "reset_duration": {
+                                            "type": "string",
+                                            "enum": [
+                                              "1h",
+                                              "1d",
+                                              "1w",
+                                              "1M",
+                                              "1Q",
+                                              "1Y"
+                                            ],
+                                            "description": "Reset duration for a budget."
+                                          },
+                                          "reset_config": {
+                                            "type": "object",
+                                            "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (`1Q`); the API rejects it on any other window.",
+                                            "properties": {
+                                              "quarter_start_month": {
+                                                "type": "integer",
+                                                "minimum": 1,
+                                                "maximum": 12,
+                                                "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates: January, April, July and October all reset on calendar quarters and differ only in which quarter is labelled Q1."
+                                              }
+                                            },
+                                            "additionalProperties": false
+                                          },
+                                          "scope": {
+                                            "type": "string",
+                                            "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                          },
+                                          "current_usage": {
+                                            "type": "number",
+                                            "readOnly": true
+                                          },
+                                          "last_reset": {
+                                            "type": "string",
+                                            "format": "date-time",
+                                            "readOnly": true
+                                          }
+                                        }
+                                      },
+                                      "description": "Spend budgets for this model."
+                                    },
+                                    "rate_limit": {
+                                      "type": "object",
+                                      "properties": {
+                                        "id": {
+                                          "type": "string",
+                                          "readOnly": true
+                                        },
+                                        "token_max_limit": {
+                                          "type": "number",
+                                          "nullable": true
+                                        },
+                                        "token_reset_duration": {
+                                          "type": "string",
+                                          "enum": [
+                                            "1h",
+                                            "1d",
+                                            "1w",
+                                            "1M",
+                                            "1Y"
+                                          ],
+                                          "description": "Reset duration for a rate limit."
+                                        },
+                                        "request_max_limit": {
+                                          "type": "number",
+                                          "nullable": true
+                                        },
+                                        "request_reset_duration": {
+                                          "type": "string",
+                                          "enum": [
+                                            "1h",
+                                            "1d",
+                                            "1w",
+                                            "1M",
+                                            "1Y"
+                                          ],
+                                          "description": "Reset duration for a rate limit."
+                                        },
+                                        "token_current_usage": {
+                                          "type": "number",
+                                          "readOnly": true
+                                        },
+                                        "request_current_usage": {
+                                          "type": "number",
+                                          "readOnly": true
+                                        }
+                                      }
+                                    }
+                                  }
+                                },
+                                "description": "Per-model budgets and rate limits scoped to this provider. Each entry targets one model and materializes as a user-scoped model config on assignment."
+                              },
+                              "key_ids": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "Key IDs allowed for this provider config. Use `[\"*\"]` to allow all keys; specific IDs restrict access to those keys only. Empty-list behavior follows the top-level config.json `version` setting: an empty array or omitted value denies all keys under the default `version: 2` semantics, but allows all keys under `version: 1` (v1.4.x compat). Set `[\"*\"]` explicitly to be unambiguous across versions."
                               }
                             }
                           }
@@ -52884,6 +53452,148 @@
                               "readOnly": true
                             }
                           }
+                        },
+                        "blacklisted_models": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "description": "Models blocked for this provider even if matched by allowed_models (denylist wins). Use `[\"*\"]` to block all; empty array or omitted blocks none."
+                        },
+                        "weight": {
+                          "type": "number",
+                          "nullable": true,
+                          "description": "Load-balancer seed weight for this provider. No fixed range is enforced. Null opts out of the weight override for this provider; it does not exclude the provider from routing."
+                        },
+                        "model_budgets": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "model_name"
+                            ],
+                            "description": "Per-model budget group under an access-profile provider config, with optional per-model rate limit.",
+                            "properties": {
+                              "model_name": {
+                                "type": "string",
+                                "description": "Model this budget group applies to (scoped to the parent provider)."
+                              },
+                              "budgets": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "required": [
+                                    "max_limit",
+                                    "reset_duration"
+                                  ],
+                                  "properties": {
+                                    "id": {
+                                      "type": "string",
+                                      "readOnly": true
+                                    },
+                                    "max_limit": {
+                                      "type": "number",
+                                      "description": "Cap in dollars (or tokens, depending on configured pricing)."
+                                    },
+                                    "reset_duration": {
+                                      "type": "string",
+                                      "enum": [
+                                        "1h",
+                                        "1d",
+                                        "1w",
+                                        "1M",
+                                        "1Q",
+                                        "1Y"
+                                      ],
+                                      "description": "Reset duration for a budget."
+                                    },
+                                    "reset_config": {
+                                      "type": "object",
+                                      "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (`1Q`); the API rejects it on any other window.",
+                                      "properties": {
+                                        "quarter_start_month": {
+                                          "type": "integer",
+                                          "minimum": 1,
+                                          "maximum": 12,
+                                          "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates: January, April, July and October all reset on calendar quarters and differ only in which quarter is labelled Q1."
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    },
+                                    "scope": {
+                                      "type": "string",
+                                      "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                    },
+                                    "current_usage": {
+                                      "type": "number",
+                                      "readOnly": true
+                                    },
+                                    "last_reset": {
+                                      "type": "string",
+                                      "format": "date-time",
+                                      "readOnly": true
+                                    }
+                                  }
+                                },
+                                "description": "Spend budgets for this model."
+                              },
+                              "rate_limit": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "type": "string",
+                                    "readOnly": true
+                                  },
+                                  "token_max_limit": {
+                                    "type": "number",
+                                    "nullable": true
+                                  },
+                                  "token_reset_duration": {
+                                    "type": "string",
+                                    "enum": [
+                                      "1h",
+                                      "1d",
+                                      "1w",
+                                      "1M",
+                                      "1Y"
+                                    ],
+                                    "description": "Reset duration for a rate limit."
+                                  },
+                                  "request_max_limit": {
+                                    "type": "number",
+                                    "nullable": true
+                                  },
+                                  "request_reset_duration": {
+                                    "type": "string",
+                                    "enum": [
+                                      "1h",
+                                      "1d",
+                                      "1w",
+                                      "1M",
+                                      "1Y"
+                                    ],
+                                    "description": "Reset duration for a rate limit."
+                                  },
+                                  "token_current_usage": {
+                                    "type": "number",
+                                    "readOnly": true
+                                  },
+                                  "request_current_usage": {
+                                    "type": "number",
+                                    "readOnly": true
+                                  }
+                                }
+                              }
+                            }
+                          },
+                          "description": "Per-model budgets and rate limits scoped to this provider. Each entry targets one model and materializes as a user-scoped model config on assignment."
+                        },
+                        "key_ids": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "description": "Key IDs allowed for this provider config. Use `[\"*\"]` to allow all keys; specific IDs restrict access to those keys only. Empty-list behavior follows the top-level config.json `version` setting: an empty array or omitted value denies all keys under the default `version: 2` semantics, but allows all keys under `version: 1` (v1.4.x compat). Set `[\"*\"]` explicitly to be unambiguous across versions."
                         }
                       }
                     }
@@ -53234,6 +53944,148 @@
                                     "readOnly": true
                                   }
                                 }
+                              },
+                              "blacklisted_models": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "Models blocked for this provider even if matched by allowed_models (denylist wins). Use `[\"*\"]` to block all; empty array or omitted blocks none."
+                              },
+                              "weight": {
+                                "type": "number",
+                                "nullable": true,
+                                "description": "Load-balancer seed weight for this provider. No fixed range is enforced. Null opts out of the weight override for this provider; it does not exclude the provider from routing."
+                              },
+                              "model_budgets": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "required": [
+                                    "model_name"
+                                  ],
+                                  "description": "Per-model budget group under an access-profile provider config, with optional per-model rate limit.",
+                                  "properties": {
+                                    "model_name": {
+                                      "type": "string",
+                                      "description": "Model this budget group applies to (scoped to the parent provider)."
+                                    },
+                                    "budgets": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "object",
+                                        "required": [
+                                          "max_limit",
+                                          "reset_duration"
+                                        ],
+                                        "properties": {
+                                          "id": {
+                                            "type": "string",
+                                            "readOnly": true
+                                          },
+                                          "max_limit": {
+                                            "type": "number",
+                                            "description": "Cap in dollars (or tokens, depending on configured pricing)."
+                                          },
+                                          "reset_duration": {
+                                            "type": "string",
+                                            "enum": [
+                                              "1h",
+                                              "1d",
+                                              "1w",
+                                              "1M",
+                                              "1Q",
+                                              "1Y"
+                                            ],
+                                            "description": "Reset duration for a budget."
+                                          },
+                                          "reset_config": {
+                                            "type": "object",
+                                            "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (`1Q`); the API rejects it on any other window.",
+                                            "properties": {
+                                              "quarter_start_month": {
+                                                "type": "integer",
+                                                "minimum": 1,
+                                                "maximum": 12,
+                                                "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates: January, April, July and October all reset on calendar quarters and differ only in which quarter is labelled Q1."
+                                              }
+                                            },
+                                            "additionalProperties": false
+                                          },
+                                          "scope": {
+                                            "type": "string",
+                                            "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                          },
+                                          "current_usage": {
+                                            "type": "number",
+                                            "readOnly": true
+                                          },
+                                          "last_reset": {
+                                            "type": "string",
+                                            "format": "date-time",
+                                            "readOnly": true
+                                          }
+                                        }
+                                      },
+                                      "description": "Spend budgets for this model."
+                                    },
+                                    "rate_limit": {
+                                      "type": "object",
+                                      "properties": {
+                                        "id": {
+                                          "type": "string",
+                                          "readOnly": true
+                                        },
+                                        "token_max_limit": {
+                                          "type": "number",
+                                          "nullable": true
+                                        },
+                                        "token_reset_duration": {
+                                          "type": "string",
+                                          "enum": [
+                                            "1h",
+                                            "1d",
+                                            "1w",
+                                            "1M",
+                                            "1Y"
+                                          ],
+                                          "description": "Reset duration for a rate limit."
+                                        },
+                                        "request_max_limit": {
+                                          "type": "number",
+                                          "nullable": true
+                                        },
+                                        "request_reset_duration": {
+                                          "type": "string",
+                                          "enum": [
+                                            "1h",
+                                            "1d",
+                                            "1w",
+                                            "1M",
+                                            "1Y"
+                                          ],
+                                          "description": "Reset duration for a rate limit."
+                                        },
+                                        "token_current_usage": {
+                                          "type": "number",
+                                          "readOnly": true
+                                        },
+                                        "request_current_usage": {
+                                          "type": "number",
+                                          "readOnly": true
+                                        }
+                                      }
+                                    }
+                                  }
+                                },
+                                "description": "Per-model budgets and rate limits scoped to this provider. Each entry targets one model and materializes as a user-scoped model config on assignment."
+                              },
+                              "key_ids": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "Key IDs allowed for this provider config. Use `[\"*\"]` to allow all keys; specific IDs restrict access to those keys only. Empty-list behavior follows the top-level config.json `version` setting: an empty array or omitted value denies all keys under the default `version: 2` semantics, but allows all keys under `version: 1` (v1.4.x compat). Set `[\"*\"]` explicitly to be unambiguous across versions."
                               }
                             }
                           }
@@ -53702,6 +54554,148 @@
                                     "readOnly": true
                                   }
                                 }
+                              },
+                              "blacklisted_models": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "Models blocked for this provider even if matched by allowed_models (denylist wins). Use `[\"*\"]` to block all; empty array or omitted blocks none."
+                              },
+                              "weight": {
+                                "type": "number",
+                                "nullable": true,
+                                "description": "Load-balancer seed weight for this provider. No fixed range is enforced. Null opts out of the weight override for this provider; it does not exclude the provider from routing."
+                              },
+                              "model_budgets": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "required": [
+                                    "model_name"
+                                  ],
+                                  "description": "Per-model budget group under an access-profile provider config, with optional per-model rate limit.",
+                                  "properties": {
+                                    "model_name": {
+                                      "type": "string",
+                                      "description": "Model this budget group applies to (scoped to the parent provider)."
+                                    },
+                                    "budgets": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "object",
+                                        "required": [
+                                          "max_limit",
+                                          "reset_duration"
+                                        ],
+                                        "properties": {
+                                          "id": {
+                                            "type": "string",
+                                            "readOnly": true
+                                          },
+                                          "max_limit": {
+                                            "type": "number",
+                                            "description": "Cap in dollars (or tokens, depending on configured pricing)."
+                                          },
+                                          "reset_duration": {
+                                            "type": "string",
+                                            "enum": [
+                                              "1h",
+                                              "1d",
+                                              "1w",
+                                              "1M",
+                                              "1Q",
+                                              "1Y"
+                                            ],
+                                            "description": "Reset duration for a budget."
+                                          },
+                                          "reset_config": {
+                                            "type": "object",
+                                            "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (`1Q`); the API rejects it on any other window.",
+                                            "properties": {
+                                              "quarter_start_month": {
+                                                "type": "integer",
+                                                "minimum": 1,
+                                                "maximum": 12,
+                                                "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates: January, April, July and October all reset on calendar quarters and differ only in which quarter is labelled Q1."
+                                              }
+                                            },
+                                            "additionalProperties": false
+                                          },
+                                          "scope": {
+                                            "type": "string",
+                                            "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                          },
+                                          "current_usage": {
+                                            "type": "number",
+                                            "readOnly": true
+                                          },
+                                          "last_reset": {
+                                            "type": "string",
+                                            "format": "date-time",
+                                            "readOnly": true
+                                          }
+                                        }
+                                      },
+                                      "description": "Spend budgets for this model."
+                                    },
+                                    "rate_limit": {
+                                      "type": "object",
+                                      "properties": {
+                                        "id": {
+                                          "type": "string",
+                                          "readOnly": true
+                                        },
+                                        "token_max_limit": {
+                                          "type": "number",
+                                          "nullable": true
+                                        },
+                                        "token_reset_duration": {
+                                          "type": "string",
+                                          "enum": [
+                                            "1h",
+                                            "1d",
+                                            "1w",
+                                            "1M",
+                                            "1Y"
+                                          ],
+                                          "description": "Reset duration for a rate limit."
+                                        },
+                                        "request_max_limit": {
+                                          "type": "number",
+                                          "nullable": true
+                                        },
+                                        "request_reset_duration": {
+                                          "type": "string",
+                                          "enum": [
+                                            "1h",
+                                            "1d",
+                                            "1w",
+                                            "1M",
+                                            "1Y"
+                                          ],
+                                          "description": "Reset duration for a rate limit."
+                                        },
+                                        "token_current_usage": {
+                                          "type": "number",
+                                          "readOnly": true
+                                        },
+                                        "request_current_usage": {
+                                          "type": "number",
+                                          "readOnly": true
+                                        }
+                                      }
+                                    }
+                                  }
+                                },
+                                "description": "Per-model budgets and rate limits scoped to this provider. Each entry targets one model and materializes as a user-scoped model config on assignment."
+                              },
+                              "key_ids": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "Key IDs allowed for this provider config. Use `[\"*\"]` to allow all keys; specific IDs restrict access to those keys only. Empty-list behavior follows the top-level config.json `version` setting: an empty array or omitted value denies all keys under the default `version: 2` semantics, but allows all keys under `version: 1` (v1.4.x compat). Set `[\"*\"]` explicitly to be unambiguous across versions."
                               }
                             }
                           }
@@ -54095,6 +55089,148 @@
                                     "readOnly": true
                                   }
                                 }
+                              },
+                              "blacklisted_models": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "Models blocked for this provider even if matched by allowed_models (denylist wins). Use `[\"*\"]` to block all; empty array or omitted blocks none."
+                              },
+                              "weight": {
+                                "type": "number",
+                                "nullable": true,
+                                "description": "Load-balancer seed weight for this provider. No fixed range is enforced. Null opts out of the weight override for this provider; it does not exclude the provider from routing."
+                              },
+                              "model_budgets": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "required": [
+                                    "model_name"
+                                  ],
+                                  "description": "Per-model budget group under an access-profile provider config, with optional per-model rate limit.",
+                                  "properties": {
+                                    "model_name": {
+                                      "type": "string",
+                                      "description": "Model this budget group applies to (scoped to the parent provider)."
+                                    },
+                                    "budgets": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "object",
+                                        "required": [
+                                          "max_limit",
+                                          "reset_duration"
+                                        ],
+                                        "properties": {
+                                          "id": {
+                                            "type": "string",
+                                            "readOnly": true
+                                          },
+                                          "max_limit": {
+                                            "type": "number",
+                                            "description": "Cap in dollars (or tokens, depending on configured pricing)."
+                                          },
+                                          "reset_duration": {
+                                            "type": "string",
+                                            "enum": [
+                                              "1h",
+                                              "1d",
+                                              "1w",
+                                              "1M",
+                                              "1Q",
+                                              "1Y"
+                                            ],
+                                            "description": "Reset duration for a budget."
+                                          },
+                                          "reset_config": {
+                                            "type": "object",
+                                            "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (`1Q`); the API rejects it on any other window.",
+                                            "properties": {
+                                              "quarter_start_month": {
+                                                "type": "integer",
+                                                "minimum": 1,
+                                                "maximum": 12,
+                                                "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates: January, April, July and October all reset on calendar quarters and differ only in which quarter is labelled Q1."
+                                              }
+                                            },
+                                            "additionalProperties": false
+                                          },
+                                          "scope": {
+                                            "type": "string",
+                                            "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                          },
+                                          "current_usage": {
+                                            "type": "number",
+                                            "readOnly": true
+                                          },
+                                          "last_reset": {
+                                            "type": "string",
+                                            "format": "date-time",
+                                            "readOnly": true
+                                          }
+                                        }
+                                      },
+                                      "description": "Spend budgets for this model."
+                                    },
+                                    "rate_limit": {
+                                      "type": "object",
+                                      "properties": {
+                                        "id": {
+                                          "type": "string",
+                                          "readOnly": true
+                                        },
+                                        "token_max_limit": {
+                                          "type": "number",
+                                          "nullable": true
+                                        },
+                                        "token_reset_duration": {
+                                          "type": "string",
+                                          "enum": [
+                                            "1h",
+                                            "1d",
+                                            "1w",
+                                            "1M",
+                                            "1Y"
+                                          ],
+                                          "description": "Reset duration for a rate limit."
+                                        },
+                                        "request_max_limit": {
+                                          "type": "number",
+                                          "nullable": true
+                                        },
+                                        "request_reset_duration": {
+                                          "type": "string",
+                                          "enum": [
+                                            "1h",
+                                            "1d",
+                                            "1w",
+                                            "1M",
+                                            "1Y"
+                                          ],
+                                          "description": "Reset duration for a rate limit."
+                                        },
+                                        "token_current_usage": {
+                                          "type": "number",
+                                          "readOnly": true
+                                        },
+                                        "request_current_usage": {
+                                          "type": "number",
+                                          "readOnly": true
+                                        }
+                                      }
+                                    }
+                                  }
+                                },
+                                "description": "Per-model budgets and rate limits scoped to this provider. Each entry targets one model and materializes as a user-scoped model config on assignment."
+                              },
+                              "key_ids": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "Key IDs allowed for this provider config. Use `[\"*\"]` to allow all keys; specific IDs restrict access to those keys only. Empty-list behavior follows the top-level config.json `version` setting: an empty array or omitted value denies all keys under the default `version: 2` semantics, but allows all keys under `version: 1` (v1.4.x compat). Set `[\"*\"]` explicitly to be unambiguous across versions."
                               }
                             }
                           }
@@ -54509,6 +55645,148 @@
                                     "readOnly": true
                                   }
                                 }
+                              },
+                              "blacklisted_models": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "Models blocked for this provider even if matched by allowed_models (denylist wins). Use `[\"*\"]` to block all; empty array or omitted blocks none."
+                              },
+                              "weight": {
+                                "type": "number",
+                                "nullable": true,
+                                "description": "Load-balancer seed weight for this provider. No fixed range is enforced. Null opts out of the weight override for this provider; it does not exclude the provider from routing."
+                              },
+                              "model_budgets": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "required": [
+                                    "model_name"
+                                  ],
+                                  "description": "Per-model budget group under an access-profile provider config, with optional per-model rate limit.",
+                                  "properties": {
+                                    "model_name": {
+                                      "type": "string",
+                                      "description": "Model this budget group applies to (scoped to the parent provider)."
+                                    },
+                                    "budgets": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "object",
+                                        "required": [
+                                          "max_limit",
+                                          "reset_duration"
+                                        ],
+                                        "properties": {
+                                          "id": {
+                                            "type": "string",
+                                            "readOnly": true
+                                          },
+                                          "max_limit": {
+                                            "type": "number",
+                                            "description": "Cap in dollars (or tokens, depending on configured pricing)."
+                                          },
+                                          "reset_duration": {
+                                            "type": "string",
+                                            "enum": [
+                                              "1h",
+                                              "1d",
+                                              "1w",
+                                              "1M",
+                                              "1Q",
+                                              "1Y"
+                                            ],
+                                            "description": "Reset duration for a budget."
+                                          },
+                                          "reset_config": {
+                                            "type": "object",
+                                            "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (`1Q`); the API rejects it on any other window.",
+                                            "properties": {
+                                              "quarter_start_month": {
+                                                "type": "integer",
+                                                "minimum": 1,
+                                                "maximum": 12,
+                                                "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates: January, April, July and October all reset on calendar quarters and differ only in which quarter is labelled Q1."
+                                              }
+                                            },
+                                            "additionalProperties": false
+                                          },
+                                          "scope": {
+                                            "type": "string",
+                                            "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                          },
+                                          "current_usage": {
+                                            "type": "number",
+                                            "readOnly": true
+                                          },
+                                          "last_reset": {
+                                            "type": "string",
+                                            "format": "date-time",
+                                            "readOnly": true
+                                          }
+                                        }
+                                      },
+                                      "description": "Spend budgets for this model."
+                                    },
+                                    "rate_limit": {
+                                      "type": "object",
+                                      "properties": {
+                                        "id": {
+                                          "type": "string",
+                                          "readOnly": true
+                                        },
+                                        "token_max_limit": {
+                                          "type": "number",
+                                          "nullable": true
+                                        },
+                                        "token_reset_duration": {
+                                          "type": "string",
+                                          "enum": [
+                                            "1h",
+                                            "1d",
+                                            "1w",
+                                            "1M",
+                                            "1Y"
+                                          ],
+                                          "description": "Reset duration for a rate limit."
+                                        },
+                                        "request_max_limit": {
+                                          "type": "number",
+                                          "nullable": true
+                                        },
+                                        "request_reset_duration": {
+                                          "type": "string",
+                                          "enum": [
+                                            "1h",
+                                            "1d",
+                                            "1w",
+                                            "1M",
+                                            "1Y"
+                                          ],
+                                          "description": "Reset duration for a rate limit."
+                                        },
+                                        "token_current_usage": {
+                                          "type": "number",
+                                          "readOnly": true
+                                        },
+                                        "request_current_usage": {
+                                          "type": "number",
+                                          "readOnly": true
+                                        }
+                                      }
+                                    }
+                                  }
+                                },
+                                "description": "Per-model budgets and rate limits scoped to this provider. Each entry targets one model and materializes as a user-scoped model config on assignment."
+                              },
+                              "key_ids": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "Key IDs allowed for this provider config. Use `[\"*\"]` to allow all keys; specific IDs restrict access to those keys only. Empty-list behavior follows the top-level config.json `version` setting: an empty array or omitted value denies all keys under the default `version: 2` semantics, but allows all keys under `version: 1` (v1.4.x compat). Set `[\"*\"]` explicitly to be unambiguous across versions."
                               }
                             }
                           }
@@ -59681,6 +60959,148 @@
                                       "readOnly": true
                                     }
                                   }
+                                },
+                                "blacklisted_models": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  },
+                                  "description": "Models blocked for this provider even if matched by allowed_models (denylist wins). Use `[\"*\"]` to block all; empty array or omitted blocks none."
+                                },
+                                "weight": {
+                                  "type": "number",
+                                  "nullable": true,
+                                  "description": "Load-balancer seed weight for this provider. No fixed range is enforced. Null opts out of the weight override for this provider; it does not exclude the provider from routing."
+                                },
+                                "model_budgets": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "required": [
+                                      "model_name"
+                                    ],
+                                    "description": "Per-model budget group under an access-profile provider config, with optional per-model rate limit.",
+                                    "properties": {
+                                      "model_name": {
+                                        "type": "string",
+                                        "description": "Model this budget group applies to (scoped to the parent provider)."
+                                      },
+                                      "budgets": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "object",
+                                          "required": [
+                                            "max_limit",
+                                            "reset_duration"
+                                          ],
+                                          "properties": {
+                                            "id": {
+                                              "type": "string",
+                                              "readOnly": true
+                                            },
+                                            "max_limit": {
+                                              "type": "number",
+                                              "description": "Cap in dollars (or tokens, depending on configured pricing)."
+                                            },
+                                            "reset_duration": {
+                                              "type": "string",
+                                              "enum": [
+                                                "1h",
+                                                "1d",
+                                                "1w",
+                                                "1M",
+                                                "1Q",
+                                                "1Y"
+                                              ],
+                                              "description": "Reset duration for a budget."
+                                            },
+                                            "reset_config": {
+                                              "type": "object",
+                                              "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (`1Q`); the API rejects it on any other window.",
+                                              "properties": {
+                                                "quarter_start_month": {
+                                                  "type": "integer",
+                                                  "minimum": 1,
+                                                  "maximum": 12,
+                                                  "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates: January, April, July and October all reset on calendar quarters and differ only in which quarter is labelled Q1."
+                                                }
+                                              },
+                                              "additionalProperties": false
+                                            },
+                                            "scope": {
+                                              "type": "string",
+                                              "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                            },
+                                            "current_usage": {
+                                              "type": "number",
+                                              "readOnly": true
+                                            },
+                                            "last_reset": {
+                                              "type": "string",
+                                              "format": "date-time",
+                                              "readOnly": true
+                                            }
+                                          }
+                                        },
+                                        "description": "Spend budgets for this model."
+                                      },
+                                      "rate_limit": {
+                                        "type": "object",
+                                        "properties": {
+                                          "id": {
+                                            "type": "string",
+                                            "readOnly": true
+                                          },
+                                          "token_max_limit": {
+                                            "type": "number",
+                                            "nullable": true
+                                          },
+                                          "token_reset_duration": {
+                                            "type": "string",
+                                            "enum": [
+                                              "1h",
+                                              "1d",
+                                              "1w",
+                                              "1M",
+                                              "1Y"
+                                            ],
+                                            "description": "Reset duration for a rate limit."
+                                          },
+                                          "request_max_limit": {
+                                            "type": "number",
+                                            "nullable": true
+                                          },
+                                          "request_reset_duration": {
+                                            "type": "string",
+                                            "enum": [
+                                              "1h",
+                                              "1d",
+                                              "1w",
+                                              "1M",
+                                              "1Y"
+                                            ],
+                                            "description": "Reset duration for a rate limit."
+                                          },
+                                          "token_current_usage": {
+                                            "type": "number",
+                                            "readOnly": true
+                                          },
+                                          "request_current_usage": {
+                                            "type": "number",
+                                            "readOnly": true
+                                          }
+                                        }
+                                      }
+                                    }
+                                  },
+                                  "description": "Per-model budgets and rate limits scoped to this provider. Each entry targets one model and materializes as a user-scoped model config on assignment."
+                                },
+                                "key_ids": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  },
+                                  "description": "Key IDs allowed for this provider config. Use `[\"*\"]` to allow all keys; specific IDs restrict access to those keys only. Empty-list behavior follows the top-level config.json `version` setting: an empty array or omitted value denies all keys under the default `version: 2` semantics, but allows all keys under `version: 1` (v1.4.x compat). Set `[\"*\"]` explicitly to be unambiguous across versions."
                                 }
                               }
                             }
@@ -60059,6 +61479,148 @@
                               "readOnly": true
                             }
                           }
+                        },
+                        "blacklisted_models": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "description": "Models blocked for this provider even if matched by allowed_models (denylist wins). Use `[\"*\"]` to block all; empty array or omitted blocks none."
+                        },
+                        "weight": {
+                          "type": "number",
+                          "nullable": true,
+                          "description": "Load-balancer seed weight for this provider. No fixed range is enforced. Null opts out of the weight override for this provider; it does not exclude the provider from routing."
+                        },
+                        "model_budgets": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "model_name"
+                            ],
+                            "description": "Per-model budget group under an access-profile provider config, with optional per-model rate limit.",
+                            "properties": {
+                              "model_name": {
+                                "type": "string",
+                                "description": "Model this budget group applies to (scoped to the parent provider)."
+                              },
+                              "budgets": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "required": [
+                                    "max_limit",
+                                    "reset_duration"
+                                  ],
+                                  "properties": {
+                                    "id": {
+                                      "type": "string",
+                                      "readOnly": true
+                                    },
+                                    "max_limit": {
+                                      "type": "number",
+                                      "description": "Cap in dollars (or tokens, depending on configured pricing)."
+                                    },
+                                    "reset_duration": {
+                                      "type": "string",
+                                      "enum": [
+                                        "1h",
+                                        "1d",
+                                        "1w",
+                                        "1M",
+                                        "1Q",
+                                        "1Y"
+                                      ],
+                                      "description": "Reset duration for a budget."
+                                    },
+                                    "reset_config": {
+                                      "type": "object",
+                                      "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (`1Q`); the API rejects it on any other window.",
+                                      "properties": {
+                                        "quarter_start_month": {
+                                          "type": "integer",
+                                          "minimum": 1,
+                                          "maximum": 12,
+                                          "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates: January, April, July and October all reset on calendar quarters and differ only in which quarter is labelled Q1."
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    },
+                                    "scope": {
+                                      "type": "string",
+                                      "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                    },
+                                    "current_usage": {
+                                      "type": "number",
+                                      "readOnly": true
+                                    },
+                                    "last_reset": {
+                                      "type": "string",
+                                      "format": "date-time",
+                                      "readOnly": true
+                                    }
+                                  }
+                                },
+                                "description": "Spend budgets for this model."
+                              },
+                              "rate_limit": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "type": "string",
+                                    "readOnly": true
+                                  },
+                                  "token_max_limit": {
+                                    "type": "number",
+                                    "nullable": true
+                                  },
+                                  "token_reset_duration": {
+                                    "type": "string",
+                                    "enum": [
+                                      "1h",
+                                      "1d",
+                                      "1w",
+                                      "1M",
+                                      "1Y"
+                                    ],
+                                    "description": "Reset duration for a rate limit."
+                                  },
+                                  "request_max_limit": {
+                                    "type": "number",
+                                    "nullable": true
+                                  },
+                                  "request_reset_duration": {
+                                    "type": "string",
+                                    "enum": [
+                                      "1h",
+                                      "1d",
+                                      "1w",
+                                      "1M",
+                                      "1Y"
+                                    ],
+                                    "description": "Reset duration for a rate limit."
+                                  },
+                                  "token_current_usage": {
+                                    "type": "number",
+                                    "readOnly": true
+                                  },
+                                  "request_current_usage": {
+                                    "type": "number",
+                                    "readOnly": true
+                                  }
+                                }
+                              }
+                            }
+                          },
+                          "description": "Per-model budgets and rate limits scoped to this provider. Each entry targets one model and materializes as a user-scoped model config on assignment."
+                        },
+                        "key_ids": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "description": "Key IDs allowed for this provider config. Use `[\"*\"]` to allow all keys; specific IDs restrict access to those keys only. Empty-list behavior follows the top-level config.json `version` setting: an empty array or omitted value denies all keys under the default `version: 2` semantics, but allows all keys under `version: 1` (v1.4.x compat). Set `[\"*\"]` explicitly to be unambiguous across versions."
                         }
                       }
                     }
@@ -60402,6 +61964,148 @@
                                     "readOnly": true
                                   }
                                 }
+                              },
+                              "blacklisted_models": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "Models blocked for this provider even if matched by allowed_models (denylist wins). Use `[\"*\"]` to block all; empty array or omitted blocks none."
+                              },
+                              "weight": {
+                                "type": "number",
+                                "nullable": true,
+                                "description": "Load-balancer seed weight for this provider. No fixed range is enforced. Null opts out of the weight override for this provider; it does not exclude the provider from routing."
+                              },
+                              "model_budgets": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "required": [
+                                    "model_name"
+                                  ],
+                                  "description": "Per-model budget group under an access-profile provider config, with optional per-model rate limit.",
+                                  "properties": {
+                                    "model_name": {
+                                      "type": "string",
+                                      "description": "Model this budget group applies to (scoped to the parent provider)."
+                                    },
+                                    "budgets": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "object",
+                                        "required": [
+                                          "max_limit",
+                                          "reset_duration"
+                                        ],
+                                        "properties": {
+                                          "id": {
+                                            "type": "string",
+                                            "readOnly": true
+                                          },
+                                          "max_limit": {
+                                            "type": "number",
+                                            "description": "Cap in dollars (or tokens, depending on configured pricing)."
+                                          },
+                                          "reset_duration": {
+                                            "type": "string",
+                                            "enum": [
+                                              "1h",
+                                              "1d",
+                                              "1w",
+                                              "1M",
+                                              "1Q",
+                                              "1Y"
+                                            ],
+                                            "description": "Reset duration for a budget."
+                                          },
+                                          "reset_config": {
+                                            "type": "object",
+                                            "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (`1Q`); the API rejects it on any other window.",
+                                            "properties": {
+                                              "quarter_start_month": {
+                                                "type": "integer",
+                                                "minimum": 1,
+                                                "maximum": 12,
+                                                "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates: January, April, July and October all reset on calendar quarters and differ only in which quarter is labelled Q1."
+                                              }
+                                            },
+                                            "additionalProperties": false
+                                          },
+                                          "scope": {
+                                            "type": "string",
+                                            "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                          },
+                                          "current_usage": {
+                                            "type": "number",
+                                            "readOnly": true
+                                          },
+                                          "last_reset": {
+                                            "type": "string",
+                                            "format": "date-time",
+                                            "readOnly": true
+                                          }
+                                        }
+                                      },
+                                      "description": "Spend budgets for this model."
+                                    },
+                                    "rate_limit": {
+                                      "type": "object",
+                                      "properties": {
+                                        "id": {
+                                          "type": "string",
+                                          "readOnly": true
+                                        },
+                                        "token_max_limit": {
+                                          "type": "number",
+                                          "nullable": true
+                                        },
+                                        "token_reset_duration": {
+                                          "type": "string",
+                                          "enum": [
+                                            "1h",
+                                            "1d",
+                                            "1w",
+                                            "1M",
+                                            "1Y"
+                                          ],
+                                          "description": "Reset duration for a rate limit."
+                                        },
+                                        "request_max_limit": {
+                                          "type": "number",
+                                          "nullable": true
+                                        },
+                                        "request_reset_duration": {
+                                          "type": "string",
+                                          "enum": [
+                                            "1h",
+                                            "1d",
+                                            "1w",
+                                            "1M",
+                                            "1Y"
+                                          ],
+                                          "description": "Reset duration for a rate limit."
+                                        },
+                                        "token_current_usage": {
+                                          "type": "number",
+                                          "readOnly": true
+                                        },
+                                        "request_current_usage": {
+                                          "type": "number",
+                                          "readOnly": true
+                                        }
+                                      }
+                                    }
+                                  }
+                                },
+                                "description": "Per-model budgets and rate limits scoped to this provider. Each entry targets one model and materializes as a user-scoped model config on assignment."
+                              },
+                              "key_ids": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "Key IDs allowed for this provider config. Use `[\"*\"]` to allow all keys; specific IDs restrict access to those keys only. Empty-list behavior follows the top-level config.json `version` setting: an empty array or omitted value denies all keys under the default `version: 2` semantics, but allows all keys under `version: 1` (v1.4.x compat). Set `[\"*\"]` explicitly to be unambiguous across versions."
                               }
                             }
                           }
@@ -60809,6 +62513,148 @@
                                     "readOnly": true
                                   }
                                 }
+                              },
+                              "blacklisted_models": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "Models blocked for this provider even if matched by allowed_models (denylist wins). Use `[\"*\"]` to block all; empty array or omitted blocks none."
+                              },
+                              "weight": {
+                                "type": "number",
+                                "nullable": true,
+                                "description": "Load-balancer seed weight for this provider. No fixed range is enforced. Null opts out of the weight override for this provider; it does not exclude the provider from routing."
+                              },
+                              "model_budgets": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "required": [
+                                    "model_name"
+                                  ],
+                                  "description": "Per-model budget group under an access-profile provider config, with optional per-model rate limit.",
+                                  "properties": {
+                                    "model_name": {
+                                      "type": "string",
+                                      "description": "Model this budget group applies to (scoped to the parent provider)."
+                                    },
+                                    "budgets": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "object",
+                                        "required": [
+                                          "max_limit",
+                                          "reset_duration"
+                                        ],
+                                        "properties": {
+                                          "id": {
+                                            "type": "string",
+                                            "readOnly": true
+                                          },
+                                          "max_limit": {
+                                            "type": "number",
+                                            "description": "Cap in dollars (or tokens, depending on configured pricing)."
+                                          },
+                                          "reset_duration": {
+                                            "type": "string",
+                                            "enum": [
+                                              "1h",
+                                              "1d",
+                                              "1w",
+                                              "1M",
+                                              "1Q",
+                                              "1Y"
+                                            ],
+                                            "description": "Reset duration for a budget."
+                                          },
+                                          "reset_config": {
+                                            "type": "object",
+                                            "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (`1Q`); the API rejects it on any other window.",
+                                            "properties": {
+                                              "quarter_start_month": {
+                                                "type": "integer",
+                                                "minimum": 1,
+                                                "maximum": 12,
+                                                "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates: January, April, July and October all reset on calendar quarters and differ only in which quarter is labelled Q1."
+                                              }
+                                            },
+                                            "additionalProperties": false
+                                          },
+                                          "scope": {
+                                            "type": "string",
+                                            "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                          },
+                                          "current_usage": {
+                                            "type": "number",
+                                            "readOnly": true
+                                          },
+                                          "last_reset": {
+                                            "type": "string",
+                                            "format": "date-time",
+                                            "readOnly": true
+                                          }
+                                        }
+                                      },
+                                      "description": "Spend budgets for this model."
+                                    },
+                                    "rate_limit": {
+                                      "type": "object",
+                                      "properties": {
+                                        "id": {
+                                          "type": "string",
+                                          "readOnly": true
+                                        },
+                                        "token_max_limit": {
+                                          "type": "number",
+                                          "nullable": true
+                                        },
+                                        "token_reset_duration": {
+                                          "type": "string",
+                                          "enum": [
+                                            "1h",
+                                            "1d",
+                                            "1w",
+                                            "1M",
+                                            "1Y"
+                                          ],
+                                          "description": "Reset duration for a rate limit."
+                                        },
+                                        "request_max_limit": {
+                                          "type": "number",
+                                          "nullable": true
+                                        },
+                                        "request_reset_duration": {
+                                          "type": "string",
+                                          "enum": [
+                                            "1h",
+                                            "1d",
+                                            "1w",
+                                            "1M",
+                                            "1Y"
+                                          ],
+                                          "description": "Reset duration for a rate limit."
+                                        },
+                                        "token_current_usage": {
+                                          "type": "number",
+                                          "readOnly": true
+                                        },
+                                        "request_current_usage": {
+                                          "type": "number",
+                                          "readOnly": true
+                                        }
+                                      }
+                                    }
+                                  }
+                                },
+                                "description": "Per-model budgets and rate limits scoped to this provider. Each entry targets one model and materializes as a user-scoped model config on assignment."
+                              },
+                              "key_ids": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "Key IDs allowed for this provider config. Use `[\"*\"]` to allow all keys; specific IDs restrict access to those keys only. Empty-list behavior follows the top-level config.json `version` setting: an empty array or omitted value denies all keys under the default `version: 2` semantics, but allows all keys under `version: 1` (v1.4.x compat). Set `[\"*\"]` explicitly to be unambiguous across versions."
                               }
                             }
                           }
@@ -61215,6 +63061,148 @@
                               "readOnly": true
                             }
                           }
+                        },
+                        "blacklisted_models": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "description": "Models blocked for this provider even if matched by allowed_models (denylist wins). Use `[\"*\"]` to block all; empty array or omitted blocks none."
+                        },
+                        "weight": {
+                          "type": "number",
+                          "nullable": true,
+                          "description": "Load-balancer seed weight for this provider. No fixed range is enforced. Null opts out of the weight override for this provider; it does not exclude the provider from routing."
+                        },
+                        "model_budgets": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "model_name"
+                            ],
+                            "description": "Per-model budget group under an access-profile provider config, with optional per-model rate limit.",
+                            "properties": {
+                              "model_name": {
+                                "type": "string",
+                                "description": "Model this budget group applies to (scoped to the parent provider)."
+                              },
+                              "budgets": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "required": [
+                                    "max_limit",
+                                    "reset_duration"
+                                  ],
+                                  "properties": {
+                                    "id": {
+                                      "type": "string",
+                                      "readOnly": true
+                                    },
+                                    "max_limit": {
+                                      "type": "number",
+                                      "description": "Cap in dollars (or tokens, depending on configured pricing)."
+                                    },
+                                    "reset_duration": {
+                                      "type": "string",
+                                      "enum": [
+                                        "1h",
+                                        "1d",
+                                        "1w",
+                                        "1M",
+                                        "1Q",
+                                        "1Y"
+                                      ],
+                                      "description": "Reset duration for a budget."
+                                    },
+                                    "reset_config": {
+                                      "type": "object",
+                                      "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (`1Q`); the API rejects it on any other window.",
+                                      "properties": {
+                                        "quarter_start_month": {
+                                          "type": "integer",
+                                          "minimum": 1,
+                                          "maximum": 12,
+                                          "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates: January, April, July and October all reset on calendar quarters and differ only in which quarter is labelled Q1."
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    },
+                                    "scope": {
+                                      "type": "string",
+                                      "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                    },
+                                    "current_usage": {
+                                      "type": "number",
+                                      "readOnly": true
+                                    },
+                                    "last_reset": {
+                                      "type": "string",
+                                      "format": "date-time",
+                                      "readOnly": true
+                                    }
+                                  }
+                                },
+                                "description": "Spend budgets for this model."
+                              },
+                              "rate_limit": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "type": "string",
+                                    "readOnly": true
+                                  },
+                                  "token_max_limit": {
+                                    "type": "number",
+                                    "nullable": true
+                                  },
+                                  "token_reset_duration": {
+                                    "type": "string",
+                                    "enum": [
+                                      "1h",
+                                      "1d",
+                                      "1w",
+                                      "1M",
+                                      "1Y"
+                                    ],
+                                    "description": "Reset duration for a rate limit."
+                                  },
+                                  "request_max_limit": {
+                                    "type": "number",
+                                    "nullable": true
+                                  },
+                                  "request_reset_duration": {
+                                    "type": "string",
+                                    "enum": [
+                                      "1h",
+                                      "1d",
+                                      "1w",
+                                      "1M",
+                                      "1Y"
+                                    ],
+                                    "description": "Reset duration for a rate limit."
+                                  },
+                                  "token_current_usage": {
+                                    "type": "number",
+                                    "readOnly": true
+                                  },
+                                  "request_current_usage": {
+                                    "type": "number",
+                                    "readOnly": true
+                                  }
+                                }
+                              }
+                            }
+                          },
+                          "description": "Per-model budgets and rate limits scoped to this provider. Each entry targets one model and materializes as a user-scoped model config on assignment."
+                        },
+                        "key_ids": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "description": "Key IDs allowed for this provider config. Use `[\"*\"]` to allow all keys; specific IDs restrict access to those keys only. Empty-list behavior follows the top-level config.json `version` setting: an empty array or omitted value denies all keys under the default `version: 2` semantics, but allows all keys under `version: 1` (v1.4.x compat). Set `[\"*\"]` explicitly to be unambiguous across versions."
                         }
                       }
                     }
@@ -61565,6 +63553,148 @@
                                     "readOnly": true
                                   }
                                 }
+                              },
+                              "blacklisted_models": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "Models blocked for this provider even if matched by allowed_models (denylist wins). Use `[\"*\"]` to block all; empty array or omitted blocks none."
+                              },
+                              "weight": {
+                                "type": "number",
+                                "nullable": true,
+                                "description": "Load-balancer seed weight for this provider. No fixed range is enforced. Null opts out of the weight override for this provider; it does not exclude the provider from routing."
+                              },
+                              "model_budgets": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "required": [
+                                    "model_name"
+                                  ],
+                                  "description": "Per-model budget group under an access-profile provider config, with optional per-model rate limit.",
+                                  "properties": {
+                                    "model_name": {
+                                      "type": "string",
+                                      "description": "Model this budget group applies to (scoped to the parent provider)."
+                                    },
+                                    "budgets": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "object",
+                                        "required": [
+                                          "max_limit",
+                                          "reset_duration"
+                                        ],
+                                        "properties": {
+                                          "id": {
+                                            "type": "string",
+                                            "readOnly": true
+                                          },
+                                          "max_limit": {
+                                            "type": "number",
+                                            "description": "Cap in dollars (or tokens, depending on configured pricing)."
+                                          },
+                                          "reset_duration": {
+                                            "type": "string",
+                                            "enum": [
+                                              "1h",
+                                              "1d",
+                                              "1w",
+                                              "1M",
+                                              "1Q",
+                                              "1Y"
+                                            ],
+                                            "description": "Reset duration for a budget."
+                                          },
+                                          "reset_config": {
+                                            "type": "object",
+                                            "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (`1Q`); the API rejects it on any other window.",
+                                            "properties": {
+                                              "quarter_start_month": {
+                                                "type": "integer",
+                                                "minimum": 1,
+                                                "maximum": 12,
+                                                "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates: January, April, July and October all reset on calendar quarters and differ only in which quarter is labelled Q1."
+                                              }
+                                            },
+                                            "additionalProperties": false
+                                          },
+                                          "scope": {
+                                            "type": "string",
+                                            "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                          },
+                                          "current_usage": {
+                                            "type": "number",
+                                            "readOnly": true
+                                          },
+                                          "last_reset": {
+                                            "type": "string",
+                                            "format": "date-time",
+                                            "readOnly": true
+                                          }
+                                        }
+                                      },
+                                      "description": "Spend budgets for this model."
+                                    },
+                                    "rate_limit": {
+                                      "type": "object",
+                                      "properties": {
+                                        "id": {
+                                          "type": "string",
+                                          "readOnly": true
+                                        },
+                                        "token_max_limit": {
+                                          "type": "number",
+                                          "nullable": true
+                                        },
+                                        "token_reset_duration": {
+                                          "type": "string",
+                                          "enum": [
+                                            "1h",
+                                            "1d",
+                                            "1w",
+                                            "1M",
+                                            "1Y"
+                                          ],
+                                          "description": "Reset duration for a rate limit."
+                                        },
+                                        "request_max_limit": {
+                                          "type": "number",
+                                          "nullable": true
+                                        },
+                                        "request_reset_duration": {
+                                          "type": "string",
+                                          "enum": [
+                                            "1h",
+                                            "1d",
+                                            "1w",
+                                            "1M",
+                                            "1Y"
+                                          ],
+                                          "description": "Reset duration for a rate limit."
+                                        },
+                                        "token_current_usage": {
+                                          "type": "number",
+                                          "readOnly": true
+                                        },
+                                        "request_current_usage": {
+                                          "type": "number",
+                                          "readOnly": true
+                                        }
+                                      }
+                                    }
+                                  }
+                                },
+                                "description": "Per-model budgets and rate limits scoped to this provider. Each entry targets one model and materializes as a user-scoped model config on assignment."
+                              },
+                              "key_ids": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "Key IDs allowed for this provider config. Use `[\"*\"]` to allow all keys; specific IDs restrict access to those keys only. Empty-list behavior follows the top-level config.json `version` setting: an empty array or omitted value denies all keys under the default `version: 2` semantics, but allows all keys under `version: 1` (v1.4.x compat). Set `[\"*\"]` explicitly to be unambiguous across versions."
                               }
                             }
                           }
@@ -62039,6 +64169,148 @@
                                     "readOnly": true
                                   }
                                 }
+                              },
+                              "blacklisted_models": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "Models blocked for this provider even if matched by allowed_models (denylist wins). Use `[\"*\"]` to block all; empty array or omitted blocks none."
+                              },
+                              "weight": {
+                                "type": "number",
+                                "nullable": true,
+                                "description": "Load-balancer seed weight for this provider. No fixed range is enforced. Null opts out of the weight override for this provider; it does not exclude the provider from routing."
+                              },
+                              "model_budgets": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "required": [
+                                    "model_name"
+                                  ],
+                                  "description": "Per-model budget group under an access-profile provider config, with optional per-model rate limit.",
+                                  "properties": {
+                                    "model_name": {
+                                      "type": "string",
+                                      "description": "Model this budget group applies to (scoped to the parent provider)."
+                                    },
+                                    "budgets": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "object",
+                                        "required": [
+                                          "max_limit",
+                                          "reset_duration"
+                                        ],
+                                        "properties": {
+                                          "id": {
+                                            "type": "string",
+                                            "readOnly": true
+                                          },
+                                          "max_limit": {
+                                            "type": "number",
+                                            "description": "Cap in dollars (or tokens, depending on configured pricing)."
+                                          },
+                                          "reset_duration": {
+                                            "type": "string",
+                                            "enum": [
+                                              "1h",
+                                              "1d",
+                                              "1w",
+                                              "1M",
+                                              "1Q",
+                                              "1Y"
+                                            ],
+                                            "description": "Reset duration for a budget."
+                                          },
+                                          "reset_config": {
+                                            "type": "object",
+                                            "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (`1Q`); the API rejects it on any other window.",
+                                            "properties": {
+                                              "quarter_start_month": {
+                                                "type": "integer",
+                                                "minimum": 1,
+                                                "maximum": 12,
+                                                "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates: January, April, July and October all reset on calendar quarters and differ only in which quarter is labelled Q1."
+                                              }
+                                            },
+                                            "additionalProperties": false
+                                          },
+                                          "scope": {
+                                            "type": "string",
+                                            "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                          },
+                                          "current_usage": {
+                                            "type": "number",
+                                            "readOnly": true
+                                          },
+                                          "last_reset": {
+                                            "type": "string",
+                                            "format": "date-time",
+                                            "readOnly": true
+                                          }
+                                        }
+                                      },
+                                      "description": "Spend budgets for this model."
+                                    },
+                                    "rate_limit": {
+                                      "type": "object",
+                                      "properties": {
+                                        "id": {
+                                          "type": "string",
+                                          "readOnly": true
+                                        },
+                                        "token_max_limit": {
+                                          "type": "number",
+                                          "nullable": true
+                                        },
+                                        "token_reset_duration": {
+                                          "type": "string",
+                                          "enum": [
+                                            "1h",
+                                            "1d",
+                                            "1w",
+                                            "1M",
+                                            "1Y"
+                                          ],
+                                          "description": "Reset duration for a rate limit."
+                                        },
+                                        "request_max_limit": {
+                                          "type": "number",
+                                          "nullable": true
+                                        },
+                                        "request_reset_duration": {
+                                          "type": "string",
+                                          "enum": [
+                                            "1h",
+                                            "1d",
+                                            "1w",
+                                            "1M",
+                                            "1Y"
+                                          ],
+                                          "description": "Reset duration for a rate limit."
+                                        },
+                                        "token_current_usage": {
+                                          "type": "number",
+                                          "readOnly": true
+                                        },
+                                        "request_current_usage": {
+                                          "type": "number",
+                                          "readOnly": true
+                                        }
+                                      }
+                                    }
+                                  }
+                                },
+                                "description": "Per-model budgets and rate limits scoped to this provider. Each entry targets one model and materializes as a user-scoped model config on assignment."
+                              },
+                              "key_ids": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "Key IDs allowed for this provider config. Use `[\"*\"]` to allow all keys; specific IDs restrict access to those keys only. Empty-list behavior follows the top-level config.json `version` setting: an empty array or omitted value denies all keys under the default `version: 2` semantics, but allows all keys under `version: 1` (v1.4.x compat). Set `[\"*\"]` explicitly to be unambiguous across versions."
                               }
                             }
                           }
@@ -62435,6 +64707,148 @@
                                     "readOnly": true
                                   }
                                 }
+                              },
+                              "blacklisted_models": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "Models blocked for this provider even if matched by allowed_models (denylist wins). Use `[\"*\"]` to block all; empty array or omitted blocks none."
+                              },
+                              "weight": {
+                                "type": "number",
+                                "nullable": true,
+                                "description": "Load-balancer seed weight for this provider. No fixed range is enforced. Null opts out of the weight override for this provider; it does not exclude the provider from routing."
+                              },
+                              "model_budgets": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "required": [
+                                    "model_name"
+                                  ],
+                                  "description": "Per-model budget group under an access-profile provider config, with optional per-model rate limit.",
+                                  "properties": {
+                                    "model_name": {
+                                      "type": "string",
+                                      "description": "Model this budget group applies to (scoped to the parent provider)."
+                                    },
+                                    "budgets": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "object",
+                                        "required": [
+                                          "max_limit",
+                                          "reset_duration"
+                                        ],
+                                        "properties": {
+                                          "id": {
+                                            "type": "string",
+                                            "readOnly": true
+                                          },
+                                          "max_limit": {
+                                            "type": "number",
+                                            "description": "Cap in dollars (or tokens, depending on configured pricing)."
+                                          },
+                                          "reset_duration": {
+                                            "type": "string",
+                                            "enum": [
+                                              "1h",
+                                              "1d",
+                                              "1w",
+                                              "1M",
+                                              "1Q",
+                                              "1Y"
+                                            ],
+                                            "description": "Reset duration for a budget."
+                                          },
+                                          "reset_config": {
+                                            "type": "object",
+                                            "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (`1Q`); the API rejects it on any other window.",
+                                            "properties": {
+                                              "quarter_start_month": {
+                                                "type": "integer",
+                                                "minimum": 1,
+                                                "maximum": 12,
+                                                "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates: January, April, July and October all reset on calendar quarters and differ only in which quarter is labelled Q1."
+                                              }
+                                            },
+                                            "additionalProperties": false
+                                          },
+                                          "scope": {
+                                            "type": "string",
+                                            "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                          },
+                                          "current_usage": {
+                                            "type": "number",
+                                            "readOnly": true
+                                          },
+                                          "last_reset": {
+                                            "type": "string",
+                                            "format": "date-time",
+                                            "readOnly": true
+                                          }
+                                        }
+                                      },
+                                      "description": "Spend budgets for this model."
+                                    },
+                                    "rate_limit": {
+                                      "type": "object",
+                                      "properties": {
+                                        "id": {
+                                          "type": "string",
+                                          "readOnly": true
+                                        },
+                                        "token_max_limit": {
+                                          "type": "number",
+                                          "nullable": true
+                                        },
+                                        "token_reset_duration": {
+                                          "type": "string",
+                                          "enum": [
+                                            "1h",
+                                            "1d",
+                                            "1w",
+                                            "1M",
+                                            "1Y"
+                                          ],
+                                          "description": "Reset duration for a rate limit."
+                                        },
+                                        "request_max_limit": {
+                                          "type": "number",
+                                          "nullable": true
+                                        },
+                                        "request_reset_duration": {
+                                          "type": "string",
+                                          "enum": [
+                                            "1h",
+                                            "1d",
+                                            "1w",
+                                            "1M",
+                                            "1Y"
+                                          ],
+                                          "description": "Reset duration for a rate limit."
+                                        },
+                                        "token_current_usage": {
+                                          "type": "number",
+                                          "readOnly": true
+                                        },
+                                        "request_current_usage": {
+                                          "type": "number",
+                                          "readOnly": true
+                                        }
+                                      }
+                                    }
+                                  }
+                                },
+                                "description": "Per-model budgets and rate limits scoped to this provider. Each entry targets one model and materializes as a user-scoped model config on assignment."
+                              },
+                              "key_ids": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "Key IDs allowed for this provider config. Use `[\"*\"]` to allow all keys; specific IDs restrict access to those keys only. Empty-list behavior follows the top-level config.json `version` setting: an empty array or omitted value denies all keys under the default `version: 2` semantics, but allows all keys under `version: 1` (v1.4.x compat). Set `[\"*\"]` explicitly to be unambiguous across versions."
                               }
                             }
                           }
@@ -62852,6 +65266,148 @@
                                     "readOnly": true
                                   }
                                 }
+                              },
+                              "blacklisted_models": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "Models blocked for this provider even if matched by allowed_models (denylist wins). Use `[\"*\"]` to block all; empty array or omitted blocks none."
+                              },
+                              "weight": {
+                                "type": "number",
+                                "nullable": true,
+                                "description": "Load-balancer seed weight for this provider. No fixed range is enforced. Null opts out of the weight override for this provider; it does not exclude the provider from routing."
+                              },
+                              "model_budgets": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "required": [
+                                    "model_name"
+                                  ],
+                                  "description": "Per-model budget group under an access-profile provider config, with optional per-model rate limit.",
+                                  "properties": {
+                                    "model_name": {
+                                      "type": "string",
+                                      "description": "Model this budget group applies to (scoped to the parent provider)."
+                                    },
+                                    "budgets": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "object",
+                                        "required": [
+                                          "max_limit",
+                                          "reset_duration"
+                                        ],
+                                        "properties": {
+                                          "id": {
+                                            "type": "string",
+                                            "readOnly": true
+                                          },
+                                          "max_limit": {
+                                            "type": "number",
+                                            "description": "Cap in dollars (or tokens, depending on configured pricing)."
+                                          },
+                                          "reset_duration": {
+                                            "type": "string",
+                                            "enum": [
+                                              "1h",
+                                              "1d",
+                                              "1w",
+                                              "1M",
+                                              "1Q",
+                                              "1Y"
+                                            ],
+                                            "description": "Reset duration for a budget."
+                                          },
+                                          "reset_config": {
+                                            "type": "object",
+                                            "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (`1Q`); the API rejects it on any other window.",
+                                            "properties": {
+                                              "quarter_start_month": {
+                                                "type": "integer",
+                                                "minimum": 1,
+                                                "maximum": 12,
+                                                "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates: January, April, July and October all reset on calendar quarters and differ only in which quarter is labelled Q1."
+                                              }
+                                            },
+                                            "additionalProperties": false
+                                          },
+                                          "scope": {
+                                            "type": "string",
+                                            "description": "Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets."
+                                          },
+                                          "current_usage": {
+                                            "type": "number",
+                                            "readOnly": true
+                                          },
+                                          "last_reset": {
+                                            "type": "string",
+                                            "format": "date-time",
+                                            "readOnly": true
+                                          }
+                                        }
+                                      },
+                                      "description": "Spend budgets for this model."
+                                    },
+                                    "rate_limit": {
+                                      "type": "object",
+                                      "properties": {
+                                        "id": {
+                                          "type": "string",
+                                          "readOnly": true
+                                        },
+                                        "token_max_limit": {
+                                          "type": "number",
+                                          "nullable": true
+                                        },
+                                        "token_reset_duration": {
+                                          "type": "string",
+                                          "enum": [
+                                            "1h",
+                                            "1d",
+                                            "1w",
+                                            "1M",
+                                            "1Y"
+                                          ],
+                                          "description": "Reset duration for a rate limit."
+                                        },
+                                        "request_max_limit": {
+                                          "type": "number",
+                                          "nullable": true
+                                        },
+                                        "request_reset_duration": {
+                                          "type": "string",
+                                          "enum": [
+                                            "1h",
+                                            "1d",
+                                            "1w",
+                                            "1M",
+                                            "1Y"
+                                          ],
+                                          "description": "Reset duration for a rate limit."
+                                        },
+                                        "token_current_usage": {
+                                          "type": "number",
+                                          "readOnly": true
+                                        },
+                                        "request_current_usage": {
+                                          "type": "number",
+                                          "readOnly": true
+                                        }
+                                      }
+                                    }
+                                  }
+                                },
+                                "description": "Per-model budgets and rate limits scoped to this provider. Each entry targets one model and materializes as a user-scoped model config on assignment."
+                              },
+                              "key_ids": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "Key IDs allowed for this provider config. Use `[\"*\"]` to allow all keys; specific IDs restrict access to those keys only. Empty-list behavior follows the top-level config.json `version` setting: an empty array or omitted value denies all keys under the default `version: 2` semantics, but allows all keys under `version: 1` (v1.4.x compat). Set `[\"*\"]` explicitly to be unambiguous across versions."
                               }
                             }
                           }
