@@ -356,7 +356,7 @@ func makeKey(model, provider, mode string) string {
 // provider name used by the pricing catalog.
 func normalizeProvider(p string) string {
 	switch {
-	case p == "together":
+	case strings.Contains(p, "together"):
 		return "together_ai"
 	case strings.Contains(p, "vertex_ai") || p == "google-vertex":
 		return string(schemas.Vertex)
