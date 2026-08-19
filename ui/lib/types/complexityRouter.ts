@@ -46,13 +46,16 @@ export interface SemanticConfig {
 	fallback?: SemanticFallback;
 }
 
+export interface SessionConfig {
+	enabled: boolean;
+}
+
 // The llm classifier has no warmup: it holds no corpus and makes its first
 // provider call on the first classified request, so it is simply ready the
 // moment its block is saved.
 export interface LLMStatusInfo {
 	state: "disabled" | "ready";
 }
-
 
 export interface SemanticStatusInfo {
 	state: "disabled" | "warming" | "ready" | "failed";
@@ -80,6 +83,10 @@ export interface AnalyzerConfig {
 	// "llm". May be present while the fallback says "none": the block is
 	// retained so toggling the fallback never loses settings.
 	llm?: LLMConfig;
+	// When enabled, one scoped session retains its highest observed tier for a
+	// fixed 24-hour inactivity window. The gateway owns that policy; there are no
+	// client-tunable thresholds or downgrade controls.
+	session?: SessionConfig;
 }
 
 export type KeywordListKey = keyof EditableKeywordConfig;
@@ -97,7 +104,7 @@ export const LEGACY_COMPLEXITY_TIER_VALUES = ["REASONING"] as const;
 // LEGACY_COMPLEXITY_TIER_VALUES): the complexity_mechanism column ships with the
 // semantic classifier, so no row was ever written with the retired "lexical"
 // mechanism and filtering on it could only ever return nothing.
-export const COMPLEXITY_MECHANISM_VALUES = ["semantic", "llm", "skipped"] as const;
+export const COMPLEXITY_MECHANISM_VALUES = ["semantic", "llm", "session", "skipped"] as const;
 
 // Labels cover "lexical" even though nothing filters on it. Rows predating the
 // structured columns record their decision only in the prose routing log, and
@@ -107,6 +114,7 @@ export const COMPLEXITY_MECHANISM_LABELS: Record<string, string> = {
 	lexical: "Lexical",
 	semantic: "Semantic",
 	llm: "LLM",
+	session: "Session",
 	skipped: "Skipped",
 };
 

@@ -6448,6 +6448,8 @@ func (s *RDBConfigStore) readComplexityCarryOverWithDB(ctx context.Context, db *
 	hashes.MediumKeywords = semanticRow.ConfigHashes.MediumKeywords
 	hashes.ComplexKeywords = semanticRow.ConfigHashes.ComplexKeywords
 	hashes.SemanticSettings = semanticRow.ConfigHashes.SemanticSettings
+	hashes.LLMSettings = semanticRow.ConfigHashes.LLMSettings
+	hashes.SessionSettings = semanticRow.ConfigHashes.SessionSettings
 	return hashes, semanticRow.EmbeddingFingerprint, nil
 }
 

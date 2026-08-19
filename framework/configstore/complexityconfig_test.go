@@ -29,6 +29,35 @@ func testSemanticAnalyzerConfig() *ComplexityAnalyzerConfig {
 	return cfg
 }
 
+func testSessionAnalyzerConfig() *ComplexityAnalyzerConfig {
+	cfg := testSemanticAnalyzerConfig()
+	cfg.Session = &ComplexitySessionConfig{Enabled: true}
+	return cfg
+}
+
+func TestComplexitySessionConfigDecoding(t *testing.T) {
+	var cfg ComplexitySessionConfig
+	require.NoError(t, json.Unmarshal([]byte(`{"enabled":true}`), &cfg))
+	assert.True(t, cfg.Enabled)
+
+	err := json.Unmarshal([]byte(`{"enable":true}`), &cfg)
+	require.ErrorContains(t, err, `unknown complexity session field "enable"`)
+
+	err = json.Unmarshal([]byte(`{}`), &cfg)
+	require.ErrorContains(t, err, "requires enabled")
+}
+
+func TestComplexitySessionConfigRequiresSemanticWhenEnabled(t *testing.T) {
+	cfg := testComplexityAnalyzerConfig()
+	cfg.Session = &ComplexitySessionConfig{Enabled: true}
+	normalized := cfg.Normalized()
+	require.ErrorContains(t, normalized.Validate(), "requires a semantic config block")
+
+	cfg.Session.Enabled = false
+	normalized = cfg.Normalized()
+	require.NoError(t, normalized.Validate())
+}
+
 func TestComplexitySemanticConfigTimeoutDecoding(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -244,12 +273,14 @@ func TestComplexityAnalyzerConfigSemanticPhraseValidation(t *testing.T) {
 
 func TestDecodeComplexityAnalyzerConfigSemanticRoundTrip(t *testing.T) {
 	cfg := testSemanticAnalyzerConfig()
+	cfg.Session = &ComplexitySessionConfig{Enabled: true}
 	cfg.ConfigHashes = ComplexityAnalyzerConfigHashes{
 		TierBoundaries:   "tier-hash",
 		SimpleKeywords:   "simple-hash",
 		MediumKeywords:   "medium-hash",
 		ComplexKeywords:  "complex-hash",
 		SemanticSettings: "settings-hash",
+		SessionSettings:  "session-hash",
 	}
 	cfg.EmbeddingFingerprint = "fingerprint-1"
 
@@ -262,13 +293,16 @@ func TestDecodeComplexityAnalyzerConfigSemanticRoundTrip(t *testing.T) {
 	// row. Anything of it that leaks into the analyzer row is something an older
 	// Bifrost would silently drop the next time it saved.
 	assert.Contains(t, string(semanticRaw), `"_embedding_fingerprint":"fingerprint-1"`)
+	assert.Contains(t, string(semanticRaw), `"session":{"enabled":true}`)
 	assert.NotContains(t, string(analyzerRaw), "_embedding_fingerprint")
 	assert.NotContains(t, string(analyzerRaw), "semantic")
+	assert.NotContains(t, string(analyzerRaw), "session")
 
 	decoded, err := roundTripComplexityAnalyzerConfig(t, cfg.Normalized())
 	require.NoError(t, err)
 	require.NotNil(t, decoded.Semantic)
 	assert.Equal(t, cfg.Normalized().Semantic, decoded.Semantic)
+	assert.Equal(t, cfg.Session, decoded.Session)
 	assert.Equal(t, cfg.ConfigHashes, decoded.ConfigHashes)
 	assert.Equal(t, "fingerprint-1", decoded.EmbeddingFingerprint)
 }
@@ -310,6 +344,57 @@ func TestGenerateComplexityAnalyzerConfigHashesSemantic(t *testing.T) {
 	plainHashes, err := GenerateComplexityAnalyzerConfigHashes(testComplexityAnalyzerConfig())
 	require.NoError(t, err)
 	assert.Empty(t, plainHashes.SemanticSettings)
+}
+
+func TestGenerateComplexityAnalyzerConfigHashesSession(t *testing.T) {
+	enabled := testSessionAnalyzerConfig()
+	enabledHashes, err := GenerateComplexityAnalyzerConfigHashes(enabled)
+	require.NoError(t, err)
+	require.NotEmpty(t, enabledHashes.SessionSettings)
+
+	disabled := testSessionAnalyzerConfig()
+	disabled.Session.Enabled = false
+	disabledHashes, err := GenerateComplexityAnalyzerConfigHashes(disabled)
+	require.NoError(t, err)
+	assert.NotEqual(t, enabledHashes.SessionSettings, disabledHashes.SessionSettings)
+	assert.Equal(t, enabledHashes.SemanticSettings, disabledHashes.SemanticSettings)
+
+	withoutSession, err := GenerateComplexityAnalyzerConfigHashes(testSemanticAnalyzerConfig())
+	require.NoError(t, err)
+	assert.Empty(t, withoutSession.SessionSettings)
+}
+
+func TestMergeComplexityAnalyzerConfigByHashesSession(t *testing.T) {
+	withHashes := func(cfg *ComplexityAnalyzerConfig) *ComplexityAnalyzerConfig {
+		hashes, err := GenerateComplexityAnalyzerConfigHashes(cfg)
+		require.NoError(t, err)
+		cfg.ConfigHashes = hashes
+		return cfg
+	}
+
+	t.Run("file omission preserves persisted session setting", func(t *testing.T) {
+		base := withHashes(testSessionAnalyzerConfig())
+		file := withHashes(testSemanticAnalyzerConfig())
+
+		merged, err := MergeComplexityAnalyzerConfigByHashes(base, file)
+		require.NoError(t, err)
+		require.NotNil(t, merged.Session)
+		assert.True(t, merged.Session.Enabled)
+		assert.Equal(t, base.ConfigHashes.SessionSettings, merged.ConfigHashes.SessionSettings)
+	})
+
+	t.Run("explicit false overrides enabled", func(t *testing.T) {
+		base := withHashes(testSessionAnalyzerConfig())
+		file := testSessionAnalyzerConfig()
+		file.Session.Enabled = false
+		withHashes(file)
+
+		merged, err := MergeComplexityAnalyzerConfigByHashes(base, file)
+		require.NoError(t, err)
+		require.NotNil(t, merged.Session)
+		assert.False(t, merged.Session.Enabled)
+		assert.Equal(t, file.ConfigHashes.SessionSettings, merged.ConfigHashes.SessionSettings)
+	})
 }
 
 func TestMergeComplexityAnalyzerConfigByHashesSemantic(t *testing.T) {
@@ -399,6 +484,36 @@ func TestRDBConfigStore_ComplexityAnalyzerConfigSemanticPersistence(t *testing.T
 	require.NoError(t, err)
 	assert.Equal(t, "text-embedding-3-large", got.Semantic.EmbeddingModel)
 	assert.Equal(t, "fingerprint-1", got.EmbeddingFingerprint)
+}
+
+func TestRDBConfigStore_ComplexitySessionPersistenceAndReset(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	cfg := testSessionAnalyzerConfig()
+	hashes, err := GenerateComplexityAnalyzerConfigHashes(cfg)
+	require.NoError(t, err)
+	cfg.ConfigHashes = hashes
+	require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, cfg))
+
+	got, err := store.GetComplexityAnalyzerConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, got.Session)
+	assert.True(t, got.Session.Enabled)
+	assert.Equal(t, hashes.SessionSettings, got.ConfigHashes.SessionSettings)
+
+	// UI payloads omit internal hashes. The split-row carry-over path must keep
+	// the session hash beside the session setting in the semantic row.
+	update := testSessionAnalyzerConfig()
+	require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, update))
+	got, err = store.GetComplexityAnalyzerConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, hashes.SessionSettings, got.ConfigHashes.SessionSettings)
+
+	restored, err := store.ResetComplexityAnalyzerConfig(ctx, testComplexityAnalyzerConfig())
+	require.NoError(t, err)
+	require.NotNil(t, restored.Session)
+	assert.True(t, restored.Session.Enabled)
 }
 
 // A writer that carries ConfigHashes/EmbeddingFingerprint over from the stored row must not

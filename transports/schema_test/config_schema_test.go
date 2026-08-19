@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -357,6 +358,67 @@ func validateConfig(t *testing.T, schema *jsonschema.Schema, configJSON string) 
 		t.Fatalf("invalid test JSON: %v", err)
 	}
 	return schema.Validate(v)
+}
+
+func TestSchemaComplexityAnalyzerDependencies(t *testing.T) {
+	compiled := compileSchema(t)
+
+	tests := []struct {
+		name      string
+		analyzer  string
+		wantError bool
+	}{
+		{
+			name:     "base analyzer remains valid",
+			analyzer: complexityAnalyzerSchemaConfig(),
+		},
+		{
+			name:     "disabled session does not require semantic config",
+			analyzer: complexityAnalyzerSchemaConfig(`,"session":{"enabled":false}`),
+		},
+		{
+			name:      "enabled session requires semantic config",
+			analyzer:  complexityAnalyzerSchemaConfig(`,"session":{"enabled":true}`),
+			wantError: true,
+		},
+		{
+			name:     "enabled session accepts semantic config",
+			analyzer: complexityAnalyzerSchemaConfig(`,"session":{"enabled":true}`, `,"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small"}`),
+		},
+		{
+			name:     "semantic fallback none does not require llm config",
+			analyzer: complexityAnalyzerSchemaConfig(`,"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small","fallback":"none"}`),
+		},
+		{
+			name:      "semantic fallback llm requires llm config",
+			analyzer:  complexityAnalyzerSchemaConfig(`,"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small","fallback":"llm"}`),
+			wantError: true,
+		},
+		{
+			name: "semantic fallback llm accepts llm config",
+			analyzer: complexityAnalyzerSchemaConfig(
+				`,"llm":{"provider":"openai","model":"gpt-4o-mini"}`,
+				`,"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small","fallback":"llm"}`,
+			),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := fmt.Sprintf(`{"governance":{"complexity_analyzer_config":%s}}`, tt.analyzer)
+			err := validateConfig(t, compiled, config)
+			if tt.wantError && err == nil {
+				t.Fatal("expected schema validation to fail")
+			}
+			if !tt.wantError && err != nil {
+				t.Fatalf("expected schema validation to pass: %v", err)
+			}
+		})
+	}
+}
+
+func complexityAnalyzerSchemaConfig(fields ...string) string {
+	return `{"keywords":{"simple_keywords":["simple"],"medium_keywords":["medium"],"complex_keywords":["complex"]}` + strings.Join(fields, "") + `}`
 }
 
 // TestSchemaGuardrailRuleTarget verifies explicit MCP targets without breaking legacy LLM rules.

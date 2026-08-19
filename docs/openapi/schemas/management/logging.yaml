@@ -55,12 +55,12 @@ LogEntry:
       description: Complexity tier used for routing; null when no routing rule referenced complexity_tier. REASONING is historical-only — it was merged into COMPLEX and is never emitted for new requests, but survives in log rows recorded under the old scheme.
       nullable: true
     complexity_mechanism:
-      type: string
-      description: How the complexity tier was classified (semantic for the embedding-based classifier, or skipped when classification was demanded but produced no tier)
-      nullable: true
+      type: [string, 'null']
+      enum: [semantic, llm, session, skipped, null]
+      description: How the effective complexity tier was determined. session means retained session state supplied the tier; skipped means classification was demanded but produced no tier.
     complexity_score:
       type: number
-      description: Similarity score of the nearest reference phrase behind the tier
+      description: Similarity score of the nearest reference phrase behind the tier. Absent for llm, session, and skipped decisions.
       nullable: true
     stream:
       type: boolean

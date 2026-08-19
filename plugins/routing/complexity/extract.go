@@ -67,45 +67,152 @@ var (
 	}
 )
 
-const codexTurnMetadataHeader = "x-codex-turn-metadata"
+const (
+	codexTurnMetadataHeader      = "x-codex-turn-metadata"
+	claudeCodeSessionIDHeader    = "x-claude-code-session-id"
+	maxComplexitySessionIDLength = 255
+	claudeSessionEnvelopeOpen    = "<session>"
+	claudeResumeRecapPrefix      = "The user stepped away and is coming back."
+)
 
 type codexTurnMetadata struct {
 	RequestKind string
+	SessionID   string
 }
 
-// buildComplexityInput extracts text from normalized BifrostRequest values for
-// complexity_tier routing. It intentionally runs after the transport converters
-// have produced Bifrost's typed request shape, so governance does not duplicate
-// provider-specific raw payload parsing.
+// InputDisposition describes how one request participates in session-aware
+// complexity routing.
+type InputDisposition uint8
+
+const (
+	// InputBypass means the operation is unsupported or explicitly belongs to a
+	// harness background workload. It neither classifies nor refreshes a session.
+	InputBypass InputDisposition = iota
+	// InputContinuation means a supported conversational request contains no new
+	// classifiable human text. It may reuse existing session state but cannot
+	// create or escalate it.
+	InputContinuation
+	// InputClassifiable means the request contains human-authored text that may
+	// initialize or escalate a session tier.
+	InputClassifiable
+)
+
+// BuildInput extracts text from normalized BifrostRequest values for
+// complexity_tier routing. It preserves the original boolean contract while
+// BuildInputWithDisposition exposes the finer session-aware outcome.
 func BuildInput(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (ComplexityInput, bool) {
+	input, disposition := BuildInputWithDisposition(ctx, req)
+	return input, disposition == InputClassifiable
+}
+
+// BuildInputWithDisposition extracts normalized classifier input and reports
+// whether the request should be classified, should reuse existing session state,
+// or should bypass session handling. Extraction runs after provider-specific
+// transport conversion, so routing never reparses raw request payloads.
+func BuildInputWithDisposition(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (ComplexityInput, InputDisposition) {
 	if req == nil {
-		return ComplexityInput{}, false
+		return ComplexityInput{}, InputBypass
 	}
 
 	harness := detectComplexityHarness(ctx)
 	if harness == complexityHarnessCodex && isCodexBackgroundRequest(ctx) {
-		return ComplexityInput{}, false
+		return ComplexityInput{}, InputBypass
 	}
 
 	switch req.RequestType {
 	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
 		if req.ChatRequest == nil {
-			return ComplexityInput{}, false
+			return ComplexityInput{}, InputBypass
 		}
-		return extractFromChatMessages(req.ChatRequest.Input, harness)
+		input, ok := extractFromChatMessages(req.ChatRequest.Input, harness)
+		if !ok {
+			return ComplexityInput{}, InputContinuation
+		}
+		if chatHasTrailingContinuation(req.ChatRequest.Input, harness) {
+			return ComplexityInput{}, InputContinuation
+		}
+		return input, InputClassifiable
 	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
 		if req.TextCompletionRequest == nil {
-			return ComplexityInput{}, false
+			return ComplexityInput{}, InputBypass
 		}
-		return extractFromTextCompletionRequest(req.TextCompletionRequest)
+		input, ok := extractFromTextCompletionRequest(req.TextCompletionRequest)
+		if !ok {
+			return ComplexityInput{}, InputBypass
+		}
+		return input, InputClassifiable
 	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
 		if req.ResponsesRequest == nil {
-			return ComplexityInput{}, false
+			return ComplexityInput{}, InputBypass
 		}
-		return extractFromResponsesRequest(req.ResponsesRequest, harness)
+		input, ok := extractFromResponsesRequest(req.ResponsesRequest, harness)
+		if !ok {
+			return ComplexityInput{}, InputContinuation
+		}
+		if responsesHasTrailingContinuation(req.ResponsesRequest.Input, harness) {
+			return ComplexityInput{}, InputContinuation
+		}
+		return input, InputClassifiable
 	default:
-		return ComplexityInput{}, false
+		return ComplexityInput{}, InputBypass
 	}
+}
+
+// chatHasTrailingContinuation distinguishes a fresh human turn from a tool or
+// assistant continuation that merely replays an older human message in the
+// request history. Context-only harness fragments and system instructions do
+// not change which conversational actor came last.
+func chatHasTrailingContinuation(messages []schemas.ChatMessage, harness complexityHarness) bool {
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		switch msg.Role {
+		case schemas.ChatMessageRoleSystem, schemas.ChatMessageRoleDeveloper:
+			continue
+		case schemas.ChatMessageRoleUser:
+			text, ok := extractChatTextOnly(msg.Content)
+			if !ok {
+				return true
+			}
+			_, kind := sanitizeUserText(text, harness)
+			if kind == complexityTextContextOnly || kind == complexityTextInvalid {
+				continue
+			}
+			return kind != complexityTextHuman
+		default:
+			return true
+		}
+	}
+	return false
+}
+
+// responsesHasTrailingContinuation is the Responses-API counterpart. Items
+// without a role are tool, reasoning, or provider-native history items; when
+// one follows the latest user message, this is a continuation rather than a
+// new human turn.
+func responsesHasTrailingContinuation(messages []schemas.ResponsesMessage, harness complexityHarness) bool {
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		if msg.Role == nil {
+			return true
+		}
+		switch *msg.Role {
+		case schemas.ResponsesInputMessageRoleSystem, schemas.ResponsesInputMessageRoleDeveloper:
+			continue
+		case schemas.ResponsesInputMessageRoleUser:
+			text, ok := extractResponsesTextOnly(msg.Content)
+			if !ok {
+				return true
+			}
+			_, kind := sanitizeUserText(text, harness)
+			if kind == complexityTextContextOnly || kind == complexityTextInvalid {
+				continue
+			}
+			return kind != complexityTextHuman
+		default:
+			return true
+		}
+	}
+	return false
 }
 
 // extractFromChatMessages builds a complexity input from chat messages by
@@ -347,6 +454,45 @@ func detectComplexityHarness(ctx *schemas.BifrostContext) complexityHarness {
 	}
 }
 
+// ResolveComplexitySessionID resolves the trusted session identity used only by
+// complexity routing. An explicit x-bf-session-id context value wins; otherwise
+// native harness metadata is accepted only when the User-Agent identifies the
+// corresponding Claude Code or Codex client.
+//
+// Native identities are not copied into BifrostContextKeySessionID because that
+// key also enables core provider-key stickiness, which is a separate feature.
+func ResolveComplexitySessionID(ctx *schemas.BifrostContext) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	if explicit, exists := ctx.Value(schemas.BifrostContextKeySessionID).(string); exists {
+		return normalizeComplexitySessionID(explicit)
+	}
+
+	headers, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
+	switch detectComplexityHarness(ctx) {
+	case complexityHarnessClaudeCode:
+		return normalizeComplexitySessionID(headers[claudeCodeSessionIDHeader])
+	case complexityHarnessCodex:
+		metadata, ok := parseCodexTurnMetadata(ctx)
+		if !ok {
+			return "", false
+		}
+		return normalizeComplexitySessionID(metadata.SessionID)
+	default:
+		return "", false
+	}
+}
+
+func normalizeComplexitySessionID(raw string) (string, bool) {
+	value := strings.TrimSpace(raw)
+	if value == "" || len(value) > maxComplexitySessionIDLength ||
+		!utf8.ValidString(value) || strings.ContainsRune(value, '\x00') {
+		return "", false
+	}
+	return value, true
+}
+
 func isCodexBackgroundRequest(ctx *schemas.BifrostContext) bool {
 	metadata, ok := parseCodexTurnMetadata(ctx)
 	if !ok {
@@ -376,6 +522,7 @@ func parseCodexTurnMetadata(ctx *schemas.BifrostContext) (codexTurnMetadata, boo
 
 	var fields struct {
 		RequestKind json.RawMessage `json:"request_kind"`
+		SessionID   json.RawMessage `json:"session_id"`
 	}
 	if err := json.Unmarshal([]byte(rawMetadata), &fields); err != nil {
 		return codexTurnMetadata{}, false
@@ -386,6 +533,9 @@ func parseCodexTurnMetadata(ctx *schemas.BifrostContext) (codexTurnMetadata, boo
 	var metadata codexTurnMetadata
 	if len(fields.RequestKind) > 0 {
 		_ = json.Unmarshal(fields.RequestKind, &metadata.RequestKind)
+	}
+	if len(fields.SessionID) > 0 {
+		_ = json.Unmarshal(fields.SessionID, &metadata.SessionID)
 	}
 	return metadata, true
 }
@@ -398,6 +548,9 @@ func sanitizeUserText(text string, harness complexityHarness) (string, complexit
 
 	switch harness {
 	case complexityHarnessClaudeCode:
+		if isClaudeCodeHousekeepingText(text) {
+			return "", complexityTextHousekeeping
+		}
 		cleaned, removedContext := stripComplexityTags(text, claudeContextTags[:])
 		cleaned, removedHousekeeping := stripComplexityTags(cleaned, claudeHousekeepingTags[:])
 		return classifySanitizedText(cleaned, removedContext, removedHousekeeping)
@@ -408,6 +561,17 @@ func sanitizeUserText(text string, harness complexityHarness) (string, complexit
 	default:
 		return text, complexityTextHuman
 	}
+}
+
+// isClaudeCodeHousekeepingText recognizes complete user-role messages Claude
+// Code injects for background session maintenance. These are not new human
+// intent and therefore must not initialize or escalate session complexity.
+// Detection is deliberately prefix-based and Claude-client-gated so a human
+// request that merely mentions a session XML tag remains classifiable.
+func isClaudeCodeHousekeepingText(text string) bool {
+	text = strings.TrimSpace(text)
+	return strings.HasPrefix(text, claudeSessionEnvelopeOpen) ||
+		strings.HasPrefix(text, claudeResumeRecapPrefix)
 }
 
 func sanitizeSystemText(text string, harness complexityHarness) string {

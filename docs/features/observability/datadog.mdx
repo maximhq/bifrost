@@ -454,7 +454,7 @@ When a routing rule references `complexity_tier`, two additional tags are set:
 - `complexity_tier` - The complexity tier the request was classified into: `SIMPLE`, `MEDIUM`, or `COMPLEX` (Datadog normalizes tag values to lowercase, so query as `simple`/`medium`/`complex`)
 - `complexity_mechanism` - How the tier was classified: `semantic`, or `skipped` when classification ran but produced no tier
 
-Use them to attribute cost, latency, and volume to classified complexity, e.g. `sum:bifrost.request.cost.usd{complexity_tier:complex} by {model}`. The raw complexity score is not exported as a tag (its cardinality is unbounded); it is available only in the log store.
+Use them to attribute cost, latency, and volume to classified complexity, e.g. `sum:bifrost.request.cost.usd{complexity_tier:complex} by {model}`. The raw complexity score is not exported as a metric tag because its cardinality is unbounded; it remains available in request logs and trace attributes.
 
 ---
 
