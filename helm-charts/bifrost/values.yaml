@@ -813,6 +813,33 @@ bifrost:
         #   mode: "exclude"           # "include" or "exclude"
         #   plugins: ["logging"]
 
+    splunk:
+      enabled: false
+      version: 1
+      config:
+        endpoint: "" # HEC base URL, e.g. https://localhost:8088 (required when enabled). Supports env.VAR_NAME.
+        token: "" # HEC token (required when enabled). Supports env.VAR_NAME — e.g. "env.SPLUNK_HEC_TOKEN".
+        events_index: "" # Splunk event index for per-request events (required when enable_events is true)
+        metrics_index: "" # Splunk metrics index for derived metrics (required when enable_metrics is true)
+        enable_events: true
+        enable_metrics: true
+        disable_content_logging: false # events include prompt/response content by default; set true for metadata only
+        # source: "bifrost"            # HEC source field (default: bifrost)
+        # sourcetype: "bifrost:llm"    # HEC sourcetype for events (metrics use bifrost:metric; default: bifrost:llm)
+        # host: ""                     # HEC host field (defaults to the server hostname)
+        # ca_cert: "env.SPLUNK_CA_CERT" # PEM CA certificate to verify the HEC TLS cert. Omit to use the system CA pool.
+        # insecure_skip_verify: false  # Disable TLS verification — development/isolated environments only; prefer ca_cert
+        # custom_fields:               # Static key/value fields added to every event and metric
+        #   environment: "production"
+        # request_headers: []          # Header name patterns; use exact names (wildcards can capture credentials)
+        # batch_max_bytes: 524288      # Flush a HEC batch once concatenated bodies reach this many bytes
+        # flush_interval_ms: 1000      # Max time buffered events wait before a flush
+        # post_workers: 4              # Concurrent HEC poster goroutines (capped at 64)
+        # indexer_ack: false           # Enable HEC indexer acknowledgement (set when the token has ack enabled)
+        # ack_poll_interval_ms: 1000   # How often to poll for acknowledgement (only when indexer_ack is true)
+        # ack_timeout_ms: 30000        # How long an unacked batch waits before resend (only when indexer_ack is true)
+        # max_ack_attempts: 3          # Max POST attempts per batch before drop (only when indexer_ack is true)
+
     # Custom/dynamic plugins
     custom: []
       # - name: "my-custom-plugin"
