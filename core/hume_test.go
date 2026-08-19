@@ -266,6 +266,50 @@ func TestEnforceSingleToolConstraint(t *testing.T) {
 		assert.Contains(t, err.Error.Message, `key alias resolves to "o3-mini"`)
 	})
 
+	t.Run("a cataloged unsupported name the key always aliases away is not validated", func(t *testing.T) {
+		// The worker replaces the requested name with the alias target, so "o3-mini"
+		// never reaches the provider and its missing parallel_tool_calls support must
+		// not reject a request the target model can serve.
+		client := newAliasClient(schemas.OpenAI, aliasKey("configured", true, schemas.WhiteList{"*"},
+			schemas.KeyAliases{"o3-mini": {ModelID: "gpt-4o-mini"}}))
+		directCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		directCtx.SetValue(schemas.BifrostContextKeyRequireSerialToolCalls, true)
+		directCtx.SetValue(schemas.BifrostContextKeyModelCatalog, ctx.Value(schemas.BifrostContextKeyModelCatalog))
+		directCtx.SetValue(schemas.BifrostContextKeyDirectKey, aliasKey("direct", true, schemas.WhiteList{"*"},
+			schemas.KeyAliases{"o3-mini": {ModelID: "gpt-4o-mini"}}))
+		req := newRequest(schemas.OpenAI, "o3-mini")
+		require.Nil(t, client.enforceSingleToolConstraint(directCtx, req))
+		assert.Equal(t, schemas.Ptr(false), req.ChatRequest.Params.ParallelToolCalls)
+	})
+
+	t.Run("a key that sends the requested name unaliased still validates it", func(t *testing.T) {
+		client := newAliasClient(schemas.OpenAI,
+			aliasKey("aliased", true, schemas.WhiteList{"*"}, schemas.KeyAliases{"o3-mini": {ModelID: "gpt-4o-mini"}}),
+			aliasKey("plain", true, schemas.WhiteList{"*"}, nil),
+		)
+		req := newRequest(schemas.OpenAI, "o3-mini")
+		err := client.enforceSingleToolConstraint(ctx, req)
+		require.NotNil(t, err)
+		assert.Contains(t, err.Error.Message, `model "o3-mini" cannot guarantee serial tool execution`)
+		assert.NotContains(t, err.Error.Message, "key alias resolves to")
+		assert.Nil(t, req.ChatRequest.Params.ParallelToolCalls)
+	})
+
+	t.Run("no eligible key keeps the requested model under the conservative check", func(t *testing.T) {
+		// Dropping the requested name once every eligible key aliases it must not
+		// degrade into an empty candidate set when no key can serve the request at
+		// all: the policy has to stay on rather than pass everything through.
+		client := newAliasClient(schemas.OpenAI,
+			aliasKey("disabled", false, schemas.WhiteList{"*"}, nil),
+			aliasKey("other-models", true, schemas.WhiteList{"gpt-4o-mini"}, nil),
+		)
+		req := newRequest(schemas.OpenAI, "o3-mini")
+		err := client.enforceSingleToolConstraint(ctx, req)
+		require.NotNil(t, err)
+		assert.Contains(t, err.Error.Message, `model "o3-mini" cannot guarantee serial tool execution`)
+		assert.Nil(t, req.ChatRequest.Params.ParallelToolCalls)
+	})
+
 	t.Run("requests without the policy are unchanged", func(t *testing.T) {
 		otherCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		req := newRequest(schemas.OpenAI, "gpt-4o-mini")
