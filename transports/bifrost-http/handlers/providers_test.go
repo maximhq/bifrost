@@ -13,6 +13,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/grants"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	governanceplugin "github.com/maximhq/bifrost/plugins/governance"
@@ -35,6 +36,15 @@ type mockModelsManager struct {
 	refreshKeyCalls      []providerKeyRef
 	refreshProviderCalls []schemas.ModelProvider
 	refreshErr           error
+	// access is what the request may reach; nil stands for a request with nothing resolved —
+	// no key presented, or a deployment without governance.
+	access       *grants.EffectiveAccess
+	resolveCalls int
+}
+
+func (m *mockModelsManager) ResolveEffectiveAccess(_ *schemas.BifrostContext) *grants.EffectiveAccess {
+	m.resolveCalls++
+	return m.access
 }
 
 func (m *mockModelsManager) ReloadProvider(_ context.Context, provider schemas.ModelProvider) (*configstoreTables.TableProvider, error) {
@@ -93,6 +103,7 @@ func (m *mockModelsManager) RefreshLiveModelsForAllKeys(_ context.Context, provi
 func providerHandlerForTest(provider schemas.ModelProvider, keys []schemas.Key, filtered, unfiltered []string) *ProviderHandler {
 	return &ProviderHandler{
 		inMemoryStore: &lib.Config{
+			ClientConfig: &configstore.ClientConfig{},
 			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
 				provider: {
 					Keys: keys,
@@ -218,6 +229,7 @@ func TestUpdateProvider_RejectsKeysInBody(t *testing.T) {
 	}
 	h := &ProviderHandler{
 		inMemoryStore: &lib.Config{
+			ClientConfig: &configstore.ClientConfig{},
 			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
 				schemas.OpenAI: {Keys: []schemas.Key{existingKey}},
 			},
@@ -330,6 +342,7 @@ func TestUpdateProvider_PassesThroughForEmptyOrAbsentKeys(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := &ProviderHandler{
 				inMemoryStore: &lib.Config{
+					ClientConfig: &configstore.ClientConfig{},
 					Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
 						schemas.OpenAI: {Keys: []schemas.Key{{ID: "key-existing"}}},
 					},
@@ -1278,15 +1291,106 @@ func TestParseVKValueFromRequest(t *testing.T) {
 	}
 }
 
-// TestListModels_VKFilterRestrictsToAllowedProviderAndModels verifies that when a
-// VK filter is active, only providers listed in VKProviderConfigs are returned and
-// only models passing AllowedModels are included.
+// accessForProviderGrants builds the access a key-authenticated caller carries, so these tests
+// express what the caller may reach rather than a copy of the key's rows.
+func accessForProviderGrants(configs ...grants.ProviderConfigGrant) *grants.EffectiveAccess {
+	grant := &grants.Grant{
+		Type:                 grants.GrantTypeVirtualKey,
+		ID:                   "vk-test",
+		Name:                 "Test VK",
+		ProviderConfigGrants: configs,
+	}
+	return grants.NewEffectiveAccess(grant, nil, "", nil, nil)
+}
+
+// A blacklisted model is not listed. The listing answers the same question a request does, so a
+// model the caller would be refused is not advertised to them as available.
+func TestListModels_VKFilterHidesBlacklistedModel(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := &ProviderHandler{
+		inMemoryStore: &lib.Config{
+			ClientConfig: &configstore.ClientConfig{},
+			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				schemas.OpenAI: {Keys: []schemas.Key{{ID: "key-a"}}},
+			},
+		},
+		modelsManager: &mockModelsManager{
+			filtered: map[schemas.ModelProvider][]string{
+				schemas.OpenAI: {"gpt-4o", "gpt-4o-mini"},
+			},
+		},
+	}
+
+	query := modelListQuery{
+		Limit:       100,
+		HasVKFilter: true,
+		Access: accessForProviderGrants(grants.ProviderConfigGrant{
+			Provider:          "openai",
+			AllowedModels:     schemas.WhiteList{"*"},
+			BlacklistedModels: schemas.BlackList{"gpt-4o-mini"},
+		}),
+	}
+
+	models, total, err := h.listManagementModels(query)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if total != 1 || len(models) != 1 || models[0].Name != "gpt-4o" {
+		t.Fatalf("expected only gpt-4o, got total=%d models=%#v", total, models)
+	}
+}
+
+// Duplicate configs for one provider grant the union of what they allow, as they do on the
+// request path — the listing must not stop at the first config it finds.
+func TestListModels_VKFilterUnionsDuplicateProviderConfigs(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := &ProviderHandler{
+		inMemoryStore: &lib.Config{
+			ClientConfig: &configstore.ClientConfig{},
+			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				schemas.OpenAI: {Keys: []schemas.Key{{ID: "key-a"}}},
+			},
+		},
+		modelsManager: &mockModelsManager{
+			filtered: map[schemas.ModelProvider][]string{
+				schemas.OpenAI: {"gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"},
+			},
+		},
+	}
+
+	query := modelListQuery{
+		Limit:       100,
+		HasVKFilter: true,
+		Access: accessForProviderGrants(
+			grants.ProviderConfigGrant{Provider: "openai", AllowedModels: schemas.WhiteList{"gpt-4o"}},
+			grants.ProviderConfigGrant{Provider: "openai", AllowedModels: schemas.WhiteList{"gpt-4o-mini"}},
+		),
+	}
+
+	models, total, err := h.listManagementModels(query)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	names := map[string]bool{}
+	for _, m := range models {
+		names[m.Name] = true
+	}
+	if total != 2 || !names["gpt-4o"] || !names["gpt-4o-mini"] || names["gpt-3.5-turbo"] {
+		t.Fatalf("expected gpt-4o and gpt-4o-mini only, got total=%d models=%#v", total, models)
+	}
+}
+
+// With a key presented, the listing returns only the providers the caller is granted, and only
+// the models those grants allow.
 func TestListModels_VKFilterRestrictsToAllowedProviderAndModels(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	// Two providers configured; VK only allows openai with specific models.
 	h := &ProviderHandler{
 		inMemoryStore: &lib.Config{
+			ClientConfig: &configstore.ClientConfig{},
 			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
 				schemas.OpenAI:    {Keys: []schemas.Key{{ID: "key-a"}}},
 				schemas.Anthropic: {Keys: []schemas.Key{{ID: "key-b"}}},
@@ -1303,12 +1407,7 @@ func TestListModels_VKFilterRestrictsToAllowedProviderAndModels(t *testing.T) {
 	query := modelListQuery{
 		Limit:       100,
 		HasVKFilter: true,
-		VKProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{
-			{
-				Provider:      "openai",
-				AllowedModels: schemas.WhiteList{"gpt-4o", "gpt-4o-mini"},
-			},
-		},
+		Access:      accessForProviderGrants(grants.ProviderConfigGrant{Provider: "openai", AllowedModels: schemas.WhiteList{"gpt-4o", "gpt-4o-mini"}}),
 	}
 
 	models, total, err := h.listManagementModels(query)
@@ -1345,6 +1444,7 @@ func TestListModels_VKFilterAllowsAllModelsWithWildcard(t *testing.T) {
 
 	h := &ProviderHandler{
 		inMemoryStore: &lib.Config{
+			ClientConfig: &configstore.ClientConfig{},
 			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
 				schemas.OpenAI: {Keys: []schemas.Key{{ID: "key-a"}}},
 			},
@@ -1359,9 +1459,7 @@ func TestListModels_VKFilterAllowsAllModelsWithWildcard(t *testing.T) {
 	query := modelListQuery{
 		Limit:       100,
 		HasVKFilter: true,
-		VKProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{
-			{Provider: "openai", AllowedModels: schemas.WhiteList{"*"}},
-		},
+		Access:      accessForProviderGrants(grants.ProviderConfigGrant{Provider: "openai", AllowedModels: schemas.WhiteList{"*"}}),
 	}
 
 	models, total, err := h.listManagementModels(query)
@@ -1381,6 +1479,7 @@ func TestListModels_VKFilterDeniesAllModelsWhenAllowedModelsEmpty(t *testing.T) 
 
 	h := &ProviderHandler{
 		inMemoryStore: &lib.Config{
+			ClientConfig: &configstore.ClientConfig{},
 			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
 				schemas.OpenAI: {Keys: []schemas.Key{{ID: "key-a"}}},
 			},
@@ -1395,9 +1494,7 @@ func TestListModels_VKFilterDeniesAllModelsWhenAllowedModelsEmpty(t *testing.T) 
 	query := modelListQuery{
 		Limit:       100,
 		HasVKFilter: true,
-		VKProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{
-			{Provider: "openai", AllowedModels: schemas.WhiteList{}},
-		},
+		Access:      accessForProviderGrants(grants.ProviderConfigGrant{Provider: "openai", AllowedModels: schemas.WhiteList{}}),
 	}
 
 	models, total, err := h.listManagementModels(query)
@@ -1416,6 +1513,7 @@ func TestListModels_VKFilterNoProviderConfigsDeniesAll(t *testing.T) {
 
 	h := &ProviderHandler{
 		inMemoryStore: &lib.Config{
+			ClientConfig: &configstore.ClientConfig{},
 			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
 				schemas.OpenAI:    {},
 				schemas.Anthropic: {},
@@ -1430,9 +1528,9 @@ func TestListModels_VKFilterNoProviderConfigsDeniesAll(t *testing.T) {
 	}
 
 	query := modelListQuery{
-		Limit:             100,
-		HasVKFilter:       true,
-		VKProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{}, // empty
+		Limit:       100,
+		HasVKFilter: true,
+		Access:      accessForProviderGrants(), // a caller granted no provider
 	}
 
 	models, total, err := h.listManagementModels(query)
@@ -1449,6 +1547,7 @@ func TestListModels_VKFilterBlockedExplicitProviderReturnsEmptyResult(t *testing
 
 	h := &ProviderHandler{
 		inMemoryStore: &lib.Config{
+			ClientConfig: &configstore.ClientConfig{},
 			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
 				schemas.OpenAI:    {},
 				schemas.Anthropic: {},
@@ -1465,14 +1564,12 @@ func TestListModels_VKFilterBlockedExplicitProviderReturnsEmptyResult(t *testing
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.SetMethod("GET")
 	ctx.Request.SetRequestURI("/api/models?provider=anthropic")
-	query, ok := h.parseModelListQuery(ctx, 5)
+	query, ok := h.parseModelListQuery(ctx, requestContextForTest(ctx), 5)
 	if !ok {
 		t.Fatalf("expected parseModelListQuery to succeed")
 	}
 	query.HasVKFilter = true
-	query.VKProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
-		{Provider: "openai", AllowedModels: schemas.WhiteList{"*"}},
-	}
+	query.Access = accessForProviderGrants(grants.ProviderConfigGrant{Provider: "openai", AllowedModels: schemas.WhiteList{"*"}})
 
 	models, total, err := h.listManagementModels(query)
 	if err != nil {
@@ -1483,33 +1580,92 @@ func TestListModels_VKFilterBlockedExplicitProviderReturnsEmptyResult(t *testing
 	}
 }
 
-func TestParseModelListQuery_VKWithoutDBStoreReturnsServiceUnavailable(t *testing.T) {
-	SetLogger(&mockLogger{})
+// requestContextForTest derives the request context a management route would hand to the query
+// parser, so the parse sees the presented key the same way it does in production.
+func requestContextForTest(ctx *fasthttp.RequestCtx) *schemas.BifrostContext {
+	bifrostCtx, _ := lib.ConvertToBifrostContext(ctx, &lib.Config{ClientConfig: &configstore.ClientConfig{}})
+	return bifrostCtx
+}
 
-	h := &ProviderHandler{
+// modelListQueryHandlerForTest builds a handler that answers a management model listing from
+// the given models manager.
+func modelListQueryHandlerForTest(manager *mockModelsManager) *ProviderHandler {
+	return &ProviderHandler{
 		inMemoryStore: &lib.Config{
+			ClientConfig: &configstore.ClientConfig{},
 			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
 				schemas.OpenAI: {},
 			},
 		},
-		modelsManager: &mockModelsManager{
-			filtered: map[schemas.ModelProvider][]string{
-				schemas.OpenAI: {"gpt-4o", "gpt-4o-mini"},
-			},
-		},
+		modelsManager: manager,
 	}
+}
+
+// A key-authenticated management listing is filtered to what that request may reach, resolved
+// from the request itself rather than from the key's stored rows.
+func TestParseModelListQuery_VKAppliesResolvedAccess(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	access := accessForProviderGrants(grants.ProviderConfigGrant{Provider: "openai", AllowedModels: schemas.WhiteList{"*"}})
+	manager := &mockModelsManager{access: access}
+	h := modelListQueryHandlerForTest(manager)
 
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.SetMethod("GET")
 	ctx.Request.SetRequestURI("/api/models")
 	ctx.Request.Header.Set("x-bf-vk", "sk-bf-test-virtual-key")
 
-	query, ok := h.parseModelListQuery(ctx, 5)
-	if ok {
-		t.Fatalf("expected parseModelListQuery to fail without dbStore, got query=%#v", query)
+	query, ok := h.parseModelListQuery(ctx, requestContextForTest(ctx), 5)
+	if !ok {
+		t.Fatalf("expected parseModelListQuery to succeed")
 	}
-	if ctx.Response.StatusCode() != fasthttp.StatusServiceUnavailable {
-		t.Fatalf("expected 503 when dbStore is unavailable, got %d", ctx.Response.StatusCode())
+	if manager.resolveCalls != 1 {
+		t.Fatalf("resolve calls = %d, want 1", manager.resolveCalls)
+	}
+	if !query.HasVKFilter {
+		t.Fatal("expected the listing to be filtered")
+	}
+	if query.Access != access {
+		t.Fatalf("expected the resolved access to be carried on the query, got %#v", query.Access)
+	}
+}
+
+// What decides the filter is the answer, not the headers: the parse always asks, and filters
+// only when something was resolved. A request with no key and one whose key resolved to nothing
+// (unknown key, or a deployment without governance) are the same case — the listing stays
+// unfiltered instead of narrowing to nothing or failing.
+func TestParseModelListQuery_LeavesListingUnfilteredWhenNothingResolved(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	for _, tc := range []struct {
+		name    string
+		vkValue string
+	}{
+		{name: "no key presented"},
+		{name: "key resolves to nothing", vkValue: "sk-bf-test-virtual-key"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			manager := &mockModelsManager{}
+			h := modelListQueryHandlerForTest(manager)
+
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod("GET")
+			ctx.Request.SetRequestURI("/api/models")
+			if tc.vkValue != "" {
+				ctx.Request.Header.Set("x-bf-vk", tc.vkValue)
+			}
+
+			query, ok := h.parseModelListQuery(ctx, requestContextForTest(ctx), 5)
+			if !ok {
+				t.Fatalf("expected parseModelListQuery to succeed")
+			}
+			if manager.resolveCalls != 1 {
+				t.Fatalf("resolve calls = %d, want 1", manager.resolveCalls)
+			}
+			if query.HasVKFilter || query.Access != nil {
+				t.Fatalf("expected an unfiltered listing, got HasVKFilter=%v access=%#v", query.HasVKFilter, query.Access)
+			}
+		})
 	}
 }
 
@@ -1520,6 +1676,7 @@ func TestListModels_NoVKFilterReturnsAll(t *testing.T) {
 
 	h := &ProviderHandler{
 		inMemoryStore: &lib.Config{
+			ClientConfig: &configstore.ClientConfig{},
 			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
 				schemas.OpenAI:    {},
 				schemas.Anthropic: {},
