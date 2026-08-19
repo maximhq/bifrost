@@ -23,7 +23,6 @@ import {
 	History,
 	KeyRound,
 	Landmark,
-	Hexagon,
 	LaptopMinimalCheck,
 	LayoutGrid,
 	Logs,

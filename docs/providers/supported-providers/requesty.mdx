@@ -1,12 +1,12 @@
 ---
 title: "Requesty"
-description: "Requesty API conversion guide - OpenAI-compatible AI gateway/router, 400+ models, streaming, tool calling, and embeddings"
+description: "Requesty API conversion guide - OpenAI-compatible AI gateway/router, model catalog, streaming, tool calling, and embeddings"
 icon: "r"
 ---
 
 ## Overview
 
-Requesty is an **OpenAI-compatible AI gateway** routing requests across 400+ models from 30+ providers through a single endpoint. Bifrost delegates all functionality to the OpenAI provider implementation with standard parameter filtering. Key characteristics:
+Requesty is an **OpenAI-compatible AI gateway** routing requests across a broad model catalog from multiple providers through a single endpoint. Bifrost delegates all functionality to the OpenAI provider implementation with standard parameter filtering. Key characteristics:
 - **OpenAI-compatible chat completions** - Standard chat, streaming, and tool calling supported
 - **Embeddings support** - Unlike some router providers, Requesty exposes an OpenAI-compatible embeddings endpoint
 - **Model naming** - Uses `provider/model` format (e.g. `openai/gpt-4o`, `anthropic/claude-sonnet-4-5`); call Requesty's `/v1/models` for the current list rather than hardcoding versions
@@ -17,7 +17,7 @@ Requesty is an **OpenAI-compatible AI gateway** routing requests across 400+ mod
 | Operation | Non-Streaming | Streaming | Endpoint |
 |-----------|---------------|-----------|----------|
 | Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
-| Responses API | ✅ | ✅ | `/v1/chat/completions` |
+| Responses API | ✅ | ✅ | `/v1/responses` |
 | Text Completions | ❌ | ❌ | - |
 | List Models | ✅ | - | `/v1/models` |
 | Embeddings | ✅ | - | `/v1/embeddings` |
