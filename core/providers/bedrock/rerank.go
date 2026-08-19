@@ -151,6 +151,36 @@ func (response *BedrockRerankResponse) ToBifrostRerankResponse(documents []schem
 	return bifrostResponse
 }
 
+// ToBedrockRerankResponse converts a Bifrost rerank response into Bedrock Agent Runtime format.
+// Bedrock echoes the ranked document, which is only present when the rerank was requested
+// with ReturnDocuments enabled.
+func ToBedrockRerankResponse(bifrostResp *schemas.BifrostRerankResponse) *BedrockRerankResponse {
+	if bifrostResp == nil {
+		return nil
+	}
+
+	bedrockResp := &BedrockRerankResponse{
+		Results: make([]BedrockRerankResult, 0, len(bifrostResp.Results)),
+	}
+
+	for _, result := range bifrostResp.Results {
+		bedrockResult := BedrockRerankResult{
+			Index:          result.Index,
+			RelevanceScore: result.RelevanceScore,
+		}
+		if result.Document != nil {
+			bedrockResult.Document = &BedrockRerankResponseDocument{
+				Type:         bedrockRerankInlineDocumentTypeText,
+				TextDocument: &BedrockRerankTextValue{Text: result.Document.Text},
+			}
+		}
+
+		bedrockResp.Results = append(bedrockResp.Results, bedrockResult)
+	}
+
+	return bedrockResp
+}
+
 // ToBifrostRerankRequest converts a Bedrock Agent Runtime rerank request to Bifrost format.
 func (req *BedrockRerankRequest) ToBifrostRerankRequest(ctx *schemas.BifrostContext) *schemas.BifrostRerankRequest {
 	if req == nil {

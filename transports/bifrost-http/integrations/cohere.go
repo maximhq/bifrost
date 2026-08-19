@@ -173,12 +173,12 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 			return nil, errors.New("invalid rerank request type")
 		},
 		RerankResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostRerankResponse) (interface{}, error) {
-			if resp.ExtraFields.Provider == schemas.Cohere {
-				if resp.ExtraFields.RawResponse != nil {
-					return resp.ExtraFields.RawResponse, nil
-				}
+			// Only return raw response for native Cohere calls
+			// For cross-provider routing, always convert to Cohere format
+			if resp.ExtraFields.RawResponse != nil && resp.ExtraFields.Provider == schemas.Cohere {
+				return resp.ExtraFields.RawResponse, nil
 			}
-			return resp, nil
+			return cohere.ToCohereRerankResponse(resp), nil
 		},
 		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return err

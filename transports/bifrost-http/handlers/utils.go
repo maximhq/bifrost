@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -82,23 +83,29 @@ func IsUniqueConstraintError(err error, identifiers ...string) bool {
 	return false
 }
 
-// SendJSON sends a JSON response with 200 OK status
+// SendJSON sends a JSON response with 200 OK status.
 func SendJSON(ctx *fasthttp.RequestCtx, data interface{}) {
 	ctx.SetContentType("application/json")
-	if err := json.NewEncoder(ctx).Encode(data); err != nil {
+	body, err := sonic.ConfigStd.Marshal(data)
+	if err != nil {
 		logger.Warn(fmt.Sprintf("Failed to encode JSON response: %v", err))
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to encode response: %v", err))
+		return
 	}
+	ctx.SetBody(append(body, '\n'))
 }
 
-// SendJSONWithStatus sends a JSON response with a custom status code
+// SendJSONWithStatus sends a JSON response with a custom status code.
 func SendJSONWithStatus(ctx *fasthttp.RequestCtx, data interface{}, statusCode int) {
 	ctx.SetContentType("application/json")
 	ctx.SetStatusCode(statusCode)
-	if err := json.NewEncoder(ctx).Encode(data); err != nil {
+	body, err := sonic.ConfigStd.Marshal(data)
+	if err != nil {
 		logger.Warn(fmt.Sprintf("Failed to encode JSON response: %v", err))
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to encode response: %v", err))
+		return
 	}
+	ctx.SetBody(append(body, '\n'))
 }
 
 // SendError sends a BifrostError response

@@ -206,9 +206,23 @@ type spanHandle struct {
 // 2. BifrostContextKeyParentSpanID - incoming parent from W3C traceparent (for root spans)
 // 3. No parent - creates a root span with no parent
 func (t *Tracer) StartSpan(ctx context.Context, name string, kind schemas.SpanKind) (context.Context, schemas.SpanHandle) {
+	spanID, handle := t.StartSpanID(ctx, name, kind)
+	if handle == nil {
+		return ctx, nil
+	}
+	// Update context with new span ID for child-span linking.
+	return context.WithValue(ctx, schemas.BifrostContextKeySpanID, spanID), handle
+}
+
+// StartSpanID creates a span exactly like StartSpan but returns the new span's ID
+// instead of wrapping ctx in a context.WithValue node. Callers that only need the
+// ID (e.g. to mirror it into a *BifrostContext via SetValue, as the plugin-hook
+// pipeline does) use this to avoid a valueCtx allocation per span. Returns
+// ("", nil) when there is no trace in ctx or span creation fails.
+func (t *Tracer) StartSpanID(ctx context.Context, name string, kind schemas.SpanKind) (string, schemas.SpanHandle) {
 	traceID := GetTraceID(ctx)
 	if traceID == "" {
-		return ctx, nil
+		return "", nil
 	}
 
 	// Get parent span ID from context - first check for existing span in this service
@@ -227,11 +241,9 @@ func (t *Tracer) StartSpan(ctx context.Context, name string, kind schemas.SpanKi
 		span = t.store.StartSpan(traceID, name, kind)
 	}
 	if span == nil {
-		return ctx, nil
+		return "", nil
 	}
-	// Update context with new span ID
-	newCtx := context.WithValue(ctx, schemas.BifrostContextKeySpanID, span.SpanID)
-	return newCtx, &spanHandle{traceID: traceID, spanID: span.SpanID}
+	return span.SpanID, &spanHandle{traceID: traceID, spanID: span.SpanID}
 }
 
 // EndSpan completes a span with the given status and message.
@@ -257,6 +269,21 @@ func (t *Tracer) SetAttribute(handle schemas.SpanHandle, key string, value any) 
 	if span != nil {
 		span.SetAttribute(key, value)
 	}
+}
+
+// SpanFromHandle resolves the *Span for a handle once. Callers writing many
+// attributes use it to avoid a trace+span lookup per attribute; span.SetAttribute
+// is nil-safe, so a nil return is fine to write against.
+func (t *Tracer) SpanFromHandle(handle schemas.SpanHandle) *schemas.Span {
+	h, ok := handle.(*spanHandle)
+	if !ok || h == nil {
+		return nil
+	}
+	trace := t.store.GetTrace(h.traceID)
+	if trace == nil {
+		return nil
+	}
+	return trace.GetSpan(h.spanID)
 }
 
 // GetSpanHandleByID retrieves a span handle for the given trace and span ID.
@@ -317,9 +344,7 @@ func (t *Tracer) PopulateLLMRequestAttributes(handle schemas.SpanHandle, req *sc
 	}
 
 	attrs := PopulateRequestAttributes(req)
-	for k, v := range attrs {
-		span.SetAttribute(k, v)
-	}
+	span.SetAttributes(attrs)
 
 	// Propagate input messages and request model to root span so observability backends (e.g. Langfuse)
 	// can display Input and model name at the top-level trace without requiring users to drill into llm.call.
@@ -378,9 +403,7 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 		}
 		span.SetAttribute(k, v)
 	}
-	for k, v := range PopulateErrorAttributes(err) {
-		span.SetAttribute(k, v)
-	}
+	span.SetAttributes(PopulateErrorAttributes(err))
 
 	// Enrichment dimensions derivable only post-response, attached here so every
 	// connector reads them from one place (see core/schemas EnrichmentDims):

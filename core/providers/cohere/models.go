@@ -33,7 +33,7 @@ type CohereRerankResult struct {
 
 // CohereRerankResponse represents a Cohere rerank API response.
 type CohereRerankResponse struct {
-	ID      string               `json:"id"`
+	ID      string               `json:"id,omitempty"`
 	Results []CohereRerankResult `json:"results"`
 	Meta    *CohereRerankMeta    `json:"meta,omitempty"`
 }

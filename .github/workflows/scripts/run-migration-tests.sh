@@ -2079,6 +2079,9 @@ append_dynamic_columns_postgres() {
     echo "UPDATE logs SET redaction_mapping = '' WHERE id = 'log-migration-test-001';" >> "$output_file"
     echo "UPDATE logs SET redaction_mapping = '' WHERE id = 'log-migration-test-002';" >> "$output_file"
     echo "UPDATE logs SET redaction_mapping = '' WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
+
+  # -------------------------------------------------------------------------
   # v1.6.3 columns - config store tables
   # -------------------------------------------------------------------------
 
@@ -3560,6 +3563,8 @@ append_dynamic_columns_sqlite() {
     echo "UPDATE logs SET redaction_mapping = '' WHERE id = 'log-migration-test-001';" >> "$output_file"
     echo "UPDATE logs SET redaction_mapping = '' WHERE id = 'log-migration-test-002';" >> "$output_file"
     echo "UPDATE logs SET redaction_mapping = '' WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
+
   # logs.redaction_mapping (added in v1.6.4 via logs_add_redaction_mapping_column -
   # nullable text, stores the encrypted reversible redaction mapping)
   if column_exists_sqlite "$logs_db" "logs" "redaction_mapping"; then

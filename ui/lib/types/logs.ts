@@ -600,6 +600,8 @@ export interface LogEntry {
 	tools?: Tool[];
 	tool_calls?: ToolCall[];
 	latency?: number;
+	upstream_latency?: number; // provider socket time across all attempts, ms
+	overhead_latency?: number; // Bifrost overhead (total minus upstream), ms
 	token_usage?: LLMUsage;
 	cache_debug?: CacheDebug;
 	guardrail_debug?: GuardrailDebug;
@@ -772,6 +774,10 @@ export interface LatencyHistogramBucket {
 	p90_latency: number;
 	p95_latency: number;
 	p99_latency: number;
+	avg_overhead: number;
+	p90_overhead: number;
+	p95_overhead: number;
+	p99_overhead: number;
 	total_requests: number;
 }
 

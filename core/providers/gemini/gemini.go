@@ -789,7 +789,7 @@ func (provider *GeminiProvider) responsesWithLargeResponseDetection(
 		preview, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadResponsePreview).(string)
 		usage := extractUsageFromResponsePrefetch([]byte(preview))
 		bifrostResponse := &schemas.BifrostResponsesResponse{
-			ID:        schemas.Ptr("resp_" + providerUtils.GetRandomString(50)),
+			ID:        schemas.Ptr("resp_" + schemas.GetRandomString(50)),
 			CreatedAt: int(time.Now().Unix()),
 			Model:     request.Model,
 			Usage:     usage,

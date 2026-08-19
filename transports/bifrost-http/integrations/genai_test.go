@@ -225,37 +225,57 @@ func TestGenAIRerankRequestConverter(t *testing.T) {
 	assert.Equal(t, 2, *bifrostReq.RerankRequest.Params.TopN)
 }
 
-func TestGenAIRerankResponseConverterUsesRawResponse(t *testing.T) {
-	route := createGenAIRerankRouteConfig("/genai")
-	require.NotNil(t, route.RerankResponseConverter)
-
-	raw := map[string]interface{}{"records": []interface{}{}}
-	resp := &schemas.BifrostRerankResponse{
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			Provider:    schemas.Vertex,
-			RawResponse: raw,
-		},
-	}
-	converted, err := route.RerankResponseConverter(nil, resp)
-	require.NoError(t, err)
-	assert.Equal(t, raw, converted)
-}
-
-func TestGenAIRerankResponseConverterFallsBackWhenNotVertex(t *testing.T) {
+func TestGenAIRerankResponseConverterRestoresCallerRecordIDs(t *testing.T) {
 	route := createGenAIRerankRouteConfig("/genai")
 	require.NotNil(t, route.RerankResponseConverter)
 
 	resp := &schemas.BifrostRerankResponse{
 		Results: []schemas.RerankResult{
-			{Index: 0, RelevanceScore: 0.9},
+			{Index: 1, RelevanceScore: 0.88, Document: &schemas.RerankDocument{
+				ID: new("doc-paris"), Text: "Paris is capital of France", Meta: map[string]interface{}{"title": "Paris"},
+			}},
+			{Index: 0, RelevanceScore: 0.12, Document: &schemas.RerankDocument{
+				ID: new("doc-berlin"), Text: "Berlin is capital of Germany",
+			}},
 		},
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			Provider: schemas.Cohere,
+			Provider: schemas.Vertex,
+			// Raw carries synthetic idx:N record IDs, so it must never be returned.
+			RawResponse: map[string]interface{}{"records": []interface{}{map[string]interface{}{"id": "idx:1"}}},
 		},
 	}
+
 	converted, err := route.RerankResponseConverter(nil, resp)
 	require.NoError(t, err)
-	assert.Equal(t, resp, converted)
+
+	rankResp, ok := converted.(*vertex.VertexRankResponse)
+	require.True(t, ok, "converter should emit *vertex.VertexRankResponse")
+	require.Len(t, rankResp.Records, 2)
+	assert.Equal(t, "doc-paris", rankResp.Records[0].ID)
+	assert.InDelta(t, 0.88, rankResp.Records[0].Score, 1e-9)
+	require.NotNil(t, rankResp.Records[0].Content)
+	assert.Equal(t, "Paris is capital of France", *rankResp.Records[0].Content)
+	require.NotNil(t, rankResp.Records[0].Title)
+	assert.Equal(t, "Paris", *rankResp.Records[0].Title)
+	assert.Equal(t, "doc-berlin", rankResp.Records[1].ID)
+	assert.Nil(t, rankResp.Records[1].Title)
+}
+
+func TestGenAIRerankRequestConverterRequestsDocuments(t *testing.T) {
+	route := createGenAIRerankRouteConfig("/genai")
+	require.NotNil(t, route.RequestConverter)
+
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq, err := route.RequestConverter(bifrostCtx, &vertex.VertexRankRequest{
+		Query:   "capital of france",
+		Records: []vertex.VertexRankRecord{{ID: "doc-paris", Content: new("Paris is capital of France")}},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, bifrostReq.RerankRequest)
+	require.NotNil(t, bifrostReq.RerankRequest.Params)
+	// Ranked records are keyed by caller record ID, which only the document carries.
+	require.NotNil(t, bifrostReq.RerankRequest.Params.ReturnDocuments)
+	assert.True(t, *bifrostReq.RerankRequest.Params.ReturnDocuments)
 }
 
 func TestCreateGenAIRouteConfigsIncludesModelMetadataRoute(t *testing.T) {

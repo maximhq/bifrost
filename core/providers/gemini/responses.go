@@ -265,7 +265,7 @@ func (response *GenerateContentResponse) ToResponsesBifrostResponsesResponse() *
 
 	// Create the BifrostResponse with Responses structure
 	bifrostResp := &schemas.BifrostResponsesResponse{
-		ID:        schemas.Ptr("resp_" + providerUtils.GetRandomString(50)),
+		ID:        schemas.Ptr("resp_" + schemas.GetRandomString(50)),
 		CreatedAt: int(time.Now().Unix()),
 		Model:     response.ModelVersion,
 	}
@@ -3254,7 +3254,7 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 			case part.Text != "":
 				// Regular text message
 				msg := schemas.ResponsesMessage{
-					ID:     schemas.Ptr("msg_" + providerUtils.GetRandomString(50)),
+					ID:     schemas.Ptr("msg_" + schemas.GetRandomString(50)),
 					Role:   schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
 					Status: schemas.Ptr("completed"),
 					Content: &schemas.ResponsesMessageContent{
@@ -3307,7 +3307,7 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 					Arguments: &argumentsStr,
 				}
 				msg := schemas.ResponsesMessage{
-					ID:                   schemas.Ptr("fc_" + providerUtils.GetRandomString(50)),
+					ID:                   schemas.Ptr("fc_" + schemas.GetRandomString(50)),
 					Role:                 schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
 					Type:                 schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
 					Status:               schemas.Ptr("completed"),

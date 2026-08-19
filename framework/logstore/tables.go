@@ -242,6 +242,8 @@ type Log struct {
 	CacheDebug              string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostCacheDebug
 	GuardrailDebug          string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostGuardrailDebug
 	Latency                 *float64  `gorm:"index:idx_logs_latency" json:"latency,omitempty"`
+	UpstreamLatency         *float64  `gorm:"index:idx_logs_upstream_latency" json:"upstream_latency,omitempty"`                          // Provider socket time across all attempts, ms; nil = unmeasured
+	OverheadLatency         *float64  `gorm:"index:idx_logs_overhead_latency" json:"overhead_latency,omitempty"`                          // Bifrost overhead (total minus upstream), ms; nil = unmeasured
 	TokenUsage              string    `gorm:"type:text" json:"-"`                                                                         // JSON serialized *schemas.LLMUsage
 	Cost                    *float64  `gorm:"index" json:"cost,omitempty"`                                                                // Cost in dollars (total cost of the request - includes cache lookup cost)
 	Status                  string    `gorm:"type:varchar(50);index;index:idx_logs_ts_provider_status,priority:3;not null" json:"status"` // "processing", "success", or "error"
@@ -1657,6 +1659,10 @@ type LatencyHistogramBucket struct {
 	P90Latency    float64   `json:"p90_latency"`
 	P95Latency    float64   `json:"p95_latency"`
 	P99Latency    float64   `json:"p99_latency"`
+	AvgOverhead   float64   `json:"avg_overhead"`
+	P90Overhead   float64   `json:"p90_overhead"`
+	P95Overhead   float64   `json:"p95_overhead"`
+	P99Overhead   float64   `json:"p99_overhead"`
 	TotalRequests int64     `json:"total_requests"`
 }
 

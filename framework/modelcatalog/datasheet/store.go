@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -66,6 +67,10 @@ type Store struct {
 	onModelParametersApplied func()
 	datasheetByProvider      map[schemas.ModelProvider][]string // rebuilt every reload
 	deprecatedByProvider     map[schemas.ModelProvider][]string // rebuilt every reload
+
+	// writeGen counts membership rebuilds; the composer's model→provider memo
+	// stamps it to detect staleness. Atomic so readers skip mu.
+	writeGen atomic.Uint64
 
 	// Overrides under their own mutex: writes here don't block pricing reads
 	// (the hot CalculateCost path takes mu.RLock and overridesMu.RLock
@@ -500,4 +505,11 @@ func (s *Store) rebuildDatasheetViewUnsafe() {
 		slices.Sort(models)
 		s.deprecatedByProvider[provider] = models
 	}
+
+	s.writeGen.Add(1)
+}
+
+// WriteGen returns the monotonic count of membership rebuilds.
+func (s *Store) WriteGen() uint64 {
+	return s.writeGen.Load()
 }

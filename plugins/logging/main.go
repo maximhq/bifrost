@@ -1166,26 +1166,6 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	if ok && fallbackRequestID != "" {
 		requestID = fallbackRequestID
 	}
-	selectedKeyID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyID)
-	selectedKeyName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyName)
-	virtualKeyID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyID)
-	virtualKeyName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyName)
-	routingRuleID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleID)
-	routingRuleName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleName)
-	selectedPromptName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedPromptName)
-	selectedPromptVersion := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedPromptVersion)
-	selectedPromptID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedPromptID)
-	teamID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamID)
-	teamName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamName)
-	customerID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerID)
-	customerName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerName)
-	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
-	userName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserName)
-	businessUnitID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceBusinessUnitID)
-	businessUnitName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceBusinessUnitName)
-	numberOfRetries := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyNumberOfRetries)
-	attemptTrail, _ := ctx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord)
-
 	requestType, _, originalModelRequested, resolvedModelUsed := bifrost.GetResponseFields(result, bifrostErr)
 	resolvedKeyAlias := bifrost.GetResponseRoutingInfo(result, bifrostErr).ResolvedKeyAlias
 	shouldStoreRaw, _ := ctx.Value(schemas.BifrostContextKeyShouldStoreRawInLogs).(bool)
@@ -1291,6 +1271,30 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		}
 		return result, bifrostErr, nil
 	}
+
+	// Governance/key/prompt fields, needed only by the final/error/non-streaming
+	// paths below (applyOutputFieldsToEntry). Read here, after the non-final-chunk
+	// fast path, so intermediate chunks skip these ~19 locked context lookups.
+	selectedKeyID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyID)
+	selectedKeyName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyName)
+	virtualKeyID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyID)
+	virtualKeyName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyName)
+	routingRuleID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleID)
+	routingRuleName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleName)
+	selectedPromptName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedPromptName)
+	selectedPromptVersion := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedPromptVersion)
+	selectedPromptID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedPromptID)
+	teamID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamID)
+	teamName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamName)
+	customerID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerID)
+	customerName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerName)
+	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
+	userName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserName)
+	businessUnitID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceBusinessUnitID)
+	businessUnitName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceBusinessUnitName)
+	numberOfRetries := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyNumberOfRetries)
+	attemptTrail, _ := ctx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord)
+
 	// Extract routing engine logs from context before entering goroutine
 	routingEngineLogs := formatRoutingEngineLogs(ctx.GetRoutingEngineLogs())
 	if requestType == schemas.RealtimeRequest {
@@ -1311,9 +1315,12 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	// latency stamped by the semantic cache plugin over the original provider
 	// latency preserved in the cached response.
 	var latency int64
+	var upstreamLatency, overheadLatency *int64
 	if result != nil {
 		ef := result.GetExtraFields()
 		latency = ef.Latency
+		upstreamLatency = ef.UpstreamLatency
+		overheadLatency = ef.OverheadLatency
 		// Model that actually served the turn when the provider swapped models inside
 		// one call. entry.Model still names what the caller asked for.
 		if ef.RoutingInfo.ServerSideFallbackModel != nil {
@@ -1333,7 +1340,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			entry.ServerSideFallbackModel = &m
 		}
 	}
-	applyOutputFieldsToEntry(entry, selectedKeyID, selectedKeyName, virtualKeyID, virtualKeyName, routingRuleID, routingRuleName, selectedPromptID, selectedPromptName, selectedPromptVersion, teamID, teamName, customerID, customerName, userID, userName, businessUnitID, businessUnitName, numberOfRetries, latency, attemptTrail)
+	applyOutputFieldsToEntry(entry, selectedKeyID, selectedKeyName, virtualKeyID, virtualKeyName, routingRuleID, routingRuleName, selectedPromptID, selectedPromptName, selectedPromptVersion, teamID, teamName, customerID, customerName, userID, userName, businessUnitID, businessUnitName, numberOfRetries, latency, upstreamLatency, overheadLatency, attemptTrail)
 	applyResolvedAliasInfo(entry, resolvedKeyAlias)
 	// Attach cluster governance metadata for disconnected node usage recovery
 	if nodeID, _ := p.clusterNodeID.Load().(string); nodeID != "" {
@@ -1481,6 +1488,10 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			// Apply streaming output fields to the entry
 			entry.Stream = true
 			p.applyStreamingOutputToEntry(entry, streamResponse, shouldStoreRaw, contentLoggingEnabled)
+			// Read off the raw final-chunk ExtraFields, not the rebuilt streamResponse.
+			if result != nil {
+				applyUpstreamOverheadToEntry(entry, result.GetExtraFields())
+			}
 		}
 		if entry.ErrorDetailsParsed != nil {
 			entry.Status = logStatusForError(entry.ErrorDetailsParsed)
@@ -1708,10 +1719,64 @@ func (p *LoggerPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
 	}
 	// Serialize plugin logs once for all entries
 	pluginLogsJSON := serializePluginLogs(trace.PluginLogs)
+	// Backfill upstream/overhead from the authoritative values the tracer stamped on
+	// the root span at completion, so the log matches the trace connectors exactly.
+	// Supersedes the mid-request PostLLMHook estimate. Only overwrite when present.
+	var upstreamMs, overheadMs float64
+	var upOK, ovOK bool
+	if trace.RootSpan != nil && trace.RootSpan.Attributes != nil {
+		upstreamMs, upOK = traceAttrFloatMs(trace.RootSpan.Attributes, schemas.AttrBifrostUpstreamDurationMs)
+		overheadMs, ovOK = traceAttrFloatMs(trace.RootSpan.Attributes, schemas.AttrBifrostOverheadDurationMs)
+	}
+
 	p.logger.Debug("Inject: enqueuing %d log entries", len(pending.entries))
-	// Enqueue each log entry (supports multiple attempts per trace)
-	for _, entry := range pending.entries {
+	// Upstream/overhead are request-level: put them on one row per trace, not all.
+	// A trace can log many rows (list_models fans out per provider; fallbacks add a
+	// row per attempt), and stamping every one would count the same overhead N times
+	// in the graphs. Clear the rest, keeping their per-row latency.
+	//
+	// Pick the target row deterministically (latest Timestamp, tie-broken by ID)
+	// rather than by slice position: list_models fans out concurrently under one
+	// trace, so entries append in nondeterministic completion order and a positional
+	// "last" would attach trace latency to a random provider row. For sequential
+	// fallbacks the latest Timestamp is still the terminal attempt.
+	stampIdx := 0
+	for i, entry := range pending.entries {
+		best := pending.entries[stampIdx]
+		if entry.Timestamp.After(best.Timestamp) ||
+			(entry.Timestamp.Equal(best.Timestamp) && entry.ID > best.ID) {
+			stampIdx = i
+		}
+	}
+	for i, entry := range pending.entries {
 		entry.PluginLogs = pluginLogsJSON
+		if i == stampIdx {
+			// Clear both provisional components before backfilling. A partial root
+			// span (only one attribute present) would otherwise leave the other as
+			// a stale PostLLMHook estimate, mixing the breakdown's two sources.
+			if upOK || ovOK {
+				entry.UpstreamLatency = nil
+				entry.OverheadLatency = nil
+			}
+			if upOK {
+				u := upstreamMs
+				entry.UpstreamLatency = &u
+			}
+			if ovOK {
+				o := overheadMs
+				entry.OverheadLatency = &o
+			}
+			// Latency = full-request wall-clock = upstream + overhead. Summing (not
+			// the raw span duration) keeps latency >= upstream when overhead clamps
+			// to zero, so the breakdown always adds up.
+			if upOK && ovOK {
+				total := upstreamMs + overheadMs
+				entry.Latency = &total
+			}
+		} else if upOK || ovOK {
+			entry.UpstreamLatency = nil
+			entry.OverheadLatency = nil
+		}
 		p.logger.Debug("Inject: enqueuing log entry %s", entry.ID)
 		p.enqueueLogEntry(entry, p.makePostWriteCallback(nil))
 	}
@@ -1728,6 +1793,20 @@ func serializePluginLogs(logs []schemas.PluginLogEntry) string {
 		return ""
 	}
 	return string(data)
+}
+
+// traceAttrFloatMs reads a millisecond span attribute, tolerating int/int64/float64.
+func traceAttrFloatMs(attrs map[string]any, key string) (float64, bool) {
+	switch v := attrs[key].(type) {
+	case float64:
+		return v, true
+	case int64:
+		return float64(v), true
+	case int:
+		return float64(v), true
+	default:
+		return 0, false
+	}
 }
 
 // MCP Plugin Interface Implementation

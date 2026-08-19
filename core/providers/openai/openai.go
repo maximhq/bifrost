@@ -934,7 +934,17 @@ func HandleOpenAIChatCompletionRequest(
 	// A 200 is not proof of success on every OpenAI-compatible provider: some report
 	// failures in-band once the status line is already committed. Left unchecked those
 	// surface to the caller as a 200 with null choices and null usage.
-	if inBandErr := ErrorInSuccessfulChatBody(body); inBandErr != nil {
+	// The non-custom path already validated body via HandleProviderResponse's
+	// sonic.Unmarshal, so it skips the redundant gjson.ValidBytes rescan. A custom
+	// handler makes no such guarantee, so validate before scanning to avoid reading an
+	// "error" object out of malformed JSON.
+	var inBandErr *schemas.BifrostError
+	if customResponseHandler != nil {
+		inBandErr = ErrorInSuccessfulChatBody(body)
+	} else {
+		inBandErr = errorInValidatedChatBody(body)
+	}
+	if inBandErr != nil {
 		logger.Debug("in-band error on a 200 from %s provider: %s", providerName, inBandErr.Error.Message)
 		return nil, providerUtils.EnrichError(ctx, inBandErr, jsonData, body, sendBackRawRequest, sendBackRawResponse, latency)
 	}
