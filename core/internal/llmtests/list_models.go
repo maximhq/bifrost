@@ -3,6 +3,7 @@ package llmtests
 import (
 	"context"
 	"os"
+	"slices"
 	"testing"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -106,6 +107,23 @@ func RunListModelsTest(t *testing.T, client *bifrost.Bifrost, ctx context.Contex
 		}
 
 		t.Logf("✅ Validated %d models with proper structure", validModels)
+
+		// OpenRouter's default /v1/models response excludes embedding models entirely
+		// (they're a disjoint catalog fetched separately and merged in). Guard against
+		// missing embedding models.
+		if testConfig.Provider == schemas.OpenRouter {
+			hasEmbeddingModel := false
+			for _, model := range response.Data {
+				if model.Architecture != nil && slices.Contains(model.Architecture.OutputModalities, "embeddings") {
+					hasEmbeddingModel = true
+					break
+				}
+			}
+			if !hasEmbeddingModel {
+				t.Fatalf("❌ OpenRouter ListModels response contains no embedding models (architecture.output_modalities=embeddings)")
+			}
+			t.Logf("✅ OpenRouter ListModels response includes embedding models")
+		}
 
 		// Validate latency is reasonable (non-negative and not absurdly high)
 		if response.ExtraFields.Latency < 0 {

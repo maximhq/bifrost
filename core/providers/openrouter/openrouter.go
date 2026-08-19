@@ -109,6 +109,38 @@ func (provider *OpenRouterProvider) validateKey(ctx *schemas.BifrostContext, key
 	return nil
 }
 
+// fetchEmbeddingModels fetches OpenRouter's embedding-model catalog. Best-effort: any
+// failure is logged and swallowed so it never fails the primary ListModels call.
+func (provider *OpenRouterProvider) fetchEmbeddingModels(ctx *schemas.BifrostContext, key schemas.Key) []schemas.Model {
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+
+	req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/embeddings/models")
+	req.Header.SetMethod(http.MethodGet)
+	req.Header.SetContentType("application/json")
+	if keyValue := key.Value.GetValue(); keyValue != "" {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", keyValue))
+	}
+
+	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
+	if bifrostErr != nil || resp.StatusCode() != fasthttp.StatusOK {
+		provider.logger.Debug("openrouter: failed to fetch embedding models, skipping")
+		return nil
+	}
+
+	var embeddingResponse schemas.BifrostListModelsResponse
+	if _, _, bifrostErr := providerUtils.HandleProviderResponse(resp.Body(), &embeddingResponse, nil, false, false); bifrostErr != nil {
+		provider.logger.Debug("openrouter: failed to parse embedding models response, skipping")
+		return nil
+	}
+	return embeddingResponse.Data
+}
+
 // listModelsByKey performs a list models request for a single key.
 // Returns the response and latency, or an error if the request fails.
 func (provider *OpenRouterProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
@@ -183,6 +215,23 @@ func (provider *OpenRouterProvider) listModelsByKey(ctx *schemas.BifrostContext,
 		// Set raw response if enabled
 		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 			openrouterResponse.ExtraFields.RawResponse = rawResponse
+		}
+	}
+
+	// Merge in the embedding-model catalog, which OpenRouter's default /v1/models
+	// response omits entirely.
+	if modelsFetched {
+		if embeddingModels := provider.fetchEmbeddingModels(ctx, key); len(embeddingModels) > 0 {
+			existing := make(map[string]bool, len(openrouterResponse.Data))
+			for _, m := range openrouterResponse.Data {
+				existing[strings.ToLower(m.ID)] = true
+			}
+			for _, m := range embeddingModels {
+				if !existing[strings.ToLower(m.ID)] {
+					openrouterResponse.Data = append(openrouterResponse.Data, m)
+					existing[strings.ToLower(m.ID)] = true
+				}
+			}
 		}
 	}
 
