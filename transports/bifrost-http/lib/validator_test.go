@@ -1335,6 +1335,56 @@ func TestValidateConfigSchema_OtelPlugin_GrpcAddress(t *testing.T) {
 	}
 }
 
+func TestValidateConfigSchema_OtelPlugin_LogsEnabled(t *testing.T) {
+	// Log export opts in per profile and requires its own endpoint.
+	validConfig := `{
+		"plugins": [
+			{
+				"enabled": true,
+				"name": "otel",
+				"config": {
+					"profiles": [
+						{
+							"collector_url": "http://localhost:4318/v1/traces",
+							"trace_type": "genai_extension",
+							"protocol": "http",
+							"logs_enabled": true,
+							"logs_endpoint": "http://localhost:4318/v1/logs",
+							"logs_disable_content_logging": true
+						}
+					]
+				}
+			}
+		]
+	}`
+
+	if err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t)); err != nil {
+		t.Errorf("expected OTEL config with log export to pass validation, got error: %v", err)
+	}
+}
+
+func TestValidateConfigSchema_OtelPlugin_LogsEnabledMissingEndpoint(t *testing.T) {
+	// logs_enabled without logs_endpoint is a config error, mirroring metrics_endpoint.
+	invalidConfig := `{
+		"plugins": [
+			{
+				"enabled": true,
+				"name": "otel",
+				"config": {
+					"collector_url": "http://localhost:4318",
+					"trace_type": "genai_extension",
+					"protocol": "http",
+					"logs_enabled": true
+				}
+			}
+		]
+	}`
+
+	if err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t)); err == nil {
+		t.Error("expected config with 'logs_enabled' but no 'logs_endpoint' to fail validation")
+	}
+}
+
 func TestValidateConfigSchema_OtelPlugin_MissingCollectorUrl(t *testing.T) {
 	// Missing required field: collector_url
 	invalidConfig := `{

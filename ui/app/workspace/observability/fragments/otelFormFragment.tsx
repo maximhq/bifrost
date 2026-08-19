@@ -38,6 +38,9 @@ interface StoredOtelProfile {
 	metrics_enabled?: boolean;
 	metrics_endpoint?: string | SecretVar;
 	metrics_push_interval?: number;
+	logs_enabled?: boolean;
+	logs_endpoint?: string | SecretVar;
+	logs_disable_content_logging?: boolean;
 	export_timeout?: number;
 	request_headers?: string[];
 	disable_content_logging?: boolean;
@@ -106,6 +109,9 @@ const emptyProfile = (): ProfileForm => ({
 	metrics_enabled: false,
 	metrics_endpoint: emptySecretVar(),
 	metrics_push_interval: 15,
+	logs_enabled: false,
+	logs_endpoint: emptySecretVar(),
+	logs_disable_content_logging: false,
 	export_timeout: 5,
 	request_headers: [],
 	disable_content_logging: false,
@@ -129,6 +135,9 @@ const toProfileForm = (p?: StoredOtelProfile): ProfileForm => ({
 	metrics_enabled: p?.metrics_enabled ?? false,
 	metrics_endpoint: toSecretVarFormValue(p?.metrics_endpoint),
 	metrics_push_interval: p?.metrics_push_interval ?? 15,
+	logs_enabled: p?.logs_enabled ?? false,
+	logs_endpoint: toSecretVarFormValue(p?.logs_endpoint),
+	logs_disable_content_logging: p?.logs_disable_content_logging ?? false,
 	export_timeout: p?.export_timeout ?? 5,
 	request_headers: p?.request_headers ?? [],
 	disable_content_logging: p?.disable_content_logging ?? false,
@@ -327,20 +336,23 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 	const protocol = form.watch(`${base}.protocol`);
 	const tracesEnabled = form.watch(`${base}.traces_enabled`);
 	const metricsEnabled = form.watch(`${base}.metrics_enabled`);
+	const logsEnabled = form.watch(`${base}.logs_enabled`);
 	const insecure = form.watch(`${base}.insecure`);
 	const enabled = form.watch(`${base}.enabled`);
 	const serviceName = form.watch(`${base}.service_name`);
 	const collectorUrl = form.watch(`${base}.collector_url`);
 
-	const [activeTab, setActiveTab] = useState<"traces" | "metrics">("traces");
+	const [activeTab, setActiveTab] = useState<"traces" | "metrics" | "logs">("traces");
 
 	// Surface which tab holds a validation error so it's findable without expanding every section.
 	const profileErrors = form.formState.errors?.profiles?.[index];
 	const hasError = Boolean(profileErrors);
 	const tracesFields = ["traces_enabled", "collector_url", "trace_type", "export_timeout", "request_headers"] as const;
 	const metricsFields = ["metrics_endpoint", "metrics_push_interval"] as const;
+	const logsFields = ["logs_endpoint"] as const;
 	const hasTracesError = tracesFields.some((f) => Boolean(profileErrors?.[f]));
 	const hasMetricsError = metricsFields.some((f) => Boolean(profileErrors?.[f]));
+	const hasLogsError = logsFields.some((f) => Boolean(profileErrors?.[f]));
 
 	const collectorPreview =
 		typeof collectorUrl === "string"
@@ -513,7 +525,7 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 					</div>
 
 					{/* Traces and Metrics tabs, each independently enable-able */}
-					<Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "traces" | "metrics")} className="border-t pt-4">
+					<Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "traces" | "metrics" | "logs")} className="border-t pt-4">
 						<TabsList className="gap-2">
 							<TabsTrigger value="traces" className="px-2 py-1" data-testid={`otel-profile-${index}-tab-traces`}>
 								Traces
@@ -526,6 +538,14 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 							<TabsTrigger value="metrics" className="px-2 py-1" data-testid={`otel-profile-${index}-tab-metrics`}>
 								Metrics
 								{hasMetricsError && (
+									<Badge variant="destructive" className="ml-1.5 px-1 py-0 text-[10px] leading-none">
+										!
+									</Badge>
+								)}
+							</TabsTrigger>
+							<TabsTrigger value="logs" className="px-2 py-1" data-testid={`otel-profile-${index}-tab-logs`}>
+								Logs
+								{hasLogsError && (
 									<Badge variant="destructive" className="ml-1.5 px-1 py-0 text-[10px] leading-none">
 										!
 									</Badge>
@@ -859,6 +879,90 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 												</FormControl>
 												<FormDescription>How often to push metrics (1-300 seconds)</FormDescription>
 												<FormMessage />
+											</FormItem>
+										)}
+									/>
+								</div>
+							)}
+						</TabsContent>
+
+						{/* Logs tab: exports GenAI events as OTLP logs */}
+						<TabsContent value="logs" className="mt-2 space-y-4">
+							<FormField
+								control={control}
+								name={`${base}.logs_enabled`}
+								render={({ field }) => (
+									<FormItem className="flex flex-row items-center gap-2">
+										<div className="flex w-full flex-row items-center gap-2">
+											<div className="flex flex-col gap-1">
+												<h3 className="flex flex-row items-center gap-2 text-sm font-medium">
+													Enable Log Export <Badge variant="secondary">BETA</Badge>
+												</h3>
+												<p className="text-muted-foreground text-xs">
+													Export GenAI events (inputs, outputs, request details) as OTLP logs correlated with trace and span IDs
+												</p>
+											</div>
+											<div className="ml-auto">
+												<Switch
+													data-testid={`otel-profile-${index}-logs-export-toggle`}
+													checked={field.value}
+													onCheckedChange={field.onChange}
+													disabled={!hasOtelAccess}
+												/>
+											</div>
+										</div>
+									</FormItem>
+								)}
+							/>
+
+							{logsEnabled && (
+								<div className="border-muted flex flex-col gap-4">
+									<FormField
+										control={control}
+										name={`${base}.logs_endpoint`}
+										render={({ field }) => (
+											<FormItem className="w-full">
+												<FormLabel>Logs Endpoint</FormLabel>
+												<div className="text-muted-foreground text-xs">
+													<code>{protocol === "http" ? "http(s)://<host>:<port>/v1/logs" : "<host>:<port>"}</code>
+												</div>
+												<FormControl>
+													<SecretVarInput
+														placeholder={
+															protocol === "http"
+																? "https://otel-collector:4318/v1/logs or env.OTEL_LOGS_ENDPOINT"
+																: "otel-collector:4317 or env.OTEL_LOGS_ENDPOINT"
+														}
+														disabled={!hasOtelAccess}
+														{...field}
+													/>
+												</FormControl>
+												<FormMessage />
+											</FormItem>
+										)}
+									/>
+
+									<FormField
+										control={control}
+										name={`${base}.logs_disable_content_logging`}
+										render={({ field }) => (
+											<FormItem className="flex flex-row items-center justify-between">
+												<div className="space-y-0.5">
+													<FormLabel className="text-base">Disable Content Logging (Logs)</FormLabel>
+													<FormDescription>
+														Exclude message content, instructions, and tool payloads from exported logs. Independent of the
+														trace-level Disable Content Logging setting on the Traces tab, so content can be sent on spans only, on
+														events only, on both, or on neither.
+													</FormDescription>
+												</div>
+												<FormControl>
+													<Switch
+														checked={field.value}
+														onCheckedChange={field.onChange}
+														disabled={!hasOtelAccess}
+														data-testid={`otel-profile-${index}-logs-disable-content-toggle`}
+													/>
+												</FormControl>
 											</FormItem>
 										)}
 									/>

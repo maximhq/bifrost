@@ -911,6 +911,12 @@ export const otelConfigSchema = z
 		metrics_enabled: z.boolean().default(false),
 		metrics_endpoint: secretVarSchema.optional(),
 		metrics_push_interval: z.number().int().min(1).max(300).default(15),
+		// Log export configuration. Emits GenAI events (one OTLP log record per LLM call)
+		// correlated with the exported spans.
+		logs_enabled: z.boolean().default(false),
+		logs_endpoint: secretVarSchema.optional(),
+		// Gates content on exported logs only; disable_content_logging gates spans.
+		logs_disable_content_logging: z.boolean().default(false),
 		request_headers: z.array(z.string()).default([]),
 		disable_content_logging: z.boolean().default(false),
 		group_traces_by_session: z.boolean().default(false),
@@ -1001,6 +1007,22 @@ export const otelConfigSchema = z
 				validateHttpUrl(metricsEndpoint, ["metrics_endpoint"]);
 			} else if (metricsEndpoint && (data.metrics_endpoint?.type === "plain_text" || !data.metrics_endpoint?.type) && protocol === "grpc") {
 				validateHostPort(metricsEndpoint, ["metrics_endpoint"], "otel-collector:4317");
+			}
+		}
+
+		// Validate logs_endpoint when logs_enabled is true
+		if (data.logs_enabled) {
+			const logsEndpoint = (data.logs_endpoint?.value || "").trim();
+			if (!isSecretVarSet(data.logs_endpoint)) {
+				ctx.addIssue({
+					code: "custom",
+					path: ["logs_endpoint"],
+					message: "Logs endpoint is required when log export is enabled",
+				});
+			} else if (logsEndpoint && (data.logs_endpoint?.type === "plain_text" || !data.logs_endpoint?.type) && protocol === "http") {
+				validateHttpUrl(logsEndpoint, ["logs_endpoint"]);
+			} else if (logsEndpoint && (data.logs_endpoint?.type === "plain_text" || !data.logs_endpoint?.type) && protocol === "grpc") {
+				validateHostPort(logsEndpoint, ["logs_endpoint"], "otel-collector:4317");
 			}
 		}
 	});
