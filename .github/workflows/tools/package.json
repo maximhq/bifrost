@@ -4,7 +4,17 @@
   "private": true,
   "description": "Pinned CI-only CLI tooling (newman). Not published, not part of the product build. Installed with `npm ci` so package-lock.json's integrity hashes are enforced, which is what OpenSSF Scorecard's Pinned-Dependencies check requires; a bare `npm install -g newman@x` pins the version but verifies nothing.",
   "dependencies": {
-    "newman": "6.2.1",
+    "newman": "6.2.2",
     "newman-reporter-htmlextra": "1.23.1"
+  },
+  "overrides": {
+    "handlebars": "4.7.9",
+    "lodash": "4.18.1",
+    "node-forge": "1.4.0",
+    "flatted": "3.4.4",
+    "underscore": "1.13.8",
+    "qs": "6.15.3",
+    "jose": "4.15.5",
+    "uuid": "11.1.1"
   }
 }
