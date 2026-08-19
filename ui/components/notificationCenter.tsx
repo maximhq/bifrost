@@ -56,7 +56,7 @@ export default function NotificationCenter() {
 
 	// Hide the trigger until there is something to open. A failed load is the one
 	// empty state that stays visible — see shouldHideNotificationTrigger.
-	if (shouldHideNotificationTrigger({ open, isLoading, isError, count: notifications.length })) return null;
+	if (shouldHideNotificationTrigger({ open, isLoading })) return null;
 
 	return (
 		<Popover open={open} onOpenChange={setOpen}>

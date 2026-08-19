@@ -24,18 +24,8 @@ export function isNotificationsUnavailable(error: unknown): boolean {
  * `open` overrides all of it, so dismissing the last row does not yank the
  * popover out from under the pointer.
  */
-export function shouldHideNotificationTrigger({
-	open,
-	isLoading,
-	isError,
-	count,
-}: {
-	open: boolean;
-	isLoading: boolean;
-	isError: boolean;
-	count: number;
-}): boolean {
+export function shouldHideNotificationTrigger({ open, isLoading }: { open: boolean; isLoading: boolean }): boolean {
 	if (open) return false;
 	if (isLoading) return true;
-	return count === 0 && !isError;
+	return false;
 }
