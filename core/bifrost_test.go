@@ -5451,8 +5451,9 @@ func TestOverrideKey_DeadKeySurfaces502CredentialsExhausted(t *testing.T) {
 // perProviderTimeoutConfig contains the endpoint and request timeout used by
 // providerConfigTimeoutPlugin.
 type perProviderTimeoutConfig struct {
-	baseURL        string
-	timeoutSeconds int
+	baseURL             string
+	timeoutSeconds      int
+	allowPrivateNetwork *bool
 }
 
 // providerConfigTimeoutPlugin looks up the request's provider and applies its
@@ -5476,7 +5477,10 @@ func (p *providerConfigTimeoutPlugin) PreLLMHook(_ *schemas.BifrostContext, req 
 	req.UpdateAPIKey(schemas.Key{Value: *schemas.NewSecretVar("sk-timeout-test")})
 	req.UpdateProviderBaseURL(cfg.baseURL)
 	timeoutSeconds := cfg.timeoutSeconds
-	req.UpdateProviderNetworkConfig(schemas.ProviderNetworkConfigOverride{RequestTimeoutInSeconds: &timeoutSeconds})
+	req.UpdateProviderNetworkConfig(schemas.ProviderNetworkConfigOverride{
+		RequestTimeoutInSeconds: &timeoutSeconds,
+		AllowPrivateNetwork:     cfg.allowPrivateNetwork,
+	})
 	return req, nil, nil
 }
 func (p *providerConfigTimeoutPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
@@ -5618,12 +5622,12 @@ func findPrivateIPv4(t *testing.T) string {
 	return ""
 }
 
-// TestAutoInitDynamicProviderAllowsPrivateNetworkUpstreams verifies that an
-// auto-initialised provider can reach request-scoped BaseURLs on RFC 1918
-// networks. Loopback is always allowed, so the test binds the mock upstream
-// to a non-loopback private address to exercise the applicable dial policy.
-// Link-local (cloud metadata endpoints) remains always-blocked regardless.
-func TestAutoInitDynamicProviderAllowsPrivateNetworkUpstreams(t *testing.T) {
+// TestAutoInitDynamicProviderRequiresPrivateNetworkOptIn verifies that an
+// auto-initialised provider reaches request-scoped RFC 1918 BaseURLs only when
+// the request explicitly opts in. Loopback is always allowed, so the test binds
+// the mock upstream to a non-loopback private address. Link-local metadata
+// endpoints remain blocked regardless of this setting.
+func TestAutoInitDynamicProviderRequiresPrivateNetworkOptIn(t *testing.T) {
 	privateIP := findPrivateIPv4(t)
 	listener, err := net.Listen("tcp", net.JoinHostPort(privateIP, "0"))
 	if err != nil {
@@ -5649,42 +5653,48 @@ func TestAutoInitDynamicProviderAllowsPrivateNetworkUpstreams(t *testing.T) {
 	}
 	_ = probeResp.Body.Close()
 
-	account := NewMockAccount()
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	bf, err := Init(ctx, schemas.BifrostConfig{
-		Account: account,
-		Logger:  NewDefaultLogger(schemas.LogLevelError),
-		LLMPlugins: []schemas.LLMPlugin{&providerConfigTimeoutPlugin{
-			configs: map[schemas.ModelProvider]perProviderTimeoutConfig{
-				schemas.OpenAI: {baseURL: server.URL, timeoutSeconds: 10},
-			},
-		}},
-	})
-	if err != nil {
-		t.Fatalf("Init failed: %v", err)
+	request := func(t *testing.T, allowPrivateNetwork *bool) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+		t.Helper()
+		account := NewMockAccount()
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		bf, initErr := Init(ctx, schemas.BifrostConfig{
+			Account: account,
+			Logger:  NewDefaultLogger(schemas.LogLevelError),
+			LLMPlugins: []schemas.LLMPlugin{&providerConfigTimeoutPlugin{
+				configs: map[schemas.ModelProvider]perProviderTimeoutConfig{
+					schemas.OpenAI: {baseURL: server.URL, timeoutSeconds: 10, allowPrivateNetwork: allowPrivateNetwork},
+				},
+			}},
+		})
+		if initErr != nil {
+			t.Fatalf("Init failed: %v", initErr)
+		}
+		t.Cleanup(func() { bf.Shutdown() })
+		content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
+		return bf.ChatCompletionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
+		})
 	}
-	t.Cleanup(func() { bf.Shutdown() })
 
-	content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
-	reqCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	resp, bifrostErr := bf.ChatCompletionRequest(reqCtx, &schemas.BifrostChatRequest{
-		Provider: schemas.OpenAI,
-		Model:    "gpt-4o",
-		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
+	t.Run("omitted opt-in is blocked", func(t *testing.T) {
+		_, bifrostErr := request(t, nil)
+		if bifrostErr == nil || bifrostErr.Error == nil || !strings.Contains(bifrostErr.Error.Message, "private IP") {
+			t.Fatalf("request without AllowPrivateNetwork=true should be blocked, got: %+v", bifrostErr)
+		}
 	})
-	if bifrostErr != nil {
-		msg := ""
-		if bifrostErr.Error != nil {
-			msg = bifrostErr.Error.Message
+
+	t.Run("explicit opt-in is allowed", func(t *testing.T) {
+		allowPrivateNetwork := true
+		resp, bifrostErr := request(t, &allowPrivateNetwork)
+		if bifrostErr != nil {
+			t.Fatalf("request with AllowPrivateNetwork=true failed: %+v", bifrostErr)
 		}
-		if strings.Contains(msg, "private IP") {
-			t.Fatalf("auto-init provider blocked the RFC 1918 upstream %s — AllowPrivateNetwork is not set on the auto-init config: %s", server.URL, msg)
+		if resp == nil || len(resp.Choices) == 0 {
+			t.Fatal("expected a completion from the private upstream, got empty response")
 		}
-		t.Fatalf("request to private upstream %s failed: %+v", server.URL, bifrostErr)
-	}
-	if resp == nil || len(resp.Choices) == 0 {
-		t.Fatal("expected a completion from the private upstream, got empty response")
-	}
+	})
 }
 
 // TestPerRequestTimeoutOverride_DynamicProvider pins the single-provider

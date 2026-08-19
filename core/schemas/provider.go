@@ -113,7 +113,10 @@ type ProviderNetworkConfigOverride struct {
 	RetryBackoffInitial        *time.Duration `json:"retry_backoff_initial,omitempty"`
 	RetryBackoffMax            *time.Duration `json:"retry_backoff_max,omitempty"`
 	StreamIdleTimeoutInSeconds *int           `json:"stream_idle_timeout_in_seconds,omitempty"`
-	AllowPrivateNetwork        *bool          `json:"allow_private_network,omitempty"`
+	// AllowPrivateNetwork opts this request into RFC 1918 access. For an
+	// auto-initialized provider with no static config, private access is enabled
+	// only when this field is explicitly true.
+	AllowPrivateNetwork *bool `json:"allow_private_network,omitempty"`
 	// BetaHeaderOverrides merges with the provider's configured BetaHeaderOverrides.
 	// Keys present in both maps use the override value; keys absent from the override
 	// keep the provider default. Mirrors the ExtraHeaders merge semantics.

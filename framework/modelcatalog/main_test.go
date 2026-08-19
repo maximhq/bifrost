@@ -47,9 +47,6 @@ func TestInitAutomaticSyncDisabledAllowsEmptyOfflineCatalog(t *testing.T) {
 	if catalog.syncTicker != nil {
 		t.Fatal("automatic sync disabled but background sync ticker was started")
 	}
-	if catalog.automaticSyncEnabled {
-		t.Fatal("catalog reports automatic sync enabled")
-	}
 	if got := requests.Load(); got != 0 {
 		t.Fatalf("automatic sync disabled but catalog made %d remote request(s)", got)
 	}

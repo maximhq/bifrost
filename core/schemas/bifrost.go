@@ -403,6 +403,7 @@ const (
 	BifrostContextKeyAttemptTrail                        BifrostContextKey = "bifrost-attempt-trail"                      // []KeyAttemptRecord (set by bifrost - DO NOT SET THIS MANUALLY) - per-attempt key selection history
 	BifrostContextKeyDimensions                          BifrostContextKey = "bifrost-dimensions"                         // map[string]string (set by HTTP transport from x-bf-dim-* headers) BifrostContextKeyDimensions holds per-request key/value dimensions supplied via x-bf-dim-<key> request headers. These dimensions are forwarded to internal logs (as metadata)
 	BifrostContextKeyProviderOverride                    BifrostContextKey = "bifrost-provider-override"                  // *ProviderOverride (set by bifrost from BifrostRequest.ProviderOverride before dispatch - DO NOT SET THIS MANUALLY)
+	BifrostContextKeyAutoInitializedProvider             BifrostContextKey = "bifrost-auto-initialized-provider"          // bool (set by bifrost when the request uses a provider created without static config - DO NOT SET THIS MANUALLY)
 	IsAPIKeyAuthContextKey                               BifrostContextKey = "is_api_key_auth"
 	IsLocalAdminContextKey                               BifrostContextKey = "is_local_admin"                // bool (set by auth middleware when password-based auth succeeds - local admin user bypasses RBAC)
 	BifrostContextKeyAuthBypassed                        BifrostContextKey = "bifrost-auth-bypassed"         // bool (set by auth middleware ONLY when dashboard/admin auth is unconfigured or disabled and the request was let through without any credential check - distinct from IsLocalAdminContextKey, which is also set on genuinely authenticated sessions; handlers gating especially dangerous capabilities (e.g. native plugin/subprocess loading) should check this, not IsLocalAdminContextKey)
@@ -899,10 +900,6 @@ func (br *BifrostRequest) SetModel(model string) {
 		br.VideoGenerationRequest.Model = model
 	case br.VideoEditRequest != nil:
 		br.VideoEditRequest.Model = model
-	case br.BatchCreateRequest != nil:
-		if br.BatchCreateRequest.Model != nil {
-			br.BatchCreateRequest.Model = new(model)
-		}
 	case br.FileUploadRequest != nil:
 		br.FileUploadRequest.Model = &model
 	case br.FileListRequest != nil:

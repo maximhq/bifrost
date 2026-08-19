@@ -132,10 +132,11 @@ type Bifrost struct {
 //     ProviderQueue, both the struct and pq.queue are eligible for GC.
 //     No explicit close is needed.
 type ProviderQueue struct {
-	queue      chan *ChannelMessage // the actual request queue channel — never closed, see above
-	done       chan struct{}        // closed by signalClosing() to signal shutdown; never written to otherwise
-	closing    uint32               // atomic: 0 = open, 1 = closing
-	signalOnce sync.Once
+	queue           chan *ChannelMessage // the actual request queue channel — never closed, see above
+	done            chan struct{}        // closed by signalClosing() to signal shutdown; never written to otherwise
+	closing         uint32               // atomic: 0 = open, 1 = closing
+	autoInitialized bool                 // provider was created from fixed defaults rather than static account config
+	signalOnce      sync.Once
 }
 
 func isLargePayloadPassthrough(ctx *schemas.BifrostContext) bool {
@@ -368,7 +369,7 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 		// Lock the provider mutex during initialization
 		providerMutex := bifrost.getProviderMutex(providerKey)
 		providerMutex.Lock()
-		err = bifrost.prepareProvider(providerKey, config)
+		err = bifrost.prepareProvider(providerKey, config, false)
 		providerMutex.Unlock()
 
 		if err != nil {
@@ -3797,7 +3798,7 @@ func (bifrost *Bifrost) UpdateProvider(providerKey schemas.ModelProvider) error 
 	if !exists {
 		bifrost.logger.Debug("provider %s not currently active, initializing with new configuration", providerKey)
 		// If provider doesn't exist, just prepare it with new configuration
-		return bifrost.prepareProvider(providerKey, providerConfig)
+		return bifrost.prepareProvider(providerKey, providerConfig, false)
 	}
 
 	oldPq := oldPqValue.(*ProviderQueue)
@@ -4518,12 +4519,13 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 // prepareProvider sets up a provider with its configuration, keys, and worker channels.
 // It initializes the request queue and starts worker goroutines for processing requests.
 // Note: This function assumes the caller has already acquired the appropriate mutex for the provider.
-func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, config *schemas.ProviderConfig) error {
+func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, config *schemas.ProviderConfig, autoInitialized bool) error {
 	// Create ProviderQueue with lifecycle management
 	pq := &ProviderQueue{
-		queue:      make(chan *ChannelMessage, config.ConcurrencyAndBufferSize.BufferSize),
-		done:       make(chan struct{}),
-		signalOnce: sync.Once{},
+		queue:           make(chan *ChannelMessage, config.ConcurrencyAndBufferSize.BufferSize),
+		done:            make(chan struct{}),
+		autoInitialized: autoInitialized,
+		signalOnce:      sync.Once{},
 	}
 
 	bifrost.requestQueues.Store(providerKey, pq)
@@ -4600,7 +4602,8 @@ func (bifrost *Bifrost) getProviderQueue(providerKey schemas.ModelProvider) (*Pr
 		// settings and send traffic with wrong configuration.
 		return nil, fmt.Errorf("failed to get config for provider %s: %v", providerKey, err)
 	}
-	if config == nil {
+	autoInitialized := config == nil
+	if autoInitialized {
 		// No static config entry exists. Auto-init well-known providers or fail.
 		// The auto-init config is always fixed defaults: per-request NetworkConfig
 		// overrides are applied at request time (executeRequestWithRetries,
@@ -4624,21 +4627,18 @@ func (bifrost *Bifrost) getProviderQueue(providerKey schemas.ModelProvider) (*Pr
 		// Memory stays O(#built-in provider types): request-scoped overrides do
 		// not create additional clients, queues, or worker pools.
 		config.NetworkConfig.DefaultRequestTimeoutInSeconds = schemas.DynamicProviderTransportTimeoutCeilingInSeconds
-		// The shared client must also allow request-scoped BaseURLs that resolve
-		// to RFC 1918 addresses. Link-local metadata addresses (169.254.x and
-		// fe80::) remain blocked by ConfigureDialer regardless of this flag.
-		// Callers must validate untrusted BaseURLs before applying an override.
-		config.NetworkConfig.AllowPrivateNetwork = true
+		// RFC 1918 access remains disabled on this shared default transport.
+		// Provider utils create a separate private-capable client only for a
+		// request-scoped BaseURL that explicitly sets AllowPrivateNetwork=true.
 	}
-	if err := bifrost.prepareProvider(providerKey, config); err != nil {
+	if err := bifrost.prepareProvider(providerKey, config, autoInitialized); err != nil {
 		return nil, err
 	}
 	pqValue, ok := bifrost.requestQueues.Load(providerKey)
 	if !ok {
 		return nil, fmt.Errorf("request queue not found for provider %s", providerKey)
 	}
-	pq := pqValue.(*ProviderQueue)
-	return pq, nil
+	return pqValue.(*ProviderQueue), nil
 }
 
 // GetProviderByKey returns the provider instance for the given provider key.
@@ -4998,14 +4998,17 @@ func (bifrost *Bifrost) getProviderByKey(providerKey schemas.ModelProvider) sche
 	}
 	// Could happen when provider is not initialized yet, check if provider config exists in account and if so, initialize it
 	config, err := bifrost.account.GetConfigForProvider(providerKey)
+	autoInitialized := config == nil
 	if err != nil || config == nil {
 		if slices.Contains(dynamicallyConfigurableProviders, providerKey) {
+			autoInitialized = true
 			bifrost.logger.Info(fmt.Sprintf("initializing provider %s with default config", providerKey))
 			// If no config found, use default config
 			config = &schemas.ProviderConfig{
 				NetworkConfig:            schemas.DefaultNetworkConfig,
 				ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
 			}
+			config.NetworkConfig.DefaultRequestTimeoutInSeconds = schemas.DynamicProviderTransportTimeoutCeilingInSeconds
 		} else {
 			return nil
 		}
@@ -5024,7 +5027,7 @@ func (bifrost *Bifrost) getProviderByKey(providerKey schemas.ModelProvider) sche
 		}
 	}
 	// Preparing provider
-	if err := bifrost.prepareProvider(providerKey, config); err != nil {
+	if err := bifrost.prepareProvider(providerKey, config, autoInitialized); err != nil {
 		return nil
 	}
 	// Return newly prepared provider without recursion
@@ -5554,6 +5557,10 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		resp, finalErr := bifrost.finalizeAfterPreHookErr(ctx, pipeline, preCount, req.RequestType, provider, model, bifrostErr)
 		return resp, finalErr, effectiveReq
 	}
+	ctx.ClearValue(schemas.BifrostContextKeyAutoInitializedProvider)
+	if pq.autoInitialized {
+		ctx.SetValue(schemas.BifrostContextKeyAutoInitializedProvider, true)
+	}
 
 	msg := bifrost.getChannelMessage(*preReq)
 	msg.Context = ctx
@@ -5939,6 +5946,10 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		bifrostErr := newBifrostError(err)
 		bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
 		return finalizeStream(bifrostErr)
+	}
+	ctx.ClearValue(schemas.BifrostContextKeyAutoInitializedProvider)
+	if pq.autoInitialized {
+		ctx.SetValue(schemas.BifrostContextKeyAutoInitializedProvider, true)
 	}
 
 	msg := bifrost.getChannelMessage(*preReq)

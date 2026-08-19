@@ -30,7 +30,6 @@ type ModelCatalog struct {
 	configStore            configstore.ConfigStore
 	distributedLockManager *configstore.DistributedLockManager
 	logger                 schemas.Logger
-	automaticSyncEnabled   bool
 
 	datasheet *datasheet.Store
 	live      *live.Store
@@ -114,7 +113,6 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 		mcpLibrarySyncInterval: mcpLibrarySyncInterval,
 		configStore:            configStore,
 		logger:                 logger,
-		automaticSyncEnabled:   automaticSyncEnabled,
 		distributedLockManager: configstore.NewDistributedLockManager(configStore, logger, configstore.WithDefaultTTL(30*time.Second)),
 		datasheet: datasheet.New(configStore, logger, datasheet.Config{
 			URL:                pricingURL,
@@ -374,7 +372,6 @@ func (mc *ModelCatalog) UpdateSyncConfig(ctx context.Context, config *Config) er
 	if config != nil && config.AutomaticSyncEnabled != nil {
 		automaticSyncEnabled = *config.AutomaticSyncEnabled
 	}
-	mc.automaticSyncEnabled = automaticSyncEnabled
 	if !automaticSyncEnabled {
 		mc.datasheet.MarkSynced(time.Now())
 		return mc.ReloadFromDB(ctx)

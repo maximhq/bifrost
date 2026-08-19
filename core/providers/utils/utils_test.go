@@ -70,6 +70,11 @@ func TestSetExtraHeaders_AppliesProviderOverrideAndSkipsCaseInsensitive(t *testi
 			},
 		},
 	})
+	ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
+		"Authorization": {"Bearer caller"},
+		"X-Request":     {"caller"},
+		"X-Caller":      {"one", "two"},
+	})
 
 	req := &fasthttp.Request{}
 	SetExtraHeaders(ctx, req, map[string]string{
@@ -87,6 +92,12 @@ func TestSetExtraHeaders_AppliesProviderOverrideAndSkipsCaseInsensitive(t *testi
 	if got := string(req.Header.Peek("X-Static")); got != "yes" {
 		t.Fatalf("X-Static header = %q, want static header", got)
 	}
+	if got := string(req.Header.Peek("X-Caller")); got != "one" {
+		t.Fatalf("X-Caller first value = %q, want caller value", got)
+	}
+	if got := len(req.Header.PeekAll("X-Caller")); got != 2 {
+		t.Fatalf("X-Caller value count = %d, want 2", got)
+	}
 }
 
 func TestSetExtraHeadersHTTP_AppliesProviderOverrideAndSkipsCaseInsensitive(t *testing.T) {
@@ -98,6 +109,11 @@ func TestSetExtraHeadersHTTP_AppliesProviderOverrideAndSkipsCaseInsensitive(t *t
 				"X-Request":     "override",
 			},
 		},
+	})
+	ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
+		"Authorization": {"Bearer caller"},
+		"X-Request":     {"caller"},
+		"X-Caller":      {"one", "two"},
 	})
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://example.com", nil)
@@ -118,6 +134,9 @@ func TestSetExtraHeadersHTTP_AppliesProviderOverrideAndSkipsCaseInsensitive(t *t
 	}
 	if got := req.Header.Get("X-Static"); got != "yes" {
 		t.Fatalf("X-Static header = %q, want static header", got)
+	}
+	if got := req.Header.Values("X-Caller"); len(got) != 2 || got[0] != "one" || got[1] != "two" {
+		t.Fatalf("X-Caller values = %v, want [one two]", got)
 	}
 }
 
