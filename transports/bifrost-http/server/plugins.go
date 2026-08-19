@@ -234,6 +234,11 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 			RequiredHeaders:       &s.Config.ClientConfig.RequiredHeaders,
 			DisableAutoToolInject: &s.Config.ClientConfig.MCPDisableAutoToolInject,
 		}
+		// This is the plugin that decides what a request may reach and what pays for it, so it is the
+		// one allowed to record that answer on the request. The key is reserved: the rest of a hook
+		// batch reads what it settled and cannot rewrite it, which is what stops a later plugin from
+		// widening access after the decision has been made.
+		schemas.RegisterReservedKeyWriter(governance.PluginName, schemas.BifrostContextKeyGovernanceEffectiveAccess)
 		s.registerPluginWithStatus(ctx, governance.PluginName, nil, config, false)
 	} else {
 		s.markPluginDisabled(governance.PluginName)
