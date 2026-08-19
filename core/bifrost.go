@@ -6244,14 +6244,20 @@ func executeRequestWithRetries[T any](
 			spanName = fmt.Sprintf("%s %s", otelOp, model)
 			spanKind = schemas.SpanKindLLMCall
 		}
-		spanCtx, handle := tracer.StartSpan(ctx, spanName, spanKind)
-		tracer.SetAttribute(handle, schemas.AttrProviderName, schemas.OTelProviderName(providerKey))
-		tracer.SetAttribute(handle, schemas.AttrBifrostProviderName, string(providerKey)) // raw Bifrost short name, mirrors canonical gen_ai.provider.name
-		tracer.SetAttribute(handle, schemas.AttrRequestModel, model)
-		tracer.SetAttribute(handle, schemas.AttrOperationName, otelOp)
-		tracer.SetAttribute(handle, schemas.AttrLegacyRequestType, string(requestType)) // legacy: replaced by gen_ai.operation.name
+		spanID, handle := tracer.StartSpanID(ctx, spanName, spanKind)
+		// Resolve the span once and write attributes directly. Previously each
+		// attribute was a separate tracer.SetAttribute, and every call re-resolved
+		// the span (trace lookup + linear span scan over all spans in the trace):
+		// ~30 lookups per request. span.SetAttribute is nil-safe, so a nil span
+		// (e.g. NoOpTracer) makes the whole block a no-op with no branch here.
+		span := tracer.SpanFromHandle(handle)
+		span.SetAttribute(schemas.AttrProviderName, schemas.OTelProviderName(providerKey))
+		span.SetAttribute(schemas.AttrBifrostProviderName, string(providerKey)) // raw Bifrost short name, mirrors canonical gen_ai.provider.name
+		span.SetAttribute(schemas.AttrRequestModel, model)
+		span.SetAttribute(schemas.AttrOperationName, otelOp)
+		span.SetAttribute(schemas.AttrLegacyRequestType, string(requestType)) // legacy: replaced by gen_ai.operation.name
 		if attempts > 0 {
-			tracer.SetAttribute(handle, schemas.AttrLegacyRetryCount, attempts) // legacy: bare key with no semconv prefix
+			span.SetAttribute(schemas.AttrLegacyRetryCount, attempts) // legacy: bare key with no semconv prefix
 		}
 
 		// Add context-related attributes (selected key, virtual key, team, customer, etc.)
@@ -6260,76 +6266,76 @@ func executeRequestWithRetries[T any](
 		// are the canonical home going forward; once all dashboards migrate, drop the
 		// gen_ai.* lines (grep for "// legacy:" in this block).
 		if selectedKeyID, ok := ctx.Value(schemas.BifrostContextKeySelectedKeyID).(string); ok && selectedKeyID != "" {
-			tracer.SetAttribute(handle, schemas.AttrSelectedKeyID, selectedKeyID) // legacy: gen_ai.* placement of bifrost-internal attr
-			tracer.SetAttribute(handle, schemas.AttrBifrostSelectedKeyID, selectedKeyID)
+			span.SetAttribute(schemas.AttrSelectedKeyID, selectedKeyID) // legacy: gen_ai.* placement of bifrost-internal attr
+			span.SetAttribute(schemas.AttrBifrostSelectedKeyID, selectedKeyID)
 		}
 		if selectedKeyName, ok := ctx.Value(schemas.BifrostContextKeySelectedKeyName).(string); ok && selectedKeyName != "" {
-			tracer.SetAttribute(handle, schemas.AttrSelectedKeyName, selectedKeyName) // legacy: gen_ai.* placement of bifrost-internal attr
-			tracer.SetAttribute(handle, schemas.AttrBifrostSelectedKeyName, selectedKeyName)
+			span.SetAttribute(schemas.AttrSelectedKeyName, selectedKeyName) // legacy: gen_ai.* placement of bifrost-internal attr
+			span.SetAttribute(schemas.AttrBifrostSelectedKeyName, selectedKeyName)
 		}
 		if virtualKeyID, ok := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string); ok && virtualKeyID != "" {
-			tracer.SetAttribute(handle, schemas.AttrVirtualKeyID, virtualKeyID) // legacy: gen_ai.* placement of bifrost-internal attr
-			tracer.SetAttribute(handle, schemas.AttrBifrostVirtualKeyID, virtualKeyID)
+			span.SetAttribute(schemas.AttrVirtualKeyID, virtualKeyID) // legacy: gen_ai.* placement of bifrost-internal attr
+			span.SetAttribute(schemas.AttrBifrostVirtualKeyID, virtualKeyID)
 		}
 		if virtualKeyName, ok := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyName).(string); ok && virtualKeyName != "" {
-			tracer.SetAttribute(handle, schemas.AttrVirtualKeyName, virtualKeyName) // legacy: gen_ai.* placement of bifrost-internal attr
-			tracer.SetAttribute(handle, schemas.AttrBifrostVirtualKeyName, virtualKeyName)
+			span.SetAttribute(schemas.AttrVirtualKeyName, virtualKeyName) // legacy: gen_ai.* placement of bifrost-internal attr
+			span.SetAttribute(schemas.AttrBifrostVirtualKeyName, virtualKeyName)
 		}
 		if teamID, ok := ctx.Value(schemas.BifrostContextKeyGovernanceTeamID).(string); ok && teamID != "" {
-			tracer.SetAttribute(handle, schemas.AttrTeamID, teamID) // legacy: gen_ai.* placement of bifrost-internal attr
-			tracer.SetAttribute(handle, schemas.AttrBifrostTeamID, teamID)
+			span.SetAttribute(schemas.AttrTeamID, teamID) // legacy: gen_ai.* placement of bifrost-internal attr
+			span.SetAttribute(schemas.AttrBifrostTeamID, teamID)
 		}
 		if teamName, ok := ctx.Value(schemas.BifrostContextKeyGovernanceTeamName).(string); ok && teamName != "" {
-			tracer.SetAttribute(handle, schemas.AttrTeamName, teamName) // legacy: gen_ai.* placement of bifrost-internal attr
-			tracer.SetAttribute(handle, schemas.AttrBifrostTeamName, teamName)
+			span.SetAttribute(schemas.AttrTeamName, teamName) // legacy: gen_ai.* placement of bifrost-internal attr
+			span.SetAttribute(schemas.AttrBifrostTeamName, teamName)
 		}
 		if customerID, ok := ctx.Value(schemas.BifrostContextKeyGovernanceCustomerID).(string); ok && customerID != "" {
-			tracer.SetAttribute(handle, schemas.AttrCustomerID, customerID) // legacy: gen_ai.* placement of bifrost-internal attr
-			tracer.SetAttribute(handle, schemas.AttrBifrostCustomerID, customerID)
+			span.SetAttribute(schemas.AttrCustomerID, customerID) // legacy: gen_ai.* placement of bifrost-internal attr
+			span.SetAttribute(schemas.AttrBifrostCustomerID, customerID)
 		}
 		if customerName, ok := ctx.Value(schemas.BifrostContextKeyGovernanceCustomerName).(string); ok && customerName != "" {
-			tracer.SetAttribute(handle, schemas.AttrCustomerName, customerName) // legacy: gen_ai.* placement of bifrost-internal attr
-			tracer.SetAttribute(handle, schemas.AttrBifrostCustomerName, customerName)
+			span.SetAttribute(schemas.AttrCustomerName, customerName) // legacy: gen_ai.* placement of bifrost-internal attr
+			span.SetAttribute(schemas.AttrBifrostCustomerName, customerName)
 		}
 		if businessUnitID, ok := ctx.Value(schemas.BifrostContextKeyGovernanceBusinessUnitID).(string); ok && businessUnitID != "" {
-			tracer.SetAttribute(handle, schemas.AttrBifrostBusinessUnitID, businessUnitID)
+			span.SetAttribute(schemas.AttrBifrostBusinessUnitID, businessUnitID)
 		}
 		if businessUnitName, ok := ctx.Value(schemas.BifrostContextKeyGovernanceBusinessUnitName).(string); ok && businessUnitName != "" {
-			tracer.SetAttribute(handle, schemas.AttrBifrostBusinessUnitName, businessUnitName)
+			span.SetAttribute(schemas.AttrBifrostBusinessUnitName, businessUnitName)
 		}
 		if teamIDs, ok := ctx.Value(schemas.BifrostContextKeyGovernanceTeamIDs).([]string); ok && len(teamIDs) > 0 {
-			tracer.SetAttribute(handle, schemas.AttrBifrostTeamIDs, teamIDs)
+			span.SetAttribute(schemas.AttrBifrostTeamIDs, teamIDs)
 		}
 		if teamNames, ok := ctx.Value(schemas.BifrostContextKeyGovernanceTeamNames).([]string); ok && len(teamNames) > 0 {
-			tracer.SetAttribute(handle, schemas.AttrBifrostTeamNames, teamNames)
+			span.SetAttribute(schemas.AttrBifrostTeamNames, teamNames)
 		}
 		if customerIDs, ok := ctx.Value(schemas.BifrostContextKeyGovernanceCustomerIDs).([]string); ok && len(customerIDs) > 0 {
-			tracer.SetAttribute(handle, schemas.AttrBifrostCustomerIDs, customerIDs)
+			span.SetAttribute(schemas.AttrBifrostCustomerIDs, customerIDs)
 		}
 		if customerNames, ok := ctx.Value(schemas.BifrostContextKeyGovernanceCustomerNames).([]string); ok && len(customerNames) > 0 {
-			tracer.SetAttribute(handle, schemas.AttrBifrostCustomerNames, customerNames)
+			span.SetAttribute(schemas.AttrBifrostCustomerNames, customerNames)
 		}
 		if businessUnitIDs, ok := ctx.Value(schemas.BifrostContextKeyGovernanceBusinessUnitIDs).([]string); ok && len(businessUnitIDs) > 0 {
-			tracer.SetAttribute(handle, schemas.AttrBifrostBusinessUnitIDs, businessUnitIDs)
+			span.SetAttribute(schemas.AttrBifrostBusinessUnitIDs, businessUnitIDs)
 		}
 		if businessUnitNames, ok := ctx.Value(schemas.BifrostContextKeyGovernanceBusinessUnitNames).([]string); ok && len(businessUnitNames) > 0 {
-			tracer.SetAttribute(handle, schemas.AttrBifrostBusinessUnitNames, businessUnitNames)
+			span.SetAttribute(schemas.AttrBifrostBusinessUnitNames, businessUnitNames)
 		}
 		if userID, ok := ctx.Value(schemas.BifrostContextKeyUserID).(string); ok && userID != "" {
-			tracer.SetAttribute(handle, schemas.AttrBifrostUserID, userID)
+			span.SetAttribute(schemas.AttrBifrostUserID, userID)
 		}
 		if userName, ok := ctx.Value(schemas.BifrostContextKeyUserName).(string); ok && userName != "" {
-			tracer.SetAttribute(handle, schemas.AttrBifrostUserName, userName)
+			span.SetAttribute(schemas.AttrBifrostUserName, userName)
 		}
 		if userEmail, ok := ctx.Value(schemas.BifrostContextKeyUserEmail).(string); ok && userEmail != "" {
-			tracer.SetAttribute(handle, schemas.AttrBifrostUserEmail, userEmail)
+			span.SetAttribute(schemas.AttrBifrostUserEmail, userEmail)
 		}
 		if fallbackIndex, ok := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int); ok {
-			tracer.SetAttribute(handle, schemas.AttrFallbackIndex, fallbackIndex) // legacy: gen_ai.* placement of bifrost-internal attr
-			tracer.SetAttribute(handle, schemas.AttrBifrostFallbackIndex, fallbackIndex)
+			span.SetAttribute(schemas.AttrFallbackIndex, fallbackIndex) // legacy: gen_ai.* placement of bifrost-internal attr
+			span.SetAttribute(schemas.AttrBifrostFallbackIndex, fallbackIndex)
 		}
-		tracer.SetAttribute(handle, schemas.AttrNumberOfRetries, attempts) // legacy: gen_ai.* placement of bifrost-internal attr
-		tracer.SetAttribute(handle, schemas.AttrBifrostRetries, attempts)
+		span.SetAttribute(schemas.AttrNumberOfRetries, attempts) // legacy: gen_ai.* placement of bifrost-internal attr
+		span.SetAttribute(schemas.AttrBifrostRetries, attempts)
 
 		// Surface caller-supplied extra headers (from x-bf-eh-* and direct-allowlist
 		// header forwarding) as span attributes so observability backends see the
@@ -6338,7 +6344,9 @@ func executeRequestWithRetries[T any](
 		exportHeaderAttributes := func(headers map[string][]string) {
 			for name, values := range headers {
 				if value, export := extraHeaderSpanAttribute(name, values); export {
-					tracer.SetAttribute(handle, schemas.AttrExtraHeaderPrefix+name, value)
+					// Write via the already-resolved span (C1), not tracer.SetAttribute,
+					// which re-resolves the span per call.
+					span.SetAttribute(schemas.AttrExtraHeaderPrefix+name, value)
 				}
 			}
 		}
@@ -6359,8 +6367,10 @@ func executeRequestWithRetries[T any](
 			tracer.PopulateLLMRequestAttributes(handle, req)
 		}
 
-		// Update context with span ID
-		ctx.SetValue(schemas.BifrostContextKeySpanID, spanCtx.Value(schemas.BifrostContextKeySpanID))
+		// Update context with span ID (no valueCtx alloc; StartSpanID returned it).
+		if spanID != "" {
+			ctx.SetValue(schemas.BifrostContextKeySpanID, spanID)
+		}
 
 		// Record stream start time for TTFT calculation (only for streaming requests)
 		// This is also used by RunPostLLMHooks to detect streaming mode
@@ -6629,6 +6639,14 @@ func clearAnthropicPassthroughForNonNativeProvider(ctx *schemas.BifrostContext, 
 // It manages retries, error handling, and response processing.
 func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas.ProviderConfig, pq *ProviderQueue, waitGroup *sync.WaitGroup) {
 	defer waitGroup.Done()
+
+	// Reusable timer for the response/error/stream handoff guard below. One timer per
+	// (long-lived) worker, reset per use, instead of a fresh time.After on every request:
+	// time.After leaks a live timer for the full 5s after each request, piling ~5s worth
+	// of timers on the runtime heap under load. Reset/Stop is race-free on Go 1.23+.
+	deliveryTimer := time.NewTimer(time.Hour)
+	deliveryTimer.Stop()
+	defer deliveryTimer.Stop()
 
 	for {
 		var req *ChannelMessage
@@ -7090,6 +7108,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			bifrostError.PopulateRoutingInfo(attemptRoutingInfo)
 
 			// Send error with context awareness to prevent deadlock
+			deliveryTimer.Reset(5 * time.Second)
 			select {
 			case req.Err <- *bifrostError:
 				// Error sent successfully
@@ -7100,10 +7119,11 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				// processing input tokens). tryRequest returned on ctx.Done and will
 				// never receive it, so bill/log it here. Non-streaming only.
 				bifrost.billAbandonedTerminal(req, nil, bifrostError)
-			case <-time.After(5 * time.Second):
+			case <-deliveryTimer.C:
 				// Timeout to prevent indefinite blocking
 				bifrost.logger.Warn("Timeout while sending error response, client may have disconnected")
 			}
+			deliveryTimer.Stop()
 		} else {
 			if result != nil {
 				result.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), originalModelRequested, resolvedModel)
@@ -7111,18 +7131,21 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			}
 			if IsStreamRequestType(req.RequestType) {
 				// Send stream with context awareness to prevent deadlock
+				deliveryTimer.Reset(5 * time.Second)
 				select {
 				case req.ResponseStream <- stream:
 					// Stream sent successfully
 				case <-req.Context.Done():
 					// Client no longer listening, log and continue
 					bifrost.logger.Debug("Client context cancelled while sending stream response")
-				case <-time.After(5 * time.Second):
+				case <-deliveryTimer.C:
 					// Timeout to prevent indefinite blocking
 					bifrost.logger.Warn("Timeout while sending stream response, client may have disconnected")
 				}
+				deliveryTimer.Stop()
 			} else {
 				// Send response with context awareness to prevent deadlock
+				deliveryTimer.Reset(5 * time.Second)
 				select {
 				case req.Response <- result:
 					// Response sent successfully
@@ -7133,10 +7156,11 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					// (consuming tokens). tryRequest returned on ctx.Done and will never
 					// receive it, so bill/log it here.
 					bifrost.billAbandonedTerminal(req, result, nil)
-				case <-time.After(5 * time.Second):
+				case <-deliveryTimer.C:
 					// Timeout to prevent indefinite blocking
 					bifrost.logger.Warn("Timeout while sending response, client may have disconnected")
 				}
+				deliveryTimer.Stop()
 			}
 		}
 	}
@@ -7630,12 +7654,10 @@ func (p *PluginPipeline) RunLLMPreHooks(ctx *schemas.BifrostContext, req *schema
 		pluginName := plugin.GetName()
 		p.logger.Debug("running pre-hook for plugin %s", pluginName)
 		// Start span for this plugin's PreLLMHook
-		spanCtx, handle := p.tracer.StartSpan(ctx, pluginSpanNamesFor(pluginName).prehook, schemas.SpanKindPlugin)
-		// Update pluginCtx with span context for nested operations
-		if spanCtx != nil {
-			if spanID, ok := spanCtx.Value(schemas.BifrostContextKeySpanID).(string); ok {
-				ctx.SetValue(schemas.BifrostContextKeySpanID, spanID)
-			}
+		spanID, handle := p.tracer.StartSpanID(ctx, pluginSpanNamesFor(pluginName).prehook, schemas.SpanKindPlugin)
+		// Mirror the new span ID into ctx for nested operations (no valueCtx alloc).
+		if spanID != "" {
+			ctx.SetValue(schemas.BifrostContextKeySpanID, spanID)
 		}
 
 		pluginCtx := ctx.WithPluginScope(&pluginName)
@@ -7683,11 +7705,9 @@ func (p *PluginPipeline) RunPreRequestHooks(ctx *schemas.BifrostContext, req *sc
 	for _, plugin := range p.llmPlugins {
 		pluginName := plugin.GetName()
 		p.logger.Debug("running pre-request hook for plugin %s", pluginName)
-		spanCtx, handle := p.tracer.StartSpan(ctx, pluginSpanNamesFor(pluginName).prerequesthook, schemas.SpanKindPlugin)
-		if spanCtx != nil {
-			if spanID, ok := spanCtx.Value(schemas.BifrostContextKeySpanID).(string); ok {
-				ctx.SetValue(schemas.BifrostContextKeySpanID, spanID)
-			}
+		spanID, handle := p.tracer.StartSpanID(ctx, pluginSpanNamesFor(pluginName).prerequesthook, schemas.SpanKindPlugin)
+		if spanID != "" {
+			ctx.SetValue(schemas.BifrostContextKeySpanID, spanID)
 		}
 
 		pluginCtx := ctx.WithPluginScope(&pluginName)
@@ -7769,12 +7789,10 @@ func (p *PluginPipeline) RunPostLLMHooks(ctx *schemas.BifrostContext, resp *sche
 			}
 		} else {
 			// For non-streaming: create span per plugin (existing behavior)
-			spanCtx, handle := p.tracer.StartSpan(ctx, pluginSpanNamesFor(pluginName).posthook, schemas.SpanKindPlugin)
-			// Update pluginCtx with span context for nested operations
-			if spanCtx != nil {
-				if spanID, ok := spanCtx.Value(schemas.BifrostContextKeySpanID).(string); ok {
-					ctx.SetValue(schemas.BifrostContextKeySpanID, spanID)
-				}
+			spanID, handle := p.tracer.StartSpanID(ctx, pluginSpanNamesFor(pluginName).posthook, schemas.SpanKindPlugin)
+			// Mirror the new span ID into ctx for nested operations (no valueCtx alloc).
+			if spanID != "" {
+				ctx.SetValue(schemas.BifrostContextKeySpanID, spanID)
 			}
 			pluginCtx := ctx.WithPluginScope(&pluginName)
 			resp, bifrostErr, err = plugin.PostLLMHook(pluginCtx, resp, bifrostErr)
@@ -7827,12 +7845,10 @@ func (p *PluginPipeline) RunMCPPreHooks(ctx *schemas.BifrostContext, req *schema
 		pluginName := plugin.GetName()
 		p.logger.Debug("running MCP pre-hook for plugin %s", pluginName)
 		// Start span for this plugin's PreMCPHook
-		spanCtx, handle := p.tracer.StartSpan(ctx, pluginSpanNamesFor(pluginName).mcpPrehook, schemas.SpanKindPlugin)
-		// Update pluginCtx with span context for nested operations
-		if spanCtx != nil {
-			if spanID, ok := spanCtx.Value(schemas.BifrostContextKeySpanID).(string); ok {
-				ctx.SetValue(schemas.BifrostContextKeySpanID, spanID)
-			}
+		spanID, handle := p.tracer.StartSpanID(ctx, pluginSpanNamesFor(pluginName).mcpPrehook, schemas.SpanKindPlugin)
+		// Mirror the new span ID into ctx for nested operations (no valueCtx alloc).
+		if spanID != "" {
+			ctx.SetValue(schemas.BifrostContextKeySpanID, spanID)
 		}
 
 		pluginCtx := ctx.WithPluginScope(&pluginName)
@@ -7883,12 +7899,10 @@ func (p *PluginPipeline) RunMCPPostHooks(ctx *schemas.BifrostContext, mcpResp *s
 		pluginName := plugin.GetName()
 		p.logger.Debug("running MCP post-hook for plugin %s", pluginName)
 		// Create span per plugin
-		spanCtx, handle := p.tracer.StartSpan(ctx, pluginSpanNamesFor(pluginName).mcpPosthook, schemas.SpanKindPlugin)
-		// Update pluginCtx with span context for nested operations
-		if spanCtx != nil {
-			if spanID, ok := spanCtx.Value(schemas.BifrostContextKeySpanID).(string); ok {
-				ctx.SetValue(schemas.BifrostContextKeySpanID, spanID)
-			}
+		spanID, handle := p.tracer.StartSpanID(ctx, pluginSpanNamesFor(pluginName).mcpPosthook, schemas.SpanKindPlugin)
+		// Mirror the new span ID into ctx for nested operations (no valueCtx alloc).
+		if spanID != "" {
+			ctx.SetValue(schemas.BifrostContextKeySpanID, spanID)
 		}
 
 		pluginCtx := ctx.WithPluginScope(&pluginName)
@@ -7937,11 +7951,9 @@ func (p *PluginPipeline) RunMCPPreConnectionHooks(ctx *schemas.BifrostContext, r
 	for i, plugin := range p.mcpPlugins {
 		pluginName := plugin.GetName()
 		p.logger.Debug("running MCP connect pre-hook for plugin %s", pluginName)
-		spanCtx, handle := p.tracer.StartSpan(ctx, pluginSpanNamesFor(pluginName).mcpConnectPrehook, schemas.SpanKindPlugin)
-		if spanCtx != nil {
-			if spanID, ok := spanCtx.Value(schemas.BifrostContextKeySpanID).(string); ok {
-				ctx.SetValue(schemas.BifrostContextKeySpanID, spanID)
-			}
+		spanID, handle := p.tracer.StartSpanID(ctx, pluginSpanNamesFor(pluginName).mcpConnectPrehook, schemas.SpanKindPlugin)
+		if spanID != "" {
+			ctx.SetValue(schemas.BifrostContextKeySpanID, spanID)
 		}
 
 		pluginCtx := ctx.WithPluginScope(&pluginName)
@@ -8000,11 +8012,9 @@ func (p *PluginPipeline) RunMCPPostConnectionHooks(ctx *schemas.BifrostContext, 
 		plugin := p.mcpPlugins[i]
 		pluginName := plugin.GetName()
 		p.logger.Debug("running MCP connect post-hook for plugin %s", pluginName)
-		spanCtx, handle := p.tracer.StartSpan(ctx, pluginSpanNamesFor(pluginName).mcpConnectPosthook, schemas.SpanKindPlugin)
-		if spanCtx != nil {
-			if spanID, ok := spanCtx.Value(schemas.BifrostContextKeySpanID).(string); ok {
-				ctx.SetValue(schemas.BifrostContextKeySpanID, spanID)
-			}
+		spanID, handle := p.tracer.StartSpanID(ctx, pluginSpanNamesFor(pluginName).mcpConnectPosthook, schemas.SpanKindPlugin)
+		if spanID != "" {
+			ctx.SetValue(schemas.BifrostContextKeySpanID, spanID)
 		}
 
 		pluginCtx := ctx.WithPluginScope(&pluginName)
