@@ -830,6 +830,22 @@ func (bc *BifrostContext) GetPluginLogs() []PluginLogEntry {
 	return copied
 }
 
+// HasPluginLogs reports whether DrainPluginLogs would return any entries,
+// without draining or copying. Lets hot callers skip a tracer lookup when
+// there is nothing to attach, while still leaving the buffer intact.
+func (bc *BifrostContext) HasPluginLogs() bool {
+	if bc.valueDelegate != nil {
+		return false // scoped contexts share the store but must not drain it
+	}
+	store := bc.pluginLogs.Load()
+	if store == nil {
+		return false
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return len(store.logs) > 0
+}
+
 // DrainPluginLogs transfers ownership of the plugin log slice to the caller.
 // The internal log store is returned to the pool after draining.
 // Returns nil if no logs have been recorded.
