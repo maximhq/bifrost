@@ -108,7 +108,6 @@
             "pages": [
               "migration-guides/v2.0.0",
               "migration-guides/v1.5.0",
-              "migration-guides/governance-api-namespace",
               "migration-guides/litellm"
             ]
           },
@@ -2098,6 +2097,10 @@
     ]
   },
   "redirects": [
+    {
+      "source": "/migration-guides/governance-api-namespace",
+      "destination": "/migration-guides/v2.0.0#breaking-change-3-governance-apis-moved-to-the-api-governance-namespace"
+    },
     {
       "source": "/features/fallbacks",
       "destination": "/features/retries-and-fallbacks"
