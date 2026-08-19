@@ -189,17 +189,14 @@ func (req *VertexRankRequest) ToBifrostRerankRequest(ctx *schemas.BifrostContext
 		bifrostReq.Params.TopN = req.TopN
 	}
 
-	// Pass extra fields as ExtraParams
-	extraParams := make(map[string]interface{})
-	if req.IgnoreRecordDetailsInResponse != nil {
-		extraParams["ignore_record_details_in_response"] = *req.IgnoreRecordDetailsInResponse
+	// Set unconditionally: Discovery Engine defaults this to false, Bifrost's rerank default is true.
+	extraParams := map[string]interface{}{
+		"ignore_record_details_in_response": req.IgnoreRecordDetailsInResponse != nil && *req.IgnoreRecordDetailsInResponse,
 	}
 	if len(req.UserLabels) > 0 {
 		extraParams["user_labels"] = req.UserLabels
 	}
-	if len(extraParams) > 0 {
-		bifrostReq.Params.ExtraParams = extraParams
-	}
+	bifrostReq.Params.ExtraParams = extraParams
 
 	return bifrostReq
 }
@@ -262,6 +259,44 @@ func (response *VertexRankResponse) ToBifrostRerankResponse(documents []schemas.
 	return &schemas.BifrostRerankResponse{
 		Results: results,
 	}, nil
+}
+
+// ToVertexRankResponse converts a Bifrost rerank response to Discovery Engine rank format.
+// Records are keyed by the caller's record ID, which only survives on the result document,
+// so callers must request the rerank with ReturnDocuments enabled.
+func ToVertexRankResponse(bifrostResp *schemas.BifrostRerankResponse) (*VertexRankResponse, error) {
+	if bifrostResp == nil {
+		return nil, fmt.Errorf("bifrost rerank response is nil")
+	}
+
+	rankResponse := &VertexRankResponse{
+		Records: make([]VertexRankedRecord, 0, len(bifrostResp.Results)),
+	}
+
+	for _, result := range bifrostResp.Results {
+		if result.Document == nil {
+			return nil, fmt.Errorf("rerank result at index %d has no document: record ids cannot be restored", result.Index)
+		}
+
+		record := VertexRankedRecord{
+			Score: result.RelevanceScore,
+		}
+		if result.Document.ID != nil {
+			record.ID = *result.Document.ID
+		}
+		if result.Document.Text != "" {
+			record.Content = &result.Document.Text
+		}
+		if rawTitle, exists := result.Document.Meta["title"]; exists {
+			if title, ok := schemas.SafeExtractString(rawTitle); ok && strings.TrimSpace(title) != "" {
+				record.Title = &title
+			}
+		}
+
+		rankResponse.Records = append(rankResponse.Records, record)
+	}
+
+	return rankResponse, nil
 }
 
 func parseDiscoveryEngineErrorMessage(responseBody []byte) string {

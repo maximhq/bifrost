@@ -184,6 +184,41 @@ func (response *CohereRerankResponse) ToBifrostRerankResponse(documents []schema
 	return bifrostResponse
 }
 
+// ToCohereRerankResponse converts a Bifrost rerank response to Cohere format.
+func ToCohereRerankResponse(bifrostResp *schemas.BifrostRerankResponse) *CohereRerankResponse {
+	if bifrostResp == nil {
+		return nil
+	}
+
+	cohereResp := &CohereRerankResponse{
+		ID:      bifrostResp.ID,
+		Results: make([]CohereRerankResult, 0, len(bifrostResp.Results)),
+	}
+
+	// Cohere v2 rerank results carry only the index and the score.
+	for _, result := range bifrostResp.Results {
+		cohereResp.Results = append(cohereResp.Results, CohereRerankResult{
+			Index:          result.Index,
+			RelevanceScore: result.RelevanceScore,
+		})
+	}
+
+	if bifrostResp.Usage != nil {
+		cohereResp.Meta = &CohereRerankMeta{
+			BilledUnits: &CohereBilledUnits{
+				InputTokens:  new(bifrostResp.Usage.PromptTokens),
+				OutputTokens: new(bifrostResp.Usage.CompletionTokens),
+			},
+			Tokens: &CohereTokenUsage{
+				InputTokens:  new(bifrostResp.Usage.PromptTokens),
+				OutputTokens: new(bifrostResp.Usage.CompletionTokens),
+			},
+		}
+	}
+
+	return cohereResp
+}
+
 func formatCohereRerankDocument(doc schemas.RerankDocument) string {
 	if doc.ID == nil && len(doc.Meta) == 0 {
 		return doc.Text
