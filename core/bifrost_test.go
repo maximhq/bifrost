@@ -2263,6 +2263,31 @@ func TestUpdateProvider_StaleProducerReroutes(t *testing.T) {
 	}
 }
 
+func TestRefreshAutoInitializedProviderContext_QueueTransitions(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	staticQueue := &ProviderQueue{autoInitialized: false}
+	autoInitializedQueue := &ProviderQueue{autoInitialized: true}
+
+	// An auto-initialized queue replaced by a static queue must lose the marker,
+	// otherwise the static provider could inherit private-network transport access.
+	refreshAutoInitializedProviderContext(ctx, autoInitializedQueue)
+	if autoInitialized, _ := ctx.Value(schemas.BifrostContextKeyAutoInitializedProvider).(bool); !autoInitialized {
+		t.Fatal("expected auto-initialized queue to set the context marker")
+	}
+	refreshAutoInitializedProviderContext(ctx, staticQueue)
+	if value := ctx.Value(schemas.BifrostContextKeyAutoInitializedProvider); value != nil {
+		t.Fatalf("expected static replacement queue to clear the context marker, got %v", value)
+	}
+
+	// A static queue replaced by an auto-initialized queue must gain the marker
+	// so an explicit private-network override is evaluated with the active queue.
+	refreshAutoInitializedProviderContext(ctx, staticQueue)
+	refreshAutoInitializedProviderContext(ctx, autoInitializedQueue)
+	if autoInitialized, _ := ctx.Value(schemas.BifrostContextKeyAutoInitializedProvider).(bool); !autoInitialized {
+		t.Fatal("expected auto-initialized replacement queue to set the context marker")
+	}
+}
+
 // TestUpdateProvider_TransferOrdering verifies the ordering invariant:
 // items are moved from oldPq to newPq BEFORE signalClosing(oldPq) is called.
 //

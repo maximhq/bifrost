@@ -5463,6 +5463,15 @@ func (bifrost *Bifrost) finalizeAfterPreHookErr(
 	return nil, bifrostErr
 }
 
+// refreshAutoInitializedProviderContext keeps request-scoped transport policy
+// aligned with the queue that will actually serve the request.
+func refreshAutoInitializedProviderContext(ctx *schemas.BifrostContext, pq *ProviderQueue) {
+	ctx.ClearValue(schemas.BifrostContextKeyAutoInitializedProvider)
+	if pq != nil && pq.autoInitialized {
+		ctx.SetValue(schemas.BifrostContextKeyAutoInitializedProvider, true)
+	}
+}
+
 // tryRequest is a generic function that handles common request processing logic
 // It consolidates queue setup, plugin pipeline execution, enqueue logic, and response handling
 func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError, *schemas.BifrostRequest) {
@@ -5561,9 +5570,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		resp, finalErr := bifrost.finalizeAfterPreHookErr(ctx, pipeline, preCount, req.RequestType, provider, model, bifrostErr)
 		return resp, finalErr, effectiveReq
 	}
-	if pq.autoInitialized {
-		ctx.SetValue(schemas.BifrostContextKeyAutoInitializedProvider, true)
-	}
+	refreshAutoInitializedProviderContext(ctx, pq)
 
 	msg := bifrost.getChannelMessage(*preReq)
 	msg.Context = ctx
@@ -5590,6 +5597,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 			return resp, finalErr, effectiveReq
 		}
 		pq = reroutedPq
+		refreshAutoInitializedProviderContext(ctx, pq)
 	}
 
 	// Use select with done channel to detect shutdown during send.
@@ -5951,9 +5959,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
 		return finalizeStream(bifrostErr)
 	}
-	if pq.autoInitialized {
-		ctx.SetValue(schemas.BifrostContextKeyAutoInitializedProvider, true)
-	}
+	refreshAutoInitializedProviderContext(ctx, pq)
 
 	msg := bifrost.getChannelMessage(*preReq)
 	msg.Context = ctx
@@ -5979,6 +5985,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 			return finalizeStream(bifrostErr)
 		}
 		pq = reroutedPq
+		refreshAutoInitializedProviderContext(ctx, pq)
 	}
 
 	// Use select with done channel to detect shutdown during send.
