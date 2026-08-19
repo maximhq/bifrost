@@ -25,6 +25,7 @@ import { DottedSeparator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { TruncatedLabel } from "@/components/ui/truncatedLabel";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { ProviderIconType, RenderProviderIcon, RoutingEngineUsedIcons } from "@/lib/constants/icons";
 import {
@@ -1147,16 +1148,20 @@ export function LogDetailView({
 											<Tooltip>
 												<TooltipTrigger asChild>
 													<code
-														className="block min-w-0 cursor-pointer font-normal break-all text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
+														className="block max-w-full min-w-0 cursor-pointer truncate font-normal text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
 														onClick={() => onFilterByParentRequestId(log.parent_request_id as string)}
 													>
 														{log.parent_request_id}
 													</code>
 												</TooltipTrigger>
-												<TooltipContent sideOffset={6}>Filter this session</TooltipContent>
+												<TooltipContent sideOffset={6} className="max-w-md break-all">
+													{log.parent_request_id} · Filter this session
+												</TooltipContent>
 											</Tooltip>
 										) : (
-											<code className="block min-w-0 font-normal break-all">{log.parent_request_id}</code>
+											<TruncatedLabel className="block max-w-full min-w-0 font-normal" tooltipSide="top">
+												{log.parent_request_id}
+											</TruncatedLabel>
 										)
 									}
 								/>
@@ -1284,7 +1289,7 @@ export function LogDetailView({
 												<Link
 													to="/workspace/logs"
 													search={(prev) => ({ ...prev, offset: 0, selected_log: "", user_ids: [log.user_id] })}
-													className={`block min-w-0 cursor-pointer text-sm font-normal break-all text-blue-600 underline-offset-2 hover:underline dark:text-blue-400${log.user_name ? "" : " font-mono"}`}
+													className={`block max-w-full min-w-0 cursor-pointer truncate text-sm font-normal text-blue-600 underline-offset-2 hover:underline dark:text-blue-400${log.user_name ? "" : " font-mono"}`}
 													data-testid="logdetails-user-link"
 												>
 													{log.user_name || log.user_id}

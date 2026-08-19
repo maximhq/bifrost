@@ -203,14 +203,14 @@ export default function ModelProviderKeysTableView({ provider, className, header
 								<TooltipTrigger asChild>
 									<Button
 										variant="outline"
-										className="size-9 px-0 md:h-9 md:w-auto md:px-4"
+										className="size-9 px-0 xl:h-9 xl:w-auto xl:px-4"
 										disabled={isRefreshing}
 										data-testid="provider-refresh-models"
 										aria-label={isRefreshingProvider ? "Refreshing model list" : "Refresh model list"}
 										onClick={handleRefreshProviderModels}
 									>
 										<RefreshCwIcon className={cn("h-4 w-4", isRefreshingProvider && "animate-spin")} />
-										<span className="hidden md:inline">{isRefreshingProvider ? "Refreshing..." : "Refresh model list"}</span>
+										<span className="hidden xl:inline">{isRefreshingProvider ? "Refreshing..." : "Refresh model list"}</span>
 									</Button>
 								</TooltipTrigger>
 								<TooltipContent className="max-w-xs">
@@ -219,18 +219,23 @@ export default function ModelProviderKeysTableView({ provider, className, header
 							</Tooltip>
 						) : null}
 						{!isKeyless && hasUpdateProviderAccess ? (
-							<Button
-								disabled={!hasUpdateProviderAccess}
-								data-testid="add-key-btn"
-								aria-label={`Add new ${entityLabel}`}
-								className="size-9 px-0 md:h-9 md:w-auto md:px-4"
-								onClick={() => {
-									handleAddKey();
-								}}
-							>
-								<PlusIcon className="h-4 w-4" />
-								<span className="hidden md:inline">Add new {entityLabel}</span>
-							</Button>
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<Button
+										disabled={!hasUpdateProviderAccess}
+										data-testid="add-key-btn"
+										aria-label={`Add new ${entityLabel}`}
+										className="size-9 px-0 xl:h-9 xl:w-auto xl:px-4"
+										onClick={() => {
+											handleAddKey();
+										}}
+									>
+										<PlusIcon className="h-4 w-4" />
+										<span className="hidden xl:inline">Add new {entityLabel}</span>
+									</Button>
+								</TooltipTrigger>
+								<TooltipContent className="xl:hidden">Add new {entityLabel}</TooltipContent>
+							</Tooltip>
 						) : null}
 					</div>
 				</CardTitle>
