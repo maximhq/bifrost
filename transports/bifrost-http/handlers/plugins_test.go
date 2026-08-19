@@ -16,9 +16,12 @@ import (
 // can assert that config merging occurred correctly.
 type capturePluginsStore struct {
 	configstore.ConfigStore
-	existingPlugin  *configstoreTables.TablePlugin
-	capturedConfig  map[string]any
-	capturedEnabled bool
+	existingPlugin    *configstoreTables.TablePlugin
+	capturedConfig    map[string]any
+	capturedEnabled   bool
+	capturedPath      *string
+	capturedPlacement *schemas.PluginPlacement
+	capturedOrder     *int
 }
 
 func (s *capturePluginsStore) GetPlugin(_ context.Context, name string) (*configstoreTables.TablePlugin, error) {
@@ -33,6 +36,9 @@ func (s *capturePluginsStore) UpdatePlugin(_ context.Context, plugin *configstor
 		s.capturedConfig = cfg
 	}
 	s.capturedEnabled = plugin.Enabled
+	s.capturedPath = plugin.Path
+	s.capturedPlacement = plugin.Placement
+	s.capturedOrder = plugin.Order
 	return nil
 }
 
@@ -63,6 +69,13 @@ func (noopPluginsLoader) ExpandPluginConfigForAPI(_ string, _ map[string]any) (m
 // buildUpdateRequest creates a PUT /api/plugins/{name} fasthttp context.
 func buildUpdateRequest(t *testing.T, body any) *fasthttp.RequestCtx {
 	t.Helper()
+	return buildUpdateRequestFor(t, "otel", body)
+}
+
+// buildUpdateRequestFor is buildUpdateRequest for a named plugin. Custom plugins need
+// their own name because built-ins have their path forced to nil by design.
+func buildUpdateRequestFor(t *testing.T, name string, body any) *fasthttp.RequestCtx {
+	t.Helper()
 	raw, err := json.Marshal(body)
 	if err != nil {
 		t.Fatalf("marshal request body: %v", err)
@@ -70,7 +83,7 @@ func buildUpdateRequest(t *testing.T, body any) *fasthttp.RequestCtx {
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.SetMethod("PUT")
 	ctx.Request.SetBody(raw)
-	ctx.SetUserValue("name", "otel")
+	ctx.SetUserValue("name", name)
 	return ctx
 }
 
@@ -475,5 +488,138 @@ func TestGetLoadedPlugins(t *testing.T) {
 		if response.Plugins[i] != name {
 			t.Errorf("plugins[%d] = %q, want %q", i, response.Plugins[i], name)
 		}
+	}
+}
+
+// TestUpdatePlugin_PreservesPathWhenOmitted verifies that a PUT which does not carry
+// `path` leaves the stored path intact. The update-plugin sheet in the UI sends only
+// `enabled` and `config`; clearing the path on such a request turned a custom plugin
+// into a built-in lookup, which then failed with "unknown built-in plugin" while the
+// already loaded instance kept running with its old config.
+func TestUpdatePlugin_PreservesPathWhenOmitted(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	storedPath := "/app/plugins/custom.so"
+	placement := schemas.PluginPlacementPreBuiltin
+	order := 3
+
+	store := &capturePluginsStore{
+		existingPlugin: &configstoreTables.TablePlugin{
+			Name:      "custom-probe",
+			Enabled:   true,
+			Config:    map[string]any{"tag": "one"},
+			Path:      &storedPath,
+			Placement: &placement,
+			Order:     &order,
+			IsCustom:  true,
+		},
+	}
+
+	h := &PluginsHandler{
+		pluginsLoader: noopPluginsLoader{},
+		configStore:   store,
+	}
+
+	// Only enabled and config, exactly what the update-plugin sheet sends.
+	ctx := buildUpdateRequestFor(t, "custom-probe", map[string]any{
+		"enabled": true,
+		"config":  map[string]any{"tag": "two"},
+	})
+	h.updatePlugin(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if store.capturedPath == nil {
+		t.Fatal("path was cleared by an update that did not send it")
+	}
+	if *store.capturedPath != storedPath {
+		t.Errorf("path = %q, want %q", *store.capturedPath, storedPath)
+	}
+	if store.capturedPlacement == nil || *store.capturedPlacement != placement {
+		t.Errorf("placement = %v, want %v", store.capturedPlacement, placement)
+	}
+	if store.capturedOrder == nil || *store.capturedOrder != order {
+		t.Errorf("order = %v, want %d", store.capturedOrder, order)
+	}
+	if got := store.capturedConfig["tag"]; got != "two" {
+		t.Errorf("tag = %v, want two", got)
+	}
+}
+
+// TestUpdatePlugin_ClearsPathWhenExplicitlyEmpty verifies that a caller can still
+// detach a path by sending it as an empty string, which the handler normalizes to nil.
+func TestUpdatePlugin_ClearsPathWhenExplicitlyEmpty(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	storedPath := "/app/plugins/custom.so"
+	store := &capturePluginsStore{
+		existingPlugin: &configstoreTables.TablePlugin{
+			Name:     "custom-probe",
+			Enabled:  true,
+			Config:   map[string]any{},
+			Path:     &storedPath,
+			IsCustom: true,
+		},
+	}
+
+	h := &PluginsHandler{
+		pluginsLoader: noopPluginsLoader{},
+		configStore:   store,
+	}
+
+	ctx := buildUpdateRequestFor(t, "custom-probe", map[string]any{
+		"enabled": true,
+		"path":    "",
+		"config":  map[string]any{},
+	})
+	h.updatePlugin(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if store.capturedPath != nil {
+		t.Errorf("path = %q, want nil after an explicit empty path", *store.capturedPath)
+	}
+}
+
+// TestUpdatePlugin_PreservesPathWhenNull verifies that an explicit JSON null for `path`
+// is treated the same as omitting it. Null would otherwise persist a nil path and send
+// a custom plugin back down the built-in branch, which is the same failure as omitting
+// the field. An empty string remains the way to detach a path.
+func TestUpdatePlugin_PreservesPathWhenNull(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	storedPath := "/app/plugins/custom.so"
+	store := &capturePluginsStore{
+		existingPlugin: &configstoreTables.TablePlugin{
+			Name:     "custom-probe",
+			Enabled:  true,
+			Config:   map[string]any{},
+			Path:     &storedPath,
+			IsCustom: true,
+		},
+	}
+
+	h := &PluginsHandler{
+		pluginsLoader: noopPluginsLoader{},
+		configStore:   store,
+	}
+
+	ctx := buildUpdateRequestFor(t, "custom-probe", map[string]any{
+		"enabled": true,
+		"path":    nil,
+		"config":  map[string]any{},
+	})
+	h.updatePlugin(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if store.capturedPath == nil {
+		t.Fatal("path was cleared by an explicit null; null must behave like an omitted field")
+	}
+	if *store.capturedPath != storedPath {
+		t.Errorf("path = %q, want %q", *store.capturedPath, storedPath)
 	}
 }

@@ -116,6 +116,10 @@ export default function AddNewPluginSheet({ open, onClose, onCreate, plugin }: A
 					name: plugin.name,
 					data: {
 						enabled: plugin.enabled,
+						// Send the path back unchanged: omitting it on a custom plugin used to
+						// clear the stored path, after which the reload fell through to the
+						// built-in lookup and failed.
+						path: plugin.path ?? undefined,
 						config: parsedConfig,
 					},
 				}).unwrap();
