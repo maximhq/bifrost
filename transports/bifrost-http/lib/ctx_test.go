@@ -662,3 +662,54 @@ func TestConvertToBifrostContext_AsyncWebhookHeader(t *testing.T) {
 		})
 	}
 }
+
+// TestConvertToBifrostContext_MCPIncludeHeadersNormalizeEmptyToEmptyAllowList
+// verifies that an explicitly present x-bf-mcp-include-* header with no usable
+// names is stored as a non-nil empty allow-list ("admit nothing"), never as a
+// typed-nil []string — a nil slice boxed in the context reads as "no filter"
+// downstream and would inject every MCP client's tools.
+func TestConvertToBifrostContext_MCPIncludeHeadersNormalizeEmptyToEmptyAllowList(t *testing.T) {
+	headers := map[string]schemas.BifrostContextKey{
+		"x-bf-mcp-include-clients": schemas.MCPContextKeyIncludeClients,
+		"x-bf-mcp-include-tools":   schemas.MCPContextKeyIncludeTools,
+	}
+	cases := []struct {
+		name  string
+		value string
+		want  []string
+	}{
+		{"names", "clientA, clientB", []string{"clientA", "clientB"}},
+		{"messy names", "a,,  b ", []string{"a", "b"}},
+		{"empty", "", []string{}},
+		{"whitespace only", "   ", []string{}},
+		{"comma only", ",", []string{}},
+		{"whitespace and commas", " , ,", []string{}},
+	}
+	for header, key := range headers {
+		for _, tc := range cases {
+			t.Run(header+"/"+tc.name, func(t *testing.T) {
+				ctx := &fasthttp.RequestCtx{}
+				ctx.Request.Header.Set(header, tc.value)
+
+				bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+				defer cancel()
+
+				got, ok := bifrostCtx.Value(key).([]string)
+				if !ok {
+					t.Fatalf("%s value is not a []string", header)
+				}
+				if got == nil {
+					t.Fatalf("%s stored a typed-nil []string; want a non-nil slice", header)
+				}
+				if len(got) != len(tc.want) {
+					t.Fatalf("%s = %q, want %q", header, got, tc.want)
+				}
+				for i := range got {
+					if got[i] != tc.want[i] {
+						t.Fatalf("%s = %q, want %q", header, got, tc.want)
+					}
+				}
+			})
+		}
+	}
+}

@@ -316,18 +316,17 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			case "include-clients":
 				fallthrough
 			case "include-tools":
-				// Parse comma-separated values into []string
-				valueStr := string(value)
-				var parsedValues []string
-				if valueStr != "" {
-					// Split by comma and trim whitespace
-					for _, v := range strings.Split(valueStr, ",") {
-						if trimmed := strings.TrimSpace(v); trimmed != "" {
-							parsedValues = append(parsedValues, trimmed)
-						}
+				// Parse comma-separated values. An explicitly present header with
+				// no usable names is an empty allow-list: store a non-nil empty
+				// slice so downstream nil-vs-empty checks read it as "admit
+				// nothing" rather than "no filter". (A nil []string stored in
+				// context is a non-nil interface value that defeats both the
+				// typed and untyped nil checks in core/mcp.)
+				parsedValues := []string{}
+				for _, v := range strings.Split(string(value), ",") {
+					if trimmed := strings.TrimSpace(v); trimmed != "" {
+						parsedValues = append(parsedValues, trimmed)
 					}
-				} else {
-					parsedValues = []string{""}
 				}
 				bifrostCtx.SetValue(schemas.BifrostContextKey("mcp-"+labelName), parsedValues)
 				return true
