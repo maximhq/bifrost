@@ -213,6 +213,7 @@ func (cm *ChatMessage) ToResponsesToolMessage() *ResponsesMessage {
 					respBlocks[i].FileID = block.File.FileID
 					respBlocks[i].ResponsesInputMessageContentBlockFile = &ResponsesInputMessageContentBlockFile{
 						FileData: block.File.FileData,
+						FileURL:  block.File.FileURL,
 						Filename: block.File.Filename,
 						FileType: block.File.FileType,
 					}
@@ -430,7 +431,7 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 				reasoningType := ResponsesMessageTypeReasoning
 				reasoningRole := ResponsesInputMessageRoleAssistant
 				rm := ResponsesMessage{
-					ID:   Ptr("rs_" + GetRandomString(50)),
+					ID:   new("rs_" + GetRandomString(50)),
 					Type: &reasoningType,
 					Role: &reasoningRole,
 				}
@@ -451,7 +452,7 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 			reasoningRole := ResponsesInputMessageRoleAssistant
 			reasoningText := *am.Reasoning
 			messages = append(messages, ResponsesMessage{
-				ID:   Ptr("rs_" + GetRandomString(50)),
+				ID:   new("rs_" + GetRandomString(50)),
 				Type: &reasoningType,
 				Role: &reasoningRole,
 				Content: &ResponsesMessageContent{
@@ -616,7 +617,9 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 				if block.File != nil {
 					responseBlocks[i].ResponsesInputMessageContentBlockFile = &ResponsesInputMessageContentBlockFile{
 						FileData: block.File.FileData,
+						FileURL:  block.File.FileURL,
 						Filename: block.File.Filename,
+						FileType: block.File.FileType,
 					}
 					responseBlocks[i].FileID = block.File.FileID
 				}
@@ -642,6 +645,15 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 		rm.ResponsesToolMessage = &ResponsesToolMessage{}
 		if cm.ChatToolMessage.ToolCallID != nil {
 			rm.ResponsesToolMessage.CallID = cm.ChatToolMessage.ToolCallID
+		}
+
+		// The chat surface marks a failed tool result with a bool and carries no
+		// error text, so there is nothing to put in ResponsesToolMessage.Error.
+		// Status "incomplete" is the equivalent signal on this surface, and is
+		// what the Anthropic Responses converter already reads back as is_error
+		// (providers/anthropic/responses.go).
+		if cm.ChatToolMessage.IsError != nil && *cm.ChatToolMessage.IsError {
+			rm.Status = Ptr("incomplete")
 		}
 
 		// If tool output content exists, add it to function_call_output
@@ -836,6 +848,15 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 						ToolCallID: rm.ResponsesToolMessage.CallID,
 					}
 
+					// Both spellings the Responses surface uses for a failed tool
+					// result collapse to the chat surface's single bool. Mirrors
+					// the same pair the Anthropic Responses converter treats as
+					// is_error (providers/anthropic/responses.go).
+					if (rm.ResponsesToolMessage.Error != nil && *rm.ResponsesToolMessage.Error != "") ||
+						(rm.Status != nil && *rm.Status == "incomplete") {
+						cm.ChatToolMessage.IsError = Ptr(true)
+					}
+
 					// Extract content from ResponsesFunctionToolCallOutput if present
 					// This is needed because OpenAI Responses API uses an "output" field
 					// which is stored in ResponsesFunctionToolCallOutput
@@ -924,7 +945,9 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 					if block.ResponsesInputMessageContentBlockFile != nil {
 						chatBlocks[i].File = &ChatInputFile{
 							FileData: block.ResponsesInputMessageContentBlockFile.FileData,
+							FileURL:  block.ResponsesInputMessageContentBlockFile.FileURL,
 							Filename: block.ResponsesInputMessageContentBlockFile.Filename,
+							FileType: block.ResponsesInputMessageContentBlockFile.FileType,
 							FileID:   block.FileID,
 						}
 					}
@@ -978,10 +1001,11 @@ func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
 	}
 
 	usage := &ResponsesResponseUsage{
-		InputTokens:  cu.PromptTokens,
-		OutputTokens: cu.CompletionTokens,
-		TotalTokens:  cu.TotalTokens,
-		Cost:         cu.Cost,
+		InputTokens:    cu.PromptTokens,
+		OutputTokens:   cu.CompletionTokens,
+		TotalTokens:    cu.TotalTokens,
+		Cost:           cu.Cost,
+		CostInUsdTicks: cu.CostInUsdTicks,
 	}
 
 	if cu.PromptTokensDetails != nil {
@@ -1019,6 +1043,7 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 		CompletionTokens: ru.OutputTokens,
 		TotalTokens:      ru.TotalTokens,
 		Cost:             ru.Cost,
+		CostInUsdTicks:   ru.CostInUsdTicks,
 	}
 
 	if ru.InputTokensDetails != nil {
@@ -1123,38 +1148,11 @@ func (cr *BifrostChatRequest) ToResponsesRequest() *BifrostResponsesRequest {
 			}
 		}
 
-		if cr.Params.ResponseFormat != nil {
-			if rfMap, ok := (*cr.Params.ResponseFormat).(map[string]interface{}); ok {
-				if fmtType, ok := rfMap["type"].(string); ok {
-					if brr.Params.Text == nil {
-						brr.Params.Text = &ResponsesTextConfig{}
-					}
-					format := &ResponsesTextConfigFormat{Type: fmtType}
-					validFormat := true
-					if fmtType == "json_schema" {
-						jsObj, ok := rfMap["json_schema"].(map[string]interface{})
-						if !ok {
-							validFormat = false
-						} else {
-							if name, ok := jsObj["name"].(string); ok {
-								format.Name = &name
-							}
-							if desc, ok := jsObj["description"].(string); ok {
-								format.Description = &desc
-							}
-							if strict, ok := jsObj["strict"].(bool); ok {
-								format.Strict = &strict
-							}
-							if schema, ok := jsObj["schema"]; ok {
-								format.JSONSchema = JSONSchemaFromMap(schema)
-							}
-						}
-					}
-					if validFormat {
-						brr.Params.Text.Format = format
-					}
-				}
+		if format := ResponsesTextConfigFormatFromChatResponseFormat(cr.Params.ResponseFormat); format != nil {
+			if brr.Params.Text == nil {
+				brr.Params.Text = &ResponsesTextConfig{}
 			}
+			brr.Params.Text.Format = format
 		}
 
 		// Handle Verbosity
@@ -1185,6 +1183,18 @@ func (brr *BifrostResponsesRequest) ToChatRequest() *BifrostChatRequest {
 
 	// Convert Input messages using existing ToChatMessages()
 	bcr.Input = ToChatMessages(brr.Input)
+
+	// The Responses API carries its system prompt in the top-level `instructions` field rather than
+	// as a message, and the Chat API has no equivalent - so without this it was dropped outright and
+	// the request still succeeded, just ignoring the instruction. OpenAI defines `instructions` as
+	// context inserted at the FRONT, so it leads even when Input already opens with a system turn.
+	if brr.Params != nil && brr.Params.Instructions != nil && *brr.Params.Instructions != "" {
+		bcr.Input = append([]ChatMessage{{
+			Role:    ChatMessageRoleSystem,
+			Content: &ChatMessageContent{ContentStr: brr.Params.Instructions},
+		}}, bcr.Input...)
+	}
+
 	normalizeDeveloperRoleForChatFallback(bcr.Input)
 
 	// Convert Parameters
@@ -1233,27 +1243,8 @@ func (brr *BifrostResponsesRequest) ToChatRequest() *BifrostChatRequest {
 			}
 		}
 
-		if brr.Params.Text != nil && brr.Params.Text.Format != nil {
-			f := brr.Params.Text.Format
-			rfMap := map[string]interface{}{"type": f.Type}
-			if f.Type == "json_schema" {
-				jsObj := map[string]interface{}{}
-				if f.Name != nil {
-					jsObj["name"] = *f.Name
-				}
-				if f.Description != nil {
-					jsObj["description"] = *f.Description
-				}
-				if f.Strict != nil {
-					jsObj["strict"] = *f.Strict
-				}
-				if schemaMap := f.JSONSchema.ToMap(); schemaMap != nil {
-					jsObj["schema"] = schemaMap
-				}
-				rfMap["json_schema"] = jsObj
-			}
-			var rf interface{} = rfMap
-			bcr.Params.ResponseFormat = &rf
+		if rf := ChatResponseFormatFromResponsesFormat(brr.Params.Text.GetFormat()); rf != nil {
+			bcr.Params.ResponseFormat = rf
 		}
 
 		// Handle Verbosity from Text config
@@ -1345,7 +1336,9 @@ func sanitizeChatToolChoiceForFallback(toolChoice *ChatToolChoice, tools []ChatT
 func responsesStatusFromChatFinishReason(finishReason string) (status string, incompleteDetails *ResponsesResponseIncompleteDetails, mapped bool) {
 	switch finishReason {
 	case string(BifrostFinishReasonLength):
-		return "incomplete", &ResponsesResponseIncompleteDetails{Reason: "max_output_tokens"}, true
+		return "incomplete", &ResponsesResponseIncompleteDetails{Reason: ResponsesResponseIncompleteReasonMaxOutputTokens}, true
+	case "content_filter", "guardrail_intervened":
+		return "incomplete", &ResponsesResponseIncompleteDetails{Reason: ResponsesResponseIncompleteReasonContentFilter}, true
 	case string(BifrostFinishReasonStop), string(BifrostFinishReasonToolCalls):
 		return "completed", nil, true
 	default:
@@ -1662,11 +1655,21 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 	// Convert first streaming choice to BifrostResponsesStreamResponse
 	// Note: Chat API typically has one choice per chunk in streaming
 	choice := cr.Choices[0]
-	if choice.ChatStreamResponseChoice == nil || choice.ChatStreamResponseChoice.Delta == nil {
-		return nil
+	var delta *ChatStreamResponseChoiceDelta
+	if choice.ChatStreamResponseChoice != nil {
+		delta = choice.ChatStreamResponseChoice.Delta
+	}
+	if delta == nil {
+		if choice.FinishReason == nil {
+			return nil
+		}
+		// Some OpenAI-compatible upstreams send their terminal chunk as
+		// {"delta":null,"finish_reason":"stop"} (or omit "delta" entirely).
+		// Fall through with an empty delta so the finish_reason handling below
+		// still runs and emits the Completed/Incomplete event with usage/stop_reason.
+		delta = &ChatStreamResponseChoiceDelta{}
 	}
 
-	delta := choice.ChatStreamResponseChoice.Delta
 	var responses []*BifrostResponsesStreamResponse
 
 	// Store message ID and model from first chunk
@@ -2594,6 +2597,7 @@ func (cr *BifrostChatResponse) ToBifrostTextCompletionResponse() *BifrostTextCom
 				Latency:                 cr.ExtraFields.Latency,
 				RawResponse:             cr.ExtraFields.RawResponse,
 				CacheDebug:              cr.ExtraFields.CacheDebug,
+				GuardrailDebug:          cr.ExtraFields.GuardrailDebug,
 				ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,
 			},
 		}
@@ -2628,6 +2632,7 @@ func (cr *BifrostChatResponse) ToBifrostTextCompletionResponse() *BifrostTextCom
 				Latency:                 cr.ExtraFields.Latency,
 				RawResponse:             cr.ExtraFields.RawResponse,
 				CacheDebug:              cr.ExtraFields.CacheDebug,
+				GuardrailDebug:          cr.ExtraFields.GuardrailDebug,
 				ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,
 			},
 		}
@@ -2678,6 +2683,7 @@ func (cr *BifrostChatResponse) ToBifrostTextCompletionResponse() *BifrostTextCom
 				Latency:                 cr.ExtraFields.Latency,
 				RawResponse:             cr.ExtraFields.RawResponse,
 				CacheDebug:              cr.ExtraFields.CacheDebug,
+				GuardrailDebug:          cr.ExtraFields.GuardrailDebug,
 				ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,
 			},
 		}
@@ -2699,6 +2705,7 @@ func (cr *BifrostChatResponse) ToBifrostTextCompletionResponse() *BifrostTextCom
 			Latency:                 cr.ExtraFields.Latency,
 			RawResponse:             cr.ExtraFields.RawResponse,
 			CacheDebug:              cr.ExtraFields.CacheDebug,
+			GuardrailDebug:          cr.ExtraFields.GuardrailDebug,
 			ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,
 		},
 	}

@@ -67,6 +67,65 @@ HTTP connections communicate with MCP servers via HTTP requests. Ideal for remot
 
 For authenticated upstream servers, see [Authentication →](./auth/overview) and pick the auth type that matches: [Headers](./auth/headers), [OAuth 2.0](./auth/oauth), [Per-User OAuth](./auth/per-user-oauth), or [Per-User Headers](./auth/per-user-headers).
 
+#### Session Stickiness (HTTP only)
+
+For a **server-level** client (`auth_type` `oauth`, `headers`, or `none` — not the per-user auth types below, which are always per-call regardless of this setting), `needs_session_stickiness` controls whether Bifrost holds one persistent upstream connection or dials fresh for every tool call:
+
+| Value | Behavior |
+| --- | --- |
+| `true` | **Sticky.** One shared connection is opened once and reused for every tool call, with an automatic health-checked reconnect on failure. Lower per-call latency; if the connection's credential dies, the client needs an admin `reauthorize` to recover. |
+| `false` / omitted (default) | **Per-call.** A fresh connection (and, for `oauth`, a fresh credential resolution) is opened for every tool call and closed immediately after. Slightly higher per-call latency, but a dead upstream credential only affects the calls made while it's dead — nothing to manually reconnect once it's fixed. |
+
+Only meaningful for `connection_type: "http"` — `sse` and `stdio` connections are always sticky (an SSE session is inherently bound to its open stream, and STDIO needs a persistent subprocess), and explicitly setting `needs_session_stickiness: false` on either is rejected at creation.
+
+<Tabs>
+<Tab title="Web UI">
+
+Toggle **Session Stickiness** in the client's create/edit sheet (HTTP connections only):
+
+<Frame>
+  <img src="/media/ui-mcp-session-stickiness.png" alt="MCP client edit sheet showing the Session Stickiness toggle" />
+</Frame>
+
+</Tab>
+<Tab title="API">
+
+```bash
+curl -X POST http://localhost:8080/api/mcp/client \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "shared-api",
+    "connection_type": "http",
+    "connection_string": "https://mcp-server.example.com/mcp",
+    "auth_type": "oauth",
+    "needs_session_stickiness": false
+  }'
+```
+
+Omit the field to get the default (per-call). Existing clients can flip it via `PUT /api/mcp/client/{id}`.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "mcp": {
+    "client_configs": [
+      {
+        "name": "shared-api",
+        "connection_type": "http",
+        "connection_string": "https://mcp-server.example.com/mcp",
+        "auth_type": "oauth",
+        "needs_session_stickiness": false
+      }
+    ]
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
 ### SSE Connections
 
 Server-Sent Events (SSE) connections provide a persistent transport to MCP servers that stream events. Supports the same auth options as HTTP.
@@ -203,7 +262,7 @@ Response:
       {"name": "write_file", "description": "Write contents to a file"},
       {"name": "list_directory", "description": "List directory contents"}
     ],
-    "state": "connected"
+    "state": "healthy"
   }
 ]
 ```
@@ -249,6 +308,53 @@ Configure MCP clients in your `config.json`:
 
 <Note>
 Use `env.VARIABLE_NAME` syntax to reference environment variables for sensitive values like URLs with API keys.
+</Note>
+
+#### Auth-aware clients in `config.json`
+
+All six auth types can be declared in `config.json`. The four that need an admin verification step (`oauth`, `per_user_oauth`, `per_user_headers`, `token_exchange`) boot into a **`pending_verification`** runtime state and surface an admin CTA in the MCP Gateway UI:
+
+```json
+{
+  "mcp": {
+    "client_configs": [
+      {
+        "name": "google-drive-shared",
+        "connection_type": "http",
+        "connection_string": "https://mcp.google.com/drive",
+        "auth_type": "oauth",
+        "oauth_config": {
+          "client_id": "your-client-id",
+          "client_secret": "env.GOOGLE_OAUTH_CLIENT_SECRET",
+          "scopes": ["drive.readonly"]
+        },
+        "tools_to_execute": ["*"]
+      },
+      {
+        "name": "github-per-user",
+        "connection_type": "http",
+        "connection_string": "https://mcp.github.com/v1",
+        "auth_type": "per_user_oauth",
+        "oauth_config": { "scopes": ["repo"] },
+        "tools_to_execute": ["*"]
+      },
+      {
+        "name": "internal-api",
+        "connection_type": "http",
+        "connection_string": "https://api.internal.example.com/mcp",
+        "auth_type": "per_user_headers",
+        "per_user_header_keys": ["authorization", "x-tenant-id"],
+        "tools_to_execute": ["*"]
+      }
+    ]
+  }
+}
+```
+
+For `oauth` / `per_user_oauth`, the `oauth_config` block is optional and each inner field is optional — RFC 8414 discovery and RFC 7591 dynamic client registration fill the gaps off `connection_string` at admin-click time. See [MCP Auth](/mcp/auth/overview) for the per-auth-type details and the post-boot verification UX.
+
+<Note>
+Deleting a config.json-declared client from the dashboard is temporary: the file entry recreates it at the next restart (freshly, in `pending_verification` for auth types that need verification). For a permanent delete, remove the entry from `config.json` as well.
 </Note>
 
 </Tab>
@@ -652,10 +758,15 @@ response, err := client.ChatCompletionRequest(bifrostCtx, request)
 
 | State | Description |
 |-------|-------------|
-| `connected` | Client is active and tools are available |
-| `connecting` | Client is establishing connection |
-| `disconnected` | Client lost connection but can be reconnected |
-| `error` | Client configuration or connection failed |
+| `healthy` | Client is active and tools are available |
+| `unstable` | The last periodic health check failed transiently — self-heals, tool calls still attempted normally |
+| `needs_reauth` | The connection credential died and needs an admin to reauthorize (server-level), or the retained admin discovery credential needs repair (per-user) |
+| `pending_verification` | Declared (typically via config.json) with an auth type that needs a one-time admin step — complete it via the UI's Authorize/Verify button, `POST /api/mcp/client/{id}/initiate-verification` (OAuth types), or `POST /api/mcp/client/{id}/verify-headers` (per-user headers) |
+| `disabled` | An admin intentionally turned the client off |
+| `error` | A data-consistency fallback — the client is registered but missing from the runtime manager |
+| `degraded` | Cluster-only: instances currently disagree on this client's state |
+
+See [Connections, States & Lifecycles](./connections) for the full picture — connection mode, self-healing behavior, and per-auth-type lifecycles.
 
 ### Managing Clients at Runtime
 
@@ -666,6 +777,10 @@ response, err := client.ChatCompletionRequest(bifrostCtx, request)
 ```bash
 curl -X POST http://localhost:8080/api/mcp/client/{id}/reconnect
 ```
+
+<Note>
+Reconnect returns `400` for any per-call client — a shared client running per-call ([`needs_session_stickiness`](./connections#two-independent-axes) false/omitted) as well as any per-user auth type — since none of them hold a shared upstream connection to re-establish. Also `400` for clients in `pending_verification` — complete the admin verification instead.
+</Note>
 
 **Edit client configuration:**
 ```bash
@@ -795,10 +910,9 @@ err := client.EditMCPClient(context.Background(), schemas.MCPClientConfig{
 
 ### Health Check Behavior
 
-When a client disconnects:
-1. State changes to `disconnected`
-2. Tools from that client become unavailable
-3. You can reconnect via API or UI
+When a client's periodic health check fails:
+1. State changes to `unstable` — purely informational, tool calls are still attempted normally against it
+2. You can also reconnect manually via API or UI, though `unstable` self-heals on its own once the next check succeeds
 
 **Note:** Changing `is_ping_available` takes effect immediately without requiring a client reconnection.
 
@@ -868,11 +982,10 @@ Bifrost applies retry logic to these critical operations:
 
 When a client reaches 5 consecutive health check failures:
 
-1. Client state changes to `disconnected`
+1. Client state changes to `unstable`
 2. Bifrost automatically attempts reconnection **in the background**
 3. Reconnection uses the same exponential backoff retry logic
-4. Once reconnected, health checks resume normal operation
-5. Tools become available again without manual intervention
+4. Once reconnected, health checks resume normal operation and state returns to `healthy`
 
 This automatic reconnection happens asynchronously and doesn't block other operations.
 
@@ -887,7 +1000,7 @@ You can also trigger manual reconnection at any time:
 curl -X POST http://localhost:8080/api/mcp/client/{id}/reconnect
 ```
 
-Manual reconnection also uses the retry logic for robustness.
+Manual reconnection also uses the retry logic for robustness. Not applicable (`400`) to any per-call client — a shared client running per-call, or any per-user auth type — each call resolves its own connection/credential per request, with nothing shared to reconnect. Also not applicable to clients in `pending_verification`, which need the one-time admin verification instead.
 
 </Tab>
 <Tab title="Go SDK">

@@ -7,6 +7,7 @@
 package credstore
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 
@@ -20,6 +21,13 @@ import (
 type resolver interface {
 	ConnectionHeaders(ctx *schemas.BifrostContext, config *schemas.MCPClientConfig) (http.Header, error)
 	RequiresPerCallConnection() bool
+	// ForceRefresh unconditionally refreshes the credential backing config.
+	// See schemas.MCPCredentialStore.ForceRefresh for the full contract.
+	ForceRefresh(ctx *schemas.BifrostContext, config *schemas.MCPClientConfig) error
+	// AdminConnectionHeaders resolves the retained admin bootstrap-verification
+	// credential's connection headers. See schemas.MCPCredentialStore.AdminConnectionHeaders
+	// for the full contract.
+	AdminConnectionHeaders(ctx context.Context, config *schemas.MCPClientConfig) (http.Header, error)
 }
 
 // CredStore routes credential resolution by MCPAuthType. Implements
@@ -43,6 +51,7 @@ func NewCredStore(oauth2Provider schemas.OAuth2Provider, headersProvider schemas
 			schemas.MCPAuthTypeOauth:          &sharedOAuthResolver{provider: oauth2Provider},
 			schemas.MCPAuthTypePerUserOauth:   &perUserOAuthResolver{provider: oauth2Provider},
 			schemas.MCPAuthTypePerUserHeaders: &perUserHeadersResolver{provider: headersProvider},
+			schemas.MCPAuthTypeTokenExchange:  &tokenExchangeResolver{provider: oauth2Provider},
 		},
 		logger: logger,
 	}
@@ -72,6 +81,16 @@ func (s *CredStore) RequestHeaders(ctx *schemas.BifrostContext, config *schemas.
 // unknown auth types it returns false (safe shared-mode default); the next
 // ConnectionHeaders / RequestHeaders call from the caller will surface the
 // actual "unsupported auth type" error.
+//
+// Per-user auth types are always per-call regardless of stickiness (their
+// resolver hardcodes true — there's no "shared" mode for them to opt out
+// of). Shared HTTP auth types (headers/oauth) additionally honor
+// config.NeedsSessionStickiness: only explicitly true keeps them on the
+// persistent-connection + connection-checker path (every pre-existing
+// client is backfilled to true at the DB layer so this is a no-op for
+// them); nil/false (the default for newly created clients) routes them
+// through the per-call path too, same as the per-user types. SSE and STDIO
+// ignore the flag — see needsSessionStickiness's doc comment.
 func (s *CredStore) RequiresPerCallConnection(config *schemas.MCPClientConfig) bool {
 	if config == nil {
 		return false
@@ -80,7 +99,44 @@ func (s *CredStore) RequiresPerCallConnection(config *schemas.MCPClientConfig) b
 	if !ok {
 		return false
 	}
-	return r.RequiresPerCallConnection()
+	if r.RequiresPerCallConnection() {
+		return true
+	}
+	return !needsSessionStickiness(config)
+}
+
+// needsSessionStickiness reports whether config wants a persistent shared
+// connection (explicitly true) or a fresh per-call connection (nil/false,
+// the default for newly created clients). Only meaningful for
+// connection_type=http: SSE has no stateless mode (its session is
+// inherently bound to the open stream) and STDIO needs a persistent
+// subprocess, so both are treated as always sticky regardless of what the
+// field says — write-time validation is responsible for rejecting an
+// explicit false for those types in the first place, this is just a
+// defensive second check at the point stickiness actually matters.
+func needsSessionStickiness(config *schemas.MCPClientConfig) bool {
+	if config.ConnectionType != schemas.MCPConnectionTypeHTTP {
+		return true
+	}
+	return config.NeedsSessionStickiness != nil && *config.NeedsSessionStickiness
+}
+
+// ForceRefresh implements schemas.MCPCredentialStore.
+func (s *CredStore) ForceRefresh(ctx *schemas.BifrostContext, config *schemas.MCPClientConfig) error {
+	r, err := s.resolverFor(config)
+	if err != nil {
+		return err
+	}
+	return r.ForceRefresh(ctx, config)
+}
+
+// AdminConnectionHeaders implements schemas.MCPCredentialStore.
+func (s *CredStore) AdminConnectionHeaders(ctx context.Context, config *schemas.MCPClientConfig) (http.Header, error) {
+	r, err := s.resolverFor(config)
+	if err != nil {
+		return nil, err
+	}
+	return r.AdminConnectionHeaders(ctx, config)
 }
 
 // resolverFor returns the resolver matching config.AuthType, or an error if

@@ -1,0 +1,33 @@
+---
+title: "Migrating to Enterprise v2.0.0"
+description: "Breaking changes and migration instructions for the Enterprise v2.0.0 release"
+---
+
+Enterprise v2.0.0 is built on top of OSS `2.0.0-prerelease3`. It inherits both breaking changes from that release: no enterprise-specific breaking changes are introduced on top. This page summarizes the inherited changes and explains how they interact with SCIM-based authentication, which is enterprise-only.
+
+---
+
+## Inherited OSS `2.0.0-prerelease3` Breaking Changes
+
+Enterprise v2.0.0 ships with the OSS `2.0.0-prerelease3` base, so both breaking changes from that release apply. See the [OSS v2.0.0 Migration Guide](/migration-guides/v2.0.0) for full before/after examples.
+
+| OSS # | Change | What you must do |
+|-------|--------|------------------|
+| 1 | **Custom plugin downloads are now SSRF-protected** | If any custom plugin `.so` (whether defined in `config.json` or via the admin API) is hosted on an internal/private-network URL, add that host to `server.plugin_download_private_allowlist`, or switch to a local file path |
+| 2 | **Custom plugin creation/update now requires admin authentication** | If dashboard auth is disabled or unconfigured, enable it before creating or updating a plugin with a custom `path` through the admin API. Plugins defined directly in `config.json` are unaffected by this specific check (see the SCIM note below for how this check behaves under SCIM specifically) |
+
+---
+
+## Note for SCIM Deployments
+
+This is **not an additional breaking change**: no action is required, and nothing behaves differently for existing SCIM deployments after upgrading. It's a transparency note about how inherited Breaking Change 2 (above) interacts with SCIM.
+
+**How SCIM authentication relates to `/api/plugins`:** SCIM's own inbound provisioning requests (the identity provider calling `/scim/v2/*` to create/update/deprovision users) authenticate via a separate per-provider bearer "provisioning token," validated by `authorizeSCIMProvisioning()`. Those routes are registered with no middleware chain at all: they never touch `/api/plugins`, and the provisioning token cannot be used to call it.
+
+**What does change under the hood:** when SCIM is enabled, the OSS `AuthMiddleware` (the component that sets the flag inherited Breaking Change 2 checks for) is never initialized. It's replaced in the admin-route middleware chain (the same chain that guards `/api/plugins`) by `SCIMController.Middleware()`. Because that flag is only ever set by the OSS `AuthMiddleware`, **the `createPlugin`/`updatePlugin` auth check from Breaking Change 2 never fires under SCIM**: it becomes inert.
+
+<Note>
+**This is not currently exploitable.** `SCIMController.Middleware()` is fail-closed on every admin route it guards, including `/api/plugins`: a missing or invalid session returns `401`, and a misconfigured SCIM provider returns `500`. There is no "auth disabled" fallback path the way OSS `AuthMiddleware` has one. An unauthenticated caller cannot reach `/api/plugins` under SCIM regardless of whether the plugin-specific check fires.
+</Note>
+
+The practical implication: under SCIM, protection for the custom-plugin-path endpoint rests entirely on `SCIMController.Middleware()`'s own fail-closed behavior, rather than on the layered, defense-in-depth check that non-SCIM deployments get in addition to their own auth middleware. If you rely on SCIM for dashboard authentication, treat `SCIMController.Middleware()`'s correctness as the sole safeguard for this endpoint rather than assuming the OSS-documented check is also active.

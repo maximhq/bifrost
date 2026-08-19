@@ -25,6 +25,7 @@ type StreamAccumulatorResult struct {
 	TokenUsage            *BifrostLLMUsage                // Token usage
 	Cost                  *float64                        // Cost in dollars
 	CacheDebug            *BifrostCacheDebug              // Semantic cache debug info if available
+	GuardrailDebug        *BifrostGuardrailDebug          // Guardrail debug info if available
 	ErrorDetails          *BifrostError                   // Error details if any
 	AudioOutput           *BifrostSpeechResponse          // For speech streaming
 	TranscriptionOutput   *BifrostTranscriptionResponse   // For transcription streaming

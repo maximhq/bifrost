@@ -1,5 +1,5 @@
 import { describe, test, expect } from "vitest";
-import { cleanNumericInput, trimFields } from "./strings";
+import { cleanNumericInput, titleCaseFromSnakeCase, trimFields } from "./strings";
 
 // Simulate what onChange does: clean → Number()
 function simulateOnChange(raw: string): { display: string; value: number | undefined } {
@@ -202,6 +202,16 @@ describe("simulateOnBlur (normalize display)", () => {
 		expect(simulateOnBlur("1000")).toEqual({ display: "1000", value: 1000 });
 	});
 });
+describe("titleCaseFromSnakeCase", () => {
+	test("single word", () => expect(titleCaseFromSnakeCase("connected")).toBe("Connected"));
+	test("two words", () => expect(titleCaseFromSnakeCase("pending_verification")).toBe("Pending Verification"));
+	test("needs_reauth", () => expect(titleCaseFromSnakeCase("needs_reauth")).toBe("Needs Reauth"));
+	test("already uppercase", () => expect(titleCaseFromSnakeCase("HEALTHY")).toBe("Healthy"));
+	test("mixed case", () => expect(titleCaseFromSnakeCase("Needs_Reauth")).toBe("Needs Reauth"));
+	test("empty string", () => expect(titleCaseFromSnakeCase("")).toBe(""));
+	test("leading/trailing underscores", () => expect(titleCaseFromSnakeCase("_disabled_")).toBe("Disabled"));
+});
+
 describe("trimFields", () => {
 	test("trims string fields in place", () => {
 		const obj = { topic: " my-topic ", project: "\tproj\n" };

@@ -4,6 +4,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/valyala/fasthttp"
 )
 
 // PassthroughRouter is a catch-all router that forwards all requests directly
@@ -47,12 +48,40 @@ func NewOpenAIPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Handle
 	})
 }
 
+// NewChatGPTPassthroughRouter creates a passthrough router for /chatgpt_passthrough.
+// Restricted to the Codex responses endpoint only — this is not a general-purpose
+// ChatGPT backend proxy.
+func NewChatGPTPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *PassthroughRouter {
+	return NewPassthroughRouter(client, handlerStore, logger, &PassthroughConfig{
+		Provider:    schemas.OpenAI,
+		UpstreamURL: "https://chatgpt.com",
+		StripPrefix: []string{
+			"/chatgpt_passthrough",
+		},
+		AllowedRoutes: []PassthroughRoute{
+			{Method: fasthttp.MethodPost, Path: "/chatgpt_passthrough/backend-api/codex/responses"},
+		},
+	})
+}
+
 // NewAzurePassthroughRouter creates a passthrough router for /azure_passthrough.
 func NewAzurePassthroughRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *PassthroughRouter {
 	return NewPassthroughRouter(client, handlerStore, logger, &PassthroughConfig{
 		Provider: schemas.Azure,
 		StripPrefix: []string{
 			"/azure_passthrough",
+		},
+	})
+}
+
+// NewRunwarePassthroughRouter creates a passthrough router for /runware_passthrough. Runware exposes
+// a single task-based endpoint, so this forwards raw task arrays and unlocks any Runware task type
+// (3D, upscaling, background removal, ...) that Bifrost does not model natively.
+func NewRunwarePassthroughRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *PassthroughRouter {
+	return NewPassthroughRouter(client, handlerStore, logger, &PassthroughConfig{
+		Provider: schemas.Runware,
+		StripPrefix: []string{
+			"/runware_passthrough",
 		},
 	})
 }

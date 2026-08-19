@@ -444,6 +444,33 @@ func TestPatchPricing_PartialPatchOnlyChangesSpecifiedFields(t *testing.T) {
 	assert.Equal(t, 0.7, *patched.InputCostPerImage)
 }
 
+func TestPatchPricing_CostPerRequest(t *testing.T) {
+	base := configstoreTables.TableModelPricing{
+		Model:    "gpt-4o",
+		Provider: "openai",
+		Mode:     "chat",
+	}
+
+	patched := patchPricing(base, Options{
+		CostPerRequest: bifrost.Ptr(0.02),
+	})
+
+	require.NotNil(t, patched.CostPerRequest)
+	assert.Equal(t, 0.02, *patched.CostPerRequest)
+}
+
+func TestPatchPricing_CostPerRequestZero(t *testing.T) {
+	base := configstoreTables.TableModelPricing{
+		CostPerRequest: bifrost.Ptr(0.02),
+	}
+	patched := patchPricing(base, Options{
+		CostPerRequest: bifrost.Ptr(0.0),
+	})
+
+	require.NotNil(t, patched.CostPerRequest)
+	assert.Equal(t, 0.0, *patched.CostPerRequest)
+}
+
 func TestApplyScopedOverrides_ScopePrecedence(t *testing.T) {
 	s := newTestStore()
 
@@ -700,4 +727,235 @@ func TestOverrideIsValid_UserScopeKind(t *testing.T) {
 	userProviderKeyWithVK := userProviderKey
 	userProviderKeyWithVK.VirtualKeyID = &vkID
 	require.ErrorContains(t, userProviderKeyWithVK.IsValid(), "does not support virtual_key_id")
+}
+
+func TestCatalogPricingOverrides_ProviderBeatsGlobal(t *testing.T) {
+	s := newTestStore()
+	providerID := "openai"
+
+	require.NoError(t, s.SetOverrides([]configstoreTables.TablePricingOverride{
+		{
+			ID:               "global",
+			Name:             "Global",
+			ScopeKind:        string(ScopeKindGlobal),
+			MatchType:        string(MatchTypeExact),
+			Pattern:          "gpt-4o",
+			RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
+			PricingPatchJSON: `{"input_cost_per_token":2}`,
+		},
+		{
+			ID:               "provider",
+			Name:             "Provider",
+			ScopeKind:        string(ScopeKindProvider),
+			ProviderID:       &providerID,
+			MatchType:        string(MatchTypeExact),
+			Pattern:          "gpt-4o",
+			RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
+			PricingPatchJSON: `{"input_cost_per_token":3}`,
+		},
+	}))
+
+	result := s.CatalogPricingOverrides("gpt-4o", schemas.OpenAI, "chat")
+	assert.Equal(t, "provider", result.AppliedID)
+	require.NotNil(t, result.AppliedPatch)
+	require.NotNil(t, result.AppliedPatch.InputCostPerToken)
+	assert.Equal(t, 3.0, *result.AppliedPatch.InputCostPerToken)
+
+	require.Len(t, result.Matching, 2)
+	assert.Equal(t, "provider", result.Matching[0].ID, "provider scope sorts before global")
+	assert.Equal(t, "global", result.Matching[1].ID)
+}
+
+func TestCatalogPricingOverrides_IgnoresMismatchedProvider(t *testing.T) {
+	s := newTestStore()
+	anthropicID := "anthropic"
+
+	require.NoError(t, s.SetOverrides([]configstoreTables.TablePricingOverride{
+		{
+			ID:               "anthropic-only",
+			ScopeKind:        string(ScopeKindProvider),
+			ProviderID:       &anthropicID,
+			MatchType:        string(MatchTypeExact),
+			Pattern:          "gpt-4o",
+			RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
+			PricingPatchJSON: `{"input_cost_per_token":3}`,
+		},
+	}))
+
+	result := s.CatalogPricingOverrides("gpt-4o", schemas.OpenAI, "chat")
+	assert.Empty(t, result.AppliedID)
+	assert.Nil(t, result.AppliedPatch)
+	assert.Empty(t, result.Matching)
+}
+
+func TestCatalogPricingOverrides_NonGlobalScopesAreInformationalOnly(t *testing.T) {
+	s := newTestStore()
+	providerID := "openai"
+	providerKeyID := "provider-key-1"
+	virtualKeyID := "virtual-key-1"
+	userID := "user-1"
+
+	require.NoError(t, s.SetOverrides([]configstoreTables.TablePricingOverride{
+		{
+			ID:               "virtual-key",
+			ScopeKind:        string(ScopeKindVirtualKey),
+			VirtualKeyID:     &virtualKeyID,
+			MatchType:        string(MatchTypeExact),
+			Pattern:          "gpt-4o",
+			RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
+			PricingPatchJSON: `{"input_cost_per_token":5}`,
+		},
+		{
+			ID:               "user-provider",
+			ScopeKind:        string(ScopeKindUserProvider),
+			UserID:           &userID,
+			ProviderID:       &providerID,
+			MatchType:        string(MatchTypeExact),
+			Pattern:          "gpt-4o",
+			RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
+			PricingPatchJSON: `{"input_cost_per_token":7}`,
+		},
+		{
+			// provider_key scope carries no provider_id, so it can't be
+			// provider-filtered — it must still surface informationally.
+			ID:               "provider-key",
+			ScopeKind:        string(ScopeKindProviderKey),
+			ProviderKeyID:    &providerKeyID,
+			MatchType:        string(MatchTypeExact),
+			Pattern:          "gpt-4o",
+			RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
+			PricingPatchJSON: `{"input_cost_per_token":4}`,
+		},
+	}))
+
+	result := s.CatalogPricingOverrides("gpt-4o", schemas.OpenAI, "chat")
+	assert.Empty(t, result.AppliedID, "no global/provider scoped override exists")
+	assert.Nil(t, result.AppliedPatch)
+
+	ids := make([]string, 0, len(result.Matching))
+	for _, o := range result.Matching {
+		ids = append(ids, o.ID)
+	}
+	assert.Equal(t, []string{"virtual-key", "user-provider", "provider-key"}, ids)
+}
+
+func TestCatalogPricingOverrides_WildcardLongestPrefixWins(t *testing.T) {
+	s := newTestStore()
+
+	require.NoError(t, s.SetOverrides([]configstoreTables.TablePricingOverride{
+		{
+			ID:               "broad",
+			ScopeKind:        string(ScopeKindGlobal),
+			MatchType:        string(MatchTypeWildcard),
+			Pattern:          "gpt-*",
+			RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
+			PricingPatchJSON: `{"input_cost_per_token":1}`,
+		},
+		{
+			ID:               "narrow",
+			ScopeKind:        string(ScopeKindGlobal),
+			MatchType:        string(MatchTypeWildcard),
+			Pattern:          "gpt-4*",
+			RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
+			PricingPatchJSON: `{"input_cost_per_token":2}`,
+		},
+	}))
+
+	result := s.CatalogPricingOverrides("gpt-4o", schemas.OpenAI, "chat")
+	assert.Equal(t, "narrow", result.AppliedID)
+	require.Len(t, result.Matching, 2)
+	assert.Equal(t, "narrow", result.Matching[0].ID)
+	assert.Equal(t, "gpt-4*", result.Matching[0].Pattern, "un-stripped pattern is reported")
+
+	// A model only the broad pattern covers.
+	other := s.CatalogPricingOverrides("gpt-5-nano", schemas.OpenAI, "chat")
+	assert.Equal(t, "broad", other.AppliedID)
+	require.Len(t, other.Matching, 1)
+}
+
+func TestCatalogPricingOverrides_ModeFilteringAppliesToWinnerOnly(t *testing.T) {
+	s := newTestStore()
+
+	require.NoError(t, s.SetOverrides([]configstoreTables.TablePricingOverride{
+		{
+			ID:               "embedding-only",
+			ScopeKind:        string(ScopeKindGlobal),
+			MatchType:        string(MatchTypeExact),
+			Pattern:          "gpt-4o",
+			RequestTypes:     []schemas.RequestType{schemas.EmbeddingRequest},
+			PricingPatchJSON: `{"input_cost_per_token":9}`,
+		},
+	}))
+
+	chat := s.CatalogPricingOverrides("gpt-4o", schemas.OpenAI, "chat")
+	assert.Empty(t, chat.AppliedID)
+	assert.Nil(t, chat.AppliedPatch)
+	require.Len(t, chat.Matching, 1, "listed informationally even though the mode differs")
+	assert.Equal(t, "embedding-only", chat.Matching[0].ID)
+
+	embedding := s.CatalogPricingOverrides("gpt-4o", schemas.OpenAI, "embedding")
+	assert.Equal(t, "embedding-only", embedding.AppliedID)
+	require.NotNil(t, embedding.AppliedPatch)
+}
+
+func TestCatalogPricingOverrides_EmptyStore(t *testing.T) {
+	s := newTestStore()
+	assert.Equal(t, CatalogPricingOverrides{}, s.CatalogPricingOverrides("gpt-4o", schemas.OpenAI, "chat"))
+
+	require.NoError(t, s.SetOverrides(nil))
+	assert.Equal(t, CatalogPricingOverrides{}, s.CatalogPricingOverrides("gpt-4o", schemas.OpenAI, "chat"))
+}
+
+// Callers must not be able to reach through the returned result into the
+// pointers the runtime lookup structure prices requests with.
+func TestCatalogPricingOverrides_ReturnsDeepCopies(t *testing.T) {
+	s := newTestStore()
+	providerID := "openai"
+
+	require.NoError(t, s.SetOverrides([]configstoreTables.TablePricingOverride{
+		{
+			ID:               "provider",
+			Name:             "Provider",
+			ScopeKind:        string(ScopeKindProvider),
+			ProviderID:       &providerID,
+			MatchType:        string(MatchTypeExact),
+			Pattern:          "gpt-4o",
+			RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
+			PricingPatchJSON: `{"input_cost_per_token":3}`,
+		},
+	}))
+
+	result := s.CatalogPricingOverrides("gpt-4o", schemas.OpenAI, "chat")
+	require.NotNil(t, result.AppliedPatch)
+	require.NotNil(t, result.AppliedPatch.InputCostPerToken)
+	require.Len(t, result.Matching, 1)
+	require.NotNil(t, result.Matching[0].ProviderID)
+	require.Len(t, result.Matching[0].RequestTypes, 1)
+	require.NotNil(t, result.Matching[0].Options.InputCostPerToken)
+
+	// A caller mutating what it was handed.
+	*result.AppliedPatch.InputCostPerToken = 999
+	*result.Matching[0].Options.InputCostPerToken = 999
+	*result.Matching[0].ProviderID = "mutated"
+	result.Matching[0].RequestTypes[0] = schemas.EmbeddingRequest
+
+	fresh := s.CatalogPricingOverrides("gpt-4o", schemas.OpenAI, "chat")
+	require.NotNil(t, fresh.AppliedPatch)
+	require.NotNil(t, fresh.AppliedPatch.InputCostPerToken)
+	assert.Equal(t, 3.0, *fresh.AppliedPatch.InputCostPerToken, "applied patch must survive a caller mutating a prior result")
+	require.Len(t, fresh.Matching, 1)
+	require.NotNil(t, fresh.Matching[0].Options.InputCostPerToken)
+	assert.Equal(t, 3.0, *fresh.Matching[0].Options.InputCostPerToken)
+	require.NotNil(t, fresh.Matching[0].ProviderID)
+	assert.Equal(t, "openai", *fresh.Matching[0].ProviderID)
+	assert.Equal(t, []schemas.RequestType{schemas.ChatCompletionRequest}, fresh.Matching[0].RequestTypes)
+
+	// The request-pricing path reads the same entries the catalog view exposed.
+	// Scope with a literal, not providerID — the override holds &providerID, so
+	// the mutation above would otherwise rewrite this lookup's own input.
+	priced, ok := s.applyPricingOverrides("gpt-4o", schemas.ChatCompletionRequest,
+		configstoreTables.TableModelPricing{}, LookupScopes{Provider: "openai"})
+	require.True(t, ok)
+	require.NotNil(t, priced.InputCostPerToken)
+	assert.Equal(t, 3.0, *priced.InputCostPerToken, "runtime pricing must survive a caller mutating a catalog result")
 }

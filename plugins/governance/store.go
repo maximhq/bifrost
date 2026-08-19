@@ -46,6 +46,19 @@ type LocalGovernanceStore struct {
 	LastDBUsagesRequestsRateLimits   map[string]int64   // Map for last DB usages for rate limits requests
 	LastDBUsagesTokensRateLimits     map[string]int64   // Map for last DB usages for rate limits tokens
 
+	// budgetResetGens counts how many times each budget's in-memory usage has been
+	// zeroed. A dump snapshots budgets by pointer and writes them several
+	// transactions later; a reset installs a fresh pointer and deliberately leaves
+	// LastReset alone, so neither the snapshot nor the last_reset guard can tell
+	// that the usage about to be persisted has since been cleared. LastReset cannot
+	// carry this signal: an operator reset leaves it equal, and equal has to keep
+	// meaning "persist this row" or steady-state usage would stop saving.
+	//
+	// Counts resets only, never usage writes, so a budget under traffic still dumps
+	// every cycle. Guarded by LastDBUsagesBudgetsMu, which every reset already holds
+	// to clear the matching baseline, so this adds no new lock.
+	budgetResetGens map[string]uint64
+
 	// CEL caching layer for routing rules
 	compiledRoutingPrograms sync.Map // string -> cel.Program (key: ruleID -> compiled CEL program)
 	routingCELEnv           *cel.Env // Singleton CEL environment reused for all compilations
@@ -109,6 +122,7 @@ type BudgetAndRateLimitStatus struct {
 type GovernanceStore interface {
 	GetGovernanceData(ctx context.Context) *GovernanceData
 	GetVirtualKey(ctx context.Context, vkValue string) (*configstoreTables.TableVirtualKey, bool)
+	GetVirtualKeyByID(ctx context.Context, vkID string) (*configstoreTables.TableVirtualKey, bool)
 	// Budget crud.
 	// UpsertBudgetConfig preserves in-memory CurrentUsage/LastReset on replacement —
 	// use it for every config publish (fresh load or admin edit) so a concurrent
@@ -147,6 +161,16 @@ type GovernanceStore interface {
 	// In-memory reset checks (return items that need DB sync)
 	ResetExpiredRateLimitsInMemory(ctx context.Context, refreshReferences bool, rateLimitIDs ...string) []*configstoreTables.TableRateLimit
 	ResetExpiredBudgetsInMemory(ctx context.Context, refreshReferences bool, budgetIDs ...string) []*configstoreTables.TableBudget
+	// ResetBudgetUsageInMemory clears one budget's usage on operator request,
+	// leaving its reset boundary untouched.
+	ResetBudgetUsageInMemory(ctx context.Context, budgetID string) (*configstoreTables.TableBudget, bool)
+	// AdoptCalendarAlignmentInMemory re-anchors a budget onto the calendar boundary
+	// it has just been told to follow, preserving its usage. Reports whether the
+	// boundary moved.
+	AdoptCalendarAlignmentInMemory(ctx context.Context, budgetID string, now time.Time) bool
+	// AdoptRateLimitCalendarAlignmentInMemory is the rate-limit counterpart,
+	// applying the rule to the token and request counters independently.
+	AdoptRateLimitCalendarAlignmentInMemory(ctx context.Context, rateLimitID string, now time.Time) bool
 	// DB sync for expired items
 	ResetExpiredRateLimits(ctx context.Context, resetRateLimits []*configstoreTables.TableRateLimit) error
 	ResetExpiredBudgets(ctx context.Context, resetBudgets []*configstoreTables.TableBudget) error
@@ -363,6 +387,8 @@ func (gs *LocalGovernanceStore) DeleteBudget(ctx context.Context, budgetID strin
 	// Clean up LastDB baselines so the gossip delta doesn't carry stale entries.
 	gs.LastDBUsagesBudgetsMu.Lock()
 	delete(gs.LastDBUsagesBudgets, budgetID)
+	// A dump holding this budget in an earlier snapshot must not resurrect its row.
+	gs.markBudgetResetLocked(budgetID)
 	gs.LastDBUsagesBudgetsMu.Unlock()
 }
 
@@ -375,6 +401,60 @@ func (gs *LocalGovernanceStore) SetBudgetDBBaseline(budgetID string, currentUsag
 	gs.LastDBUsagesBudgetsMu.Lock()
 	gs.LastDBUsagesBudgets[budgetID] = currentUsage
 	gs.LastDBUsagesBudgetsMu.Unlock()
+}
+
+// markBudgetResetLocked records that a budget's in-memory usage was cleared, so a
+// dump that snapshotted the pre-reset value can recognise its row as stale.
+//
+// The caller must already hold LastDBUsagesBudgetsMu for writing. Every reset site
+// does, because clearing the gossip baseline and invalidating in-flight dumps are
+// the same event and must not be observable half-done.
+func (gs *LocalGovernanceStore) markBudgetResetLocked(budgetID string) {
+	if gs.budgetResetGens == nil {
+		gs.budgetResetGens = make(map[string]uint64)
+	}
+	gs.budgetResetGens[budgetID]++
+}
+
+// budgetResetGensSnapshot copies the current reset generations. A dump takes this
+// alongside its budget snapshot and re-compares before writing.
+func (gs *LocalGovernanceStore) budgetResetGensSnapshot() map[string]uint64 {
+	gs.LastDBUsagesBudgetsMu.RLock()
+	defer gs.LastDBUsagesBudgetsMu.RUnlock()
+	gens := make(map[string]uint64, len(gs.budgetResetGens))
+	for budgetID, gen := range gs.budgetResetGens {
+		gens[budgetID] = gen
+	}
+	return gens
+}
+
+// keepUnresetRows returns the rows of a dump batch whose budget has not been reset
+// since snapshot was taken. A row that has been reset carries the usage the reset
+// cleared, so writing it would put that number straight back.
+//
+// Dropping is safe and self-correcting: the post-reset usage is already in memory,
+// so the next dump cycle persists it a few seconds later. Re-checked per batch
+// rather than once per dump because batches are separated by database round trips,
+// which is time enough for a reset to land between them.
+func (gs *LocalGovernanceStore) keepUnresetRows(batch []budgetDumpRow, snapshot map[string]uint64) []budgetDumpRow {
+	gs.LastDBUsagesBudgetsMu.RLock()
+	defer gs.LastDBUsagesBudgetsMu.RUnlock()
+	stale := 0
+	for _, row := range batch {
+		if gs.budgetResetGens[row.ID] != snapshot[row.ID] {
+			stale++
+		}
+	}
+	if stale == 0 {
+		return batch
+	}
+	kept := make([]budgetDumpRow, 0, len(batch)-stale)
+	for _, row := range batch {
+		if gs.budgetResetGens[row.ID] == snapshot[row.ID] {
+			kept = append(kept, row)
+		}
+	}
+	return kept
 }
 
 // LoadRateLimit loads a rate limit by its ID from the local store.
@@ -502,6 +582,7 @@ func (gs *LocalGovernanceStore) BumpBudgetUsage(ctx context.Context, budgetID st
 			clone.RefreshOverrideCyclesRemaining()
 			gs.LastDBUsagesBudgetsMu.Lock()
 			gs.LastDBUsagesBudgets[budgetID] = 0
+			gs.markBudgetResetLocked(budgetID)
 			gs.LastDBUsagesBudgetsMu.Unlock()
 		}
 		clone.CurrentUsage += cost
@@ -2018,9 +2099,102 @@ func (gs *LocalGovernanceStore) resetExpiredBudgetFromSnapshot(ctx context.Conte
 	oldUsage := budget.CurrentUsage
 	gs.LastDBUsagesBudgetsMu.Lock()
 	gs.LastDBUsagesBudgets[resetBudget.ID] = 0
+	gs.markBudgetResetLocked(resetBudget.ID)
 	gs.LastDBUsagesBudgetsMu.Unlock()
 	gs.logger.Debug(fmt.Sprintf("Reset budget %s (was %.2f, reset to 0)", resetBudget.ID, oldUsage))
 	return resetBudget
+}
+
+// ResetBudgetUsageInMemory clears one budget's usage on operator request, without
+// moving its reset boundary.
+//
+// This is the deliberate counterpart to resetExpiredBudgetFromSnapshot above. That
+// one is driven by a window closing, so it advances LastReset; this one is driven
+// by a person choosing "reset usage", where the window has not closed and the
+// boundary must stay exactly where it is. Every persistence path guards LastReset
+// forward-only, so a boundary move here would be refused anyway.
+//
+// Clearing the LastDBUsages baseline is not optional. The dump path writes the
+// difference between in-memory usage and that baseline, and in a cluster each
+// node contributes CurrentUsage - LastDBUsage to the shared total. Leaving the
+// old baseline behind would re-add the spend that was just cleared, or drive the
+// contribution negative.
+//
+// Returns the reset snapshot and true, or (nil, false) when the budget is unknown.
+func (gs *LocalGovernanceStore) ResetBudgetUsageInMemory(ctx context.Context, budgetID string) (*configstoreTables.TableBudget, bool) {
+	reset, ok := gs.RebaseBudget(ctx, budgetID, 0, nil)
+	if !ok {
+		return nil, false
+	}
+	gs.LastDBUsagesBudgetsMu.Lock()
+	gs.LastDBUsagesBudgets[budgetID] = 0
+	gs.markBudgetResetLocked(budgetID)
+	gs.LastDBUsagesBudgetsMu.Unlock()
+	gs.logger.Debug(fmt.Sprintf("Reset budget %s usage on operator request (boundary unchanged at %s)", budgetID, reset.LastReset))
+	return reset, true
+}
+
+// AdoptCalendarAlignmentInMemory re-anchors a budget onto the calendar grid when
+// its owner has just switched alignment on, and reports whether it moved.
+//
+// Called on the false-to-true transition only. Without it the switch is
+// destructive: budgetResetTarget resets whenever WindowStart(now) is after
+// LastReset, so a window that opened before the current boundary is instantly due
+// and the next sweep clears its usage. See TableBudget.AdoptCalendarAlignment.
+//
+// The usage carried into the swap is the one observed inside the CAS loop, not a
+// value read beforehand: a request bumping this budget between a read and the
+// write would otherwise have its spend dropped. No reset generation is bumped
+// here - nothing was reset, so an in-flight dump's rows are still accurate.
+func (gs *LocalGovernanceStore) AdoptCalendarAlignmentInMemory(ctx context.Context, budgetID string, now time.Time) bool {
+	for {
+		raw, exists := gs.budgets.Load(budgetID)
+		if !exists || raw == nil {
+			return false
+		}
+		old, ok := raw.(*configstoreTables.TableBudget)
+		if !ok || old == nil {
+			return false
+		}
+		clone := *old
+		// The owner's flag has already been applied upstream, but the in-memory
+		// copy predates it, so stamp it here or adoption declines its own work.
+		clone.IsCalendarAligned = true
+		if !clone.AdoptCalendarAlignment(now) {
+			return false
+		}
+		clone.RefreshOverrideCyclesRemaining()
+		if gs.budgets.CompareAndSwap(budgetID, raw, &clone) {
+			gs.logger.Debug(fmt.Sprintf("Adopted budget %s onto its calendar boundary %s (usage %.2f preserved)",
+				budgetID, clone.LastReset, clone.CurrentUsage))
+			return true
+		}
+	}
+}
+
+// AdoptRateLimitCalendarAlignmentInMemory is the rate-limit counterpart, applying
+// the same switch-over rule to the token and request counters independently.
+func (gs *LocalGovernanceStore) AdoptRateLimitCalendarAlignmentInMemory(ctx context.Context, rateLimitID string, now time.Time) bool {
+	for {
+		raw, exists := gs.rateLimits.Load(rateLimitID)
+		if !exists || raw == nil {
+			return false
+		}
+		old, ok := raw.(*configstoreTables.TableRateLimit)
+		if !ok || old == nil {
+			return false
+		}
+		clone := *old
+		clone.IsCalendarAligned = true
+		if !clone.AdoptCalendarAlignment(now) {
+			return false
+		}
+		if gs.rateLimits.CompareAndSwap(rateLimitID, raw, &clone) {
+			gs.logger.Debug(fmt.Sprintf("Adopted rate limit %s onto its calendar boundaries (token %s, request %s)",
+				rateLimitID, clone.TokenLastReset, clone.RequestLastReset))
+			return true
+		}
+	}
 }
 
 // ResetExpiredBudgetsInMemory checks and resets budgets that have exceeded their reset duration.
@@ -2064,11 +2238,14 @@ func (gs *LocalGovernanceStore) ResetExpiredBudgetsInMemory(ctx context.Context,
 }
 
 // rateLimitResetTarget returns the LastReset value to write when a rate-limit counter is expired.
-// Calendar alignment only applies to durations with a calendar boundary (d/w/M/Y);
+// Calendar alignment only applies to durations with a calendar boundary (d/w/M/Q/Y);
 // sub-day durations fall back to rolling-window semantics even when the owner is
 // calendar-aligned, mirroring the handler-side snap logic. Without this guard
 // GetCalendarPeriodStart returns now for sub-day durations, making the reset
 // target perpetually due and spinning BumpRateLimitUsage forever (issue #4851).
+//
+// Rate limits carry no quarter definition - quarters are configured per budget -
+// so the quarter start is not applicable here and plain calendar quarters apply.
 // The returned value is a window boundary anchored on the rate limit's
 // CreatedAt, never the caller's wall clock, so every cluster node computes the
 // same instant from the same persisted row. See budgetResetTarget for why that
@@ -2079,7 +2256,7 @@ func (gs *LocalGovernanceStore) rateLimitResetTarget(resetDuration *string, cale
 		return nil
 	}
 	if calendarAligned && configstoreTables.IsCalendarAlignableDuration(*resetDuration) {
-		period := configstoreTables.GetCalendarPeriodStart(*resetDuration, now)
+		period := configstoreTables.GetCalendarPeriodStart(*resetDuration, now, configstoreTables.QuarterStartNotApplicable)
 		if period.After(lastReset) {
 			return &period
 		}
@@ -2570,15 +2747,30 @@ func (gs *LocalGovernanceStore) DumpRateLimits(ctx context.Context, tokenBaselin
 	return nil
 }
 
-// DumpBudgets dumps all budgets to the database
+// DumpBudgets dumps all budgets to the database.
+//
+// Split into a snapshot and a write so the gap between them is expressible in a
+// test: that gap is where an operator reset can land, and the reset generations
+// taken here are what let the write recognise a row cleared underneath it.
 func (gs *LocalGovernanceStore) DumpBudgets(ctx context.Context, baselines map[string]float64) error {
 	if gs.configStore == nil {
 		return nil
 	}
+	rows, gens := gs.snapshotBudgetRows(baselines)
+	return gs.writeBudgetRows(ctx, rows, gens)
+}
+
+// snapshotBudgetRows captures every budget's current usage as dump rows, together
+// with the reset generation each row was read at.
+func (gs *LocalGovernanceStore) snapshotBudgetRows(baselines map[string]float64) ([]budgetDumpRow, map[string]uint64) {
 	// This is to prevent nil pointer dereference
 	if baselines == nil {
 		baselines = map[string]float64{}
 	}
+	// Read the generations first. Taking them before the budgets means a reset that
+	// races this snapshot is either fully visible in both, or shows up as a bumped
+	// generation later; it can never look unchanged while the usage read was stale.
+	gens := gs.budgetResetGensSnapshot()
 	budgets := make(map[string]*configstoreTables.TableBudget)
 	gs.budgets.Range(func(key, value interface{}) bool {
 		// Type-safe conversion
@@ -2612,13 +2804,23 @@ func (gs *LocalGovernanceStore) DumpBudgets(ctx context.Context, baselines map[s
 	// Stable ID order keeps concurrent dumpers taking row locks in the same
 	// sequence, which is what keeps them deadlock-free rather than merely lucky.
 	sort.Slice(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
+	return rows, gens
+}
 
+// writeBudgetRows persists a snapshot taken by snapshotBudgetRows.
+func (gs *LocalGovernanceStore) writeBudgetRows(ctx context.Context, rows []budgetDumpRow, gens map[string]uint64) error {
+	if gs.configStore == nil {
+		return nil
+	}
 	// Written in batches so row locks are released between chunks rather than
 	// held for the whole sweep, and so each chunk costs one round trip instead
 	// of two per row.
 	for start := 0; start < len(rows); start += dumpBatchSize {
 		end := min(start+dumpBatchSize, len(rows))
-		batch := rows[start:end]
+		batch := gs.keepUnresetRows(rows[start:end], gens)
+		if len(batch) == 0 {
+			continue
+		}
 		if err := gs.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 			return gs.writeBudgetBatch(ctx, tx, batch, "<=")
 		}); err != nil {

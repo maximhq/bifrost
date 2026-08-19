@@ -1,6 +1,8 @@
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -11,25 +13,12 @@ import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } f
 import { AuthConfig, CoreConfig, DefaultCoreConfig } from "@/lib/types/config";
 import { SecretVar } from "@/lib/types/schemas";
 import { parseArrayFromText } from "@/lib/utils/array";
-import { validateOrigins } from "@/lib/utils/validation";
+import { getPasswordPolicyFailures, validateOrigins } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetAuthTypeQuery } from "@enterprise/lib/store/apis/scimApi";
 import { AlertTriangle, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-
-const PASSWORD_REQUIREMENTS = [
-	{ label: "at least 12 characters", test: (password: string) => password.length >= 12 },
-	{ label: "one uppercase letter", test: (password: string) => /[A-Z]/.test(password) },
-	{ label: "one lowercase letter", test: (password: string) => /[a-z]/.test(password) },
-	{ label: "one number", test: (password: string) => /\d/.test(password) },
-	{ label: "one special character", test: (password: string) => /[^A-Za-z0-9]/.test(password) },
-];
-
-const getPasswordPolicyFailures = (password?: string) => {
-	if (!password) return [];
-	return PASSWORD_REQUIREMENTS.filter((requirement) => !requirement.test(password)).map((requirement) => requirement.label);
-};
 
 export default function SecurityView() {
 	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
@@ -40,6 +29,7 @@ export default function SecurityView() {
 	const [localConfig, setLocalConfig] = useState<CoreConfig>(DefaultCoreConfig);
 	const showPasswordSection = !IS_ENTERPRISE || (!authTypeLoading && !authTypeError && authType?.type !== "sso");
 	const passwordInputRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null);
+	const passwordUnchangedRef = useRef(true);
 
 	const [localValues, setLocalValues] = useState<{
 		allowed_origins: string;
@@ -59,6 +49,13 @@ export default function SecurityView() {
 		is_enabled: false,
 	});
 	const [passwordError, setPasswordError] = useState("");
+	const [setupToken, setSetupToken] = useState("");
+	const [setupTokenErrorMessage, setSetupTokenErrorMessage] = useState<string | null>(null);
+	// No admin account has ever been created on this instance yet. The very first
+	// PUT /api/config that creates one must include the setup token the operator
+	// configured via setup_token in config.json (or BIFROST_SETUP_TOKEN), so this
+	// field only needs to show up that once.
+	const isFirstTimeSetup = !bifrostConfig?.auth_config;
 
 	useEffect(() => {
 		if (bifrostConfig && config) {
@@ -71,6 +68,7 @@ export default function SecurityView() {
 			});
 		}
 		if (bifrostConfig?.auth_config) {
+			passwordUnchangedRef.current = true;
 			setAuthConfig(bifrostConfig.auth_config);
 		}
 	}, [config, bifrostConfig]);
@@ -168,7 +166,8 @@ export default function SecurityView() {
 
 	const handleAuthFieldChange = useCallback((field: "admin_username" | "admin_password", value: SecretVar) => {
 		if (field === "admin_password") {
-			const passwordPolicyFailures = !value.ref && value.value ? getPasswordPolicyFailures(value.value) : [];
+			passwordUnchangedRef.current = false;
+			const passwordPolicyFailures = !value.ref && value.value ? getPasswordPolicyFailures(value.value, false) : [];
 			setPasswordError(passwordPolicyFailures.length > 0 ? `Password must include ${passwordPolicyFailures.join(", ")}.` : "");
 		}
 		setAuthConfig((prev) => ({ ...prev, [field]: value }));
@@ -188,13 +187,19 @@ export default function SecurityView() {
 			const hasPassword = authConfig.admin_password?.value || authConfig.admin_password?.ref;
 			const passwordPolicyFailures =
 				showPasswordSection && authConfig.is_enabled && !authConfig.admin_password?.ref && authConfig.admin_password?.value
-					? getPasswordPolicyFailures(authConfig.admin_password.value)
+					? getPasswordPolicyFailures(authConfig.admin_password.value, passwordUnchangedRef.current)
 					: [];
 
 			if (passwordPolicyFailures.length > 0) {
 				setPasswordError(`Password must include ${passwordPolicyFailures.join(", ")}.`);
 				passwordInputRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
 				passwordInputRef.current?.focus({ preventScroll: true });
+				return;
+			}
+			if (isFirstTimeSetup && authConfig.is_enabled && !setupToken.trim()) {
+				setSetupTokenErrorMessage(
+					"Enter the setup token configured by your operator to create the first admin account. It's set via setup_token in config.json or the BIFROST_SETUP_TOKEN environment variable.",
+				);
 				return;
 			}
 			setPasswordError("");
@@ -204,15 +209,24 @@ export default function SecurityView() {
 				client_config: localConfig,
 				...(showPasswordSection
 					? {
-						auth_config: authConfig.is_enabled && hasUsername && hasPassword ? authConfig : { ...authConfig, is_enabled: false },
+						auth_config: {
+							...(authConfig.is_enabled && hasUsername && hasPassword ? authConfig : { ...authConfig, is_enabled: false }),
+							...(isFirstTimeSetup ? { setup_token: setupToken.trim() } : {}),
+						},
 					}
 					: {}),
 			}).unwrap();
+			setSetupToken("");
 			toast.success("Security settings updated successfully.");
 		} catch (error) {
-			toast.error(getErrorMessage(error));
+			const message = getErrorMessage(error);
+			if (isFirstTimeSetup && message.toLowerCase().includes("setup token")) {
+				setSetupTokenErrorMessage(message);
+			} else {
+				toast.error(message);
+			}
 		}
-	}, [bifrostConfig, localConfig, authConfig, showPasswordSection, updateCoreConfig]);
+	}, [bifrostConfig, localConfig, authConfig, showPasswordSection, updateCoreConfig, isFirstTimeSetup, setupToken]);
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-4">
@@ -287,6 +301,25 @@ export default function SecurityView() {
 										</p>
 									) : null}
 								</div>
+								{isFirstTimeSetup && authConfig.is_enabled ? (
+									<div className="space-y-2">
+										<Label htmlFor="setup-token">Setup token</Label>
+										<Input
+											id="setup-token"
+											data-testid="security-setup-token-input"
+											type="password"
+											autoComplete="off"
+											placeholder="Paste the setup token configured by your operator"
+											value={setupToken}
+											onChange={(e) => setSetupToken(e.target.value)}
+										/>
+										<p className="text-muted-foreground text-xs">
+											No admin account exists yet, so this instance is reachable without a password. To finish setup, ask your
+											operator for the setup token configured via <code>setup_token</code> in <code>config.json</code> (or the{" "}
+											<code>BIFROST_SETUP_TOKEN</code> environment variable) and paste it here.
+										</p>
+									</div>
+								) : null}
 							</div>
 						</div>
 					</div>
@@ -462,6 +495,24 @@ export default function SecurityView() {
 					{isLoading ? "Saving..." : "Save Changes"}
 				</Button>
 			</div>
+			<Dialog open={!!setupTokenErrorMessage} onOpenChange={(open) => !open && setSetupTokenErrorMessage(null)}>
+				<DialogContent data-testid="setup-token-error-dialog">
+					<DialogHeader>
+						<DialogTitle>Setup token required</DialogTitle>
+						<DialogDescription>{setupTokenErrorMessage}</DialogDescription>
+					</DialogHeader>
+					<DialogFooter>
+						<Button variant="outline" onClick={() => setSetupTokenErrorMessage(null)} data-testid="setup-token-error-close">
+							Close
+						</Button>
+						<Button asChild data-testid="setup-token-error-view-docs">
+							<a href="https://docs.getbifrost.ai/quickstart/gateway/setting-up-auth" target="_blank" rel="noopener noreferrer">
+								View docs
+							</a>
+						</Button>
+					</DialogFooter>
+				</DialogContent>
+			</Dialog>
 		</div>
 	);
 }

@@ -31,11 +31,12 @@ func newRealtimeTurnContext(
 			if value == nil {
 				continue
 			}
-			// Never inherit a session/transport-level trace ID. Each realtime turn
-			// must mint its own trace in RunRealtimeTurnPreHooks so its log entry is
-			// delivered when the turn's trace is completed and flushed. Inheriting a
-			// trace whose lifecycle is owned elsewhere strands the entry forever.
-			if ctxKey == schemas.BifrostContextKeyTraceID {
+			// Never inherit a session/transport-level trace ID (store handle or its
+			// W3C export). Each realtime turn must mint its own trace in
+			// RunRealtimeTurnPreHooks so its log entry is delivered when the turn's
+			// trace is completed and flushed. Inheriting a trace whose lifecycle is
+			// owned elsewhere strands the entry forever.
+			if ctxKey == schemas.BifrostContextKeyTraceID || ctxKey == schemas.BifrostContextKeyExportTraceID {
 				continue
 			}
 			ctx.SetValue(ctxKey, value)
@@ -195,7 +196,33 @@ func updateRealtimeSessionFromEvent(session *bfws.Session, event *schemas.Bifros
 	}
 }
 
-func buildRealtimeTurnPreRequest(provider schemas.ModelProvider, model string, turnInputs []bfws.RealtimeTurnInput, sessionTools json.RawMessage) *schemas.BifrostRequest {
+// realtimeResponseCreateParams contains response-level content that must be visible
+// to turn pre-hooks before a response.create event reaches the provider.
+type realtimeResponseCreateParams struct {
+	Instructions *string                    `json:"instructions,omitempty"`
+	Input        []schemas.ResponsesMessage `json:"input,omitempty"`
+	Tools        *[]schemas.ResponsesTool   `json:"tools,omitempty"`
+}
+
+// realtimeResponseCreateParamsFromEvent extracts guardrail-relevant response.create fields.
+func realtimeResponseCreateParamsFromEvent(event *schemas.BifrostRealtimeEvent) realtimeResponseCreateParams {
+	if event == nil || event.Type != schemas.RTEventResponseCreate || event.ExtraParams == nil {
+		return realtimeResponseCreateParams{}
+	}
+	responseRaw := event.ExtraParams["response"]
+	if len(responseRaw) == 0 || string(responseRaw) == "null" {
+		return realtimeResponseCreateParams{}
+	}
+	var params realtimeResponseCreateParams
+	if json.Unmarshal(responseRaw, &params) != nil {
+		return realtimeResponseCreateParams{}
+	}
+	return params
+}
+
+// buildRealtimeTurnPreRequest builds the normalized request inspected by turn pre-hooks.
+func buildRealtimeTurnPreRequest(provider schemas.ModelProvider, model string, turnInputs []bfws.RealtimeTurnInput, sessionTools json.RawMessage, startEvent *schemas.BifrostRealtimeEvent) *schemas.BifrostRequest {
+	responseParams := realtimeResponseCreateParamsFromEvent(startEvent)
 	input := make([]schemas.ResponsesMessage, 0, len(turnInputs))
 	for _, turnInput := range turnInputs {
 		summary := strings.TrimSpace(turnInput.Summary)
@@ -223,12 +250,19 @@ func buildRealtimeTurnPreRequest(provider schemas.ModelProvider, model string, t
 		}
 	}
 
-	var params *schemas.ResponsesParameters
-	if len(sessionTools) > 0 {
+	input = append(input, responseParams.Input...)
+
+	params := &schemas.ResponsesParameters{Instructions: responseParams.Instructions}
+	if responseParams.Tools != nil {
+		params.Tools = *responseParams.Tools
+	} else if len(sessionTools) > 0 {
 		var tools []schemas.ResponsesTool
-		if json.Unmarshal(sessionTools, &tools) == nil && len(tools) > 0 {
-			params = &schemas.ResponsesParameters{Tools: tools}
+		if json.Unmarshal(sessionTools, &tools) == nil {
+			params.Tools = tools
 		}
+	}
+	if params.Instructions == nil && responseParams.Tools == nil && len(params.Tools) == 0 {
+		params = nil
 	}
 
 	return &schemas.BifrostRequest{
@@ -596,7 +630,7 @@ func startRealtimeTurnHooks(
 	provider schemas.ModelProvider,
 	model string,
 	key *schemas.Key,
-	startEventType schemas.RealtimeEventType,
+	startEvent *schemas.BifrostRealtimeEvent,
 ) *schemas.BifrostError {
 	if client == nil || session == nil {
 		return &schemas.BifrostError{
@@ -626,6 +660,10 @@ func startRealtimeTurnHooks(
 	}()
 
 	startedAt := time.Now()
+	startEventType := schemas.RealtimeEventType("")
+	if startEvent != nil {
+		startEventType = startEvent.Type
+	}
 	storeRaw := shouldStoreRealtimeRawPayloads(baseCtx)
 	turnCtx := newRealtimeTurnContext(baseCtx, "", session.ID(), session.ProviderSessionID(), realtimeTurnSourceEI, startEventType, key)
 	applyRealtimeRawStorageContext(turnCtx, storeRaw)
@@ -633,7 +671,7 @@ func startRealtimeTurnHooks(
 		turnCtx.SetValue(schemas.BifrostContextKeyRealtimeVoice, voice)
 	}
 	setRealtimeTurnStreamContext(turnCtx, startedAt, false)
-	req := buildRealtimeTurnPreRequest(provider, model, session.PeekRealtimeTurnInputs(), session.RealtimeSessionTools())
+	req := buildRealtimeTurnPreRequest(provider, model, session.PeekRealtimeTurnInputs(), session.RealtimeSessionTools(), startEvent)
 	hooks, bifrostErr := client.RunRealtimeTurnPreHooks(turnCtx, req)
 	if bifrostErr != nil {
 		// RunRealtimeTurnPreHooks already executed post-hooks and flushed the trace
@@ -707,7 +745,7 @@ func finalizeRealtimeTurnHooks(
 	preCtx := newRealtimeTurnContext(baseCtx, "", session.ID(), session.ProviderSessionID(), realtimeTurnSourceEI, "", key)
 	applyRealtimeRawStorageContext(preCtx, storeRaw)
 	setRealtimeTurnStreamContext(preCtx, startedAt, false)
-	preReq := buildRealtimeTurnPreRequest(provider, model, turnInputs, session.RealtimeSessionTools())
+	preReq := buildRealtimeTurnPreRequest(provider, model, turnInputs, session.RealtimeSessionTools(), nil)
 	hooks, bifrostErr := client.RunRealtimeTurnPreHooks(preCtx, preReq)
 	if bifrostErr != nil {
 		return bifrostErr
@@ -793,7 +831,7 @@ func finalizeRealtimeTurnHooksWithError(
 	preCtx := newRealtimeTurnContext(baseCtx, "", session.ID(), session.ProviderSessionID(), realtimeTurnSourceEI, "", key)
 	applyRealtimeRawStorageContext(preCtx, storeRaw)
 	setRealtimeTurnStreamContext(preCtx, startedAt, false)
-	preReq := buildRealtimeTurnPreRequest(provider, model, turnInputs, session.RealtimeSessionTools())
+	preReq := buildRealtimeTurnPreRequest(provider, model, turnInputs, session.RealtimeSessionTools(), nil)
 	hooks, hookPreErr := client.RunRealtimeTurnPreHooks(preCtx, preReq)
 	if hookPreErr != nil {
 		return hookPreErr

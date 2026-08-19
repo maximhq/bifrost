@@ -86,6 +86,7 @@ export default function DashboardPage() {
 			customer_ids: parseAsSafeArrayOf.withDefault([]),
 			business_unit_ids: parseAsSafeArrayOf.withDefault([]),
 			aliases: parseAsSafeArrayOf.withDefault([]),
+			apps: parseAsSafeArrayOf.withDefault([]),
 		},
 		{
 			history: "push",
@@ -144,6 +145,7 @@ export default function DashboardPage() {
 			...(urlState.customer_ids.length > 0 && { customer_ids: urlState.customer_ids }),
 			...(urlState.business_unit_ids.length > 0 && { business_unit_ids: urlState.business_unit_ids }),
 			...(urlState.aliases.length > 0 && { aliases: urlState.aliases }),
+			...(urlState.apps.length > 0 && { apps: urlState.apps }),
 		}),
 		[
 			urlState.period,
@@ -167,6 +169,7 @@ export default function DashboardPage() {
 			urlState.customer_ids,
 			urlState.business_unit_ids,
 			urlState.aliases,
+			urlState.apps,
 		],
 	);
 
@@ -210,6 +213,7 @@ export default function DashboardPage() {
 	const buRankingsRef = useRef<DimensionRankingsTabViewHandle>(null);
 	const userRankingsRef = useRef<DimensionRankingsTabViewHandle>(null);
 	const virtualKeyRankingsRef = useRef<DimensionRankingsTabViewHandle>(null);
+	const appRankingsRef = useRef<DimensionRankingsTabViewHandle>(null);
 
 	const allRefs = [
 		overviewRef,
@@ -221,6 +225,7 @@ export default function DashboardPage() {
 		buRankingsRef,
 		userRankingsRef,
 		virtualKeyRankingsRef,
+		appRankingsRef,
 	];
 
 	const getDashboardData = useCallback((): DashboardData => {
@@ -243,6 +248,7 @@ export default function DashboardPage() {
 			buRankingsData: null,
 			userRankingsData: null,
 			virtualKeyRankingsData: null,
+			appRankingsData: null,
 			mcpHistogramData: null,
 			mcpCostData: null,
 			mcpTopToolsData: null,
@@ -276,6 +282,7 @@ export default function DashboardPage() {
 			"bu-rankings": buRankingsRef,
 			"user-rankings": userRankingsRef,
 			"virtual-key-rankings": virtualKeyRankingsRef,
+			"app-rankings": appRankingsRef,
 		};
 
 		const refs = scope === "all" ? allRefs : [refsByTab[scope]];
@@ -304,7 +311,10 @@ export default function DashboardPage() {
 	const handleProviderCostChartToggle = useCallback((type: ChartType) => setUrlState({ provider_cost_chart: type }), [setUrlState]);
 	const handleProviderTokenChartToggle = useCallback((type: ChartType) => setUrlState({ provider_token_chart: type }), [setUrlState]);
 	const handleProviderLatencyChartToggle = useCallback((type: ChartType) => setUrlState({ provider_latency_chart: type }), [setUrlState]);
-	const handleProviderThroughputChartToggle = useCallback((type: ChartType) => setUrlState({ provider_throughput_chart: type }), [setUrlState]);
+	const handleProviderThroughputChartToggle = useCallback(
+		(type: ChartType) => setUrlState({ provider_throughput_chart: type }),
+		[setUrlState],
+	);
 	const handleMcpVolumeChartToggle = useCallback((type: ChartType) => setUrlState({ mcp_volume_chart: type }), [setUrlState]);
 	const handleMcpCostChartToggle = useCallback((type: ChartType) => setUrlState({ mcp_cost_chart: type }), [setUrlState]);
 
@@ -361,6 +371,7 @@ export default function DashboardPage() {
 				customer_ids: newFilters.customer_ids || [],
 				business_unit_ids: newFilters.business_unit_ids || [],
 				aliases: newFilters.aliases || [],
+				apps: newFilters.apps || [],
 			});
 		},
 		[setUrlState, urlState.start_time, urlState.end_time],
@@ -556,9 +567,11 @@ export default function DashboardPage() {
 								<TabsTrigger className="shrink-0" value="bu-rankings" data-testid="dashboard-tab-bu-rankings">
 									BU Rankings
 								</TabsTrigger>
+								<TabsTrigger value="app-rankings" data-testid="dashboard-tab-app-rankings">
+									App Rankings
+								</TabsTrigger>
 							</TabsList>
 						</div>
-
 						{/* Overview Tab */}
 						<TabsContent value="overview" {...(exportingAll && { forceMount: true })}>
 							<div id="dashboard-section-overview">
@@ -724,6 +737,21 @@ export default function DashboardPage() {
 									testIdPrefix="dashboard-virtual-key-rankings"
 									dataKey="virtualKeyRankingsData"
 									pdfMode={isExportingTab("virtual-key-rankings")}
+								/>
+							</div>
+						</TabsContent>
+						{/* App Rankings Tab */}
+						<TabsContent value="app-rankings" {...(isExportingTab("app-rankings") && { forceMount: true })}>
+							<div id="dashboard-section-app-rankings">
+								<DimensionRankingsTabView
+									ref={appRankingsRef}
+									filters={filters}
+									active={activeTab === "app-rankings" || isExportingTab("app-rankings")}
+									dimension="app"
+									dimensionLabel="App"
+									testIdPrefix="dashboard-app-rankings"
+									dataKey="appRankingsData"
+									pdfMode={isExportingTab("app-rankings")}
 								/>
 							</div>
 						</TabsContent>

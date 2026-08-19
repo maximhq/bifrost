@@ -1,0 +1,160 @@
+---
+title: "v1.6.9"
+description: "v1.6.9 changelog - 2026-08-07"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.6.9
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.6.9
+    docker run -p 8080:8080 maximhq/bifrost:v1.6.9
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.6.9">
+## ✨ Features
+
+- **Bedrock HTTP/2 PING Keepalives** - Opt-in HTTP/2 PING keepalives on the Bedrock provider via the new `http2_ping_interval_in_seconds` config key (0 = off), keeping quiet streams alive through intermediaries that sever idle connections (thanks [@jeremym-tanium](https://github.com/jeremym-tanium)!)
+- **Expanded OTEL Metric Attributes** - Metrics now carry a service instance id plus team, customer, and business-unit ids and names, so exported series can be sliced by tenant without post-processing
+- **Adaptive Thinking on Raw Passthrough** - Adaptive-only Anthropic models (Opus 4.7+, Opus 4.8, Opus 5, Sonnet 5, Fable 5, Mythos 5) now get legacy `thinking.type: "enabled"` rewritten to the adaptive form on the raw passthrough body as well as the typed request path
+
+## 🐞 Fixed
+
+- **SSE Heartbeat Mid-Line Corruption** - The stream reader now tracks line boundaries under a mutex and refuses to emit a heartbeat mid-line, fixing corrupted `data:` payloads on raw passthrough streams where a heartbeat could split a JSON line
+- **SSE Heartbeat Frame Compatibility** - Dropped the trailing blank line from the heartbeat comment frame so non-conforming SSE decoders (e.g. openai-go ssestream before v3.43.0) no longer dispatch an empty event and abort mid-stream with "unexpected end of JSON input"
+- **Lost Log Rows on Shared Trace IDs** - Concurrent HTTP requests that inherit the same W3C trace id no longer overwrite each other's pending log entry; the join now uses the per-request internal trace id (thanks [@AdityaPainuli](https://github.com/AdityaPainuli)!)
+- **Budget Counters Reset on Force-Sync** - `config.json` force-sync no longer overwrites live `current_usage`, `last_reset`, and the token/request rate-limit counters with the values from the file
+- **Transcription Filename Dropped** - The client's multipart filename is now carried through transcription ingress, so non-WAV containers are no longer relabelled `audio.mp3` and rejected upstream (thanks [@AdityaPainuli](https://github.com/AdityaPainuli)!)
+- **Anthropic Mid-Conversation System Messages** - A `role:"system"` turn that cannot be forwarded natively is now inlined as a user turn instead of being dropped, the placement check enforces both of Anthropic's clauses, and Bedrock's system-reminder converter keeps its `cache_control` marker
+- **Bedrock Streaming Correctness** - `ConverseStream` reports `stopReason: tool_use` for tool-use turns instead of `end_turn` (thanks [@axelray-dev](https://github.com/axelray-dev)!); `message_start` carries an all-zero `usage` object when figures are unknown so `@ai-sdk/anthropic` 4.0.6-4.0.32 accepts the frame; and encrypted reasoning is preserved as a replay signature when translating Responses history (thanks [@zachgersh](https://github.com/zachgersh)!)
+- **Encrypted Reasoning Fail-Soft** - An upstream 400 caused by unverifiable replayed `encrypted_content` now strips the reasoning content and retries once instead of failing the request, which matters when a key pool rotates or a request falls back to another provider
+- **Server-Side Tool Search** - `tool_search_tool_*` types are normalized on the Responses path, and `include_server_side_tool_invocations` now reaches the Gemini declaration-drop gate (thanks [@AdityaPainuli](https://github.com/AdityaPainuli)!)
+- **DeepSeek Thinking on Multi-Turn** - Thinking is no longer silently disabled for ordinary multi-turn conversations through the OpenAI-compatible surface; the shim is non-mutating and inbound reasoning aliases are normalized
+- **Vertex and Gemini Response Fidelity** - `generateContent` keeps `candidates[0].safetyRatings` and `avgLogprobs`, and the Vertex cached-content methods honour API-key or context-header auth instead of overwriting `Authorization` with an OAuth token (thanks [@TransactCharlie](https://github.com/TransactCharlie)!)
+- **Custom Provider Base Resolution** - OpenAI models served through a custom provider now resolve to their built-in base provider before deciding reasoning item-id embedding
+- **MCP Tool Errors Replayed as Success** - Failed MCP tool executions are now marked as errors instead of being replayed to the model as successful results, covering agent-loop failures, the MCP protocol's own `isError` flag, and CodeMode lookup/sandbox failures (thanks [@AidanAllchin](https://github.com/AidanAllchin)!)
+- **Tool-Result Document Blocks** - `document` blocks in tool results survive the Anthropic to Responses conversion with a synthesized filename, and `FileURL`/`FileType` propagate through all three chat/responses conversion paths
+- **Stream Termination Edge Cases** - A nil delta paired with a non-nil finish reason no longer aborts the stream, and GPT-5-series detection tolerates prefixed model names when resolving reasoning-effort support
+
+## 🗄️ Database Migrations
+
+- No new database migrations in this release.
+
+## 🐙 Closed GitHub Issues
+
+- [#5206](https://github.com/maximhq/bifrost/issues/5206) - Bedrock ConverseStream egress reports stopReason=end_turn for tool-use turns (should be tool_use)
+- [#5211](https://github.com/maximhq/bifrost/issues/5211) - Bedrock streaming can drop with "unexpected EOF" when an intermediary idle timeout severs a quiet stream
+- [#5256](https://github.com/maximhq/bifrost/issues/5256) - Concurrent HTTP requests sharing a W3C trace ID lose LLM log rows
+- [#5279](https://github.com/maximhq/bifrost/issues/5279) - OpenAI /v1/responses to Anthropic drops the tool_search_tool_regex type, so server-side tool_search never runs
+- [#5670](https://github.com/maximhq/bifrost/issues/5670) - Transcription drops the client's multipart filename, so non-WAV containers are relabelled audio.mp3 and rejected
+- [#5679](https://github.com/maximhq/bifrost/issues/5679) - Anthropic Messages does not propagate Gemini mixed server/client tool opt-in
+- [#5843](https://github.com/maximhq/bifrost/issues/5843) - generateContent (Gemini format) drops `candidates[0].safetyRatings` and `avgLogprobs` on Vertex AI responses
+- [#5874](https://github.com/maximhq/bifrost/issues/5874) - SSE heartbeat frame aborts streams for openai-go ssestream consumers (< v3.43.0) with "unexpected end of JSON input"
+- [#5885](https://github.com/maximhq/bifrost/issues/5885) - v1.6.8 omits message_start.message.usage on Bedrock-backed providers, breaking @ai-sdk/anthropic streaming
+- [#5887](https://github.com/maximhq/bifrost/issues/5887) - DeepSeek thinking silently lost on ALL multi-turn requests via OpenAI-compat inbound (v1.6.7; regression from v1.6.3)
+- [#5890](https://github.com/maximhq/bifrost/issues/5890) - chat completions surface drops tool_result `is_error`, so failed tool calls replay to the model as successful
+- [#5902](https://github.com/maximhq/bifrost/issues/5902) - service_tier silently dropped for gpt-5.4 family, priority/fast requests downgrade to default
+- [#5905](https://github.com/maximhq/bifrost/issues/5905) - v1.6.8 raw passthrough heartbeat can split SSE data lines and corrupt JSON
+- [#5925](https://github.com/maximhq/bifrost/issues/5925) - config.json force-sync overwrites budget current_usage and last_reset on startup
+
+## 🔧 Maintenance
+
+- **Dependency Upgrades** - Bumped core to v1.7.7 and framework to v1.5.7; all plugins bumped to pick up the cascade (compat v0.1.33, governance v1.6.11, jsonparser v1.5.34, logging v1.6.7, maxim v1.6.34, mocker v1.5.34, modelcatalogresolver v1.0.15, otel v1.4.6, prompts v1.0.34, semanticcache v1.5.34, telemetry v1.5.34)
+
+</Update>
+<Update label="Core" description="1.7.7">
+- feat: add `BifrostContextKeyCompatDroppedParams` so the compat plugin can carry its dropped-parameter list per request instead of on the shared plugin struct (#5902)
+- feat: rewrite `thinking.type: "enabled"` to the adaptive form for adaptive-only Anthropic models (Opus 4.7+, Opus 4.8, Opus 5, Sonnet 5, Fable 5, Mythos 5) on both the typed request path and the raw passthrough body, and gate `stripUnsupportedAnthropicFields` on `capModel` so custom deployment names resolve correctly (#5934)
+- feat: add service instance id to OTEL attributes (#5849)
+- feat: add team / customer / business-unit ids and names to OTEL metrics (#5848)
+- feat: opt-in HTTP/2 PING keepalives on the Bedrock provider via a configurable interval (0 = off) [@jeremym-tanium](https://github.com/jeremym-tanium)
+- fix: always emit a well-formed `message_start` on the Anthropic surface - the frame now carries a `message` object with a `usage` object and an array `content` even when the upstream created event has no payload, and the chat-completions converter no longer panics on a content-less assistant message
+- fix: carry tool-result `is_error` across the chat/Responses mux in both directions, and stop the unmarshal reattach gate from dropping a tool message that marks a failure without a `tool_call_id` (#5890)
+- fix: mark failed MCP tool executions as errors instead of replaying them to the model as successful results - covers agent-loop execution errors, the MCP protocol's own `isError` flag which was previously discarded, and CodeMode lookup/sandbox failures (#5890)
+- fix: carry tool-result `is_error` through the chat completions surface so Anthropic replay and Bedrock Converse status reflect failed tool calls [@AidanAllchin](https://github.com/AidanAllchin)
+- fix: preserve encrypted reasoning as a Bedrock replay signature when translating Responses history [@zachgersh](https://github.com/zachgersh)
+- fix: `include_server_side_tool_invocations` now reaches the Gemini declaration-drop gate, so mixed server/client tool opt-in propagates from the Anthropic Messages surface (#5935) [@AdityaPainuli](https://github.com/AdityaPainuli)
+- fix: inline mid-conversation `role:"system"` messages as a user turn when the native system form is unavailable (unsupported model or wrong provider), tighten the Anthropic placement check to both of its clauses, and stop `convertBifrostSystemReminderToBedrockUserMessage` from dropping `cache_control` (#5931)
+- fix: map Bedrock `ConverseStream` `stopReason` to `tool_use` for tool-use turns instead of reporting `end_turn` (#5209) [@axelray-dev](https://github.com/axelray-dev)
+- fix: fail soft on `invalid_encrypted_content` by stripping replayed reasoning `encrypted_content` and retrying once, cloning reasoning structs rather than mutating them in place, and reporting the true retry ceiling in retry logs (#5892)
+- fix: normalize `tool_search_tool_*` types on the Responses path so server-side tool search actually runs (#5891)
+- fix: stop disabling DeepSeek thinking on ordinary multi-turn conversations - the disable gate is narrowed, the thinking shim is now non-mutating, `reasoning_content` is stripped except on tool calls, and inbound reasoning aliases are normalized (#5888)
+- fix: emit an all-zero `usage` object on `message_start` for both the native Anthropic and Bedrock invoke streaming paths so `@ai-sdk/anthropic` 4.0.6-4.0.32 no longer rejects the frame as missing a required field (#5886)
+- fix: carry `document` tool-result blocks through the Anthropic to Responses converters with a synthesized filename when the block has no title, and propagate `FileURL` and `FileType` across all three chat/responses conversion paths (#5884)
+- fix: resolve the base provider for custom providers via the new `BifrostContextKeyBaseProviderType` and `ResolveBaseProvider` helper, so reasoning item-id embedding is decided from the built-in provider rather than the custom provider name (#5897)
+- fix: a nil stream delta with a non-nil finish reason no longer bails out of the stream (#5878)
+- fix: keep `candidates[0].safetyRatings` and `avgLogprobs` on `generateContent` (Gemini format) responses from Vertex AI (#5877)
+- fix: support API-key and context-header auth in the Vertex cached content methods instead of unconditionally overwriting the `Authorization` header with an OAuth token (#5462) [@TransactCharlie](https://github.com/TransactCharlie)
+- fix: detect the GPT-5 series with `strings.Contains` instead of `strings.HasPrefix` so prefixed model names still resolve reasoning-effort support (#5867)
+- fix: normalize and whitespace-trim attribute values when exporting metrics (#5847)
+- fix: carry the client's multipart filename through transcription ingress so non-WAV containers are no longer relabelled `audio.mp3` and rejected (#5823) [@AdityaPainuli](https://github.com/AdityaPainuli)
+- fix: concurrent requests sharing a W3C trace id no longer lose LLM log rows (#5356) [@AdityaPainuli](https://github.com/AdityaPainuli)
+- fix: clamp http2_ping_interval_in_seconds to avoid int64 overflow on conversion to time.Duration [@jeremym-tanium](https://github.com/jeremym-tanium)
+- perf: avoid copying known request fields on the Anthropic path (#5809) [@zachgersh](https://github.com/zachgersh)
+
+</Update>
+<Update label="Framework" description="1.5.7">
+- feat: expose `SetSupportedParamsForTest` on the datasheet `Store` and plumb `supports_service_tier` through it, so packages outside the datasheet package can seed capability data (#5928)
+- fix: `UpdateBudget` and `UpdateRateLimit` now carry live runtime counters (`current_usage`, `last_reset`, `token_current_usage`, `token_last_reset`, `request_current_usage`, `request_last_reset`) forward from the existing row instead of overwriting them, and `mergeGovernanceConfig` adopts the persisted counters on config force-sync (#5932)
+- fix: concurrent requests sharing a W3C trace id no longer lose log rows in the tracing store (#5356) [@AdityaPainuli](https://github.com/AdityaPainuli)
+- fix: normalize `tool_search_tool_*` on the Responses path (#5891)
+
+</Update>
+<Update label="compat" description="0.1.33">
+- fix: scope the compat plugin's dropped-parameter list to the request that produced it - the list was held on the process-wide plugin struct, so concurrent requests raced on it and `extra_fields.dropped_compat_plugin_params` could report another request's dropped params (#5902)
+- feat: log parameters scrubbed by `should_drop_params` at Debug, and a dropped `service_tier` at Warn - a silently stripped `service_tier` downgrades the request to the provider's default tier with no upstream error, which was previously untraceable (#5902)
+- chore: upgraded core to v1.7.7 and framework to v1.5.7
+
+</Update>
+<Update label="governance" description="1.6.11">
+- chore: upgraded core to v1.7.7 and framework to v1.5.7
+
+</Update>
+<Update label="jsonparser" description="1.5.34">
+- chore: upgraded core to v1.7.7 and framework to v1.5.7
+
+</Update>
+<Update label="logging" description="1.6.7">
+- fix: join pending log entries on the trace's `InternalID` instead of its `TraceID`, so concurrent requests that inherit the same W3C trace id no longer overwrite each other's pending entry and lose log rows (#5356) [@AdityaPainuli](https://github.com/AdityaPainuli)
+- chore: upgraded core to v1.7.7 and framework to v1.5.7
+
+</Update>
+<Update label="maxim" description="1.6.34">
+- chore: upgraded core to v1.7.7 and framework to v1.5.7
+
+</Update>
+<Update label="mocker" description="1.5.34">
+- chore: upgraded core to v1.7.7 and framework to v1.5.7
+
+</Update>
+<Update label="modelcatalogresolver" description="1.0.15">
+- chore: upgraded core to v1.7.7 and framework to v1.5.7
+
+</Update>
+<Update label="otel" description="1.4.6">
+- feat: add service instance id to the exported OTEL resource attributes (#5849)
+- feat: add team / customer / business-unit ids and names to OTEL metrics (#5848)
+- fix: normalize and whitespace-trim attribute values when exporting metrics (#5847)
+- chore: upgraded core to v1.7.7 and framework to v1.5.7
+
+</Update>
+<Update label="prompts" description="1.0.34">
+- chore: upgraded core to v1.7.7 and framework to v1.5.7
+
+</Update>
+<Update label="semanticcache" description="1.5.34">
+- chore: upgraded core to v1.7.7 and framework to v1.5.7
+
+</Update>
+<Update label="telemetry" description="1.5.34">
+- feat: add service instance id to the exported telemetry attributes (#5849)
+- feat: add team / customer / business-unit ids and names to exported metrics (#5848)
+- fix: normalize and whitespace-trim attribute values when exporting metrics (#5847)
+- chore: upgraded core to v1.7.7 and framework to v1.5.7
+
+</Update>

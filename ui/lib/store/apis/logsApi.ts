@@ -89,6 +89,12 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	if (filters.business_unit_ids && filters.business_unit_ids.length > 0) {
 		params.business_unit_ids = filters.business_unit_ids.join(",");
 	}
+	if (filters.apps && filters.apps.length > 0) {
+		params.apps = JSON.stringify(filters.apps);
+	}
+	if (filters.user_agents && filters.user_agents.length > 0) {
+		params.user_agents = JSON.stringify(filters.user_agents);
+	}
 	if (filters.metadata_filters) {
 		for (const [key, value] of Object.entries(filters.metadata_filters)) {
 			params[`metadata_${key}`] = value;
@@ -121,15 +127,18 @@ export const logsApi = baseApi.injectEndpoints({
 			{
 				filters: LogFilters;
 				pagination: Pagination;
+				/** Grouped view: hide fallback-child rows so each chain lists as its root */
+				rootsOnly?: boolean;
 			}
 		>({
-			query: ({ filters, pagination }) => ({
+			query: ({ filters, pagination, rootsOnly }) => ({
 				url: "/logs",
 				params: {
 					limit: pagination.limit,
 					offset: pagination.offset,
 					sort_by: pagination.sort_by,
 					order: pagination.order,
+					...(rootsOnly ? { roots_only: "true" } : {}),
 					...buildFilterParams(filters),
 				},
 			}),
@@ -368,6 +377,8 @@ export const logsApi = baseApi.injectEndpoints({
 				routing_rules?: RoutingRule[];
 				routing_engines?: string[];
 				stop_reasons?: string[];
+				apps?: string[];
+				user_agents?: string[];
 				teams?: { id: string; name: string }[];
 				customers?: { id: string; name: string }[];
 				users?: { id: string; name: string }[];
@@ -420,6 +431,21 @@ export const logsApi = baseApi.injectEndpoints({
 			}),
 		}),
 
+		// Stop a running cost recalculation. Costs already recomputed are kept; the job
+		// simply stops walking the window. Omit id to cancel whichever job is in flight.
+		// Resolves with the job's post-cancel status so the caller can settle its UI.
+		cancelRecalculateCostJob: builder.mutation<RecalcJobStatus, { id?: string } | void>({
+			query: (arg) => ({
+				url: "/logs/recalculate-cost/cancel",
+				method: "POST",
+				params: arg?.id ? { id: arg.id } : {},
+			}),
+			// A cancelled job still committed costs for every row it got through, so
+			// every Logs-tagged query (stats, histograms, filter data) is stale — same
+			// as for the start mutation above.
+			invalidatesTags: ["Logs"],
+		}),
+
 		// Get a single log entry by ID (includes raw_request and raw_response)
 		getLogById: builder.query<LogEntry, string>({
 			query: (id) => `/logs/${encodeURIComponent(id)}`,
@@ -466,6 +492,7 @@ export const {
 	useDeleteLogsMutation,
 	useRecalculateLogCostsMutation,
 	useGetRecalculateCostStatusQuery,
+	useCancelRecalculateCostJobMutation,
 	useLazyGetLogByIdQuery,
 	useGetLogByIdQuery,
 } = logsApi;

@@ -3,7 +3,8 @@ import { useDebouncedValue } from "@/hooks/useDebounce";
 import { getErrorMessage, useGetMCPSessionsQuery } from "@/lib/store";
 import { AuthMode, MCPSessionKind, MCPSessionStatus } from "@/lib/types/mcpSessions";
 import { parseAsArrayOf, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
-import { useEffect } from "react";
+import { useCallback, useEffect, useMemo } from "react";
+import { MCPSessionFilters, MCPSessionsFilterSidebar } from "./views/mcpSessionsFilterSidebar";
 import SessionsTable from "./views/sessionsTable";
 
 // Page size larger than the governance default (25) since session rows are
@@ -18,6 +19,8 @@ export default function MCPSessionsPage() {
 			status: parseAsArrayOf(parseAsString).withDefault([]),
 			auth_mode: parseAsArrayOf(parseAsString).withDefault([]),
 			mcp_client_id: parseAsArrayOf(parseAsString).withDefault([]),
+			virtual_key_id: parseAsArrayOf(parseAsString).withDefault([]),
+			user_id: parseAsArrayOf(parseAsString).withDefault([]),
 			identity: parseAsString.withDefault(""),
 			offset: parseAsInteger.withDefault(0),
 		},
@@ -27,12 +30,41 @@ export default function MCPSessionsPage() {
 	const debouncedSearch = useDebouncedValue(urlState.q, 300);
 	const normalizedIdentity = urlState.identity.trim();
 
+	const filters: MCPSessionFilters = useMemo(
+		() => ({
+			kind: urlState.kind,
+			status: urlState.status,
+			auth_mode: urlState.auth_mode,
+			mcp_client_id: urlState.mcp_client_id,
+			virtual_key_id: urlState.virtual_key_id,
+			user_id: urlState.user_id,
+		}),
+		[urlState.kind, urlState.status, urlState.auth_mode, urlState.mcp_client_id, urlState.virtual_key_id, urlState.user_id],
+	);
+
+	const setFilters = useCallback(
+		(newFilters: MCPSessionFilters) => {
+			void setUrlState({
+				kind: newFilters.kind,
+				status: newFilters.status,
+				auth_mode: newFilters.auth_mode,
+				mcp_client_id: newFilters.mcp_client_id,
+				virtual_key_id: newFilters.virtual_key_id,
+				user_id: newFilters.user_id,
+				offset: 0,
+			});
+		},
+		[setUrlState],
+	);
+
 	const { data, isLoading, isFetching, isError, error } = useGetMCPSessionsQuery({
 		q: debouncedSearch || undefined,
-		kind: urlState.kind.length ? (urlState.kind as MCPSessionKind[]) : undefined,
-		status: urlState.status.length ? (urlState.status as MCPSessionStatus[]) : undefined,
-		auth_mode: urlState.auth_mode.length ? (urlState.auth_mode as AuthMode[]) : undefined,
-		mcp_client_id: urlState.mcp_client_id.length ? urlState.mcp_client_id : undefined,
+		kind: filters.kind.length ? (filters.kind as MCPSessionKind[]) : undefined,
+		status: filters.status.length ? (filters.status as MCPSessionStatus[]) : undefined,
+		auth_mode: filters.auth_mode.length ? (filters.auth_mode as AuthMode[]) : undefined,
+		mcp_client_id: filters.mcp_client_id.length ? filters.mcp_client_id : undefined,
+		virtual_key_id: filters.virtual_key_id.length ? filters.virtual_key_id : undefined,
+		user_id: filters.user_id.length ? filters.user_id : undefined,
 		identity: normalizedIdentity || undefined,
 		limit: PAGE_SIZE,
 		offset: urlState.offset,
@@ -61,41 +93,46 @@ export default function MCPSessionsPage() {
 		);
 	}
 
-	const hasActiveFilters =
-		!!urlState.q ||
-		urlState.kind.length > 0 ||
-		urlState.status.length > 0 ||
-		urlState.auth_mode.length > 0 ||
-		urlState.mcp_client_id.length > 0 ||
-		!!normalizedIdentity;
+	const filtersActive =
+		filters.kind.length > 0 ||
+		filters.status.length > 0 ||
+		filters.auth_mode.length > 0 ||
+		filters.mcp_client_id.length > 0 ||
+		filters.virtual_key_id.length > 0 ||
+		filters.user_id.length > 0;
+	const hasActiveFilters = !!urlState.q || filtersActive || !!normalizedIdentity;
 
 	const handleSearchChange = (value: string) => setUrlState({ q: value || null, offset: 0 });
-	const handleKindChange = (value: string[]) => setUrlState({ kind: value.length ? value : null, offset: 0 });
-	const handleStatusChange = (value: string[]) => setUrlState({ status: value.length ? value : null, offset: 0 });
-	const handleAuthModeChange = (value: string[]) => setUrlState({ auth_mode: value.length ? value : null, offset: 0 });
 	const handleOffsetChange = (offset: number) => setUrlState({ offset });
-	const handleClearFilters = () => setUrlState({ q: null, kind: null, status: null, auth_mode: null, mcp_client_id: null, identity: null, offset: 0 });
+
+	const table = (
+		<SessionsTable
+			sessions={data?.sessions ?? []}
+			totalCount={totalCount}
+			isFetching={isFetching}
+			search={urlState.q}
+			onSearchChange={handleSearchChange}
+			hasActiveFilters={hasActiveFilters}
+			offset={urlState.offset}
+			limit={PAGE_SIZE}
+			onOffsetChange={handleOffsetChange}
+		/>
+	);
+
+	// No sessions at all and no active filters/search: render full-width
+	// without the filter sidebar, mirroring the MCP clients onboarding state.
+	if (totalCount === 0 && !hasActiveFilters) {
+		return <div className="mx-auto flex h-[calc(100dvh-50px)] w-full max-w-7xl flex-col">{table}</div>;
+	}
 
 	return (
-		<div className="mx-auto flex h-[calc(100dvh-50px)] w-full max-w-7xl flex-col">
-			<SessionsTable
-				sessions={data?.sessions ?? []}
-				totalCount={totalCount}
-				isFetching={isFetching}
-				search={urlState.q}
-				onSearchChange={handleSearchChange}
-				kindFilter={urlState.kind}
-				onKindFilterChange={handleKindChange}
-				statusFilter={urlState.status}
-				onStatusFilterChange={handleStatusChange}
-				authModeFilter={urlState.auth_mode}
-				onAuthModeFilterChange={handleAuthModeChange}
-				hasActiveFilters={hasActiveFilters}
-				onClearFilters={handleClearFilters}
-				offset={urlState.offset}
-				limit={PAGE_SIZE}
-				onOffsetChange={handleOffsetChange}
-			/>
+		<div className="dark:bg-card no-padding-parent no-border-parent h-[calc(100dvh_-_16px)]">
+			<div className="bg-background flex h-full w-full grow gap-3">
+				<MCPSessionsFilterSidebar filters={filters} onFiltersChange={setFilters} />
+				<div className="bg-card h-full w-full overflow-hidden rounded-l-md">
+					<div className="flex h-full flex-col p-4">{table}</div>
+				</div>
+			</div>
 		</div>
 	);
 }

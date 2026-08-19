@@ -53,7 +53,7 @@ VK and session-mode URLs may also carry a `#t=<temp-token>` fragment when [`mcp_
 
 ## Setup
 
-The admin configures the MCP client once, declaring the schema (header names) end-users will need to fill in. During setup, Bifrost asks the admin for sample values, runs a one-time upstream verify, and discovers the tool list — same as the per-user OAuth setup pattern, just with a values form instead of an OAuth popup. Sample values are discarded after the test.
+The admin configures the MCP client once, declaring the schema (header names) end-users will need to fill in. During setup, Bifrost asks the admin for sample values, runs a one-time upstream verify, and discovers the tool list — same as the per-user OAuth setup pattern, just with a values form instead of an OAuth popup. When verification runs through the `verify-headers` flow, the sample values are retained as the [admin discovery credential](#admin-discovery-credential) used to keep the tool list fresh; values passed inline on the create call are still used once and discarded.
 
 <Tabs>
 <Tab title="Web UI">
@@ -98,7 +98,7 @@ curl -X POST http://localhost:8080/api/mcp/client \
 | Field                  | Type                          | Purpose                                                                            |
 | ---------------------- | ----------------------------- | ---------------------------------------------------------------------------------- |
 | `per_user_header_keys` | `string[]`                    | Required header names end-users must supply. The schema.                           |
-| `user_headers`         | `map[string]string`           | Admin's sample values for the one-time verify. Discarded after the create call.   |
+| `user_headers`         | `map[string]string`           | Admin's sample values for the one-time verify. Discarded after the create call; only the [`verify-headers` flow](#admin-discovery-credential) retains them as the admin discovery credential. |
 | `headers`              | `map[string]EnvVar`           | Optional static admin headers that accompany every per-user request.              |
 
 On success, Bifrost runs the upstream verify with `user_headers`, attaches the discovered tools, persists the MCP client, and returns:
@@ -115,9 +115,46 @@ If the verify fails, the call returns `422 Unprocessable Entity` with the upstre
 </Tab>
 <Tab title="config.json">
 
-File-based config is **not supported** for `per_user_headers`. Bifrost needs to run the one-time upstream verify with the admin's sample values during create, which can only happen via an interactive admin step (Web UI or API).
+Declare the client with `auth_type: "per_user_headers"` and the required header-name schema. The admin's sample values aren't included in config.json — they're collected by the UI when verification runs.
 
-If you want a declarative-ish setup, run the API create once with your sample values, then check the resulting `mcp_client_id` into your config to reference it from other parts of the system. The MCP client itself stays in Bifrost's database.
+```json
+{
+  "mcp": {
+    "client_configs": [
+      {
+        "name": "acme_api",
+        "connection_type": "http",
+        "connection_string": "https://api.acme.example.com/mcp",
+        "auth_type": "per_user_headers",
+        "per_user_header_keys": ["X-API-Key", "X-Tenant-ID"],
+        "headers": {
+          "X-Region": "us-east-1"
+        },
+        "tools_to_execute": ["*"]
+      }
+    ]
+  }
+}
+```
+
+At boot the client lands in **`pending_verification`** state. From the MCP Gateway UI, open the client and click **Verify** — Bifrost opens the same sample-values dialog the Web UI Create flow uses. Submit values, the upstream verify runs, tools are discovered, the values are retained as the [admin discovery credential](#admin-discovery-credential) for later tool-list refresh, and the client transitions to `healthy`.
+
+The same step is scriptable — no browser involved:
+
+```bash
+curl -X POST http://localhost:8080/api/mcp/client/{id}/verify-headers \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_headers": {
+      "X-API-Key": "sample-admin-key",
+      "X-Tenant-ID": "verification-tenant"
+    }
+  }'
+```
+
+`user_headers` must cover every declared key. On success the response carries `tools_count` and the client transitions to `healthy`; a `422` means the upstream verify failed (retry with different values). A `409` means the client was already verified and its [admin discovery credential](#admin-discovery-credential) is healthy (or absent), so there is nothing to re-verify. The one legitimate repeat call is a repair: while the admin credential sits in `needs_update`, the endpoint accepts fresh sample values and flips the credential back to `active` on success.
+
+**Lifecycle across restarts and config edits:** the verified state (discovered tools) is server-side and survives restarts and config.json re-syncs, including edits to `per_user_header_keys` — new keys apply to end-user submissions without re-verification. The key list cannot be *emptied*, though: an edit that removes all keys is ignored and the stored keys kept (with a warning at boot). Immutable fields — `auth_type`, `connection_type`, `connection_string`, `stdio_config` — cannot be changed after creation: file edits to them are ignored with a boot warning, matching the update API. Delete the client and re-declare it to change them.
 
 </Tab>
 </Tabs>
@@ -141,7 +178,7 @@ There is a strict separation between the two:
 
 ## Editing the schema
 
-If the admin later changes `per_user_header_keys` (adds, removes, or renames a required header), all existing credentials for that MCP server flip to `needs_update`. End-users will see an `mcp_auth_required` payload on the next tool call and be sent back to the submission form to fill in the new schema. Their old values are preserved where the key still matches — the form pre-shows which keys are already on file (names only, never values).
+If the admin later changes `per_user_header_keys` (adds, removes, or renames a required header), all existing credentials for that MCP server flip to `needs_update`. End-users will see an `mcp_auth_required` payload on the next tool call and be sent back to the submission form to fill in the new schema. Their old values are preserved where the key still matches — the form pre-shows which keys are already on file (names only, never values). The retained [admin discovery credential](#admin-discovery-credential) flips to `needs_update` too, which surfaces as a `needs_reauth` badge on the client until the admin re-runs verification with values for the new schema.
 
 <Tabs>
 <Tab title="Web UI">
@@ -217,6 +254,37 @@ Every per-user header credential shows up on the **MCP Sessions** page with one 
 
 From the sessions table the user can **Edit values** (mints a fresh submission flow against the same MCP/identity) or **Revoke** outright. See [MCP Sessions](../sessions) for the full lifecycle and the orphan/reactivate behavior on VK changes.
 
+The client-level [admin discovery credential](#admin-discovery-credential) is deliberately excluded from this page: it is not an end-user credential, and it is managed from the client sheet instead.
+
+---
+
+## Admin discovery credential
+
+When admin verification runs through the `verify-headers` flow (the **Verify** dialog on a `pending_verification` client, or the endpoint directly), the sample values are retained as a client-level **admin discovery credential** (auth mode `admin`). Its role is deliberately narrow:
+
+- **Tool-list refresh only.** The periodic tool syncer uses it for a one-shot connect, `tools/list`, disconnect cycle on the client's [tool sync interval](#periodic-tool-sync). It is **never** used for end-user tool calls; those always run under the caller's own submitted values.
+- **Invisible on the sessions page.** Admin credentials are excluded from [MCP Sessions](../sessions); they are managed from the client sheet instead.
+
+If the credential falls into `needs_update` (typically because `per_user_header_keys` changed), the client list projects a **`needs_reauth`** badge next to the client's **View sessions** link. This is a display-level state: end-user credentials and tool calls keep working, only tool-list refresh pauses until an admin repairs it. Clients created with inline `user_headers` before running `verify-headers` have no admin row and simply stay healthy (their tool list just cannot refresh periodically).
+
+To repair it, open the client sheet and click **Update headers**: the same sample-values dialog re-runs the upstream verify, re-discovers tools, and flips the credential back to `active`. The scriptable equivalent is a repeat `POST /api/mcp/client/{id}/verify-headers` call, which is accepted while the admin credential sits in `needs_update` (any other repeat returns `409`).
+
+<Frame>
+  <img src="/media/ui-mcp-per-user-headers-admin-repair.png" alt="Per-user headers client sheet showing the needs_reauth badge next to View sessions and the Update headers button" />
+</Frame>
+
+### Periodic tool sync
+
+Per-user clients hold no persistent upstream connection, but their tool list still refreshes on a schedule using the admin discovery credential. The cadence follows the per-client `tool_sync_interval` (minutes, on the create/update API):
+
+- **Positive**: sync every N minutes for this client
+- **`0` / unset**: inherit the global `mcp_tool_sync_interval` client setting (minutes, default 10)
+- **Negative**: disable periodic sync for this client
+
+A failed sync keeps the existing tool set and retries on the next cycle. In `config.json`, the field also accepts duration strings such as `"10m"` (recommended); a bare number there is a legacy nanosecond value, unlike the API which takes minutes.
+
+Every sync's result persists to the database (skipped when it's byte-identical to what's already stored), so a restart doesn't revert the tool list to whatever was discovered at the client's original bootstrap verification.
+
 ---
 
 ## Configuration reference
@@ -229,7 +297,7 @@ From the sessions table the user can **Edit values** (mints a fresh submission f
   "auth_type": "per_user_headers",
   "per_user_header_keys": ["X-API-Key", "X-Tenant-ID"],
   "headers": {
-    "X-Region": { "value": "us-east-1" }
+    "X-Region": "us-east-1"
   },
   "tools_to_execute": ["*"]
 }
@@ -240,7 +308,7 @@ From the sessions table the user can **Edit values** (mints a fresh submission f
 | `auth_type`            | string                | `"per_user_headers"`                                                             |
 | `per_user_header_keys` | `string[]`            | Required header names. Must be non-empty.                                        |
 | `headers`              | `map[string]EnvVar`   | Optional static admin headers.                                                   |
-| `user_headers`         | `map[string]string`   | **Create-only**: admin sample values for the upstream verify; not persisted.    |
+| `user_headers`         | `map[string]string`   | **Create-only**: admin sample values for the upstream verify; not persisted on the create path. The [`verify-headers` flow](#admin-discovery-credential) retains its values as the admin discovery credential. |
 
 <Note>
 MCP client names cannot contain hyphens — Bifrost prefixes tools as `<client>-<tool>` and uses the hyphen to split the two halves at execution time.

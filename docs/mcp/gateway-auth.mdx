@@ -39,6 +39,10 @@ A request must carry **exactly one** credential type. If an OAuth access token a
 In `oauth` mode, clients that authenticate with a virtual key or API key header can no longer reach `/mcp`. Use `both` if you need header and OAuth clients to coexist.
 </Warning>
 
+<Warning>
+`oauth` mode also blocks [Token Exchange (`token_exchange`)](./auth/token-exchange) MCP clients: that auth type needs the caller's own identity-provider token to reach `/mcp`, but `oauth` mode accepts Bifrost-issued JWTs only and rejects everything else, including the caller's IdP token. Use `headers` or `both` for any deployment using `token_exchange`.
+</Warning>
+
 ---
 
 ## How the OAuth Connect Flow Works
@@ -132,11 +136,12 @@ curl -X PUT http://localhost:8080/api/config \
 ```json
 {
   "client": {
-    "mcp_server_auth_mode": "both",
+    "mcp_server_auth_mode": "oauth",
     "oauth2_server_config": {
       "issuer_url": "https://bifrost.example.com",
       "auth_code_ttl": 300,
-      "access_token_ttl": 600
+      "access_token_ttl": 600,
+      "disable_vk_identity": false
     }
   }
 }
@@ -148,6 +153,7 @@ curl -X PUT http://localhost:8080/api/config \
 | `oauth2_server_config.issuer_url` | string | No | Stable public URL advertised as the issuer in discovery docs and the JWT `iss` claim. Required for multi-host deployments; single-host can omit it (falls back to the request `Host`). Supports `env.MY_VAR` syntax. |
 | `oauth2_server_config.auth_code_ttl` | integer | No | Authorization code lifetime in seconds (default `300`, max `900` = 15 minutes). |
 | `oauth2_server_config.access_token_ttl` | integer | No | Issued JWT lifetime in seconds (default `600`). |
+| `oauth2_server_config.disable_vk_identity` | boolean | No | Require identity-provider login: removes the virtual-key option from consent and cuts off existing vk-mode grants (see [Token Lifetime & Revocation](#token-lifetime--revocation)). Only honored when an identity provider is configured, and only valid when `mcp_server_auth_mode` is `oauth` (400 otherwise). |
 
 </Tab>
 </Tabs>
@@ -178,6 +184,8 @@ Each completed OAuth connection is a **grant** — a refresh-token lineage Bifro
 ![OAuth Grants table with revoke action](/media/ui-oauth-grants.png)
 
 Revoking a grant stops its refresh token from rotating immediately, so the client can no longer renew access.
+
+The page is backed by `GET /api/oauth2/sessions` (list active grants, filtered and paginated) and `DELETE /api/oauth2/sessions/{id}` (revoke a grant), so the same operations are scriptable.
 
 <Note>
 A revoked grant's current access token is a short-lived JWT that keeps working on `/mcp` until it expires (up to `access_token_ttl`, default `600` seconds). After that the client is fully cut off and must reconnect through the consent flow.

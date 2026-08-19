@@ -3,6 +3,8 @@ package datasheet
 import (
 	"context"
 	"fmt"
+	"reflect"
+	"slices"
 	"sort"
 	"strings"
 
@@ -162,20 +164,75 @@ func (e *customPricingEntry) matchesMode(mode string) bool {
 	return ok
 }
 
+// matchesCatalogProvider reports whether the entry could ever apply to a model
+// served by provider. Weaker than matchesScope on purpose: the management
+// catalog has no virtual-key/user/selected-key context, so those scopes can
+// never satisfy matchesScope there, yet they still deserve to be listed
+// informationally. Entries whose scope pins a provider must match it;
+// provider_key-scoped entries carry no provider_id, so they always pass.
+func (e *customPricingEntry) matchesCatalogProvider(provider string) bool {
+	return e.providerID == "" || e.providerID == provider
+}
+
+// matchesModel reports whether the entry's pattern covers model.
+func (e *customPricingEntry) matchesModel(model string) bool {
+	if e.wildcard {
+		return strings.HasPrefix(model, e.pattern)
+	}
+	return e.pattern == model
+}
+
+// catalogScopeRank orders scope kinds most-specific-first for display. Mirrors
+// scopePriorityOrder's ranking but is independent of runtime identifiers,
+// which the management catalog does not have.
+func catalogScopeRank(k ScopeKind) int {
+	switch k {
+	case ScopeKindVirtualKeyProviderKey:
+		return 0
+	case ScopeKindVirtualKeyProvider:
+		return 1
+	case ScopeKindVirtualKey:
+		return 2
+	case ScopeKindUserProviderKey:
+		return 3
+	case ScopeKindUserProvider:
+		return 4
+	case ScopeKindUser:
+		return 5
+	case ScopeKindProviderKey:
+		return 6
+	case ScopeKindProvider:
+		return 7
+	case ScopeKindGlobal:
+		return 8
+	}
+	return 9
+}
+
 // resolve walks the 9-scope priority hierarchy and returns the first matching
 // pricing patch for the given model, mode, and runtime scopes.
 func (c *customPricingData) resolve(model, mode string, scopes LookupScopes) *Options {
+	if e := c.resolveEntry(model, mode, scopes); e != nil {
+		return &e.options
+	}
+	return nil
+}
+
+// resolveEntry is resolve's implementation, returning the winning entry itself
+// so callers that need the override's identity (not just its patch) can
+// recover it without duplicating the precedence walk.
+func (c *customPricingData) resolveEntry(model, mode string, scopes LookupScopes) *customPricingEntry {
 	for _, scopeKind := range scopePriorityOrder(scopes) {
 		for i := range c.exact[model] {
 			e := &c.exact[model][i]
 			if e.scopeKind == scopeKind && e.matchesScope(scopes) && e.matchesMode(mode) {
-				return &e.options
+				return e
 			}
 		}
 		for i := range c.wildcard {
 			e := &c.wildcard[i]
 			if e.scopeKind == scopeKind && e.matchesScope(scopes) && strings.HasPrefix(model, e.pattern) && e.matchesMode(mode) {
-				return &e.options
+				return e
 			}
 		}
 	}
@@ -285,6 +342,130 @@ func (s *Store) applyPricingOverrides(model string, requestType schemas.RequestT
 	return pricing, false
 }
 
+// cloneOptions returns a copy of o in which every non-nil pointer field
+// addresses a fresh value.
+//
+// buildCustomPricingData stores Options by value, so a runtime entry shares
+// every pointer with the override it came from. Options is nothing but pointer
+// fields, so copying the struct alone still lets a caller reach through and
+// repricing live requests. Reflection rather than field-by-field assignment
+// keeps this correct as Options gains fields — a missed field would fail
+// silently. Only the management catalog path pays for this; the request path
+// dereferences through resolve() and never hands pointers out.
+func cloneOptions(o Options) Options {
+	out := o
+	v := reflect.ValueOf(&out).Elem()
+	for _, f := range v.Fields() {
+		if f.Kind() != reflect.Pointer || f.IsNil() || !f.CanSet() {
+			continue
+		}
+		fresh := reflect.New(f.Type().Elem())
+		fresh.Elem().Set(f.Elem())
+		f.Set(fresh)
+	}
+	return out
+}
+
+// cloneOverride returns a copy of o sharing no mutable state with it.
+func cloneOverride(o Override) Override {
+	out := o
+	out.UserID = cloneStringPtr(o.UserID)
+	out.VirtualKeyID = cloneStringPtr(o.VirtualKeyID)
+	out.ProviderID = cloneStringPtr(o.ProviderID)
+	out.ProviderKeyID = cloneStringPtr(o.ProviderKeyID)
+	out.RequestTypes = slices.Clone(o.RequestTypes)
+	out.Options = cloneOptions(o.Options)
+	return out
+}
+
+func cloneStringPtr(s *string) *string {
+	if s == nil {
+		return nil
+	}
+	v := *s
+	return &v
+}
+
+// CatalogPricingOverrides summarizes how scoped overrides affect one
+// (model, provider) row of the management model catalog.
+type CatalogPricingOverrides struct {
+	// AppliedID is the override that wins under the global/provider scopes
+	// only — the scopes that apply to every request regardless of caller.
+	// Empty when nothing global/provider-scoped matches.
+	AppliedID string
+	// AppliedPatch is that winner's option patch; nil when AppliedID is empty.
+	AppliedPatch *Options
+	// Matching lists every override matching (model, provider) regardless of
+	// scope or mode, most-specific-first, for informational display. Includes
+	// the applied one.
+	Matching []Override
+}
+
+// CatalogPricingOverrides returns the overrides relevant to one management
+// catalog row. mode is the pricing mode of the base row being displayed
+// ("chat", "embedding", …).
+//
+// The management catalog has no virtual-key/user/selected-key context, so
+// AppliedPatch is resolved with only the provider set — scopePriorityOrder
+// then naturally yields [provider, global], the two scopes that hold for
+// every caller. Overrides in the virtual-key/user/provider-key families are
+// still returned in Matching so the UI can show them as informational.
+func (s *Store) CatalogPricingOverrides(model string, provider schemas.ModelProvider, mode string) CatalogPricingOverrides {
+	s.overridesMu.RLock()
+	custom := s.customPricing
+	raw := s.rawOverrides
+	s.overridesMu.RUnlock()
+
+	if custom == nil || len(raw) == 0 {
+		return CatalogPricingOverrides{}
+	}
+
+	var out CatalogPricingOverrides
+	if e := custom.resolveEntry(model, mode, LookupScopes{Provider: string(provider)}); e != nil {
+		patch := cloneOptions(e.options)
+		out.AppliedID = e.id
+		out.AppliedPatch = &patch
+	}
+
+	matched := make(map[string]struct{})
+	collect := func(entries []customPricingEntry) {
+		for i := range entries {
+			e := &entries[i]
+			if e.matchesModel(model) && e.matchesCatalogProvider(string(provider)) {
+				matched[e.id] = struct{}{}
+			}
+		}
+	}
+	collect(custom.exact[model])
+	collect(custom.wildcard)
+	if len(matched) == 0 {
+		return out
+	}
+
+	out.Matching = make([]Override, 0, len(matched))
+	for i := range raw {
+		if _, ok := matched[raw[i].ID]; ok {
+			out.Matching = append(out.Matching, cloneOverride(raw[i]))
+		}
+	}
+	sort.SliceStable(out.Matching, func(i, j int) bool {
+		a, b := out.Matching[i], out.Matching[j]
+		if ra, rb := catalogScopeRank(a.ScopeKind), catalogScopeRank(b.ScopeKind); ra != rb {
+			return ra < rb
+		}
+		// Exact patterns are more specific than wildcards; among wildcards the
+		// longer prefix wins, matching buildCustomPricingData's ordering.
+		if av, bv := a.MatchType == MatchTypeWildcard, b.MatchType == MatchTypeWildcard; av != bv {
+			return !av
+		}
+		if len(a.Pattern) != len(b.Pattern) {
+			return len(a.Pattern) > len(b.Pattern)
+		}
+		return a.ID < b.ID
+	})
+	return out
+}
+
 // patchPricing returns a copy of pricing with override fields applied. Nil
 // fields in override leave the corresponding base values intact.
 func patchPricing(pricing configstoreTables.TableModelPricing, override Options) configstoreTables.TableModelPricing {
@@ -365,6 +546,7 @@ func patchPricing(pricing configstoreTables.TableModelPricing, override Options)
 		{dst: &patched.CacheReadInputImageTokenCost, src: override.CacheReadInputImageTokenCost},
 		{dst: &patched.SearchContextCostPerQuery, src: override.SearchContextCostPerQuery},
 		{dst: &patched.CodeInterpreterCostPerSession, src: override.CodeInterpreterCostPerSession},
+		{dst: &patched.CostPerRequest, src: override.CostPerRequest},
 		{dst: &patched.OutputCostPerImageLowQuality, src: override.OutputCostPerImageLowQuality},
 		{dst: &patched.OutputCostPerImageMediumQuality, src: override.OutputCostPerImageMediumQuality},
 		{dst: &patched.OutputCostPerImageHighQuality, src: override.OutputCostPerImageHighQuality},

@@ -1,4 +1,5 @@
 import { SecretVarInput } from "@/components/ui/secretVarInput";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { ModelMultiselect } from "@/components/ui/modelMultiselect";
@@ -45,6 +46,92 @@ function BatchAPIFormField({ control }: { control: Control<any>; form: UseFormRe
 				</FormItem>
 			)}
 		/>
+	);
+}
+
+// AWS endpoint services Bifrost dials for Bedrock. `name` is the config field, `placeholder` the
+// DNS name shape for that service - S3 differs from the rest, so each is spelled out.
+const BEDROCK_VPC_ENDPOINT_SERVICES = [
+	{
+		name: "runtime",
+		label: "Runtime",
+		description: "Serves all inference.",
+		placeholder: "vpce-0abc123-x1y2z3.bedrock-runtime.us-east-1.vpce.amazonaws.com",
+	},
+	{
+		name: "control_plane",
+		label: "Control Plane",
+		description: "Serves model listing and batch jobs.",
+		placeholder: "vpce-0abc123-x1y2z3.bedrock.us-east-1.vpce.amazonaws.com",
+	},
+	{
+		name: "mantle",
+		label: "Mantle",
+		description: "Serves mantle-routed models.",
+		placeholder: "vpce-0abc123-x1y2z3.bedrock-mantle.us-east-1.vpce.amazonaws.com",
+	},
+	{
+		name: "agent_runtime",
+		label: "Agent Runtime",
+		description: "Serves rerank.",
+		placeholder: "vpce-0abc123-x1y2z3.bedrock-agent-runtime.us-east-1.vpce.amazonaws.com",
+	},
+	{
+		name: "s3",
+		label: "S3",
+		description: "Serves batch file I/O. Requires the bucket-prefixed endpoint name. A Gateway endpoint needs no value here.",
+		placeholder: "bucket.vpce-0abc123-x1y2z3.s3.us-east-1.vpce.amazonaws.com",
+	},
+];
+
+// VPC endpoint host overrides for AWS PrivateLink. Collapsed by default: most deployments reach
+// Bedrock over the public regional endpoints and never set these.
+function VPCEndpointsFormField({
+	control,
+	configKey,
+	services,
+}: {
+	control: Control<any>;
+	configKey: string;
+	services: typeof BEDROCK_VPC_ENDPOINT_SERVICES;
+}) {
+	return (
+		<Accordion type="single" collapsible className="w-full">
+			<AccordionItem value="vpc-endpoints" className="rounded-sm border px-2 last:border-b">
+				<AccordionTrigger className="py-2 hover:no-underline" data-testid="bedrock-vpc-endpoints-trigger">
+					<span className="block space-y-1.5 pr-2">
+						<span className="block text-sm leading-none font-medium">VPC Endpoints (Optional)</span>
+						<span className="text-muted-foreground block text-sm font-normal">
+							Route traffic through interface VPC endpoints instead of the public regional endpoints. Use each endpoint&apos;s DNS name from
+							the VPC console, not its ID. Region is still required — it sets the request signing scope.
+						</span>
+					</span>
+				</AccordionTrigger>
+				<AccordionContent className="space-y-4 pt-2 pb-3">
+					{services.map((service) => (
+						<FormField
+							key={service.name}
+							control={control}
+							name={`${configKey}.endpoints.${service.name}`}
+							render={({ field }) => (
+								<FormItem>
+									<FormLabel>{service.label}</FormLabel>
+									<FormDescription>{service.description}</FormDescription>
+									<FormControl>
+										<SecretVarInput
+											data-testid={`apikey-bedrock-endpoint-${service.name}-input`}
+											placeholder={service.placeholder}
+											{...field}
+										/>
+									</FormControl>
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
+					))}
+				</AccordionContent>
+			</AccordionItem>
+		</Accordion>
 	);
 }
 
@@ -1036,6 +1123,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 						/>
 					)}
 					{supportsBatchAPI && <BatchAPIFormField control={control} form={form} />}
+					<VPCEndpointsFormField control={control} configKey="key.bedrock_key_config" services={BEDROCK_VPC_ENDPOINT_SERVICES} />
 				</div>
 			)}
 
@@ -1238,6 +1326,11 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 							/>
 						</>
 					)}
+					<VPCEndpointsFormField
+						control={control}
+						configKey="key.bedrock_mantle_key_config"
+						services={BEDROCK_VPC_ENDPOINT_SERVICES.filter((s) => s.name === "mantle")}
+					/>
 				</div>
 			)}
 		</div>
