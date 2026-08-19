@@ -74,6 +74,8 @@
           "        hasContent = !!(j.choices[0].message.content || (j.choices[0].message.tool_calls && j.choices[0].message.tool_calls.length));",
           "        // Stop-sequence truncation can yield content:null with non-zero completion_tokens — treat as valid response.",
           "        if (!hasContent && j.choices[0].finish_reason === 'stop' && j.usage && j.usage.completion_tokens > 0) { hasContent = true; }",
+          "        // finish_reason 'length' is the openai-shaped twin of the anthropic-messages stop_reason 'max_tokens' forgiveness below. A reasoning model can spend the whole max_tokens cap thinking and end the turn mid-thought, returning content:null alongside a populated reasoning/reasoning_content field. Tokens were produced and the gateway relayed exactly what the provider sent, so failing here reports a defect in whatever the row was actually measuring rather than anything that went wrong. An empty content with zero completion tokens is still a failure.",
+          "        if (!hasContent && j.choices[0].finish_reason === 'length' && j.usage && j.usage.completion_tokens > 0) { hasContent = true; }",
           "    } else if (Array.isArray(j.content) && (j.content.length > 0 || j.type === 'message')) {",
           "        shape = 'anthropic-messages';",
           "        hasContent = j.content.some(function (c) { return c && (c.type === 'text' && c.text) || c.type === 'tool_use' || c.type === 'server_tool_use'; });",
@@ -108,6 +110,10 @@
           "    } else if (Array.isArray(j.embedding)) {",
           "        shape = 'bedrock-titan-embedding';",
           "        hasContent = j.embedding.length > 0;",
+          "    } else if (Array.isArray(j.results) && j.results.length > 0 && j.results[0] && typeof j.results[0].index === 'number' && (typeof j.results[0].relevance_score === 'number' || typeof j.results[0].relevanceScore === 'number')) {",
+          "        shape = 'rerank';",
+          "        // A rerank response ranks the documents it was given; it generates no text, so the ranked list IS the content. Matched on index + a relevance score rather than on `results` alone, which is too generic to claim off other shapes. This branch went missing until now because no rerank row had ever returned 2xx: every bedrock row was rejected pre-flight for not naming its model as an ARN, and every vertex row 403s on discoveryengine IAM - and the content check is gated on code < 400, so it never ran.",
+          "        hasContent = j.results.length > 0;",
           "    } else if (Array.isArray(j.predictions)) {",
           "        shape = 'vertex-predictions';",
           "        hasContent = j.predictions.length > 0;",
@@ -248,7 +254,7 @@
     },
     {
       "key": "bedrockOpenaiModel",
-      "value": "openai.gpt-oss-120b-1:0",
+      "value": "global.openai.gpt-5.6-sol",
       "type": "string"
     },
     {
@@ -7296,7 +7302,7 @@
                   }
                 },
                 {
-                  "name": "gemini/imagen-4.0-generate-001",
+                  "name": "gemini/gemini-3.1-flash-image",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -7307,7 +7313,7 @@
                     ],
                     "body": {
                       "mode": "raw",
-                      "raw": "{\n  \"model\": \"gemini/imagen-4.0-generate-001\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}"
+                      "raw": "{\n  \"model\": \"gemini/gemini-3.1-flash-image\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}"
                     },
                     "url": {
                       "raw": "{{baseUrl}}/v1/images/generations",
@@ -7438,7 +7444,7 @@
                   }
                 },
                 {
-                  "name": "gemini/imagen-4.0-generate-001",
+                  "name": "gemini/gemini-3.1-flash-image",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -7449,7 +7455,7 @@
                     ],
                     "body": {
                       "mode": "raw",
-                      "raw": "{\n  \"model\": \"gemini/imagen-4.0-generate-001\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}"
+                      "raw": "{\n  \"model\": \"gemini/gemini-3.1-flash-image\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}"
                     },
                     "url": {
                       "raw": "{{baseUrl}}/openai/v1/images/generations",
@@ -38466,7 +38472,7 @@
                       }
                     },
                     {
-                      "name": "gemini/imagen-4.0-generate-001",
+                      "name": "gemini/gemini-3.1-flash-image",
                       "request": {
                         "method": "POST",
                         "header": [
@@ -38477,7 +38483,7 @@
                         ],
                         "body": {
                           "mode": "raw",
-                          "raw": "{\n  \"model\": \"imagen-4.0-generate-001\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}"
+                          "raw": "{\n  \"model\": \"gemini/gemini-3.1-flash-image\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}"
                         },
                         "url": {
                           "raw": "{{baseUrl}}/openai/v1/images/generations",
@@ -38505,7 +38511,7 @@
                         ],
                         "body": {
                           "mode": "raw",
-                          "raw": "{\n  \"model\": \"imagen-4.0-generate-001\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}"
+                          "raw": "{\n  \"model\": \"vertex/imagen-4.0-generate-001\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}"
                         },
                         "url": {
                           "raw": "{{baseUrl}}/openai/v1/images/generations",
@@ -127125,7 +127131,7 @@
               ]
             },
             {
-              "name": "48.6 /cohere/v2/rerank -> bedrock/amazon.rerank-v1:0",
+              "name": "48.6 /cohere/v2/rerank -> bedrock/cohere.rerank-v3-5:0",
               "request": {
                 "method": "POST",
                 "header": [
@@ -127136,7 +127142,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"bedrock/amazon.rerank-v1:0\",\n  \"query\": \"What is the capital of France?\",\n  \"documents\": [\n    \"Paris is the capital of France.\",\n    \"Berlin is the capital of Germany.\"\n  ],\n  \"top_n\": 2\n}"
+                  "raw": "{\n  \"model\": \"bedrock/cohere.rerank-v3-5:0\",\n  \"query\": \"What is the capital of France?\",\n  \"documents\": [\n    \"Paris is the capital of France.\",\n    \"Berlin is the capital of Germany.\"\n  ],\n  \"top_n\": 2\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/cohere/v2/rerank",
@@ -127526,7 +127532,7 @@
               ]
             },
             {
-              "name": "48.6 /bedrock/rerank -> bedrock/amazon.rerank-v1:0",
+              "name": "48.6 /bedrock/rerank -> bedrock/cohere.rerank-v3-5:0",
               "request": {
                 "method": "POST",
                 "header": [
@@ -127537,7 +127543,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"queries\": [\n    {\n      \"type\": \"TEXT\",\n      \"textQuery\": {\n        \"text\": \"What is the capital of France?\"\n      }\n    }\n  ],\n  \"sources\": [\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"TEXT\",\n        \"textDocument\": {\n          \"text\": \"Paris is the capital of France.\"\n        }\n      }\n    },\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"TEXT\",\n        \"textDocument\": {\n          \"text\": \"Berlin is the capital of Germany.\"\n        }\n      }\n    },\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"TEXT\",\n        \"textDocument\": {\n          \"text\": \"Madrid is the capital of Spain.\"\n        }\n      }\n    }\n  ],\n  \"rerankingConfiguration\": {\n    \"type\": \"BEDROCK_RERANKING_MODEL\",\n    \"bedrockRerankingConfiguration\": {\n      \"modelConfiguration\": {\n        \"modelArn\": \"bedrock/amazon.rerank-v1:0\"\n      },\n      \"numberOfResults\": 3\n    }\n  }\n}"
+                  "raw": "{\n  \"queries\": [\n    {\n      \"type\": \"TEXT\",\n      \"textQuery\": {\n        \"text\": \"What is the capital of France?\"\n      }\n    }\n  ],\n  \"sources\": [\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"TEXT\",\n        \"textDocument\": {\n          \"text\": \"Paris is the capital of France.\"\n        }\n      }\n    },\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"TEXT\",\n        \"textDocument\": {\n          \"text\": \"Berlin is the capital of Germany.\"\n        }\n      }\n    },\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"TEXT\",\n        \"textDocument\": {\n          \"text\": \"Madrid is the capital of Spain.\"\n        }\n      }\n    }\n  ],\n  \"rerankingConfiguration\": {\n    \"type\": \"BEDROCK_RERANKING_MODEL\",\n    \"bedrockRerankingConfiguration\": {\n      \"modelConfiguration\": {\n        \"modelArn\": \"bedrock/cohere.rerank-v3-5:0\"\n      },\n      \"numberOfResults\": 3\n    }\n  }\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/bedrock/rerank",
@@ -127922,7 +127928,7 @@
               ]
             },
             {
-              "name": "[SKIP] 48.6 /v1/rank -> bedrock/amazon.rerank-v1:0 (no unified rerank route: /v1/rank is registered only under the /genai prefix - see transports/bifrost-http/integrations/genai.go createGenAIRerankRouteConfig)",
+              "name": "[SKIP] 48.6 /v1/rank -> bedrock/cohere.rerank-v3-5:0 (no unified rerank route: /v1/rank is registered only under the /genai prefix - see transports/bifrost-http/integrations/genai.go createGenAIRerankRouteConfig)",
               "request": {
                 "method": "POST",
                 "header": [
@@ -127933,7 +127939,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"bedrock/amazon.rerank-v1:0\",\n  \"query\": \"What is the capital of France?\",\n  \"documents\": [\n    \"Paris is the capital of France.\",\n    \"Berlin is the capital of Germany.\"\n  ],\n  \"top_n\": 2\n}"
+                  "raw": "{\n  \"model\": \"bedrock/cohere.rerank-v3-5:0\",\n  \"query\": \"What is the capital of France?\",\n  \"documents\": [\n    \"Paris is the capital of France.\",\n    \"Berlin is the capital of Germany.\"\n  ],\n  \"top_n\": 2\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/v1/rank",
@@ -128322,7 +128328,7 @@
               ]
             },
             {
-              "name": "48.6 /genai/v1/rank -> bedrock/amazon.rerank-v1:0",
+              "name": "48.6 /genai/v1/rank -> bedrock/cohere.rerank-v3-5:0",
               "request": {
                 "method": "POST",
                 "header": [
@@ -128333,7 +128339,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"bedrock/amazon.rerank-v1:0\",\n  \"query\": \"What is the capital of France?\",\n  \"records\": [\n    {\n      \"id\": \"1\",\n      \"content\": \"Paris is the capital of France.\"\n    },\n    {\n      \"id\": \"2\",\n      \"content\": \"Berlin is the capital of Germany.\"\n    },\n    {\n      \"id\": \"3\",\n      \"content\": \"Madrid is the capital of Spain.\"\n    }\n  ],\n  \"topN\": 3\n}"
+                  "raw": "{\n  \"model\": \"bedrock/cohere.rerank-v3-5:0\",\n  \"query\": \"What is the capital of France?\",\n  \"records\": [\n    {\n      \"id\": \"1\",\n      \"content\": \"Paris is the capital of France.\"\n    },\n    {\n      \"id\": \"2\",\n      \"content\": \"Berlin is the capital of Germany.\"\n    },\n    {\n      \"id\": \"3\",\n      \"content\": \"Madrid is the capital of Spain.\"\n    }\n  ],\n  \"topN\": 3\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/genai/v1/rank",
@@ -128552,7 +128558,7 @@
     },
     {
       "name": "49. Gemini Server-Side Tool Invocations + thoughtSignature Fidelity (PR #6071)",
-      "description": "PR #6071 (server-side tool call support) with PR #6065/#6066 (tool combination).\n\nWhen toolConfig.includeServerSideToolInvocations is enabled, Gemini reports built-in tools it ran\nitself as toolCall/toolResponse part pairs instead of the older text + groundingMetadata shape.\nBefore PR #6071 those parts were silently dropped: the response still returned 200 with plausible\ntext, so no status assertion can pin this — the parts themselves have to be inspected. The\nthoughtSignature bytes riding on those parts matter independently: Gemini rejects a follow-up turn\nthat replays the assistant content without them.\n\nThe /genai surface reaches Gemini three different ways, which are three different code paths:\n  - bare model name (gemini-3.6-flash)      -> Gemini converter path\n  - vertex/ prefix (vertex/gemini-2.5-flash) -> Vertex converter path (never passes through)\n  - gemini/ prefix (gemini/gemini-3.6-flash) -> raw body passthrough (explicitGemini, genai.go)\nAll three are covered here, streaming and non-streaming, because they share no conversion code.\n\nCases:\n  1/2. Gemini converter, non-streaming and SSE: toolCall/toolResponse parts survive, stay id-paired,\n       and keep thoughtSignature.\n  3/4. Vertex converter on a PRE-Gemini-3 model (2.5), non-streaming and SSE: tool combination did\n       not exist before Gemini 3, and Vertex rejects the mix outright with 400 \"Multiple tools are\n       supported only when they are all search tools\". Bifrost must therefore still drop googleSearch\n       and keep the declarations there, so a 2xx with a functionCall is the pin.\n  5/6. Vertex converter on Gemini 3.6, non-streaming and SSE: the same request keeps BOTH tool kinds,\n       which is what PR #6066 set out to allow. Together with 3/4 this pins the version boundary in\n       both directions -- the original PR #6066 gate keyed on provider alone and 400d every 2.5 call.\n  7.   Gemini raw passthrough: the same parts survive the non-converting path byte-for-byte.\n  8.   Multi-turn replay: the assistant turn captured in case 1 is sent back in contents. Gemini\n       validates thoughtSignature server-side, so a 2xx here proves the signatures round-tripped\n       intact. Skips itself if case 1 captured nothing.",
+      "description": "PR #6071 (server-side tool call support) with PR #6065/#6066 (tool combination).\n\nWhen toolConfig.includeServerSideToolInvocations is enabled, Gemini reports built-in tools it ran\nitself as toolCall/toolResponse part pairs instead of the older text + groundingMetadata shape.\nBefore PR #6071 those parts were silently dropped: the response still returned 200 with plausible\ntext, so no status assertion can pin this — the parts themselves have to be inspected. The\nthoughtSignature bytes riding on those parts matter independently: Gemini rejects a follow-up turn\nthat replays the assistant content without them.\n\nThe /genai surface reaches Gemini three different ways, which are three different code paths:\n  - bare model name (gemini-3.6-flash)      -> Gemini converter path\n  - vertex/ prefix (vertex/gemini-2.5-flash) -> Vertex converter path (never passes through)\n  - gemini/ prefix (gemini/gemini-3.6-flash) -> raw body passthrough (explicitGemini, genai.go)\nAll three are covered here, streaming and non-streaming, because they share no conversion code.\n\nCases:\n  1/2. Gemini converter, non-streaming and SSE: toolCall/toolResponse parts survive, stay id-paired,\n       and keep thoughtSignature.\n  3/4. Vertex converter on a PRE-Gemini-3 model (2.5), non-streaming and SSE: tool combination did\n       not exist before Gemini 3, and Vertex rejects the mix outright with 400 \"Multiple tools are\n       supported only when they are all search tools\". Bifrost must therefore still drop googleSearch\n       and keep the declarations there, so a 2xx with a functionCall is the pin.\n  5/6. Vertex converter on Gemini 3.6, non-streaming and SSE: the same request keeps BOTH tool kinds,\n       which is what PR #6066 set out to allow. Together with 3/4 this pins the version boundary in\n       both directions -- the original PR #6066 gate keyed on provider alone and 400d every 2.5 call.\n       These two are [PREVIEW]-tagged: gemini-3.6-flash is not published to every Vertex project/region\n       (it 404s as \"Publisher model ... was not found or your project does not have access to it\"), so a\n       default run pins only the 3/4 direction. Run with INCLUDE_PREVIEW=1 on a project that has the\n       model to close the boundary.\n  7.   Gemini raw passthrough: the same parts survive the non-converting path byte-for-byte.\n  8.   Multi-turn replay: the assistant turn captured in case 1 is sent back in contents. Gemini\n       validates thoughtSignature server-side, so a 2xx here proves the signatures round-tripped\n       intact. Skips itself if case 1 captured nothing.",
       "item": [
         {
           "name": "gemini-3.6-flash genai server-side toolCall parts + thoughtSignature survive conversion (/genai generateContent) - PR #6071",
@@ -128915,7 +128921,7 @@
           ]
         },
         {
-          "name": "vertex/gemini-3.6-flash genai mixed googleSearch + functionDeclarations both survive (/genai generateContent) - PR #6071",
+          "name": "[PREVIEW] vertex/gemini-3.6-flash genai mixed googleSearch + functionDeclarations both survive (/genai generateContent) - PR #6071 (gemini-3.6-flash is not published to every Vertex project/region)",
           "request": {
             "method": "POST",
             "header": [
@@ -128984,7 +128990,7 @@
           ]
         },
         {
-          "name": "vertex/gemini-3.6-flash genai mixed googleSearch + functionDeclarations both survive streaming (/genai SSE) - PR #6071",
+          "name": "[PREVIEW] vertex/gemini-3.6-flash genai mixed googleSearch + functionDeclarations both survive streaming (/genai SSE) - PR #6071 (gemini-3.6-flash is not published to every Vertex project/region)",
           "request": {
             "method": "POST",
             "header": [
@@ -129389,6 +129395,1938 @@
               ]
             }
           }
+        }
+      ]
+    },
+    {
+      "name": "52. Object-store & remote URL file sources x media type",
+      "description": "Pins how a URL-sourced file reaches the provider, which depends on the scheme AND the target model family - not the scheme alone.\n\ngs:// on the Gemini family is forwarded as fileData.fileUri: it is the documented form (the v1 aiplatform discovery doc defines fileUri as \"The URI of the file in Google Cloud Storage\"), it resolves under the caller's own project IAM with no crawler involved, and it keeps large media out of bifrost's 25 MiB inline path - which is what makes video input viable at all. Regression guarded: gs:// used to be handed to the http fetcher and died with 'unsupported URL scheme \"gs\" (only http/https allowed)'.\n\ngs:// on the Anthropic family is downloaded from Cloud Storage with the request key's Google credentials and inlined, because Claude on Google Cloud accepts base64 sources only (\"Input sources (URL sources for images and documents, Files API)\" is listed under Features not supported).\n\nhttps stays inlined for every family. Forwarding it was measured here and Vertex rejected all six 47.10 endpoint shapes with \"Cannot fetch content from the provided URL ... Status: URL_REJECTED-REJECTED_FC_TOO_MANY_PENDING\" after ~59s each.\n\nA scheme bifrost cannot download is forwarded verbatim rather than rejected here: bifrost inlines only what it can fetch, and whether a source is usable is the provider's call - an answer that stays correct as provider capabilities change. So s3:// reaches Vertex and Vertex rejects it, while on Bedrock Converse it IS resolvable and travels as the s3Location union member of DocumentSource/ImageSource. These rows assert only that the rejection comes from the provider, never from a bifrost-side scheme guard.\n\nMedia types are chosen per model: Gemini covers document/image/audio/video, Claude only document/image. Images use an image_url block, because a file block maps to an Anthropic document block whose source accepts application/pdf only.",
+      "item": [
+        {
+          "name": "52.A1 gs:// document -> vertex/gemini-2.5-flash",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"file_url\": \"gs://cloud-samples-data/generative-ai/pdf/1706.03762v7.pdf\",\n            \"file_type\": \"application/pdf\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Summarize this document in one sentence.\"\n        }\n      ]\n    }\n  ],\n  \"max_tokens\": 256\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+                  "// collection-level 2xx test own it and skip the feature assertion.",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "var txt = (((j.choices || [])[0] || {}).message || {}).content || '';",
+                  "pm.test('document reached the model', function () {",
+                  "  pm.expect(String(txt).length, 'empty reply').to.be.above(15);",
+                  "  pm.expect(String(txt), 'model reported it could not read the document: ' +",
+                  "    String(txt).slice(0, 300))",
+                  "    .to.not.match(/unable to (read|access|open)|can.?t (read|access|open)|cannot (read|access|open)|(there (is|was)|received|see) no (document|image|audio|video)|didn.?t receive/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "52.A2 gs:// image -> vertex/gemini-2.5-flash",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"image_url\",\n          \"image_url\": {\n            \"url\": \"gs://cloud-samples-data/generative-ai/image/scones.jpg\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Describe this in one short sentence.\"\n        }\n      ]\n    }\n  ],\n  \"max_tokens\": 256\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+                  "// collection-level 2xx test own it and skip the feature assertion.",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "var txt = (((j.choices || [])[0] || {}).message || {}).content || '';",
+                  "pm.test('image reached the model', function () {",
+                  "  pm.expect(String(txt).length, 'empty reply').to.be.above(15);",
+                  "  pm.expect(String(txt), 'model reported it could not read the image: ' +",
+                  "    String(txt).slice(0, 300))",
+                  "    .to.not.match(/unable to (read|access|open)|can.?t (read|access|open)|cannot (read|access|open)|(there (is|was)|received|see) no (document|image|audio|video)|didn.?t receive/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "52.A3 gs:// audio -> vertex/gemini-2.5-flash",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"file_url\": \"gs://cloud-samples-data/generative-ai/audio/pixel.mp3\",\n            \"file_type\": \"audio/mpeg\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Describe this in one short sentence.\"\n        }\n      ]\n    }\n  ],\n  \"max_tokens\": 256\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+                  "// collection-level 2xx test own it and skip the feature assertion.",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "var txt = (((j.choices || [])[0] || {}).message || {}).content || '';",
+                  "pm.test('audio reached the model', function () {",
+                  "  pm.expect(String(txt).length, 'empty reply').to.be.above(15);",
+                  "  pm.expect(String(txt), 'model reported it could not read the audio: ' +",
+                  "    String(txt).slice(0, 300))",
+                  "    .to.not.match(/unable to (read|access|open)|can.?t (read|access|open)|cannot (read|access|open)|(there (is|was)|received|see) no (document|image|audio|video)|didn.?t receive/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "52.A4 gs:// video -> vertex/gemini-2.5-flash",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"file_url\": \"gs://cloud-samples-data/generative-ai/video/animals.mp4\",\n            \"file_type\": \"video/mp4\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Describe this in one short sentence.\"\n        }\n      ]\n    }\n  ],\n  \"max_tokens\": 256\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+                  "// collection-level 2xx test own it and skip the feature assertion.",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "var txt = (((j.choices || [])[0] || {}).message || {}).content || '';",
+                  "pm.test('video reached the model', function () {",
+                  "  pm.expect(String(txt).length, 'empty reply').to.be.above(15);",
+                  "  pm.expect(String(txt), 'model reported it could not read the video: ' +",
+                  "    String(txt).slice(0, 300))",
+                  "    .to.not.match(/unable to (read|access|open)|can.?t (read|access|open)|cannot (read|access|open)|(there (is|was)|received|see) no (document|image|audio|video)|didn.?t receive/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "52.B1 gs:// document -> vertex/claude-opus-4-7 (fetched from Cloud Storage, inlined)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-opus-4-7\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"file_url\": \"gs://cloud-samples-data/generative-ai/pdf/1706.03762v7.pdf\",\n            \"file_type\": \"application/pdf\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Summarize this document in one sentence.\"\n        }\n      ]\n    }\n  ],\n  \"max_tokens\": 256\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+                  "// collection-level 2xx test own it and skip the feature assertion.",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "var txt = (((j.choices || [])[0] || {}).message || {}).content || '';",
+                  "pm.test('document reached the model', function () {",
+                  "  pm.expect(String(txt).length, 'empty reply').to.be.above(15);",
+                  "  pm.expect(String(txt), 'model reported it could not read the document: ' +",
+                  "    String(txt).slice(0, 300))",
+                  "    .to.not.match(/unable to (read|access|open)|can.?t (read|access|open)|cannot (read|access|open)|(there (is|was)|received|see) no (document|image|audio|video)|didn.?t receive/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "52.B2 gs:// image -> vertex/claude-opus-4-7 (fetched from Cloud Storage, inlined)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-opus-4-7\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"image_url\",\n          \"image_url\": {\n            \"url\": \"gs://cloud-samples-data/generative-ai/image/scones.jpg\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Describe this in one short sentence.\"\n        }\n      ]\n    }\n  ],\n  \"max_tokens\": 256\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+                  "// collection-level 2xx test own it and skip the feature assertion.",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "var txt = (((j.choices || [])[0] || {}).message || {}).content || '';",
+                  "pm.test('image reached the model', function () {",
+                  "  pm.expect(String(txt).length, 'empty reply').to.be.above(15);",
+                  "  pm.expect(String(txt), 'model reported it could not read the image: ' +",
+                  "    String(txt).slice(0, 300))",
+                  "    .to.not.match(/unable to (read|access|open)|can.?t (read|access|open)|cannot (read|access|open)|(there (is|was)|received|see) no (document|image|audio|video)|didn.?t receive/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "52.C1 https:// audio -> vertex/gemini-2.5-flash (inlined, not forwarded)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"file_url\": \"https://storage.googleapis.com/cloud-samples-data/generative-ai/audio/pixel.mp3\",\n            \"file_type\": \"audio/mpeg\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Describe this in one short sentence.\"\n        }\n      ]\n    }\n  ],\n  \"max_tokens\": 256\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+                  "// collection-level 2xx test own it and skip the feature assertion.",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "var txt = (((j.choices || [])[0] || {}).message || {}).content || '';",
+                  "pm.test('audio reached the model', function () {",
+                  "  pm.expect(String(txt).length, 'empty reply').to.be.above(15);",
+                  "  pm.expect(String(txt), 'model reported it could not read the audio: ' +",
+                  "    String(txt).slice(0, 300))",
+                  "    .to.not.match(/unable to (read|access|open)|can.?t (read|access|open)|cannot (read|access|open)|(there (is|was)|received|see) no (document|image|audio|video)|didn.?t receive/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "52.C2 https:// video -> vertex/gemini-2.5-flash (inlined, not forwarded)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"file_url\": \"https://storage.googleapis.com/cloud-samples-data/generative-ai/video/animals.mp4\",\n            \"file_type\": \"video/mp4\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Describe this in one short sentence.\"\n        }\n      ]\n    }\n  ],\n  \"max_tokens\": 256\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+                  "// collection-level 2xx test own it and skip the feature assertion.",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "var txt = (((j.choices || [])[0] || {}).message || {}).content || '';",
+                  "pm.test('video reached the model', function () {",
+                  "  pm.expect(String(txt).length, 'empty reply').to.be.above(15);",
+                  "  pm.expect(String(txt), 'model reported it could not read the video: ' +",
+                  "    String(txt).slice(0, 300))",
+                  "    .to.not.match(/unable to (read|access|open)|can.?t (read|access|open)|cannot (read|access|open)|(there (is|was)|received|see) no (document|image|audio|video)|didn.?t receive/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-4XX] 52.D1 s3:// document -> vertex/gemini-2.5-flash (forwarded, provider rejects)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"file_url\": \"s3://bifrost-harness-no-such-bucket/doc.pdf\",\n            \"file_type\": \"application/pdf\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Summarize this document in one sentence.\"\n        }\n      ]\n    }\n  ],\n  \"max_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Infra noise (auth/rate/upstream) is not what this row pins, and it arrives",
+                  "// as is_bifrost_error:true - which is exactly the shape the assertion below",
+                  "// treats as a failure. Without this guard a 401 or a 429 fails the row for a",
+                  "// reason it does not measure. Same guard every sibling row uses.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('s3:// is forwarded to vertex, not rejected by bifrost', function () {",
+                  "  pm.expect(txt, 'bifrost rejected the scheme instead of forwarding it: ' + txt.slice(0, 300))",
+                  "    .to.not.match(/unsupported URL scheme|only http\\/https allowed/i);",
+                  "  var j; try { j = JSON.parse(txt); } catch (e) { return; }",
+                  "  pm.expect(j.is_bifrost_error, 'the rejection must come from vertex, not bifrost: ' + txt.slice(0, 300))",
+                  "    .to.not.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-4XX] 52.E1 s3:// document -> bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0 (forwarded as s3Location)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"file_url\": \"s3://bifrost-harness-no-such-bucket/doc.pdf\",\n            \"file_type\": \"application/pdf\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Summarize this document in one sentence.\"\n        }\n      ]\n    }\n  ],\n  \"max_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('s3:// document is forwarded to Converse, not rejected by bifrost', function () {",
+                  "  pm.expect(txt, 'bifrost rejected the scheme instead of forwarding it as s3Location: ' +",
+                  "    txt.slice(0, 300))",
+                  "    .to.not.match(/unsupported URL scheme|only http\\/https allowed/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-4XX] 52.E2 s3:// image -> bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0 (forwarded as s3Location)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"image_url\",\n          \"image_url\": {\n            \"url\": \"s3://bifrost-harness-no-such-bucket/shot.png\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Describe this in one short sentence.\"\n        }\n      ]\n    }\n  ],\n  \"max_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('s3:// image is forwarded to Converse, not rejected by bifrost', function () {",
+                  "  pm.expect(txt, 'bifrost rejected the scheme instead of forwarding it as s3Location: ' +",
+                  "    txt.slice(0, 300))",
+                  "    .to.not.match(/unsupported URL scheme|only http\\/https allowed/i);",
+                  "  pm.expect(txt, 'the .png extension should have resolved the Converse image format: ' +",
+                  "    txt.slice(0, 300))",
+                  "    .to.not.match(/cannot determine image format/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "53. Embeddings x provider x parameter surface",
+      "description": "Embedding coverage before this folder was one request per provider, each sending a single string and asserting nothing beyond the collection-level status check - and that check is a no-op for embeddings, because the shape branch it lands in is Array.isArray(j.data) with hasContent = j.data.length >= 0, which is true for an empty list. A provider returning zero vectors passed.\n\nThis folder pins the request parameter surface end to end: what the caller sends at the gateway, what the provider-native field is called, and what observable property of the response proves the rename survived the trip. Bedrock gets the depth because it is the only provider carrying two incompatible embedding envelopes behind one name, chosen by substring match on the model id.\n\nRoute reachability worth knowing before adding rows here: /v1/embeddings parses exactly four body fields (model, input, encoding_format, dimensions) plus fallbacks. Every other key is dropped silently unless the request carries x-bf-passthrough-extra-params: true and nests the key under \"extra_params\" (transports/bifrost-http/integrations/router.go). There is no embedding route on the /bedrock drop-in at all - /bedrock/model/{id}/invoke converts to Converse and then to Responses - so Bedrock embeddings are reachable only through /v1/embeddings, /openai/v1/embeddings, /genai/.../:embedContent and /cohere/v2/embed.\n\nSub-folder names avoid provider keywords on purpose. runners/filter-collection.mjs matches PROVIDER against ancestor folder names as well as the item body, so naming this folder after Bedrock would hand every openai/gemini/vertex/azure row to the bedrock partition.",
+      "item": [
+        {
+          "name": "53.A Bedrock Titan envelope (amazon.titan-embed-*)",
+          "description": "Titan takes a single `inputText` string and returns a single vector, so Bifrost joins array input with \" \\n\" before sending (core/providers/bedrock/embedding.go ToBedrockTitanEmbeddingRequest). These rows pin the Titan-shaped request body reaching AWS and the single-vector response coming back.\n\nAWS request fields (docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-titan-embed-text.html): inputText (required), dimensions (1024 default | 512 | 256), normalize (default true), embeddingTypes (camelCase, [\"float\"] | [\"binary\"] | both). Response: embedding, inputTextTokenCount, embeddingsByType.\n\nnormalize and embeddingTypes are not first-class fields on /v1/embeddings - only model, input, encoding_format and dimensions are parsed there. They reach the provider through x-bf-passthrough-extra-params: true plus an \"extra_params\" object, which is the door those rows use.",
+          "item": [
+            {
+              "name": "53.A1 bedrock/amazon.titan-embed-text-v2:0 - baseline single input",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"bedrock/amazon.titan-embed-text-v2:0\",\n  \"input\": \"Hello world\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/embeddings",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+                      "// collection-level 2xx test own it and skip the feature assertion.",
+                      "// 400 is deliberately NOT guarded: a rejected embedding body is a real finding.",
+                      "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                      "var j; try { j = pm.response.json(); } catch (e) {",
+                      "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                      "var data = j.data || [];",
+                      "pm.test('returns 1 vector(s) - Titan returns exactly one embedding', function () {",
+                      "  pm.expect(data.length, 'wrong vector count; body: ' + pm.response.text().slice(0, 300))",
+                      "    .to.eql(1);",
+                      "  for (var i = 0; i < data.length; i++) {",
+                      "    pm.expect(Array.isArray(data[i].embedding), 'data[' + i + '].embedding is not an array').to.be.true;",
+                      "    pm.expect(data[i].embedding.length, 'data[' + i + '].embedding is empty').to.be.above(0);",
+                      "  }",
+                      "});",
+                      "pm.test('usage is backfilled from inputTextTokenCount', function () {",
+                      "  pm.expect(j.usage, 'usage missing entirely').to.be.an('object');",
+                      "  pm.expect(j.usage.prompt_tokens, 'prompt_tokens not populated from inputTextTokenCount')",
+                      "    .to.be.above(0);",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "53.A2 bedrock/amazon.titan-embed-text-v2:0 - dimensions:256 reaches the wire",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"bedrock/amazon.titan-embed-text-v2:0\",\n  \"input\": \"Hello world\",\n  \"dimensions\": 256\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/embeddings",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+                      "// collection-level 2xx test own it and skip the feature assertion.",
+                      "// 400 is deliberately NOT guarded: a rejected embedding body is a real finding.",
+                      "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                      "var j; try { j = pm.response.json(); } catch (e) {",
+                      "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                      "var data = j.data || [];",
+                      "pm.test('vector length is 256 - Params.Dimensions maps to Titan `dimensions`', function () {",
+                      "  pm.expect(data.length, 'no embedding returned: ' + pm.response.text().slice(0, 300)).to.be.above(0);",
+                      "  pm.expect(Array.isArray(data[0].embedding), 'embedding is not an array').to.be.true;",
+                      "  pm.expect(data[0].embedding.length, 'wrong dimensionality').to.eql(256);",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "53.A3 bedrock/amazon.titan-embed-text-v2:0 - array input collapses to one vector",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"bedrock/amazon.titan-embed-text-v2:0\",\n  \"input\": [\n    \"alpha kestrel harbor\",\n    \"beta lantern quarry\",\n    \"gamma meridian trellis\"\n  ]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/embeddings",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+                      "// collection-level 2xx test own it and skip the feature assertion.",
+                      "// 400 is deliberately NOT guarded: a rejected embedding body is a real finding.",
+                      "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                      "var j; try { j = pm.response.json(); } catch (e) {",
+                      "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                      "var data = j.data || [];",
+                      "pm.test('returns 1 vector(s) - Titan has no batch shape; Bifrost concatenates the array into one inputText', function () {",
+                      "  pm.expect(data.length, 'wrong vector count; body: ' + pm.response.text().slice(0, 300))",
+                      "    .to.eql(1);",
+                      "  for (var i = 0; i < data.length; i++) {",
+                      "    pm.expect(Array.isArray(data[i].embedding), 'data[' + i + '].embedding is not an array').to.be.true;",
+                      "    pm.expect(data[i].embedding.length, 'data[' + i + '].embedding is empty').to.be.above(0);",
+                      "  }",
+                      "});",
+                      "// Contrast with 53.B5: the same array on a Bedrock Cohere model returns 3 vectors.",
+                      "// Same provider, same route, different model family, different arity."
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "53.A4 bedrock/amazon.titan-embed-text-v2:0 - normalize:true is unit length (control)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-bf-passthrough-extra-params",
+                    "value": "true"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"bedrock/amazon.titan-embed-text-v2:0\",\n  \"input\": \"Hello world\",\n  \"extra_params\": {\n    \"normalize\": true\n  }\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/embeddings",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+                      "// collection-level 2xx test own it and skip the feature assertion.",
+                      "// 400 is deliberately NOT guarded: a rejected embedding body is a real finding.",
+                      "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                      "var j; try { j = pm.response.json(); } catch (e) {",
+                      "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                      "var data = j.data || [];",
+                      "var v = (data[0] || {}).embedding || [];",
+                      "var sumsq = 0; for (var i = 0; i < v.length; i++) { sumsq += v[i] * v[i]; }",
+                      "var norm = Math.sqrt(sumsq);",
+                      "pm.test('normalized vector has L2 norm ~= 1', function () {",
+                      "  pm.expect(v.length, 'no embedding returned').to.be.above(0);",
+                      "  pm.expect(Math.abs(norm - 1), 'L2 norm was ' + norm + ', expected ~1').to.be.below(0.05);",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "53.A5 bedrock/amazon.titan-embed-text-v2:0 - normalize:false changes the vector",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-bf-passthrough-extra-params",
+                    "value": "true"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"bedrock/amazon.titan-embed-text-v2:0\",\n  \"input\": \"Hello world\",\n  \"extra_params\": {\n    \"normalize\": false\n  }\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/embeddings",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+                      "// collection-level 2xx test own it and skip the feature assertion.",
+                      "// 400 is deliberately NOT guarded: a rejected embedding body is a real finding.",
+                      "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                      "var j; try { j = pm.response.json(); } catch (e) {",
+                      "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                      "var data = j.data || [];",
+                      "var v = (data[0] || {}).embedding || [];",
+                      "var sumsq = 0; for (var i = 0; i < v.length; i++) { sumsq += v[i] * v[i]; }",
+                      "var norm = Math.sqrt(sumsq);",
+                      "pm.test('un-normalized vector has L2 norm != 1 (proves normalize reached AWS)', function () {",
+                      "  pm.expect(v.length, 'no embedding returned').to.be.above(0);",
+                      "  pm.expect(Math.abs(norm - 1), 'L2 norm was ' + norm + '; a value of ~1 means normalize:false was dropped before it reached Bedrock').to.be.above(0.05);",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "53.A6 bedrock/amazon.titan-embed-text-v2:0 - embeddingTypes float+binary",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-bf-passthrough-extra-params",
+                    "value": "true"
+                  },
+                  {
+                    "key": "x-bf-send-back-raw-response",
+                    "value": "true"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"bedrock/amazon.titan-embed-text-v2:0\",\n  \"input\": \"Hello world\",\n  \"extra_params\": {\n    \"embeddingTypes\": [\n      \"float\",\n      \"binary\"\n    ]\n  }\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/embeddings",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+                      "// collection-level 2xx test own it and skip the feature assertion.",
+                      "// 400 is deliberately NOT guarded: a rejected embedding body is a real finding.",
+                      "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                      "var j; try { j = pm.response.json(); } catch (e) {",
+                      "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                      "var data = j.data || [];",
+                      "// AWS documents embeddingTypes (camelCase) as a Titan V2 field, and warns that the",
+                      "// `embedding` field is omitted entirely when embeddingTypes contains only \"binary\".",
+                      "// This row asks for both, so the normalized float path must stay intact while the",
+                      "// binary variant is still recoverable from the raw provider payload.",
+                      "pm.test('returns 1 vector(s) - float path survives alongside binary', function () {",
+                      "  pm.expect(data.length, 'wrong vector count; body: ' + pm.response.text().slice(0, 300))",
+                      "    .to.eql(1);",
+                      "  for (var i = 0; i < data.length; i++) {",
+                      "    pm.expect(Array.isArray(data[i].embedding), 'data[' + i + '].embedding is not an array').to.be.true;",
+                      "    pm.expect(data[i].embedding.length, 'data[' + i + '].embedding is empty').to.be.above(0);",
+                      "  }",
+                      "});",
+                      "pm.test('embeddingsByType.binary reached the caller via raw_response', function () {",
+                      "  var raw = (j.extra_fields || {}).raw_response || {};",
+                      "  var byType = raw.embeddingsByType || {};",
+                      "  pm.expect(byType, 'embeddingsByType missing from raw_response; embeddingTypes may have been dropped before Bedrock: ' + JSON.stringify(raw).slice(0, 300)).to.have.property('binary');",
+                      "  pm.expect(Array.isArray(byType.binary), 'embeddingsByType.binary is not an array').to.be.true;",
+                      "  pm.expect(byType.binary.length, 'embeddingsByType.binary is empty').to.be.above(0);",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "53.B Bedrock Cohere envelope (cohere.embed-v4)",
+          "description": "The second Bedrock embedding envelope. DetermineEmbeddingModelType (core/providers/bedrock/embedding.go) switches on model family via plain substring match, so a model id containing \"cohere\" takes a completely different request and response shape from one containing \"titan\": `texts` array in, N vectors out, versus one `inputText` in and one vector out.\n\nAWS request fields (docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-embed-v4.html): input_type is REQUIRED (search_document | search_query | classification | clustering), output_dimension 256 | 512 | 1024 | 1536 (default 1536), embedding_types float | int8 | uint8 | binary | ubinary, truncate NONE | LEFT | RIGHT. Response is {embeddings, response_type} where response_type is \"embeddings_floats\" by default and \"embeddings_by_type\" once embedding_types is set.\n\nNote that /cohere/v2/embed only returns the raw provider payload when the resolved provider is Cohere itself; for a bedrock/* model it returns the normalized Bifrost shape, so every row below asserts against data[].embedding regardless of route.",
+          "item": [
+            {
+              "name": "53.B1 bedrock/global.cohere.embed-v4:0 - /cohere/v2/embed with input_type",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"bedrock/global.cohere.embed-v4:0\",\n  \"texts\": [\n    \"alpha kestrel harbor\",\n    \"beta lantern quarry\"\n  ],\n  \"input_type\": \"search_document\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/cohere/v2/embed",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "cohere",
+                    "v2",
+                    "embed"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+                      "// collection-level 2xx test own it and skip the feature assertion.",
+                      "// 400 is deliberately NOT guarded: a rejected embedding body is a real finding.",
+                      "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                      "var j; try { j = pm.response.json(); } catch (e) {",
+                      "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                      "var data = j.data || [];",
+                      "pm.test('returns 2 vector(s) - Cohere embeds each text independently', function () {",
+                      "  pm.expect(data.length, 'wrong vector count; body: ' + pm.response.text().slice(0, 300))",
+                      "    .to.eql(2);",
+                      "  for (var i = 0; i < data.length; i++) {",
+                      "    pm.expect(Array.isArray(data[i].embedding), 'data[' + i + '].embedding is not an array').to.be.true;",
+                      "    pm.expect(data[i].embedding.length, 'data[' + i + '].embedding is empty').to.be.above(0);",
+                      "  }",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "53.B2 bedrock/global.cohere.embed-v4:0 - /cohere/v2/embed embedding_types int8",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"bedrock/global.cohere.embed-v4:0\",\n  \"texts\": [\n    \"alpha kestrel harbor\"\n  ],\n  \"input_type\": \"search_document\",\n  \"embedding_types\": [\n    \"int8\"\n  ]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/cohere/v2/embed",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "cohere",
+                    "v2",
+                    "embed"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+                      "// collection-level 2xx test own it and skip the feature assertion.",
+                      "// 400 is deliberately NOT guarded: a rejected embedding body is a real finding.",
+                      "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                      "var j; try { j = pm.response.json(); } catch (e) {",
+                      "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                      "var data = j.data || [];",
+                      "// embedding_types flips the Bedrock response to response_type \"embeddings_by_type\", which",
+                      "// takes a different parse branch (BedrockCohereEmbeddingResponse.ToBifrostEmbeddingResponse).",
+                      "// The Cohere dialect parser builds this key as a real []string, which is the only path that",
+                      "// satisfies the v.([]string) assertion in ToBedrockCohereEmbeddingRequest - a JSON body on",
+                      "// /v1/embeddings yields []interface{} and misses that typed field.",
+                      "pm.test('returns 1 vector(s) - int8 branch of embeddings_by_type', function () {",
+                      "  pm.expect(data.length, 'wrong vector count; body: ' + pm.response.text().slice(0, 300))",
+                      "    .to.eql(1);",
+                      "  for (var i = 0; i < data.length; i++) {",
+                      "    pm.expect(Array.isArray(data[i].embedding), 'data[' + i + '].embedding is not an array').to.be.true;",
+                      "    pm.expect(data[i].embedding.length, 'data[' + i + '].embedding is empty').to.be.above(0);",
+                      "  }",
+                      "});",
+                      "pm.test('values are int8, not floats', function () {",
+                      "  var v = data[0].embedding;",
+                      "  for (var i = 0; i < v.length; i++) {",
+                      "    pm.expect(v[i] % 1, 'value at ' + i + ' is not an integer: ' + v[i]).to.eql(0);",
+                      "    pm.expect(v[i], 'value at ' + i + ' is outside int8 range: ' + v[i]).to.be.within(-128, 127);",
+                      "  }",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "53.B3 bedrock/global.cohere.embed-v4:0 - plain /v1/embeddings with no input_type",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"bedrock/global.cohere.embed-v4:0\",\n  \"input\": \"Hello world\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/embeddings",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+                      "// collection-level 2xx test own it and skip the feature assertion.",
+                      "// 400 is deliberately NOT guarded: a rejected embedding body is a real finding.",
+                      "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                      "var j; try { j = pm.response.json(); } catch (e) {",
+                      "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                      "var data = j.data || [];",
+                      "// The plainest possible OpenAI-shaped call against a Bedrock Cohere model.",
+                      "// BedrockCohereEmbeddingRequest.InputType is tagged `json:\"input_type\"` with no omitempty",
+                      "// (core/providers/bedrock/types.go), so a caller who omits it sends \"input_type\": \"\" to",
+                      "// Bedrock, and AWS documents input_type as required with a fixed enum. A 400 here is a",
+                      "// Bifrost defect, not a caller error: the same request shape works on every other provider.",
+                      "pm.test('returns 1 vector(s) - a Bedrock Cohere embed must not require caller-supplied input_type', function () {",
+                      "  pm.expect(data.length, 'wrong vector count; body: ' + pm.response.text().slice(0, 300))",
+                      "    .to.eql(1);",
+                      "  for (var i = 0; i < data.length; i++) {",
+                      "    pm.expect(Array.isArray(data[i].embedding), 'data[' + i + '].embedding is not an array').to.be.true;",
+                      "    pm.expect(data[i].embedding.length, 'data[' + i + '].embedding is empty').to.be.above(0);",
+                      "  }",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "53.B4 bedrock/global.cohere.embed-v4:0 - /v1/embeddings + extra_params.input_type",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-bf-passthrough-extra-params",
+                    "value": "true"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"bedrock/global.cohere.embed-v4:0\",\n  \"input\": \"Hello world\",\n  \"extra_params\": {\n    \"input_type\": \"search_query\"\n  }\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/embeddings",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+                      "// collection-level 2xx test own it and skip the feature assertion.",
+                      "// 400 is deliberately NOT guarded: a rejected embedding body is a real finding.",
+                      "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                      "var j; try { j = pm.response.json(); } catch (e) {",
+                      "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                      "var data = j.data || [];",
+                      "// The working counterpart to 53.B3: input_type supplied through the passthrough door.",
+                      "pm.test('returns 1 vector(s) - input_type via extra_params reaches Bedrock', function () {",
+                      "  pm.expect(data.length, 'wrong vector count; body: ' + pm.response.text().slice(0, 300))",
+                      "    .to.eql(1);",
+                      "  for (var i = 0; i < data.length; i++) {",
+                      "    pm.expect(Array.isArray(data[i].embedding), 'data[' + i + '].embedding is not an array').to.be.true;",
+                      "    pm.expect(data[i].embedding.length, 'data[' + i + '].embedding is empty').to.be.above(0);",
+                      "  }",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "53.B5 bedrock/global.cohere.embed-v4:0 - array input returns one vector per text",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-bf-passthrough-extra-params",
+                    "value": "true"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"bedrock/global.cohere.embed-v4:0\",\n  \"input\": [\n    \"alpha kestrel harbor\",\n    \"beta lantern quarry\",\n    \"gamma meridian trellis\"\n  ],\n  \"extra_params\": {\n    \"input_type\": \"search_document\"\n  }\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/embeddings",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+                      "// collection-level 2xx test own it and skip the feature assertion.",
+                      "// 400 is deliberately NOT guarded: a rejected embedding body is a real finding.",
+                      "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                      "var j; try { j = pm.response.json(); } catch (e) {",
+                      "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                      "var data = j.data || [];",
+                      "pm.test('returns 3 vector(s) - Cohere embeds each array element separately', function () {",
+                      "  pm.expect(data.length, 'wrong vector count; body: ' + pm.response.text().slice(0, 300))",
+                      "    .to.eql(3);",
+                      "  for (var i = 0; i < data.length; i++) {",
+                      "    pm.expect(Array.isArray(data[i].embedding), 'data[' + i + '].embedding is not an array').to.be.true;",
+                      "    pm.expect(data[i].embedding.length, 'data[' + i + '].embedding is empty').to.be.above(0);",
+                      "  }",
+                      "});",
+                      "// The arity divergence inside a single provider: 53.A3 sends this same array to a Titan",
+                      "// model on the same route and gets 1 vector back.",
+                      "pm.test('indices are 0,1,2 in order', function () {",
+                      "  for (var i = 0; i < data.length; i++) {",
+                      "    pm.expect(data[i].index, 'data[' + i + '].index is out of order').to.eql(i);",
+                      "  }",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "53.B6 bedrock/global.cohere.embed-v4:0 - dimensions:512 maps to output_dimension",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-bf-passthrough-extra-params",
+                    "value": "true"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"bedrock/global.cohere.embed-v4:0\",\n  \"input\": \"Hello world\",\n  \"dimensions\": 512,\n  \"extra_params\": {\n    \"input_type\": \"search_document\"\n  }\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/embeddings",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+                      "// collection-level 2xx test own it and skip the feature assertion.",
+                      "// 400 is deliberately NOT guarded: a rejected embedding body is a real finding.",
+                      "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                      "var j; try { j = pm.response.json(); } catch (e) {",
+                      "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                      "var data = j.data || [];",
+                      "pm.test('vector length is 512 - Params.Dimensions maps to Cohere `output_dimension`', function () {",
+                      "  pm.expect(data.length, 'no embedding returned: ' + pm.response.text().slice(0, 300)).to.be.above(0);",
+                      "  pm.expect(Array.isArray(data[0].embedding), 'embedding is not an array').to.be.true;",
+                      "  pm.expect(data[0].embedding.length, 'wrong dimensionality').to.eql(512);",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "53.B7 bedrock/global.cohere.embed-v4:0 - usage backfilled from Bedrock token header",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-bf-passthrough-extra-params",
+                    "value": "true"
+                  },
+                  {
+                    "key": "x-bf-send-back-raw-response",
+                    "value": "true"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"bedrock/global.cohere.embed-v4:0\",\n  \"input\": \"Hello world\",\n  \"extra_params\": {\n    \"input_type\": \"search_document\"\n  }\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/embeddings",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+                      "// collection-level 2xx test own it and skip the feature assertion.",
+                      "// 400 is deliberately NOT guarded: a rejected embedding body is a real finding.",
+                      "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                      "var j; try { j = pm.response.json(); } catch (e) {",
+                      "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                      "var data = j.data || [];",
+                      "// Bedrock Cohere embed omits token usage from the response body and reports it only in the",
+                      "// X-Amzn-Bedrock-Input-Token-Count response header. inputTokensFromHeaders backfills Usage",
+                      "// from it (#3917); without that backfill this call would bill as zero tokens.",
+                      "pm.test('usage.prompt_tokens is populated despite an empty body usage', function () {",
+                      "  pm.expect(j.usage, 'usage missing entirely').to.be.an('object');",
+                      "  pm.expect(j.usage.prompt_tokens, 'prompt_tokens is 0/absent - the token header backfill regressed').to.be.above(0);",
+                      "  pm.expect(j.usage.total_tokens, 'total_tokens is 0/absent').to.be.above(0);",
+                      "});",
+                      "pm.test('the source header is present on the response', function () {",
+                      "  var headers = (j.extra_fields || {}).provider_response_headers || {};",
+                      "  var found = false;",
+                      "  for (var k in headers) {",
+                      "    if (k.toLowerCase() === 'x-amzn-bedrock-input-token-count') { found = true; }",
+                      "  }",
+                      "  pm.expect(found, 'X-Amzn-Bedrock-Input-Token-Count not surfaced; keys: ' +",
+                      "    Object.keys(headers).join(',')).to.be.true;",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "53.C Batch-input arity parity (/v1/embeddings)",
+          "description": "An array of N inputs must come back as N vectors with indices 0..N-1, on every provider that supports embeddings. This is the invariant callers actually depend on when they embed a document chunk list in one request and zip the results back against their own array.\n\nThe documented exception lives in 53.A3: Bedrock Titan has no batch request shape, so Bifrost concatenates the array into a single inputText and returns exactly one vector. Bedrock Cohere (53.B5) honours the array normally. That divergence is inside one provider, selected by model family, which is why it needs its own rows rather than a cell in this table.",
+          "item": [
+            {
+              "name": "53.C1 openai/text-embedding-3-small - array of 3 returns 3 vectors",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"openai/text-embedding-3-small\",\n  \"input\": [\n    \"alpha kestrel harbor\",\n    \"beta lantern quarry\",\n    \"gamma meridian trellis\"\n  ]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/embeddings",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+                      "// collection-level 2xx test own it and skip the feature assertion.",
+                      "// 400 is deliberately NOT guarded: a rejected embedding body is a real finding.",
+                      "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                      "var j; try { j = pm.response.json(); } catch (e) {",
+                      "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                      "var data = j.data || [];",
+                      "pm.test('returns 3 vector(s) - one vector per input element', function () {",
+                      "  pm.expect(data.length, 'wrong vector count; body: ' + pm.response.text().slice(0, 300))",
+                      "    .to.eql(3);",
+                      "  for (var i = 0; i < data.length; i++) {",
+                      "    pm.expect(Array.isArray(data[i].embedding), 'data[' + i + '].embedding is not an array').to.be.true;",
+                      "    pm.expect(data[i].embedding.length, 'data[' + i + '].embedding is empty').to.be.above(0);",
+                      "  }",
+                      "});",
+                      "pm.test('indices are 0,1,2 in order', function () {",
+                      "  for (var i = 0; i < data.length; i++) {",
+                      "    pm.expect(data[i].index, 'data[' + i + '].index is out of order').to.eql(i);",
+                      "  }",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "53.C2 gemini/gemini-embedding-001 - array of 3 returns 3 vectors",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"gemini/gemini-embedding-001\",\n  \"input\": [\n    \"alpha kestrel harbor\",\n    \"beta lantern quarry\",\n    \"gamma meridian trellis\"\n  ]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/embeddings",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+                      "// collection-level 2xx test own it and skip the feature assertion.",
+                      "// 400 is deliberately NOT guarded: a rejected embedding body is a real finding.",
+                      "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                      "var j; try { j = pm.response.json(); } catch (e) {",
+                      "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                      "var data = j.data || [];",
+                      "pm.test('returns 3 vector(s) - one vector per input element', function () {",
+                      "  pm.expect(data.length, 'wrong vector count; body: ' + pm.response.text().slice(0, 300))",
+                      "    .to.eql(3);",
+                      "  for (var i = 0; i < data.length; i++) {",
+                      "    pm.expect(Array.isArray(data[i].embedding), 'data[' + i + '].embedding is not an array').to.be.true;",
+                      "    pm.expect(data[i].embedding.length, 'data[' + i + '].embedding is empty').to.be.above(0);",
+                      "  }",
+                      "});",
+                      "pm.test('indices are 0,1,2 in order', function () {",
+                      "  for (var i = 0; i < data.length; i++) {",
+                      "    pm.expect(data[i].index, 'data[' + i + '].index is out of order').to.eql(i);",
+                      "  }",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "53.C3 vertex/text-embedding-005 - array of 3 returns 3 vectors",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"vertex/text-embedding-005\",\n  \"input\": [\n    \"alpha kestrel harbor\",\n    \"beta lantern quarry\",\n    \"gamma meridian trellis\"\n  ]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/embeddings",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+                      "// collection-level 2xx test own it and skip the feature assertion.",
+                      "// 400 is deliberately NOT guarded: a rejected embedding body is a real finding.",
+                      "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                      "var j; try { j = pm.response.json(); } catch (e) {",
+                      "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                      "var data = j.data || [];",
+                      "pm.test('returns 3 vector(s) - one vector per input element', function () {",
+                      "  pm.expect(data.length, 'wrong vector count; body: ' + pm.response.text().slice(0, 300))",
+                      "    .to.eql(3);",
+                      "  for (var i = 0; i < data.length; i++) {",
+                      "    pm.expect(Array.isArray(data[i].embedding), 'data[' + i + '].embedding is not an array').to.be.true;",
+                      "    pm.expect(data[i].embedding.length, 'data[' + i + '].embedding is empty').to.be.above(0);",
+                      "  }",
+                      "});",
+                      "pm.test('indices are 0,1,2 in order', function () {",
+                      "  for (var i = 0; i < data.length; i++) {",
+                      "    pm.expect(data[i].index, 'data[' + i + '].index is out of order').to.eql(i);",
+                      "  }",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "53.C4 azure/text-embedding-ada-002 - array of 3 returns 3 vectors",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"azure/text-embedding-ada-002\",\n  \"input\": [\n    \"alpha kestrel harbor\",\n    \"beta lantern quarry\",\n    \"gamma meridian trellis\"\n  ]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/embeddings",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+                      "// collection-level 2xx test own it and skip the feature assertion.",
+                      "// 400 is deliberately NOT guarded: a rejected embedding body is a real finding.",
+                      "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                      "var j; try { j = pm.response.json(); } catch (e) {",
+                      "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                      "var data = j.data || [];",
+                      "pm.test('returns 3 vector(s) - one vector per input element', function () {",
+                      "  pm.expect(data.length, 'wrong vector count; body: ' + pm.response.text().slice(0, 300))",
+                      "    .to.eql(3);",
+                      "  for (var i = 0; i < data.length; i++) {",
+                      "    pm.expect(Array.isArray(data[i].embedding), 'data[' + i + '].embedding is not an array').to.be.true;",
+                      "    pm.expect(data[i].embedding.length, 'data[' + i + '].embedding is empty').to.be.above(0);",
+                      "  }",
+                      "});",
+                      "pm.test('indices are 0,1,2 in order', function () {",
+                      "  for (var i = 0; i < data.length; i++) {",
+                      "    pm.expect(data[i].index, 'data[' + i + '].index is out of order').to.eql(i);",
+                      "  }",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "53.D dimensions maps to the provider-native output size",
+          "description": "`dimensions` is one of only four fields /v1/embeddings parses natively (model, input, encoding_format, dimensions), and each provider spells it differently on the wire: Titan and OpenAI use `dimensions`, Cohere on Bedrock uses `output_dimension`, Gemini uses `outputDimensionality`, Vertex uses parameters.outputDimensionality. Asserting the returned vector length is the only end-to-end proof the rename happened.\n\nazure/text-embedding-ada-002 is deliberately absent: ada-002 predates Matryoshka truncation and has no dimensions knob, so the row would pin an upstream rejection rather than a mapping. Bedrock Titan is covered by 53.A2 at 256.",
+          "item": [
+            {
+              "name": "53.D1 openai/text-embedding-3-small - dimensions:256",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"openai/text-embedding-3-small\",\n  \"input\": \"Hello world\",\n  \"dimensions\": 256\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/embeddings",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+                      "// collection-level 2xx test own it and skip the feature assertion.",
+                      "// 400 is deliberately NOT guarded: a rejected embedding body is a real finding.",
+                      "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                      "var j; try { j = pm.response.json(); } catch (e) {",
+                      "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                      "var data = j.data || [];",
+                      "pm.test('vector length is 256 - OpenAI `dimensions`', function () {",
+                      "  pm.expect(data.length, 'no embedding returned: ' + pm.response.text().slice(0, 300)).to.be.above(0);",
+                      "  pm.expect(Array.isArray(data[0].embedding), 'embedding is not an array').to.be.true;",
+                      "  pm.expect(data[0].embedding.length, 'wrong dimensionality').to.eql(256);",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "53.D2 gemini/gemini-embedding-001 - dimensions:256",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"gemini/gemini-embedding-001\",\n  \"input\": \"Hello world\",\n  \"dimensions\": 256\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/embeddings",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+                      "// collection-level 2xx test own it and skip the feature assertion.",
+                      "// 400 is deliberately NOT guarded: a rejected embedding body is a real finding.",
+                      "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                      "var j; try { j = pm.response.json(); } catch (e) {",
+                      "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                      "var data = j.data || [];",
+                      "pm.test('vector length is 256 - Gemini `outputDimensionality`', function () {",
+                      "  pm.expect(data.length, 'no embedding returned: ' + pm.response.text().slice(0, 300)).to.be.above(0);",
+                      "  pm.expect(Array.isArray(data[0].embedding), 'embedding is not an array').to.be.true;",
+                      "  pm.expect(data[0].embedding.length, 'wrong dimensionality').to.eql(256);",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "53.D3 vertex/text-embedding-005 - dimensions:256",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"vertex/text-embedding-005\",\n  \"input\": \"Hello world\",\n  \"dimensions\": 256\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/embeddings",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+                      "// collection-level 2xx test own it and skip the feature assertion.",
+                      "// 400 is deliberately NOT guarded: a rejected embedding body is a real finding.",
+                      "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                      "var j; try { j = pm.response.json(); } catch (e) {",
+                      "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                      "var data = j.data || [];",
+                      "pm.test('vector length is 256 - Vertex parameters.outputDimensionality', function () {",
+                      "  pm.expect(data.length, 'no embedding returned: ' + pm.response.text().slice(0, 300)).to.be.above(0);",
+                      "  pm.expect(Array.isArray(data[0].embedding), 'embedding is not an array').to.be.true;",
+                      "  pm.expect(data[0].embedding.length, 'wrong dimensionality').to.eql(256);",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "53.D4 bedrock/global.cohere.embed-v4:0 - dimensions:256",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-bf-passthrough-extra-params",
+                    "value": "true"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"bedrock/global.cohere.embed-v4:0\",\n  \"input\": \"Hello world\",\n  \"dimensions\": 256,\n  \"extra_params\": {\n    \"input_type\": \"search_document\"\n  }\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/embeddings",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+                      "// collection-level 2xx test own it and skip the feature assertion.",
+                      "// 400 is deliberately NOT guarded: a rejected embedding body is a real finding.",
+                      "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                      "var j; try { j = pm.response.json(); } catch (e) {",
+                      "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                      "var data = j.data || [];",
+                      "pm.test('vector length is 256 - Bedrock Cohere `output_dimension`', function () {",
+                      "  pm.expect(data.length, 'no embedding returned: ' + pm.response.text().slice(0, 300)).to.be.above(0);",
+                      "  pm.expect(Array.isArray(data[0].embedding), 'embedding is not an array').to.be.true;",
+                      "  pm.expect(data[0].embedding.length, 'wrong dimensionality').to.eql(256);",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "53.E encoding_format base64 divergence",
+          "description": "encoding_format is parsed into EmbeddingParameters but only one provider converter reads it (HuggingFace). OpenAI-family providers forward the field verbatim and the upstream API returns packed base64; Bedrock, Gemini and Vertex have no equivalent request field, so the flag is dropped and float arrays come back.\n\nThese rows pin the divergence as it actually is rather than asserting a uniformity that does not exist. They fail in both useful directions: if an OpenAI-family row starts returning arrays the passthrough broke, and if a Bedrock/Gemini row starts returning a string then something began encoding on the provider's behalf, which changes the byte size and the type callers see.",
+          "item": [
+            {
+              "name": "53.E1 openai/text-embedding-3-small - encoding_format base64",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"openai/text-embedding-3-small\",\n  \"input\": \"Hello world\",\n  \"encoding_format\": \"base64\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/embeddings",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+                      "// collection-level 2xx test own it and skip the feature assertion.",
+                      "// 400 is deliberately NOT guarded: a rejected embedding body is a real finding.",
+                      "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                      "var j; try { j = pm.response.json(); } catch (e) {",
+                      "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                      "var data = j.data || [];",
+                      "pm.test('embedding is a base64 string - OpenAI honours encoding_format', function () {",
+                      "  pm.expect(data.length, 'no embedding returned: ' + pm.response.text().slice(0, 300)).to.be.above(0);",
+                      "  pm.expect(data[0].embedding, 'expected a base64 string, got ' +",
+                      "    (Array.isArray(data[0].embedding) ? 'an array' : typeof data[0].embedding)).to.be.a('string');",
+                      "  pm.expect(data[0].embedding.length, 'base64 string is empty').to.be.above(0);",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "53.E2 azure/text-embedding-ada-002 - encoding_format base64",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"azure/text-embedding-ada-002\",\n  \"input\": \"Hello world\",\n  \"encoding_format\": \"base64\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/embeddings",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+                      "// collection-level 2xx test own it and skip the feature assertion.",
+                      "// 400 is deliberately NOT guarded: a rejected embedding body is a real finding.",
+                      "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                      "var j; try { j = pm.response.json(); } catch (e) {",
+                      "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                      "var data = j.data || [];",
+                      "pm.test('embedding is a base64 string - Azure serves the OpenAI embeddings API', function () {",
+                      "  pm.expect(data.length, 'no embedding returned: ' + pm.response.text().slice(0, 300)).to.be.above(0);",
+                      "  pm.expect(data[0].embedding, 'expected a base64 string, got ' +",
+                      "    (Array.isArray(data[0].embedding) ? 'an array' : typeof data[0].embedding)).to.be.a('string');",
+                      "  pm.expect(data[0].embedding.length, 'base64 string is empty').to.be.above(0);",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "53.E3 bedrock/amazon.titan-embed-text-v2:0 - encoding_format base64 is ignored",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"bedrock/amazon.titan-embed-text-v2:0\",\n  \"input\": \"Hello world\",\n  \"encoding_format\": \"base64\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/embeddings",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+                      "// collection-level 2xx test own it and skip the feature assertion.",
+                      "// 400 is deliberately NOT guarded: a rejected embedding body is a real finding.",
+                      "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                      "var j; try { j = pm.response.json(); } catch (e) {",
+                      "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                      "var data = j.data || [];",
+                      "pm.test('embedding is still a float array - Bedrock InvokeModel has no encoding_format field', function () {",
+                      "  pm.expect(data.length, 'no embedding returned: ' + pm.response.text().slice(0, 300)).to.be.above(0);",
+                      "  pm.expect(Array.isArray(data[0].embedding), 'expected a float array; a string here would mean Bifrost started encoding on the provider\\'s behalf').to.be.true;",
+                      "  pm.expect(data[0].embedding.length, 'embedding is empty').to.be.above(0);",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "53.E4 gemini/gemini-embedding-001 - encoding_format base64 is ignored",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"gemini/gemini-embedding-001\",\n  \"input\": \"Hello world\",\n  \"encoding_format\": \"base64\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/embeddings",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "embeddings"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Infra noise (auth/rate/upstream) is not what this row pins - let the",
+                      "// collection-level 2xx test own it and skip the feature assertion.",
+                      "// 400 is deliberately NOT guarded: a rejected embedding body is a real finding.",
+                      "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                      "var j; try { j = pm.response.json(); } catch (e) {",
+                      "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                      "var data = j.data || [];",
+                      "pm.test('embedding is still a float array - embedContent has no encoding_format field', function () {",
+                      "  pm.expect(data.length, 'no embedding returned: ' + pm.response.text().slice(0, 300)).to.be.above(0);",
+                      "  pm.expect(Array.isArray(data[0].embedding), 'expected a float array; a string here would mean Bifrost started encoding on the provider\\'s behalf').to.be.true;",
+                      "  pm.expect(data[0].embedding.length, 'embedding is empty').to.be.above(0);",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
         }
       ]
     }

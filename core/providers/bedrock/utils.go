@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"mime"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -76,6 +77,22 @@ func resolveBedrockRegion(ctx *schemas.BifrostContext, key schemas.Key, model st
 		return key.BedrockKeyConfig.Region.GetValue()
 	}
 	return DefaultBedrockRegion
+}
+
+// awsPartitionForRegion returns the ARN partition a region belongs to. AWS defines
+// exactly three: "aws", "aws-cn" (China) and "aws-us-gov" (GovCloud US) -- see
+// https://docs.aws.amazon.com/IAM/latest/UserGuide/reference-arns.html. Defaulting
+// to "aws" for everything would build an ARN that is well-formed but wrong in the
+// two partitions where it matters, and the failure would only surface at runtime.
+func awsPartitionForRegion(region string) string {
+	switch {
+	case strings.HasPrefix(region, "us-gov-"):
+		return "aws-us-gov"
+	case strings.HasPrefix(region, "cn-"):
+		return "aws-cn"
+	default:
+		return "aws"
+	}
 }
 
 // resolveBedrockARN returns the inference-profile / resource ARN prepended
@@ -1286,8 +1303,44 @@ func convertContentBlock(ctx context.Context, block schemas.ChatContentBlock) ([
 			documentSource.Format = format
 		}
 
-		// URL-sourced document: fetch and inline the bytes (Bedrock Converse only
-		// accepts inline source bytes, not remote URLs).
+		// s3:// document: hand Converse the object reference. Bytes and s3Location are
+		// alternative members of the same DocumentSource union, and Converse reads the
+		// object itself, so there is nothing to download here. Format has to come from
+		// the declared type / filename resolved above -- there is no Content-Type to
+		// refine it from.
+		if block.File.FileURL != nil {
+			if s3Loc, ok := bedrockS3LocationFromURL(*block.File.FileURL); ok {
+				// Last resort: the object key's own extension. Nothing is downloaded for
+				// an s3:// reference, so there is no Content-Type to read and no bytes to
+				// sniff -- the key is the only signal left, and the refusal below already
+				// tells the caller to use it. bedrockImageFormatFromPath does the same for
+				// the image twin.
+				if format == "" {
+					if resolved, ok := bedrockDocumentFormatFromPath(*block.File.FileURL); ok {
+						format = resolved
+						documentSource.Format = format
+					}
+				}
+				if format == "" {
+					return nil, fmt.Errorf("cannot determine document format for %q: set file_type or give the object a file extension", *block.File.FileURL)
+				}
+				documentSource.Source.S3Location = s3Loc
+				return []BedrockContentBlock{
+					{
+						Document: documentSource,
+					},
+				}, nil
+			} else if strings.HasPrefix(*block.File.FileURL, "s3://") {
+				// The scheme is right but the reference is not: bedrockS3LocationFromURL
+				// rejects a bucket with no object key. Falling through would hand it to
+				// the http(s) fetch path, whose "unsupported URL scheme" refusal is
+				// actively misleading -- s3:// is supported, this one is just malformed.
+				return nil, fmt.Errorf("invalid s3:// document reference %q: expected s3://bucket/key", *block.File.FileURL)
+			}
+		}
+
+		// URL-sourced document: fetch and inline the bytes. Converse has no url member
+		// on DocumentSource, so an http(s) reference must travel as bytes.
 		if block.File.FileURL != nil && *block.File.FileURL != "" {
 			fetchedMediaType, fetchedB64, fetchErr := providerUtils.FetchAndEncodeURL(ctx, *block.File.FileURL)
 			if fetchErr != nil {
@@ -1365,12 +1418,69 @@ func convertContentBlock(ctx context.Context, block schemas.ChatContentBlock) ([
 	}
 }
 
+// bedrockDocumentFormatFromPath resolves a Converse document format from a URL's
+// object key, which is the only signal left for an s3:// reference: nothing is
+// downloaded, so there is no Content-Type and no bytes to sniff.
+//
+// The extension is handed to bedrockDocumentFormat rather than matched here, so the
+// two paths cannot disagree about which formats Converse accepts -- that function
+// already takes a bare extension and owns the vocabulary.
+func bedrockDocumentFormatFromPath(rawURL string) (string, bool) {
+	path := rawURL
+	if i := strings.IndexAny(path, "?#"); i >= 0 {
+		path = path[:i]
+	}
+	ext := strings.TrimPrefix(filepath.Ext(path), ".")
+	if ext == "" {
+		return "", false
+	}
+	format, _, ok := bedrockDocumentFormat(ext)
+	return format, ok
+}
+
+// bedrockImageFormatFromPath derives a Converse image format from a URI's extension.
+// Only needed on the s3Location path: nothing is downloaded there, so there is no
+// Content-Type to read the format from, and Converse requires one on every image block.
+// The four names are the formats Converse accepts.
+func bedrockImageFormatFromPath(rawURL string) (string, error) {
+	path := rawURL
+	if i := strings.IndexAny(path, "?#"); i >= 0 {
+		path = path[:i]
+	}
+	switch strings.ToLower(strings.TrimPrefix(filepath.Ext(path), ".")) {
+	case "png":
+		return "png", nil
+	case "gif":
+		return "gif", nil
+	case "webp":
+		return "webp", nil
+	case "jpg", "jpeg":
+		return "jpeg", nil
+	default:
+		return "", fmt.Errorf("cannot determine image format for %q: bedrock requires png, jpeg, gif or webp, and an s3:// reference carries no content type", rawURL)
+	}
+}
+
 // convertImageToBedrockSource converts a Bifrost image URL to Bedrock image source.
-// Bedrock Converse requires inline base64 bytes - it does not accept remote URLs.
-// For data: URLs (already base64), use the bytes directly. For http(s) URLs, fetch
-// the image and inline it via fetchImageFromURL. The ctx is propagated to the
-// fetch so request cancellation/deadlines abort in-flight downloads.
+// Converse has no url member on ImageSource, so an http(s) reference must travel as
+// bytes: data: URLs are used directly, http(s) URLs are fetched and inlined. s3:// is
+// the exception -- Converse resolves those itself via the s3Location union member. The
+// ctx is propagated to the fetch so request cancellation/deadlines abort in-flight
+// downloads.
 func convertImageToBedrockSource(ctx context.Context, imageURL string) (*BedrockImageSource, error) {
+	// Checked before sanitizing: SanitizeImageURL runs the default http/https allowlist
+	// and would reject s3:// outright.
+	if s3Loc, ok := bedrockS3LocationFromURL(imageURL); ok {
+		format, err := bedrockImageFormatFromPath(imageURL)
+		if err != nil {
+			return nil, err
+		}
+		return &BedrockImageSource{
+			Format: format,
+			Source: BedrockImageSourceData{S3Location: s3Loc},
+		}, nil
+	}
+
 	sanitizedURL, err := schemas.SanitizeImageURL(imageURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sanitize image URL: %w", err)

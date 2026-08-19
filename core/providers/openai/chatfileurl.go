@@ -140,6 +140,15 @@ func ResolveChatFileURLs(ctx *schemas.BifrostContext, provider schemas.ModelProv
 				continue
 			}
 
+			// Leave references bifrost cannot download in place. Bifrost inlines only
+			// what it can actually fetch; whether the surface accepts the reference is
+			// the provider's call, and it now travels on the wire (MarshalJSON no longer
+			// drops file_url) so the provider can answer for itself instead of the block
+			// arriving empty.
+			if scheme := urlSourceScheme(*file.FileURL); scheme != "http" && scheme != "https" {
+				continue
+			}
+
 			mediaType, encoded, err := providerUtils.FetchAndEncodeURL(fetchCtx, *file.FileURL)
 			if err != nil {
 				return fmt.Errorf("failed to fetch document at %s for messages[%d].content[%d]: %w",
@@ -157,4 +166,15 @@ func ResolveChatFileURLs(ctx *schemas.BifrostContext, provider schemas.ModelProv
 		}
 	}
 	return nil
+}
+
+// urlSourceScheme returns the lowercase scheme of rawURL, or "" when it has none or
+// does not parse. Used only to phrase the rejection in ResolveChatFileURLs;
+// FetchAndEncodeURL remains the actual gate on what gets dialled.
+func urlSourceScheme(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(parsed.Scheme)
 }

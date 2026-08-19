@@ -1,7 +1,7 @@
 {
   "$schema_note": "Curated smoke selection for `make run-provider-harness-test SMOKE=1`. Rows are matched by (folder, name) against the AUGMENTED collection (tmp/harness-augmented.json), because the cache-parity rows are generated at augment time and do not exist in provider-harness.json. `folder` is the immediate parent folder and is REQUIRED, not advisory: the criss-cross rows are named after their model, so a bare name like `gemini/gemini-2.5-flash` matches 25 requests. Selecting a request pulls in its chained-variable producers automatically (filter-collection.mjs expandWithProducers), so the effective request count can exceed the count here. Rows claimed by more than one provider partition run once per fork, same as in a full sweep.",
-  "budget": 100,
-  "total_selected": 100,
+  "budget": 102,
+  "total_selected": 102,
   "pillars": [
     {
       "key": "cache-parity",
@@ -109,7 +109,15 @@
         },
         {
           "folder": "Cross-Cut Round 35: Cross-Provider Prompt-Cache Matrix (generated)",
-          "name": "Cache matrix: openai/gpt-5.6 / control round 4 (verdict)"
+          "name": "Cache matrix: openai/gpt-5.6 / control round 4"
+        },
+        {
+          "folder": "Cross-Cut Round 35: Cross-Provider Prompt-Cache Matrix (generated)",
+          "name": "Cache matrix: openai/gpt-5.6 / control round 5"
+        },
+        {
+          "folder": "Cross-Cut Round 35: Cross-Provider Prompt-Cache Matrix (generated)",
+          "name": "Cache matrix: openai/gpt-5.6 / control round 6 (verdict)"
         },
         {
           "folder": "41. Cross-Provider Content-Block Cache Control & cachePoint (#5629)",

@@ -45,6 +45,14 @@ func InlineURLContentSources(ctx *schemas.BifrostContext, body []byte) ([]byte, 
 	}
 
 	for _, ref := range refs {
+		// Leave references bifrost cannot download in place rather than failing the
+		// request here. Bifrost only inlines what it can actually fetch; deciding that a
+		// scheme is unusable is the provider's call, and its answer stays accurate as its
+		// capabilities change. The source travels as {"type":"url"} and the platform
+		// responds for itself.
+		if scheme := urlScheme(ref.url); scheme != "http" && scheme != "https" {
+			continue
+		}
 		mediaType, encoded, err := providerUtils.FetchAndEncodeURL(ctx, ref.url)
 		if err != nil {
 			return nil, fmt.Errorf("failed to inline URL content source %q: %w", providerUtils.RedactURLForError(ref.url), err)
@@ -56,6 +64,17 @@ func InlineURLContentSources(ctx *schemas.BifrostContext, body []byte) ([]byte, 
 	}
 
 	return body, nil
+}
+
+// urlScheme returns the lowercase scheme of rawURL, or "" when it has none or does not
+// parse. Used only to phrase the rejection above; FetchAndEncodeURL remains the actual
+// gate on what gets dialled.
+func urlScheme(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(parsed.Scheme)
 }
 
 // applyInlinedSource rewrites one url source into its inline form. Split out from the
