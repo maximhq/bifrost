@@ -79,6 +79,7 @@ func NewHuggingFaceProvider(config *schemas.ProviderConfig, logger schemas.Logge
 		MaxConnWaitTimeout:  requestTimeout,
 		MaxConnDuration:     time.Second * time.Duration(schemas.DefaultMaxConnDurationInSeconds),
 		ConnPoolStrategy:    fasthttp.FIFO,
+		ReadBufferSize:      schemas.DefaultClientReadBufferSize,
 	}
 
 	// Pre-warm response pools
