@@ -114,7 +114,7 @@ export default function PluginTracingSheet({ open, onClose, pluginName, destinat
 
 	return (
 		<Sheet open={open} onOpenChange={onClose}>
-			<SheetContent className="flex w-full flex-col overflow-hidden p-8">
+			<SheetContent className="flex w-full flex-col overflow-hidden p-4 md:p-8">
 				<SheetHeader className="flex flex-col items-start p-0">
 					<SheetTitle>Configure Plugin Tracing</SheetTitle>
 					<SheetDescription>

@@ -1130,17 +1130,11 @@ func TestToChatRequest_TextFormat_JSONSchema(t *testing.T) {
 	if cr.Params == nil || cr.Params.ResponseFormat == nil {
 		t.Fatal("expected ResponseFormat to be set")
 	}
-	rfMap, ok := (*cr.Params.ResponseFormat).(map[string]interface{})
-	if !ok {
-		t.Fatal("expected ResponseFormat to be map[string]interface{}")
-	}
+	rfMap := responseFormatAsMap(t, cr.Params.ResponseFormat)
 	if rfMap["type"] != "json_schema" {
 		t.Fatalf("expected type json_schema, got %v", rfMap["type"])
 	}
-	jsObj, ok := rfMap["json_schema"].(map[string]interface{})
-	if !ok {
-		t.Fatal("expected json_schema inner object")
-	}
+	jsObj := nestedMap(t, rfMap, "json_schema")
 	if jsObj["name"] != "CityInfo" {
 		t.Fatalf("expected name=CityInfo, got %v", jsObj["name"])
 	}
@@ -1175,10 +1169,7 @@ func TestToChatRequest_TextFormat_JSONObject(t *testing.T) {
 	if cr.Params == nil || cr.Params.ResponseFormat == nil {
 		t.Fatal("expected ResponseFormat to be set")
 	}
-	rfMap, ok := (*cr.Params.ResponseFormat).(map[string]interface{})
-	if !ok {
-		t.Fatal("expected ResponseFormat to be map[string]interface{}")
-	}
+	rfMap := responseFormatAsMap(t, cr.Params.ResponseFormat)
 	if rfMap["type"] != "json_object" {
 		t.Fatalf("expected type json_object, got %v", rfMap["type"])
 	}
@@ -1214,17 +1205,11 @@ func TestResponseFormatRoundTrip_ChatToResponsesAndBack(t *testing.T) {
 	if cr.Params == nil || cr.Params.ResponseFormat == nil {
 		t.Fatal("expected ResponseFormat to survive round-trip")
 	}
-	rfMap, ok := (*cr.Params.ResponseFormat).(map[string]interface{})
-	if !ok {
-		t.Fatal("expected ResponseFormat to be map after round-trip")
-	}
+	rfMap := responseFormatAsMap(t, cr.Params.ResponseFormat)
 	if rfMap["type"] != "json_schema" {
 		t.Fatalf("type did not survive round-trip: got %v", rfMap["type"])
 	}
-	jsObj, ok := rfMap["json_schema"].(map[string]interface{})
-	if !ok {
-		t.Fatal("json_schema inner object missing after round-trip")
-	}
+	jsObj := nestedMap(t, rfMap, "json_schema")
 	if jsObj["name"] != "CityInfo" {
 		t.Fatalf("name did not survive round-trip: got %v", jsObj["name"])
 	}
@@ -1325,15 +1310,9 @@ func TestToChatRequest_TextFormat_TypedFields(t *testing.T) {
 		t.Fatal("expected ResponseFormat to be set")
 	}
 
-	rfMap, ok := (*cr.Params.ResponseFormat).(map[string]interface{})
-	if !ok {
-		t.Fatal("expected ResponseFormat to be a map")
-	}
+	rfMap := responseFormatAsMap(t, cr.Params.ResponseFormat)
 
-	jsObj, ok := rfMap["json_schema"].(map[string]interface{})
-	if !ok {
-		t.Fatal("expected json_schema inner object")
-	}
+	jsObj := nestedMap(t, rfMap, "json_schema")
 
 	// Schema body must be present and non-empty
 	schemaVal, ok := jsObj["schema"]
@@ -1341,14 +1320,17 @@ func TestToChatRequest_TextFormat_TypedFields(t *testing.T) {
 		t.Fatalf("schema body silently dropped: json_schema=%v", jsObj)
 	}
 
-	schemaMap, ok := schemaVal.(map[string]interface{})
+	// The schema is handed back as an OrderedMap so the key order the client
+	// declared survives the Responses -> Chat rewrite.
+	schemaMap, ok := SafeExtractOrderedMap(schemaVal)
 	if !ok {
-		t.Fatalf("expected schema to be a map, got %T", schemaVal)
+		t.Fatalf("expected schema to be an ordered map, got %T", schemaVal)
 	}
-	if schemaMap["type"] != "object" {
-		t.Fatalf("expected schema.type=object, got %v", schemaMap["type"])
+	if schemaType, _ := schemaMap.Get("type"); schemaType != "object" {
+		t.Fatalf("expected schema.type=object, got %v", schemaType)
 	}
-	propsBytes, err := MarshalSorted(schemaMap["properties"])
+	schemaProps, _ := schemaMap.Get("properties")
+	propsBytes, err := MarshalSorted(schemaProps)
 	if err != nil {
 		t.Fatalf("failed to marshal properties: %v", err)
 	}
@@ -1465,4 +1447,27 @@ func TestToBifrostResponsesStreamResponse_ReasoningOpensThinkingBlock(t *testing
 	if textOutputIndex <= reasoningOutputIndex {
 		t.Fatalf("text output index %d must be greater than reasoning output index %d", textOutputIndex, reasoningOutputIndex)
 	}
+}
+
+
+// responseFormatAsMap reads a converted chat response_format regardless of its
+// representation. The Responses to Chat conversion emits raw JSON (the same
+// representation the chat wire decode produces), so tests read it through the
+// same accessor providers use rather than type-asserting a map.
+func responseFormatAsMap(t *testing.T, responseFormat *interface{}) map[string]interface{} {
+	t.Helper()
+	om, ok := SafeExtractOrderedMap(*responseFormat)
+	if !ok || om == nil {
+		t.Fatalf("expected response_format to be readable as an object, got %T", *responseFormat)
+	}
+	return om.ToMap()
+}
+
+func nestedMap(t *testing.T, parent map[string]interface{}, key string) map[string]interface{} {
+	t.Helper()
+	om, ok := SafeExtractOrderedMap(parent[key])
+	if !ok || om == nil {
+		t.Fatalf("expected %q to be an object, got %T", key, parent[key])
+	}
+	return om.ToMap()
 }

@@ -3,7 +3,11 @@ title: "Migrating to Enterprise v2.0.0"
 description: "Breaking changes and migration instructions for the Enterprise v2.0.0 release"
 ---
 
-Enterprise v2.0.0 is built on top of OSS `2.0.0-prerelease3`. It inherits both breaking changes from that release: no enterprise-specific breaking changes are introduced on top. This page summarizes the inherited changes and explains how they interact with SCIM-based authentication, which is enterprise-only.
+Enterprise v2.0.0 is built on top of OSS `2.0.0-prerelease3` and inherits both breaking changes from that release. This page summarizes the inherited changes, the Enterprise license requirement, and how the changes interact with SCIM-based authentication.
+
+<Warning>
+**A provisioned Bifrost Enterprise license is required for v2.0.0.** Before migrating, contact the Bifrost team to obtain your `license.bif` file. Set the entire contents of this file as the value of the `BIFROST_LICENSE` environment variable on every node running Bifrost. Complete this configuration before upgrading to avoid interrupting your deployment.
+</Warning>
 
 ---
 

@@ -303,6 +303,10 @@
           "description": "Short label (max 10 characters) displayed in the management UI sidebar to identify the environment (e.g. \"staging\", \"prod\"). Written into config.json as env_label.",
           "maxLength": 10
         },
+        "setupToken": {
+          "type": "string",
+          "description": "Operator-provisioned bootstrap secret required to create the very first admin account when none exists yet. Identical across every node so any node can authorize first-admin creation. Never persisted or logged; also read from the BIFROST_SETUP_TOKEN env var. Supports env.<ENV_VAR_NAME> and vault.<path> references. Renders into config.json setup_token."
+        },
         "schemaUrl": {
           "type": "string",
           "default": "",
@@ -618,6 +622,14 @@
               "type": "integer",
               "description": "Read buffer size in bytes. This controls the size of the buffer used for reading HTTP headers.",
               "default": 65536
+            },
+            "pluginDownloadPrivateAllowlist": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "description": "Hostnames, IP addresses, or CIDR ranges that custom plugin (.so) downloads are allowed to reach even when they resolve to a private/loopback/link-local/CGNAT address (blocked by default to prevent SSRF). Deploy-time only. Renders into server.plugin_download_private_allowlist."
             }
           },
           "additionalProperties": false
@@ -651,9 +663,9 @@
                 },
                 "mcpLibrarySyncInterval": {
                   "type": "integer",
-                  "description": "MCP library sync interval in seconds. Default is 24 hours. Minimum is 3600 seconds (1 hour).",
+                  "description": "MCP library sync interval in seconds. Set to 0 to disable background catalog syncing entirely (air-gapped deployments with no local catalog file). Default is 24 hours; minimum when enabled is 3600 seconds (1 hour).",
                   "default": 86400,
-                  "minimum": 3600
+                  "anyOf": [{ "const": 0 }, { "minimum": 3600 }]
                 },
                 "liveModelsSyncInterval": {
                   "type": "integer",
@@ -1502,6 +1514,19 @@
                     "description": "Snap budget reset windows to calendar boundaries",
                     "default": false
                   },
+                  "reset_config": {
+                    "type": "object",
+                    "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (\"1Q\").",
+                    "properties": {
+                      "quarter_start_month": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 12,
+                        "description": "First month of Q1 as 1-12 (e.g. 4 = fiscal year starting April). Omitted or 0 means January."
+                      }
+                    },
+                    "additionalProperties": false
+                  },
                   "current_usage": {
                     "type": "number"
                   },
@@ -2343,7 +2368,7 @@
                       },
                       "apiToken": {
                         "type": "string",
-                        "description": "Okta API token for Admin API access"
+                        "description": "Okta API token for Admin API access (optional; enables 24-hour background user/group reconciliation)"
                       },
                       "audience": {
                         "type": "string",
@@ -2371,13 +2396,14 @@
                       },
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
+                      "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
                       "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
                       "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
                       "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
                     },
-                    "required": ["issuerUrl", "clientId", "clientSecret", "apiToken"],
+                    "required": ["issuerUrl", "clientId", "clientSecret"],
                     "additionalProperties": false
                   }
                 }
@@ -2445,6 +2471,7 @@
                       },
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
+                      "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
                       "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
@@ -2513,6 +2540,7 @@
                       },
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
+                      "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
                       "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
@@ -2579,6 +2607,7 @@
                       },
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
+                      "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
                       "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
@@ -2655,6 +2684,7 @@
                       },
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
+                      "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
                       "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
@@ -2753,6 +2783,7 @@
                       },
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
+                      "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
                       "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
@@ -2826,6 +2857,7 @@
                       },
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
                       "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
+                      "claimsSyncMode": {"$ref": "#/$defs/scim_claims_sync_mode"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
                       "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
@@ -5953,12 +5985,82 @@
         },
         "authType": {
           "type": "string",
-          "enum": ["none", "headers", "oauth", "per_user_oauth", "per_user_headers"],
-          "description": "Authentication type for MCP connection"
+          "enum": ["none", "headers", "oauth", "per_user_oauth", "per_user_headers", "token_exchange"],
+          "description": "Authentication type for MCP connection. 'token_exchange' is only honored on Enterprise builds."
+        },
+        "oauthConfig": {
+          "type": "object",
+          "description": "Inline OAuth provider configuration for authType 'oauth' or 'per_user_oauth'. All fields are optional — omitted URLs are resolved via RFC 8414 discovery from the connection string and a missing clientId triggers RFC 7591 dynamic client registration at admin-verification time. Renders into oauth_config.",
+          "properties": {
+            "clientId": {
+              "type": "string",
+              "description": "OAuth client ID (optional — Dynamic Client Registration is used when omitted; can use env./vault. prefix). Renders into client_id."
+            },
+            "clientSecret": {
+              "type": "string",
+              "description": "OAuth client secret (optional — omit for PKCE public clients or DCR; can use env./vault. prefix). Renders into client_secret."
+            },
+            "authorizeUrl": {
+              "type": "string",
+              "description": "Provider authorize endpoint (optional — discovered when omitted). Renders into authorize_url."
+            },
+            "tokenUrl": {
+              "type": "string",
+              "description": "Provider token endpoint (optional — discovered when omitted). Renders into token_url."
+            },
+            "registrationUrl": {
+              "type": "string",
+              "description": "Dynamic Client Registration endpoint (optional — discovered when omitted). Renders into registration_url."
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "OAuth scopes to request."
+            }
+          },
+          "additionalProperties": false
+        },
+        "tokenExchange": {
+          "type": "object",
+          "description": "Delegated token-exchange configuration for authType 'token_exchange' (Enterprise builds only). Each caller's identity-provider token is exchanged at runtime for a short-lived token scoped to this server's audience. Renders into token_exchange.",
+          "properties": {
+            "audience": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Resource identifier the exchanged token is scoped to at the identity provider (e.g. 'api://jira-mcp'). Required."
+            },
+            "useIdpCredentials": {
+              "type": "boolean",
+              "description": "When true, performs the exchange as the SSO login application itself instead of clientId/clientSecret (which are then ignored). Renders into use_idp_credentials."
+            },
+            "clientId": {
+              "type": "string",
+              "description": "Identity-provider application authorized to perform exchanges for this audience. Required unless useIdpCredentials is true. Can use env./vault. prefix. Renders into client_id."
+            },
+            "clientSecret": {
+              "type": "string",
+              "description": "Secret for the exchange application; omit for public clients. Ignored when useIdpCredentials is true. Can use env./vault. prefix. Renders into client_secret."
+            },
+            "authorizationServerUrl": {
+              "type": "string",
+              "description": "Overrides where the exchange request is sent, for providers that bind an audience to a specific authorization server (e.g. Okta Custom Authorization Servers). Renders into authorization_server_url."
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Optional scopes to request on the exchanged token. Include 'offline_access' where supported so exchanges issue refresh tokens."
+            }
+          },
+          "required": ["audience"],
+          "additionalProperties": false
         },
         "oauthConfigId": {
           "type": "string",
-          "description": "OAuth config ID reference"
+          "description": "OAuth config ID reference. Bifrost-managed (minted by the admin verification flow); ignored when supplied via config.json. Prefer oauthConfig for inline OAuth setup."
         },
         "headers": {
           "type": "object",
@@ -6033,6 +6135,10 @@
         "isPingAvailable": {
           "type": "boolean",
           "description": "Whether the MCP server supports ping"
+        },
+        "needsSessionStickiness": {
+          "type": "boolean",
+          "description": "Only meaningful for connectionType 'http': true keeps one persistent connection reused across every caller; false (the default for new clients) connects fresh per call. SSE and STDIO always behave as sticky regardless. Renders into needs_session_stickiness."
         },
         "toolPricing": {
           "type": "object",
@@ -6625,6 +6731,12 @@
       "enum": ["highestPermissionCount", "order"],
       "default": "highestPermissionCount",
       "description": "How a single role is chosen when a user resolves to more than one role: 'highestPermissionCount' (default) picks the role with the most permissions; 'order' evaluates the attribute-role mappings top to bottom and the first matching rule wins."
+    },
+    "scim_claims_sync_mode": {
+      "type": "string",
+      "enum": ["both", "scim"],
+      "default": "both",
+      "description": "When SCIM is enabled, selects whether IdP login/refresh claims still drive role/team/business-unit/profile sync and JIT user creation: 'both' (default) keeps syncing from both claims and SCIM; 'scim' makes SCIM the sole source of truth — claims are ignored for provisioning and new users must be pushed by SCIM. Inert when SCIM is disabled (claims always sync then)."
     },
     "scim_attribute_team_mappings": {
       "type": "array",

@@ -197,7 +197,7 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 				}}
 				data-testid="model-catalog-attribute-sheet"
 			>
-				<SheetHeader className="flex flex-col items-start p-0 px-8 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10">
+				<SheetHeader className="flex flex-col items-start p-0 px-4 py-4 md:px-8" headerClassName="mb-0 sticky -top-4 bg-card z-10">
 					<SheetTitle>Edit Model Attributes</SheetTitle>
 					<SheetDescription>
 						Update the description and other attributes for this model. These attributes are stored on the pricing row and preserved across
@@ -206,9 +206,9 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 				</SheetHeader>
 
 				<div className="flex h-full flex-col gap-6">
-					<div className="grow space-y-4 px-8">
+					<div className="grow space-y-4 px-4 md:px-8">
 						{/* Read-only provider / model header */}
-						<div className="grid grid-cols-2 gap-4">
+						<div className="grid grid-cols-1 gap-4 md:grid-cols-2">
 							<div>
 								<Label className="text-sm font-medium">Provider</Label>
 								<div className="bg-muted/30 mt-2 flex items-center gap-2 rounded-sm border px-3 py-2 text-sm">
@@ -245,7 +245,7 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 									</span>
 								)}
 							</div>
-							<div className="grid grid-cols-2 gap-4">
+							<div className="grid grid-cols-1 gap-4 md:grid-cols-2">
 								<div className="bg-muted/30 rounded-sm border px-3 py-2">
 									<p className="text-muted-foreground text-xs">Input</p>
 									<p className="mt-1 font-mono text-sm" data-testid="model-catalog-input-cost">
@@ -417,7 +417,7 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 						</div>
 					</div>
 
-					<div className="bg-card sticky bottom-0 shrink-0 border-t px-8 py-4">
+					<div className="bg-card sticky bottom-0 shrink-0 border-t px-4 py-4 md:px-8">
 						<div className="flex items-center justify-end gap-3">
 							{!hasUpdateAccess && <p className="text-destructive text-sm">You don't have permission to perform this action</p>}
 							<Button type="button" variant="outline" onClick={handleClose} data-testid="model-catalog-attribute-cancel">

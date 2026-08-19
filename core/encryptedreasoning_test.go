@@ -791,6 +791,64 @@ func TestIsEncryptedReasoningRejection(t *testing.T) {
 			want: false,
 		},
 		{
+			// Anthropic's refusal of a foreign payload: no code, block named in the message.
+			name: "anthropic redacted_thinking rejection",
+			err: &schemas.BifrostError{
+				StatusCode: schemas.Ptr(400),
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr("invalid_request_error"),
+					Message: "messages.1.content.0: Invalid `data` in `redacted_thinking` block",
+				},
+			},
+			want: true,
+		},
+		{
+			// This case expected false while the strip only cleared encrypted_content
+			// on Responses-shaped requests: a retry would have resent the same
+			// signature and earned the same 400, so recognising the refusal only
+			// bought a wasted upstream call.
+			//
+			// stripChatUnverifiableReasoning (#6110) removed that constraint. It is
+			// the chat-shaped strip, and stripChatReasoningDetails clears
+			// detail.Signature and detail.Data on every replayed assistant turn -- so
+			// the retry now goes out without the signature the new model refused.
+			// This exact message is the trigger that function's doc comment names:
+			// a complexity or virtual-model router picks a model per turn, and turn
+			// N+1 replays a thinking block minted by whoever answered turn N.
+			//
+			// Recognising it is therefore correct, and the remediation is real.
+			name: "anthropic thinking signature rejection triggers the chat-shaped strip",
+			err: &schemas.BifrostError{
+				StatusCode: schemas.Ptr(400),
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr("invalid_request_error"),
+					Message: "messages.1.content.0: Invalid `signature` in `thinking` block",
+				},
+			},
+			want: true,
+		},
+		{
+			// The guard the case above relies on: a bare "signature" with no reasoning
+			// word must stay unrecognised. SigV4 mismatches read like this, and
+			// stripping reasoning cannot fix one.
+			name: "request-signing failure is not a reasoning rejection",
+			err: &schemas.BifrostError{
+				StatusCode: schemas.Ptr(400),
+				Error: &schemas.ErrorField{
+					Message: "The request signature we calculated does not match the signature you provided",
+				},
+			},
+			want: false,
+		},
+		{
+			name: "unrelated anthropic 400 naming thinking",
+			err: &schemas.BifrostError{
+				StatusCode: schemas.Ptr(400),
+				Error:      &schemas.ErrorField{Message: "Invalid value for `thinking.budget_tokens`: must be >= 1024"},
+			},
+			want: false,
+		},
+		{
 			name: "unrelated 400",
 			err: &schemas.BifrostError{
 				StatusCode: schemas.Ptr(400),

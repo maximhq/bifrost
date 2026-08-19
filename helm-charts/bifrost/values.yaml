@@ -217,6 +217,13 @@ bifrost:
   logStyle: json
   # envLabel: staging  # Short label (max 10 chars) shown in the UI sidebar to identify the environment
 
+  # Operator-provisioned bootstrap secret required to create the very first admin account
+  # when none exists yet. Identical across every node so any node can authorize first-admin
+  # creation. Never persisted or logged. Also read from the BIFROST_SETUP_TOKEN env var.
+  # Whitespace-only values are rejected. Use env.<ENV_VAR_NAME> or vault.<path> for indirection.
+  # Renders into config.json `setup_token`.
+  # setupToken: "env.BIFROST_SETUP_TOKEN"
+
   # Schema location written to config.json $schema and exported as BIFROST_SCHEMA_URL.
   # Leave empty to use the default (https://www.getbifrost.ai/schema); set it only for
   # isolated deployments that mirror the schema internally. When empty, the env var is
@@ -341,6 +348,13 @@ bifrost:
   # Server configuration
   server:
     readBufferSize: 65536 # Read buffer size in bytes for reading HTTP headers (default: 64 KiB)
+    # Hostnames, IPs, or CIDR ranges that custom plugin (.so) downloads may reach even when they
+    # resolve to a private/loopback/link-local/CGNAT address (blocked by default to prevent SSRF).
+    # Deploy-time only — read at startup, never settable via the plugin admin API.
+    # Renders into config.json `server.plugin_download_private_allowlist`.
+    # pluginDownloadPrivateAllowlist:
+    #   - "artifacts.internal.corp"
+    #   - "10.0.0.0/8"
 
   # Framework configuration
   framework:
@@ -352,8 +366,10 @@ bifrost:
       # Sync interval in seconds (default: 86400 = 24 hours, minimum: 3600)
       pricingSyncInterval: 86400
       # Custom MCP server catalog URL (optional, leave empty to use the default Bifrost catalog)
+      # Accepts a file:// URL to load the catalog from local disk in air-gapped deployments
       # mcpLibraryUrl: ""
-      # MCP library sync interval in seconds (default: 86400 = 24 hours, minimum: 3600)
+      # MCP library sync interval in seconds
+      # (default: 86400 = 24 hours, minimum: 3600; set to 0 to disable catalog syncing)
       # mcpLibrarySyncInterval: 86400
       # How often each provider's model list is re-fetched in the background, in seconds
       # (default: 3600 = 1 hour, minimum: 60; set to 0 to disable background refresh)
@@ -391,6 +407,7 @@ bifrost:
     #     keep_alive_timeout_in_seconds: 30             # Idle keep-alive for pooled connections; set below the upstream's keep-alive (default: 30)
     #     max_conns_per_host: 5000                      # Max TCP connections per host (default: 5000)
     #     enforce_http2: false                           # Force HTTP/2 on provider connections (e.g. Bedrock)
+    #     http2_ping_interval_in_seconds: 0              # Idle seconds before a client-initiated HTTP/2 keepalive PING (0 = disabled; only when enforce_http2). Max 3600.
     #     insecure_skip_verify: false                   # Disable TLS certificate verification (last resort)
     #     ca_cert_pem: ""                               # PEM-encoded CA cert for self-signed/private CA
     #     allow_private_network: false                  # Allow connections to RFC 1918 private IPs (k8s pod network, LAN, VPC)
@@ -526,14 +543,44 @@ bifrost:
       # - name: "example-oauth-mcp"
       #   connectionType: "http"
       #   connectionString: "https://my-mcp.corp/mcp"
-      #   # authType "oauth": shared OAuth token; provide oauthConfigId referencing an existing oauth_config.
-      #   # authType "per_user_oauth": each user authenticates individually via OAuth flow;
-      #   #   oauth_config is registered via the API (POST /api/mcp/clients), not configured here.
+      #   # authType "oauth": shared inline OAuth. authType "per_user_oauth": each user authenticates
+      #   # individually. In both cases the client boots into `pending_verification`; an admin runs the
+      #   # verification flow once from the MCP Gateway UI. (oauth_config_id is minted by that flow and
+      #   # is Bifrost-managed — it cannot be set here and is ignored if supplied via config.json.)
       #   authType: "oauth"
-      #   oauthConfigId: "my-oauth-config-id"   # ID of the OAuth config created in Bifrost
+      #   # Inline OAuth provider config. All fields optional — omitted URLs are discovered from the
+      #   # connection_string (RFC 8414) and a missing clientId triggers dynamic client registration
+      #   # (RFC 7591) at admin-click time. Omit the whole block to rely entirely on discovery.
+      #   # Omit any field to have it discovered/registered during admin verification.
+      #   # Leaving every field blank is the same as omitting oauthConfig entirely (full discovery);
+      #   # blank/empty values are dropped, not written as an empty oauth_config block.
+      #   oauthConfig:
+      #     clientId: "env.MY_MCP_OAUTH_CLIENT_ID"       # optional (can use env./vault. prefix)
+      #     clientSecret: "env.MY_MCP_OAUTH_CLIENT_SECRET"  # optional (omit for PKCE/DCR public clients)
+      #     # authorizeUrl: "https://idp.corp/oauth2/authorize"   # optional — discovered when omitted
+      #     # tokenUrl: "https://idp.corp/oauth2/token"           # optional — discovered when omitted
+      #     # registrationUrl: "https://idp.corp/oauth2/register" # optional — discovered when omitted
+      #     # scopes: ["read", "write"]                           # optional — OAuth scopes to request
+      #   # Only meaningful for connectionType "http": true keeps one persistent connection reused
+      #   # across every caller; false (default for new clients) connects fresh per call.
+      #   needsSessionStickiness: false
       #   # When true, this MCP server is accessible to all virtual keys without explicit per-key assignment.
       #   # If a virtual key has an explicit MCP config for this server, that config takes precedence.
       #   allowOnAllVirtualKeys: false
+      #
+      # - name: "example-token-exchange-mcp"
+      #   connectionType: "http"
+      #   connectionString: "https://my-mcp.corp/mcp"
+      #   # authType "token_exchange" (Enterprise builds only): each caller's IdP token is exchanged at
+      #   # runtime for a short-lived token scoped to this server's audience. Requires user-identity auth.
+      #   authType: "token_exchange"
+      #   tokenExchange:
+      #     audience: "api://jira-mcp"                   # required — resource the exchanged token is scoped to
+      #     useIdpCredentials: false                     # true = exchange as the SSO login app (ignores clientId/secret)
+      #     clientId: "env.MY_EXCHANGE_CLIENT_ID"        # required unless useIdpCredentials is true (env./vault. prefix)
+      #     clientSecret: "env.MY_EXCHANGE_CLIENT_SECRET"  # omit for public clients
+      #     authorizationServerUrl: ""                   # optional — override exchange endpoint (e.g. Okta custom AS)
+      #     scopes: []                                   # optional; include 'offline_access' for refresh tokens
     # toolSyncInterval: "10m"   # Global tool sync interval (Go duration string, e.g. "10m", "1h", "0s")
     # Assign groups of MCP tools to virtual keys / access profiles.
     # toolGroups:
@@ -780,8 +827,11 @@ bifrost:
     budgets: []
       # - id: "budget-1"
       #   max_limit: 100
-      #   reset_duration: "1M"     # Supports: 30s, 5m, 1h, 1d, 1w, 1M, 1Y
+      #   reset_duration: "1M"     # Supports: 30s, 5m, 1h, 1d, 1w, 1M, 1Q, 1Y
       #   calendar_aligned: false  # Snap reset to calendar boundaries (e.g. 1M resets on the 1st)
+      #   # reset_config only applies to quarterly ("1Q") budgets:
+      #   reset_config:
+      #     quarter_start_month: 4  # First month of Q1 as 1-12 (e.g. 4 = fiscal year starting April). 0/omitted = January.
     rateLimits: []
       # - id: "rate-limit-1"
       #   token_max_limit: 100000
@@ -957,7 +1007,7 @@ bifrost:
       # authServerType: "org"  # "org" or "custom"; auto-detected from issuer URL when omitted
       # clientId: ""
       # clientSecret: ""
-      # apiToken: ""
+      # apiToken: ""  # optional — enables 24-hour background user/group reconciliation
       # audience: ""
       # # Extra OAuth scopes on top of the base openid/profile/email/offline_access set
       # # (for Custom Authorization Servers where claims like "groups" are gated behind a scope).
@@ -1001,6 +1051,10 @@ bifrost:
       #     attributeType: "group"                   # "user" (SCIM User attribute) or "group" (match SCIM Group)
       #     attributeValue: "displayName"
       # provisioningToken: "env.SCIM_PROVISIONING_TOKEN"  # bearer token the IdP presents; generate: openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
+      # # Claims-sync mode (Enterprise). Shared across every provider above; only matters when SCIM is enabled:
+      # # "both" (default) = login/refresh claims and SCIM both sync roles/teams/business-units/profile and can JIT-create users;
+      # # "scim" = SCIM is the sole source of truth — claims are ignored for provisioning and new users must be pushed by SCIM.
+      # claimsSyncMode: "both"
       #
       # # Auth proxy / identity-aware proxy (Enterprise). Shared across every provider above:
       # # when a Zero Trust / ZTNA proxy fronts the IdP, Bifrost reads the login credential from the

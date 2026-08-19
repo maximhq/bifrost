@@ -144,6 +144,11 @@ type ComprehensiveTestConfig struct {
 	InterleavedThinkingModel string                     // Model for interleaved thinking tests; defaults to claude-opus-4-5
 	FastModeModel            string                     // Model for fast mode tests; defaults to claude-opus-4-6
 	RealtimeModel            string                     // Model for Realtime API (e.g., "gpt-4o-realtime-preview")
+
+	// SkipEmptyToolSchemas skips the empty/nil function-schema tool tests for providers that
+	// reject a function schema whose properties object is empty or absent (e.g. Runware, whose
+	// OpenAI-compatible endpoint requires a non-empty properties object).
+	SkipEmptyToolSchemas bool
 }
 
 // ComprehensiveTestAccount provides a test implementation of the Account interface for comprehensive testing.

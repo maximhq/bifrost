@@ -211,8 +211,7 @@ export default function LogsPage() {
 			// period mode `newFilters` carries no start/end, so only touch time when an
 			// explicit range is actually provided — otherwise we'd wipe the active period/range.
 			const hasExplicitTime = !!newFilters.start_time && !!newFilters.end_time;
-			const timeChanged =
-				hasExplicitTime && (newFilters.start_time !== filters.start_time || newFilters.end_time !== filters.end_time);
+			const timeChanged = hasExplicitTime && (newFilters.start_time !== filters.start_time || newFilters.end_time !== filters.end_time);
 			if (timeChanged) {
 				userModifiedTimeRange.current = true;
 			}
@@ -569,8 +568,18 @@ export default function LogsPage() {
 	}, [userAgentMappingsData?.mappings]);
 
 	const columns = useMemo(
+<<<<<<< HEAD
+<<<<<<< HEAD
 		() => createColumns(handleDelete, hasDeleteAccess, metadataKeys, customAppIcons, grouped),
 		[customAppIcons, handleDelete, hasDeleteAccess, metadataKeys, grouped],
+=======
+		() => createColumns(handleDelete, hasDeleteAccess, metadataKeys, customAppIcons),
+		[customAppIcons, handleDelete, hasDeleteAccess, metadataKeys],
+>>>>>>> 061d01944 (V2.0.0 (#4365))
+=======
+		() => createColumns(handleDelete, hasDeleteAccess, metadataKeys, customAppIcons),
+		[customAppIcons, handleDelete, hasDeleteAccess, metadataKeys],
+>>>>>>> f4a637df4 (V2.0.0 (#4365))
 	);
 
 	const columnIds = useMemo(
@@ -589,6 +598,7 @@ export default function LogsPage() {
 			latency: "Latency",
 			tokens: "Tokens",
 			cost: "Cost",
+			service_tier: "Service Tier",
 			virtual_key: "Virtual Key",
 			routing_rule: "Routing Rule",
 			team: "Team",
@@ -599,7 +609,10 @@ export default function LogsPage() {
 		[],
 	);
 
-	const DEFAULT_HIDDEN_COLUMNS = useMemo(() => ["virtual_key", "routing_rule", "team", "customer", "user", "business_unit"], []);
+	const DEFAULT_HIDDEN_COLUMNS = useMemo(
+		() => ["service_tier", "virtual_key", "routing_rule", "team", "customer", "user", "business_unit"],
+		[],
+	);
 
 	const {
 		entries: columnEntries,
@@ -734,7 +747,7 @@ export default function LogsPage() {
 	);
 
 	return (
-		<div className="dark:bg-card no-padding-parent no-border-parent h-[calc(100vh_-_16px)]">
+		<div className="dark:bg-card no-padding-parent no-border-parent h-[calc(var(--app-content-viewport)_-_16px)]">
 			{showEmptyState ? (
 				<EmptyState error={error ?? (logsError ? getErrorMessage(logsError as Parameters<typeof getErrorMessage>[0]) : null)} />
 			) : (

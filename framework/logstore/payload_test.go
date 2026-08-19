@@ -51,7 +51,9 @@ func TestExtractPayload_RoundTrip(t *testing.T) {
 	}
 
 	payload := ExtractPayload(log)
-	assert.Equal(t, len(payloadFields)+1, len(payload), "payload map should have all payload fields plus metadata")
+	// +1 for metadata, +6 for the always-present index fields (provider, model,
+	// status, timestamp, selected_key_id, selected_key_name) added in #6070.
+	assert.Equal(t, len(payloadFields)+1+6, len(payload), "payload map should have all payload fields plus metadata and index fields")
 	assert.Equal(t, `[{"role":"user","content":"hello"}]`, payload["input_history"])
 	assert.Equal(t, `{"role":"assistant","content":"world"}`, payload["output_message"])
 	assert.Equal(t, `{"judge_calls":[{"total_tokens":18}]}`, payload["guardrail_debug"])

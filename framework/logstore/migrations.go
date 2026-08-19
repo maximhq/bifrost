@@ -288,6 +288,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_recreate_matviews_with_app_column"}, run: migrationRecreateMatViewsWithUserAgentColumn},
 	{IDs: []string{"mcp_tool_logs_add_endpoint_columns"}, run: migrationAddEndpointColumnsToMCPToolLogs},
 	{IDs: []string{"mcp_tool_logs_add_plugin_logs_column"}, run: migrationAddMCPPluginLogsColumn},
+	{IDs: []string{"logs_add_video_edit_input_column"}, run: migrationAddVideoEditInputColumn},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -4157,6 +4158,37 @@ func migrationAddBillingFidelityColumns(ctx context.Context, db *gorm.DB, logger
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while adding billing fidelity columns: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddVideoEditInputColumn adds the video_edit_input column to the logs table.
+func migrationAddVideoEditInputColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_video_edit_input_column"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "video_edit_input"); err != nil {
+				return err
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &Log{}, "video_edit_input"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding video edit input column: %s", err.Error())
 	}
 	return nil
 }

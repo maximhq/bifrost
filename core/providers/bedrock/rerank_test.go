@@ -209,17 +209,119 @@ func TestResolveBedrockDeployment(t *testing.T) {
 	assert.Equal(t, "", key.Aliases.Resolve(""))
 }
 
-func TestBedrockRerankRequiresARNModelIdentifier(t *testing.T) {
-	provider := &BedrockProvider{}
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	key := schemas.Key{
-		Aliases: schemas.KeyAliases{
-			"cohere-rerank": {ModelID: "cohere.rerank-v3-5:0"},
+// Bedrock's Rerank API names the reranker model with a full foundation-model ARN
+// ("arn:aws:bedrock:us-east-1::foundation-model/cohere.rerank-v3-5:0" in the AWS
+// docs' own example), while every other Bifrost surface names a Bedrock model by
+// its bare ID. Rejecting the bare ID outright made rerank the one route where
+// callers had to hand-write an ARN, so all three rerank drop-ins in the provider
+// harness 400'd on "amazon.rerank-v1:0". Bifrost already resolves a region for
+// every other Bedrock call, so it has everything it needs to build the ARN itself.
+func TestResolveBedrockRerankModelARN(t *testing.T) {
+	regionKey := func(region string) schemas.Key {
+		return schemas.Key{BedrockKeyConfig: &schemas.BedrockKeyConfig{
+			Region: schemas.NewSecretVar(region),
+		}}
+	}
+
+	tests := []struct {
+		name  string
+		key   schemas.Key
+		model string
+		want  string
+	}{
+		{
+			name:  "bare model id uses the key region",
+			key:   regionKey("us-west-2"),
+			model: "amazon.rerank-v1:0",
+			want:  "arn:aws:bedrock:us-west-2::foundation-model/amazon.rerank-v1:0",
+		},
+		{
+			// A nil BedrockKeyConfig is valid (inherited IAM/env credentials), so this
+			// must fall back to the default region rather than panic or return empty.
+			name:  "nil key config falls back to the default region",
+			key:   schemas.Key{},
+			model: "amazon.rerank-v1:0",
+			want:  "arn:aws:bedrock:" + DefaultBedrockRegion + "::foundation-model/amazon.rerank-v1:0",
+		},
+		{
+			name:  "region prefix on the model wins over the key region",
+			key:   regionKey("us-west-2"),
+			model: "eu-central-1/cohere.rerank-v3-5:0",
+			want:  "arn:aws:bedrock:eu-central-1::foundation-model/cohere.rerank-v3-5:0",
+		},
+		{
+			// Hardcoding the "aws" partition silently breaks GovCloud and China, where
+			// the ARN is otherwise well-formed and the failure surfaces only at runtime.
+			name:  "govcloud region uses the aws-us-gov partition",
+			key:   regionKey("us-gov-west-1"),
+			model: "amazon.rerank-v1:0",
+			want:  "arn:aws-us-gov:bedrock:us-gov-west-1::foundation-model/amazon.rerank-v1:0",
+		},
+		{
+			name:  "china region uses the aws-cn partition",
+			key:   regionKey("cn-north-1"),
+			model: "amazon.rerank-v1:0",
+			want:  "arn:aws-cn:bedrock:cn-north-1::foundation-model/amazon.rerank-v1:0",
+		},
+		{
+			name:  "an explicit ARN passes through untouched",
+			key:   regionKey("us-west-2"),
+			model: "arn:aws:bedrock:us-east-1::foundation-model/cohere.rerank-v3-5:0",
+			want:  "arn:aws:bedrock:us-east-1::foundation-model/cohere.rerank-v3-5:0",
+		},
+		{
+			name:  "empty model stays empty so the caller can reject it",
+			key:   regionKey("us-west-2"),
+			model: "",
+			want:  "",
+		},
+		{
+			name:  "whitespace-only model stays empty",
+			key:   regionKey("us-west-2"),
+			model: "   ",
+			want:  "",
 		},
 	}
 
-	response, bifrostErr := provider.Rerank(ctx, key, &schemas.BifrostRerankRequest{
-		Model: "cohere-rerank",
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			assert.Equal(t, tc.want, resolveBedrockRerankModelARN(ctx, tc.key, tc.model))
+		})
+	}
+}
+
+// A bare model ID must now reach the request builder as a synthesized ARN rather
+// than being rejected before the call is ever built.
+func TestBedrockRerankAcceptsBareModelIdentifier(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	key := schemas.Key{BedrockKeyConfig: &schemas.BedrockKeyConfig{
+		Region: schemas.NewSecretVar("us-east-1"),
+	}}
+
+	modelARN := resolveBedrockRerankModelARN(ctx, key, "amazon.rerank-v1:0")
+	req, err := ToBedrockRerankRequest(&schemas.BifrostRerankRequest{
+		Model: "amazon.rerank-v1:0",
+		Query: "capital of france",
+		Documents: []schemas.RerankDocument{
+			{Text: "Paris is the capital of France."},
+		},
+	}, modelARN)
+
+	require.NoError(t, err)
+	require.NotNil(t, req)
+	assert.Equal(t,
+		"arn:aws:bedrock:us-east-1::foundation-model/amazon.rerank-v1:0",
+		req.RerankingConfiguration.BedrockRerankingConfiguration.ModelConfiguration.ModelARN)
+}
+
+// The model identifier is still required; only the ARN-shape requirement is lifted.
+func TestBedrockRerankRejectsEmptyModelIdentifier(t *testing.T) {
+	provider := &BedrockProvider{}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	response, bifrostErr := provider.Rerank(ctx, schemas.Key{}, &schemas.BifrostRerankRequest{
+		Model: "",
 		Query: "capital of france",
 		Documents: []schemas.RerankDocument{
 			{Text: "Paris is the capital of France."},
@@ -229,5 +331,5 @@ func TestBedrockRerankRequiresARNModelIdentifier(t *testing.T) {
 	require.Nil(t, response)
 	require.NotNil(t, bifrostErr)
 	require.NotNil(t, bifrostErr.Error)
-	assert.Contains(t, bifrostErr.Error.Message, "requires an ARN")
+	assert.Contains(t, bifrostErr.Error.Message, "model identifier")
 }

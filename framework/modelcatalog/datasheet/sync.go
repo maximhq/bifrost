@@ -143,7 +143,7 @@ func (s *Store) applyPricingData(pricingData map[string]Entry) {
 	s.mu.Unlock()
 }
 
-// filePathFromURL resolves a parsed file:// URL to a filesystem path,
+// FilePathFromURL resolves a parsed file:// URL to a filesystem path,
 // supporting both absolute and relative references. Go's url.Parse scatters a
 // relative path across different fields depending on its form, so we reassemble
 // it here:
@@ -154,7 +154,11 @@ func (s *Store) applyPricingData(pricingData map[string]Entry) {
 //
 // Relative paths resolve against the process working directory, matching how the
 // sqlite config store treats a relative "path" value.
-func filePathFromURL(parsed *url.URL) string {
+//
+// Exported because every air-gapped source in the catalog resolves file:// URLs
+// the same way: the pricing datasheet, the model parameters datasheet, and the
+// MCP library catalog (modelcatalog.fetchMCPLibrary).
+func FilePathFromURL(parsed *url.URL) string {
 	if parsed.Opaque != "" {
 		return parsed.Opaque
 	}
@@ -179,7 +183,7 @@ func (s *Store) loadPricingFromURL(ctx context.Context) (map[string]Entry, error
 	var data []byte
 
 	if parsed.Scheme == "file" {
-		data, err = os.ReadFile(filePathFromURL(parsed))
+		data, err = os.ReadFile(FilePathFromURL(parsed))
 		if err != nil {
 			return nil, fmt.Errorf("failed to read pricing file: %w", err)
 		}

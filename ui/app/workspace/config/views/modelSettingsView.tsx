@@ -1,3 +1,4 @@
+import PageTitle from "@/components/pageTitle";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -132,10 +133,7 @@ export default function ModelSettingsView() {
 	return (
 		<div className="mx-auto w-full max-w-7xl space-y-4" data-testid="model-settings-view">
 			<form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-				<div>
-					<h2 className="text-lg font-semibold tracking-tight">Model Settings</h2>
-					<p className="text-muted-foreground text-sm">Configure pricing and routing behaviour.</p>
-				</div>
+				<PageTitle title="Model Settings">Configure pricing and routing behaviour.</PageTitle>
 
 				<div className="space-y-4">
 					{/* Pricing Datasheet URL */}

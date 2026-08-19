@@ -229,6 +229,7 @@ type Log struct {
 	ImageEditInput          string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.ImageEditInput
 	ImageVariationInput     string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.ImageVariationInput
 	VideoGenerationInput    string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.VideoGenerationInput
+	VideoEditInput          string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.VideoEditInput
 	SpeechOutput            string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostSpeech
 	TranscriptionOutput     string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostTranscribe
 	ImageGenerationOutput   string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostImageGenerationResponse
@@ -239,7 +240,10 @@ type Log struct {
 	VideoListOutput         string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostVideoListResponse
 	VideoDeleteOutput       string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostVideoDeleteResponse
 	CacheDebug              string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostCacheDebug
-	GuardrailDebug          string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostGuardrailDebug
+<<<<<<< HEAD
+	GuardrailDebug          string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostGuardrailDebug
+=======
+>>>>>>> f4a637df4 (V2.0.0 (#4365))
 	Latency                 *float64  `gorm:"index:idx_logs_latency" json:"latency,omitempty"`
 	TokenUsage              string    `gorm:"type:text" json:"-"`                                                                         // JSON serialized *schemas.LLMUsage
 	Cost                    *float64  `gorm:"index" json:"cost,omitempty"`                                                                // Cost in dollars (total cost of the request - includes cache lookup cost)
@@ -330,6 +334,7 @@ type Log struct {
 	ListModelsOutputParsed      []schemas.Model                         `gorm:"-" json:"list_models_output,omitempty"`
 	MetadataParsed              map[string]interface{}                  `gorm:"-" json:"metadata,omitempty"`
 	VideoGenerationInputParsed  *schemas.VideoGenerationInput           `gorm:"-" json:"video_generation_input,omitempty"`
+	VideoEditInputParsed        *schemas.VideoEditInput                 `gorm:"-" json:"video_edit_input,omitempty"`
 	VideoGenerationOutputParsed *schemas.BifrostVideoGenerationResponse `gorm:"-" json:"video_generation_output,omitempty"`
 	VideoRetrieveOutputParsed   *schemas.BifrostVideoGenerationResponse `gorm:"-" json:"video_retrieve_output,omitempty"`
 	VideoDownloadOutputParsed   *schemas.BifrostVideoDownloadResponse   `gorm:"-" json:"video_download_output,omitempty"`
@@ -528,6 +533,14 @@ func (l *Log) SerializeFields() error {
 			return err
 		} else {
 			l.VideoGenerationInput = string(data)
+		}
+	}
+
+	if l.VideoEditInputParsed != nil {
+		if data, err := sonic.Marshal(l.VideoEditInputParsed); err != nil {
+			return err
+		} else {
+			l.VideoEditInput = string(data)
 		}
 	}
 
@@ -901,6 +914,12 @@ func (l *Log) DeserializeFields() error {
 		if err := sonic.Unmarshal([]byte(l.VideoGenerationInput), &l.VideoGenerationInputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.VideoGenerationInputParsed = nil
+		}
+	}
+
+	if l.VideoEditInput != "" {
+		if err := sonic.Unmarshal([]byte(l.VideoEditInput), &l.VideoEditInputParsed); err != nil {
+			l.VideoEditInputParsed = nil
 		}
 	}
 
@@ -1548,6 +1567,11 @@ func (l *Log) BuildContentSummary() string {
 	// Add video generation input prompt
 	if l.VideoGenerationInputParsed != nil && l.VideoGenerationInputParsed.Prompt != "" {
 		parts = append(parts, l.VideoGenerationInputParsed.Prompt)
+	}
+
+	// Add video edit input prompt
+	if l.VideoEditInputParsed != nil && l.VideoEditInputParsed.Prompt != "" {
+		parts = append(parts, l.VideoEditInputParsed.Prompt)
 	}
 
 	// Add error details

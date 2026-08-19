@@ -9,7 +9,7 @@ interface ObservabilitySettingsSheetProps {
 export function ObservabilitySettingsSheet({ open, onOpenChange }: ObservabilitySettingsSheetProps) {
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent side="right" className="flex w-full flex-col overflow-x-hidden px-8 pt-6 sm:max-w-3xl">
+			<SheetContent side="right" className="flex w-full flex-col overflow-x-hidden px-4 pt-6 sm:max-w-3xl md:px-8">
 				<SheetHeader className="">
 					<SheetTitle className="text-lg font-semibold">Logging settings</SheetTitle>
 				</SheetHeader>

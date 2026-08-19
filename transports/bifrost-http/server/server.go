@@ -222,10 +222,11 @@ type BifrostHTTPServer struct {
 	// from it.
 	ShellRewriter handlers.ShellRewriter
 
-	WebSocketHandler   *handlers.WebSocketHandler
-	MCPServerHandler   *handlers.MCPServerHandler
-	devPprofHandler    *handlers.DevPprofHandler
-	IntegrationHandler *handlers.IntegrationHandler
+	WebSocketHandler    *handlers.WebSocketHandler
+	NotificationService *handlers.NotificationService
+	MCPServerHandler    *handlers.MCPServerHandler
+	devPprofHandler     *handlers.DevPprofHandler
+	IntegrationHandler  *handlers.IntegrationHandler
 
 	AuthMiddleware       *handlers.AuthMiddleware
 	CORSMiddleware       *handlers.CorsMiddleware
@@ -2105,6 +2106,11 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	if s.WebSocketHandler == nil {
 		s.WebSocketHandler = handlers.NewWebSocketHandler(s.Ctx, s.Config.ClientConfig.AllowedOrigins)
 	}
+	if s.NotificationService == nil {
+		s.NotificationService = handlers.NewNotificationService(s.Config.ConfigStore, s.WebSocketHandler)
+		s.Config.NotificationPublisher = s.NotificationService.Publish
+		s.NotificationService.Start(s.Ctx)
+	}
 	// Start WebSocket heartbeat
 	s.WebSocketHandler.StartHeartbeat()
 	// Adding telemetry middleware
@@ -2174,6 +2180,9 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	}
 	if s.WebSocketHandler != nil {
 		s.WebSocketHandler.RegisterRoutes(s.Router, middlewares...)
+	}
+	if s.NotificationService != nil {
+		s.NotificationService.RegisterRoutes(s.Router, middlewares...)
 	}
 	// Register dev pprof handler only in dev mode
 	if handlers.IsDevMode() {
@@ -2364,6 +2373,9 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// Log callbacks are registered later in RegisterAPIRoutes when logging plugin is available.
 	s.WebSocketHandler = handlers.NewWebSocketHandler(s.Ctx, s.Config.ClientConfig.AllowedOrigins)
 	s.Config.EventBroadcaster = s.WebSocketHandler.BroadcastEvent
+	s.NotificationService = handlers.NewNotificationService(s.Config.ConfigStore, s.WebSocketHandler)
+	s.Config.NotificationPublisher = s.NotificationService.Publish
+	s.NotificationService.Start(s.Ctx)
 	// Initializing plugin loader. Allowlist entries are validated now - a malformed entry
 	// fails server startup rather than silently no-oping, since this is security-relaxing
 	// config for SSRF protection on custom plugin downloads.

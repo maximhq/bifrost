@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -172,7 +173,118 @@ func canDisableThinkingWithBudget(model string) bool {
 	return !strings.Contains(strings.ToLower(model), "gemini-2.5-pro")
 }
 
+// geminiThinkingLevels is the thinkingLevel ladder ordered from least to most
+// thinking. Source: https://ai.google.dev/api/generate-content#ThinkingLevel
+var geminiThinkingLevels = []string{"minimal", "low", "medium", "high"}
+
+// geminiThinkingLevelSupport records which rungs of that ladder each model actually
+// implements. The sets are not uniform across the Gemini 3 family - gemini-3.7-flash
+// has no "minimal", gemini-3-pro-preview has neither "minimal" nor "medium" - and the
+// API rejects a level the model does not implement, so an effort has to be clamped per
+// model rather than per family.
+// Source: https://ai.google.dev/gemini-api/docs/thinking#thinking-levels
+// Matching is first-prefix-wins, so longer prefixes are listed before the shorter
+// prefixes they would otherwise be shadowed by.
+var geminiThinkingLevelSupport = []struct {
+	prefix string
+	levels []string
+}{
+	{"gemini-3.1-flash-lite-image", []string{"minimal", "high"}},
+	{"gemini-3.7-flash", []string{"low", "medium", "high"}},
+	{"gemini-3.6-flash", []string{"minimal", "low", "medium", "high"}},
+	{"gemini-3.5-flash-lite", []string{"minimal", "low", "medium", "high"}},
+	{"gemini-3.5-flash", []string{"minimal", "low", "medium", "high"}},
+	{"gemini-3.1-pro", []string{"low", "medium", "high"}},
+	{"gemini-3-flash", []string{"minimal", "low", "medium", "high"}},
+	{"gemini-3-pro", []string{"low", "high"}},
+}
+
+// defaultGemini3ThinkingLevels is the fallback for a Gemini 3 model not yet in the table.
+//
+// It omits "minimal" because that is the rung the text models most often lack: of the
+// documented Gemini 3 text models, gemini-3.7-flash, gemini-3.1-pro-preview and
+// gemini-3-pro-preview all reject it, so defaulting to it would send an unreleased model
+// a level it is more likely than not to refuse.
+//
+// This is a heuristic, not a guarantee -- there is no rung every documented Gemini 3 model
+// accepts. gemini-3.1-flash-lite-image implements only "minimal" and "high", so even "low"
+// is not universal, which is why that model has its own entry above rather than relying on
+// this fallback. Any model whose set genuinely differs needs an explicit entry too.
+// TestNotEveryDocumentedGemini3ModelAcceptsLow pins that counterexample.
+// Source: https://ai.google.dev/gemini-api/docs/thinking#thinking-levels
+var defaultGemini3ThinkingLevels = []string{"low", "medium", "high"}
+
+// supportedThinkingLevels returns the thinkingLevel values model accepts.
+func supportedThinkingLevels(model string) []string {
+	modelLower := strings.ToLower(model)
+	for _, entry := range geminiThinkingLevelSupport {
+		if strings.Contains(modelLower, entry.prefix) {
+			return entry.levels
+		}
+	}
+	return defaultGemini3ThinkingLevels
+}
+
+// lowestThinkingLevel returns the least amount of thinking model can be asked for.
+// Gemini 3 has no "off" switch, so this is the floor a "none" effort lands on.
+func lowestThinkingLevel(model string) string {
+	levels := supportedThinkingLevels(model)
+	if len(levels) == 0 {
+		return "low"
+	}
+	return levels[0]
+}
+
+// clampThinkingLevel snaps a requested level onto the nearest rung model implements.
+// Ties break upward so a clamp never silently spends less reasoning than asked for.
+func clampThinkingLevel(level string, model string) string {
+	supported := supportedThinkingLevels(model)
+	if slices.Contains(supported, level) {
+		return level
+	}
+	want := slices.Index(geminiThinkingLevels, level)
+	if want < 0 {
+		return level
+	}
+	best := ""
+	bestDistance := 0
+	for _, candidate := range supported {
+		idx := slices.Index(geminiThinkingLevels, candidate)
+		if idx < 0 {
+			continue
+		}
+		distance := idx - want
+		if distance < 0 {
+			distance = -distance
+		}
+		if best == "" || distance < bestDistance || (distance == bestDistance && idx > want) {
+			best = candidate
+			bestDistance = distance
+		}
+	}
+	if best == "" {
+		return level
+	}
+	return best
+}
+
 func setThinkingBudgetZeroIfSupported(config *GenerationConfig, model string) {
+	// Gemini 3 cannot turn thinking off. Depth is controlled by thinkingLevel and the
+	// floor is the model's lowest supported rung, so a "none" effort clamps to that rung
+	// instead of zeroing the budget. Sending thinkingBudget:0 here used the pre-3.0
+	// control surface and suppressed the internal reasoning Gemini 3 leans on to pick
+	// functions, which surfaced as tools being advertised but never called.
+	// Docs: https://ai.google.dev/gemini-api/docs/thinking#thinking-levels
+	//       https://ai.google.dev/gemini-api/docs/function-calling#thinking
+	if isGemini3Plus(model) {
+		if config.ThinkingConfig == nil {
+			config.ThinkingConfig = &GenerationConfigThinkingConfig{}
+		}
+		config.ThinkingConfig.IncludeThoughts = false
+		config.ThinkingConfig.ThinkingBudget = nil
+		config.ThinkingConfig.ThinkingLevel = schemas.Ptr(lowestThinkingLevel(model))
+		return
+	}
 	if !canDisableThinkingWithBudget(model) {
 		config.ThinkingConfig = nil
 		return
@@ -184,35 +296,26 @@ func setThinkingBudgetZeroIfSupported(config *GenerationConfig, model string) {
 	config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(0))
 }
 
-// effortToThinkingLevel converts reasoning effort to Gemini ThinkingLevel string
-// Pro models only support "low" or "high"
-// Other models support "minimal", "low", "medium", and "high"
+// effortToThinkingLevel converts reasoning effort to a Gemini ThinkingLevel string,
+// clamped to the levels the target model implements. Returns "" for "none", which
+// callers handle through setThinkingBudgetZeroIfSupported instead.
 func effortToThinkingLevel(effort string, model string) string {
-	isPro := strings.Contains(strings.ToLower(model), "pro")
-
+	var desired string
 	switch effort {
 	case "none":
 		return "" // Empty string for no thinking
 	case "minimal":
-		if isPro {
-			return "low" // Pro models don't support minimal, use low
-		}
-		return "minimal"
+		desired = "minimal"
 	case "low":
-		return "low"
+		desired = "low"
 	case "medium":
-		if isPro {
-			return "high" // Pro models don't support medium, use high
-		}
-		return "medium"
+		desired = "medium"
 	case "high", "xhigh", "max":
-		return "high"
+		desired = "high"
 	default:
-		if isPro {
-			return "high"
-		}
-		return "medium"
+		desired = "medium"
 	}
+	return clampThinkingLevel(desired, model)
 }
 
 func getThinkingBudgetRange(model string, defaultMaxTokens int) thinkingBudgetRange {
@@ -1232,8 +1335,9 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 			// User provided effort only (no max_tokens)
 			if supportsLevel {
 				// Gemini 3.0+ - use thinkingLevel (more native)
-				level := effortToThinkingLevel(*params.Reasoning.Effort, model)
-				config.ThinkingConfig.ThinkingLevel = &level
+				if level := effortToThinkingLevel(*params.Reasoning.Effort, model); level != "" {
+					config.ThinkingConfig.ThinkingLevel = &level
+				}
 			} else {
 				maxTokens := providerUtils.GetMaxOutputTokensOrDefault(model, DefaultCompletionMaxTokens)
 				if config.MaxOutputTokens > 0 {
@@ -1253,23 +1357,17 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 		}
 	}
 	// Handle response_format to response_schema conversion
-	if params.ResponseFormat != nil {
-		formatMap, ok := (*params.ResponseFormat).(map[string]interface{})
-		if ok {
-			formatType, typeOk := formatMap["type"].(string)
-			if typeOk {
-				switch formatType {
-				case "json_schema":
-					// OpenAI Structured Outputs: {"type": "json_schema", "json_schema": {...}}
-					if schemaMap := extractSchemaMapFromResponseFormat(params.ResponseFormat); schemaMap != nil {
-						config.ResponseMIMEType = "application/json"
-						config.ResponseJSONSchema = schemaMap
-					}
-				case "json_object":
-					// Maps to Gemini's responseMimeType without schema
-					config.ResponseMIMEType = "application/json"
-				}
+	if rf, ok := schemas.ParseChatResponseFormat(params.ResponseFormat); ok {
+		switch rf.Type {
+		case "json_schema":
+			// OpenAI Structured Outputs: {"type": "json_schema", "json_schema": {...}}
+			if schemaMap := extractSchemaMapFromResponseFormat(params.ResponseFormat); schemaMap != nil {
+				config.ResponseMIMEType = "application/json"
+				config.ResponseJSONSchema = schemaMap
 			}
+		case "json_object":
+			// Maps to Gemini's responseMimeType without schema
+			config.ResponseMIMEType = "application/json"
 		}
 	}
 	if params.ExtraParams != nil {
@@ -2837,22 +2935,19 @@ func normalizeOrderedSchemaForGemini(om *schemas.OrderedMap) *schemas.OrderedMap
 // structure. The schema may be a plain map or an order-preserving OrderedMap (e.g. when built
 // from a Responses request); the result is used with ResponseJSONSchema.
 func extractSchemaMapFromResponseFormat(responseFormat *interface{}) interface{} {
-	formatMap, ok := (*responseFormat).(map[string]interface{})
-	if !ok {
+	rf, ok := schemas.ParseChatResponseFormat(responseFormat)
+	if !ok || rf.Type != "json_schema" {
 		return nil
 	}
 
-	formatType, ok := formatMap["type"].(string)
-	if !ok || formatType != "json_schema" {
-		return nil
+	// normalizeSchemaForGemini only rewrites union `type` arrays; on a schema
+	// without any, it is an identity transform. Detect that case and hand Gemini
+	// the client's own bytes instead of a re-encoding of them.
+	if raw := rf.RawSchema(); len(raw) > 0 && !schemaNeedsGeminiNormalization(raw) {
+		return raw
 	}
 
-	jsonSchemaObj, ok := formatMap["json_schema"].(map[string]interface{})
-	if !ok {
-		return nil
-	}
-
-	schemaObj, ok := jsonSchemaObj["schema"]
+	schemaObj, ok := rf.Schema()
 	if !ok {
 		return nil
 	}
@@ -3066,4 +3161,82 @@ func mimeTypeFromURI(uri string) string {
 		return ""
 	}
 	return uriExtensionMIMETypes[strings.ToLower(uri[dot:])]
+}
+
+// schemaNeedsGeminiNormalization reports whether a raw JSON Schema contains any
+// `type` whose value is an array (e.g. ["string","null"]). That is the only
+// construct normalizeSchemaForGemini rewrites, so a schema without one can be
+// forwarded byte for byte instead of being decoded and re-encoded.
+func schemaNeedsGeminiNormalization(raw []byte) bool {
+	return resultNeedsGeminiNormalization(gjson.ParseBytes(raw))
+}
+
+// geminiTypeArrayNeedsRewrite reports whether normalizeSchemaForGemini would actually
+// change an array-valued "type", rather than reproduce it.
+//
+// The distinction matters because flagging every type array kept the very common nullable
+// shape ["string","null"] off the raw-bytes fast path, for a rewrite that reproduces the
+// same two entries -- and the decode/re-encode round trip that came with it reformatted
+// unrelated numeric literals elsewhere in the schema (1.50 arriving as 1.5).
+//
+// It mirrors extractTypesFromValue, which silently drops non-string entries: if any are
+// present the normalizer's output cannot equal the input, so that forces a rewrite too.
+func geminiTypeArrayNeedsRewrite(value gjson.Result) bool {
+	stringEntries, nonNull, foreign := 0, 0, 0
+	value.ForEach(func(_, entry gjson.Result) bool {
+		if entry.Type != gjson.String {
+			foreign++
+			return true
+		}
+		stringEntries++
+		if entry.String() != "null" {
+			nonNull++
+		}
+		return true
+	})
+
+	if foreign > 0 {
+		// Dropped by extractTypesFromValue, so the rewritten array differs from the input.
+		return true
+	}
+	if stringEntries <= 1 {
+		// normalizeSchemaForGemini's entire type block is guarded by len(types) > 1.
+		return false
+	}
+	if nonNull > 1 {
+		return true // multiple non-null types are rebuilt as anyOf
+	}
+	if nonNull == 0 {
+		return true // an all-null array collapses to the "null" scalar
+	}
+	// One non-null type beside null is rewritten to exactly two entries, so it is the
+	// identity only when the input already had exactly those two.
+	return stringEntries != 2
+}
+
+func resultNeedsGeminiNormalization(result gjson.Result) bool {
+	needs := false
+	switch {
+	case result.IsObject():
+		result.ForEach(func(key, value gjson.Result) bool {
+			if key.String() == "type" && value.IsArray() && geminiTypeArrayNeedsRewrite(value) {
+				needs = true
+				return false
+			}
+			if resultNeedsGeminiNormalization(value) {
+				needs = true
+				return false
+			}
+			return true
+		})
+	case result.IsArray():
+		result.ForEach(func(_, value gjson.Result) bool {
+			if resultNeedsGeminiNormalization(value) {
+				needs = true
+				return false
+			}
+			return true
+		})
+	}
+	return needs
 }

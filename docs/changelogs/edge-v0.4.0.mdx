@@ -1,0 +1,33 @@
+---
+title: "v0.4.0"
+description: "v0.4.0 changelog - 2026-08-13"
+---
+
+<Update label="Bifrost Edge" description="v0.4.0">
+
+## Changelog
+
+This release moves device trust setup to the server, so the agent no longer holds long-lived signing material locally, and verifies the signature on the trust responses it receives. It also cuts idle CPU and log volume on the device, hardens the data directory with a single-instance lock, and reports a specific reason when the agent is degraded instead of always blaming setup.
+
+## ✨ Features
+
+- **Server-Managed Device Trust** - Trust material is now issued and signed by the Bifrost server on demand and cached on the device, so no long-lived signing key is stored locally. If the server cannot issue it, the agent fails closed instead of running with stale local material.
+- **Signed Trust Responses** - The agent verifies a signature on the trust and configuration responses it receives from the server, so a forged or tampered response is rejected even if the transport or a bearer credential is compromised.
+- **Multi-User Passthrough Switch** - Passthrough mode can be switched on machines with more than one signed-in user, so shared devices are handled correctly.
+- **Support Option in the Tray** - The tray menu has a direct support entry.
+- **Degraded State Reporting** - The agent reports the actual reason it is degraded rather than attributing every degraded state to setup, and it retries the initial DNS resolve before declaring itself degraded.
+- **Log Volume Caps** - Per-file log caps plus a top-level rotation budget bound how much disk the agent can consume.
+- **Windows Data Directory in ProgramData** - The Windows data directory is pinned to ProgramData, with an in-place migration from the previous location.
+- **Data Directory Locking** - The agent takes a single-instance lock on its data directory, so two agent processes can no longer write over each other's state.
+- **Inspect Without Provider Checks** - Device inspect runs without provider checks, so it still returns results when an upstream provider is unreachable.
+
+## 🐞 Fixed
+
+- **Idle CPU Usage** - Removed the process tracker and reworked the periodic trust check, which together were the main source of idle CPU on the device.
+- **Local State Lost on Restart** - Persisted local trust state now survives an agent restart, so a device does not fall out of enrollment after a restart.
+- **Self-Relay Loop** - Fixed a loop where the agent could relay traffic back to itself, and bounded the number of direct relays.
+- **User Attribution** - Fixed attribution of activity to the signed-in user, including the tray usage counts and status icon on Windows.
+- **Proxy Hardening** - Fixed issues found by code scanning in the app interception paths, including the Cursor and web app handlers.
+- **Setup and Sync Edge Cases** - Fixed external config apply and sync edge cases, and Linux setup handling.
+
+</Update>

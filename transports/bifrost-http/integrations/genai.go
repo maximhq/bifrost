@@ -240,6 +240,7 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 			return gemini.ToGeminiError(err)
 		},
 		StreamConfig: &StreamConfig{
+			HeartbeatFraming: lib.SSEHeartbeatDelimitedCommentBlock,
 			ResponsesStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
 				// Store state in context so it persists across chunks of the same stream
 				const stateKey = "gemini_stream_state"

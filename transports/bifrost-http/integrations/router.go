@@ -428,6 +428,7 @@ type StreamConfig struct {
 	TranscriptionStreamResponseConverter   TranscriptionStreamResponseConverter   // Function to convert BifrostTranscriptionResponse to streaming format
 	ImageGenerationStreamResponseConverter ImageGenerationStreamResponseConverter // Function to convert BifrostImageGenerationStreamResponse to streaming format
 	ErrorConverter                         StreamErrorConverter                   // Function to convert BifrostError to streaming error format
+	HeartbeatFraming                       lib.SSEHeartbeatFraming                // Wire framing for no-op SSE heartbeat comments
 }
 
 type RouteConfigType string
@@ -1324,6 +1325,32 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 
 		response, err = config.VideoGenerationResponseConverter(bifrostCtx, videoGenerationResponse)
 		bifrostExtraFields = videoGenerationResponse.ExtraFields
+	case bifrostReq.VideoEditRequest != nil:
+		videoEditResponse, bifrostErr := g.client.VideoEditRequest(bifrostCtx, bifrostReq.VideoEditRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, videoEditResponse); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+
+		if videoEditResponse == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			return
+		}
+
+		if config.VideoGenerationResponseConverter == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "missing VideoGenerationResponseConverter for integration"))
+			return
+		}
+
+		response, err = config.VideoGenerationResponseConverter(bifrostCtx, videoEditResponse)
+		bifrostExtraFields = videoEditResponse.ExtraFields
 	case bifrostReq.VideoRetrieveRequest != nil:
 		videoRetrieveResponse, bifrostErr := g.client.VideoRetrieveRequest(bifrostCtx, bifrostReq.VideoRetrieveRequest)
 		if bifrostErr != nil {
@@ -2776,7 +2803,14 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 		var heartbeatDone chan struct{}
 		var heartbeatExited <-chan struct{}
 		if config.Type != RouteConfigTypeBedrock {
-			heartbeatDone, heartbeatExited = lib.StartSSEHeartbeat(lib.DefaultSSEHeartbeatInterval, reader.SendHeartbeat, cancel)
+			heartbeatFraming := lib.SSEHeartbeatBareCommentLine
+			if config.StreamConfig != nil {
+				heartbeatFraming = config.StreamConfig.HeartbeatFraming
+			}
+			sendHeartbeat := func() bool {
+				return reader.SendHeartbeatWithFraming(heartbeatFraming)
+			}
+			heartbeatDone, heartbeatExited = lib.StartSSEHeartbeat(lib.DefaultSSEHeartbeatInterval, sendHeartbeat, cancel)
 		}
 
 		defer func() {

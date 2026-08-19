@@ -360,6 +360,7 @@ type AllowedRequests struct {
 	ImageEditStream       bool `json:"image_edit_stream"`
 	ImageVariation        bool `json:"image_variation"`
 	VideoGeneration       bool `json:"video_generation"`
+	VideoEdit             bool `json:"video_edit"`
 	VideoRetrieve         bool `json:"video_retrieve"`
 	VideoDownload         bool `json:"video_download"`
 	VideoDelete           bool `json:"video_delete"`
@@ -455,6 +456,8 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.ImageVariation
 	case VideoGenerationRequest:
 		return ar.VideoGeneration
+	case VideoEditRequest:
+		return ar.VideoEdit
 	case VideoRetrieveRequest:
 		return ar.VideoRetrieve
 	case VideoDownloadRequest:
@@ -681,6 +684,8 @@ type Provider interface {
 	ImageVariation(ctx *BifrostContext, key Key, request *BifrostImageVariationRequest) (*BifrostImageGenerationResponse, *BifrostError)
 	// VideoGeneration performs a video generation request
 	VideoGeneration(ctx *BifrostContext, key Key, request *BifrostVideoGenerationRequest) (*BifrostVideoGenerationResponse, *BifrostError)
+	// VideoEdit edits an existing video, returning a job in the same shape as video generation
+	VideoEdit(ctx *BifrostContext, key Key, request *BifrostVideoEditRequest) (*BifrostVideoEditResponse, *BifrostError)
 	// VideoRetrieve retrieves a video from the provider
 	VideoRetrieve(ctx *BifrostContext, key Key, request *BifrostVideoRetrieveRequest) (*BifrostVideoGenerationResponse, *BifrostError)
 	// VideoDownload downloads a video from the provider

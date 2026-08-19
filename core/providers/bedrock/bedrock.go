@@ -2167,15 +2167,19 @@ func (provider *BedrockProvider) Rerank(ctx *schemas.BifrostContext, key schemas
 		return nil, err
 	}
 
-	if !strings.HasPrefix(request.Model, "arn:") {
-		return nil, providerUtils.NewConfigurationError(fmt.Sprintf("bedrock rerank requires an ARN model identifier; got %q", request.Model))
+	// Bedrock's Rerank API addresses its model by ARN, unlike every other Bedrock
+	// operation. Synthesize one from the resolved region when the caller passed a
+	// bare model ID so rerank accepts the same identifiers the other routes do.
+	modelARN := resolveBedrockRerankModelARN(ctx, key, request.Model)
+	if modelARN == "" {
+		return nil, providerUtils.NewConfigurationError("bedrock rerank requires a model identifier")
 	}
 
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToBedrockRerankRequest(request, request.Model)
+			return ToBedrockRerankRequest(request, modelARN)
 		},
 	)
 	if bifrostErr != nil {
@@ -2477,6 +2481,11 @@ func (provider *BedrockProvider) VideoDelete(_ *schemas.BifrostContext, _ schema
 // VideoList is not supported by Bedrock provider.
 func (provider *BedrockProvider) VideoList(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoListRequest) (*schemas.BifrostVideoListResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoListRequest, provider.GetProviderKey())
+}
+
+// VideoEdit is not supported by the Bedrock provider.
+func (provider *BedrockProvider) VideoEdit(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoEditRequest) (*schemas.BifrostVideoEditResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoEditRequest, provider.GetProviderKey())
 }
 
 // VideoRemix is not supported by Bedrock provider.
