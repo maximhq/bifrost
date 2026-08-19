@@ -11,6 +11,7 @@ package datasheet
 
 import (
 	"context"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -324,27 +325,6 @@ type customPricingData struct {
 	wildcard []customPricingEntry
 }
 
-// modelParametersParseResult is the parsed result type used by
-// extractSupportedParams (consumed by params.go's applyModelParameters).
-type modelParametersParseResult struct {
-	Mode               *string  `json:"mode,omitempty"`
-	SupportedEndpoints []string `json:"supported_endpoints,omitempty"`
-	ModelParameters    []struct {
-		ID string `json:"id"`
-	} `json:"model_parameters,omitempty"`
-	SupportsAssistantPrefill        *bool `json:"supports_assistant_prefill,omitempty"`
-	SupportsFunctionCalling         *bool `json:"supports_function_calling,omitempty"`
-	SupportsParallelFunctionCalling *bool `json:"supports_parallel_function_calling,omitempty"`
-	SupportsToolChoice              *bool `json:"supports_tool_choice,omitempty"`
-	SupportsReasoning               *bool `json:"supports_reasoning,omitempty"`
-	SupportsResponseSchema          *bool `json:"supports_response_schema,omitempty"`
-	SupportsReasoningWithToolCalls  *bool `json:"supports_reasoning_with_tool_calls,omitempty"`
-	SupportsServiceTier             *bool `json:"supports_service_tier,omitempty"`
-	SupportsPromptCaching           *bool `json:"supports_prompt_caching,omitempty"`
-	SupportsWebSearch               *bool `json:"supports_web_search,omitempty"`
-	VertexMultiRegionOnly           *bool `json:"vertex_multi_region_only,omitempty"`
-}
-
 // --- private helpers (shared across pricing/*.go files) ---
 
 // makeKey is the composite map key used by pricingData: model|provider|mode.
@@ -485,7 +465,7 @@ func normalizeModeToOutputType(mode string) string {
 
 // extractSupportedParams builds a list of supported OpenAI-compatible parameter
 // names from model_parameters[].id values and supports_* boolean flags.
-func extractSupportedParams(parsed *modelParametersParseResult) []string {
+func extractSupportedParams(parsed *schemas.ModelCapabilities) []string {
 	var supported []string
 	addParam := func(name string) {
 		if !slices.Contains(supported, name) {
@@ -779,7 +759,7 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		OCRCostPerPage:        pricing.OCRCostPerPage,
 		AnnotationCostPerPage: pricing.AnnotationCostPerPage,
 	}
-	return &Entry{
+	entry := &Entry{
 		BaseModel:            pricing.BaseModel,
 		Provider:             pricing.Provider,
 		Mode:                 pricing.Mode,
@@ -791,6 +771,16 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		AdditionalAttributes: pricing.AdditionalAttributes,
 		Options:              options,
 	}
+	return entry
+}
+
+// IsEmptyModelCapabilities reports whether no field on the override struct is
+// set. Compared against the zero value so new fields need no maintenance here.
+func IsEmptyModelCapabilities(ov *schemas.ModelCapabilities) bool {
+	if ov == nil {
+		return true
+	}
+	return reflect.DeepEqual(*ov, schemas.ModelCapabilities{})
 }
 
 // convertTableOverride converts a TablePricingOverride to an Override.

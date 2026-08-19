@@ -46,17 +46,6 @@ type thinkingBudgetRange struct {
 	Max int
 }
 
-// thinkingBudgetRanges defines the valid thinkingBudget range per model family.
-// Source: https://ai.google.dev/gemini-api/docs/thinking#set-budget
-var thinkingBudgetRanges = []struct {
-	prefix string
-	r      thinkingBudgetRange
-}{
-	{"gemini-2.5-flash-lite", thinkingBudgetRange{Min: 512, Max: 24576}},
-	{"gemini-2.5-pro", thinkingBudgetRange{Min: 128, Max: 32768}},
-	{"gemini-2.5-flash", thinkingBudgetRange{Min: 0, Max: 24576}},
-}
-
 // thoughtSignatureSeparator is used to separate the base ID from the thought signature in tool IDs
 const thoughtSignatureSeparator = providerUtils.ThoughtSignatureSeparator
 

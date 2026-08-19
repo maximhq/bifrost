@@ -547,7 +547,7 @@ func TestOpenAIChatRequest_FilterOpenAISpecificParameters_NormalizesReasoningEff
 				},
 			}
 
-			req.filterOpenAISpecificParameters(req.Model)
+			req.filterOpenAISpecificParameters(schemas.ResolveModelCaps(schemas.OpenAI, req.Model))
 
 			if req.Reasoning == nil || req.Reasoning.Effort == nil {
 				t.Fatal("expected reasoning effort to be set")
@@ -1376,7 +1376,7 @@ func TestApplyXAICompatibility(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Apply the compatibility function
-			tt.request.applyXAICompatibility(tt.model)
+			tt.request.applyXAICompatibility(schemas.ResolveModelCaps(schemas.XAI, tt.model))
 
 			// Validate the results
 			tt.validate(t, tt.request)
@@ -1871,4 +1871,65 @@ func TestXAIReasoningEffortEndToEnd(t *testing.T) {
 			}
 		})
 	}
+}
+
+// installCapabilityRecord points the capability resolver at a single model for
+// the duration of the test, so a gate can be driven from the datasheet side.
+func installCapabilityRecord(t *testing.T, model string, record *schemas.ModelCapabilities) {
+	t.Helper()
+	schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		if m != model {
+			return nil
+		}
+		return record
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+}
+
+// TestOpenAICompatFiltersReadDatasheet covers the datasheet side of the
+// openai-compat parameter filters. The name-based fallbacks are covered by
+// TestApplyXAICompatibility; these pin that an unsupported_fields entry
+// overrides them, and that unlisted fields keep the fallback.
+func TestOpenAICompatFiltersReadDatasheet(t *testing.T) {
+	t.Run("compat_filter_strips_when_datasheet_is_silent", func(t *testing.T) {
+		req := &OpenAIChatRequest{ChatParameters: schemas.ChatParameters{
+			Prediction: &schemas.ChatPrediction{Type: "content"},
+			Store:      new(true),
+			Verbosity:  schemas.Ptr("low"),
+		}}
+		req.filterOpenAISpecificParameters(schemas.ResolveModelCaps(schemas.Cerebras, "some-compat-model"))
+		require.Nil(t, req.Prediction)
+		require.Nil(t, req.Store)
+		require.Nil(t, req.Verbosity)
+	})
+
+	t.Run("compat_filter_honours_explicit_opt_in", func(t *testing.T) {
+		const model = "fireworks-predictive"
+		installCapabilityRecord(t, model, &schemas.ModelCapabilities{
+			UnsupportedFields: map[string]bool{schemas.FieldPrediction: false},
+		})
+
+		req := &OpenAIChatRequest{ChatParameters: schemas.ChatParameters{
+			Prediction: &schemas.ChatPrediction{Type: "content"},
+			Store:      new(true),
+		}}
+		req.filterOpenAISpecificParameters(schemas.ResolveModelCaps(schemas.Fireworks, model))
+		require.NotNil(t, req.Prediction, "an explicit false must survive the compat filter")
+		require.Nil(t, req.Store, "fields the row omits keep the default strip")
+	})
+
+	t.Run("xai_gate_honours_explicit_opt_in", func(t *testing.T) {
+		const model = "grok-4"
+		installCapabilityRecord(t, model, &schemas.ModelCapabilities{
+			UnsupportedFields: map[string]bool{schemas.FieldPresencePenalty: false},
+		})
+
+		req := &OpenAIChatRequest{ChatParameters: schemas.ChatParameters{
+			PresencePenalty:  schemas.Ptr(0.5),
+			FrequencyPenalty: schemas.Ptr(0.5),
+		}}
+		req.applyXAICompatibility(schemas.ResolveModelCaps(schemas.XAI, model))
+		require.NotNil(t, req.PresencePenalty, "an explicit false must beat the grok name check")
+		require.Nil(t, req.FrequencyPenalty, "fields the row omits keep the grok name-based default")
+	})
 }

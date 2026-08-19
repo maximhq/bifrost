@@ -231,7 +231,7 @@ type ChatParameters struct {
 	// in core/providers/anthropic/types.go). Non-Anthropic providers (OpenAI
 	// etc.) silently ignore them.
 	TopK              *int            `json:"top_k,omitempty"`              // Anthropic top_k sampling
-	Speed             *string         `json:"speed,omitempty"`              // "fast" (Anthropic fast-mode-2026-02-01 beta, Opus 4.6 only)
+	Speed             *string         `json:"speed,omitempty"`              // "fast" (Anthropic fast-mode-2026-02-01 beta, Opus 4.6 and 4.7+)
 	InferenceGeo      *string         `json:"inference_geo,omitempty"`      // Anthropic inference_geo (Claude API only)
 	MCPServers        []ChatMCPServer `json:"mcp_servers,omitempty"`        // Anthropic MCP connector (mcp-client-2025-11-20)
 	Container         *ChatContainer  `json:"container,omitempty"`          // Anthropic container (string id, or object with skills[] — beta skills-2025-10-02)

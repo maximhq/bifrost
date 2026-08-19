@@ -34,7 +34,7 @@ func ToGeminiChatCompletionRequestWithImageURLSchemes(ctx *schemas.BifrostContex
 	if bifrostReq.Params != nil {
 		geminiReq.ExtraParams = bifrostReq.Params.ExtraParams
 		var err error
-		geminiReq.GenerationConfig, err = convertParamsToGenerationConfig(bifrostReq.Params, []string{}, capModel)
+		geminiReq.GenerationConfig, err = convertParamsToGenerationConfig(bifrostReq.Params, []string{}, bifrostReq.Provider, capModel)
 		if err != nil {
 			return nil, err
 		}

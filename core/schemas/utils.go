@@ -1701,15 +1701,15 @@ func IsOpenAIModel(model string) bool {
 	// OpenAI reasoning families (o1, o3, o4, ...). Match the bare id or a
 	// version-suffixed variant (e.g. "o3", "o4-mini", "o1-preview") while
 	// avoiding false matches on substrings like "co1" or "model-o3x".
-	return isOpenAIReasoningModel(model)
+	return isOSeriesModel(model)
 }
 
-// isOpenAIReasoningModel reports whether model names an OpenAI o-series
-// reasoning model. It strips any provider prefix (e.g. "openai/o3") and matches
-// an "o" followed by a single digit, where the next character is either end of
-// string or a "-" separator, so "o3" and "o4-mini" match but "co1" and "o3x"
-// do not.
-func isOpenAIReasoningModel(model string) bool {
+// isOSeriesModel reports whether model names an OpenAI o-series model. It
+// strips any provider prefix (e.g. "openai/o3") and matches an "o" followed by
+// a single digit, where the next character is either end of string or a "-"
+// separator, so "o3" and "o4-mini" match but "co1" and "o3x" do not. Narrower
+// than IsOpenAIReasoningModel, which also covers GPT-5.x and gpt-oss.
+func isOSeriesModel(model string) bool {
 	name := model
 	if idx := strings.LastIndexAny(name, "/:"); idx >= 0 {
 		name = name[idx+1:]
