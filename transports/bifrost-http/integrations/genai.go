@@ -1045,19 +1045,19 @@ func createGenAIRerankRouteConfig(pathPrefix string) RouteConfig {
 		},
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 			if vertexReq, ok := req.(*vertex.VertexRankRequest); ok {
+				rerankRequest := vertexReq.ToBifrostRerankRequest(ctx)
+				// Ranked records are keyed by the caller's record ID, which only the document carries.
+				rerankRequest.Params.ReturnDocuments = new(true)
 				return &schemas.BifrostRequest{
-					RerankRequest: vertexReq.ToBifrostRerankRequest(ctx),
+					RerankRequest: rerankRequest,
 				}, nil
 			}
 			return nil, errors.New("invalid rerank request type")
 		},
 		RerankResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostRerankResponse) (interface{}, error) {
-			if resp.ExtraFields.Provider == schemas.Vertex {
-				if resp.ExtraFields.RawResponse != nil {
-					return resp.ExtraFields.RawResponse, nil
-				}
-			}
-			return resp, nil
+			// No raw passthrough here, unlike other routes: ToVertexRankRequest replaces caller
+			// record IDs with synthetic ones, so the raw upstream records are not addressable.
+			return vertex.ToVertexRankResponse(resp)
 		},
 		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return gemini.ToGeminiError(err)

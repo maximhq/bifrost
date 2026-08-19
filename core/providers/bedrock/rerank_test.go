@@ -333,3 +333,36 @@ func TestBedrockRerankRejectsEmptyModelIdentifier(t *testing.T) {
 	require.NotNil(t, bifrostErr.Error)
 	assert.Contains(t, bifrostErr.Error.Message, "model identifier")
 }
+
+func TestToBedrockRerankResponse(t *testing.T) {
+	response := ToBedrockRerankResponse(&schemas.BifrostRerankResponse{
+		Results: []schemas.RerankResult{
+			{Index: 1, RelevanceScore: 0.92, Document: &schemas.RerankDocument{Text: "Paris is capital of France"}},
+			{Index: 0, RelevanceScore: 0.11, Document: &schemas.RerankDocument{Text: "Berlin is capital of Germany"}},
+		},
+		Model: "arn:aws:bedrock:us-east-1::foundation-model/cohere.rerank-v3-5:0",
+	})
+
+	require.NotNil(t, response)
+	require.Len(t, response.Results, 2)
+	assert.Equal(t, 1, response.Results[0].Index)
+	assert.InDelta(t, 0.92, response.Results[0].RelevanceScore, 1e-9)
+	require.NotNil(t, response.Results[0].Document)
+	assert.Equal(t, bedrockRerankInlineDocumentTypeText, response.Results[0].Document.Type)
+	require.NotNil(t, response.Results[0].Document.TextDocument)
+	assert.Equal(t, "Paris is capital of France", response.Results[0].Document.TextDocument.Text)
+	require.NotNil(t, response.Results[1].Document)
+	assert.Equal(t, "Berlin is capital of Germany", response.Results[1].Document.TextDocument.Text)
+}
+
+func TestToBedrockRerankResponseOmitsMissingDocument(t *testing.T) {
+	response := ToBedrockRerankResponse(&schemas.BifrostRerankResponse{
+		Results: []schemas.RerankResult{{Index: 0, RelevanceScore: 0.7}},
+	})
+
+	require.NotNil(t, response)
+	require.Len(t, response.Results, 1)
+	assert.Nil(t, response.Results[0].Document)
+
+	assert.Nil(t, ToBedrockRerankResponse(nil))
+}

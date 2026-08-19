@@ -203,3 +203,57 @@ func TestVertexRankResponseToBifrostRerankResponseInvalidID(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid record id")
 }
+
+func TestToVertexRankResponse(t *testing.T) {
+	response, err := ToVertexRankResponse(&schemas.BifrostRerankResponse{
+		Results: []schemas.RerankResult{
+			{Index: 1, RelevanceScore: 0.88, Document: &schemas.RerankDocument{
+				ID: new("doc-paris"), Text: "Paris is capital of France", Meta: map[string]interface{}{"title": "Paris"},
+			}},
+			{Index: 0, RelevanceScore: 0.12, Document: &schemas.RerankDocument{
+				ID: new("doc-berlin"), Text: "Berlin is capital of Germany",
+			}},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, response)
+	require.Len(t, response.Records, 2)
+
+	// Caller record IDs are restored; upstream only ever saw synthetic idx:N ids.
+	assert.Equal(t, "doc-paris", response.Records[0].ID)
+	assert.InDelta(t, 0.88, response.Records[0].Score, 1e-9)
+	require.NotNil(t, response.Records[0].Title)
+	assert.Equal(t, "Paris", *response.Records[0].Title)
+	require.NotNil(t, response.Records[0].Content)
+	assert.Equal(t, "Paris is capital of France", *response.Records[0].Content)
+
+	assert.Equal(t, "doc-berlin", response.Records[1].ID)
+	assert.Nil(t, response.Records[1].Title)
+}
+
+func TestToVertexRankResponseRequiresDocuments(t *testing.T) {
+	_, err := ToVertexRankResponse(&schemas.BifrostRerankResponse{
+		Results: []schemas.RerankResult{{Index: 0, RelevanceScore: 0.88}},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no document")
+
+	_, err = ToVertexRankResponse(nil)
+	require.Error(t, err)
+}
+
+func TestVertexRankRequestToBifrostRerankRequestDefaultsIgnoreRecordDetailsToFalse(t *testing.T) {
+	t.Parallel()
+
+	// Discovery Engine defaults the flag to false, so an omitted field must not
+	// fall through to Bifrost's own default of true.
+	result := (&VertexRankRequest{
+		Query:   "capital of france",
+		Records: []VertexRankRecord{{ID: "rec-1", Content: new("Paris is the capital of France.")}},
+	}).ToBifrostRerankRequest(nil)
+
+	require.NotNil(t, result)
+	require.NotNil(t, result.Params)
+	require.NotNil(t, result.Params.ExtraParams)
+	assert.Equal(t, false, result.Params.ExtraParams["ignore_record_details_in_response"])
+}
