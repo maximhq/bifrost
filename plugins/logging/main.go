@@ -1751,6 +1751,13 @@ func (p *LoggerPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
 	for i, entry := range pending.entries {
 		entry.PluginLogs = pluginLogsJSON
 		if i == stampIdx {
+			// Clear both provisional components before backfilling. A partial root
+			// span (only one attribute present) would otherwise leave the other as
+			// a stale PostLLMHook estimate, mixing the breakdown's two sources.
+			if upOK || ovOK {
+				entry.UpstreamLatency = nil
+				entry.OverheadLatency = nil
+			}
 			if upOK {
 				u := upstreamMs
 				entry.UpstreamLatency = &u
