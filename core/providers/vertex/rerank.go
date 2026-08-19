@@ -32,8 +32,10 @@ func buildVertexRankingConfig(projectID, rankingConfigOverride string) (string, 
 }
 
 func getVertexRerankOptions(projectID string, params *schemas.RerankParameters) (*vertexRerankOptions, error) {
+	// Record details are Vertex's name for returning the document back, so it maps onto the
+	// neutral ReturnDocuments flag rather than a provider-specific extra param.
 	options := &vertexRerankOptions{
-		IgnoreRecordDetailsInResponse: true,
+		IgnoreRecordDetailsInResponse: params == nil || params.ReturnDocuments == nil || !*params.ReturnDocuments,
 	}
 
 	if params == nil || params.ExtraParams == nil {
@@ -61,14 +63,6 @@ func getVertexRerankOptions(projectID string, params *schemas.RerankParameters) 
 		return nil, err
 	}
 	options.RankingConfig = rankingConfig
-
-	if rawIgnoreRecordDetails, exists := extraParams["ignore_record_details_in_response"]; exists {
-		ignoreRecordDetailsInResponse, ok := schemas.SafeExtractBool(rawIgnoreRecordDetails)
-		if !ok {
-			return nil, fmt.Errorf("invalid ignore_record_details_in_response: expected bool")
-		}
-		options.IgnoreRecordDetailsInResponse = ignoreRecordDetailsInResponse
-	}
 
 	if rawUserLabels, exists := extraParams["user_labels"]; exists {
 		userLabels, ok := schemas.SafeExtractStringMap(rawUserLabels)
@@ -104,6 +98,11 @@ func ToVertexRankRequest(bifrostReq *schemas.BifrostRerankRequest, options *vert
 	for i, doc := range bifrostReq.Documents {
 		recordID := fmt.Sprintf("%s%d", vertexSyntheticRecordPrefix, i)
 		content := doc.Text
+		if content == "" && len(doc.Data) > 0 {
+			if encoded, err := sonic.Marshal(doc.Data); err == nil {
+				content = string(encoded)
+			}
+		}
 		record := VertexRankRecord{
 			ID:      recordID,
 			Content: &content,
@@ -153,12 +152,12 @@ func (req *VertexRankRequest) ToBifrostRerankRequest(ctx *schemas.BifrostContext
 		return nil
 	}
 
+	// Leave the provider empty like the other rerank converters so the route's header and the
+	// modelcatalogresolver decide it; pinning Vertex here made /genai/v1/rank single-provider.
 	var provider schemas.ModelProvider
 	var model string
 	if req.Model != nil {
-		provider, model = schemas.ParseModelString(*req.Model, schemas.Vertex)
-	} else {
-		provider = schemas.Vertex
+		provider, model = schemas.ParseModelString(*req.Model, "")
 	}
 
 	bifrostReq := &schemas.BifrostRerankRequest{
@@ -189,14 +188,12 @@ func (req *VertexRankRequest) ToBifrostRerankRequest(ctx *schemas.BifrostContext
 		bifrostReq.Params.TopN = req.TopN
 	}
 
-	// Set unconditionally: Discovery Engine defaults this to false, Bifrost's rerank default is true.
-	extraParams := map[string]interface{}{
-		"ignore_record_details_in_response": req.IgnoreRecordDetailsInResponse != nil && *req.IgnoreRecordDetailsInResponse,
-	}
+	// Discovery Engine defaults to returning record details, so an omitted flag means documents come back.
+	bifrostReq.Params.ReturnDocuments = new(req.IgnoreRecordDetailsInResponse == nil || !*req.IgnoreRecordDetailsInResponse)
+
 	if len(req.UserLabels) > 0 {
-		extraParams["user_labels"] = req.UserLabels
+		bifrostReq.Params.ExtraParams = map[string]interface{}{"user_labels": req.UserLabels}
 	}
-	bifrostReq.Params.ExtraParams = extraParams
 
 	return bifrostReq
 }
@@ -239,6 +236,7 @@ func (response *VertexRankResponse) ToBifrostRerankResponse(documents []schemas.
 		result := schemas.RerankResult{
 			Index:          index,
 			RelevanceScore: record.Score,
+			ID:             documents[index].ID,
 		}
 
 		if returnDocuments {
@@ -262,8 +260,8 @@ func (response *VertexRankResponse) ToBifrostRerankResponse(documents []schemas.
 }
 
 // ToVertexRankResponse converts a Bifrost rerank response to Discovery Engine rank format.
-// Records are keyed by the caller's record ID, which only survives on the result document,
-// so callers must request the rerank with ReturnDocuments enabled.
+// Records are keyed by the caller's record ID, which rides on the result as identity; title and
+// content appear only when the caller asked for documents back.
 func ToVertexRankResponse(bifrostResp *schemas.BifrostRerankResponse) (*VertexRankResponse, error) {
 	if bifrostResp == nil {
 		return nil, fmt.Errorf("bifrost rerank response is nil")
@@ -274,22 +272,24 @@ func ToVertexRankResponse(bifrostResp *schemas.BifrostRerankResponse) (*VertexRa
 	}
 
 	for _, result := range bifrostResp.Results {
-		if result.Document == nil {
-			return nil, fmt.Errorf("rerank result at index %d has no document: record ids cannot be restored", result.Index)
-		}
-
 		record := VertexRankedRecord{
 			Score: result.RelevanceScore,
 		}
-		if result.Document.ID != nil {
+		switch {
+		case result.ID != nil:
+			record.ID = *result.ID
+		case result.Document != nil && result.Document.ID != nil:
 			record.ID = *result.Document.ID
 		}
-		if result.Document.Text != "" {
-			record.Content = &result.Document.Text
-		}
-		if rawTitle, exists := result.Document.Meta["title"]; exists {
-			if title, ok := schemas.SafeExtractString(rawTitle); ok && strings.TrimSpace(title) != "" {
-				record.Title = &title
+
+		if result.Document != nil {
+			if result.Document.Text != "" {
+				record.Content = &result.Document.Text
+			}
+			if rawTitle, exists := result.Document.Meta["title"]; exists {
+				if title, ok := schemas.SafeExtractString(rawTitle); ok && strings.TrimSpace(title) != "" {
+					record.Title = &title
+				}
 			}
 		}
 

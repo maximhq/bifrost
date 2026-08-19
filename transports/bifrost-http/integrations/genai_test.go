@@ -25,7 +25,8 @@ func TestCreateGenAIRerankRouteConfig(t *testing.T) {
 	assert.NotNil(t, route.RequestConverter)
 	assert.NotNil(t, route.RerankResponseConverter)
 	assert.NotNil(t, route.ErrorConverter)
-	assert.Nil(t, route.PreCallback)
+	// The route resolves x-model-provider so it can be served cross-provider.
+	assert.NotNil(t, route.PreCallback)
 
 	// Verify request instance type
 	reqInstance := route.GetRequestTypeInstance(context.Background())
@@ -214,7 +215,8 @@ func TestGenAIRerankRequestConverter(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, bifrostReq)
 	require.NotNil(t, bifrostReq.RerankRequest)
-	assert.Equal(t, schemas.Vertex, bifrostReq.RerankRequest.Provider)
+	// Provider resolution is deferred to the route header and the modelcatalogresolver plugin.
+	assert.Equal(t, schemas.ModelProvider(""), bifrostReq.RerankRequest.Provider)
 	assert.Equal(t, "semantic-ranker-default@latest", bifrostReq.RerankRequest.Model)
 	assert.Equal(t, "capital of france", bifrostReq.RerankRequest.Query)
 	require.Len(t, bifrostReq.RerankRequest.Documents, 2)

@@ -55,7 +55,7 @@ func TestCohereRerankRouteRequestConverter(t *testing.T) {
 	req := &cohere.CohereRerankRequest{
 		Model:     "rerank-v3.5",
 		Query:     "what is bifrost?",
-		Documents: []string{"doc1", "doc2"},
+		Documents: []cohere.CohereRerankDocument{{Text: "doc1"}, {Text: "doc2"}},
 		TopN:      &topN,
 	}
 
@@ -113,7 +113,7 @@ func TestCohereRerankResponseConverterEmitsCohereShape(t *testing.T) {
 	require.Len(t, cohereResp.Results, 2)
 	assert.Equal(t, 1, cohereResp.Results[0].Index)
 	assert.InDelta(t, 0.9, cohereResp.Results[0].RelevanceScore, 1e-9)
-	assert.Nil(t, cohereResp.Results[0].Document, "cohere v2 results carry no document")
+	assert.Nil(t, cohereResp.Results[0].Document, "no document echoed when the canonical response carries none")
 	require.NotNil(t, cohereResp.Meta)
 	require.NotNil(t, cohereResp.Meta.Tokens)
 	assert.Equal(t, 12, *cohereResp.Meta.Tokens.InputTokens)

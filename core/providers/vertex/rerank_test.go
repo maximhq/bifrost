@@ -89,9 +89,10 @@ func TestGetVertexRerankOptions(t *testing.T) {
 	t.Parallel()
 
 	options, err := getVertexRerankOptions("project-x", &schemas.RerankParameters{
+		// Returning documents is Bifrost's neutral spelling of "do not ignore record details".
+		ReturnDocuments: new(true),
 		ExtraParams: map[string]interface{}{
-			"ranking_config":                    "custom_rank",
-			"ignore_record_details_in_response": false,
+			"ranking_config": "custom_rank",
 			"user_labels": map[string]interface{}{
 				"env": "test",
 			},
@@ -101,6 +102,23 @@ func TestGetVertexRerankOptions(t *testing.T) {
 	assert.Equal(t, "projects/project-x/locations/global/rankingConfigs/custom_rank", options.RankingConfig)
 	assert.False(t, options.IgnoreRecordDetailsInResponse)
 	assert.Equal(t, map[string]string{"env": "test"}, options.UserLabels)
+}
+
+func TestGetVertexRerankOptionsReturnDocumentsUnset(t *testing.T) {
+	t.Parallel()
+
+	// A nil ReturnDocuments only reaches here from the canonical rerank route, where "unset"
+	// means the caller did not ask for documents - the same default Cohere and Bedrock apply.
+	// The /genai/v1/rank route never passes nil: ToBifrostRerankRequest resolves an omitted
+	// ignoreRecordDetailsInResponse into an explicit ReturnDocuments first. Fetching record
+	// details here would be discarded by Rerank, which attaches documents only on an explicit
+	// ReturnDocuments.
+	for _, params := range []*schemas.RerankParameters{nil, {}, {ReturnDocuments: new(false)}} {
+		options, err := getVertexRerankOptions("project-x", params)
+		require.NoError(t, err)
+		assert.True(t, options.IgnoreRecordDetailsInResponse,
+			"documents must not be fetched unless the caller asked for them: %+v", params)
+	}
 }
 
 func TestVertexRankResponseToBifrostRerankResponse(t *testing.T) {
@@ -156,7 +174,9 @@ func TestVertexRankRequestToBifrostRerankRequest(t *testing.T) {
 	result := req.ToBifrostRerankRequest(bifrostCtx)
 
 	require.NotNil(t, result)
-	assert.Equal(t, schemas.Vertex, result.Provider)
+	// Provider resolution is deferred to the route header and the modelcatalogresolver plugin,
+	// matching the Cohere and Bedrock rerank converters.
+	assert.Equal(t, schemas.ModelProvider(""), result.Provider)
 	assert.Equal(t, "semantic-ranker-default@latest", result.Model)
 	assert.Equal(t, "capital of france", result.Query)
 	require.Len(t, result.Documents, 2)
@@ -179,9 +199,10 @@ func TestVertexRankRequestToBifrostRerankRequest(t *testing.T) {
 	require.NotNil(t, result.Params.TopN)
 	assert.Equal(t, 5, *result.Params.TopN)
 
-	// ExtraParams
+	// ignoreRecordDetailsInResponse maps onto the neutral ReturnDocuments flag.
+	require.NotNil(t, result.Params.ReturnDocuments)
+	assert.False(t, *result.Params.ReturnDocuments)
 	require.NotNil(t, result.Params.ExtraParams)
-	assert.Equal(t, true, result.Params.ExtraParams["ignore_record_details_in_response"])
 	assert.Equal(t, map[string]string{"env": "test"}, result.Params.ExtraParams["user_labels"])
 }
 
@@ -231,22 +252,28 @@ func TestToVertexRankResponse(t *testing.T) {
 	assert.Nil(t, response.Records[1].Title)
 }
 
-func TestToVertexRankResponseRequiresDocuments(t *testing.T) {
-	_, err := ToVertexRankResponse(&schemas.BifrostRerankResponse{
-		Results: []schemas.RerankResult{{Index: 0, RelevanceScore: 0.88}},
+func TestToVertexRankResponseIdentityWithoutDocuments(t *testing.T) {
+	// ignoreRecordDetailsInResponse means no document comes back, but the record id is identity
+	// rather than detail, so it must still address the caller's record.
+	response, err := ToVertexRankResponse(&schemas.BifrostRerankResponse{
+		Results: []schemas.RerankResult{{Index: 0, RelevanceScore: 0.88, ID: new("doc-paris")}},
 	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no document")
+	require.NoError(t, err)
+	require.Len(t, response.Records, 1)
+	assert.Equal(t, "doc-paris", response.Records[0].ID)
+	assert.InDelta(t, 0.88, response.Records[0].Score, 1e-9)
+	assert.Nil(t, response.Records[0].Title)
+	assert.Nil(t, response.Records[0].Content)
 
 	_, err = ToVertexRankResponse(nil)
 	require.Error(t, err)
 }
 
-func TestVertexRankRequestToBifrostRerankRequestDefaultsIgnoreRecordDetailsToFalse(t *testing.T) {
+func TestVertexRankRequestToBifrostRerankRequestDefaultsToReturningDocuments(t *testing.T) {
 	t.Parallel()
 
-	// Discovery Engine defaults the flag to false, so an omitted field must not
-	// fall through to Bifrost's own default of true.
+	// Discovery Engine returns record details by default, so an omitted flag must mean
+	// documents come back rather than falling through to Bifrost's own default.
 	result := (&VertexRankRequest{
 		Query:   "capital of france",
 		Records: []VertexRankRecord{{ID: "rec-1", Content: new("Paris is the capital of France.")}},
@@ -254,6 +281,6 @@ func TestVertexRankRequestToBifrostRerankRequestDefaultsIgnoreRecordDetailsToFal
 
 	require.NotNil(t, result)
 	require.NotNil(t, result.Params)
-	require.NotNil(t, result.Params.ExtraParams)
-	assert.Equal(t, false, result.Params.ExtraParams["ignore_record_details_in_response"])
+	require.NotNil(t, result.Params.ReturnDocuments)
+	assert.True(t, *result.Params.ReturnDocuments)
 }

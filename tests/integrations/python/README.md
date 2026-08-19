@@ -87,6 +87,26 @@ Our test suite covers 30 comprehensive scenarios for each integration:
 16. **Transcription Error Handling** - Invalid audio format and model error handling
 17. **Voice & Format Testing** - Multiple voices and audio format validation
 
+### Rerank Tests (Cohere, Bedrock, Vertex)
+Reranking takes a query plus documents and returns them ordered by relevance. The parameterized
+provider-SDK tests run cross-provider — a request shaped for one provider must come back in that
+provider's wire shape no matter which provider actually served it. Cases that pin a single
+provider's own behaviour (`return_documents`, error shapes, the LangChain compressors) stay
+fixed to that provider.
+
+- **Cohere SDK** (`test_cohere.py`) — cross-provider: string documents, object documents carrying
+  id/metadata, `top_n`. Cohere-only: `return_documents`, Cohere-shaped errors
+- **AWS SDK** (`test_bedrock.py`) — cross-provider: inline TEXT sources, inline JSON sources,
+  `numberOfResults`
+- **LangChain** (`test_langchain.py`) — `CohereRerank` and `BedrockRerank` document compressors,
+  each fixed to its own provider
+- **Discovery Engine** (`test_google.py`) — cross-provider: `/genai/v1/rank`, caller record-id
+  restoration and `ignoreRecordDetailsInResponse`
+
+Assertions check the ranking itself, not just a 200: a provider that drops document content still
+returns success with meaningless scores, so the shared helper asserts the relevant document
+outranks the irrelevant one.
+
 ### Embeddings Tests (OpenAI)
 18. **Single Text Embedding** - Basic text-to-vector conversion
 19. **Batch Text Embeddings** - Multiple text embeddings in single request

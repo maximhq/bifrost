@@ -82,7 +82,7 @@ Sources:
 - [ ] **Models list** (`GET /v1/models`)
 - [ ] **Containers API** (`POST /v1/containers` for code-interpreter sandboxes)
 - [ ] **Videos API** (`POST /v1/videos` for Sora)
-- [ ] **Rerank** (`POST /v1/rerank`)
+- [x] **Rerank** (`POST /v1/rerank`) - folder 56, cross-provider across cohere/bedrock/vertex
 
 ---
 

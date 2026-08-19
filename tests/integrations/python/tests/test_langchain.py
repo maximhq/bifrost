@@ -111,6 +111,9 @@ except ImportError:
 
 
 from .utils.common import (
+    RERANK_DOCUMENTS,
+    RERANK_QUERY,
+    assert_valid_rerank_results,
     CALCULATOR_TOOL,
     EMBEDDINGS_MULTIPLE_TEXTS,
     EMBEDDINGS_SIMILAR_TEXTS,
@@ -1696,3 +1699,74 @@ class TestLangChainStandardEmbeddings(TestLangChainOpenAIEmbeddings):
     """Run LangChain's standard embeddings tests"""
 
     pass
+
+
+class TestLangChainRerank:
+    """Rerank via LangChain document compressors through Bifrost.
+
+    LangChain wraps each provider's rerank API in a BaseDocumentCompressor, so these
+    exercise the same Bifrost routes through a third abstraction layer: whatever the
+    compressor returns must still be a correctly ordered ranking.
+    """
+
+    @staticmethod
+    def _documents():
+        from langchain_core.documents import Document
+
+        return [Document(page_content=text) for text in RERANK_DOCUMENTS]
+
+    @staticmethod
+    def _pairs(compressed):
+        """Normalize compressed documents into (index, score) tuples.
+
+        LangChain drops the provider's index and keeps relevance_score in metadata, so the
+        original position is recovered by matching page_content.
+        """
+        return [
+            (
+                RERANK_DOCUMENTS.index(document.page_content),
+                document.metadata["relevance_score"],
+            )
+            for document in compressed
+        ]
+
+    def test_20_cohere_rerank_compressor(self, test_config):
+        """langchain_cohere.CohereRerank against Bifrost's /cohere routes."""
+        from langchain_cohere import CohereRerank
+
+        compressor = CohereRerank(
+            base_url=get_integration_url("cohere"),
+            cohere_api_key=os.getenv("COHERE_API_KEY", "dummy-key"),
+            model=get_config().get_provider_model("cohere", "rerank"),
+            top_n=2,
+        )
+
+        compressed = compressor.compress_documents(self._documents(), RERANK_QUERY)
+
+        assert_valid_rerank_results(self._pairs(compressed), expected_count=2)
+
+    def test_21_bedrock_rerank_compressor(self, test_config):
+        """langchain_aws.BedrockRerank against Bifrost's /bedrock routes."""
+        from langchain_aws import BedrockRerank
+
+        config = get_config()
+        region = config.get_integration_settings("bedrock").get("region", "us-west-2")
+
+        # BedrockRerank exposes endpoint_url as an output field only, so Bifrost is reached
+        # by handing it a pre-built client rather than an endpoint override.
+        client = boto3.client(
+            "bedrock-agent-runtime",
+            region_name=region,
+            endpoint_url=get_integration_url("bedrock"),
+        )
+
+        compressor = BedrockRerank(
+            client=client,
+            model_arn=config.get_provider_model("bedrock", "rerank"),
+            region_name=region,
+            top_n=2,
+        )
+
+        compressed = compressor.compress_documents(self._documents(), RERANK_QUERY)
+
+        assert_valid_rerank_results(self._pairs(compressed), expected_count=2)
