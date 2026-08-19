@@ -477,3 +477,188 @@ func TestNewBifrostContext_WatchdogRaceWithReleasedScope(t *testing.T) {
 		_, _ = c.Deadline()
 	}
 }
+
+// Reserved keys carry what a request has settled about itself, and a hook batch is a room full of
+// plugins with a handle on that request. A deployment names the plugin that settles each fact; the rest
+// of the room can read the answer and cannot rewrite it.
+//
+// The values here are sentinels, not resolved access: this package declares the keys but not the types
+// that travel under them.
+func TestBifrostContext_ReservedKeysAreWritableOnlyByTheirNamedPlugin(t *testing.T) {
+	const owner = "the-plugin-that-settles-it"
+	const bystander = "a-plugin-nobody-named"
+	const settled = "what the request settled"
+	const forged = "what a bystander would rather it had settled"
+
+	RegisterReservedKeyWriter(owner, BifrostContextKeyGovernanceEffectiveAccess)
+
+	// A request mid-hook: the fact already settled, and writes guarded because a batch is running.
+	inHook := func(t *testing.T, key BifrostContextKey) *BifrostContext {
+		t.Helper()
+		ctx := NewBifrostContext(context.Background(), NoDeadline)
+		ctx.SetValue(key, settled)
+		ctx.BlockRestrictedWrites()
+		t.Cleanup(ctx.UnblockRestrictedWrites)
+		return ctx
+	}
+	// The context a plugin is actually handed: a scope over the request, named after the plugin.
+	scopeFor := func(t *testing.T, ctx *BifrostContext, plugin string) *BifrostContext {
+		t.Helper()
+		name := plugin
+		scoped := ctx.WithPluginScope(&name)
+		t.Cleanup(scoped.ReleasePluginScope)
+		return scoped
+	}
+
+	t.Run("the named plugin writes, clears and swaps", func(t *testing.T) {
+		ctx := inHook(t, BifrostContextKeyGovernanceEffectiveAccess)
+		scoped := scopeFor(t, ctx, owner)
+
+		scoped.SetValue(BifrostContextKeyGovernanceEffectiveAccess, "resolved for this attempt")
+		if got := ctx.Value(BifrostContextKeyGovernanceEffectiveAccess); got != "resolved for this attempt" {
+			t.Fatalf("the named plugin could not record its own answer: %v", got)
+		}
+
+		if previous := scoped.GetAndSetValue(BifrostContextKeyGovernanceEffectiveAccess, "resolved again"); previous != "resolved for this attempt" {
+			t.Errorf("the swap reported %v rather than what it replaced", previous)
+		}
+		if got := ctx.Value(BifrostContextKeyGovernanceEffectiveAccess); got != "resolved again" {
+			t.Errorf("the named plugin could not re-record: %v", got)
+		}
+
+		scoped.ClearValue(BifrostContextKeyGovernanceEffectiveAccess)
+		if got := ctx.Value(BifrostContextKeyGovernanceEffectiveAccess); got != nil {
+			t.Errorf("the named plugin could not clear its own answer: %v", got)
+		}
+	})
+
+	t.Run("every other plugin in the batch is refused", func(t *testing.T) {
+		ctx := inHook(t, BifrostContextKeyGovernanceEffectiveAccess)
+		scoped := scopeFor(t, ctx, bystander)
+
+		scoped.SetValue(BifrostContextKeyGovernanceEffectiveAccess, forged)
+		if got := ctx.Value(BifrostContextKeyGovernanceEffectiveAccess); got != settled {
+			t.Errorf("a bystander rewrote what the request settled: %v", got)
+		}
+
+		scoped.ClearValue(BifrostContextKeyGovernanceEffectiveAccess)
+		if got := ctx.Value(BifrostContextKeyGovernanceEffectiveAccess); got != settled {
+			t.Errorf("a bystander erased what the request settled: %v", got)
+		}
+
+		if previous := scoped.GetAndSetValue(BifrostContextKeyGovernanceEffectiveAccess, forged); previous != settled {
+			t.Errorf("the refused swap reported %v rather than what stands", previous)
+		}
+		if got := ctx.Value(BifrostContextKeyGovernanceEffectiveAccess); got != settled {
+			t.Errorf("a bystander rewrote what the request settled: %v", got)
+		}
+	})
+
+	// The grant is a key at a time, so naming a plugin for one fact does not hand it the rest.
+	t.Run("the named plugin is named for one key, not for all of them", func(t *testing.T) {
+		ctx := inHook(t, BifrostContextKeyAttemptTrail)
+		scoped := scopeFor(t, ctx, owner)
+
+		scoped.SetValue(BifrostContextKeyAttemptTrail, forged)
+
+		if got := ctx.Value(BifrostContextKeyAttemptTrail); got != settled {
+			t.Errorf("a grant for one key let a write through to another: %v", got)
+		}
+	})
+
+	// The grant follows the scope a plugin runs under, and a plugin that reaches past its scope to the
+	// request itself is writing as nobody. Plugin authors are told to capture Root() for writes from a
+	// goroutine that outlives the hook (see Root), so this is a real path, not a hypothetical one.
+	t.Run("reaching past the scope to the request is writing as nobody", func(t *testing.T) {
+		ctx := inHook(t, BifrostContextKeyGovernanceEffectiveAccess)
+		scoped := scopeFor(t, ctx, owner)
+
+		scoped.Root().SetValue(BifrostContextKeyGovernanceEffectiveAccess, forged)
+
+		if got := ctx.Value(BifrostContextKeyGovernanceEffectiveAccess); got != settled {
+			t.Errorf("an unscoped write landed on a guarded key: %v", got)
+		}
+	})
+
+	// Unchanged, and the reason core has its own door: core is not a plugin and holds no grant.
+	t.Run("core's own write is still refused while it holds the guard", func(t *testing.T) {
+		ctx := inHook(t, BifrostContextKeyGovernanceEffectiveAccess)
+
+		ctx.SetValue(BifrostContextKeyGovernanceEffectiveAccess, forged)
+
+		if got := ctx.Value(BifrostContextKeyGovernanceEffectiveAccess); got != settled {
+			t.Errorf("an unscoped write landed on a guarded key: %v", got)
+		}
+	})
+
+	// Guarding is scoped to the window plugins run in. Outside it only core and the transport are
+	// writing, and an ordinary write has to keep working.
+	t.Run("outside a hook batch nothing is guarded", func(t *testing.T) {
+		ctx := NewBifrostContext(context.Background(), NoDeadline)
+		name := bystander
+		scoped := ctx.WithPluginScope(&name)
+		defer scoped.ReleasePluginScope()
+
+		ctx.SetValue(BifrostContextKeyGovernanceEffectiveAccess, settled)
+		scoped.SetValue(BifrostContextKeyAttemptTrail, settled)
+
+		if got := ctx.Value(BifrostContextKeyGovernanceEffectiveAccess); got != settled {
+			t.Errorf("blocked a write core itself makes: %v", got)
+		}
+		if got := ctx.Value(BifrostContextKeyAttemptTrail); got != settled {
+			t.Errorf("blocked a plugin write outside any hook batch: %v", got)
+		}
+	})
+
+	// Ordinary keys are nobody's to reserve, so a batch changes nothing for them.
+	t.Run("an unreserved key is unaffected", func(t *testing.T) {
+		ctx := NewBifrostContext(context.Background(), NoDeadline)
+		ctx.BlockRestrictedWrites()
+		defer ctx.UnblockRestrictedWrites()
+		name := bystander
+		scoped := ctx.WithPluginScope(&name)
+		defer scoped.ReleasePluginScope()
+
+		scoped.SetValue(BifrostContextKeyUserID, "someone")
+
+		if got := ctx.Value(BifrostContextKeyUserID); got != "someone" {
+			t.Errorf("guarded a key nobody reserved: %v", got)
+		}
+	})
+}
+
+// A grant nobody registered is no grant, and registering is additive: naming a second plugin for a key
+// must not unname the first.
+func TestRegisterReservedKeyWriter(t *testing.T) {
+	const first = "first-named-plugin"
+	const second = "second-named-plugin"
+
+	if mayWriteReservedKey(BifrostContextKeyGovernanceEffectiveAccess, "never-registered") {
+		t.Error("a plugin nobody named holds a grant")
+	}
+
+	RegisterReservedKeyWriter(first, BifrostContextKeyGovernanceEffectiveAccess)
+	RegisterReservedKeyWriter(second, BifrostContextKeyGovernanceEffectiveAccess, BifrostContextKeyAttemptTrail)
+
+	for _, tc := range []struct {
+		plugin string
+		key    BifrostContextKey
+		want   bool
+	}{
+		{first, BifrostContextKeyGovernanceEffectiveAccess, true},
+		{second, BifrostContextKeyGovernanceEffectiveAccess, true},
+		{second, BifrostContextKeyAttemptTrail, true},
+		{first, BifrostContextKeyAttemptTrail, false},
+	} {
+		if got := mayWriteReservedKey(tc.key, tc.plugin); got != tc.want {
+			t.Errorf("%s on %v: got %v, want %v", tc.plugin, tc.key, got, tc.want)
+		}
+	}
+
+	// Nothing to grant, so nothing is granted — and no panic on the way there.
+	RegisterReservedKeyWriter("", BifrostContextKeyGovernanceEffectiveAccess)
+	RegisterReservedKeyWriter("names-no-keys")
+	if mayWriteReservedKey(BifrostContextKeyGovernanceEffectiveAccess, "") {
+		t.Error("an unnamed plugin holds a grant")
+	}
+}

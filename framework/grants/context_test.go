@@ -125,3 +125,66 @@ func TestRecordAndReadEffectiveAccess(t *testing.T) {
 		}
 	})
 }
+
+// Resolution runs from inside a plugin hook, and core blocks writes to the keys it owns for as long as
+// a batch is running. Recording has to work there for the plugin the deployment named, and nowhere else:
+// the recorded access is what the request is enforced and billed against, so a plugin able to overwrite
+// it would widen what the request reaches with nothing re-checking, and one able to erase it would leave
+// a checked request looking unchecked, which is billed nothing.
+func TestAccessIsRecordedOnlyByThePluginNamedForIt(t *testing.T) {
+	const resolvesAccess = "the-plugin-that-resolves-access"
+	const bystander = "a-plugin-nobody-named"
+
+	schemas.RegisterReservedKeyWriter(resolvesAccess, schemas.BifrostContextKeyGovernanceEffectiveAccess)
+
+	base := grantWithProviders(GrantTypeVirtualKey, "vk1", "Caller Key", "openai")
+	wider := grantWithProviders(GrantTypeVirtualKey, "vk2", "Wider Key", "openai", "anthropic")
+
+	// Mid-batch, from inside the named plugin's hook: the ordinary path on every request.
+	inHookAs := func(t *testing.T, plugin string) *schemas.BifrostContext {
+		t.Helper()
+		ctx := newCtx()
+		ctx.BlockRestrictedWrites()
+		t.Cleanup(ctx.UnblockRestrictedWrites)
+		name := plugin
+		scoped := ctx.WithPluginScope(&name)
+		t.Cleanup(scoped.ReleasePluginScope)
+		return scoped
+	}
+
+	t.Run("the plugin that resolves access records it", func(t *testing.T) {
+		ctx := inHookAs(t, resolvesAccess)
+		access := NewEffectiveAccess(base, nil, "", nil, nil)
+
+		RecordEffectiveAccess(ctx, access)
+
+		assert.Same(t, access, EffectiveAccessFromContext(ctx),
+			"resolution happens inside a hook, so this is the window that has to work")
+	})
+
+	t.Run("another plugin cannot widen what was resolved", func(t *testing.T) {
+		resolved := NewEffectiveAccess(base, nil, "", nil, nil)
+		ctx := inHookAs(t, resolvesAccess)
+		RecordEffectiveAccess(ctx, resolved)
+
+		elsewhere := inHookAs(t, bystander)
+		RecordEffectiveAccess(elsewhere, NewEffectiveAccess(wider, nil, "", nil, nil))
+
+		read := EffectiveAccessFromContext(ctx)
+		assert.Same(t, resolved, read)
+		assert.False(t, read.IsProviderAllowed("anthropic"),
+			"a provider this request never resolved access to")
+	})
+
+	t.Run("another plugin cannot unbill a checked request", func(t *testing.T) {
+		resolved := NewEffectiveAccess(base, nil, "", nil, nil)
+		ctx := inHookAs(t, resolvesAccess)
+		RecordEffectiveAccess(ctx, resolved)
+
+		elsewhere := inHookAs(t, bystander)
+		elsewhere.ClearValue(schemas.BifrostContextKeyGovernanceEffectiveAccess)
+
+		assert.Same(t, resolved, EffectiveAccessFromContext(ctx),
+			"a cleared access reads as never resolved, and a request nobody resolved is charged nothing")
+	})
+}
