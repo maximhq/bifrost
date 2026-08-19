@@ -343,7 +343,7 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 
 		AddMissingBetaHeadersToContext(ctx, reqBody, cfg.Provider)
 
-		jsonBody, err = providerUtils.MarshalSorted(reqBody)
+		jsonBody, err = providerUtils.MarshalProviderRequest(reqBody)
 		if err != nil {
 			return nil, newErr(schemas.ErrProviderRequestMarshal, fmt.Errorf("failed to marshal request body: %w", err), jsonBody)
 		}
@@ -603,7 +603,7 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 
 		AddMissingBetaHeadersToContext(ctx, reqBody, cfg.Provider)
 
-		jsonBody, err = providerUtils.MarshalSorted(reqBody)
+		jsonBody, err = providerUtils.MarshalProviderRequest(reqBody)
 		if err != nil {
 			return nil, newErr(schemas.ErrProviderRequestMarshal, fmt.Errorf("failed to marshal request body: %w", err), jsonBody)
 		}

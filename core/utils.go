@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/maximhq/bifrost/core/mcp"
@@ -697,6 +698,43 @@ func ValidateExternalURL(urlStr string, allowPrivateNetwork bool) error {
 // sanitizeSpanName sanitizes a span name to remove capital letters and spaces to make it a valid span name.
 func sanitizeSpanName(name string) string {
 	return schemas.SanitizePluginSpanName(name)
+}
+
+// pluginSpanNameSet holds the precomputed "plugin.<name>.<hook>" span names for
+// one plugin. Building them with Sprintf on every hook invocation costs ~2
+// allocs per span at request rate; plugin names are static, so cache them.
+type pluginSpanNameSet struct {
+	prehook            string
+	prerequesthook     string
+	posthook           string
+	mcpPrehook         string
+	mcpPosthook        string
+	mcpConnectPrehook  string
+	mcpConnectPosthook string
+}
+
+// pluginSpanNameCache maps plugin name -> *pluginSpanNameSet. Bounded by the
+// number of distinct registered plugins.
+var pluginSpanNameCache sync.Map
+
+func pluginSpanNamesFor(name string) *pluginSpanNameSet {
+	if v, ok := pluginSpanNameCache.Load(name); ok {
+		return v.(*pluginSpanNameSet)
+	}
+	s := sanitizeSpanName(name)
+	set := &pluginSpanNameSet{
+		prehook:            "plugin." + s + ".prehook",
+		prerequesthook:     "plugin." + s + ".prerequesthook",
+		posthook:           "plugin." + s + ".posthook",
+		mcpPrehook:         "plugin." + s + ".mcp_prehook",
+		mcpPosthook:        "plugin." + s + ".mcp_posthook",
+		mcpConnectPrehook:  "plugin." + s + ".mcp_connect_prehook",
+		mcpConnectPosthook: "plugin." + s + ".mcp_connect_posthook",
+	}
+	if v, loaded := pluginSpanNameCache.LoadOrStore(name, set); loaded {
+		return v.(*pluginSpanNameSet)
+	}
+	return set
 }
 
 // IsCodemodeTool returns true if the given tool name is a codemode tool.
