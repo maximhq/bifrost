@@ -1968,7 +1968,12 @@ type ModelRankingEntry struct {
 	SuccessRate        float64 `json:"success_rate"`
 	TotalTokens        int64   `json:"total_tokens"`
 	TotalCost          float64 `json:"total_cost"`
-	AvgLatency         float64 `json:"avg_latency"`
+	// Per-category cost split; sums to TotalCost. AdditionalCost holds internal
+	// sidecar costs with no input/output token category (guardrail, MCP).
+	InputCost      float64 `json:"input_cost"`
+	OutputCost     float64 `json:"output_cost"`
+	AdditionalCost float64 `json:"additional_cost"`
+	AvgLatency     float64 `json:"avg_latency"`
 	// Throughput is aggregate token-generation rate (tokens/sec) for this model:
 	// SUM(completion_tokens) / (SUM(latency_ms)/1000) over successful rows with
 	// latency > 0 — the same definition as the throughput histogram.
