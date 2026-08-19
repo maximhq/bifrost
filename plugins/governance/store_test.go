@@ -328,7 +328,7 @@ func TestGovernanceStore_MultiBudget_UsageUpdatesAllBudgets(t *testing.T) {
 	vk, _ = store.GetVirtualKey(context.Background(), "sk-bf-test")
 
 	// Simulate a $3.50 request
-	err = store.UpdateVirtualKeyBudgetUsageInMemory(context.Background(), vk, schemas.OpenAI, 3.50)
+	err = chargeGrantBudgets(store, context.Background(), vk, schemas.OpenAI, 3.50)
 	require.NoError(t, err)
 
 	// Both budgets should reflect the cost
@@ -341,7 +341,7 @@ func TestGovernanceStore_MultiBudget_UsageUpdatesAllBudgets(t *testing.T) {
 	assert.InDelta(t, 3.50, dailyVal.(*configstoreTables.TableBudget).CurrentUsage, 0.01, "Daily budget should reflect usage")
 
 	// Second request: $7.00 — should push hourly over limit
-	err = store.UpdateVirtualKeyBudgetUsageInMemory(context.Background(), vk, schemas.OpenAI, 7.00)
+	err = chargeGrantBudgets(store, context.Background(), vk, schemas.OpenAI, 7.00)
 	require.NoError(t, err)
 
 	hourlyVal, _ = store.budgets.Load("hourly")
@@ -492,7 +492,7 @@ func TestGovernanceStore_MultiBudget_UsageDrivesBlockAfterRequests(t *testing.T)
 
 	// Request 1: $0.80 — both budgets fine
 	vk, _ = store.GetVirtualKey(context.Background(), "sk-bf-test")
-	err = store.UpdateVirtualKeyBudgetUsageInMemory(context.Background(), vk, schemas.OpenAI, 0.80)
+	err = chargeGrantBudgets(store, context.Background(), vk, schemas.OpenAI, 0.80)
 	require.NoError(t, err)
 
 	ctx := resolverCtx(store, "sk-bf-test")
@@ -501,7 +501,7 @@ func TestGovernanceStore_MultiBudget_UsageDrivesBlockAfterRequests(t *testing.T)
 
 	// Request 2: $0.80 — still fine ($1.60 total)
 	vk, _ = store.GetVirtualKey(context.Background(), "sk-bf-test")
-	err = store.UpdateVirtualKeyBudgetUsageInMemory(context.Background(), vk, schemas.OpenAI, 0.80)
+	err = chargeGrantBudgets(store, context.Background(), vk, schemas.OpenAI, 0.80)
 	require.NoError(t, err)
 
 	ctx = resolverCtx(store, "sk-bf-test")
@@ -510,7 +510,7 @@ func TestGovernanceStore_MultiBudget_UsageDrivesBlockAfterRequests(t *testing.T)
 
 	// Request 3: $0.80 — pushes hourly to $2.40 > $2.00 limit → blocked
 	vk, _ = store.GetVirtualKey(context.Background(), "sk-bf-test")
-	err = store.UpdateVirtualKeyBudgetUsageInMemory(context.Background(), vk, schemas.OpenAI, 0.80)
+	err = chargeGrantBudgets(store, context.Background(), vk, schemas.OpenAI, 0.80)
 	require.NoError(t, err)
 
 	ctx = resolverCtx(store, "sk-bf-test")
@@ -702,7 +702,7 @@ func TestGovernanceStore_UpdateRateLimitUsage_TokensAndRequests(t *testing.T) {
 	require.NoError(t, err)
 
 	// Test updating tokens
-	err = store.UpdateVirtualKeyRateLimitUsageInMemory(context.Background(), vk, schemas.OpenAI, 500, true, false)
+	err = chargeGrantRateLimits(store, context.Background(), vk, schemas.OpenAI, 500, true, false)
 	assert.NoError(t, err, "Rate limit update should succeed")
 
 	// Retrieve the updated rate limit from the main RateLimits map
@@ -715,7 +715,7 @@ func TestGovernanceStore_UpdateRateLimitUsage_TokensAndRequests(t *testing.T) {
 	assert.Equal(t, int64(0), updatedRateLimit.RequestCurrentUsage, "Request usage should not change")
 
 	// Test updating requests
-	err = store.UpdateVirtualKeyRateLimitUsageInMemory(context.Background(), vk, schemas.OpenAI, 0, false, true)
+	err = chargeGrantRateLimits(store, context.Background(), vk, schemas.OpenAI, 0, false, true)
 	assert.NoError(t, err, "Rate limit update should succeed")
 
 	// Retrieve the updated rate limit again
@@ -1201,10 +1201,10 @@ func ptrInt64(i int64) *int64 {
 	return &i
 }
 
-// The IDs recorded on a log row are what a recovering node replays usage against, so they have to be
-// every limit the request was actually charged to and nothing else. Both halves matter: a limit left
-// out loses its usage when the node ghosts, and one added that nothing debits invents usage.
-func TestCollectApplicableGovernanceIDs(t *testing.T) {
+// What a request is billed to and what is recorded on its log row are the limits settled onto its
+// access, and nothing else. Both halves matter: a limit left out loses its usage when the node ghosts,
+// and one that nothing debits invents usage on replay.
+func TestSettledLimitsAreWhatIsAccounted(t *testing.T) {
 	logger := NewMockLogger()
 
 	vkBudget := buildBudget("b-vk", 1000, "1d")
@@ -1237,53 +1237,48 @@ func TestCollectApplicableGovernanceIDs(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	// Settling the limits onto the access is what the funnel does before any check runs, so the
-	// recorded set is read from there rather than worked out again here.
-	settle := func(t *testing.T, provider schemas.ModelProvider, model string) (*schemas.BifrostContext, *grants.EffectiveAccess) {
+	// Settling the limits onto the access is what the funnel does before any check runs; everything
+	// afterwards reads them from there rather than working out a second answer.
+	settle := func(t *testing.T, provider schemas.ModelProvider, model string) *grants.EffectiveAccess {
 		t.Helper()
-		ctx := resolverCtx(store, "sk-bf-collect")
-		access := resolveLimits(ctx, store, provider, model)
+		access := resolveLimits(resolverCtx(store, "sk-bf-collect"), store, provider, model)
 		require.NotNil(t, access)
-		return ctx, access
+		return access
 	}
 
-	t.Run("records every limit the access answers to, and the attempt's own", func(t *testing.T) {
-		ctx, access := settle(t, schemas.OpenAI, "gpt-4o")
-		budgetIDs, _ := store.CollectApplicableGovernanceIDs(ctx, access, schemas.OpenAI, "gpt-4o")
+	t.Run("every limit the access answers to, and the attempt's own", func(t *testing.T) {
+		budgetIDs := limitIDsOf(settle(t, schemas.OpenAI, "gpt-4o").ResolvedBudgets())
 
 		assert.ElementsMatch(t,
 			[]string{"b-provider", "b-model", "b-vk", "b-team", "b-customer"}, budgetIDs,
-			"the holder chain the grant carries, plus the provider and model config this attempt draws on")
+			"the holder chain, plus the provider and model config this attempt draws on")
 	})
 
-	t.Run("a nil access leaves only what the attempt itself is subject to", func(t *testing.T) {
-		// What a request whose holder is deliberately not being tracked records. The provider and the
-		// model config are charged regardless of what granted the request, so they stay.
-		ctx, _ := settle(t, schemas.OpenAI, "gpt-4o")
-		budgetIDs, _ := store.CollectApplicableGovernanceIDs(ctx, nil, schemas.OpenAI, "gpt-4o")
+	t.Run("dropping what the holder funds keeps what the deployment does", func(t *testing.T) {
+		// What a request whose holder is deliberately not being counted is billed. The provider and the
+		// model config are owed whatever granted the request, so they stay.
+		budgets := grants.LimitsFrom(settle(t, schemas.OpenAI, "gpt-4o").ResolvedBudgets(), untrackedHolderKinds...)
 
-		assert.ElementsMatch(t, []string{"b-provider", "b-model"}, budgetIDs)
+		assert.ElementsMatch(t, []string{"b-provider", "b-model"}, limitIDsOf(budgets))
 	})
 
-	t.Run("a limit reached twice is recorded once", func(t *testing.T) {
-		// The same budget row can cover a request by more than one route. Recording it twice would
-		// have reconciliation replay its usage twice.
-		ctx, access := settle(t, schemas.OpenAI, "gpt-4o")
-		budgetIDs, _ := store.CollectApplicableGovernanceIDs(ctx, access, schemas.OpenAI, "gpt-4o")
+	t.Run("a limit reached twice is accounted once", func(t *testing.T) {
+		// The same budget row can cover a request by more than one route. Billing it twice would charge
+		// one budget twice and have reconciliation replay its usage twice.
+		budgetIDs := limitIDsOf(settle(t, schemas.OpenAI, "gpt-4o").ResolvedBudgets())
 
 		seen := map[string]int{}
 		for _, id := range budgetIDs {
 			seen[id]++
 		}
 		for id, count := range seen {
-			assert.Equal(t, 1, count, "budget %s recorded more than once", id)
+			assert.Equal(t, 1, count, "budget %s accounted more than once", id)
 		}
 	})
 
-	t.Run("an attempt with no model still records what its provider is charged", func(t *testing.T) {
+	t.Run("an attempt with no model still answers to its provider", func(t *testing.T) {
 		// Tool execution and other modelless attempts still spend against the provider.
-		ctx, access := settle(t, schemas.OpenAI, "")
-		budgetIDs, _ := store.CollectApplicableGovernanceIDs(ctx, access, schemas.OpenAI, "")
+		budgetIDs := limitIDsOf(settle(t, schemas.OpenAI, "").ResolvedBudgets())
 
 		assert.Contains(t, budgetIDs, "b-provider")
 		assert.NotContains(t, budgetIDs, "b-model", "no model means no model config applies")
