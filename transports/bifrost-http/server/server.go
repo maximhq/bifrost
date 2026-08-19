@@ -308,6 +308,10 @@ func (s *GovernanceInMemoryStore) GetMCPClientsAllowingAllVirtualKeys() map[stri
 	return s.Config.GetAllowOnAllVirtualKeysClients()
 }
 
+func (s *GovernanceInMemoryStore) GetMCPClientNames() map[string]string {
+	return s.Config.GetMCPClientNames()
+}
+
 // AddMCPClient adds a new MCP client to the in-memory store
 func (s *BifrostHTTPServer) AddMCPClient(ctx context.Context, clientConfig *schemas.MCPClientConfig) error {
 	if err := s.Config.AddMCPClient(ctx, clientConfig); err != nil {
