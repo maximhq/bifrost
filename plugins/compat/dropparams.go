@@ -72,10 +72,23 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 		if params.Reasoning != nil {
 			// for chat completions, some models do not support reasoning_effort
 			// with tools
-			if !isSupported["reasoning"] || (hasSupportedTools && !isSupported["reasoning_with_tool_calls"]) {
+			if !isSupported["reasoning"] {
 				params.Reasoning = nil
 				dropped = append(dropped, "reasoning")
+			} else if hasSupportedTools && !isSupported["reasoning_with_tool_calls"] {
+				// models like gpt-5.6 series models defaults to reasoning, even when
+				// reasoning_effort is not set.
+				if isSupported["supports_none_reasoning_effort"] {
+					params.Reasoning = &schemas.ChatReasoning{Effort: new("none")}
+					dropped = append(dropped, "reasoning")
+				} else {
+					params.Reasoning = nil
+					dropped = append(dropped, "reasoning")
+				}
 			}
+		} else if isSupported["reasoning"] && isSupported["supports_none_reasoning_effort"] && hasSupportedTools && !isSupported["reasoning_with_tool_calls"] {
+			params.Reasoning = &schemas.ChatReasoning{Effort: new("none")}
+			dropped = append(dropped, "reasoning")
 		}
 		if params.ResponseFormat != nil && !isSupported["response_format"] {
 			params.ResponseFormat = nil

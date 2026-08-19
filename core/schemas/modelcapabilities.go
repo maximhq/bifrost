@@ -70,6 +70,7 @@ type ModelCapabilities struct {
 	SupportsReasoning               *bool `json:"supports_reasoning,omitempty"`
 	SupportsResponseSchema          *bool `json:"supports_response_schema,omitempty"`
 	SupportsReasoningWithToolCalls  *bool `json:"supports_reasoning_with_tool_calls,omitempty"`
+	SupportsNoneReasoningEffort     *bool `json:"supports_none_reasoning_effort,omitempty"`
 	SupportsServiceTier             *bool `json:"supports_service_tier,omitempty"`
 	SupportsPromptCaching           *bool `json:"supports_prompt_caching,omitempty"`
 	SupportsWebSearch               *bool `json:"supports_web_search,omitempty"`
