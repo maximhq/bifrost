@@ -36,7 +36,7 @@ func TestPreRequestHook_ComplexityAnalyzerFeedsCELVariable(t *testing.T) {
 		Priority: 0,
 	}))
 
-	plugin, err := routing.InitFromStore(context.Background(), nil, logger, nil, ruleStore, rules.NewMockGovernanceStore())
+	plugin, err := routing.InitFromStore(context.Background(), nil, logger, nil, ruleStore, routing.NewMockGovernance())
 	require.NoError(t, err)
 	defer func() {
 		require.NoError(t, plugin.Cleanup())
@@ -87,7 +87,7 @@ func TestPreRequestHook_ComplexitySkippedWhenNoRulesReferenceIt(t *testing.T) {
 		Priority: 0,
 	}))
 
-	plugin, err := routing.InitFromStore(context.Background(), nil, logger, nil, ruleStore, rules.NewMockGovernanceStore())
+	plugin, err := routing.InitFromStore(context.Background(), nil, logger, nil, ruleStore, routing.NewMockGovernance())
 	require.NoError(t, err)
 	defer func() {
 		require.NoError(t, plugin.Cleanup())
