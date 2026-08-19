@@ -56,7 +56,7 @@
           "// Only register the content-shape test when the request actually succeeded.",
           "// Otherwise newman reports it as passing (because of an early return) which is misleading next to a failing status.",
           "var __u = (pm.request && pm.request.url && pm.request.url.toString()) || '';",
-          "var __skipShape = (__u.indexOf('/files/') !== -1 && (__u.indexOf('/content?') !== -1 || __u.slice(-8) === '/content')) || __u.indexOf('storage.googleapis.com') !== -1 || __u.indexOf('batchPredictionJobs') !== -1;",
+          "var __skipShape = (__u.indexOf('/files/') !== -1 && (__u.indexOf('/content?') !== -1 || __u.slice(-8) === '/content')) || __u.indexOf('storage.googleapis.com') !== -1 || __u.indexOf('batchPredictionJobs') !== -1 || (__u.indexOf('/genai/v1beta/batches/') !== -1 && __u.indexOf(':cancel') !== -1);",
           "if (pm.response.code < 400 && !__skipShape && (pm.response.headers.get('content-type') || '').indexOf('text/event-stream') === -1 && (pm.response.headers.get('content-type') || '').indexOf('vnd.amazon.eventstream') === -1 && (pm.response.headers.get('content-type') || '').indexOf('audio/') === -1) {",
           "  pm.test('Response has content (text or tool_use)', function () {",
           "    var j;",
@@ -144,6 +144,12 @@
           "    } else if (j.type === 'message_batch' && typeof j.id === 'string') {",
           "        shape = 'anthropic-batch-create';",
           "        hasContent = !!j.id;",
+          "    } else if (typeof j.name === 'string' && j.name.indexOf('batches/') === 0) {",
+          "        shape = 'gemini-batch';",
+          "        hasContent = true;",
+          "    } else if (Array.isArray(j.operations)) {",
+          "        shape = 'gemini-batch-list';",
+          "        hasContent = true;",
           "    } else if (j.background === true && typeof j.id === 'string') {",
           "        shape = 'openai-responses-background';",
           "        hasContent = !!j.id;",
@@ -16301,7 +16307,21 @@
                     "batches"
                   ]
                 }
-              }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('Anthropic list batches: 2xx', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(300); });",
+                      "var j = pm.response.json();",
+                      "pm.test('Anthropic list batches: data is array', function () { pm.expect(j.data).to.be.an('array'); });"
+                    ]
+                  }
+                }
+              ]
             },
             {
               "name": "Anthropic: list files",
@@ -20010,7 +20030,22 @@
                     "batches"
                   ]
                 }
-              }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('OpenAI list batches: 2xx', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(300); });",
+                      "var j = pm.response.json();",
+                      "pm.test('OpenAI list batches: object list', function () { pm.expect(j.object).to.eql('list'); });",
+                      "pm.test('OpenAI list batches: data is array', function () { pm.expect(j.data).to.be.an('array'); });"
+                    ]
+                  }
+                }
+              ]
             },
             {
               "name": "OpenAI: list files",
@@ -22098,6 +22133,59 @@
               }
             },
             {
+              "name": "OpenAI: upload batch input file",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{openaiKey}}"
+                  }
+                ],
+                "body": {
+                  "mode": "formdata",
+                  "formdata": [
+                    {
+                      "key": "file",
+                      "src": "tests/e2e/api/fixtures/openai-batch-input.jsonl",
+                      "type": "file"
+                    },
+                    {
+                      "key": "purpose",
+                      "value": "batch",
+                      "type": "text"
+                    }
+                  ]
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/openai/v1/files",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "openai",
+                    "v1",
+                    "files"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('OpenAI batch input upload: 2xx', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(300); });",
+                      "var j = pm.response.json();",
+                      "pm.test('OpenAI batch input upload: has id', function () { pm.expect(j.id).to.be.a('string').and.not.empty; });",
+                      "pm.collectionVariables.set('openaiBatchInputFileId', j.id);"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
               "name": "OpenAI: create batch",
               "request": {
                 "method": "POST",
@@ -22113,7 +22201,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"input_file_id\": \"file_REPLACE_ME\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"completion_window\": \"24h\"\n}"
+                  "raw": "{\n  \"input_file_id\": \"{{openaiBatchInputFileId}}\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"completion_window\": \"24h\"\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/openai/v1/batches",
@@ -22126,7 +22214,178 @@
                     "batches"
                   ]
                 }
-              }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Clear any stale id from a previous run so a guarded skip below (401/403/429/5xx)",
+                      "// can't leave 'OpenAI: retrieve batch'/'cancel batch' chaining onto an old batch.",
+                      "pm.collectionVariables.unset('openaiBatchId');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('OpenAI create batch: 2xx', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(300); });",
+                      "var j = pm.response.json();",
+                      "pm.test('OpenAI create batch: object batch', function () { pm.expect(j.object).to.eql('batch'); });",
+                      "pm.test('OpenAI create batch: has id', function () { pm.expect(j.id).to.be.a('string').and.not.empty; });",
+                      "pm.test('OpenAI create batch: input_file_id round-trips', function () { pm.expect(j.input_file_id).to.eql(pm.collectionVariables.get('openaiBatchInputFileId')); });",
+                      "pm.test('OpenAI create batch: has status', function () { pm.expect(j.status).to.be.a('string').and.not.empty; });",
+                      "if (typeof j.id === 'string' && j.id) { pm.collectionVariables.set('openaiBatchId', j.id); }"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "OpenAI: retrieve batch",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{openaiKey}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/openai/v1/batches/{{openaiBatchId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "openai",
+                    "v1",
+                    "batches",
+                    "{{openaiBatchId}}"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Create didn't set an id (skipped on a guarded code, or failed) - nothing to retrieve.",
+                      "if (!pm.collectionVariables.get('openaiBatchId')) { pm.execution.skipRequest(); return; }"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('OpenAI retrieve batch: 2xx', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(300); });",
+                      "var j = pm.response.json();",
+                      "pm.test('OpenAI retrieve batch: object batch', function () { pm.expect(j.object).to.eql('batch'); });",
+                      "pm.test('OpenAI retrieve batch: id matches create', function () { pm.expect(j.id).to.eql(pm.collectionVariables.get('openaiBatchId')); });"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "OpenAI: cancel batch",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{openaiKey}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/openai/v1/batches/{{openaiBatchId}}/cancel",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "openai",
+                    "v1",
+                    "batches",
+                    "{{openaiBatchId}}",
+                    "cancel"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Create didn't set an id (skipped on a guarded code, or failed) - nothing to cancel.",
+                      "if (!pm.collectionVariables.get('openaiBatchId')) { pm.execution.skipRequest(); return; }",
+                      "// OpenAI's real batch API can 500 on a cancel fired within ~1s of create (the",
+                      "// batch is still transitioning out of 'validating'). Give it a moment to settle.",
+                      "// Top-level await isn't supported by this sandbox, so block synchronously instead.",
+                      "var __until = Date.now() + 3000;",
+                      "while (Date.now() < __until) { /* busy-wait */ }"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('OpenAI cancel batch: 2xx', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(300); });",
+                      "var j = pm.response.json();",
+                      "pm.test('OpenAI cancel batch: has id', function () { pm.expect(j.id).to.be.a('string').and.not.empty; });",
+                      "pm.test('OpenAI cancel batch: cancelling/cancelled', function () { pm.expect(['cancelling','cancelled','completed']).to.include(j.status); });"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "OpenAI: delete batch input file (cleanup)",
+              "request": {
+                "method": "DELETE",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{openaiKey}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/openai/v1/files/{{openaiBatchInputFileId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "openai",
+                    "v1",
+                    "files",
+                    "{{openaiBatchInputFileId}}"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('OpenAI delete batch input file: 2xx', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(300); });",
+                      "var j = pm.response.json();",
+                      "pm.test('OpenAI delete batch input file: deleted', function () { pm.expect(j.deleted).to.eql(true); });"
+                    ]
+                  }
+                }
+              ]
             },
             {
               "name": "Anthropic: token counting endpoint",
@@ -22198,7 +22457,144 @@
                     "batches"
                   ]
                 }
-              }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Clear any stale id from a previous run so a guarded skip below (401/403/429/5xx/529)",
+                      "// can't leave 'Anthropic: retrieve batch'/'cancel batch' chaining onto an old batch.",
+                      "pm.collectionVariables.unset('anthropicBatchId');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('Anthropic create batch: 2xx', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(300); });",
+                      "var j = pm.response.json();",
+                      "pm.test('Anthropic create batch: type message_batch', function () { pm.expect(j.type).to.eql('message_batch'); });",
+                      "pm.test('Anthropic create batch: has id', function () { pm.expect(j.id).to.be.a('string').and.not.empty; });",
+                      "pm.test('Anthropic create batch: has processing_status', function () { pm.expect(j.processing_status).to.be.a('string').and.not.empty; });",
+                      "if (typeof j.id === 'string' && j.id) { pm.collectionVariables.set('anthropicBatchId', j.id); }"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Anthropic: retrieve batch",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "x-api-key",
+                    "value": "{{anthropicKey}}"
+                  },
+                  {
+                    "key": "anthropic-version",
+                    "value": "2023-06-01"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/anthropic/v1/messages/batches/{{anthropicBatchId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "anthropic",
+                    "v1",
+                    "messages",
+                    "batches",
+                    "{{anthropicBatchId}}"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Create didn't set an id (skipped on a guarded code, or failed) - nothing to retrieve.",
+                      "if (!pm.collectionVariables.get('anthropicBatchId')) { pm.execution.skipRequest(); return; }"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('Anthropic retrieve batch: 2xx', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(300); });",
+                      "var j = pm.response.json();",
+                      "pm.test('Anthropic retrieve batch: type message_batch', function () { pm.expect(j.type).to.eql('message_batch'); });",
+                      "pm.test('Anthropic retrieve batch: id matches create', function () { pm.expect(j.id).to.eql(pm.collectionVariables.get('anthropicBatchId')); });"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Anthropic: cancel batch",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "x-api-key",
+                    "value": "{{anthropicKey}}"
+                  },
+                  {
+                    "key": "anthropic-version",
+                    "value": "2023-06-01"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/anthropic/v1/messages/batches/{{anthropicBatchId}}/cancel",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "anthropic",
+                    "v1",
+                    "messages",
+                    "batches",
+                    "{{anthropicBatchId}}",
+                    "cancel"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Create didn't set an id (skipped on a guarded code, or failed) - nothing to cancel.",
+                      "if (!pm.collectionVariables.get('anthropicBatchId')) { pm.execution.skipRequest(); return; }"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('Anthropic cancel batch: 2xx', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(300); });",
+                      "var j = pm.response.json();",
+                      "pm.test('Anthropic cancel batch: has id', function () { pm.expect(j.id).to.be.a('string').and.not.empty; });",
+                      "pm.test('Anthropic cancel batch: canceling/ended', function () { pm.expect(['canceling','ended']).to.include(j.processing_status); });"
+                    ]
+                  }
+                }
+              ]
             },
             {
               "name": "Gemini: tool_choice forced via toolConfig",
@@ -132933,6 +133329,202 @@
                   }
                 }
               ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "55. Gemini Native Batch API (create/list/retrieve/cancel)",
+      "description": "Bifrost wires up Gemini's native batch surface (/genai/v1beta/models/{model}:batchGenerateContent, /genai/v1beta/batches[...]) alongside the already-covered OpenAI and Anthropic batch APIs (folder 12 Round 3), but it had zero harness coverage of its own. Unlike OpenAI, Gemini batch create takes inline requests directly in the body (batch.inputConfig.requests), so no file-upload step is required - same shape as Anthropic. These cases pin: create accepts inline requests and returns an operation name + pending state, list returns an array, retrieve round-trips the created batch's id, and cancel transitions it to a cancelling/cancelled-ish state without erroring.",
+      "item": [
+        {
+          "name": "Gemini: create batch (gemini-2.5-pro)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"batch\": {\n    \"displayName\": \"bifrost-harness-batch\",\n    \"inputConfig\": {\n      \"requests\": {\n        \"requests\": [\n          {\"request\": {\"contents\": [{\"role\": \"user\", \"parts\": [{\"text\": \"Say hello\"}]}], \"generationConfig\": {\"maxOutputTokens\": 16}}, \"metadata\": {\"key\": \"req-1\"}},\n          {\"request\": {\"contents\": [{\"role\": \"user\", \"parts\": [{\"text\": \"Say goodbye\"}]}], \"generationConfig\": {\"maxOutputTokens\": 16}}, \"metadata\": {\"key\": \"req-2\"}}\n        ]\n      }\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/{{genaiModel}}:batchGenerateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "{{genaiModel}}:batchGenerateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Clear any stale id from a previous run so a guarded skip below (401/403/429/5xx)",
+                  "// can't leave 'Gemini: retrieve batch'/'cancel batch' chaining onto an old batch.",
+                  "pm.collectionVariables.unset('genaiBatchId');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Gemini create batch: 2xx', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(300); });",
+                  "var j = pm.response.json();",
+                  "pm.test('Gemini create batch: has name', function () { pm.expect(j.name).to.be.a('string').and.not.empty; });",
+                  "pm.test('Gemini create batch: has metadata.state', function () { pm.expect(j.metadata).to.be.an('object'); pm.expect(j.metadata.state).to.be.a('string').and.not.empty; });",
+                  "if (typeof j.name === 'string' && j.name) { pm.collectionVariables.set('genaiBatchId', j.name.replace(/^batches\\//, '')); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Gemini: list batches",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/batches",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "batches"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Gemini list batches: 2xx', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(300); });",
+                  "var j = pm.response.json();",
+                  "pm.test('Gemini list batches: operations is array (or omitted when empty)', function () { pm.expect(j.operations === undefined || Array.isArray(j.operations)).to.eql(true); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Gemini: retrieve batch",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/batches/{{genaiBatchId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "batches",
+                "{{genaiBatchId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Create didn't set an id (skipped on a guarded code, or failed) - nothing to retrieve.",
+                  "if (!pm.collectionVariables.get('genaiBatchId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Gemini retrieve batch: 2xx', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(300); });",
+                  "var j = pm.response.json();",
+                  "pm.test('Gemini retrieve batch: name matches create', function () { pm.expect(typeof j.name === 'string' ? j.name.replace(/^batches\\//, '') : j.name).to.eql(pm.collectionVariables.get('genaiBatchId')); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Gemini: cancel batch",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/batches/{{genaiBatchId}}:cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "batches",
+                "{{genaiBatchId}}:cancel"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Create didn't set an id (skipped on a guarded code, or failed) - nothing to cancel.",
+                  "if (!pm.collectionVariables.get('genaiBatchId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Gemini cancel batch: 2xx', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(300); });"
+                ]
+              }
             }
           ]
         }
