@@ -100,6 +100,40 @@ func buildAnthropicPassthroughUsage(au *AnthropicUsage) *schemas.BifrostPassthro
 type AnthropicPassthroughStreamUsage struct {
 	combined AnthropicUsage
 	seen     bool
+
+	// looseInput is the largest input_tokens seen on an event whose usage object carried NO
+	// cache counters; authInput is the largest seen on an event that DID. They are kept apart
+	// because the two are not the same quantity on every upstream.
+	//
+	// Anthropic documents input_tokens as EXCLUDING the cache counters (see AnthropicUsage),
+	// so summing input + cache_read + cache_creation is only valid when they came from a
+	// cache-aware event. Some Anthropic-dialect upstreams (observed: QwenCloud's
+	// /apps/anthropic endpoint) instead put the FULL prompt count in message_start.usage
+	// .input_tokens and emit no cache counters there, then send the real cache-aware split in
+	// message_delta. Max-merging both into one field made the prefix-cached prompt count once
+	// as input and again as cache_read, roughly doubling prompt_tokens on every streaming
+	// request. Preferring the cache-aware event's input_tokens fixes that without ever
+	// lowering a value (still monotone), so no upstream that reports correctly is affected.
+	looseInput int
+	authInput  int
+	authSeen   bool
+}
+
+// usageEventHasCacheCounters reports whether this SSE data payload's usage object explicitly
+// carries cache counters, i.e. whether its input_tokens follows Anthropic's "excludes cache"
+// convention. Presence is read off the raw JSON: a decoded struct cannot distinguish an absent
+// field from a zero one, and that distinction is the whole signal.
+func usageEventHasCacheCounters(event []byte) bool {
+	for _, path := range [...]string{
+		"usage.cache_read_input_tokens", "usage.cache_creation_input_tokens", "usage.cache_creation",
+		"message.usage.cache_read_input_tokens", "message.usage.cache_creation_input_tokens",
+		"message.usage.cache_creation",
+	} {
+		if providerUtils.GetJSONField(event, path).Exists() {
+			return true
+		}
+	}
+	return false
 }
 
 // ObserveEvent merges one framed SSE data payload's usage into the running total and returns
@@ -122,8 +156,18 @@ func (a *AnthropicPassthroughStreamUsage) ObserveEvent(event []byte) *schemas.Bi
 
 	a.seen = true
 	c := &a.combined
-	if u.InputTokens > c.InputTokens {
-		c.InputTokens = u.InputTokens
+	if usageEventHasCacheCounters(event) {
+		a.authSeen = true
+		if u.InputTokens > a.authInput {
+			a.authInput = u.InputTokens
+		}
+	} else if u.InputTokens > a.looseInput {
+		a.looseInput = u.InputTokens
+	}
+	if a.authSeen {
+		c.InputTokens = a.authInput
+	} else {
+		c.InputTokens = a.looseInput
 	}
 	if u.OutputTokens > c.OutputTokens {
 		c.OutputTokens = u.OutputTokens
