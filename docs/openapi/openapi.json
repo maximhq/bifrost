@@ -67484,6 +67484,56 @@
                   "required": [
                     "keywords"
                   ],
+                  "allOf": [
+                    {
+                      "if": {
+                        "properties": {
+                          "session": {
+                            "properties": {
+                              "enabled": {
+                                "const": true
+                              }
+                            },
+                            "required": [
+                              "enabled"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "session"
+                        ]
+                      },
+                      "then": {
+                        "required": [
+                          "semantic"
+                        ]
+                      }
+                    },
+                    {
+                      "if": {
+                        "properties": {
+                          "semantic": {
+                            "properties": {
+                              "fallback": {
+                                "const": "llm"
+                              }
+                            },
+                            "required": [
+                              "fallback"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "semantic"
+                        ]
+                      },
+                      "then": {
+                        "required": [
+                          "llm"
+                        ]
+                      }
+                    }
+                  ],
                   "properties": {
                     "tier_boundaries": {
                       "type": "object",
@@ -67664,6 +67714,20 @@
                           "description": "Whether classification completion cost counts toward virtual-key budgets (record-only, never enforced; default false)"
                         }
                       }
+                    },
+                    "session": {
+                      "type": "object",
+                      "description": "Session-aware complexity routing. When enabled and a request carries a supported session identity, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. Overlapping requests for the same session are best-effort and resolve by last writer wins.",
+                      "additionalProperties": false,
+                      "required": [
+                        "enabled"
+                      ],
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean",
+                          "description": "Enable monotonic session tier retention. Requires semantic complexity classification; default is false."
+                        }
+                      }
                     }
                   }
                 }
@@ -67709,6 +67773,56 @@
                 "additionalProperties": false,
                 "required": [
                   "keywords"
+                ],
+                "allOf": [
+                  {
+                    "if": {
+                      "properties": {
+                        "session": {
+                          "properties": {
+                            "enabled": {
+                              "const": true
+                            }
+                          },
+                          "required": [
+                            "enabled"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "session"
+                      ]
+                    },
+                    "then": {
+                      "required": [
+                        "semantic"
+                      ]
+                    }
+                  },
+                  {
+                    "if": {
+                      "properties": {
+                        "semantic": {
+                          "properties": {
+                            "fallback": {
+                              "const": "llm"
+                            }
+                          },
+                          "required": [
+                            "fallback"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "semantic"
+                      ]
+                    },
+                    "then": {
+                      "required": [
+                        "llm"
+                      ]
+                    }
+                  }
                 ],
                 "properties": {
                   "tier_boundaries": {
@@ -67890,6 +68004,20 @@
                         "description": "Whether classification completion cost counts toward virtual-key budgets (record-only, never enforced; default false)"
                       }
                     }
+                  },
+                  "session": {
+                    "type": "object",
+                    "description": "Session-aware complexity routing. When enabled and a request carries a supported session identity, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. Overlapping requests for the same session are best-effort and resolve by last writer wins.",
+                    "additionalProperties": false,
+                    "required": [
+                      "enabled"
+                    ],
+                    "properties": {
+                      "enabled": {
+                        "type": "boolean",
+                        "description": "Enable monotonic session tier retention. Requires semantic complexity classification; default is false."
+                      }
+                    }
                   }
                 }
               }
@@ -67912,6 +68040,56 @@
                   "additionalProperties": false,
                   "required": [
                     "keywords"
+                  ],
+                  "allOf": [
+                    {
+                      "if": {
+                        "properties": {
+                          "session": {
+                            "properties": {
+                              "enabled": {
+                                "const": true
+                              }
+                            },
+                            "required": [
+                              "enabled"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "session"
+                        ]
+                      },
+                      "then": {
+                        "required": [
+                          "semantic"
+                        ]
+                      }
+                    },
+                    {
+                      "if": {
+                        "properties": {
+                          "semantic": {
+                            "properties": {
+                              "fallback": {
+                                "const": "llm"
+                              }
+                            },
+                            "required": [
+                              "fallback"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "semantic"
+                        ]
+                      },
+                      "then": {
+                        "required": [
+                          "llm"
+                        ]
+                      }
+                    }
                   ],
                   "properties": {
                     "tier_boundaries": {
@@ -68091,6 +68269,20 @@
                         "count_toward_budgets": {
                           "type": "boolean",
                           "description": "Whether classification completion cost counts toward virtual-key budgets (record-only, never enforced; default false)"
+                        }
+                      }
+                    },
+                    "session": {
+                      "type": "object",
+                      "description": "Session-aware complexity routing. When enabled and a request carries a supported session identity, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. Overlapping requests for the same session are best-effort and resolve by last writer wins.",
+                      "additionalProperties": false,
+                      "required": [
+                        "enabled"
+                      ],
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean",
+                          "description": "Enable monotonic session tier retention. Requires semantic complexity classification; default is false."
                         }
                       }
                     }
@@ -68157,6 +68349,56 @@
                   "required": [
                     "keywords"
                   ],
+                  "allOf": [
+                    {
+                      "if": {
+                        "properties": {
+                          "session": {
+                            "properties": {
+                              "enabled": {
+                                "const": true
+                              }
+                            },
+                            "required": [
+                              "enabled"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "session"
+                        ]
+                      },
+                      "then": {
+                        "required": [
+                          "semantic"
+                        ]
+                      }
+                    },
+                    {
+                      "if": {
+                        "properties": {
+                          "semantic": {
+                            "properties": {
+                              "fallback": {
+                                "const": "llm"
+                              }
+                            },
+                            "required": [
+                              "fallback"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "semantic"
+                        ]
+                      },
+                      "then": {
+                        "required": [
+                          "llm"
+                        ]
+                      }
+                    }
+                  ],
                   "properties": {
                     "tier_boundaries": {
                       "type": "object",
@@ -68335,6 +68577,20 @@
                         "count_toward_budgets": {
                           "type": "boolean",
                           "description": "Whether classification completion cost counts toward virtual-key budgets (record-only, never enforced; default false)"
+                        }
+                      }
+                    },
+                    "session": {
+                      "type": "object",
+                      "description": "Session-aware complexity routing. When enabled and a request carries a supported session identity, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. Overlapping requests for the same session are best-effort and resolve by last writer wins.",
+                      "additionalProperties": false,
+                      "required": [
+                        "enabled"
+                      ],
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean",
+                          "description": "Enable monotonic session tier retention. Requires semantic complexity classification; default is false."
                         }
                       }
                     }
@@ -68791,6 +69047,56 @@
                   "required": [
                     "keywords"
                   ],
+                  "allOf": [
+                    {
+                      "if": {
+                        "properties": {
+                          "session": {
+                            "properties": {
+                              "enabled": {
+                                "const": true
+                              }
+                            },
+                            "required": [
+                              "enabled"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "session"
+                        ]
+                      },
+                      "then": {
+                        "required": [
+                          "semantic"
+                        ]
+                      }
+                    },
+                    {
+                      "if": {
+                        "properties": {
+                          "semantic": {
+                            "properties": {
+                              "fallback": {
+                                "const": "llm"
+                              }
+                            },
+                            "required": [
+                              "fallback"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "semantic"
+                        ]
+                      },
+                      "then": {
+                        "required": [
+                          "llm"
+                        ]
+                      }
+                    }
+                  ],
                   "properties": {
                     "tier_boundaries": {
                       "type": "object",
@@ -68971,6 +69277,20 @@
                           "description": "Whether classification completion cost counts toward virtual-key budgets (record-only, never enforced; default false)"
                         }
                       }
+                    },
+                    "session": {
+                      "type": "object",
+                      "description": "Session-aware complexity routing. When enabled and a request carries a supported session identity, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. Overlapping requests for the same session are best-effort and resolve by last writer wins.",
+                      "additionalProperties": false,
+                      "required": [
+                        "enabled"
+                      ],
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean",
+                          "description": "Enable monotonic session tier retention. Requires semantic complexity classification; default is false."
+                        }
+                      }
                     }
                   }
                 }
@@ -69017,6 +69337,56 @@
                 "additionalProperties": false,
                 "required": [
                   "keywords"
+                ],
+                "allOf": [
+                  {
+                    "if": {
+                      "properties": {
+                        "session": {
+                          "properties": {
+                            "enabled": {
+                              "const": true
+                            }
+                          },
+                          "required": [
+                            "enabled"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "session"
+                      ]
+                    },
+                    "then": {
+                      "required": [
+                        "semantic"
+                      ]
+                    }
+                  },
+                  {
+                    "if": {
+                      "properties": {
+                        "semantic": {
+                          "properties": {
+                            "fallback": {
+                              "const": "llm"
+                            }
+                          },
+                          "required": [
+                            "fallback"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "semantic"
+                      ]
+                    },
+                    "then": {
+                      "required": [
+                        "llm"
+                      ]
+                    }
+                  }
                 ],
                 "properties": {
                   "tier_boundaries": {
@@ -69198,6 +69568,20 @@
                         "description": "Whether classification completion cost counts toward virtual-key budgets (record-only, never enforced; default false)"
                       }
                     }
+                  },
+                  "session": {
+                    "type": "object",
+                    "description": "Session-aware complexity routing. When enabled and a request carries a supported session identity, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. Overlapping requests for the same session are best-effort and resolve by last writer wins.",
+                    "additionalProperties": false,
+                    "required": [
+                      "enabled"
+                    ],
+                    "properties": {
+                      "enabled": {
+                        "type": "boolean",
+                        "description": "Enable monotonic session tier retention. Requires semantic complexity classification; default is false."
+                      }
+                    }
                   }
                 }
               }
@@ -69220,6 +69604,56 @@
                   "additionalProperties": false,
                   "required": [
                     "keywords"
+                  ],
+                  "allOf": [
+                    {
+                      "if": {
+                        "properties": {
+                          "session": {
+                            "properties": {
+                              "enabled": {
+                                "const": true
+                              }
+                            },
+                            "required": [
+                              "enabled"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "session"
+                        ]
+                      },
+                      "then": {
+                        "required": [
+                          "semantic"
+                        ]
+                      }
+                    },
+                    {
+                      "if": {
+                        "properties": {
+                          "semantic": {
+                            "properties": {
+                              "fallback": {
+                                "const": "llm"
+                              }
+                            },
+                            "required": [
+                              "fallback"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "semantic"
+                        ]
+                      },
+                      "then": {
+                        "required": [
+                          "llm"
+                        ]
+                      }
+                    }
                   ],
                   "properties": {
                     "tier_boundaries": {
@@ -69399,6 +69833,20 @@
                         "count_toward_budgets": {
                           "type": "boolean",
                           "description": "Whether classification completion cost counts toward virtual-key budgets (record-only, never enforced; default false)"
+                        }
+                      }
+                    },
+                    "session": {
+                      "type": "object",
+                      "description": "Session-aware complexity routing. When enabled and a request carries a supported session identity, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. Overlapping requests for the same session are best-effort and resolve by last writer wins.",
+                      "additionalProperties": false,
+                      "required": [
+                        "enabled"
+                      ],
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean",
+                          "description": "Enable monotonic session tier retention. Requires semantic complexity classification; default is false."
                         }
                       }
                     }
@@ -69466,6 +69914,56 @@
                   "required": [
                     "keywords"
                   ],
+                  "allOf": [
+                    {
+                      "if": {
+                        "properties": {
+                          "session": {
+                            "properties": {
+                              "enabled": {
+                                "const": true
+                              }
+                            },
+                            "required": [
+                              "enabled"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "session"
+                        ]
+                      },
+                      "then": {
+                        "required": [
+                          "semantic"
+                        ]
+                      }
+                    },
+                    {
+                      "if": {
+                        "properties": {
+                          "semantic": {
+                            "properties": {
+                              "fallback": {
+                                "const": "llm"
+                              }
+                            },
+                            "required": [
+                              "fallback"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "semantic"
+                        ]
+                      },
+                      "then": {
+                        "required": [
+                          "llm"
+                        ]
+                      }
+                    }
+                  ],
                   "properties": {
                     "tier_boundaries": {
                       "type": "object",
@@ -69644,6 +70142,20 @@
                         "count_toward_budgets": {
                           "type": "boolean",
                           "description": "Whether classification completion cost counts toward virtual-key budgets (record-only, never enforced; default false)"
+                        }
+                      }
+                    },
+                    "session": {
+                      "type": "object",
+                      "description": "Session-aware complexity routing. When enabled and a request carries a supported session identity, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. Overlapping requests for the same session are best-effort and resolve by last writer wins.",
+                      "additionalProperties": false,
+                      "required": [
+                        "enabled"
+                      ],
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean",
+                          "description": "Enable monotonic session tier retention. Requires semantic complexity classification; default is false."
                         }
                       }
                     }
@@ -69759,7 +70271,7 @@
           {
             "name": "complexity_mechanisms",
             "in": "query",
-            "description": "Comma-separated list of complexity classification mechanisms to filter by (semantic or skipped)",
+            "description": "Comma-separated list of complexity decision mechanisms to filter by (semantic, llm, session, or skipped)",
             "schema": {
               "type": "string"
             }
@@ -70355,7 +70867,7 @@
           {
             "name": "complexity_mechanisms",
             "in": "query",
-            "description": "Comma-separated list of complexity classification mechanisms to filter by (semantic or skipped)",
+            "description": "Comma-separated list of complexity decision mechanisms to filter by (semantic, llm, session, or skipped)",
             "schema": {
               "type": "string"
             }
@@ -70606,7 +71118,7 @@
           {
             "name": "complexity_mechanisms",
             "in": "query",
-            "description": "Comma-separated list of complexity classification mechanisms to filter by (semantic or skipped)",
+            "description": "Comma-separated list of complexity decision mechanisms to filter by (semantic, llm, session, or skipped)",
             "schema": {
               "type": "string"
             }
@@ -70889,7 +71401,7 @@
           {
             "name": "complexity_mechanisms",
             "in": "query",
-            "description": "Comma-separated list of complexity classification mechanisms to filter by (semantic or skipped)",
+            "description": "Comma-separated list of complexity decision mechanisms to filter by (semantic, llm, session, or skipped)",
             "schema": {
               "type": "string"
             }
@@ -71132,7 +71644,7 @@
           {
             "name": "complexity_mechanisms",
             "in": "query",
-            "description": "Comma-separated list of complexity classification mechanisms to filter by (semantic or skipped)",
+            "description": "Comma-separated list of complexity decision mechanisms to filter by (semantic, llm, session, or skipped)",
             "schema": {
               "type": "string"
             }
@@ -71380,7 +71892,7 @@
           {
             "name": "complexity_mechanisms",
             "in": "query",
-            "description": "Comma-separated list of complexity classification mechanisms to filter by (semantic or skipped)",
+            "description": "Comma-separated list of complexity decision mechanisms to filter by (semantic, llm, session, or skipped)",
             "schema": {
               "type": "string"
             }
@@ -71639,7 +72151,7 @@
           {
             "name": "complexity_mechanisms",
             "in": "query",
-            "description": "Comma-separated list of complexity classification mechanisms to filter by (semantic or skipped)",
+            "description": "Comma-separated list of complexity decision mechanisms to filter by (semantic, llm, session, or skipped)",
             "schema": {
               "type": "string"
             }
@@ -71886,7 +72398,7 @@
           {
             "name": "complexity_mechanisms",
             "in": "query",
-            "description": "Comma-separated list of complexity classification mechanisms to filter by (semantic or skipped)",
+            "description": "Comma-separated list of complexity decision mechanisms to filter by (semantic, llm, session, or skipped)",
             "schema": {
               "type": "string"
             }
@@ -72133,7 +72645,7 @@
           {
             "name": "complexity_mechanisms",
             "in": "query",
-            "description": "Comma-separated list of complexity classification mechanisms to filter by (semantic or skipped)",
+            "description": "Comma-separated list of complexity decision mechanisms to filter by (semantic, llm, session, or skipped)",
             "schema": {
               "type": "string"
             }
@@ -72392,7 +72904,7 @@
           {
             "name": "complexity_mechanisms",
             "in": "query",
-            "description": "Comma-separated list of complexity classification mechanisms to filter by (semantic or skipped)",
+            "description": "Comma-separated list of complexity decision mechanisms to filter by (semantic, llm, session, or skipped)",
             "schema": {
               "type": "string"
             }
@@ -72672,7 +73184,7 @@
           {
             "name": "complexity_mechanisms",
             "in": "query",
-            "description": "Comma-separated list of complexity classification mechanisms to filter by (semantic or skipped)",
+            "description": "Comma-separated list of complexity decision mechanisms to filter by (semantic, llm, session, or skipped)",
             "schema": {
               "type": "string"
             }
@@ -72947,7 +73459,7 @@
           {
             "name": "complexity_mechanisms",
             "in": "query",
-            "description": "Comma-separated list of complexity classification mechanisms to filter by (semantic or skipped)",
+            "description": "Comma-separated list of complexity decision mechanisms to filter by (semantic, llm, session, or skipped)",
             "schema": {
               "type": "string"
             }
@@ -73233,7 +73745,7 @@
           {
             "name": "complexity_mechanisms",
             "in": "query",
-            "description": "Comma-separated list of complexity classification mechanisms to filter by (semantic or skipped)",
+            "description": "Comma-separated list of complexity decision mechanisms to filter by (semantic, llm, session, or skipped)",
             "schema": {
               "type": "string"
             }
@@ -73652,7 +74164,7 @@
           {
             "name": "complexity_mechanisms",
             "in": "query",
-            "description": "Comma-separated list of complexity classification mechanisms to filter by (semantic or skipped)",
+            "description": "Comma-separated list of complexity decision mechanisms to filter by (semantic, llm, session, or skipped)",
             "schema": {
               "type": "string"
             }
@@ -74031,7 +74543,7 @@
           {
             "name": "complexity_mechanisms",
             "in": "query",
-            "description": "Comma-separated list of complexity classification mechanisms to filter by (semantic or skipped)",
+            "description": "Comma-separated list of complexity decision mechanisms to filter by (semantic, llm, session, or skipped)",
             "schema": {
               "type": "string"
             }
@@ -99592,12 +100104,18 @@
           },
           "complexity_mechanism": {
             "type": "string",
-            "description": "How the complexity tier was classified (semantic for the embedding-based classifier, or skipped when classification was demanded but produced no tier)",
+            "enum": [
+              "semantic",
+              "llm",
+              "session",
+              "skipped"
+            ],
+            "description": "How the effective complexity tier was determined. session means retained session state supplied the tier; skipped means classification was demanded but produced no tier.",
             "nullable": true
           },
           "complexity_score": {
             "type": "number",
-            "description": "Similarity score of the nearest reference phrase behind the tier",
+            "description": "Similarity score of the nearest reference phrase behind the tier. Absent for llm, session, and skipped decisions.",
             "nullable": true
           },
           "stream": {

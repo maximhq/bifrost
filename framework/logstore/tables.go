@@ -58,7 +58,7 @@ type SearchFilters struct {
 	VirtualKeyIDs        []string          `json:"virtual_key_ids,omitempty"`
 	RoutingRuleIDs       []string          `json:"routing_rule_ids,omitempty"`
 	ComplexityTiers      []string          `json:"complexity_tiers,omitempty"`      // For filtering by routing complexity tier (SIMPLE, MEDIUM, COMPLEX)
-	ComplexityMechanisms []string          `json:"complexity_mechanisms,omitempty"` // For filtering by complexity classification mechanism (lexical, skipped)
+	ComplexityMechanisms []string          `json:"complexity_mechanisms,omitempty"` // For filtering by complexity decision mechanism (semantic, llm, session, skipped)
 	TeamIDs              []string          `json:"team_ids,omitempty"`
 	CustomerIDs          []string          `json:"customer_ids,omitempty"`
 	UserIDs              []string          `json:"user_ids,omitempty"`

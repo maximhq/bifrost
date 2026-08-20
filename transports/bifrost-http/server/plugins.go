@@ -104,6 +104,13 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal routing plugin config: %w", err)
 		}
+		if routingConfig == nil {
+			routingConfig = &routing.Config{}
+		}
+		// Session complexity state uses the same process-wide store as core
+		// session routing. The field is runtime-only and is never persisted in
+		// plugin configuration.
+		routingConfig.KVStore = bifrostConfig.KVStore
 		// Routing rules read the virtual key and its live budget/rate-limit usage, so the
 		// governance plugin must already be registered when this runs.
 		governancePlugin, err := lib.FindPluginAs[governance.BaseGovernancePlugin](bifrostConfig, governancePluginNameFromContext(ctx))

@@ -37,14 +37,13 @@ const semanticSchema = z.object({
 	timeout: z
 		.string()
 		.min(1, "Enter an embedding timeout")
-		.refine(
-			(value) => isPositiveDurationString(value),
-			`Enter a timeout greater than 0 and at most ${MAX_SEMANTIC_TIMEOUT_MS}ms`,
-		)
+		.refine((value) => isPositiveDurationString(value), `Enter a timeout greater than 0 and at most ${MAX_SEMANTIC_TIMEOUT_MS}ms`)
 		.optional(),
 	min_similarity: z.number({ error: "Enter a number between 0 and 1" }).min(0, "Must be 0 or greater").lt(1, "Must be less than 1"),
 	message_history_count: z
-		.number({ error: `Enter a number between ${MIN_SEMANTIC_MESSAGE_HISTORY} and ${MAX_SEMANTIC_MESSAGE_HISTORY}` })
+		.number({
+			error: `Enter a number between ${MIN_SEMANTIC_MESSAGE_HISTORY} and ${MAX_SEMANTIC_MESSAGE_HISTORY}`,
+		})
 		.int("Must be a whole number")
 		.min(MIN_SEMANTIC_MESSAGE_HISTORY, `Must be at least ${MIN_SEMANTIC_MESSAGE_HISTORY}`)
 		.max(MAX_SEMANTIC_MESSAGE_HISTORY, `Must be at most ${MAX_SEMANTIC_MESSAGE_HISTORY}`),
@@ -60,14 +59,13 @@ const llmSchema = z.object({
 	timeout: z
 		.string()
 		.min(1, "Enter a classification timeout")
-		.refine(
-			(value) => isPositiveDurationString(value),
-			"Enter a timeout greater than 0",
-		)
+		.refine((value) => isPositiveDurationString(value), "Enter a timeout greater than 0")
 		.optional(),
 	prompt: z.string().max(MAX_LLM_PROMPT_CHARACTERS, `Must be at most ${MAX_LLM_PROMPT_CHARACTERS} characters`),
 	message_history_count: z
-		.number({ error: `Enter a number between ${MIN_LLM_MESSAGE_HISTORY} and ${MAX_LLM_MESSAGE_HISTORY}` })
+		.number({
+			error: `Enter a number between ${MIN_LLM_MESSAGE_HISTORY} and ${MAX_LLM_MESSAGE_HISTORY}`,
+		})
 		.int("Must be a whole number")
 		.min(MIN_LLM_MESSAGE_HISTORY, `Must be at least ${MIN_LLM_MESSAGE_HISTORY}`)
 		.max(MAX_LLM_MESSAGE_HISTORY, `Must be at most ${MAX_LLM_MESSAGE_HISTORY}`),
@@ -83,6 +81,7 @@ export const analyzerConfigSchema = z
 		}),
 		semantic: semanticSchema,
 		llm: llmSchema,
+		session: z.object({ enabled: z.boolean() }),
 	})
 	.superRefine((data, ctx) => {
 		// A blank provider and model means the classifier simply is not configured
@@ -92,11 +91,26 @@ export const analyzerConfigSchema = z
 		const hasModel = data.semantic.embedding_model.trim() !== "";
 		if (hasProvider || hasModel) {
 			if (!hasProvider) {
-				ctx.addIssue({ code: "custom", message: "Select an embedding provider", path: ["semantic", "provider"] });
+				ctx.addIssue({
+					code: "custom",
+					message: "Select an embedding provider",
+					path: ["semantic", "provider"],
+				});
 			}
 			if (!hasModel) {
-				ctx.addIssue({ code: "custom", message: "Select an embedding model", path: ["semantic", "embedding_model"] });
+				ctx.addIssue({
+					code: "custom",
+					message: "Select an embedding model",
+					path: ["semantic", "embedding_model"],
+				});
 			}
+		}
+		if (data.session.enabled && (!hasProvider || !hasModel)) {
+			ctx.addIssue({
+				code: "custom",
+				message: "Configure the semantic classifier before enabling session routing",
+				path: ["session", "enabled"],
+			});
 		}
 
 		// The llm block follows the same half-filled rule, with one addition:
@@ -106,10 +120,18 @@ export const analyzerConfigSchema = z
 		const hasLLMModel = data.llm.model.trim() !== "";
 		if (hasLLMProvider || hasLLMModel || data.semantic.fallback === "llm") {
 			if (!hasLLMProvider) {
-				ctx.addIssue({ code: "custom", message: "Select a fallback provider", path: ["llm", "provider"] });
+				ctx.addIssue({
+					code: "custom",
+					message: "Select a fallback provider",
+					path: ["llm", "provider"],
+				});
 			}
 			if (!hasLLMModel) {
-				ctx.addIssue({ code: "custom", message: "Select a fallback model", path: ["llm", "model"] });
+				ctx.addIssue({
+					code: "custom",
+					message: "Select a fallback model",
+					path: ["llm", "model"],
+				});
 			}
 		}
 
@@ -179,6 +201,7 @@ export const DEFAULT_FORM_VALUES: AnalyzerFormValues = {
 	},
 	semantic: DEFAULT_SEMANTIC_FORM_VALUES,
 	llm: DEFAULT_LLM_FORM_VALUES,
+	session: { enabled: false },
 };
 
 // Fills in the fields the API omitted so the semantic controls stay controlled.
@@ -187,6 +210,7 @@ export function toFormValues(config: AnalyzerConfig): AnalyzerFormValues {
 	const savedLLM = config.llm;
 	return {
 		keywords: config.keywords,
+		session: config.session ?? { enabled: false },
 		llm: savedLLM
 			? {
 					...DEFAULT_LLM_FORM_VALUES,
@@ -207,6 +231,22 @@ export function toFormValues(config: AnalyzerConfig): AnalyzerFormValues {
 					fallback: saved.fallback ?? "none",
 				}
 			: DEFAULT_SEMANTIC_FORM_VALUES,
+	};
+}
+
+// Builds the replacement payload without writing a disabled session block.
+// Session is additive to the complexity API, and nil already means disabled;
+// omitting it keeps ordinary semantic edits compatible with gateways that
+// predate session-aware routing. Once enabled, the block is sent explicitly.
+export function toAnalyzerPayload(values: AnalyzerFormValues, saved?: AnalyzerConfig): AnalyzerConfig {
+	const semantic = values.semantic.provider && values.semantic.embedding_model ? values.semantic : (saved?.semantic ?? undefined);
+	const llm = values.llm.provider && values.llm.model ? values.llm : (saved?.llm ?? undefined);
+
+	return {
+		keywords: values.keywords,
+		...(values.session.enabled ? { session: values.session } : {}),
+		...(semantic ? { semantic } : {}),
+		...(llm ? { llm } : {}),
 	};
 }
 

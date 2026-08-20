@@ -11,7 +11,6 @@ package routing
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -56,6 +55,9 @@ type Config struct {
 	// ComplexityAnalyzerConfig overrides the analyzer defaults. When nil, the persisted
 	// config is used, falling back to the built-in defaults.
 	ComplexityAnalyzerConfig *complexity.AnalyzerConfig `json:"complexity_analyzer_config,omitempty"`
+	// KVStore is the runtime-only shared store used for complexity
+	// session state. It is injected by the host and is never serialized.
+	KVStore schemas.KVStore `json:"-"`
 }
 
 // chainMaxDepthOrDefault resolves the configured chain depth, falling back to the default.
@@ -75,6 +77,8 @@ type RoutingPlugin struct {
 	complexityAnalyzer atomic.Pointer[complexity.ComplexityAnalyzer]
 	semanticClassifier *complexity.SemanticClassifier
 	llmClassifier      *complexity.LLMClassifier
+	sessionStore       *complexitySessionStore
+	sessionEnabled     atomic.Bool
 
 	// governance supplies the virtual key, its live budget/rate-limit usage, and the provider
 	// materialization that runs once rules have decided. Required: rules address budgets and
@@ -101,7 +105,6 @@ type RoutingPlugin struct {
 	// a chat completion is rejected because the judge model requires
 	// /v1/responses; it stays nil until wired, in which case no fallback runs.
 	responsesRequestExecutor atomic.Pointer[ResponsesRequestExecutor]
-
 }
 
 // Init initializes and returns a routing plugin instance.
@@ -164,12 +167,18 @@ func InitFromStore(
 		semanticClassifier: complexity.NewSemanticClassifier(ctx, logger),
 		llmClassifier:      complexity.NewLLMClassifier(logger),
 	}
+	if config != nil && config.KVStore != nil {
+		plugin.sessionStore = newComplexitySessionStore(config.KVStore, complexitySessionInactivityTTL)
+	}
 
 	var analyzerOverride *complexity.AnalyzerConfig
 	if config != nil {
 		analyzerOverride = config.ComplexityAnalyzerConfig
 	}
-	plugin.storeComplexityAnalyzerConfig(resolveAnalyzerConfigFromStoreOrArg(ctx, logger, configStore, analyzerOverride))
+	if err := plugin.storeComplexityAnalyzerConfig(resolveAnalyzerConfigFromStoreOrArg(ctx, logger, configStore, analyzerOverride)); err != nil {
+		_ = plugin.Cleanup()
+		return nil, err
+	}
 	return plugin, nil
 }
 
@@ -184,11 +193,11 @@ func (p *RoutingPlugin) GetRuleStore() rules.Store {
 }
 
 // ReloadComplexityAnalyzerConfig swaps the analyzer used by complexity_tier routing.
-func (p *RoutingPlugin) ReloadComplexityAnalyzerConfig(config *complexity.AnalyzerConfig) {
-	p.storeComplexityAnalyzerConfig(config)
+func (p *RoutingPlugin) ReloadComplexityAnalyzerConfig(config *complexity.AnalyzerConfig) error {
+	return p.storeComplexityAnalyzerConfig(config)
 }
 
-func (p *RoutingPlugin) storeComplexityAnalyzerConfig(config *complexity.AnalyzerConfig) {
+func (p *RoutingPlugin) storeComplexityAnalyzerConfig(config *complexity.AnalyzerConfig) error {
 	resolved, err := complexity.ValidateAndNormalize(config)
 	if err != nil {
 		if p.logger != nil {
@@ -197,14 +206,18 @@ func (p *RoutingPlugin) storeComplexityAnalyzerConfig(config *complexity.Analyze
 		defaults := complexity.DefaultAnalyzerConfig()
 		resolved = &defaults
 	}
+	if resolved.SessionRoutingEnabled() && p.sessionStore == nil {
+		return fmt.Errorf("complexity session routing requires a KV store")
+	}
 	p.complexityAnalyzer.Store(complexity.NewComplexityAnalyzerWithConfig(resolved))
+	p.sessionEnabled.Store(resolved.SessionRoutingEnabled())
 	if p.semanticClassifier != nil {
 		p.semanticClassifier.Configure(resolved)
 	}
 	if p.llmClassifier != nil {
 		p.llmClassifier.Configure(resolved)
 	}
-
+	return nil
 }
 
 // ComplexityLLMStatus returns the current llm classifier readiness.
@@ -232,10 +245,19 @@ func (p *RoutingPlugin) RearmComplexitySemanticClassifier(provider schemas.Model
 // setting whose validity depends on live process state has a seam to hook
 // into; no semantic setting needs one today.
 func (p *RoutingPlugin) ValidateComplexityAnalyzerConfig(config *complexity.AnalyzerConfig) error {
-	if p.semanticClassifier == nil {
-		return nil
+	if p.semanticClassifier != nil {
+		if err := p.semanticClassifier.ValidateConfig(config); err != nil {
+			return err
+		}
 	}
-	return p.semanticClassifier.ValidateConfig(config)
+	resolved, err := complexity.ValidateAndNormalize(config)
+	if err != nil {
+		return err
+	}
+	if resolved.SessionRoutingEnabled() && p.sessionStore == nil {
+		return fmt.Errorf("complexity session routing requires a KV store")
+	}
+	return nil
 }
 
 // ComplexitySemanticStatus returns the current semantic classifier readiness.
@@ -358,126 +380,7 @@ func (p *RoutingPlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *sche
 	var computeComplexity func() *complexity.ComplexityResult
 	if p.complexityAnalyzer.Load() != nil {
 		computeComplexity = func() *complexity.ComplexityResult {
-			input, ok := complexity.BuildInput(ctx, req)
-			if !ok {
-				if p.logger != nil {
-					p.logger.Debug("[Routing] Complexity analysis skipped: no routable human-authored text detected")
-				}
-				ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityMechanism, complexity.MechanismSkipped)
-				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo, "Complexity analysis skipped: no routable human-authored text detected")
-				return nil
-			}
-
-			// Semantic classification is the only mechanism. Without it there is no
-			// tier to publish: the lexical scorer still exists for historical
-			// configs but is never run, because the phrase lists an operator
-			// authors are semantic exemplars — whole sentences — and scoring them
-			// as literal keywords produces tiers that look authoritative while
-			// resting on matches the operator never intended.
-			if p.semanticClassifier == nil || !p.semanticClassifier.IsConfigured() {
-				if p.logger != nil {
-					p.logger.Debug("[Routing] %s", noSemanticClassifierLog)
-				}
-				ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityMechanism, complexity.MechanismSkipped)
-				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo, noSemanticClassifierLog)
-				return nil
-			}
-
-			// How much of the conversation is embedded is configuration
-			// (semantic.message_history_count); the classifier applies it from
-			// the same snapshot that owns the exemplars.
-			semanticResult, err := p.semanticClassifier.Classify(ctx, input)
-			// Carried to the single routing log below rather than logged here. Every
-			// one of these branches ends at the same outcome — no tier published —
-			// so logging per branch *and* at the outcome put two lines in the
-			// request log for one decision, the second restating the first.
-			var rejectedResult *complexity.SemanticResult
-			var timedOut bool
-			if err != nil {
-				if p.logger != nil {
-					p.logger.Debug("[Routing] Semantic complexity classification unavailable: %v", err)
-				}
-				timedOut = errors.Is(err, ErrEmbeddingTimeout)
-			} else if semanticResult != nil && !semanticResult.Accepted {
-				rejectedResult = semanticResult
-				if p.logger != nil {
-					p.logger.Debug(
-						"[Routing] Semantic complexity below min_similarity: tier=%s similarity=%.2f min=%.2f",
-						semanticResult.Tier,
-						semanticResult.Score,
-						semanticResult.MinSimilarity,
-					)
-				}
-			} else if semanticResult != nil {
-				result := &complexity.ComplexityResult{Tier: semanticResult.Tier, Score: semanticResult.Score}
-				ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityTier, result.Tier)
-				ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityScore, result.Score)
-				ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityMechanism, complexity.MechanismSemantic)
-				// The exemplar is what makes the decision auditable: the tier alone
-				// cannot tell a reader whether the request genuinely resembled its
-				// nearest phrase or merely won an argmax over unrelated ones.
-				ctx.AppendRoutingEngineLog(
-					schemas.RoutingEngineRoutingRule,
-					schemas.LogLevelInfo,
-					withMatchedExemplar(
-						fmt.Sprintf("Semantic complexity: tier=%s similarity=%.2f", result.Tier, result.Score),
-						semanticResult.MatchedExemplar,
-					),
-				)
-				return result
-			}
-			// One line per decision, naming the cause. The level is part of the
-			// message: a classifier that could not run is an operator problem,
-			// while a request that resembled nothing in the tier lists is routine
-			// and would be noise at Warn. The cause and the outcome are built
-			// separately because a semantic non-answer now has two possible
-			// endings: skipped, or handed to the llm fallback.
-			unavailableLevel := schemas.LogLevelWarn
-			unavailableCause := "Semantic complexity classification unavailable"
-			switch {
-			case err == nil && semanticResult == nil:
-				unavailableLevel = schemas.LogLevelInfo
-			case rejectedResult != nil:
-				unavailableLevel = schemas.LogLevelInfo
-				// A near miss is the case where the exemplar matters most: it is
-				// the difference between "the floor is set too high for a phrase
-				// that genuinely fits" and "nothing in the tier lists resembles
-				// this request".
-				unavailableCause = withMatchedExemplar(
-					fmt.Sprintf(
-						"Semantic complexity rejected: nearest tier=%s similarity=%.2f below min_similarity=%.2f",
-						rejectedResult.Tier,
-						rejectedResult.Score,
-						rejectedResult.MinSimilarity,
-					),
-					rejectedResult.MatchedExemplar,
-				)
-			case timedOut:
-				// An exhausted budget is a tuning problem with an obvious remedy,
-				// and naming it as merely "unavailable" sends the operator hunting
-				// for a broken provider or an incomplete warmup instead of raising
-				// semantic.timeout.
-				unavailableCause = fmt.Sprintf(
-					"Semantic complexity classification timed out after %s",
-					p.semanticClassifier.Timeout(),
-				)
-			}
-			// The fallback engages on every semantic non-answer alike —
-			// rejection, timeout, unfinished warmup, unwired executor — because
-			// each one leaves the same hole: a rule referencing complexity_tier
-			// that cannot match. Its own outcome is logged by
-			// computeLLMComplexity, so this line only records the handoff.
-			if p.llmClassifier != nil && p.llmClassifier.FallbackEnabled() {
-				ctx.AppendRoutingEngineLog(
-					schemas.RoutingEngineRoutingRule,
-					schemas.LogLevelInfo,
-					unavailableCause+"; falling back to the LLM classifier",
-				)
-				return p.computeLLMComplexity(ctx, input)
-			}
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityMechanism, complexity.MechanismSkipped)
-			ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, unavailableLevel, unavailableCause+", so no complexity tier is published")
-			return nil
+			return p.computeComplexity(ctx, req, virtualKey)
 		}
 	}
 
