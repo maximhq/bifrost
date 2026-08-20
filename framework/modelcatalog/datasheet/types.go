@@ -515,9 +515,6 @@ func extractSupportedParams(parsed *schemas.ModelCapabilities) []string {
 	if parsed.SupportsReasoning != nil && *parsed.SupportsReasoning {
 		addParam("reasoning")
 	}
-	if parsed.SupportsReasoningWithToolCalls == nil || *parsed.SupportsReasoningWithToolCalls {
-		addParam("reasoning_with_tool_calls")
-	}
 	if parsed.SupportsNoneReasoningEffort != nil && *parsed.SupportsNoneReasoningEffort {
 		addParam("supports_none_reasoning_effort")
 	}
@@ -537,6 +534,20 @@ func extractSupportedParams(parsed *schemas.ModelCapabilities) []string {
 	if parsed.SupportsWebSearch != nil && *parsed.SupportsWebSearch {
 		addParam("web_search")
 		addParam("web_search_options")
+	}
+
+	// reasoning_with_tool_calls defaults on for rows that lack the flag, so models
+	// missing it don't get reasoning stripped when tools are present. Restrict the
+	// default to rows that declared at least one capability: for a capability-empty
+	// (e.g. cost-only) row the marker alone would otherwise become a one-element
+	// allowlist, and compat with should_drop_params would strip every other
+	// parameter (tools, tool_choice, ...) from requests.
+	if parsed.SupportsReasoningWithToolCalls != nil {
+		if *parsed.SupportsReasoningWithToolCalls {
+			addParam("reasoning_with_tool_calls")
+		}
+	} else if len(supported) > 0 {
+		addParam("reasoning_with_tool_calls")
 	}
 
 	return supported
