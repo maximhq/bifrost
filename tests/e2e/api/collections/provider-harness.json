@@ -135044,6 +135044,518 @@
           ]
         }
       ]
+    },
+    {
+      "name": "57. Claude Code turn normalization - assistant prefill trim + mid-conversation system inlining (#6334)",
+      "description": "Claude Code sends two shapes that Gemini/Vertex cannot accept verbatim, and until #6334 the Gemini egress\nconverter (core/providers/gemini/responses.go) normalized neither, so /anthropic/v1/messages traffic pointed at\ngemini/vertex failed upstream with HTTP 400.\n\n1. TRAILING ASSISTANT PREFILL. Claude Code routinely ends its messages array with a role:\"assistant\" turn for the\n   model to continue. Bifrost mapped it to a Gemini role:\"model\" content. Gemini's Content.role is documented as\n   \"Must be either 'user' or 'model'\" and generateContent rejects a history whose final turn is \"model\"\n   (\"Please ensure that multiturn requests ends with a user role or a function response\"). Gemini exposes no\n   prefill mechanism at all, so the turn is trimmed. Bedrock has done this since #3517.\n\n2. MID-CONVERSATION SYSTEM TURN. Claude Code injects runtime state as role:\"system\" entries inside messages.\n   Gemini has no message-level system role, so Bifrost hoisted them into systemInstruction - which renders ahead\n   of every message, presenting a turn-40 reminder as though it were said at turn 0, and invalidating the cached\n   prefix behind it on every injection. They are now inlined in place as user turns wrapped in\n   <system-reminder>, matching convertBifrostSystemReminderToBedrockUserMessage (#4068) and the native Anthropic\n   fallback inlineMidConversationSystem.\n\nEvery case asserts the OUTBOUND provider payload via x-bf-send-back-raw-request rather than merely checking that\nthe call did not 400. A \"no 400\" assertion would pass on a provider that silently tolerated the bad shape and\nwould tell us nothing about which normalization ran; raw_request pins the converter itself.\n\nFIXTURE CONSTRAINTS - do not \"tidy\" these bodies:\n - Case B needs TWO consecutive trailing assistant turns. A fix that drops only messages[len-1] passes case A\n   and still fails case B.\n - Case E needs a leading top-level `system` AND a later role:\"system\" entry. Without the leading one the case\n   cannot distinguish \"inlined correctly\" from \"system handling dropped entirely\".\n - Case G is the anti-over-trim guard: its trailing assistant turn carries tool_use, which is unanswered history\n   rather than a prefill and must survive. A trim that keys only on role:\"assistant\" passes A-C and breaks G.\n - A 400 is NOT guarded away in these scripts - a 400 IS the regression signature here.",
+      "item": [
+        {
+          "name": "gemini/gemini-3.7-flash /anthropic/v1/messages trailing assistant prefill is trimmed - #6334",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('gemini prefill: 2xx (Gemini 400s on an illegal turn sequence)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('gemini prefill: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var contents = rr.contents || [];",
+                  "var dump = JSON.stringify(contents);",
+                  "pm.test('gemini prefill: conversation does not end on a model turn', function () {",
+                  "  pm.expect(contents.length, 'contents empty: ' + dump).to.be.above(0);",
+                  "  pm.expect(contents[contents.length - 1].role, 'contents: ' + dump).to.not.eql('model');",
+                  "});",
+                  "pm.test('gemini prefill: the assistant prefill never reached the wire', function () {",
+                  "  pm.expect(dump).to.not.include('The answer is');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-3.7-flash\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is 2+2? Answer with just the number.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"The answer is\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-3.7-flash /anthropic/v1/messages consecutive trailing prefills are all trimmed - #6334",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('gemini multi-prefill: 2xx (Gemini 400s on an illegal turn sequence)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('gemini multi-prefill: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var contents = rr.contents || [];",
+                  "var dump = JSON.stringify(contents);",
+                  "pm.test('gemini multi-prefill: conversation does not end on a model turn', function () {",
+                  "  pm.expect(contents.length, 'contents empty: ' + dump).to.be.above(0);",
+                  "  pm.expect(contents[contents.length - 1].role, 'contents: ' + dump).to.not.eql('model');",
+                  "});",
+                  "pm.test('gemini multi-prefill: the assistant prefill never reached the wire', function () {",
+                  "  pm.expect(dump).to.not.include('The answer is');",
+                  "});",
+                  "pm.test('gemini multi-prefill: the earlier prefill went too', function () {",
+                  "  pm.expect(dump).to.not.include('Let me think.');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-3.7-flash\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is 2+2? Answer with just the number.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"Let me think.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"The answer is\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/gemini-2.5-pro /anthropic/v1/messages trailing assistant prefill is trimmed - #6334",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('vertex prefill: 2xx (Gemini 400s on an illegal turn sequence)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('vertex prefill: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var contents = rr.contents || [];",
+                  "var dump = JSON.stringify(contents);",
+                  "pm.test('vertex prefill: conversation does not end on a model turn', function () {",
+                  "  pm.expect(contents.length, 'contents empty: ' + dump).to.be.above(0);",
+                  "  pm.expect(contents[contents.length - 1].role, 'contents: ' + dump).to.not.eql('model');",
+                  "});",
+                  "pm.test('vertex prefill: the assistant prefill never reached the wire', function () {",
+                  "  pm.expect(dump).to.not.include('The answer is');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-pro\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is 2+2? Answer with just the number.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"The answer is\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-3.7-flash /anthropic/v1/messages streaming trailing prefill does not 400 - #6334",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('gemini prefill stream: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "var text = pm.response.text() || '';",
+                  "pm.test('gemini prefill stream: the stream actually carried data', function () {",
+                  "  pm.expect(text.length, 'empty body - the negative checks below would pass vacuously').to.be.above(0);",
+                  "  pm.expect(text, 'no SSE data frame in body: ' + text.slice(0, 800)).to.include('data:');",
+                  "});",
+                  "pm.test('gemini prefill stream: no turn-order refusal in the stream', function () {",
+                  "  var low = String(text).toLowerCase();",
+                  "  pm.expect(low, 'stream body: ' + String(text).slice(0, 800)).to.not.include('ends with a user role');",
+                  "  pm.expect(low, 'stream body: ' + String(text).slice(0, 800)).to.not.include('last turn cannot be model');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-3.7-flash\",\n  \"max_tokens\": 64,\n  \"stream\": true,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is 2+2? Answer with just the number.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"The answer is\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-3.7-flash /anthropic/v1/messages mid-conversation system turn is inlined as a user turn - #6334",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('gemini mid-conv system: 2xx (Gemini 400s on an illegal turn sequence)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('gemini mid-conv system: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var contents = rr.contents || [];",
+                  "var dump = JSON.stringify(contents);",
+                  "var sysInstr = JSON.stringify(rr.systemInstruction || rr.system_instruction || {});",
+                  "pm.test('gemini mid-conv system: reminder is NOT hoisted into systemInstruction', function () {",
+                  "  pm.expect(sysInstr, 'systemInstruction: ' + sysInstr).to.not.include('The user just opened src/main.go.');",
+                  "});",
+                  "pm.test('gemini mid-conv system: leading system prompt still hoisted', function () {",
+                  "  pm.expect(sysInstr, 'systemInstruction: ' + sysInstr).to.include('terse assistant');",
+                  "});",
+                  "pm.test('gemini mid-conv system: reminder inlined in contents as a user turn', function () {",
+                  "  var hit = null;",
+                  "  for (var i = 0; i < contents.length; i++) {",
+                  "    if (JSON.stringify(contents[i]).indexOf('The user just opened src/main.go.') !== -1) { hit = contents[i]; }",
+                  "  }",
+                  "  pm.expect(hit, 'reminder absent from contents: ' + dump).to.not.eql(null);",
+                  "  pm.expect(hit.role, 'contents: ' + dump).to.eql('user');",
+                  "});",
+                  "pm.test('gemini mid-conv system: reminder keeps its <system-reminder> envelope', function () {",
+                  "  pm.expect(dump, 'contents: ' + dump).to.include('system-reminder');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-3.7-flash\",\n  \"max_tokens\": 64,\n  \"system\": \"You are a terse assistant.\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"Hi.\"\n    },\n    {\n      \"role\": \"system\",\n      \"content\": \"The user just opened src/main.go.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"What file am I in? Answer with the path only.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-3.7-flash /v1/chat/completions trailing assistant prefill is trimmed - #6334",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('gemini chat prefill: 2xx (Gemini 400s on an illegal turn sequence)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('gemini chat prefill: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var contents = rr.contents || [];",
+                  "var dump = JSON.stringify(contents);",
+                  "pm.test('gemini chat prefill: conversation does not end on a model turn', function () {",
+                  "  pm.expect(contents.length, 'contents empty: ' + dump).to.be.above(0);",
+                  "  pm.expect(contents[contents.length - 1].role, 'contents: ' + dump).to.not.eql('model');",
+                  "});",
+                  "pm.test('gemini chat prefill: the assistant prefill never reached the wire', function () {",
+                  "  pm.expect(dump).to.not.include('The answer is');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-3.7-flash\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is 2+2? Answer with just the number.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"The answer is\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-3.7-flash /anthropic/v1/messages trailing assistant tool_use is NOT trimmed - #6334",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('gemini tool_use guard: 2xx (Gemini 400s on an illegal turn sequence)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('gemini tool_use guard: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var contents = rr.contents || [];",
+                  "var dump = JSON.stringify(contents);",
+                  "pm.test('gemini tool_use guard: the trailing tool round survived the prefill trim', function () {",
+                  "  var modelCall = null;",
+                  "  for (var i = 0; i < contents.length; i++) {",
+                  "    var parts = contents[i].parts || [];",
+                  "    for (var j = 0; j < parts.length; j++) {",
+                  "      if (parts[j].functionCall && parts[j].functionCall.name === 'get_weather') { modelCall = parts[j]; }",
+                  "    }",
+                  "  }",
+                  "  pm.expect(modelCall, 'no functionCall survived - a substring match on get_weather would also match the tool_result functionResponse. contents: ' + dump).to.not.eql(null);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-3.7-flash\",\n  \"max_tokens\": 128,\n  \"tools\": [\n    {\n      \"name\": \"get_weather\",\n      \"description\": \"Get weather for a city\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in SF?\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_bf6334\",\n          \"name\": \"get_weather\",\n          \"input\": {\n            \"city\": \"SF\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_bf6334\",\n          \"content\": \"sunny, 20C\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-opus-4-7 /anthropic/v1/messages mid-conversation system turn is inlined, not hoisted - #6334",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('bedrock mid-conv system: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('bedrock mid-conv system: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var msgs = JSON.stringify(rr.messages || []);",
+                  "var sys = JSON.stringify(rr.system || []);",
+                  "pm.test('bedrock mid-conv system: reminder is NOT hoisted into the system block', function () {",
+                  "  pm.expect(sys, 'system: ' + sys).to.not.include('The user just opened src/main.go.');",
+                  "});",
+                  "pm.test('bedrock mid-conv system: reminder inlined into messages with its envelope', function () {",
+                  "  pm.expect(msgs, 'messages: ' + msgs).to.include('The user just opened src/main.go.');",
+                  "  pm.expect(msgs, 'messages: ' + msgs).to.include('system-reminder');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-opus-4-7\",\n  \"max_tokens\": 64,\n  \"system\": \"You are a terse assistant.\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"Hi.\"\n    },\n    {\n      \"role\": \"system\",\n      \"content\": \"The user just opened src/main.go.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"What file am I in? Answer with the path only.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
