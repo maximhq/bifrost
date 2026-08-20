@@ -204,6 +204,108 @@ func (t *Trace) SnapshotForExport() *Trace {
 	return clone
 }
 
+// overheadBreakdownSpanNames are internal phase spans emitted solely to build the
+// log-detail overhead breakdown. They are withheld from observability connectors (see
+// IsOverheadBreakdownSpan); only a plugin that opts in via OverheadSpanConsumer (the
+// logging plugin) receives them.
+var overheadBreakdownSpanNames = map[string]struct{}{
+	"request-unmarshal":    {},
+	"request-marshal":      {},
+	"response-parse":       {},
+	"response-marshal":     {},
+	"convertor":            {},
+	"queue-wait":           {},
+	"attribute-population": {},
+}
+
+// IsOverheadBreakdownSpan reports whether a span exists only to feed the overhead
+// breakdown and should not be exported to observability connectors: the internal phase
+// spans, the middleware.* auth spans, and the plugin transport-hook stages. Note
+// key.selection is deliberately NOT included — it predates the breakdown and carries
+// chosen-key attributes worth keeping in traces.
+func IsOverheadBreakdownSpan(span *Span) bool {
+	if span == nil {
+		return false
+	}
+	switch span.Kind {
+	case SpanKindInternal:
+		if _, ok := overheadBreakdownSpanNames[span.Name]; ok {
+			return true
+		}
+		return strings.HasPrefix(span.Name, "middleware.")
+	case SpanKindPlugin:
+		return strings.HasSuffix(span.Name, ".transportprehook") || strings.HasSuffix(span.Name, ".transportposthook")
+	}
+	return false
+}
+
+// WithoutOverheadBreakdownSpans returns a copy of the trace whose Spans slice omits the
+// overhead-breakdown spans. It is meant to be called on an export snapshot (which has
+// no live writers), so the returned trace shares that snapshot's metadata and its kept
+// span pointers; only the span slice differs and reparented spans are copied. A
+// retained span parented to an omitted one is reparented to the omitted span's own
+// parent so the exported hierarchy stays connected (breakdown spans are leaves today,
+// so this is defensive). Returns the receiver unchanged when nothing is stripped, so
+// the common path allocates nothing.
+func (t *Trace) WithoutOverheadBreakdownSpans() *Trace {
+	if t == nil {
+		return t
+	}
+	var omittedParent map[string]string
+	for _, s := range t.Spans {
+		if IsOverheadBreakdownSpan(s) {
+			if omittedParent == nil {
+				omittedParent = make(map[string]string)
+			}
+			omittedParent[s.SpanID] = s.ParentID
+		}
+	}
+	if len(omittedParent) == 0 {
+		return t
+	}
+	kept := make([]*Span, 0, len(t.Spans)-len(omittedParent))
+	for _, s := range t.Spans {
+		if s == nil {
+			continue
+		}
+		if _, drop := omittedParent[s.SpanID]; drop {
+			continue
+		}
+		if _, reparent := omittedParent[s.ParentID]; reparent {
+			// Walk up past any chained omitted ancestors to the nearest kept parent.
+			parentID := s.ParentID
+			for range omittedParent {
+				next, still := omittedParent[parentID]
+				if !still {
+					break
+				}
+				parentID = next
+			}
+			cp := s.snapshotForExport()
+			cp.ParentID = parentID
+			kept = append(kept, cp)
+			continue
+		}
+		kept = append(kept, s)
+	}
+	// New Trace (fresh zero mutex, intentional) sharing the snapshot's metadata; only
+	// the span slice differs.
+	return &Trace{
+		RequestID:             t.RequestID,
+		TraceID:               t.TraceID,
+		InternalID:            t.InternalID,
+		ParentID:              t.ParentID,
+		RootSpan:              t.RootSpan,
+		Spans:                 kept,
+		StartTime:             t.StartTime,
+		EndTime:               t.EndTime,
+		Attributes:            t.Attributes,
+		RequestHeaders:        t.RequestHeaders,
+		PluginLogs:            t.PluginLogs,
+		redactionReplacements: t.redactionReplacements,
+	}
+}
+
 // StampOverheadDuration writes Bifrost's own cost onto the root span as
 // AttrBifrostOverheadDurationMs: the root span's wall time minus the upstream
 // total stamped on it. This is the single definition of the overhead number —

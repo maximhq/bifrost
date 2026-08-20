@@ -893,6 +893,13 @@ func (t *Tracer) CompleteAndFlushTrace(traceID string) {
 		// so every trace connector sees the same value on the root span.
 		exportTrace.StampOverheadDuration()
 
+		// Connectors receive a copy with the internal overhead-breakdown spans stripped
+		// so they don't inflate span volume in OTEL/Datadog/etc.; only plugins that opt
+		// in via OverheadSpanConsumer (the logging plugin, which needs them to compute
+		// the breakdown) get the full trace. Computed once; returns exportTrace unchanged
+		// when there are no breakdown spans to strip.
+		connectorTrace := exportTrace.WithoutOverheadBreakdownSpans()
+
 		var slots []*obsPluginSlot
 		if loaded := t.obsPlugins.Load(); loaded != nil {
 			slots = *loaded
@@ -932,7 +939,13 @@ func (t *Tracer) CompleteAndFlushTrace(traceID string) {
 				}()
 				injectCtx, cancel := context.WithTimeout(context.Background(), slot.injectTimeout)
 				defer cancel()
-				if err := slot.plugin.Inject(injectCtx, exportTrace); err != nil && t.logger != nil {
+				// Opt-in consumers (the logging plugin) get the full trace incl. overhead
+				// breakdown spans; every other connector gets the stripped copy.
+				traceForPlugin := connectorTrace
+				if consumer, ok := slot.plugin.(schemas.OverheadSpanConsumer); ok && consumer.ConsumesOverheadSpans() {
+					traceForPlugin = exportTrace
+				}
+				if err := slot.plugin.Inject(injectCtx, traceForPlugin); err != nil && t.logger != nil {
 					if errors.Is(err, context.DeadlineExceeded) {
 						t.logger.Warn("observability plugin %s timed out injecting trace %s after %s", slot.name, exportTrace.TraceID, slot.injectTimeout)
 					} else {

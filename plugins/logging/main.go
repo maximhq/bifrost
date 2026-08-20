@@ -2020,6 +2020,11 @@ func (p *LoggerPlugin) storeOrEnqueueEntry(ctx *schemas.BifrostContext, entry *l
 	}
 }
 
+// ConsumesOverheadSpans opts this plugin into receiving the internal overhead-breakdown
+// spans (implements schemas.OverheadSpanConsumer). computeOverheadBreakdown needs them;
+// every other connector gets a trace with those spans stripped.
+func (p *LoggerPlugin) ConsumesOverheadSpans() bool { return true }
+
 // Inject receives a completed trace and writes the log entries with plugin logs to DB.
 // This implements the ObservabilityPlugin interface.
 func (p *LoggerPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
