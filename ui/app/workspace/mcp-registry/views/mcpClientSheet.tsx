@@ -273,9 +273,9 @@ export default function MCPClientSheet({
 				: undefined,
 			tls_config: mcpClient.config.tls_config
 				? {
-						insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
-						ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
-					}
+					insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
+					ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
+				}
 				: undefined,
 		},
 	});
@@ -324,9 +324,9 @@ export default function MCPClientSheet({
 				: undefined,
 			tls_config: mcpClient.config.tls_config
 				? {
-						insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
-						ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
-					}
+					insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
+					ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
+				}
 				: undefined,
 		});
 	}, [form, mcpClient, supportsOAuthCredentialUpdate, supportsTokenExchangeCredentialUpdate]);
@@ -474,9 +474,9 @@ export default function MCPClientSheet({
 					tls_config:
 						data.tls_config !== undefined
 							? {
-									insecure_skip_verify: data.tls_config.insecure_skip_verify ?? false,
-									ca_cert_pem: data.tls_config.ca_cert_pem,
-								}
+								insecure_skip_verify: data.tls_config.insecure_skip_verify ?? false,
+								ca_cert_pem: data.tls_config.ca_cert_pem,
+							}
 							: undefined,
 					vk_configs: vkConfigsDirty ? vkConfigs : undefined,
 				},

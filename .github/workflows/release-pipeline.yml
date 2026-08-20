@@ -366,6 +366,7 @@ jobs:
             registry.npmjs.org:443
             release-assets.githubusercontent.com:443
             router.huggingface.co:443
+            router.requesty.ai:443
             storage.googleapis.com:443
             sum.golang.org:443
             us-central1-aiplatform.googleapis.com:443
@@ -430,6 +431,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
+          REQUESTY_API_KEY: ${{ secrets.REQUESTY_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
@@ -573,6 +575,7 @@ jobs:
             release-assets.githubusercontent.com:443
             releases.astral.sh:443
             router.huggingface.co:443
+            router.requesty.ai:443
             storage.googleapis.com:443
             sum.golang.org:443
             us-central1-aiplatform.googleapis.com:443
@@ -931,6 +934,7 @@ jobs:
             proxy.golang.org:443
             registry.npmjs.org:443
             release-assets.githubusercontent.com:443
+            router.requesty.ai:443
             statsig.anthropic.com:443
             storage.googleapis.com:443
             sum.golang.org:443
@@ -1136,6 +1140,7 @@ jobs:
             api.cerebras.ai:443
             api.cohere.ai:443
             api.deepseek.com:443
+            api.dev.runwayml.com:443
             api.elevenlabs.io:443
             api.github.com:443
             api.groq.com:443
@@ -1157,6 +1162,7 @@ jobs:
             proxy.golang.org:443
             registry-1.docker.io:443
             release-assets.githubusercontent.com:443
+            router.requesty.ai:443
             storage.googleapis.com:443
             sum.golang.org:443
             telemetry.qdrant.io:443
@@ -1208,6 +1214,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
+          REQUESTY_API_KEY: ${{ secrets.REQUESTY_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
@@ -1277,6 +1284,7 @@ jobs:
             proxy.golang.org:443
             registry-1.docker.io:443
             release-assets.githubusercontent.com:443
+            router.requesty.ai:443
             storage.googleapis.com:443
             sum.golang.org:443
             telemetry.qdrant.io:443
@@ -1333,6 +1341,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
+          REQUESTY_API_KEY: ${{ secrets.REQUESTY_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
@@ -1408,6 +1417,7 @@ jobs:
             registry-1.docker.io:443
             registry.npmjs.org:443
             release-assets.githubusercontent.com:443
+            router.requesty.ai:443
             storage.googleapis.com:443
             sum.golang.org:443
             telemetry.qdrant.io:443
@@ -1514,6 +1524,7 @@ jobs:
             registry-1.docker.io:443
             registry.npmjs.org:443
             release-assets.githubusercontent.com:443
+            router.requesty.ai:443
             storage.googleapis.com:443
             sum.golang.org:443
 
@@ -1632,6 +1643,7 @@ jobs:
             registry-1.docker.io:443
             registry.npmjs.org:443
             release-assets.githubusercontent.com:443
+            router.requesty.ai:443
             storage.googleapis.com:443
             sum.golang.org:443
             telemetry.qdrant.io:443
@@ -1706,6 +1718,7 @@ jobs:
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
+          REQUESTY_API_KEY: ${{ secrets.REQUESTY_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
@@ -1779,6 +1792,7 @@ jobs:
             proxy.golang.org:443
             registry-1.docker.io:443
             release-assets.githubusercontent.com:443
+            router.requesty.ai:443
             storage.googleapis.com:443
             sum.golang.org:443
             www.getbifrost.ai:443
@@ -1874,6 +1888,7 @@ jobs:
             openrouter.ai:443
             proxy.golang.org:443
             release-assets.githubusercontent.com:443
+            router.requesty.ai:443
             storage.googleapis.com:443
             sum.golang.org:443
             www.getbifrost.ai:443
@@ -1993,6 +2008,7 @@ jobs:
             registry-1.docker.io:443
             registry.npmjs.org:443
             release-assets.githubusercontent.com:443
+            router.requesty.ai:443
             storage.googleapis.com:443
             sum.golang.org:443
             telemetry.qdrant.io:443
@@ -2046,6 +2062,7 @@ jobs:
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
+          REQUESTY_API_KEY: ${{ secrets.REQUESTY_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
@@ -2133,6 +2150,7 @@ jobs:
             registry-1.docker.io:443
             registry.npmjs.org:443
             release-assets.githubusercontent.com:443
+            router.requesty.ai:443
             storage.googleapis.com:443
             sum.golang.org:443
             telemetry.qdrant.io:443
@@ -2186,6 +2204,7 @@ jobs:
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
+          REQUESTY_API_KEY: ${{ secrets.REQUESTY_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
@@ -2298,6 +2317,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
+          REQUESTY_API_KEY: ${{ secrets.REQUESTY_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
@@ -2416,6 +2436,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
+          REQUESTY_API_KEY: ${{ secrets.REQUESTY_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
@@ -2550,6 +2571,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
+          REQUESTY_API_KEY: ${{ secrets.REQUESTY_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}

@@ -155,7 +155,8 @@ export const MCPHeadersAuthorizer: React.FC<MCPHeadersAuthorizerProps> = ({
 						<>
 							<InfoBox icon={<KeyRound className="size-4" />}>
 								<p>
-									To set up this MCP server, we need to verify that your header configuration is correct and discover the available tools.
+									To set up this MCP server, we need to verify that your header configuration is correct and discover the
+									available tools.
 								</p>
 								<p className="text-muted-foreground/80 text-xs">
 									You will be asked to provide sample values for the required headers. Bifrost keeps these values on file to periodically
