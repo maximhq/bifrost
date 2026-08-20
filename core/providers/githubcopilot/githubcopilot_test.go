@@ -38,6 +38,42 @@ func TestProviderConstructor(t *testing.T) {
 	})
 }
 
+func TestExchangeClient(t *testing.T) {
+	provider, err := NewGithubCopilotProvider(&schemas.ProviderConfig{}, nil)
+	require.NoError(t, err)
+
+	t.Run("caps the response body at read time", func(t *testing.T) {
+		// api.github.com is not supposed to return megabytes, and the cap is what stops a
+		// misbehaving or intercepted upstream from being allocated in full.
+		assert.Equal(t, maxExchangeBodyBytes, provider.exchangeClient.MaxResponseBodySize)
+		assert.False(t, provider.exchangeClient.StreamResponseBody,
+			"a credential exchange is a small unary call; streaming it would defeat the cap")
+	})
+
+	t.Run("inherits the dial policy rather than dialling raw", func(t *testing.T) {
+		require.NotNil(t, provider.exchangeClient.Dial,
+			"a nil Dial would mean the clone lost the configured policy and dials directly")
+	})
+
+	t.Run("rejects a private target on a direct connection", func(t *testing.T) {
+		// This is the SSRF property the exchange client relies on, and it holds only for
+		// direct connections: ConfigureDialer delegates to a proxy dialer when one is set,
+		// and that path performs no address checks.
+		_, err := provider.exchangeClient.Dial("10.0.0.1:443")
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "private IP")
+	})
+
+	t.Run("rejects a link-local target on a direct connection", func(t *testing.T) {
+		// 169.254.169.254 is the cloud metadata endpoint, the classic SSRF target.
+		_, err := provider.exchangeClient.Dial("169.254.169.254:80")
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "link-local")
+	})
+}
+
 func TestResolveCredentials(t *testing.T) {
 	t.Run("refuses a bare token with no base URL", func(t *testing.T) {
 		// A Copilot API token does not carry its own host. Paid plans are served from
@@ -46,7 +82,7 @@ func TestResolveCredentials(t *testing.T) {
 		// reads like a bad credential, so refuse instead.
 		key := schemas.Key{Value: *schemas.NewSecretVar("tid=abc;exp=123")}
 
-		creds, bErr := resolveCredentials(key, "")
+		creds, bErr := resolveCredentials(nil, key, nil, "", nil)
 
 		require.Nil(t, creds)
 		require.NotNil(t, bErr)
@@ -56,7 +92,7 @@ func TestResolveCredentials(t *testing.T) {
 	t.Run("a configured base URL wins", func(t *testing.T) {
 		key := schemas.Key{Value: *schemas.NewSecretVar("tid=abc")}
 
-		creds, bErr := resolveCredentials(key, "https://copilot.ghe.acme.com/")
+		creds, bErr := resolveCredentials(nil, key, nil, "https://copilot.ghe.acme.com/", nil)
 
 		require.Nil(t, bErr)
 		assert.Equal(t, "https://copilot.ghe.acme.com", creds.BaseURL)
@@ -65,7 +101,7 @@ func TestResolveCredentials(t *testing.T) {
 	t.Run("trims surrounding whitespace on the token", func(t *testing.T) {
 		key := schemas.Key{Value: *schemas.NewSecretVar("  tid=abc\n")}
 
-		creds, bErr := resolveCredentials(key, "https://api.business.githubcopilot.com")
+		creds, bErr := resolveCredentials(nil, key, nil, "https://api.business.githubcopilot.com", nil)
 
 		require.Nil(t, bErr)
 		assert.Equal(t, "tid=abc", creds.Token,
@@ -75,7 +111,7 @@ func TestResolveCredentials(t *testing.T) {
 	t.Run("a whitespace-only base URL counts as unset", func(t *testing.T) {
 		key := schemas.Key{Value: *schemas.NewSecretVar("tid=abc")}
 
-		creds, bErr := resolveCredentials(key, "   ")
+		creds, bErr := resolveCredentials(nil, key, nil, "   ", nil)
 
 		require.Nil(t, creds)
 		require.NotNil(t, bErr)
@@ -85,7 +121,7 @@ func TestResolveCredentials(t *testing.T) {
 	t.Run("a whitespace-only token is treated as absent", func(t *testing.T) {
 		key := schemas.Key{Value: *schemas.NewSecretVar("   ")}
 
-		creds, bErr := resolveCredentials(key, "https://api.githubcopilot.com")
+		creds, bErr := resolveCredentials(nil, key, nil, "https://api.githubcopilot.com", nil)
 
 		require.Nil(t, creds)
 		require.NotNil(t, bErr)
@@ -107,12 +143,12 @@ func TestConfigurationErrorsBlockFallbacks(t *testing.T) {
 	}
 
 	t.Run("no credentials on the key", func(t *testing.T) {
-		_, bErr := resolveCredentials(schemas.Key{}, "https://api.githubcopilot.com")
+		_, bErr := resolveCredentials(nil, schemas.Key{}, nil, "https://api.githubcopilot.com", nil)
 		assertBlocked(t, bErr)
 	})
 
 	t.Run("token with no base URL", func(t *testing.T) {
-		_, bErr := resolveCredentials(schemas.Key{Value: *schemas.NewSecretVar("tid=abc")}, "")
+		_, bErr := resolveCredentials(nil, schemas.Key{Value: *schemas.NewSecretVar("tid=abc")}, nil, "", nil)
 		assertBlocked(t, bErr)
 	})
 }

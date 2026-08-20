@@ -467,7 +467,7 @@
           "$ref": "#/$defs/provider"
         },
         "github-copilot": {
-          "$ref": "#/$defs/provider"
+          "$ref": "#/$defs/provider_with_github_copilot_config"
         }
       },
       "additionalProperties": true
@@ -4466,6 +4466,60 @@
         }
       ]
     },
+    "github_copilot_key": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base_key"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "github_copilot_key_config": {
+              "type": "object",
+              "properties": {
+                "app_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "GitHub App ID or Client ID; the App JWT issuer (can use env. prefix)"
+                },
+                "installation_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Installation to mint tokens for, digits only (can use env. prefix)"
+                },
+                "repository_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Repository the installation token is scoped to, digits only (can use env. prefix)"
+                },
+                "private_key": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "GitHub App private key in PKCS#1 or PKCS#8 PEM form (can use env. prefix)"
+                },
+                "github_domain": {
+                  "type": "string",
+                  "description": "GitHub Enterprise domain, e.g. acme.ghe.com. Leave unset for github.com."
+                }
+              },
+              "required": ["app_id", "installation_id", "repository_id", "private_key"],
+              "additionalProperties": false
+            }
+          }
+        },
+        {
+          "anyOf": [
+            {
+              "properties": { "value": { "minLength": 1 } },
+              "required": ["value"]
+            },
+            {
+              "required": ["github_copilot_key_config"]
+            }
+          ]
+        }
+      ]
+    },
     "ollama_key": {
       "allOf": [
         {
@@ -4848,6 +4902,45 @@
           "type": "array",
           "items": {
             "$ref": "#/$defs/azure_key"
+          },
+          "minItems": 1,
+          "description": "API keys for this provider"
+        },
+        "network_config": {
+          "$ref": "#/$defs/network_config"
+        },
+        "concurrency_and_buffer_size": {
+          "$ref": "#/$defs/concurrency_and_buffer_size"
+        },
+        "proxy_config": {
+          "$ref": "#/$defs/proxy_config"
+        },
+        "send_back_raw_request": {
+          "type": "boolean",
+          "description": "Include raw request in BifrostResponse (default: false)"
+        },
+        "send_back_raw_response": {
+          "type": "boolean",
+          "description": "Include raw response in BifrostResponse (default: false)"
+        },
+        "store_raw_request_response": {
+          "type": "boolean",
+          "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "custom_provider_config": {
+          "$ref": "#/$defs/custom_provider_config"
+        }
+      },
+      "required": ["keys"],
+      "additionalProperties": false
+    },
+    "provider_with_github_copilot_config": {
+      "type": "object",
+      "properties": {
+        "keys": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/github_copilot_key"
           },
           "minItems": 1,
           "description": "API keys for this provider"

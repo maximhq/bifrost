@@ -10,6 +10,9 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/network"
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestValidateExternalURL(t *testing.T) {
@@ -350,3 +353,81 @@ func TestIsPrivateIP(t *testing.T) {
 	}
 }
 
+// TestValidateKeyGithubCopilot pins that validateKey rejects the same credentials the
+// provider would reject at request time. Accepting a whitespace-only field here defers the
+// failure to the first inference call, where it reads like a runtime fault rather than a
+// setup mistake.
+func TestValidateKeyGithubCopilot(t *testing.T) {
+	fullAppConfig := func() *schemas.GithubCopilotKeyConfig {
+		return &schemas.GithubCopilotKeyConfig{
+			AppID:          *schemas.NewSecretVar("123456"),
+			InstallationID: *schemas.NewSecretVar("87654321"),
+			RepositoryID:   *schemas.NewSecretVar("999000111"),
+			PrivateKey:     *schemas.NewSecretVar("pem"),
+		}
+	}
+	blank := func(mutate func(*schemas.GithubCopilotKeyConfig)) *schemas.GithubCopilotKeyConfig {
+		c := fullAppConfig()
+		mutate(c)
+		return c
+	}
+
+	tests := []struct {
+		name      string
+		key       schemas.Key
+		wantError string
+	}{
+		{
+			name: "a direct token is sufficient",
+			key:  schemas.Key{Value: *schemas.NewSecretVar("tid=abc")},
+		},
+		{
+			name: "the full app config is sufficient",
+			key:  schemas.Key{GithubCopilotKeyConfig: fullAppConfig()},
+		},
+		{
+			name:      "a whitespace-only token is not a credential",
+			key:       schemas.Key{Value: *schemas.NewSecretVar("   ")},
+			wantError: "github_copilot_key_config is required",
+		},
+		{
+			name:      "no credential at all",
+			key:       schemas.Key{},
+			wantError: "github_copilot_key_config is required",
+		},
+		{
+			name:      "whitespace-only app_id",
+			key:       schemas.Key{GithubCopilotKeyConfig: blank(func(c *schemas.GithubCopilotKeyConfig) { c.AppID = *schemas.NewSecretVar("  ") })},
+			wantError: "github_copilot_key_config.app_id is required",
+		},
+		{
+			name:      "whitespace-only installation_id",
+			key:       schemas.Key{GithubCopilotKeyConfig: blank(func(c *schemas.GithubCopilotKeyConfig) { c.InstallationID = *schemas.NewSecretVar("\t") })},
+			wantError: "github_copilot_key_config.installation_id is required",
+		},
+		{
+			name:      "whitespace-only repository_id",
+			key:       schemas.Key{GithubCopilotKeyConfig: blank(func(c *schemas.GithubCopilotKeyConfig) { c.RepositoryID = *schemas.NewSecretVar(" ") })},
+			wantError: "github_copilot_key_config.repository_id is required",
+		},
+		{
+			name:      "whitespace-only private_key",
+			key:       schemas.Key{GithubCopilotKeyConfig: blank(func(c *schemas.GithubCopilotKeyConfig) { c.PrivateKey = *schemas.NewSecretVar("\n") })},
+			wantError: "github_copilot_key_config.private_key is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			key := tt.key
+			err := validateKey(schemas.GithubCopilot, &key)
+
+			if tt.wantError == "" {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantError)
+		})
+	}
+}
