@@ -1541,7 +1541,7 @@ func (p *LoggerPlugin) RecalculateCostsWithProgress(ctx context.Context, filters
 			return nil, err
 		}
 
-		costUpdates := make(map[string]float64, len(searchResult.Logs))
+		costUpdates := make(map[string]logstore.CostUpdate, len(searchResult.Logs))
 		batchDebugUpdated := 0
 		stillMissingInBatch := 0
 
@@ -1559,7 +1559,7 @@ func (p *LoggerPlugin) RecalculateCostsWithProgress(ctx context.Context, filters
 			}
 			if cost <= 0 {
 				if outcomes[i].knownZeroCost {
-					costUpdates[logEntry.ID] = cost
+					costUpdates[logEntry.ID] = logstore.CostUpdate{}
 				} else {
 					result.Skipped++
 					p.logger.Debug("skipping cost recalculation for log %s: resolved cost is zero", logEntry.ID)
@@ -1572,18 +1572,24 @@ func (p *LoggerPlugin) RecalculateCostsWithProgress(ctx context.Context, filters
 			if outcomes[i].batchDebugUpdate != "" {
 				// A repriced batch aggregate row needs cost and batch_debug written
 				// together so model_breakdowns never disagrees with the row's own
-				// cost — BulkUpdateCost only ever writes the cost column, so this one
-				// row goes through a dedicated update instead of the bulk path below.
+				// cost, and batch_debug can only be written through a dedicated update
+				// (BulkUpdateCost writes cost and the split columns, but not
+				// batch_debug). This row carries a scalar total only, so derive the
+				// split columns from it the same way CostUpdateFromBreakdown does.
+				update := logstore.CostUpdateFromBreakdown(&schemas.BifrostCost{TotalCost: cost})
 				if err := p.store.Update(ctx, logEntry.ID, map[string]any{
-					"cost":        cost,
-					"batch_debug": outcomes[i].batchDebugUpdate,
+					"cost":            update.Total,
+					"input_cost":      update.Input,
+					"output_cost":     update.Output,
+					"additional_cost": update.Additional,
+					"batch_debug":     outcomes[i].batchDebugUpdate,
 				}); err != nil {
 					return nil, fmt.Errorf("failed to update batch cost for log %s: %w", logEntry.ID, err)
 				}
 				batchDebugUpdated++
 				continue
 			}
-			costUpdates[logEntry.ID] = cost
+			costUpdates[logEntry.ID] = logstore.CostUpdateFromBreakdown(outcomes[i].breakdown)
 		}
 
 		if len(costUpdates) > 0 {
@@ -1655,14 +1661,17 @@ var errPricingInputsUnavailable = errors.New("pricing inputs unavailable")
 // reason the row was left alone.
 type billingOutcome struct {
 	cost float64
-	err  error
+	// breakdown is the per-category split for the same reprice; nil when the row
+	// priced to zero or errored. Recompute denormalizes it into the split columns.
+	breakdown *schemas.BifrostCost
+	err       error
 	// knownZeroCost is captured while the row's payload is still hydrated, because it
 	// is derived from CacheDebugParsed and ReleaseBillingPayloads clears that. Callers
 	// run after the release, so they cannot re-derive it.
 	knownZeroCost bool
 	// batchDebugUpdate is the serialized batch_debug JSON to persist alongside cost,
 	// set only for a batch aggregate row repriced via calculateBatchAggregateCost.
-	// BulkUpdateCost only ever touches the cost column, so without this the row's
+	// BulkUpdateCost cannot write batch_debug, so without this the row's
 	// model_breakdowns would stay stuck showing the pre-recalculation (unpriced)
 	// state even after cost is fixed.
 	batchDebugUpdate string
@@ -1726,9 +1735,15 @@ func (p *LoggerPlugin) priceLogsInChunks(ctx context.Context, batch []logstore.L
 				continue
 			}
 			if isBatchAggregateRow(&batch[i]) {
+				// Batch aggregate rows reprice per model and carry only a scalar
+				// total (no input/output split), persisted via the batchDebugUpdate
+				// path below.
 				outcomes[i].cost, outcomes[i].batchDebugUpdate, outcomes[i].err = p.calculateBatchAggregateCost(&batch[i])
 			} else {
-				outcomes[i].cost, outcomes[i].err = p.calculateCostForLog(&batch[i])
+				outcomes[i].breakdown, outcomes[i].err = p.calculateCostBreakdownForLog(&batch[i])
+				if outcomes[i].breakdown != nil {
+					outcomes[i].cost = outcomes[i].breakdown.TotalCost
+				}
 			}
 			// Must be read here, before the release below drops cache_debug.
 			outcomes[i].knownZeroCost = isKnownZeroCostLog(&batch[i])
@@ -1915,16 +1930,30 @@ func attachCostToNativeUsage(result *schemas.BifrostResponse, breakdown *schemas
 	}
 }
 
+// calculateCostForLog reprices a stored log row and returns the total. Thin
+// wrapper over calculateCostBreakdownForLog for callers that only need the scalar.
 func (p *LoggerPlugin) calculateCostForLog(logEntry *logstore.Log) (float64, error) {
+	bd, err := p.calculateCostBreakdownForLog(logEntry)
+	if bd == nil {
+		return 0, err
+	}
+	return bd.TotalCost, err
+}
+
+// calculateCostBreakdownForLog reprices a stored log row and returns the full
+// per-category breakdown, so recompute can refresh the denormalized input/output/
+// additional cost columns, not just the total. Returns (nil, nil) for a provably
+// zero-cost row (e.g. a direct cache hit).
+func (p *LoggerPlugin) calculateCostBreakdownForLog(logEntry *logstore.Log) (*schemas.BifrostCost, error) {
 	if logEntry == nil {
-		return 0, fmt.Errorf("log entry cannot be nil")
+		return nil, fmt.Errorf("log entry cannot be nil")
 	}
 
 	if (logEntry.TokenUsageParsed == nil && logEntry.TokenUsage != "") ||
 		(logEntry.CacheDebugParsed == nil && logEntry.CacheDebug != "") ||
 		(logEntry.GuardrailDebugParsed == nil && logEntry.GuardrailDebug != "") {
 		if err := logEntry.DeserializeFields(); err != nil {
-			return 0, fmt.Errorf("failed to deserialize fields for log %s: %w", logEntry.ID, err)
+			return nil, fmt.Errorf("failed to deserialize fields for log %s: %w", logEntry.ID, err)
 		}
 	}
 
@@ -1934,15 +1963,17 @@ func (p *LoggerPlugin) calculateCostForLog(logEntry *logstore.Log) (float64, err
 
 	// If no cache hit, guardrail call, or usage, we can't calculate cost.
 	if usage == nil && (cacheDebug == nil || !cacheDebug.CacheHit) && guardrailDebug == nil {
-		return 0, fmt.Errorf("token usage not available for log %s", logEntry.ID)
+		return nil, fmt.Errorf("%w: token usage not available for log %s", errPricingInputsUnavailable, logEntry.ID)
 	}
 
 	// A direct cache hit was served without an LLM call, so pricing returns zero
 	// regardless of the token breakdown (see calculateCostWithCache). Short-circuiting
 	// ahead of the degraded gate keeps a provably-free row from being reported
-	// unpriceable and revisited by every MissingCostOnly pass.
-	if isKnownZeroCostLog(logEntry) {
-		return 0, nil
+	// unpriceable and revisited by every MissingCostOnly pass. A guardrail judge
+	// call is billed separately (AdditionalCost) even on a cache hit, so fall
+	// through when one ran instead of discarding that charge.
+	if isKnownZeroCostLog(logEntry) && guardrailDebug == nil {
+		return nil, nil
 	}
 
 	// Refuse to price a usage stub rebuilt from denormalized columns. It lacks the
@@ -1954,13 +1985,13 @@ func (p *LoggerPlugin) calculateCostForLog(logEntry *logstore.Log) (float64, err
 	// failed). Erroring makes the recalc job count it as skipped instead of
 	// writing a number that is wrong by multiples.
 	if logEntry.IsUsageDegraded() {
-		return 0, fmt.Errorf("%w: log %s", errPricingInputsUnavailable, logEntry.ID)
+		return nil, fmt.Errorf("%w: log %s", errPricingInputsUnavailable, logEntry.ID)
 	}
 
 	requestType := normalizeLogRequestType(logEntry.Object)
 	if requestType == "" && (cacheDebug == nil || !cacheDebug.CacheHit) && guardrailDebug == nil {
 		p.logger.Warn("skipping cost calculation for log %s: object type is empty (timestamp: %s)", logEntry.ID, logEntry.Timestamp)
-		return 0, fmt.Errorf("object type is empty for log %s", logEntry.ID)
+		return nil, fmt.Errorf("%w: object type is empty for log %s", errPricingInputsUnavailable, logEntry.ID)
 	}
 
 	// Build a minimal BifrostResponse matching the request type so that
@@ -2062,7 +2093,7 @@ func (p *LoggerPlugin) calculateCostForLog(logEntry *logstore.Log) (float64, err
 	}
 
 	scopes := pricingScopesForLog(logEntry)
-	return p.pricingManager.CalculateCost(resp, &scopes), nil
+	return p.pricingManager.CalculateCostBreakdown(resp, &scopes), nil
 }
 
 // servedTier carries the billing tier a log row was served at, read back from the

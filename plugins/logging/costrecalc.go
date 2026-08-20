@@ -197,7 +197,7 @@ func (p *LoggerPlugin) RunCostRecalcJob(ctx context.Context, metaJSON string, ch
 			return snapshot(), err
 		}
 
-		costUpdates := make(map[string]float64, len(batch))
+		costUpdates := make(map[string]logstore.CostUpdate, len(batch))
 		gotPositiveCost := make([]bool, len(batch))
 		batchSkipped := 0
 		batchUnpriceable := 0
@@ -214,14 +214,14 @@ func (p *LoggerPlugin) RunCostRecalcJob(ctx context.Context, metaJSON string, ch
 			}
 			if cost <= 0 {
 				if outcomes[i].knownZeroCost {
-					costUpdates[logEntry.ID] = cost
+					costUpdates[logEntry.ID] = logstore.CostUpdate{}
 				} else {
 					batchSkipped++
 					p.logger.Debug("skipping cost recalculation for log %s: resolved cost is zero", logEntry.ID)
 				}
 				continue
 			}
-			costUpdates[logEntry.ID] = cost
+			costUpdates[logEntry.ID] = logstore.CostUpdateFromBreakdown(outcomes[i].breakdown)
 			gotPositiveCost[i] = true
 		}
 
