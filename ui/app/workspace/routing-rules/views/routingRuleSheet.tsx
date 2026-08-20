@@ -33,7 +33,9 @@ import {
 import { validateRateLimitAndBudgetRules, validateRoutingRules } from "@/lib/utils/celConverterRouting";
 import { isValidRuleGroupType, normalizeRoutingRuleGroupQuery } from "@/lib/utils/routingRuleGroupQuery";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { Plus, Trash2, X } from "lucide-react";
+import { DragDropProvider } from "@dnd-kit/react";
+import { isSortable, useSortable } from "@dnd-kit/react/sortable";
+import { GripVertical, Plus, Trash2, X } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { RuleGroupType } from "react-querybuilder";
@@ -562,71 +564,49 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 								{(fallbacks || []).length === 0 ? (
 									<p className="text-muted-foreground text-sm">No fallbacks configured</p>
 								) : (
-									(fallbacks || []).map((fallback, index) => {
-										// Parse provider/model from fallback string
-										const parts = fallback.split("/");
-										const fbProvider = parts[0] || "";
-										const fbModel = parts.slice(1).join("/");
-
-										const handleProviderChange = (newProvider: string) => {
-											const model = fbModel || "";
-											const newFallback = `${newProvider}/${model}`;
-											const newFallbacks = [...fallbacks];
-											newFallbacks[index] = newFallback;
+									<DragDropProvider
+										onDragEnd={(event) => {
+											if (event.canceled) return;
+											const { source, target } = event.operation;
+											if (!source || !target) return;
+											if (!isSortable(source) || !isSortable(target)) return;
+											if (source.index === target.index) return;
+											const newFallbacks = [...(fallbacks || [])];
+											const [moved] = newFallbacks.splice(source.index, 1);
+											newFallbacks.splice(target.index, 0, moved);
 											setValue("fallbacks", newFallbacks);
-										};
-
-										const handleModelChange = (newModel: string) => {
-											const prov = fbProvider || "";
-											const newFallback = `${prov}/${newModel}`;
-											const newFallbacks = [...fallbacks];
-											newFallbacks[index] = newFallback;
-											setValue("fallbacks", newFallbacks);
-										};
-
-										const handleRemove = () => {
-											const newFallbacks = fallbacks.filter((_: string, i: number) => i !== index);
-											setValue("fallbacks", newFallbacks);
-										};
-
-										return (
-											<div key={index} className="flex items-center gap-2">
-												<div className="flex-1">
-													<ComboboxSelect
-														options={providerOptions}
-														value={fbProvider || null}
-														onValueChange={(value) => handleProviderChange(value ?? "")}
-														placeholder="Select provider..."
-														className="h-9"
-														noPortal
-													/>
-												</div>
-												<div className="flex-1">
-													<ModelMultiselect
-														provider={fbProvider || undefined}
-														value={fbModel}
-														onChange={handleModelChange}
-														placeholder="Incoming (optional)"
-														isSingleSelect
-														disabled={!fbProvider}
-														className="!h-9 !min-h-9 w-full"
-													/>
-												</div>
-												<Button
-													type="button"
-													variant="ghost"
-													size="sm"
-													onClick={handleRemove}
-													className="h-9 px-2"
-													aria-label={`Remove fallback ${index + 1}`}
-												>
-													<Trash2 className="h-4 w-4" />
-												</Button>
-											</div>
-										);
-									})
+										}}
+									>
+										<div className="space-y-2">
+											{(fallbacks || []).map((fallback, index) => (
+												<SortableFallbackRow
+													key={`fallback-${index}`}
+													fallback={fallback}
+													index={index}
+													providerOptions={providerOptions}
+													onProviderChange={(value) => {
+														const model = fallback.split("/").slice(1).join("/") || "";
+														const newFallbacks = [...(fallbacks || [])];
+														newFallbacks[index] = `${value}/${model}`;
+														setValue("fallbacks", newFallbacks);
+													}}
+													onModelChange={(value) => {
+														const prov = fallback.split("/")[0] || "";
+														const newFallbacks = [...(fallbacks || [])];
+														newFallbacks[index] = `${prov}/${value}`;
+														setValue("fallbacks", newFallbacks);
+													}}
+													onRemove={() => {
+														const newFallbacks = (fallbacks || []).filter((_: string, i: number) => i !== index);
+														setValue("fallbacks", newFallbacks);
+													}}
+												/>
+											))}
+										</div>
+									</DragDropProvider>
 								)}
 							</div>
+
 							<p className="text-muted-foreground text-xs">Fallbacks will be used in the order they are defined</p>
 						</div>
 					</div>
@@ -642,6 +622,72 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 				</form>
 			</SheetContent>
 		</Sheet>
+	);
+}
+
+interface SortableFallbackRowProps {
+	fallback: string;
+	index: number;
+	providerOptions: Array<{ label: string; value: string; icon: React.ReactNode }>;
+	onProviderChange: (value: string) => void;
+	onModelChange: (value: string) => void;
+	onRemove: () => void;
+}
+
+function SortableFallbackRow({ fallback, index, providerOptions, onProviderChange, onModelChange, onRemove }: SortableFallbackRowProps) {
+	const { ref, handleRef, isDragging } = useSortable({ id: index, index });
+
+	// Parse provider/model from fallback string
+	const parts = fallback.split("/");
+	const fbProvider = parts[0] || "";
+	const fbModel = parts.slice(1).join("/");
+
+	return (
+		<div
+			ref={ref}
+			className={`flex items-center gap-2 ${isDragging ? "opacity-60" : ""}`}
+		>
+			<button
+				ref={handleRef}
+				type="button"
+				className="cursor-grab text-muted-foreground hover:text-foreground"
+				aria-label={`Reorder fallback ${index + 1}`}
+				data-testid={`fallback-reorder-handle-${index}`}
+			>
+				<GripVertical className="h-4 w-4" />
+			</button>
+			<div className="flex-1">
+				<ComboboxSelect
+					options={providerOptions}
+					value={fbProvider || null}
+					onValueChange={(value) => onProviderChange(value ?? "")}
+					placeholder="Select provider..."
+					className="h-9"
+					noPortal
+				/>
+			</div>
+			<div className="flex-1">
+				<ModelMultiselect
+					provider={fbProvider || undefined}
+					value={fbModel}
+					onChange={onModelChange}
+					placeholder="Incoming (optional)"
+					isSingleSelect
+					disabled={!fbProvider}
+					className="!h-9 !min-h-9 w-full"
+				/>
+			</div>
+			<Button
+				type="button"
+				variant="ghost"
+				size="sm"
+				onClick={onRemove}
+				className="h-9 px-2"
+				aria-label={`Remove fallback ${index + 1}`}
+			>
+				<Trash2 className="h-4 w-4" />
+			</Button>
+		</div>
 	);
 }
 
