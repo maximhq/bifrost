@@ -340,6 +340,11 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 	if len(filters.UserIDs) > 0 {
 		baseQuery = baseQuery.Where("user_id IN ?", filters.UserIDs)
 	}
+	// Scalar, unlike the team, customer and business-unit dimensions: a request is scoped to at most
+	// one project, so there is no array column to OR against.
+	if len(filters.ProjectIDs) > 0 {
+		baseQuery = baseQuery.Where("project_id IN ?", filters.ProjectIDs)
+	}
 	if len(filters.BusinessUnitIDs) > 0 {
 		if s.db.Dialector.Name() == "postgres" {
 			sql, args := multiValueDimensionFilterSQL("business_unit_id", "business_unit_ids", filters.BusinessUnitIDs)

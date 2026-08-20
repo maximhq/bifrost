@@ -142,6 +142,12 @@ type GovernanceStore interface {
 	// Answering with nothing means one of two things the funnel tells apart by what was presented: a
 	// request that presented nothing carries no access and is governed as unrestricted, and one that
 	// presented something this store resolves permits from, which resolved to nothing, is refused.
+	//
+	// A store that resolves a project the request named answers the same way about that: the scoping
+	// slot is filled when the request may be scoped by the project it named, and left empty when it
+	// may not. Which of those happened is not this store's to report: the funnel refuses a request
+	// that named a project and carries no scoping permit, exactly as it refuses one that presented a
+	// credential nothing granted.
 	ResolvePermits(ctx *schemas.BifrostContext) (bases []schemas.Permit, scoping schemas.Permit, mode grant.CompositionMode)
 	// ProviderAndModelLimits reports the deployment's own limits on a provider plus whichever model
 	// configs cover the pair, for the deployment and for the permit's holder. Resolved per attempt
@@ -4475,6 +4481,8 @@ func modelConfigScopeFor(permitType string) string {
 	switch permitType {
 	case string(grant.PermitVirtualKey):
 		return configstoreTables.ModelConfigScopeVirtualKey
+	case string(grant.PermitProject):
+		return configstoreTables.ModelConfigScopeProject
 	default:
 		return permitType
 	}
