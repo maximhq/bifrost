@@ -16,7 +16,7 @@ complexity_tier in ["MEDIUM", "COMPLEX"]
 
 This lets you route simple greetings to a fast, cheap model and deep reasoning tasks to a frontier model automatically, with no changes to your application code.
 
-Classification runs only when a routing rule actually references `complexity_tier`, so requests that never touch a complexity rule pay no embedding cost. When classification is unavailable or the request resembles no reference phrase closely enough, Bifrost leaves `complexity_tier` unknown and keeps the request on its existing routing path instead of guessing.
+Classification runs only when a routing rule actually references `complexity_tier`, so requests that never touch a complexity rule pay no embedding cost. Once semantic classification is configured, a request it cannot confidently match — a near miss, a timeout, an in-progress warmup — leaves `complexity_tier` unpublished. You can optionally configure an **LLM fallback classifier** to step in for exactly those requests — see [LLM fallback classifier](#llm-fallback-classifier). The fallback engages only after semantic classification has actually run; without semantic classification configured at all, Bifrost keeps the request on its existing routing path instead of guessing.
 
 <Note>
 Complexity classification is **semantic** (embedding-based). The older lexical keyword scorer is retired. See [Lexical keyword classifier (retired)](#lexical-keyword-classifier-retired) for details and migration guidance.
@@ -57,6 +57,26 @@ With semantic classification configured, every tier must contain at least one ph
 
 ---
 
+## LLM fallback classifier
+
+By default, a request that matches no reference phrase confidently simply carries no `complexity_tier`. If you'd rather have a second opinion than let those requests fall through, set semantic classification's `fallback` to `llm` and configure a chat model to name the tier instead.
+
+The LLM fallback runs **only after** semantic classification produces no tier — never as the primary classifier, and never in parallel with it. It never sees a request that semantic classification already resolved.
+
+<Warning>
+The cost of this classifier is latency, paid on every request it runs for. A request that reaches the fallback waits on one full chat completion from the configured model before it is routed. Pick a small, fast model, and use `timeout` to cap the wait — a timed-out classification skips complexity routing for that request, exactly like an unmatched semantic request without a fallback.
+</Warning>
+
+The fallback model is asked to answer with one of the three tier names, guided by a prompt you can edit (`prompt`, or **Fallback Classification Prompt** on the Complexity Router page). Bifrost always appends a fixed, non-editable section stating the tier names and the required JSON response shape, so your edits refine *what the tiers mean* to the model but can never break the response contract. Leaving `prompt` empty uses Bifrost's shipped default guidance.
+
+`message_history_count` behaves the same way it does for semantic classification: it controls how many of the most recent user messages (oldest first) are sent to the fallback model, independent of the semantic classifier's own `message_history_count`.
+
+<Note>
+An LLM-classified turn carries no similarity score — a chat completion has no equivalent of embedding-distance, and a synthetic one would invite comparisons against thresholds tuned for your vector backend. `complexity_score` is therefore absent on rows where `complexity_mechanism` is `llm`. See [Observability](#observability).
+</Note>
+
+---
+
 ## Configuration
 
 Semantic classification requires an embedding provider and model. The provider must have an enabled key in **Model Providers**. The UI warns you if the saved provider has no usable key.
@@ -67,9 +87,10 @@ Semantic classification requires an embedding provider and model. The provider m
 Navigate to **Complexity Router** in the sidebar.
 
 - **Phrase to Tier Mapping**: add a phrase by typing it and pressing **Enter** in a tier's input; remove one with the × on its chip. Counts are shown per tier.
-- **Edit embedding configuration**: opens the embedding sheet (provider, model, similarity floor, history window, timeout, budgets, and phrase storage: **Embedded** keeps phrase vectors in Bifrost's own memory; **Vector Store** keeps them in the configured vector store so they survive restarts, falling back to Embedded when none is available).
+- **Edit embedding configuration**: opens the embedding sheet (provider, model, similarity floor, history window, timeout, budgets, and phrase storage: **Embedded** keeps phrase vectors in Bifrost's own memory; **Vector Store** keeps them in the configured vector store so they survive restarts, falling back to Embedded when none is available). Setting **When no phrase matches confidently** to **LLM classifier** reveals a **Fallback classifier** section further down the same sheet — provider, model, timeout, history window, and budgets for the fallback model. Setting it back to **None** hides that section again; its settings are preserved either way.
+- When the fallback is on, a **Fallback Classification Prompt** section appears on the main page below the phrase lists, with a **Reset to default** button. The model itself is configured in the embedding sheet; only the prompt text lives here, since it needs room to iterate.
 - The **Classifier status** badge in the header shows whether the classifier is ready to serve (see [Classifier status and warmup](#classifier-status-and-warmup)).
-- Click **Save changes** to apply (hot-reloaded, no restart), **Discard changes** to revert unsaved edits, or **Restore defaults** to restore the built-in reference phrases. Restore defaults keeps the embedding configuration.
+- Click **Save changes** to apply (hot-reloaded, no restart), **Discard changes** to revert unsaved edits, or **Restore defaults** to restore the built-in reference phrases. Restore defaults keeps the embedding and fallback configuration.
 
 ![Embedding configuration](../../media/ui-complexity-router-embedding-configuration.png)
 
@@ -91,7 +112,8 @@ curl -X PUT http://localhost:8080/api/routing/complexity-analyzer-config \
       "min_similarity": 0,
       "message_history_count": 1,
       "count_toward_budgets": false,
-      "vector_store": "embedded"
+      "vector_store": "embedded",
+      "fallback": "none"
     },
     "keywords": {
       "simple_keywords": ["what is a mutex?", "fix the grammar in this sentence."],
@@ -100,7 +122,30 @@ curl -X PUT http://localhost:8080/api/routing/complexity-analyzer-config \
     }
   }'
 
-# Check classifier status
+# Enable the LLM fallback classifier: set semantic.fallback to "llm" and add an llm block
+curl -X PUT http://localhost:8080/api/routing/complexity-analyzer-config \
+  -H "Content-Type: application/json" \
+  -d '{
+    "semantic": {
+      "provider": "openai",
+      "embedding_model": "text-embedding-3-small",
+      "fallback": "llm"
+    },
+    "llm": {
+      "provider": "openai",
+      "model": "gpt-4o-mini",
+      "timeout": "4s",
+      "message_history_count": 1,
+      "count_toward_budgets": false
+    },
+    "keywords": {
+      "simple_keywords": ["what is a mutex?", "fix the grammar in this sentence."],
+      "medium_keywords": ["add api-key auth: hash the keys, reject revoked ones, and never log them."],
+      "complex_keywords": ["balance testing, prescribing rules, and staffing against rising resistant infections."]
+    }
+  }'
+
+# Check classifier status (includes llm readiness and the default prompt when llm is configured)
 curl http://localhost:8080/api/routing/complexity-analyzer-status
 
 # Restore built-in reference phrases (embedding configuration is preserved)
@@ -123,7 +168,16 @@ Reference-phrase lists are stored in the existing `keywords` fields (`simple_key
         "min_similarity": 0,
         "message_history_count": 1,
         "count_toward_budgets": false,
-        "vector_store": "embedded"
+        "vector_store": "embedded",
+        "fallback": "llm"
+      },
+      "llm": {
+        "provider": "openai",
+        "model": "gpt-4o-mini",
+        "timeout": "4s",
+        "prompt": "",
+        "message_history_count": 1,
+        "count_toward_budgets": false
       },
       "keywords": {
         "simple_keywords": ["what is a mutex?", "fix the grammar in this sentence."],
@@ -142,8 +196,15 @@ Reference-phrase lists are stored in the existing `keywords` fields (`simple_key
 | `semantic.timeout` | duration | `1.5s` | Ceiling on the inline embedding call; exceeding it skips tier routing for that request |
 | `semantic.min_similarity` | number | `0` | Similarity floor. Below it no tier is published. `0` accepts the nearest eligible match |
 | `semantic.message_history_count` | integer | `1` | Number of recent user messages joined into the embedded text (1–10) |
-| `semantic.count_toward_budgets` | boolean | `false` | Count embedding usage toward virtual-key budgets |
+| `semantic.count_toward_budgets` | boolean | `false` | Count embedding usage toward virtual-key budgets (record-only, never enforced) |
 | `semantic.vector_store` | string | `embedded` | `embedded` uses Bifrost's built-in in-memory store and re-embeds phrases on restart. `vector_store` uses the configured top-level `vector_store`; if none is configured, it safely uses Embedded instead. |
+| `semantic.fallback` | string | `none` | What answers when semantic classification produces no tier: `none` records the request as skipped; `llm` asks the model configured in `llm` below. Requires `llm` to be set |
+| `llm.provider` | string | Required when `fallback` is `llm` | Provider used to run the classification chat completion; must have an enabled key |
+| `llm.model` | string | Required when `fallback` is `llm` | Chat model asked to name the tier. Pick a small, fast one — every fallback classification waits on one completion |
+| `llm.timeout` | duration | `4s` | Ceiling on the classification completion; exceeding it skips tier routing for that request |
+| `llm.prompt` | string | Shipped default guidance | Replaces the shipped classification guidance (max 4,000 characters). The tier-name and response-format reinforcement is appended by Bifrost regardless and cannot be edited |
+| `llm.message_history_count` | integer | `1` | Number of recent user messages sent to the classifier, oldest first (1–10) |
+| `llm.count_toward_budgets` | boolean | `false` | Count classification completion cost toward virtual-key budgets (record-only, never enforced) |
 | `keywords.simple_keywords` | string[] | 50 built-in phrases | Reference phrases for the Simple tier |
 | `keywords.medium_keywords` | string[] | 50 built-in phrases | Reference phrases for the Medium tier |
 | `keywords.complex_keywords` | string[] | 50 built-in phrases | Reference phrases for the Complex tier |
@@ -175,6 +236,13 @@ The badge in the UI header and `GET /api/routing/complexity-analyzer-status` rep
 | `failed` | The desired configuration failed to warm. When `serving_previous` is true, the previous generation keeps serving while you fix the problem |
 
 The status response never contains phrases, embeddings, or provider secrets.
+
+The same response always also carries the LLM fallback classifier's own status, whether or not it is configured:
+
+| Field | Values | Meaning |
+|---|---|---|
+| `llm.state` | `disabled`, `ready` | `disabled` means no `llm` block is configured; `ready` means it is. Unlike semantic classification, the LLM fallback has no warmup — it makes its first provider call on the first classification it runs, so it is ready as soon as it is saved. |
+| `llm_default_prompt` | string | The shipped classification guidance, served so a configuration client (like the **Fallback Classification Prompt** editor) can seed itself and offer a reset without holding a copy that drifts from the gateway's. Present regardless of whether an `llm` block is configured. |
 
 ---
 
@@ -301,15 +369,21 @@ When a routing rule references `complexity_tier`, the classification outcome is 
 | Field | Values | Meaning |
 |---|---|---|
 | `complexity_tier` | `SIMPLE`, `MEDIUM`, `COMPLEX` | The tier the request was classified into |
-| `complexity_mechanism` | `semantic`, `skipped` | How the tier was produced. `semantic` means an embedding match produced the tier; `skipped` means a rule demanded a tier but classification produced none (classifier not configured or not ready, unsupported input, embedding failure/timeout, or a match below `min_similarity`) |
-| `complexity_score` | 0.0 – 1.0 | The similarity score of the nearest reference phrase |
+| `complexity_mechanism` | `semantic`, `llm`, `skipped` | How the tier was produced. `semantic` means an embedding match produced the tier; `llm` means the fallback chat model named the tier after semantic classification produced none; `skipped` means a rule demanded a tier but neither produced one (classifier not configured or not ready, unsupported input, failure/timeout, or a match below `min_similarity`) |
+| `complexity_score` | 0.0 – 1.0 | The similarity score of the nearest reference phrase. Never set when `complexity_mechanism` is `llm` — a chat completion has no equivalent similarity score |
 
 The routing decision logs also record the matched reference phrase alongside the tier and similarity, so you can tell a genuine match from an accidental one. Long phrases are truncated to 120 characters in the log line.
 
-For example, a successful match is recorded as:
+For example, a successful semantic match is recorded as:
 
 ```text
 Semantic complexity: tier=MEDIUM similarity=0.62 matched="produce a customer-facing incident summary from an already established cause and remediation."
+```
+
+A tier produced by the LLM fallback is recorded as:
+
+```text
+LLM complexity: tier=COMPLEX
 ```
 
 These fields are only set when a routing rule actually referenced `complexity_tier`; requests that never touched a complexity rule carry no complexity fields.
@@ -323,7 +397,7 @@ curl "http://localhost:8080/api/logs?complexity_tiers=COMPLEX&complexity_mechani
 ```
 
 <Note>
-The raw `complexity_score` is displayed but not filterable; tier and mechanism are the supported filter dimensions. The mechanism filter offers `semantic` and `skipped`. Legacy `REASONING` tiers remain available in the logs filter.
+The raw `complexity_score` is displayed but not filterable; tier and mechanism are the supported filter dimensions. The mechanism filter offers `semantic`, `llm`, and `skipped`. Legacy `REASONING` tiers remain available in the logs filter.
 </Note>
 
 ### In telemetry
@@ -335,6 +409,11 @@ Semantic routing's own embedding overhead is tracked separately with two Prometh
 - `bifrost_routing_embedding_requests_total`
 - `bifrost_routing_embedding_cost_total` (USD; recorded whether or not `count_toward_budgets` is set)
 
+The LLM fallback classifier's own completion overhead is tracked separately too, with two Prometheus counters labeled by the fallback provider and model (no `phase` label — the fallback has no warmup):
+
+- `bifrost_routing_llm_requests_total`
+- `bifrost_routing_llm_cost_total` (USD; recorded whether or not `count_toward_budgets` is set)
+
 See [Telemetry](../telemetry) and [Prometheus](../observability/prometheus) for the full attribute and label reference.
 
 ---
@@ -343,13 +422,23 @@ See [Telemetry](../telemetry) and [Prometheus](../observability/prometheus) for 
 
 ### No tier is ever published (everything is `skipped`)
 
-The most common cause is that semantic classification is not configured or not ready. Check the classifier status badge or `GET /api/routing/complexity-analyzer-status`:
+The most common cause is that semantic classification is not configured. Without a configured semantic classifier, no fallback runs either — the LLM fallback only ever engages after semantic classification has actually been invoked, never as a substitute for missing semantic configuration. Check the classifier status badge or `GET /api/routing/complexity-analyzer-status`:
 
 - `disabled`: set an embedding provider and model, and make sure the provider has an enabled key.
 - `warming`: warmup is embedding the reference phrases. If `serving_previous` is true, the last good generation remains available while it runs.
 - `failed`: check server logs for the provider or vector-store failure. If `serving_previous` is true, the last good generation is still serving while you fix the configuration.
 
+If semantic classification is configured and ready, but individual requests still land as skipped (a near miss, a timeout), consider configuring the [LLM fallback classifier](#llm-fallback-classifier) instead of leaving those requests unclassified.
+
 Also verify a routing rule actually references `complexity_tier`; classification runs lazily and never runs otherwise.
+
+### Setting `fallback` to `llm` is rejected
+
+Semantic classification's `fallback` field requires a companion `llm` block with at least `provider` and `model` set — the update endpoint rejects `fallback: "llm"` without one. Configure the LLM fallback classifier (Web UI: the **Fallback classifier** section inside the embedding sheet; API/config.json: the `llm` block) before or in the same request that sets `fallback` to `llm`.
+
+### LLM fallback times out or never runs
+
+Check `llm.state` on `GET /api/routing/complexity-analyzer-status`: `disabled` means no `llm` block is saved. If it's `ready` but classifications still show `complexity_mechanism: skipped`, check `llm.timeout` — the fallback model may be too slow for the configured budget. Provider errors and timeouts are recorded in the routing decision logs alongside the cause.
 
 ### Rule not matching when complexity_tier is set
 
@@ -359,7 +448,7 @@ If classification is unavailable for a request (unsupported input, mixed-modal c
 
 ### Which request types are supported
 
-Complexity routing currently runs only for **text-bearing** request families. Supported inputs include:
+Complexity routing currently runs only for **text-bearing** request families. This applies identically to the LLM fallback classifier — it shares the same input extraction as semantic classification, so a request semantic classification cannot analyze reaches the fallback in the same unclassifiable state. Supported inputs include:
 
 - Chat Completions and other messages-style requests with text-only user content
 - Text Completions requests using `prompt`
