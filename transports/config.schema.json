@@ -477,6 +477,9 @@
         },
         "sarvam": {
           "$ref": "#/$defs/provider"
+        },
+        "github-copilot": {
+          "$ref": "#/$defs/provider"
         }
       },
       "additionalProperties": true
