@@ -369,9 +369,7 @@ func TestConvertGeminiModelMetadataResponse_EmptyReturnsMinimalModel(t *testing.
 	assert.Equal(t, "models/gemini-3-pro-preview", model.Name)
 }
 
-// TestFileRequestConverter_RetainsResumableUploadSession verifies that
-// FileRequestConverter retrieves the resumable upload session without deleting it.
-// This ensures the session remains available for subsequent upload/retry requests.
+// Test that FileRequestConverter retains the resumable upload session for retries.
 func TestFileRequestConverter_RetainsResumableUploadSession(t *testing.T) {
 	t.Parallel()
 
@@ -396,11 +394,10 @@ func TestFileRequestConverter_RetainsResumableUploadSession(t *testing.T) {
 		Provider:    schemas.Gemini,
 	}
 
-	// Store the resumable upload session.
 	err = kvStore.SetWithTTL(uploadID, session, time.Minute)
 	require.NoError(t, err)
 
-	// Verify session exists before FileRequestConverter.
+	// Verify the session exists before FileRequestConverter.
 	storedBefore, err := kvStore.Get(uploadID)
 	require.NoError(t, err)
 	require.NotNil(t, storedBefore)
@@ -437,9 +434,7 @@ func TestFileRequestConverter_RetainsResumableUploadSession(t *testing.T) {
 	assert.Equal(t, session.Provider, stored.Provider)
 }
 
-// TestFileRequestConverter_ReusesResumableUploadSessionForRetry verifies that
-// the same resumable upload session can be retrieved and reused for multiple
-// upload attempts using the same upload_id.
+// Test that the resumable upload session can be reused for retries.
 func TestFileRequestConverter_ReusesResumableUploadSessionForRetry(t *testing.T) {
 	t.Parallel()
 
@@ -464,7 +459,6 @@ func TestFileRequestConverter_ReusesResumableUploadSessionForRetry(t *testing.T)
 		Provider:    schemas.Gemini,
 	}
 
-	// Store the resumable upload session.
 	err = kvStore.SetWithTTL(uploadID, session, time.Minute)
 	require.NoError(t, err)
 
@@ -477,7 +471,6 @@ func TestFileRequestConverter_ReusesResumableUploadSessionForRetry(t *testing.T)
 
 	firstFileReq, err := route.FileRequestConverter(bifrostCtx, firstReq)
 
-	// First call should succeed.
 	require.NoError(t, err)
 	require.NotNil(t, firstFileReq)
 	require.NotNil(t, firstFileReq.UploadRequest)
@@ -487,16 +480,13 @@ func TestFileRequestConverter_ReusesResumableUploadSessionForRetry(t *testing.T)
 	assert.Equal(t, "retry-test.pdf", firstFileReq.UploadRequest.Filename)
 	assert.Equal(t, schemas.Gemini, firstFileReq.UploadRequest.Provider)
 
-	// Second upload attempt using the SAME upload_id.
+	// Retry using the same upload session.
 	secondReq := &gemini.GeminiFileUploadHandlerReq{
 		UploadID: uploadID,
 		FileData: []byte("retry upload chunk"),
 	}
 
-	// Second call to FileRequestConverter.
 	secondFileReq, err := route.FileRequestConverter(bifrostCtx, secondReq)
-
-	// Second call should also succeed.
 	require.NoError(t, err)
 	require.NotNil(t, secondFileReq)
 	require.NotNil(t, secondFileReq.UploadRequest)
@@ -506,7 +496,7 @@ func TestFileRequestConverter_ReusesResumableUploadSessionForRetry(t *testing.T)
 	assert.Equal(t, "retry-test.pdf", secondFileReq.UploadRequest.Filename)
 	assert.Equal(t, schemas.Gemini, secondFileReq.UploadRequest.Provider)
 
-	// The session should still exist after both calls.
+	// Verify the session is still available after the retry.
 	storedSession, err := kvStore.Get(uploadID)
 	require.NoError(t, err)
 	require.NotNil(t, storedSession)
@@ -519,9 +509,7 @@ func TestFileRequestConverter_ReusesResumableUploadSessionForRetry(t *testing.T)
 	assert.Equal(t, session.Provider, stored.Provider)
 }
 
-// TestFileUploadPostCallback_DeletesSessionAfterSuccessfulFinalization verifies
-// that PostCallback marks the upload as finalized and removes the resumable
-// upload session from KV after a successful upload.
+// Test that the upload session is deleted after successful finalization.
 func TestFileUploadPostCallback_DeletesSessionAfterSuccessfulFinalization(t *testing.T) {
 	t.Parallel()
 
@@ -548,7 +536,7 @@ func TestFileUploadPostCallback_DeletesSessionAfterSuccessfulFinalization(t *tes
 	err = kvStore.SetWithTTL(uploadID, session, time.Minute)
 	require.NoError(t, err)
 
-	// Verify session exists before finalization.
+	// Verify the session exists before finalization.
 	storedBefore, err := kvStore.Get(uploadID)
 	require.NoError(t, err)
 	require.NotNil(t, storedBefore)
@@ -564,14 +552,12 @@ func TestFileUploadPostCallback_DeletesSessionAfterSuccessfulFinalization(t *tes
 
 	assert.Equal(t, "final", string(ctx.Response.Header.Peek("X-Goog-Upload-Status")))
 
-	// Verify the session was deleted from KV.
+	// Verify the session was deleted after finalization.
 	_, err = kvStore.Get(uploadID)
 	assert.ErrorIs(t, err, kvstore.ErrNotFound)
 }
 
-// TestFileRequestConverter_RejectsEmptyUploadID verifies that
-// FileRequestConverter rejects requests without an upload_id.
-// Step 1 requests should be handled by ShortCircuit instead.
+// Test that the request is rejected without an upload session.
 func TestFileRequestConverter_RejectsEmptyUploadID(t *testing.T) {
 	t.Parallel()
 
@@ -589,7 +575,6 @@ func TestFileRequestConverter_RejectsEmptyUploadID(t *testing.T) {
 
 	route := findGenAIRouteForTest(t, routes, "/genai/upload/v1beta/files", "POST")
 
-	// Request has no upload_id.
 	req := &gemini.GeminiFileUploadHandlerReq{
 		UploadID: "",
 		FileData: []byte("test file data"),

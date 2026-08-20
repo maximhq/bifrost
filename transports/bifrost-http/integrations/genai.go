@@ -416,9 +416,7 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 				return nil, errors.New("kvstore not initialized")
 			}
 
-			// Do not use GetAndDelete here. A resumable upload can be interrupted
-			// and retried using the same upload_id, so the session must remain in
-			// KV store until the upload has been successfully finalized.
+			//Use Get instead of GetANDDelete which will keep session available for upload retries.
 			val, err := kvStore.Get(r.UploadID)
 			if err != nil {
 				return nil, fmt.Errorf("upload session not found for id %q: %w", r.UploadID, err)
@@ -466,8 +464,6 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 		},
 		PreCallback: extractGeminiFileUploadParams,
 		PostCallback: func(ctx *fasthttp.RequestCtx, req interface{}, resp interface{}) error {
-			// The provider response reached the post-callback, which means the
-			// upload request was successfully processed and finalized.
 			ctx.Response.Header.Set("X-Goog-Upload-Status", "final")
 
 			r, ok := req.(*gemini.GeminiFileUploadHandlerReq)
@@ -477,8 +473,7 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 			}
 
 			if r.UploadID == "" {
-				// Non-resumable uploads do not have a session to clean up.
-				logger.Info("PostCallback: upload_id is empty, skipping KV cleanup")
+				// Normal file uploads do not use a resumable upload session.
 				return nil
 			}
 
@@ -488,17 +483,13 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 				return nil
 			}
 
-			// Delete the resumable upload session only after successful finalization.
-			// The session was intentionally kept during FileRequestConverter so that
-			// interrupted uploads could retry using the same upload_id.
-			logger.Infof("PostCallback: deleting upload session from kvstore, upload_id=%q", r.UploadID)
+			// Clean up the session after finalization; it was retained for upload retries.
 			_, err := kvStore.Delete(r.UploadID)
 			if err != nil {
-				logger.Errorf("PostCallback: failed to delete upload session, upload_id=%q, error=%v", r.UploadID, err)
+				logger.Errorf("PostCallback: failed to delete upload session, error=%v", err)
 				return nil
 			}
 
-			logger.Infof("PostCallback: upload finalized and session deleted, upload_id=%q", r.UploadID)
 			return nil
 		},
 	})
