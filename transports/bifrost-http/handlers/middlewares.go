@@ -1368,10 +1368,11 @@ func NewTracingMiddleware(tracer *tracing.Tracer) *TracingMiddleware {
 	return tm
 }
 
-// SetObservabilityPlugins sets the observability plugins for the tracing middleware
-func (m *TracingMiddleware) SetObservabilityPlugins(obsPlugins []schemas.ObservabilityPlugin) {
+// SetObservabilityPlugins sets the observability plugins for the tracing middleware.
+// limits is keyed by plugin name; see tracing.Tracer.SetObservabilityPlugins.
+func (m *TracingMiddleware) SetObservabilityPlugins(obsPlugins []schemas.ObservabilityPlugin, limits map[string]schemas.ObservabilityLimits) {
 	if tracer := m.tracer.Load(); tracer != nil {
-		tracer.SetObservabilityPlugins(obsPlugins)
+		tracer.SetObservabilityPlugins(obsPlugins, limits)
 	}
 }
 

@@ -3,6 +3,7 @@ package tracing
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -14,28 +15,51 @@ import (
 )
 
 const (
-	// maxConcurrentInjectsPerPlugin bounds how many traces may sit inside a single
-	// observability connector's Inject at once. A connector pointed at a wrong or
-	// black-holed endpoint blocks on network I/O while pinning a full trace snapshot;
-	// uncapped that is one goroutine and one snapshot per request, whose heap and
-	// scheduler pressure starves the rest of the process — notably the logging
-	// plugin's single DB batch writer, whose queue then drops rows silently.
+	// defaultSemaphoreSize bounds how many traces may sit inside a single observability
+	// connector's Inject at once when its PluginConfig doesn't set semaphore_size. A
+	// connector pointed at a wrong or black-holed endpoint blocks on network I/O while
+	// pinning a full trace snapshot; uncapped that is one goroutine and one snapshot per
+	// request, whose heap and scheduler pressure starves the rest of the process —
+	// notably the logging plugin's single DB batch writer, whose queue then drops rows
+	// silently.
 	// Each connector gets its own budget so a stalled one cannot crowd out a healthy one.
-	maxConcurrentInjectsPerPlugin = 1024
+	defaultSemaphoreSize = 10000
+
+	// defaultInjectTimeout bounds a single Inject call when its PluginConfig doesn't set
+	// inject_timeout. Paired with the per-plugin semaphore, this is what actually
+	// releases a slot when a connector hangs — the semaphore alone only limits how many
+	// hung calls can pile up, not how long each does.
+	defaultInjectTimeout = 5 * time.Second
 
 	// flushStopTimeout bounds how long Stop waits for in-flight trace exports, so a
 	// hung collector cannot block shutdown or a config reload.
 	flushStopTimeout = 10 * time.Second
 )
 
-// obsPluginSlot pairs an observability plugin with its own concurrency budget and
-// drop counter. Isolating the budget per connector is what keeps a misconfigured
-// exporter from consuming the capacity that healthy connectors need.
+// obsPluginSlot pairs an observability plugin with its own concurrency budget, inject
+// timeout, and drop counter. Isolating the budget per connector is what keeps a
+// misconfigured exporter from consuming the capacity that healthy connectors need.
 type obsPluginSlot struct {
-	plugin  schemas.ObservabilityPlugin
-	name    string
-	sem     chan struct{}
-	dropped atomic.Int64
+	plugin        schemas.ObservabilityPlugin
+	name          string
+	sem           chan struct{}
+	injectTimeout time.Duration
+	dropped       atomic.Int64
+}
+
+// resolveObservabilityLimits applies the tracer defaults to whatever limits a plugin's
+// generic PluginConfig declared (see schemas.PluginConfig.SemaphoreSize/InjectTimeout).
+// A zero field means "unset", not "zero" — it falls back to the default rather than
+// producing a zero-size semaphore or an immediately-expiring timeout.
+func resolveObservabilityLimits(limits schemas.ObservabilityLimits) (semSize int, injectTimeout time.Duration) {
+	semSize, injectTimeout = defaultSemaphoreSize, defaultInjectTimeout
+	if limits.SemaphoreSize > 0 {
+		semSize = limits.SemaphoreSize
+	}
+	if limits.InjectTimeout > 0 {
+		injectTimeout = limits.InjectTimeout
+	}
+	return semSize, injectTimeout
 }
 
 // Tracer implements schemas.Tracer using TraceStore.
@@ -65,10 +89,13 @@ func NewTracer(store *TraceStore, pricingManager *modelcatalog.ModelCatalog, log
 	}
 }
 
-// SetObservabilityPlugins updates the plugins that receive completed traces.
+// SetObservabilityPlugins updates the plugins that receive completed traces. limits is
+// keyed by plugin name (GetName()), sourced from each plugin's generic PluginConfig
+// (schemas.PluginConfig.SemaphoreSize/InjectTimeout) — a plugin absent from the map, or
+// with unset fields, gets the tracer's defaults.
 // It also precomputes the deduplicated, normalized union of request-header patterns
 // requested by those plugins so the per-request capture path is a single atomic load.
-func (t *Tracer) SetObservabilityPlugins(obsPlugins []schemas.ObservabilityPlugin) {
+func (t *Tracer) SetObservabilityPlugins(obsPlugins []schemas.ObservabilityPlugin, limits map[string]schemas.ObservabilityLimits) {
 	if t == nil {
 		return
 	}
@@ -86,10 +113,12 @@ func (t *Tracer) SetObservabilityPlugins(obsPlugins []schemas.ObservabilityPlugi
 			continue
 		}
 		seenPlugins[name] = struct{}{}
+		semSize, injectTimeout := resolveObservabilityLimits(limits[name])
 		slots = append(slots, &obsPluginSlot{
-			plugin: plugin,
-			name:   name,
-			sem:    make(chan struct{}, maxConcurrentInjectsPerPlugin),
+			plugin:        plugin,
+			name:          name,
+			sem:           make(chan struct{}, semSize),
+			injectTimeout: injectTimeout,
 		})
 	}
 	t.obsPlugins.Store(&slots)
@@ -858,7 +887,7 @@ func (t *Tracer) CompleteAndFlushTrace(traceID string) {
 				// the logging itself a second source of load.
 				if n := slot.dropped.Add(1); (n == 1 || n%1000 == 0) && t.logger != nil {
 					t.logger.Warn("observability plugin %s saturated at %d concurrent injects, skipped trace %s (%d skipped so far)",
-						slot.name, maxConcurrentInjectsPerPlugin, exportTrace.TraceID, n)
+						slot.name, cap(slot.sem), exportTrace.TraceID, n)
 				}
 				continue
 			}
@@ -873,8 +902,14 @@ func (t *Tracer) CompleteAndFlushTrace(traceID string) {
 						t.logger.Error("observability plugin %s panicked during trace injection: %v", slot.name, r)
 					}
 				}()
-				if err := slot.plugin.Inject(context.Background(), exportTrace); err != nil && t.logger != nil {
-					t.logger.Warn("observability plugin %s failed to inject trace: %v", slot.name, err)
+				injectCtx, cancel := context.WithTimeout(context.Background(), slot.injectTimeout)
+				defer cancel()
+				if err := slot.plugin.Inject(injectCtx, exportTrace); err != nil && t.logger != nil {
+					if errors.Is(err, context.DeadlineExceeded) {
+						t.logger.Warn("observability plugin %s timed out injecting trace %s after %s", slot.name, exportTrace.TraceID, slot.injectTimeout)
+					} else {
+						t.logger.Warn("observability plugin %s failed to inject trace: %v", slot.name, err)
+					}
 				}
 			}(slot)
 		}

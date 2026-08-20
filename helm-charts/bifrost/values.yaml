@@ -621,6 +621,11 @@ bifrost:
       config:
         disable_content_logging: false
         logging_headers: []
+      # Cap on concurrent in-flight trace injects the tracer will send this plugin;
+      # a saturated cap drops new traces for this plugin only (default: 10000)
+      # semaphore_size: 10000
+      # Timeout for a single trace inject, as a Go duration string (default: 5s)
+      # inject_timeout: "5s"
 
     governance:
       enabled: false
@@ -721,6 +726,11 @@ bifrost:
         # Request header name patterns (exact or wildcard like "x-custom-*") captured and emitted as span attributes.
         # Note: "*" captures all headers including sensitive ones like Authorization.
         # request_headers: []
+      # Cap on concurrent in-flight trace injects the tracer will send this plugin;
+      # a saturated cap drops new traces for this plugin only, not process-wide (default: 10000)
+      # semaphore_size: 10000
+      # Timeout for a single trace inject, as a Go duration string (default: 5s)
+      # inject_timeout: "5s"
     datadog:
       enabled: false
       version: 1
