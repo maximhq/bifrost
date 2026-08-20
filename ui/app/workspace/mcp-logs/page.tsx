@@ -437,7 +437,7 @@ export default function MCPLogsPage() {
 			) : showEmptyState ? (
 				<MCPEmptyState error={displayError} />
 			) : (
-				<div className="no-padding-parent no-border-parent bg-background flex h-[calc(var(--app-content-viewport)_-_16px)] w-full gap-3">
+				<div className="no-padding-parent no-border-parent bg-background flex h-[calc(var(--app-content-viewport)_-_var(--app-bottom-padding))] w-full gap-3">
 					{/* Sidebar Filters */}
 					<MCPFilterSidebar filters={filters} onFiltersChange={setFilters} />
 

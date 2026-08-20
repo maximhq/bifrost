@@ -291,6 +291,8 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_add_video_edit_input_column"}, run: migrationAddVideoEditInputColumn},
 	{IDs: []string{"logs_add_upstream_and_overhead_latency_columns"}, run: migrationAddUpstreamAndOverheadLatencyColumns},
 	{IDs: []string{"logs_add_batch_debug_column"}, run: migrationAddBatchDebugColumn},
+	{IDs: []string{"logs_add_cost_breakdown_columns"}, run: migrationAddCostBreakdownColumns},
+	{IDs: []string{"logs_recreate_matviews_with_cost_breakdown"}, run: migrationRecreateMatViewsWithCostBreakdown},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -3033,6 +3035,45 @@ func migrationAddCanonicalModelColumns(ctx context.Context, db *gorm.DB, logger 
 	return nil
 }
 
+// migrationAddCostBreakdownColumns adds the denormalized input/output/additional
+// cost columns (input_cost, output_cost, additional_cost) to the logs table. The
+// total cost already lives in the cost column; these split it so per-model quota
+// usage can be summed by category in SQL (input + output + additional == total).
+// New rows populate them on write from the TokenUsage cost breakdown; existing
+// rows keep 0 (their total cost column is unaffected).
+func migrationAddCostBreakdownColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_cost_breakdown_columns"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, column := range []string{"input_cost", "output_cost", "additional_cost"} {
+				if err := addColumnIfNotExists(tx, logger, &Log{}, column); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, column := range []string{"input_cost", "output_cost", "additional_cost"} {
+				if err := dropColumnIfExists(tx, logger, &Log{}, column); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding cost breakdown columns: %s", err.Error())
+	}
+	return nil
+}
+
 // migrationAddHasObjectColumn adds the has_object boolean column to the logs table.
 // Used by the hybrid log store to track whether a log's payload is stored in object storage.
 func migrationAddHasObjectColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
@@ -3458,6 +3499,34 @@ func migrationRecreateMatViewsWithUserAgentColumn(ctx context.Context, db *gorm.
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while recreating matviews with app column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationRecreateMatViewsWithCostBreakdown is a marker migration: the actual
+// rebuild of mv_logs_hourly (now carrying total_input_cost / total_output_cost /
+// total_additional_cost alongside total_cost) happens on the next PostgreSQL
+// startup via ensureMatViews / repairMatViewShapes, which detect the new required
+// columns and drop+recreate the drifted view. The rebuild is deferred to startup
+// (not done inline here) to avoid heavy AccessExclusiveLock churn during rolling
+// deploys on large logs tables.
+func migrationRecreateMatViewsWithCostBreakdown(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_recreate_matviews_with_cost_breakdown",
+		Migrate: func(tx *gorm.DB) error {
+			// No-op: the drifted mv_logs_hourly is dropped and recreated on the
+			// next startup by repairMatViewShapes once it sees the new columns.
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// No rollback needed — ensureMatViews recreates on next startup.
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while recreating matviews with cost breakdown columns: %s", err.Error())
 	}
 	return nil
 }

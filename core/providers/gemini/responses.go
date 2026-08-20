@@ -4074,6 +4074,127 @@ func convertResponsesToolChoiceToGemini(toolChoice *schemas.ResponsesToolChoice)
 // responses, where a tool returns images/files nested in functionResponse.parts). provider
 // distinguishes Vertex AI from the Gemini Developer API, which differ in how multimodal
 // function responses must be referenced (see the FunctionCallOutput handling below).
+// isAssistantPrefillMessage reports whether msg is a plain assistant text turn -- the shape
+// Claude Code sends as a prefill, and the only trailing model turn that is safe to drop.
+//
+// Reasoning items and function calls are deliberately excluded even though they also render as
+// role:"model". Gemini's thinking guide requires thought blocks to survive replay verbatim ("You
+// MUST always resend all thought blocks exactly as they were received from the model",
+// https://ai.google.dev/gemini-api/docs/thinking), and a trailing function call is a turn the
+// caller still owes a functionResponse for -- neither is a prefill, and silently deleting either
+// would corrupt the history rather than repair it.
+func isAssistantPrefillMessage(msg *schemas.ResponsesMessage) bool {
+	if msg.Role == nil || *msg.Role != schemas.ResponsesInputMessageRoleAssistant {
+		return false
+	}
+	if msg.ResponsesToolMessage != nil || msg.ResponsesReasoning != nil {
+		return false
+	}
+	if msg.Type != nil && *msg.Type != schemas.ResponsesMessageTypeMessage {
+		return false
+	}
+	// The type and the standalone-reasoning check above are not sufficient: a turn typed
+	// "message" can still smuggle thought history in through its content blocks. A
+	// reasoning block becomes Part{Thought: true}, and a plain TEXT block carrying a
+	// signature becomes Part.ThoughtSignature -- both in convertContentBlockToGeminiPart.
+	// Either one makes the turn history Gemini requires replayed verbatim, not a prefill.
+	//
+	// So the allowance is a whitelist rather than a blacklist: only unsigned text blocks
+	// qualify, and any other block type (reasoning, refusal, compaction, fallback, image,
+	// file) disqualifies the turn. Erring this way costs at most an untrimmed turn --
+	// which Gemini answers with the 400 the caller already had -- while the opposite
+	// error silently deletes history and is unrecoverable.
+	if msg.Content != nil {
+		for _, block := range msg.Content.ContentBlocks {
+			if block.Signature != nil {
+				return false
+			}
+			switch block.Type {
+			case schemas.ResponsesInputMessageContentBlockTypeText,
+				schemas.ResponsesOutputMessageContentTypeText:
+			default:
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// trimTrailingAssistantPrefill drops the trailing run of assistant prefill turns so the
+// conversation ends on a user turn. Returns messages unchanged when the model declares prefill
+// support via the datasheet (ModelCaps.SupportsAssistantPrefill), which no Gemini model does
+// today -- the hook exists so a future model can opt back in without a code change.
+func trimTrailingAssistantPrefill(messages []schemas.ResponsesMessage, caps schemas.ModelCaps) []schemas.ResponsesMessage {
+	if caps.SupportsAssistantPrefill(false) {
+		return messages
+	}
+	trimmed := len(messages)
+	for trimmed > 0 && isAssistantPrefillMessage(&messages[trimmed-1]) {
+		trimmed--
+	}
+	return messages[:trimmed]
+}
+
+// inlineGeminiSystemReminder renders a mid-conversation role:"system" turn as a user turn wrapped
+// in the <system-reminder> envelope Claude Code uses, keeping it at its original position in the
+// conversation.
+//
+// Gemini has no message-level system role -- Content.role must be "user" or "model" -- so such a
+// turn has to become one or the other. The alternative, hoisting it into systemInstruction, is
+// what this replaces: systemInstruction renders ahead of every message, so a reminder that
+// arrives at turn 40 is presented as though it had been said at turn 0, and growing that block
+// mid-conversation invalidates the cached prefix behind it. This mirrors Bedrock's
+// convertBifrostSystemReminderToBedrockUserMessage and the native Anthropic fallback in
+// inlineMidConversationSystem, both of which measured the hoist as a prompt-cache collapse.
+//
+// The trade is the same one those converters accepted: a user turn is not the operator channel a
+// system turn is, so instruction adherence is weaker. The text originates from the caller's own
+// system role, so nothing attacker-controlled is laundered by the change.
+//
+// Returns nil when the message yields no text, so the caller skips the append.
+func inlineGeminiSystemReminder(msg *schemas.ResponsesMessage, allowedImageURLSchemes ...string) (*Content, error) {
+	if msg.Content == nil {
+		return nil, nil
+	}
+
+	wrap := func(text string) string {
+		return "<system-reminder>\n" + text + "\n</system-reminder>\n"
+	}
+
+	content := &Content{Role: "user"}
+	// ContentStr and ContentBlocks are mutually exclusive sources: whenever ContentStr is
+	// non-nil it is the sole source, matching convertBifrostSystemReminderToBedrockUserMessage.
+	// Gating the block loop on a non-EMPTY string instead would let a caller that set
+	// ContentStr to "" fall through and have its blocks read as well, emitting the reminder
+	// from a source the caller did not select.
+	if msg.Content.ContentStr != nil {
+		if *msg.Content.ContentStr != "" {
+			content.Parts = append(content.Parts, &Part{Text: wrap(*msg.Content.ContentStr)})
+		}
+	} else {
+		for _, block := range msg.Content.ContentBlocks {
+			part, err := convertContentBlockToGeminiPart(block, allowedImageURLSchemes...)
+			if err != nil {
+				return nil, fmt.Errorf("failed to convert system message content block: %w", err)
+			}
+			if part == nil {
+				continue
+			}
+			// Only text is wrapped; a non-text block (image, file) has no envelope to carry and is
+			// passed through as-is rather than dropped.
+			if part.Text != "" {
+				part.Text = wrap(part.Text)
+			}
+			content.Parts = append(content.Parts, part)
+		}
+	}
+
+	if len(content.Parts) == 0 {
+		return nil, nil
+	}
+	return content, nil
+}
+
 func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessage, model string, provider schemas.ModelProvider, allowedImageURLSchemes ...string) ([]Content, *Content, error) {
 	if len(allowedImageURLSchemes) == 0 {
 		allowedImageURLSchemes = defaultGeminiImageURLSchemes
@@ -4081,6 +4202,20 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 
 	isVertex := provider == schemas.Vertex
 	caps := schemas.ResolveModelCaps(provider, model)
+
+	// Gemini rejects a conversation whose final turn is role:"model" -- generateContent answers
+	// 400 with "Please ensure that multiturn requests ends with a user role or a function
+	// response". Content.role is documented as "Must be either 'user' or 'model'", and Gemini
+	// exposes no assistant-prefill mechanism to continue from, so a trailing model turn has no
+	// valid meaning on this wire at all.
+	//
+	// Claude Code routinely ends its message array with an assistant prefill, so /anthropic
+	// traffic pointed at Gemini/Vertex fails on every such turn. Bedrock trims the same shape in
+	// ToBedrockResponsesRequest; this is that trim for Gemini. The gate differs: Bedrock keys on
+	// IsAnthropicModelFamily because a Bedrock target may be a Claude model, which is never true
+	// here, so the default is a flat false and only a datasheet record can turn it back on.
+	messages = trimTrailingAssistantPrefill(messages, caps)
+
 	// if only system / developer message is there, convert it to user message (since openai allows it)
 	if len(messages) == 1 && messages[0].Role != nil && (*messages[0].Role == schemas.ResponsesInputMessageRoleSystem || *messages[0].Role == schemas.ResponsesInputMessageRoleDeveloper) {
 		content := Content{Role: "user"}
@@ -4128,7 +4263,20 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 	// According to Gemini docs, all function responses must be in a single message
 	var pendingFunctionResponseParts []*Part
 
+	// Set once the leading system prompt ends (first non-system message). Only the leading run is
+	// hoisted into systemInstruction; a system turn that arrives after the conversation has
+	// started is inlined in place instead -- see inlineGeminiSystemReminder.
+	seenNonSystemMessage := false
+
 	for i, msg := range messages {
+		isSystemMessage := msg.Role != nil &&
+			(*msg.Role == schemas.ResponsesInputMessageRoleSystem || *msg.Role == schemas.ResponsesInputMessageRoleDeveloper)
+		// Recorded before the branches below, all of which `continue`, so a reasoning or tool
+		// item still closes the leading system run.
+		if !isSystemMessage {
+			seenNonSystemMessage = true
+		}
+
 		// Standalone reasoning messages carry the model's thought blocks. Their
 		// SIGNATURE is picked up by the look-ahead on the preceding function
 		// call, so only the text is emitted here - sending the signature again
@@ -4171,8 +4319,31 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 			continue
 		}
 
-		// Handle system messages separately
-		if msg.Role != nil && (*msg.Role == schemas.ResponsesInputMessageRoleSystem || *msg.Role == schemas.ResponsesInputMessageRoleDeveloper) {
+		// A mid-conversation system turn is inlined at its original position as a user turn.
+		// Hoisting it would move it ahead of the whole conversation and invalidate the cached
+		// prefix behind it.
+		if isSystemMessage && seenNonSystemMessage {
+			inlined, err := inlineGeminiSystemReminder(&msg, allowedImageURLSchemes...)
+			if err != nil {
+				return nil, nil, err
+			}
+			if inlined != nil {
+				// Flush first: the reminder is a user turn of its own and must not be filed
+				// behind function responses that precede it.
+				if len(pendingFunctionResponseParts) > 0 {
+					contents = append(contents, Content{
+						Parts: pendingFunctionResponseParts,
+						Role:  "user",
+					})
+					pendingFunctionResponseParts = nil
+				}
+				contents = append(contents, *inlined)
+			}
+			continue
+		}
+
+		// Handle the leading system prompt separately
+		if isSystemMessage {
 			if systemInstruction == nil {
 				systemInstruction = &Content{}
 			}

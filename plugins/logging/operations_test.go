@@ -920,6 +920,62 @@ func TestApplyErrorBillingFromBilledUsage_ComputesCostWhenTokensAlreadyParsed(t 
 	if entry.PromptTokens != promptTokens || entry.TotalTokens != promptTokens+completionTokens {
 		t.Fatalf("token counters mutated: prompt=%d total=%d", entry.PromptTokens, entry.TotalTokens)
 	}
+	// The breakdown must ride on the usage so the denormalized split populates,
+	// not just the scalar total (Discrepancy B: failed/cancelled billing).
+	if entry.TokenUsageParsed.Cost == nil {
+		t.Fatal("expected cost breakdown attached to usage for the denormalized split")
+	}
+	if err := entry.SerializeFields(); err != nil {
+		t.Fatalf("SerializeFields: %v", err)
+	}
+	wantIn := float64(promptTokens) * 2.5e-6
+	wantOut := float64(completionTokens) * 1e-5
+	if d := entry.InputCost - wantIn; d < -1e-9 || d > 1e-9 {
+		t.Fatalf("input_cost %v != %v", entry.InputCost, wantIn)
+	}
+	if d := entry.OutputCost - wantOut; d < -1e-9 || d > 1e-9 {
+		t.Fatalf("output_cost %v != %v", entry.OutputCost, wantOut)
+	}
+}
+
+// TestApplyInternalCallCosts_DenormalizesGuardrailToAdditional guards Discrepancy
+// B for internal-only sidecar costs: a guardrail judge call with no provider
+// response must land on the additional side of the split, not just the total,
+// and must not leak into input/output.
+func TestApplyInternalCallCosts_DenormalizesGuardrailToAdditional(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, newTestPricingManager(t), nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	entry := &logstore.Log{Provider: string(schemas.OpenAI), Model: "gpt-4o"}
+	guardrail := &schemas.BifrostGuardrailDebug{
+		JudgeCalls: []schemas.BifrostGuardrailJudgeCall{{
+			JudgeProvider:    schemas.OpenAI,
+			JudgeModel:       "gpt-4o",
+			PromptTokens:     100,
+			CompletionTokens: 50,
+			TotalTokens:      150,
+		}},
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	plugin.applyInternalCallCosts(ctx, entry, guardrail)
+
+	want := float64(100)*2.5e-6 + float64(50)*1e-5
+	if entry.Cost == nil {
+		t.Fatal("expected guardrail cost on entry.Cost")
+	}
+	if d := *entry.Cost - want; d < -1e-9 || d > 1e-9 {
+		t.Fatalf("entry.Cost %v != guardrail %v", *entry.Cost, want)
+	}
+	// No usage carrier exists, so the split is written directly on the columns.
+	if d := entry.AdditionalCost - want; d < -1e-9 || d > 1e-9 {
+		t.Fatalf("additional_cost %v != guardrail %v", entry.AdditionalCost, want)
+	}
+	if entry.InputCost != 0 || entry.OutputCost != 0 {
+		t.Fatalf("guardrail-only cost must not populate input/output: in=%v out=%v", entry.InputCost, entry.OutputCost)
+	}
 }
 
 // TestApplyErrorBillingFromBilledUsage_FillsTokensAndCostWhenUnparsed pins the
