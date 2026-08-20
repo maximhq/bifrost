@@ -74,6 +74,7 @@ type RoutingPlugin struct {
 	engine             *rules.Engine
 	complexityAnalyzer atomic.Pointer[complexity.ComplexityAnalyzer]
 	semanticClassifier *complexity.SemanticClassifier
+	llmClassifier      *complexity.LLMClassifier
 
 	// governance supplies the virtual key, its live budget/rate-limit usage, and the provider
 	// materialization that runs once rules have decided. Required: rules address budgets and
@@ -89,6 +90,18 @@ type RoutingPlugin struct {
 	embeddingRequestExecutor atomic.Pointer[EmbeddingRequestExecutor]
 	warmupEmbedUsageObserver atomic.Pointer[WarmupEmbedUsageObserver]
 	complexityVectorStore    atomic.Pointer[vectorstore.VectorStore]
+
+	// chatRequestExecutor is wired by the HTTP server after the bifrost client
+	// exists (post-Init) via SetChatRequestExecutor, exactly like
+	// embeddingRequestExecutor; the llm complexity classifier reads it on the
+	// request hot path.
+	chatRequestExecutor atomic.Pointer[ChatRequestExecutor]
+	// responsesRequestExecutor is the Responses-API counterpart, wired the same
+	// way via SetResponsesRequestExecutor. The llm classifier reads it only when
+	// a chat completion is rejected because the judge model requires
+	// /v1/responses; it stays nil until wired, in which case no fallback runs.
+	responsesRequestExecutor atomic.Pointer[ResponsesRequestExecutor]
+
 }
 
 // Init initializes and returns a routing plugin instance.
@@ -149,6 +162,7 @@ func InitFromStore(
 		configStore:        configStore,
 		logger:             logger,
 		semanticClassifier: complexity.NewSemanticClassifier(ctx, logger),
+		llmClassifier:      complexity.NewLLMClassifier(logger),
 	}
 
 	var analyzerOverride *complexity.AnalyzerConfig
@@ -187,6 +201,18 @@ func (p *RoutingPlugin) storeComplexityAnalyzerConfig(config *complexity.Analyze
 	if p.semanticClassifier != nil {
 		p.semanticClassifier.Configure(resolved)
 	}
+	if p.llmClassifier != nil {
+		p.llmClassifier.Configure(resolved)
+	}
+
+}
+
+// ComplexityLLMStatus returns the current llm classifier readiness.
+func (p *RoutingPlugin) ComplexityLLMStatus() complexity.LLMStatusInfo {
+	if p.llmClassifier == nil {
+		return complexity.LLMStatusInfo{State: complexity.LLMStatusDisabled}
+	}
+	return p.llmClassifier.Status()
 }
 
 // RearmComplexitySemanticClassifier restarts semantic warmup after the given
@@ -400,15 +426,14 @@ func (p *RoutingPlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *sche
 				)
 				return result
 			}
-			// There is nowhere to fall back to: semantic is the only mechanism
-			// that runs.
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityMechanism, complexity.MechanismSkipped)
 			// One line per decision, naming the cause. The level is part of the
 			// message: a classifier that could not run is an operator problem,
 			// while a request that resembled nothing in the tier lists is routine
-			// and would be noise at Warn.
+			// and would be noise at Warn. The cause and the outcome are built
+			// separately because a semantic non-answer now has two possible
+			// endings: skipped, or handed to the llm fallback.
 			unavailableLevel := schemas.LogLevelWarn
-			unavailableLog := "Semantic complexity classification unavailable, so no complexity tier is published"
+			unavailableCause := "Semantic complexity classification unavailable"
 			switch {
 			case err == nil && semanticResult == nil:
 				unavailableLevel = schemas.LogLevelInfo
@@ -418,9 +443,9 @@ func (p *RoutingPlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *sche
 				// the difference between "the floor is set too high for a phrase
 				// that genuinely fits" and "nothing in the tier lists resembles
 				// this request".
-				unavailableLog = withMatchedExemplar(
+				unavailableCause = withMatchedExemplar(
 					fmt.Sprintf(
-						"Semantic complexity rejected: nearest tier=%s similarity=%.2f below min_similarity=%.2f, so no complexity tier is published",
+						"Semantic complexity rejected: nearest tier=%s similarity=%.2f below min_similarity=%.2f",
 						rejectedResult.Tier,
 						rejectedResult.Score,
 						rejectedResult.MinSimilarity,
@@ -432,12 +457,26 @@ func (p *RoutingPlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *sche
 				// and naming it as merely "unavailable" sends the operator hunting
 				// for a broken provider or an incomplete warmup instead of raising
 				// semantic.timeout.
-				unavailableLog = fmt.Sprintf(
-					"Semantic complexity classification timed out after %s, so no complexity tier is published",
+				unavailableCause = fmt.Sprintf(
+					"Semantic complexity classification timed out after %s",
 					p.semanticClassifier.Timeout(),
 				)
 			}
-			ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, unavailableLevel, unavailableLog)
+			// The fallback engages on every semantic non-answer alike —
+			// rejection, timeout, unfinished warmup, unwired executor — because
+			// each one leaves the same hole: a rule referencing complexity_tier
+			// that cannot match. Its own outcome is logged by
+			// computeLLMComplexity, so this line only records the handoff.
+			if p.llmClassifier != nil && p.llmClassifier.FallbackEnabled() {
+				ctx.AppendRoutingEngineLog(
+					schemas.RoutingEngineRoutingRule,
+					schemas.LogLevelInfo,
+					unavailableCause+"; falling back to the LLM classifier",
+				)
+				return p.computeLLMComplexity(ctx, input)
+			}
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityMechanism, complexity.MechanismSkipped)
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, unavailableLevel, unavailableCause+", so no complexity tier is published")
 			return nil
 		}
 	}

@@ -195,9 +195,9 @@ type Log struct {
 	RoutingEnginesUsedStr   *string   `gorm:"type:varchar(255);column:routing_engines_used" json:"-"` // Comma-separated routing engines
 	RoutingRuleID           *string   `gorm:"type:varchar(255);index:idx_logs_routing_rule_id" json:"routing_rule_id"`
 	RoutingRuleName         *string   `gorm:"type:varchar(255)" json:"routing_rule_name"`
-	ComplexityTier          *string   `gorm:"type:varchar(50);index:idx_logs_complexity_tier" json:"complexity_tier,omitempty"`           // Complexity tier used for routing ("SIMPLE", "MEDIUM", "COMPLEX"); NULL when no routing rule demanded complexity
-	ComplexityMechanism     *string   `gorm:"type:varchar(50);index:idx_logs_complexity_mechanism" json:"complexity_mechanism,omitempty"` // How the complexity tier was classified ("lexical", "skipped"; later "semantic", "llm")
-	ComplexityScore         *float64  `gorm:"column:complexity_score" json:"complexity_score,omitempty"`                                  // Raw complexity score behind the tier; unindexed (detail-view only)
+	ComplexityTier          *string   `gorm:"type:varchar(50);index:idx_logs_complexity_tier,where:complexity_tier IS NOT NULL" json:"complexity_tier,omitempty"`                // Complexity tier used for routing ("SIMPLE", "MEDIUM", "COMPLEX"); NULL when no routing rule demanded complexity. Partial index, matching its performanceIndexes entry
+	ComplexityMechanism     *string   `gorm:"type:varchar(50);index:idx_logs_complexity_mechanism,where:complexity_mechanism IS NOT NULL" json:"complexity_mechanism,omitempty"` // How the complexity tier was classified ("semantic", "llm", "session", "skipped"). NULL means no routing rule referenced complexity_tier, so classification never ran. Partial index, matching its performanceIndexes entry
+	ComplexityScore         *float64  `gorm:"column:complexity_score" json:"complexity_score,omitempty"`                                                                         // Raw complexity score behind the tier; unindexed (detail-view only)
 	SelectedPromptName      *string   `gorm:"type:varchar(255)" json:"selected_prompt_name"`
 	SelectedPromptVersion   *string   `gorm:"type:varchar(64)" json:"selected_prompt_version"`
 	SelectedPromptID        *string   `gorm:"type:varchar(36)" json:"selected_prompt_id"`
@@ -246,6 +246,7 @@ type Log struct {
 	VideoDeleteOutput       string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostVideoDeleteResponse
 	CacheDebug              string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostCacheDebug
 	GuardrailDebug          string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostGuardrailDebug
+	RoutingDebug            string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostRoutingDebug
 	Latency                 *float64  `gorm:"index:idx_logs_latency" json:"latency,omitempty"`
 	UpstreamLatency         *float64  `gorm:"index:idx_logs_upstream_latency" json:"upstream_latency,omitempty"`                          // Provider socket time across all attempts, ms; nil = unmeasured
 	OverheadLatency         *float64  `gorm:"index:idx_logs_overhead_latency" json:"overhead_latency,omitempty"`                          // Bifrost overhead (total minus upstream), ms; nil = unmeasured
@@ -343,6 +344,7 @@ type Log struct {
 	CacheDebugParsed            *schemas.BifrostCacheDebug              `gorm:"-" json:"cache_debug,omitempty"`
 	BatchDebugParsed            *schemas.BifrostBatchDebug              `gorm:"-" json:"batch_debug,omitempty"`
 	GuardrailDebugParsed        *schemas.BifrostGuardrailDebug          `gorm:"-" json:"guardrail_debug,omitempty"`
+	RoutingDebugParsed          *schemas.BifrostRoutingDebug            `gorm:"-" json:"routing_debug,omitempty"`
 	ListModelsOutputParsed      []schemas.Model                         `gorm:"-" json:"list_models_output,omitempty"`
 	MetadataParsed              map[string]interface{}                  `gorm:"-" json:"metadata,omitempty"`
 	VideoGenerationInputParsed  *schemas.VideoGenerationInput           `gorm:"-" json:"video_generation_input,omitempty"`
@@ -699,6 +701,14 @@ func (l *Log) SerializeFields() error {
 		}
 	}
 
+	if l.RoutingDebugParsed != nil {
+		if data, err := sonic.Marshal(l.RoutingDebugParsed); err != nil {
+			return err
+		} else {
+			l.RoutingDebug = string(data)
+		}
+	}
+
 	if len(l.AttemptTrailParsed) > 0 {
 		if data, err := sonic.Marshal(l.AttemptTrailParsed); err != nil {
 			return err
@@ -1029,6 +1039,13 @@ func (l *Log) DeserializeFields() error {
 		if err := sonic.Unmarshal([]byte(l.GuardrailDebug), &l.GuardrailDebugParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.GuardrailDebugParsed = nil
+		}
+	}
+
+	if l.RoutingDebug != "" {
+		if err := sonic.Unmarshal([]byte(l.RoutingDebug), &l.RoutingDebugParsed); err != nil {
+			// Log error but don't fail the operation - initialize as nil
+			l.RoutingDebugParsed = nil
 		}
 	}
 

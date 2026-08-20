@@ -444,7 +444,7 @@ func TestPostLLMHookCancelledStreamLogsCost(t *testing.T) {
 		t.Fatal("expected semantic cache debug to be stored on context")
 	}
 	routingEmbeddingTokens := 13
-	if !schemas.SetRoutingDebugOnContext(ctx, &schemas.BifrostRoutingDebug{
+	if !schemas.AppendRoutingCallOnContext(ctx, schemas.BifrostRoutingCall{
 		ProviderUsed:       &embeddingProvider,
 		ModelUsed:          &embeddingModel,
 		InputTokens:        &routingEmbeddingTokens,
@@ -523,6 +523,16 @@ func TestPostLLMHookCancelledStreamLogsCost(t *testing.T) {
 		float64(embeddingTokens+routingEmbeddingTokens)*2e-8 + float64(10)*2.5e-6 + float64(5)*1e-5
 	if diff := *entry.Cost - want; diff < -1e-9 || diff > 1e-9 {
 		t.Fatalf("logged cost %v does not match datasheet-computed cost %v", *entry.Cost, want)
+	}
+	// The routing classification call must survive the full write/read round
+	// trip through the DB — this is what makes it visible in the log detail
+	// view, not just correctly billed.
+	if entry.RoutingDebugParsed == nil || len(entry.RoutingDebugParsed.Calls) != 1 {
+		t.Fatalf("expected one routing call to round-trip through the DB, got %+v", entry.RoutingDebugParsed)
+	}
+	if call := entry.RoutingDebugParsed.Calls[0]; call.ProviderUsed == nil || *call.ProviderUsed != embeddingProvider ||
+		call.InputTokens == nil || *call.InputTokens != routingEmbeddingTokens {
+		t.Fatalf("routing call round-tripped incorrectly: %+v", call)
 	}
 }
 
@@ -804,13 +814,13 @@ func TestApplyInternalCallCostsRoutingOwnershipAndBudgetFlag(t *testing.T) {
 			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 			ctx.SetValue(schemas.BifrostContextKeyNumberOfRetries, test.retryNumber)
 			ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, test.fallbackIndex)
-			if !schemas.SetRoutingDebugOnContext(ctx, &schemas.BifrostRoutingDebug{
+			if !schemas.AppendRoutingCallOnContext(ctx, schemas.BifrostRoutingCall{
 				ProviderUsed:       &provider,
 				ModelUsed:          &model,
 				InputTokens:        &inputTokens,
 				CountTowardBudgets: test.countTowardBudgets,
 			}) {
-				t.Fatal("SetRoutingDebugOnContext() = false")
+				t.Fatal("AppendRoutingCallOnContext() = false")
 			}
 			entry := &logstore.Log{Provider: string(schemas.OpenAI), Model: "gpt-4o"}
 

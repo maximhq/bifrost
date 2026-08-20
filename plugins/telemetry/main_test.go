@@ -216,10 +216,12 @@ func TestRoutingEmbeddingCounters(t *testing.T) {
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				RequestType: schemas.ChatCompletionRequest,
 				RoutingDebug: &schemas.BifrostRoutingDebug{
-					ProviderUsed:       &provider,
-					ModelUsed:          &model,
-					InputTokens:        &inputTokens,
-					CountTowardBudgets: countTowardBudgets,
+					Calls: []schemas.BifrostRoutingCall{{
+						ProviderUsed:       &provider,
+						ModelUsed:          &model,
+						InputTokens:        &inputTokens,
+						CountTowardBudgets: countTowardBudgets,
+					}},
 				},
 			},
 		}}
@@ -237,6 +239,44 @@ func TestRoutingEmbeddingCounters(t *testing.T) {
 		if got := counterTotal(t, p.registry, "bifrost_routing_embedding_cost_total"); got != 0 {
 			t.Fatalf("cost counter without pricing manager = %v, want 0", got)
 		}
+	}
+}
+
+// TestRoutingCountersRecordBothSemanticAndLLMCalls pins the fix for the bug
+// where a request that classified via semantic and then fell back to the llm
+// classifier lost the embedding's telemetry: both calls in one RoutingDebug
+// stamp must each increment their own counter family, not just the last one
+// written.
+func TestRoutingCountersRecordBothSemanticAndLLMCalls(t *testing.T) {
+	p := newTestPlugin(t)
+
+	embedProvider, embedModel, embedTokens := "openai", "text-embedding-3-small", 42
+	llmProvider, llmModel, llmInput, llmOutput := "anthropic", "claude-haiku-4-5", 30, 5
+	resp := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Usage: &schemas.BifrostLLMUsage{PromptTokens: 11, CompletionTokens: 7, TotalTokens: 18},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.ChatCompletionRequest,
+			RoutingDebug: &schemas.BifrostRoutingDebug{
+				Calls: []schemas.BifrostRoutingCall{
+					{ProviderUsed: &embedProvider, ModelUsed: &embedModel, InputTokens: &embedTokens},
+					{ProviderUsed: &llmProvider, ModelUsed: &llmModel, InputTokens: &llmInput, OutputTokens: &llmOutput},
+				},
+			},
+		},
+	}}
+	resp.PopulateExtraFields(schemas.ChatCompletionRequest, schemas.ModelProvider(embedProvider), embedModel, embedModel)
+
+	ctx := newHookContext(schemas.ChatCompletionRequest)
+	if _, _, err := p.PostLLMHook(ctx, resp, nil); err != nil {
+		t.Fatalf("PostLLMHook: %v", err)
+	}
+
+	waitForCounter(t, p.registry, "bifrost_routing_llm_requests_total", 1)
+	if got := counterTotalWithLabel(t, p.registry, "bifrost_routing_embedding_requests_total", "phase", "request"); got != 1 {
+		t.Fatalf("embedding requests counter = %v, want 1", got)
+	}
+	if got := counterTotal(t, p.registry, "bifrost_routing_llm_requests_total"); got != 1 {
+		t.Fatalf("llm requests counter = %v, want 1 (must not be shadowed by the embed call)", got)
 	}
 }
 

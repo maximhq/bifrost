@@ -1811,6 +1811,48 @@ export function LogDetailView({
 							</div>
 						</>
 					)}
+					{!isContainer && !isPassthrough && log.routing_debug?.calls && log.routing_debug.calls.length > 0 && (
+						<>
+							<DottedSeparator />
+							<div className="space-y-4">
+								<BlockHeader title="Routing Classification Details" />
+								<div className="space-y-4">
+									{log.routing_debug.calls.map((call, index) => (
+										<div
+											key={`${call.provider_used ?? "routing"}-${call.model_used ?? "call"}-${index}`}
+											className={cn("grid w-full grid-cols-1 gap-4 md:grid-cols-3", index > 0 && "border-border border-t pt-4")}
+										>
+											<LogEntryDetailsView
+												className="w-full"
+												label="Mechanism"
+												value={
+													<Badge variant="secondary" className="uppercase">
+														{call.output_tokens != null ? "LLM Classification" : "Embedding"}
+													</Badge>
+												}
+											/>
+											{call.provider_used && (
+												<LogEntryDetailsView
+													className="w-full"
+													label="Provider"
+													value={
+														<Badge variant="secondary" className="uppercase">
+															{call.provider_used}
+														</Badge>
+													}
+												/>
+											)}
+											{call.model_used && <LogEntryDetailsView className="w-full" label="Model" value={call.model_used} />}
+											<LogEntryDetailsView className="w-full" label="Input Tokens" value={call.input_tokens ?? 0} />
+											{call.output_tokens != null && (
+												<LogEntryDetailsView className="w-full" label="Output Tokens" value={call.output_tokens} />
+											)}
+										</div>
+									))}
+								</div>
+							</div>
+						</>
+					)}
 					{!isContainer &&
 						!isPassthrough &&
 						log.metadata &&

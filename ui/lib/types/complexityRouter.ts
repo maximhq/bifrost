@@ -11,6 +11,26 @@ export interface EditableKeywordConfig {
 
 export type SemanticVectorStore = "embedded" | "vector_store";
 
+// Mirrors ComplexitySemanticFallback* in framework/configstore: what answers
+// when semantic classification produces no tier. An absent field on the wire
+// means "none".
+export type SemanticFallback = "none" | "llm";
+
+export interface LLMConfig {
+	provider: string;
+	model: string;
+	timeout?: string;
+	// Replaces the shipped classification guidance when set; empty means the
+	// shipped guidance is used. The tier-name and response-format
+	// reinforcement is appended by the gateway either way and is not
+	// editable or exposed.
+	prompt?: string;
+	// How many of the most recent user messages are given to the classifier.
+	// 1 (the default) sends only the latest message.
+	message_history_count?: number;
+	count_toward_budgets?: boolean;
+}
+
 export interface SemanticConfig {
 	provider: string;
 	embedding_model: string;
@@ -23,7 +43,16 @@ export interface SemanticConfig {
 	message_history_count?: number;
 	count_toward_budgets?: boolean;
 	vector_store?: SemanticVectorStore;
+	fallback?: SemanticFallback;
 }
+
+// The llm classifier has no warmup: it holds no corpus and makes its first
+// provider call on the first classified request, so it is simply ready the
+// moment its block is saved.
+export interface LLMStatusInfo {
+	state: "disabled" | "ready";
+}
+
 
 export interface SemanticStatusInfo {
 	state: "disabled" | "warming" | "ready" | "failed";
@@ -37,11 +66,20 @@ export interface SemanticStatusInfo {
 	// unchanged. Reuse cannot be inferred from the persisted config alone; zero
 	// means the next save re-embeds every phrase regardless of what changed.
 	cached_phrases?: number;
+	llm?: LLMStatusInfo;
+	// The shipped classification guidance, served so the prompt editor can
+	// seed itself and offer a reset without holding a copy that drifts from
+	// the gateway's. The fixed reinforcement is never exposed.
+	llm_default_prompt?: string;
 }
 
 export interface AnalyzerConfig {
 	keywords: EditableKeywordConfig;
 	semantic?: SemanticConfig;
+	// The fallback classifier, engaged only when semantic.fallback selects
+	// "llm". May be present while the fallback says "none": the block is
+	// retained so toggling the fallback never loses settings.
+	llm?: LLMConfig;
 }
 
 export type KeywordListKey = keyof EditableKeywordConfig;
@@ -59,7 +97,7 @@ export const LEGACY_COMPLEXITY_TIER_VALUES = ["REASONING"] as const;
 // LEGACY_COMPLEXITY_TIER_VALUES): the complexity_mechanism column ships with the
 // semantic classifier, so no row was ever written with the retired "lexical"
 // mechanism and filtering on it could only ever return nothing.
-export const COMPLEXITY_MECHANISM_VALUES = ["semantic", "skipped"] as const;
+export const COMPLEXITY_MECHANISM_VALUES = ["semantic", "llm", "skipped"] as const;
 
 // Labels cover "lexical" even though nothing filters on it. Rows predating the
 // structured columns record their decision only in the prose routing log, and
@@ -68,6 +106,7 @@ export const COMPLEXITY_MECHANISM_VALUES = ["semantic", "skipped"] as const;
 export const COMPLEXITY_MECHANISM_LABELS: Record<string, string> = {
 	lexical: "Lexical",
 	semantic: "Semantic",
+	llm: "LLM",
 	skipped: "Skipped",
 };
 
@@ -127,6 +166,7 @@ export const DEFAULT_SEMANTIC_CONFIG: SemanticConfig = {
 	message_history_count: 1,
 	count_toward_budgets: false,
 	vector_store: "embedded",
+	fallback: "none",
 };
 
 // These are the wire values, not display-only aliases: config.json, the Helm
@@ -181,4 +221,59 @@ export function formatSemanticTimeout(milliseconds: number): string {
 	const inRange = Number.isFinite(milliseconds) && milliseconds > 0 && milliseconds <= MAX_SEMANTIC_TIMEOUT_MS;
 	const safe = inRange ? milliseconds : DEFAULT_SEMANTIC_TIMEOUT_MS;
 	return `${safe}ms`;
+}
+
+// Mirrors DefaultComplexityLLMTimeout in framework/configstore.
+export const DEFAULT_LLM_TIMEOUT_MS = 4000;
+
+// Server-side bounds from ComplexityLLMConfig.Validate. Enforced here too so
+// an over-long prompt fails in the form instead of as an opaque 400.
+export const MIN_LLM_MESSAGE_HISTORY = 1;
+export const MAX_LLM_MESSAGE_HISTORY = 10;
+export const MAX_LLM_PROMPT_CHARACTERS = 4000;
+
+// Seeded when a deployment has no llm block saved yet. Provider and model stay
+// blank because only the operator knows them; prompt stays blank because the
+// editor seeds it from the gateway-served default.
+export const DEFAULT_LLM_CONFIG: LLMConfig = {
+	provider: "",
+	model: "",
+	timeout: `${DEFAULT_LLM_TIMEOUT_MS}ms`,
+	prompt: "",
+	message_history_count: 1,
+	count_toward_budgets: false,
+};
+
+// These are the wire values, not display aliases: config.json and the
+// governance API take the same two strings.
+export const SEMANTIC_FALLBACK_OPTIONS: Array<{ value: SemanticFallback; label: string; description: string }> = [
+	{
+		value: "none",
+		label: "None",
+		description: "A request matching no phrase confidently carries no tier, and rules referencing complexity_tier do not match it.",
+	},
+	{
+		value: "llm",
+		label: "LLM classifier",
+		description: "A chat model names the tier instead. Slower and costlier than an embedding, but only unmatched requests pay for it.",
+	},
+];
+
+export const SEMANTIC_FALLBACK_LABELS: Record<SemanticFallback, string> = {
+	none: "None",
+	llm: "LLM classifier",
+};
+
+// Same duration round-trip as parseSemanticTimeoutMs, with the llm default.
+export function parseLLMTimeoutMs(timeout: string | undefined): number {
+	if (!timeout) return DEFAULT_LLM_TIMEOUT_MS;
+	const match = timeout.trim().match(/^([0-9]*\.?[0-9]+)(ns|us|µs|ms|s|m|h)$/);
+	if (!match) {
+		const numeric = Number(timeout);
+		return Number.isFinite(numeric) && numeric > 0 ? numeric : DEFAULT_LLM_TIMEOUT_MS;
+	}
+	const value = Number(match[1]);
+	const unitToMs: Record<string, number> = { ns: 1e-6, us: 1e-3, µs: 1e-3, ms: 1, s: 1000, m: 60000, h: 3600000 };
+	const milliseconds = value * unitToMs[match[2]];
+	return Number.isFinite(milliseconds) && milliseconds > 0 ? milliseconds : DEFAULT_LLM_TIMEOUT_MS;
 }

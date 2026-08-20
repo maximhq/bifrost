@@ -1458,10 +1458,16 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifro
 		// includes it. When no response exists (or a later plugin recovered with a
 		// fresh response after routing's post-hook), add the owned context snapshot
 		// explicitly. This also composes with provider BilledUsage rather than
-		// replacing the upstream cost.
-		if p.modelCatalog != nil && routingDebug != nil && routingDebug.CountTowardBudgets &&
+		// replacing the upstream cost. Each call's own CountTowardBudgets flag is
+		// checked independently, so a request that made both a semantic embed and
+		// an llm classification call bills whichever of the two (or both) opted in.
+		if p.modelCatalog != nil && routingDebug != nil &&
 			(result == nil || result.GetExtraFields().RoutingDebug == nil) {
-			cost += p.modelCatalog.CalculateRoutingEmbeddingCost(routingDebug, pricingScopes)
+			for _, call := range routingDebug.Calls {
+				if call.CountTowardBudgets {
+					cost += p.modelCatalog.CalculateRoutingCallCost(call, pricingScopes)
+				}
+			}
 		}
 
 		// Create usage update for tracker (business logic)

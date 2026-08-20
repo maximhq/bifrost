@@ -151,12 +151,14 @@ func requestEmbeddingTimeout(semantic *complexity.SemanticConfig) time.Duration 
 	return configstore.DefaultComplexitySemanticTimeout
 }
 
-// recordRoutingEmbedUsage stashes one classification embed's usage on the
+// recordRoutingEmbedUsage appends one classification embed's usage to the
 // triggering request's context. Warmup embeds arrive on plain background
 // contexts (never a *schemas.BifrostContext), so they are naturally excluded —
 // boot/warmup embedding cost is never stamped or attributed to any request.
 // Classification runs in PreRequestHook, once per top-level request before any
-// provider fallback attempts, so this is one call rather than an accumulator.
+// provider fallback attempts, so this call happens at most once; a later llm
+// fallback call (recordRoutingLLMUsage) appends alongside it rather than
+// replacing it, so both calls' cost and budget attribution survive.
 func recordRoutingEmbedUsage(ctx context.Context, semantic *complexity.SemanticConfig, inputTokens int) {
 	bfCtx, ok := ctx.(*schemas.BifrostContext)
 	if !ok || semantic == nil {
@@ -167,11 +169,40 @@ func recordRoutingEmbedUsage(ctx context.Context, semantic *complexity.SemanticC
 	}
 	provider := string(semantic.Provider)
 	model := semantic.EmbeddingModel
-	schemas.SetRoutingDebugOnContext(bfCtx, &schemas.BifrostRoutingDebug{
+	schemas.AppendRoutingCallOnContext(bfCtx, schemas.BifrostRoutingCall{
 		ProviderUsed:       &provider,
 		ModelUsed:          &model,
 		InputTokens:        &inputTokens,
 		CountTowardBudgets: semantic.CountTowardBudgets,
+	})
+}
+
+// recordRoutingLLMUsage appends one llm classification completion to the same
+// request-scoped handoff used by semantic classification. It runs at most
+// once per request — the llm classifier is invoked only after a semantic
+// non-answer, never retried within PreRequestHook — so this simply appends
+// rather than accumulating repeated calls. OutputTokens remains non-nil even
+// when zero because its presence tells cost calculation to use
+// chat-completion pricing.
+func recordRoutingLLMUsage(ctx context.Context, llm *complexity.LLMConfig, inputTokens, outputTokens int) {
+	bfCtx, ok := ctx.(*schemas.BifrostContext)
+	if !ok || llm == nil {
+		return
+	}
+	if inputTokens < 0 {
+		inputTokens = 0
+	}
+	if outputTokens < 0 {
+		outputTokens = 0
+	}
+	provider := string(llm.Provider)
+	model := llm.Model
+	schemas.AppendRoutingCallOnContext(bfCtx, schemas.BifrostRoutingCall{
+		ProviderUsed:       &provider,
+		ModelUsed:          &model,
+		InputTokens:        &inputTokens,
+		OutputTokens:       &outputTokens,
+		CountTowardBudgets: llm.CountTowardBudgets,
 	})
 }
 

@@ -132,6 +132,7 @@ type ServerCallbacks interface {
 	ReloadComplexityAnalyzerConfig(ctx context.Context, config *complexity.AnalyzerConfig) error
 	ValidateComplexityAnalyzerConfig(ctx context.Context, config *complexity.AnalyzerConfig) error
 	GetComplexitySemanticStatus(ctx context.Context) (complexity.SemanticStatusInfo, error)
+	GetComplexityLLMStatus(ctx context.Context) (complexity.LLMStatusInfo, error)
 	// Webhook related callbacks
 	ReloadWebhookEndpoint(ctx context.Context, id string) error
 	RemoveWebhookEndpoint(ctx context.Context, id string) error
@@ -1076,6 +1077,16 @@ func (s *BifrostHTTPServer) GetComplexitySemanticStatus(_ context.Context) (comp
 	return routingPlugin.ComplexitySemanticStatus(), nil
 }
 
+// GetComplexityLLMStatus returns the llm fallback classifier's readiness from
+// the routing plugin.
+func (s *BifrostHTTPServer) GetComplexityLLMStatus(_ context.Context) (complexity.LLMStatusInfo, error) {
+	routingPlugin, err := s.getRoutingPlugin()
+	if err != nil {
+		return complexity.LLMStatusInfo{}, fmt.Errorf("routing plugin not found: %w", err)
+	}
+	return routingPlugin.ComplexityLLMStatus(), nil
+}
+
 // ReloadComplexityAnalyzerConfig reloads the complexity analyzer config into the routing plugin.
 func (s *BifrostHTTPServer) ReloadComplexityAnalyzerConfig(ctx context.Context, config *complexity.AnalyzerConfig) error {
 	routingPlugin, err := s.getRoutingPlugin()
@@ -1987,6 +1998,14 @@ func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path 
 	if routingWarmupObserverPlugin, ok := plugin.(routing.WarmupEmbedUsageObserverSetter); ok {
 		routingWarmupObserverPlugin.SetWarmupEmbedUsageObserver(s.ObserveWarmupRoutingEmbedding)
 	}
+	if routingChatPlugin, ok := plugin.(interface {
+		SetChatRequestExecutor(routing.ChatRequestExecutor)
+	}); ok {
+		routingChatPlugin.SetChatRequestExecutor(s.Client.ChatCompletionRequest)
+	}
+	if routingResponsesPlugin, ok := plugin.(routing.ResponsesExecutorSetter); ok {
+		routingResponsesPlugin.SetResponsesRequestExecutor(s.Client.ResponsesRequest)
+	}
 	return s.SyncLoadedPlugin(ctx, name, plugin, placement, order)
 }
 
@@ -2648,6 +2667,8 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		routingPlugin.SetEmbeddingRequestExecutor(s.Client.EmbeddingRequest)
 		routingPlugin.SetComplexityVectorStore(s.Config.VectorStore)
 		routingPlugin.SetWarmupEmbedUsageObserver(s.ObserveWarmupRoutingEmbedding)
+		routingPlugin.SetChatRequestExecutor(s.Client.ChatCompletionRequest)
+		routingPlugin.SetResponsesRequestExecutor(s.Client.ResponsesRequest)
 	}
 
 	// Initialize Sidekiq runner for background jobs

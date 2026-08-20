@@ -20,7 +20,7 @@ func (p *GovernancePlugin) AttributeRoutingEmbeddingCost(provider schemas.ModelP
 	}
 	providerStr := string(provider)
 	tokens := inputTokens
-	cost := p.modelCatalog.CalculateRoutingEmbeddingCost(&schemas.BifrostRoutingDebug{
+	cost := p.modelCatalog.CalculateRoutingCallCost(schemas.BifrostRoutingCall{
 		ProviderUsed: &providerStr,
 		ModelUsed:    &model,
 		InputTokens:  &tokens,

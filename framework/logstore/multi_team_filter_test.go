@@ -89,4 +89,5 @@ func TestCanUseMatViewFilters_ExcludesTeamBU(t *testing.T) {
 	assert.False(t, canUseMatViewFilters(SearchFilters{BusinessUnitIDs: []string{"bu1"}}), "BU filter must force the raw path")
 	assert.False(t, canUseMatViewFilters(SearchFilters{CustomerIDs: []string{"c1"}}), "customer filter must force the raw path")
 	assert.False(t, canUseMatViewFilters(SearchFilters{ParentRequestID: "req-1"}), "parent request filter has no matview dimension and must force the raw path")
+
 }
