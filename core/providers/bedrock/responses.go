@@ -3434,9 +3434,23 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 			seenNonSystemMessage = true
 		}
 
-		// If we're processing a non-reasoning message and have pending reasoning blocks,
-		// flush them into the previous assistant message (if it exists)
-		if msgType != schemas.ResponsesMessageTypeReasoning && len(pendingReasoningContentBlocks) > 0 {
+		// Buffered reasoning belongs to the assistant turn that is still being built,
+		// so the three item types that build one consume it themselves and are skipped
+		// here: an assistant `message` prepends it to its own content, and
+		// function_call / function_call_output prepend it to the toolUse message they
+		// flush. Relocating it into the PREVIOUS assistant message for those types
+		// moved an interleaved thinking block in front of the tool call it was produced
+		// after -- a modification of a signed block that Bedrock rejects (issue #6342).
+		//
+		// Everything else (a user turn, a server-tool call, an unhandled type) has
+		// nothing to attach the reasoning to going forward, so the historical fallback
+		// still applies: fold it into the last assistant message rather than lose it.
+		consumesPendingReasoning := msgType == schemas.ResponsesMessageTypeReasoning ||
+			msgType == schemas.ResponsesMessageTypeFunctionCall ||
+			msgType == schemas.ResponsesMessageTypeFunctionCallOutput ||
+			(msgType == schemas.ResponsesMessageTypeMessage && msg.Role != nil &&
+				*msg.Role == schemas.ResponsesInputMessageRoleAssistant)
+		if !consumesPendingReasoning && len(pendingReasoningContentBlocks) > 0 {
 			if len(bedrockMessages) > 0 && bedrockMessages[len(bedrockMessages)-1].Role == BedrockMessageRoleAssistant {
 				// Prepend reasoning blocks to the last assistant message
 				lastMsg := &bedrockMessages[len(bedrockMessages)-1]
@@ -3467,10 +3481,19 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 				resultContent := []BedrockContentBlock{}
 				status := "success"
 				if msg.Status != nil && *msg.Status != "" {
-					// Validate status is one of the allowed values
+					// Converse accepts only success|error on toolResult.status
+					// (docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolResultBlock.html).
+					// "incomplete" is the canonical Responses status for a failed tool
+					// result -- it is what the Anthropic ingress writes for is_error and
+					// what this provider's own Converse ingress writes for status "error"
+					// (see convertSingleBedrockMessageToBifrostMessages). Letting it fall
+					// through to the default reported a failed tool call to the model as a
+					// success, so Bedrock could not read back what Bedrock had written.
 					switch *msg.Status {
 					case "success", "error":
 						status = *msg.Status
+					case "incomplete":
+						status = "error"
 					default:
 						// Default to success for unknown status values
 						status = "success"
@@ -3614,47 +3637,17 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 			role := *msg.Role
 
 			// Always flush pending tool calls and results before processing a new message
-			// This ensures tool calls and results are properly paired
-			if stateManager.HasPendingToolCalls() {
-				callIDs := stateManager.EmitPendingToolCalls()
-				// Create assistant message with tool calls
-				var toolUseBlocks []BedrockContentBlock
-				for _, callID := range callIDs {
-					if toolCall, exists := stateManager.toolCalls[callID]; exists {
-						toolUseBlock := &BedrockContentBlock{
-							ToolUse: &BedrockToolUse{
-								ToolUseID: bedrockAliasToolUseID(toolCall.CallID),
-								Name:      toolCall.ToolName,
-							},
-						}
-						// Preserve original key ordering of tool arguments for prompt caching.
-						var input json.RawMessage
-						var buf bytes.Buffer
-						if err := json.Compact(&buf, []byte(toolCall.Arguments)); err == nil {
-							input = buf.Bytes()
-						} else {
-							input = json.RawMessage("{}")
-						}
-						toolUseBlock.ToolUse.Input = input
-						toolUseBlocks = append(toolUseBlocks, *toolUseBlock)
-						// Preserve the cache breakpoint Claude Code placed on this tool call, else the
-						// next turn can't match the prefix and collapses to the tools/system floor.
-						if toolCall.CacheControl != nil {
-							toolUseBlocks = append(toolUseBlocks, BedrockContentBlock{
-								CachePoint: newBedrockCachePoint(toolCall.CacheControl.TTL),
-							})
-						}
-					}
-				}
-
-				if len(toolUseBlocks) > 0 {
-					bedrockMessages = append(bedrockMessages, BedrockMessage{
-						Role:    BedrockMessageRoleAssistant,
-						Content: toolUseBlocks,
-					})
-					stateManager.MarkToolCallsEmitted(callIDs, len(bedrockMessages)-1)
-				}
-			}
+			// This ensures tool calls and results are properly paired.
+			//
+			// Routed through flushPendingToolCalls rather than a private copy of it:
+			// the copy that used to live here was identical except that it did NOT
+			// prepend pendingReasoningContentBlocks, so a turn ordered
+			// [thinking, tool_use, text] -- which reaches this branch with a tool call
+			// AND buffered reasoning pending at the same time -- emitted the tool use
+			// in front of the signed reasoning block that preceded it upstream. That is
+			// the same relocation of a replayed thinking block that issue #6342 is
+			// about, just one flush site further along.
+			flushPendingToolCalls()
 
 			// Emit any pending results after tool calls
 			if stateManager.HasPendingResults() {
@@ -3712,11 +3705,26 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 						bedrockMsg.Content = append(pendingServerToolBlocks, bedrockMsg.Content...)
 						pendingServerToolBlocks = nil
 					}
+					// Buffered reasoning belongs at the front of THIS assistant message,
+					// not folded back into the previous one. Doing it here is what keeps
+					// an interleaved turn in wire order once the tool-call batch before
+					// it has already been flushed (see the reasoning case above).
+					if bedrockMsg.Role == BedrockMessageRoleAssistant && len(pendingReasoningContentBlocks) > 0 {
+						bedrockMsg.Content = append(pendingReasoningContentBlocks, bedrockMsg.Content...)
+						pendingReasoningContentBlocks = nil
+					}
 					bedrockMessages = append(bedrockMessages, *bedrockMsg)
 				}
 			}
 
 		case schemas.ResponsesMessageTypeReasoning:
+			// A reasoning item arriving while tool calls are still buffered means the
+			// model thought AFTER those calls (interleaved thinking). Emit them first so
+			// the new reasoning lands behind them in the turn instead of being hoisted
+			// in front of them. flushPendingToolCalls consumes whatever reasoning was
+			// already pending, which is the reasoning that genuinely preceded the calls.
+			flushPendingToolCalls()
+
 			// Handle reasoning as content in next assistant message
 			// For now, just add to pending content blocks
 			reasoningBlocks := convertBifrostReasoningToBedrockReasoning(&msg)

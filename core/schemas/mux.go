@@ -975,6 +975,26 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 			attachPendingReasoning(cm.ChatAssistantMessage)
 		}
 
+		// A role:"tool" message carries a tool's result, so unlike an assistant
+		// message it has no meaning without content -- OpenAI's Chat Completions API
+		// requires the field. A function_call_output can legitimately carry no body
+		// though: Anthropic marks `content` optional on a tool_result block, so a void
+		// tool, an errored tool with no body, and an explicit empty content array all
+		// arrive here with nothing to convert. Left alone, ChatMessageContent's
+		// omitempty then drops the key entirely and the tool message goes out as
+		// {"role":"tool","tool_call_id":"..."}.
+		//
+		// Backfilled here, after the content conversion above, rather than at any one
+		// ingress: this is the layer that owns the chat wire contract, so it covers
+		// every producer of an empty tool output at once. Seeding the empty string
+		// further upstream would also rewrite the Bedrock Converse wire from
+		// `"content":[]` to `"content":[{"text":""}]`, and an empty text block is a
+		// shape Anthropic rejects.
+		if cm.Role == ChatMessageRoleTool &&
+			(cm.Content == nil || (cm.Content.ContentStr == nil && len(cm.Content.ContentBlocks) == 0)) {
+			cm.Content = &ChatMessageContent{ContentStr: Ptr("")}
+		}
+
 		chatMessages = append(chatMessages, cm)
 	}
 
