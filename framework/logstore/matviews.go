@@ -44,6 +44,8 @@ SELECT
     COALESCE(business_unit_id, '') AS business_unit_id,
     COALESCE(alias, '') AS alias,
     COALESCE(canonical_model_name, '') AS canonical_model_name,
+    COALESCE(user_agent, '') AS user_agent,
+    COALESCE(app, '') AS app,
     COUNT(*) AS count,
     SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count,
     SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS error_count,
@@ -78,7 +80,7 @@ SELECT
     COUNT(*) FILTER (WHERE ` + cacheDebugJSONGuard + `) AS cache_debug_count
 FROM logs
 WHERE status IN ('success', 'error', 'cancelled')
-GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14
+GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16
 `
 
 // cacheDebugJSONGuard matches rows whose cache_debug column holds a loose
@@ -96,7 +98,7 @@ const cacheDebugHitTypeExpr = `substring(cache_debug from '"hit_type"[[:space:]]
 // during startup ensure / repair paths.
 const mvLogsHourlyUniqueIdx = `
 CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS mv_logs_hourly_uniq
-ON mv_logs_hourly (hour, provider, model, status, object_type, selected_key_id, virtual_key_id, routing_rule_id, user_id, team_id, customer_id, business_unit_id, alias, canonical_model_name)
+ON mv_logs_hourly (hour, provider, model, status, object_type, selected_key_id, virtual_key_id, routing_rule_id, user_id, team_id, customer_id, business_unit_id, alias, canonical_model_name, user_agent, app)
 `
 
 // mvLogsHourlyRequiredColumns is the canonical column set used by
@@ -117,13 +119,27 @@ var mvLogsHourlyRequiredColumns = []string{
 	"business_unit_id",
 	"alias",
 	"canonical_model_name",
-	"cancelled_count",
 	"throughput_completion_tokens",
 	"throughput_latency_ms",
 	"throughput_request_count",
 	"direct_cache_hits",
 	"semantic_cache_hits",
 	"cache_debug_count",
+	"user_agent",
+	"app",
+	"count",
+	"success_count",
+	"error_count",
+	"cancelled_count",
+	"avg_latency",
+	"p90_latency",
+	"p95_latency",
+	"p99_latency",
+	"total_prompt_tokens",
+	"total_completion_tokens",
+	"total_tokens",
+	"total_cached_read_tokens",
+	"total_cost",
 }
 
 // legacyMatViewNames are matviews from previous schema versions that no longer
@@ -179,8 +195,10 @@ type filterMatViewDef struct {
 // dimension is single-valued on the scalar column (old / pre-migration rows and
 // the VK-team path) and multi-valued on the JSON-array column (the enterprise
 // user/AP path). It reuses teamOrBUFanoutFrom — the same fan-out the ranking /
-// histogram readers use — so a team / business unit that only ever appears in
-// the JSON array still surfaces in the filter dropdown. The fanned-out
+// histogram readers reach through dimensionFanoutFrom — so a team / business
+// unit that only ever appears in the JSON array still surfaces in the filter
+// dropdown. The emitted body text is pinned: repairMatViewShapes treats a
+// change as drift and drops the views on boot. The fanned-out
 // dim_id/dim_name become the dropdown id/name; the visibility columns
 // (scopeProjection) come from the original log row (exposed via l.* by the
 // fan-out subquery) so DAC scope still applies — including the scalar
@@ -315,6 +333,21 @@ var filterMatViews = []filterMatViewDef{
 		bodyOverride:    multiValueFilterMatViewBody("business_unit_id"),
 		uniqueIdx:       "id, name, " + scopeIdxColumns,
 		requiredColumns: append([]string{"id", "name"}, scopeRequiredColumns...),
+	},
+	{
+		name:            "mv_filter_apps",
+		selectExpr:      "app, " + scopeProjection,
+		whereExpr:       "app IS NOT NULL AND app != ''",
+		uniqueIdx:       "app, " + scopeIdxColumns,
+		requiredColumns: append([]string{"app"}, scopeRequiredColumns...),
+	},
+	{
+		// Distinct raw User-Agent strings kept for compatibility/debug filtering.
+		name:            "mv_filter_user_agents",
+		selectExpr:      "user_agent, " + scopeProjection,
+		whereExpr:       "user_agent IS NOT NULL AND user_agent != ''",
+		uniqueIdx:       "user_agent, " + scopeIdxColumns,
+		requiredColumns: append([]string{"user_agent"}, scopeRequiredColumns...),
 	},
 }
 
@@ -591,6 +624,9 @@ func matViewNeedsRebuild(ctx context.Context, conn *sql.Conn, view string, requi
 			return true, nil
 		}
 	}
+	if len(actual) != len(requiredColumns) {
+		return true, nil
+	}
 	return false, nil
 }
 
@@ -854,7 +890,12 @@ func refreshMatViews(ctx context.Context, db *gorm.DB) error {
 // refreshes materialized views. If readyFlag is provided and not yet true,
 // it will be set to true on the first successful refresh (recovery path when
 // the initial refresh failed). Returns a stop function for graceful shutdown.
+// A non-positive interval means maintenance is disabled: no goroutine starts
+// and the stop function is a no-op.
 func startMatViewRefresher(ctx context.Context, db *gorm.DB, interval, timeout time.Duration, logger schemas.Logger, readyFlag *atomic.Bool) func() {
+	if interval <= 0 {
+		return func() {}
+	}
 	stopCh := make(chan struct{})
 	go func() {
 		ticker := time.NewTicker(interval)
@@ -902,6 +943,7 @@ func startMatViewRefresher(ctx context.Context, db *gorm.DB, interval, timeout t
 func canUseMatViewFilters(f SearchFilters) bool {
 	return f.ContentSearch == "" &&
 		f.ParentRequestID == "" &&
+		!f.RootsOnly &&
 		len(f.MetadataFilters) == 0 &&
 		canUseMatViewStatusFilter(f.Status) &&
 		len(f.RoutingEngineUsed) == 0 &&
@@ -911,6 +953,7 @@ func canUseMatViewFilters(f SearchFilters) bool {
 		f.MinCost == nil && f.MaxCost == nil &&
 		!f.MissingCostOnly &&
 		len(f.CacheHitTypes) == 0 &&
+		len(f.UserAgents) == 0 &&
 		len(f.TeamIDs) == 0 &&
 		len(f.BusinessUnitIDs) == 0 &&
 		len(f.CustomerIDs) == 0
@@ -1037,6 +1080,9 @@ func applyMatViewFiltersOnly(q *gorm.DB, f SearchFilters) *gorm.DB {
 	}
 	if len(f.BusinessUnitIDs) > 0 {
 		q = q.Where("business_unit_id IN ?", f.BusinessUnitIDs)
+	}
+	if len(f.Apps) > 0 {
+		q = q.Where("app IN ?", f.Apps)
 	}
 	return q
 }
@@ -2579,6 +2625,36 @@ func (s *RDBLogStore) getDistinctStopReasonsFromMatView(ctx context.Context, lim
 		return nil, err
 	}
 	return stopReasons, nil
+}
+
+// getDistinctUserAgentsFromMatView returns unique raw User-Agent strings from mv_filter_user_agents.
+func (s *RDBLogStore) getDistinctUserAgentsFromMatView(ctx context.Context, limit int, query string) ([]string, error) {
+	var userAgents []string
+	q := s.ScopedDB(ctx).Table("mv_filter_user_agents").
+		Distinct("user_agent").
+		Where("user_agent != ''")
+	if query != "" {
+		q = q.Where("user_agent ILIKE ?", "%"+query+"%")
+	}
+	if err := q.Order("user_agent ASC").Limit(limit).Pluck("user_agent", &userAgents).Error; err != nil {
+		return nil, err
+	}
+	return userAgents, nil
+}
+
+// getDistinctAppsFromMatView returns unique backend-detected app labels from mv_filter_apps.
+func (s *RDBLogStore) getDistinctAppsFromMatView(ctx context.Context, limit int, query string) ([]string, error) {
+	var apps []string
+	q := s.ScopedDB(ctx).Table("mv_filter_apps").
+		Distinct("app").
+		Where("app != ''")
+	if query != "" {
+		q = q.Where("app ILIKE ?", "%"+query+"%")
+	}
+	if err := q.Order("app ASC").Limit(limit).Pluck("app", &apps).Error; err != nil {
+		return nil, err
+	}
+	return apps, nil
 }
 
 // getDistinctKeyPairsFromMatView returns unique ID-Name pairs for the given

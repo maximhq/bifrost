@@ -18,6 +18,8 @@ export interface ProviderConfigBudgetLine {
 	id?: string;
 	max_limit?: number;
 	reset_duration?: string;
+	/** Fiscal quarter definition; only meaningful when reset_duration is "1Q". */
+	reset_config?: { quarter_start_month?: number };
 }
 
 export interface ProviderConfigRateLimit {
@@ -174,6 +176,17 @@ export function ProviderConfigCard({
 
 	const modelBudgets = value.modelBudgets || [];
 	const capLabel = budgetLinesLabel(value.budgets);
+	// Header summary: the provider cap and/or a model-budget count, falling back to
+	// "No budget" only when neither is set — so a provider with only model budgets
+	// doesn't read as "No budget".
+	const modelBudgetCount = showModelBudgets ? modelBudgets.length : 0;
+	const headerSummary =
+		[
+			budgetLinesLabel(value.budgets, ""),
+			modelBudgetCount > 0 ? `${modelBudgetCount} model budget${modelBudgetCount === 1 ? "" : "s"}` : "",
+		]
+			.filter(Boolean)
+			.join(" · ") || "No budget";
 	const ws = globalProviderCap;
 
 	// Key scope handed to ModelMultiselect so model suggestions match the keys
@@ -214,8 +227,9 @@ export function ProviderConfigCard({
 			>
 				<RenderProviderIcon provider={iconProvider} size="sm" className="h-4 w-4 shrink-0" />
 				<span className="shrink-0 text-sm font-medium whitespace-nowrap">{providerLabel}</span>
-				<span className="min-w-0 flex-1" />
-				<span className="text-muted-foreground shrink-0 text-sm whitespace-nowrap">{capLabel}</span>
+				<span className="text-muted-foreground min-w-0 flex-1 truncate text-right text-sm" title={headerSummary}>
+					{headerSummary}
+				</span>
 				<button
 					type="button"
 					onClick={(e) => {
@@ -273,10 +287,16 @@ export function ProviderConfigCard({
 									id: b.id,
 									max_limit: b.max_limit,
 									reset_duration: b.reset_duration || "1M",
+									reset_config: b.reset_config,
 								}))}
 								onChange={(lines: BudgetLineEntry[]) => {
 									update({
-										budgets: lines.map((l) => ({ id: l.id, max_limit: l.max_limit, reset_duration: l.reset_duration })),
+										budgets: lines.map((l) => ({
+											id: l.id,
+											max_limit: l.max_limit,
+											reset_duration: l.reset_duration,
+											reset_config: l.reset_config,
+										})),
 									});
 								}}
 							/>
@@ -368,12 +388,20 @@ export function ProviderConfigCard({
 														lines={(mb.budgets || []).map((b) => ({
 															max_limit: b.max_limit,
 															reset_duration: b.reset_duration || "1d",
+															reset_config: b.reset_config,
 														}))}
 														onChange={(lines: BudgetLineEntry[]) => {
 															update({
 																modelBudgets: modelBudgets.map((m, i) =>
 																	i === mbIndex
-																		? { ...m, budgets: lines.map((l) => ({ max_limit: l.max_limit, reset_duration: l.reset_duration })) }
+																		? {
+																				...m,
+																				budgets: lines.map((l) => ({
+																					max_limit: l.max_limit,
+																					reset_duration: l.reset_duration,
+																					reset_config: l.reset_config,
+																				})),
+																			}
 																		: m,
 																),
 															});

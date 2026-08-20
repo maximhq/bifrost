@@ -294,7 +294,7 @@ func TestCheckBudgetHonoursResetSemantics(t *testing.T) {
 
 	t.Run("calendar aligned budget expires on the calendar boundary", func(t *testing.T) {
 		now := time.Now().UTC()
-		periodStart := configstoreTables.GetCalendarPeriodStart("1Y", now)
+		periodStart := configstoreTables.GetCalendarPeriodStart("1Y", now, configstoreTables.QuarterStartNotApplicable)
 		// Guard against the final hours of the year, where the rolling
 		// approximation of a year coincides with the calendar boundary and the
 		// two predicates would agree by accident.
@@ -536,5 +536,475 @@ func TestDumpBudgetsPersistsUsageAndNeverRewindsBoundary(t *testing.T) {
 		require.NoError(t, err)
 		assert.True(t, persisted.LastReset.UTC().Equal(now),
 			"a stale snapshot rewound the persisted boundary to %s, re-opening a spent window", persisted.LastReset.UTC())
+	})
+}
+
+// newQuarterlyBudget builds a calendar-aligned quarterly budget with the given
+// fiscal start, created well before the window under test.
+func newQuarterlyBudget(id string, quarterStartMonth time.Month, usage float64) *configstoreTables.TableBudget {
+	createdAt := time.Date(2025, time.January, 1, 0, 0, 0, 0, time.UTC)
+	budget := buildBudgetWithUsage(id, 1000, usage, "1Q")
+	budget.CreatedAt = createdAt
+	budget.UpdatedAt = createdAt
+	budget.IsCalendarAligned = true
+	budget.ResetConfig = &configstoreTables.BudgetResetConfig{QuarterStartMonth: int(quarterStartMonth)}
+	budget.LastReset = configstoreTables.GetCalendarPeriodStart("1Q", createdAt, quarterStartMonth)
+	return budget
+}
+
+// TestQuarterlyBudgetResetTargetIsDeterministicAcrossNodes proves two nodes
+// holding the same quarterly budget converge on the same boundary even when
+// their reset tickers fire days apart.
+//
+// This is the cluster property the whole feature rests on. Each node derives the
+// boundary from its own copy of the row, so if a peer failed to load the quarter
+// definition - the AfterFind hook not firing on a preload, or an access profile
+// materialising a managed key without copying it - the two nodes would land on
+// different boundaries and reset each other's usage repeatedly.
+func TestQuarterlyBudgetResetTargetIsDeterministicAcrossNodes(t *testing.T) {
+	for _, quarterStart := range []time.Month{time.January, time.February, time.April, time.November} {
+		t.Run(quarterStart.String(), func(t *testing.T) {
+			nodeA := newStandaloneStore(t)
+			nodeB := newStandaloneStore(t)
+			nodeA.budgets.Store("shared-quarterly", newQuarterlyBudget("shared-quarterly", quarterStart, 250))
+			nodeB.budgets.Store("shared-quarterly", newQuarterlyBudget("shared-quarterly", quarterStart, 250))
+
+			// Sweep across two years. Node A's ticker lands early in each month,
+			// node B's lands late, so any dependence on wall-clock phase shows up.
+			for month := 0; month < 24; month++ {
+				base := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC).AddDate(0, month, 0)
+				sweepBudgetAt(t, nodeA, "shared-quarterly", base.Add(2*time.Hour))
+				sweepBudgetAt(t, nodeB, "shared-quarterly", base.AddDate(0, 0, 19).Add(21*time.Hour))
+			}
+
+			ctx := context.Background()
+			gotA := nodeA.LoadBudget(ctx, "shared-quarterly")
+			gotB := nodeB.LoadBudget(ctx, "shared-quarterly")
+			require.NotNil(t, gotA)
+			require.NotNil(t, gotB)
+
+			assert.True(t, gotA.LastReset.Equal(gotB.LastReset),
+				"nodes disagree on the quarter boundary: A at %s, B at %s",
+				gotA.LastReset.UTC(), gotB.LastReset.UTC())
+
+			// The boundary must be a real fiscal quarter start, not a ticker instant.
+			assert.Equal(t, 1, gotA.LastReset.UTC().Day(), "boundary is not the 1st: %s", gotA.LastReset.UTC())
+			assert.Zero(t, gotA.LastReset.UTC().Hour())
+			expectedMonthOffset := (int(gotA.LastReset.UTC().Month()) - int(quarterStart) + 12) % 3
+			assert.Zero(t, expectedMonthOffset,
+				"boundary month %s is not a quarter start for fiscal year opening in %s",
+				gotA.LastReset.UTC().Month(), quarterStart)
+		})
+	}
+}
+
+// TestQuarterlyBudgetIsNotDueImmediatelyAfterReset is the runtime guard against
+// the perpetually-due failure (issue #4851 class).
+//
+// If WindowStart ever falls through to returning now for a quarterly budget, the
+// reset path finds it due on every ticker tick and zeroes usage continuously,
+// which reads as "the budget never enforces" rather than as an error.
+func TestQuarterlyBudgetIsNotDueImmediatelyAfterReset(t *testing.T) {
+	store := newStandaloneStore(t)
+	store.budgets.Store("quarterly", newQuarterlyBudget("quarterly", time.February, 500))
+
+	// First sweep well inside a quarter: the budget is due because LastReset is
+	// still on the 2025 boundary.
+	now := time.Date(2026, time.June, 15, 12, 0, 0, 0, time.UTC)
+	require.NotNil(t, sweepBudgetAt(t, store, "quarterly", now), "expected the stale window to reset")
+
+	// Every subsequent sweep inside the same quarter must be a no-op.
+	for _, offset := range []time.Duration{time.Second, time.Hour, 24 * time.Hour, 20 * 24 * time.Hour} {
+		assert.Nil(t, sweepBudgetAt(t, store, "quarterly", now.Add(offset)),
+			"budget reported due again %s into the same quarter", offset)
+	}
+
+	ctx := context.Background()
+	got := store.LoadBudget(ctx, "quarterly")
+	require.NotNil(t, got)
+	// February start puts 15 June in the May-Jul quarter.
+	assert.Equal(t, time.Date(2026, time.May, 1, 0, 0, 0, 0, time.UTC), got.LastReset.UTC())
+	assert.Zero(t, got.CurrentUsage)
+}
+
+// TestQuarterlyBudgetResetsExactlyOncePerQuarter verifies the cadence: sweeping
+// daily across a year produces four resets, not one per sweep and not one per
+// month.
+func TestQuarterlyBudgetResetsExactlyOncePerQuarter(t *testing.T) {
+	store := newStandaloneStore(t)
+	start := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	budget := newQuarterlyBudget("quarterly", time.April, 100)
+	budget.LastReset = configstoreTables.GetCalendarPeriodStart("1Q", start, time.April)
+	store.budgets.Store("quarterly", budget)
+
+	resets := 0
+	for day := 1; day <= 365; day++ {
+		if sweepBudgetAt(t, store, "quarterly", start.AddDate(0, 0, day)) != nil {
+			resets++
+		}
+	}
+
+	assert.Equal(t, 4, resets, "a year must contain exactly four quarterly resets")
+}
+
+// TestQuarterDefinitionSurvivesVirtualKeyReload closes the last link in the
+// cluster propagation chain.
+//
+// A quarterly budget's fiscal calendar never travels over the wire. The gossip
+// payload carries usage only, and a config change broadcasts nothing but an
+// entity ID and action; each peer answers it by calling ReloadVirtualKey, which
+// re-reads the row with Preload("Budgets") and hands the result to
+// UpdateVirtualKeyInMemory. Two links in that chain are already covered - the
+// AfterFind hook firing on a nested preload, and the migration persisting the
+// column - and this covers the third: the in-memory store keeping the
+// definition rather than rebuilding budgets from a field list.
+//
+// If it were lost here, the node that served the edit would enforce April
+// quarters while every peer enforced January ones, with nothing logged.
+func TestQuarterDefinitionSurvivesVirtualKeyReload(t *testing.T) {
+	ctx := context.Background()
+
+	newQuarterlyVK := func(quarterStart time.Month, usage float64) *configstoreTables.TableVirtualKey {
+		budget := buildBudgetWithUsage("vk-quarterly-budget", 1000, usage, "1Q")
+		budget.ResetConfig = &configstoreTables.BudgetResetConfig{QuarterStartMonth: int(quarterStart)}
+		vk := buildVirtualKeyWithBudget("vk-quarterly", "bf-vk-quarterly", "quarterly", budget)
+		vk.CalendarAligned = true
+		return vk
+	}
+
+	// February start puts 15 June in the May-Jul quarter, where a January default
+	// would say Apr-Jun and disagree by a whole month.
+	now := time.Date(2026, time.June, 15, 12, 0, 0, 0, time.UTC)
+	wantWindow := time.Date(2026, time.May, 1, 0, 0, 0, 0, time.UTC)
+
+	assertQuarterly := func(t *testing.T, loaded *configstoreTables.TableBudget, wantUsage float64) {
+		t.Helper()
+		require.NotNil(t, loaded)
+		require.NotNil(t, loaded.ResetConfig, "the peer's in-memory budget lost its quarter definition")
+		assert.Equal(t, int(time.February), loaded.ResetConfig.QuarterStartMonth)
+		assert.True(t, loaded.IsCalendarAligned, "calendar alignment is stamped from the owning virtual key")
+		// The definition has to actually drive the window, not merely be stored.
+		assert.Equal(t, wantWindow, loaded.WindowStart(now))
+		// Config travels on a reload; live counters do not.
+		assert.Equal(t, wantUsage, loaded.CurrentUsage)
+	}
+
+	// A node seeing the virtual key for the first time: UpdateVirtualKeyInMemory
+	// delegates to CreateVirtualKeyInMemory when nothing is cached yet.
+	t.Run("first load", func(t *testing.T) {
+		store := newStandaloneStore(t)
+		store.UpdateVirtualKeyInMemory(ctx, newQuarterlyVK(time.February, 250), nil, nil, nil)
+		assertQuarterly(t, store.LoadBudget(ctx, "vk-quarterly-budget"), 250)
+	})
+
+	// The path a peer actually takes after an ID-only config broadcast: the
+	// virtual key is already cached, so the update branch rebuilds its budgets.
+	// This branch is distinct from the create branch above and preserves live
+	// usage from the cached row, so it has to be exercised separately - a
+	// definition dropped only here would survive every first-load test.
+	t.Run("reload over an existing virtual key", func(t *testing.T) {
+		store := newStandaloneStore(t)
+		store.UpdateVirtualKeyInMemory(ctx, newQuarterlyVK(time.January, 0), nil, nil, nil)
+
+		// Simulate accrued spend on the cached copy, then reload with an edited
+		// fiscal calendar, exactly as a peer would after the operator changes it.
+		cached := store.LoadBudget(ctx, "vk-quarterly-budget")
+		require.NotNil(t, cached)
+		cached.CurrentUsage = 250
+		store.storeBudget(cached.ID, cached)
+
+		store.UpdateVirtualKeyInMemory(ctx, newQuarterlyVK(time.February, 0), nil, nil, nil)
+		assertQuarterly(t, store.LoadBudget(ctx, "vk-quarterly-budget"), 250)
+	})
+}
+
+// TestResetBudgetUsageInMemory covers the primitive behind an operator-triggered
+// usage reset.
+//
+// It must zero usage without touching LastReset. Moving the boundary is ruled
+// out: every persistence path guards it forward-only, and the intended target
+// would often be earlier than the current value. Clearing the LastDBUsages
+// baseline alongside is not optional - the dump path writes the delta between
+// in-memory usage and that baseline, so a stale baseline would immediately
+// re-add the spend that was just cleared.
+func TestResetBudgetUsageInMemory(t *testing.T) {
+	ctx := context.Background()
+	store := newStandaloneStore(t)
+
+	anchor := cycleTestAnchor()
+	budget := buildBudgetWithUsage("operator-reset", 1000, 425, "1M")
+	budget.LastReset = anchor
+	store.budgets.Store(budget.ID, budget)
+	store.LastDBUsagesBudgetsMu.Lock()
+	store.LastDBUsagesBudgets[budget.ID] = 300
+	store.LastDBUsagesBudgetsMu.Unlock()
+
+	reset, ok := store.ResetBudgetUsageInMemory(ctx, budget.ID)
+	require.True(t, ok, "reset should apply to a budget that exists")
+	require.NotNil(t, reset)
+
+	assert.Zero(t, reset.CurrentUsage, "usage must be cleared")
+	assert.True(t, reset.LastReset.Equal(anchor), "the reset boundary must not move")
+
+	loaded := store.LoadBudget(ctx, budget.ID)
+	require.NotNil(t, loaded)
+	assert.Zero(t, loaded.CurrentUsage, "the stored budget must reflect the reset")
+	assert.True(t, loaded.LastReset.Equal(anchor))
+
+	store.LastDBUsagesBudgetsMu.RLock()
+	baseline := store.LastDBUsagesBudgets[budget.ID]
+	store.LastDBUsagesBudgetsMu.RUnlock()
+	assert.Zero(t, baseline, "a stale baseline would re-add the cleared spend on the next dump")
+}
+
+// TestResetBudgetUsageInMemoryMissingBudget verifies an unknown ID is reported
+// rather than silently succeeding, so a caller cannot believe it reset something
+// that does not exist.
+func TestResetBudgetUsageInMemoryMissingBudget(t *testing.T) {
+	store := newStandaloneStore(t)
+	reset, ok := store.ResetBudgetUsageInMemory(context.Background(), "does-not-exist")
+	assert.False(t, ok)
+	assert.Nil(t, reset)
+}
+
+// TestDumpBudgetsCannotUndoOperatorReset covers the interleaving where an operator
+// reset lands after a dump has snapshotted a budget but before that snapshot
+// reaches the database.
+//
+// The two halves of a dump are separated by one database transaction per batch, so
+// this window is real work, not an instant. A reset installs a fresh pointer via
+// CAS, which the snapshot cannot see, and deliberately leaves LastReset alone, so
+// the "<=" guard still matches. Without the reset generation the stale usage is
+// written straight back over the operator's reset, and nothing reports an error:
+// the number simply reappears.
+func TestDumpBudgetsCannotUndoOperatorReset(t *testing.T) {
+	ctx := context.Background()
+	logger := NewMockLogger()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	newStore := func(t *testing.T, seeded *configstoreTables.TableBudget) (*LocalGovernanceStore, configstore.ConfigStore) {
+		t.Helper()
+		configStore, err := configstore.NewConfigStore(ctx, &configstore.Config{
+			Enabled: true,
+			Type:    configstore.ConfigStoreTypeSQLite,
+			Config:  &configstore.SQLiteConfig{Path: t.TempDir() + "/resetrace.db"},
+		}, logger)
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, configStore.Close(ctx)) })
+		require.NoError(t, configStore.CreateBudget(ctx, seeded))
+		store, err := NewLocalGovernanceStore(ctx, logger, configStore, nil, nil)
+		require.NoError(t, err)
+		return store, configStore
+	}
+
+	seed := buildBudgetWithUsage("dump-reset-race-budget", 1000, 500, "24h")
+	seed.CreatedAt = now
+	seed.UpdatedAt = now
+	seed.LastReset = now
+
+	store, configStore := newStore(t, seed)
+
+	live := store.LoadBudget(ctx, seed.ID)
+	require.NotNil(t, live)
+	require.Equal(t, 500.0, live.CurrentUsage, "precondition: the budget carries spend to be reset")
+	require.True(t, live.LastReset.Equal(now), "precondition: no sweep moved the boundary")
+
+	// The dump reads the pre-reset usage, then stalls before writing.
+	rows, gens := store.snapshotBudgetRows(nil)
+	require.NotEmpty(t, rows)
+
+	// The operator reset lands in the gap: memory is cleared here, and the handler's
+	// own transaction clears the database.
+	reset, ok := store.ResetBudgetUsageInMemory(ctx, seed.ID)
+	require.True(t, ok)
+	require.Zero(t, reset.CurrentUsage)
+	require.True(t, reset.LastReset.Equal(now),
+		"an operator reset must leave the boundary alone, which is why the <= guard cannot catch this")
+	require.NoError(t, configStore.UpdateBudgetUsage(ctx, seed.ID, 0))
+
+	// The stalled dump now writes. Its rows are stale and must be dropped.
+	require.NoError(t, store.writeBudgetRows(ctx, rows, gens))
+
+	persisted, err := configStore.GetBudget(ctx, seed.ID)
+	require.NoError(t, err)
+	assert.Zero(t, persisted.CurrentUsage,
+		"a dump that snapshotted before the reset wrote %.2f back and silently undid the operator's reset", persisted.CurrentUsage)
+	assert.True(t, persisted.LastReset.UTC().Equal(now),
+		"dropping a stale row must not disturb the boundary")
+
+	// The drop is scoped to the reset, not permanent: the next cycle persists the
+	// post-reset value normally.
+	require.NoError(t, store.BumpBudgetUsage(ctx, seed.ID, 7.5))
+	require.NoError(t, store.DumpBudgets(ctx, nil))
+	persisted, err = configStore.GetBudget(ctx, seed.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 7.5, persisted.CurrentUsage,
+		"the dump after a reset must resume persisting usage, or a reset would stop accounting for good")
+}
+
+// TestEnablingCalendarAlignmentCanResetAtTheBoundaryAlreadyPassed records what
+// enabling alignment actually does today, which is not what this feature's docs
+// describe. It is a characterization test, not an endorsement.
+//
+// budgetResetTarget returns WindowStart(now) whenever that is after LastReset, and
+// for an aligned budget WindowStart is the most recent calendar boundary. So a
+// budget whose window opened before that boundary is already due the moment
+// alignment is switched on, and the next sweep clears its usage.
+//
+// The documented promise is that alignment applies from the next period and the
+// current window keeps its usage. That holds only when LastReset is newer than the
+// most recent boundary, which is the case the existing coverage exercises: it
+// creates the budget at test time, so LastReset is always inside the current
+// period. Both cases are pinned below so the difference is visible.
+//
+// The gap is closed by adoption: the owner handlers now call
+// AdoptCalendarAlignmentInMemory on the switch-over, which moves each open window
+// forward onto its boundary so the sweep below never finds it overdue. These
+// assertions stay as they are on purpose - budgetResetTarget itself is unchanged,
+// and it is precisely its "reset whatever is overdue" rule that makes adoption
+// necessary. Read them as the reason the switch-over needs a step, not as a
+// description of what an operator sees.
+func TestEnablingCalendarAlignmentCanResetAtTheBoundaryAlreadyPassed(t *testing.T) {
+	store := newStandaloneStore(t)
+	now := time.Date(2026, time.February, 5, 12, 0, 0, 0, time.UTC)
+	monthStart := time.Date(2026, time.February, 1, 0, 0, 0, 0, time.UTC)
+
+	alignedBudget := func(lastReset time.Time) *configstoreTables.TableBudget {
+		return &configstoreTables.TableBudget{
+			ID:                "align-boundary-budget",
+			MaxLimit:          100,
+			CurrentUsage:      42,
+			ResetDuration:     "1M",
+			IsCalendarAligned: true,
+			CreatedAt:         lastReset,
+			LastReset:         lastReset,
+		}
+	}
+
+	t.Run("a window opened before the boundary is due at once", func(t *testing.T) {
+		target := store.budgetResetTarget(alignedBudget(time.Date(2026, time.January, 10, 9, 0, 0, 0, time.UTC)), now)
+		require.NotNil(t, target,
+			"current behaviour: the budget is due immediately, so its $42 of usage is cleared on the next reset evaluation - the sweep or the next request, whichever lands first")
+		assert.True(t, target.Equal(monthStart),
+			"the reset lands on the boundary that already passed, not on the next one")
+	})
+
+	// Being due is evaluated on two independent paths, not one. The subtest above
+	// asks budgetResetTarget the question the 10s ticker asks; BumpBudgetUsage asks
+	// the identical question on the request path and resets before recording the
+	// new cost. So an already-due window is cleared by the very next request even
+	// on a node whose sweep has not fired yet, which is why the transition is
+	// documented as the next reset *evaluation* rather than the next sweep.
+	t.Run("the request path clears an already-due window without any sweep", func(t *testing.T) {
+		ctx := context.Background()
+		budget := alignedBudget(time.Date(2026, time.January, 10, 9, 0, 0, 0, time.UTC))
+		budget.ID = "align-boundary-request-path-budget"
+		openedAt := budget.LastReset
+		store.budgets.Store(budget.ID, budget)
+
+		// No sweepBudgetAt call anywhere in this subtest: the bump is the only
+		// thing that touches the budget.
+		require.NoError(t, store.BumpBudgetUsage(ctx, budget.ID, 2.5))
+
+		bumped := store.LoadBudget(ctx, budget.ID)
+		require.NotNil(t, bumped, "expected the budget to remain loaded after the bump")
+		assert.Equal(t, 2.5, bumped.CurrentUsage,
+			"the 42 already accumulated was cleared by the request itself rather than carried forward, so the new window holds only this request's cost")
+		assert.True(t, bumped.LastReset.After(openedAt),
+			"the request path advanced the window to its boundary, exactly as a sweep would")
+	})
+
+	t.Run("a window opened after the boundary is left alone", func(t *testing.T) {
+		target := store.budgetResetTarget(alignedBudget(time.Date(2026, time.February, 3, 9, 0, 0, 0, time.UTC)), now)
+		assert.Nil(t, target,
+			"this is the case the docs describe, and the only one existing coverage reaches")
+	})
+
+	// calendar_aligned is an owner-level flag: the same switch drives the owner's
+	// rate limits, and rateLimitResetTarget applies the identical
+	// "boundary after lastReset" rule. Pinned here so the documented transition
+	// cannot claim to cover rate limits while only budgets are actually checked -
+	// and so the eventual behaviour fix is reminded it owes them the same rule.
+	t.Run("rate limits carry the same transition", func(t *testing.T) {
+		duration := "1M"
+
+		before := store.rateLimitResetTarget(&duration, true,
+			time.Time{}, time.Date(2026, time.January, 10, 9, 0, 0, 0, time.UTC), now)
+		require.NotNil(t, before,
+			"a rate-limit window opened before the boundary is due at once, exactly like a budget")
+		assert.True(t, before.Equal(monthStart),
+			"the reset lands on the boundary that already passed")
+
+		after := store.rateLimitResetTarget(&duration, true,
+			time.Time{}, time.Date(2026, time.February, 3, 9, 0, 0, 0, time.UTC), now)
+		assert.Nil(t, after,
+			"a window opened after the boundary is left alone, exactly like a budget")
+	})
+
+	// One owner holds several windows on independent cadences: every budget has its
+	// own ResetDuration, and a rate limit has two more in TokenResetDuration and
+	// RequestResetDuration, each with its own LastReset. The owner-level flag picks
+	// the alignment *mode*; it does not give them a shared boundary. Pinned because
+	// the documented behaviour is easy to state as "everything snaps together",
+	// which is wrong in both directions below.
+	t.Run("each window aligns on its own duration", func(t *testing.T) {
+		lastReset := time.Date(2026, time.January, 10, 9, 0, 0, 0, time.UTC)
+		monthly, daily := "1M", "1d"
+
+		monthlyTarget := store.rateLimitResetTarget(&monthly, true, time.Time{}, lastReset, now)
+		dailyTarget := store.rateLimitResetTarget(&daily, true, time.Time{}, lastReset, now)
+		require.NotNil(t, monthlyTarget)
+		require.NotNil(t, dailyTarget)
+		assert.True(t, monthlyTarget.Equal(monthStart),
+			"a monthly window aligns to the month boundary")
+		assert.True(t, dailyTarget.Equal(time.Date(2026, time.February, 5, 0, 0, 0, 0, time.UTC)),
+			"a daily window aligns to midnight, not to the month boundary the budget uses")
+		assert.False(t, monthlyTarget.Equal(*dailyTarget),
+			"two windows on one aligned owner do not share a boundary")
+	})
+
+	// A sub-day counter has no calendar boundary to snap to, so rateLimitResetTarget
+	// falls through to the rolling branch and the owner-level flag changes nothing
+	// for it. Documenting alignment as owner-wide without this exception promises a
+	// behaviour the code does not have.
+	t.Run("sub-day durations stay rolling even when aligned", func(t *testing.T) {
+		hourly := "1h"
+		anchor := time.Date(2026, time.February, 5, 9, 30, 0, 0, time.UTC)
+
+		aligned := store.rateLimitResetTarget(&hourly, true, anchor, anchor, now)
+		rolling := store.rateLimitResetTarget(&hourly, false, anchor, anchor, now)
+		require.NotNil(t, aligned)
+		require.NotNil(t, rolling)
+		assert.True(t, aligned.Equal(*rolling),
+			"calendar_aligned is inert on a sub-day window: it resets on its rolling anchor either way")
+		assert.False(t, aligned.Equal(time.Date(2026, time.February, 5, 0, 0, 0, 0, time.UTC)),
+			"and specifically it does not snap to midnight")
+	})
+
+	// The combination is accepted, not refused. BeforeSave validates owner count,
+	// duration format, a positive duration, max_limit, the override fields and
+	// reset_config - and nothing ties alignment to the duration, at the table layer
+	// or in the handlers. So "sub-day plus aligned" persists happily and is simply
+	// ignored at reset time, which is what the docs have to say.
+	t.Run("a sub-day aligned budget is accepted, not rejected", func(t *testing.T) {
+		ctx := context.Background()
+		logger := NewMockLogger()
+		configStore, err := configstore.NewConfigStore(ctx, &configstore.Config{
+			Enabled: true,
+			Type:    configstore.ConfigStoreTypeSQLite,
+			Config:  &configstore.SQLiteConfig{Path: t.TempDir() + "/subdayaligned.db"},
+		}, logger)
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, configStore.Close(ctx)) })
+
+		budget := buildBudgetWithUsage("sub-day-aligned-budget", 100, 0, "1h")
+		budget.IsCalendarAligned = true
+		require.NoError(t, configStore.CreateBudget(ctx, budget),
+			"nothing validates alignment against the duration, so this must save")
+
+		stored, err := configStore.GetBudget(ctx, budget.ID)
+		require.NoError(t, err)
+		assert.Equal(t, "1h", stored.ResetDuration,
+			"the sub-day duration is kept as written rather than corrected or refused")
 	})
 }

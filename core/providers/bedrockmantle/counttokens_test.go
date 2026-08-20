@@ -27,13 +27,13 @@ func TestMantleAnthropicCountTokensURL(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.region, func(t *testing.T) {
-			got := mantleAnthropicCountTokensURL(tt.region)
+			got := mantleAnthropicCountTokensURL(nil, tt.region)
 			if got != tt.want {
 				t.Fatalf("mantleAnthropicCountTokensURL(%q) = %q, want %q", tt.region, got, tt.want)
 			}
 			// count_tokens must stay a suffix of the messages URL, so a future change to the
 			// messages host/path can't silently desync the two surfaces.
-			if want := mantleAnthropicURL(tt.region) + "/count_tokens"; got != want {
+			if want := mantleAnthropicURL(nil, tt.region) + "/count_tokens"; got != want {
 				t.Fatalf("count-tokens URL %q is not the messages URL + /count_tokens (%q)", got, want)
 			}
 		})
@@ -70,7 +70,7 @@ func TestCountTokensRegionResolution(t *testing.T) {
 			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 			defer ctx.Cancel()
 
-			got := mantleAnthropicCountTokensURL(provider.resolveRegion(ctx, tt.key, tt.model))
+			got := mantleAnthropicCountTokensURL(nil, provider.resolveRegion(ctx, tt.key, tt.model))
 			want := "https://bedrock-mantle." + tt.want + ".api.aws/anthropic/v1/messages/count_tokens"
 			if got != want {
 				t.Fatalf("count-tokens URL = %q, want %q", got, want)

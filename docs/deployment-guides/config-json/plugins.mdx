@@ -126,14 +126,17 @@ Exports distributed traces to any OTel-compatible collector (Jaeger, Zipkin, Tem
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `config.collector_url` | Yes | - | OTLP collector endpoint |
-| `config.trace_type` | Yes | - | Trace format: `"genai_extension"`, `"vercel"`, or `"open_inference"` |
-| `config.protocol` | Yes | - | `"http"` or `"grpc"` |
+| `config.traces_enabled` | No | `true` | Export traces. Set `false` for a metrics-only profile; `collector_url` is then not required |
+| `config.collector_url` | Yes (if traces enabled) | - | OTLP collector endpoint |
+| `config.trace_type` | Yes (if traces enabled) | - | Trace format: `"genai_extension"`, `"vercel"`, or `"open_inference"` |
+| `config.protocol` | Yes (when traces or metrics enabled) | - | `"http"` or `"grpc"` (used by both traces and metrics) |
 | `config.service_name` | No | `"bifrost"` | Service name reported to the collector |
 | `config.metrics_enabled` | No | `false` | Enable push-based OTLP metrics export |
-| `config.metrics_endpoint` | No | - | OTLP metrics endpoint URL |
+| `config.metrics_endpoint` | Yes (if `metrics_enabled`) | - | OTLP metrics endpoint URL |
 | `config.metrics_push_interval` | No | `15` | Metrics push interval in seconds |
-| `config.headers` | No | - | Custom headers for the collector (supports `env.` prefix) |
+| `config.headers` | No | - | Custom headers sent to both the trace and metrics endpoints (supports `env.` prefix) |
+| `config.trace_headers` | No | - | Extra headers sent only to the trace endpoint, overlaid on `headers` (supports `env.` prefix) |
+| `config.metrics_headers` | No | - | Extra headers sent only to the metrics endpoint, overlaid on `headers` (supports `env.` prefix) |
 | `config.insecure` | No | `false` | Skip TLS verification |
 | `config.tls_ca_cert` | No | - | Path to TLS CA certificate |
 | `config.plugin_span_filter` | No | - | Filter which plugin hook spans are exported. See [Filtering Plugin Spans](/features/observability/otel#filtering-plugin-spans) |

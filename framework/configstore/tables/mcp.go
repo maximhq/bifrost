@@ -26,16 +26,30 @@ type TableMCPClient struct {
 	HeadersJSON             string             `gorm:"type:text" json:"-"`                              // JSON serialized map[string]string
 	AllowedExtraHeadersJSON string             `gorm:"type:text" json:"-"`                              // JSON serialized []string
 	IsPingAvailable         *bool              `gorm:"default:true" json:"is_ping_available,omitempty"` // Whether the MCP server supports ping for health checks
-	ToolPricingJSON         string             `gorm:"type:text" json:"-"`                              // JSON serialized map[string]float64
-	ToolSyncInterval        int                `gorm:"default:0" json:"tool_sync_interval"`             // Per-client tool sync interval in seconds (0 = use global, negative = disabled)
-	ToolExecutionTimeout    int                `gorm:"default:0" json:"tool_execution_timeout"`         // Per-client tool execution timeout in seconds (0 = use global from tool_manager_config)
+	// NeedsSessionStickiness: nil/false = per-call connection (the default
+	// for newly created clients); true = persistent shared connection
+	// (today's only behavior — every pre-existing row is explicitly
+	// backfilled to true by the migration, so this default only applies to
+	// clients created after this column existed). Ignored/always-true for
+	// non-http connection types.
+	//
+	// Deliberately no `gorm:"default:..."` tag: a DB-level default would
+	// make ADD COLUMN's fast-default mechanism return that value for every
+	// pre-existing row immediately, so the migration's `WHERE
+	// needs_session_stickiness IS NULL` backfill would never match anything.
+	// Leaving the column plain-nullable is what lets the migration tell
+	// "pre-existing, needs backfill" (NULL) apart from "explicitly set".
+	NeedsSessionStickiness *bool  `json:"needs_session_stickiness,omitempty"`
+	ToolPricingJSON        string `gorm:"type:text" json:"-"`                      // JSON serialized map[string]float64
+	ToolSyncInterval       int    `gorm:"default:0" json:"tool_sync_interval"`     // Per-client tool sync interval in seconds (0 = use global, negative = disabled)
+	ToolExecutionTimeout   int    `gorm:"default:0" json:"tool_execution_timeout"` // Per-client tool execution timeout in seconds (0 = use global from tool_manager_config)
 
 	// Per-user OAuth: discovered tools persisted so they survive restart
 	DiscoveredToolsJSON string `gorm:"type:text" json:"-"` // JSON serialized map[string]schemas.ChatTool
 	ToolNameMappingJSON string `gorm:"type:text" json:"-"` // JSON serialized map[string]string
 
 	// OAuth authentication fields
-	AuthType      string            `gorm:"type:varchar(20);default:'headers'" json:"auth_type"`                         // "none", "headers", "oauth", "per_user_oauth", "per_user_headers"
+	AuthType      string            `gorm:"type:varchar(20);default:'headers'" json:"auth_type"`                         // "none", "headers", "oauth", "per_user_oauth", "per_user_headers", "token_exchange"
 	OauthConfigID *string           `gorm:"type:varchar(255);index;constraint:OnDelete:CASCADE" json:"oauth_config_id"`  // Foreign key to oauth_configs.ID with CASCADE delete
 	OauthConfig   *TableOauthConfig `gorm:"foreignKey:OauthConfigID;references:ID;constraint:OnDelete:CASCADE" json:"-"` // Gorm relationship
 
@@ -45,8 +59,31 @@ type TableMCPClient struct {
 	// utils.StaticConfigHeaders (strip from plugin-visible static headers).
 	PerUserHeaderKeysJSON string `gorm:"type:text" json:"-"` // JSON serialized []string
 
+	// Token-exchange configuration (audience/scopes + the exchange
+	// application's client credentials) for auth_type='token_exchange'. NULL
+	// for all other auth types. Carries a client secret, so it is encrypted
+	// at rest like the other credential-bearing columns; the exchange
+	// endpoint and grant shape come from the deployment's identity-provider
+	// integration at exchange time.
+	TokenExchangeJSON *string `gorm:"type:text" json:"-"` // JSON serialized schemas.MCPTokenExchangeConfig
+
 	AllowOnAllVirtualKeys bool `gorm:"default:false" json:"allow_on_all_virtual_keys"` // Whether to allow the MCP client to run on all virtual keys
 	Disabled              bool `gorm:"default:false" json:"disabled"`                  // Whether the client is intentionally disabled
+
+	// PendingOAuthConfigJSON stashes the inline `oauth_config` block from
+	// config.json for shared-OAuth MCP clients (auth_type='oauth') that have
+	// not yet been authorized by an admin. NULL on UI-created clients and on
+	// rows whose OAuth has already been authorized — cleared by the OAuth
+	// callback once oauth_configs.status='authorized'.
+	//
+	// Deserialised into PendingOAuthConfig by AfterFind; serialised back by
+	// BeforeSave. Wire-side it surfaces as `oauth_config` (UI form parity).
+	//
+	// The column name is pinned explicitly: GORM's naming strategy would
+	// otherwise derive pending_o_auth_config_json from the Go field name,
+	// breaking the add-column migration and every raw map update that
+	// addresses the column as pending_oauth_config_json.
+	PendingOAuthConfigJSON *string `gorm:"column:pending_oauth_config_json;type:text" json:"-"`
 
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
@@ -58,16 +95,18 @@ type TableMCPClient struct {
 	UpdatedAt time.Time `gorm:"index;not null" json:"updated_at"`
 
 	// Virtual fields for runtime use (not stored in DB)
-	StdioConfig               *schemas.MCPStdioConfig      `gorm:"-" json:"stdio_config,omitempty"`
-	TLSConfig                 *schemas.MCPTLSConfig        `gorm:"-" json:"tls_config,omitempty"`
-	ToolsToExecute            schemas.WhiteList            `gorm:"-" json:"tools_to_execute"`
-	ToolsToAutoExecute        schemas.WhiteList            `gorm:"-" json:"tools_to_auto_execute"`
-	Headers                   map[string]schemas.SecretVar `gorm:"-" json:"headers"`
-	AllowedExtraHeaders       schemas.WhiteList            `gorm:"-" json:"allowed_extra_headers"`
-	ToolPricing               map[string]float64           `gorm:"-" json:"tool_pricing"`
-	DiscoveredTools           map[string]schemas.ChatTool  `gorm:"-" json:"-"`
-	DiscoveredToolNameMapping map[string]string            `gorm:"-" json:"-"`
-	PerUserHeaderKeys         []string                     `gorm:"-" json:"per_user_header_keys"`
+	StdioConfig               *schemas.MCPStdioConfig         `gorm:"-" json:"stdio_config,omitempty"`
+	TLSConfig                 *schemas.MCPTLSConfig           `gorm:"-" json:"tls_config,omitempty"`
+	ToolsToExecute            schemas.WhiteList               `gorm:"-" json:"tools_to_execute"`
+	ToolsToAutoExecute        schemas.WhiteList               `gorm:"-" json:"tools_to_auto_execute"`
+	Headers                   map[string]schemas.SecretVar    `gorm:"-" json:"headers"`
+	AllowedExtraHeaders       schemas.WhiteList               `gorm:"-" json:"allowed_extra_headers"`
+	ToolPricing               map[string]float64              `gorm:"-" json:"tool_pricing"`
+	DiscoveredTools           map[string]schemas.ChatTool     `gorm:"-" json:"-"`
+	DiscoveredToolNameMapping map[string]string               `gorm:"-" json:"-"`
+	PerUserHeaderKeys         []string                        `gorm:"-" json:"per_user_header_keys"`
+	TokenExchange             *schemas.MCPTokenExchangeConfig `gorm:"-" json:"token_exchange,omitempty"` // Runtime mirror of TokenExchangeJSON
+	PendingOAuthConfig        *schemas.OAuth2Config           `gorm:"-" json:"oauth_config,omitempty"`   // Runtime mirror of PendingOAuthConfigJSON
 }
 
 // TableName sets the table name for each model
@@ -192,6 +231,31 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 		c.PerUserHeaderKeysJSON = ""
 	}
 
+	if c.TokenExchange != nil {
+		data, err := json.Marshal(c.TokenExchange)
+		if err != nil {
+			return err
+		}
+		s := string(data)
+		c.TokenExchangeJSON = &s
+	} else {
+		c.TokenExchangeJSON = nil
+	}
+
+	// Persist the inline `oauth_config` block. Rehydrated by AfterFind so
+	// the initiate-verification endpoint can feed it to InitiateOAuthFlow
+	// the same way the UI Create handler does.
+	if c.PendingOAuthConfig != nil {
+		data, err := json.Marshal(c.PendingOAuthConfig)
+		if err != nil {
+			return err
+		}
+		s := string(data)
+		c.PendingOAuthConfigJSON = &s
+	} else {
+		c.PendingOAuthConfigJSON = nil
+	}
+
 	// Encrypt sensitive fields after serialization.
 	// Always set EncryptionStatus when encryption is enabled so the startup
 	// batch pass does not re-process this row indefinitely.
@@ -212,6 +276,24 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 				return fmt.Errorf("failed to encrypt mcp headers: %w", err)
 			}
 			c.HeadersJSON = enc
+		}
+		// The stash can carry an inline OAuth client_secret — encrypt it at
+		// rest like the other credential-bearing columns.
+		if c.PendingOAuthConfigJSON != nil && *c.PendingOAuthConfigJSON != "" {
+			enc, err := encrypt.Encrypt(*c.PendingOAuthConfigJSON)
+			if err != nil {
+				return fmt.Errorf("failed to encrypt mcp pending oauth config: %w", err)
+			}
+			c.PendingOAuthConfigJSON = &enc
+		}
+		// The token-exchange block carries the exchange application's
+		// client_secret — same treatment.
+		if c.TokenExchangeJSON != nil && *c.TokenExchangeJSON != "" {
+			enc, err := encrypt.Encrypt(*c.TokenExchangeJSON)
+			if err != nil {
+				return fmt.Errorf("failed to encrypt mcp token exchange config: %w", err)
+			}
+			c.TokenExchangeJSON = &enc
 		}
 		c.EncryptionStatus = EncryptionStatusEncrypted
 	}
@@ -236,6 +318,20 @@ func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 				return fmt.Errorf("failed to decrypt mcp connection string: %w", err)
 			}
 			c.ConnectionString.Val = decrypted
+		}
+		if c.TokenExchangeJSON != nil && *c.TokenExchangeJSON != "" {
+			decrypted, err := encrypt.Decrypt(*c.TokenExchangeJSON)
+			if err != nil {
+				return fmt.Errorf("failed to decrypt mcp token exchange config: %w", err)
+			}
+			c.TokenExchangeJSON = &decrypted
+		}
+		if c.PendingOAuthConfigJSON != nil && *c.PendingOAuthConfigJSON != "" {
+			decrypted, err := encrypt.Decrypt(*c.PendingOAuthConfigJSON)
+			if err != nil {
+				return fmt.Errorf("failed to decrypt mcp pending oauth config: %w", err)
+			}
+			c.PendingOAuthConfigJSON = &decrypted
 		}
 	}
 	if c.StdioConfigJSON != nil {
@@ -291,6 +387,20 @@ func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 		if err := sonic.Unmarshal([]byte(c.PerUserHeaderKeysJSON), &c.PerUserHeaderKeys); err != nil {
 			return err
 		}
+	}
+	if c.TokenExchangeJSON != nil && *c.TokenExchangeJSON != "" {
+		var cfg schemas.MCPTokenExchangeConfig
+		if err := sonic.Unmarshal([]byte(*c.TokenExchangeJSON), &cfg); err != nil {
+			return err
+		}
+		c.TokenExchange = &cfg
+	}
+	if c.PendingOAuthConfigJSON != nil && *c.PendingOAuthConfigJSON != "" {
+		var cfg schemas.OAuth2Config
+		if err := sonic.Unmarshal([]byte(*c.PendingOAuthConfigJSON), &cfg); err != nil {
+			return err
+		}
+		c.PendingOAuthConfig = &cfg
 	}
 	return nil
 }

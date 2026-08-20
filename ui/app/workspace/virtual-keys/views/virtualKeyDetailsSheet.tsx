@@ -1,4 +1,5 @@
 import { BudgetOverrideDialog } from "@/components/budgetOverrideDialog";
+import { BudgetOverrideManagerDialog, type BudgetOverrideSection } from "@/components/budgetOverrideManagerDialog";
 import { CopyableId } from "@/components/copyableId";
 import { SheetNavigationButtons } from "@/components/sheetNavigationButtons";
 import { Badge } from "@/components/ui/badge";
@@ -8,11 +9,11 @@ import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useSheetNavigation } from "@/hooks/useSheetNavigation";
-import { supportsCalendarAlignment } from "@/lib/constants/governance";
+import { fiscalQuarterNote, supportsCalendarAlignment } from "@/lib/constants/governance";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { useRemoveVirtualKeyBudgetOverrideMutation, useSetVirtualKeyBudgetOverrideMutation } from "@/lib/store/apis/governanceApi";
-import { BudgetOverrideRequest, VirtualKey } from "@/lib/types/governance";
+import { BudgetOverrideRequest, VirtualKey, VirtualKeyProviderConfig } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
 import {
 	calculateUsagePercentage,
@@ -82,6 +83,22 @@ export default function VirtualKeyDetailSheet({
 	};
 	const clearBudgetOverride = async (budgetId: string) => {
 		await removeBudgetOverride({ vkId: virtualKey.id, budgetId }).unwrap();
+	};
+	// Provider budget + one section per model, for the provider's single override modal.
+	// Only persisted budgets (with an id) can carry an override.
+	const buildProviderOverrideSections = (config: VirtualKeyProviderConfig): BudgetOverrideSection[] => {
+		const toRows = (budgets: VirtualKeyProviderConfig["budgets"]) =>
+			(budgets ?? [])
+				.filter((b) => b.id)
+				.map((b) => ({ key: b.id, label: parseResetPeriod(b.reset_duration), budget: b, calendarAligned: virtualKey.calendar_aligned }));
+		const sections: BudgetOverrideSection[] = [];
+		const providerRows = toRows(config.budgets);
+		if (providerRows.length > 0) sections.push({ key: "provider", title: "Provider budget", rows: providerRows });
+		for (const mb of config.model_budgets ?? []) {
+			const rows = toRows(mb.budgets);
+			if (rows.length > 0) sections.push({ key: `m:${mb.model_name}`, title: `Model: ${mb.model_name}`, rows });
+		}
+		return sections;
 	};
 
 	const { prev: prevKeys, next: nextKeys } = useSheetNavigation({
@@ -229,9 +246,20 @@ export default function VirtualKeyDetailSheet({
 													<RenderProviderIcon provider={config.provider as ProviderIconType} size="sm" className="h-5 w-5" />
 													<span className="font-medium">{ProviderLabels[config.provider as ProviderName] || config.provider}</span>
 												</div>
-												<Badge variant="outline" className="font-mono text-xs">
-													Weight: {config.weight != null ? config.weight : <span className="text-muted-foreground italic">Not Set</span>}
-												</Badge>
+												<div className="flex items-center gap-2">
+													<Badge variant="outline" className="font-mono text-xs">
+														Weight: {config.weight != null ? config.weight : <span className="text-muted-foreground italic">Not Set</span>}
+													</Badge>
+													{!isManagedByProfile ? (
+														<BudgetOverrideManagerDialog
+															title={`${ProviderLabels[config.provider as ProviderName] || config.provider} budget overrides`}
+															sections={buildProviderOverrideSections(config)}
+															onSave={saveBudgetOverride}
+															onRemove={clearBudgetOverride}
+															disabled={!canUpdateVirtualKeys}
+														/>
+													) : null}
+												</div>
 											</div>
 
 											{/* Basic Config */}
@@ -313,17 +341,6 @@ export default function VirtualKeyDetailSheet({
 															<h4 className="text-sm font-medium">Provider Budgets</h4>
 															{config.budgets.map((b, bIdx) => (
 																<div key={bIdx} className="space-y-2">
-																	{!isManagedByProfile && b.id ? (
-																		<div className="flex justify-end">
-																			<BudgetOverrideDialog
-																				budget={b}
-																				onSave={(data) => saveBudgetOverride(b.id, data)}
-																				onRemove={() => clearBudgetOverride(b.id)}
-																				disabled={!canUpdateVirtualKeys}
-																				calendarAligned={virtualKey.calendar_aligned}
-																			/>
-																		</div>
-																	) : null}
 																	<UsageLine current={b.current_usage} max={getEffectiveBudgetLimit(b)} format={formatCurrency} />
 																	{hasActiveBudgetOverride(b) ? (
 																		<p className="text-muted-foreground text-xs">
@@ -334,6 +351,7 @@ export default function VirtualKeyDetailSheet({
 																		<span>
 																			Resets {parseResetPeriod(b.reset_duration)}
 																			{virtualKey.calendar_aligned && supportsCalendarAlignment(b.reset_duration) && " (calendar)"}
+																			{fiscalQuarterNote(b.reset_duration, b.reset_config)}
 																		</span>
 																		{b.last_reset ? (
 																			<span>
@@ -411,6 +429,81 @@ export default function VirtualKeyDetailSheet({
 															{config.rate_limit.token_max_limit == null && config.rate_limit.request_max_limit == null && (
 																<p className="text-muted-foreground text-sm">No rate limits configured for this provider</p>
 															)}
+														</div>
+													</>
+												)}
+
+												{/* Model Budgets — per-model caps/rate-limits under this provider */}
+												{config.model_budgets && config.model_budgets.length > 0 && (
+													<>
+														<DottedSeparator />
+														<div className="space-y-3">
+															<h4 className="text-sm font-medium">Model Budgets</h4>
+															{config.model_budgets.map((mb, mbIdx) => (
+																<div key={`${mb.model_name}-${mbIdx}`} className="space-y-3 rounded-md border p-3">
+																	<span className="text-sm font-medium">{mb.model_name}</span>
+
+																	{/* Budgets */}
+																	{mb.budgets && mb.budgets.length > 0
+																		? mb.budgets.map((b, bIdx) => (
+																				<div key={bIdx} className="space-y-2">
+																					<UsageLine current={b.current_usage} max={getEffectiveBudgetLimit(b)} format={formatCurrency} />
+																					{hasActiveBudgetOverride(b) ? (
+																						<p className="text-muted-foreground text-xs">
+																							Base {formatCurrency(b.max_limit)} + {formatCurrency(b.override_amount ?? 0)} override
+																						</p>
+																					) : null}
+																					<div className="text-muted-foreground flex items-center justify-between text-xs">
+																						<span>
+																							Resets {parseResetPeriod(b.reset_duration)}
+																							{virtualKey.calendar_aligned && supportsCalendarAlignment(b.reset_duration) && " (calendar)"}
+																			{fiscalQuarterNote(b.reset_duration, b.reset_config)}
+																						</span>
+																						{b.last_reset ? (
+																							<span>Last reset {formatDistanceToNow(new Date(b.last_reset), { addSuffix: true })}</span>
+																						) : null}
+																					</div>
+																				</div>
+																			))
+																		: null}
+
+																	{/* Token Limits */}
+																	{mb.rate_limit?.token_max_limit != null ? (
+																		<div className="space-y-2">
+																			<span className="text-muted-foreground text-xs font-medium">TOKEN LIMITS</span>
+																			<UsageLine
+																				current={mb.rate_limit.token_current_usage}
+																				max={mb.rate_limit.token_max_limit}
+																				format={(n) => n.toLocaleString()}
+																			/>
+																			<div className="text-muted-foreground text-xs">
+																				Resets {parseResetPeriod(mb.rate_limit.token_reset_duration || "")}
+																				{virtualKey.calendar_aligned &&
+																					supportsCalendarAlignment(mb.rate_limit.token_reset_duration || "") &&
+																					" (calendar)"}
+																			</div>
+																		</div>
+																	) : null}
+
+																	{/* Request Limits */}
+																	{mb.rate_limit?.request_max_limit != null ? (
+																		<div className="space-y-2">
+																			<span className="text-muted-foreground text-xs font-medium">REQUEST LIMITS</span>
+																			<UsageLine
+																				current={mb.rate_limit.request_current_usage}
+																				max={mb.rate_limit.request_max_limit}
+																				format={(n) => n.toLocaleString()}
+																			/>
+																			<div className="text-muted-foreground text-xs">
+																				Resets {parseResetPeriod(mb.rate_limit.request_reset_duration || "")}
+																				{virtualKey.calendar_aligned &&
+																					supportsCalendarAlignment(mb.rate_limit.request_reset_duration || "") &&
+																					" (calendar)"}
+																			</div>
+																		</div>
+																	) : null}
+																</div>
+															))}
 														</div>
 													</>
 												)}
@@ -510,6 +603,7 @@ export default function VirtualKeyDetailSheet({
 											<span>
 												Resets {parseResetPeriod(b.reset_duration)}
 												{virtualKey.calendar_aligned && supportsCalendarAlignment(b.reset_duration) && " (calendar)"}
+												{fiscalQuarterNote(b.reset_duration, b.reset_config)}
 											</span>
 											{b.last_reset ? (
 												<span>

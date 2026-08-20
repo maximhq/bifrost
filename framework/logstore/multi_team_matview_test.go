@@ -91,31 +91,33 @@ func TestFilterBusinessUnitMatView_CollectsScalarAndArray(t *testing.T) {
 	assert.Equal(t, "BU One", byID["bu-arr1"], "array-only business unit must now appear")
 }
 
-// TestDimensionRankings_SingleOwnerAdditive pins the additive attribution
-// semantics for the org-rollup dimensions: each request is credited to exactly
-// one owner — the scalar team_id — and requests with no scalar owner (e.g. the
-// enterprise user/AP path that only populates the JSON array) fall into a
-// synthetic "Unassigned" bucket rather than being fanned out to every team they
-// touch. This keeps the per-team spend additive so the Teams tab reconciles to
-// the org total, and TotalActualRequests == TotalAttributedRequests.
-func TestDimensionRankings_SingleOwnerAdditive(t *testing.T) {
+// TestDimensionRankings_ArrayFanout pins the attribution semantics for the org
+// dimensions that carry a JSON-array column. The enterprise user/AP path records
+// a request's full hierarchy in team_ids and leaves the scalar team_id NULL, so
+// each id on the row must be credited in full; the scalar column still covers
+// rows written without an array. The rollup is deliberately not additive —
+// TotalAttributedRequests exceeds TotalActualRequests when a request spans
+// several teams — and only rows with neither array nor scalar owner are
+// Unassigned.
+func TestDimensionRankings_ArrayFanout(t *testing.T) {
 	store, db := setupPerfTestDB(t)
 	ctx := context.Background()
 	now := time.Now().UTC()
 
-	// Row 1: array-only multi-team request with no scalar owner -> Unassigned.
+	// Row 1: array-only multi-team request -> credited to both teams.
 	// Row 2: single-team request with a scalar owner -> t-a.
-	// Additive: 2 requests total, each counted once.
+	// Row 3: no owner at all -> Unassigned.
 	insertTeamBULog(t, db, now, "u-1", "", "", `["t-a","t-b"]`, `["Team A","Team B"]`, "", "", "", "")
 	insertTeamBULog(t, db, now, "u-1", "t-a", "Team A", "", "", "", "", "", "")
+	insertTeamBULog(t, db, now, "u-1", "", "", "", "", "", "", "", "")
 
 	start := now.Add(-time.Hour)
 	end := now.Add(time.Hour)
 	res, err := store.GetDimensionRankings(ctx, SearchFilters{StartTime: &start, EndTime: &end}, RankingDimensionTeam)
 	require.NoError(t, err)
 
-	assert.Equal(t, int64(2), res.TotalActualRequests, "actual counts every terminal request, including Unassigned")
-	assert.Equal(t, int64(2), res.TotalAttributedRequests, "single-owner attribution is additive: attributed == actual")
+	assert.Equal(t, int64(3), res.TotalActualRequests, "actual counts every terminal request once, including Unassigned")
+	assert.Equal(t, int64(4), res.TotalAttributedRequests, "the two-team request is attributed to both teams")
 
 	requestsByID := make(map[string]int64, len(res.Rankings))
 	namesByID := make(map[string]string, len(res.Rankings))
@@ -125,12 +127,12 @@ func TestDimensionRankings_SingleOwnerAdditive(t *testing.T) {
 		namesByID[r.ID] = r.Name
 		summedRequests += r.TotalRequests
 	}
-	assert.Equal(t, int64(1), requestsByID["t-a"], "t-a owns exactly its one scalar-attributed request")
-	assert.Equal(t, int64(1), requestsByID[unassignedDimensionID], "the array-only request with no scalar owner is Unassigned")
+	assert.Equal(t, int64(2), requestsByID["t-a"], "t-a is credited its scalar row plus the array row it appears in")
+	assert.Equal(t, int64(1), requestsByID["t-b"], "an array-only team is credited rather than lost to Unassigned")
+	assert.Equal(t, "Team B", namesByID["t-b"], "name aligned with the id by ordinality")
+	assert.Equal(t, int64(1), requestsByID[unassignedDimensionID], "only the request with no owner at all is Unassigned")
 	assert.Equal(t, unassignedDimensionName, namesByID[unassignedDimensionID], "the unassigned bucket gets a stable display name")
-	_, hasTB := requestsByID["t-b"]
-	assert.False(t, hasTB, "no fan-out: t-b is never credited a request it doesn't scalar-own")
-	assert.Equal(t, res.TotalActualRequests, summedRequests, "rows must sum to the org total (additive rollup)")
+	assert.Equal(t, res.TotalAttributedRequests, summedRequests, "rows sum to attributed, not actual")
 }
 
 // TestDimensionRankings_VirtualKeyUnassigned pins that the Unassigned bucket now

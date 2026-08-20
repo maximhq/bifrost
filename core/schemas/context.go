@@ -25,6 +25,7 @@ var reservedKeys = []any{
 	BifrostContextKeySkipKeySelection,
 	BifrostContextKeyPassthroughHeaders,
 	BifrostContextKeySkipBudgetAndRateLimits,
+	BifrostContextKeySkipProviderCheck,
 	BifrostContextKeyURLPath,
 	BifrostContextKeyDeferTraceCompletion,
 	BifrostContextKeyAttemptTrail,
@@ -32,6 +33,7 @@ var reservedKeys = []any{
 	BifrostContextKeyMCPHealthCheckRequest,
 	BifrostContextKeyUpstreamLatency,
 	BifrostContextKeyRoutingInfo,
+	BifrostContextKeyMCPInboundBearer,
 }
 
 // pluginLogStore holds plugin log entries accumulated during request processing.
@@ -334,6 +336,38 @@ func (bc *BifrostContext) MCPAuthMode() MCPAuthMode {
 		return MCPAuthModeSession
 	}
 	return MCPAuthModeNone
+}
+
+// MCPIdentity returns the identity string to key per-user MCP credential
+// state by, for the given mode. Mirrors the exact priority MCPAuthMode()
+// uses to derive mode in the first place — call MCPAuthMode() first, then
+// pass its result here to read back the single context value that produced
+// it (user ID for MCPAuthModeUser, the resolved VK row ID for MCPAuthModeVK,
+// the raw session ID for MCPAuthModeSession).
+//
+// Used by every resolver that keys persisted state by (mode, identity,
+// mcp_client) — currently per-user OAuth and per-user headers — and by the
+// OAuth2Provider implementation for the same per-identity lookups. Returns
+// "" when the value backing mode isn't populated (e.g. mode is
+// MCPAuthModeNone, or context state changed between the two calls);
+// callers that require an identity to proceed treat that as "no usable
+// identity" and fall through to their own error path.
+func (bc *BifrostContext) MCPIdentity(mode MCPAuthMode) string {
+	switch mode {
+	case MCPAuthModeUser:
+		if v, _ := bc.Value(BifrostContextKeyUserID).(string); v != "" {
+			return v
+		}
+	case MCPAuthModeVK:
+		if v, _ := bc.Value(BifrostContextKeyGovernanceVirtualKeyID).(string); v != "" {
+			return v
+		}
+	case MCPAuthModeSession:
+		if v, _ := bc.Value(BifrostContextKeyMCPSessionID).(string); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // SetValue sets a value in the internal userValues map.

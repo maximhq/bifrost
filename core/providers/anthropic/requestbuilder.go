@@ -89,6 +89,13 @@ type AnthropicProviderRequestDefaults struct {
 	// InjectBetaHeadersIntoBody serialises filtered beta headers into the JSON
 	// body as "anthropic_beta" (Vertex only — embeds in body, others use HTTP).
 	InjectBetaHeadersIntoBody bool
+
+	// InlineURLSources fetches URL-sourced images and documents and rewrites them
+	// as inline base64/text sources. Set for hosts that reject remote sources —
+	// Bedrock Mantle answers them with "URL content sources are not yet supported
+	// for this model". Native Anthropic accepts URLs and fetches them itself, so
+	// it leaves this off and avoids a redundant download.
+	InlineURLSources bool
 }
 
 // AnthropicProviderRequestDefaultsMap maps each Anthropic-family provider to
@@ -112,6 +119,11 @@ var AnthropicProviderRequestDefaultsMap = map[schemas.ModelProvider]AnthropicPro
 	// Converse path without coupling the two.
 	schemas.BedrockMantle: {
 		RemapToolVersions: true,
+		// AWS-hosted Claude has no URL fetcher: a {"type":"url"} image or document
+		// source comes back as 400 "URL content sources are not yet supported for
+		// this model". Bedrock's Converse path already inlines these; this keeps
+		// the native-Anthropic surface at parity.
+		InlineURLSources: true,
 	},
 	schemas.DeepSeek: {},
 	// Vertex publisher endpoint: model + region in URL, anthropic_version
@@ -323,8 +335,11 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 		// support. ToAnthropicResponsesRequest doesn't do this internally
 		// (unlike ToAnthropicChatRequest), so the builder must — keeping
 		// behaviour symmetric across raw and typed paths and across both
-		// chat/responses APIs.
-		stripUnsupportedAnthropicFields(reqBody, cfg.Provider, request.Model)
+		// chat/responses APIs. Gate on capModel, not request.Model: the
+		// model-capability predicates match on canonical Anthropic model names,
+		// so a Bifrost alias would otherwise match none of them and skip every
+		// model-level strip. The raw path above already uses capModel.
+		stripUnsupportedAnthropicFields(reqBody, cfg.Provider, capModel)
 
 		AddMissingBetaHeadersToContext(ctx, reqBody, cfg.Provider)
 
@@ -404,6 +419,13 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 
 	if defaults.DeleteStreamField {
 		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "stream")
+		if err != nil {
+			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+		}
+	}
+
+	if defaults.InlineURLSources {
+		jsonBody, err = InlineURLContentSources(ctx, jsonBody)
 		if err != nil {
 			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 		}
@@ -574,8 +596,10 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 		// routed through a custom-provider alias whose name doesn't match
 		// the ProviderFeatures map entry. Idempotent — ToAnthropicChatRequest
 		// already strips using bifrostReq.Provider, so this only changes
-		// behaviour when the two diverge.
-		stripUnsupportedAnthropicFields(reqBody, cfg.Provider, request.Model)
+		// behaviour when the two diverge. Gate on capModel for the same reason
+		// as the responses builder: the model predicates match canonical
+		// Anthropic model names, not Bifrost aliases.
+		stripUnsupportedAnthropicFields(reqBody, cfg.Provider, capModel)
 
 		AddMissingBetaHeadersToContext(ctx, reqBody, cfg.Provider)
 
@@ -637,6 +661,13 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 
 	if defaults.DeleteStreamField {
 		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "stream")
+		if err != nil {
+			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+		}
+	}
+
+	if defaults.InlineURLSources {
+		jsonBody, err = InlineURLContentSources(ctx, jsonBody)
 		if err != nil {
 			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 		}

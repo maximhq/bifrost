@@ -139,8 +139,16 @@ const ReasoningItemIDSeparator = ":"
 // resolved model itself to be OpenAI-family -- stamping a Bifrost-synthetic id
 // onto a non-OpenAI reasoning item's signature/data would mark data that never
 // needed it and was never bound to any id in the first place.
-func ShouldEmbedReasoningItemID(provider schemas.ModelProvider, model string) bool {
-	switch provider {
+//
+// provider is matched after schemas.ResolveBaseProvider, so a custom provider
+// (which reports its own key, e.g. "my-openai") is gated by the built-in
+// provider it wraps. A custom provider on base type OpenAI therefore qualifies
+// unconditionally like native OpenAI: OpenAI-compatible endpoints are commonly
+// configured with deployment-style model names that no OpenAI-family check would
+// match, and embedding stays a no-op anyway unless the upstream issued a real
+// reasoning item id for EmbedReasoningItemID to carry.
+func ShouldEmbedReasoningItemID(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string) bool {
+	switch schemas.ResolveBaseProvider(ctx, provider) {
 	case schemas.OpenAI:
 		return true
 	case schemas.Azure, schemas.BedrockMantle, schemas.Vertex:

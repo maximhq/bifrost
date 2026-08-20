@@ -1,0 +1,6 @@
+{
+  "name": "newman-reporter-cache-parity",
+  "version": "1.0.0",
+  "description": "Newman reporter that captures prompt-cache parity report blobs emitted via console.log by the cache-anchor and cross-provider cache matrices (see tests/e2e/api/runners/lib/midconv-system-cache-parity.mjs and crossprovider-cache-matrix.mjs)",
+  "main": "index.js"
+}

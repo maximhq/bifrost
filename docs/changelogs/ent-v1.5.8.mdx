@@ -5,6 +5,10 @@ description: "v1.5.8 changelog - 2026-08-05"
 
 <Update label="Bifrost Enterprise" description="v1.5.8">
 
+<Warning>
+    v1.5.8 has an SSE heartbeat parsing issue that affects certain SDK versions (LangChain, OpenAI Go). Upgrade to v1.5.9.
+</Warning>
+
 ## Changelog
 
 This release adds JIT provisioning for first-time SSO users hitting inference endpoints directly, an `order` role-resolution strategy for SCIM/OIDC role mapping conflicts, and AWS ALB as a selectable Identity-Aware Proxy option in the SCIM wizard. It also fixes access-profile budget propagation gaps (calendar-aligned resets, large profiles), a soft-deleted-user reactivation inconsistency between the proxy and OAuth login paths, and isolates cluster peer-liveness tracking from bulk sync backlog.

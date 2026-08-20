@@ -7,6 +7,7 @@
     "pg": "8.13.0",
     "better-sqlite3": "11.0.0",
     "newman-reporter-dbverify": "file:./newman-reporter-dbverify",
-    "newman-reporter-token-parity": "file:./newman-reporter-token-parity"
+    "newman-reporter-token-parity": "file:./newman-reporter-token-parity",
+    "newman-reporter-cache-parity": "file:./newman-reporter-cache-parity"
   }
 }

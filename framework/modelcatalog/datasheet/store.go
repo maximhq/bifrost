@@ -437,6 +437,18 @@ func NewTestStore(baseModelIndex map[string]string) *Store {
 	}
 }
 
+// SetSupportedParamsForTest replaces the supported-parameter index. Test-only
+// seam for packages outside datasheet (e.g. the compat plugin) that need a
+// catalog answering GetSupportedParameters without running a sync.
+func (s *Store) SetSupportedParamsForTest(params map[string][]string) {
+	if params == nil {
+		params = make(map[string][]string)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.supportedParams = params
+}
+
 // --- Internal: rebuild the datasheet view from current pricingData ---
 
 // rebuildDatasheetViewUnsafe regenerates baseModelIndex, datasheetByProvider,

@@ -106,6 +106,15 @@
           "    }",
           "  } catch (e) {}",
           "}",
+          "if (pluginRequests.indexOf(requestName) !== -1 && code === 403 && !pm.variables.get('admin_auth_header')) {",
+          "  try {",
+          "    var authBody = pm.response.json();",
+          "    var authMsg = (authBody && authBody.error && authBody.error.message) ? authBody.error.message : '';",
+          "    if (/requires genuine admin authentication/i.test(authMsg)) {",
+          "      pass = true;",
+          "    }",
+          "  } catch (e) {}",
+          "}",
           "",
           "",
           "// Coverage probes intentionally exercise routes with placeholder IDs or invalid OAuth state.",
@@ -135,6 +144,7 @@
           "  var nullable = {",
           "    'Delete Provider': { provider_status: true },",
           "    'List Model Configs': { model_configs: true },",
+          "    'List Virtual Keys': { virtual_keys: true },",
           "    'Get Provider Governance': { providers: true },",
           "    'Get Plugin (After Create)': { config: true }",
           "  };",
@@ -1473,7 +1483,7 @@
           "};",
           "var successShapes = {",
           "  'Health Check': ['components', 'status'],",
-          "  'Get Config': ['auth_config', 'client_config', 'framework_config', 'is_db_connected', 'is_logs_connected'],",
+          "  'Get Config': ['client_config', 'framework_config', 'is_db_connected', 'is_logs_connected'], // auth_config is omitted until an admin account exists (first-time-setup signal)",
           "  'Update Config': ['message', 'status'],",
           "  'List Providers': ['providers', 'total'],",
           "  'Add Provider': ['name', 'network_config', 'concurrency_and_buffer_size', 'provider_status'],",
@@ -1889,6 +1899,51 @@
     },
     {
       "key": "admin_password",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "skill_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "skill_name",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "skill_upload_storage_key",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "skill_upload_blob_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "complexity_config_json",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "webhook_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "webhook_name",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_budget_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_budget_max_limit",
       "value": "",
       "type": "string"
     }
@@ -2653,6 +2708,88 @@
               ]
             }
           }
+        },
+        {
+          "name": "Get Logs Dashboard",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/logs/dashboard",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "dashboard"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Dashboard returns every panel section', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body).to.have.property('meta');",
+                  "  pm.expect(body).to.have.property('overview');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Unknown /api/* paths fall through to the SPA and answer 200 text/html, which",
+                  "// would satisfy the collection-level 2xx gate while asserting nothing. Fail",
+                  "// loudly instead, so a route that is not registered cannot pass as covered.",
+                  "pm.test(\"Route is registered (not the SPA fallback)\", function () {",
+                  "  pm.expect(pm.response.headers.get(\"Content-Type\") || \"\").to.not.include(\"text/html\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Cost Recalculation Status (Coverage Probe)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/logs/recalculate-cost/status",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "recalculate-cost",
+                "status"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Unknown /api/* paths fall through to the SPA and answer 200 text/html, which",
+                  "// would satisfy the collection-level 2xx gate while asserting nothing. Fail",
+                  "// loudly instead, so a route that is not registered cannot pass as covered.",
+                  "pm.test(\"Route is registered (not the SPA fallback)\", function () {",
+                  "  pm.expect(pm.response.headers.get(\"Content-Type\") || \"\").to.not.include(\"text/html\");",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
@@ -3049,6 +3186,8 @@
                   "        pm.expect(vk.budgets).to.be.an('array').with.length.greaterThan(0);",
                   "        pm.expect(vk.rate_limit).to.be.an('object');",
                   "        pm.expect(vk.provider_configs).to.be.an('array').with.length.greaterThan(0);",
+                  "        pm.collectionVariables.set('vk_budget_id', String(vk.budgets[0].id));",
+                  "        pm.collectionVariables.set('vk_budget_max_limit', String(vk.budgets[0].max_limit));",
                   "    });",
                   "}"
                 ],
@@ -3241,6 +3380,138 @@
           }
         },
         {
+          "name": "Set Virtual Key Budget Override",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// This mutates a real budget, so it must never fall back to placeholder ids:",
+                  "// skip unless the create above captured the VK and its budget.",
+                  "var missing = ['vk_id', 'vk_budget_id', 'vk_budget_max_limit'].filter(function (key) {",
+                  "  return !pm.collectionVariables.get(key);",
+                  "});",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.collectionVariables.set('vk_override_amount', '7.5');",
+                  "pm.request.body.raw = JSON.stringify({ amount: 7.5, mode: 'forever' });"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Virtual key budget override is applied', function () {",
+                  "    pm.expect(pm.response.code, pm.response.text().slice(0, 300)).to.be.within(200, 299);",
+                  "    var body = pm.response.json();",
+                  "    pm.expect(body).to.have.property('budget');",
+                  "    pm.expect(body.budget.override_mode).to.equal('forever');",
+                  "    pm.expect(Number(body.budget.override_amount)).to.equal(7.5);",
+                  "});",
+                  "",
+                  "pm.test('Override raises the effective limit above the base budget', function () {",
+                  "    var body = pm.response.json();",
+                  "    var base = Number(pm.collectionVariables.get('vk_budget_max_limit'));",
+                  "    pm.expect(Number(body.effective_max_limit)).to.be.above(base);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}/budgets/{{vk_budget_id}}/override",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_id}}",
+                "budgets",
+                "{{vk_budget_id}}",
+                "override"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Remove Virtual Key Budget Override",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// Mirrors the guard on the Set request: no placeholder ids reach a real budget.",
+                  "var missing = ['vk_id', 'vk_budget_id', 'vk_budget_max_limit'].filter(function (key) {",
+                  "  return !pm.collectionVariables.get(key);",
+                  "});",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Virtual key budget override is cleared', function () {",
+                  "    pm.expect(pm.response.code, pm.response.text().slice(0, 300)).to.be.within(200, 299);",
+                  "    var body = pm.response.json();",
+                  "    pm.expect(body).to.have.property('budget');",
+                  "    pm.expect(body.budget.override_mode || '').to.equal('');",
+                  "    pm.expect(Number(body.budget.override_amount || 0)).to.equal(0);",
+                  "});",
+                  "",
+                  "pm.test('Effective limit falls back to the base budget', function () {",
+                  "    var body = pm.response.json();",
+                  "    var base = Number(pm.collectionVariables.get('vk_budget_max_limit'));",
+                  "    pm.expect(Number(body.effective_max_limit)).to.equal(base);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}/budgets/{{vk_budget_id}}/override",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_id}}",
+                "budgets",
+                "{{vk_budget_id}}",
+                "override"
+              ]
+            }
+          }
+        },
+        {
           "name": "Delete Virtual Key",
           "request": {
             "method": "DELETE",
@@ -3306,12 +3577,26 @@
           ],
           "request": {
             "method": "POST",
-            "header": [ { "key": "Content-Type", "value": "application/json" } ],
-            "body": { "mode": "raw", "raw": "{}" },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
             "url": {
               "raw": "{{base_url}}/api/governance/virtual-keys",
-              "host": [ "{{base_url}}" ],
-              "path": [ "api", "governance", "virtual-keys" ]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
             }
           }
         },
@@ -3347,12 +3632,27 @@
           ],
           "request": {
             "method": "GET",
-            "header": [ { "key": "x-bf-vk", "value": "{{vkrestrict_value}}" } ],
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{vkrestrict_value}}"
+              }
+            ],
             "url": {
               "raw": "{{base_url}}/api/models?limit=5000",
-              "host": [ "{{base_url}}" ],
-              "path": [ "api", "models" ],
-              "query": [ { "key": "limit", "value": "5000" } ]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "5000"
+                }
+              ]
             }
           }
         },
@@ -3393,11 +3693,21 @@
           ],
           "request": {
             "method": "GET",
-            "header": [ { "key": "x-bf-vk", "value": "{{vkrestrict_value}}" } ],
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{vkrestrict_value}}"
+              }
+            ],
             "url": {
               "raw": "{{base_url}}/v1/models",
-              "host": [ "{{base_url}}" ],
-              "path": [ "v1", "models" ]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ]
             }
           }
         },
@@ -3419,8 +3729,15 @@
             "header": [],
             "url": {
               "raw": "{{base_url}}/api/governance/virtual-keys/{{vkrestrict_id}}",
-              "host": [ "{{base_url}}" ],
-              "path": [ "api", "governance", "virtual-keys", "{{vkrestrict_id}}" ]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vkrestrict_id}}"
+              ]
             }
           }
         }
@@ -3837,6 +4154,153 @@
       ]
     },
     {
+      "name": "Governance - Complexity Analyzer",
+      "item": [
+        {
+          "name": "Get Complexity Analyzer Config",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/complexity-analyzer-config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "complexity-analyzer-config"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Config exposes boundaries and keywords', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body).to.have.property('tier_boundaries');",
+                  "  pm.expect(body).to.have.property('keywords');",
+                  "});",
+                  "pm.collectionVariables.set('complexity_config_json', pm.response.text());"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update Complexity Analyzer Config",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/complexity-analyzer-config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "complexity-analyzer-config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// Get above only stores the body on a 2xx JSON response. An SPA fallback,",
+                  "// a 401/403 in the unauthenticated pass, or any error leaves this empty, so",
+                  "// parse defensively and skip rather than throwing a Newman script error.",
+                  "var stored = pm.collectionVariables.get('complexity_config_json');",
+                  "var current = null;",
+                  "try { current = stored ? JSON.parse(stored) : null; } catch (e) { current = null; }",
+                  "if (!current || !current.keywords) {",
+                  "  if (typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "  return;",
+                  "}",
+                  "current.keywords.simple_keywords = (current.keywords.simple_keywords || []).concat(['e2eprobe']);",
+                  "pm.request.body.raw = JSON.stringify(current);"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Update echoes the normalized config', function () {",
+                  "  pm.expect(pm.response.json().keywords.simple_keywords).to.include('e2eprobe');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reset Complexity Analyzer Config",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/complexity-analyzer-config/reset",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "complexity-analyzer-config",
+                "reset"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Reset drops the e2e keyword', function () {",
+                  "  pm.expect(pm.response.json().keywords.simple_keywords).to.not.include('e2eprobe');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        }
+      ],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Unknown /api/* paths fall through to the SPA and answer 200 text/html, which",
+              "// would satisfy the collection-level 2xx gate while asserting nothing. Fail",
+              "// loudly instead, so a route that is not registered cannot pass as covered.",
+              "pm.test(\"Route is registered (not the SPA fallback)\", function () {",
+              "  pm.expect(pm.response.headers.get(\"Content-Type\") || \"\").to.not.include(\"text/html\");",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
       "name": "MCP Clients",
       "item": [
         {
@@ -3869,7 +4333,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"client_id\": \"{{mcp_client_id}}\", \"name\": \"TestMCPClient\", \"connection_type\": \"http\", \"connection_string\": {\"value\": \"http://localhost:3001/\", \"env_var\": \"\", \"from_env\": false}, \"auth_type\": \"none\", \"is_ping_available\": false}"
+              "raw": "{\"client_id\": \"{{mcp_client_id}}\", \"name\": \"TestMCPClient\", \"connection_type\": \"http\", \"connection_string\": {\"value\": \"http://localhost:3001/\", \"env_var\": \"\", \"from_env\": false}, \"auth_type\": \"none\", \"is_ping_available\": false, \"needs_session_stickiness\": true}"
             },
             "url": {
               "raw": "{{base_url}}/api/mcp/client",
@@ -4160,6 +4624,1092 @@
                 "{{plugin_name}}"
               ]
             }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Skills",
+      "item": [
+        {
+          "name": "List Skills",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/skills?limit=10&sort_by=created_at&order=desc",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "skills"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "10"
+                },
+                {
+                  "key": "sort_by",
+                  "value": "created_at"
+                },
+                {
+                  "key": "order",
+                  "value": "desc"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get All Skills Version",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/skills/all/version",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "skills",
+                "all",
+                "version"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bump All Skills Version",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/skills/all/version",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "skills",
+                "all",
+                "version"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"bump\": \"patch\"}"
+            }
+          }
+        },
+        {
+          "name": "Upload Skill File",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "multipart/form-data; boundary=bifroste2eboundary"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/skills/files/upload",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "skills",
+                "files",
+                "upload"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "--bifroste2eboundary\r\nContent-Disposition: form-data; name=\"path\"\r\n\r\nassets/uploaded.txt\r\n--bifroste2eboundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"uploaded.txt\"\r\nContent-Type: text/plain\r\n\r\nbifrost e2e uploaded skill asset\r\n--bifroste2eboundary--\r\n"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "pm.test('Upload returns a stored file reference', function () {",
+                  "  pm.expect(body, 'JSON response body').to.not.equal(null);",
+                  "  pm.expect(body).to.have.property('upload_id');",
+                  "  pm.expect(!!(body.storage_key || body.blob_id), 'storage_key or blob_id').to.equal(true);",
+                  "});",
+                  "// The create below only adds the upload entry when one of these is set.",
+                  "pm.collectionVariables.set('skill_upload_storage_key', (body && body.storage_key) || '');",
+                  "pm.collectionVariables.set('skill_upload_blob_id', (body && body.blob_id) || '');"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create Skill",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/skills",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "skills"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var name = 'e2e-skill-' + Date.now();",
+                  "pm.collectionVariables.set('skill_name', name);",
+                  "var files = [{",
+                  "  path: 'reference/notes.md',",
+                  "  source_type: 'text',",
+                  "  content: '# Notes\\n\\nBifrost e2e skill reference file.'",
+                  "}];",
+                  "var storageKey = pm.collectionVariables.get('skill_upload_storage_key');",
+                  "var blobID = pm.collectionVariables.get('skill_upload_blob_id');",
+                  "if (storageKey) {",
+                  "  files.push({ path: 'assets/uploaded.txt', source_type: 'upload', storage_key: storageKey });",
+                  "} else if (blobID) {",
+                  "  files.push({ path: 'assets/uploaded.txt', source_type: 'upload', blob_id: blobID });",
+                  "}",
+                  "pm.request.body.raw = JSON.stringify({",
+                  "  name: name,",
+                  "  description: 'Skill created by the Bifrost API e2e suite.',",
+                  "  skill_md_body: 'Use this skill only in end-to-end tests.',",
+                  "  version: '1.0.0',",
+                  "  metadata: { owner: 'e2e' },",
+                  "  files: files",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "pm.test('Create returns the skill', function () {",
+                  "  pm.expect(body, 'JSON response body').to.not.equal(null);",
+                  "  pm.expect(body).to.have.property('skill');",
+                  "  pm.expect(body.skill).to.have.property('id');",
+                  "  pm.expect(body.skill.latest_version).to.equal('1.0.0');",
+                  "});",
+                  "// Leave skill_id unset when the create failed, so the dependent requests skip.",
+                  "if (body && body.skill && body.skill.id) {",
+                  "  pm.collectionVariables.set('skill_id', body.skill.id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Skill",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/skills/{{skill_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "skills",
+                "{{skill_id}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "if (!pm.collectionVariables.get('skill_id') && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var body = pm.response.json();",
+                  "pm.test('Skill carries the files it was created with', function () {",
+                  "  var skill = body.skill || body;",
+                  "  pm.expect(skill.name).to.equal(pm.collectionVariables.get('skill_name'));",
+                  "  pm.expect(skill.files).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Skill Versions",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/skills/{{skill_id}}/versions?limit=25",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "skills",
+                "{{skill_id}}",
+                "versions"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "25"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "if (!pm.collectionVariables.get('skill_id') && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var body = pm.response.json();",
+                  "pm.test('Version list is paginated', function () {",
+                  "  pm.expect(body.versions).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(body).to.have.property('total');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update Skill",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/skills/{{skill_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "skills",
+                "{{skill_id}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "pm.request.body.raw = JSON.stringify({",
+                  "  description: 'Skill updated by the Bifrost API e2e suite.',",
+                  "  skill_md_body: 'Updated body for the e2e skill.',",
+                  "  version: '1.1.0',",
+                  "  files: [{",
+                  "    path: 'reference/notes.md',",
+                  "    source_type: 'text',",
+                  "    content: '# Notes\\n\\nUpdated reference file.'",
+                  "  }]",
+                  "});",
+                  "if (!pm.collectionVariables.get('skill_id') && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Update publishes the new version', function () {",
+                  "  var skill = pm.response.json().skill || pm.response.json();",
+                  "  pm.expect(skill.latest_version).to.equal('1.1.0');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Shift Skill Version",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/skills/{{skill_id}}/shift-version",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "skills",
+                "{{skill_id}}",
+                "shift-version"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"version\": \"1.0.0\"}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "if (!pm.collectionVariables.get('skill_id') && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Serving version is shifted back', function () {",
+                  "  var skill = pm.response.json().skill || pm.response.json();",
+                  "  pm.expect(skill).to.have.property('id');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Claude Code Marketplace Manifest",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/skills/serve/claude-code/.claude-plugin/marketplace.json",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "skills",
+                "serve",
+                "claude-code",
+                ".claude-plugin",
+                "marketplace.json"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Marketplace lists plugins', function () {",
+                  "  pm.expect(pm.response.json().plugins).to.be.an('array');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Codex Marketplace Manifest",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/skills/serve/codex/.agents/plugins/marketplace.json",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "skills",
+                "serve",
+                "codex",
+                ".agents",
+                "plugins",
+                "marketplace.json"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Download All Skills Zip",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/skills/serve/all/download.zip",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "skills",
+                "serve",
+                "all",
+                "download.zip"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('All-skills bundle is a zip', function () {",
+                  "  pm.expect(pm.response.headers.get('Content-Type')).to.include('zip');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Download Skill Zip",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/skills/serve/{{skill_name}}/download.zip",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "skills",
+                "serve",
+                "{{skill_name}}",
+                "download.zip"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "if (!pm.collectionVariables.get('skill_id') && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Skill bundle is a zip', function () {",
+                  "  pm.expect(pm.response.headers.get('Content-Type')).to.include('zip');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Download Skill File",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/skills/serve/{{skill_name}}/files/reference/notes.md",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "skills",
+                "serve",
+                "{{skill_name}}",
+                "files",
+                "reference",
+                "notes.md"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "if (!pm.collectionVariables.get('skill_id') && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Served file is the stored content', function () {",
+                  "  pm.expect(pm.response.text()).to.include('Bifrost e2e skill reference file');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Delete Skill",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/skills/{{skill_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "skills",
+                "{{skill_id}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "if (!pm.collectionVariables.get('skill_id') && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cleanup Orphan Skill Files",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/skills/files/orphans?force=true",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "skills",
+                "files",
+                "orphans"
+              ],
+              "query": [
+                {
+                  "key": "force",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Unknown /api/* paths fall through to the SPA and answer 200 text/html, which",
+              "// would satisfy the collection-level 2xx gate while asserting nothing. Fail",
+              "// loudly instead, so a route that is not registered cannot pass as covered.",
+              "pm.test(\"Route is registered (not the SPA fallback)\", function () {",
+              "  pm.expect(pm.response.headers.get(\"Content-Type\") || \"\").to.not.include(\"text/html\");",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Webhooks",
+      "item": [
+        {
+          "name": "List Webhook Endpoints",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/webhooks?limit=10",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "webhooks"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "10"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Endpoint list is paginated', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.endpoints).to.be.an('array');",
+                  "  pm.expect(body).to.have.property('total_count');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create Webhook Endpoint",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/webhooks",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "webhooks"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var name = 'e2e-webhook-' + Date.now();",
+                  "pm.collectionVariables.set('webhook_name', name);",
+                  "pm.request.body.raw = JSON.stringify({",
+                  "  name: name,",
+                  "  url: 'http://127.0.0.1:39199/e2e-webhook',",
+                  "  events: ['async_job.completed'],",
+                  "  allow_private_network: true,",
+                  "  include_response: false,",
+                  "  max_retries: 1,",
+                  "  attempt_timeout_seconds: 5",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "pm.test('Create returns the endpoint and its secret exactly once', function () {",
+                  "  pm.expect(body, 'JSON response body').to.not.equal(null);",
+                  "  pm.expect(body.endpoint).to.have.property('id');",
+                  "  pm.expect(body.secret).to.be.a('string').and.not.empty;",
+                  "});",
+                  "// Leave webhook_id unset when the create failed, so the dependent requests skip.",
+                  "if (body && body.endpoint && body.endpoint.id) {",
+                  "  pm.collectionVariables.set('webhook_id', body.endpoint.id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Webhook Endpoint",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/webhooks/{{webhook_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "webhooks",
+                "{{webhook_id}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "if (!pm.collectionVariables.get('webhook_id') && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Secret is never returned on read', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.name).to.equal(pm.collectionVariables.get('webhook_name'));",
+                  "  pm.expect(body).to.not.have.property('secret');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update Webhook Endpoint",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/webhooks/{{webhook_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "webhooks",
+                "{{webhook_id}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "pm.request.body.raw = JSON.stringify({",
+                  "  name: pm.collectionVariables.get('webhook_name'),",
+                  "  url: 'http://127.0.0.1:39199/e2e-webhook-updated',",
+                  "  events: ['async_job.completed', 'async_job.failed'],",
+                  "  allow_private_network: true,",
+                  "  include_response: true,",
+                  "  max_retries: 2,",
+                  "  attempt_timeout_seconds: 10",
+                  "});",
+                  "if (!pm.collectionVariables.get('webhook_id') && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Update replaces the editable fields', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.url).to.equal('http://127.0.0.1:39199/e2e-webhook-updated');",
+                  "  pm.expect(body.events).to.have.lengthOf(2);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Rotate Webhook Secret",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/webhooks/{{webhook_id}}/rotate-secret",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "webhooks",
+                "{{webhook_id}}",
+                "rotate-secret"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "if (!pm.collectionVariables.get('webhook_id') && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Rotation returns a fresh secret', function () {",
+                  "  pm.expect(pm.response.json().secret).to.be.a('string').and.not.empty;",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Test Webhook Endpoint (Coverage Probe)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/webhooks/{{webhook_id}}/test",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "webhooks",
+                "{{webhook_id}}",
+                "test"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"event\": \"async_job.completed\"}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "if (!pm.collectionVariables.get('webhook_id') && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Webhook Deliveries",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/webhooks/{{webhook_id}}/deliveries?limit=10",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "webhooks",
+                "{{webhook_id}}",
+                "deliveries"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "10"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "if (!pm.collectionVariables.get('webhook_id') && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Delivery history is readable', function () {",
+                  "  pm.expect(pm.response.json()).to.be.an('object');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Redeliver Webhook (Coverage Probe)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/webhooks/deliveries/coverage-probe-delivery/redeliver",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "webhooks",
+                "deliveries",
+                "coverage-probe-delivery",
+                "redeliver"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete Webhook Endpoint",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/webhooks/{{webhook_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "webhooks",
+                "{{webhook_id}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "if (!pm.collectionVariables.get('webhook_id') && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        }
+      ],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Unknown /api/* paths fall through to the SPA and answer 200 text/html, which",
+              "// would satisfy the collection-level 2xx gate while asserting nothing. Fail",
+              "// loudly instead, so a route that is not registered cannot pass as covered.",
+              "pm.test(\"Route is registered (not the SPA fallback)\", function () {",
+              "  pm.expect(pm.response.headers.get(\"Content-Type\") || \"\").to.not.include(\"text/html\");",
+              "});"
+            ]
           }
         }
       ]

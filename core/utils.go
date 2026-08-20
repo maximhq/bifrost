@@ -33,6 +33,12 @@ var transientServerStatusCodes = map[int]bool{
 	502: true, // Bad Gateway
 	503: true, // Service Unavailable
 	504: true, // Gateway Timeout
+	// 529 — Anthropic's overloaded_error ("The API is temporarily overloaded",
+	// docs.claude.com/en/api/errors), also surfaced by Bedrock Mantle's Claude
+	// endpoint. It reflects capacity across all callers rather than anything about
+	// this credential, so it retries on the same key instead of rotating: rotating
+	// would burn every key on a condition none of them can avoid.
+	529: true,
 }
 
 // perKeyFailureStatusCodes are failures bound to the specific key/account rather than

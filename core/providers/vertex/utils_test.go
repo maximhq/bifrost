@@ -1,6 +1,7 @@
 package vertex
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
@@ -637,5 +638,267 @@ func TestVertexServiceTierHeaderValue_Gemini35FlashLiteFlex(t *testing.T) {
 	}
 	if got := vertexServiceTierHeaderValue("us-central1", "gemini-3.5-flash-lite", flex); got != "" {
 		t.Fatalf("expected no flex header outside global region, got %q", got)
+	}
+}
+
+// TestClassifyURLSource pins the capability matrix this provider implements. Vertex
+// serves two model families with different source support -- Claude-on-Vertex takes
+// base64 only, Gemini-on-Vertex takes fileData.fileUri -- so the same URL is downloaded
+// for one and forwarded for the other. Getting this wrong is invisible until a live
+// request fails, which is how the gs:// regression shipped.
+func TestClassifyURLSource(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		url       string
+		anthropic bool
+		want      urlSourceDisposition
+	}{
+		{name: "https to gemini is fetched", url: "https://example.com/a.pdf", want: urlSourceFetchHTTP},
+		{name: "http to gemini is fetched", url: "http://example.com/a.pdf", want: urlSourceFetchHTTP},
+		{name: "gcs to gemini is forwarded", url: "gs://bucket/clip.mp4", want: urlSourceForward},
+		{name: "data uri to gemini is forwarded", url: "data:image/png;base64,iVBORw0KGgo=", want: urlSourceForward},
+
+		{name: "https to claude is fetched", url: "https://example.com/a.pdf", anthropic: true, want: urlSourceFetchHTTP},
+		{name: "http to claude is fetched", url: "http://example.com/a.pdf", anthropic: true, want: urlSourceFetchHTTP},
+		{name: "gcs to claude is fetched from storage", url: "gs://bucket/clip.mp4", anthropic: true, want: urlSourceFetchGCS},
+		{name: "data uri to claude is forwarded", url: "data:image/png;base64,iVBORw0KGgo=", anthropic: true, want: urlSourceForward},
+
+		// Schemes bifrost cannot fetch are still handed to the provider rather than
+		// rejected here: bifrost does not decide what the provider accepts, and the
+		// provider's own answer is the authoritative one.
+		{name: "s3 is forwarded for gemini", url: "s3://bucket/a.pdf", want: urlSourceForward},
+		{name: "s3 is forwarded for claude", url: "s3://bucket/a.pdf", anthropic: true, want: urlSourceForward},
+		{name: "file scheme is forwarded", url: "file:///etc/passwd", want: urlSourceForward},
+		{name: "scheme-less value is forwarded", url: "bucket/a.pdf", want: urlSourceForward},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := classifyURLSource(tt.url, tt.anthropic); got != tt.want {
+				t.Fatalf("classifyURLSource(%q, anthropic=%v) = %v, want %v", tt.url, tt.anthropic, got, tt.want)
+			}
+		})
+	}
+}
+
+// forwardedGeminiURLs are the URL forms a Gemini-family request must reach Vertex with
+// intact. gs:// is the load-bearing case: downloading it fails outright today (the
+// reported bug) and forwarding keeps large media out of the 25 MiB inline path.
+// https is deliberately absent -- Vertex rejects a forwarded https fileUri, measured
+// against harness 47.10, so it stays on the fetch path. See classifyURLSource.
+var forwardedGeminiURLs = []struct {
+	name string
+	url  string
+}{
+	{name: "gcs", url: "gs://my-bucket/video-eval/clip.mp4"},
+	{name: "data uri", url: "data:image/png;base64,iVBORw0KGgo="},
+}
+
+func TestInlineRemoteURLSourcesForwardsGeminiURLs(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range forwardedGeminiURLs {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			provider := &VertexProvider{}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			fileURL := tc.url
+			request := &schemas.BifrostChatRequest{
+				Model: "gemini-3.1-pro-preview",
+				Input: []schemas.ChatMessage{
+					{
+						Role: schemas.ChatMessageRoleUser,
+						Content: &schemas.ChatMessageContent{
+							ContentBlocks: []schemas.ChatContentBlock{
+								{
+									Type: schemas.ChatContentBlockTypeFile,
+									File: &schemas.ChatInputFile{FileURL: &fileURL},
+								},
+								{
+									Type:           schemas.ChatContentBlockTypeImage,
+									ImageURLStruct: &schemas.ChatInputImage{URL: tc.url},
+								},
+							},
+						},
+					},
+				},
+			}
+
+			if err := provider.inlineRemoteURLSources(ctx, schemas.Key{}, request); err != nil {
+				t.Fatalf("inlineRemoteURLSources(%q) returned error, want forward: %v", tc.url, err)
+			}
+
+			blocks := request.Input[0].Content.ContentBlocks
+			if got := blocks[0].File.FileURL; got == nil || *got != tc.url {
+				t.Errorf("file url = %v, want %q untouched", got, tc.url)
+			}
+			if blocks[0].File.FileData != nil {
+				t.Errorf("file data = %q, want nil (nothing should have been fetched)", *blocks[0].File.FileData)
+			}
+			if got := blocks[1].ImageURLStruct.URL; got != tc.url {
+				t.Errorf("image url = %q, want %q untouched", got, tc.url)
+			}
+		})
+	}
+}
+
+func TestInlineDocumentURLsResponsesForwardsGeminiURLs(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range forwardedGeminiURLs {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			provider := &VertexProvider{}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			fileURL := tc.url
+			imageURL := tc.url
+			role := schemas.ResponsesInputMessageRoleUser
+			request := &schemas.BifrostResponsesRequest{
+				Model: "gemini-3.1-pro-preview",
+				Input: []schemas.ResponsesMessage{
+					{
+						Role: &role,
+						Content: &schemas.ResponsesMessageContent{
+							ContentBlocks: []schemas.ResponsesMessageContentBlock{
+								{
+									Type:                                  schemas.ResponsesInputMessageContentBlockTypeFile,
+									ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{FileURL: &fileURL},
+								},
+								{
+									Type:                                   schemas.ResponsesInputMessageContentBlockTypeImage,
+									ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{ImageURL: &imageURL},
+								},
+							},
+						},
+					},
+				},
+			}
+
+			if err := provider.inlineDocumentURLsResponses(ctx, schemas.Key{}, request); err != nil {
+				t.Fatalf("inlineDocumentURLsResponses(%q) returned error, want forward: %v", tc.url, err)
+			}
+
+			blocks := request.Input[0].Content.ContentBlocks
+			if got := blocks[0].ResponsesInputMessageContentBlockFile.FileURL; got == nil || *got != tc.url {
+				t.Errorf("file url = %v, want %q untouched", got, tc.url)
+			}
+			if got := blocks[1].ResponsesInputMessageContentBlockImage.ImageURL; got == nil || *got != tc.url {
+				t.Errorf("image url = %v, want %q untouched", got, tc.url)
+			}
+			// An unchanged URL alone does not prove the object was left alone: a
+			// regression that fetched the bytes AND kept the URL would satisfy the two
+			// checks above. FileData is what says nothing was downloaded, which is the
+			// actual claim of this test. The chat twin already asserts it, so without
+			// this the invariant is only half covered - and the uncovered half is the
+			// Responses path.
+			if got := blocks[0].ResponsesInputMessageContentBlockFile.FileData; got != nil {
+				t.Errorf("file data = %v, want nil (the reference must be forwarded, not fetched)", *got)
+			}
+		})
+	}
+}
+
+// TestInlineRemoteURLSourcesForwardsUnfetchableSchemes: a scheme bifrost cannot download
+// is passed through untouched rather than rejected. Bifrost does not model which sources
+// a provider accepts - the provider answers for itself, and its capabilities can change
+// without a bifrost release.
+func TestInlineRemoteURLSourcesForwardsUnfetchableSchemes(t *testing.T) {
+	t.Parallel()
+
+	for _, rawURL := range []string{"s3://my-bucket/doc.pdf", "bucket/doc.pdf", "file:///etc/passwd"} {
+		t.Run(rawURL, func(t *testing.T) {
+			t.Parallel()
+
+			provider := &VertexProvider{}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			fileURL := rawURL
+			request := &schemas.BifrostChatRequest{
+				Model: "gemini-3.1-pro-preview",
+				Input: []schemas.ChatMessage{
+					{
+						Role: schemas.ChatMessageRoleUser,
+						Content: &schemas.ChatMessageContent{
+							ContentBlocks: []schemas.ChatContentBlock{
+								{
+									Type: schemas.ChatContentBlockTypeFile,
+									File: &schemas.ChatInputFile{FileURL: &fileURL},
+								},
+							},
+						},
+					},
+				},
+			}
+
+			if err := provider.inlineRemoteURLSources(ctx, schemas.Key{}, request); err != nil {
+				t.Fatalf("inlineRemoteURLSources(%q) errored, want pass-through: %v", rawURL, err)
+			}
+
+			block := request.Input[0].Content.ContentBlocks[0]
+			if got := block.File.FileURL; got == nil || *got != rawURL {
+				t.Errorf("file url = %v, want %q forwarded untouched", got, rawURL)
+			}
+			if block.File.FileData != nil {
+				t.Errorf("file data = %q, want nil: bifrost must not have fetched anything", *block.File.FileData)
+			}
+		})
+	}
+}
+
+// TestVertexGeminiGCSFileURLSurvivesInlining is the end-to-end regression for the
+// reported failure: a video file block carrying a gs:// URI must reach the Gemini
+// converter intact and come out as a fileData part. TestVertexGeminiImageURLSchemesAllowGCS
+// only exercises the converter in isolation, which is why the inliner running ahead of it
+// went unnoticed.
+func TestVertexGeminiGCSFileURLSurvivesInlining(t *testing.T) {
+	t.Parallel()
+
+	const gcsURI = "gs://dropbox-ml-dev-uploads/video-eval/clip.mp4"
+	provider := &VertexProvider{}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	fileURL := gcsURI
+	fileType := "video/mp4"
+	request := &schemas.BifrostChatRequest{
+		Model: "gemini-3.1-pro-preview",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentBlocks: []schemas.ChatContentBlock{
+						{
+							Type: schemas.ChatContentBlockTypeFile,
+							File: &schemas.ChatInputFile{FileURL: &fileURL, FileType: &fileType},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	if err := provider.inlineRemoteURLSources(ctx, schemas.Key{}, request); err != nil {
+		t.Fatalf("inlineRemoteURLSources returned error for gs:// file source: %v", err)
+	}
+
+	result, err := gemini.ToGeminiChatCompletionRequestWithImageURLSchemes(ctx, request, geminiImageURLSchemes...)
+	if err != nil {
+		t.Fatalf("converting gs:// file source failed: %v", err)
+	}
+	if len(result.Contents) != 1 || len(result.Contents[0].Parts) != 1 {
+		t.Fatalf("expected one part, got %#v", result.Contents)
+	}
+	part := result.Contents[0].Parts[0]
+	if part.FileData == nil {
+		t.Fatalf("expected a fileData part, got %#v", part)
+	}
+	if part.FileData.FileURI != gcsURI {
+		t.Errorf("fileUri = %q, want %q", part.FileData.FileURI, gcsURI)
+	}
+	if part.FileData.MIMEType != fileType {
+		t.Errorf("mimeType = %q, want %q", part.FileData.MIMEType, fileType)
 	}
 }

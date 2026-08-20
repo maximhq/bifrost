@@ -3,6 +3,13 @@
 roles:
   get:
     operationId: listRoles
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: List roles
     description: Returns all roles visible to the caller, scoped by data access control.
     tags:
@@ -21,6 +28,13 @@ roles:
 
   post:
     operationId: createRole
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Create role
     description: |
       Creates a custom role with the specified data access control scope.
@@ -50,11 +64,18 @@ roles:
 roles-by-id:
   get:
     operationId: getRole
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Get role by ID
     tags:
       - RBAC
     parameters:
-      - name: id
+      - name: role_id
         in: path
         required: true
         schema:
@@ -75,6 +96,13 @@ roles-by-id:
 
   put:
     operationId: updateRole
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Update role
     description: |
       Partial update. Omitted fields preserve the current value.
@@ -82,7 +110,7 @@ roles-by-id:
     tags:
       - RBAC
     parameters:
-      - name: id
+      - name: role_id
         in: path
         required: true
         schema:
@@ -111,13 +139,20 @@ roles-by-id:
 
   delete:
     operationId: deleteRole
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Delete role
     description: |
       Deletes a custom role. Built-in system roles cannot be deleted and return 403.
     tags:
       - RBAC
     parameters:
-      - name: id
+      - name: role_id
         in: path
         required: true
         schema:
@@ -149,11 +184,18 @@ roles-by-id:
 roles-permissions:
   get:
     operationId: getRolePermissions
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: List permissions assigned to a role
     tags:
       - RBAC
     parameters:
-      - name: id
+      - name: role_id
         in: path
         required: true
         schema:
@@ -174,6 +216,13 @@ roles-permissions:
 
   put:
     operationId: updateRolePermissions
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Replace the permission set on a role
     description: |
       Replaces the permission set assigned to the role.
@@ -181,7 +230,7 @@ roles-permissions:
     tags:
       - RBAC
     parameters:
-      - name: id
+      - name: role_id
         in: path
         required: true
         schema:
@@ -211,6 +260,13 @@ roles-permissions:
 resources:
   get:
     operationId: listResources
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: List RBAC resources
     description: Returns the set of resource names that permissions can target.
     tags:
@@ -230,6 +286,13 @@ resources:
 operations:
   get:
     operationId: listOperations
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: List RBAC operations
     description: Returns the set of operation names that permissions can grant.
     tags:
@@ -249,6 +312,13 @@ operations:
 permissions:
   get:
     operationId: listPermissions
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: List all RBAC permissions
     description: Returns every (resource, operation) pair that can be granted to a role.
     tags:
@@ -262,41 +332,5 @@ permissions:
           application/json:
             schema:
               $ref: '../../schemas/management/rbac.yaml#/PermissionsListResponse'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
-
-users-assign-role:
-  put:
-    operationId: assignUserRole
-    summary: Assign a role to a user
-    description: |
-      Assigns a role to a user, including the role's data access scope.
-      Triggers a per-user governance reload so the new scope takes effect on the next request.
-    tags:
-      - RBAC
-    parameters:
-      - name: id
-        in: path
-        required: true
-        description: User ID.
-        schema:
-          type: string
-    requestBody:
-      required: true
-      content:
-        application/json:
-          schema:
-            $ref: '../../schemas/management/rbac.yaml#/AssignUserRoleRequest'
-    responses:
-      '200':
-        description: Role assigned
-        content:
-          application/json:
-            schema:
-              $ref: '../../schemas/management/rbac.yaml#/MessageResponse'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '404':
-        description: Role not found
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'

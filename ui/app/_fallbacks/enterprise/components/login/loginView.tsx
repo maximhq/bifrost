@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useBranding } from "@/lib/hooks/useBranding";
 import { getErrorMessage, useLoginMutation } from "@/lib/store/apis";
 import { BooksIcon, DiscordLogoIcon, GithubLogoIcon } from "@phosphor-icons/react";
 import { useNavigate } from "@tanstack/react-router";
@@ -57,7 +58,7 @@ export default function LoginView() {
 		}
 	};
 
-	const logoSrc = mounted && resolvedTheme === "dark" ? "/bifrost-logo-dark.webp" : "/bifrost-logo.webp";
+	const { logoSrc, logoAlt } = useBranding(mounted && resolvedTheme === "dark");
 
 	return (
 		<div className="flex min-h-screen items-center justify-center p-4">
@@ -65,7 +66,7 @@ export default function LoginView() {
 				<div className="border-border bg-card w-full space-y-6 rounded-sm border p-8">
 					{/* Logo */}
 					<div className="flex items-center justify-center">
-						<img src={logoSrc} alt="Bifrost" width={160} height={26} className="" />
+						<img src={logoSrc} alt={logoAlt} width={160} height={26} className="max-h-[40px] w-auto max-w-[220px] object-contain" />
 					</div>
 
 					<div className="space-y-2 text-center">

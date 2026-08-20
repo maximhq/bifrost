@@ -85,3 +85,34 @@ func TestAttachLogRedactionDataIgnoresMissingContext(t *testing.T) {
 
 	assert.Nil(t, entry.RedactionData)
 }
+
+// TestAttachMCPLogRedactionDataCopiesContextValue verifies MCP entries receive an owned redaction snapshot.
+func TestAttachMCPLogRedactionDataCopiesContextValue(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	reversibleMappings := map[string]string{"EMAIL-1": "alex_rivera@gmail.com"}
+	schemas.SetRedactionDataOnContext(ctx, schemas.RedactionData{
+		ReversibleMappings: schemas.RedactionMapsByPhase{Input: reversibleMappings},
+	})
+	entry := &logstore.MCPToolLog{}
+
+	attachMCPLogRedactionData(ctx, entry, true)
+	reversibleMappings["EMAIL-1"] = "mutated@example.com"
+
+	require.NotNil(t, entry.RedactionData)
+	assert.Equal(t, "alex_rivera@gmail.com", entry.RedactionData.ReversibleMappings.Input["EMAIL-1"])
+}
+
+// TestAttachMCPLogRedactionDataSkipsUnavailableContent verifies disabled logging and missing inputs never attach sensitive data.
+func TestAttachMCPLogRedactionDataSkipsUnavailableContent(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	schemas.SetRedactionDataOnContext(ctx, schemas.RedactionData{
+		ReversibleMappings: schemas.RedactionMapsByPhase{Input: map[string]string{"EMAIL-1": "alex_rivera@gmail.com"}},
+	})
+	entry := &logstore.MCPToolLog{}
+
+	attachMCPLogRedactionData(ctx, entry, false)
+	attachMCPLogRedactionData(nil, entry, true)
+	attachMCPLogRedactionData(ctx, nil, true)
+
+	assert.Nil(t, entry.RedactionData)
+}
