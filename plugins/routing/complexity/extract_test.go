@@ -1,7 +1,9 @@
 package complexity
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -36,7 +38,7 @@ func TestBuildComplexityInput_ChatTextMessages(t *testing.T) {
 		},
 	}
 
-	input, ok := BuildInput(req)
+	input, ok := BuildInput(nil, req)
 	require.True(t, ok)
 	assert.Equal(t, "Compare them to Lamport clocks", input.LastUserText)
 	assert.Equal(t, []string{"Explain vector clocks"}, input.PriorUserTexts)
@@ -52,7 +54,7 @@ func TestBuildComplexityInput_TextCompletionPrompt(t *testing.T) {
 		},
 	}
 
-	input, ok := BuildInput(req)
+	input, ok := BuildInput(nil, req)
 	require.True(t, ok)
 	assert.Equal(t, prompt, input.LastUserText)
 }
@@ -70,7 +72,7 @@ func TestBuildComplexityInput_TextCompletionPromptArraySkipped(t *testing.T) {
 		},
 	}
 
-	input, ok := BuildInput(req)
+	input, ok := BuildInput(nil, req)
 	require.False(t, ok)
 	assert.Empty(t, input.LastUserText)
 }
@@ -112,11 +114,64 @@ func TestBuildComplexityInput_ResponsesInputTextBlocks(t *testing.T) {
 		},
 	}
 
-	input, ok := BuildInput(req)
+	input, ok := BuildInput(nil, req)
 	require.True(t, ok)
 	assert.Equal(t, "Can you explain the changes?", input.LastUserText)
 	assert.Equal(t, []string{"I changed the retry policy and circuit breaker thresholds."}, input.PriorUserTexts)
 	assert.Equal(t, "Review carefully Be concise", input.SystemText)
+}
+
+func TestBuildComplexityInput_BlankUserTurns(t *testing.T) {
+	userRole := schemas.ResponsesInputMessageRoleUser
+	tests := []struct {
+		name         string
+		req          *schemas.BifrostRequest
+		wantOK       bool
+		wantLastUser string
+	}{
+		{
+			name: "chat trailing blank preserves prior human turn",
+			req: &schemas.BifrostRequest{
+				RequestType: schemas.ChatCompletionRequest,
+				ChatRequest: &schemas.BifrostChatRequest{Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleUser, Content: complexityChatString("Explain vector clocks")},
+					{Role: schemas.ChatMessageRoleUser, Content: complexityChatString("  ")},
+				}},
+			},
+			wantOK:       true,
+			wantLastUser: "Explain vector clocks",
+		},
+		{
+			name: "responses trailing blank preserves prior human turn",
+			req: &schemas.BifrostRequest{
+				RequestType: schemas.ResponsesRequest,
+				ResponsesRequest: &schemas.BifrostResponsesRequest{Input: []schemas.ResponsesMessage{
+					{Role: &userRole, Content: complexityResponsesString("Explain vector clocks")},
+					{Role: &userRole, Content: complexityResponsesString("  ")},
+				}},
+			},
+			wantOK:       true,
+			wantLastUser: "Explain vector clocks",
+		},
+		{
+			name: "all blank turns remain unavailable",
+			req: &schemas.BifrostRequest{
+				RequestType: schemas.ChatCompletionRequest,
+				ChatRequest: &schemas.BifrostChatRequest{Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleUser, Content: complexityChatString("")},
+					{Role: schemas.ChatMessageRoleUser, Content: complexityChatString("  ")},
+				}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input, ok := BuildInput(nil, tt.req)
+			assert.Equal(t, tt.wantOK, ok)
+			assert.Equal(t, tt.wantLastUser, input.LastUserText)
+		})
+	}
 }
 
 func TestBuildComplexityInput_SupportsStreamingRequestTypes(t *testing.T) {
@@ -177,7 +232,7 @@ func TestBuildComplexityInput_SupportsStreamingRequestTypes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			input, ok := BuildInput(tt.req)
+			input, ok := BuildInput(nil, tt.req)
 			require.True(t, ok)
 			assert.Equal(t, tt.wantLastUser, input.LastUserText)
 			assert.Equal(t, tt.wantSystem, input.SystemText)
@@ -210,7 +265,7 @@ func TestBuildComplexityInput_ResponsesOutputTextTypedUserBlocks(t *testing.T) {
 		},
 	}
 
-	input, ok := BuildInput(req)
+	input, ok := BuildInput(nil, req)
 	require.True(t, ok)
 	assert.Equal(t, "Explain encryption", input.LastUserText)
 	assert.Equal(t, "You are a coding agent", input.SystemText)
@@ -232,7 +287,7 @@ func TestBuildComplexityInput_SkipsUnsupportedRequestTypesEvenWhenTextIsPresent(
 		},
 	}
 
-	input, ok := BuildInput(req)
+	input, ok := BuildInput(nil, req)
 	require.False(t, ok)
 	assert.Empty(t, input.LastUserText)
 }
@@ -285,7 +340,7 @@ func TestBuildComplexityInput_ExtractsTextFromMixedModalityUserContent(t *testin
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			input, ok := BuildInput(tt.req)
+			input, ok := BuildInput(nil, tt.req)
 			require.True(t, ok)
 			assert.Equal(t, tt.wantText, input.LastUserText)
 		})
@@ -335,11 +390,260 @@ func TestBuildComplexityInput_SkipsUserContentWithoutText(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			input, ok := BuildInput(tt.req)
+			input, ok := BuildInput(nil, tt.req)
 			require.False(t, ok)
 			assert.Empty(t, input.LastUserText)
 		})
 	}
+}
+
+func TestSanitizeUserText_ClaudeCodeWrappers(t *testing.T) {
+	tests := []struct {
+		name     string
+		text     string
+		wantText string
+		wantKind complexityTextKind
+	}{
+		{
+			name:     "system_reminder",
+			text:     "<system-reminder>Internal context</system-reminder>",
+			wantKind: complexityTextContextOnly,
+		},
+		{
+			name:     "local_command_caveat",
+			text:     "<local-command-caveat>Ignore local command messages</local-command-caveat>",
+			wantKind: complexityTextHousekeeping,
+		},
+		{
+			name:     "local_command_stdout",
+			text:     "<local-command-stdout>Compacted</local-command-stdout>",
+			wantKind: complexityTextHousekeeping,
+		},
+		{
+			name:     "local_command_stderr",
+			text:     "<local-command-stderr>command failed</local-command-stderr>",
+			wantKind: complexityTextHousekeeping,
+		},
+		{
+			name:     "command_name",
+			text:     "<command-name>/compact</command-name>",
+			wantKind: complexityTextHousekeeping,
+		},
+		{
+			name:     "command_message",
+			text:     "<command-message>compact</command-message>",
+			wantKind: complexityTextHousekeeping,
+		},
+		{
+			name:     "command_args",
+			text:     "<command-args>focus on routing</command-args>",
+			wantKind: complexityTextHousekeeping,
+		},
+		{
+			name:     "wrapper_with_human_text",
+			text:     "<local-command-stdout>build failed</local-command-stdout>\nWhy did the build fail?",
+			wantText: "Why did the build fail?",
+			wantKind: complexityTextHuman,
+		},
+		{
+			name:     "malformed_wrapper_is_preserved",
+			text:     "<local-command-stdout>build failed",
+			wantText: "<local-command-stdout>build failed",
+			wantKind: complexityTextHuman,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotText, gotKind := sanitizeUserText(tt.text, complexityHarnessClaudeCode)
+			assert.Equal(t, tt.wantText, gotText)
+			assert.Equal(t, tt.wantKind, gotKind)
+		})
+	}
+}
+
+func TestBuildComplexityInput_ClaudeCodeContextAndHousekeeping(t *testing.T) {
+	claudeCtx := complexityHarnessContext(schemas.ClaudeCLI.String(), nil)
+
+	tests := []struct {
+		name       string
+		messages   []schemas.ChatMessage
+		wantOK     bool
+		wantLast   string
+		wantPriors []string
+	}{
+		{
+			name: "trailing_context_reveals_previous_human_turn",
+			messages: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleUser, Content: complexityChatString("Explain vector clocks")},
+				{Role: schemas.ChatMessageRoleUser, Content: complexityChatString("<system-reminder>Use the repository instructions</system-reminder>")},
+			},
+			wantOK:   true,
+			wantLast: "Explain vector clocks",
+		},
+		{
+			name: "historical_command_is_not_conversation_context",
+			messages: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleUser, Content: complexityChatString("Explain vector clocks")},
+				{Role: schemas.ChatMessageRoleUser, Content: complexityChatString("<command-name>/plugin</command-name>")},
+				{Role: schemas.ChatMessageRoleUser, Content: complexityChatString("Compare them to Lamport clocks")},
+			},
+			wantOK:     true,
+			wantLast:   "Compare them to Lamport clocks",
+			wantPriors: []string{"Explain vector clocks"},
+		},
+		{
+			name: "newest_local_command_skips_request",
+			messages: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleUser, Content: complexityChatString("Explain vector clocks")},
+				{Role: schemas.ChatMessageRoleUser, Content: complexityChatString("<local-command-stdout>Compacted</local-command-stdout>")},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input, ok := BuildInput(claudeCtx, &schemas.BifrostRequest{
+				RequestType: schemas.ChatCompletionRequest,
+				ChatRequest: &schemas.BifrostChatRequest{
+					Input: tt.messages,
+				},
+			})
+			assert.Equal(t, tt.wantOK, ok)
+			assert.Equal(t, tt.wantLast, input.LastUserText)
+			assert.Equal(t, tt.wantPriors, input.PriorUserTexts)
+		})
+	}
+}
+
+func TestBuildComplexityInput_CodexContextAndSystemText(t *testing.T) {
+	codexCtx := complexityHarnessContext(schemas.CodexDesktop.String(), nil)
+	userRole := schemas.ResponsesInputMessageRoleUser
+	systemRole := schemas.ResponsesInputMessageRoleSystem
+	systemText := "Keep answers concise. <recommended_plugins>Plugin inventory</recommended_plugins>"
+
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ResponsesRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Input: []schemas.ResponsesMessage{
+				{Role: &systemRole, Content: complexityResponsesString(systemText)},
+				{Role: &userRole, Content: complexityResponsesString("<environment_context><cwd>/tmp/repo</cwd></environment_context>")},
+				{Role: &userRole, Content: complexityResponsesString("Fix the latest-message extractor")},
+			},
+		},
+	}
+
+	input, ok := BuildInput(codexCtx, req)
+	require.True(t, ok)
+	assert.Equal(t, "Fix the latest-message extractor", input.LastUserText)
+	assert.Empty(t, input.PriorUserTexts)
+	assert.Equal(t, "Keep answers concise.", input.SystemText)
+	assert.Equal(t, systemText, *req.ResponsesRequest.Input[0].Content.ContentStr, "classifier sanitization must not mutate the request")
+}
+
+func TestBuildComplexityInput_CodexNewestHousekeepingSkipsRequest(t *testing.T) {
+	codexCtx := complexityHarnessContext(schemas.CodexCLI.String(), nil)
+	userRole := schemas.ResponsesInputMessageRoleUser
+
+	tests := []struct {
+		name       string
+		latestText string
+	}{
+		{
+			name:       "local_shell_command",
+			latestText: "<user_shell_command><command>pwd</command><result>/tmp/repo</result></user_shell_command>",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input, ok := BuildInput(codexCtx, &schemas.BifrostRequest{
+				RequestType: schemas.ResponsesRequest,
+				ResponsesRequest: &schemas.BifrostResponsesRequest{
+					Input: []schemas.ResponsesMessage{
+						{Role: &userRole, Content: complexityResponsesString("Explain vector clocks")},
+						{Role: &userRole, Content: complexityResponsesString(tt.latestText)},
+					},
+				},
+			})
+			require.False(t, ok)
+			assert.Empty(t, input.LastUserText)
+		})
+	}
+}
+
+func TestBuildComplexityInput_CodexRequestKinds(t *testing.T) {
+	userRole := schemas.ResponsesInputMessageRoleUser
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ResponsesRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Input: []schemas.ResponsesMessage{
+				{Role: &userRole, Content: complexityResponsesString("Explain vector clocks")},
+			},
+		},
+	}
+
+	tests := []struct {
+		name        string
+		userAgent   string
+		requestKind string
+		rawMetadata string
+		wantOK      bool
+	}{
+		{name: "turn", userAgent: schemas.CodexCLI.String(), requestKind: "turn", wantOK: true},
+		{name: "prewarm", userAgent: schemas.CodexCLI.String(), requestKind: "prewarm"},
+		{name: "compaction", userAgent: schemas.CodexCLI.String(), requestKind: "compaction"},
+		{name: "memory", userAgent: schemas.CodexDesktop.String(), requestKind: "memory"},
+		{name: "unknown_kind_preserves_behavior", userAgent: schemas.CodexCLI.String(), requestKind: "future_kind", wantOK: true},
+		{name: "malformed_metadata_preserves_behavior", userAgent: schemas.CodexCLI.String(), rawMetadata: "{", wantOK: true},
+		{name: "non_codex_cannot_skip", userAgent: "generic-client/1.0", requestKind: "compaction", wantOK: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rawMetadata := tt.rawMetadata
+			if rawMetadata == "" {
+				rawMetadata = `{"request_kind":"` + tt.requestKind + `"}`
+			}
+			ctx := complexityHarnessContext("", map[string]string{
+				"user-agent":            tt.userAgent,
+				codexTurnMetadataHeader: rawMetadata,
+			})
+
+			input, ok := BuildInput(ctx, req)
+			assert.Equal(t, tt.wantOK, ok)
+			if tt.wantOK {
+				assert.Equal(t, "Explain vector clocks", input.LastUserText)
+			}
+		})
+	}
+}
+
+func TestBuildComplexityInput_HarnessMarkersRequireMatchingUserAgent(t *testing.T) {
+	markerText := "<local-command-stdout>Compacted</local-command-stdout>"
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Input: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleUser, Content: complexityChatString(markerText)},
+			},
+		},
+	}
+
+	input, ok := BuildInput(complexityHarnessContext("generic-client/1.0", nil), req)
+	require.True(t, ok)
+	assert.Equal(t, markerText, input.LastUserText)
+}
+
+func complexityHarnessContext(userAgent string, headers map[string]string) *schemas.BifrostContext {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	if userAgent != "" {
+		ctx.SetValue(schemas.BifrostContextKeyUserAgent, userAgent)
+	}
+	if headers != nil {
+		ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, headers)
+	}
+	return ctx
 }
 
 func complexityChatString(text string) *schemas.ChatMessageContent {
