@@ -35,3 +35,66 @@ This is **not an additional breaking change**: no action is required, and nothin
 </Note>
 
 The practical implication: under SCIM, protection for the custom-plugin-path endpoint rests entirely on `SCIMController.Middleware()`'s own fail-closed behavior, rather than on the layered, defense-in-depth check that non-SCIM deployments get in addition to their own auth middleware. If you rely on SCIM for dashboard authentication, treat `SCIMController.Middleware()`'s correctness as the sole safeguard for this endpoint rather than assuming the OSS-documented check is also active.
+
+---
+
+## Downgrading to v1.5.x After Running a 2.0 Prerelease
+
+**This applies only if your deployment ran `v2.0.0-prerelease3` — the one prerelease that shipped the `ent_split_oidc_session_auth_token_column` migration — and you now want to move back to v1.5.x.** Upgrading from that prerelease to v2.0.0 does not undo it: the migration is already recorded as applied, so it does not run again. Deployments that reached v2.0.0 from v1.5.x directly, or from `v2.0.0-prerelease2` or earlier, are unaffected, and downgrading from v2.0.0 itself needs no manual step — v2.0.0 leaves the legacy column in place, so a v1.5.x binary still finds session tokens where it expects them.
+
+That migration replaces `enterprise_oidc_sessions.encrypted_auth_token` — a single column that held the ID token for some providers and the access token for others — with two unambiguous columns, `encrypted_id_token` and `encrypted_access_token`. In `v2.0.0-prerelease3` it also **dropped** `encrypted_auth_token` once the values were copied across. The v1.5.x session model still declares that column, so every session query a v1.5.x binary issues against such a database fails with `column enterprise_oidc_sessions.encrypted_auth_token does not exist` — dashboard and SSO sign-in included.
+
+Check whether you are affected:
+
+```sql
+SELECT column_name
+FROM information_schema.columns
+WHERE table_name = 'enterprise_oidc_sessions'
+  AND column_name IN ('encrypted_auth_token', 'encrypted_id_token', 'encrypted_access_token');
+```
+
+If `encrypted_auth_token` is absent and the other two are present, run the script below against your Bifrost database **before** starting the v1.5.x binary. It recreates the column, collapses the two split columns back into it using the same provider rule the single-column code used, drops the split columns, and removes the migration's ledger row so a later upgrade re-applies it.
+
+<Warning>
+Take a database backup before running this. It drops two columns, and there is no second copy of the values once they are gone.
+</Warning>
+
+```sql
+BEGIN;
+
+-- 1. Recreate the legacy column.
+ALTER TABLE enterprise_oidc_sessions
+    ADD COLUMN IF NOT EXISTS encrypted_auth_token text;
+
+-- 2. Collapse the split columns back into it: the ID token for the providers
+--    that preferred it, the access token otherwise. Ciphertext copies verbatim,
+--    so no decryption step is involved.
+UPDATE enterprise_oidc_sessions s
+SET encrypted_auth_token = CASE
+        WHEN COALESCE(s.encrypted_id_token, '') <> ''
+             AND LOWER(COALESCE(
+                     (SELECT u.source_name FROM governance_users u WHERE u.id = s.user_id),
+                     '')) IN ('google', 'okta', 'entra', 'auth0', 'generic')
+        THEN s.encrypted_id_token
+        ELSE COALESCE(s.encrypted_access_token, '')
+    END
+WHERE COALESCE(s.encrypted_id_token, '') <> ''
+   OR COALESCE(s.encrypted_access_token, '') <> '';
+
+-- 3. Drop the split columns.
+ALTER TABLE enterprise_oidc_sessions
+    DROP COLUMN IF EXISTS encrypted_id_token,
+    DROP COLUMN IF EXISTS encrypted_access_token;
+
+-- 4. Forget the migration so a later upgrade re-applies it.
+DELETE FROM migrations
+WHERE id = 'ent_split_oidc_session_auth_token_column';
+
+COMMIT;
+```
+
+<Note>
+Sessions created or refreshed while you were on the prerelease hold both tokens, so step 2 has to pick one. It picks the token the v1.5.x code would have stored; a session whose cookie was minted against the other token type is rejected on its next refresh and that user signs in again. To avoid the question entirely, run `DELETE FROM enterprise_oidc_sessions;` in place of step 2 — every user signs in again, and no token has to be reconstructed.
+</Note>
+
+Running the script a second time is harmless: with the split columns already gone, step 2 errors and the whole transaction rolls back.
