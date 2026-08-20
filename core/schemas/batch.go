@@ -63,7 +63,21 @@ func (c BatchRequestCounts) IsZero() bool {
 // request addressed, how the provider reported its progress, and — on the
 // aggregate cost row only — how settlement priced it.
 type BifrostBatchDebug struct {
-	BatchID       string                `json:"batch_id,omitempty"`
+	BatchID string `json:"batch_id,omitempty"`
+	// Status is the provider's batch lifecycle status (BatchStatus, e.g.
+	// "in_progress" or "completed") as last known when this row was written. On a
+	// batch_create/batch_retrieve row it is that call's own response status. On the
+	// aggregate cost row it is the status settlement observed (always a terminal
+	// one, since settlement only runs once the batch completed) — a later /results
+	// fetch of the same batch mirrors this value rather than re-deriving it, so it
+	// can go stale relative to the provider if queried long after settlement.
+	Status string `json:"status,omitempty"`
+	// Endpoint is the batch's provider endpoint (/v1/embeddings, /v1/chat/completions,
+	// …). The row's Object column is always "batch_results", which carries no modality,
+	// so without this a later repricing pass cannot tell an embeddings batch from a
+	// chat one and would look the wrong catalog rates up. Empty on rows written before
+	// this field existed; callers must keep a fallback for them.
+	Endpoint      string                `json:"endpoint,omitempty"`
 	RequestCounts *BatchRequestCounts   `json:"request_counts,omitempty"`
 	Accounting    *BatchAccountingDebug `json:"accounting,omitempty"` // Set only on the aggregate cost row
 }
@@ -74,14 +88,28 @@ func (d *BifrostBatchDebug) IsZero() bool {
 	if d == nil {
 		return true
 	}
-	return d.BatchID == "" && d.RequestCounts == nil && d.Accounting == nil
+	return d.BatchID == "" && d.Status == "" && d.Endpoint == "" && d.RequestCounts == nil && d.Accounting == nil
 }
 
-// BatchAccountingDebug records how a settled batch was priced. It rides on the
-// aggregate cost row, whose cost and token_usage columns hold the row-level
-// totals ModelBreakdowns breaks down.
+// BatchAccountingDebug records how a settled batch was priced. On the aggregate
+// cost row (the one CreateIfNotExists writes once), the row's own cost and
+// token_usage columns hold the row-level totals ModelBreakdowns breaks down.
+// A repeated /results fetch after the batch already settled gets its own,
+// separate log row for that HTTP call — Cost on THAT row is a read-only echo
+// of the aggregate row's price so the caller can display it too; see Cost below.
 type BatchAccountingDebug struct {
 	ModelBreakdowns map[string]BatchModelBreakdown `json:"model_breakdowns,omitempty"`
+	Cost            *float64                       `json:"cost,omitempty"`
+	// ParseErrorCount is how many result rows the provider returned that could not
+	// be parsed at all. Their usage is unrecoverable — the raw results are not
+	// persisted — so the count is kept as the record of how much the row omits.
+	ParseErrorCount int `json:"parse_error_count,omitempty"`
+	// Incomplete marks a total that is known to under-state the batch: some
+	// usage-bearing row failed to price, or rows were lost to parse errors. It is
+	// only ever set, never cleared by a repricing pass — usage that never reached
+	// ModelBreakdowns (a row with no model at all, or a parse error) cannot be
+	// recovered by repricing the breakdowns that did land.
+	Incomplete bool `json:"incomplete,omitempty"`
 }
 
 // BatchModelBreakdown is the per-model slice of a settled batch's usage and
