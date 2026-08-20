@@ -555,6 +555,22 @@ type streamBufferClearer interface {
 	ClearPausedStreamBuffer(traceID string) error
 }
 
+// PausedStreamBufferTransformResult contains rewritten chunks and the leading count safe to replay.
+type PausedStreamBufferTransformResult struct {
+	Chunks       []*BifrostStreamChunk
+	ReleaseCount int
+}
+
+// PausedStreamBufferTransform rewrites a shallow snapshot of chunks captured by one pause epoch.
+// Implementations must use copy-on-write and return the same number of chunks in the same order.
+// ReleaseCount lets the gate replay an approved prefix while keeping an unevaluated suffix paused.
+type PausedStreamBufferTransform func(chunks []*BifrostStreamChunk) (PausedStreamBufferTransformResult, error)
+
+// streamBufferTransformer is an optional tracer capability for atomically rewriting paused client chunks.
+type streamBufferTransformer interface {
+	TransformPausedStreamBuffer(traceID string, transform PausedStreamBufferTransform) error
+}
+
 // ClearPausedStreamBuffer drops chunks buffered while the active stream is paused.
 func (bc *BifrostContext) ClearPausedStreamBuffer() error {
 	tr, _ := bc.Value(BifrostContextKeyTracer).(Tracer)
@@ -567,6 +583,24 @@ func (bc *BifrostContext) ClearPausedStreamBuffer() error {
 		return fmt.Errorf("stream tracer does not support buffer clearing")
 	}
 	return clearer.ClearPausedStreamBuffer(tid)
+}
+
+// TransformPausedStreamBuffer atomically rewrites chunks captured since the latest pause.
+// The current PostLLMHook chunk has not reached the gate yet and is therefore not included.
+func (bc *BifrostContext) TransformPausedStreamBuffer(transform PausedStreamBufferTransform) error {
+	if transform == nil {
+		return fmt.Errorf("paused stream buffer transform is nil")
+	}
+	tr, _ := bc.Value(BifrostContextKeyTracer).(Tracer)
+	tid, _ := bc.Value(BifrostContextKeyTraceID).(string)
+	if tr == nil || tid == "" {
+		return fmt.Errorf("stream tracer or trace ID is missing")
+	}
+	transformer, ok := any(tr).(streamBufferTransformer)
+	if !ok {
+		return fmt.Errorf("stream tracer does not support buffer transformation")
+	}
+	return transformer.TransformPausedStreamBuffer(tid, transform)
 }
 
 // EndStream terminates the active streaming response. Any buffered chunks are

@@ -2973,6 +2973,7 @@ func TestClearAnthropicPassthroughForNonNativeProvider(t *testing.T) {
 					return rawBody, nil
 				},
 			))
+			ctx.SetValue(schemas.BifrostContextKeyRawStreamTextCodec, "stream-codec-sentinel")
 
 			clearAnthropicPassthroughForNonNativeProvider(ctx, tt.baseProvider)
 
@@ -2988,6 +2989,10 @@ func TestClearAnthropicPassthroughForNonNativeProvider(t *testing.T) {
 			if hasRewriter == tt.wantCleared {
 				t.Errorf("raw request body rewriter present = %v, want %v", hasRewriter, !tt.wantCleared)
 			}
+			hasStreamCodec := ctx.Value(schemas.BifrostContextKeyRawStreamTextCodec) != nil
+			if hasStreamCodec == tt.wantCleared {
+				t.Errorf("raw stream text codec present = %v, want %v", hasStreamCodec, !tt.wantCleared)
+			}
 		})
 	}
 }
@@ -3000,11 +3005,15 @@ func TestClearContextForInternalRequestClearsRawBodyRewriter(t *testing.T) {
 			return rawBody, nil
 		},
 	))
+	ctx.SetValue(schemas.BifrostContextKeyRawStreamTextCodec, "stream-codec-sentinel")
 
 	ClearContextForInternalRequest(ctx)
 
 	if got := ctx.Value(schemas.BifrostContextKeyRawRequestBodyTextRewriter); got != nil {
 		t.Fatalf("raw request body rewriter = %v, want nil", got)
+	}
+	if got := ctx.Value(schemas.BifrostContextKeyRawStreamTextCodec); got != nil {
+		t.Fatalf("raw stream text codec = %v, want nil", got)
 	}
 }
 

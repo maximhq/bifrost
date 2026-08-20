@@ -3,6 +3,7 @@ package tracing
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -558,6 +559,14 @@ func (t *Tracer) ClearPausedStreamBuffer(traceID string) error {
 		return nil
 	}
 	return t.accumulator.ClearPausedStreamBuffer(traceID)
+}
+
+// TransformPausedStreamBuffer forwards atomic rewrites of paused client chunks to the streaming accumulator.
+func (t *Tracer) TransformPausedStreamBuffer(traceID string, transform schemas.PausedStreamBufferTransform) error {
+	if t == nil || t.accumulator == nil {
+		return errors.New("stream accumulator is not configured")
+	}
+	return t.accumulator.TransformPausedStreamBuffer(traceID, transform)
 }
 
 // EndStream terminates the streaming response. Any buffered chunks are flushed

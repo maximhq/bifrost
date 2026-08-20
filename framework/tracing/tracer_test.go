@@ -77,6 +77,34 @@ func TestTracer_CompleteAndFlushTraceInjectsObservabilityPlugins(t *testing.T) {
 	}
 }
 
+// TestTracer_TransformPausedStreamBufferForwardsToAccumulator verifies the production tracer exposes the gate transformation capability.
+func TestTracer_TransformPausedStreamBufferForwardsToAccumulator(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	const traceID = "trace-transform-paused"
+	tracer.PauseStream(traceID)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+
+	called := false
+	err := ctx.TransformPausedStreamBuffer(func(chunks []*schemas.BifrostStreamChunk) (schemas.PausedStreamBufferTransformResult, error) {
+		called = true
+		return schemas.PausedStreamBufferTransformResult{Chunks: chunks}, nil
+	})
+	if err != nil {
+		t.Fatalf("TransformPausedStreamBuffer() error = %v", err)
+	}
+	if !called {
+		t.Fatal("TransformPausedStreamBuffer() did not reach the streaming accumulator")
+	}
+}
+
 func TestTracer_CompleteAndFlushTraceRedactsContentBeforeInject(t *testing.T) {
 	store := NewTraceStore(5*time.Minute, nil)
 	defer store.Stop()
