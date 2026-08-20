@@ -1396,7 +1396,9 @@ func getLargeRequestTypeDetectionThreshold(ctx *fasthttp.RequestCtx) int64 {
 	return schemas.DefaultLargePayloadRequestThresholdBytes
 }
 
-// extractAndSetModelAndRequestType extracts model and request type from URL and request object and sets it in the request
+// extractAndSetModelAndRequestType derives GenAI routing flags and configures native Gemini passthrough.
+// GeminiGenerationRequest and GeminiCountTokensRequest also register a path-aware rewriter because
+// their raw bytes otherwise bypass runtime guardrail mutations made to the normalized request.
 func extractAndSetModelAndRequestType(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 	model := ctx.UserValue("model")
 	if model == nil {
@@ -1496,7 +1498,7 @@ func extractAndSetModelAndRequestType(ctx *fasthttp.RequestCtx, bifrostCtx *sche
 		}
 		if !r.IsEmbedding && explicitGemini {
 			setGenAIRawRequestBodyFromRequest(ctx, bifrostCtx)
-			bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+			enableGenAIRawRequestBodyRedaction(bifrostCtx)
 		}
 
 		return nil
@@ -1506,7 +1508,7 @@ func extractAndSetModelAndRequestType(ctx *fasthttp.RequestCtx, bifrostCtx *sche
 		}
 		if explicitGemini {
 			setGenAIRawRequestBodyFromRequest(ctx, bifrostCtx)
-			bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+			enableGenAIRawRequestBodyRedaction(bifrostCtx)
 		}
 		return nil
 	case *gemini.GeminiEmbeddingRequest:
@@ -1541,6 +1543,145 @@ func setGenAIRawRequestBodyFromRequest(ctx *fasthttp.RequestCtx, bifrostCtx *sch
 	if body := ctx.Request.Body(); len(body) > 0 {
 		bifrostCtx.SetValue(genAIRawRequestBodyContextKey, copyBytes(body))
 	}
+}
+
+// enableGenAIRawRequestBodyRedaction couples Gemini raw passthrough with its native content rewriter.
+// The two settings must travel together so provider-specific fields are preserved without bypassing runtime redaction.
+func enableGenAIRawRequestBodyRedaction(bifrostCtx *schemas.BifrostContext) {
+	bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+	bifrostCtx.SetValue(
+		schemas.BifrostContextKeyRawRequestBodyTextRewriter,
+		schemas.RawRequestBodyTextRewriter(rewriteGenAIRawRequestBody),
+	)
+}
+
+// rewriteGenAIRawRequestBody applies runtime replacements only to Gemini fields mirrored as mutable normalized text.
+// Keeping the allowlist here preserves configuration and other native fields Guardrails did not inspect.
+func rewriteGenAIRawRequestBody(rawBody []byte, replacements map[string]string) ([]byte, error) {
+	return rewriteRawRequestTextFields(rawBody, replacements, collectGenAIRawRequestTextPaths)
+}
+
+// collectGenAIRawRequestTextPaths enumerates flat and countTokens-enveloped Gemini content fields.
+func collectGenAIRawRequestTextPaths(root gjson.Result, replacements map[string]string) ([]string, error) {
+	paths := make([]string, 0)
+	if err := collectGenAIGenerationTextPaths(&paths, root, "", replacements); err != nil {
+		return nil, err
+	}
+	for _, envelopeKey := range []string{"generateContentRequest", "generate_content_request"} {
+		envelope := root.Get(envelopeKey)
+		if !envelope.Exists() || envelope.Type == gjson.Null {
+			continue
+		}
+		if !envelope.IsObject() {
+			return nil, fmt.Errorf("raw Gemini countTokens envelope %q must be an object", envelopeKey)
+		}
+		if err := collectGenAIGenerationTextPaths(&paths, envelope, rawRequestObjectPath("", envelopeKey), replacements); err != nil {
+			return nil, err
+		}
+	}
+	return paths, nil
+}
+
+// collectGenAIGenerationTextPaths selects Gemini generation fields mirrored into mutable Bifrost request text.
+func collectGenAIGenerationTextPaths(paths *[]string, request gjson.Result, path string, replacements map[string]string) error {
+	if !request.IsObject() {
+		return fmt.Errorf("raw Gemini generation request at %q must be an object", path)
+	}
+	for _, systemKey := range []string{"systemInstruction", "system_instruction"} {
+		if err := collectGenAIContentTextPaths(
+			paths,
+			request.Get(systemKey),
+			rawRequestObjectPath(path, systemKey),
+			false,
+			replacements,
+		); err != nil {
+			return err
+		}
+	}
+
+	contents := request.Get("contents")
+	if contents.Exists() && contents.Type != gjson.Null {
+		if !contents.IsArray() {
+			return fmt.Errorf("raw Gemini contents at %q must be an array", rawRequestObjectPath(path, "contents"))
+		}
+		var collectErr error
+		contentsPath := rawRequestObjectPath(path, "contents")
+		contents.ForEach(func(index, content gjson.Result) bool {
+			collectErr = collectGenAIContentTextPaths(
+				paths,
+				content,
+				rawRequestArrayPath(contentsPath, int(index.Int())),
+				true,
+				replacements,
+			)
+			return collectErr == nil
+		})
+		if collectErr != nil {
+			return collectErr
+		}
+	}
+
+	instances := request.Get("instances")
+	if !instances.Exists() || instances.Type == gjson.Null {
+		return nil
+	}
+	if !instances.IsArray() {
+		return fmt.Errorf("raw Gemini instances at %q must be an array", rawRequestObjectPath(path, "instances"))
+	}
+	instancesPath := rawRequestObjectPath(path, "instances")
+	var collectErr error
+	instances.ForEach(func(index, instance gjson.Result) bool {
+		instancePath := rawRequestArrayPath(instancesPath, int(index.Int()))
+		collectErr = appendRawRequestStringPath(paths, instance.Get("prompt"), rawRequestObjectPath(instancePath, "prompt"))
+		return collectErr == nil
+	})
+	return collectErr
+}
+
+// collectGenAIContentTextPaths selects text parts and supported function-response JSON values from one Gemini content object.
+func collectGenAIContentTextPaths(paths *[]string, content gjson.Result, path string, includeFunctionResponses bool, replacements map[string]string) error {
+	if !content.Exists() || content.Type == gjson.Null {
+		return nil
+	}
+	if !content.IsObject() {
+		return fmt.Errorf("raw Gemini content at %q must be an object", path)
+	}
+	parts := content.Get("parts")
+	if !parts.Exists() || parts.Type == gjson.Null {
+		return nil
+	}
+	if !parts.IsArray() {
+		return fmt.Errorf("raw Gemini content parts at %q must be an array", rawRequestObjectPath(path, "parts"))
+	}
+
+	partsPath := rawRequestObjectPath(path, "parts")
+	var collectErr error
+	parts.ForEach(func(index, part gjson.Result) bool {
+		partPath := rawRequestArrayPath(partsPath, int(index.Int()))
+		if collectErr = appendRawRequestStringPath(paths, part.Get("text"), rawRequestObjectPath(partPath, "text")); collectErr != nil {
+			return false
+		}
+		if !includeFunctionResponses {
+			return true
+		}
+		functionResponse := part.Get("functionResponse")
+		if !functionResponse.Exists() || functionResponse.Type == gjson.Null {
+			return true
+		}
+		functionResponsePath := rawRequestObjectPath(partPath, "functionResponse")
+		if !functionResponse.IsObject() {
+			collectErr = fmt.Errorf("raw Gemini function response at %q must be an object", functionResponsePath)
+			return false
+		}
+		collectErr = appendRawRequestJSONLeafPaths(
+			paths,
+			functionResponse.Get("response"),
+			rawRequestObjectPath(functionResponsePath, "response"),
+			replacements,
+		)
+		return collectErr == nil
+	})
+	return collectErr
 }
 
 func copyBytes(in []byte) []byte {

@@ -282,6 +282,7 @@ const (
 	BifrostContextKeyPassthroughHeaders                  BifrostContextKey = "bifrost-anthropic-passthrough-headers"  // map[string][]string (the caller's raw request headers, captured for Anthropic OAuth passthrough where their token is the upstream credential; ONLY the Anthropic provider may forward these — every other provider authenticates with its own configured credentials. Reserved: set by the transport, never by a plugin)
 	BifrostContextKeyURLPath                             BifrostContextKey = "bifrost-extra-url-path"                 // string
 	BifrostContextKeyUseRawRequestBody                   BifrostContextKey = "bifrost-use-raw-request-body"
+	BifrostContextKeyRawRequestBodyTextRewriter          BifrostContextKey = "bifrost-raw-request-body-text-rewriter"           // RawRequestBodyTextRewriter (set by native integrations because raw passthrough bypasses normalized runtime redaction)
 	BifrostContextKeyChangeRequestType                   BifrostContextKey = "bifrost-change-request-type"                      // RequestType (set by plugins to trigger request type conversion in core, e.g. text->chat or chat->responses)
 	BifrostContextKeySendBackRawRequest                  BifrostContextKey = "bifrost-send-back-raw-request"                    // bool (per-request override — read by bifrost.go, never overwritten)
 	BifrostContextKeySendBackRawResponse                 BifrostContextKey = "bifrost-send-back-raw-response"                   // bool (per-request override — read by bifrost.go, never overwritten)
