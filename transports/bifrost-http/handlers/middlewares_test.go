@@ -2465,3 +2465,214 @@ func TestTracingMiddleware_AccessLogIncludesRequestID(t *testing.T) {
 		t.Error("expected access log to include a non-empty trace_id")
 	}
 }
+
+// fakePreAuthPlugin is a minimal HTTPTransportPlugin whose pre-auth hook is supplied per test;
+// the remaining transport hooks are inert.
+type fakePreAuthPlugin struct {
+	name string
+	hook func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error)
+}
+
+func (p *fakePreAuthPlugin) GetName() string { return p.name }
+
+func (p *fakePreAuthPlugin) Cleanup() error { return nil }
+
+func (p *fakePreAuthPlugin) HTTPTransportPreAuthHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	return p.hook(ctx, req)
+}
+
+func (p *fakePreAuthPlugin) HTTPTransportPreHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	return nil, nil
+}
+
+func (p *fakePreAuthPlugin) HTTPTransportPostHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, _ *schemas.HTTPResponse) error {
+	return nil
+}
+
+func (p *fakePreAuthPlugin) HTTPTransportStreamChunkHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
+	return chunk, nil
+}
+
+// preAuthTestConfig builds a Config whose transport plugin cache holds the given plugins.
+func preAuthTestConfig(plugins ...schemas.HTTPTransportPlugin) *lib.Config {
+	config := &lib.Config{}
+	config.HTTPTransportPlugins.Store(&plugins)
+	return config
+}
+
+// preAuthTestCtx builds a request context carrying a body, so tests can assert the body is
+// neither delivered to the hook nor disturbed by the phase.
+func preAuthTestCtx() *fasthttp.RequestCtx {
+	var req fasthttp.Request
+	req.Header.SetMethod("POST")
+	req.SetRequestURI("/v1/chat/completions?stream=false")
+	req.SetBodyString(`{"model":"gpt-4"}`)
+	// Init rather than a zero value: the middleware derives a BifrostContext from the
+	// request context, and Done() panics on an uninitialized RequestCtx.
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Init(&req, nil, nil)
+	return ctx
+}
+
+// TestTransportPreAuthInterceptorMiddleware_HeaderVisibleToNext asserts the whole point of the
+// phase: a credential a plugin writes is on the request before the next middleware runs.
+func TestTransportPreAuthInterceptorMiddleware_HeaderVisibleToNext(t *testing.T) {
+	config := preAuthTestConfig(&fakePreAuthPlugin{
+		name: "vk-injector",
+		hook: func(_ *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+			req.Headers["x-bf-vk"] = "sk-bf-injected"
+			req.Query["injected"] = "yes"
+			return nil, nil
+		},
+	})
+
+	var seenVK, seenQuery string
+	handler := TransportPreAuthInterceptorMiddleware(config)(func(ctx *fasthttp.RequestCtx) {
+		seenVK = string(ctx.Request.Header.Peek("x-bf-vk"))
+		seenQuery = string(ctx.Request.URI().QueryArgs().Peek("injected"))
+	})
+
+	ctx := preAuthTestCtx()
+	handler(ctx)
+
+	if seenVK != "sk-bf-injected" {
+		t.Errorf("expected next middleware to see the injected virtual key, got %q", seenVK)
+	}
+	if seenQuery != "yes" {
+		t.Errorf("expected next middleware to see the injected query param, got %q", seenQuery)
+	}
+}
+
+// TestTransportPreAuthInterceptorMiddleware_BodyIsModifiable asserts the pre-auth phase carries
+// the same request shape as the post-auth phase: the hook reads the body and its rewrite lands on
+// the request, so a hook can move between the two phases by renaming.
+func TestTransportPreAuthInterceptorMiddleware_BodyIsModifiable(t *testing.T) {
+	var hookSawBody string
+	config := preAuthTestConfig(&fakePreAuthPlugin{
+		name: "body-rewriter",
+		hook: func(_ *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+			hookSawBody = string(req.Body)
+			req.Body = []byte(`{"model":"rewritten"}`)
+			return nil, nil
+		},
+	})
+
+	var handlerBody string
+	handler := TransportPreAuthInterceptorMiddleware(config)(func(ctx *fasthttp.RequestCtx) {
+		handlerBody = string(ctx.Request.Body())
+	})
+
+	ctx := preAuthTestCtx()
+	handler(ctx)
+
+	if hookSawBody != `{"model":"gpt-4"}` {
+		t.Errorf("expected the pre-auth hook to receive the request body, got %q", hookSawBody)
+	}
+	if handlerBody != `{"model":"rewritten"}` {
+		t.Errorf("expected the rewritten body to reach the handler, got %q", handlerBody)
+	}
+}
+
+// TestTransportPreAuthInterceptorMiddleware_ShortCircuitResponse asserts a plugin can answer the
+// request itself, and that authentication and the handler never run.
+func TestTransportPreAuthInterceptorMiddleware_ShortCircuitResponse(t *testing.T) {
+	config := preAuthTestConfig(&fakePreAuthPlugin{
+		name: "denier",
+		hook: func(_ *schemas.BifrostContext, _ *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+			return &schemas.HTTPResponse{
+				StatusCode: fasthttp.StatusUnauthorized,
+				Headers:    map[string]string{"WWW-Authenticate": "Bearer"},
+				Body:       []byte("denied"),
+			}, nil
+		},
+	})
+
+	nextCalled := false
+	handler := TransportPreAuthInterceptorMiddleware(config)(func(_ *fasthttp.RequestCtx) {
+		nextCalled = true
+	})
+
+	ctx := preAuthTestCtx()
+	handler(ctx)
+
+	if nextCalled {
+		t.Error("expected the chain to stop at the short-circuiting plugin")
+	}
+	if ctx.Response.StatusCode() != fasthttp.StatusUnauthorized {
+		t.Errorf("expected status %d, got %d", fasthttp.StatusUnauthorized, ctx.Response.StatusCode())
+	}
+	if got := string(ctx.Response.Body()); got != "denied" {
+		t.Errorf("expected the plugin's body, got %q", got)
+	}
+}
+
+// TestTransportPreAuthInterceptorMiddleware_PluginError asserts a hook error fails the request
+// rather than letting it continue unauthenticated.
+func TestTransportPreAuthInterceptorMiddleware_PluginError(t *testing.T) {
+	config := preAuthTestConfig(&fakePreAuthPlugin{
+		name: "broken",
+		hook: func(_ *schemas.BifrostContext, _ *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+			return nil, context.DeadlineExceeded
+		},
+	})
+
+	nextCalled := false
+	handler := TransportPreAuthInterceptorMiddleware(config)(func(_ *fasthttp.RequestCtx) {
+		nextCalled = true
+	})
+
+	ctx := preAuthTestCtx()
+	handler(ctx)
+
+	if nextCalled {
+		t.Error("expected the chain to stop after a plugin error")
+	}
+	if ctx.Response.StatusCode() != fasthttp.StatusInternalServerError {
+		t.Errorf("expected status %d, got %d", fasthttp.StatusInternalServerError, ctx.Response.StatusCode())
+	}
+}
+
+// TestTransportPreAuthInterceptorMiddleware_PathMutationRejected asserts routing cannot be
+// rewritten from the pre-auth phase — the request is failed rather than served on a path the
+// router never matched.
+func TestTransportPreAuthInterceptorMiddleware_PathMutationRejected(t *testing.T) {
+	SetLogger(&mockLogger{})
+	config := preAuthTestConfig(&fakePreAuthPlugin{
+		name: "rerouter",
+		hook: func(_ *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+			req.Path = "/v1/embeddings"
+			return nil, nil
+		},
+	})
+
+	nextCalled := false
+	handler := TransportPreAuthInterceptorMiddleware(config)(func(_ *fasthttp.RequestCtx) {
+		nextCalled = true
+	})
+
+	ctx := preAuthTestCtx()
+	handler(ctx)
+
+	if nextCalled {
+		t.Error("expected the chain to stop after a rejected path mutation")
+	}
+	if ctx.Response.StatusCode() != fasthttp.StatusConflict {
+		t.Errorf("expected status %d, got %d", fasthttp.StatusConflict, ctx.Response.StatusCode())
+	}
+}
+
+// TestTransportPreAuthInterceptorMiddleware_NoPlugins asserts the phase is a pass-through when
+// nothing implements the hook, which is the common case.
+func TestTransportPreAuthInterceptorMiddleware_NoPlugins(t *testing.T) {
+	nextCalled := false
+	handler := TransportPreAuthInterceptorMiddleware(preAuthTestConfig())(func(_ *fasthttp.RequestCtx) {
+		nextCalled = true
+	})
+
+	ctx := preAuthTestCtx()
+	handler(ctx)
+
+	if !nextCalled {
+		t.Error("expected the request to pass straight through when no plugin implements the hook")
+	}
+}

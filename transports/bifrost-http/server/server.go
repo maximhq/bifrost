@@ -2617,6 +2617,10 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		return fmt.Errorf("failed to initialize routes: %v", err)
 	}
 	// Registering inference routes
+	// The pre-auth plugin phase runs immediately before the auth middlewares so a plugin can
+	// supply or translate the credentials they read (see schemas.HTTPTransportPreAuthHook).
+	// Skipped entirely when no transport plugin is loaded.
+	inferenceMiddlewares = append(inferenceMiddlewares, handlers.TransportPreAuthInterceptorMiddleware(s.Config))
 	if ctx.Value(schemas.BifrostContextKeyIsEnterprise) == nil && s.AuthMiddleware != nil {
 		inferenceMiddlewares = append(inferenceMiddlewares, s.AuthMiddleware.InferenceMiddleware())
 	}
@@ -2632,10 +2636,12 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	tracer.SetObservabilityPlugins(observabilityPlugins)
 	s.Client.SetTracer(tracer)
 	s.TracingMiddleware = handlers.NewTracingMiddleware(tracer)
-	// TransportInterceptor must be inside TracingMiddleware so that the tracing defer
-	// runs AFTER transport post-hooks (capturing HTTPTransportPostHook plugin logs).
-	// Order: Tracing.pre → TransportInterceptor.pre → handler → TransportInterceptor.post → Tracing.defer
-	inferenceMiddlewares = append([]schemas.BifrostHTTPMiddleware{handlers.TransportInterceptorMiddleware(s.Config)}, inferenceMiddlewares...)
+	// TransportInterceptor runs AFTER the auth middlewares so HTTPTransportPreHook observes an
+	// authenticated request, and inside TracingMiddleware so the tracing defer runs AFTER
+	// transport post-hooks (capturing HTTPTransportPostHook plugin logs).
+	// Order: Tracing.pre → PreAuthInterceptor → auth → TransportInterceptor.pre → handler →
+	//        TransportInterceptor.post → Tracing.defer
+	inferenceMiddlewares = append(inferenceMiddlewares, handlers.TransportInterceptorMiddleware(s.Config))
 	inferenceMiddlewares = append([]schemas.BifrostHTTPMiddleware{s.TracingMiddleware.Middleware()}, inferenceMiddlewares...)
 
 	err = s.RegisterInferenceRoutes(s.Ctx, inferenceMiddlewares...)

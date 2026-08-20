@@ -493,6 +493,10 @@ func (m *mockRealtimeMintingGovernancePlugin) EvaluateGovernanceRequest(ctx *sch
 	return &governance.EvaluationResult{Decision: governance.DecisionAllow}, nil
 }
 
+func (m *mockRealtimeMintingGovernancePlugin) HTTPTransportPreAuthHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	return nil, nil
+}
+
 func (m *mockRealtimeMintingGovernancePlugin) HTTPTransportPreHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
 	return nil, nil
 }
