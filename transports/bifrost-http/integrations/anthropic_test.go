@@ -7,8 +7,94 @@ import (
 
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
+
+// TestRewriteAnthropicRawRequestBodyRedactsOnlyContentFields verifies native redaction covers conversation content without touching request metadata or tool arguments.
+func TestRewriteAnthropicRawRequestBodyRedactsOnlyContentFields(t *testing.T) {
+	rawBody := []byte(`{
+		"model":"claude-sonnet-4-5",
+		"prompt":"legacy alice@example.com",
+		"system":[{"type":"text","text":"system alice@example.com"}],
+		"messages":[
+			{"role":"user","content":"first alice@example.com"},
+			{"role":"assistant","content":[
+				{"type":"thinking","thinking":"reason alice@example.com","signature":"alice@example.com"},
+				{"type":"text","text":"answer alice@example.com"},
+				{"type":"tool_use","id":"call_1","name":"lookup","input":{"email":"alice@example.com"}}
+			]},
+			{"role":"user","content":[
+				{"type":"tool_result","tool_use_id":"call_1","content":"tool alice@example.com"},
+				{"type":"mcp_tool_result","tool_use_id":"call_2","content":[{"type":"text","text":"nested alice@example.com"}]}
+			]}
+		],
+		"metadata":{"user_id":"alice@example.com"},
+		"tools":[{"name":"lookup","description":"alice@example.com","input_schema":{"type":"object"}}]
+	}`)
+
+	got, err := rewriteAnthropicRawRequestBody(rawBody, map[string]string{"alice@example.com": "[EMAIL]"})
+	if err != nil {
+		t.Fatalf("rewriteAnthropicRawRequestBody() error = %v", err)
+	}
+
+	redactedPaths := []string{
+		"prompt",
+		"system.0.text",
+		"messages.0.content",
+		"messages.1.content.0.thinking",
+		"messages.1.content.1.text",
+		"messages.2.content.0.content",
+		"messages.2.content.1.content.0.text",
+	}
+	for _, path := range redactedPaths {
+		if value := gjson.GetBytes(got, path).String(); strings.Contains(value, "alice@example.com") || !strings.Contains(value, "[EMAIL]") {
+			t.Errorf("%s = %q, want redacted content", path, value)
+		}
+	}
+
+	untouchedPaths := []string{
+		"messages.1.content.0.signature",
+		"messages.1.content.2.input.email",
+		"metadata.user_id",
+		"tools.0.description",
+	}
+	for _, path := range untouchedPaths {
+		if value := gjson.GetBytes(got, path).String(); value != "alice@example.com" {
+			t.Errorf("%s = %q, want untouched literal", path, value)
+		}
+	}
+}
+
+// TestRewriteAnthropicRawRequestBodyRejectsUnmappedLiteral verifies a normalized runtime mutation cannot silently leave native content unredacted.
+func TestRewriteAnthropicRawRequestBodyRejectsUnmappedLiteral(t *testing.T) {
+	_, err := rewriteAnthropicRawRequestBody(
+		[]byte(`{"messages":[{"role":"user","content":"hello"}]}`),
+		map[string]string{"alice@example.com": "[EMAIL]"},
+	)
+	if err == nil {
+		t.Fatal("rewriteAnthropicRawRequestBody() error = nil, want unmapped literal error")
+	}
+}
+
+// TestRewriteAnthropicRawRequestBodyRejectsMalformedJSON verifies native rewrites never repair or forward a malformed body.
+func TestRewriteAnthropicRawRequestBodyRejectsMalformedJSON(t *testing.T) {
+	_, err := rewriteAnthropicRawRequestBody([]byte(`{"messages":`), map[string]string{"alice@example.com": "[EMAIL]"})
+	if err == nil {
+		t.Fatal("rewriteAnthropicRawRequestBody() error = nil, want malformed JSON error")
+	}
+}
+
+// TestRewriteAnthropicRawRequestBodyRejectsDuplicateKeys prevents parser precedence from selecting an unredacted duplicate value.
+func TestRewriteAnthropicRawRequestBodyRejectsDuplicateKeys(t *testing.T) {
+	_, err := rewriteAnthropicRawRequestBody(
+		[]byte(`{"messages":[{"role":"user","content":"alice@example.com","content":"alice@example.com"}]}`),
+		map[string]string{"alice@example.com": "[EMAIL]"},
+	)
+	if err == nil {
+		t.Fatal("rewriteAnthropicRawRequestBody() error = nil, want duplicate-key error")
+	}
+}
 
 // TestMustConvertInPassthrough pins the passthrough routing decision that fixes
 // the Claude Code advisor/server-tool streaming bug: server tools (advisor,
@@ -188,6 +274,13 @@ func TestCheckAnthropicPassthrough_OutputConfigEscapeHatch(t *testing.T) {
 			}
 			if !tc.wantRawOff && !useRaw {
 				t.Errorf("expected UseRawRequestBody to stay true for %s, got false", tc.model)
+			}
+			_, hasRewriter := bifrostCtx.Value(schemas.BifrostContextKeyRawRequestBodyTextRewriter).(schemas.RawRequestBodyTextRewriter)
+			if tc.wantRawOff && hasRewriter {
+				t.Errorf("expected raw request body text rewriter to remain unset for %s", tc.model)
+			}
+			if !tc.wantRawOff && !hasRewriter {
+				t.Errorf("expected Anthropic raw request body text rewriter for %s", tc.model)
 			}
 		})
 	}

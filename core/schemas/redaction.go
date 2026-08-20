@@ -6,6 +6,12 @@ import (
 	"strings"
 )
 
+// RawRequestBodyTextRewriter synchronizes runtime literal replacements into provider-native JSON.
+// Integrations implement this contract because only they know which native fields correspond to
+// guardrail-visible normalized text. Callers must pass owned rawBody bytes and use only the returned
+// slice because implementations may mutate the input in place; any rewrite error is unsafe to forward.
+type RawRequestBodyTextRewriter func(rawBody []byte, replacements map[string]string) ([]byte, error)
+
 // RedactionPhase identifies which request lifecycle phase produced a redaction finding.
 type RedactionPhase string
 
