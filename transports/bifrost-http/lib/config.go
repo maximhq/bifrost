@@ -4556,10 +4556,15 @@ func ResolveFrameworkPricingConfig(
 	fileMCPLibraryURL := (*string)(nil)
 	fileMCPLibrarySyncSeconds := (*int64)(nil)
 	fileLiveModelsSyncSeconds := (*int64)(nil)
+	fileAutomaticSyncEnabled := (*bool)(nil)
 	skipURLBackfill := false // prevent DB backfill of unresolved env references
 	skipModelParamsURLBackfill := false
 	skipMCPLibraryURLBackfill := false
 	if fileConfig != nil && fileConfig.Pricing != nil {
+		if fileConfig.Pricing.AutomaticSyncEnabled != nil {
+			value := *fileConfig.Pricing.AutomaticSyncEnabled
+			fileAutomaticSyncEnabled = &value
+		}
 		if fileConfig.Pricing.PricingURL != nil {
 			raw := *fileConfig.Pricing.PricingURL
 			if strings.HasPrefix(raw, "env.") {
@@ -4925,6 +4930,7 @@ func ResolveFrameworkPricingConfig(
 			PricingURL:             resolvedPricingURL,
 			PricingSyncInterval:    resolvedSyncSeconds,
 			ModelParametersURL:     resolvedModelParametersURL,
+			AutomaticSyncEnabled:   fileAutomaticSyncEnabled,
 			MCPLibraryURL:          resolvedMCPLibraryURL,
 			MCPLibrarySyncInterval: resolvedMCPLibrarySyncInterval,
 			LiveModelsSyncInterval: resolvedLiveModelsSyncInterval,

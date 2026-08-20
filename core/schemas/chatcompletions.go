@@ -44,7 +44,7 @@ type BifrostChatResponse struct {
 	InferenceGeo      *string                    `json:"inference_geo,omitempty"` // "us" | "global" — inference geography served (Anthropic data residency); drives the 1.1x US multiplier
 	Diagnostics       *CacheDiagnostics          `json:"diagnostics,omitempty"`   // Anthropic cache diagnostics (cache-diagnosis-2026-04-07); first prompt-cache prefix divergence point
 	SystemFingerprint string                     `json:"system_fingerprint"`
-	Usage             *BifrostLLMUsage           `json:"usage"`
+	Usage             *BifrostLLMUsage           `json:"usage,omitempty"`
 	ExtraFields       BifrostResponseExtraFields `json:"extra_fields"`
 	ExtraParams       map[string]interface{}     `json:"-"`
 

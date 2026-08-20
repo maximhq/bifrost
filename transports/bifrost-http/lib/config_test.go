@@ -18628,6 +18628,18 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 		require.Equal(t, defaultSyncSeconds, *normalizedModelCatalog.MCPLibrarySyncInterval)
 	})
 
+	t.Run("automatic sync opt-out is carried from file config", func(t *testing.T) {
+		disabled := false
+		fileConfig := &framework.FrameworkConfig{
+			Pricing: &modelcatalog.Config{AutomaticSyncEnabled: &disabled},
+		}
+
+		_, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(nil, fileConfig)
+		require.False(t, needsDBUpdate)
+		require.NotNil(t, normalizedModelCatalog.AutomaticSyncEnabled)
+		require.False(t, *normalizedModelCatalog.AutomaticSyncEnabled)
+	})
+
 	t.Run("live models sync interval defaults when unset everywhere", func(t *testing.T) {
 		normalizedTable, normalizedModelCatalog, _ := ResolveFrameworkPricingConfig(nil, nil)
 		want := int64(modelcatalog.DefaultLiveModelsSyncInterval.Seconds())

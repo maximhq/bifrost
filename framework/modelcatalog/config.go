@@ -45,6 +45,18 @@ type Config struct {
 	PricingSyncInterval *int64  `json:"pricing_sync_interval,omitempty"` // seconds
 	ModelParametersURL  *string `json:"model_parameters_url,omitempty"`
 
+	// AutomaticSyncEnabled controls startup and scheduled remote catalog
+	// fetches. Nil preserves the historical default (enabled). When false, Init
+	// loads any stored pricing/model-parameter data and starts with empty caches
+	// when none exists; operators can still request an explicit reload.
+	//
+	// This directly provides the air-gapped/optional lookup behavior requested
+	// in https://github.com/maximhq/bifrost/issues/2330 and is a foundation for
+	// the broader pricing-system toggle in
+	// https://github.com/maximhq/bifrost/issues/624. It deliberately does not
+	// disable pricing calculations or hide pricing UI by itself.
+	AutomaticSyncEnabled *bool `json:"automatic_sync_enabled,omitempty"`
+
 	// MCPLibraryURL overrides the endpoint the MCP server library catalog is
 	// synced from. Empty/nil uses DefaultMCPLibraryURL. Mirrors PricingURL: the
 	// default ships out of the box and the user can point it at a custom source.

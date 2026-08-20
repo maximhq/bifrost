@@ -3872,6 +3872,12 @@
           "optional": true,
           "minimum": 3600
         },
+        "automatic_sync_enabled": {
+          "type": "boolean",
+          "description": "Whether Bifrost automatically fetches pricing, model parameters, and MCP catalog data during startup and on the background schedule. Defaults to true. When false, startup uses stored data only and permits an empty catalog; explicit reloads remain available.",
+          "default": true,
+          "optional": true
+        },
         "model_parameters_url": {
           "type": "string",
           "description": "Model parameters URL",

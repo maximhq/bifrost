@@ -3,6 +3,7 @@ package schemas
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -436,6 +437,10 @@ func (bc *BifrostContext) SetRoutingInfoSnapshot(ri RoutingInfo) {
 
 // ClearValue clears a value from the internal userValues map.
 // For scoped contexts, delegates to the root context via valueDelegate.
+// The entry is nil-masked rather than deleted: Value(key) returns nil afterwards
+// instead of falling through to the parent context. This keeps security-sensitive
+// scrubs (clearCtxForFallback, key-identity scrubbing) from re-exposing values a
+// caller stashed on the parent context chain.
 func (bc *BifrostContext) ClearValue(key any) {
 	if bc.valueDelegate != nil {
 		bc.valueDelegate.ClearValue(key)
@@ -448,9 +453,13 @@ func (bc *BifrostContext) ClearValue(key any) {
 	}
 	bc.valuesMu.Lock()
 	defer bc.valuesMu.Unlock()
-	if bc.userValues != nil {
-		bc.userValues[key] = nil
+	if key != nil && !reflect.TypeOf(key).Comparable() {
+		return
 	}
+	if bc.userValues == nil {
+		bc.userValues = make(map[any]any)
+	}
+	bc.userValues[key] = nil
 }
 
 // GetAndSetValue gets a value from the internal userValues map and sets it.
