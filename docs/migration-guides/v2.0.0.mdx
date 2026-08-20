@@ -3,7 +3,7 @@ title: "Migrating to v2.0.0"
 description: "Breaking changes and migration instructions for the v2.0.0 release"
 ---
 
-v2.0.0 hardens custom plugin loading against server-side request forgery (SSRF), closes a path that let an unauthenticated caller register a custom native plugin when dashboard auth is disabled or unconfigured, and moves all governance APIs under a single `/api/governance` namespace. This page covers the three breaking changes in this release and how to migrate.
+v2.0.0 hardens custom plugin loading against server-side request forgery (SSRF), closes a path that let an unauthenticated caller register a custom native plugin when dashboard auth is disabled or unconfigured, moves all governance APIs under a single `/api/governance` namespace, and moves the plugin `HTTPTransportPreHook` phase to run after the transport authenticates the request. This page covers the four breaking changes in this release and how to migrate.
 
 <Note>
 **Running Bifrost Enterprise?** This page covers the OSS behavior only. See the [Enterprise v2.0.0 Migration Guide](/enterprise/migration-guides/v2.0.0) for how these changes interact with SCIM-based authentication.
@@ -179,6 +179,69 @@ The canonical Team `customer_id` field retains the Open Source budget-hierarchy 
 
 ---
 
+## Breaking Change 4: `HTTPTransportPreHook` Now Runs After Authentication
+
+**What changed:** the plugin HTTP transport pipeline gained a phase. `HTTPTransportPreAuthHook` now runs *before* the transport's authentication middlewares, and `HTTPTransportPreHook` — which used to hold that position — runs *after* them.
+
+```
+before:  HTTPTransportPreHook → auth → handler
+after:   HTTPTransportPreAuthHook → auth → HTTPTransportPreHook → handler
+```
+
+**Who is affected:** any custom plugin that writes a credential from `HTTPTransportPreHook` — a virtual key on `x-bf-vk`, an `Authorization` header, an `x-api-key` — typically to derive one from an upstream identity header.
+
+<Warning>
+**Whether this breaks the plugin depends on what authenticates inference in your deployment, and neither outcome reports an error.**
+
+- **Authentication rejects the request** — Enterprise with an identity provider configured and `enforce_auth_on_inference` enabled. Authentication runs first, so `HTTPTransportPreHook` never executes and the credential is never written.
+- **Authentication permits the request** — every Open Source deployment, because inference auth is a deliberate pass-through, and Enterprise without an identity provider. The hook still runs, and the header it writes is still visible to components downstream of it, so governance validates the key and the plugin keeps working.
+
+The second case is why this can look deployment-specific: the same plugin binary keeps working on one gateway and stops on another. In both cases the credential is now written after the point that authenticates it, so move that work to `HTTPTransportPreAuthHook` — the only phase where a credential is guaranteed to be in place before authentication reads it.
+</Warning>
+
+**How to fix it:** rename the function. `HTTPTransportPreAuthHook` receives the same `*HTTPRequest` — headers, query, path params and body — and applies the same mutations, so nothing inside the hook body changes.
+
+**Before** (v1.x — credential injected from the pre-hook):
+```go
+func HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	if userID := req.Headers["x-my-idp-user"]; userID != "" {
+		req.Headers["x-bf-vk"] = virtualKeyFor(userID)
+	}
+	return nil, nil
+}
+```
+
+**After** (v2.0 — same body, new phase):
+```go
+func HTTPTransportPreAuthHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	if userID := req.Headers["x-my-idp-user"]; userID != "" {
+		req.Headers["x-bf-vk"] = virtualKeyFor(userID)
+	}
+	return nil, nil
+}
+```
+
+A plugin may export both hooks; they are independent phases. `HTTPTransportPreAuthHook` runs once per request. `HTTPTransportPreHook` runs once per request too, but only for requests that reach it: a pre-auth hook that short-circuits, or authentication rejecting the request, skips it.
+
+**Plugins that do not touch credentials need no behavioural change** — and gain something. Because authentication has already run, `HTTPTransportPreHook` now sees the resolved caller identity on `ctx`. They do still need the new method to compile, as the Note below explains.
+
+Two differences between the phases are worth knowing:
+
+| | `HTTPTransportPreAuthHook` | `HTTPTransportPreHook` |
+|---|---|---|
+| Runs for a request authentication rejects | Yes | No |
+| Post-hook counterpart | None | `HTTPTransportPostHook` |
+
+A plugin that must observe *every* request, including rejected ones, should not rely on `HTTPTransportPreHook` for that bookkeeping.
+
+<Note>
+`HTTPTransportPreAuthHook` is part of the `HTTPTransportPlugin` interface, so Go plugins compiled against v2.0 must define it. Plugins with nothing to do before authentication return `(nil, nil)`. Native `.so` plugins are unaffected unless they opt in: the symbol is looked up optionally, and a plugin that never exports it is skipped by the phase.
+</Note>
+
+See the [Plugin Migration Guide](/plugins/migration-guide) for the full hook contract.
+
+---
+
 ## Migration Checklist
 
 <Steps>
@@ -192,6 +255,10 @@ For any internal URL found above, add the host (or its CIDR) to `server.plugin_d
 
 <Step title="Confirm dashboard auth is configured before creating a custom-path plugin">
 If dashboard auth is disabled or unconfigured, `POST /api/plugins` and `PUT /api/plugins/{name}` will now reject any request that sets a custom `path`. Enable dashboard authentication first if you need to register a plugin with a custom binary path.
+</Step>
+
+<Step title="Move credential work in custom plugins to `HTTPTransportPreAuthHook`">
+Grep your plugins for writes to `x-bf-vk`, `Authorization`, `x-api-key`, `x-goog-api-key`, or `api-key` inside `HTTPTransportPreHook`. Any you find must move to `HTTPTransportPreAuthHook` — the rename is the whole migration, and the failure mode if you miss one is silent.
 </Step>
 
 <Step title="Move governance API callers to canonical `/api/governance` paths">

@@ -388,6 +388,81 @@ func newDecompressReader(r io.Reader, encoding string) (io.Reader, func(), error
 	}
 }
 
+// TransportPreAuthInterceptorMiddleware runs the pre-auth phase of the plugin pipeline.
+// It converts the fasthttp request to a serializable HTTPRequest, runs every plugin implementing
+// HTTPTransportPreAuthHook, and applies modifications back to the fasthttp context — so the
+// authentication middlewares that run next observe them. This is the seam for plugins whose job is
+// to supply or translate the credentials authentication reads (deriving a virtual key from an
+// upstream identity header, say). Everything else belongs in TransportInterceptorMiddleware, which
+// runs after authentication and can see the resolved caller.
+//
+// The phase carries the same request shape as TransportInterceptorMiddleware, body included, so a
+// hook can move between the two by renaming. That means the body is snapshotted before the caller
+// is authenticated: a request authentication goes on to reject has already been copied once here.
+// Large payloads are still skipped — fasthttpToHTTPRequest honours the large-payload threshold, so
+// the threshold middleware must run before this one.
+//
+// There is no post-hook counterpart. HTTPTransportPostHook pairs with HTTPTransportPreHook, and a
+// request rejected by authentication runs neither.
+func TransportPreAuthInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			plugins := config.GetLoadedHTTPTransportPlugins()
+			if len(plugins) == 0 {
+				next(ctx)
+				return
+			}
+			// Get or create BifrostContext from fasthttp context
+			bifrostCtx := getBifrostContextFromFastHTTP(ctx)
+			// Transport hooks run before the inference path stamps the catalog, so stamp it
+			// here too — otherwise ctx.GetModelInfo would be nil in HTTPTransportPreAuthHook
+			// but populated in every other hook.
+			if config.ModelCatalog != nil {
+				bifrostCtx.SetValue(schemas.BifrostContextKeyModelCatalog, config.ModelCatalog)
+			}
+			// Acquire pooled request
+			req := schemas.AcquireHTTPRequest()
+			defer schemas.ReleaseHTTPRequest(req)
+			fasthttpToHTTPRequest(ctx, req)
+			// Run plugin pre-auth interceptors
+			for _, plugin := range plugins {
+				pluginName := plugin.GetName()
+				pluginCtx := bifrostCtx.WithPluginScope(&pluginName)
+				resp, err := plugin.HTTPTransportPreAuthHook(pluginCtx, req)
+				pluginCtx.ReleasePluginScope()
+				if err != nil {
+					// Short-circuit with error — drain plugin logs before returning
+					appendTransportPluginLogs(ctx, bifrostCtx.DrainPluginLogs())
+					ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+					ctx.SetBodyString(err.Error())
+					return
+				}
+				if resp != nil {
+					// Short-circuit with response — drain plugin logs before returning
+					appendTransportPluginLogs(ctx, bifrostCtx.DrainPluginLogs())
+					applyHTTPResponseToCtx(ctx, resp)
+					return
+				}
+				// If we got here, the plugin may have modified req in-place
+			}
+			// Drain pre-auth plugin logs and store on fasthttp context for trace attachment
+			appendTransportPluginLogs(ctx, bifrostCtx.DrainPluginLogs())
+			// Apply modifications back to fasthttp context. A plugin that rewrote the method
+			// or path has already been failed with 409; running the rest of the chain would
+			// serve a response the transport just rejected.
+			if !applyHTTPRequestToCtx(ctx, req) {
+				return
+			}
+			// Adding user values so later middlewares, hooks and handlers observe anything
+			// a pre-auth plugin stashed on the context.
+			for key, value := range bifrostCtx.GetUserValues() {
+				ctx.SetUserValue(key, value)
+			}
+			next(ctx)
+		}
+	}
+}
+
 // TransportInterceptorMiddleware runs all plugin HTTP transport interceptors.
 // It converts the fasthttp request to a serializable HTTPRequest, runs all plugin interceptors,
 // and applies any modifications back to the fasthttp context.
@@ -419,29 +494,27 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 				pluginCtx.ReleasePluginScope()
 				if err != nil {
 					// Short-circuit with error — drain plugin logs before returning
-					if logs := bifrostCtx.DrainPluginLogs(); len(logs) > 0 {
-						ctx.SetUserValue(schemas.BifrostContextKeyTransportPluginLogs, logs)
-					}
+					appendTransportPluginLogs(ctx, bifrostCtx.DrainPluginLogs())
 					ctx.SetStatusCode(fasthttp.StatusInternalServerError)
 					ctx.SetBodyString(err.Error())
 					return
 				}
 				if resp != nil {
 					// Short-circuit with response — drain plugin logs before returning
-					if logs := bifrostCtx.DrainPluginLogs(); len(logs) > 0 {
-						ctx.SetUserValue(schemas.BifrostContextKeyTransportPluginLogs, logs)
-					}
+					appendTransportPluginLogs(ctx, bifrostCtx.DrainPluginLogs())
 					applyHTTPResponseToCtx(ctx, resp)
 					return
 				}
 				// If we got here, the plugin may have modified req in-place
 			}
 			// Drain pre-hook plugin logs and store on fasthttp context for trace attachment
-			if preHookLogs := bifrostCtx.DrainPluginLogs(); len(preHookLogs) > 0 {
-				ctx.SetUserValue(schemas.BifrostContextKeyTransportPluginLogs, preHookLogs)
+			appendTransportPluginLogs(ctx, bifrostCtx.DrainPluginLogs())
+			// Apply modifications back to fasthttp context. A plugin that rewrote the method
+			// or path has already been failed with 409; running the handler anyway would
+			// serve a response the transport just rejected.
+			if !applyHTTPRequestToCtx(ctx, req) {
+				return
 			}
-			// Apply modifications back to fasthttp context
-			applyHTTPRequestToCtx(ctx, req)
 			// Adding user values
 			for key, value := range bifrostCtx.GetUserValues() {
 				ctx.SetUserValue(key, value)
@@ -528,27 +601,15 @@ func runTransportPostHooks(ctx *fasthttp.RequestCtx, plugins []schemas.HTTPTrans
 		if err != nil {
 			logger.Warn("error in HTTPTransportPostHook for plugin %s: %s", pluginName, err.Error())
 			// Drain plugin logs before returning on error
-			if postHookLogs := bifrostCtx.DrainPluginLogs(); len(postHookLogs) > 0 {
-				if existing, ok := ctx.UserValue(schemas.BifrostContextKeyTransportPluginLogs).([]schemas.PluginLogEntry); ok {
-					ctx.SetUserValue(schemas.BifrostContextKeyTransportPluginLogs, append(existing, postHookLogs...))
-				} else {
-					ctx.SetUserValue(schemas.BifrostContextKeyTransportPluginLogs, postHookLogs)
-				}
-			}
+			appendTransportPluginLogs(ctx, bifrostCtx.DrainPluginLogs())
 			if shouldApplyShortCircuit {
 				applyHTTPResponseToCtx(ctx, httpResp)
 			}
 			return fmt.Errorf("transport post-hook plugin %s: %w", pluginName, err)
 		}
 	}
-	// Drain post-hook plugin logs and merge with pre-hook logs
-	if postHookLogs := bifrostCtx.DrainPluginLogs(); len(postHookLogs) > 0 {
-		if existing, ok := ctx.UserValue(schemas.BifrostContextKeyTransportPluginLogs).([]schemas.PluginLogEntry); ok {
-			ctx.SetUserValue(schemas.BifrostContextKeyTransportPluginLogs, append(existing, postHookLogs...))
-		} else {
-			ctx.SetUserValue(schemas.BifrostContextKeyTransportPluginLogs, postHookLogs)
-		}
-	}
+	// Drain post-hook plugin logs and merge with the earlier phases' logs
+	appendTransportPluginLogs(ctx, bifrostCtx.DrainPluginLogs())
 	if shouldApplyShortCircuit {
 		applyHTTPResponseToCtx(ctx, httpResp)
 	}
@@ -665,12 +726,14 @@ func fasthttpToHTTPRequest(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) {
 }
 
 // applyHTTPRequestToCtx applies modifications from HTTPRequest back to fasthttp context.
-func applyHTTPRequestToCtx(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) {
+// Reports false when a plugin rewrote the method or path: the request has already been
+// failed with 409 and the caller must stop.
+func applyHTTPRequestToCtx(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) bool {
 	// If path/method is different, throw error
 	if req.Method != string(ctx.Method()) || req.Path != string(ctx.Path()) {
 		logger.Error("request method/path mismatch: %s %s != %s %s", req.Method, req.Path, string(ctx.Method()), string(ctx.Path()))
 		SendError(ctx, fasthttp.StatusConflict, "request method/path was modified by a plugin, this is not allowed")
-		return
+		return false
 	}
 	// Apply headers
 	for key, value := range req.Headers {
@@ -684,6 +747,22 @@ func applyHTTPRequestToCtx(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) {
 	if req.Body != nil {
 		ctx.Request.SetBody(req.Body)
 	}
+	return true
+}
+
+// appendTransportPluginLogs accumulates transport-layer plugin logs on the fasthttp context
+// for trace attachment. Every phase (pre-auth, pre-hook, post-hook) drains into the same slot,
+// so this appends rather than overwrites — otherwise a later phase would drop the earlier
+// phases' logs.
+func appendTransportPluginLogs(ctx *fasthttp.RequestCtx, logs []schemas.PluginLogEntry) {
+	if len(logs) == 0 {
+		return
+	}
+	if existing, ok := ctx.UserValue(schemas.BifrostContextKeyTransportPluginLogs).([]schemas.PluginLogEntry); ok {
+		ctx.SetUserValue(schemas.BifrostContextKeyTransportPluginLogs, append(existing, logs...))
+		return
+	}
+	ctx.SetUserValue(schemas.BifrostContextKeyTransportPluginLogs, logs)
 }
 
 // applyHTTPResponseToCtx writes a short-circuit response to fasthttp context.

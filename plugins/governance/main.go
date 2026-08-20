@@ -322,6 +322,12 @@ func (p *GovernancePlugin) UpdateEnforceAuthOnInference(enforceAuthOnInference b
 	p.isVkMandatory = new(enforceAuthOnInference)
 }
 
+// HTTPTransportPreAuthHook is a no-op: this plugin does no credential work, so it has
+// nothing to do before the transport authenticates the request (HTTPTransportPlugin interface).
+func (*GovernancePlugin) HTTPTransportPreAuthHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	return nil, nil
+}
+
 // HTTPTransportPreHook is retained as a no-op so governance still satisfies the
 // HTTPTransportPlugin interface (used by the enterprise wrapper's 503 gate delegation).
 // All routing now flows through PreRequestHook: body-having requests via handleRequest,

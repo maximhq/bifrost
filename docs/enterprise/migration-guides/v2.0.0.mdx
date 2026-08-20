@@ -3,7 +3,7 @@ title: "Migrating to Enterprise v2.0.0"
 description: "Breaking changes and migration instructions for the Enterprise v2.0.0 release"
 ---
 
-Enterprise v2.0.0 is built on top of OSS `2.0.0-prerelease3` and inherits both breaking changes from that release. This page summarizes the inherited changes, the Enterprise license requirement, and how the changes interact with SCIM-based authentication.
+Enterprise v2.0.0 is built on top of OSS `2.0.0-prerelease3` and inherits both breaking changes from that release. This page summarizes the inherited changes, the Enterprise license requirement, the plugin transport-hook change, and how the changes interact with SCIM-based authentication.
 
 <Warning>
 **A provisioned Bifrost Enterprise license is required for v2.0.0.** Before migrating, contact the Bifrost team to obtain your `license.bif` file. Set the entire contents of this file as the value of the `BIFROST_LICENSE` environment variable on every node running Bifrost. Complete this configuration before upgrading to avoid interrupting your deployment.
@@ -35,6 +35,29 @@ This is **not an additional breaking change**: no action is required, and nothin
 </Note>
 
 The practical implication: under SCIM, protection for the custom-plugin-path endpoint rests entirely on `SCIMController.Middleware()`'s own fail-closed behavior, rather than on the layered, defense-in-depth check that non-SCIM deployments get in addition to their own auth middleware. If you rely on SCIM for dashboard authentication, treat `SCIMController.Middleware()`'s correctness as the sole safeguard for this endpoint rather than assuming the OSS-documented check is also active.
+
+---
+
+## Plugin Transport Hooks: New Pre-Auth Phase
+
+OSS v2.0.0 adds `HTTPTransportPreAuthHook`, which runs before the transport authenticates a request, and moves `HTTPTransportPreHook` to run after authentication (see [Breaking Change 4](/migration-guides/v2.0.0#breaking-change-4-httptransportprehook-now-runs-after-authentication)). On Enterprise the ordering half of that change is not new — `HTTPTransportPreHook` has run after the SCIM and API-key middlewares since the release that introduced the desktop agent. What is new is a phase that runs *before* them.
+
+**Who is affected:** any custom plugin that supplies a credential — deriving a virtual key from an upstream identity header, rewriting an `Authorization` header — from `HTTPTransportPreHook`.
+
+On Enterprise this has been silently ineffective for SCIM deployments, and the symptom depends on whether an identity provider is configured:
+
+| Deployment | Credential injected from `HTTPTransportPreHook` |
+|---|---|
+| Identity provider configured, `enforce_auth_on_inference` on | Never seen. Inference auth rejects the request with `401` before the plugin runs |
+| No identity provider | Still works. The injected key is not seen by the auth middlewares, but it does reach governance downstream, which validates it |
+
+The second row is why this often looks like an SSO-specific bug: the same plugin binary works on a deployment without an IdP and fails on one with it.
+
+**How to fix it:** rename the function to `HTTPTransportPreAuthHook`. It receives the same `*HTTPRequest` — headers, query, path params and body — and applies the same mutations, so the hook body does not change. After the rename the plugin behaves identically with or without an identity provider.
+
+<Note>
+**Ordering with large payloads.** The request-body snapshot now happens in the pre-auth phase, so the large-payload threshold middleware moved ahead of it. A body above `large_payload.request_threshold_bytes` is still skipped rather than copied, exactly as before. No configuration change is required.
+</Note>
 
 ---
 

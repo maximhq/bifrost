@@ -170,7 +170,10 @@ func ReleaseHTTPResponse(resp *HTTPResponse) {
 // PostHooks are executed in the reverse order of PreHooks.
 //
 // Execution order:
-// 1. HTTPTransportPreHook (HTTP transport only, once per request, executed in registration order)
+// 0. HTTPTransportPreAuthHook (HTTP transport only, once per request, executed in registration order,
+//    before the transport's authentication middlewares)
+// 1. HTTPTransportPreHook (HTTP transport only, once per request, executed in registration order,
+//    after the transport's authentication middlewares)
 // 2. PreRequestHook (once per request, executed in registration order)
 // 3. PreLLMHook (executed in registration order, runs again on each fallback attempt)
 // 4. Provider call
@@ -179,7 +182,8 @@ func ReleaseHTTPResponse(resp *HTTPResponse) {
 // 6a. HTTPTransportStreamChunkHook (for streaming responses, called per-chunk in reverse order)
 //
 // Per-request vs per-attempt phases:
-// - HTTPTransportPreHook, PreRequestHook, HTTPTransportPostHook run ONCE per top-level request.
+// - HTTPTransportPreAuthHook, HTTPTransportPreHook, PreRequestHook, HTTPTransportPostHook run
+//   ONCE per top-level request.
 // - PreLLMHook, PostLLMHook run ONCE PER ATTEMPT: the primary provider call, plus once per
 //   fallback attempt. Mutations a PreLLMHook makes to the request only carry to later
 //   fallbacks where prepareFallbackRequest happens to share pointers (shallow copy) —
@@ -218,7 +222,40 @@ type BasePlugin interface {
 type HTTPTransportPlugin interface {
 	BasePlugin
 
-	// HTTPTransportPreHook is called at the HTTP transport layer before requests enter Bifrost core.
+	// HTTPTransportPreAuthHook is called at the HTTP transport layer before the transport's
+	// authentication middlewares run, so mutations made here are visible to authentication.
+	// Implement it with a body only when the plugin's job is to supply or translate the
+	// credentials authentication reads — deriving a virtual key from an upstream identity
+	// header, say. Every other kind of work belongs in HTTPTransportPreHook, which runs after
+	// authentication and can therefore see the resolved caller identity. Plugins with nothing
+	// to do before authentication return (nil, nil).
+	// Only invoked when using HTTP transport (bifrost-http), not when using Bifrost as a Go SDK
+	// directly. Like the other transport hooks it takes serializable types; native .so plugins
+	// join the phase by exporting an HTTPTransportPreAuthHook symbol.
+	//
+	// req carries the same fields HTTPTransportPreHook receives — Method, Path, Headers, Query,
+	// PathParams and Body — and the same mutations apply, so moving a hook between the two
+	// phases is a rename. Note the cost: the body is snapshotted before the caller is known, so
+	// a request authentication goes on to reject has already been copied.
+	//
+	// Mutating Method or Path is rejected (the request is failed with 409) — routing has
+	// already been resolved by the time this runs.
+	//
+	// This hook has no post-hook counterpart: HTTPTransportPostHook pairs with
+	// HTTPTransportPreHook, and a request rejected by authentication runs neither. A plugin
+	// that must observe every request, including rejected ones, should not rely on this phase
+	// for its bookkeeping.
+	//
+	// Return values:
+	// - (nil, nil): Continue to authentication, request modifications are applied
+	// - (*HTTPResponse, nil): Short-circuit with this response, skip authentication and the handler
+	// - (nil, error): Short-circuit with error response
+	HTTPTransportPreAuthHook(ctx *BifrostContext, req *HTTPRequest) (*HTTPResponse, error)
+
+	// HTTPTransportPreHook is called at the HTTP transport layer before requests enter Bifrost core,
+	// after the transport has authenticated the request — so the resolved caller identity is already
+	// on ctx. A plugin that needs to run BEFORE authentication (typically to supply the credentials
+	// authentication reads) belongs in HTTPTransportPreAuthHook instead.
 	// It receives a serializable HTTPRequest and allows plugins to modify it in-place.
 	// Only invoked when using HTTP transport (bifrost-http), not when using Bifrost as a Go SDK directly.
 	// Works with both native .so plugins and WASM plugins due to serializable types.
