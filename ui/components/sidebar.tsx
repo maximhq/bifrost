@@ -19,10 +19,10 @@ import {
 	Gavel,
 	GitCompareArrows,
 	Globe,
+	Hexagon,
 	History,
 	KeyRound,
 	Landmark,
-	Hexagon,
 	LaptopMinimalCheck,
 	LayoutGrid,
 	Logs,
@@ -251,15 +251,14 @@ const SidebarItemView = ({
 
 	const isHighlighted = !hasSubItems && highlightedUrl === item.url;
 
-	const buttonClassName = `group/nav-item relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${
-		isHighlighted
-			? "bg-sidebar-accent text-accent-foreground border-primary/20"
-			: isActive || isAnySubItemActive
-				? "bg-sidebar-accent text-primary border-primary/20"
-				: item.hasAccess
-					? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
-					: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-	} `;
+	const buttonClassName = `group/nav-item relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${isHighlighted
+		? "bg-sidebar-accent text-accent-foreground border-primary/20"
+		: isActive || isAnySubItemActive
+			? "bg-sidebar-accent text-primary border-primary/20"
+			: item.hasAccess
+				? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
+				: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+		} `;
 
 	const innerContent = (
 		<div className="flex w-full items-center justify-between">
@@ -410,15 +409,14 @@ const SidebarItemView = ({
 						const isSubItemActive = subItem.queryParam ? pathname === subItem.url : isRouteMatch(subItem.url);
 						const isSubItemHighlighted = highlightedUrl ? subItemHref.startsWith(highlightedUrl) : false;
 						const SubItemIcon = subItem.icon;
-						const subItemClassName = `h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${
-							isSubItemHighlighted
-								? "bg-sidebar-accent text-accent-foreground"
-								: isSubItemActive
-									? "bg-sidebar-accent text-primary font-medium"
-									: subItem.hasAccess === false
-										? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-										: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
-						}`;
+						const subItemClassName = `h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${isSubItemHighlighted
+							? "bg-sidebar-accent text-accent-foreground"
+							: isSubItemActive
+								? "bg-sidebar-accent text-primary font-medium"
+								: subItem.hasAccess === false
+									? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+									: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
+							}`;
 						const subInner = (
 							<div className="flex w-full items-center gap-2">
 								{SubItemIcon && <SubItemIcon className={`h-3.5 w-3.5 ${isSubItemActive ? "text-primary" : "text-muted-foreground"}`} />}
@@ -960,21 +958,21 @@ export default function AppSidebar() {
 			},
 			...(isDbConnected
 				? [
-						{
-							title: "Prompt Repository",
-							url: "/workspace/prompt-repo",
-							icon: FolderGit,
-							description: "Prompt repository",
-							hasAccess: hasPromptRepositoryAccess,
-						},
-						{
-							title: "Skills Repository",
-							url: "/workspace/skills-repo",
-							icon: BookOpenText,
-							description: "Skills repository",
-							hasAccess: hasSkillsRepositoryAccess,
-						},
-					]
+					{
+						title: "Prompt Repository",
+						url: "/workspace/prompt-repo",
+						icon: FolderGit,
+						description: "Prompt repository",
+						hasAccess: hasPromptRepositoryAccess,
+					},
+					{
+						title: "Skills Repository",
+						url: "/workspace/skills-repo",
+						icon: BookOpenText,
+						description: "Skills repository",
+						hasAccess: hasSkillsRepositoryAccess,
+					},
+				]
 				: []),
 			{
 				title: "Evals",
@@ -1021,14 +1019,14 @@ export default function AppSidebar() {
 					},
 					...(IS_ENTERPRISE
 						? [
-								{
-									title: "Proxy",
-									url: "/workspace/config/proxy",
-									icon: Globe,
-									description: "Proxy configuration",
-									hasAccess: hasSettingsAccess,
-								},
-							]
+							{
+								title: "Proxy",
+								url: "/workspace/config/proxy",
+								icon: Globe,
+								description: "Proxy configuration",
+								hasAccess: hasSettingsAccess,
+							},
+						]
 						: []),
 					{
 						title: "API Keys",
@@ -1053,21 +1051,21 @@ export default function AppSidebar() {
 					},
 					...(IS_ENTERPRISE
 						? [
-								{
-									title: "Branding",
-									url: "/workspace/config/branding",
-									icon: Palette,
-									description: "Custom logo and icon",
-									hasAccess: hasSettingsAccess,
-								},
-								{
-									title: "License Info",
-									url: "/workspace/config/license",
-									icon: BadgeInfo,
-									description: "Enterprise license information",
-									hasAccess: hasSettingsAccess,
-								},
-							]
+							{
+								title: "Branding",
+								url: "/workspace/config/branding",
+								icon: Palette,
+								description: "Custom logo and icon",
+								hasAccess: hasSettingsAccess,
+							},
+							{
+								title: "License Info",
+								url: "/workspace/config/license",
+								icon: BadgeInfo,
+								description: "Enterprise license information",
+								hasAccess: hasSettingsAccess,
+							},
+						]
 						: []),
 				],
 			},
@@ -1485,8 +1483,8 @@ export default function AppSidebar() {
 					</div>
 				</div>
 			)}
-			<div className="mx-2 pb-1 group-data-[collapsible=icon]:hidden">
-				<div className="dark:bg-card relative bg-white">
+			<div className="ml-2 mr-3 pb-1 group-data-[collapsible=icon]:hidden">
+				<div className="dark:bg-card relative bg-white rounded-sm">
 					<Search className="text-muted-foreground absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2" />
 					<input
 						ref={searchInputRef}
@@ -1508,7 +1506,7 @@ export default function AppSidebar() {
 				</div>
 			</div>
 			<SidebarContent className="overflow-hidden">
-				<SidebarGroup className="custom-scrollbar min-h-0 flex-1 overflow-y-auto">
+				<SidebarGroup className="custom-scrollbar min-h-0 flex-1 overflow-y-auto pr-3">
 					<SidebarGroupContent>
 						<SidebarMenu className="space-y-0.5">
 							{filteredItems.map((item) => {
@@ -1535,7 +1533,7 @@ export default function AppSidebar() {
 						</SidebarMenu>
 					</SidebarGroupContent>
 				</SidebarGroup>
-				<div className="mt-auto flex flex-col gap-4 px-3 pb-2 group-data-[collapsible=icon]:px-1">
+				<div className="mt-auto flex flex-col gap-4 px-3 pb-3 group-data-[collapsible=icon]:px-1">
 					<div className="mx-1 group-data-[collapsible=icon]:hidden">
 						<PromoCardStack cards={promoCards} onDismiss={handlePromoDismiss} />
 					</div>

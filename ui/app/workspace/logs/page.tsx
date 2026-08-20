@@ -648,10 +648,22 @@ export default function LogsPage() {
 		() => ({ expandedChainIds, loadingChainIds, onToggleChain: handleToggleChain }),
 		[expandedChainIds, loadingChainIds, handleToggleChain],
 	);
-	const selectedLogFromData = useMemo(
-		() => (selectedLogId ? (logs.find((l) => l.id === selectedLogId) ?? null) : null),
-		[selectedLogId, logs],
-	);
+	// Resolve the selected log from data already on screen — the page of roots
+	// first, then the children of any expanded chain. Children live outside
+	// `logs`, so without this second lookup clicking a child would fall through
+	// to the fetch-by-id effect below and the sheet would only appear after that
+	// round trip. Resolving locally opens the sheet immediately; the sheet still
+	// fetches the full record and shows its own loader while that lands.
+	const selectedLogFromData = useMemo(() => {
+		if (!selectedLogId) return null;
+		const root = logs.find((l) => l.id === selectedLogId);
+		if (root) return root;
+		for (const children of Object.values(chainChildren)) {
+			const child = children.find((l) => l.id === selectedLogId);
+			if (child) return child;
+		}
+		return null;
+	}, [selectedLogId, logs, chainChildren]);
 
 	useEffect(() => {
 		if (!selectedLogId || selectedLogFromData) {
@@ -737,7 +749,7 @@ export default function LogsPage() {
 	);
 
 	return (
-		<div className="dark:bg-card no-padding-parent no-border-parent h-[calc(var(--app-content-viewport)_-_16px)]">
+		<div className="dark:bg-card no-padding-parent no-border-parent h-[calc(var(--app-content-viewport)_-_var(--app-bottom-padding))]">
 			{showEmptyState ? (
 				<EmptyState error={error ?? (logsError ? getErrorMessage(logsError as Parameters<typeof getErrorMessage>[0]) : null)} />
 			) : (

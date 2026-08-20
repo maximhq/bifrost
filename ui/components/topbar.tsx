@@ -1,5 +1,5 @@
-import { ThemeToggle } from "@/components/themeToggle";
 import NotificationCenter from "@/components/notificationCenter";
+import { ThemeToggle } from "@/components/themeToggle";
 import { deriveTitleFromPathname, TOPBAR_MENU_SIDE_OFFSET } from "@/components/topbar.utils";
 import {
 	DropdownMenu,
@@ -34,29 +34,29 @@ const externalLinks: {
 	icon: React.ComponentType<Record<string, unknown>>;
 	strokeWidth?: number;
 }[] = [
-	{
-		title: "Discord Server",
-		url: "https://discord.gg/exN5KAydbU",
-		icon: DiscordLogoIcon,
-	},
-	{
-		title: "GitHub Repository",
-		url: "https://github.com/maximhq/bifrost",
-		icon: GithubLogoIcon,
-	},
-	{
-		title: "Report a bug",
-		url: "https://github.com/maximhq/bifrost/issues/new?title=[Bug Report]&labels=bug&type=bug&projects=maximhq/1",
-		icon: BugIcon,
-		strokeWidth: 1.5,
-	},
-	{
-		title: "Full Documentation",
-		url: "https://docs.getbifrost.ai",
-		icon: BooksIcon,
-		strokeWidth: 1,
-	},
-];
+		{
+			title: "Discord Server",
+			url: "https://discord.gg/exN5KAydbU",
+			icon: DiscordLogoIcon,
+		},
+		{
+			title: "GitHub Repository",
+			url: "https://github.com/maximhq/bifrost",
+			icon: GithubLogoIcon,
+		},
+		{
+			title: "Report a bug",
+			url: "https://github.com/maximhq/bifrost/issues/new?title=[Bug Report]&labels=bug&type=bug&projects=maximhq/1",
+			icon: BugIcon,
+			strokeWidth: 1.5,
+		},
+		{
+			title: "Full Documentation",
+			url: "https://docs.getbifrost.ai",
+			icon: BooksIcon,
+			strokeWidth: 1,
+		},
+	];
 
 /**
  * Resolves the topbar title. A page can name itself via useSetTopbarTitle();
@@ -121,7 +121,7 @@ export default function Topbar() {
 	};
 
 	return (
-		<header className="flex h-13 w-full shrink-0 items-center gap-2 px-3 pt-1 md:pr-4 md:pl-2" data-testid="topbar-container-root">
+		<header className="flex h-13 w-full shrink-0 items-center gap-2 px-3 pt-1 md:pr-3 md:pl-2" data-testid="topbar-container-root">
 			<div className="flex min-w-0 flex-1 items-center gap-2">
 				<SidebarTrigger className="shrink-0 md:hidden" />
 				<img className="h-[22px] w-auto max-w-[120px] object-contain md:hidden" src={logoSrc} alt={logoAlt} width={70} height={70} />

@@ -56,7 +56,7 @@ export default function SkillsRepoPage() {
 
 	// List view
 	return (
-		<div className="no-padding-parent flex min-h-full w-full min-w-0 flex-col p-4 md:h-[calc(var(--app-content-viewport)_-_16px)] md:min-h-0">
+		<div className="no-padding-parent flex min-h-full w-full min-w-0 flex-col p-4 md:h-[calc(var(--app-content-viewport)_-_var(--app-bottom-padding))] md:min-h-0">
 			<SkillsListView onSelectSkill={handleSelectSkill} onCreateNew={() => setUrlState({ create: true, skillId: null, edit: false })} />
 		</div>
 	);
