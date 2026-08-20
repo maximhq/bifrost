@@ -1608,3 +1608,70 @@ func TestReplicateToBifrostResponsesResponse(t *testing.T) {
 	}
 }
 
+
+// TestReplicateSystemPromptReadsDatasheet covers the datasheet side of the
+// system_prompt gate. The hardcoded model list is covered by the
+// Deepseek_Model_NoSystemPrompt / Meta_Llama_NoSystemPrompt cases above; these
+// pin that a supports_system_messages row overrides it in both directions.
+func TestReplicateSystemPromptReadsDatasheet(t *testing.T) {
+	install := func(t *testing.T, model string, supported bool) {
+		t.Helper()
+		schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+			if m != model {
+				return nil
+			}
+			return &schemas.ModelCapabilities{SupportsSystemMessages: &supported}
+		})
+		t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+	}
+
+	build := func(t *testing.T, model string) *replicate.ReplicatePredictionRequest {
+		t.Helper()
+		result, err := replicate.ToReplicateChatRequest(&schemas.BifrostChatRequest{
+			Model: model,
+			Input: []schemas.ChatMessage{
+				{
+					Role:    schemas.ChatMessageRoleSystem,
+					Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("You are a helpful assistant.")},
+				},
+				{
+					Role:    schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello!")},
+				},
+			},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.NotNil(t, result.Input)
+		return result
+	}
+
+	t.Run("row_opts_a_listed_model_back_in", func(t *testing.T) {
+		// deepseek is hardcoded as unsupported; an explicit true must win.
+		const model = "deepseek-ai/deepseek-r1"
+		install(t, model, true)
+
+		result := build(t, model)
+		require.NotNil(t, result.Input.SystemPrompt)
+		assert.Equal(t, "You are a helpful assistant.", *result.Input.SystemPrompt)
+		assert.NotContains(t, *result.Input.Prompt, "You are a helpful assistant.")
+	})
+
+	t.Run("row_opts_an_unlisted_model_out", func(t *testing.T) {
+		const model = "meta/llama-3.1-70b-instruct"
+		install(t, model, false)
+
+		result := build(t, model)
+		assert.Nil(t, result.Input.SystemPrompt)
+		require.NotNil(t, result.Input.Prompt)
+		assert.Contains(t, *result.Input.Prompt, "You are a helpful assistant.")
+		assert.Contains(t, *result.Input.Prompt, "Hello!")
+	})
+
+	t.Run("version_suffix_still_resolves", func(t *testing.T) {
+		install(t, "deepseek-ai/deepseek-r1", true)
+
+		result := build(t, "deepseek-ai/deepseek-r1:abc123")
+		require.NotNil(t, result.Input.SystemPrompt, "the version suffix must be stripped before lookup")
+	})
+}

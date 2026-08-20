@@ -8,6 +8,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/require"
 )
 
 func TestToOpenAIResponsesRequest_ReasoningOnlyMessageSkip(t *testing.T) {
@@ -270,9 +271,32 @@ func TestToOpenAIResponsesRequest_ReasoningStringContent(t *testing.T) {
 		}
 	})
 
-	t.Run("non-empty string content becomes a reasoning_text block", func(t *testing.T) {
+	t.Run("non-empty string content is dropped for a non-gpt-oss model", func(t *testing.T) {
 		bifrostReq := &schemas.BifrostResponsesRequest{
 			Model: "gpt-5.5",
+			Input: []schemas.ResponsesMessage{{
+				Type:               schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+				ResponsesReasoning: &schemas.ResponsesReasoning{EncryptedContent: schemas.Ptr("enc1")},
+				Content:            &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("thinking")},
+			}},
+		}
+
+		result := ToOpenAIResponsesRequest(nil, bifrostReq)
+		original := bifrostReq.Input[0].Content
+		if original == nil || original.ContentStr == nil || *original.ContentStr != "thinking" {
+			t.Fatalf("expected input reasoning content string to remain unchanged, got %#v", original)
+		}
+		if result == nil || len(result.Input.OpenAIResponsesRequestInputArray) != 1 {
+			t.Fatalf("expected one converted message, got %#v", result)
+		}
+		if c := result.Input.OpenAIResponsesRequestInputArray[0].Content; c != nil {
+			t.Errorf("expected reasoning Content to be dropped for gpt-5.5, got %#v", c)
+		}
+	})
+
+	t.Run("non-empty string content becomes a reasoning_text block for gpt-oss", func(t *testing.T) {
+		bifrostReq := &schemas.BifrostResponsesRequest{
+			Model: "gpt-oss-120b",
 			Input: []schemas.ResponsesMessage{{
 				Type:               schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
 				ResponsesReasoning: &schemas.ResponsesReasoning{EncryptedContent: schemas.Ptr("enc1")},
@@ -299,6 +323,107 @@ func TestToOpenAIResponsesRequest_ReasoningStringContent(t *testing.T) {
 		if block.Type != schemas.ResponsesOutputMessageContentTypeReasoning ||
 			block.Text == nil || *block.Text != "thinking" {
 			t.Errorf("expected reasoning_text block with text %q, got %#v", "thinking", block)
+		}
+	})
+}
+
+// TestToOpenAIResponsesRequest_ReasoningContentBlocksDropped guards the Anthropic
+// replay path: Claude thinking blocks translate into a reasoning item whose content
+// carries reasoning_text blocks (with Anthropic signatures). Replaying that item to a
+// non-gpt-oss OpenAI/Azure reasoning model fails with
+// "Invalid 'input[N].content': array too long. Expected an array with maximum length 0",
+// because those models keep their reasoning state in summary + encrypted_content only.
+// The outbound conversion must therefore drop content while preserving both.
+func TestToOpenAIResponsesRequest_ReasoningContentBlocksDropped(t *testing.T) {
+	newReasoningItem := func() schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			ID:   schemas.Ptr("rs_abc"),
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+			ResponsesReasoning: &schemas.ResponsesReasoning{
+				Summary: []schemas.ResponsesReasoningSummary{{
+					Type: schemas.ResponsesReasoningContentBlockTypeSummaryText,
+					Text: "summary text",
+				}},
+				EncryptedContent: schemas.Ptr("gAAAAAB-encrypted"),
+			},
+			Content: &schemas.ResponsesMessageContent{
+				ContentBlocks: []schemas.ResponsesMessageContentBlock{
+					{
+						Type:      schemas.ResponsesOutputMessageContentTypeReasoning,
+						Text:      schemas.Ptr("first thinking block"),
+						Signature: schemas.Ptr("anthropic-signature-1"),
+					},
+					{
+						Type:      schemas.ResponsesOutputMessageContentTypeReasoning,
+						Text:      schemas.Ptr("second thinking block"),
+						Signature: schemas.Ptr("anthropic-signature-2"),
+					},
+				},
+			},
+		}
+	}
+
+	// gpt-4o is not a reasoning model, so it additionally has cross-provider
+	// encrypted_content stripped (it could never decrypt it).
+	models := map[string]bool{"gpt-5.6-sol": true, "gpt-5.5": true, "o3": true, "gpt-4o": false}
+	for model, keepsEncrypted := range models {
+		t.Run(model, func(t *testing.T) {
+			input := newReasoningItem()
+			bifrostReq := &schemas.BifrostResponsesRequest{
+				Model: model,
+				Input: []schemas.ResponsesMessage{input},
+			}
+
+			result := ToOpenAIResponsesRequest(nil, bifrostReq)
+			if result == nil || len(result.Input.OpenAIResponsesRequestInputArray) != 1 {
+				t.Fatalf("expected the reasoning item to be preserved, got %#v", result)
+			}
+			msg := result.Input.OpenAIResponsesRequestInputArray[0]
+			if msg.Content != nil {
+				t.Errorf("expected reasoning content to be dropped, got %#v", msg.Content)
+			}
+			if msg.ResponsesReasoning == nil || len(msg.ResponsesReasoning.Summary) != 1 {
+				t.Fatalf("expected summary to be preserved, got %#v", msg.ResponsesReasoning)
+			}
+			if keepsEncrypted {
+				if msg.ResponsesReasoning.EncryptedContent == nil ||
+					*msg.ResponsesReasoning.EncryptedContent != "gAAAAAB-encrypted" {
+					t.Errorf("expected encrypted_content to be preserved, got %#v", msg.ResponsesReasoning.EncryptedContent)
+				}
+			} else if msg.ResponsesReasoning.EncryptedContent != nil {
+				t.Errorf("expected encrypted_content to be stripped for a non-reasoning model, got %q", *msg.ResponsesReasoning.EncryptedContent)
+			}
+
+			// The caller's input must not be mutated.
+			if bifrostReq.Input[0].Content == nil || len(bifrostReq.Input[0].Content.ContentBlocks) != 2 {
+				t.Errorf("expected caller input to keep its two reasoning blocks, got %#v", bifrostReq.Input[0].Content)
+			}
+
+			// End-to-end: nothing reasoning_text-shaped may reach the wire.
+			out, err := json.Marshal(result)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if strings.Contains(string(out), "reasoning_text") ||
+				strings.Contains(string(out), "anthropic-signature-1") {
+				t.Errorf("reasoning item serialized with content blocks: %s", string(out))
+			}
+		})
+	}
+
+	t.Run("gpt-oss keeps reasoning content blocks", func(t *testing.T) {
+		bifrostReq := &schemas.BifrostResponsesRequest{
+			Model: "gpt-oss-120b",
+			Input: []schemas.ResponsesMessage{newReasoningItem()},
+		}
+
+		result := ToOpenAIResponsesRequest(nil, bifrostReq)
+		if result == nil || len(result.Input.OpenAIResponsesRequestInputArray) != 1 {
+			t.Fatalf("expected the reasoning item to be preserved, got %#v", result)
+		}
+		c := result.Input.OpenAIResponsesRequestInputArray[0].Content
+		if c == nil || len(c.ContentBlocks) != 2 {
+			t.Fatalf("expected gpt-oss to keep both reasoning blocks, got %#v", c)
 		}
 	})
 }
@@ -379,8 +504,62 @@ func TestToOpenAIResponsesRequest_NormalizesReasoningEffort(t *testing.T) {
 			expected: "high",
 		},
 		{
-			name:     "maps minimal to low",
+			name:     "maps minimal to low for gpt-5.4",
 			model:    "gpt-5.4",
+			effort:   "minimal",
+			expected: "low",
+		},
+		{
+			name:     "preserves minimal for gpt-5",
+			model:    "gpt-5",
+			effort:   "minimal",
+			expected: "minimal",
+		},
+		{
+			name:     "preserves minimal for gpt-5-mini",
+			model:    "gpt-5-mini",
+			effort:   "minimal",
+			expected: "minimal",
+		},
+		{
+			name:     "preserves minimal for gpt-5-nano",
+			model:    "gpt-5-nano",
+			effort:   "minimal",
+			expected: "minimal",
+		},
+		{
+			name:     "maps minimal to low for gpt-5.2",
+			model:    "gpt-5.2",
+			effort:   "minimal",
+			expected: "low",
+		},
+		{
+			name:     "maps minimal to low for gpt-5.6",
+			model:    "gpt-5.6",
+			effort:   "minimal",
+			expected: "low",
+		},
+		{
+			name:     "maps minimal to low for o3",
+			model:    "o3",
+			effort:   "minimal",
+			expected: "low",
+		},
+		{
+			name:     "maps minimal to low for o1",
+			model:    "o1",
+			effort:   "minimal",
+			expected: "low",
+		},
+		{
+			name:     "maps minimal to low for o4",
+			model:    "o4",
+			effort:   "minimal",
+			expected: "low",
+		},
+		{
+			name:     "maps minimal to low for gpt-oss",
+			model:    "gpt-oss",
 			effort:   "minimal",
 			expected: "low",
 		},
@@ -2377,6 +2556,63 @@ func TestToOpenAIResponsesRequest_FallbackBlockDropped(t *testing.T) {
 	})
 }
 
+// TestToOpenAIResponsesRequest_ContextManagement_ProviderGating covers a real
+// regression: bedrock/openai.gpt-5.4 through /v1/responses forwarded a
+// context_management array straight through to Bedrock Mantle's OpenAI-compatible
+// endpoint, which 400s with "Unknown parameter: 'context_management'" since it
+// doesn't accept the field at all. OpenAI and Azure OpenAI must keep receiving it
+// (default-open, like every other unlisted-provider field here); Bedrock and
+// Bedrock Mantle are the explicit exceptions.
+func TestToOpenAIResponsesRequest_ContextManagement_ProviderGating(t *testing.T) {
+	cm := []byte(`[{"type":"compaction","compact_threshold":2000}]`)
+
+	cases := []struct {
+		name          string
+		provider      schemas.ModelProvider
+		wantForwarded bool
+	}{
+		{"openai forwards it", schemas.OpenAI, true},
+		{"azure forwards it", schemas.Azure, true},
+		{"bedrock drops it", schemas.Bedrock, false},
+		{"bedrock mantle drops it", schemas.BedrockMantle, false},
+		{"unlisted provider forwards it", schemas.ModelProvider("test-unlisted-provider"), true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &schemas.BifrostResponsesRequest{
+				Provider: tc.provider,
+				Model:    "gpt-5.4",
+				Input: []schemas.ResponsesMessage{{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Hello")},
+				}},
+				Params: &schemas.ResponsesParameters{
+					ContextManagement: cm,
+					ExtraParams: map[string]interface{}{
+						"context_management": cm,
+					},
+				},
+			}
+
+			result := ToOpenAIResponsesRequest(nil, req)
+			if result == nil {
+				t.Fatal("ToOpenAIResponsesRequest returned nil")
+			}
+
+			gotNeutral := len(result.ContextManagement) > 0
+			_, gotExtra := result.ExtraParams["context_management"]
+
+			if gotNeutral != tc.wantForwarded {
+				t.Errorf("neutral ContextManagement field: got present=%v, want present=%v", gotNeutral, tc.wantForwarded)
+			}
+			if gotExtra != tc.wantForwarded {
+				t.Errorf("ExtraParams[\"context_management\"]: got present=%v, want present=%v", gotExtra, tc.wantForwarded)
+			}
+		})
+	}
+}
+
 func TestBuildResponsesRetrieveQuery_Stream(t *testing.T) {
 	t.Run("emits stream=true and other params when set", func(t *testing.T) {
 		req := &schemas.BifrostResponsesRetrieveRequest{
@@ -2430,4 +2666,117 @@ func TestBifrostResponsesRetrieveRequest_IsStreamingRequested(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestTopPGateReadsDatasheet covers the datasheet side of the top_p strip.
+// top_p is the field the schema deliberately leaves untyped because its verdict
+// can be conditional, so both unsupported_fields and
+// conditionally_unsupported_fields have to drive it.
+func TestTopPGateReadsDatasheet(t *testing.T) {
+	t.Run("name_fallback_strips_for_reasoning_model", func(t *testing.T) {
+		caps := schemas.ResolveModelCaps(schemas.OpenAI, "o3")
+		require.True(t, topPUnsupported(caps, "o3", "high"))
+		require.False(t, topPUnsupported(caps, "gpt-4o", ""))
+	})
+
+	t.Run("name_fallback_keeps_gpt5x_while_effort_none", func(t *testing.T) {
+		caps := schemas.ResolveModelCaps(schemas.OpenAI, "gpt-5.4")
+		require.False(t, topPUnsupported(caps, "gpt-5.4", ""))
+		require.True(t, topPUnsupported(caps, "gpt-5.4", "high"))
+		require.True(t, topPUnsupported(caps, "gpt-5.4-pro", ""), "-pro always reasons")
+	})
+
+	t.Run("conditional_label_drives_both_directions", func(t *testing.T) {
+		const model = "some-conditional-reasoner"
+		installCapabilityRecord(t, model, &schemas.ModelCapabilities{
+			ConditionallyUnsupportedFields: map[string]string{
+				schemas.FieldTopP: schemas.ConditionWhenEffortNone,
+			},
+		})
+
+		caps := schemas.ResolveModelCaps(schemas.OpenAI, model)
+		require.False(t, topPUnsupported(caps, model, ""), "allowed while reasoning is off")
+		require.False(t, topPUnsupported(caps, model, "none"))
+		require.True(t, topPUnsupported(caps, model, "low"), "rejected once reasoning is on")
+	})
+
+	t.Run("outright_entry_beats_name_fallback", func(t *testing.T) {
+		const model = "o3-with-top-p"
+		installCapabilityRecord(t, model, &schemas.ModelCapabilities{
+			UnsupportedFields: map[string]bool{schemas.FieldTopP: false},
+		})
+		require.False(t, topPUnsupported(schemas.ResolveModelCaps(schemas.OpenAI, model), model, "high"),
+			"an explicit false must beat the reasoning-model name check")
+	})
+}
+
+// TestReasoningContentBlocksGateReadsDatasheet covers the datasheet side of the
+// reasoning-shape gate. The gpt-oss name fallback is covered by
+// TestToOpenAIResponsesRequest_ReasoningOnlyMessageSkip and the Summary→blocks
+// conversion test; these pin that a record drives it on a model whose name says
+// otherwise, in both directions.
+func TestReasoningContentBlocksGateReadsDatasheet(t *testing.T) {
+	reasoningOnly := schemas.ResponsesMessage{
+		Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+		ResponsesReasoning: &schemas.ResponsesReasoning{
+			Summary: []schemas.ResponsesReasoningSummary{},
+		},
+		Content: &schemas.ResponsesMessageContent{
+			ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+				Type: schemas.ResponsesOutputMessageContentTypeReasoning,
+				Text: schemas.Ptr("reasoning text"),
+			}},
+		},
+	}
+	summaryOnly := schemas.ResponsesMessage{
+		ID:     schemas.Ptr("msg-1"),
+		Type:   schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+		Role:   schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+		Status: schemas.Ptr("completed"),
+		ResponsesReasoning: &schemas.ResponsesReasoning{
+			Summary: []schemas.ResponsesReasoningSummary{{
+				Type: schemas.ResponsesReasoningContentBlockTypeSummaryText,
+				Text: "a summary",
+			}},
+		},
+	}
+
+	convert := func(t *testing.T, model string, msg schemas.ResponsesMessage) []schemas.ResponsesMessage {
+		t.Helper()
+		result := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+			Model: model,
+			Input: []schemas.ResponsesMessage{msg},
+		})
+		require.NotNil(t, result)
+		return result.Input.OpenAIResponsesRequestInputArray
+	}
+
+	t.Run("record_opts_a_non_oss_name_into_content_blocks", func(t *testing.T) {
+		const model = "some-content-block-reasoner"
+		installCapabilityRecord(t, model, &schemas.ModelCapabilities{
+			SupportsReasoningContentBlocks: new(true),
+		})
+
+		require.Len(t, convert(t, model, reasoningOnly), 1,
+			"a content-block model must keep reasoning-only messages")
+
+		out := convert(t, model, summaryOnly)
+		require.Len(t, out, 1)
+		require.NotNil(t, out[0].Content)
+		require.Len(t, out[0].Content.ContentBlocks, 1, "summaries must be rewritten as content blocks")
+	})
+
+	t.Run("record_opts_an_oss_name_out_of_content_blocks", func(t *testing.T) {
+		const model = "gpt-oss-summary-variant"
+		installCapabilityRecord(t, model, &schemas.ModelCapabilities{
+			SupportsReasoningContentBlocks: new(false),
+		})
+
+		require.Empty(t, convert(t, model, reasoningOnly),
+			"a summary model must skip reasoning-only content-block messages despite the gpt-oss name")
+
+		out := convert(t, model, summaryOnly)
+		require.Len(t, out, 1)
+		require.Nil(t, out[0].Content, "summaries must stay as summaries")
+	})
 }

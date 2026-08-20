@@ -2,6 +2,7 @@ package logstore
 
 import (
 	"fmt"
+	"strconv"
 	"time"
 	"unicode/utf8"
 
@@ -33,6 +34,7 @@ var payloadFields = []string{
 	"image_edit_input",
 	"image_variation_input",
 	"video_generation_input",
+	"video_edit_input",
 	"speech_output",
 	"transcription_output",
 	"image_generation_output",
@@ -43,6 +45,7 @@ var payloadFields = []string{
 	"video_list_output",
 	"video_delete_output",
 	"cache_debug",
+	"guardrail_debug",
 	"token_usage",
 	"error_details",
 	"raw_request",
@@ -55,7 +58,7 @@ var payloadFields = []string{
 // ExtractPayload reads the serialized TEXT payload fields from a Log into a map.
 // The map keys are the DB column names.
 func ExtractPayload(l *Log) map[string]string {
-	m := make(map[string]string, len(payloadFields)+1)
+	m := make(map[string]string, len(payloadFields)+25)
 	m["input_history"] = l.InputHistory
 	m["responses_input_history"] = l.ResponsesInputHistory
 	m["output_message"] = l.OutputMessage
@@ -73,6 +76,7 @@ func ExtractPayload(l *Log) map[string]string {
 	m["image_edit_input"] = l.ImageEditInput
 	m["image_variation_input"] = l.ImageVariationInput
 	m["video_generation_input"] = l.VideoGenerationInput
+	m["video_edit_input"] = l.VideoEditInput
 	m["speech_output"] = l.SpeechOutput
 	m["transcription_output"] = l.TranscriptionOutput
 	m["image_generation_output"] = l.ImageGenerationOutput
@@ -83,6 +87,7 @@ func ExtractPayload(l *Log) map[string]string {
 	m["video_list_output"] = l.VideoListOutput
 	m["video_delete_output"] = l.VideoDeleteOutput
 	m["cache_debug"] = l.CacheDebug
+	m["guardrail_debug"] = l.GuardrailDebug
 	m["token_usage"] = l.TokenUsage
 	m["error_details"] = l.ErrorDetails
 	m["raw_request"] = l.RawRequest
@@ -99,7 +104,43 @@ func ExtractPayload(l *Log) map[string]string {
 	if l.Metadata != nil && *l.Metadata != "" {
 		m["metadata"] = *l.Metadata
 	}
+	m["provider"] = l.Provider
+	m["model"] = l.Model
+	m["status"] = l.Status
+	m["timestamp"] = l.Timestamp.Format(time.RFC3339Nano)
+	m["selected_key_id"] = l.SelectedKeyID
+	m["selected_key_name"] = l.SelectedKeyName
+	putIfPresent(m, "virtual_key_id", l.VirtualKeyID)
+	putIfPresent(m, "virtual_key_name", l.VirtualKeyName)
+	putIfPresent(m, "user_id", l.UserID)
+	putIfPresent(m, "user_name", l.UserName)
+	putIfPresent(m, "team_id", l.TeamID)
+	putIfPresent(m, "team_name", l.TeamName)
+	putIfPresent(m, "team_ids", l.TeamIDs)
+	putIfPresent(m, "team_names", l.TeamNames)
+	putIfPresent(m, "customer_id", l.CustomerID)
+	putIfPresent(m, "customer_name", l.CustomerName)
+	putIfPresent(m, "customer_ids", l.CustomerIDs)
+	putIfPresent(m, "customer_names", l.CustomerNames)
+	putIfPresent(m, "business_unit_id", l.BusinessUnitID)
+	putIfPresent(m, "business_unit_name", l.BusinessUnitName)
+	putIfPresent(m, "business_unit_ids", l.BusinessUnitIDs)
+	putIfPresent(m, "business_unit_names", l.BusinessUnitNames)
+	if l.Cost != nil {
+		m["cost"] = strconv.FormatFloat(*l.Cost, 'f', -1, 64)
+	}
+	if l.Latency != nil {
+		m["latency"] = strconv.FormatFloat(*l.Latency, 'f', -1, 64)
+	}
 	return m
+}
+
+// putIfPresent sets the key only when v is non-nil and non-empty, so absent
+// attribution stays absent rather than becoming an empty string.
+func putIfPresent(m map[string]string, key string, v *string) {
+	if v != nil && *v != "" {
+		m[key] = *v
+	}
 }
 
 // ClearPayload zeros out both the TEXT payload columns and the Parsed virtual
@@ -107,6 +148,56 @@ func ExtractPayload(l *Log) map[string]string {
 // GORM's BeforeCreate/SerializeFields from re-populating TEXT columns.
 // After calling this, the struct only contains index-weight data suitable
 // for a lightweight DB INSERT.
+// BillingHydrationChunkSize is how many rows a cost recomputation may hydrate at
+// once. Kept deliberately tiny: a hydrated row holds its whole offloaded payload,
+// which can include full message histories and raw request/response bodies, so this
+// is the knob that bounds a recompute worker's peak memory. Billing query pages are
+// capped to the same size because DB-resident modality payloads are materialized by
+// the query before object-store hydration begins.
+const BillingHydrationChunkSize = 3
+
+// BillingHydrationResult reports what one hydration pass actually did, so the caller
+// does not have to infer it from the rows.
+type BillingHydrationResult struct {
+	// Hydrated lists the rows whose pricing inputs were fetched from object storage.
+	// These are the only rows worth persisting via BulkBackfillBillingPayloads: every
+	// other row's inputs already came from the database.
+	Hydrated []string
+	// Unpriceable lists rows whose inputs could not be recovered — for example, a
+	// missing object or unavailable object storage. Callers must skip these rather
+	// than price them from the lossy fallback.
+	Unpriceable []string
+}
+
+// BillingPayloadBackfill carries pricing inputs recovered from object storage that are
+// worth writing back into the row.
+//
+// Deliberately only the two small ones. token_usage is a few hundred bytes of counters
+// and cache_debug a handful of cache-hit fields, so keeping them in the row is cheap and
+// repairs legacy rows written before pricing metadata became unconditionally
+// DB-resident. The modality payloads
+// (image_generation_output above all, which carries base64 image bytes) are exactly what
+// offloading exists to keep out of the database, so they stay in object storage and
+// modality rows keep fetching.
+type BillingPayloadBackfill struct {
+	TokenUsage string
+	CacheDebug string
+}
+
+// ReleaseBillingPayloads drops the payload fields from rows that have already been
+// priced, so a batch never accumulates more than one chunk of them.
+//
+// Safe because pricing is the last thing that reads these: the recalc job keeps only
+// the ID, timestamp and computed cost afterwards, and the rows are never written back
+// (BulkUpdateCost takes an id → cost map).
+func ReleaseBillingPayloads(logs []*Log) {
+	for _, l := range logs {
+		if l != nil {
+			ClearPayload(l)
+		}
+	}
+}
+
 func ClearPayload(l *Log) {
 	// Clear serialized TEXT columns.
 	l.InputHistory = ""
@@ -126,6 +217,7 @@ func ClearPayload(l *Log) {
 	l.ImageEditInput = ""
 	l.ImageVariationInput = ""
 	l.VideoGenerationInput = ""
+	l.VideoEditInput = ""
 	l.SpeechOutput = ""
 	l.TranscriptionOutput = ""
 	l.ImageGenerationOutput = ""
@@ -136,6 +228,7 @@ func ClearPayload(l *Log) {
 	l.VideoListOutput = ""
 	l.VideoDeleteOutput = ""
 	l.CacheDebug = ""
+	l.GuardrailDebug = ""
 	l.TokenUsage = ""
 	l.ErrorDetails = ""
 	l.RawRequest = ""
@@ -162,6 +255,7 @@ func ClearPayload(l *Log) {
 	l.ImageEditInputParsed = nil
 	l.ImageVariationInputParsed = nil
 	l.VideoGenerationInputParsed = nil
+	l.VideoEditInputParsed = nil
 	l.SpeechOutputParsed = nil
 	l.TranscriptionOutputParsed = nil
 	l.ImageGenerationOutputParsed = nil
@@ -172,6 +266,7 @@ func ClearPayload(l *Log) {
 	l.VideoListOutputParsed = nil
 	l.VideoDeleteOutputParsed = nil
 	l.CacheDebugParsed = nil
+	l.GuardrailDebugParsed = nil
 	l.TokenUsageParsed = nil
 	l.ErrorDetailsParsed = nil
 }
@@ -235,6 +330,9 @@ func MergePayloadFromJSON(l *Log, data []byte) error {
 	if v, ok := m["video_generation_input"]; ok && v != "" {
 		l.VideoGenerationInput = v
 	}
+	if v, ok := m["video_edit_input"]; ok && v != "" {
+		l.VideoEditInput = v
+	}
 	if v, ok := m["speech_output"]; ok && v != "" {
 		l.SpeechOutput = v
 	}
@@ -264,6 +362,9 @@ func MergePayloadFromJSON(l *Log, data []byte) error {
 	}
 	if v, ok := m["cache_debug"]; ok && v != "" {
 		l.CacheDebug = v
+	}
+	if v, ok := m["guardrail_debug"]; ok && v != "" {
+		l.GuardrailDebug = v
 	}
 	if v, ok := m["token_usage"]; ok && v != "" {
 		l.TokenUsage = v
@@ -349,6 +450,7 @@ func MarshalMCPToolLogPayload(l *MCPToolLog) ([]byte, error) {
 func MergeMCPToolLogPayloadFromJSON(l *MCPToolLog, data []byte) error {
 	hasObject := l.HasObject
 	virtualKey := l.VirtualKey
+	redactionMapping := l.RedactionMapping
 
 	var payload MCPToolLog
 	if err := sonic.Unmarshal(data, &payload); err != nil {
@@ -360,6 +462,7 @@ func MergeMCPToolLogPayloadFromJSON(l *MCPToolLog, data []byte) error {
 	*l = payload
 	l.HasObject = hasObject
 	l.VirtualKey = virtualKey
+	l.RedactionMapping = redactionMapping
 	return nil
 }
 
@@ -430,6 +533,11 @@ func (l *Log) BuildInputContentSummary() string {
 	// Video generation input prompt
 	if l.VideoGenerationInputParsed != nil && l.VideoGenerationInputParsed.Prompt != "" {
 		return l.VideoGenerationInputParsed.Prompt
+	}
+
+	// Video edit input prompt
+	if l.VideoEditInputParsed != nil && l.VideoEditInputParsed.Prompt != "" {
+		return l.VideoEditInputParsed.Prompt
 	}
 
 	return ""
@@ -788,6 +896,9 @@ func clearPayloadField(l *Log, name string) {
 	case "video_generation_input":
 		l.VideoGenerationInput = ""
 		l.VideoGenerationInputParsed = nil
+	case "video_edit_input":
+		l.VideoEditInput = ""
+		l.VideoEditInputParsed = nil
 	case "speech_output":
 		l.SpeechOutput = ""
 		l.SpeechOutputParsed = nil
@@ -818,6 +929,9 @@ func clearPayloadField(l *Log, name string) {
 	case "cache_debug":
 		l.CacheDebug = ""
 		l.CacheDebugParsed = nil
+	case "guardrail_debug":
+		l.GuardrailDebug = ""
+		l.GuardrailDebugParsed = nil
 	case "token_usage":
 		l.TokenUsage = ""
 		l.TokenUsageParsed = nil

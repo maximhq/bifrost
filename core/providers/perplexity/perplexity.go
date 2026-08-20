@@ -104,7 +104,7 @@ func (provider *PerplexityProvider) completeRequest(ctx *schemas.BifrostContext,
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", provider.GetProviderKey(), string(resp.Body())))
+		provider.logger.Debug(fmt.Sprintf("error from %s provider: status %d", provider.GetProviderKey(), resp.StatusCode()))
 		return nil, latency, providerResponseHeaders, providerUtils.SetErrorLatency(openai.ParseOpenAIError(resp), latency)
 	}
 
@@ -373,6 +373,11 @@ func (provider *PerplexityProvider) VideoDelete(_ *schemas.BifrostContext, _ sch
 // VideoList is not supported by Perplexity provider.
 func (provider *PerplexityProvider) VideoList(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoListRequest) (*schemas.BifrostVideoListResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoListRequest, provider.GetProviderKey())
+}
+
+// VideoEdit is not supported by the Perplexity provider.
+func (provider *PerplexityProvider) VideoEdit(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoEditRequest) (*schemas.BifrostVideoEditResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoEditRequest, provider.GetProviderKey())
 }
 
 // VideoRemix is not supported by Perplexity provider.

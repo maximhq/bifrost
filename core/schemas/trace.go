@@ -11,7 +11,8 @@ import (
 // Trace represents a distributed trace that captures the full lifecycle of a request
 type Trace struct {
 	RequestID             string            // Request ID for the trace
-	TraceID               string            // Unique identifier for this trace
+	TraceID               string            // Exported trace identifier; inherited from the W3C traceparent header when present, so concurrent requests of one distributed trace may share it
+	InternalID            string            // Unique per-request handle the trace is stored under; unlike TraceID it is never shared across requests
 	ParentID              string            // Parent trace ID from incoming W3C traceparent header
 	RootSpan              *Span             // The root span of this trace
 	Spans                 []*Span           // All spans in this trace
@@ -171,6 +172,7 @@ func (t *Trace) SnapshotForExport() *Trace {
 	clone := &Trace{
 		RequestID:      t.RequestID,
 		TraceID:        t.TraceID,
+		InternalID:     t.InternalID,
 		ParentID:       t.ParentID,
 		StartTime:      t.StartTime,
 		EndTime:        t.EndTime,
@@ -254,6 +256,7 @@ func (t *Trace) Reset() {
 	defer t.mu.Unlock()
 	t.RequestID = ""
 	t.TraceID = ""
+	t.InternalID = ""
 	t.ParentID = ""
 	t.RootSpan = nil
 	for i := range t.Spans {
@@ -377,6 +380,27 @@ func (s *Span) SetAttribute(key string, value any) {
 	s.Attributes[key] = value
 }
 
+// SetAttributes merges an already-built attribute map into the span under a
+// single lock. Preferred over a caller-side range + SetAttribute loop (one lock
+// per entry) when the map already exists (e.g. the Populate*Attributes output).
+// Nil values are skipped, matching SetAttribute.
+func (s *Span) SetAttributes(attrs map[string]any) {
+	if s == nil || len(attrs) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Attributes == nil {
+		s.Attributes = make(map[string]any, len(attrs))
+	}
+	for k, v := range attrs {
+		if v == nil {
+			continue
+		}
+		s.Attributes[k] = v
+	}
+}
+
 // snapshotForExport returns a copy of the span whose Attributes (and Events)
 // are cloned under the span lock, so observability exporters can read them
 // concurrently while a late writer (streaming finalization, redaction) may still
@@ -447,7 +471,14 @@ func (s *Span) Reset() {
 	s.EndTime = time.Time{}
 	s.Status = SpanStatusUnset
 	s.StatusMsg = ""
-	s.Attributes = nil
+	// Reuse the attribute map across pool cycles: tracing/store.go clears and
+	// refills it, so nil-ing here forced a fresh map alloc per pooled span every
+	// request. Drop only an outlier-sized map so one huge request can't pin it.
+	if len(s.Attributes) > 64 {
+		s.Attributes = nil
+	} else {
+		clear(s.Attributes)
+	}
 	s.Events = s.Events[:0]
 }
 

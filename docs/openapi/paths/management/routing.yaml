@@ -1,0 +1,481 @@
+# Routing rule and complexity analyzer endpoints.
+#
+# Every operation appears twice: once under its canonical /api/routing path, and once under
+# the /api/governance path it was served on while routing rules lived inside the governance
+# plugin. The *-legacy entries describe that second form. They are the same operations with
+# distinct operationIds, since OpenAPI requires operationIds to be unique, and are marked
+# deprecated so generated clients steer callers to the canonical paths.
+
+rules:
+  get:
+    operationId: listRoutingRules
+    summary: List routing rules
+    description: Returns a list of all routing rules configured for intelligent request routing across providers.
+    tags:
+      - Routing
+    parameters:
+      - name: scope
+        in: query
+        description: Filter routing rules by scope (global, team, customer, virtual_key)
+        schema:
+          type: string
+      - name: scope_id
+        in: query
+        description: Filter routing rules by scope ID
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ListRoutingRulesResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  post:
+    operationId: createRoutingRule
+    summary: Create routing rule
+    description: Creates a new CEL-based routing rule for intelligent request routing. Provider and model can be left empty to use the incoming request values.
+    tags:
+      - Routing
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/CreateRoutingRuleRequest'
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Routing rule created successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/RoutingRuleResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+rules-by-id:
+  get:
+    operationId: getRoutingRule
+    summary: Get routing rule
+    description: Returns a specific routing rule by ID.
+    tags:
+      - Routing
+    parameters:
+      - name: rule_id
+        in: path
+        required: true
+        description: Routing rule ID
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                rule:
+                  $ref: '../../schemas/management/governance.yaml#/RoutingRule'
+      '404':
+        description: Routing rule not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  put:
+    operationId: updateRoutingRule
+    summary: Update routing rule
+    description: Updates an existing routing rule's configuration.
+    tags:
+      - Routing
+    parameters:
+      - name: rule_id
+        in: path
+        required: true
+        description: Routing rule ID
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/UpdateRoutingRuleRequest'
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Routing rule updated successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/RoutingRuleResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Routing rule not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  delete:
+    operationId: deleteRoutingRule
+    summary: Delete routing rule
+    description: Deletes a routing rule.
+    tags:
+      - Routing
+    parameters:
+      - name: rule_id
+        in: path
+        required: true
+        description: Routing rule ID
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Routing rule deleted successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/MessageResponse'
+      '404':
+        description: Routing rule not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+# Model Configs CRUD
+
+complexity:
+  get:
+    operationId: getComplexityAnalyzerConfig
+    summary: Get complexity analyzer config
+    description: Returns the full complexity analyzer runtime config, including tier thresholds and editable keyword lists. Returns built-in defaults if none have been configured.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Complexity analyzer config retrieved successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ComplexityAnalyzerConfig'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+
+  put:
+    operationId: updateComplexityAnalyzerConfig
+    summary: Update complexity analyzer config
+    description: Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Tier thresholds must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.
+    tags:
+      - Routing
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/ComplexityAnalyzerConfig'
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Complexity analyzer config updated successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ComplexityAnalyzerConfig'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+
+complexity-reset:
+  post:
+    operationId: resetComplexityAnalyzerConfig
+    summary: Reset complexity analyzer config
+    description: Restores the built-in complexity analyzer runtime config defaults and hot-reloads the routing plugin.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Complexity analyzer config reset successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ComplexityAnalyzerConfig'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+
+rules-legacy:
+  get:
+    operationId: listRoutingRulesLegacy
+    deprecated: true
+    summary: List routing rules (deprecated path)
+    description: Returns a list of all routing rules configured for intelligent request routing across providers. Deprecated, use /api/routing/rules instead. This path is kept for backwards compatibility and behaves identically.
+    tags:
+      - Routing
+    parameters:
+      - name: scope
+        in: query
+        description: Filter routing rules by scope (global, team, customer, virtual_key)
+        schema:
+          type: string
+      - name: scope_id
+        in: query
+        description: Filter routing rules by scope ID
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ListRoutingRulesResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  post:
+    operationId: createRoutingRuleLegacy
+    deprecated: true
+    summary: Create routing rule (deprecated path)
+    description: Creates a new CEL-based routing rule for intelligent request routing. Provider and model can be left empty to use the incoming request values. Deprecated, use /api/routing/rules instead. This path is kept for backwards compatibility and behaves identically.
+    tags:
+      - Routing
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/CreateRoutingRuleRequest'
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Routing rule created successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/RoutingRuleResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+rules-by-id-legacy:
+  get:
+    operationId: getRoutingRuleLegacy
+    deprecated: true
+    summary: Get routing rule (deprecated path)
+    description: Returns a specific routing rule by ID. Deprecated, use /api/routing/rules/{rule_id} instead. This path is kept for backwards compatibility and behaves identically.
+    tags:
+      - Routing
+    parameters:
+      - name: rule_id
+        in: path
+        required: true
+        description: Routing rule ID
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                rule:
+                  $ref: '../../schemas/management/governance.yaml#/RoutingRule'
+      '404':
+        description: Routing rule not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  put:
+    operationId: updateRoutingRuleLegacy
+    deprecated: true
+    summary: Update routing rule (deprecated path)
+    description: Updates an existing routing rule's configuration. Deprecated, use /api/routing/rules/{rule_id} instead. This path is kept for backwards compatibility and behaves identically.
+    tags:
+      - Routing
+    parameters:
+      - name: rule_id
+        in: path
+        required: true
+        description: Routing rule ID
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/UpdateRoutingRuleRequest'
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Routing rule updated successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/RoutingRuleResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Routing rule not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  delete:
+    operationId: deleteRoutingRuleLegacy
+    deprecated: true
+    summary: Delete routing rule (deprecated path)
+    description: Deletes a routing rule. Deprecated, use /api/routing/rules/{rule_id} instead. This path is kept for backwards compatibility and behaves identically.
+    tags:
+      - Routing
+    parameters:
+      - name: rule_id
+        in: path
+        required: true
+        description: Routing rule ID
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Routing rule deleted successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/MessageResponse'
+      '404':
+        description: Routing rule not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+# Model Configs CRUD
+
+complexity-legacy:
+  get:
+    operationId: getComplexityAnalyzerConfigLegacy
+    deprecated: true
+    summary: Get complexity analyzer config (deprecated path)
+    description: Returns the full complexity analyzer runtime config, including tier thresholds and editable keyword lists. Returns built-in defaults if none have been configured. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Complexity analyzer config retrieved successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ComplexityAnalyzerConfig'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+
+  put:
+    operationId: updateComplexityAnalyzerConfigLegacy
+    deprecated: true
+    summary: Update complexity analyzer config (deprecated path)
+    description: Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Tier thresholds must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.
+    tags:
+      - Routing
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/ComplexityAnalyzerConfig'
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Complexity analyzer config updated successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ComplexityAnalyzerConfig'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+
+complexity-reset-legacy:
+  post:
+    operationId: resetComplexityAnalyzerConfigLegacy
+    deprecated: true
+    summary: Reset complexity analyzer config (deprecated path)
+    description: Restores the built-in complexity analyzer runtime config defaults and hot-reloads the routing plugin. Deprecated, use /api/routing/complexity-analyzer-config/reset instead. This path is kept for backwards compatibility and behaves identically.
+    tags:
+      - Routing
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Complexity analyzer config reset successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ComplexityAnalyzerConfig'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'

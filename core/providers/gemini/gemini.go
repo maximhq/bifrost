@@ -789,7 +789,7 @@ func (provider *GeminiProvider) responsesWithLargeResponseDetection(
 		preview, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadResponsePreview).(string)
 		usage := extractUsageFromResponsePrefetch([]byte(preview))
 		bifrostResponse := &schemas.BifrostResponsesResponse{
-			ID:        schemas.Ptr("resp_" + providerUtils.GetRandomString(50)),
+			ID:        schemas.Ptr("resp_" + schemas.GetRandomString(50)),
 			CreatedAt: int(time.Now().Unix()),
 			Model:     request.Model,
 			Usage:     usage,
@@ -1252,7 +1252,7 @@ func (provider *GeminiProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		providerUtils.MaterializeStreamErrorBody(ctx, resp)
-		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		provider.logger.Debug(fmt.Sprintf("error from %s provider: status %d", providerName, resp.StatusCode()))
 		parsedErr := providerUtils.EnrichError(ctx, parseGeminiError(resp), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		wait()
 		fasthttp.ReleaseResponse(resp)
@@ -2415,8 +2415,7 @@ func (provider *GeminiProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 			return nil, bifrostErr
 		}
 		if resp.StatusCode() != fasthttp.StatusOK {
-			// log full error
-			provider.logger.Error("failed to download video: " + string(resp.Body()))
+			provider.logger.Error("failed to download video: status %d", resp.StatusCode())
 			return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(
 				fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()),
 				nil,
@@ -2450,6 +2449,11 @@ func (provider *GeminiProvider) VideoDelete(_ *schemas.BifrostContext, _ schemas
 // VideoList is not supported by the Gemini provider.
 func (provider *GeminiProvider) VideoList(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoListRequest) (*schemas.BifrostVideoListResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoListRequest, provider.GetProviderKey())
+}
+
+// VideoEdit is not supported by the Gemini provider.
+func (provider *GeminiProvider) VideoEdit(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoEditRequest) (*schemas.BifrostVideoEditResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoEditRequest, provider.GetProviderKey())
 }
 
 // VideoRemix is not supported by the Gemini provider.
@@ -2514,7 +2518,6 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 				geminiRequests[i] = GeminiBatchRequestItem{
 					Request: geminiReq,
 				}
-				// Set metadata with custom_id
 				if bifrostItem.CustomID != "" {
 					geminiRequests[i].Metadata = &GeminiBatchMetadata{
 						Key: bifrostItem.CustomID,
@@ -3322,8 +3325,9 @@ func (provider *GeminiProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 	}
 
 	batchResultsResp := &schemas.BifrostBatchResultsResponse{
-		BatchID: request.BatchID,
-		Results: results,
+		BatchID:  request.BatchID,
+		Endpoint: schemas.BatchEndpointChatCompletions,
+		Results:  results,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Latency: latency.Milliseconds(),
 		},
@@ -3899,6 +3903,13 @@ func (provider *GeminiProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		isLargePayload = true
 	}
 
+	if strings.TrimSpace(request.Model) == "" {
+		return nil, providerUtils.NewBifrostOperationError("model is required for Gemini count tokens request", fmt.Errorf("missing model"))
+	}
+
+	// Determine native model name (e.g., parse any provider prefix)
+	_, model := schemas.ParseModelString(request.Model, schemas.Gemini)
+
 	var (
 		jsonData   []byte
 		bifrostErr *schemas.BifrostError
@@ -3917,24 +3928,13 @@ func (provider *GeminiProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		}
 
 		jsonData = normalizeRawGenerateContentBody(ctx, jsonData)
-
-		// Use sjson to delete fields directly from JSON bytes, preserving key ordering
-		jsonData, _ = providerUtils.DeleteJSONField(jsonData, "toolConfig")
-		jsonData, _ = providerUtils.DeleteJSONField(jsonData, "generationConfig")
-		jsonData, _ = providerUtils.DeleteJSONField(jsonData, "systemInstruction")
+		jsonData = wrapGeminiCountTokensBody(jsonData, model)
 	}
 
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
-
-	if strings.TrimSpace(request.Model) == "" {
-		return nil, providerUtils.NewBifrostOperationError("model is required for Gemini count tokens request", fmt.Errorf("missing model"))
-	}
-
-	// Determine native model name (e.g., parse any provider prefix)
-	_, model := schemas.ParseModelString(request.Model, schemas.Gemini)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	path := fmt.Sprintf("/models/%s:countTokens", model)

@@ -17,6 +17,7 @@
 //                 Caller must resubmit values.
 //   pending:      flow row, user must complete OAuth authentication.
 
+import PageTitle from "@/components/pageTitle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -30,16 +31,16 @@ import {
 	AlertDialogTitle,
 } from "@/components/ui/alertDialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
+import { Input } from "@/components/ui/input";
 import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { ChevronLeft, ChevronRight, Info } from "lucide-react";
+import { ChevronLeft, ChevronRight, Info, Search } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { getErrorMessage, useReauthMCPSessionMutation, useRevokeMCPSessionMutation } from "@/lib/store";
 import { MCPSessionRow } from "@/lib/types/mcpSessions";
 import { ExternalLink, Fingerprint, KeyRound, Loader2, MoreHorizontal, Pencil, RefreshCcw, Trash2, UserRound } from "lucide-react";
 import { useState } from "react";
-import SessionsFilterBar from "./sessionsFilterBar";
 
 interface SessionsTableProps {
 	sessions: MCPSessionRow[];
@@ -47,14 +48,7 @@ interface SessionsTableProps {
 	isFetching: boolean;
 	search: string;
 	onSearchChange: (value: string) => void;
-	kindFilter: string[];
-	onKindFilterChange: (value: string[]) => void;
-	statusFilter: string[];
-	onStatusFilterChange: (value: string[]) => void;
-	authModeFilter: string[];
-	onAuthModeFilterChange: (value: string[]) => void;
 	hasActiveFilters: boolean;
-	onClearFilters: () => void;
 	offset: number;
 	limit: number;
 	onOffsetChange: (offset: number) => void;
@@ -66,14 +60,7 @@ export default function SessionsTable({
 	isFetching,
 	search,
 	onSearchChange,
-	kindFilter,
-	onKindFilterChange,
-	statusFilter,
-	onStatusFilterChange,
-	authModeFilter,
-	onAuthModeFilterChange,
 	hasActiveFilters,
-	onClearFilters,
 	offset,
 	limit,
 	onOffsetChange,
@@ -148,28 +135,22 @@ export default function SessionsTable({
 				</AlertDialogContent>
 			</AlertDialog>
 
-			<div className="mb-4 flex items-center justify-between gap-4">
-				<div>
-					<h2 className="text-lg font-semibold tracking-tight">MCP Auth Sessions</h2>
-					<p className="text-muted-foreground text-sm">
-						Per-user credentials stored for MCP servers (OAuth tokens and submitted headers), plus any pending authentication flows.
-					</p>
-				</div>
-			</div>
+			<PageTitle title="MCP Auth Sessions">
+				Per-user credentials stored for MCP servers (OAuth tokens and submitted headers), plus any pending authentication flows.
+			</PageTitle>
 
-			<div className="mb-4">
-				<SessionsFilterBar
-					search={search}
-					onSearchChange={onSearchChange}
-					kindFilter={kindFilter}
-					onKindFilterChange={onKindFilterChange}
-					statusFilter={statusFilter}
-					onStatusFilterChange={onStatusFilterChange}
-					authModeFilter={authModeFilter}
-					onAuthModeFilterChange={onAuthModeFilterChange}
-					hasActiveFilters={hasActiveFilters}
-					onClearFilters={onClearFilters}
-				/>
+			<div className="mb-4 flex items-center gap-3">
+				<div className="relative max-w-sm min-w-[200px] flex-1">
+					<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
+					<Input
+						aria-label="Search sessions"
+						placeholder="Search MCP, user, VK, session..."
+						value={search}
+						onChange={(e) => onSearchChange(e.target.value)}
+						className="pl-9"
+						data-testid="mcp-sessions-search-input"
+					/>
+				</div>
 			</div>
 
 			<div className="flex grow flex-col overflow-auto">

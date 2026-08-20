@@ -162,7 +162,7 @@ func createPrediction(
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK && resp.StatusCode() != fasthttp.StatusCreated {
-		logger.Debug(fmt.Sprintf("error from replicate provider: %s", string(resp.Body())))
+		logger.Debug(fmt.Sprintf("error from replicate provider: status %d", resp.StatusCode()))
 		return nil, nil, latency, providerResponseHeaders, providerUtils.SetErrorLatency(parseReplicateError(resp.Body(), resp.StatusCode()), latency)
 	}
 
@@ -217,7 +217,7 @@ func getPrediction(
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		logger.Debug(fmt.Sprintf("error from replicate provider: %s", string(resp.Body())))
+		logger.Debug(fmt.Sprintf("error from replicate provider: status %d", resp.StatusCode()))
 		return nil, nil, providerResponseHeaders, providerUtils.SetErrorLatency(parseReplicateError(resp.Body(), resp.StatusCode()), latency)
 	}
 
@@ -1833,6 +1833,11 @@ func (provider *ReplicateProvider) ImageGeneration(ctx *schemas.BifrostContext, 
 		return nil, providerUtils.EnrichError(ctx, err, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
+	// Backfill output resolution for upscale-style models (target/factor
+	// input, no plain size param) so resolution-tiered cost calculation
+	// doesn't silently fall back to the base per-image rate.
+	applyUpscaleOutputResolution(request, prediction, bifrostResponse)
+
 	// Set extra fields
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
@@ -2109,6 +2114,12 @@ func (provider *ReplicateProvider) ImageGenerationStream(ctx *schemas.BifrostCon
 					},
 				}
 
+				// Backfill output resolution for upscale-style models. Only the
+				// request-side target signal is available here: the SSE path never
+				// re-reads the finished prediction, so factor mode has no metrics
+				// band to fall back to.
+				applyUpscaleStreamOutputResolution(resolveUpscaleOutputPixels(request, nil), finalChunk)
+
 				// Set raw request only on final chunk if enabled
 				if sendBackRawRequest {
 					providerUtils.ParseAndSetRawRequest(&finalChunk.ExtraFields, jsonData)
@@ -2248,6 +2259,12 @@ func (provider *ReplicateProvider) ImageEdit(ctx *schemas.BifrostContext, key sc
 	if err != nil {
 		return nil, providerUtils.EnrichError(ctx, err, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
+
+	// Backfill output resolution for upscale-style models, which reach this path
+	// through the first-class target_megapixels/upscale_factor edit params, so
+	// resolution-tiered cost calculation doesn't silently fall back to the base
+	// per-image rate.
+	applyUpscaleEditOutputResolution(request, prediction, bifrostResponse)
 
 	// Set extra fields
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
@@ -2517,6 +2534,12 @@ func (provider *ReplicateProvider) ImageEditStream(ctx *schemas.BifrostContext, 
 						Latency:    time.Since(startTime).Milliseconds(),
 					},
 				}
+
+				// Backfill output resolution for upscale-style models. Only the
+				// request-side target signal is available here: the SSE path never
+				// re-reads the finished prediction, so factor mode has no metrics
+				// band to fall back to.
+				applyUpscaleStreamOutputResolution(resolveUpscaleEditOutputPixels(request, nil), finalChunk)
 
 				if sendBackRawRequest {
 					providerUtils.ParseAndSetRawRequest(&finalChunk.ExtraFields, jsonData)
@@ -2801,6 +2824,11 @@ func (provider *ReplicateProvider) VideoList(_ *schemas.BifrostContext, _ schema
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoListRequest, provider.GetProviderKey())
 }
 
+// VideoEdit is not supported by the Replicate provider.
+func (provider *ReplicateProvider) VideoEdit(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoEditRequest) (*schemas.BifrostVideoEditResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoEditRequest, provider.GetProviderKey())
+}
+
 // VideoRemix is not supported by replicate provider.
 func (provider *ReplicateProvider) VideoRemix(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoRemixRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoRemixRequest, provider.GetProviderKey())
@@ -2949,7 +2977,7 @@ func (provider *ReplicateProvider) FileUpload(ctx *schemas.BifrostContext, key s
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK && resp.StatusCode() != fasthttp.StatusCreated {
-		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
+		provider.logger.Debug("error from %s provider: status %d", providerName, resp.StatusCode())
 		return nil, providerUtils.SetErrorLatency(parseReplicateError(resp.Body(), resp.StatusCode()), latency)
 	}
 
@@ -3038,7 +3066,7 @@ func (provider *ReplicateProvider) FileList(ctx *schemas.BifrostContext, keys []
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
+		provider.logger.Debug("error from %s provider: status %d", providerName, resp.StatusCode())
 		return nil, providerUtils.SetErrorLatency(parseReplicateError(resp.Body(), resp.StatusCode()), latency)
 	}
 
@@ -3138,7 +3166,7 @@ func (provider *ReplicateProvider) FileRetrieve(ctx *schemas.BifrostContext, key
 
 		// Handle error response
 		if resp.StatusCode() != fasthttp.StatusOK {
-			provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
+			provider.logger.Debug("error from %s provider: status %d", providerName, resp.StatusCode())
 			lastErr = parseReplicateError(resp.Body(), resp.StatusCode())
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
@@ -3232,7 +3260,7 @@ func (provider *ReplicateProvider) FileDelete(ctx *schemas.BifrostContext, keys 
 
 		// Handle error response
 		if resp.StatusCode() != fasthttp.StatusOK {
-			provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
+			provider.logger.Debug("error from %s provider: status %d", providerName, resp.StatusCode())
 			lastErr = parseReplicateError(resp.Body(), resp.StatusCode())
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)

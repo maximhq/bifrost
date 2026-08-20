@@ -91,10 +91,17 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 			if requestType, ok := ctx.Value(schemas.BifrostContextKeyHTTPRequestType).(schemas.RequestType); ok && requestType == schemas.BatchCreateRequest && ctx.Value(isGeminiBatchCreateRequestContextKey) != nil {
 				return &gemini.GeminiBatchCreateRequest{}
 			}
+			if requestType, ok := ctx.Value(schemas.BifrostContextKeyHTTPRequestType).(schemas.RequestType); ok && requestType == schemas.CountTokensRequest {
+				return &gemini.GeminiCountTokensRequest{}
+			}
 			return &gemini.GeminiGenerationRequest{}
 		},
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
-			if geminiReq, ok := req.(*gemini.GeminiGenerationRequest); ok {
+			if countTokensReq, ok := req.(*gemini.GeminiCountTokensRequest); ok {
+				return &schemas.BifrostRequest{
+					CountTokensRequest: countTokensReq.ToGeminiGenerationRequest().ToBifrostResponsesRequest(ctx),
+				}, nil
+			} else if geminiReq, ok := req.(*gemini.GeminiGenerationRequest); ok {
 				if geminiReq.IsCountTokens {
 					return &schemas.BifrostRequest{
 						CountTokensRequest: geminiReq.ToBifrostResponsesRequest(ctx),
@@ -234,6 +241,7 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 			return gemini.ToGeminiError(err)
 		},
 		StreamConfig: &StreamConfig{
+			HeartbeatFraming: lib.SSEHeartbeatDelimitedCommentBlock,
 			ResponsesStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
 				// Store state in context so it persists across chunks of the same stream
 				const stateKey = "gemini_stream_state"
@@ -1080,15 +1088,18 @@ func createGenAIRerankRouteConfig(pathPrefix string) RouteConfig {
 			return nil, errors.New("invalid rerank request type")
 		},
 		RerankResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostRerankResponse) (interface{}, error) {
-			if resp.ExtraFields.Provider == schemas.Vertex {
-				if resp.ExtraFields.RawResponse != nil {
-					return resp.ExtraFields.RawResponse, nil
-				}
-			}
-			return resp, nil
+			// No raw passthrough here, unlike other routes: ToVertexRankRequest replaces caller
+			// record IDs with synthetic ones, so the raw upstream records are not addressable.
+			return vertex.ToVertexRankResponse(resp)
 		},
 		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return gemini.ToGeminiError(err)
+		},
+		// Resolve the provider from x-model-provider (Vertex by default) so the route can be
+		// served cross-provider like /cohere/v2/rerank and /bedrock/rerank.
+		PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+			bifrostCtx.SetValue(bifrostContextKeyProvider, getProviderFromHeader(ctx, schemas.Vertex))
+			return nil
 		},
 	}
 }
@@ -1522,6 +1533,15 @@ func extractAndSetModelAndRequestType(ctx *fasthttp.RequestCtx, bifrostCtx *sche
 			bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
 		}
 
+		return nil
+	case *gemini.GeminiCountTokensRequest:
+		if modelStr != "" {
+			r.Model = modelStr
+		}
+		if explicitGemini {
+			setGenAIRawRequestBodyFromRequest(ctx, bifrostCtx)
+			bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+		}
 		return nil
 	case *gemini.GeminiEmbeddingRequest:
 		if modelStr != "" {

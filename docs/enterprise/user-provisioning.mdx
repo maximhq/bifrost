@@ -20,6 +20,14 @@ Bifrost Enterprise connects your organization's identity provider to Bifrost thr
 
 Once configured, users sign in to Bifrost with their corporate credentials and inherit the right [role and permissions](./rbac) immediately — no manual account creation.
 
+<Note>
+  **OIDC or SCIM satisfies dashboard authentication.** Bifrost Enterprise treats the dashboard and admin API as
+  authenticated when OAuth 2.0 / OIDC login or inbound SCIM 2.0 provisioning is configured. You do not need to
+  additionally enable [basic dashboard authentication](/quickstart/gateway/setting-up-auth) with an admin username
+  and password. Anywhere the docs require "dashboard auth to be configured", such as creating a custom-path plugin
+  in [v2.0.0](/enterprise/migration-guides/v2.0.0), an OIDC or SCIM deployment already meets that requirement.
+</Note>
+
 <Frame>
   <img src="/media/user-provisioning/scim-overview.png" alt="User Provisioning overview in Bifrost dashboard" />
 </Frame>

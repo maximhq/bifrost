@@ -6,13 +6,18 @@ icon: "wifi-slash"
 
 ## Overview
 
-Bifrost fetches its pricing and model parameter datasheets from `https://getbifrost.ai/datasheet` on startup and periodically in the background. In environments without outbound internet access, these fetches fail and Bifrost cannot start.
+Bifrost reaches out to `getbifrost.ai` for two things:
 
-Both fields accept `file://` URLs so you can load the datasheets from the local filesystem instead.
+| Data | Default source | Startup behaviour if unreachable |
+| --- | --- | --- |
+| Pricing and model parameter datasheets | `https://getbifrost.ai/datasheet` | Bifrost cannot start |
+| MCP server library catalog | `https://getbifrost.ai/mcp-library` | Bifrost starts, MCP Library page stays empty |
+
+Every one of these URLs accepts a `file://` value, so you can load the data from the local filesystem instead.
 
 ---
 
-## Setup
+## Datasheets
 
 **1. Download the datasheets** on a machine with internet access:
 
@@ -38,13 +43,87 @@ Transfer the files to your air-gapped host (or bake them into your container ima
 ```
 
 <Note>
-`file://` URLs require three slashes followed by an absolute path.
+An absolute `file://` URL takes three slashes followed by the path. Relative references are also accepted (`file://./pricing.json` or `file:./pricing.json`) and resolve against the Bifrost process working directory.
 </Note>
 
 **3. Ensure the files are accessible** to the Bifrost process at the configured paths before starting.
 
 ---
 
-## Keeping datasheets current
+## MCP server library
 
-Bifrost re-reads the file on every sync tick (`pricing_sync_interval`, minimum 3600 s).
+The MCP Library page is populated by a catalog synced from `https://getbifrost.ai/mcp-library`. Air-gapped deployments have two options.
+
+### Option A: serve the catalog from a local file
+
+**1. Obtain a catalog file.** Either download the hosted one on a connected machine, or copy the community catalog that ships in the Bifrost repository at `community/mcp-library/servers.json`:
+
+```bash
+curl -o mcp-library.json https://getbifrost.ai/mcp-library
+```
+
+**2. Point Bifrost at it** in `config.json`:
+
+```json
+{
+  "framework": {
+    "pricing": {
+      "mcp_library_url": "file:///opt/bifrost/mcp-library.json",
+      "mcp_library_sync_interval": 86400
+    }
+  }
+}
+```
+
+The same value can be set from the UI under **MCP Registry → Library → Settings**.
+
+The file is a JSON envelope with a `servers` array:
+
+```json
+{
+  "lastUpdatedAt": "2026-06-09T00:00:00Z",
+  "servers": [
+    {
+      "name": "Filesystem",
+      "description": "Read and write files on the local filesystem within configured directories.",
+      "category": "Developer Tools",
+      "connection_type": "stdio",
+      "stdio_config": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem"] },
+      "auth_type": "none"
+    }
+  ]
+}
+```
+
+Entries are keyed by a slug derived from `name`, so re-syncing an updated file updates rows in place. Servers you added yourself through the UI are never overwritten by a sync.
+
+### Option B: turn the catalog sync off
+
+If you do not want a server catalog at all, set the interval to `0`:
+
+```json
+{
+  "framework": {
+    "pricing": {
+      "mcp_library_sync_interval": 0
+    }
+  }
+}
+```
+
+Bifrost then skips the catalog fetch at startup and never schedules a background sync, so no requests go to `getbifrost.ai`. Anything already stored in the database is still served, MCP servers can still be added manually, and **Force Sync Now** in the UI still runs on demand.
+
+<Note>
+Catalog entries carry an `icon_url` pointing at a remote image. On an air-gapped host those images do not load and the UI falls back to a generic MCP icon. This is cosmetic and does not affect server connectivity.
+</Note>
+
+---
+
+## Keeping local data current
+
+Bifrost re-reads each local file on every sync tick, so updating a file on disk is enough. No restart is needed.
+
+| Setting | Cadence | Minimum | Disable |
+| --- | --- | --- | --- |
+| `pricing_sync_interval` | Default 24 h | 3600 s | Not supported |
+| `mcp_library_sync_interval` | Default 24 h | 3600 s | Set to `0` |

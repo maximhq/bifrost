@@ -95,6 +95,26 @@ var ignoreGoFields = map[string]string{
 	// populated on GET from the oauth_configs table, never accepted as config.json input.
 	"/properties/mcp/properties/client_configs/items|oauth_client_id":     "response-only; populated on GET from oauth_configs, not user-configurable via config.json",
 	"/properties/mcp/properties/client_configs/items|oauth_client_secret": "response-only; populated on GET from oauth_configs, not user-configurable via config.json",
+	// oauth_authorize_url / oauth_token_url / oauth_registration_url / oauth_scopes /
+	// oauth_resource are the remaining response-only OAuth fields on MCPClientConfig:
+	// populated on GET (not stored here) so the full oauth_config can be reviewed/edited,
+	// never accepted as config.json input. Inline OAuth input goes through oauth_config.
+	"/properties/mcp/properties/client_configs/items|oauth_authorize_url":    "response-only; populated on GET (not stored here), not user-configurable via config.json",
+	"/properties/mcp/properties/client_configs/items|oauth_token_url":        "response-only; populated on GET (not stored here), not user-configurable via config.json",
+	"/properties/mcp/properties/client_configs/items|oauth_registration_url": "response-only; populated on GET (not stored here), not user-configurable via config.json",
+	"/properties/mcp/properties/client_configs/items|oauth_scopes":           "response-only; populated on GET (not stored here), not user-configurable via config.json",
+	"/properties/mcp/properties/client_configs/items|oauth_resource":         "response-only; populated on GET (not stored here), not user-configurable via config.json",
+	// oauth_config_id is a server-managed reference to the oauth_configs row, minted by the
+	// admin verification flow; config.go clears any value supplied via config.json.
+	"/properties/mcp/properties/client_configs/items|oauth_config_id": "server-managed oauth_configs reference; config.go clears any config.json-supplied value",
+	// The inline oauth_config block (schemas.OAuth2Config) carries four fields beyond the
+	// user-facing set the UI form / config.schema.json document (client_id, client_secret,
+	// authorize_url, token_url, registration_url, scopes, resource). These four are managed /
+	// derived / deprecated and are never authored in the inline config.json oauth_config block.
+	"/properties/mcp/properties/client_configs/items/properties/oauth_config|id":            "server-generated oauth_configs row id; not authored in the inline oauth_config block",
+	"/properties/mcp/properties/client_configs/items/properties/oauth_config|redirect_uri":  "computed by Bifrost (MCP OAuth callback URI); not authored in config.json",
+	"/properties/mcp/properties/client_configs/items/properties/oauth_config|server_url":    "derived from the client connection_string for OAuth discovery; not authored in config.json",
+	"/properties/mcp/properties/client_configs/items/properties/oauth_config|use_discovery": "deprecated; discovery is automatic when URLs are missing",
 	// source_id is a stable external identifier for teams provisioned by an
 	// integrating system (PR #3395). It is assigned through the API by that
 	// system, never authored in config.json.
@@ -105,6 +125,10 @@ var ignoreGoFields = map[string]string{
 	// scope_name is a non-persisted (gorm:"-"), API-only display label populated by the
 	// HTTP layer on read (the scope target's human-readable name); never config.json input.
 	"/properties/governance/properties/model_configs/items|scope_name": "response-only; populated on GET as the scope target's display name, not user-configurable via config.json",
+	// virtual_key_count is a non-persisted (gorm:"-"), derived count populated by the
+	// read paths so list responses can report it without loading the full VirtualKeys
+	// relation; never config.json input.
+	"/properties/governance/properties/customers/items|virtual_key_count": "response-only; derived count populated on read (TableCustomer.VirtualKeyCount), not user-configurable via config.json",
 }
 
 // ignoreGoFieldNames are field names (regardless of parent path) that are

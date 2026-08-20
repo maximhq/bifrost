@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"errors"
 	"fmt"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -88,6 +89,13 @@ type AnthropicProviderRequestDefaults struct {
 	// InjectBetaHeadersIntoBody serialises filtered beta headers into the JSON
 	// body as "anthropic_beta" (Vertex only — embeds in body, others use HTTP).
 	InjectBetaHeadersIntoBody bool
+
+	// InlineURLSources fetches URL-sourced images and documents and rewrites them
+	// as inline base64/text sources. Set for hosts that reject remote sources —
+	// Bedrock Mantle answers them with "URL content sources are not yet supported
+	// for this model". Native Anthropic accepts URLs and fetches them itself, so
+	// it leaves this off and avoids a redundant download.
+	InlineURLSources bool
 }
 
 // AnthropicProviderRequestDefaultsMap maps each Anthropic-family provider to
@@ -111,6 +119,11 @@ var AnthropicProviderRequestDefaultsMap = map[schemas.ModelProvider]AnthropicPro
 	// Converse path without coupling the two.
 	schemas.BedrockMantle: {
 		RemapToolVersions: true,
+		// AWS-hosted Claude has no URL fetcher: a {"type":"url"} image or document
+		// source comes back as 400 "URL content sources are not yet supported for
+		// this model". Bedrock's Converse path already inlines these; this keeps
+		// the native-Anthropic surface at parity.
+		InlineURLSources: true,
 	},
 	schemas.DeepSeek: {},
 	// Vertex publisher endpoint: model + region in URL, anthropic_version
@@ -207,7 +220,7 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 						modelForTokens = r.String()
 					}
 				}
-				jsonBody, err = providerUtils.SetJSONField(jsonBody, "max_tokens", providerUtils.GetMaxOutputTokensOrDefault(modelForTokens, AnthropicDefaultMaxTokens))
+				jsonBody, err = providerUtils.SetJSONField(jsonBody, "max_tokens", providerUtils.GetMaxOutputTokensOrDefault(cfg.Provider, modelForTokens, AnthropicDefaultMaxTokens))
 				if err != nil {
 					return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 				}
@@ -279,7 +292,7 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 			// than failing the whole request. Mirrors ValidateChatToolsForProvider
 			// and the Bedrock Responses path. Use a shallow copy so the shared
 			// (possibly pooled) request and its Params are never mutated.
-			if keep, dropped := ValidateResponsesToolsForProvider(request.Params.Tools, cfg.Provider); len(dropped) > 0 {
+			if keep, dropped := ValidateResponsesToolsForProvider(request.Params.Tools, schemas.ResolveModelCaps(cfg.Provider, capModel)); len(dropped) > 0 {
 				reqCopy := *request
 				paramsCopy := *request.Params
 				paramsCopy.Tools = keep
@@ -290,6 +303,16 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 
 		reqBody, convErr := ToAnthropicResponsesRequest(ctx, request)
 		if convErr != nil {
+			if errors.Is(convErr, ErrReasoningMaxTokensTooLow) {
+				return nil, providerUtils.EnrichError(
+					ctx,
+					providerUtils.NewBifrostBadRequestError(convErr.Error()),
+					jsonBody,
+					nil,
+					cfg.ShouldSendBackRawRequest,
+					cfg.ShouldSendBackRawResponse,
+				)
+			}
 			return nil, newErr(schemas.ErrRequestBodyConversion, convErr, jsonBody)
 		}
 		if reqBody == nil {
@@ -312,12 +335,15 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 		// support. ToAnthropicResponsesRequest doesn't do this internally
 		// (unlike ToAnthropicChatRequest), so the builder must — keeping
 		// behaviour symmetric across raw and typed paths and across both
-		// chat/responses APIs.
-		stripUnsupportedAnthropicFields(reqBody, cfg.Provider, request.Model)
+		// chat/responses APIs. Gate on capModel, not request.Model: the
+		// model-capability predicates match on canonical Anthropic model names,
+		// so a Bifrost alias would otherwise match none of them and skip every
+		// model-level strip. The raw path above already uses capModel.
+		stripUnsupportedAnthropicFields(reqBody, cfg.Provider, capModel)
 
 		AddMissingBetaHeadersToContext(ctx, reqBody, cfg.Provider)
 
-		jsonBody, err = providerUtils.MarshalSorted(reqBody)
+		jsonBody, err = providerUtils.MarshalProviderRequest(reqBody)
 		if err != nil {
 			return nil, newErr(schemas.ErrProviderRequestMarshal, fmt.Errorf("failed to marshal request body: %w", err), jsonBody)
 		}
@@ -398,6 +424,13 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 		}
 	}
 
+	if defaults.InlineURLSources {
+		jsonBody, err = InlineURLContentSources(ctx, jsonBody)
+		if err != nil {
+			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+		}
+	}
+
 	if defaults.InjectBetaHeadersIntoBody {
 		if betaHeaders := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, cfg.ProviderExtraHeaders), cfg.Provider, cfg.BetaHeaderOverrides); len(betaHeaders) > 0 {
 			jsonBody, err = providerUtils.SetJSONField(jsonBody, "anthropic_beta", betaHeaders)
@@ -471,7 +504,7 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 					modelForTokens = r.String()
 				}
 			}
-			jsonBody, err = providerUtils.SetJSONField(jsonBody, "max_tokens", providerUtils.GetMaxOutputTokensOrDefault(modelForTokens, AnthropicDefaultMaxTokens))
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, "max_tokens", providerUtils.GetMaxOutputTokensOrDefault(cfg.Provider, modelForTokens, AnthropicDefaultMaxTokens))
 			if err != nil {
 				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 			}
@@ -531,6 +564,16 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 	} else {
 		reqBody, convErr := ToAnthropicChatRequest(ctx, request)
 		if convErr != nil {
+			if errors.Is(convErr, ErrReasoningMaxTokensTooLow) {
+				return nil, providerUtils.EnrichError(
+					ctx,
+					providerUtils.NewBifrostBadRequestError(convErr.Error()),
+					jsonBody,
+					nil,
+					cfg.ShouldSendBackRawRequest,
+					cfg.ShouldSendBackRawResponse,
+				)
+			}
 			return nil, newErr(schemas.ErrRequestBodyConversion, convErr, jsonBody)
 		}
 		if reqBody == nil {
@@ -553,12 +596,14 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 		// routed through a custom-provider alias whose name doesn't match
 		// the ProviderFeatures map entry. Idempotent — ToAnthropicChatRequest
 		// already strips using bifrostReq.Provider, so this only changes
-		// behaviour when the two diverge.
-		stripUnsupportedAnthropicFields(reqBody, cfg.Provider, request.Model)
+		// behaviour when the two diverge. Gate on capModel for the same reason
+		// as the responses builder: the model predicates match canonical
+		// Anthropic model names, not Bifrost aliases.
+		stripUnsupportedAnthropicFields(reqBody, cfg.Provider, capModel)
 
 		AddMissingBetaHeadersToContext(ctx, reqBody, cfg.Provider)
 
-		jsonBody, err = providerUtils.MarshalSorted(reqBody)
+		jsonBody, err = providerUtils.MarshalProviderRequest(reqBody)
 		if err != nil {
 			return nil, newErr(schemas.ErrProviderRequestMarshal, fmt.Errorf("failed to marshal request body: %w", err), jsonBody)
 		}
@@ -616,6 +661,13 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 
 	if defaults.DeleteStreamField {
 		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "stream")
+		if err != nil {
+			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+		}
+	}
+
+	if defaults.InlineURLSources {
+		jsonBody, err = InlineURLContentSources(ctx, jsonBody)
 		if err != nil {
 			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 		}

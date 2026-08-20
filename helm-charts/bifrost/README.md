@@ -4,13 +4,51 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.32
+**Latest Version:** 2.1.36
 
 ## Changelog
 
 ### Upcoming
 
+- Added `bifrost.plugins.splunk` — the Splunk HTTP Event Collector (HEC) observability connector (Enterprise): one flattened event per request to `events_index` plus the derived metric set to `metrics_index`, with TLS (`ca_cert` / `insecure_skip_verify`), a content toggle (`disable_content_logging`), request-header capture, and indexer acknowledgement (`indexer_ack`, `ack_poll_interval_ms`, `ack_timeout_ms`, `max_ack_attempts`). Renders into the `splunk` plugin config.
+
+### 2.1.36
+
+- Added `bifrost.scim.config.claimsSyncMode` (`both` default, or `scim`) to every SCIM/SSO provider — selects, when SCIM is enabled, whether IdP login/refresh claims still drive role/team/business-unit/profile sync and JIT user creation (`both`) or SCIM is the sole source of truth (`scim`). Renders into the provider's `claimsSyncMode`.
+- Made `bifrost.scim.config.apiToken` optional for the Okta provider — removed it from the Okta config `required` set (it was contradicting the docs, which describe the API token as optional and only needed for 24-hour background user/group reconciliation). SCIM validation now requires only `issuerUrl`, `clientId`, and `clientSecret`.
+
+### 2.1.35
+
+- Added `bifrost.plugins.otel.config.traces_enabled` (and `profiles[*].traces_enabled`, default `true`) — set `false` for a metrics-only profile where no traces are sent and `collector_url` is not required. Renders into `traces_enabled`.
+- Added `bifrost.plugins.otel.config.trace_headers` and `metrics_headers` (and their `profiles[*]` forms) — extra headers sent only to the trace or metrics endpoint, overlaid on the shared `headers` (same key wins), e.g. a Databricks table name required only on metrics. Render into `trace_headers` / `metrics_headers`.
+- Added top-level `bifrost.setupToken` — the operator-provisioned bootstrap secret required to create the first admin account when none exists (supports `env.`/`vault.` prefixes and the `BIFROST_SETUP_TOKEN` env var). Renders into `setup_token`.
+- Added `bifrost.server.pluginDownloadPrivateAllowlist` (array of hostnames/IPs/CIDRs) to let custom plugin (`.so`) downloads reach trusted internal hosts that resolve to private/loopback/link-local/CGNAT addresses, blocked by default to prevent SSRF. Renders into `server.plugin_download_private_allowlist`.
+- Added `http2_ping_interval_in_seconds` (0–3600, `0` disables) to provider `network_config` — sends a client-initiated HTTP/2 keepalive PING after that many idle seconds; only applies when `enforce_http2` is set. Renders into `network_config.http2_ping_interval_in_seconds`.
+- Added inline `oauthConfig` to `bifrost.mcp.clientConfigs[]` (`clientId`, `clientSecret`, `authorizeUrl`, `tokenUrl`, `registrationUrl`, `scopes`; all optional) for `authType` `oauth`/`per_user_oauth`, so OAuth can be declared inline instead of pre-creating a config — missing URLs and client IDs are discovered/registered during admin verification. Renders into `oauth_config`. (`oauthConfigId` is now Bifrost-managed and is no longer emitted.)
+- Added `tokenExchange` to `bifrost.mcp.clientConfigs[]` (`audience`, `useIdpCredentials`, `clientId`, `clientSecret`, `authorizationServerUrl`, `scopes`) for the new `token_exchange` auth type (Enterprise builds), exchanging each caller's IDP token for a short-lived token scoped to the server's audience. Renders into `token_exchange`.
+- Added `needsSessionStickiness` to `bifrost.mcp.clientConfigs[]` (HTTP servers only) to choose one persistent connection reused across callers (`true`) or a fresh connection per call (`false`, default). Renders into `needs_session_stickiness`.
+- Documented `endpoints` on the `bedrock` and `bedrock_mantle` key examples (AWS PrivateLink interface VPC endpoint hosts: `runtime`, `control_plane`, `mantle`, `agent_runtime`, `s3`). Passes through into `bedrock_key_config.endpoints` / `bedrock_mantle_key_config.endpoints`.
+- Extended `bifrost.governance.budgets[]` with quarterly resets (`reset_duration: "1Q"`) and `reset_config.quarter_start_month` (1–12, sets the fiscal Q1 month). Passes through into `budgets[].reset_config`.
+- Added `target` (`llm` default, or `mcp`) to `bifrost.governance` guardrail rules to select the rule's execution target. Passes through into the rule's `target`.
+
+
+### 2.1.34
+
+- Added `bifrost.scim.config.roleResolutionStrategy` (`highestPermissionCount` default, or `order`) to pick a single role when a user matches multiple `attributeRoleMappings` — most-permissioned role vs first match in the list. Passes through into `scim_config.config.roleResolutionStrategy`.
+
+### 2.1.33
+
+- Fixed Helm schema validation failure for multi-profile OTEL configs (`bifrost.plugins.otel.config.profiles`), introduced by the `export_timeout` default in 2.1.32.
+
+### 2.1.32
+
+- Extended `bifrost.accessProfiles[].provider_configs[]` with `blacklisted_models` (denylist that wins over `allowed_models`; `["*"]` blocks every model, while an empty or omitted list blocks none), `weight` (load-balancer seed weight; `null` opts out), and `model_budgets[]` (per-model budget groups; each entry requires `model_name` and may carry optional `budgets[]` and a `rate_limit`). These pass through into `access_profiles[].provider_configs[]`.
+- Added `bifrost.scim.config.additionalScopes` (Okta) — an array of extra OAuth scopes requested on top of the base `openid/profile/email/offline_access` set, for Custom Authorization Servers where claims like `groups` are gated behind a scope Bifrost does not request by default. Passes through into `scim_config.config.additionalScopes`.
 - Added `bifrost.framework.pricing.liveModelsSyncInterval` (default `3600` seconds, minimum `60`, `0` disables) to control how often each provider's list-models response is re-fetched in the background. Renders into `framework.pricing.live_models_sync_interval`.
+- Added `storage.configStore.connMaxIdleTime` and `storage.logsStore.connMaxIdleTime` (Go duration, e.g. `5m`) to cap how long an idle PostgreSQL connection is kept before closing, so bursts above `maxIdleConns` stop churning physical connections. Each renders into its store's `conn_max_idle_time`.
+- Added `storage.logsStore.matviewRefreshTimeout` (Go duration, min 30s, max 30m; unset derives 5× the refresh interval, at least 5m) to bound a single materialized-view refresh pass. Renders into `logs_store.matview_refresh_timeout`.
+- Added `bifrost.plugins.otel.config.export_timeout` (seconds, 1–60, default 5) to bound a single trace export — the only timeout on gRPC exports. Renders into the OTEL plugin config's `export_timeout` (also wired the field through `_helpers.tpl`), and is omitted from the generated config when unset (or `0`).
+- Added `postgresql.external.passwordCommand.cache_ttl` (Go duration, default 60s) to control how long a resolved password is reused across new physical connections instead of re-running the command per connection. Passes through into `password_command.cache_ttl`.
 
 ### 2.1.31
 

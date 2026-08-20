@@ -22,7 +22,6 @@ import (
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 
-	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -217,6 +216,7 @@ var rerankParamsKnownFields = map[string]bool{
 	"max_tokens_per_doc": true,
 	"priority":           true,
 	"return_documents":   true,
+	"next_token":         true,
 }
 
 var ocrParamsKnownFields = map[string]bool{
@@ -270,6 +270,7 @@ var imageGenerationParamsKnownFields = map[string]bool{
 	"user":                true,
 	"aspect_ratio":        true,
 	"input_images":        true,
+	"type":                true,
 }
 
 // imageEditParamsKnownFields contains known fields for image edit requests
@@ -280,6 +281,8 @@ var imageEditParamsKnownFields = map[string]bool{
 	"fallbacks":           true,
 	"image":               true,
 	"image[]":             true,
+	"image_url":           true,
+	"image_url[]":         true,
 	"mask":                true,
 	"type":                true,
 	"background":          true,
@@ -295,6 +298,8 @@ var imageEditParamsKnownFields = map[string]bool{
 	"negative_prompt":     true,
 	"seed":                true,
 	"num_inference_steps": true,
+	"upscale_factor":      true,
+	"target_megapixels":   true,
 	"stream":              true,
 }
 
@@ -314,21 +319,40 @@ var imageVariationParamsKnownFields = map[string]bool{
 // videoGenerationParamsKnownFields contains known fields for video generation requests
 // Based on VideoGenerationInput and VideoGenerationParameters structs
 var videoGenerationParamsKnownFields = map[string]bool{
-	"model":           true,
-	"prompt":          true,
-	"input_reference": true,
-	"seconds":         true,
-	"size":            true,
-	"negative_prompt": true,
-	"seed":            true,
-	"video_uri":       true,
-	"audio":           true,
-	"fallbacks":       true,
+	"model":             true,
+	"prompt":            true,
+	"input_reference":   true,
+	"seconds":           true,
+	"size":              true,
+	"negative_prompt":   true,
+	"seed":              true,
+	"type":              true,
+	"upscale_factor":    true,
+	"target_megapixels": true,
+	"video_uri":         true,
+	"audio":             true,
+	"fallbacks":         true,
 }
 
 var videoRemixParamsKnownFields = map[string]bool{
 	"prompt":    true,
 	"fallbacks": true,
+}
+
+// videoEditParamsKnownFields contains known fields for video edit requests
+// Based on VideoEditInput and VideoEditParameters structs
+var videoEditParamsKnownFields = map[string]bool{
+	"model":             true,
+	"prompt":            true,
+	"video":             true,
+	"video_url":         true,
+	"video_id":          true,
+	"type":              true,
+	"seed":              true,
+	"output_format":     true,
+	"upscale_factor":    true,
+	"target_megapixels": true,
+	"fallbacks":         true,
 }
 
 var transcriptionParamsKnownFields = map[string]bool{
@@ -575,6 +599,12 @@ type VideoRemixRequest struct {
 	ExtraParams map[string]any `json:"extra_params,omitempty"`
 }
 
+type VideoEditHTTPRequest struct {
+	*schemas.VideoEditInput
+	BifrostParams
+	*schemas.VideoEditParameters
+}
+
 // BatchCreateRequest is a bifrost batch create request
 type BatchCreateRequest struct {
 	Model            string                     `json:"model"`                       // Model in "provider/model" format
@@ -693,6 +723,7 @@ var PathToTypeMapping = map[string]schemas.RequestType{
 	"/v1/responses/compact":      schemas.CompactionRequest,
 	"/v1/images/edits":           schemas.ImageEditRequest,
 	"/v1/images/variations":      schemas.ImageVariationRequest,
+	"/v1/videos/edits":           schemas.VideoEditRequest,
 	"/v1/models":                 schemas.ListModelsRequest,
 }
 
@@ -751,6 +782,7 @@ func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.POST("/v1/images/edits", lib.ChainMiddlewares(h.imageEdit, baseMiddlewares...))
 	r.POST("/v1/images/variations", lib.ChainMiddlewares(h.imageVariation, baseMiddlewares...))
 	r.POST("/v1/videos", lib.ChainMiddlewares(h.videoGeneration, baseMiddlewares...))
+	r.POST("/v1/videos/edits", lib.ChainMiddlewares(h.videoEdit, baseMiddlewares...))
 
 	// Video API endpoints (parameterized routes need explicit request type middleware)
 	videoListMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.VideoListRequest)}, middlewares...)
@@ -902,51 +934,8 @@ func enrichListModelsResponse(resp *schemas.BifrostListModelsResponse, catalog *
 		if pricingEntry == nil && modelEntry.Alias != nil {
 			pricingEntry = catalog.GetPricingEntryForModel(*modelEntry.Alias, provider)
 		}
-		if pricingEntry != nil {
-			modelEntry.IsDeprecated = modelEntry.IsDeprecated || pricingEntry.IsDeprecated
-			if pricingEntry.BaseModel != "" && modelEntry.NormalizedName == nil {
-				modelEntry.NormalizedName = bifrost.Ptr(providerUtils.NormalizeBaseModelSlug(pricingEntry.BaseModel))
-			}
-			if len(pricingEntry.AdditionalAttributes) > 0 && modelEntry.AdditionalAttributes == nil {
-				modelEntry.AdditionalAttributes = pricingEntry.AdditionalAttributes
-			}
-			if pricingEntry.ContextLength != nil && modelEntry.ContextLength == nil {
-				modelEntry.ContextLength = pricingEntry.ContextLength
-			} else if pricingEntry.MaxInputTokens != nil && modelEntry.ContextLength == nil {
-				modelEntry.ContextLength = pricingEntry.MaxInputTokens
-			}
-			if pricingEntry.MaxInputTokens != nil && modelEntry.MaxInputTokens == nil {
-				modelEntry.MaxInputTokens = pricingEntry.MaxInputTokens
-			}
-			if pricingEntry.MaxOutputTokens != nil && modelEntry.MaxOutputTokens == nil {
-				modelEntry.MaxOutputTokens = pricingEntry.MaxOutputTokens
-			}
-			if pricingEntry.Architecture != nil && modelEntry.Architecture == nil {
-				modelEntry.Architecture = pricingEntry.Architecture
-			}
-			if modelEntry.Pricing == nil {
-				pricing := &schemas.Pricing{}
-				if pricingEntry.InputCostPerToken != nil {
-					pricing.Prompt = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.InputCostPerToken))
-				}
-				if pricingEntry.OutputCostPerToken != nil {
-					pricing.Completion = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.OutputCostPerToken))
-				}
-				if pricingEntry.InputCostPerImage != nil {
-					pricing.Image = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.InputCostPerImage))
-				}
-				if pricingEntry.CacheReadInputTokenCost != nil {
-					pricing.InputCacheRead = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.CacheReadInputTokenCost))
-				}
-				if pricingEntry.CacheCreationInputTokenCost != nil {
-					pricing.InputCacheWrite = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.CacheCreationInputTokenCost))
-				}
-				if pricingEntry.SearchContextCostPerQuery != nil {
-					pricing.WebSearch = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.SearchContextCostPerQuery))
-				}
-				modelEntry.Pricing = pricing
-			}
-		}
+		// Same mapping ctx.GetModelInfo hands to plugins, so the two never drift.
+		modelcatalog.ApplyModelInfo(&modelEntry, pricingEntry)
 		resp.Data[i] = modelEntry
 	}
 }
@@ -1225,8 +1214,8 @@ func prepareRerankRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Rerank
 		return nil, nil, fmt.Errorf("documents are required for rerank")
 	}
 	for i, doc := range req.Documents {
-		if strings.TrimSpace(doc.Text) == "" {
-			return nil, nil, fmt.Errorf("document text is required for rerank at index %d", i)
+		if strings.TrimSpace(doc.Text) == "" && len(doc.Data) == 0 {
+			return nil, nil, fmt.Errorf("document text or data is required for rerank at index %d", i)
 		}
 	}
 	if req.RerankParameters == nil {
@@ -2047,12 +2036,31 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 			transportLogs = logs
 		}
 
+		// Client-disconnect detection is otherwise purely reactive: cancel() only fires when
+		// a downstream SendEvent write actually fails, which only happens when this loop
+		// attempts one. If the upstream provider delivers its whole response in a few
+		// large/fast chunks, this loop may never attempt another write during the window
+		// where the client has already disconnected, so the disconnect goes undetected and
+		// the request logs as a false success (observed live: Vertex's streamGenerateContent
+		// delivers fewer, larger deltas than direct Gemini for the same prompt, giving the
+		// write-failure detector too few chances to fire before the stream finished).
+		// A periodic no-op heartbeat forces an extra write attempt during otherwise-idle
+		// gaps, closing that window without touching fasthttp's connection internals.
+		heartbeatDone, heartbeatExited := lib.StartSSEHeartbeat(lib.DefaultSSEHeartbeatInterval, reader.SendHeartbeat, cancel)
+
 		defer func() {
+			// Must run before reader.Done(): closing eventCh while the heartbeat goroutine
+			// could still be mid-send on it panics ("send on closed channel"). See
+			// lib.StopSSEHeartbeat's doc for the full ordering rationale.
+			lib.StopSSEHeartbeat(reader, heartbeatDone, heartbeatExited)
 			schemas.ReleaseHTTPRequest(httpReq)
 			// Fallback: on early-return paths (client disconnect, interceptor error)
 			// we never reached the pre-[DONE] invocation, so run it now. Any error is
 			// logged server-side only — the stream is already closing.
 			runCompleter(false)
+			// Safe now: the heartbeat goroutine has fully exited (waited on above), so no
+			// other goroutine can be mid-send on eventCh when this closes it. Closing it
+			// while a send was still in flight would panic ("send on closed channel").
 			reader.Done()
 			// Complete the trace after streaming finishes, passing transport plugin logs.
 			// This ensures all spans (including llm.call) are properly ended before the trace is sent to OTEL.
@@ -2364,10 +2372,19 @@ func prepareImageEditRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Ima
 	} else if imageFilesSingle := form.File["image"]; len(imageFilesSingle) > 0 {
 		imageFiles = imageFilesSingle
 	}
-	if len(imageFiles) == 0 {
-		return nil, nil, fmt.Errorf("at least one image is required")
+	// Providers whose upstream fetches the asset itself (e.g. Runware) accept a URL in place of an
+	// upload, which avoids round-tripping large images through the gateway as base64.
+	imageURLs := form.Value["image_url[]"]
+	if len(imageURLs) == 0 {
+		imageURLs = form.Value["image_url"]
 	}
-	images := make([]schemas.ImageInput, 0, len(imageFiles))
+	if len(imageFiles) == 0 && len(imageURLs) == 0 {
+		return nil, nil, fmt.Errorf("at least one image or image_url is required")
+	}
+	// Uploads keep their leading position so a request that sends no URL is ordered exactly as
+	// before: providers treat the first image as the primary one (Runware's seed image, Bedrock's
+	// style-transfer base), so the order is part of the contract.
+	images := make([]schemas.ImageInput, 0, len(imageFiles)+len(imageURLs))
 	for _, fh := range imageFiles {
 		f, err := fh.Open()
 		if err != nil {
@@ -2379,6 +2396,11 @@ func prepareImageEditRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Ima
 			return nil, nil, fmt.Errorf("failed to read uploaded file: %v", err)
 		}
 		images = append(images, schemas.ImageInput{Image: fileData})
+	}
+	for _, imageURL := range imageURLs {
+		if imageURL != "" {
+			images = append(images, schemas.ImageInput{URL: imageURL})
+		}
 	}
 	prompt := ""
 	if len(promptValues) > 0 && promptValues[0] != "" {
@@ -2424,6 +2446,20 @@ func prepareImageEditRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Ima
 			return nil, nil, fmt.Errorf("invalid num_inference_steps value: %v", err)
 		}
 		req.ImageEditParameters.NumInferenceSteps = &numInferenceSteps
+	}
+	if upscaleFactorValues := form.Value["upscale_factor"]; len(upscaleFactorValues) > 0 && upscaleFactorValues[0] != "" {
+		upscaleFactor, err := strconv.Atoi(upscaleFactorValues[0])
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid upscale_factor value: %v", err)
+		}
+		req.ImageEditParameters.UpscaleFactor = &upscaleFactor
+	}
+	if targetMegapixelsValues := form.Value["target_megapixels"]; len(targetMegapixelsValues) > 0 && targetMegapixelsValues[0] != "" {
+		targetMegapixels, err := strconv.Atoi(targetMegapixelsValues[0])
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid target_megapixels value: %v", err)
+		}
+		req.ImageEditParameters.TargetMegapixels = &targetMegapixels
 	}
 	if seedValues := form.Value["seed"]; len(seedValues) > 0 && seedValues[0] != "" {
 		seed, err := strconv.Atoi(seedValues[0])
@@ -2688,13 +2724,15 @@ func (h *CompletionHandler) videoGeneration(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if req.VideoGenerationInput == nil || req.Prompt == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "prompt cannot be empty")
-		return
-	}
-
 	if req.VideoGenerationParameters == nil {
 		req.VideoGenerationParameters = &schemas.VideoGenerationParameters{}
+	}
+
+	// Operations driven by an input asset (video upscale, image-to-3D) carry no prompt.
+	if req.VideoGenerationInput == nil ||
+		(req.Prompt == "" && req.InputReference == nil && req.VideoURI == nil) {
+		SendError(ctx, fasthttp.StatusBadRequest, "prompt, input_reference or video_uri is required")
+		return
 	}
 
 	extraParams, err := extractExtraParams(ctx.PostBody(), videoGenerationParamsKnownFields)
@@ -2721,6 +2759,227 @@ func (h *CompletionHandler) videoGeneration(ctx *fasthttp.RequestCtx) {
 	defer cancel()
 
 	resp, bifrostErr := h.client.VideoGenerationRequest(bifrostCtx, bifrostReq)
+	if bifrostErr != nil {
+		forwardProviderHeadersFromContext(ctx, bifrostCtx)
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
+	}
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
+	SendJSON(ctx, resp)
+}
+
+// isMultipartRequest reports whether the request body is a multipart form.
+func isMultipartRequest(ctx *fasthttp.RequestCtx) bool {
+	return strings.HasPrefix(strings.ToLower(string(ctx.Request.Header.ContentType())), "multipart/form-data")
+}
+
+// resolveVideoEditProvider resolves the provider and model for a video edit request. Model is
+// optional here — an edit of an existing video is identified by an ID that already names its
+// provider, and the upstream infers the model from that video — so the provider can instead come
+// from the ?provider= query param, the x-model-provider header, or that ID suffix.
+//
+// A provider prefix on the model wins, then the explicit sources, then the ID suffix, which is
+// inferred rather than stated. A bare model name with no provider anywhere is left for the model
+// catalogue and routing plugins to resolve, as on every other inference endpoint.
+func resolveVideoEditProvider(ctx *fasthttp.RequestCtx, config *lib.Config, model string, videoID string) (schemas.ModelProvider, string, error) {
+	provider, modelName, err := resolveModelAndProvider(ctx, config, model)
+	if err != nil {
+		return "", "", err
+	}
+	if provider != "" {
+		return provider, modelName, nil
+	}
+
+	for _, candidate := range []string{
+		string(ctx.QueryArgs().Peek("provider")),
+		string(ctx.Request.Header.Peek("x-model-provider")),
+		videoIDProviderSuffix(videoID),
+	} {
+		if candidate != "" {
+			return schemas.ModelProvider(candidate), modelName, nil
+		}
+	}
+
+	if modelName != "" {
+		return "", modelName, nil
+	}
+	return "", "", fmt.Errorf("model is required unless the source video id carries a provider suffix, or a provider query parameter or x-model-provider header is set")
+}
+
+// videoIDProviderSuffix returns the provider a video ID is scoped to, if it carries one. The suffix
+// counts only when it names a real provider, so an ID that merely contains a colon is left alone.
+func videoIDProviderSuffix(videoID string) string {
+	idx := strings.LastIndex(videoID, ":")
+	if idx <= 0 || idx == len(videoID)-1 {
+		return ""
+	}
+	if suffix := videoID[idx+1:]; schemas.IsKnownProvider(suffix) {
+		return suffix
+	}
+	return ""
+}
+
+// prepareVideoEditRequest builds a BifrostVideoEditRequest from either a multipart form (uploaded
+// source video, matching OpenAI's /v1/videos/edits) or a JSON body (source referenced by id or url).
+func prepareVideoEditRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*schemas.BifrostVideoEditRequest, error) {
+	var req VideoEditHTTPRequest
+	var extraParams map[string]any
+
+	if isMultipartRequest(ctx) {
+		form, err := ctx.MultipartForm()
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse multipart form: %v", err)
+		}
+		if err := parseVideoEditMultipartForm(&req, form); err != nil {
+			return nil, err
+		}
+		extraParams = make(map[string]any)
+		for key, value := range form.Value {
+			if len(value) > 0 && value[0] != "" && !videoEditParamsKnownFields[key] {
+				extraParams[key] = value[0]
+			}
+		}
+	} else {
+		if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
+			return nil, fmt.Errorf("Invalid request payload")
+		}
+		ep, epErr := extractExtraParams(ctx.PostBody(), videoEditParamsKnownFields)
+		if epErr != nil {
+			logger.Warn("Failed to extract extra params: %v", epErr)
+		} else {
+			extraParams = ep
+		}
+	}
+
+	if req.VideoEditInput == nil {
+		return nil, fmt.Errorf("video is required")
+	}
+	source := req.VideoEditInput.Video
+	if len(source.Video) == 0 && source.URL == "" && source.ID == "" {
+		return nil, fmt.Errorf("video is required")
+	}
+
+	provider, modelName, err := resolveVideoEditProvider(ctx, config, req.Model, source.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	fallbacks, err := parseFallbacks(req.Fallbacks)
+	if err != nil {
+		return nil, err
+	}
+
+	if req.VideoEditParameters == nil {
+		req.VideoEditParameters = &schemas.VideoEditParameters{}
+	}
+	req.VideoEditParameters.ExtraParams = extraParams
+
+	return &schemas.BifrostVideoEditRequest{
+		Provider:  provider,
+		Model:     modelName,
+		Input:     req.VideoEditInput,
+		Params:    req.VideoEditParameters,
+		Fallbacks: fallbacks,
+	}, nil
+}
+
+// parseVideoEditMultipartForm fills req from an OpenAI-style multipart video edit form.
+func parseVideoEditMultipartForm(req *VideoEditHTTPRequest, form *multipart.Form) error {
+	req.VideoEditInput = &schemas.VideoEditInput{}
+	req.VideoEditParameters = &schemas.VideoEditParameters{}
+
+	if modelValues := form.Value["model"]; len(modelValues) > 0 {
+		req.Model = modelValues[0]
+	}
+	if promptValues := form.Value["prompt"]; len(promptValues) > 0 {
+		req.VideoEditInput.Prompt = promptValues[0]
+	}
+
+	// The source arrives as an upload, or as a reference the upstream resolves itself.
+	if videoFiles := form.File["video"]; len(videoFiles) > 0 {
+		f, err := videoFiles[0].Open()
+		if err != nil {
+			return fmt.Errorf("failed to open uploaded file: %v", err)
+		}
+		fileData, err := io.ReadAll(f)
+		f.Close()
+		if err != nil {
+			return fmt.Errorf("failed to read uploaded file: %v", err)
+		}
+		req.VideoEditInput.Video.Video = fileData
+	}
+	// "video[id]" / "video[url]" are how the official OpenAI SDKs flatten a reference source into a
+	// multipart body; the underscore forms are the plain-form equivalents.
+	for _, key := range []string{"video_url", "video[url]"} {
+		if values := form.Value[key]; len(values) > 0 && values[0] != "" {
+			req.VideoEditInput.Video.URL = values[0]
+			break
+		}
+	}
+	for _, key := range []string{"video_id", "video[id]"} {
+		if values := form.Value[key]; len(values) > 0 && values[0] != "" {
+			req.VideoEditInput.Video.ID = values[0]
+			break
+		}
+	}
+
+	if typeValues := form.Value["type"]; len(typeValues) > 0 && typeValues[0] != "" {
+		req.VideoEditParameters.Type = &typeValues[0]
+	}
+	if outputFormatValues := form.Value["output_format"]; len(outputFormatValues) > 0 && outputFormatValues[0] != "" {
+		req.VideoEditParameters.OutputFormat = &outputFormatValues[0]
+	}
+	if seedValues := form.Value["seed"]; len(seedValues) > 0 && seedValues[0] != "" {
+		seed, err := strconv.Atoi(seedValues[0])
+		if err != nil {
+			return fmt.Errorf("invalid seed value: %v", err)
+		}
+		req.VideoEditParameters.Seed = &seed
+	}
+	if upscaleFactorValues := form.Value["upscale_factor"]; len(upscaleFactorValues) > 0 && upscaleFactorValues[0] != "" {
+		upscaleFactor, err := strconv.Atoi(upscaleFactorValues[0])
+		if err != nil {
+			return fmt.Errorf("invalid upscale_factor value: %v", err)
+		}
+		req.VideoEditParameters.UpscaleFactor = &upscaleFactor
+	}
+	if targetMegapixelsValues := form.Value["target_megapixels"]; len(targetMegapixelsValues) > 0 && targetMegapixelsValues[0] != "" {
+		targetMegapixels, err := strconv.Atoi(targetMegapixelsValues[0])
+		if err != nil {
+			return fmt.Errorf("invalid target_megapixels value: %v", err)
+		}
+		req.VideoEditParameters.TargetMegapixels = &targetMegapixels
+	}
+	if fallbackValues := form.Value["fallbacks"]; len(fallbackValues) > 0 {
+		req.Fallbacks = fallbackValues
+	}
+
+	return nil
+}
+
+// videoEdit handles POST /v1/videos/edits - Edit an existing video
+func (h *CompletionHandler) videoEdit(ctx *fasthttp.RequestCtx) {
+	bifrostReq, err := prepareVideoEditRequest(ctx, h.config)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
+	if bifrostCtx == nil {
+		cancel()
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
+		return
+	}
+	defer cancel()
+
+	resp, bifrostErr := h.client.VideoEditRequest(bifrostCtx, bifrostReq)
 	if bifrostErr != nil {
 		forwardProviderHeadersFromContext(ctx, bifrostCtx)
 		SendBifrostError(ctx, bifrostErr)
@@ -3086,9 +3345,24 @@ func (h *CompletionHandler) batchCreate(ctx *fasthttp.RequestCtx) {
 		logger.Warn("Failed to extract extra params: %v", err)
 	}
 
+	// Model is optional at the batch level per OpenAI spec — it lives inside
+	// each JSONL request body. When absent, lift it from the first inline request
+	// so the sweeper has a fallback model for pricing lookups.
+	//
+	// Taking Requests[0] is deliberate, not a mixed-model hazard. It is only ever
+	// a fallback: accounting prefers the model echoed on each result row, and the
+	// providers where the fallback actually decides pricing run one model per job
+	// anyway — Gemini carries it in the URL (models/%s:batchGenerateContent) and
+	// Bedrock requires a job-level model. Leaving it unset when inline models
+	// differ would break Bedrock batch creation and make Gemini silently run its
+	// default model.
 	var model *string
 	if modelName != "" {
 		model = schemas.Ptr(modelName)
+	} else if len(req.Requests) > 0 && req.Requests[0].Body != nil {
+		if m, ok := req.Requests[0].Body["model"].(string); ok && m != "" {
+			model = schemas.Ptr(m)
+		}
 	}
 
 	// Build Bifrost batch create request

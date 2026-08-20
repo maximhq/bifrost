@@ -67,6 +67,7 @@ export const governanceApi = baseApi.injectEndpoints({
 					...(params?.search && { search: params.search }),
 					...(params?.customer_id && { customer_id: params.customer_id }),
 					...(params?.team_id && { team_id: params.team_id }),
+					...(params?.user_id && { user_id: params.user_id }),
 					...(params?.exclude_access_profile_managed_virtual === true && {
 						exclude_access_profile_managed_virtual: "true",
 					}),
@@ -855,7 +856,7 @@ export const governanceApi = baseApi.injectEndpoints({
 		// Complexity Analyzer Config
 		getComplexityAnalyzerConfig: builder.query<AnalyzerConfig, void>({
 			query: () => ({
-				url: "/governance/complexity-analyzer-config",
+				url: "/routing/complexity-analyzer-config",
 				method: "GET",
 			}),
 			providesTags: ["ComplexityAnalyzerConfig"],
@@ -863,7 +864,7 @@ export const governanceApi = baseApi.injectEndpoints({
 
 		updateComplexityAnalyzerConfig: builder.mutation<AnalyzerConfig, AnalyzerConfig>({
 			query: (data) => ({
-				url: "/governance/complexity-analyzer-config",
+				url: "/routing/complexity-analyzer-config",
 				method: "PUT",
 				body: data,
 			}),
@@ -872,7 +873,7 @@ export const governanceApi = baseApi.injectEndpoints({
 
 		resetComplexityAnalyzerConfig: builder.mutation<AnalyzerConfig, void>({
 			query: () => ({
-				url: "/governance/complexity-analyzer-config/reset",
+				url: "/routing/complexity-analyzer-config/reset",
 				method: "POST",
 			}),
 			invalidatesTags: ["ComplexityAnalyzerConfig"],

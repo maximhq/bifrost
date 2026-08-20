@@ -366,7 +366,7 @@ export function PrometheusFormFragment({
 								)}
 							/>
 
-							<div className="grid grid-cols-2 gap-4">
+							<div className="grid grid-cols-1 gap-4 md:grid-cols-2">
 								<FormField
 									control={form.control}
 									name="prometheus_config.job_name"
@@ -470,7 +470,7 @@ export function PrometheusFormFragment({
 												<Trash className="h-4 w-4" />
 											</Button>
 										</div>
-										<div className="border-muted grid grid-cols-2 gap-4">
+										<div className="border-muted grid grid-cols-1 gap-4 md:grid-cols-2">
 											<FormField
 												control={form.control}
 												name="prometheus_config.basic_auth_username"

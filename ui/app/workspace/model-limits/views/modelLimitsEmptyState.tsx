@@ -17,7 +17,7 @@ export function ModelLimitsEmptyState({ onAddClick, canCreate = true }: ModelLim
 			</div>
 			<div className="flex flex-col gap-1">
 				<h1 className="text-muted-foreground text-xl font-medium">Budgets and rate limits</h1>
-				<div className="text-muted-foreground mx-auto mt-2 max-w-[600px] text-sm font-normal">
+				<div className="text-muted-foreground mx-auto mt-2 w-full max-w-[600px] text-sm font-normal">
 					Set spending caps and rate limits at any scope: virtual keys, users, providers, or specific models.
 				</div>
 				<div className="mx-auto mt-6 flex flex-row flex-wrap items-center justify-center gap-2">
@@ -31,12 +31,7 @@ export function ModelLimitsEmptyState({ onAddClick, canCreate = true }: ModelLim
 					>
 						Read more <ArrowUpRight className="text-muted-foreground h-3 w-3" />
 					</Button>
-					<Button
-						aria-label="Add your first limit"
-						onClick={onAddClick}
-						disabled={!canCreate}
-						data-testid="model-limits-button-create"
-					>
+					<Button aria-label="Add your first limit" onClick={onAddClick} disabled={!canCreate} data-testid="model-limits-button-create">
 						Add Limit
 					</Button>
 				</div>

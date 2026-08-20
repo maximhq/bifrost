@@ -85,9 +85,14 @@ func TestCodeMode_SomeToolsAvailable(t *testing.T) {
 
 	// Execute code that calls available tool from code mode client
 	// Note: In code mode, code mode clients are bound in the execution environment
-	// The client's ToolsToExecute filters which tools are available
-	// The test server provides YouTube tools, so we'll call youtube_search_you_tube
-	code := `r = TestCodeModeServer.youtube_search_you_tube(query="golang")
+	// The client's ToolsToExecute filters which tools are available.
+	//
+	// `echo` is one of the three tools examples/mcps/remote-test-server exposes
+	// (see TestMain in remoteserver_test.go). This previously called
+	// youtube_search_you_tube, a tool that existed only on the hosted MCP
+	// instance the suite used to point at - the assertion is about code-mode
+	// dispatch returning a dict, not about any particular tool's semantics.
+	code := `r = TestCodeModeServer.echo(message="golang")
 result = type(r)`
 
 	argsJSON, _ := json.Marshal(map[string]interface{}{

@@ -122,6 +122,15 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 		transport.TLSClientConfig = tlsConfig
 	}
 
+	// When HTTP/2 is enforced and a ping interval is configured, send client-initiated
+	// PING keepalives so an idle streaming connection isn't closed by an intermediary
+	// (surfaces as "unexpected EOF"). Left off by default; opt in via the interval.
+	if config.NetworkConfig.EnforceHTTP2 && config.NetworkConfig.HTTP2PingIntervalInSeconds > 0 {
+		transport.HTTP2 = &http.HTTP2Config{
+			SendPingTimeout: time.Duration(config.NetworkConfig.HTTP2PingIntervalInSeconds) * time.Second,
+		}
+	}
+
 	client := &http.Client{Transport: transport, Timeout: requestTimeout}
 	streamingClient := providerUtils.BuildStreamingHTTPClient(client)
 
@@ -269,7 +278,7 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 	region := resolveBedrockRegion(ctx, key, model)
 
 	// Create the request with the JSON body
-	requestURL := fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s", region, path)
+	requestURL := fmt.Sprintf("https://%s/model/%s", resolveBedrockHost(bedrockEndpoints(config), bedrockServiceRuntime, region), path)
 	req, err := http.NewRequestWithContext(ctx, "POST", requestURL, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return nil, 0, nil, &schemas.BifrostError{
@@ -385,7 +394,7 @@ func (provider *BedrockProvider) completeAgentRuntimeRequest(ctx *schemas.Bifros
 		region = config.Region.GetValue()
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("https://bedrock-agent-runtime.%s.amazonaws.com%s", region, path), bytes.NewBuffer(jsonData))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("https://%s%s", resolveBedrockHost(bedrockEndpoints(config), bedrockServiceAgentRuntime, region), path), bytes.NewBuffer(jsonData))
 	if err != nil {
 		return nil, 0, nil, &schemas.BifrostError{
 			IsBifrostError: true,
@@ -477,7 +486,7 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 	path, region := provider.getModelPathAndRegion(ctx, action, model, key)
 
 	// Create HTTP request for streaming
-	requestURL := fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s", region, path)
+	requestURL := fmt.Sprintf("https://%s/model/%s", resolveBedrockHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceRuntime, region), path)
 	req, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, bytes.NewReader(jsonData))
 	if reqErr != nil {
 		return nil, providerUtils.NewBifrostOperationError("error creating request", reqErr)
@@ -565,6 +574,56 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 }
 
 // Returns a BifrostError if signing fails.
+// unsignableHeaders must not be covered by the SigV4 signature: hop-by-hop and
+// proxy-managed headers that an intermediary may rewrite in transit, which invalidates the
+// signature. AWS's signing guide requires only host and x-amz-* to be signed and warns
+// against "volatile transport headers that are mutated by proxies, load balancers, and the
+// nodes in a distributed system". The AWS SDK itself skips only authorization, user-agent,
+// x-amzn-trace-id, expect and transfer-encoding, so the rest is on us. These are removed for
+// signing and restored afterwards, so what goes on the wire is unchanged.
+var unsignableHeaders = map[string]struct{}{
+	"connection":          {},
+	"keep-alive":          {},
+	"te":                  {},
+	"trailer":             {},
+	"upgrade":             {},
+	"proxy-authorization": {},
+	"proxy-authenticate":  {},
+	"x-real-ip":           {},
+	"x-request-id":        {},
+}
+
+// internalHeaderPrefix marks Bifrost's own headers. They carry the caller's virtual key, so
+// they are dropped outright rather than restored — they must never reach a provider.
+const internalHeaderPrefix = "x-bf-"
+
+// restoredHeader is a header lifted off the request for signing, to be put back after.
+type restoredHeader struct {
+	name   string
+	values []string
+}
+
+// stripHeadersForSigning removes headers that must not be signed and returns the ones to put
+// back after signing. Bifrost-internal headers are dropped and never returned. A request with
+// no volatile headers — the common case — allocates nothing and leaves the request untouched.
+func stripHeadersForSigning(header http.Header) []restoredHeader {
+	var restore []restoredHeader
+	for name, values := range header {
+		lower := strings.ToLower(name)
+		internal := strings.HasPrefix(lower, internalHeaderPrefix)
+		_, volatile := unsignableHeaders[lower]
+		if !internal && !volatile && !strings.HasPrefix(lower, "x-forwarded-") {
+			continue
+		}
+		if !internal {
+			restore = append(restore, restoredHeader{name: name, values: values})
+		}
+		// The name came straight off the map, so skip Del's redundant canonicalization.
+		delete(header, name)
+	}
+	return restore
+}
+
 func signAWSRequest(
 	ctx *schemas.BifrostContext,
 	req *http.Request,
@@ -690,6 +749,10 @@ func signAWSRequest(
 		}
 	}
 
+	// The SDK signs every header still on the request, so lift the volatile ones out for
+	// the duration of signing and put them back before the request goes out.
+	restoreHeaders := stripHeadersForSigning(req.Header)
+
 	// Create the AWS signer
 	signer := v4.NewSigner()
 
@@ -700,7 +763,11 @@ func signAWSRequest(
 	}
 
 	// Sign the request with AWS Signature V4
-	if err := signer.SignHTTP(ctx, creds, req, bodyHash, service, region, time.Now()); err != nil {
+	err = signer.SignHTTP(ctx, creds, req, bodyHash, service, region, time.Now())
+	for _, h := range restoreHeaders {
+		req.Header[h.name] = h.values
+	}
+	if err != nil {
 		return providerUtils.NewBifrostOperationError("failed to sign request", err)
 	}
 
@@ -717,7 +784,7 @@ func signAWSRequest(
 // for this GET). Best-effort: returns nil on any failure so the foundation-model list is
 // still returned.
 func (provider *BedrockProvider) listMantleModels(ctx *schemas.BifrostContext, key schemas.Key, region string, unfiltered bool) *schemas.BifrostListModelsResponse {
-	mURL := mantleOpenAIURL(region, "", "models")
+	mURL := mantleOpenAIURL(bedrockEndpoints(key.BedrockKeyConfig), region, "", "models")
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, mURL, nil)
 	if err != nil {
 		provider.logger.Warn("failed to build mantle list-models request: %v", err)
@@ -743,7 +810,7 @@ func (provider *BedrockProvider) listMantleModels(ctx *schemas.BifrostContext, k
 		return nil
 	}
 	if resp.StatusCode != http.StatusOK {
-		provider.logger.Warn("mantle list-models returned status %d: %s", resp.StatusCode, string(responseBody))
+		provider.logger.Warn("mantle list-models returned status %d", resp.StatusCode)
 		return nil
 	}
 
@@ -781,7 +848,7 @@ func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 	}
 
 	// List models endpoint uses the bedrock service (not bedrock-runtime)
-	url := fmt.Sprintf("https://bedrock.%s.amazonaws.com/foundation-models?%s", region, params.Encode())
+	url := fmt.Sprintf("https://%s/foundation-models?%s", resolveBedrockHost(bedrockEndpoints(config), bedrockServiceControlPlane, region), params.Encode())
 
 	// Create the GET request without a body
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -1195,6 +1262,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 	// Set ExtraFields
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
+	applyDroppedUnsupportedTools(ctx, &bifrostResponse.ExtraFields, provider.logger)
 
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
 		providerUtils.ParseAndSetRawRequest(&bifrostResponse.ExtraFields, jsonData)
@@ -1207,6 +1275,20 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 	}
 
 	return bifrostResponse, nil
+}
+
+// applyDroppedUnsupportedTools reads tool-drop info stashed in context during
+// request building (ValidateChatToolsForProvider / ValidateResponsesToolsForProvider,
+// plus the Nova-model gate in convertToolConfigFromFiltered/ToBedrockResponsesRequest)
+// and surfaces it on the response so callers aren't left guessing why a requested
+// tool never showed up — mirrors how ProviderResponseHeaders is threaded via context.
+func applyDroppedUnsupportedTools(ctx *schemas.BifrostContext, extraFields *schemas.BifrostResponseExtraFields, logger schemas.Logger) {
+	dropped, ok := ctx.Value(schemas.BifrostContextKeyDroppedUnsupportedTools).([]string)
+	if !ok || len(dropped) == 0 {
+		return
+	}
+	extraFields.DroppedUnsupportedTools = dropped
+	logger.Warn(fmt.Sprintf("bedrock: dropped unsupported tools from request: %v", dropped))
 }
 
 // normalizeCachedUsage folds the accumulated cached read/write token counts into
@@ -1664,6 +1746,7 @@ func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key sche
 	// Set ExtraFields
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
+	applyDroppedUnsupportedTools(ctx, &bifrostResponse.ExtraFields, provider.logger)
 
 	// Set raw request if enabled
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
@@ -2084,15 +2167,19 @@ func (provider *BedrockProvider) Rerank(ctx *schemas.BifrostContext, key schemas
 		return nil, err
 	}
 
-	if !strings.HasPrefix(request.Model, "arn:") {
-		return nil, providerUtils.NewConfigurationError(fmt.Sprintf("bedrock rerank requires an ARN model identifier; got %q", request.Model))
+	// Bedrock's Rerank API addresses its model by ARN, unlike every other Bedrock
+	// operation. Synthesize one from the resolved region when the caller passed a
+	// bare model ID so rerank accepts the same identifiers the other routes do.
+	modelARN := resolveBedrockRerankModelARN(ctx, key, request.Model)
+	if modelARN == "" {
+		return nil, providerUtils.NewConfigurationError("bedrock rerank requires a model identifier")
 	}
 
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToBedrockRerankRequest(request, request.Model)
+			return ToBedrockRerankRequest(request, modelARN)
 		},
 	)
 	if bifrostErr != nil {
@@ -2396,6 +2483,11 @@ func (provider *BedrockProvider) VideoList(_ *schemas.BifrostContext, _ schemas.
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoListRequest, provider.GetProviderKey())
 }
 
+// VideoEdit is not supported by the Bedrock provider.
+func (provider *BedrockProvider) VideoEdit(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoEditRequest) (*schemas.BifrostVideoEditResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoEditRequest, provider.GetProviderKey())
+}
+
 // VideoRemix is not supported by Bedrock provider.
 func (provider *BedrockProvider) VideoRemix(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoRemixRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoRemixRequest, provider.GetProviderKey())
@@ -2462,7 +2554,7 @@ func (provider *BedrockProvider) FileUpload(ctx *schemas.BifrostContext, key sch
 
 	// Build S3 PUT request URL
 	// Escape each path segment individually to handle special characters while preserving "/"
-	reqURL := fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", bucketName, region, escapeS3KeyForURL(s3Key))
+	reqURL := fmt.Sprintf("https://%s.%s/%s", bucketName, resolveBedrockHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceS3, region), escapeS3KeyForURL(s3Key))
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPut, reqURL, bytes.NewReader(request.File))
 	if err != nil {
@@ -2595,7 +2687,7 @@ func (provider *BedrockProvider) FileList(ctx *schemas.BifrostContext, keys []sc
 		params.Set("continuation-token", nativeCursor)
 	}
 
-	requestURL := fmt.Sprintf("https://%s.s3.%s.amazonaws.com/?%s", bucketName, region, params.Encode())
+	requestURL := fmt.Sprintf("https://%s.%s/?%s", bucketName, resolveBedrockHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceS3, region), params.Encode())
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
@@ -2705,7 +2797,7 @@ func (provider *BedrockProvider) FileRetrieve(ctx *schemas.BifrostContext, keys 
 
 		// Build S3 HEAD request
 		// Escape each path segment individually to handle special characters while preserving "/"
-		reqURL := fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", bucketName, region, escapeS3KeyForURL(s3Key))
+		reqURL := fmt.Sprintf("https://%s.%s/%s", bucketName, resolveBedrockHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceS3, region), escapeS3KeyForURL(s3Key))
 
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodHead, reqURL, nil)
 		if err != nil {
@@ -2803,7 +2895,7 @@ func (provider *BedrockProvider) FileDelete(ctx *schemas.BifrostContext, keys []
 
 		// Build S3 DELETE request
 		// Escape each path segment individually to handle special characters while preserving "/"
-		reqURL := fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", bucketName, region, escapeS3KeyForURL(s3Key))
+		reqURL := fmt.Sprintf("https://%s.%s/%s", bucketName, resolveBedrockHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceS3, region), escapeS3KeyForURL(s3Key))
 
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, reqURL, nil)
 		if err != nil {
@@ -2884,7 +2976,7 @@ func (provider *BedrockProvider) FileContent(ctx *schemas.BifrostContext, keys [
 
 		// Build S3 GET request
 		// Escape each path segment individually to handle special characters while preserving "/"
-		reqURL := fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", bucketName, region, escapeS3KeyForURL(s3Key))
+		reqURL := fmt.Sprintf("https://%s.%s/%s", bucketName, resolveBedrockHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceS3, region), escapeS3KeyForURL(s3Key))
 
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 		if err != nil {
@@ -3096,7 +3188,7 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 	}
 
 	// Create HTTP request
-	reqURL := fmt.Sprintf("https://bedrock.%s.amazonaws.com/model-invocation-job", region)
+	reqURL := fmt.Sprintf("https://%s/model-invocation-job", resolveBedrockHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceControlPlane, region))
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error creating request", err), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
@@ -3217,7 +3309,7 @@ func (provider *BedrockProvider) BatchList(ctx *schemas.BifrostContext, keys []s
 		params.Set("nextToken", nativeCursor)
 	}
 
-	reqURL := fmt.Sprintf("https://bedrock.%s.amazonaws.com/model-invocation-jobs", region)
+	reqURL := fmt.Sprintf("https://%s/model-invocation-jobs", resolveBedrockHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceControlPlane, region))
 	if len(params) > 0 {
 		reqURL += "?" + params.Encode()
 	}
@@ -3338,7 +3430,7 @@ func (provider *BedrockProvider) fetchBatchManifest(ctx *schemas.BifrostContext,
 	}
 
 	// Build S3 GET request
-	reqURL := fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", bucketName, region, escapeS3KeyForURL(manifestKey))
+	reqURL := fmt.Sprintf("https://%s.%s/%s", bucketName, resolveBedrockHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceS3, region), escapeS3KeyForURL(manifestKey))
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
@@ -3398,7 +3490,7 @@ func (provider *BedrockProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys
 
 		// URL encode the job ARN
 		encodedJobArn := url.PathEscape(request.BatchID)
-		reqURL := fmt.Sprintf("https://bedrock.%s.amazonaws.com/model-invocation-job/%s", region, encodedJobArn)
+		reqURL := fmt.Sprintf("https://%s/model-invocation-job/%s", resolveBedrockHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceControlPlane, region), encodedJobArn)
 
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 		if err != nil {
@@ -3542,7 +3634,7 @@ func (provider *BedrockProvider) BatchCancel(ctx *schemas.BifrostContext, keys [
 
 		// URL encode the job ARN
 		encodedJobArn := url.PathEscape(request.BatchID)
-		reqURL := fmt.Sprintf("https://bedrock.%s.amazonaws.com/model-invocation-job/%s/stop", region, encodedJobArn)
+		reqURL := fmt.Sprintf("https://%s/model-invocation-job/%s/stop", resolveBedrockHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceControlPlane, region), encodedJobArn)
 
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, nil)
 		if err != nil {
@@ -3690,8 +3782,9 @@ func (provider *BedrockProvider) BatchResults(ctx *schemas.BifrostContext, keys 
 		// Direct download succeeded, parse the content
 		results, parseErrors := parseBatchResultsJSONL(fileContentResp.Content, provider)
 		batchResultsResp := &schemas.BifrostBatchResultsResponse{
-			BatchID: request.BatchID,
-			Results: results,
+			BatchID:  request.BatchID,
+			Endpoint: schemas.BatchEndpointChatCompletions,
+			Results:  results,
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				Latency: fileContentResp.ExtraFields.Latency,
 			},
@@ -3723,8 +3816,9 @@ func (provider *BedrockProvider) BatchResults(ctx *schemas.BifrostContext, keys 
 	}
 
 	batchResultsResp := &schemas.BifrostBatchResultsResponse{
-		BatchID: request.BatchID,
-		Results: allResults,
+		BatchID:  request.BatchID,
+		Endpoint: schemas.BatchEndpointChatCompletions,
+		Results:  allResults,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Latency: totalLatency,
 		},

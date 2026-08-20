@@ -1,8 +1,9 @@
 import { Button } from "@/components/ui/button";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { setSelectedPlugin, useAppDispatch, useAppSelector, useGetPluginsQuery } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { ListOrdered, PlusIcon, Puzzle } from "lucide-react";
+import { ArrowLeft, ListOrdered, PlusIcon, Puzzle } from "lucide-react";
 import { useQueryState } from "nuqs";
 import { useEffect, useMemo, useState } from "react";
 import AddNewPluginSheet from "./sheets/addNewPluginSheet";
@@ -11,6 +12,7 @@ import { PluginsEmptyState } from "./views/pluginsEmptyState";
 import PluginsView from "./views/pluginsView";
 
 export default function PluginsPage() {
+	const isMobile = useIsMobile();
 	const dispatch = useAppDispatch();
 	const hasCreatePluginAccess = useRbac(RbacResource.Plugins, RbacOperation.Create);
 	const hasUpdatePluginAccess = useRbac(RbacResource.Plugins, RbacOperation.Update);
@@ -20,6 +22,7 @@ export default function PluginsPage() {
 	const customPlugins = useMemo(() => plugins?.filter((plugin) => plugin.isCustom), [plugins]);
 	const [isSheetOpen, setIsSheetOpen] = useState(false);
 	const [isSequenceSheetOpen, setIsSequenceSheetOpen] = useState(false);
+	const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
 
 	const handleAddNew = () => {
 		setIsSheetOpen(true);
@@ -63,8 +66,8 @@ export default function PluginsPage() {
 
 	return (
 		<div className="mx-auto w-full max-w-7xl">
-			<div className="flex flex-row gap-4">
-				<div className="flex min-w-[250px] flex-col gap-2 pb-10">
+			<div className="flex min-w-0 flex-col gap-4 md:flex-row">
+				<div className={cn("w-full flex-col gap-2 pb-10 md:flex md:w-[250px] md:min-w-[250px]", mobileDetailOpen ? "hidden" : "flex")}>
 					<div className="rounded-md bg-zinc-50/50 p-4 dark:bg-zinc-800/20">
 						<div className="mb-4">
 							<div className="text-muted-foreground mb-2 text-xs font-medium">Plugins</div>
@@ -82,6 +85,7 @@ export default function PluginsPage() {
 									)}
 									onClick={() => {
 										setSelectedPluginId(plugin.name);
+										if (isMobile) setMobileDetailOpen(true);
 									}}
 								>
 									<div className="flex min-w-0 flex-row items-center gap-2">
@@ -129,14 +133,21 @@ export default function PluginsPage() {
 						</div>
 					</div>
 				</div>
-				<PluginsView
-					onDelete={() => {
-						setSelectedPluginId(customPlugins?.[0]?.name ?? "");
-					}}
-					onCreate={(pluginName) => {
-						setSelectedPluginId(pluginName ?? "");
-					}}
-				/>
+				<div className={cn("min-w-0 w-full", mobileDetailOpen ? "block" : "hidden md:block")}>
+					<Button variant="ghost" size="sm" className="mb-2 md:hidden" onClick={() => setMobileDetailOpen(false)}>
+						<ArrowLeft className="size-4" />
+						Plugins
+					</Button>
+					<PluginsView
+						onDelete={() => {
+							setSelectedPluginId(customPlugins?.[0]?.name ?? "");
+							setMobileDetailOpen(false);
+						}}
+						onCreate={(pluginName) => {
+							setSelectedPluginId(pluginName ?? "");
+						}}
+					/>
+				</div>
 			</div>
 			<AddNewPluginSheet
 				open={isSheetOpen}

@@ -171,6 +171,87 @@ func TestDropUnsupportedParams_ChatMaxCompletionTokensUnchanged(t *testing.T) {
 	}
 }
 
+// TestDropUnsupportedParams_ServiceTier pins service_tier passthrough on both
+// request paths. A dropped service_tier is invisible to the caller - the
+// provider simply serves the request at its default tier and bills it as such -
+// so this guards that the param survives whenever the catalog allowlists it.
+func TestDropUnsupportedParams_ServiceTier(t *testing.T) {
+	tests := []struct {
+		name          string
+		supported     []string
+		wantPreserved bool
+	}{
+		{
+			name:          "catalog lists service_tier",
+			supported:     []string{"temperature", "service_tier"},
+			wantPreserved: true,
+		},
+		{
+			name:          "catalog omits service_tier",
+			supported:     []string{"temperature"},
+			wantPreserved: false,
+		},
+		{
+			name:          "empty catalog",
+			supported:     []string{},
+			wantPreserved: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name+"/chat", func(t *testing.T) {
+			req := &schemas.BifrostRequest{
+				RequestType: schemas.ChatCompletionRequest,
+				ChatRequest: &schemas.BifrostChatRequest{
+					Provider: schemas.OpenAI,
+					Model:    "gpt-5.4",
+					Params: &schemas.ChatParameters{
+						ServiceTier: schemas.Ptr(schemas.BifrostServiceTierPriority),
+						Temperature: schemas.Ptr(0.5),
+					},
+				},
+			}
+
+			dropped := dropUnsupportedParams(newTestContext(), req, tt.supported)
+			assertServiceTier(t, req.ChatRequest.Params.ServiceTier, dropped, tt.wantPreserved, tt.supported)
+		})
+
+		t.Run(tt.name+"/responses", func(t *testing.T) {
+			req := newResponsesRequest(schemas.OpenAI, "gpt-5.4", &schemas.ResponsesParameters{
+				ServiceTier: schemas.Ptr(schemas.BifrostServiceTierPriority),
+				Temperature: schemas.Ptr(0.5),
+			})
+
+			dropped := dropUnsupportedParams(newTestContext(), req, tt.supported)
+			assertServiceTier(t, req.ResponsesRequest.Params.ServiceTier, dropped, tt.wantPreserved, tt.supported)
+		})
+	}
+}
+
+func assertServiceTier(t *testing.T, got *schemas.BifrostServiceTier, dropped []string, wantPreserved bool, supported []string) {
+	t.Helper()
+
+	if wantPreserved {
+		if got == nil {
+			t.Fatalf("service_tier = dropped, want preserved (supported=%v)", supported)
+		}
+		if *got != schemas.BifrostServiceTierPriority {
+			t.Errorf("service_tier = %q, want %q", *got, schemas.BifrostServiceTierPriority)
+		}
+		if slices.Contains(dropped, "service_tier") {
+			t.Errorf("service_tier reported in dropped=%v, want absent", dropped)
+		}
+		return
+	}
+
+	if got != nil {
+		t.Fatalf("service_tier = %q, want dropped (supported=%v)", *got, supported)
+	}
+	if !slices.Contains(dropped, "service_tier") {
+		t.Errorf("service_tier not reported in dropped=%v, want present", dropped)
+	}
+}
+
 func TestDropUnsupportedParams_ChatReasoningWithUnsupportedTools(t *testing.T) {
 	newChat := func() *schemas.BifrostRequest {
 		return &schemas.BifrostRequest{
@@ -208,14 +289,80 @@ func TestDropUnsupportedParams_ChatReasoningWithUnsupportedTools(t *testing.T) {
 	}
 
 	dropReasoning := newChat()
-	dropped = dropUnsupportedParams(newTestContext(), dropReasoning, []string{"reasoning", "tools"})
-	if dropReasoning.ChatRequest.Params.Reasoning != nil {
-		t.Fatalf("reasoning = preserved, want dropped when tools survive without reasoning_with_tool_calls")
+	dropped = dropUnsupportedParams(newTestContext(), dropReasoning, []string{"reasoning", "tools", "supports_none_reasoning_effort"})
+	if dropReasoning.ChatRequest.Params.Reasoning == nil {
+		t.Fatalf("reasoning = nil, want forced to effort=none when tools survive without reasoning_with_tool_calls")
+	}
+	if got := dropReasoning.ChatRequest.Params.Reasoning.Effort; got == nil || *got != "none" {
+		t.Fatalf("reasoning.effort = %v, want \"none\"", got)
 	}
 	if dropReasoning.ChatRequest.Params.Tools == nil {
 		t.Fatalf("tools = dropped, want preserved")
 	}
 	if !slices.Contains(dropped, "reasoning") {
 		t.Errorf("reasoning not reported in dropped=%v, want present", dropped)
+	}
+
+	dropReasoningNoNoneSupport := newChat()
+	dropped = dropUnsupportedParams(newTestContext(), dropReasoningNoNoneSupport, []string{"reasoning", "tools"})
+	if dropReasoningNoNoneSupport.ChatRequest.Params.Reasoning != nil {
+		t.Fatalf("reasoning = %v, want dropped to nil when model doesn't support effort=none", dropReasoningNoNoneSupport.ChatRequest.Params.Reasoning)
+	}
+	if !slices.Contains(dropped, "reasoning") {
+		t.Errorf("reasoning not reported in dropped=%v, want present", dropped)
+	}
+}
+
+func TestDropUnsupportedParams_ChatReasoningNilForcedToNoneWithUnsupportedTools(t *testing.T) {
+	newChatNoReasoning := func() *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{
+			RequestType: schemas.ChatCompletionRequest,
+			ChatRequest: &schemas.BifrostChatRequest{
+				Provider: schemas.OpenAI,
+				Model:    "reasoning-no-tools-model",
+				Params: &schemas.ChatParameters{
+					Tools: []schemas.ChatTool{{
+						Type: schemas.ChatToolTypeFunction,
+						Function: &schemas.ChatToolFunction{
+							Name:        "get_weather",
+							Description: schemas.Ptr("Returns weather"),
+						},
+					}},
+				},
+			},
+		}
+	}
+
+	forceNone := newChatNoReasoning()
+	dropped := dropUnsupportedParams(newTestContext(), forceNone, []string{"reasoning", "tools", "supports_none_reasoning_effort"})
+	if forceNone.ChatRequest.Params.Reasoning == nil {
+		t.Fatalf("reasoning = nil, want forced to effort=none when model reasons by default and doesn't support reasoning with tools")
+	}
+	if got := forceNone.ChatRequest.Params.Reasoning.Effort; got == nil || *got != "none" {
+		t.Fatalf("reasoning.effort = %v, want \"none\"", got)
+	}
+	if forceNone.ChatRequest.Params.Tools == nil {
+		t.Fatalf("tools = dropped, want preserved")
+	}
+	if !slices.Contains(dropped, "reasoning") {
+		t.Errorf("reasoning not reported in dropped=%v, want present", dropped)
+	}
+
+	noNoneSupport := newChatNoReasoning()
+	dropped = dropUnsupportedParams(newTestContext(), noNoneSupport, []string{"reasoning", "tools"})
+	if noNoneSupport.ChatRequest.Params.Reasoning != nil {
+		t.Fatalf("reasoning = %v, want left nil when model doesn't support effort=none", noNoneSupport.ChatRequest.Params.Reasoning)
+	}
+	if slices.Contains(dropped, "reasoning") {
+		t.Errorf("reasoning reported in dropped=%v, want absent since it was never set", dropped)
+	}
+
+	reasoningWithToolsSupported := newChatNoReasoning()
+	dropped = dropUnsupportedParams(newTestContext(), reasoningWithToolsSupported, []string{"reasoning", "tools", "reasoning_with_tool_calls", "supports_none_reasoning_effort"})
+	if reasoningWithToolsSupported.ChatRequest.Params.Reasoning != nil {
+		t.Fatalf("reasoning = %v, want left nil when reasoning_with_tool_calls is supported", reasoningWithToolsSupported.ChatRequest.Params.Reasoning)
+	}
+	if slices.Contains(dropped, "reasoning") {
+		t.Errorf("reasoning reported in dropped=%v, want absent since it was never set", dropped)
 	}
 }

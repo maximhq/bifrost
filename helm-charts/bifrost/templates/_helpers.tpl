@@ -211,6 +211,9 @@ false
 {{- if .Values.bifrost.envLabel }}
 {{- $_ := set $config "env_label" .Values.bifrost.envLabel }}
 {{- end }}
+{{- if .Values.bifrost.setupToken }}
+{{- $_ := set $config "setup_token" .Values.bifrost.setupToken }}
+{{- end }}
 {{- if .Values.bifrost.client }}
 {{- $client := dict }}
 {{- if hasKey .Values.bifrost.client "dropExcessRequests" }}
@@ -360,6 +363,9 @@ false
 {{- if .Values.bifrost.server.readBufferSize }}
 {{- $_ := set $server "read_buffer_size" .Values.bifrost.server.readBufferSize }}
 {{- end }}
+{{- if .Values.bifrost.server.pluginDownloadPrivateAllowlist }}
+{{- $_ := set $server "plugin_download_private_allowlist" .Values.bifrost.server.pluginDownloadPrivateAllowlist }}
+{{- end }}
 {{- if $server }}
 {{- $_ := set $config "server" $server }}
 {{- end }}
@@ -381,14 +387,15 @@ false
 {{- if .Values.bifrost.framework.pricing.mcpLibraryUrl }}
 {{- $_ := set $pricing "mcp_library_url" .Values.bifrost.framework.pricing.mcpLibraryUrl }}
 {{- end }}
-{{- if .Values.bifrost.framework.pricing.mcpLibrarySyncInterval }}
+{{- /* nil-aware: 0 is a meaningful value here (disables the catalog sync) */ -}}
+{{- if not (kindIs "invalid" .Values.bifrost.framework.pricing.mcpLibrarySyncInterval) }}
 {{- $_ := set $pricing "mcp_library_sync_interval" .Values.bifrost.framework.pricing.mcpLibrarySyncInterval }}
 {{- end }}
 {{- /* nil-aware: 0 is a meaningful value here (disables the background refresh) */ -}}
 {{- if not (kindIs "invalid" .Values.bifrost.framework.pricing.liveModelsSyncInterval) }}
 {{- $_ := set $pricing "live_models_sync_interval" .Values.bifrost.framework.pricing.liveModelsSyncInterval }}
 {{- end }}
-{{- if or $pricing.pricing_url $pricing.model_parameters_url $pricing.pricing_sync_interval $pricing.mcp_library_url $pricing.mcp_library_sync_interval (hasKey $pricing "live_models_sync_interval") }}
+{{- if or $pricing.pricing_url $pricing.model_parameters_url $pricing.pricing_sync_interval $pricing.mcp_library_url (hasKey $pricing "mcp_library_sync_interval") (hasKey $pricing "live_models_sync_interval") }}
 {{- $_ := set $framework "pricing" $pricing }}
 {{- end }}
 {{- end }}
@@ -443,6 +450,9 @@ false
 {{- end }}
 {{- if hasKey $providerConfig.network_config "enforce_http2" }}
 {{- $_ := set $networkConfig "enforce_http2" $providerConfig.network_config.enforce_http2 }}
+{{- end }}
+{{- if hasKey $providerConfig.network_config "http2_ping_interval_in_seconds" }}
+{{- $_ := set $networkConfig "http2_ping_interval_in_seconds" $providerConfig.network_config.http2_ping_interval_in_seconds }}
 {{- end }}
 {{- if $providerConfig.network_config.beta_header_overrides }}
 {{- $_ := set $networkConfig "beta_header_overrides" $providerConfig.network_config.beta_header_overrides }}
@@ -734,6 +744,7 @@ false
 {{- range .Values.bifrost.guardrails.rules }}
 {{- $rule := dict "id" .id "name" .name "enabled" .enabled "cel_expression" .cel_expression "apply_to" .apply_to }}
 {{- if .description }}{{- $_ := set $rule "description" .description }}{{- end }}
+{{- if hasKey . "target" }}{{- $_ := set $rule "target" .target }}{{- end }}
 {{- if hasKey . "query" }}{{- $_ := set $rule "query" .query }}{{- end }}
 {{- if .sampling_rate }}{{- $_ := set $rule "sampling_rate" .sampling_rate }}{{- end }}
 {{- if .timeout }}{{- $_ := set $rule "timeout" .timeout }}{{- end }}
@@ -1171,13 +1182,36 @@ false
 {{- else if hasKey $client "authType" }}
 {{- $_ := set $cc "auth_type" $client.authType }}
 {{- end }}
-{{- if hasKey $client "oauth_config_id" }}
-{{- $_ := set $cc "oauth_config_id" $client.oauth_config_id }}
-{{- else if hasKey $client "oauthConfigId" }}
-{{- $_ := set $cc "oauth_config_id" $client.oauthConfigId }}
+{{- /* Inline OAuth provider config for auth_type "oauth"/"per_user_oauth". oauth_config_id is Bifrost-managed (minted by the admin verification flow) and is ignored when supplied via config.json, so it is not rendered here. */ -}}
+{{- if $client.oauthConfig }}
+{{- $oauthCfg := dict }}
+{{- with $client.oauthConfig.clientId }}{{- $_ := set $oauthCfg "client_id" . }}{{- end }}
+{{- with $client.oauthConfig.clientSecret }}{{- $_ := set $oauthCfg "client_secret" . }}{{- end }}
+{{- with $client.oauthConfig.authorizeUrl }}{{- $_ := set $oauthCfg "authorize_url" . }}{{- end }}
+{{- with $client.oauthConfig.tokenUrl }}{{- $_ := set $oauthCfg "token_url" . }}{{- end }}
+{{- with $client.oauthConfig.registrationUrl }}{{- $_ := set $oauthCfg "registration_url" . }}{{- end }}
+{{- with $client.oauthConfig.scopes }}{{- $_ := set $oauthCfg "scopes" . }}{{- end }}
+{{- /* Only emit oauth_config when at least one field resolved; an all-empty block would render "oauth_config": {} instead of relying on discovery. */ -}}
+{{- if $oauthCfg }}
+{{- $_ := set $cc "oauth_config" $oauthCfg }}
+{{- end }}
+{{- end }}
+{{- /* Delegated token-exchange config for auth_type "token_exchange" (Enterprise builds only). */ -}}
+{{- if $client.tokenExchange }}
+{{- $te := dict }}
+{{- with $client.tokenExchange.audience }}{{- $_ := set $te "audience" . }}{{- end }}
+{{- if hasKey $client.tokenExchange "useIdpCredentials" }}{{- $_ := set $te "use_idp_credentials" $client.tokenExchange.useIdpCredentials }}{{- end }}
+{{- with $client.tokenExchange.clientId }}{{- $_ := set $te "client_id" . }}{{- end }}
+{{- with $client.tokenExchange.clientSecret }}{{- $_ := set $te "client_secret" . }}{{- end }}
+{{- with $client.tokenExchange.authorizationServerUrl }}{{- $_ := set $te "authorization_server_url" . }}{{- end }}
+{{- with $client.tokenExchange.scopes }}{{- $_ := set $te "scopes" . }}{{- end }}
+{{- $_ := set $cc "token_exchange" $te }}
 {{- end }}
 {{- if hasKey $client "isPingAvailable" }}
 {{- $_ := set $cc "is_ping_available" $client.isPingAvailable }}
+{{- end }}
+{{- if hasKey $client "needsSessionStickiness" }}
+{{- $_ := set $cc "needs_session_stickiness" $client.needsSessionStickiness }}
 {{- end }}
 {{- if $client.clientId }}
 {{- $_ := set $cc "client_id" $client.clientId }}
@@ -1371,6 +1405,9 @@ false
 {{- if $inputConfig.service_name }}
 {{- $_ := set $otelConfig "service_name" $inputConfig.service_name }}
 {{- end }}
+{{- if hasKey $inputConfig "traces_enabled" }}
+{{- $_ := set $otelConfig "traces_enabled" $inputConfig.traces_enabled }}
+{{- end }}
 {{- if $inputConfig.collector_url }}
 {{- $_ := set $otelConfig "collector_url" $inputConfig.collector_url }}
 {{- end }}
@@ -1379,6 +1416,9 @@ false
 {{- end }}
 {{- if $inputConfig.protocol }}
 {{- $_ := set $otelConfig "protocol" $inputConfig.protocol }}
+{{- end }}
+{{- if $inputConfig.export_timeout }}
+{{- $_ := set $otelConfig "export_timeout" ($inputConfig.export_timeout | int) }}
 {{- end }}
 {{- if hasKey $inputConfig "metrics_enabled" }}
 {{- $_ := set $otelConfig "metrics_enabled" $inputConfig.metrics_enabled }}
@@ -1391,6 +1431,12 @@ false
 {{- end }}
 {{- if $inputConfig.headers }}
 {{- $_ := set $otelConfig "headers" $inputConfig.headers }}
+{{- end }}
+{{- if $inputConfig.trace_headers }}
+{{- $_ := set $otelConfig "trace_headers" $inputConfig.trace_headers }}
+{{- end }}
+{{- if $inputConfig.metrics_headers }}
+{{- $_ := set $otelConfig "metrics_headers" $inputConfig.metrics_headers }}
 {{- end }}
 {{- if $inputConfig.tls_ca_cert }}
 {{- $_ := set $otelConfig "tls_ca_cert" $inputConfig.tls_ca_cert }}
@@ -1603,6 +1649,76 @@ false
 {{- end }}
 {{- $plugin := dict "enabled" true "name" "pubsub" "config" $pubsubConfig }}
 {{- if hasKey .Values.bifrost.plugins.pubsub "version" }}{{- $_ := set $plugin "version" (.Values.bifrost.plugins.pubsub.version | int) }}{{- end }}
+{{- $plugins = append $plugins $plugin }}
+{{- end }}
+{{- if .Values.bifrost.plugins.splunk.enabled }}
+{{- $splunkConfig := dict }}
+{{- $inputConfig := .Values.bifrost.plugins.splunk.config | default dict }}
+{{- if $inputConfig.endpoint }}
+{{- $_ := set $splunkConfig "endpoint" $inputConfig.endpoint }}
+{{- end }}
+{{- if $inputConfig.token }}
+{{- $_ := set $splunkConfig "token" $inputConfig.token }}
+{{- end }}
+{{- if $inputConfig.events_index }}
+{{- $_ := set $splunkConfig "events_index" $inputConfig.events_index }}
+{{- end }}
+{{- if $inputConfig.metrics_index }}
+{{- $_ := set $splunkConfig "metrics_index" $inputConfig.metrics_index }}
+{{- end }}
+{{- if $inputConfig.source }}
+{{- $_ := set $splunkConfig "source" $inputConfig.source }}
+{{- end }}
+{{- if $inputConfig.sourcetype }}
+{{- $_ := set $splunkConfig "sourcetype" $inputConfig.sourcetype }}
+{{- end }}
+{{- if $inputConfig.host }}
+{{- $_ := set $splunkConfig "host" $inputConfig.host }}
+{{- end }}
+{{- if hasKey $inputConfig "enable_events" }}
+{{- $_ := set $splunkConfig "enable_events" $inputConfig.enable_events }}
+{{- end }}
+{{- if hasKey $inputConfig "enable_metrics" }}
+{{- $_ := set $splunkConfig "enable_metrics" $inputConfig.enable_metrics }}
+{{- end }}
+{{- if hasKey $inputConfig "disable_content_logging" }}
+{{- $_ := set $splunkConfig "disable_content_logging" $inputConfig.disable_content_logging }}
+{{- end }}
+{{- if $inputConfig.ca_cert }}
+{{- $_ := set $splunkConfig "ca_cert" $inputConfig.ca_cert }}
+{{- end }}
+{{- if hasKey $inputConfig "insecure_skip_verify" }}
+{{- $_ := set $splunkConfig "insecure_skip_verify" $inputConfig.insecure_skip_verify }}
+{{- end }}
+{{- if $inputConfig.custom_fields }}
+{{- $_ := set $splunkConfig "custom_fields" $inputConfig.custom_fields }}
+{{- end }}
+{{- if hasKey $inputConfig "request_headers" }}
+{{- $_ := set $splunkConfig "request_headers" $inputConfig.request_headers }}
+{{- end }}
+{{- if $inputConfig.batch_max_bytes }}
+{{- $_ := set $splunkConfig "batch_max_bytes" (int $inputConfig.batch_max_bytes) }}
+{{- end }}
+{{- if $inputConfig.flush_interval_ms }}
+{{- $_ := set $splunkConfig "flush_interval_ms" (int $inputConfig.flush_interval_ms) }}
+{{- end }}
+{{- if $inputConfig.post_workers }}
+{{- $_ := set $splunkConfig "post_workers" (int $inputConfig.post_workers) }}
+{{- end }}
+{{- if hasKey $inputConfig "indexer_ack" }}
+{{- $_ := set $splunkConfig "indexer_ack" $inputConfig.indexer_ack }}
+{{- end }}
+{{- if $inputConfig.ack_poll_interval_ms }}
+{{- $_ := set $splunkConfig "ack_poll_interval_ms" (int $inputConfig.ack_poll_interval_ms) }}
+{{- end }}
+{{- if $inputConfig.ack_timeout_ms }}
+{{- $_ := set $splunkConfig "ack_timeout_ms" (int $inputConfig.ack_timeout_ms) }}
+{{- end }}
+{{- if $inputConfig.max_ack_attempts }}
+{{- $_ := set $splunkConfig "max_ack_attempts" (int $inputConfig.max_ack_attempts) }}
+{{- end }}
+{{- $plugin := dict "enabled" true "name" "splunk" "config" $splunkConfig }}
+{{- if hasKey .Values.bifrost.plugins.splunk "version" }}{{- $_ := set $plugin "version" (.Values.bifrost.plugins.splunk.version | int) }}{{- end }}
 {{- $plugins = append $plugins $plugin }}
 {{- end }}
 {{- /* Custom plugins */ -}}
@@ -1861,6 +1977,31 @@ Call this template at the beginning of deployment/stateful templates
 {{- fail "ERROR: bifrost.plugins.pubsub.config.topic_id is required when the Pub/Sub plugin is enabled." }}
 {{- end }}
 {{- end }}
+{{- if and (.Values.bifrost.plugins.splunk).enabled (hasKey .Values.bifrost.plugins.splunk "version") (lt (int .Values.bifrost.plugins.splunk.version) 1) }}
+{{- fail "ERROR: bifrost.plugins.splunk.version must be >= 1. Bump to >1 to force DB-backed plugin config updates." }}
+{{- end }}
+{{- if and (.Values.bifrost.plugins.splunk).enabled (hasKey .Values.bifrost.plugins.splunk "version") (gt (int .Values.bifrost.plugins.splunk.version) 32767) }}
+{{- fail "ERROR: bifrost.plugins.splunk.version must be <= 32767." }}
+{{- end }}
+{{- if (.Values.bifrost.plugins.splunk).enabled }}
+{{- $splunkInputConfig := .Values.bifrost.plugins.splunk.config | default dict }}
+{{- if not $splunkInputConfig.endpoint }}
+{{- fail "ERROR: bifrost.plugins.splunk.config.endpoint is required when the Splunk plugin is enabled." }}
+{{- end }}
+{{- if not $splunkInputConfig.token }}
+{{- fail "ERROR: bifrost.plugins.splunk.config.token is required when the Splunk plugin is enabled." }}
+{{- end }}
+{{- $splunkEventsEnabled := true }}
+{{- if hasKey $splunkInputConfig "enable_events" }}{{- $splunkEventsEnabled = $splunkInputConfig.enable_events }}{{- end }}
+{{- if and $splunkEventsEnabled (not $splunkInputConfig.events_index) }}
+{{- fail "ERROR: bifrost.plugins.splunk.config.events_index is required when the Splunk plugin has events enabled." }}
+{{- end }}
+{{- $splunkMetricsEnabled := true }}
+{{- if hasKey $splunkInputConfig "enable_metrics" }}{{- $splunkMetricsEnabled = $splunkInputConfig.enable_metrics }}{{- end }}
+{{- if and $splunkMetricsEnabled (not $splunkInputConfig.metrics_index) }}
+{{- fail "ERROR: bifrost.plugins.splunk.config.metrics_index is required when the Splunk plugin has metrics enabled." }}
+{{- end }}
+{{- end }}
 
 {{/* Validate semantic cache plugin when enabled */}}
 {{- if .Values.bifrost.plugins.semanticCache.enabled }}
@@ -1888,13 +2029,19 @@ Call this template at the beginning of deployment/stateful templates
 {{- $profileEnabled = $profile.enabled }}
 {{- end }}
 {{- if $profileEnabled }}
+{{- $tracesEnabled := true }}
+{{- if hasKey $profile "traces_enabled" }}
+{{- $tracesEnabled = $profile.traces_enabled }}
+{{- end }}
+{{- if $tracesEnabled }}
 {{- if not $profile.collector_url }}
-{{- fail (printf "ERROR: bifrost.plugins.otel.config.profiles[%d].collector_url is required for enabled OTEL profiles." $idx) }}
+{{- fail (printf "ERROR: bifrost.plugins.otel.config.profiles[%d].collector_url is required when traces_enabled is true." $idx) }}
 {{- end }}
 {{- if not $profile.trace_type }}
-{{- fail (printf "ERROR: bifrost.plugins.otel.config.profiles[%d].trace_type is required. Supported values: genai_extension, vercel, open_inference" $idx) }}
+{{- fail (printf "ERROR: bifrost.plugins.otel.config.profiles[%d].trace_type is required when traces_enabled is true. Supported values: genai_extension, vercel, open_inference" $idx) }}
 {{- end }}
-{{- if not $profile.protocol }}
+{{- end }}
+{{- if and (or $tracesEnabled $profile.metrics_enabled) (not $profile.protocol) }}
 {{- fail (printf "ERROR: bifrost.plugins.otel.config.profiles[%d].protocol is required. Supported values: http, grpc" $idx) }}
 {{- end }}
 {{- if and $profile.metrics_enabled (not $profile.metrics_endpoint) }}
@@ -1903,14 +2050,20 @@ Call this template at the beginning of deployment/stateful templates
 {{- end }}
 {{- end }}
 {{- else }}
+{{- $tracesEnabled := true }}
+{{- if hasKey $otelInputConfig "traces_enabled" }}
+{{- $tracesEnabled = $otelInputConfig.traces_enabled }}
+{{- end }}
+{{- if $tracesEnabled }}
 {{- if not $otelInputConfig.collector_url }}
-{{- fail "ERROR: bifrost.plugins.otel.config.collector_url is required when OTEL plugin is enabled. Provide the URL of your OpenTelemetry collector." }}
+{{- fail "ERROR: bifrost.plugins.otel.config.collector_url is required when traces_enabled is true. Provide the URL of your OpenTelemetry collector." }}
 {{- end }}
 {{- if not $otelInputConfig.trace_type }}
-{{- fail "ERROR: bifrost.plugins.otel.config.trace_type is required when OTEL plugin is enabled. Supported values: genai_extension, vercel, open_inference" }}
+{{- fail "ERROR: bifrost.plugins.otel.config.trace_type is required when traces_enabled is true. Supported values: genai_extension, vercel, open_inference" }}
 {{- end }}
-{{- if not $otelInputConfig.protocol }}
-{{- fail "ERROR: bifrost.plugins.otel.config.protocol is required when OTEL plugin is enabled. Supported values: http, grpc" }}
+{{- end }}
+{{- if and (or $tracesEnabled $otelInputConfig.metrics_enabled) (not $otelInputConfig.protocol) }}
+{{- fail "ERROR: bifrost.plugins.otel.config.protocol is required. Supported values: http, grpc" }}
 {{- end }}
 {{- if and $otelInputConfig.metrics_enabled (not $otelInputConfig.metrics_endpoint) }}
 {{- fail "ERROR: bifrost.plugins.otel.config.metrics_endpoint is required when metrics_enabled is true." }}
@@ -1937,9 +2090,6 @@ Call this template at the beginning of deployment/stateful templates
 {{- end }}
 {{- if not $scimValidation.config.clientSecret }}
 {{- fail "ERROR: bifrost.scim.config.clientSecret is required when SCIM provider is Okta." }}
-{{- end }}
-{{- if not $scimValidation.config.apiToken }}
-{{- fail "ERROR: bifrost.scim.config.apiToken is required when SCIM provider is Okta." }}
 {{- end }}
 {{- end }}
 {{- if eq $scimValidation.provider "entra" }}

@@ -25,6 +25,12 @@ type Store interface {
 	UpdateSidekiqJobProgress(ctx context.Context, id, runnerID, metadata string) error
 	CompleteSidekiqJob(ctx context.Context, id, runnerID, metadata string) error
 	FailSidekiqJob(ctx context.Context, id, runnerID, metadata, lastErr string) error
+	// CancelSidekiqJob flips a pending or running job to cancelled. Returns true only
+	// when this call performed the transition (false = unknown or already terminal).
+	CancelSidekiqJob(ctx context.Context, id string) (bool, error)
+	// FinalizeCancelledSidekiqJob stores the last metadata snapshot of a cancelled job
+	// so its partial progress survives.
+	FinalizeCancelledSidekiqJob(ctx context.Context, id, runnerID, metadata string) error
 	// ListClaimableSidekiqJobs returns pending jobs and running jobs whose heartbeat is older than staleBefore.
 	ListClaimableSidekiqJobs(ctx context.Context, staleBefore time.Time) ([]tables.TableSidekiqJob, error)
 }
@@ -63,6 +69,13 @@ type Runner struct {
 	inflightMu sync.Mutex
 	inflight   map[string]struct{}
 
+	// jobCancels maps a claimed job's ID to the cancel func of its handler context.
+	// Cancel uses it to stop a job running on this node the moment the request lands,
+	// instead of waiting up to a heartbeat interval for the status change to be noticed.
+	// Entries exist only between claim and handler return.
+	jobCancelsMu sync.Mutex
+	jobCancels   map[string]context.CancelFunc
+
 	baseCtx context.Context
 	cancel  context.CancelFunc
 	sem     chan struct{}
@@ -84,6 +97,7 @@ func New(store Store, logger schemas.Logger, maxConcurrent int, runnerID string)
 		runnerID:          runnerID,
 		heartbeatInterval: HeartbeatInterval,
 		inflight:          make(map[string]struct{}),
+		jobCancels:        make(map[string]context.CancelFunc),
 		baseCtx:           ctx,
 		cancel:            cancel,
 		sem:               make(chan struct{}, maxConcurrent),
@@ -140,6 +154,61 @@ func (r *Runner) EnqueuePartitioned(ctx context.Context, id, kind, partitioningK
 	}
 	r.spawn(*job)
 	return nil
+}
+
+// Cancel stops a pending or running job. It flips the durable row to cancelled
+// first — so the dispatcher will not re-claim it and the reaper will not fail it,
+// whatever happens next — and then cancels the handler's context if the job
+// happens to be running on this node, which stops the work within one checkpoint
+// instead of one heartbeat.
+//
+// A job owned by another node is stopped by that node's next heartbeat, which is
+// fenced on status = running and therefore reads the cancellation as lost
+// ownership. Cancelling an unknown or already-terminal job is a no-op: it returns
+// false with no error, since the caller's intent ("this job should not be
+// running") already holds.
+func (r *Runner) Cancel(ctx context.Context, id string) (bool, error) {
+	cancelled, err := r.store.CancelSidekiqJob(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	// Signal the local handler even when the row was already terminal: another node
+	// may have cancelled it while this node still runs the goroutine.
+	r.cancelLocal(id)
+	return cancelled, nil
+}
+
+// cancelLocal cancels the handler context of a job running on this node, if any.
+func (r *Runner) cancelLocal(id string) {
+	r.jobCancelsMu.Lock()
+	cancel, ok := r.jobCancels[id]
+	r.jobCancelsMu.Unlock()
+	if ok {
+		cancel()
+	}
+}
+
+func (r *Runner) registerJobCancel(id string, cancel context.CancelFunc) (unregister func()) {
+	r.jobCancelsMu.Lock()
+	r.jobCancels[id] = cancel
+	r.jobCancelsMu.Unlock()
+	return func() {
+		r.jobCancelsMu.Lock()
+		delete(r.jobCancels, id)
+		r.jobCancelsMu.Unlock()
+	}
+}
+
+// isCancelled re-reads the job row to distinguish a cancellation from the other
+// reasons a handler context dies (node shutdown, lost ownership). It is only
+// consulted on the error path of a context-cancelled handler, so the extra read
+// costs nothing in the normal case.
+func (r *Runner) isCancelled(id string) bool {
+	job, err := r.store.GetSidekiqJob(r.baseCtx, id)
+	if err != nil || job == nil {
+		return false
+	}
+	return job.Status == tables.SidekiqStatusCancelled
 }
 
 func (r *Runner) staleBefore() time.Time {
@@ -241,6 +310,17 @@ func (r *Runner) execute(job tables.TableSidekiqJob) {
 		return
 	}
 
+	// Expose the handler's cancel func so an in-process Cancel stops this job at once.
+	// Registered after the claim (only the owner can be asked to stop) and removed as
+	// soon as the handler returns.
+	unregisterCancel := r.registerJobCancel(job.ID, cancel)
+	defer unregisterCancel()
+	// A cancel that landed between the claim and the registration above would have
+	// found no cancel func; re-check the row so the job does not run on regardless.
+	if r.isCancelled(job.ID) {
+		cancel()
+	}
+
 	stopHeartbeat := r.startHeartbeat(jobCtx, cancel, job.ID)
 	defer stopHeartbeat()
 
@@ -250,13 +330,44 @@ func (r *Runner) execute(job tables.TableSidekiqJob) {
 
 	finalMetadata, err := fn(jobCtx, job, progress)
 	if err != nil {
+		// A cancelled job unwinds through this path too: the handler sees its context
+		// die and returns ctx.Err(), or its next checkpoint fails because the row is no
+		// longer running. Neither is a failure — the status is already cancelled, so
+		// only the partial progress needs persisting.
+		if jobCtx.Err() != nil && r.isCancelled(job.ID) {
+			r.logger.Info("sidekiq: job %s (%s) cancelled", job.ID, job.Kind)
+			if cerr := r.store.FinalizeCancelledSidekiqJob(r.baseCtx, job.ID, r.runnerID, finalMetadata); cerr != nil {
+				r.logger.Error("sidekiq: failed to store final progress for cancelled job %s: %v", job.ID, cerr)
+			}
+			return
+		}
 		r.logger.Error("sidekiq: job %s (%s) failed: %v", job.ID, job.Kind, err)
 		if ferr := r.store.FailSidekiqJob(r.baseCtx, job.ID, r.runnerID, finalMetadata, err.Error()); ferr != nil {
+			// Same race as the complete path: a cancel can land while the handler is
+			// returning an unrelated error, in which case the fail is correctly rejected
+			// (the row is no longer running). Honor the cancellation and persist progress.
+			if r.isCancelled(job.ID) {
+				r.logger.Info("sidekiq: job %s (%s) cancelled as it was failing", job.ID, job.Kind)
+				if cerr := r.store.FinalizeCancelledSidekiqJob(r.baseCtx, job.ID, r.runnerID, finalMetadata); cerr != nil {
+					r.logger.Error("sidekiq: failed to store final progress for cancelled job %s: %v", job.ID, cerr)
+				}
+				return
+			}
 			r.logger.Error("sidekiq: failed to mark job %s failed: %v", job.ID, ferr)
 		}
 		return
 	}
 	if cerr := r.store.CompleteSidekiqJob(r.baseCtx, job.ID, r.runnerID, finalMetadata); cerr != nil {
+		// A cancel can land while the handler is finishing its last unit of work, in
+		// which case the complete is correctly rejected (the row is no longer running).
+		// Honor the cancellation rather than reporting a spurious failure.
+		if r.isCancelled(job.ID) {
+			r.logger.Info("sidekiq: job %s (%s) cancelled as it was completing", job.ID, job.Kind)
+			if ferr := r.store.FinalizeCancelledSidekiqJob(r.baseCtx, job.ID, r.runnerID, finalMetadata); ferr != nil {
+				r.logger.Error("sidekiq: failed to store final progress for cancelled job %s: %v", job.ID, ferr)
+			}
+			return
+		}
 		r.logger.Error("sidekiq: failed to mark job %s completed: %v", job.ID, cerr)
 	}
 }

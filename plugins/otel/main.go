@@ -86,14 +86,21 @@ type Profile struct {
 	// Enabled gates whether this profile exports anything. The plugin itself is always on;
 	// a disabled profile builds no trace client or metrics exporter, so no traces/metrics
 	// are sent for it. Defaults to true when omitted.
-	Enabled      bool               `json:"enabled"`
-	ServiceName  string             `json:"service_name"`
-	CollectorURL *schemas.SecretVar `json:"collector_url"`
-	Headers      map[string]string  `json:"headers,omitempty"`
-	TraceType    TraceType          `json:"trace_type"`
-	Protocol     Protocol           `json:"protocol"`
-	TLSCACert    string             `json:"tls_ca_cert,omitempty"`
-	Insecure     bool               `json:"insecure"` // Skip TLS when true; ignored if TLSCACert is set. Defaults to true when omitted.
+	Enabled bool `json:"enabled"`
+
+	// TracesEnabled gates trace export. When false, no trace client is built and
+	// CollectorURL is not required: a metrics-only profile. Defaults to true when omitted.
+	TracesEnabled bool `json:"traces_enabled"`
+
+	ServiceName    string             `json:"service_name"`
+	CollectorURL   *schemas.SecretVar `json:"collector_url"`
+	Headers        map[string]string  `json:"headers,omitempty"`         // Shared between traces and metrics endpoints
+	TraceHeaders   map[string]string  `json:"trace_headers,omitempty"`   // Traces only headers
+	MetricsHeaders map[string]string  `json:"metrics_headers,omitempty"` // Metrics only headers
+	TraceType      TraceType          `json:"trace_type"`
+	Protocol       Protocol           `json:"protocol"`
+	TLSCACert      string             `json:"tls_ca_cert,omitempty"`
+	Insecure       bool               `json:"insecure"` // Skip TLS when true; ignored if TLSCACert is set. Defaults to true when omitted.
 
 	// ExportTimeout bounds a single trace export, in seconds (default 5, max 60).
 	// This is the only deadline on the export: the caller passes context.Background(),
@@ -137,8 +144,9 @@ type Profile struct {
 func (p *Profile) UnmarshalJSON(data []byte) error {
 	type alias Profile
 	aux := struct {
-		Enabled  *bool `json:"enabled"`
-		Insecure *bool `json:"insecure"`
+		Enabled       *bool `json:"enabled"`
+		Insecure      *bool `json:"insecure"`
+		TracesEnabled *bool `json:"traces_enabled"`
 		*alias
 	}{
 		alias: (*alias)(p),
@@ -155,6 +163,12 @@ func (p *Profile) UnmarshalJSON(data []byte) error {
 		p.Enabled = true
 	} else {
 		p.Enabled = *aux.Enabled
+	}
+	// Default traces on so existing configs keep exporting spans.
+	if aux.TracesEnabled == nil {
+		p.TracesEnabled = true
+	} else {
+		p.TracesEnabled = *aux.TracesEnabled
 	}
 	return nil
 }
@@ -238,9 +252,12 @@ func hoistSpanFilter(data []byte) *PluginSpanFilter {
 // persistence.
 type profileForStorage struct {
 	Enabled                bool              `json:"enabled"`
+	TracesEnabled          bool              `json:"traces_enabled"`
 	ServiceName            string            `json:"service_name"`
 	CollectorURL           string            `json:"collector_url"`
 	Headers                map[string]string `json:"headers,omitempty"`
+	TraceHeaders           map[string]string `json:"trace_headers,omitempty"`
+	MetricsHeaders         map[string]string `json:"metrics_headers,omitempty"`
 	TraceType              TraceType         `json:"trace_type"`
 	Protocol               Protocol          `json:"protocol"`
 	TLSCACert              string            `json:"tls_ca_cert,omitempty"`
@@ -276,9 +293,12 @@ func (c *Config) MarshalForStorage() ([]byte, error) {
 		}
 		out.Profiles = append(out.Profiles, profileForStorage{
 			Enabled:                p.Enabled,
+			TracesEnabled:          p.TracesEnabled,
 			ServiceName:            p.ServiceName,
 			CollectorURL:           schemas.SecretVarAsString(p.CollectorURL),
 			Headers:                p.Headers,
+			TraceHeaders:           p.TraceHeaders,
+			MetricsHeaders:         p.MetricsHeaders,
 			TraceType:              p.TraceType,
 			Protocol:               p.Protocol,
 			TLSCACert:              p.TLSCACert,
@@ -317,12 +337,9 @@ func (c *Config) Redacted() *Config {
 			rp := *p
 			rp.CollectorURL = hideResolvedEnvValue(p.CollectorURL)
 			rp.MetricsEndpoint = hideResolvedEnvValue(p.MetricsEndpoint)
-			if p.Headers != nil {
-				rp.Headers = make(map[string]string, len(p.Headers))
-				for k, v := range p.Headers {
-					rp.Headers[k] = redactHeaderValue(v)
-				}
-			}
+			rp.Headers = redactHeaderMap(p.Headers)
+			rp.TraceHeaders = redactHeaderMap(p.TraceHeaders)
+			rp.MetricsHeaders = redactHeaderMap(p.MetricsHeaders)
 			redacted.Profiles = append(redacted.Profiles, &rp)
 		}
 	}
@@ -337,6 +354,18 @@ func redactHeaderValue(v string) string {
 		return v
 	}
 	return schemas.SecretVarAsString(schemas.NewSecretVar(v).Redacted())
+}
+
+// redactHeaderMap redacts every value in a copy of h, returning nil for nil h.
+func redactHeaderMap(h map[string]string) map[string]string {
+	if h == nil {
+		return nil
+	}
+	out := make(map[string]string, len(h))
+	for k, v := range h {
+		out[k] = redactHeaderValue(v)
+	}
+	return out
 }
 
 // hideResolvedEnvValue returns v unchanged for literal values (URLs are not secrets).
@@ -509,21 +538,39 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 	if profile == nil {
 		return nil, fmt.Errorf("profile %d is nil", index)
 	}
-	if profile.CollectorURL == nil || profile.CollectorURL.GetValue() == "" {
-		return nil, fmt.Errorf("profile %d: collector url is required", index)
-	}
 
 	serviceName := profile.ServiceName
 	if serviceName == "" {
 		serviceName = "bifrost"
 	}
 
-	// Copy headers before resolving so the stored config is never mutated, then resolve
-	// any "env." references against the environment (errors if a referenced var is unset).
-	headers := make(map[string]string, len(profile.Headers))
-	maps.Copy(headers, profile.Headers)
-	if err := injectEnvToHeaders(headers); err != nil {
-		return nil, fmt.Errorf("profile %d: %w", index, err)
+	// Both traces and metrics dial with this protocol, so validate it once. A profile
+	// with neither enabled is a no-op, so skip the check.
+	if profile.TracesEnabled || profile.MetricsEnabled {
+		switch profile.Protocol {
+		case ProtocolGRPC, ProtocolHTTP:
+		default:
+			return nil, fmt.Errorf("profile %d: invalid protocol type %q", index, profile.Protocol)
+		}
+	}
+
+	// Common headers go to both endpoints; per-signal headers override on collision.
+	var (
+		traceHeaders   map[string]string
+		metricsHeaders map[string]string
+		err            error
+	)
+	if profile.TracesEnabled {
+		traceHeaders, err = mergedResolvedHeaders(profile.Headers, profile.TraceHeaders)
+		if err != nil {
+			return nil, fmt.Errorf("profile %d: %w", index, err)
+		}
+	}
+	if profile.MetricsEnabled {
+		metricsHeaders, err = mergedResolvedHeaders(profile.Headers, profile.MetricsHeaders)
+		if err != nil {
+			return nil, fmt.Errorf("profile %d: %w", index, err)
+		}
 	}
 
 	exportTimeout, err := resolveExportTimeout(profile.ExportTimeout)
@@ -531,10 +578,8 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 		return nil, fmt.Errorf("profile %d: %w", index, err)
 	}
 
-	url := profile.CollectorURL.GetValue()
 	target := &otelTarget{
 		serviceName:            serviceName,
-		url:                    url,
 		traceType:              profile.TraceType,
 		requestHeaders:         slices.Clone(profile.RequestHeaders),
 		disableContentLogging:  profile.DisableContentLogging,
@@ -543,37 +588,47 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 		exportTimeout:          exportTimeout,
 	}
 
-	switch profile.Protocol {
-	case ProtocolGRPC:
-		// gRPC has no client-side timeout of its own; the per-export context deadline
-		// applied in Inject is what bounds it.
-		target.client, err = NewOtelClientGRPC(url, headers, profile.TLSCACert, profile.Insecure)
-	case ProtocolHTTP:
-		target.client, err = NewOtelClientHTTP(url, headers, profile.TLSCACert, profile.Insecure, exportTimeout)
-	default:
-		return nil, fmt.Errorf("profile %d: invalid protocol type %q", index, profile.Protocol)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("profile %d: %w", index, err)
+	// Build the trace client only when traces are enabled; Inject skips a nil client.
+	if profile.TracesEnabled {
+		if profile.CollectorURL == nil || profile.CollectorURL.GetValue() == "" {
+			return nil, fmt.Errorf("profile %d: collector url is required when traces_enabled is true", index)
+		}
+		url := profile.CollectorURL.GetValue()
+		target.url = url
+		switch profile.Protocol {
+		case ProtocolGRPC:
+			// gRPC has no client-side timeout of its own; the per-export context deadline
+			// applied in Inject is what bounds it.
+			target.client, err = NewOtelClientGRPC(url, traceHeaders, profile.TLSCACert, profile.Insecure)
+		case ProtocolHTTP:
+			target.client, err = NewOtelClientHTTP(url, traceHeaders, profile.TLSCACert, profile.Insecure, exportTimeout)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("profile %d: %w", index, err)
+		}
 	}
 
 	// Initialize metrics exporter if enabled
 	if profile.MetricsEnabled {
 		if profile.MetricsEndpoint.GetValue() == "" {
-			target.client.Close()
+			if target.client != nil {
+				target.client.Close()
+			}
 			return nil, fmt.Errorf("profile %d: metrics_endpoint is required when metrics_enabled is true", index)
 		}
 		pushInterval := profile.MetricsPushInterval
 		if pushInterval <= 0 {
 			pushInterval = 15 // default 15 seconds
 		} else if pushInterval > 300 {
-			target.client.Close()
+			if target.client != nil {
+				target.client.Close()
+			}
 			return nil, fmt.Errorf("profile %d: metrics_push_interval must be between 1 and 300 seconds, got %d", index, pushInterval)
 		}
 		metricsConfig := &MetricsConfig{
 			ServiceName:  serviceName,
 			Endpoint:     profile.MetricsEndpoint.GetValue(),
-			Headers:      headers,
+			Headers:      metricsHeaders,
 			Protocol:     profile.Protocol,
 			TLSCACert:    profile.TLSCACert,
 			Insecure:     profile.Insecure,
@@ -591,6 +646,18 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 	}
 
 	return target, nil
+}
+
+// mergedResolvedHeaders overlays overlay onto common (overlay wins) and resolves "env."
+// references. Inputs are not mutated.
+func mergedResolvedHeaders(common, overlay map[string]string) (map[string]string, error) {
+	merged := make(map[string]string, len(common)+len(overlay))
+	maps.Copy(merged, common)
+	maps.Copy(merged, overlay)
+	if err := injectEnvToHeaders(merged); err != nil {
+		return nil, err
+	}
+	return merged, nil
 }
 
 // resolveExportTimeout validates a configured export_timeout (in seconds) and returns
@@ -839,6 +906,52 @@ func getStringAttr(attrs map[string]any, key string) string {
 	return ""
 }
 
+// getStringSliceAttr reads an array-valued span attribute ([]string or []any).
+func getStringSliceAttr(attrs map[string]any, key string) []string {
+	if attrs == nil {
+		return nil
+	}
+	switch v := attrs[key].(type) {
+	case []string:
+		return v
+	case []any:
+		// Preserve index so id/name arrays stay aligned; non-strings become "".
+		out := make([]string, len(v))
+		for i, e := range v {
+			out[i], _ = e.(string)
+		}
+		return out
+	}
+	return nil
+}
+
+// entitySetFromAttrs resolves one entity dimension from span attrs: plural arrays,
+// else scalar as a set of one, canonicalized.
+func entitySetFromAttrs(attrs map[string]any, idsKey, namesKey, scalarIDKey, scalarNameKey string) (idsCSV, namesCSV string) {
+	ids := getStringSliceAttr(attrs, idsKey)
+	names := getStringSliceAttr(attrs, namesKey)
+	if len(ids) == 0 {
+		if id := getStringAttr(attrs, scalarIDKey); id != "" {
+			ids = []string{id}
+			names = []string{getStringAttr(attrs, scalarNameKey)}
+		}
+	}
+	return schemas.CanonicalEntitySet(ids, names)
+}
+
+// entitySetFromContext is entitySetFromAttrs for the request context path.
+func entitySetFromContext(ctx context.Context, idsKey, namesKey, scalarIDKey, scalarNameKey schemas.BifrostContextKey) (idsCSV, namesCSV string) {
+	ids, _ := ctx.Value(idsKey).([]string)
+	names, _ := ctx.Value(namesKey).([]string)
+	if len(ids) == 0 {
+		if id := bifrost.GetStringFromContext(ctx, scalarIDKey); id != "" {
+			ids = []string{id}
+			names = []string{bifrost.GetStringFromContext(ctx, scalarNameKey)}
+		}
+	}
+	return schemas.CanonicalEntitySet(ids, names)
+}
+
 func getIntAttr(attrs map[string]any, key string) int {
 	if attrs == nil {
 		return 0
@@ -880,19 +993,24 @@ func buildSpanAttrs(span *schemas.Span) []attribute.KeyValue {
 	if method == "" {
 		method = span.Name
 	}
+	teamIDs, teamNames := entitySetFromAttrs(attrs, schemas.AttrBifrostTeamIDs, schemas.AttrBifrostTeamNames, schemas.AttrTeamID, schemas.AttrTeamName)
+	customerIDs, customerNames := entitySetFromAttrs(attrs, schemas.AttrBifrostCustomerIDs, schemas.AttrBifrostCustomerNames, schemas.AttrCustomerID, schemas.AttrCustomerName)
+	buIDs, buNames := entitySetFromAttrs(attrs, schemas.AttrBifrostBusinessUnitIDs, schemas.AttrBifrostBusinessUnitNames, schemas.AttrBifrostBusinessUnitID, schemas.AttrBifrostBusinessUnitName)
 	return BuildBifrostAttributes(
 		getStringAttr(attrs, schemas.AttrProviderName),
-		getStringAttr(attrs, schemas.AttrRequestModel),
+		schemas.NormalizeModelName(getStringAttr(attrs, schemas.AttrRequestModel)),
 		method,
 		getStringAttr(attrs, schemas.AttrVirtualKeyID),
 		getStringAttr(attrs, schemas.AttrVirtualKeyName),
 		getStringAttr(attrs, schemas.AttrSelectedKeyID),
 		getStringAttr(attrs, schemas.AttrSelectedKeyName),
 		getIntAttr(attrs, schemas.AttrFallbackIndex),
-		getStringAttr(attrs, schemas.AttrTeamID),
-		getStringAttr(attrs, schemas.AttrTeamName),
-		getStringAttr(attrs, schemas.AttrCustomerID),
-		getStringAttr(attrs, schemas.AttrCustomerName),
+		teamIDs,
+		teamNames,
+		customerIDs,
+		customerNames,
+		buIDs,
+		buNames,
 	)
 }
 
@@ -905,19 +1023,24 @@ func buildContextAttrs(ctx context.Context, resp *schemas.BifrostResponse, bifro
 	if resolvedModel != "" {
 		model = resolvedModel
 	}
+	teamIDs, teamNames := entitySetFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamIDs, schemas.BifrostContextKeyGovernanceTeamNames, schemas.BifrostContextKeyGovernanceTeamID, schemas.BifrostContextKeyGovernanceTeamName)
+	customerIDs, customerNames := entitySetFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerIDs, schemas.BifrostContextKeyGovernanceCustomerNames, schemas.BifrostContextKeyGovernanceCustomerID, schemas.BifrostContextKeyGovernanceCustomerName)
+	buIDs, buNames := entitySetFromContext(ctx, schemas.BifrostContextKeyGovernanceBusinessUnitIDs, schemas.BifrostContextKeyGovernanceBusinessUnitNames, schemas.BifrostContextKeyGovernanceBusinessUnitID, schemas.BifrostContextKeyGovernanceBusinessUnitName)
 	return BuildBifrostAttributes(
 		string(provider),
-		model,
+		schemas.NormalizeModelName(model),
 		string(requestType),
 		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyID),
 		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyName),
 		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyID),
 		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyName),
 		bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyFallbackIndex),
-		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamID),
-		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamName),
-		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerID),
-		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerName),
+		teamIDs,
+		teamNames,
+		customerIDs,
+		customerNames,
+		buIDs,
+		buNames,
 	)
 }
 
@@ -1008,6 +1131,12 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, exporter *Metri
 		if span.Kind != schemas.SpanKindLLMCall && span.Kind != schemas.SpanKindRetry {
 			continue
 		}
+		// Skip spans with no provider and no model (avoid empty-label series); also
+		// excludes them from final-span selection below.
+		if getStringAttr(span.Attributes, schemas.AttrProviderName) == "" &&
+			strings.TrimSpace(getStringAttr(span.Attributes, schemas.AttrRequestModel)) == "" {
+			continue
+		}
 
 		spanAttrs := buildSpanAttrs(span)
 
@@ -1042,6 +1171,13 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, exporter *Metri
 	}
 
 	attrs := finalSpan.Attributes
+
+	// Skip pre-dispatch rejections (no provider and no model) to avoid empty-label series.
+	if getStringAttr(attrs, schemas.AttrProviderName) == "" &&
+		strings.TrimSpace(getStringAttr(attrs, schemas.AttrRequestModel)) == "" {
+		return
+	}
+
 	otelAttrs := buildSpanAttrs(finalSpan)
 
 	// Record retries used for this request. Read off the final span (the last attempt's

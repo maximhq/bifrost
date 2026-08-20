@@ -26,7 +26,7 @@ from langchain_core.messages import HumanMessage
 llm = ChatOpenAI(
     model="gpt-4o-mini",
     openai_api_base="http://localhost:8080/langchain",  # Point to Bifrost
-    openai_api_key="dummy-key"  # Keys managed by Bifrost
+    openai_api_key="<YOUR-BIFROST-VIRTUAL-KEY>"  # Replace with your actual Bifrost virtual key.
 )
 
 response = llm.invoke([HumanMessage(content="Hello!")])
@@ -45,7 +45,7 @@ const llm = new ChatOpenAI({
   configuration: {
     baseURL: "http://localhost:8080/langchain",  // Point to Bifrost
   },
-  openAIApiKey: "dummy-key"  // Keys managed by Bifrost
+  openAIApiKey: "<YOUR-BIFROST-VIRTUAL-KEY>" // Replace with your actual Bifrost virtual key.
 });
 
 const response = await llm.invoke("Hello!");
@@ -155,7 +155,7 @@ llm = ChatOpenAI(
     model="gpt-4o-mini",
     openai_api_base="http://localhost:8080/langchain",
     default_headers={
-        "x-bf-vk": "your-virtual-key",
+        "x-bf-vk": "<YOUR-BIFROST-VIRTUAL-KEY>",
     }
 )
 
@@ -175,7 +175,7 @@ llm = ChatAnthropic(
     model="claude-3-sonnet-20240229",
     anthropic_api_url="http://localhost:8080/langchain",
     default_headers={
-        "x-bf-vk": "your-virtual-key",  # Virtual key for governance
+        "x-bf-vk": "<YOUR-BIFROST-VIRTUAL-KEY>",  # Replace with your actual Bifrost virtual key.
     }
 )
 
@@ -195,7 +195,7 @@ llm = ChatGoogleGenerativeAI(
     model="gemini-2.5-flash",
     google_api_base="http://localhost:8080/langchain",
     additional_headers={
-        "x-bf-vk": "your-virtual-key",  # Virtual key for governance
+        "x-bf-vk": "<YOUR-BIFROST-VIRTUAL-KEY>",  # Replace with your actual Bifrost virtual key.
     }
 )
 
@@ -223,7 +223,7 @@ llm = ChatBedrockConverse(
 
 def add_bifrost_headers(request, **kwargs):
     """Add custom headers to Bedrock requests"""
-    request.headers.add_header("x-bf-vk", "your-virtual-key")
+    request.headers.add_header("x-bf-vk", "<YOUR-BIFROST-VIRTUAL-KEY>")  # Replace with your actual Bifrost virtual key.
 
 # Register header injection for all Bedrock operations
 llm.client.meta.events.register_first(
@@ -253,7 +253,7 @@ bedrock_client = boto3.client(
 
 def add_bifrost_headers(request, **kwargs):
     """Add custom headers to Bedrock requests"""
-    request.headers.add_header("x-bf-vk", "your-virtual-key")
+    request.headers.add_header("x-bf-vk", "<YOUR-BIFROST-VIRTUAL-KEY>")  # Replace with your actual Bifrost virtual key.
 
 # Register header injection before creating LLM
 bedrock_client.meta.events.register_first(
@@ -287,7 +287,7 @@ const llm = new ChatOpenAI({
   configuration: {
     baseURL: "http://localhost:8080/langchain",
     defaultHeaders: {
-      "x-bf-vk": "your-virtual-key",  // Virtual key for governance
+      "x-bf-vk": "<YOUR-BIFROST-VIRTUAL-KEY>",  // Replace with your actual Bifrost virtual key.
     }
   }
 });
@@ -308,7 +308,7 @@ const llm = new ChatAnthropic({
   clientOptions: {
     baseURL: "http://localhost:8080/langchain",
     defaultHeaders: {
-      "x-bf-vk": "your-virtual-key",  // Virtual key for governance
+      "x-bf-vk": "<YOUR-BIFROST-VIRTUAL-KEY>",  // Replace with your actual Bifrost virtual key.
     }
   }
 });
@@ -328,7 +328,7 @@ const llm = new ChatGoogleGenerativeAI({
   model: "gemini-2.5-flash",
   baseURL: "http://localhost:8080/langchain",
   additionalHeaders: {
-    "x-bf-vk": "your-virtual-key",  // Virtual key for governance
+    "x-bf-vk": "<YOUR-BIFROST-VIRTUAL-KEY>",  // Replace with your actual Bifrost virtual key.
   }
 });
 
@@ -360,7 +360,7 @@ from langchain_core.messages import HumanMessage
 llm = ChatOpenAI(
     model="azure/gpt-5.1",  # Azure deployment name
     base_url="http://localhost:8080/langchain",
-    api_key="dummy-key",
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>",  # Replace with your actual Bifrost virtual key.
     reasoning={
         "effort": "high",      # "minimal" | "low" | "medium" | "high"
         "summary": "detailed"  # "auto" | "concise" | "detailed"
@@ -390,7 +390,7 @@ const llm = new ChatOpenAI({
       "x-bf-azure-endpoint": "https://your-resource.openai.azure.com"
     }
   },
-  openAIApiKey: "dummy-key",
+  openAIApiKey: "<YOUR-BIFROST-VIRTUAL-KEY>", // Replace with your actual Bifrost virtual key.
   reasoning: {
     effort: "high",
     summary: "detailed"
@@ -418,7 +418,7 @@ from langchain_core.messages import HumanMessage
 llm = ChatOpenAI(
     model="gpt-5",
     base_url="http://localhost:8080/langchain",
-    api_key="dummy-key",
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>",  # Replace with your actual Bifrost virtual key.
     max_tokens=2000,
     reasoning={
         "effort": "high",
@@ -440,7 +440,7 @@ const llm = new ChatOpenAI({
   configuration: {
     baseURL: "http://localhost:8080/langchain"
   },
-  openAIApiKey: "dummy-key",
+  openAIApiKey: "<YOUR-BIFROST-VIRTUAL-KEY>", // Replace with your actual Bifrost virtual key.
   reasoning: {
     effort: "high",
     summary: "detailed"
@@ -469,7 +469,7 @@ from langchain_core.messages import HumanMessage
 # Bedrock Claude with reasoning control
 llm = ChatBedrockConverse(
     model="us.anthropic.claude-opus-4-5-20251101-v1:0",
-    region_name="dummy-region",
+    region_name="<YOUR-AWS-REGION>",
     endpoint_url="http://localhost:8080/langchain",
     aws_access_key_id="dummy-access-key",
     aws_secret_access_key="dummy-secret-key",
@@ -534,7 +534,7 @@ from langchain_core.messages import HumanMessage
 llm = ChatGoogleGenerativeAI(
     model="gemini/gemini-2.5-flash",  # or "vertex/gemini-2.5-flash"
     base_url="http://localhost:8080/langchain",
-    api_key="dummy-key",
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>",  # Replace with your actual Bifrost virtual key.
     max_tokens=4000,
     thinking_budget=1024,    # 0=disable, -1=dynamic, >0=constrained token budget
     include_thoughts=True,   # Include reasoning in response
@@ -562,7 +562,7 @@ from langchain_openai import OpenAIEmbeddings
 embeddings = OpenAIEmbeddings(
     model="text-embedding-3-small",
     base_url="http://localhost:8080/langchain",
-    api_key="dummy-key"
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>"  # Replace with your actual Bifrost virtual key.
 )
 
 # Embed a single query
@@ -593,7 +593,7 @@ from langchain_google_genai import GoogleGenerativeAIEmbeddings
 embeddings = GoogleGenerativeAIEmbeddings(
     model="cohere/cohere-embed-v4.0",  # or bedrock/..., gemini/..., etc.
     base_url="http://localhost:8080/langchain",
-    api_key="dummy-key"
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>"  # Replace with your actual Bifrost virtual key.
 )
 
 query_embedding = embeddings.embed_query("What is machine learning?")

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fasthttp/router"
@@ -303,11 +304,16 @@ func (h *WSRealtimeHandler) runRealtimeSession(
 		clientConn.writeRealtimeError(headerErr)
 		return
 	}
+	var proxyConfig *schemas.ProxyConfig
+	if providerCfg, cfgErr := h.config.GetProviderConfigRaw(providerKey); cfgErr == nil && providerCfg != nil {
+		proxyConfig = providerCfg.ProxyConfig
+	}
+
 	upstream, err := h.pool.Get(bfws.PoolKey{
 		Provider: providerKey,
 		KeyID:    key.ID,
 		Endpoint: wsURL,
-	}, mapToHTTPHeader(realtimeHeaders))
+	}, mapToHTTPHeader(realtimeHeaders), proxyConfig)
 	if err != nil {
 		clientConn.writeRealtimeError(newRealtimeWireBifrostError(502, "server_error", err.Error()))
 		return
@@ -388,7 +394,7 @@ func (h *WSRealtimeHandler) relayClientToRealtimeProvider(
 			if inputSummary != "" {
 				session.RecordRealtimeInput(inputItemID, inputSummary, string(message))
 			}
-			if bifrostErr := startRealtimeTurnHooks(h.client, bifrostCtx, session, provider, providerKey, model, &key, event.Type); bifrostErr != nil {
+			if bifrostErr := startRealtimeTurnHooks(h.client, bifrostCtx, session, provider, providerKey, model, &key, event); bifrostErr != nil {
 				clientConn.writeRealtimeError(bifrostErr)
 				return nil
 			}
@@ -520,7 +526,7 @@ func (h *WSRealtimeHandler) relayRealtimeProviderToClient(
 					session.AppendRealtimeOutputText(event.Delta.Transcript)
 				}
 				if provider.ShouldStartRealtimeTurn(event) && session.PeekRealtimeTurnHooks() == nil {
-					if bifrostErr := startRealtimeTurnHooks(h.client, bifrostCtx, session, provider, providerKey, model, &key, event.Type); bifrostErr != nil {
+					if bifrostErr := startRealtimeTurnHooks(h.client, bifrostCtx, session, provider, providerKey, model, &key, event); bifrostErr != nil {
 						clientConn.writeRealtimeError(bifrostErr)
 						return nil
 					}
@@ -661,12 +667,23 @@ type realtimeClientConn struct {
 	writeMu   sync.Mutex
 	closeOnce sync.Once
 	done      chan struct{}
+
+	// pingInterval is the heartbeat period. It is a field rather than a constant
+	// so tests can drive the heartbeat without waiting out realtimeWSPingInterval.
+	pingInterval time.Duration
+
+	// heartbeatStarted guards heartbeatDone: waiting on it is only valid once the
+	// heartbeat goroutine exists to close it.
+	heartbeatStarted atomic.Bool
+	heartbeatDone    chan struct{}
 }
 
 func newRealtimeClientConn(conn *ws.Conn) *realtimeClientConn {
 	return &realtimeClientConn{
-		conn: conn,
-		done: make(chan struct{}),
+		conn:          conn,
+		done:          make(chan struct{}),
+		pingInterval:  realtimeWSPingInterval,
+		heartbeatDone: make(chan struct{}),
 	}
 }
 
@@ -694,8 +711,14 @@ func (c *realtimeClientConn) startHeartbeat() {
 	c.installPongHandler()
 	c.refreshReadDeadline()
 
+	if !c.heartbeatStarted.CompareAndSwap(false, true) {
+		return
+	}
+
 	go func() {
-		ticker := time.NewTicker(realtimeWSPingInterval)
+		defer close(c.heartbeatDone)
+
+		ticker := time.NewTicker(c.pingInterval)
 		defer ticker.Stop()
 
 		for {
@@ -712,8 +735,20 @@ func (c *realtimeClientConn) startHeartbeat() {
 	}()
 }
 
+// stopHeartbeat signals the heartbeat goroutine and waits for it to exit.
+//
+// The wait is what makes it safe for the upgrade handler to return afterwards.
+// fasthttp recycles the hijacked connection as soon as that handler returns,
+// nilling the net.Conn underneath it, and a ping already inside WriteMessage
+// would dereference it. Unlike the /ws broadcast path there is no recover here,
+// so that panic would take the whole process down.
+//
+// A ping in flight can hold this up for at most realtimeWSPingWriteTimeout.
 func (c *realtimeClientConn) stopHeartbeat() {
 	c.closeDone()
+	if c.heartbeatStarted.Load() {
+		<-c.heartbeatDone
+	}
 }
 
 func (c *realtimeClientConn) installPongHandler() {
@@ -830,11 +865,11 @@ var realtimeMiddlewareKeys = []any{
 	schemas.BifrostContextKeyAPIKeyName,
 	schemas.BifrostContextKeySelectedKeyID,
 	schemas.BifrostContextKeySelectedKeyName,
-	// NOTE: BifrostContextKeyTraceID is intentionally NOT inherited here. The
-	// upgrade request's trace is already ended by the time realtime turns run, so
-	// inheriting it would route each turn's log entry into pendingLogsToInject
-	// under a dead trace ID whose Inject() never fires, dropping the row. Each
-	// realtime turn mints its own trace in RunRealtimeTurnPreHooks instead.
+	// NOTE: BifrostContextKeyTraceID (and its W3C export, BifrostContextKeyExportTraceID)
+	// are intentionally NOT inherited here. The upgrade request's trace is already ended
+	// by the time realtime turns run, so inheriting it would route each turn's log entry
+	// into pendingLogsToInject under a dead trace ID whose Inject() never fires, dropping
+	// the row. Each realtime turn mints its own trace in RunRealtimeTurnPreHooks instead.
 	schemas.BifrostContextKeyTransportPluginLogs,
 }
 

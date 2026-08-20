@@ -11,26 +11,46 @@ import (
 
 var NoDeadline time.Time
 
-var reservedKeys = []any{
-	BifrostContextKeyVirtualKey,
-	BifrostContextKeyAPIKeyName,
-	BifrostContextKeyAPIKeyID,
-	BifrostContextKeyDirectKey,
-	BifrostContextKeyRequestID,
-	BifrostContextKeyFallbackRequestID,
-	BifrostContextKeySelectedKeyID,
-	BifrostContextKeySelectedKeyName,
-	BifrostContextKeyNumberOfRetries,
-	BifrostContextKeyFallbackIndex,
-	BifrostContextKeySkipKeySelection,
-	BifrostContextKeySkipBudgetAndRateLimits,
-	BifrostContextKeyURLPath,
-	BifrostContextKeyDeferTraceCompletion,
-	BifrostContextKeyAttemptTrail,
-	BifrostContextKeyStreamGated,
-	BifrostContextKeyMCPHealthCheckRequest,
-	BifrostContextKeyUpstreamLatency,
-	BifrostContextKeyRoutingInfo,
+// reservedKeys is a set (not a slice) so the per-write guard is O(1) instead of a
+// linear interface-equality scan; the guard runs on every restricted write, per
+// chunk on streams. Keyed by BifrostContextKey (not any) so isReservedKey can
+// assert the type before indexing: SetValue/ClearValue/GetAndSetValue accept any,
+// and indexing a map with a non-comparable key (slice, map, func) would panic.
+var reservedKeys = map[BifrostContextKey]struct{}{
+	BifrostContextKeyVirtualKey:              {},
+	BifrostContextKeyAPIKeyName:              {},
+	BifrostContextKeyAPIKeyID:                {},
+	BifrostContextKeyDirectKey:               {},
+	BifrostContextKeyRequestID:               {},
+	BifrostContextKeyFallbackRequestID:       {},
+	BifrostContextKeySelectedKeyID:           {},
+	BifrostContextKeySelectedKeyName:         {},
+	BifrostContextKeyNumberOfRetries:         {},
+	BifrostContextKeyFallbackIndex:           {},
+	BifrostContextKeySkipKeySelection:        {},
+	BifrostContextKeyPassthroughHeaders:      {},
+	BifrostContextKeySkipBudgetAndRateLimits: {},
+	BifrostContextKeySkipProviderCheck:       {},
+	BifrostContextKeyURLPath:                 {},
+	BifrostContextKeyDeferTraceCompletion:    {},
+	BifrostContextKeyAttemptTrail:            {},
+	BifrostContextKeyStreamGated:             {},
+	BifrostContextKeyMCPHealthCheckRequest:   {},
+	BifrostContextKeyUpstreamLatency:         {},
+	BifrostContextKeyRoutingInfo:             {},
+	BifrostContextKeyMCPInboundBearer:        {},
+}
+
+// isReservedKey reports whether key is a reserved context key whose writes are
+// blocked while blockRestrictedWrites is set. Non-BifrostContextKey keys (which
+// may be non-comparable) are never reserved and must not reach the map index.
+func isReservedKey(key any) bool {
+	contextKey, ok := key.(BifrostContextKey)
+	if !ok {
+		return false
+	}
+	_, ok = reservedKeys[contextKey]
+	return ok
 }
 
 // pluginLogStore holds plugin log entries accumulated during request processing.
@@ -93,7 +113,6 @@ func NewBifrostContext(parent context.Context, deadline time.Time) *BifrostConte
 		deadline:              deadline,
 		hasDeadline:           !deadline.IsZero(),
 		done:                  make(chan struct{}),
-		userValues:            make(map[any]any),
 		blockRestrictedWrites: atomic.Bool{},
 	}
 	ctx.blockRestrictedWrites.Store(false)
@@ -335,6 +354,38 @@ func (bc *BifrostContext) MCPAuthMode() MCPAuthMode {
 	return MCPAuthModeNone
 }
 
+// MCPIdentity returns the identity string to key per-user MCP credential
+// state by, for the given mode. Mirrors the exact priority MCPAuthMode()
+// uses to derive mode in the first place — call MCPAuthMode() first, then
+// pass its result here to read back the single context value that produced
+// it (user ID for MCPAuthModeUser, the resolved VK row ID for MCPAuthModeVK,
+// the raw session ID for MCPAuthModeSession).
+//
+// Used by every resolver that keys persisted state by (mode, identity,
+// mcp_client) — currently per-user OAuth and per-user headers — and by the
+// OAuth2Provider implementation for the same per-identity lookups. Returns
+// "" when the value backing mode isn't populated (e.g. mode is
+// MCPAuthModeNone, or context state changed between the two calls);
+// callers that require an identity to proceed treat that as "no usable
+// identity" and fall through to their own error path.
+func (bc *BifrostContext) MCPIdentity(mode MCPAuthMode) string {
+	switch mode {
+	case MCPAuthModeUser:
+		if v, _ := bc.Value(BifrostContextKeyUserID).(string); v != "" {
+			return v
+		}
+	case MCPAuthModeVK:
+		if v, _ := bc.Value(BifrostContextKeyGovernanceVirtualKeyID).(string); v != "" {
+			return v
+		}
+	case MCPAuthModeSession:
+		if v, _ := bc.Value(BifrostContextKeyMCPSessionID).(string); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 // SetValue sets a value in the internal userValues map.
 // For scoped contexts, delegates to the root context via valueDelegate.
 // This is thread-safe and can be called concurrently.
@@ -344,14 +395,14 @@ func (bc *BifrostContext) SetValue(key, value any) {
 		return
 	}
 	// Check if the key is a reserved key
-	if bc.blockRestrictedWrites.Load() && slices.Contains(reservedKeys, key) {
+	if bc.blockRestrictedWrites.Load() && isReservedKey(key) {
 		// we silently drop writes for these reserved keys
 		return
 	}
 	bc.valuesMu.Lock()
 	defer bc.valuesMu.Unlock()
 	if bc.userValues == nil {
-		bc.userValues = make(map[any]any)
+		bc.userValues = make(map[any]any, 16)
 	}
 	bc.userValues[key] = value
 }
@@ -368,7 +419,7 @@ func (bc *BifrostContext) setReservedValue(key, value any) {
 	bc.valuesMu.Lock()
 	defer bc.valuesMu.Unlock()
 	if bc.userValues == nil {
-		bc.userValues = make(map[any]any)
+		bc.userValues = make(map[any]any, 16)
 	}
 	bc.userValues[key] = value
 }
@@ -391,7 +442,7 @@ func (bc *BifrostContext) ClearValue(key any) {
 		return
 	}
 	// Check if the key is a reserved key
-	if bc.blockRestrictedWrites.Load() && slices.Contains(reservedKeys, key) {
+	if bc.blockRestrictedWrites.Load() && isReservedKey(key) {
 		// we silently drop writes for these reserved keys
 		return
 	}
@@ -411,12 +462,12 @@ func (bc *BifrostContext) GetAndSetValue(key any, value any) any {
 	bc.valuesMu.Lock()
 	defer bc.valuesMu.Unlock()
 	// Check if the key is a reserved key
-	if bc.blockRestrictedWrites.Load() && slices.Contains(reservedKeys, key) {
+	if bc.blockRestrictedWrites.Load() && isReservedKey(key) {
 		// we silently drop writes for these reserved keys
 		return bc.userValues[key]
 	}
 	if bc.userValues == nil {
-		bc.userValues = make(map[any]any)
+		bc.userValues = make(map[any]any, 16)
 	}
 	oldValue := bc.userValues[key]
 	bc.userValues[key] = value
@@ -579,6 +630,60 @@ func (bc *BifrostContext) GetAccumulatedResponse() *BifrostResponse {
 	return tr.GetAccumulatedResponse(tid)
 }
 
+// GetModelInfo returns pricing and capability metadata for a (provider, model)
+// pair: the same information the /v1/models endpoint reports, including
+// per-token pricing, context length, max input/output tokens, architecture and
+// deprecation status.
+//
+// Returns nil when the model is unknown to the catalog, and also when no
+// catalog is wired into this Bifrost instance (e.g. core used directly as a Go
+// SDK without the framework). Callers must nil-check.
+//
+// The returned *Model is freshly built and owned by the caller. Mutating it
+// does not affect the catalog or any other caller.
+//
+// PLUGIN AUTHORS: provider must be the concrete provider that serves the model
+// (e.g. schemas.Anthropic), not an empty string. Inside a hook, read it from
+// req.GetRequestFields() or the response's RoutingInfo rather than guessing
+// from the model string.
+func (bc *BifrostContext) GetModelInfo(provider ModelProvider, model string) *Model {
+	catalog, _ := bc.Value(BifrostContextKeyModelCatalog).(ModelInfoProvider)
+	if catalog == nil || model == "" {
+		return nil
+	}
+	return catalog.GetModelInfo(provider, model)
+}
+
+// CalculateCost returns the dollar cost of a completed response.
+//
+// Prefer this over doing arithmetic on GetModelInfo(...).Pricing: that field
+// carries only flat prompt/completion rates, whereas this path applies the full
+// pricing resolution: long-context tiers (128k/200k/272k), batch/priority/flex
+// /fast rates, cache read/write costs, the provider and request-mode fallback
+// chain, and any virtual-key / user / provider-key pricing overrides in effect
+// for this request.
+//
+// Returns 0 when no catalog is wired or the response has no billable usage.
+//
+// PLUGIN AUTHORS: call this synchronously inside your hook. It reads the
+// governance scopes (user ID, virtual key ID, selected key ID) off the context,
+// and that read is not safe once the request context has been cancelled. If you
+// need the cost in a background goroutine, compute it in the hook and close over
+// the float64:
+//
+//	func (p *Plugin) PostLLMHook(ctx *schemas.BifrostContext, resp ...) (...) {
+//	    cost := ctx.CalculateCost(resp) // synchronous
+//	    go func() { p.report(cost) }()
+//	    return resp, nil, nil
+//	}
+func (bc *BifrostContext) CalculateCost(resp *BifrostResponse) float64 {
+	catalog, _ := bc.Value(BifrostContextKeyModelCatalog).(ModelInfoProvider)
+	if catalog == nil || resp == nil {
+		return 0
+	}
+	return catalog.CalculateRequestCost(bc, resp)
+}
+
 // AppendRoutingEngineLog appends a routing engine log entry to the context.
 // Parameters:
 //   - ctx: The Bifrost context
@@ -723,6 +828,22 @@ func (bc *BifrostContext) GetPluginLogs() []PluginLogEntry {
 	copied := make([]PluginLogEntry, len(store.logs))
 	copy(copied, store.logs)
 	return copied
+}
+
+// HasPluginLogs reports whether DrainPluginLogs would return any entries,
+// without draining or copying. Lets hot callers skip a tracer lookup when
+// there is nothing to attach, while still leaving the buffer intact.
+func (bc *BifrostContext) HasPluginLogs() bool {
+	if bc.valueDelegate != nil {
+		return false // scoped contexts share the store but must not drain it
+	}
+	store := bc.pluginLogs.Load()
+	if store == nil {
+		return false
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return len(store.logs) > 0
 }
 
 // DrainPluginLogs transfers ownership of the plugin log slice to the caller.

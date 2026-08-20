@@ -1,6 +1,8 @@
 package websocket
 
 import (
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +15,48 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// startTestHTTPProxy starts a minimal CONNECT-based forward proxy. Used to prove that a
+// configured HTTP proxy actually sits in the WebSocket dial path (via the CONNECT tunnel),
+// not just that a Dialer.Proxy func was set.
+func startTestHTTPProxy(t *testing.T) (proxyURL string, connectCount *atomic.Int32) {
+	t.Helper()
+	var count atomic.Int32
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodConnect {
+			http.Error(w, "only CONNECT supported", http.StatusMethodNotAllowed)
+			return
+		}
+		count.Add(1)
+
+		destConn, err := net.Dial("tcp", r.Host)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		defer destConn.Close()
+
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			http.Error(w, "hijacking not supported", http.StatusInternalServerError)
+			return
+		}
+		clientConn, _, err := hijacker.Hijack()
+		if err != nil {
+			return
+		}
+		defer clientConn.Close()
+
+		if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
+			return
+		}
+
+		go io.Copy(destConn, clientConn) //nolint:errcheck
+		io.Copy(clientConn, destConn)    //nolint:errcheck
+	}))
+	t.Cleanup(proxy.Close)
+	return proxy.URL, &count
+}
 
 func startTestWSServer(t *testing.T) *httptest.Server {
 	t.Helper()
@@ -53,7 +97,7 @@ func TestPoolGetAndReturn(t *testing.T) {
 	key := PoolKey{Provider: schemas.OpenAI, KeyID: "test-key", Endpoint: wsURL}
 
 	// Get a new connection (pool is empty, should dial)
-	conn, err := pool.Get(key, nil)
+	conn, err := pool.Get(key, nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, conn)
 	assert.Equal(t, schemas.OpenAI, conn.Provider())
@@ -64,7 +108,7 @@ func TestPoolGetAndReturn(t *testing.T) {
 	pool.Return(conn)
 
 	// Get again — should reuse the same connection
-	conn2, err := pool.Get(key, nil)
+	conn2, err := pool.Get(key, nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, conn2)
 	assert.Same(t, conn, conn2)
@@ -90,7 +134,7 @@ func TestPoolMaxIdlePerKey(t *testing.T) {
 	// Get 3 connections
 	var conns []*UpstreamConn
 	for range 3 {
-		conn, err := pool.Get(key, nil)
+		conn, err := pool.Get(key, nil, nil)
 		require.NoError(t, err)
 		conns = append(conns, conn)
 	}
@@ -118,14 +162,14 @@ func TestPoolClose(t *testing.T) {
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
 	key := PoolKey{Provider: schemas.OpenAI, KeyID: "test-key", Endpoint: wsURL}
 
-	conn, err := pool.Get(key, nil)
+	conn, err := pool.Get(key, nil, nil)
 	require.NoError(t, err)
 	pool.Return(conn)
 
 	pool.Close()
 
 	// Getting from a closed pool should fail
-	_, err = pool.Get(key, nil)
+	_, err = pool.Get(key, nil, nil)
 	assert.Error(t, err)
 }
 
@@ -144,7 +188,7 @@ func TestPoolDialIncludesHandshakeDetails(t *testing.T) {
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
 	key := PoolKey{Provider: schemas.OpenAI, KeyID: "test-key", Endpoint: wsURL}
 
-	_, err := pool.Get(key, nil)
+	_, err := pool.Get(key, nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "401 Unauthorized")
 	assert.Contains(t, err.Error(), "invalid websocket token")
@@ -164,7 +208,7 @@ func TestDialUpstreamCloseDoesNotAffectPoolCapacityCounters(t *testing.T) {
 	defer pool.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
-	unpooled, err := DialUpstream(wsURL, nil, schemas.OpenAI, "test-key")
+	unpooled, err := DialUpstream(wsURL, nil, schemas.OpenAI, "test-key", nil)
 	require.NoError(t, err)
 	require.NotNil(t, unpooled)
 	require.NoError(t, unpooled.Close())
@@ -175,7 +219,7 @@ func TestDialUpstreamCloseDoesNotAffectPoolCapacityCounters(t *testing.T) {
 	assert.Equal(t, 0, inFlight)
 
 	key := PoolKey{Provider: schemas.OpenAI, KeyID: "test-key", Endpoint: wsURL}
-	pooled, err := pool.Get(key, nil)
+	pooled, err := pool.Get(key, nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, pooled)
 	pool.Discard(pooled)
@@ -197,7 +241,7 @@ func TestPoolExpiredConnection(t *testing.T) {
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
 	key := PoolKey{Provider: schemas.OpenAI, KeyID: "test-key", Endpoint: wsURL}
 
-	conn, err := pool.Get(key, nil)
+	conn, err := pool.Get(key, nil, nil)
 	require.NoError(t, err)
 	pool.Return(conn)
 
@@ -205,7 +249,7 @@ func TestPoolExpiredConnection(t *testing.T) {
 	time.Sleep(1500 * time.Millisecond)
 
 	// Get should dial a new connection (old one expired)
-	conn2, err := pool.Get(key, nil)
+	conn2, err := pool.Get(key, nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, conn2)
 	assert.NotSame(t, conn, conn2)
@@ -252,7 +296,7 @@ func TestPoolGetSkipsStaleIdleConnection(t *testing.T) {
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
 	key := PoolKey{Provider: schemas.OpenAI, KeyID: "test-key", Endpoint: wsURL}
 
-	conn, err := pool.Get(key, nil)
+	conn, err := pool.Get(key, nil, nil)
 	require.NoError(t, err)
 	pool.Return(conn)
 
@@ -264,10 +308,74 @@ func TestPoolGetSkipsStaleIdleConnection(t *testing.T) {
 		t.Fatal("server did not close the first connection in time")
 	}
 
-	freshConn, err := pool.Get(key, nil)
+	freshConn, err := pool.Get(key, nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, freshConn)
 	assert.NotSame(t, conn, freshConn)
 	assert.EqualValues(t, 2, connectionCount.Load())
 	pool.Discard(freshConn)
+}
+
+// TestPoolGetDialsThroughConfiguredHTTPProxy proves the WebSocket proxy fix actually works
+// end-to-end: the dial goes through the configured HTTP CONNECT proxy (not directly to the
+// origin), and application data still round-trips correctly over the tunneled connection.
+func TestPoolGetDialsThroughConfiguredHTTPProxy(t *testing.T) {
+	server := startTestWSServer(t)
+	defer server.Close()
+
+	proxyURL, connectCount := startTestHTTPProxy(t)
+
+	config := &schemas.WSPoolConfig{
+		MaxIdlePerKey:                5,
+		MaxTotalConnections:          10,
+		IdleTimeoutSeconds:           300,
+		MaxConnectionLifetimeSeconds: 3600,
+	}
+	pool := NewPool(config)
+	defer pool.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	key := PoolKey{Provider: schemas.OpenAI, KeyID: "test-key", Endpoint: wsURL}
+	proxyConfig := &schemas.ProxyConfig{
+		Type: schemas.HTTPProxy,
+		URL:  schemas.NewSecretVar(proxyURL),
+	}
+
+	conn, err := pool.Get(key, nil, proxyConfig)
+	require.NoError(t, err)
+	require.NotNil(t, conn)
+	assert.EqualValues(t, 1, connectCount.Load(), "expected the WebSocket dial to route through the configured HTTP proxy via CONNECT")
+
+	require.NoError(t, conn.WriteMessage(ws.TextMessage, []byte("ping")))
+	_, msg, err := conn.ReadMessage()
+	require.NoError(t, err)
+	assert.Equal(t, "ping", string(msg))
+
+	pool.Discard(conn)
+}
+
+// TestPoolGetFailsWithUnreachableProxy is the regression guard: a broken proxy must fail
+// the dial, not silently fall back to a direct connection.
+func TestPoolGetFailsWithUnreachableProxy(t *testing.T) {
+	server := startTestWSServer(t)
+	defer server.Close()
+
+	config := &schemas.WSPoolConfig{
+		MaxIdlePerKey:                5,
+		MaxTotalConnections:          10,
+		IdleTimeoutSeconds:           300,
+		MaxConnectionLifetimeSeconds: 3600,
+	}
+	pool := NewPool(config)
+	defer pool.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	key := PoolKey{Provider: schemas.OpenAI, KeyID: "test-key", Endpoint: wsURL}
+	proxyConfig := &schemas.ProxyConfig{
+		Type: schemas.HTTPProxy,
+		URL:  schemas.NewSecretVar("http://127.0.0.1:1"), // reserved, always-unreachable port
+	}
+
+	_, err := pool.Get(key, nil, proxyConfig)
+	require.Error(t, err)
 }

@@ -1,6 +1,6 @@
 /**
  * Complexity Router Type Definitions
- * Mirrors the AnalyzerConfig shape exchanged with /governance/complexity-analyzer-config.
+ * Mirrors the AnalyzerConfig shape exchanged with /routing/complexity-analyzer-config.
  */
 
 export interface TierBoundaries {

@@ -715,99 +715,6 @@ func TestConvertResponsesTextConfigToAnthropicOutputFormatPreservesLegacyDefinit
 	}
 }
 
-func TestValidateToolsForProvider(t *testing.T) {
-	tests := []struct {
-		name      string
-		tools     []schemas.ResponsesTool
-		provider  schemas.ModelProvider
-		expectErr bool
-	}{
-		{
-			name:      "Anthropic allows web_search",
-			tools:     []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebSearch}},
-			provider:  schemas.Anthropic,
-			expectErr: false,
-		},
-		{
-			name:      "Anthropic allows web_fetch",
-			tools:     []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebFetch}},
-			provider:  schemas.Anthropic,
-			expectErr: false,
-		},
-		{
-			name:      "Vertex allows web_search",
-			tools:     []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebSearch}},
-			provider:  schemas.Vertex,
-			expectErr: false,
-		},
-		{
-			name:      "Vertex rejects web_fetch",
-			tools:     []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebFetch}},
-			provider:  schemas.Vertex,
-			expectErr: true,
-		},
-		{
-			name:      "Vertex rejects code_interpreter",
-			tools:     []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeCodeInterpreter}},
-			provider:  schemas.Vertex,
-			expectErr: true,
-		},
-		{
-			name:      "Vertex rejects MCP",
-			tools:     []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeMCP}},
-			provider:  schemas.Vertex,
-			expectErr: true,
-		},
-		{
-			name:     "Bedrock allows web_search (nova_grounding via Responses path)",
-			tools:    []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebSearch}},
-			provider: schemas.Bedrock,
-		},
-		{
-			name:      "Bedrock rejects web_fetch",
-			tools:     []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebFetch}},
-			provider:  schemas.Bedrock,
-			expectErr: true,
-		},
-		{
-			name:      "Bedrock allows computer_use",
-			tools:     []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeComputerUsePreview}},
-			provider:  schemas.Bedrock,
-			expectErr: false,
-		},
-		{
-			name:      "Azure allows everything",
-			tools:     []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebFetch}, {Type: schemas.ResponsesToolTypeCodeInterpreter}, {Type: schemas.ResponsesToolTypeMCP}},
-			provider:  schemas.Azure,
-			expectErr: false,
-		},
-		{
-			name:      "Unknown provider allows all",
-			tools:     []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebFetch}},
-			provider:  "custom_provider",
-			expectErr: false,
-		},
-		{
-			name:      "Function tools always allowed",
-			tools:     []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeFunction}},
-			provider:  schemas.Bedrock,
-			expectErr: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateToolsForProvider(tt.tools, tt.provider)
-			if tt.expectErr && err == nil {
-				t.Errorf("expected error but got nil")
-			}
-			if !tt.expectErr && err != nil {
-				t.Errorf("unexpected error: %v", err)
-			}
-		})
-	}
-}
-
 func TestAddMissingBetaHeadersToContext_PerProvider(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -1329,6 +1236,30 @@ func TestFilterBetaHeadersForProvider(t *testing.T) {
 		result := FilterBetaHeadersForProvider(supported, schemas.Bedrock)
 		if len(result) != len(supported) {
 			t.Errorf("expected %d headers, got %d: %v", len(supported), len(result), result)
+		}
+	})
+
+	t.Run("Vertex/keeps_tool_search_beta_header", func(t *testing.T) {
+		result := FilterBetaHeadersForProvider([]string{AnthropicToolSearchBetaHeader}, schemas.Vertex)
+		if len(result) != 1 || result[0] != AnthropicToolSearchBetaHeader {
+			t.Errorf("expected %q to be kept for Vertex, got %v", AnthropicToolSearchBetaHeader, result)
+		}
+	})
+
+	t.Run("BedrockMantle/keeps_tool_search_beta_header", func(t *testing.T) {
+		result := FilterBetaHeadersForProvider([]string{AnthropicToolSearchBetaHeader}, schemas.BedrockMantle)
+		if len(result) != 1 || result[0] != AnthropicToolSearchBetaHeader {
+			t.Errorf("expected %q to be kept for Bedrock Mantle, got %v", AnthropicToolSearchBetaHeader, result)
+		}
+	})
+
+	t.Run("Bedrock/drops_tool_search_beta_header", func(t *testing.T) {
+		// tool-search-tool-2025-10-19 is InvokeModel/InvokeModelWithResponseStream
+		// only per AWS's docs; classic Bedrock always uses Converse here, so this
+		// must never reach AWS regardless of what the client sends.
+		result := FilterBetaHeadersForProvider([]string{AnthropicToolSearchBetaHeader}, schemas.Bedrock)
+		if len(result) != 0 {
+			t.Errorf("expected %q to be dropped for Bedrock, got %v", AnthropicToolSearchBetaHeader, result)
 		}
 	})
 
@@ -1892,6 +1823,39 @@ func TestStripUnsupportedAnthropicFields_ContainerSkillsGating(t *testing.T) {
 		}
 		if req.Container.ContainerObject.Skills == nil {
 			t.Errorf("expected empty skills preserved on Skills=true provider (not nilled)")
+		}
+	})
+}
+
+// TestStripUnsupportedAnthropicFields_ToolSearchGating covers #5xxx: defer_loading
+// used to be gated on AdvancedToolUse (the advanced-tool-use-2025-11-20 bundle), but
+// per current Anthropic docs defer_loading now has its own beta
+// (tool-search-tool-2025-10-19) and must be gated on ToolSearch instead. Vertex is a
+// real example where the two flags diverge: ToolSearch=true, AdvancedToolUse=false.
+func TestStripUnsupportedAnthropicFields_ToolSearchGating(t *testing.T) {
+	t.Run("vertex_tool_search_true_advanced_tool_use_false_keeps_defer_loading", func(t *testing.T) {
+		req := &AnthropicMessageRequest{
+			Model: "claude-sonnet-4-5",
+			Tools: []AnthropicTool{
+				{Name: "search", DeferLoading: schemas.Ptr(true)},
+			},
+		}
+		stripUnsupportedAnthropicFields(req, schemas.Vertex, "claude-sonnet-4-5")
+		if req.Tools[0].DeferLoading == nil || !*req.Tools[0].DeferLoading {
+			t.Errorf("expected defer_loading to survive for Vertex (ToolSearch=true), got %v", req.Tools[0].DeferLoading)
+		}
+	})
+
+	t.Run("bedrock_tool_search_false_strips_defer_loading", func(t *testing.T) {
+		req := &AnthropicMessageRequest{
+			Model: "claude-sonnet-4-5",
+			Tools: []AnthropicTool{
+				{Name: "search", DeferLoading: schemas.Ptr(true)},
+			},
+		}
+		stripUnsupportedAnthropicFields(req, schemas.Bedrock, "claude-sonnet-4-5")
+		if req.Tools[0].DeferLoading != nil {
+			t.Errorf("expected defer_loading to be stripped for Bedrock (ToolSearch=false), got %v", *req.Tools[0].DeferLoading)
 		}
 	})
 }
@@ -2599,9 +2563,9 @@ func TestSupportsAdaptiveThinking(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
-			got := SupportsAdaptiveThinking(tt.model)
+			got := schemas.ResolveModelCaps(schemas.Anthropic, tt.model).SupportsAdaptiveThinking(DefaultSupportsAdaptiveThinking(tt.model))
 			if got != tt.expected {
-				t.Errorf("SupportsAdaptiveThinking(%q) = %v, want %v", tt.model, got, tt.expected)
+				t.Errorf("schemas.ResolveModelCaps(schemas.Anthropic, %q).SupportsAdaptiveThinking() = %v, want %v", tt.model, got, tt.expected)
 			}
 		})
 	}
@@ -2745,8 +2709,8 @@ func TestIsAdaptiveOnlyThinkingModel(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
-			if got := IsAdaptiveOnlyThinkingModel(tt.model); got != tt.expected {
-				t.Errorf("IsAdaptiveOnlyThinkingModel(%q) = %v, want %v", tt.model, got, tt.expected)
+			if got := schemas.ResolveModelCaps(schemas.Anthropic, tt.model).AdaptiveOnlyThinking(DefaultAdaptiveOnlyThinking(tt.model)); got != tt.expected {
+				t.Errorf("schemas.ResolveModelCaps(schemas.Anthropic, %q).AdaptiveOnlyThinking() = %v, want %v", tt.model, got, tt.expected)
 			}
 		})
 	}
@@ -2793,7 +2757,7 @@ func TestSupportsMidConversationSystem(t *testing.T) {
 	for _, tt := range tests {
 		name := string(tt.provider) + "/" + tt.model
 		t.Run(name, func(t *testing.T) {
-			got := SupportsMidConversationSystem(tt.provider, tt.model)
+			got := schemas.ResolveModelCaps(tt.provider, tt.model).SupportsMidConversationSystem(DefaultSupportsMidConversationSystem(tt.provider, tt.model))
 			if got != tt.expected {
 				t.Errorf("SupportsMidConversationSystem(%q, %q) = %v, want %v", tt.provider, tt.model, got, tt.expected)
 			}
@@ -2838,9 +2802,9 @@ func TestSupportsFastMode(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
-			got := SupportsFastMode(tt.model)
+			got := schemas.ResolveModelCaps(schemas.Anthropic, tt.model).SupportsFastMode(DefaultSupportsFastMode(tt.model))
 			if got != tt.expected {
-				t.Errorf("SupportsFastMode(%q) = %v, want %v", tt.model, got, tt.expected)
+				t.Errorf("SupportsFastMode(schemas.Anthropic, %q) = %v, want %v", tt.model, got, tt.expected)
 			}
 		})
 	}
@@ -2905,9 +2869,9 @@ func TestSupportsEffortParameter(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
-			got := SupportsEffortParameter(tt.model)
+			got := schemas.ResolveModelCaps(schemas.Anthropic, tt.model).SupportsNativeEffort(DefaultSupportsNativeEffort(tt.model))
 			if got != tt.expected {
-				t.Errorf("SupportsEffortParameter(%q) = %v, want %v", tt.model, got, tt.expected)
+				t.Errorf("SupportsEffortParameter(schemas.Anthropic, %q) = %v, want %v", tt.model, got, tt.expected)
 			}
 		})
 	}
@@ -3393,9 +3357,9 @@ func TestComputerUseGeneration(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.model, func(t *testing.T) {
-			got := ComputerUseGeneration(tc.model)
+			got := ComputerUseGeneration(schemas.ResolveModelCaps(schemas.Anthropic, tc.model))
 			if got != tc.want {
-				t.Errorf("ComputerUseGeneration(%q) = %q, want %q", tc.model, got, tc.want)
+				t.Errorf("ComputerUseGeneration(schemas.Anthropic, %q) = %q, want %q", tc.model, got, tc.want)
 			}
 		})
 	}

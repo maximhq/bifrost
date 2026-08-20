@@ -29,6 +29,7 @@ Sources:
 - [x] Tool choice forced (`tool_choice: "required"`)
 - [x] Structured output (`response_format: json_schema`)
 - [x] Reasoning effort (`reasoning_effort: "high"` for gpt-5/o3)
+- [x] Reasoning effort forwarded to xAI (grok-4.5 / grok-4.6 / grok-4.20-multi-agent) — folder 50
 - [ ] **Tool choice: specific function** (`tool_choice: { type: "function", function: { name: "x" } }`)
 - [ ] **Parallel tool calls** (`parallel_tool_calls: true/false`)
 - [ ] **Response format JSON object** (`response_format: { type: "json_object" }`)
@@ -70,18 +71,18 @@ Sources:
 
 ### Other endpoints
 
-- [ ] **Embeddings** (`POST /v1/embeddings`)
+- [x] **Embeddings** (`POST /v1/embeddings`) - folder 53: batch-input arity (53.C1), `dimensions` maps to OpenAI `dimensions` (53.D1), `encoding_format: "base64"` returns a packed string (53.E1)
 - [ ] **Audio speech (TTS)** (`POST /v1/audio/speech`)
 - [ ] **Audio transcription** (`POST /v1/audio/transcriptions`)
 - [ ] **Image generation** (`POST /v1/images/generations`)
 - [ ] **Image edit** (`POST /v1/images/edits`)
 - [ ] **Image variation** (`POST /v1/images/variations`)
-- [ ] **Batch API** (`POST /v1/batches` + `GET /v1/batches/{id}`)
+- [x] **Batch API** (`POST /v1/batches` + `GET /v1/batches/{id}`): OpenAI/Anthropic covered in folder `12. Backlog Coverage / OpenAI/Anthropic/Gemini/Azure Round 3` — upload input file (OpenAI only), create, retrieve, cancel, all asserted. Gemini native batch (`/genai/v1beta/models/{model}:batchGenerateContent` + `/genai/v1beta/batches`) covered separately in folder `55. Gemini Native Batch API` — create/list/retrieve/cancel, inline requests (no file upload needed). Vertex batch covered in folder `11c. Vertex Batches`. Azure batch (via `/openai/v1/batches` with `provider:"azure"` / `?provider=azure`, no dedicated route - reuses the OpenAI drop-in with inline `requests` auto-uploaded server-side) and Bedrock batch create/retrieve/cancel (`/bedrock/model-invocation-job*`, needs an S3 bucket + IAM role_arn not yet in the harness env) remain uncovered. Settled cost/pricing not covered here (async, no test hook for the sweeper) - see `plugins/logging/costfidelity_test.go` / `framework/batchaccounting/*_test.go` for that.
 - [ ] **Files API** (`POST /v1/files`, etc.)
 - [ ] **Models list** (`GET /v1/models`)
 - [ ] **Containers API** (`POST /v1/containers` for code-interpreter sandboxes)
 - [ ] **Videos API** (`POST /v1/videos` for Sora)
-- [ ] **Rerank** (`POST /v1/rerank`)
+- [x] **Rerank** (`POST /v1/rerank`) - folder 56, cross-provider across cohere/bedrock/vertex
 
 ---
 
@@ -159,7 +160,7 @@ Sources:
 ### Other endpoints
 
 - [ ] **Token counting** (`POST /v1/messages/count_tokens`)
-- [ ] **Message Batches** (`POST /v1/messages/batches` + cancel + retrieve + results)
+- [~] **Message Batches** (`POST /v1/messages/batches` + cancel + retrieve + results): create/retrieve/cancel/list asserted in folder `12. Backlog Coverage / OpenAI/Anthropic/Gemini/Azure Round 3` and `Anthropic Backlog`; `results` (post-settlement) not covered - requires a completed batch, no fast test path (sweeper poll is real-time, hard-coded 1 min interval)
 - [ ] **Files API** (`POST /v1/files`, list, retrieve, delete, content)
 - [ ] **Models list** (`GET /v1/models`)
 - [ ] **Text Completions API** (legacy `POST /v1/complete`)
@@ -181,7 +182,7 @@ Sources:
 - [x] Tool config (`toolConfig: { tools: [{ toolSpec: { name, inputSchema } }] }`)
 - [ ] **Streaming** (`POST /model/{modelId}/converse-stream`)
 - [ ] **Vision** (`content: [{ image: { format, source: { bytes } } }]`)
-- [ ] **Document input** (`content: [{ document: { format, name, source: { bytes } } }]`)
+- [~] **Document input** (`content: [{ document: { format, name, source: { bytes } } }]`) — the converter into this block is covered by folder 42 (#5472: OpenAI `type:"file"` / Responses `input_file` document uploads via `/v1/chat/completions` and `/v1/responses`, xlsx/docx/csv/pdf/txt + `file_url`). A native Converse-shaped `document` block posted directly at `/bedrock/model/{id}/converse` is still uncovered.
 - [ ] **Video input** (`content: [{ video: { format, source } }]`)
 - [ ] **Tool result** (`content: [{ toolResult: { toolUseId, content, status } }]`)
 - [ ] **Stop sequences** (`inferenceConfig: { stopSequences: [...] }`)
@@ -196,8 +197,9 @@ Sources:
 
 ### InvokeModel API (`POST /model/{modelId}/invoke`)
 
-- [ ] **Direct invoke** with provider-native body (Anthropic shape, Cohere shape, etc.)
-- [ ] **Invoke streaming** (`POST /model/{modelId}/invoke-with-response-stream`)
+- [x] **Direct invoke** with Anthropic-native provider body, incl. image/tool_use/tool_result content blocks — folder 37 (#5560)
+- [ ] **Direct invoke** with Cohere-native provider body
+- [x] **Invoke streaming** (`POST /model/{modelId}/invoke-with-response-stream`) — folder 36 (#5629), folder 37 (#5560)
 - [ ] **Async invocation jobs** (`POST /model-invocation-job` + list + get + stop)
 
 ### Cross-region inference profiles
@@ -208,6 +210,37 @@ Sources:
 - [ ] **APAC geo profile** (`apac.anthropic.claude-*`)
 - [ ] **JP geo profile** (`jp.anthropic.claude-*`)
 - [ ] **AU geo profile** (`au.anthropic.claude-haiku-4-5`)
+
+### Embeddings (`POST /model/{modelId}/invoke`)
+
+Sources:
+- Titan Text Embeddings: <https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-titan-embed-text.html>
+- Cohere Embed v4: <https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-embed-v4.html>
+- Cohere Embed v3: <https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-embed-v3.html>
+
+Bedrock is the only provider carrying two incompatible embedding envelopes behind one name.
+`DetermineEmbeddingModelType` picks between them by substring match on the model id, so the same
+`/v1/embeddings` request behaves differently depending on whether the id contains `titan` or
+`cohere`. There is no embedding route on the `/bedrock` drop-in: `/bedrock/model/{id}/invoke`
+converts to Converse and then to Responses, so Bedrock embeddings are reachable only via
+`/v1/embeddings`, `/openai/v1/embeddings`, `/genai/.../:embedContent` and `/cohere/v2/embed`.
+
+- [x] **Titan V2 baseline** (`inputText`, one vector out, `inputTextTokenCount` to usage) - folder 53.A1
+- [x] **Titan `dimensions`** (1024 default | 512 | 256) - folder 53.A2
+- [x] **Titan array-input collapse** (no batch shape; Bifrost joins with `" \n"`, returns 1 vector) - folder 53.A3
+- [x] **Titan `normalize`** (default true; proven via L2 norm of the returned vector) - folder 53.A4 / 53.A5
+- [x] **Titan `embeddingTypes`** (camelCase; `embeddingsByType` recovered through `x-bf-send-back-raw-response`) - folder 53.A6
+- [x] **Cohere v4 `input_type`** (required by AWS; both the native `/cohere/v2/embed` route and `extra_params`) - folder 53.B1 / 53.B4
+- [x] **Cohere v4 `embedding_types`** (`embeddings_by_type` int8 parse branch) - folder 53.B2
+- [x] **Cohere v4 array input** (one vector per text, the arity divergence against Titan) - folder 53.B5
+- [x] **Cohere v4 `output_dimension`** (256 | 512 | 1024 | 1536) - folder 53.B6 / 53.D4
+- [x] **Usage backfill from `X-Amzn-Bedrock-Input-Token-Count`** (Cohere embed omits usage from the body; #3917) - folder 53.B7
+- [ ] **Titan G1** (`amazon.titan-embed-text-v1`) - `inputText` only, no `dimensions`/`normalize`; sending either is expected to be rejected
+- [ ] **Titan multimodal** (`amazon.titan-embed-image-v1`) - `inputImage` is not mapped by `ToBedrockTitanEmbeddingRequest` at all
+- [ ] **Cohere v4 multimodal** (`images` data-URI array, `inputs` interleaved text+image blocks) - the typed fields exist on `BedrockCohereEmbeddingRequest` but nothing populates them: the Cohere dialect converter drops both, and a JSON body yields `[]interface{}`, which misses the `v.([]string)` assertion in `ToBedrockCohereEmbeddingRequest`
+- [ ] **Cohere v3** (`cohere.embed-english-v3`) - fixed 1024 dims, `truncate` is `NONE|START|END` on v3 versus `NONE|LEFT|RIGHT` on v4, so the shared converter cannot validate the enum
+- [ ] **`truncate` / `max_tokens` passthrough** to Cohere on Bedrock
+- [ ] **Drop-in routes with parameters** - §8.3.I/§8.3.J send a bare single string to `/openai/v1/embeddings` and `:embedContent`; neither carries `dimensions`, `encoding_format` or any extra param
 
 ### Other Bedrock surfaces
 
@@ -258,12 +291,12 @@ Sources:
 - [ ] **URL context** (`tools: [{ urlContext: {} }]`)
 - [ ] **Live API** (websocket-based bidirectional streaming)
 - [ ] **Function responses** (`role: "function"` parts with `functionResponse`)
-- [ ] **Thinking response signature** (return `thoughtSignature` to continue thinking across turns)
+- [x] **Thinking response signature** (return `thoughtSignature` to continue thinking across turns): folder `49.` replays a captured server-side tool turn (toolCall/toolResponse + thoughtSignature) in `contents`; Gemini validates signatures upstream, so a 2xx pins the round-trip
 
 ### Other endpoints
 
 - [ ] **Count tokens** (`POST /v1beta/models/{model}:countTokens`)
-- [ ] **Embed content** (`POST /v1beta/models/{model}:embedContent`)
+- [~] **Embed content** (`POST /v1beta/models/{model}:embedContent`) - §8.3.J posts the native shape at the drop-in route; folder 53 covers the parameter surface via `/v1/embeddings` (arity 53.C2, `outputDimensionality` 53.D2, `encoding_format` ignored 53.E4). Native `:embedContent` carrying `taskType`/`title`/`outputDimensionality` in the Gemini body is still uncovered.
 - [ ] **Batch embed** (`POST /v1beta/models/{model}:batchEmbedContents`)
 - [~] **Cached content CRUD** (`POST /v1beta/cachedContents`, list, get, update, delete): typed lifecycle implemented for both Gemini and Vertex; harness `Gemini: list cached contents` runs against real upstream (list only; create/retrieve/update/delete not yet exercised)
 - [ ] **Files API** (`POST /v1beta/files` upload, list, get, delete)
@@ -367,6 +400,9 @@ These exercise Bifrost's translation layer between provider shapes — every che
 - [~] **Tool choice forced cross-cut** (OpenAI + Bedrock + Vertex Claude via Cross-Cut Round 4; **Anthropic + Gemini + Azure still missing**)
 - [ ] **Computer use via cross-model** (`anthropic/claude-...` with computer_2025x tools - verifies Bifrost's translation; currently only tested via /anthropic drop-in and `vertex/claude-opus-4-7` preview at L1279)
 - [~] **Extended/adaptive thinking via cross-model** (Anthropic enabled + Bedrock enabled/adaptive + Vertex Claude enabled/adaptive covered; **anthropic-direct adaptive Opus 4.7 still missing**)
+- [x] **OpenAI Responses reasoning item id/encrypted_content round-trip via Anthropic drop-in** (`/anthropic/v1/messages` → openai/gpt-5: turn-1 `redacted_thinking` block replayed on turn 2 without OpenAI's item-id mismatch 400 — pins #5186; folder 38)
+- [~] **Reasoning/thinking multi-turn replay across the criss-cross matrix** (folder 39: OpenAI-shaped request → Anthropic model reverse direction, plus native-chat Anthropic-origin `reasoning_details` replay per #4943 previously uncovered by the harness; Gemini `thoughtSignature` replay (distinct smuggling mechanism from the OpenAI/Anthropic encrypted_content envelope, #5186 — deserves its own replay-matrix folder) and Azure-hosted-reasoning-model coverage still open)
+- [ ] **Native `/v1/chat/completions` `reasoning_details` id-loss for OpenAI-origin encrypted reasoning** (same bug *class* as #5186 but a separate code path: `core/schemas/mux.go` `ToChatMessages` never populates `ChatReasoningDetails.ID` on egress, and `ToResponsesMessages` mints a fresh `rs_` id on replay regardless, unaffected by the `/anthropic` surface fix. No tracked issue yet — file one before adding a harness case; a currently-red case with no owner/fix-in-flight breaks this collection's regression-pin convention.)
 - [x] **Prompt caching via cross-model** (Anthropic + Bedrock 1h + Vertex Claude 1h covered)
 - [~] **System message cross-cut** (Vertex Claude added in Round 4; Azure added in Round 4; **other providers were already implicit via cross-cut entries** - if explicit test needed, file a ticket)
 - [~] **Multi-turn conversation cross-cut** (Vertex Claude added in Round 4; remaining providers still cross-cut-implicit only)
@@ -392,7 +428,7 @@ should be re-tested through passthrough since the translation layer is bypassed.
 - [ ] **OpenAI passthrough w/ web_search**
 - [ ] **OpenAI passthrough w/ code_interpreter**
 - [ ] **Anthropic passthrough w/ computer_use** (verify auth header strip + beta header injection)
-- [ ] **Anthropic passthrough w/ extended thinking**
+- [~] **Anthropic passthrough w/ extended thinking** (folder 51 sends `thinking: { type: "enabled", budget_tokens }` through `/anthropic/v1/messages` and pins the encrypted-reasoning fail-soft's raw rewrite against Anthropic's "latest assistant message cannot be modified" rule — PR #6110; a fresh non-replay request asserting a `thinking` block comes back through passthrough, and the streaming variant, are still open)
 - [ ] **Anthropic passthrough w/ prompt caching**
 - [ ] **Anthropic passthrough w/ web_search_20260209**
 - [ ] **GenAI passthrough w/ googleSearch**

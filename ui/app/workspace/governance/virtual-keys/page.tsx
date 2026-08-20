@@ -20,6 +20,7 @@ export default function GovernanceVirtualKeysPage() {
 			search: parseAsSafeString.withDefault(""),
 			customer_id: parseAsString.withDefault(""),
 			team_id: parseAsString.withDefault(""),
+			user_id: parseAsString.withDefault(""),
 			offset: parseAsInteger.withDefault(0),
 			sort_by: parseAsString.withDefault(""),
 			order: parseAsString.withDefault(""),
@@ -41,6 +42,7 @@ export default function GovernanceVirtualKeysPage() {
 			search: debouncedSearch || undefined,
 			customer_id: urlState.customer_id || undefined,
 			team_id: urlState.team_id || undefined,
+			user_id: urlState.user_id || undefined,
 			sort_by: (urlState.sort_by as "name" | "budget_spent" | "created_at" | "status") || undefined,
 			order: (urlState.order as "asc" | "desc") || undefined,
 		},
@@ -89,6 +91,10 @@ export default function GovernanceVirtualKeysPage() {
 		setUrlState({ team_id: value || null, offset: 0 });
 	};
 
+	const handleUserFilterChange = (value: string) => {
+		setUrlState({ user_id: value || null, offset: 0 });
+	};
+
 	const handleOffsetChange = (newOffset: number) => {
 		setUrlState({ offset: newOffset });
 	};
@@ -112,7 +118,7 @@ export default function GovernanceVirtualKeysPage() {
 	};
 
 	return (
-		<div className="no-padding-parent mx-auto flex h-[calc(100dvh-1rem)] min-h-0 w-full flex-col overflow-hidden p-4">
+		<div className="no-padding-parent mx-auto flex h-[calc(var(--app-content-viewport)_-_1rem)] min-h-0 w-full flex-col overflow-hidden p-4">
 			<VirtualKeysTable
 				virtualKeys={virtualKeysData?.virtual_keys || []}
 				totalCount={virtualKeysData?.total_count || 0}
@@ -123,6 +129,8 @@ export default function GovernanceVirtualKeysPage() {
 				onCustomerFilterChange={handleCustomerFilterChange}
 				teamFilter={urlState.team_id}
 				onTeamFilterChange={handleTeamFilterChange}
+				userFilter={urlState.user_id}
+				onUserFilterChange={handleUserFilterChange}
 				offset={urlState.offset}
 				limit={PAGE_SIZE}
 				onOffsetChange={handleOffsetChange}

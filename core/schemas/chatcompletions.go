@@ -92,6 +92,7 @@ func (cr *BifrostChatResponse) ToTextCompletionResponse() *BifrostTextCompletion
 				Latency:                 cr.ExtraFields.Latency,
 				RawResponse:             cr.ExtraFields.RawResponse,
 				CacheDebug:              cr.ExtraFields.CacheDebug,
+				GuardrailDebug:          cr.ExtraFields.GuardrailDebug,
 				ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,
 			},
 		}
@@ -126,6 +127,7 @@ func (cr *BifrostChatResponse) ToTextCompletionResponse() *BifrostTextCompletion
 				Latency:                 cr.ExtraFields.Latency,
 				RawResponse:             cr.ExtraFields.RawResponse,
 				CacheDebug:              cr.ExtraFields.CacheDebug,
+				GuardrailDebug:          cr.ExtraFields.GuardrailDebug,
 				ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,
 			},
 		}
@@ -163,6 +165,7 @@ func (cr *BifrostChatResponse) ToTextCompletionResponse() *BifrostTextCompletion
 				Latency:                 cr.ExtraFields.Latency,
 				RawResponse:             cr.ExtraFields.RawResponse,
 				CacheDebug:              cr.ExtraFields.CacheDebug,
+				GuardrailDebug:          cr.ExtraFields.GuardrailDebug,
 				ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,
 			},
 		}
@@ -184,6 +187,7 @@ func (cr *BifrostChatResponse) ToTextCompletionResponse() *BifrostTextCompletion
 			Latency:                 cr.ExtraFields.Latency,
 			RawResponse:             cr.ExtraFields.RawResponse,
 			CacheDebug:              cr.ExtraFields.CacheDebug,
+			GuardrailDebug:          cr.ExtraFields.GuardrailDebug,
 			ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,
 		},
 	}
@@ -227,7 +231,7 @@ type ChatParameters struct {
 	// in core/providers/anthropic/types.go). Non-Anthropic providers (OpenAI
 	// etc.) silently ignore them.
 	TopK              *int            `json:"top_k,omitempty"`              // Anthropic top_k sampling
-	Speed             *string         `json:"speed,omitempty"`              // "fast" (Anthropic fast-mode-2026-02-01 beta, Opus 4.6 only)
+	Speed             *string         `json:"speed,omitempty"`              // "fast" (Anthropic fast-mode-2026-02-01 beta, Opus 4.6 and 4.7+)
 	InferenceGeo      *string         `json:"inference_geo,omitempty"`      // Anthropic inference_geo (Claude API only)
 	MCPServers        []ChatMCPServer `json:"mcp_servers,omitempty"`        // Anthropic MCP connector (mcp-client-2025-11-20)
 	Container         *ChatContainer  `json:"container,omitempty"`          // Anthropic container (string id, or object with skills[] — beta skills-2025-10-02)
@@ -293,6 +297,24 @@ func (cp *ChatParameters) UnmarshalJSON(data []byte) error {
 			cp.Reasoning.Display = aux.ReasoningDisplay
 		}
 	}
+	// response_format carries a user-authored JSON Schema, and Bifrost is not
+	// entitled to rewrite it. Decoding it into interface{} (what the alias does)
+	// yields a map[string]interface{}, which loses two things the provider cares
+	// about: key order, because Structured Outputs generates fields in schema key
+	// order ("outputs will be produced in the same order as the ordering of keys
+	// in the schema", https://developers.openai.com/api/docs/guides/structured-outputs),
+	// and numeric literals, because every number becomes a float64 (so an integer
+	// above 2^53 comes back corrupted and 1.0 comes back as 1).
+	//
+	// Keep the object form as raw bytes instead. Providers that forward
+	// response_format unchanged then emit exactly what the client sent, and the
+	// few that must rewrite it read it on demand via ParseChatResponseFormat.
+	// Non-object values (null, or a provider quirk) keep whatever the alias produced.
+	if rf := gjson.GetBytes(data, "response_format"); rf.IsObject() {
+		var value interface{} = json.RawMessage(rf.Raw)
+		cp.ResponseFormat = &value
+	}
+
 	// ExtraParams etc. are already handled by the alias
 	return nil
 }
@@ -437,6 +459,13 @@ type ChatTool struct {
 	MCPServerName string                           `json:"mcp_server_name,omitempty"`
 	DefaultConfig *ChatMCPToolsetConfig            `json:"default_config,omitempty"`
 	Configs       map[string]*ChatMCPToolsetConfig `json:"configs,omitempty"`
+
+	// serialized caches this tool's MarshalJSON output. Set only for immutable,
+	// shared tools (MCP catalog entries precomputed once per refresh via
+	// EnsureSerialized) so logging/marshal reuse the bytes instead of re-running
+	// the full tool marshal per request. nil for client-supplied tools, which
+	// marshal normally. Unexported so it never appears in JSON.
+	serialized []byte
 }
 
 // normalizeShape clears fields that don't belong to the ChatTool's active
@@ -491,10 +520,37 @@ func (t *ChatTool) clearServerToolVariantFields() {
 // dispatch on the top-level Type/Name shape — could misinterpret or
 // silently forward the stray fields.
 func (t ChatTool) MarshalJSON() ([]byte, error) {
+	if len(t.serialized) > 0 {
+		return t.serialized, nil
+	}
 	normalized := t
 	normalized.normalizeShape()
 	type Alias ChatTool
 	return MarshalSorted((*Alias)(&normalized))
+}
+
+// EnsureSerialized precomputes and caches this tool's MarshalJSON output so later
+// marshals (logging especially) reuse the bytes. Call ONLY on immutable, shared
+// tools (e.g. MCP catalog entries at refresh time) — a later mutation would leave
+// the cache stale. Idempotent; a no-op once cached.
+func (t *ChatTool) EnsureSerialized() error {
+	if len(t.serialized) > 0 {
+		return nil
+	}
+	b, err := t.MarshalJSON()
+	if err != nil {
+		return err
+	}
+	t.serialized = b
+	return nil
+}
+
+// InvalidateSerialized drops the cached MarshalJSON bytes so the next
+// EnsureSerialized (or MarshalJSON) recomputes them. Call after mutating any
+// field that changes the wire output (e.g. Function.Name); otherwise the stale
+// cache keeps emitting the old bytes.
+func (t *ChatTool) InvalidateSerialized() {
+	t.serialized = nil
 }
 
 // UnmarshalJSON tolerantly decodes whatever JSON shape arrives, then
@@ -1020,6 +1076,81 @@ type ChatMessage struct {
 	*ChatAssistantMessage
 }
 
+// MarshalJSON implements custom JSON marshalling for ChatMessage.
+//
+// The mirror of UnmarshalJSON below, and needed for the same reason: Go promotes
+// an embedded type's MarshalJSON to the outer struct, so ChatAssistantMessage's
+// marshaller would otherwise serialise a ChatMessage as ONLY its assistant fields,
+// silently dropping role, content and name from every message on the wire.
+//
+// The embedded pointers are flattened by hand rather than by struct embedding,
+// because embedding them in the output type would re-promote the same method and
+// reintroduce the bug this exists to prevent.
+//
+// The fragments are spliced textually rather than merged through a map: a Go map
+// marshals its keys in sorted order, which silently reorders every message body
+// on the wire (payload_ordering_test.go pins that ordering, and providers that
+// hash or cache on the raw payload are sensitive to it).
+func (cm ChatMessage) MarshalJSON() ([]byte, error) {
+	// Base fields first, in declaration order. Marshalled through a plain struct so
+	// the omitempty rules and ChatMessageContent's own marshaller are honoured
+	// exactly as declared.
+	base, err := Marshal(struct {
+		Name    *string             `json:"name,omitempty"`
+		Role    ChatMessageRole     `json:"role,omitempty"`
+		Content *ChatMessageContent `json:"content,omitempty"`
+	}{Name: cm.Name, Role: cm.Role, Content: cm.Content})
+	if err != nil {
+		return nil, err
+	}
+	fragments := [][]byte{base}
+
+	// Only one of the embedded pointers is ever set (see the struct comment), but
+	// appending both keeps this correct if that ever stops holding.
+	if cm.ChatToolMessage != nil {
+		encoded, err := Marshal(cm.ChatToolMessage)
+		if err != nil {
+			return nil, err
+		}
+		fragments = append(fragments, encoded)
+	}
+	if cm.ChatAssistantMessage != nil {
+		encoded, err := Marshal(cm.ChatAssistantMessage)
+		if err != nil {
+			return nil, err
+		}
+		fragments = append(fragments, encoded)
+	}
+
+	return spliceJSONObjects(fragments), nil
+}
+
+// spliceJSONObjects concatenates the bodies of several JSON objects into one,
+// preserving the order the fragments were produced in. Each fragment must be a
+// marshalled object; empty ones contribute nothing.
+func spliceJSONObjects(fragments [][]byte) []byte {
+	var buf bytes.Buffer
+	buf.WriteByte('{')
+	first := true
+	for _, fragment := range fragments {
+		trimmed := bytes.TrimSpace(fragment)
+		if len(trimmed) < 2 || trimmed[0] != '{' || trimmed[len(trimmed)-1] != '}' {
+			continue
+		}
+		body := bytes.TrimSpace(trimmed[1 : len(trimmed)-1])
+		if len(body) == 0 {
+			continue
+		}
+		if !first {
+			buf.WriteByte(',')
+		}
+		buf.Write(body)
+		first = false
+	}
+	buf.WriteByte('}')
+	return buf.Bytes()
+}
+
 // UnmarshalJSON implements custom JSON unmarshalling for ChatMessage.
 // This is needed because ChatAssistantMessage has a custom UnmarshalJSON method,
 // which interferes with the JSON library's handling of other fields in ChatMessage.
@@ -1044,7 +1175,10 @@ func (cm *ChatMessage) UnmarshalJSON(data []byte) error {
 	if err := Unmarshal(data, &toolMsg); err != nil {
 		return err
 	}
-	if toolMsg.ToolCallID != nil {
+	// Gate on every field the struct carries, not just ToolCallID -- keying on one
+	// field silently makes the others conditional on it, which would drop a tool
+	// message that marks a failure without correlating an id.
+	if toolMsg.ToolCallID != nil || toolMsg.IsError != nil {
 		cm.ChatToolMessage = (*ChatToolMessage)(&toolMsg)
 	}
 
@@ -1388,6 +1522,12 @@ type ChatInputFile struct {
 // ChatToolMessage represents a tool message in a chat conversation.
 type ChatToolMessage struct {
 	ToolCallID *string `json:"tool_call_id,omitempty"`
+	// IsError marks the tool execution as failed. Not part of the OpenAI wire
+	// format — converters for providers whose wire supports an error marker map
+	// it (Anthropic tool_result.is_error, Bedrock toolResult.status), and
+	// OpenAI-wire converters strip it before serialization so providers that
+	// reject unknown message parameters never see it.
+	IsError *bool `json:"is_error,omitempty"`
 }
 
 // ChatAssistantMessage represents a message in a chat conversation.
@@ -1398,6 +1538,43 @@ type ChatAssistantMessage struct {
 	ReasoningDetails []ChatReasoningDetails           `json:"reasoning_details,omitempty"`
 	Annotations      []ChatAssistantMessageAnnotation `json:"annotations,omitempty"`
 	ToolCalls        []ChatAssistantMessageToolCall   `json:"tool_calls,omitempty"`
+}
+
+// MarshalJSON emits reasoning under both spellings the ecosystem uses.
+//
+// OpenRouter defines them as interchangeable: reasoning text "will appear in the
+// `reasoning` field of each message", and "you can also use `reasoning_content`
+// as an alias - it functions identically to `reasoning`"
+// (https://openrouter.ai/docs/use-cases/reasoning-tokens). DeepSeek and xAI spell
+// it reasoning_content; OpenRouter-shaped clients read reasoning. UnmarshalJSON
+// below already accepts either on the way in, so emitting only one on the way out
+// left a client written against the other spelling seeing no reasoning at all -
+// the text was present the whole time, under a key it never looked at.
+//
+// The alias is derived from Reasoning at marshal time rather than stored, so the
+// two can never disagree, and a message with no reasoning gains no empty key.
+//
+// This does NOT reach provider requests. The outbound OpenAI-family wire type is
+// openai.OpenAIChatAssistantMessage, which has its own field set (and already
+// spells the outbound field reasoning_content); the other providers build their
+// own message types. This type is the internal/response shape.
+//
+// NOTE: ChatMessage embeds *ChatAssistantMessage, and Go promotes an embedded
+// type's MarshalJSON to the outer struct - so ChatMessage carries its own
+// MarshalJSON to stop this one swallowing role/content/name. Same reason
+// ChatMessage.UnmarshalJSON exists. Do not remove one without the other.
+func (cm ChatAssistantMessage) MarshalJSON() ([]byte, error) {
+	type Alias ChatAssistantMessage
+	if cm.Reasoning == nil {
+		return Marshal(Alias(cm))
+	}
+	return Marshal(struct {
+		Alias
+		ReasoningContent *string `json:"reasoning_content,omitempty"`
+	}{
+		Alias:            Alias(cm),
+		ReasoningContent: cm.Reasoning,
+	})
 }
 
 // UnmarshalJSON implements custom unmarshalling for ChatAssistantMessage.
@@ -1478,8 +1655,8 @@ type ChatAssistantMessageToolCall struct {
 
 // ChatAssistantMessageToolCallFunction represents a call to a function.
 type ChatAssistantMessageToolCallFunction struct {
-	Name      *string `json:"name"`
-	Arguments string  `json:"arguments"` // stringified json as retured by OpenAI, might not be a valid JSON always
+	Name      *string `json:"name,omitempty"` // omitted on streaming continuation deltas; strict clients reject an explicit null (issue #5900)
+	Arguments string  `json:"arguments"`      // stringified json as retured by OpenAI, might not be a valid JSON always
 }
 
 // ChatAudioMessageAudio represents audio data in a message.
@@ -1582,6 +1759,28 @@ type ChatStreamResponseChoiceDelta struct {
 	ExtraContent     json.RawMessage                  `json:"extra_content,omitempty"` // Provider-specific metadata (e.g. Gemini thought markers, thought_signature)
 }
 
+// MarshalJSON emits reasoning under both spellings, matching
+// ChatAssistantMessage.MarshalJSON. See that method for why the alias exists.
+//
+// Streaming needs this independently of the non-streaming path: DeepSeek streams
+// its thinking phase under reasoning_content, so a client written against that
+// wire watched a Bifrost stream emit the entire reasoning phase under a key it
+// never read. Unlike ChatAssistantMessage this type is not embedded anywhere, so
+// no companion marshaller is required.
+func (d ChatStreamResponseChoiceDelta) MarshalJSON() ([]byte, error) {
+	type Alias ChatStreamResponseChoiceDelta
+	if d.Reasoning == nil {
+		return Marshal(Alias(d))
+	}
+	return Marshal(struct {
+		Alias
+		ReasoningContent *string `json:"reasoning_content,omitempty"`
+	}{
+		Alias:            Alias(d),
+		ReasoningContent: d.Reasoning,
+	})
+}
+
 // UnmarshalJSON implements custom unmarshalling for ChatStreamResponseChoiceDelta.
 // If Reasoning is non-nil and ReasoningDetails is nil/empty, it adds a single
 // ChatReasoningDetails entry of type "reasoning.text" with the text set to Reasoning.
@@ -1647,6 +1846,8 @@ type BifrostLLMUsage struct {
 	CompletionTokensDetails *ChatCompletionTokensDetails `json:"completion_tokens_details,omitempty"`
 	TotalTokens             int                          `json:"total_tokens"`
 	Cost                    *BifrostCost                 `json:"cost,omitempty"` // Only for the providers which support cost calculation
+	// xAI-specific usage field, normalized into Cost by NormalizeProviderCost.
+	CostInUsdTicks *int64 `json:"cost_in_usd_ticks,omitempty"`
 	// Served Anthropic tier (fast mode / data residency), carried internally so
 	// cancel/timeout billing (which reads a bare usage via BilledUsage) can apply
 	// the tier multiplier. json:"-" keeps them out of every serialized usage payload.
@@ -1756,6 +1957,118 @@ type BifrostCost struct {
 	TotalCost           float64 `json:"total_cost,omitempty"`
 }
 
+// MergeBifrostLLMUsage returns a usage value containing the sum of base and add.
+// Nil inputs are treated as absent values; if both inputs are nil, nil is returned.
+func MergeBifrostLLMUsage(base, add *BifrostLLMUsage) *BifrostLLMUsage {
+	if add == nil {
+		return base
+	}
+	if base == nil {
+		return add
+	}
+
+	merged := &BifrostLLMUsage{
+		PromptTokens:     base.PromptTokens + add.PromptTokens,
+		CompletionTokens: base.CompletionTokens + add.CompletionTokens,
+		TotalTokens:      base.TotalTokens + add.TotalTokens,
+	}
+
+	if base.PromptTokensDetails != nil || add.PromptTokensDetails != nil {
+		baseDetails := base.PromptTokensDetails
+		addDetails := add.PromptTokensDetails
+		if baseDetails == nil {
+			baseDetails = &ChatPromptTokensDetails{}
+		}
+		if addDetails == nil {
+			addDetails = &ChatPromptTokensDetails{}
+		}
+		merged.PromptTokensDetails = &ChatPromptTokensDetails{
+			TextTokens:        baseDetails.TextTokens + addDetails.TextTokens,
+			AudioTokens:       baseDetails.AudioTokens + addDetails.AudioTokens,
+			ImageTokens:       baseDetails.ImageTokens + addDetails.ImageTokens,
+			CachedReadTokens:  baseDetails.CachedReadTokens + addDetails.CachedReadTokens,
+			CachedWriteTokens: baseDetails.CachedWriteTokens + addDetails.CachedWriteTokens,
+		}
+		if baseDetails.CachedWriteTokenDetails != nil || addDetails.CachedWriteTokenDetails != nil {
+			merged.PromptTokensDetails.CachedWriteTokenDetails = &ChatCachedWriteTokenDetails{
+				CachedWriteTokens5m: cachedWriteTokens5m(baseDetails) + cachedWriteTokens5m(addDetails),
+				CachedWriteTokens1h: cachedWriteTokens1h(baseDetails) + cachedWriteTokens1h(addDetails),
+			}
+		}
+	}
+
+	if base.CompletionTokensDetails != nil || add.CompletionTokensDetails != nil {
+		baseDetails := base.CompletionTokensDetails
+		addDetails := add.CompletionTokensDetails
+		if baseDetails == nil {
+			baseDetails = &ChatCompletionTokensDetails{}
+		}
+		if addDetails == nil {
+			addDetails = &ChatCompletionTokensDetails{}
+		}
+		merged.CompletionTokensDetails = &ChatCompletionTokensDetails{
+			TextTokens:               baseDetails.TextTokens + addDetails.TextTokens,
+			AcceptedPredictionTokens: baseDetails.AcceptedPredictionTokens + addDetails.AcceptedPredictionTokens,
+			AudioTokens:              baseDetails.AudioTokens + addDetails.AudioTokens,
+			ReasoningTokens:          baseDetails.ReasoningTokens + addDetails.ReasoningTokens,
+			RejectedPredictionTokens: baseDetails.RejectedPredictionTokens + addDetails.RejectedPredictionTokens,
+		}
+		merged.CompletionTokensDetails.CitationTokens = sumOptionalInts(baseDetails.CitationTokens, addDetails.CitationTokens)
+		merged.CompletionTokensDetails.NumSearchQueries = sumOptionalInts(baseDetails.NumSearchQueries, addDetails.NumSearchQueries)
+		merged.CompletionTokensDetails.ImageTokens = sumOptionalInts(baseDetails.ImageTokens, addDetails.ImageTokens)
+	}
+
+	if base.Cost != nil || add.Cost != nil {
+		baseCost := base.Cost
+		addCost := add.Cost
+		if baseCost == nil {
+			baseCost = &BifrostCost{}
+		}
+		if addCost == nil {
+			addCost = &BifrostCost{}
+		}
+		merged.Cost = &BifrostCost{
+			InputTokensCost:     baseCost.InputTokensCost + addCost.InputTokensCost,
+			OutputTokensCost:    baseCost.OutputTokensCost + addCost.OutputTokensCost,
+			ReasoningTokensCost: baseCost.ReasoningTokensCost + addCost.ReasoningTokensCost,
+			CitationTokensCost:  baseCost.CitationTokensCost + addCost.CitationTokensCost,
+			SearchQueriesCost:   baseCost.SearchQueriesCost + addCost.SearchQueriesCost,
+			RequestCost:         baseCost.RequestCost + addCost.RequestCost,
+			TotalCost:           baseCost.TotalCost + addCost.TotalCost,
+		}
+	}
+
+	return merged
+}
+
+func cachedWriteTokens5m(details *ChatPromptTokensDetails) int {
+	if details == nil || details.CachedWriteTokenDetails == nil {
+		return 0
+	}
+	return details.CachedWriteTokenDetails.CachedWriteTokens5m
+}
+
+func cachedWriteTokens1h(details *ChatPromptTokensDetails) int {
+	if details == nil || details.CachedWriteTokenDetails == nil {
+		return 0
+	}
+	return details.CachedWriteTokenDetails.CachedWriteTokens1h
+}
+
+func sumOptionalInts(base, add *int) *int {
+	if base == nil && add == nil {
+		return nil
+	}
+	sum := 0
+	if base != nil {
+		sum += *base
+	}
+	if add != nil {
+		sum += *add
+	}
+	return &sum
+}
+
 // UnmarshalJSON implements custom JSON unmarshalling for BifrostCost.
 func (bc *BifrostCost) UnmarshalJSON(data []byte) error {
 	// First, try to unmarshal as a direct float
@@ -1775,6 +2088,27 @@ func (bc *BifrostCost) UnmarshalJSON(data []byte) error {
 	}
 
 	return fmt.Errorf("cost field is neither a float nor an object")
+}
+
+// xAI reports request cost as cost_in_usd_ticks, where TICKS_IN_USD_CENT = 100_000_000, so 1 USD = 1e10 ticks.
+const usdTicksPerUSD = 1e10
+
+// costFromUSDTicks converts a tick count to a cost object, nil for missing or non-positive ticks.
+func costFromUSDTicks(ticks *int64) *BifrostCost {
+	if ticks == nil || *ticks <= 0 {
+		return nil
+	}
+	return &BifrostCost{TotalCost: float64(*ticks) / usdTicksPerUSD}
+}
+
+// NormalizeProviderCost derives the neutral Cost object from a provider-reported
+// cost_in_usd_ticks so cost calculation only ever reads Cost. No-op when the
+// provider already sent a cost or reported no ticks.
+func (u *BifrostLLMUsage) NormalizeProviderCost() {
+	if u == nil || u.Cost != nil {
+		return
+	}
+	u.Cost = costFromUSDTicks(u.CostInUsdTicks)
 }
 
 type SearchResult struct {

@@ -107,6 +107,8 @@ interface RoutingRulesTableProps {
 	offset: number;
 	limit: number;
 	onOffsetChange: (offset: number) => void;
+	/** Page-level actions rendered at the right end of the same row as the search. */
+	actions?: React.ReactNode;
 }
 
 export function RoutingRulesTable({
@@ -122,6 +124,7 @@ export function RoutingRulesTable({
 	offset,
 	limit,
 	onOffsetChange,
+	actions,
 }: RoutingRulesTableProps) {
 	const [deleteRuleId, setDeleteRuleId] = useState<string | null>(null);
 	const [deleteRoutingRule, { isLoading: isDeleting }] = useDeleteRoutingRuleMutation();
@@ -173,8 +176,8 @@ export function RoutingRulesTable({
 
 	return (
 		<>
-			{/* Toolbar: Search */}
-			<div className="mb-4 flex items-center gap-3">
+			{/* Toolbar: Search + Actions */}
+			<div className="mb-4 flex flex-wrap items-center gap-3">
 				<div className="relative max-w-sm flex-1">
 					<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 					<Input
@@ -186,6 +189,7 @@ export function RoutingRulesTable({
 						data-testid="routing-rules-search-input"
 					/>
 				</div>
+				{actions && <div className="flex items-center gap-2 sm:ml-auto">{actions}</div>}
 			</div>
 
 			<div className="mb-2 overflow-hidden rounded-sm border">

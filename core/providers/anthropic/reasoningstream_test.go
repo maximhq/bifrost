@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -104,29 +105,75 @@ func TestReasoningStream_NoOrphanThinkingBlock(t *testing.T) {
 // TestConvertBifrostReasoning_SignaturePresent asserts converted (non-Anthropic)
 // reasoning yields a thinking block with a non-nil signature. The Agent SDK's
 // non-streaming parser requires the field; omitting it fails with
-// "Missing required field in assistant message: 'signature'".
+// "Missing required field in assistant message: 'signature'". It also pins the
+// sourceProvider gate on this path: an id is only set here, so a nil/empty id
+// would make the DeepSeek subtest pass regardless of whether the gate works.
 func TestConvertBifrostReasoning_SignaturePresent(t *testing.T) {
 	reasoning := "The user asked how to run core tests."
-	msg := &schemas.ResponsesMessage{
-		Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
-		Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
-		Content: &schemas.ResponsesMessageContent{
-			ContentBlocks: []schemas.ResponsesMessageContentBlock{
-				{Type: schemas.ResponsesOutputMessageContentTypeReasoning, Text: &reasoning}, // no Signature
+	newMsg := func() *schemas.ResponsesMessage {
+		return &schemas.ResponsesMessage{
+			ID:   schemas.Ptr("rs_test123"),
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+			Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+			Content: &schemas.ResponsesMessageContent{
+				ContentBlocks: []schemas.ResponsesMessageContentBlock{
+					{Type: schemas.ResponsesOutputMessageContentTypeReasoning, Text: &reasoning}, // no Signature
+				},
 			},
-		},
+		}
 	}
 
-	blocks := convertBifrostReasoningToAnthropicThinking(msg)
-	if len(blocks) != 1 {
-		t.Fatalf("expected 1 thinking block, got %d", len(blocks))
-	}
-	if blocks[0].Type != AnthropicContentBlockTypeThinking {
-		t.Fatalf("expected thinking block, got %q", blocks[0].Type)
-	}
-	if blocks[0].Signature == nil {
-		t.Fatal("thinking block signature is nil; Agent SDK parse would fail on the missing field")
-	}
+	t.Run("DeepSeek does not embed the id", func(t *testing.T) {
+		msg := newMsg()
+		blocks := convertBifrostReasoningToAnthropicThinking(schemas.NewBifrostContext(nil, schemas.NoDeadline), msg, schemas.DeepSeek, "deepseek-chat")
+		if len(blocks) != 1 {
+			t.Fatalf("expected 1 thinking block, got %d", len(blocks))
+		}
+		if blocks[0].Type != AnthropicContentBlockTypeThinking {
+			t.Fatalf("expected thinking block, got %q", blocks[0].Type)
+		}
+		if blocks[0].Signature == nil {
+			t.Fatal("thinking block signature is nil; Agent SDK parse would fail on the missing field")
+		}
+		if *blocks[0].Signature != "" {
+			t.Errorf("DeepSeek-sourced signature = %q, want empty (non-OpenAI sources must not embed the id)", *blocks[0].Signature)
+		}
+		if _, _, ok := providerUtils.ExtractReasoningItemID(*blocks[0].Signature); ok {
+			t.Errorf("DeepSeek-sourced signature %q unexpectedly carries an embedded reasoning item id", *blocks[0].Signature)
+		}
+	})
+
+	t.Run("OpenAI embeds the id", func(t *testing.T) {
+		msg := newMsg()
+		blocks := convertBifrostReasoningToAnthropicThinking(schemas.NewBifrostContext(nil, schemas.NoDeadline), msg, schemas.OpenAI, "gpt-5")
+		if len(blocks) != 1 {
+			t.Fatalf("expected 1 thinking block, got %d", len(blocks))
+		}
+		if blocks[0].Signature == nil {
+			t.Fatal("thinking block signature is nil; Agent SDK parse would fail on the missing field")
+		}
+		id, _, ok := providerUtils.ExtractReasoningItemID(*blocks[0].Signature)
+		if !ok || id == nil || *id != *msg.ID {
+			t.Errorf("OpenAI-sourced signature = %q, want an embedded id %q", *blocks[0].Signature, *msg.ID)
+		}
+	})
+
+	// A custom provider reports its own key, so the gate has to resolve it back to
+	// the base provider type Bifrost recorded on the context -- otherwise OpenAI
+	// models served through an openai-based custom provider silently lose the id.
+	t.Run("openai-based custom provider embeds the id", func(t *testing.T) {
+		msg := newMsg()
+		ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, schemas.OpenAI)
+		blocks := convertBifrostReasoningToAnthropicThinking(ctx, msg, schemas.ModelProvider("my-openai"), "my-gpt-deployment")
+		if len(blocks) != 1 {
+			t.Fatalf("expected 1 thinking block, got %d", len(blocks))
+		}
+		id, _, ok := providerUtils.ExtractReasoningItemID(*blocks[0].Signature)
+		if !ok || id == nil || *id != *msg.ID {
+			t.Errorf("custom-provider signature = %q, want an embedded id %q", *blocks[0].Signature, *msg.ID)
+		}
+	})
 }
 
 // TestReasoningStream_ResumedReasoningNotEmittedPastStop guards the
