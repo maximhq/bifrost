@@ -545,6 +545,12 @@ func extractSupportedParams(parsed *schemas.ModelCapabilities) []string {
 	if parsed.SupportsReasoningWithToolCalls != nil {
 		if *parsed.SupportsReasoningWithToolCalls {
 			addParam("reasoning_with_tool_calls")
+		} else {
+			// Explicit false wins even when a model_parameters id already added
+			// the marker via the default case above.
+			supported = slices.DeleteFunc(supported, func(p string) bool {
+				return p == "reasoning_with_tool_calls"
+			})
 		}
 	} else if len(supported) > 0 {
 		addParam("reasoning_with_tool_calls")

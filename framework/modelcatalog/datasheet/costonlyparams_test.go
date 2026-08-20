@@ -82,5 +82,14 @@ func TestCostOnlyRowProducesNoParamAllowlist(t *testing.T) {
 		if got := extractSupportedParams(&explicitFalse); slices.Contains(got, "reasoning_with_tool_calls") {
 			t.Errorf("extractSupportedParams(explicit false) = %v, want reasoning_with_tool_calls absent", got)
 		}
+
+		// Explicit false must also override a marker sourced from model_parameters ids.
+		var falseWithParamID schemas.ModelCapabilities
+		if err := json.Unmarshal(json.RawMessage(`{"model_parameters":[{"id":"reasoning_with_tool_calls"}],"supports_reasoning_with_tool_calls":false}`), &falseWithParamID); err != nil {
+			t.Fatalf("unmarshal explicit-false row with param id: %v", err)
+		}
+		if got := extractSupportedParams(&falseWithParamID); slices.Contains(got, "reasoning_with_tool_calls") {
+			t.Errorf("extractSupportedParams(explicit false + model_parameters id) = %v, want reasoning_with_tool_calls absent", got)
+		}
 	})
 }
