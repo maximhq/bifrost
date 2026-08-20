@@ -759,9 +759,12 @@ func (provider *GeminiProvider) responsesWithLargeResponseDetection(
 	}
 	setGeminiRequestBody(req, bodyReader, bodySize, jsonData)
 
-	// Make request
-	streamingClient := providerUtils.BuildLargeResponseClient(provider.client, responseThreshold)
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, streamingClient, req, resp)
+	// Make request. The body is streamed, so it goes out over net/http and never
+	// becomes fasthttp's pooled *requestStream, which cannot be closed safely
+	// while a reader is parked in it (issue #6143). provider.client is passed
+	// rather than a per-request BuildLargeResponseClient clone so the net/http
+	// twin cache stays keyed on a stable pointer.
+	latency, bifrostErr, wait := providerUtils.MakeStreamingRequestWithContext(ctx, provider.client, req, resp)
 	if bifrostErr != nil {
 		wait()
 		fasthttp.ReleaseResponse(resp)
@@ -4170,8 +4173,8 @@ func (provider *GeminiProvider) PassthroughStream(
 
 	fasthttpReq.SetBody(req.Body)
 
-	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.streamingClient, resp)
-	err := providerUtils.DoStreamingRequest(ctx, activeClient, fasthttpReq, resp)
+	providerUtils.PrepareStreamResponseThreshold(ctx, resp)
+	err := providerUtils.DoStreamingRequest(ctx, provider.streamingClient, fasthttpReq, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		providerUtils.ReleaseStreamingResponse(ctx, resp)

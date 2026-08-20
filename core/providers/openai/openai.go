@@ -491,13 +491,15 @@ func HandleOpenAITextCompletionStreaming(
 
 	setStreamingRequestBody(ctx, req, jsonBody, providerName)
 
-	// Use streaming-aware client when large payload optimization is active — ensures
-	// MaxResponseBodySize > 0 so ErrBodyTooLarge triggers StreamBody for Content-Length responses.
-	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
+	// Mark the response for streaming when large payload optimization is active.
+	// The fasthttp MaxResponseBodySize/StreamResponseBody clone this used to build has
+	// no effect now that streaming sends go through net/http; the threshold is enforced
+	// by Bifrost's own readers.
+	providerUtils.PrepareStreamResponseThreshold(ctx, resp)
 
 	startTime := time.Now()
 	// Make the request
-	err := providerUtils.DoStreamingRequest(ctx, activeClient, req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, client, req, resp)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		latency := time.Since(startTime)
@@ -1109,13 +1111,15 @@ func HandleOpenAIChatCompletionStreaming(
 
 	setStreamingRequestBody(ctx, req, jsonBody, providerName)
 
-	// Use streaming-aware client when large payload optimization is active — ensures
-	// MaxResponseBodySize > 0 so ErrBodyTooLarge triggers StreamBody for Content-Length responses.
-	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
+	// Mark the response for streaming when large payload optimization is active.
+	// The fasthttp MaxResponseBodySize/StreamResponseBody clone this used to build has
+	// no effect now that streaming sends go through net/http; the threshold is enforced
+	// by Bifrost's own readers.
+	providerUtils.PrepareStreamResponseThreshold(ctx, resp)
 
 	startTime := time.Now()
 	// Make the request
-	err := providerUtils.DoStreamingRequest(ctx, activeClient, req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, client, req, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -1823,13 +1827,15 @@ func HandleOpenAIResponsesStreaming(
 
 	setStreamingRequestBody(ctx, req, jsonBody, providerName)
 
-	// Use streaming-aware client when large payload optimization is active — ensures
-	// MaxResponseBodySize > 0 so ErrBodyTooLarge triggers StreamBody for Content-Length responses.
-	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
+	// Mark the response for streaming when large payload optimization is active.
+	// The fasthttp MaxResponseBodySize/StreamResponseBody clone this used to build has
+	// no effect now that streaming sends go through net/http; the threshold is enforced
+	// by Bifrost's own readers.
+	providerUtils.PrepareStreamResponseThreshold(ctx, resp)
 
 	startTime := time.Now()
 	// Make the request
-	err := providerUtils.DoStreamingRequest(ctx, activeClient, req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, client, req, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -2431,13 +2437,15 @@ func HandleOpenAISpeechStreamRequest(
 
 	setStreamingRequestBody(ctx, req, jsonBody, providerName)
 
-	// Use streaming-aware client when large payload optimization is active — ensures
-	// MaxResponseBodySize > 0 so ErrBodyTooLarge triggers StreamBody for Content-Length responses.
-	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
+	// Mark the response for streaming when large payload optimization is active.
+	// The fasthttp MaxResponseBodySize/StreamResponseBody clone this used to build has
+	// no effect now that streaming sends go through net/http; the threshold is enforced
+	// by Bifrost's own readers.
+	providerUtils.PrepareStreamResponseThreshold(ctx, resp)
 
 	startTime := time.Now()
 	// Make the request
-	err := providerUtils.DoStreamingRequest(ctx, activeClient, req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, client, req, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -3399,13 +3407,15 @@ func HandleOpenAIImageGenerationStreaming(
 
 	setStreamingRequestBody(ctx, req, jsonBody, providerName)
 
-	// Use streaming-aware client when large payload optimization is active — ensures
-	// MaxResponseBodySize > 0 so ErrBodyTooLarge triggers StreamBody for Content-Length responses.
-	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
+	// Mark the response for streaming when large payload optimization is active.
+	// The fasthttp MaxResponseBodySize/StreamResponseBody clone this used to build has
+	// no effect now that streaming sends go through net/http; the threshold is enforced
+	// by Bifrost's own readers.
+	providerUtils.PrepareStreamResponseThreshold(ctx, resp)
 
 	startTime := time.Now()
 	// Make the request
-	err := providerUtils.DoStreamingRequest(ctx, activeClient, req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, client, req, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -7687,11 +7697,11 @@ func (provider *OpenAIProvider) PassthroughStream(
 
 	fasthttpReq.SetBody(req.Body)
 
-	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.streamingClient, resp)
+	providerUtils.PrepareStreamResponseThreshold(ctx, resp)
 
 	startTime := time.Now()
 
-	err := providerUtils.DoStreamingRequest(ctx, activeClient, fasthttpReq, resp)
+	err := providerUtils.DoStreamingRequest(ctx, provider.streamingClient, fasthttpReq, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		providerUtils.ReleaseStreamingResponse(ctx, resp)
