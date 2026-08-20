@@ -12,6 +12,8 @@ const (
 	taskType3DInference = "3dInference"
 	// taskTypeGetResponse polls an async task (e.g. video, 3D) by its taskUUID.
 	taskTypeGetResponse = "getResponse"
+	// taskTypeModelSearch queries the model catalog; used to list models.
+	taskTypeModelSearch = "modelSearch"
 	// taskTypeUpscale enlarges an existing image; the model selects the upscaler.
 	taskTypeUpscale = "upscale"
 	// taskTypeRemoveBackground cuts the subject out onto a transparent background.
@@ -98,6 +100,62 @@ type RunwareInferenceRequest struct {
 
 func (r *RunwareInferenceRequest) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
+}
+
+// RunwareModelSearchRequest queries Runware's model catalog. The catalog spans ~320k entries once
+// community uploads are included, so listing narrows it with source "curated" — Runware's own
+// first-party set, which is what every AIR Bifrost maps natively belongs to.
+type RunwareModelSearchRequest struct {
+	TaskType string `json:"taskType"`
+	TaskUUID string `json:"taskUUID"`
+	Source   string `json:"source,omitempty"` // "curated" | "community" | "merged"
+	Limit    int    `json:"limit,omitempty"`  // 1-100, default 20
+	Offset   int    `json:"offset,omitempty"`
+}
+
+// RunwareModelSearchResponse is the envelope a modelSearch task returns.
+type RunwareModelSearchResponse struct {
+	Data   []RunwareModelSearchResult `json:"data,omitempty"`
+	Errors []RunwareError             `json:"errors,omitempty"`
+}
+
+// RunwareModelSearchResult is a single page of catalog results.
+type RunwareModelSearchResult struct {
+	TaskType string         `json:"taskType"`
+	TaskUUID string         `json:"taskUUID"`
+	Results  []RunwareModel `json:"results,omitempty"`
+	// TotalResults is the size of the whole match set, but Runware reports it inconsistently —
+	// repeated identical requests alternate between the curated and full counts. Paging stops on a
+	// short page instead of trusting it.
+	TotalResults int `json:"totalResults,omitempty"`
+}
+
+// RunwareModel is a catalog entry. The AIR is the identifier every inference task keys off.
+type RunwareModel struct {
+	AIR          string   `json:"air"`
+	Name         string   `json:"name,omitempty"`
+	Category     string   `json:"category,omitempty"` // "checkpoint" | "video" | "text" | "audio" | "others" | ...
+	Architecture string   `json:"architecture,omitempty"`
+	Capabilities []string `json:"capabilities,omitempty"` // "io:text-to-image", "op:upscale", "form:lora", ...
+	Comment      string   `json:"comment,omitempty"`
+	Version      string   `json:"version,omitempty"`
+	Source       string   `json:"source,omitempty"`
+	Private      bool     `json:"private,omitempty"`
+
+	AddedUnixTimestamp int64 `json:"addedUnixTimestamp,omitempty"`
+
+	// Present on checkpoints, absent on text and audio entries.
+	DefaultWidth  *int `json:"defaultWidth,omitempty"`
+	DefaultHeight *int `json:"defaultHeight,omitempty"`
+	DefaultSteps  *int `json:"defaultSteps,omitempty"`
+
+	Creator *RunwareModelCreator `json:"creator,omitempty"`
+}
+
+// RunwareModelCreator identifies the vendor a catalog entry belongs to.
+type RunwareModelCreator struct {
+	ID   string `json:"id,omitempty"`
+	Name string `json:"name,omitempty"`
 }
 
 // RunwareGetResponseRequest polls an async task by its UUID.

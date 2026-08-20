@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bytedance/sonic"
+	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -69,9 +71,71 @@ func (provider *RunwareProvider) GetProviderKey() schemas.ModelProvider {
 	return schemas.Runware
 }
 
-// ListModels is not supported by the Runware provider.
+// ListModels returns Runware's curated model catalog, spanning every modality it serves — image,
+// video, 3D, audio and text.
 func (provider *RunwareProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ListModelsRequest, provider.GetProviderKey())
+	startTime := time.Now()
+
+	response, err := providerUtils.HandleMultipleListModelsRequests(ctx, keys, request, provider.listModelsByKey)
+	if err != nil {
+		return nil, err
+	}
+
+	response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
+	return response, nil
+}
+
+// listModelsByKey sweeps Runware's catalog for one key. Runware pages a modelSearch task by offset
+// and reports totalResults inconsistently, so paging stops on the first short page rather than on a
+// count. The sweep is scoped to curated models: the full catalog is ~320k entries, the overwhelming
+// majority community LoRA uploads that no Bifrost route targets.
+func (provider *RunwareProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	var models []RunwareModel
+
+	for offset := 0; ; offset += runwareModelSearchPageSize {
+		searchRequest := RunwareModelSearchRequest{
+			TaskType: taskTypeModelSearch,
+			TaskUUID: uuid.New().String(),
+			Source:   runwareCuratedSource,
+			Limit:    runwareModelSearchPageSize,
+			Offset:   offset,
+		}
+		jsonData, err := providerUtils.MarshalSorted(searchRequest)
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
+		}
+
+		_, respBody, _, bifrostErr := provider.sendTaskArray(ctx, key, jsonData)
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+
+		var searchResponse RunwareModelSearchResponse
+		if err := sonic.Unmarshal(respBody, &searchResponse); err != nil {
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
+		}
+		if len(searchResponse.Data) == 0 {
+			if msg := firstRunwareErrorMessage(searchResponse.Errors); msg != "" {
+				return nil, providerUtils.NewBifrostOperationError(msg, nil)
+			}
+			break
+		}
+
+		page := searchResponse.Data[0].Results
+		models = append(models, page...)
+		if len(page) < runwareModelSearchPageSize {
+			break
+		}
+	}
+
+	return ToBifrostListModelsResponse(
+		models,
+		provider.GetProviderKey(),
+		key.Models,
+		key.BlacklistedModels,
+		key.Aliases,
+		request.Unfiltered,
+	), nil
 }
 
 // TextCompletion is not supported by the Runware provider.
