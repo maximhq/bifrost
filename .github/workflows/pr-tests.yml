@@ -132,6 +132,10 @@ jobs:
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          GITHUB_COPILOT_APP_ID: ${{ secrets.GITHUB_COPILOT_APP_ID }}
+          GITHUB_COPILOT_INSTALLATION_ID: ${{ secrets.GITHUB_COPILOT_INSTALLATION_ID }}
+          GITHUB_COPILOT_REPOSITORY_ID: ${{ secrets.GITHUB_COPILOT_REPOSITORY_ID }}
+          GITHUB_COPILOT_PRIVATE_KEY: ${{ secrets.GITHUB_COPILOT_PRIVATE_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
