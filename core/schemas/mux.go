@@ -717,6 +717,27 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 
 // ToChatMessages converts a slice of ResponsesMessages back to ChatMessages
 // This handles the aggregation of function_call messages back into assistant messages with tool calls
+// flattenSystemTextBlocks joins multi-block all-text system/developer content into a
+// single string prompt. Chat-style providers reached via this conversion (e.g. ollama's
+// OpenAI-compatible server) expand a content-parts array into one message per part,
+// which breaks upstreams that require a single leading system message.
+func flattenSystemTextBlocks(role ChatMessageRole, blocks []ResponsesMessageContentBlock) (string, bool) {
+	if role != ChatMessageRoleSystem && role != ChatMessageRoleDeveloper {
+		return "", false
+	}
+	if len(blocks) < 2 {
+		return "", false
+	}
+	texts := make([]string, len(blocks))
+	for i, block := range blocks {
+		if (block.Type != ResponsesInputMessageContentBlockTypeText && block.Type != ResponsesOutputMessageContentTypeText) || block.Text == nil {
+			return "", false
+		}
+		texts[i] = *block.Text
+	}
+	return strings.Join(texts, "\n\n"), true
+}
+
 func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 	if len(rms) == 0 {
 		return []ChatMessage{}
@@ -897,7 +918,11 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 
 		// Convert content (skip for refusal messages since refusal is already extracted)
 		if rm.Content != nil && (rm.Type == nil || *rm.Type != ResponsesMessageTypeRefusal) {
-			if rm.Content.ContentStr != nil ||
+			if joined, ok := flattenSystemTextBlocks(cm.Role, rm.Content.ContentBlocks); ok {
+				cm.Content = &ChatMessageContent{
+					ContentStr: &joined,
+				}
+			} else if rm.Content.ContentStr != nil ||
 				(len(rm.Content.ContentBlocks) == 1 &&
 					(rm.Content.ContentBlocks[0].Type == ResponsesInputMessageContentBlockTypeText || rm.Content.ContentBlocks[0].Type == ResponsesOutputMessageContentTypeText)) {
 				if rm.Content.ContentStr != nil {
