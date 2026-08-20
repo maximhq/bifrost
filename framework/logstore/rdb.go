@@ -1320,8 +1320,9 @@ var billingPayloadColumns = map[string][]string{
 }
 
 // billingScalarColumns is every non-payload column cost recomputation reads, and
-// nothing else. Traced from calculateCostForLog, pricingScopesForLog,
-// servedTierFromLog, isKnownZeroCostLog, and the recalc job's cursor bookkeeping.
+// nothing else. Traced from calculateCostForLog, calculateBatchAggregateCost,
+// pricingScopesForLog, servedTierFromLog, isKnownZeroCostLog, and the recalc
+// job's cursor bookkeeping.
 //
 // Deliberately NOT built on listSelectColumns: that projection serves /api/logs and
 // carries message previews, content summaries, metadata and every denormalized
@@ -1339,6 +1340,10 @@ var billingScalarColumns = []string{
 	"token_usage", "prompt_tokens", "completion_tokens", "total_tokens", "cached_read_tokens",
 	// Semantic-cache billing.
 	"cache_debug",
+	// Per-model usage for a batch aggregate row (object_type=batch_results) whose
+	// own Model is "mixed" and token_usage is one blended total — without this,
+	// calculateBatchAggregateCost has nothing to reprice a mixed-model batch from.
+	"batch_debug",
 	// Whether the payload was offloaded, and whether it can ever be fetched back.
 	"has_object", "content_hidden",
 	// Served tier: scales every token rate.
