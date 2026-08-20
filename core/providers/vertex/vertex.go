@@ -3433,8 +3433,9 @@ func (provider *VertexProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 	}
 
 	return &schemas.BifrostBatchResultsResponse{
-		BatchID: request.BatchID,
-		Results: results,
+		BatchID:  request.BatchID,
+		Endpoint: schemas.BatchEndpointChatCompletions,
+		Results:  results,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Latency: time.Since(startTime).Milliseconds(),
 		},
