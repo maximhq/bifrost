@@ -99,3 +99,69 @@ func TestReasoningItemIDAndSummary(t *testing.T) {
 		assertValidReasoningItem(t, resp.Output[0])
 	})
 }
+
+// Reasoning items built by the Gemini converter carry their text as reasoning content
+// blocks (summary stays an empty array for OpenAI-compat clients). Replay back to
+// Gemini must read those blocks — the thinking guide requires thought blocks to be
+// resent unmodified, so text and signature both have to survive the round trip.
+func TestReasoningItemRoundTripToGeminiContents(t *testing.T) {
+	roundTrip := func(t *testing.T, parts []*Part) []Content {
+		t.Helper()
+		resp := (&GenerateContentResponse{
+			ModelVersion: "gemini-2.5-pro",
+			Candidates: []*Candidate{
+				{
+					FinishReason: FinishReasonStop,
+					Content:      &Content{Role: "model", Parts: parts},
+				},
+			},
+		}).ToResponsesBifrostResponsesResponse()
+		if resp == nil {
+			t.Fatal("nil bifrost response")
+		}
+		contents, _, err := convertResponsesMessagesToGeminiContents(resp.Output, "gemini-2.5-pro", schemas.Gemini)
+		if err != nil {
+			t.Fatalf("convert back to gemini contents: %v", err)
+		}
+		return contents
+	}
+
+	collectThoughts := func(contents []Content) (texts []string, signatures int) {
+		for _, c := range contents {
+			for _, p := range c.Parts {
+				if p.Thought && p.Text != "" {
+					texts = append(texts, p.Text)
+				}
+				if len(p.ThoughtSignature) > 0 {
+					signatures++
+				}
+			}
+		}
+		return texts, signatures
+	}
+
+	t.Run("unsigned thought text survives replay", func(t *testing.T) {
+		contents := roundTrip(t, []*Part{
+			{Thought: true, Text: "Reasoning about the answer."},
+			{Text: "The answer is 42."},
+		})
+		texts, _ := collectThoughts(contents)
+		if len(texts) != 1 || texts[0] != "Reasoning about the answer." {
+			t.Errorf("unsigned thought text lost on replay, got thought texts %q", texts)
+		}
+	})
+
+	t.Run("signed thought keeps text and signature", func(t *testing.T) {
+		contents := roundTrip(t, []*Part{
+			{Thought: true, Text: "Signed reasoning.", ThoughtSignature: []byte("opaque-signature-bytes")},
+			{Text: "Done."},
+		})
+		texts, signatures := collectThoughts(contents)
+		if len(texts) != 1 || texts[0] != "Signed reasoning." {
+			t.Errorf("signed thought text lost on replay, got thought texts %q", texts)
+		}
+		if signatures != 1 {
+			t.Errorf("expected the thought signature exactly once on replay, got %d", signatures)
+		}
+	})
+}

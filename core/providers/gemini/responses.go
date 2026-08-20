@@ -344,16 +344,31 @@ func (response *GenerateContentResponse) ToResponsesBifrostResponsesResponse() *
 	return bifrostResp
 }
 
-// thoughtTextParts renders a reasoning item's summary as Gemini thought parts.
+// thoughtTextParts renders a reasoning item's text as Gemini thought parts.
 //
 // Gemini's thinking guide requires thought blocks to be resent unmodified, so
 // wherever a reasoning item's signature is taken its text has to travel with it.
-func thoughtTextParts(reasoning *schemas.ResponsesReasoning) []*Part {
-	if reasoning == nil {
+// Gemini's own outbound converter stores thought text as reasoning content
+// blocks (with summary left an empty array for OpenAI-compat clients), while
+// OpenAI-ingress replay carries it in summary — so content blocks are read
+// first and summary is the fallback.
+func thoughtTextParts(msg *schemas.ResponsesMessage) []*Part {
+	if msg == nil {
 		return nil
 	}
 	var parts []*Part
-	for _, summaryBlock := range reasoning.Summary {
+	if msg.Content != nil {
+		for _, block := range msg.Content.ContentBlocks {
+			if block.Type == schemas.ResponsesOutputMessageContentTypeReasoning &&
+				block.Text != nil && *block.Text != "" {
+				parts = append(parts, &Part{Text: *block.Text, Thought: true})
+			}
+		}
+	}
+	if len(parts) > 0 || msg.ResponsesReasoning == nil {
+		return parts
+	}
+	for _, summaryBlock := range msg.ResponsesReasoning.Summary {
 		if summaryBlock.Text == "" {
 			continue
 		}
@@ -561,7 +576,7 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 								// because the normal reasoning branch below also
 								// emits a signature-only part - that path would
 								// send the same signature twice.
-								consumedThoughtText = thoughtTextParts(nextMsg.ResponsesReasoning)
+								consumedThoughtText = thoughtTextParts(&nextMsg)
 							}
 						}
 					}
@@ -4151,7 +4166,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 		// A reasoning message with no text still has nothing to add here, so it
 		// keeps being skipped.
 		if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeReasoning && msg.ResponsesReasoning != nil {
-			parts := thoughtTextParts(msg.ResponsesReasoning)
+			parts := thoughtTextParts(&msg)
 
 			// The signature is carried by the PRECEDING function call's
 			// look-ahead - but only when there is one. A standalone signed
