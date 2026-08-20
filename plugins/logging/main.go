@@ -309,25 +309,22 @@ func (p *LoggerPlugin) applyInternalCallCosts(ctx *schemas.BifrostContext, entry
 		*entry.Cost += cost
 	}
 
-	// Denormalize the split too: the cache embedding lookup is an input cost, the
-	// guardrail judge call an additional one. When a usage carrier exists, merge
-	// onto its breakdown (SerializeFields denormalizes from there); otherwise
-	// there is no carrier to synthesize (that would suppress the deferred-usage
-	// watcher), so write the split columns directly.
+	// Both are additional-side sidecar costs. Merge onto the usage carrier's
+	// breakdown when one exists (SerializeFields denormalizes from it); otherwise
+	// write the additional_cost column directly. Don't synthesize a carrier: that
+	// suppresses the deferred-usage watcher.
 	sidecar := &schemas.BifrostCost{TotalCost: cost}
-	if cacheCost > 0 {
-		sidecar.InputCost = cacheCost
-		sidecar.InputCostDetails = &schemas.InputCostDetails{TextCost: cacheCost}
-	}
-	if guardrailCost > 0 {
-		sidecar.AdditionalCost = guardrailCost
-		sidecar.AdditionalCostDetails = &schemas.AdditionalCostDetails{GuardrailCost: guardrailCost}
+	if cacheCost > 0 || guardrailCost > 0 {
+		sidecar.AdditionalCost = cacheCost + guardrailCost
+		sidecar.AdditionalCostDetails = &schemas.AdditionalCostDetails{
+			SemanticCacheCost: cacheCost,
+			GuardrailCost:     guardrailCost,
+		}
 	}
 	if entry.TokenUsageParsed != nil {
 		entry.TokenUsageParsed.Cost = entry.TokenUsageParsed.Cost.Add(sidecar)
 	} else {
-		entry.InputCost += cacheCost
-		entry.AdditionalCost += guardrailCost
+		entry.AdditionalCost += cacheCost + guardrailCost
 	}
 }
 
