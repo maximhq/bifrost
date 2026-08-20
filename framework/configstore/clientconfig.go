@@ -673,6 +673,18 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			sglConfig.URL = *key.SGLKeyConfig.URL.Redacted()
 			redactedConfig.Keys[i].SGLKeyConfig = sglConfig
 		}
+
+		if key.GithubCopilotKeyConfig != nil {
+			// The private key is the whole credential, so it is redacted like any other
+			// secret rather than surfaced in a config read.
+			redactedConfig.Keys[i].GithubCopilotKeyConfig = &schemas.GithubCopilotKeyConfig{
+				AppID:          *key.GithubCopilotKeyConfig.AppID.Redacted(),
+				InstallationID: *key.GithubCopilotKeyConfig.InstallationID.Redacted(),
+				RepositoryID:   *key.GithubCopilotKeyConfig.RepositoryID.Redacted(),
+				PrivateKey:     *key.GithubCopilotKeyConfig.PrivateKey.Redacted(),
+				GithubDomain:   *key.GithubCopilotKeyConfig.GithubDomain.Redacted(),
+			}
+		}
 	}
 	return &redactedConfig
 }
@@ -858,6 +870,14 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	// Hash SGLKeyConfig
 	if key.SGLKeyConfig != nil {
 		data, err := sonic.Marshal(key.SGLKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+	// Hash GithubCopilotKeyConfig
+	if key.GithubCopilotKeyConfig != nil {
+		data, err := sonic.Marshal(key.GithubCopilotKeyConfig)
 		if err != nil {
 			return "", err
 		}

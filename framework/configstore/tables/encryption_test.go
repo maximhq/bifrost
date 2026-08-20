@@ -171,6 +171,91 @@ func TestTableKey_VertexFieldsEncryptDecrypt(t *testing.T) {
 	assert.Equal(t, `{"type":"service_account"}`, found.VertexKeyConfig.AuthCredentials.GetValue())
 }
 
+func TestTableKey_GithubCopilotFieldsEncryptDecrypt(t *testing.T) {
+	db := setupTestDB(t)
+
+	const pemBody = "-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJB\n-----END RSA PRIVATE KEY-----"
+
+	key := &TableKey{
+		Name:       "copilot-key",
+		ProviderID: 1,
+		Provider:   "github-copilot",
+		KeyID:      "copilot-uuid-1",
+		GithubCopilotKeyConfig: &schemas.GithubCopilotKeyConfig{
+			AppID:          *schemas.NewSecretVar("123456"),
+			InstallationID: *schemas.NewSecretVar("87654321"),
+			RepositoryID:   *schemas.NewSecretVar("999000111"),
+			PrivateKey:     *schemas.NewSecretVar(pemBody),
+			GithubDomain:   *schemas.NewSecretVar("acme.ghe.com"),
+		},
+	}
+
+	require.NoError(t, db.Create(key).Error)
+
+	raw := rawRow(t, db, "config_keys", key.ID)
+	assert.Equal(t, "encrypted", raw["encryption_status"])
+	// The private key is the entire credential. It must never sit in the table as plaintext.
+	assert.NotEqual(t, pemBody, raw["github_copilot_private_key"])
+	assert.NotEqual(t, "123456", raw["github_copilot_app_id"])
+	assert.NotEqual(t, "87654321", raw["github_copilot_installation_id"])
+	assert.NotEqual(t, "999000111", raw["github_copilot_repository_id"])
+	assert.NotEqual(t, "acme.ghe.com", raw["github_copilot_github_domain"])
+
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+	require.NotNil(t, found.GithubCopilotKeyConfig)
+	assert.Equal(t, "123456", found.GithubCopilotKeyConfig.AppID.GetValue())
+	assert.Equal(t, "87654321", found.GithubCopilotKeyConfig.InstallationID.GetValue())
+	assert.Equal(t, "999000111", found.GithubCopilotKeyConfig.RepositoryID.GetValue())
+	assert.Equal(t, pemBody, found.GithubCopilotKeyConfig.PrivateKey.GetValue())
+	assert.Equal(t, "acme.ghe.com", found.GithubCopilotKeyConfig.GithubDomain.GetValue())
+}
+
+func TestTableKey_GithubCopilotOptionalDomainRoundTrips(t *testing.T) {
+	db := setupTestDB(t)
+
+	// github_domain is only set for GitHub Enterprise. The zero value must round-trip as
+	// unset rather than as an empty string that later reads as a configured domain.
+	key := &TableKey{
+		Name:       "copilot-dotcom",
+		ProviderID: 1,
+		Provider:   "github-copilot",
+		KeyID:      "copilot-uuid-2",
+		GithubCopilotKeyConfig: &schemas.GithubCopilotKeyConfig{
+			AppID:          *schemas.NewSecretVar("123456"),
+			InstallationID: *schemas.NewSecretVar("87654321"),
+			RepositoryID:   *schemas.NewSecretVar("999000111"),
+			PrivateKey:     *schemas.NewSecretVar("pem"),
+		},
+	}
+
+	require.NoError(t, db.Create(key).Error)
+
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+	require.NotNil(t, found.GithubCopilotKeyConfig)
+	assert.Empty(t, found.GithubCopilotKeyConfig.GithubDomain.GetValue())
+}
+
+func TestTableKey_NoGithubCopilotConfig_LeavesNil(t *testing.T) {
+	db := setupTestDB(t)
+
+	key := &TableKey{
+		Name:       "openai-key",
+		ProviderID: 1,
+		Provider:   "openai",
+		KeyID:      "openai-uuid-1",
+		Value:      *schemas.NewSecretVar("sk-test"),
+	}
+
+	require.NoError(t, db.Create(key).Error)
+
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+	assert.Nil(t, found.GithubCopilotKeyConfig,
+		"a key from another provider must not gain an empty copilot config on read")
+}
+
 func TestTableKey_BedrockFieldsEncryptDecrypt(t *testing.T) {
 	db := setupTestDB(t)
 
