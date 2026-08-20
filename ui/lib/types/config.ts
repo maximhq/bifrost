@@ -337,6 +337,7 @@ export type RequestType =
 	| "batch_list"
 	| "batch_retrieve"
 	| "batch_cancel"
+	| "batch_delete"
 	| "batch_results"
 	| "file_upload"
 	| "file_list"

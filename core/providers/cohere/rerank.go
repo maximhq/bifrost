@@ -163,11 +163,7 @@ func (response *CohereRerankResponse) ToBifrostRerankResponse(documents []schema
 				CompletionTokens: completionTokens,
 				TotalTokens:      promptTokens + completionTokens,
 			}
-			if searchUnits != nil {
-				bifrostResponse.Usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
-					NumSearchQueries: searchUnits,
-				}
-			}
+			bifrostResponse.Usage.SearchUnits = searchUnits
 		}
 	}
 
@@ -203,8 +199,8 @@ func ToCohereRerankResponse(bifrostResp *schemas.BifrostRerankResponse) *CohereR
 	if bifrostResp.Usage != nil {
 		billedUnits := &CohereBilledUnits{}
 		hasBilledUnits := false
-		if bifrostResp.Usage.CompletionTokensDetails != nil && bifrostResp.Usage.CompletionTokensDetails.NumSearchQueries != nil {
-			billedUnits.SearchUnits = bifrostResp.Usage.CompletionTokensDetails.NumSearchQueries
+		if bifrostResp.Usage.SearchUnits != nil {
+			billedUnits.SearchUnits = bifrostResp.Usage.SearchUnits
 			hasBilledUnits = true
 		}
 		if bifrostResp.Usage.PromptTokens > 0 || bifrostResp.Usage.CompletionTokens > 0 {

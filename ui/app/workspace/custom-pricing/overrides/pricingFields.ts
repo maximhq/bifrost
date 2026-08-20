@@ -296,6 +296,12 @@ export const PRICING_FIELDS = [
 		requestTypeGroups: ["chat", "rerank"],
 	},
 	{
+		key: "input_cost_per_query",
+		label: "Rerank / query",
+		group: "chat",
+		requestTypeGroups: ["rerank"],
+	},
+	{
 		key: "code_interpreter_cost_per_session",
 		label: "Code interpreter / session",
 		group: "chat",

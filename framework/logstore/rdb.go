@@ -623,7 +623,7 @@ func (s *RDBLogStore) Update(ctx context.Context, id string, entry any) error {
 
 // BulkUpdateCost updates log costs in bulk, using a PostgreSQL-specific batched
 // VALUES update when available and per-row updates for other dialects.
-func (s *RDBLogStore) BulkUpdateCost(ctx context.Context, updates map[string]float64) error {
+func (s *RDBLogStore) BulkUpdateCost(ctx context.Context, updates map[string]CostUpdate) error {
 	if len(updates) == 0 {
 		return nil
 	}
@@ -633,9 +633,13 @@ func (s *RDBLogStore) BulkUpdateCost(ctx context.Context, updates map[string]flo
 	}
 
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		for id, cost := range updates {
-			costValue := cost
-			if err := tx.Model(&Log{}).Where("id = ?", id).Update("cost", costValue).Error; err != nil {
+		for id, u := range updates {
+			if err := tx.Model(&Log{}).Where("id = ?", id).Updates(map[string]interface{}{
+				"cost":            u.Total,
+				"input_cost":      u.Input,
+				"output_cost":     u.Output,
+				"additional_cost": u.Additional,
+			}).Error; err != nil {
 				return err
 			}
 		}
@@ -781,31 +785,41 @@ func serializeLogUpdateEntry(entry any) (any, error) {
 // buildBulkUpdateCostPostgresSQL builds a deterministic UPDATE ... FROM
 // (VALUES ...) statement and argument list for a chunk of PostgreSQL log cost
 // updates.
-func buildBulkUpdateCostPostgresSQL(ids []string, updates map[string]float64) (string, []interface{}) {
+func buildBulkUpdateCostPostgresSQL(ids []string, updates map[string]CostUpdate) (string, []interface{}) {
 	var sqlBuilder strings.Builder
-	args := make([]interface{}, 0, len(ids)*2)
+	const colsPerRow = 5
+	args := make([]interface{}, 0, len(ids)*colsPerRow)
 
-	sqlBuilder.WriteString("UPDATE logs SET cost = v.cost FROM (VALUES ")
+	// Reprice the total and the per-category split together so the denormalized
+	// columns stay reconciled to the cost column.
+	sqlBuilder.WriteString("UPDATE logs SET cost = v.cost, input_cost = v.input_cost, output_cost = v.output_cost, additional_cost = v.additional_cost FROM (VALUES ")
 	for i, id := range ids {
 		if i > 0 {
 			sqlBuilder.WriteString(",")
 		}
-		argOffset := i * 2
+		argOffset := i * colsPerRow
 		sqlBuilder.WriteString("($")
 		sqlBuilder.WriteString(strconv.Itoa(argOffset + 1))
 		sqlBuilder.WriteString("::text,$")
 		sqlBuilder.WriteString(strconv.Itoa(argOffset + 2))
+		sqlBuilder.WriteString("::float8,$")
+		sqlBuilder.WriteString(strconv.Itoa(argOffset + 3))
+		sqlBuilder.WriteString("::float8,$")
+		sqlBuilder.WriteString(strconv.Itoa(argOffset + 4))
+		sqlBuilder.WriteString("::float8,$")
+		sqlBuilder.WriteString(strconv.Itoa(argOffset + 5))
 		sqlBuilder.WriteString("::float8)")
-		args = append(args, id, updates[id])
+		u := updates[id]
+		args = append(args, id, u.Total, u.Input, u.Output, u.Additional)
 	}
-	sqlBuilder.WriteString(") AS v(id, cost) WHERE logs.id = v.id")
+	sqlBuilder.WriteString(") AS v(id, cost, input_cost, output_cost, additional_cost) WHERE logs.id = v.id")
 
 	return sqlBuilder.String(), args
 }
 
 // bulkUpdateCostPostgres applies chunked PostgreSQL bulk cost updates to avoid
 // issuing one UPDATE per log row.
-func (s *RDBLogStore) bulkUpdateCostPostgres(ctx context.Context, updates map[string]float64) error {
+func (s *RDBLogStore) bulkUpdateCostPostgres(ctx context.Context, updates map[string]CostUpdate) error {
 	ids := make([]string, 0, len(updates))
 	for id := range updates {
 		ids = append(ids, id)
@@ -2577,9 +2591,13 @@ func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilter
 		COALESCE(SUM(CASE WHEN status = 'success' AND latency > 0 THEN completion_tokens ELSE 0 END), 0) as tp_completion_tokens,
 		COALESCE(SUM(CASE WHEN status = 'success' AND latency > 0 THEN latency ELSE 0 END), 0) as tp_latency_ms
 	`
-	// Only the current-period query scans canonical_name; keeping it out of the
-	// shared clause spares the previous-period query a discarded aggregate.
-	currentSelectClause := "MAX(NULLIF(canonical_model_name, '')) as canonical_name," + selectClause
+	// Only the current-period query scans canonical_name and the per-category cost
+	// split; keeping them out of the shared clause spares the previous-period
+	// query aggregates it discards (trend compares totals only).
+	currentSelectClause := "MAX(NULLIF(canonical_model_name, '')) as canonical_name," + selectClause + `,
+		COALESCE(SUM(input_cost), 0) as total_input_cost,
+		COALESCE(SUM(output_cost), 0) as total_output_cost,
+		COALESCE(SUM(additional_cost), 0) as total_additional_cost`
 
 	// Query current period
 	currentQuery := s.ScopedDB(ctx).Model(&Log{})
@@ -2595,6 +2613,9 @@ func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilter
 		SuccessCount       int64           `gorm:"column:success_count"`
 		TotalTokens        sql.NullInt64   `gorm:"column:total_tokens"`
 		TotalCost          sql.NullFloat64 `gorm:"column:total_cost"`
+		InputCost          sql.NullFloat64 `gorm:"column:total_input_cost"`
+		OutputCost         sql.NullFloat64 `gorm:"column:total_output_cost"`
+		AdditionalCost     sql.NullFloat64 `gorm:"column:total_additional_cost"`
 		AvgLatency         sql.NullFloat64 `gorm:"column:avg_latency"`
 		TPCompletionTokens int64           `gorm:"column:tp_completion_tokens"`
 		TPLatencyMs        float64         `gorm:"column:tp_latency_ms"`
@@ -2678,14 +2699,17 @@ func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilter
 	rankings := make([]ModelRankingWithTrend, len(currentResults))
 	for i, r := range currentResults {
 		entry := ModelRankingEntry{
-			Model:         r.Model,
-			Provider:      r.Provider,
-			TotalRequests: r.TotalRequests,
-			SuccessCount:  r.SuccessCount,
-			TotalTokens:   r.TotalTokens.Int64,
-			TotalCost:     r.TotalCost.Float64,
-			AvgLatency:    r.AvgLatency.Float64,
-			Throughput:    tokensPerSecond(r.TPCompletionTokens, r.TPLatencyMs),
+			Model:          r.Model,
+			Provider:       r.Provider,
+			TotalRequests:  r.TotalRequests,
+			SuccessCount:   r.SuccessCount,
+			TotalTokens:    r.TotalTokens.Int64,
+			TotalCost:      r.TotalCost.Float64,
+			InputCost:      r.InputCost.Float64,
+			OutputCost:     r.OutputCost.Float64,
+			AdditionalCost: r.AdditionalCost.Float64,
+			AvgLatency:     r.AvgLatency.Float64,
+			Throughput:     tokensPerSecond(r.TPCompletionTokens, r.TPLatencyMs),
 		}
 		if r.CanonicalName.Valid {
 			entry.CanonicalModelName = &r.CanonicalName.String

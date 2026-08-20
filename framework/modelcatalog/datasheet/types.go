@@ -192,6 +192,14 @@ type Options struct {
 	// represents it as a tiered object. See Entry.UnmarshalJSON.
 	SearchContextCostPerQuery     *float64 `json:"search_context_cost_per_query,omitempty"`
 	CodeInterpreterCostPerSession *float64 `json:"code_interpreter_cost_per_session,omitempty"`
+	// InputCostPerQuery is the per-query rate rerank models bill on. Cohere and Bedrock both
+	// define a query (a "search unit") as one query against up to 100 document chunks, so a
+	// request over that many chunks bills as several queries. It is unrelated to
+	// SearchContextCostPerQuery, which prices web-search context on chat models.
+	//
+	// Not applicable to Vertex: its Ranking API bills "ranking units" derived from record count
+	// and title/content size, so a flat per-query rate would misprice every call.
+	InputCostPerQuery *float64 `json:"input_cost_per_query,omitempty"`
 	InferenceGeoUSMultiplier      *float64 `json:"inference_geo_us_multiplier,omitempty"`
 	// CostPerRequest is a flat fee added once per billed request, on top of
 	// whatever usage-based cost the request otherwise computes to.
@@ -680,6 +688,7 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 
 		SearchContextCostPerQuery:     entry.SearchContextCostPerQuery,
 		CodeInterpreterCostPerSession: entry.CodeInterpreterCostPerSession,
+		InputCostPerQuery:             entry.InputCostPerQuery,
 		InferenceGeoUSMultiplier:      entry.InferenceGeoUSMultiplier,
 		CostPerRequest:                entry.CostPerRequest,
 
@@ -773,6 +782,7 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		OutputCostPerSecond:         pricing.OutputCostPerSecond,
 
 		SearchContextCostPerQuery:     pricing.SearchContextCostPerQuery,
+		InputCostPerQuery:             pricing.InputCostPerQuery,
 		CodeInterpreterCostPerSession: pricing.CodeInterpreterCostPerSession,
 		InferenceGeoUSMultiplier:      pricing.InferenceGeoUSMultiplier,
 		CostPerRequest:                pricing.CostPerRequest,

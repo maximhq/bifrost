@@ -151,3 +151,30 @@ func TestToBifrostVideoEditRequest(t *testing.T) {
 		t.Fatalf("input not carried: %+v", out.Input)
 	}
 }
+
+// The official SDKs send no model on the video edit route, so the provider the transport resolved
+// from the query parameter, header, or video ID suffix is the only routing signal available.
+func TestToBifrostVideoEditRequest_ProviderFallback(t *testing.T) {
+	out := ToBifrostVideoEditRequest(&OpenAIVideoEditRequest{
+		Prompt:   "make it grayscale",
+		Video:    OpenAIVideoEditVideoInput{ID: "vid_123"},
+		Provider: schemas.Runware,
+	})
+	if out.Provider != schemas.Runware {
+		t.Fatalf("provider = %q, want runware", out.Provider)
+	}
+	if out.Model != "" {
+		t.Fatalf("model should stay empty when none was sent, got %q", out.Model)
+	}
+
+	// An explicit "provider/model" string still wins over the resolved fallback.
+	explicit := ToBifrostVideoEditRequest(&OpenAIVideoEditRequest{
+		Prompt:   "make it grayscale",
+		Video:    OpenAIVideoEditVideoInput{ID: "vid_123"},
+		Model:    "replicate/some-model",
+		Provider: schemas.Runware,
+	})
+	if explicit.Provider != schemas.Replicate || explicit.Model != "some-model" {
+		t.Fatalf("model string should win, got provider=%q model=%q", explicit.Provider, explicit.Model)
+	}
+}

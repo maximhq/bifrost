@@ -29,13 +29,13 @@ func TestMergeBifrostLLMUsage(t *testing.T) {
 			RejectedPredictionTokens: 8,
 		},
 		Cost: &BifrostCost{
-			InputTokensCost:     1,
-			OutputTokensCost:    2,
-			ReasoningTokensCost: 3,
-			CitationTokensCost:  4,
-			SearchQueriesCost:   5,
-			RequestCost:         6,
-			TotalCost:           21,
+			InputCost:             1,
+			InputCostDetails:      &InputCostDetails{TextCost: 1},
+			OutputCost:            2,
+			OutputCostDetails:     &OutputCostDetails{TextCost: 2},
+			AdditionalCost:        3,
+			AdditionalCostDetails: &AdditionalCostDetails{GuardrailCost: 3},
+			TotalCost:             6,
 		},
 	}
 	add := &BifrostLLMUsage{
@@ -64,13 +64,13 @@ func TestMergeBifrostLLMUsage(t *testing.T) {
 			RejectedPredictionTokens: 15,
 		},
 		Cost: &BifrostCost{
-			InputTokensCost:     10,
-			OutputTokensCost:    20,
-			ReasoningTokensCost: 30,
-			CitationTokensCost:  40,
-			SearchQueriesCost:   50,
-			RequestCost:         60,
-			TotalCost:           210,
+			InputCost:             10,
+			InputCostDetails:      &InputCostDetails{TextCost: 10},
+			OutputCost:            20,
+			OutputCostDetails:     &OutputCostDetails{TextCost: 20},
+			AdditionalCost:        30,
+			AdditionalCostDetails: &AdditionalCostDetails{GuardrailCost: 30},
+			TotalCost:             60,
 		},
 	}
 
@@ -99,13 +99,13 @@ func TestMergeBifrostLLMUsage(t *testing.T) {
 		merged.CompletionTokensDetails.RejectedPredictionTokens != 23 {
 		t.Fatalf("unexpected completion details: %+v", merged.CompletionTokensDetails)
 	}
-	if merged.Cost.InputTokensCost != 11 ||
-		merged.Cost.OutputTokensCost != 22 ||
-		merged.Cost.ReasoningTokensCost != 33 ||
-		merged.Cost.CitationTokensCost != 44 ||
-		merged.Cost.SearchQueriesCost != 55 ||
-		merged.Cost.RequestCost != 66 ||
-		merged.Cost.TotalCost != 231 {
+	if merged.Cost.InputCost != 11 ||
+		merged.Cost.OutputCost != 22 ||
+		merged.Cost.AdditionalCost != 33 ||
+		merged.Cost.TotalCost != 66 ||
+		merged.Cost.InputCostDetails.TextCost != 11 ||
+		merged.Cost.OutputCostDetails.TextCost != 22 ||
+		merged.Cost.AdditionalCostDetails.GuardrailCost != 33 {
 		t.Fatalf("unexpected cost: %+v", merged.Cost)
 	}
 }

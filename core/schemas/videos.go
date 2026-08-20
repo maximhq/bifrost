@@ -94,7 +94,8 @@ type VideoGenerationParameters struct {
 
 	NegativePrompt *string        `json:"negative_prompt,omitempty"`
 	Seed           *int           `json:"seed,omitempty"`
-	Type           *string        `json:"type,omitempty"` // operation selector, e.g. "3d", "upscale"
+	Type           *string        `json:"type,omitempty"`          // operation selector, e.g. "3d", "upscale"
+	OutputFormat   *string        `json:"output_format,omitempty"` // container, e.g. "mp4", "webm", "mov"
 	Audio          *bool          `json:"audio,omitempty"`
 	ExtraParams    map[string]any `json:"-"`
 

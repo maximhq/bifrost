@@ -21,6 +21,7 @@ type fakeRecalcStore struct {
 	logstore.LogStore
 	logs              []logstore.Log // pre-sorted by (timestamp, id)
 	cost              map[string]float64
+	split             map[string]logstore.CostUpdate // full per-category update per id
 	hasCost           map[string]bool
 	updateCount       map[string]int // successful BulkUpdateCost touches per id
 	searchCalls       int
@@ -34,6 +35,7 @@ func newFakeRecalcStore(logs []logstore.Log) *fakeRecalcStore {
 	return &fakeRecalcStore{
 		logs:        logs,
 		cost:        make(map[string]float64),
+		split:       make(map[string]logstore.CostUpdate),
 		hasCost:     make(map[string]bool),
 		updateCount: make(map[string]int),
 	}
@@ -89,13 +91,14 @@ func (s *fakeRecalcStore) SearchLogs(_ context.Context, f logstore.SearchFilters
 	return &logstore.SearchResult{Logs: page}, nil
 }
 
-func (s *fakeRecalcStore) BulkUpdateCost(_ context.Context, updates map[string]float64) error {
+func (s *fakeRecalcStore) BulkUpdateCost(_ context.Context, updates map[string]logstore.CostUpdate) error {
 	s.bulkCalls++
 	if s.failBulkOnCall != 0 && s.bulkCalls == s.failBulkOnCall {
 		return fmt.Errorf("simulated bulk update failure")
 	}
 	for id, c := range updates {
-		s.cost[id] = c
+		s.cost[id] = c.Total
+		s.split[id] = c
 		s.hasCost[id] = true
 		s.updateCount[id]++
 	}
@@ -184,6 +187,35 @@ func window(base time.Time) logstore.SearchFilters {
 	start := base.Add(-time.Hour)
 	end := base.Add(time.Hour)
 	return logstore.SearchFilters{StartTime: &start, EndTime: &end}
+}
+
+// TestRunCostRecalcJob_BackfillsCostSplit verifies recompute refreshes the
+// denormalized input/output/additional columns, not just the total, so the split
+// reconciles to the cost column after a reprice.
+func TestRunCostRecalcJob_BackfillsCostSplit(t *testing.T) {
+	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	store := newFakeRecalcStore([]logstore.Log{positiveLog("split-1", base)})
+	p := newRecalcPlugin(t, store)
+
+	if _, _, err := runJob(t, p, CostRecalcJobMeta{Filters: window(base), MissingCostOnly: false, Total: 1}); err != nil {
+		t.Fatalf("RunCostRecalcJob error = %v", err)
+	}
+
+	u, ok := store.split["split-1"]
+	if !ok {
+		t.Fatal("expected a cost update for split-1")
+	}
+	// gpt-4o testdata rates: input 2.5e-6/token, output 1e-5/token (100 prompt, 50 completion).
+	wantIn, wantOut := 100*2.5e-6, 50*1e-5
+	if d := u.Input - wantIn; d < -1e-12 || d > 1e-12 {
+		t.Fatalf("input cost %v != %v", u.Input, wantIn)
+	}
+	if d := u.Output - wantOut; d < -1e-12 || d > 1e-12 {
+		t.Fatalf("output cost %v != %v", u.Output, wantOut)
+	}
+	if d := u.Total - (u.Input + u.Output + u.Additional); d < -1e-12 || d > 1e-12 {
+		t.Fatalf("split does not reconcile to total: total=%v in=%v out=%v add=%v", u.Total, u.Input, u.Output, u.Additional)
+	}
 }
 
 // TestCalculateCostForLog_BedrockMantleChatStreamUsesResponsesPricing pins the

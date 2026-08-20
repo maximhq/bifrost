@@ -1,4 +1,5 @@
 import { test as base, expect } from "@playwright/test";
+import { waitForNetworkIdle } from "../utils/test-helpers";
 import { SidebarPage } from "../pages/sidebar.page";
 import { ProvidersPage } from "../../features/providers/pages/providers.page";
 import { VirtualKeysPage } from "../../features/virtual-keys/pages/virtual-keys.page";
@@ -21,6 +22,8 @@ import { ModelLimitsPage } from "../../features/model-limits/pages/model-limits.
  */
 type BifrostFixtures = {
 	closeDevProfiler: void;
+	handleLoginRedirect: void;
+	skipAutoLogin: boolean;
 	sidebarPage: SidebarPage;
 	providersPage: ProvidersPage;
 	virtualKeysPage: VirtualKeysPage;
@@ -66,6 +69,47 @@ export const test = base.extend<BifrostFixtures>({
 						.catch(() => {});
 				},
 				{ noWaitAfter: true },
+			);
+			await use();
+		},
+		{ auto: true },
+	],
+
+	skipAutoLogin: [false, { option: true }],
+
+	handleLoginRedirect: [
+		async ({ page, skipAutoLogin }, use) => {
+			// Any test can hit an auth wall: dashboard auth redirects to /login (via a
+			// baseApi 401 handler) whenever the session is missing/expired. Transparently
+			// complete the login flow whenever that happens so feature tests don't each
+			// need their own auth handling.
+			if (skipAutoLogin) {
+				await use();
+				return;
+			}
+			await page.addLocatorHandler(
+				page.locator("#username"),
+				async () => {
+					const username = process.env.BIFROST_ADMIN_USERNAME;
+					const password = process.env.BIFROST_ADMIN_PASSWORD;
+					if (!username || !password) {
+						throw new Error(
+							"Redirected to /login but BIFROST_ADMIN_USERNAME/BIFROST_ADMIN_PASSWORD are not set.",
+						);
+					}
+					// The login form always redirects to /workspace on success, ignoring
+					// ?goto=; capture it here and navigate back so the test lands on the
+					// page it originally asked for.
+					const goto = new URL(page.url()).searchParams.get("goto");
+					await page.locator("#username").fill(username);
+					await page.locator("#password").fill(password);
+					await page.getByRole("button", { name: /Sign in/i }).click();
+					await page.waitForURL((url) => !url.pathname.startsWith("/login"), { timeout: 15000 });
+					if (goto) {
+						await page.goto(goto);
+					}
+					await waitForNetworkIdle(page);
+				},
 			);
 			await use();
 		},

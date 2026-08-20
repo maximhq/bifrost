@@ -634,9 +634,9 @@ func (s *legacyOffloadedStore) HydrateBillingChunk(_ context.Context, logs []*lo
 	return result, nil
 }
 
-func (s *legacyOffloadedStore) BulkUpdateCost(_ context.Context, updates map[string]float64) error {
+func (s *legacyOffloadedStore) BulkUpdateCost(_ context.Context, updates map[string]logstore.CostUpdate) error {
 	for id, c := range updates {
-		s.costs[id] = c
+		s.costs[id] = c.Total
 	}
 	return nil
 }

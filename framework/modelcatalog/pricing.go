@@ -59,11 +59,25 @@ func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse, scopes *P
 	return mc.datasheet.CalculateCost(result, (*datasheet.LookupScopes)(scopes))
 }
 
+// CalculateCostBreakdown computes the per-category cost breakdown (input /
+// output / cache) for a Bifrost response. Returns nil when there is no cost to
+// record. TotalCost equals what CalculateCost returns for the same response.
+func (mc *ModelCatalog) CalculateCostBreakdown(result *schemas.BifrostResponse, scopes *PricingLookupScopes) *schemas.BifrostCost {
+	return mc.datasheet.CalculateCostBreakdown(result, (*datasheet.LookupScopes)(scopes))
+}
+
 // CalculateCostForUsage computes the dollar cost from a bare usage object when
 // no full BifrostResponse is available — used to bill partial usage carried on
 // a failed/cancelled request (BifrostError.ExtraFields.BilledUsage).
 func (mc *ModelCatalog) CalculateCostForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *PricingLookupScopes) float64 {
 	return mc.datasheet.CalculateCostForUsage(usage, provider, model, requestType, (*datasheet.LookupScopes)(scopes))
+}
+
+// CalculateCostBreakdownForUsage computes the per-category cost breakdown from a
+// bare usage object when no full BifrostResponse is available. TotalCost equals
+// what CalculateCostForUsage returns for the same usage.
+func (mc *ModelCatalog) CalculateCostBreakdownForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *PricingLookupScopes) *schemas.BifrostCost {
+	return mc.datasheet.CalculateCostBreakdownForUsage(usage, provider, model, requestType, (*datasheet.LookupScopes)(scopes))
 }
 
 // CalculateGuardrailCost computes the aggregate cost of guardrail judge calls.

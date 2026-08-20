@@ -1704,42 +1704,57 @@ class TestLangChainStandardEmbeddings(TestLangChainOpenAIEmbeddings):
 class TestLangChainRerank:
     """Rerank via LangChain document compressors through Bifrost.
 
-    LangChain wraps each provider's rerank API in a BaseDocumentCompressor, so these
-    exercise the same Bifrost routes through a third abstraction layer: whatever the
-    compressor returns must still be a correctly ordered ranking.
+    LangChain wraps each provider's rerank API in a BaseDocumentCompressor, so these exercise
+    Bifrost's rerank routes through a third abstraction layer. CohereRerank coerces every
+    document to a string before calling the API (Document -> page_content, dict -> YAML,
+    str -> itself), so these also cover Bifrost accepting the plain-string document form.
+
+    Cross-provider tests cover the operations a customer's behaviour depends on. Tests that
+    pin LangChain's own client-side mechanics (rank_fields YAML filtering, the empty-input
+    short circuit, metadata deep-copy) run against Cohere only - the provider cannot change
+    what LangChain does before and after the call.
     """
 
     @staticmethod
     def _documents():
         from langchain_core.documents import Document
 
-        return [Document(page_content=text) for text in RERANK_DOCUMENTS]
+        return [
+            Document(page_content=text, metadata={"source": f"doc-{i}", "position": i})
+            for i, text in enumerate(RERANK_DOCUMENTS)
+        ]
+
+    @staticmethod
+    def _compressor(provider, model, **kwargs):
+        from langchain_cohere import CohereRerank
+
+        return CohereRerank(
+            base_url=get_integration_url("cohere"),
+            cohere_api_key=os.getenv("COHERE_API_KEY", "dummy-key"),
+            model=model,
+            **kwargs,
+        )
 
     @staticmethod
     def _pairs(compressed):
         """Normalize compressed documents into (index, score) tuples.
 
-        LangChain drops the provider's index and keeps relevance_score in metadata, so the
-        original position is recovered by matching page_content.
+        compress_documents drops the provider's index and keeps relevance_score in metadata,
+        so the original position is recovered from the document itself.
         """
         return [
-            (
-                RERANK_DOCUMENTS.index(document.page_content),
-                document.metadata["relevance_score"],
-            )
+            (RERANK_DOCUMENTS.index(document.page_content), document.metadata["relevance_score"])
             for document in compressed
         ]
 
-    def test_20_cohere_rerank_compressor(self, test_config):
-        """langchain_cohere.CohereRerank against Bifrost's /cohere routes."""
-        from langchain_cohere import CohereRerank
+    # ---------------------------------------------------------------- core compressor path
 
-        compressor = CohereRerank(
-            base_url=get_integration_url("cohere"),
-            cohere_api_key=os.getenv("COHERE_API_KEY", "dummy-key"),
-            model=get_config().get_provider_model("cohere", "rerank"),
-            top_n=2,
-        )
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("rerank")
+    )
+    def test_20_cohere_rerank_compressor(self, provider, model):
+        """compress_documents - the method ContextualCompressionRetriever calls."""
+        compressor = self._compressor(provider, model, top_n=2)
 
         compressed = compressor.compress_documents(self._documents(), RERANK_QUERY)
 
@@ -1768,5 +1783,165 @@ class TestLangChainRerank:
         )
 
         compressed = compressor.compress_documents(self._documents(), RERANK_QUERY)
+
+        assert_valid_rerank_results(self._pairs(compressed), expected_count=2)
+
+    # ---------------------------------------------------------------- rerank() directly
+
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("rerank")
+    )
+    def test_22_rerank_returns_index_and_score(self, provider, model):
+        """rerank() returns raw {index, relevance_score} dicts keyed to the input order."""
+        compressor = self._compressor(provider, model, top_n=3)
+
+        results = compressor.rerank(self._documents(), RERANK_QUERY)
+
+        assert results, "rerank returned nothing"
+        for result in results:
+            assert set(result) >= {"index", "relevance_score"}, f"unexpected keys: {list(result)}"
+        assert_valid_rerank_results([(r["index"], r["relevance_score"]) for r in results])
+
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("rerank")
+    )
+    def test_23_metadata_is_preserved_and_scored(self, provider, model):
+        """Caller metadata survives the round trip and relevance_score is added to it."""
+        compressor = self._compressor(provider, model, top_n=3)
+        documents = self._documents()
+
+        compressed = compressor.compress_documents(documents, RERANK_QUERY)
+
+        assert_valid_rerank_results(self._pairs(compressed))
+        for document in compressed:
+            original = documents[RERANK_DOCUMENTS.index(document.page_content)]
+            assert document.metadata["source"] == original.metadata["source"]
+            assert document.metadata["position"] == original.metadata["position"]
+            assert isinstance(document.metadata["relevance_score"], float)
+
+        # compress_documents deep-copies metadata; the caller's documents must be untouched.
+        for original in documents:
+            assert "relevance_score" not in original.metadata
+
+    # ---------------------------------------------------------------- top_n behaviour
+
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("rerank")
+    )
+    def test_24_top_n_from_constructor(self, provider, model):
+        """top_n set on the compressor truncates the ranking."""
+        compressor = self._compressor(provider, model, top_n=1)
+
+        compressed = compressor.compress_documents(self._documents(), RERANK_QUERY)
+
+        assert_valid_rerank_results(self._pairs(compressed), expected_count=1)
+
+    def test_25_top_n_per_call_override(self, test_config):
+        """A per-call top_n wins over the constructor value."""
+        model = get_config().get_provider_model("cohere", "rerank")
+        compressor = self._compressor("cohere", model, top_n=1)
+
+        results = compressor.rerank(self._documents(), RERANK_QUERY, top_n=2)
+
+        assert len(results) == 2, f"per-call top_n ignored: got {len(results)}"
+
+    def test_26_top_n_none_returns_all(self, test_config):
+        """top_n=None asks for the full ranking rather than the constructor default."""
+        model = get_config().get_provider_model("cohere", "rerank")
+        compressor = self._compressor("cohere", model, top_n=1)
+
+        results = compressor.rerank(self._documents(), RERANK_QUERY, top_n=None)
+
+        assert len(results) == len(RERANK_DOCUMENTS), (
+            f"expected the full ranking, got {len(results)}"
+        )
+
+    # ---------------------------------------------------------------- document forms
+
+    def test_27_string_documents(self, test_config):
+        """Plain strings - the form CohereRerank sends for every document type."""
+        model = get_config().get_provider_model("cohere", "rerank")
+        compressor = self._compressor("cohere", model, top_n=3)
+
+        results = compressor.rerank(RERANK_DOCUMENTS, RERANK_QUERY)
+
+        assert_valid_rerank_results([(r["index"], r["relevance_score"]) for r in results])
+
+    def test_28_dict_documents_with_rank_fields(self, test_config):
+        """dict documents are YAML-dumped, restricted to rank_fields when given.
+
+        rank_fields is applied client-side by LangChain, so the ranked text is the filtered
+        YAML. Ranking on the title-only field must still surface the relevant document.
+        """
+        model = get_config().get_provider_model("cohere", "rerank")
+        compressor = self._compressor("cohere", model, top_n=3)
+        documents = [
+            {"title": "France", "body": RERANK_DOCUMENTS[0], "internal_id": "a"},
+            {"title": "Carrots", "body": RERANK_DOCUMENTS[1], "internal_id": "b"},
+            {"title": "Germany", "body": RERANK_DOCUMENTS[2], "internal_id": "c"},
+        ]
+
+        results = compressor.rerank(documents, RERANK_QUERY, rank_fields=["title", "body"])
+
+        assert_valid_rerank_results([(r["index"], r["relevance_score"]) for r in results])
+
+    def test_29_empty_documents_short_circuits(self, test_config):
+        """An empty document list returns [] without calling the API."""
+        model = get_config().get_provider_model("cohere", "rerank")
+        compressor = self._compressor("cohere", model, top_n=3)
+
+        assert compressor.rerank([], RERANK_QUERY) == []
+        assert list(compressor.compress_documents([], RERANK_QUERY)) == []
+
+    def test_30_max_tokens_per_doc(self, test_config):
+        """max_tokens_per_doc is forwarded and accepted by the rerank route."""
+        model = get_config().get_provider_model("cohere", "rerank")
+        compressor = self._compressor("cohere", model, top_n=3)
+
+        results = compressor.rerank(
+            self._documents(), RERANK_QUERY, max_tokens_per_doc=512
+        )
+
+        assert_valid_rerank_results([(r["index"], r["relevance_score"]) for r in results])
+
+    # ---------------------------------------------------------------- retriever wiring
+
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("rerank")
+    )
+    def test_31_contextual_compression_retriever(self, provider, model):
+        """The documented RAG pattern: a reranker wrapped around a base retriever.
+
+        A static base retriever keeps the assertion about reranking rather than about vector
+        search, which is what this suite is pinning.
+        """
+        from langchain_classic.retrievers import ContextualCompressionRetriever
+        from langchain_core.retrievers import BaseRetriever
+
+        documents = self._documents()
+
+        class StaticRetriever(BaseRetriever):
+            def _get_relevant_documents(self, query, *, run_manager=None):
+                return documents
+
+        retriever = ContextualCompressionRetriever(
+            base_compressor=self._compressor(provider, model, top_n=2),
+            base_retriever=StaticRetriever(),
+        )
+
+        compressed = retriever.invoke(RERANK_QUERY)
+
+        assert_valid_rerank_results(self._pairs(compressed), expected_count=2)
+
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("rerank")
+    )
+    def test_32_async_compress_documents(self, provider, model):
+        """acompress_documents - the path async LangChain apps take."""
+        compressor = self._compressor(provider, model, top_n=2)
+
+        compressed = asyncio.run(
+            compressor.acompress_documents(self._documents(), RERANK_QUERY)
+        )
 
         assert_valid_rerank_results(self._pairs(compressed), expected_count=2)
