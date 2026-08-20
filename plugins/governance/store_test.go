@@ -174,7 +174,7 @@ func TestGovernanceStoreCheckBudgetUsesOverride(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, DecisionAllow, decision)
 
-	decision, err = store.CheckBudget(context.Background(), EntityWiseBudgets{"VirtualKey": {budget}}, map[string]float64{budget.ID: 15})
+	decision, err = store.CheckBudget(context.Background(), EntityWiseBudgets{"VirtualKey": {budget}}, MapBudgetBaselines{budget.ID: 15})
 	require.Error(t, err)
 	assert.Equal(t, DecisionBudgetExceeded, decision)
 	assert.Contains(t, err.Error(), "125.0000 dollars")
@@ -674,7 +674,7 @@ func TestGovernanceStore_UpdateVirtualKeyInMemory_RotatedValueRemovesOldLookup(t
 
 	updated := *vk
 	updated.Value = *schemas.NewSecretVar("sk-bf-new")
-	store.UpdateVirtualKeyInMemory(context.Background(), &updated, nil, nil, nil)
+	store.UpdateVirtualKeyInMemory(context.Background(), &updated, nil, nil)
 
 	oldVK, oldFound := store.GetVirtualKey(context.Background(), "sk-bf-old")
 	assert.False(t, oldFound)
@@ -1106,14 +1106,14 @@ func TestGovernanceStore_RateLimitStatus(t *testing.T) {
 	store.providers.Store("openai", providerConfig)
 
 	// Get status
-	status := store.GetBudgetAndRateLimitStatus(context.Background(), "", schemas.ModelProvider("openai"), nil, nil, nil, nil)
+	status := store.GetBudgetAndRateLimitStatus(context.Background(), "", schemas.ModelProvider("openai"), nil, nil, nil)
 
 	assert.NotNil(t, status)
 	assert.Equal(t, 50.0, status.RateLimitTokenPercentUsed)
 
 	// Update usage to exhausted state
 	rl.TokenCurrentUsage = 1000
-	status = store.GetBudgetAndRateLimitStatus(context.Background(), "", schemas.ModelProvider("openai"), nil, nil, nil, nil)
+	status = store.GetBudgetAndRateLimitStatus(context.Background(), "", schemas.ModelProvider("openai"), nil, nil, nil)
 
 	assert.Equal(t, 100.0, status.RateLimitTokenPercentUsed)
 }
@@ -1141,14 +1141,14 @@ func TestGovernanceStore_BudgetStatus(t *testing.T) {
 	store.providers.Store("openai", providerConfig)
 
 	// Get status
-	status := store.GetBudgetAndRateLimitStatus(context.Background(), "", schemas.ModelProvider("openai"), nil, nil, nil, nil)
+	status := store.GetBudgetAndRateLimitStatus(context.Background(), "", schemas.ModelProvider("openai"), nil, nil, nil)
 
 	assert.NotNil(t, status)
 	assert.Equal(t, 60.0, status.BudgetPercentUsed)
 
 	// Update usage to exhausted state
 	budget.CurrentUsage = 100.0
-	status = store.GetBudgetAndRateLimitStatus(context.Background(), "", schemas.ModelProvider("openai"), nil, nil, nil, nil)
+	status = store.GetBudgetAndRateLimitStatus(context.Background(), "", schemas.ModelProvider("openai"), nil, nil, nil)
 
 	assert.Equal(t, 100.0, status.BudgetPercentUsed)
 }
@@ -1181,7 +1181,7 @@ func TestGetBudgetAndRateLimitStatus_VKScopedModelConfig(t *testing.T) {
 
 	store.virtualKeys.Store(vkValue, vk)
 
-	status := store.GetBudgetAndRateLimitStatus(context.Background(), "gpt-5", schemas.ModelProvider(providerName), vk, nil, nil, nil)
+	status := store.GetBudgetAndRateLimitStatus(context.Background(), "gpt-5", schemas.ModelProvider(providerName), vk, nil, nil)
 
 	require.NotNil(t, status)
 	assert.Greater(t, status.BudgetPercentUsed, 100.0, "VK-scoped model budget at 120%% must be visible to routing status")
@@ -1208,7 +1208,7 @@ func TestGetBudgetAndRateLimitStatus_VKScopedModelConfig_NoMatchOtherProvider(t 
 	store.virtualKeys.Store(vkValue, vk)
 
 	// Query for anthropic — should not see the openai-scoped budget.
-	status := store.GetBudgetAndRateLimitStatus(context.Background(), "claude-3-5-sonnet", schemas.ModelProvider("anthropic"), vk, nil, nil, nil)
+	status := store.GetBudgetAndRateLimitStatus(context.Background(), "claude-3-5-sonnet", schemas.ModelProvider("anthropic"), vk, nil, nil)
 
 	require.NotNil(t, status)
 	assert.Equal(t, 0.0, status.BudgetPercentUsed, "openai VK-scoped budget must not appear for anthropic requests")
@@ -1229,7 +1229,7 @@ func TestGetBudgetAndRateLimitStatus_GlobalModelConfig(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	status := store.GetBudgetAndRateLimitStatus(context.Background(), "gpt-5", schemas.ModelProvider(providerName), nil, nil, nil, nil)
+	status := store.GetBudgetAndRateLimitStatus(context.Background(), "gpt-5", schemas.ModelProvider(providerName), nil, nil, nil)
 
 	require.NotNil(t, status)
 	assert.Equal(t, 75.0, status.BudgetPercentUsed, "global model+provider budget must be visible to routing status")

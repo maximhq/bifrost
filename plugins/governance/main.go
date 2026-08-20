@@ -734,7 +734,7 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 		RequestType:              requestType,
 		Headers:                  headers,
 		QueryParams:              queryParams,
-		BudgetAndRateLimitStatus: p.store.GetBudgetAndRateLimitStatus(ctx, model, provider, virtualKey, nil, nil, nil),
+		BudgetAndRateLimitStatus: p.store.GetBudgetAndRateLimitStatus(ctx, model, provider, virtualKey, nil, nil),
 		computeComplexity:        computeComplexity,
 	}
 
