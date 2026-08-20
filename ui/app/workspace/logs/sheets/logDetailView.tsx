@@ -38,7 +38,7 @@ import {
 	RoutingEngineUsedLabels,
 	Status,
 } from "@/lib/constants/logs";
-import { BatchRequestCounts, ContentBlock, LogEntry, ResponsesMessage } from "@/lib/types/logs";
+import { BatchRequestCounts, ContentBlock, LogEntry, OverheadBucket, ResponsesMessage } from "@/lib/types/logs";
 import { useGetUserAgentMappingsQuery } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { downloadAsJson } from "@/lib/utils/browser-download";
@@ -473,6 +473,191 @@ function HeroStat({
 				{value}
 			</div>
 			{sub ? <div className="text-muted-foreground mt-0.5 truncate text-[11px]">{sub}</div> : null}
+		</div>
+	);
+}
+
+// formatMicros renders a microsecond overhead value, promoting to ms once it is
+// large enough that microseconds would just be noise.
+function formatMicros(us: number): string {
+	if (us >= 1000) return `${(us / 1000).toFixed(2)} ms`;
+	return `${us.toFixed(us < 10 ? 1 : 0)} µs`;
+}
+
+// Top-level overhead categories. The four JSON (un)marshalling phases fold into one
+// "Serialization" category; the auth middleware spans (middleware.*) fold into
+// "Middleware"; every plugin span folds into "Plugins"; the remaining named phase
+// spans (queue-wait, convertor, key.selection) and the backend "core" remainder each
+// get their own category; anything else lands in "Other". The stacked bar and legend
+// show these categories, and "View details" drills into the member spans (individual
+// (un)marshal phases, individual middlewares, individual plugins) inside grouped ones.
+type OverheadCategory = {
+	key: string;
+	label: string;
+	colorClass: string;
+	totalUs: number;
+	members: OverheadBucket[];
+};
+
+// The four serialization phases collapsed into the "Serialization" category. Their
+// per-phase labels below are used for the drill-down rows.
+const OVERHEAD_SERIALIZATION_PHASES = new Set(["request-unmarshal", "request-marshal", "response-parse", "response-marshal"]);
+
+const OVERHEAD_CATEGORY_META: Record<string, { label: string; colorClass: string }> = {
+	serialization: { label: "Serialization", colorClass: "bg-indigo-500/70" },
+	middleware: { label: "Middleware", colorClass: "bg-cyan-500/70" },
+	"middleware.apikeys": { label: "API keys", colorClass: "bg-cyan-500/70" },
+	"middleware.scim": { label: "SCIM", colorClass: "bg-cyan-500/70" },
+	"middleware.auth": { label: "Auth", colorClass: "bg-cyan-500/70" },
+	"queue-wait": { label: "Queue wait", colorClass: "bg-orange-500/70" },
+	"request-unmarshal": { label: "Request unmarshal", colorClass: "bg-sky-500/70" },
+	convertor: { label: "Convertor", colorClass: "bg-fuchsia-500/70" },
+	"attribute-population": { label: "Attribute population", colorClass: "bg-pink-500/70" },
+	"request-marshal": { label: "Request marshal", colorClass: "bg-indigo-500/70" },
+	"response-parse": { label: "Response unmarshal", colorClass: "bg-purple-500/70" },
+	"response-marshal": { label: "Response marshal", colorClass: "bg-rose-500/70" },
+	"key.selection": { label: "Key selection", colorClass: "bg-amber-500/70" },
+	core: { label: "Core", colorClass: "bg-slate-500/70" },
+	transport: { label: "Transport", colorClass: "bg-teal-500/70" },
+	plugins: { label: "Plugins", colorClass: "bg-blue-500/70" },
+	other: { label: "Other", colorClass: "bg-emerald-500/70" },
+};
+
+function overheadCategoryKey(b: OverheadBucket): string {
+	if (OVERHEAD_SERIALIZATION_PHASES.has(b.name)) {
+		return "serialization";
+	}
+	if (b.name.startsWith("middleware.")) {
+		return "middleware";
+	}
+	if (OVERHEAD_CATEGORY_META[b.name] && b.name !== "plugins" && b.name !== "other") {
+		return b.name;
+	}
+	return b.kind === "plugin" ? "plugins" : "other";
+}
+
+// overheadMemberLabel renders a drill-down member with its friendly phase label when
+// there is one (serialization phases), else the raw span name (plugins).
+function overheadMemberLabel(name: string): string {
+	return OVERHEAD_CATEGORY_META[name]?.label ?? name;
+}
+
+// buildOverheadCategories groups the raw buckets into the top-level categories,
+// ordered largest-first so the bar and legend read like the numbers.
+function buildOverheadCategories(buckets: OverheadBucket[]): OverheadCategory[] {
+	const grouped = new Map<string, OverheadBucket[]>();
+	for (const b of buckets) {
+		const key = overheadCategoryKey(b);
+		const list = grouped.get(key);
+		if (list) list.push(b);
+		else grouped.set(key, [b]);
+	}
+	const cats: OverheadCategory[] = [];
+	for (const [key, members] of grouped) {
+		members.sort((a, b) => b.duration_us - a.duration_us);
+		cats.push({
+			key,
+			label: OVERHEAD_CATEGORY_META[key]?.label ?? key,
+			colorClass: OVERHEAD_CATEGORY_META[key]?.colorClass ?? "bg-muted-foreground/50",
+			totalUs: members.reduce((acc, m) => acc + m.duration_us, 0),
+			members,
+		});
+	}
+	return cats.sort((a, b) => b.totalUs - a.totalUs);
+}
+
+// OverheadBreakdown renders Bifrost's overhead as a single horizontal stacked bar
+// split into the top-level categories, with a legend beneath. Plugin and internal
+// spans are measured directly; the "core" bucket (from the backend) accounts for the
+// rest of the overhead, so the segments sum to the full overhead number. "View
+// details" expands the categories that hold more than one span (Plugins, Other) into
+// their individual members so a specific plugin can be inspected.
+function OverheadBreakdown({ buckets, overheadMs }: { buckets: OverheadBucket[]; overheadMs?: number }) {
+	const [showDetails, setShowDetails] = useState(false);
+	if (!buckets || buckets.length === 0) return null;
+
+	const categories = buildOverheadCategories(buckets);
+	const sumUs = buckets.reduce((acc, b) => acc + b.duration_us, 0);
+	const overheadUs = overheadMs != null && !isNaN(overheadMs) ? overheadMs * 1000 : undefined;
+
+	// When measured spans already exceed the computed overhead, the backend omits a
+	// core bucket (it would be negative): a sign the upstream accumulator is
+	// over-counting. Surface it rather than let the numbers look inconsistent.
+	const overCounted = overheadUs != null && sumUs > overheadUs + 1;
+
+	const barTotal = categories.reduce((acc, c) => acc + c.totalUs, 0) || 1;
+	// Only categories that aggregate more than one span are worth drilling into.
+	const drillable = categories.filter((c) => c.members.length > 1);
+
+	return (
+		<div className="space-y-3">
+			<div className="flex items-center justify-between gap-2">
+				<BlockHeader title="Overhead Breakdown" />
+				<div className="font-mono text-xs tabular-nums">{formatMicros(overheadUs ?? sumUs)}</div>
+			</div>
+
+			<div className="flex h-3 w-full overflow-hidden rounded-sm">
+				{categories.map((c) => (
+					<div
+						key={c.key}
+						className={cn(c.colorClass, "h-full")}
+						style={{ width: `${(c.totalUs / barTotal) * 100}%` }}
+						title={`${c.label} · ${formatMicros(c.totalUs)}`}
+					/>
+				))}
+			</div>
+
+			<div className="flex flex-wrap gap-x-4 gap-y-1.5">
+				{categories.map((c) => (
+					<div key={c.key} className="flex items-center gap-1.5 font-mono text-[11px]">
+						<span className={cn("h-2.5 w-2.5 shrink-0 rounded-[2px]", c.colorClass)} />
+						<span>{c.label}</span>
+						<span className="text-muted-foreground tabular-nums">{formatMicros(c.totalUs)}</span>
+					</div>
+				))}
+			</div>
+
+			{drillable.length > 0 ? (
+				<button
+					type="button"
+					onClick={() => setShowDetails((v) => !v)}
+					className="text-muted-foreground hover:text-foreground flex items-center gap-1 font-mono text-[11px] transition"
+				>
+					View details
+					<ChevronDown className={cn("h-3 w-3 transition-transform", showDetails ? "rotate-180" : "rotate-0")} />
+				</button>
+			) : null}
+
+			{showDetails ? (
+				<div className="space-y-3 pt-1">
+					{drillable.map((c) => (
+						<div key={c.key} className="space-y-1.5">
+							<div className="text-muted-foreground flex items-center gap-1.5 text-[11px] font-medium tracking-wide uppercase">
+								<span className={cn("h-2 w-2 shrink-0 rounded-[2px]", c.colorClass)} />
+								{c.label}
+								<span className="tabular-nums">{formatMicros(c.totalUs)}</span>
+							</div>
+							<div className="space-y-1 pl-3">
+								{c.members.map((m) => (
+									<div key={m.name} className="flex items-center justify-between gap-3 font-mono text-[11px]">
+										<span className="truncate" title={m.name}>
+											{overheadMemberLabel(m.name)}
+										</span>
+										<span className="text-muted-foreground shrink-0 tabular-nums">{formatMicros(m.duration_us)}</span>
+									</div>
+								))}
+							</div>
+						</div>
+					))}
+				</div>
+			) : null}
+
+			{overCounted ? (
+				<div className="text-muted-foreground text-[11px]">
+					Measured spans ({formatMicros(sumUs)}) exceed the computed overhead ({formatMicros(overheadUs!)}); the upstream accumulator may be
+					over-counting.
+				</div>
+			) : null}
 		</div>
 	);
 }
@@ -1089,6 +1274,9 @@ export function LogDetailView({
 								value={log.overhead_latency == null || isNaN(log.overhead_latency) ? "N/A" : <div>{log.overhead_latency.toFixed(2)}ms</div>}
 							/>
 						</div>
+						{log.overhead_breakdown && log.overhead_breakdown.length > 0 ? (
+							<OverheadBreakdown buckets={log.overhead_breakdown} overheadMs={log.overhead_latency} />
+						) : null}
 					</div>
 					<DottedSeparator />
 					<div className="space-y-4">

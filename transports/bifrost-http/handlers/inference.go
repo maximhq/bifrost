@@ -1042,7 +1042,11 @@ func prepareChatCompletionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) 
 
 // chatCompletion handles POST /v1/chat/completions - Process chat completion requests
 func (h *CompletionHandler) chatCompletion(ctx *fasthttp.RequestCtx) {
+	pt, ph := startTransportSpan(ctx, "request-unmarshal")
 	req, bifrostChatReq, err := prepareChatCompletionRequest(ctx, h.config)
+	if pt != nil {
+		pt.EndSpan(ph, schemas.SpanStatusOk, "")
+	}
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -1074,7 +1078,11 @@ func (h *CompletionHandler) chatCompletion(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	// Send successful response
+	mt, mh := startTransportSpan(ctx, "response-marshal")
 	SendJSON(ctx, resp)
+	if mt != nil {
+		mt.EndSpan(mh, schemas.SpanStatusOk, "")
+	}
 }
 
 // prepareResponsesRequest prepares a BifrostResponsesRequest from a ResponsesRequest
