@@ -2215,6 +2215,18 @@ func (provider *BedrockProvider) Rerank(ctx *schemas.BifrostContext, key schemas
 		}
 	}
 
+	// Rerank bills per query, where AWS defines a query as one call covering up to 100 document
+	// chunks ("if a request contains 350 documents, it will be treated as 4 queries"). The count
+	// is exposed only as the CloudWatch SearchUnits metric, never in the response, so it is
+	// derived here. A document over ~500 tokens is chunked upstream into several, so this is a
+	// lower bound for long documents; CloudWatch remains the source for exact reconciliation.
+	if len(request.Documents) > 0 {
+		if bifrostResponse.Usage == nil {
+			bifrostResponse.Usage = &schemas.BifrostLLMUsage{}
+		}
+		bifrostResponse.Usage.SearchUnits = new((len(request.Documents) + bedrockRerankChunksPerQuery - 1) / bedrockRerankChunksPerQuery)
+	}
+
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 

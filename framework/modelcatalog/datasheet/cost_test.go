@@ -4940,3 +4940,64 @@ func TestCalculateBatchCostDetailsForUsage_CostPerRequestSurcharge(t *testing.T)
 	assert.InDelta(t, viaUsage, details.Cost, 1e-12)
 	assert.InDelta(t, 0.0007+0.01, details.Cost, 1e-12)
 }
+
+func TestCalculateCost_RerankPerQuery(t *testing.T) {
+	// Cohere and Bedrock both bill rerank per query rather than per token, so the token rates
+	// on these rows are genuinely zero upstream. Before input_cost_per_query was wired, that
+	// made every rerank request cost nothing.
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("rerank-v3.5", "cohere", "rerank"): {
+			Model: "rerank-v3.5", Provider: "cohere", Mode: "rerank",
+			InputCostPerToken:  bifrost.Ptr(0.0),
+			OutputCostPerToken: bifrost.Ptr(0.0),
+			InputCostPerQuery:  bifrost.Ptr(0.002),
+		},
+	})
+
+	t.Run("single search unit", func(t *testing.T) {
+		resp := makeRerankResponse(schemas.Cohere, "rerank-v3.5", &schemas.BifrostLLMUsage{
+			SearchUnits: bifrost.Ptr(1),
+		})
+		assert.InDelta(t, 0.002, s.CalculateCost(resp, nil), 1e-12)
+	})
+
+	t.Run("multiple search units bill per unit", func(t *testing.T) {
+		// A query covers up to 100 document chunks; 150 documents bills as 2.
+		resp := makeRerankResponse(schemas.Cohere, "rerank-v3.5", &schemas.BifrostLLMUsage{
+			SearchUnits: bifrost.Ptr(2),
+		})
+		assert.InDelta(t, 0.004, s.CalculateCost(resp, nil), 1e-12)
+	})
+
+	t.Run("usage without search units bills one query", func(t *testing.T) {
+		resp := makeRerankResponse(schemas.Cohere, "rerank-v3.5", &schemas.BifrostLLMUsage{
+			PromptTokens: 500,
+			TotalTokens:  500,
+		})
+		assert.InDelta(t, 0.002, s.CalculateCost(resp, nil), 1e-12)
+	})
+
+	t.Run("nil usage still bills one query", func(t *testing.T) {
+		// Vertex reports no usage on rerank; returning zero would under-report every call.
+		resp := makeRerankResponse(schemas.Cohere, "rerank-v3.5", nil)
+		assert.InDelta(t, 0.002, s.CalculateCost(resp, nil), 1e-12)
+	})
+}
+
+func TestCalculateCost_RerankPerTokenStillWorks(t *testing.T) {
+	// Voyage and Jina style rerankers bill per token and carry no per-query rate; the two
+	// pricing shapes must not interfere.
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("rerank-2", "voyage", "rerank"): {
+			Model: "rerank-2", Provider: "voyage", Mode: "rerank",
+			InputCostPerToken: bifrost.Ptr(0.00000005),
+		},
+	})
+
+	resp := makeRerankResponse("voyage", "rerank-2", &schemas.BifrostLLMUsage{
+		PromptTokens: 1000,
+		TotalTokens:  1000,
+	})
+
+	assert.InDelta(t, 0.00005, s.CalculateCost(resp, nil), 1e-12)
+}

@@ -427,8 +427,13 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 		return input.imageUsage.Cost
 	}
 
-	// If no usage data at all, nothing to price
-	if input.usage == nil && input.audioSeconds == nil && input.audioTokenDetails == nil && input.imageUsage == nil && input.videoSeconds == nil && input.audioTextInputChars == 0 && input.ocrProcessedPages == nil && input.containerIdentifierString == "" {
+	// If no usage data at all, nothing to price.
+	//
+	// Rerank is exempt: it bills per query rather than per unit of reported usage, so a call
+	// that reports nothing still owes one query. Vertex returns no usage on rerank at all, and
+	// treating that as free would silently under-report every one of its calls.
+	if requestType != schemas.RerankRequest &&
+		input.usage == nil && input.audioSeconds == nil && input.audioTokenDetails == nil && input.imageUsage == nil && input.videoSeconds == nil && input.audioTextInputChars == 0 && input.ocrProcessedPages == nil && input.containerIdentifierString == "" {
 		return nil
 	}
 
@@ -596,7 +601,9 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 	case result.EmbeddingResponse != nil && result.EmbeddingResponse.Usage != nil:
 		input.usage = result.EmbeddingResponse.Usage
 
-	case result.RerankResponse != nil && result.RerankResponse.Usage != nil:
+	// Not gated on Usage like its neighbours: rerank bills per query, so a response that
+	// carries no usage at all (Vertex reports none) still owes one query's cost.
+	case result.RerankResponse != nil:
 		input.usage = result.RerankResponse.Usage
 
 	case result.SpeechResponse != nil && result.SpeechResponse.Usage != nil:
@@ -1034,31 +1041,55 @@ func computeEmbeddingCost(pricing *configstoreTables.TableModelPricing, usage *s
 }
 
 // computeRerankCost handles rerank requests.
+//
+// Rerank is priced two different ways depending on the model. Cohere, Bedrock and Azure bill per
+// query - one query covers up to 100 document chunks, so a larger request bills as several - while
+// hosted rerankers such as Voyage and Jina bill per token. Both terms are summed because a given
+// pricing row only ever carries one of them.
+//
+// Per-query pricing needs no usage at all, so a nil usage still bills one query rather than
+// returning zero: Vertex reports no usage on rerank, and dropping the charge there would silently
+// under-report every one of its calls.
 func computeRerankCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, tier serviceTier) *schemas.BifrostCost {
-	if usage == nil {
-		return nil
+	queryCost := 0.0
+	if pricing.InputCostPerQuery != nil {
+		// Providers that report their own billed unit count win: Cohere's search_units already
+		// accounts for long documents being chunked past the 100-per-query boundary.
+		queries := 1
+		if usage != nil && usage.SearchUnits != nil && *usage.SearchUnits > 0 {
+			queries = *usage.SearchUnits
+		}
+		queryCost = float64(queries) * *pricing.InputCostPerQuery
 	}
-	tierTokens := usage.PromptTokens
-	inputCost := float64(usage.PromptTokens) * tieredInputRate(pricing, tierTokens, tier)
-	outputCost := float64(usage.CompletionTokens) * tieredOutputRate(pricing, tierTokens, tier)
 
-	searchCost := 0.0
-	if pricing.SearchContextCostPerQuery != nil && usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.NumSearchQueries != nil {
-		searchCost = float64(*usage.CompletionTokensDetails.NumSearchQueries) * *pricing.SearchContextCostPerQuery
+	// Token terms stay zero when the response reports no usage; the per-query charge above
+	// still applies.
+	inputCost, outputCost, searchCost := 0.0, 0.0, 0.0
+	if usage != nil {
+		tierTokens := usage.PromptTokens
+		inputCost = float64(usage.PromptTokens) * tieredInputRate(pricing, tierTokens, tier)
+		outputCost = float64(usage.CompletionTokens) * tieredOutputRate(pricing, tierTokens, tier)
+
+		if pricing.SearchContextCostPerQuery != nil && usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.NumSearchQueries != nil {
+			searchCost = float64(*usage.CompletionTokensDetails.NumSearchQueries) * *pricing.SearchContextCostPerQuery
+		}
 	}
 
-	// Search queries are billed on the output side, matching computeTextCost.
+	// Search queries are billed on the output side, matching computeTextCost. The flat
+	// per-query rerank charge maps to no token category, so it folds into the input side
+	// as RequestCost, matching CostPerRequest.
+	inputTokensCost := inputCost + queryCost
 	outputTokensCost := outputCost + searchCost
 
 	var inputDetails *schemas.InputCostDetails
-	if inputCost != 0 {
-		inputDetails = &schemas.InputCostDetails{TextCost: inputCost}
+	if inputTokensCost != 0 {
+		inputDetails = &schemas.InputCostDetails{TextCost: inputCost, RequestCost: queryCost}
 	}
 	var outputDetails *schemas.OutputCostDetails
-	if outputCost != 0 || searchCost != 0 {
+	if outputTokensCost != 0 {
 		outputDetails = &schemas.OutputCostDetails{TextCost: outputCost, SearchQueriesCost: searchCost}
 	}
-	return newInputOutputCostWithDetails(inputCost, outputTokensCost, inputDetails, outputDetails)
+	return newInputOutputCostWithDetails(inputTokensCost, outputTokensCost, inputDetails, outputDetails)
 }
 
 // newInputOutputCost builds a BifrostCost from separate input and output costs,

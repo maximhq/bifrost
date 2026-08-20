@@ -3683,3 +3683,34 @@ func TestRDBConfigStore_SyncRoutingRules(t *testing.T) {
 		})
 	}
 }
+
+// TestUpsertModelPricesBatch_InputCostPerQuerySurvivesResync guards the ON CONFLICT DO UPDATE
+// column list. Create() writes every column, so a first sync looks correct even when a field is
+// missing from pricingSyncUpdateColumns - the value only disappears on the next resync of an
+// existing row, which is 24h later in production.
+func TestUpsertModelPricesBatch_InputCostPerQuerySurvivesResync(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
+
+	ctx := context.Background()
+	cost := func(f float64) *float64 { return &f }
+
+	row := tables.TableModelPricing{Model: "rerank-v3.5", Provider: "cohere", Mode: "rerank"}
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, []tables.TableModelPricing{row}))
+
+	row.InputCostPerQuery = cost(0.002)
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, []tables.TableModelPricing{row}))
+
+	got, err := s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	var found *tables.TableModelPricing
+	for i := range got {
+		if got[i].Model == "rerank-v3.5" {
+			found = &got[i]
+			break
+		}
+	}
+	require.NotNil(t, found)
+	require.NotNil(t, found.InputCostPerQuery, "input_cost_per_query missing from pricingSyncUpdateColumns")
+	assert.Equal(t, 0.002, *found.InputCostPerQuery)
+}

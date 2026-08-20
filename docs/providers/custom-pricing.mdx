@@ -404,6 +404,7 @@ Any field you set (including `0`) is applied as an override; omitted fields are 
 | Field | Description |
 |-------|-------------|
 | `search_context_cost_per_query` | Cost per web search context query |
+| `input_cost_per_query` | Cost per rerank query. One query covers up to 100 document chunks, so a larger request bills as several. Does not apply to Vertex, which bills content-size-derived ranking units |
 | `code_interpreter_cost_per_session` | Cost per code interpreter session |
 | `inference_geo_us_multiplier` | Data-residency cost multiplier applied when a request is served from a US inference region |
 | `cost_per_request` | Flat fee added once per billed request, on top of any usage-based cost |
