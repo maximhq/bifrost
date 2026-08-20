@@ -1586,6 +1586,7 @@ func mergeProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []schema
 					VLLMKeyConfig:          dbKey.VLLMKeyConfig,
 					OllamaKeyConfig:        dbKey.OllamaKeyConfig,
 					SGLKeyConfig:           dbKey.SGLKeyConfig,
+					GithubCopilotKeyConfig: dbKey.GithubCopilotKeyConfig,
 					Enabled:                dbKey.Enabled,
 					UseForBatchAPI:         dbKey.UseForBatchAPI,
 					UseAnthropicEndpoints:  dbKey.UseAnthropicEndpoints,
@@ -1669,6 +1670,7 @@ func reconcileProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []sc
 					VLLMKeyConfig:          dbKey.VLLMKeyConfig,
 					OllamaKeyConfig:        dbKey.OllamaKeyConfig,
 					SGLKeyConfig:           dbKey.SGLKeyConfig,
+					GithubCopilotKeyConfig: dbKey.GithubCopilotKeyConfig,
 					Enabled:                dbKey.Enabled,
 					UseForBatchAPI:         dbKey.UseForBatchAPI,
 					UseAnthropicEndpoints:  dbKey.UseAnthropicEndpoints,
@@ -6523,6 +6525,15 @@ func (c *Config) GetAllKeys() ([]configstoreTables.TableKey, error) {
 				cfg := *key.SGLKeyConfig // safe copy
 				cfg.URL = *cfg.URL.Redacted()
 				configStoreKey.SGLKeyConfig = &cfg
+			}
+			if key.GithubCopilotKeyConfig != nil {
+				cfg := *key.GithubCopilotKeyConfig // safe copy
+				cfg.AppID = *cfg.AppID.Redacted()
+				cfg.InstallationID = *cfg.InstallationID.Redacted()
+				cfg.RepositoryID = *cfg.RepositoryID.Redacted()
+				cfg.PrivateKey = *cfg.PrivateKey.Redacted()
+				cfg.GithubDomain = *cfg.GithubDomain.Redacted()
+				configStoreKey.GithubCopilotKeyConfig = &cfg
 			}
 			keys = append(keys, configStoreKey)
 		}
