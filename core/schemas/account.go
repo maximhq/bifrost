@@ -843,6 +843,10 @@ type GigaChatKeyConfig struct {
 	CABundleFile string     `json:"ca_bundle_file,omitempty"` // CA bundle file for GigaChat TLS roots
 }
 
+// GigaChatRedactedFilePlaceholder is the stable wire placeholder for redacted
+// certificate paths. Update handlers must preserve stored paths when receiving it.
+const GigaChatRedactedFilePlaceholder = "<REDACTED>"
+
 // CheckAndSetDefaults applies GigaChat defaults that are safe at config-parse time.
 func (config *GigaChatKeyConfig) CheckAndSetDefaults() {
 	if config == nil {
@@ -927,7 +931,7 @@ func redactNonEmptyString(value string) string {
 	if strings.TrimSpace(value) == "" {
 		return value
 	}
-	return "<REDACTED>"
+	return GigaChatRedactedFilePlaceholder
 }
 
 // Account defines the interface for managing provider accounts and their configurations.

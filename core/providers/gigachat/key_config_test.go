@@ -29,6 +29,15 @@ func TestGigaChatKeyConfigRedacted(t *testing.T) {
 		t.Fatalf("json.Marshal returned error: %v", err)
 	}
 	output := string(data)
+	for field, value := range map[string]string{
+		"cert_file":      redacted.CertFile,
+		"key_file":       redacted.KeyFile,
+		"ca_bundle_file": redacted.CABundleFile,
+	} {
+		if value != schemas.GigaChatRedactedFilePlaceholder {
+			t.Errorf("%s redaction mismatch: got %q, want %q", field, value, schemas.GigaChatRedactedFilePlaceholder)
+		}
+	}
 
 	for _, secret := range []string{
 		"secret-credentials",

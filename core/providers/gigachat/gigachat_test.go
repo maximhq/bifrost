@@ -26,7 +26,6 @@ func TestGigachat(t *testing.T) {
 	t.Run("NewProvider", testNewGigaChatProvider)
 	t.Run("TrimBaseURL", testNewGigaChatProviderTrimsBaseURL)
 	t.Run("UnsupportedOperation", testGigaChatProviderUnsupportedOperation)
-	t.Run("ChatCompletion", testGigaChatChatCompletion)
 	t.Run("ListModels", testGigaChatListModels)
 	t.Run("Embedding", testGigaChatEmbedding)
 	t.Run("ResponsesRequestConversion", testGigaChatResponsesRequestConversion)

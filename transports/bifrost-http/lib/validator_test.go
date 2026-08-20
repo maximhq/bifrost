@@ -9,6 +9,9 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 )
 
 // loadLocalSchema reads the local config.schema.json for use in tests,
@@ -1803,6 +1806,31 @@ func TestValidateConfigSchema_GigaChatKeyConfig_RejectsBlankAuthMaterial(t *test
 			}
 		})
 	}
+}
+
+func TestGigaChatCustomProviderBase(t *testing.T) {
+	t.Run("runtime validation", func(t *testing.T) {
+		config := configstore.ProviderConfig{
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.GigaChat},
+		}
+		if err := ValidateCustomProvider(config, schemas.ModelProvider("custom-gigachat")); err != nil {
+			t.Fatalf("expected GigaChat custom-provider base to pass validation: %v", err)
+		}
+	})
+
+	t.Run("config schema", func(t *testing.T) {
+		config := `{
+			"providers": {
+				"custom-gigachat": {
+					"keys": [{"name": "test", "value": "token", "weight": 1, "models": ["GigaChat"]}],
+					"custom_provider_config": {"base_provider_type": "gigachat"}
+				}
+			}
+		}`
+		if err := ValidateConfigSchema([]byte(config), loadLocalSchema(t)); err != nil {
+			t.Fatalf("expected GigaChat custom-provider base to pass schema validation: %v", err)
+		}
+	})
 }
 
 // =============================================================================

@@ -82,6 +82,7 @@ var SupportedBaseProviders = []ModelProvider{
 	Bedrock,
 	Cohere,
 	Gemini,
+	GigaChat,
 	OpenAI,
 	HuggingFace,
 	Replicate,

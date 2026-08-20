@@ -599,7 +599,7 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, updateKey schemas.Key) (sch
 			{&mergedKey.GigaChatKeyConfig.KeyFile, keyFile, "gigachat_key_config.key_file"},
 			{&mergedKey.GigaChatKeyConfig.CABundleFile, caBundleFile, "gigachat_key_config.ca_bundle_file"},
 		} {
-			if *item.incoming != "<REDACTED>" {
+			if *item.incoming != schemas.GigaChatRedactedFilePlaceholder {
 				continue
 			}
 			if strings.TrimSpace(item.stored) == "" {

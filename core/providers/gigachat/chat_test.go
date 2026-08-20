@@ -406,19 +406,25 @@ func testGigaChatChatCompletionExecutesWithOAuthTokenAndExtraParams(t *testing.T
 		case "/oauth":
 			tokenRequests.Add(1)
 			if got := request.Header.Get("Authorization"); got != "Basic super-secret-credentials" {
-				t.Fatalf("token authorization header mismatch: got %q", got)
+				failGigaChatHTTPHandler(t, w, "token authorization header mismatch: got %q", got)
+				return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"access_token":"chat-access-token","expires_at":1893456000}`))
 		case "/v1/chat/completions":
 			chatRequests.Add(1)
 			if got := request.Header.Get("Authorization"); got != "Bearer chat-access-token" {
-				t.Fatalf("chat authorization header mismatch: got %q", got)
+				failGigaChatHTTPHandler(t, w, "chat authorization header mismatch: got %q", got)
+				return
 			}
 			if strings.Contains(request.Header.Get("Authorization"), "super-secret-credentials") {
-				t.Fatal("chat request leaked OAuth credentials")
+				failGigaChatHTTPHandler(t, w, "chat request leaked OAuth credentials")
+				return
 			}
-			assertGigaChatChatRequestBody(t, request)
+			if err := validateGigaChatChatRequestBody(request); err != nil {
+				failGigaChatHTTPHandler(t, w, "%v", err)
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("X-Request-ID", "chat-request-id")
 			_, _ = w.Write([]byte(`{
@@ -430,7 +436,7 @@ func testGigaChatChatCompletionExecutesWithOAuthTokenAndExtraParams(t *testing.T
 				"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10,"precached_prompt_tokens":2}
 			}`))
 		default:
-			t.Fatalf("unexpected path: %s", request.URL.Path)
+			failGigaChatHTTPHandler(t, w, "unexpected path: %s", request.URL.Path)
 		}
 	}))
 	defer server.Close()
@@ -493,16 +499,21 @@ func testGigaChatChatCompletionExecutesWithMTLSClientCertificate(t *testing.T) {
 		switch request.URL.Path {
 		case "/oauth", "/api/v2/oauth", "/v1/token", "/api/v1/token":
 			oauthRequests.Add(1)
-			t.Fatalf("unexpected token endpoint request: %s", request.URL.Path)
+			failGigaChatHTTPHandler(t, w, "unexpected token endpoint request: %s", request.URL.Path)
 		case "/v1/chat/completions":
 			chatRequests.Add(1)
 			if got := request.Header.Get("Authorization"); got != "" {
-				t.Fatalf("chat authorization header mismatch: got %q, want empty", got)
+				failGigaChatHTTPHandler(t, w, "chat authorization header mismatch: got %q, want empty", got)
+				return
 			}
 			if request.TLS == nil || len(request.TLS.PeerCertificates) == 0 {
-				t.Fatal("expected client certificate on API request")
+				failGigaChatHTTPHandler(t, w, "expected client certificate on API request")
+				return
 			}
-			assertGigaChatChatRequestBody(t, request)
+			if err := validateGigaChatChatRequestBody(request); err != nil {
+				failGigaChatHTTPHandler(t, w, "%v", err)
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{
 				"id":"chatcmpl-mtls",
@@ -513,7 +524,7 @@ func testGigaChatChatCompletionExecutesWithMTLSClientCertificate(t *testing.T) {
 				"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}
 			}`))
 		default:
-			t.Fatalf("unexpected path: %s", request.URL.Path)
+			failGigaChatHTTPHandler(t, w, "unexpected path: %s", request.URL.Path)
 		}
 	}))
 
@@ -551,28 +562,35 @@ func testGigaChatChatCompletionUploadsInlineImageAttachment(t *testing.T) {
 		case "/v1/files":
 			uploadRequests.Add(1)
 			if got := request.Header.Get("Authorization"); got != "Bearer image-token" {
-				t.Fatalf("file upload authorization header mismatch: got %q", got)
+				failGigaChatHTTPHandler(t, w, "file upload authorization header mismatch: got %q", got)
+				return
 			}
 			if err := request.ParseMultipartForm(1024); err != nil {
-				t.Fatalf("failed to parse upload multipart form: %v", err)
+				failGigaChatHTTPHandler(t, w, "failed to parse upload multipart form: %v", err)
+				return
 			}
 			if got := request.FormValue("purpose"); got != "general" {
-				t.Fatalf("upload purpose mismatch: got %q", got)
+				failGigaChatHTTPHandler(t, w, "upload purpose mismatch: got %q", got)
+				return
 			}
 			file, header, err := request.FormFile("file")
 			if err != nil {
-				t.Fatalf("failed to read uploaded file: %v", err)
+				failGigaChatHTTPHandler(t, w, "failed to read uploaded file: %v", err)
+				return
 			}
 			defer file.Close()
 			fileBytes, err := io.ReadAll(file)
 			if err != nil {
-				t.Fatalf("failed to read uploaded bytes: %v", err)
+				failGigaChatHTTPHandler(t, w, "failed to read uploaded bytes: %v", err)
+				return
 			}
 			if string(fileBytes) != "image-bytes" {
-				t.Fatalf("uploaded image bytes mismatch: %q", fileBytes)
+				failGigaChatHTTPHandler(t, w, "uploaded image bytes mismatch: %q", fileBytes)
+				return
 			}
 			if header.Filename != "image.jpg" {
-				t.Fatalf("uploaded image filename mismatch: got %q", header.Filename)
+				failGigaChatHTTPHandler(t, w, "uploaded image filename mismatch: got %q", header.Filename)
+				return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"id":"uploaded-image","object":"file","bytes":11,"created_at":1700000000,"filename":"image.jpg","purpose":"general"}`))
@@ -580,20 +598,27 @@ func testGigaChatChatCompletionUploadsInlineImageAttachment(t *testing.T) {
 			chatRequests.Add(1)
 			body, err := io.ReadAll(request.Body)
 			if err != nil {
-				t.Fatalf("failed to read chat body: %v", err)
+				failGigaChatHTTPHandler(t, w, "failed to read chat body: %v", err)
+				return
 			}
-			payload := assertGigaChatChatBodyAttachment(t, body, "uploaded-image")
+			payload, err := validateGigaChatChatBodyAttachment(body, "uploaded-image")
+			if err != nil {
+				failGigaChatHTTPHandler(t, w, "%v", err)
+				return
+			}
 			bodyStr := string(body)
 			if strings.Contains(bodyStr, "data:image") || strings.Contains(bodyStr, "image_url") {
-				t.Fatalf("chat body leaked OpenAI image_url payload: %s", body)
+				failGigaChatHTTPHandler(t, w, "chat body leaked OpenAI image_url payload: %s", body)
+				return
 			}
 			if _, ok := payload["function_call"]; ok {
-				t.Fatalf("image-only attachment should not force function_call auto: %s", body)
+				failGigaChatHTTPHandler(t, w, "image-only attachment should not force function_call auto: %s", body)
+				return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"На изображении..."},"finish_reason":"stop"}],"model":"GigaChat","object":"chat.completion"}`))
 		default:
-			t.Fatalf("unexpected path: %s", request.URL.Path)
+			failGigaChatHTTPHandler(t, w, "unexpected path: %s", request.URL.Path)
 		}
 	}))
 	defer server.Close()
@@ -641,22 +666,27 @@ func testGigaChatChatCompletionUploadsInlineFileAttachment(t *testing.T) {
 		case "/v1/files":
 			uploadRequests.Add(1)
 			if err := request.ParseMultipartForm(1024); err != nil {
-				t.Fatalf("failed to parse upload multipart form: %v", err)
+				failGigaChatHTTPHandler(t, w, "failed to parse upload multipart form: %v", err)
+				return
 			}
 			file, header, err := request.FormFile("file")
 			if err != nil {
-				t.Fatalf("failed to read uploaded file: %v", err)
+				failGigaChatHTTPHandler(t, w, "failed to read uploaded file: %v", err)
+				return
 			}
 			defer file.Close()
 			fileBytes, err := io.ReadAll(file)
 			if err != nil {
-				t.Fatalf("failed to read uploaded bytes: %v", err)
+				failGigaChatHTTPHandler(t, w, "failed to read uploaded bytes: %v", err)
+				return
 			}
 			if string(fileBytes) != "%PDF test" {
-				t.Fatalf("uploaded file bytes mismatch: %q", fileBytes)
+				failGigaChatHTTPHandler(t, w, "uploaded file bytes mismatch: %q", fileBytes)
+				return
 			}
 			if header.Filename != "Day_2_v6.pdf" {
-				t.Fatalf("uploaded filename mismatch: got %q", header.Filename)
+				failGigaChatHTTPHandler(t, w, "uploaded filename mismatch: got %q", header.Filename)
+				return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"id":"uploaded-pdf","object":"file","bytes":9,"created_at":1700000000,"filename":"Day_2_v6.pdf","purpose":"general"}`))
@@ -664,20 +694,27 @@ func testGigaChatChatCompletionUploadsInlineFileAttachment(t *testing.T) {
 			chatRequests.Add(1)
 			body, err := io.ReadAll(request.Body)
 			if err != nil {
-				t.Fatalf("failed to read chat body: %v", err)
+				failGigaChatHTTPHandler(t, w, "failed to read chat body: %v", err)
+				return
 			}
-			payload := assertGigaChatChatBodyAttachment(t, body, "uploaded-pdf")
+			payload, err := validateGigaChatChatBodyAttachment(body, "uploaded-pdf")
+			if err != nil {
+				failGigaChatHTTPHandler(t, w, "%v", err)
+				return
+			}
 			bodyStr := string(body)
 			if got := payload["function_call"]; got != "auto" {
-				t.Fatalf("document attachment should enable function_call auto: got %#v body %s", got, body)
+				failGigaChatHTTPHandler(t, w, "document attachment should enable function_call auto: got %#v body %s", got, body)
+				return
 			}
 			if strings.Contains(bodyStr, "file_data") || strings.Contains(bodyStr, "application/pdf;base64") {
-				t.Fatalf("chat body leaked OpenAI file payload: %s", body)
+				failGigaChatHTTPHandler(t, w, "chat body leaked OpenAI file payload: %s", body)
+				return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"Краткое содержание..."},"finish_reason":"stop"}],"model":"GigaChat","object":"chat.completion"}`))
 		default:
-			t.Fatalf("unexpected path: %s", request.URL.Path)
+			failGigaChatHTTPHandler(t, w, "unexpected path: %s", request.URL.Path)
 		}
 	}))
 	defer server.Close()
@@ -732,19 +769,23 @@ func testGigaChatChatCompletionReusesUploadedAttachmentAfterBackendError(t *test
 		case "/v1/files":
 			uploadRequests.Add(1)
 			if err := request.ParseMultipartForm(1024); err != nil {
-				t.Fatalf("failed to parse upload multipart form: %v", err)
+				failGigaChatHTTPHandler(t, w, "failed to parse upload multipart form: %v", err)
+				return
 			}
 			file, _, err := request.FormFile("file")
 			if err != nil {
-				t.Fatalf("failed to read uploaded file: %v", err)
+				failGigaChatHTTPHandler(t, w, "failed to read uploaded file: %v", err)
+				return
 			}
 			defer file.Close()
 			fileBytes, err := io.ReadAll(file)
 			if err != nil {
-				t.Fatalf("failed to read uploaded bytes: %v", err)
+				failGigaChatHTTPHandler(t, w, "failed to read uploaded bytes: %v", err)
+				return
 			}
 			if string(fileBytes) != "%PDF retry" {
-				t.Fatalf("uploaded file bytes mismatch: %q", fileBytes)
+				failGigaChatHTTPHandler(t, w, "uploaded file bytes mismatch: %q", fileBytes)
+				return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"id":"uploaded-retry-pdf","object":"file","bytes":10,"created_at":1700000000,"filename":"retry.pdf","purpose":"general"}`))
@@ -752,9 +793,13 @@ func testGigaChatChatCompletionReusesUploadedAttachmentAfterBackendError(t *test
 			requestIndex := chatRequests.Add(1)
 			body, err := io.ReadAll(request.Body)
 			if err != nil {
-				t.Fatalf("failed to read chat body: %v", err)
+				failGigaChatHTTPHandler(t, w, "failed to read chat body: %v", err)
+				return
 			}
-			assertGigaChatChatBodyAttachment(t, body, "uploaded-retry-pdf")
+			if _, err := validateGigaChatChatBodyAttachment(body, "uploaded-retry-pdf"); err != nil {
+				failGigaChatHTTPHandler(t, w, "%v", err)
+				return
+			}
 			if requestIndex == 1 {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusInternalServerError)
@@ -764,7 +809,7 @@ func testGigaChatChatCompletionReusesUploadedAttachmentAfterBackendError(t *test
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"model":"GigaChat","object":"chat.completion"}`))
 		default:
-			t.Fatalf("unexpected path: %s", request.URL.Path)
+			failGigaChatHTTPHandler(t, w, "unexpected path: %s", request.URL.Path)
 		}
 	}))
 	defer server.Close()
@@ -828,16 +873,19 @@ func testGigaChatChatCompletionReusesSuccessfulAttachmentAfterPartialUploadFailu
 		switch request.URL.Path {
 		case "/v1/files":
 			if err := request.ParseMultipartForm(1024); err != nil {
-				t.Fatalf("failed to parse upload multipart form: %v", err)
+				failGigaChatHTTPHandler(t, w, "failed to parse upload multipart form: %v", err)
+				return
 			}
 			file, header, err := request.FormFile("file")
 			if err != nil {
-				t.Fatalf("failed to read uploaded file: %v", err)
+				failGigaChatHTTPHandler(t, w, "failed to read uploaded file: %v", err)
+				return
 			}
 			defer file.Close()
 			fileBytes, err := io.ReadAll(file)
 			if err != nil {
-				t.Fatalf("failed to read uploaded bytes: %v", err)
+				failGigaChatHTTPHandler(t, w, "failed to read uploaded bytes: %v", err)
+				return
 			}
 
 			w.Header().Set("Content-Type", "application/json")
@@ -845,13 +893,15 @@ func testGigaChatChatCompletionReusesSuccessfulAttachmentAfterPartialUploadFailu
 			case "first.txt":
 				firstFileUploads.Add(1)
 				if string(fileBytes) != "first attachment" {
-					t.Fatalf("first uploaded file bytes mismatch: %q", fileBytes)
+					failGigaChatHTTPHandler(t, w, "first uploaded file bytes mismatch: %q", fileBytes)
+					return
 				}
 				_, _ = w.Write([]byte(`{"id":"uploaded-first","object":"file","bytes":16,"created_at":1700000000,"filename":"first.txt","purpose":"general"}`))
 			case "second.txt":
 				uploadIndex := secondFileUploads.Add(1)
 				if string(fileBytes) != "second attachment" {
-					t.Fatalf("second uploaded file bytes mismatch: %q", fileBytes)
+					failGigaChatHTTPHandler(t, w, "second uploaded file bytes mismatch: %q", fileBytes)
+					return
 				}
 				if uploadIndex == 1 {
 					w.WriteHeader(http.StatusInternalServerError)
@@ -860,34 +910,39 @@ func testGigaChatChatCompletionReusesSuccessfulAttachmentAfterPartialUploadFailu
 				}
 				_, _ = w.Write([]byte(`{"id":"uploaded-second","object":"file","bytes":17,"created_at":1700000000,"filename":"second.txt","purpose":"general"}`))
 			default:
-				t.Fatalf("unexpected uploaded filename: %q", header.Filename)
+				failGigaChatHTTPHandler(t, w, "unexpected uploaded filename: %q", header.Filename)
 			}
 		case "/v1/chat/completions":
 			chatRequests.Add(1)
 			body, err := io.ReadAll(request.Body)
 			if err != nil {
-				t.Fatalf("failed to read chat body: %v", err)
+				failGigaChatHTTPHandler(t, w, "failed to read chat body: %v", err)
+				return
 			}
 			var payload map[string]interface{}
 			if err := json.Unmarshal(body, &payload); err != nil {
-				t.Fatalf("failed to unmarshal chat body %s: %v", body, err)
+				failGigaChatHTTPHandler(t, w, "failed to unmarshal chat body %s: %v", body, err)
+				return
 			}
 			messages, ok := payload["messages"].([]interface{})
 			if !ok || len(messages) != 1 {
-				t.Fatalf("messages mismatch: %#v", payload["messages"])
+				failGigaChatHTTPHandler(t, w, "messages mismatch: %#v", payload["messages"])
+				return
 			}
 			message, ok := messages[0].(map[string]interface{})
 			if !ok {
-				t.Fatalf("message shape mismatch: %#v", messages[0])
+				failGigaChatHTTPHandler(t, w, "message shape mismatch: %#v", messages[0])
+				return
 			}
 			attachments, ok := message["attachments"].([]interface{})
 			if !ok || len(attachments) != 2 || attachments[0] != "uploaded-first" || attachments[1] != "uploaded-second" {
-				t.Fatalf("attachments mismatch: %#v body %s", message["attachments"], body)
+				failGigaChatHTTPHandler(t, w, "attachments mismatch: %#v body %s", message["attachments"], body)
+				return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"model":"GigaChat","object":"chat.completion"}`))
 		default:
-			t.Fatalf("unexpected path: %s", request.URL.Path)
+			failGigaChatHTTPHandler(t, w, "unexpected path: %s", request.URL.Path)
 		}
 	}))
 	defer server.Close()
@@ -965,19 +1020,23 @@ func testGigaChatChatCompletionDoesNotReuseUploadedAttachmentAcrossIndependentRe
 		case "/v1/files":
 			uploadIndex := uploadRequests.Add(1)
 			if err := request.ParseMultipartForm(1024); err != nil {
-				t.Fatalf("failed to parse upload multipart form: %v", err)
+				failGigaChatHTTPHandler(t, w, "failed to parse upload multipart form: %v", err)
+				return
 			}
 			file, _, err := request.FormFile("file")
 			if err != nil {
-				t.Fatalf("failed to read uploaded file: %v", err)
+				failGigaChatHTTPHandler(t, w, "failed to read uploaded file: %v", err)
+				return
 			}
 			defer file.Close()
 			fileBytes, err := io.ReadAll(file)
 			if err != nil {
-				t.Fatalf("failed to read uploaded bytes: %v", err)
+				failGigaChatHTTPHandler(t, w, "failed to read uploaded bytes: %v", err)
+				return
 			}
 			if string(fileBytes) != "%PDF independent" {
-				t.Fatalf("uploaded file bytes mismatch: %q", fileBytes)
+				failGigaChatHTTPHandler(t, w, "uploaded file bytes mismatch: %q", fileBytes)
+				return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"id":"uploaded-independent-` + formatInt32(uploadIndex) + `","object":"file","bytes":16,"created_at":1700000000,"filename":"independent.pdf","purpose":"general"}`))
@@ -985,13 +1044,17 @@ func testGigaChatChatCompletionDoesNotReuseUploadedAttachmentAcrossIndependentRe
 			chatIndex := chatRequests.Add(1)
 			body, err := io.ReadAll(request.Body)
 			if err != nil {
-				t.Fatalf("failed to read chat body: %v", err)
+				failGigaChatHTTPHandler(t, w, "failed to read chat body: %v", err)
+				return
 			}
-			assertGigaChatChatBodyAttachment(t, body, "uploaded-independent-"+formatInt32(chatIndex))
+			if _, err := validateGigaChatChatBodyAttachment(body, "uploaded-independent-"+formatInt32(chatIndex)); err != nil {
+				failGigaChatHTTPHandler(t, w, "%v", err)
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"model":"GigaChat","object":"chat.completion"}`))
 		default:
-			t.Fatalf("unexpected path: %s", request.URL.Path)
+			failGigaChatHTTPHandler(t, w, "unexpected path: %s", request.URL.Path)
 		}
 	}))
 	defer server.Close()
@@ -1034,19 +1097,23 @@ func testGigaChatChatCompletionDoesNotCacheFailedAttachmentUpload(t *testing.T) 
 		case "/v1/files":
 			uploadIndex := uploadRequests.Add(1)
 			if err := request.ParseMultipartForm(1024); err != nil {
-				t.Fatalf("failed to parse upload multipart form: %v", err)
+				failGigaChatHTTPHandler(t, w, "failed to parse upload multipart form: %v", err)
+				return
 			}
 			file, _, err := request.FormFile("file")
 			if err != nil {
-				t.Fatalf("failed to read uploaded file: %v", err)
+				failGigaChatHTTPHandler(t, w, "failed to read uploaded file: %v", err)
+				return
 			}
 			defer file.Close()
 			fileBytes, err := io.ReadAll(file)
 			if err != nil {
-				t.Fatalf("failed to read uploaded bytes: %v", err)
+				failGigaChatHTTPHandler(t, w, "failed to read uploaded bytes: %v", err)
+				return
 			}
 			if string(fileBytes) != "stale-secret-inline" {
-				t.Fatalf("uploaded file bytes mismatch: %q", fileBytes)
+				failGigaChatHTTPHandler(t, w, "uploaded file bytes mismatch: %q", fileBytes)
+				return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			if uploadIndex == 1 {
@@ -1059,16 +1126,21 @@ func testGigaChatChatCompletionDoesNotCacheFailedAttachmentUpload(t *testing.T) 
 			chatRequests.Add(1)
 			body, err := io.ReadAll(request.Body)
 			if err != nil {
-				t.Fatalf("failed to read chat body: %v", err)
+				failGigaChatHTTPHandler(t, w, "failed to read chat body: %v", err)
+				return
 			}
-			assertGigaChatChatBodyAttachment(t, body, "uploaded-after-error")
+			if _, err := validateGigaChatChatBodyAttachment(body, "uploaded-after-error"); err != nil {
+				failGigaChatHTTPHandler(t, w, "%v", err)
+				return
+			}
 			if strings.Contains(string(body), "stale-file-id") {
-				t.Fatalf("chat body used stale file id: %s", body)
+				failGigaChatHTTPHandler(t, w, "chat body used stale file id: %s", body)
+				return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"model":"GigaChat","object":"chat.completion"}`))
 		default:
-			t.Fatalf("unexpected path: %s", request.URL.Path)
+			failGigaChatHTTPHandler(t, w, "unexpected path: %s", request.URL.Path)
 		}
 	}))
 	defer server.Close()
@@ -1207,7 +1279,8 @@ func testGigaChatChatCompletionRefreshesTokenAfterUnauthorized(t *testing.T) {
 			chatIndex := chatRequests.Add(1)
 			wantAuthorization := fmt.Sprintf("Bearer token-%d", chatIndex)
 			if got := request.Header.Get("Authorization"); got != wantAuthorization {
-				t.Fatalf("authorization header mismatch on request %d: got %q, want %q", chatIndex, got, wantAuthorization)
+				failGigaChatHTTPHandler(t, w, "authorization header mismatch on request %d: got %q, want %q", chatIndex, got, wantAuthorization)
+				return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			if chatIndex == 1 {
@@ -1217,7 +1290,7 @@ func testGigaChatChatCompletionRefreshesTokenAfterUnauthorized(t *testing.T) {
 			}
 			_, _ = w.Write([]byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"model":"GigaChat","object":"chat.completion"}`))
 		default:
-			t.Fatalf("unexpected path: %s", request.URL.Path)
+			failGigaChatHTTPHandler(t, w, "unexpected path: %s", request.URL.Path)
 		}
 	}))
 	defer server.Close()
@@ -1258,7 +1331,8 @@ func testGigaChatChatCompletionDoesNotDoubleExchangeExpiredTokenOnRefresh(t *tes
 			chatIndex := chatRequests.Add(1)
 			wantAuthorization := fmt.Sprintf("Bearer token-%d", chatIndex)
 			if got := request.Header.Get("Authorization"); got != wantAuthorization {
-				t.Fatalf("authorization header mismatch on request %d: got %q, want %q", chatIndex, got, wantAuthorization)
+				failGigaChatHTTPHandler(t, w, "authorization header mismatch on request %d: got %q, want %q", chatIndex, got, wantAuthorization)
+				return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			if chatIndex == 1 {
@@ -1269,7 +1343,7 @@ func testGigaChatChatCompletionDoesNotDoubleExchangeExpiredTokenOnRefresh(t *tes
 			}
 			_, _ = w.Write([]byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"model":"GigaChat","object":"chat.completion"}`))
 		default:
-			t.Fatalf("unexpected path: %s", request.URL.Path)
+			failGigaChatHTTPHandler(t, w, "unexpected path: %s", request.URL.Path)
 		}
 	}))
 	defer server.Close()
@@ -1306,12 +1380,17 @@ func testGigaChatChatCompletionStreamsSSEChunks(t *testing.T) {
 		case "/v1/chat/completions":
 			streamRequests.Add(1)
 			if got := request.Header.Get("Authorization"); got != "Bearer stream-access-token" {
-				t.Fatalf("stream authorization header mismatch: got %q", got)
+				failGigaChatHTTPHandler(t, w, "stream authorization header mismatch: got %q", got)
+				return
 			}
 			if strings.Contains(request.Header.Get("Authorization"), "super-secret-credentials") {
-				t.Fatal("stream request leaked OAuth credentials")
+				failGigaChatHTTPHandler(t, w, "stream request leaked OAuth credentials")
+				return
 			}
-			assertGigaChatChatStreamRequestBody(t, request)
+			if err := validateGigaChatChatStreamRequestBody(request); err != nil {
+				failGigaChatHTTPHandler(t, w, "%v", err)
+				return
+			}
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.Header().Set("X-Request-ID", "stream-request-id")
 			_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-stream\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"reasoning_content\":\"Думаю\",\"content\":\"З\"}}],\"created\":1700000000,\"model\":\"GigaChat\",\"object\":\"chat.completion\"}\n\n"))
@@ -1319,7 +1398,7 @@ func testGigaChatChatCompletionStreamsSSEChunks(t *testing.T) {
 			_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-stream\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"created\":1700000000,\"model\":\"GigaChat\",\"object\":\"chat.completion\",\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3,\"total_tokens\":10}}\n\n"))
 			_, _ = w.Write([]byte("data: [DONE]\n\n"))
 		default:
-			t.Fatalf("unexpected path: %s", request.URL.Path)
+			failGigaChatHTTPHandler(t, w, "unexpected path: %s", request.URL.Path)
 		}
 	}))
 	defer server.Close()
@@ -1383,9 +1462,13 @@ func testGigaChatChatCompletionStreamFinalizesLargeResponsePassthrough(t *testin
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/v1/chat/completions" {
-			t.Fatalf("unexpected path: %s", request.URL.Path)
+			failGigaChatHTTPHandler(t, w, "unexpected path: %s", request.URL.Path)
+			return
 		}
-		assertGigaChatChatStreamRequestBody(t, request)
+		if err := validateGigaChatChatStreamRequestBody(request); err != nil {
+			failGigaChatHTTPHandler(t, w, "%v", err)
+			return
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-large\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"large\"}}],\"created\":1700000000,\"model\":\"GigaChat\",\"object\":\"chat.completion\"}\n\n"))
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
@@ -1527,7 +1610,8 @@ func testGigaChatChatCompletionStreamRefreshesTokenAfterUnauthorized(t *testing.
 			streamIndex := streamRequests.Add(1)
 			wantAuthorization := fmt.Sprintf("Bearer stream-token-%d", streamIndex)
 			if got := request.Header.Get("Authorization"); got != wantAuthorization {
-				t.Fatalf("authorization header mismatch on stream request %d: got %q, want %q", streamIndex, got, wantAuthorization)
+				failGigaChatHTTPHandler(t, w, "authorization header mismatch on stream request %d: got %q, want %q", streamIndex, got, wantAuthorization)
+				return
 			}
 			if streamIndex == 1 {
 				w.Header().Set("Content-Type", "application/json")
@@ -1539,7 +1623,7 @@ func testGigaChatChatCompletionStreamRefreshesTokenAfterUnauthorized(t *testing.
 			_, _ = w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"}}],\"model\":\"GigaChat\",\"object\":\"chat.completion\"}\n\n"))
 			_, _ = w.Write([]byte("data: [DONE]\n\n"))
 		default:
-			t.Fatalf("unexpected path: %s", request.URL.Path)
+			failGigaChatHTTPHandler(t, w, "unexpected path: %s", request.URL.Path)
 		}
 	}))
 	defer server.Close()
@@ -1568,7 +1652,8 @@ func testGigaChatChatCompletionStreamHandlesContextCancellation(t *testing.T) {
 	firstChunkWritten := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/v1/chat/completions" {
-			t.Fatalf("unexpected path: %s", request.URL.Path)
+			failGigaChatHTTPHandler(t, w, "unexpected path: %s", request.URL.Path)
+			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"}}],\"model\":\"GigaChat\",\"object\":\"chat.completion\"}\n\n"))
@@ -1691,90 +1776,89 @@ func testGigaChatInlineFileChatRequest(filename string, fileData string) *schema
 	}
 }
 
-func assertGigaChatChatRequestBody(t *testing.T, request *http.Request) {
+func failGigaChatHTTPHandler(t *testing.T, w http.ResponseWriter, format string, args ...any) {
 	t.Helper()
-
-	assertGigaChatChatRequestBodyWithStream(t, request, false)
+	t.Errorf(format, args...)
+	http.Error(w, "test handler assertion failed", http.StatusInternalServerError)
 }
 
-func assertGigaChatChatStreamRequestBody(t *testing.T, request *http.Request) {
-	t.Helper()
-
-	assertGigaChatChatRequestBodyWithStream(t, request, true)
+func validateGigaChatChatRequestBody(request *http.Request) error {
+	return validateGigaChatChatRequestBodyWithStream(request, false)
 }
 
-func assertGigaChatChatRequestBodyWithStream(t *testing.T, request *http.Request, wantStream bool) {
-	t.Helper()
+func validateGigaChatChatStreamRequestBody(request *http.Request) error {
+	return validateGigaChatChatRequestBodyWithStream(request, true)
+}
 
+func validateGigaChatChatRequestBodyWithStream(request *http.Request, wantStream bool) error {
 	if request.Method != http.MethodPost {
-		t.Fatalf("method mismatch: got %s, want POST", request.Method)
+		return fmt.Errorf("method mismatch: got %s, want POST", request.Method)
 	}
 	if got := request.Header.Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
-		t.Fatalf("content type mismatch: got %q", got)
+		return fmt.Errorf("content type mismatch: got %q", got)
 	}
 	if got := request.Header.Get(gigaChatUserAgentHeader); got != gigaChatUserAgent {
-		t.Fatalf("user-agent mismatch: got %q, want %q", got, gigaChatUserAgent)
+		return fmt.Errorf("user-agent mismatch: got %q, want %q", got, gigaChatUserAgent)
 	}
 
 	body, err := io.ReadAll(request.Body)
 	if err != nil {
-		t.Fatalf("failed to read request body: %v", err)
+		return fmt.Errorf("failed to read request body: %w", err)
 	}
 	var payload map[string]interface{}
 	if err := json.Unmarshal(body, &payload); err != nil {
-		t.Fatalf("failed to unmarshal request body %s: %v", body, err)
+		return fmt.Errorf("failed to unmarshal request body %s: %w", body, err)
 	}
 	if got := payload["model"]; got != "GigaChat" {
-		t.Fatalf("model mismatch: got %#v", got)
+		return fmt.Errorf("model mismatch: got %#v", got)
 	}
 	if got := payload["max_tokens"]; got != float64(128) {
-		t.Fatalf("max_tokens mismatch: got %#v", got)
+		return fmt.Errorf("max_tokens mismatch: got %#v", got)
 	}
 	if _, ok := payload["max_completion_tokens"]; ok {
-		t.Fatalf("max_completion_tokens should not be sent: %s", body)
+		return fmt.Errorf("max_completion_tokens should not be sent: %s", body)
 	}
 	if got := payload["stream"]; got != wantStream {
-		t.Fatalf("stream mismatch: got %#v, want %v", got, wantStream)
+		return fmt.Errorf("stream mismatch: got %#v, want %v", got, wantStream)
 	}
 	if got := payload["profanity_check"]; got != false {
-		t.Fatalf("profanity_check mismatch: got %#v", got)
+		return fmt.Errorf("profanity_check mismatch: got %#v", got)
 	}
 	messages, ok := payload["messages"].([]interface{})
 	if !ok || len(messages) != 1 {
-		t.Fatalf("messages mismatch: %#v", payload["messages"])
+		return fmt.Errorf("messages mismatch: %#v", payload["messages"])
 	}
 	message, ok := messages[0].(map[string]interface{})
 	if !ok {
-		t.Fatalf("message shape mismatch: %#v", messages[0])
+		return fmt.Errorf("message shape mismatch: %#v", messages[0])
 	}
 	if got := message["role"]; got != "user" {
-		t.Fatalf("message role mismatch: got %#v", got)
+		return fmt.Errorf("message role mismatch: got %#v", got)
 	}
 	if got := message["content"]; got != "Привет" {
-		t.Fatalf("message content mismatch: got %#v", got)
+		return fmt.Errorf("message content mismatch: got %#v", got)
 	}
+	return nil
 }
 
-func assertGigaChatChatBodyAttachment(t *testing.T, body []byte, wantAttachment string) map[string]interface{} {
-	t.Helper()
-
+func validateGigaChatChatBodyAttachment(body []byte, wantAttachment string) (map[string]interface{}, error) {
 	var payload map[string]interface{}
 	if err := json.Unmarshal(body, &payload); err != nil {
-		t.Fatalf("failed to unmarshal chat body %s: %v", body, err)
+		return nil, fmt.Errorf("failed to unmarshal chat body %s: %w", body, err)
 	}
 	messages, ok := payload["messages"].([]interface{})
 	if !ok || len(messages) != 1 {
-		t.Fatalf("messages mismatch: %#v", payload["messages"])
+		return nil, fmt.Errorf("messages mismatch: %#v", payload["messages"])
 	}
 	message, ok := messages[0].(map[string]interface{})
 	if !ok {
-		t.Fatalf("message shape mismatch: %#v", messages[0])
+		return nil, fmt.Errorf("message shape mismatch: %#v", messages[0])
 	}
 	attachments, ok := message["attachments"].([]interface{})
 	if !ok || len(attachments) != 1 || attachments[0] != wantAttachment {
-		t.Fatalf("attachments mismatch: %#v body %s", message["attachments"], body)
+		return nil, fmt.Errorf("attachments mismatch: %#v body %s", message["attachments"], body)
 	}
-	return payload
+	return payload, nil
 }
 
 func assertGigaChatJSONSchemaResponseFormat(t *testing.T, responseFormat interface{}, wantTitle string, wantDescription string, wantStrict bool) {
