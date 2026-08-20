@@ -671,16 +671,18 @@ func computeAudioOutputCost(pricing *configstoreTables.TableModelPricing, usage 
 // computeImageCost handles image generation requests.
 // Input and output are calculated independently — each tries token-based pricing first,
 // then per-pixel pricing, falling back to per-image count pricing.
-// imageQuality must be one of "low", "medium", "high", "auto" to use quality-specific rates; other values use base rates.
+// imageQuality must be one of "low", "medium", "high", "standard", "auto" to use
+// quality-specific rates; other values use base rates.
 func computeImageCost(pricing *configstoreTables.TableModelPricing, imageUsage *schemas.ImageUsage, imageSize string, imageQuality string, tier serviceTier) float64 {
 	if imageUsage == nil {
 		return 0
 	}
 
 	tierTokens := imageInputTierTokens(imageUsage)
-	pixels := parseImagePixels(imageSize)
+	width, height := parseImageDimensions(imageSize)
+	pixels := width * height
 	inputCost := computeImageInputCost(pricing, imageUsage, tierTokens, pixels, tier)
-	outputCost := computeImageOutputCost(pricing, imageUsage, tierTokens, pixels, imageQuality, tier)
+	outputCost := computeImageOutputCost(pricing, imageUsage, tierTokens, width, height, pixels, imageQuality, tier)
 
 	return inputCost + outputCost
 }
@@ -715,8 +717,8 @@ func computeImageInputCost(pricing *configstoreTables.TableModelPricing, imageUs
 }
 
 // computeImageOutputCost calculates output cost: tokens first, then per-pixel, then per-image count fallback.
-// imageQuality: "low", "medium", "high", "auto" use quality-specific rates when available; other values use base/size-tier rates.
-func computeImageOutputCost(pricing *configstoreTables.TableModelPricing, imageUsage *schemas.ImageUsage, totalTokens int, pixels int, imageQuality string, tier serviceTier) float64 {
+// imageQuality: "low", "medium", "high", "standard", "auto" use quality-specific rates when available; other values use base/size-tier rates.
+func computeImageOutputCost(pricing *configstoreTables.TableModelPricing, imageUsage *schemas.ImageUsage, totalTokens int, width, height, pixels int, imageQuality string, tier serviceTier) float64 {
 	// Try token-based pricing first
 	var outputTextTokens, outputImageTokens int
 	if imageUsage.OutputTokensDetails != nil {
@@ -746,52 +748,130 @@ func computeImageOutputCost(pricing *configstoreTables.TableModelPricing, imageU
 	if imageUsage.OutputTokensDetails != nil && imageUsage.OutputTokensDetails.NImages > 0 {
 		numOutputImages = imageUsage.OutputTokensDetails.NImages
 	}
-	var perImageRate *float64
 	q := imageQuality
 	if q == "" {
 		q = "auto"
 	}
-	switch q {
-	case "low":
-		if pricing.OutputCostPerImageLowQuality != nil {
-			perImageRate = pricing.OutputCostPerImageLowQuality
-		}
-	case "medium":
-		if pricing.OutputCostPerImageMediumQuality != nil {
-			perImageRate = pricing.OutputCostPerImageMediumQuality
-		}
-	case "high":
-		if pricing.OutputCostPerImageHighQuality != nil {
-			perImageRate = pricing.OutputCostPerImageHighQuality
-		}
-	case "auto":
-		if pricing.OutputCostPerImageAutoQuality != nil {
-			perImageRate = pricing.OutputCostPerImageAutoQuality
-		}
+	// Most specific rate wins: joint size+quality, then quality-only, then
+	// size-only, then the flat per-image rate.
+	perImageRate := imageSizeRatesForQuality(pricing, q).rateForSize(width, height, pixels)
+	if perImageRate == nil {
+		perImageRate = imageQualityRate(pricing, q)
 	}
 	if perImageRate == nil {
-		const pixels512x512 = 512 * 512
-		const pixels1024x1024 = 1024 * 1024
-		const pixels2048x2048 = 2048 * 2048
-		const pixels4096x4096 = 4096 * 4096
-		switch {
-		case pixels >= pixels4096x4096 && pricing.OutputCostPerImageAbove4096x4096Pixels != nil:
-			perImageRate = pricing.OutputCostPerImageAbove4096x4096Pixels
-		case pixels >= pixels2048x2048 && pricing.OutputCostPerImageAbove2048x2048Pixels != nil:
-			perImageRate = pricing.OutputCostPerImageAbove2048x2048Pixels
-		case pixels >= pixels1024x1024 && pricing.OutputCostPerImageAbove1024x1024Pixels != nil:
-			perImageRate = pricing.OutputCostPerImageAbove1024x1024Pixels
-		case pixels >= pixels512x512 && pricing.OutputCostPerImageAbove512x512Pixels != nil:
-			perImageRate = pricing.OutputCostPerImageAbove512x512Pixels
-		default:
-			perImageRate = pricing.OutputCostPerImage
-		}
+		perImageRate = baseImageSizeRates(pricing).rateForSize(width, height, pixels)
+	}
+	if perImageRate == nil {
+		perImageRate = pricing.OutputCostPerImage
 	}
 	if perImageRate != nil {
 		return float64(numOutputImages) * *perImageRate
 	}
 
 	return 0
+}
+
+// imageSizeRates holds the per-image output rates for each size threshold:
+// either the base set or the set belonging to one image quality.
+type imageSizeRates struct {
+	above512x512   *float64
+	above1024x1024 *float64
+	above1024x1536 *float64
+	above1536x1024 *float64
+	above2048x2048 *float64
+	above4096x4096 *float64
+}
+
+// rateForSize returns the rate for the largest size threshold the generated
+// image meets, or nil when no matching threshold is configured.
+//
+// 1536x1024 and 1024x1536 have identical pixel counts, so they are matched on
+// width and height rather than on the total, and are checked ahead of the
+// square 1024x1024 threshold that both of them exceed.
+func (r imageSizeRates) rateForSize(width, height, pixels int) *float64 {
+	const (
+		pixels512x512   = 512 * 512
+		pixels1024x1024 = 1024 * 1024
+		pixels2048x2048 = 2048 * 2048
+		pixels4096x4096 = 4096 * 4096
+	)
+	switch {
+	case pixels >= pixels4096x4096 && r.above4096x4096 != nil:
+		return r.above4096x4096
+	case pixels >= pixels2048x2048 && r.above2048x2048 != nil:
+		return r.above2048x2048
+	case width >= 1536 && height >= 1024 && r.above1536x1024 != nil:
+		return r.above1536x1024
+	case width >= 1024 && height >= 1536 && r.above1024x1536 != nil:
+		return r.above1024x1536
+	case pixels >= pixels1024x1024 && r.above1024x1024 != nil:
+		return r.above1024x1024
+	case pixels >= pixels512x512 && r.above512x512 != nil:
+		return r.above512x512
+	}
+	return nil
+}
+
+// baseImageSizeRates collects the size-threshold rates that apply regardless of
+// the requested image quality.
+func baseImageSizeRates(pricing *configstoreTables.TableModelPricing) imageSizeRates {
+	return imageSizeRates{
+		above512x512:   pricing.OutputCostPerImageAbove512x512Pixels,
+		above1024x1024: pricing.OutputCostPerImageAbove1024x1024Pixels,
+		above1024x1536: pricing.OutputCostPerImageAbove1024x1536Pixels,
+		above1536x1024: pricing.OutputCostPerImageAbove1536x1024Pixels,
+		above2048x2048: pricing.OutputCostPerImageAbove2048x2048Pixels,
+		above4096x4096: pricing.OutputCostPerImageAbove4096x4096Pixels,
+	}
+}
+
+// imageSizeRatesForQuality collects the size-threshold rates that apply only to
+// the given image quality. Returns the zero set for a quality that has no
+// size-specific rates.
+func imageSizeRatesForQuality(pricing *configstoreTables.TableModelPricing, quality string) imageSizeRates {
+	switch quality {
+	case "low":
+		return imageSizeRates{
+			above1024x1024: pricing.OutputCostPerImageAbove1024x1024PixelsLowQuality,
+			above1024x1536: pricing.OutputCostPerImageAbove1024x1536PixelsLowQuality,
+			above1536x1024: pricing.OutputCostPerImageAbove1536x1024PixelsLowQuality,
+		}
+	case "medium":
+		return imageSizeRates{
+			above1024x1024: pricing.OutputCostPerImageAbove1024x1024PixelsMediumQuality,
+			above1024x1536: pricing.OutputCostPerImageAbove1024x1536PixelsMediumQuality,
+			above1536x1024: pricing.OutputCostPerImageAbove1536x1024PixelsMediumQuality,
+		}
+	case "high":
+		return imageSizeRates{
+			above1024x1024: pricing.OutputCostPerImageAbove1024x1024PixelsHighQuality,
+			above1024x1536: pricing.OutputCostPerImageAbove1024x1536PixelsHighQuality,
+			above1536x1024: pricing.OutputCostPerImageAbove1536x1024PixelsHighQuality,
+		}
+	case "standard":
+		return imageSizeRates{
+			above1024x1024: pricing.OutputCostPerImageAbove1024x1024PixelsStandardQuality,
+			above1024x1536: pricing.OutputCostPerImageAbove1024x1536PixelsStandardQuality,
+			above1536x1024: pricing.OutputCostPerImageAbove1536x1024PixelsStandardQuality,
+		}
+	}
+	return imageSizeRates{}
+}
+
+// imageQualityRate returns the quality-only per-image rate, independent of the
+// generated image's size. "standard" has no quality-only rate upstream.
+func imageQualityRate(pricing *configstoreTables.TableModelPricing, quality string) *float64 {
+	switch quality {
+	case "low":
+		return pricing.OutputCostPerImageLowQuality
+	case "medium":
+		return pricing.OutputCostPerImageMediumQuality
+	case "high":
+		return pricing.OutputCostPerImageHighQuality
+	case "auto":
+		return pricing.OutputCostPerImageAutoQuality
+	}
+	return nil
 }
 
 // computeVideoCost handles video generation requests.
@@ -1145,24 +1225,31 @@ func imageOutputTokens(usage *schemas.ImageUsage) int {
 	return usage.OutputTokens
 }
 
-// parseImagePixels parses a size string like "1024x1024" into total pixel count.
-// Returns 0 if the size string is empty or malformed.
-func parseImagePixels(size string) int {
+// parseImageDimensions parses a size string like "1024x1024" into its width and
+// height. Returns 0, 0 if the size string is empty or malformed.
+func parseImageDimensions(size string) (int, int) {
 	if size == "" {
-		return 0
+		return 0, 0
 	}
 	parts := strings.SplitN(size, "x", 2)
 	if len(parts) != 2 {
-		return 0
+		return 0, 0
 	}
 	w, err := strconv.Atoi(parts[0])
 	if err != nil || w <= 0 {
-		return 0
+		return 0, 0
 	}
 	h, err := strconv.Atoi(parts[1])
 	if err != nil || h <= 0 {
-		return 0
+		return 0, 0
 	}
+	return w, h
+}
+
+// parseImagePixels parses a size string like "1024x1024" into total pixel count.
+// Returns 0 if the size string is empty or malformed.
+func parseImagePixels(size string) int {
+	w, h := parseImageDimensions(size)
 	return w * h
 }
 
