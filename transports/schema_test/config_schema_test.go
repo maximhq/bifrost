@@ -1242,3 +1242,80 @@ func TestSchemaResetConfigRequiresQuarterlyDuration(t *testing.T) {
 		})
 	}
 }
+
+// copilotKeyConfig builds a github-copilot provider config with the given key body.
+func copilotKeyConfig(keyBody string) string {
+	return fmt.Sprintf(`{
+		"providers": {
+			"github-copilot": {
+				"keys": [{%s}]
+			}
+		}
+	}`, keyBody)
+}
+
+// TestSchemaGithubCopilotCredentialRequired pins that the schema demands one of the two
+// credential forms. core/utils.go rejects a key carrying neither, and the schema is the
+// source of truth for config fields, so it has to reject the same shape rather than
+// deferring the failure to boot.
+func TestSchemaGithubCopilotCredentialRequired(t *testing.T) {
+	compiled := compileSchema(t)
+
+	const appConfig = `"github_copilot_key_config": {
+		"app_id": "123456",
+		"installation_id": "87654321",
+		"repository_id": "999000111",
+		"private_key": "pem"
+	}`
+
+	valid := []struct {
+		name   string
+		config string
+	}{
+		{
+			name:   "direct token alone",
+			config: copilotKeyConfig(`"name": "k", "value": "tid=abc", "models": ["*"], "weight": 1.0`),
+		},
+		{
+			name:   "github app config alone",
+			config: copilotKeyConfig(`"name": "k", "models": ["*"], "weight": 1.0, ` + appConfig),
+		},
+		{
+			name:   "both forms together",
+			config: copilotKeyConfig(`"name": "k", "value": "tid=abc", "models": ["*"], "weight": 1.0, ` + appConfig),
+		},
+	}
+	for _, tt := range valid {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := validateConfig(t, compiled, tt.config); err != nil {
+				t.Fatalf("config should be valid: %v", err)
+			}
+		})
+	}
+
+	invalid := []struct {
+		name   string
+		config string
+	}{
+		{
+			name:   "neither credential form",
+			config: copilotKeyConfig(`"name": "k", "models": ["*"], "weight": 1.0`),
+		},
+		{
+			name:   "empty token with no app config",
+			config: copilotKeyConfig(`"name": "k", "value": "", "models": ["*"], "weight": 1.0`),
+		},
+		{
+			name: "app config missing the private key",
+			config: copilotKeyConfig(`"name": "k", "models": ["*"], "weight": 1.0,
+				"github_copilot_key_config": {"app_id": "1", "installation_id": "2", "repository_id": "3"}`),
+		},
+	}
+	for _, tt := range invalid {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := validateConfig(t, compiled, tt.config); err == nil {
+				t.Fatal("config should be invalid")
+			}
+		})
+	}
+}
