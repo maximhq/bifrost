@@ -2,11 +2,19 @@ package integrations
 
 import (
 	"context"
-	"strconv"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/fasthttp/router"
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/providers/vertex"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -594,110 +602,175 @@ func TestFileRequestConverter_RejectsEmptyUploadID(t *testing.T) {
 	assert.Equal(t, "upload_id missing — step 1 should have been short-circuited", err.Error())
 }
 
-// Test the complete resumable upload flow from start to upload and finalization.
-func TestGenAIFileUpload_ResumableUploadIntegration(t *testing.T) {
+type genAIUploadTestAccount struct {
+	baseURL string
+}
+
+func (a *genAIUploadTestAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.Gemini}, nil
+}
+
+func (a *genAIUploadTestAccount) GetKeysForProvider(context.Context, schemas.ModelProvider) ([]schemas.Key, error) {
+	useForBatchAPI := true
+	return []schemas.Key{{
+		ID:             "genai-upload-test-key",
+		Value:          *schemas.NewSecretVar("test-gemini-key"),
+		Weight:         100,
+		UseForBatchAPI: &useForBatchAPI,
+	}}, nil
+}
+
+func (a *genAIUploadTestAccount) GetConfigForProvider(schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	return &schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{
+			BaseURL:                        a.baseURL + "/v1beta",
+			DefaultRequestTimeoutInSeconds: 10,
+		},
+	}, nil
+}
+
+var _ schemas.Account = (*genAIUploadTestAccount)(nil)
+
+// TestGenAIResumableUploadE2EFlow verifies the complete resumable upload flow
+// and ensures the session remains available when reaching the provider.
+func TestGenAIResumableUploadE2EFlow(t *testing.T) {
 	t.Parallel()
 
 	kvStore, err := kvstore.New(kvstore.Config{})
 	require.NoError(t, err)
 	defer kvStore.Close()
+	RegisterKVDecoders(kvStore)
 
 	handlerStore := &fileUploadTestHandlerStore{
 		mockHandlerStore: &mockHandlerStore{},
 		kvStore:          kvStore,
 	}
 
-	routes := CreateGenAIFileRouteConfigs("/genai", handlerStore)
-	require.NotEmpty(t, routes)
-
-	route := findGenAIRouteForTest(t, routes, "/genai/upload/v1beta/files", "POST")
-	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-
-	fileData := []byte("test file data")
-	startCtx := &fasthttp.RequestCtx{}
-	startCtx.Request.Header.Set("Host", "localhost:8080")
-	startCtx.Request.Header.Set("Content-Type", "application/json")
-	startCtx.Request.Header.Set("X-Goog-Upload-Protocol", "resumable")
-	startCtx.Request.Header.Set("X-Goog-Upload-Command", "start")
-	startCtx.Request.Header.Set("x-goog-upload-header-content-type", "application/pdf")
-	startCtx.Request.Header.Set("X-Goog-Upload-Header-Content-Length", strconv.Itoa(len(fileData)))
-	startCtx.Request.SetBody([]byte(`{"file": {"display_name": "test.pdf"}}`))
-
-	startReq := &gemini.GeminiFileUploadHandlerReq{}
-	err = route.RequestParser(startCtx, startReq)
+	var expectedUploadID atomic.Pointer[string]
+	var providerCallCount atomic.Int32
+	providerServer := http.Server{}
+	providerListener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 
-	if route.PreCallback != nil {
-		err = route.PreCallback(startCtx, bifrostCtx, startReq)
-		require.NoError(t, err)
-	}
+	providerBaseURL := "http://" + providerListener.Addr().String()
+	providerHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providerCallCount.Add(1)
+		if r.URL.Path != "/upload/v1beta/files" {
+			http.Error(w, "unexpected provider path", http.StatusNotFound)
+			return
+		}
+		expectedUploadIDValue := expectedUploadID.Load()
+		if expectedUploadIDValue == nil {
+			http.Error(w, "upload ID was not captured", http.StatusInternalServerError)
+			return
+		}
+		if _, err := kvStore.Get(*expectedUploadIDValue); err != nil {
+			http.Error(w, fmt.Sprintf("upload session unavailable: %v", err), http.StatusInternalServerError)
+			return
+		}
+		multipartReader, err := r.MultipartReader()
+		if err != nil {
+			http.Error(w, fmt.Sprintf("invalid multipart upload: %v", err), http.StatusBadRequest)
+			return
+		}
+		var sawMetadata, sawFile bool
+		for {
+			part, err := multipartReader.NextPart()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				http.Error(w, fmt.Sprintf("invalid multipart part: %v", err), http.StatusBadRequest)
+				return
+			}
+			partBody, err := io.ReadAll(part)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("failed to read multipart part: %v", err), http.StatusBadRequest)
+				return
+			}
+			switch part.FormName() {
+			case "metadata":
+				sawMetadata = strings.Contains(string(partBody), `"displayName":"test.pdf"`) && strings.Contains(string(partBody), `"mimeType":"application/pdf"`)
+			case "file":
+				sawFile = string(partBody) == "PDF file content here"
+			}
+		}
+		if !sawMetadata || !sawFile {
+			http.Error(w, "missing or invalid multipart upload parts", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"file":{"name":"files/test","displayName":"test.pdf","mimeType":"application/pdf","sizeBytes":"20","createTime":"2026-07-01T00:00:00Z","state":"ACTIVE","uri":"https://example.test/files/test"}}`))
+	})
 
-	shortCircuited, err := route.ShortCircuit(startCtx, bifrostCtx, startReq)
+	providerServer.Handler = providerHandler
+	go func() { _ = providerServer.Serve(providerListener) }()
+	t.Cleanup(func() { _ = providerServer.Close() })
+
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: &genAIUploadTestAccount{baseURL: providerBaseURL},
+		Logger:  bifrost.NewNoOpLogger(),
+	})
 	require.NoError(t, err)
-	require.True(t, shortCircuited)
 
-	uploadURL := string(startCtx.Response.Header.Peek("X-Goog-Upload-URL"))
+	t.Cleanup(client.Shutdown)
+	fileRoutes := CreateGenAIFileRouteConfigs("/genai", handlerStore)
+	genAIRouter := NewGenericRouter(client, handlerStore, fileRoutes, nil, bifrost.NewNoOpLogger())
+
+	httpRouter := router.New()
+	genAIRouter.RegisterRoutes(httpRouter)
+	gatewayServer := &fasthttp.Server{Handler: httpRouter.Handler}
+	gatewayListener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+
+	go func() { _ = gatewayServer.Serve(gatewayListener) }()
+	t.Cleanup(func() { _ = gatewayServer.Shutdown() })
+
+	httpClient := &http.Client{}
+	startBody := strings.NewReader(`{"file":{"display_name":"test.pdf"},"mime_type":"application/pdf"}`)
+	startRequest, err := http.NewRequest(http.MethodPost, "http://"+gatewayListener.Addr().String()+"/genai/upload/v1beta/files", startBody)
+	require.NoError(t, err)
+
+	startRequest.Header.Set("Content-Type", "application/json")
+	startRequest.Header.Set("X-Goog-Upload-Protocol", "resumable")
+	startRequest.Header.Set("X-Goog-Upload-Command", "start")
+	startRequest.Header.Set("X-Goog-Upload-Header-Content-Type", "application/pdf")
+	startResponse, err := httpClient.Do(startRequest)
+	require.NoError(t, err)
+	defer startResponse.Body.Close()
+
+	assert.Equal(t, http.StatusOK, startResponse.StatusCode)
+	assert.Equal(t, "active", startResponse.Header.Get("X-Goog-Upload-Status"))
+	uploadURL := startResponse.Header.Get("X-Goog-Upload-URL")
 	require.NotEmpty(t, uploadURL)
 
-	assert.Equal(t, "active", string(startCtx.Response.Header.Peek("X-Goog-Upload-Status")))
-
-	uploadURI := fasthttp.AcquireURI()
-	defer fasthttp.ReleaseURI(uploadURI)
-
-	err = uploadURI.Parse(nil, []byte(uploadURL))
+	uploadURI, err := http.NewRequest(http.MethodPost, uploadURL, strings.NewReader("PDF file content here"))
+	require.NoError(t, err)
+	uploadURI.Header.Set("Content-Type", "application/octet-stream")
+	uploadURI.Header.Set("X-Goog-Upload-Command", "upload, finalize")
+	uploadURLParsed, err := url.Parse(uploadURL)
 	require.NoError(t, err)
 
-	uploadID := string(uploadURI.QueryArgs().Peek("upload_id"))
+	uploadID := uploadURLParsed.Query().Get("upload_id")
 	require.NotEmpty(t, uploadID)
+	expectedUploadID.Store(&uploadID)
 
-	storedSession, err := kvStore.Get(uploadID)
+	stored, err := kvStore.Get(uploadID)
 	require.NoError(t, err)
-	require.NotNil(t, storedSession)
-
-	session, ok := storedSession.(*gemini.GeminiResumableUploadSession)
+	session, ok := stored.(*gemini.GeminiResumableUploadSession)
 	require.True(t, ok)
-
 	assert.Equal(t, "test.pdf", session.DisplayName)
 	assert.Equal(t, "application/pdf", session.MimeType)
-	assert.Equal(t, schemas.Gemini, session.Provider)
 
-	uploadCtx := &fasthttp.RequestCtx{}
-	uploadCtx.Request.Header.Set("Content-Type", "application/pdf")
-	uploadCtx.Request.Header.Set("X-Goog-Upload-Protocol", "resumable")
-	uploadCtx.Request.Header.Set("X-Goog-Upload-Command", "upload, finalize")
-	uploadCtx.Request.Header.Set("X-Goog-Upload-Offset", "0")
-	uploadCtx.Request.URI().QueryArgs().Set("upload_id", uploadID)
-	uploadCtx.Request.SetBody([]byte("test file data"))
-
-	uploadReq := &gemini.GeminiFileUploadHandlerReq{}
-	err = route.RequestParser(uploadCtx, uploadReq)
+	uploadResponse, err := httpClient.Do(uploadURI)
 	require.NoError(t, err)
+	defer uploadResponse.Body.Close()
 
-	assert.Equal(t, uploadID, uploadReq.UploadID)
-	assert.Equal(t, []byte("test file data"), uploadReq.FileData)
-
-	if route.PreCallback != nil {
-		err = route.PreCallback(uploadCtx, bifrostCtx, uploadReq)
-		require.NoError(t, err)
-	}
-
-	fileReq, err := route.FileRequestConverter(bifrostCtx, uploadReq)
+	uploadResponseBody, err := io.ReadAll(uploadResponse.Body)
 	require.NoError(t, err)
-	require.NotNil(t, fileReq)
-	require.NotNil(t, fileReq.UploadRequest)
-
-	assert.Equal(t, schemas.FileUploadRequest, fileReq.Type)
-	assert.Equal(t, []byte("test file data"), fileReq.UploadRequest.File)
-	assert.Equal(t, "test.pdf", fileReq.UploadRequest.Filename)
-	assert.Equal(t, schemas.Gemini, fileReq.UploadRequest.Provider)
-
-	_, err = kvStore.Get(uploadID)
-	require.NoError(t, err)
-
-	err = route.PostCallback(uploadCtx, uploadReq, nil)
-	require.NoError(t, err)
-
-	assert.Equal(t, "final", string(uploadCtx.Response.Header.Peek("X-Goog-Upload-Status")))
+	require.Equalf(t, http.StatusOK, uploadResponse.StatusCode, "upload response body: %s", uploadResponseBody)
+	assert.Equal(t, "final", uploadResponse.Header.Get("X-Goog-Upload-Status"))
+	assert.Equal(t, int32(1), providerCallCount.Load())
 
 	_, err = kvStore.Get(uploadID)
 	assert.ErrorIs(t, err, kvstore.ErrNotFound)
