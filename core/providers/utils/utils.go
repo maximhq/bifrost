@@ -999,12 +999,68 @@ func SetExtraHeaders(ctx context.Context, req *fasthttp.Request, extraHeaders ma
 // gateway credentials and must never be forwarded to a provider.
 const internalHeaderPrefix = "x-bf-"
 
+// supportedBufferedContentEncodings are the response codings handled by
+// CheckAndDecodeBody. Accept-Encoding passthrough is intersected with this set
+// so Bifrost never advertises an upstream response format it cannot parse.
+var supportedBufferedContentEncodings = map[string]struct{}{
+	"identity": {},
+	"gzip":     {},
+	"x-gzip":   {},
+	"deflate":  {},
+	"br":       {},
+	"zstd":     {},
+}
+
+// supportedStreamingContentEncodings are the codings handled incrementally by
+// DecompressStreamBody. Keep this separate from the buffered set: advertising
+// Brotli or zstd on an SSE request would be unsafe until the stream reader can
+// decode those formats without buffering the whole response.
+var supportedStreamingContentEncodings = map[string]struct{}{
+	"identity": {},
+	"gzip":     {},
+	"x-gzip":   {},
+}
+
+func filterSupportedAcceptEncodings(values []string, supportedEncodings map[string]struct{}) []string {
+	filtered := make([]string, 0, len(values))
+	for _, value := range values {
+		for item := range strings.SplitSeq(value, ",") {
+			item = strings.TrimSpace(item)
+			if item == "" {
+				continue
+			}
+
+			coding := item
+			if separator := strings.IndexByte(coding, ';'); separator >= 0 {
+				coding = coding[:separator]
+			}
+			coding = strings.ToLower(strings.TrimSpace(coding))
+			if _, ok := supportedEncodings[coding]; ok {
+				// Preserve parameters such as q-values while normalizing the list into
+				// one header value below.
+				filtered = append(filtered, item)
+			}
+		}
+	}
+	return filtered
+}
+
 // SetPassthroughHeaders applies the caller's raw request headers captured for Anthropic OAuth
 // passthrough, where the caller's token is the upstream credential. ONLY the Anthropic provider
 // may call this: every other provider authenticates with its own configured credentials, so
 // forwarding these would leak x-bf-* upstream and, on Bedrock, break SigV4 when a hop rewrites
 // x-forwarded-for. Hop-by-hop headers are dropped by filterHeaders, x-bf-* never leaves the gateway.
 func SetPassthroughHeaders(ctx context.Context, req *fasthttp.Request, provider schemas.ModelProvider, skipHeaders []string) {
+	setPassthroughHeaders(ctx, req, provider, skipHeaders, supportedBufferedContentEncodings)
+}
+
+// SetPassthroughHeadersForStreaming applies OAuth passthrough headers while
+// advertising only response codings that Bifrost can decode incrementally.
+func SetPassthroughHeadersForStreaming(ctx context.Context, req *fasthttp.Request, provider schemas.ModelProvider, skipHeaders []string) {
+	setPassthroughHeaders(ctx, req, provider, skipHeaders, supportedStreamingContentEncodings)
+}
+
+func setPassthroughHeaders(ctx context.Context, req *fasthttp.Request, provider schemas.ModelProvider, skipHeaders []string, supportedEncodings map[string]struct{}) {
 	// Gate on the provider here rather than at the call sites: the Anthropic request handlers
 	// are shared with azure, vertex, bedrockmantle, vllm, sgl, deepseek and fireworks, so a
 	// call-site check would silently forward the caller's credential to all of them.
@@ -1020,13 +1076,25 @@ func SetPassthroughHeaders(ctx context.Context, req *fasthttp.Request, provider 
 		if strings.HasPrefix(lower, internalHeaderPrefix) {
 			continue
 		}
-		// Bifrost owns the body it sends, so it owns Content-Type. Dropping it here keeps a
-		// caller value from overriding the JSON content type no matter where callers invoke
-		// this relative to their own SetContentType.
+		if skipHeaders != nil && slices.Contains(skipHeaders, lower) {
+			continue
+		}
+		// Bifrost owns the body it sends, so a caller cannot override its content type.
 		if lower == "content-type" {
 			continue
 		}
-		if skipHeaders != nil && slices.Contains(skipHeaders, lower) {
+		if lower == "accept-encoding" {
+			// Filtering must never widen what the upstream may send: an omitted
+			// Accept-Encoding means any coding is acceptable (RFC 9110 12.5.3), so a
+			// caller list that filters down to nothing pins identity instead of
+			// dropping the header. Without this, a streaming caller asking for br
+			// alone would let the upstream answer in br, which DecompressStreamBody
+			// cannot decode, and the SSE parser would see raw compressed bytes.
+			if supported := filterSupportedAcceptEncodings(values, supportedEncodings); len(supported) > 0 {
+				req.Header.Set(k, strings.Join(supported, ", "))
+			} else {
+				req.Header.Set(k, "identity")
+			}
 			continue
 		}
 		for i, v := range values {
@@ -1969,33 +2037,79 @@ func CheckOperationAllowed(defaultProvider schemas.ModelProvider, config *schema
 }
 
 // CheckAndDecodeBody checks the content encoding and decodes the body accordingly.
-// It returns a copy of the body to avoid race conditions when the response is released
-// back to fasthttp's buffer pool. Uses pooled gzip readers to reduce GC pressure.
+// It returns an owned body to avoid races when the response is released back to
+// fasthttp's buffer pool. Content codings are decoded in reverse application order,
+// as required by RFC 9110, using the shared pooled readers.
 func CheckAndDecodeBody(resp *fasthttp.Response) ([]byte, error) {
-	contentEncoding := strings.ToLower(strings.TrimSpace(string(resp.Header.Peek("Content-Encoding"))))
-	if strings.Contains(contentEncoding, "gzip") {
-		body := resp.Body()
-		if len(body) == 0 {
-			return nil, nil
-		}
-
-		reader := bytes.NewReader(body)
-		gz, err := AcquireGzipReader(reader)
-		if err != nil {
-			return nil, err
-		}
-		defer ReleaseGzipReader(gz)
-
-		decompressed, err := io.ReadAll(gz)
-		if err != nil {
-			return nil, err
-		}
-		return decompressed, nil
-	}
-	// Copy the body to avoid race conditions when response is released back to pool
 	body := resp.Body()
-	result := make([]byte, len(body))
-	copy(result, body)
+	if len(body) == 0 {
+		return nil, nil
+	}
+
+	result := append([]byte(nil), body...)
+	contentEncoding := strings.ToLower(strings.TrimSpace(string(resp.Header.Peek("Content-Encoding"))))
+	if contentEncoding == "" || contentEncoding == "identity" {
+		return result, nil
+	}
+
+	encodings := strings.Split(contentEncoding, ",")
+	for i := len(encodings) - 1; i >= 0; i-- {
+		encoding := strings.TrimSpace(encodings[i])
+		reader := bytes.NewReader(result)
+
+		// Release on the Acquire error paths too: zstd.NewReader's contract is to
+		// return the decoder alongside its error, so a bare return could drop one
+		// from the pool. The gzip and deflate constructors return nil there, where
+		// Release is a no-op.
+		switch encoding {
+		case "", "identity":
+			continue
+		case "gzip", "x-gzip":
+			gz, err := AcquireGzipReader(reader)
+			if err != nil {
+				ReleaseGzipReader(gz)
+				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
+			}
+			result, err = io.ReadAll(gz)
+			ReleaseGzipReader(gz)
+			if err != nil {
+				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
+			}
+		case "deflate":
+			fr, err := AcquireFlateReader(reader)
+			if err != nil {
+				ReleaseFlateReader(fr)
+				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
+			}
+			result, err = io.ReadAll(fr)
+			ReleaseFlateReader(fr)
+			if err != nil {
+				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
+			}
+		case "br":
+			br := AcquireBrotliReader(reader)
+			var err error
+			result, err = io.ReadAll(br)
+			ReleaseBrotliReader(br)
+			if err != nil {
+				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
+			}
+		case "zstd":
+			dec, err := AcquireZstdDecoder(reader)
+			if err != nil {
+				ReleaseZstdDecoder(dec)
+				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
+			}
+			result, err = io.ReadAll(dec)
+			ReleaseZstdDecoder(dec)
+			if err != nil {
+				return nil, fmt.Errorf("decode %s response body: %w", encoding, err)
+			}
+		default:
+			return nil, fmt.Errorf("unsupported Content-Encoding %q", encoding)
+		}
+	}
+
 	return result, nil
 }
 
