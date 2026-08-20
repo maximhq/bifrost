@@ -5,6 +5,7 @@ go 1.26.6
 require (
 	github.com/andybalholm/brotli v1.2.2
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.10
+	github.com/bytedance/gopkg v0.1.3
 	github.com/bytedance/sonic v1.15.2
 	github.com/fasthttp/router v1.5.4
 	github.com/fasthttp/websocket v1.5.12
@@ -87,7 +88,6 @@ require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/blevesearch/go-porterstemmer v1.0.3 // indirect
 	github.com/buger/jsonparser v1.2.0 // indirect
-	github.com/bytedance/gopkg v0.1.3 // indirect
 	github.com/bytedance/sonic/loader v0.5.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
