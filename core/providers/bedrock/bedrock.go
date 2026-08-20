@@ -2118,15 +2118,6 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 		}
 		bifrostResponse = converted
 		bifrostResponse.Model = request.Model
-		// For embeddings_by_type responses preserve the raw Bedrock payload so the
-		// invoke-endpoint converter can return all encoding variants verbatim, since
-		// the internal BifrostEmbeddingResponse only has float32 and string fields.
-		if cohereResp.ResponseType == "embeddings_by_type" {
-			var rawResponseData interface{}
-			if err := sonic.Unmarshal(rawResponse, &rawResponseData); err == nil {
-				bifrostResponse.ExtraFields.RawResponse = rawResponseData
-			}
-		}
 	}
 
 	// Bedrock Cohere embed models omit token usage from the response body and instead
