@@ -3,16 +3,26 @@ package integrations
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/providers/vertex"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 )
 
+type fileUploadTestHandlerStore struct {
+	*mockHandlerStore
+	kvStore *kvstore.Store
+}
+
+func (m *fileUploadTestHandlerStore) GetKVStore() *kvstore.Store {
+	return m.kvStore
+}
 func TestCreateGenAIRerankRouteConfig(t *testing.T) {
 	route := createGenAIRerankRouteConfig("/genai")
 
@@ -335,4 +345,243 @@ func TestConvertGeminiModelMetadataResponse_EmptyReturnsMinimalModel(t *testing.
 	model, ok := converted.(gemini.GeminiModel)
 	require.True(t, ok, "expected gemini.GeminiModel")
 	assert.Equal(t, "models/gemini-3-pro-preview", model.Name)
+}
+
+// TestFileRequestConverter_RetainsResumableUploadSession verifies that
+// FileRequestConverter retrieves the resumable upload session without deleting it.
+// This ensures the session remains available for subsequent upload/retry requests.
+func TestFileRequestConverter_RetainsResumableUploadSession(t *testing.T) {
+	t.Parallel()
+
+	kvStore, err := kvstore.New(kvstore.Config{})
+	require.NoError(t, err)
+	defer kvStore.Close()
+
+	handlerStore := &fileUploadTestHandlerStore{
+		mockHandlerStore: &mockHandlerStore{},
+		kvStore:          kvStore,
+	}
+
+	routes := CreateGenAIFileRouteConfigs("/genai", handlerStore)
+	require.NotEmpty(t, routes)
+
+	route := findGenAIRouteForTest(t, routes, "/genai/upload/v1beta/files", "POST")
+
+	uploadID := "test-upload-id"
+	session := &gemini.GeminiResumableUploadSession{
+		DisplayName: "test.pdf",
+		MimeType:    "application/pdf",
+		Provider:    schemas.Gemini,
+	}
+
+	// Store the resumable upload session.
+	err = kvStore.SetWithTTL(uploadID, session, time.Minute)
+	require.NoError(t, err)
+
+	// Verify session exists before FileRequestConverter.
+	storedBefore, err := kvStore.Get(uploadID)
+	require.NoError(t, err)
+	require.NotNil(t, storedBefore)
+
+	req := &gemini.GeminiFileUploadHandlerReq{
+		UploadID: uploadID,
+		FileData: []byte("test file data"),
+	}
+
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	fileReq, err := route.FileRequestConverter(bifrostCtx, req)
+
+	require.NoError(t, err)
+	require.NotNil(t, fileReq)
+
+	assert.Equal(t, schemas.FileUploadRequest, fileReq.Type)
+	require.NotNil(t, fileReq.UploadRequest)
+
+	assert.Equal(t, []byte("test file data"), fileReq.UploadRequest.File)
+	assert.Equal(t, "test.pdf", fileReq.UploadRequest.Filename)
+	assert.Equal(t, schemas.Gemini, fileReq.UploadRequest.Provider)
+
+	// FileRequestConverter must NOT delete the resumable upload session.
+	storedAfter, err := kvStore.Get(uploadID)
+	require.NoError(t, err)
+	require.NotNil(t, storedAfter)
+
+	stored, ok := storedAfter.(*gemini.GeminiResumableUploadSession)
+	require.True(t, ok)
+
+	assert.Equal(t, session.DisplayName, stored.DisplayName)
+	assert.Equal(t, session.MimeType, stored.MimeType)
+	assert.Equal(t, session.Provider, stored.Provider)
+}
+
+// TestFileRequestConverter_ReusesResumableUploadSessionForRetry verifies that
+// the same resumable upload session can be retrieved and reused for multiple
+// upload attempts using the same upload_id.
+func TestFileRequestConverter_ReusesResumableUploadSessionForRetry(t *testing.T) {
+	t.Parallel()
+
+	kvStore, err := kvstore.New(kvstore.Config{})
+	require.NoError(t, err)
+	defer kvStore.Close()
+
+	handlerStore := &fileUploadTestHandlerStore{
+		mockHandlerStore: &mockHandlerStore{},
+		kvStore:          kvStore,
+	}
+
+	routes := CreateGenAIFileRouteConfigs("/genai", handlerStore)
+	require.NotEmpty(t, routes)
+
+	route := findGenAIRouteForTest(t, routes, "/genai/upload/v1beta/files", "POST")
+
+	uploadID := "retry-upload-id"
+	session := &gemini.GeminiResumableUploadSession{
+		DisplayName: "retry-test.pdf",
+		MimeType:    "application/pdf",
+		Provider:    schemas.Gemini,
+	}
+
+	// Store the resumable upload session.
+	err = kvStore.SetWithTTL(uploadID, session, time.Minute)
+	require.NoError(t, err)
+
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	firstReq := &gemini.GeminiFileUploadHandlerReq{
+		UploadID: uploadID,
+		FileData: []byte("first upload chunk"),
+	}
+
+	firstFileReq, err := route.FileRequestConverter(bifrostCtx, firstReq)
+
+	// First call should succeed.
+	require.NoError(t, err)
+	require.NotNil(t, firstFileReq)
+	require.NotNil(t, firstFileReq.UploadRequest)
+
+	assert.Equal(t, schemas.FileUploadRequest, firstFileReq.Type)
+	assert.Equal(t, []byte("first upload chunk"), firstFileReq.UploadRequest.File)
+	assert.Equal(t, "retry-test.pdf", firstFileReq.UploadRequest.Filename)
+	assert.Equal(t, schemas.Gemini, firstFileReq.UploadRequest.Provider)
+
+	// Second upload attempt using the SAME upload_id.
+	secondReq := &gemini.GeminiFileUploadHandlerReq{
+		UploadID: uploadID,
+		FileData: []byte("retry upload chunk"),
+	}
+
+	// Second call to FileRequestConverter.
+	secondFileReq, err := route.FileRequestConverter(bifrostCtx, secondReq)
+
+	// Second call should also succeed.
+	require.NoError(t, err)
+	require.NotNil(t, secondFileReq)
+	require.NotNil(t, secondFileReq.UploadRequest)
+
+	assert.Equal(t, schemas.FileUploadRequest, secondFileReq.Type)
+	assert.Equal(t, []byte("retry upload chunk"), secondFileReq.UploadRequest.File)
+	assert.Equal(t, "retry-test.pdf", secondFileReq.UploadRequest.Filename)
+	assert.Equal(t, schemas.Gemini, secondFileReq.UploadRequest.Provider)
+
+	// The session should still exist after both calls.
+	storedSession, err := kvStore.Get(uploadID)
+	require.NoError(t, err)
+	require.NotNil(t, storedSession)
+
+	stored, ok := storedSession.(*gemini.GeminiResumableUploadSession)
+	require.True(t, ok)
+
+	assert.Equal(t, session.DisplayName, stored.DisplayName)
+	assert.Equal(t, session.MimeType, stored.MimeType)
+	assert.Equal(t, session.Provider, stored.Provider)
+}
+
+// TestFileUploadPostCallback_DeletesSessionAfterSuccessfulFinalization verifies
+// that PostCallback marks the upload as finalized and removes the resumable
+// upload session from KV after a successful upload.
+func TestFileUploadPostCallback_DeletesSessionAfterSuccessfulFinalization(t *testing.T) {
+	t.Parallel()
+
+	kvStore, err := kvstore.New(kvstore.Config{})
+	require.NoError(t, err)
+	defer kvStore.Close()
+
+	handlerStore := &fileUploadTestHandlerStore{
+		mockHandlerStore: &mockHandlerStore{},
+		kvStore:          kvStore,
+	}
+
+	routes := CreateGenAIFileRouteConfigs("/genai", handlerStore)
+	require.NotEmpty(t, routes)
+
+	route := findGenAIRouteForTest(t, routes, "/genai/upload/v1beta/files", "POST")
+	uploadID := "finalize-upload-id"
+	session := &gemini.GeminiResumableUploadSession{
+		DisplayName: "finalize-test.pdf",
+		MimeType:    "application/pdf",
+		Provider:    schemas.Gemini,
+	}
+
+	err = kvStore.SetWithTTL(uploadID, session, time.Minute)
+	require.NoError(t, err)
+
+	// Verify session exists before finalization.
+	storedBefore, err := kvStore.Get(uploadID)
+	require.NoError(t, err)
+	require.NotNil(t, storedBefore)
+
+	req := &gemini.GeminiFileUploadHandlerReq{
+		UploadID: uploadID,
+		FileData: []byte("test file data"),
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	err = route.PostCallback(ctx, req, nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, "final", string(ctx.Response.Header.Peek("X-Goog-Upload-Status")))
+
+	// Verify the session was deleted from KV.
+	_, err = kvStore.Get(uploadID)
+	assert.ErrorIs(t, err, kvstore.ErrNotFound)
+}
+
+// TestFileRequestConverter_RejectsEmptyUploadID verifies that
+// FileRequestConverter rejects requests without an upload_id.
+// Step 1 requests should be handled by ShortCircuit instead.
+func TestFileRequestConverter_RejectsEmptyUploadID(t *testing.T) {
+	t.Parallel()
+
+	kvStore, err := kvstore.New(kvstore.Config{})
+	require.NoError(t, err)
+	defer kvStore.Close()
+
+	handlerStore := &fileUploadTestHandlerStore{
+		mockHandlerStore: &mockHandlerStore{},
+		kvStore:          kvStore,
+	}
+
+	routes := CreateGenAIFileRouteConfigs("/genai", handlerStore)
+	require.NotEmpty(t, routes)
+
+	route := findGenAIRouteForTest(t, routes, "/genai/upload/v1beta/files", "POST")
+
+	// Request has no upload_id.
+	req := &gemini.GeminiFileUploadHandlerReq{
+		UploadID: "",
+		FileData: []byte("test file data"),
+	}
+
+	bifrostCtx := schemas.NewBifrostContext(
+		context.Background(),
+		schemas.NoDeadline,
+	)
+
+	fileReq, err := route.FileRequestConverter(bifrostCtx, req)
+
+	require.Error(t, err)
+	assert.Nil(t, fileReq)
+
+	assert.Equal(t, "upload_id missing — step 1 should have been short-circuited", err.Error())
 }
