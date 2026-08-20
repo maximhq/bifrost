@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -436,6 +437,39 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 				}
 			}
 
+			assembled := r.FileData
+			if r.UploadCommand != "" {
+				if r.UploadOffset < 0 || r.UploadOffset != session.NextOffset {
+					return nil, fmt.Errorf("invalid upload offset %d, expected %d", r.UploadOffset, session.NextOffset)
+				}
+				if session.Chunks == nil {
+					session.Chunks = make(map[int64][]byte)
+				}
+				chunk := append([]byte(nil), r.FileData...)
+				session.Chunks[r.UploadOffset] = chunk
+				session.NextOffset += int64(len(chunk))
+				if err := kvStore.SetWithTTL(r.UploadID, session, 1*time.Minute); err != nil {
+					return nil, fmt.Errorf("failed to persist upload chunk: %w", err)
+				}
+
+				if !hasGeminiUploadCommand(r.UploadCommand, "finalize") {
+					return &FileRequest{
+						Handled:        true,
+						HandledHeaders: map[string]string{"X-Goog-Upload-Status": "active"},
+					}, nil
+				}
+
+				offsets := make([]int64, 0, len(session.Chunks))
+				for offset := range session.Chunks {
+					offsets = append(offsets, offset)
+				}
+				sort.Slice(offsets, func(i, j int) bool { return offsets[i] < offsets[j] })
+				assembled = make([]byte, 0, session.NextOffset)
+				for _, offset := range offsets {
+					assembled = append(assembled, session.Chunks[offset]...)
+				}
+			}
+
 			filename := session.DisplayName
 			if filename == "" {
 				filename = "upload"
@@ -446,7 +480,7 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 				Type: schemas.FileUploadRequest,
 				UploadRequest: &schemas.BifrostFileUploadRequest{
 					Provider:    session.Provider,
-					File:        r.FileData,
+					File:        assembled,
 					Filename:    filename,
 					ContentType: &contentType,
 					Purpose:     schemas.FilePurposeBatch,
@@ -478,15 +512,7 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 			// Inspect X-Goog-Upload-Command header as comma-separated tokens.
 			// Only finalize and delete the session if "finalize" is present.
 			commandHeader := string(ctx.Request.Header.Peek("X-Goog-Upload-Command"))
-			commands := strings.Split(commandHeader, ",")
-
-			hasFinalize := false
-			for _, cmd := range commands {
-				if strings.TrimSpace(cmd) == "finalize" {
-					hasFinalize = true
-					break
-				}
-			}
+			hasFinalize := hasGeminiUploadCommand(commandHeader, "finalize")
 
 			// Set response status based on command
 			if hasFinalize {
@@ -1073,9 +1099,27 @@ func extractGeminiFileUploadParams(ctx *fasthttp.RequestCtx, bifrostCtx *schemas
 	if r, ok := req.(*gemini.GeminiFileUploadHandlerReq); ok {
 		r.Provider = provider
 		r.MimeType = string(ctx.Request.Header.Peek("x-goog-upload-header-content-type"))
+		r.UploadCommand = string(ctx.Request.Header.Peek("x-goog-upload-command"))
+		offsetHeader := string(ctx.Request.Header.Peek("x-goog-upload-offset"))
+		if offsetHeader != "" {
+			offset, err := strconv.ParseInt(offsetHeader, 10, 64)
+			if err != nil || offset < 0 {
+				return errors.New("x-goog-upload-offset must be a non-negative integer")
+			}
+			r.UploadOffset = offset
+		}
 	}
 
 	return nil
+}
+
+func hasGeminiUploadCommand(header, wanted string) bool {
+	for _, command := range strings.Split(header, ",") {
+		if strings.TrimSpace(command) == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 // createGenAIRerankRouteConfig creates a route configuration for the GenAI/Vertex Rerank API endpoint

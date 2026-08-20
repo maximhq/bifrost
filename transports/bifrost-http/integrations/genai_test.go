@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -816,13 +817,29 @@ func TestGenAIResumableUploadE2EFlow(t *testing.T) {
 	assert.Equal(t, "test.pdf", session.DisplayName)
 	assert.Equal(t, "application/pdf", session.MimeType)
 
-	// Upload with finalize command
-	uploadURI, err := http.NewRequest(http.MethodPost, uploadURL, strings.NewReader("PDF file content here"))
+	// Upload the first chunk without finalizing. This must not invoke the provider.
+	firstChunk := "PDF file "
+	firstUpload, err := http.NewRequest(http.MethodPost, uploadURL, strings.NewReader(firstChunk))
 	require.NoError(t, err)
-	uploadURI.Header.Set("Content-Type", "application/octet-stream")
-	uploadURI.Header.Set("X-Goog-Upload-Command", "upload, finalize")
+	firstUpload.Header.Set("Content-Type", "application/octet-stream")
+	firstUpload.Header.Set("X-Goog-Upload-Command", "upload")
+	firstUpload.Header.Set("X-Goog-Upload-Offset", "0")
 
-	uploadResponse, err := httpClient.Do(uploadURI)
+	firstResponse, err := httpClient.Do(firstUpload)
+	require.NoError(t, err)
+	defer firstResponse.Body.Close()
+	assert.Equal(t, http.StatusOK, firstResponse.StatusCode)
+	assert.Equal(t, "active", firstResponse.Header.Get("X-Goog-Upload-Status"))
+	assert.Equal(t, int32(0), providerCallCount.Load())
+
+	// Finalize with the next offset. The provider receives both chunks assembled in order.
+	finalUpload, err := http.NewRequest(http.MethodPost, uploadURL, strings.NewReader("content here"))
+	require.NoError(t, err)
+	finalUpload.Header.Set("Content-Type", "application/octet-stream")
+	finalUpload.Header.Set("X-Goog-Upload-Command", "upload, finalize")
+	finalUpload.Header.Set("X-Goog-Upload-Offset", strconv.Itoa(len(firstChunk)))
+
+	uploadResponse, err := httpClient.Do(finalUpload)
 	require.NoError(t, err)
 	defer uploadResponse.Body.Close()
 

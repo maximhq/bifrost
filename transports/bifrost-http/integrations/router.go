@@ -103,6 +103,8 @@ type BatchRequest struct {
 // FileRequest wraps a Bifrost file request with its type information.
 type FileRequest struct {
 	Type            schemas.RequestType
+	Handled         bool
+	HandledHeaders  map[string]string
 	UploadRequest   *schemas.BifrostFileUploadRequest
 	ListRequest     *schemas.BifrostFileListRequest
 	RetrieveRequest *schemas.BifrostFileRetrieveRequest
@@ -823,6 +825,12 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 			}
 			if fileReq == nil {
 				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "invalid file request"))
+				return
+			}
+			if fileReq.Handled {
+				for key, value := range fileReq.HandledHeaders {
+					ctx.Response.Header.Set(key, value)
+				}
 				return
 			}
 			g.handleFileRequest(ctx, config, req, fileReq, bifrostCtx)
