@@ -36,22 +36,18 @@ func ToBedrockTitanEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest)
 		return nil, fmt.Errorf("bifrost embedding request is nil")
 	}
 
-	// Validate that only single text input is provided for Titan models
-	if bifrostReq.Input.Text == nil && len(bifrostReq.Input.Texts) == 0 {
+	if bifrostReq.Input == nil || (bifrostReq.Input.Text == nil && len(bifrostReq.Input.Texts) == 0) {
 		return nil, fmt.Errorf("no input text provided for embedding")
 	}
 
 	titanReq := &BedrockTitanEmbeddingRequest{}
 
-	// Set input text
 	if bifrostReq.Input.Text != nil {
 		titanReq.InputText = *bifrostReq.Input.Text
-	} else if len(bifrostReq.Input.Texts) > 0 {
-		var embeddingText string
-		for _, text := range bifrostReq.Input.Texts {
-			embeddingText += text + " \n"
-		}
-		titanReq.InputText = embeddingText
+	} else if len(bifrostReq.Input.Texts) == 1 {
+		titanReq.InputText = bifrostReq.Input.Texts[0]
+	} else {
+		return nil, fmt.Errorf("Titan embedding batches must be fanned out before request conversion")
 	}
 
 	if bifrostReq.Params != nil {
@@ -84,17 +80,10 @@ func (response *BedrockTitanEmbeddingResponse) ToBifrostEmbeddingResponse() *sch
 		return nil
 	}
 
+	data := response.toBifrostEmbeddingData(0)
 	bifrostResponse := &schemas.BifrostEmbeddingResponse{
 		Object: "list",
-		Data: []schemas.EmbeddingData{
-			{
-				Index:  0,
-				Object: "embedding",
-				Embedding: schemas.EmbeddingStruct{
-					EmbeddingArray: response.Embedding,
-				},
-			},
-		},
+		Data:   []schemas.EmbeddingData{data},
 		Usage: &schemas.BifrostLLMUsage{
 			PromptTokens: response.InputTextTokenCount,
 			TotalTokens:  response.InputTextTokenCount,
@@ -102,6 +91,16 @@ func (response *BedrockTitanEmbeddingResponse) ToBifrostEmbeddingResponse() *sch
 	}
 
 	return bifrostResponse
+}
+
+func (response *BedrockTitanEmbeddingResponse) toBifrostEmbeddingData(index int) schemas.EmbeddingData {
+	return schemas.EmbeddingData{
+		Index:  index,
+		Object: "embedding",
+		Embedding: schemas.EmbeddingStruct{
+			EmbeddingArray: response.Embedding,
+		},
+	}
 }
 
 // ToBedrockCohereEmbeddingRequest converts a Bifrost embedding request to Bedrock Cohere format.
