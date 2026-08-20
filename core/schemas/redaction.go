@@ -6,6 +6,9 @@ import (
 	"strings"
 )
 
+// RawRequestBodyTextRewriter applies runtime literal replacements to integration-owned text fields in a native JSON request body.
+type RawRequestBodyTextRewriter func(rawBody []byte, replacements map[string]string) ([]byte, error)
+
 // RedactionPhase identifies which request lifecycle phase produced a redaction finding.
 type RedactionPhase string
 

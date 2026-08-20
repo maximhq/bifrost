@@ -2968,6 +2968,11 @@ func TestClearAnthropicPassthroughForNonNativeProvider(t *testing.T) {
 			for _, k := range flagKeys {
 				ctx.SetValue(k, true)
 			}
+			ctx.SetValue(schemas.BifrostContextKeyRawRequestBodyTextRewriter, schemas.RawRequestBodyTextRewriter(
+				func(rawBody []byte, _ map[string]string) ([]byte, error) {
+					return rawBody, nil
+				},
+			))
 
 			clearAnthropicPassthroughForNonNativeProvider(ctx, tt.baseProvider)
 
@@ -2978,7 +2983,28 @@ func TestClearAnthropicPassthroughForNonNativeProvider(t *testing.T) {
 					t.Errorf("flag %v = %v, want %v", k, got, want)
 				}
 			}
+
+			_, hasRewriter := ctx.Value(schemas.BifrostContextKeyRawRequestBodyTextRewriter).(schemas.RawRequestBodyTextRewriter)
+			if hasRewriter == tt.wantCleared {
+				t.Errorf("raw request body rewriter present = %v, want %v", hasRewriter, !tt.wantCleared)
+			}
 		})
+	}
+}
+
+// TestClearContextForInternalRequestClearsRawBodyRewriter verifies nested requests cannot inherit integration callbacks.
+func TestClearContextForInternalRequestClearsRawBodyRewriter(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRawRequestBodyTextRewriter, schemas.RawRequestBodyTextRewriter(
+		func(rawBody []byte, _ map[string]string) ([]byte, error) {
+			return rawBody, nil
+		},
+	))
+
+	ClearContextForInternalRequest(ctx)
+
+	if got := ctx.Value(schemas.BifrostContextKeyRawRequestBodyTextRewriter); got != nil {
+		t.Fatalf("raw request body rewriter = %v, want nil", got)
 	}
 }
 

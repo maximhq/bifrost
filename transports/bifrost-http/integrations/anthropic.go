@@ -353,6 +353,118 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 			bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
 			return nil
 		}
+		bifrostCtx.SetValue(
+			schemas.BifrostContextKeyRawRequestBodyTextRewriter,
+			schemas.RawRequestBodyTextRewriter(rewriteAnthropicRawRequestBody),
+		)
+	}
+	return nil
+}
+
+// rewriteAnthropicRawRequestBody applies runtime replacements to Anthropic-native content fields.
+func rewriteAnthropicRawRequestBody(rawBody []byte, replacements map[string]string) ([]byte, error) {
+	return rewriteRawRequestTextFields(rawBody, replacements, collectAnthropicRawRequestTextPaths)
+}
+
+// anthropicRawContentScope controls which native content-block text fields are guardrail-visible.
+type anthropicRawContentScope uint8
+
+const (
+	anthropicRawContentScopeSystem anthropicRawContentScope = iota
+	anthropicRawContentScopeMessage
+	anthropicRawContentScopeToolResult
+)
+
+// collectAnthropicRawRequestTextPaths enumerates Anthropic fields mirrored into mutable Bifrost request text.
+func collectAnthropicRawRequestTextPaths(root gjson.Result, replacements map[string]string) ([]string, error) {
+	paths := make([]string, 0)
+	if err := appendRawRequestStringPath(&paths, root.Get("prompt"), "prompt"); err != nil {
+		return nil, err
+	}
+	if err := collectAnthropicRawContentPaths(&paths, root.Get("system"), "system", anthropicRawContentScopeSystem); err != nil {
+		return nil, err
+	}
+
+	messages := root.Get("messages")
+	if !messages.Exists() || messages.Type == gjson.Null {
+		return paths, nil
+	}
+	if !messages.IsArray() {
+		return nil, fmt.Errorf("raw Anthropic request messages must be an array")
+	}
+	var collectErr error
+	messages.ForEach(func(index, message gjson.Result) bool {
+		messagePath := rawRequestArrayPath("messages", int(index.Int()))
+		collectErr = collectAnthropicRawContentPaths(
+			&paths,
+			message.Get("content"),
+			rawRequestObjectPath(messagePath, "content"),
+			anthropicRawContentScopeMessage,
+		)
+		return collectErr == nil
+	})
+	return paths, collectErr
+}
+
+// collectAnthropicRawContentPaths handles the string, block-array, and single-block Anthropic content union.
+func collectAnthropicRawContentPaths(paths *[]string, content gjson.Result, path string, scope anthropicRawContentScope) error {
+	if !content.Exists() || content.Type == gjson.Null {
+		return nil
+	}
+	if content.Type == gjson.String {
+		*paths = append(*paths, path)
+		return nil
+	}
+	if content.IsObject() {
+		return collectAnthropicRawContentBlockPaths(paths, content, path, scope)
+	}
+	if !content.IsArray() {
+		return fmt.Errorf("raw Anthropic content path %q must be a string, object, or array", path)
+	}
+
+	var collectErr error
+	content.ForEach(func(index, block gjson.Result) bool {
+		collectErr = collectAnthropicRawContentBlockPaths(paths, block, rawRequestArrayPath(path, int(index.Int())), scope)
+		return collectErr == nil
+	})
+	return collectErr
+}
+
+// collectAnthropicRawContentBlockPaths selects only block fields represented as mutable normalized text.
+func collectAnthropicRawContentBlockPaths(paths *[]string, block gjson.Result, path string, scope anthropicRawContentScope) error {
+	if !block.IsObject() {
+		return fmt.Errorf("raw Anthropic content block at %q must be an object", path)
+	}
+	blockType := block.Get("type")
+	if !blockType.Exists() || blockType.Type == gjson.Null {
+		return nil
+	}
+	if blockType.Type != gjson.String {
+		return fmt.Errorf("raw Anthropic content block type at %q must be a string", path)
+	}
+
+	switch scope {
+	case anthropicRawContentScopeSystem, anthropicRawContentScopeToolResult:
+		if blockType.String() == string(anthropic.AnthropicContentBlockTypeText) {
+			return appendRawRequestStringPath(paths, block.Get("text"), rawRequestObjectPath(path, "text"))
+		}
+		return nil
+	case anthropicRawContentScopeMessage:
+		switch anthropic.AnthropicContentBlockType(blockType.String()) {
+		case anthropic.AnthropicContentBlockTypeText:
+			return appendRawRequestStringPath(paths, block.Get("text"), rawRequestObjectPath(path, "text"))
+		case anthropic.AnthropicContentBlockTypeThinking:
+			return appendRawRequestStringPath(paths, block.Get("thinking"), rawRequestObjectPath(path, "thinking"))
+		case anthropic.AnthropicContentBlockTypeCompaction:
+			return appendRawRequestStringPath(paths, block.Get("content"), rawRequestObjectPath(path, "content"))
+		case anthropic.AnthropicContentBlockTypeToolResult, anthropic.AnthropicContentBlockTypeMCPToolResult:
+			return collectAnthropicRawContentPaths(
+				paths,
+				block.Get("content"),
+				rawRequestObjectPath(path, "content"),
+				anthropicRawContentScopeToolResult,
+			)
+		}
 	}
 	return nil
 }
