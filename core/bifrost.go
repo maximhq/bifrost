@@ -6659,7 +6659,10 @@ func clearAnthropicPassthroughForNonNativeProvider(ctx *schemas.BifrostContext, 
 		baseProvider == schemas.BedrockMantle {
 		return
 	}
+	// The rewriter is valid only while the matching Anthropic-native body is
+	// forwarded; converted and fallback requests must not inherit it.
 	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
+	ctx.ClearValue(schemas.BifrostContextKeyRawRequestBodyTextRewriter)
 	ctx.SetValue(schemas.BifrostContextKeySendBackRawResponse, false)
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughOverridesPresent, false)
 }
