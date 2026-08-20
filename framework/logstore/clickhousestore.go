@@ -401,7 +401,7 @@ func (s *ClickHouseLogStore) Update(ctx context.Context, id string, entry any) e
 // BulkUpdateCost backfills costs by reading each chunk of rows, patching cost,
 // and re-inserting. Reading the full row is required because the re-insert must
 // reproduce every column (the ReplacingMergeTree dedup key includes timestamp).
-func (s *ClickHouseLogStore) BulkUpdateCost(ctx context.Context, updates map[string]float64) error {
+func (s *ClickHouseLogStore) BulkUpdateCost(ctx context.Context, updates map[string]CostUpdate) error {
 	if len(updates) == 0 {
 		return nil
 	}
@@ -425,8 +425,12 @@ func (s *ClickHouseLogStore) BulkUpdateCost(ctx context.Context, updates map[str
 				return nil
 			}
 			for _, r := range rows {
-				cost := updates[r.ID]
+				u := updates[r.ID]
+				cost := u.Total
 				r.Cost = &cost
+				r.InputCost = u.Input
+				r.OutputCost = u.Output
+				r.AdditionalCost = u.Additional
 			}
 			return s.chReinsert(ctx, &rows)
 		}(); err != nil {

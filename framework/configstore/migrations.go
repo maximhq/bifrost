@@ -471,6 +471,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_notifications_table"}, run: migrationAddNotificationsTable},
 	{IDs: []string{"add_batch_jobs_table"}, run: migrationAddBatchJobsTable},
 	{IDs: []string{"add_image_megapixel_tier_pricing_columns"}, run: migrationAddImageMegapixelTierPricingColumns},
+	{IDs: []string{"add_input_cost_per_query_column"}, run: migrationAddInputCostPerQueryColumn},
 }
 
 func migrationAddNotificationsTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
@@ -12082,6 +12083,36 @@ func migrationAddImageMegapixelTierPricingColumns(ctx context.Context, db *gorm.
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_image_megapixel_tier_pricing_columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddInputCostPerQueryColumn adds the per-query rerank rate. Rerank models bill per
+// query (a "search unit" covering up to 100 document chunks) rather than per token, so without
+// this column every rerank request costs zero.
+func migrationAddInputCostPerQueryColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_input_cost_per_query_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, "input_cost_per_query"); err != nil {
+				return fmt.Errorf("failed to add column input_cost_per_query: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, "input_cost_per_query"); err != nil {
+				return fmt.Errorf("failed to drop column input_cost_per_query: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
 	}
 	return nil
 }

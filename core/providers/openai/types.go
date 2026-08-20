@@ -1164,6 +1164,11 @@ type OpenAIVideoEditRequest struct {
 
 	Model string `json:"model,omitempty"` // Inferred from the source video when it is referenced by ID
 
+	// Provider is resolved by the transport from the provider query parameter, the x-model-provider
+	// header, or a provider suffix on the source video ID. The official SDKs send no model on this
+	// route, so it is often the only routing signal available.
+	Provider schemas.ModelProvider `json:"-"`
+
 	Fallbacks   []string               `json:"fallbacks,omitempty"`
 	ExtraParams map[string]interface{} `json:"-"`
 }

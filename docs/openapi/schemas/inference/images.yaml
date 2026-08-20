@@ -51,9 +51,26 @@ ImageGenerationRequest:
           enum:
             - "url"
             - "b64_json"
+            - "data_uri"
           default: "url"
           description: |
-            Format of the response.
+            Format of the response. `data_uri` is supported by providers that return an inline
+            data URI (e.g. Runware).
+        input_images:
+          type: array
+          items:
+            type: string
+          description: |
+            Input images for image-to-image generation, as public URLs, provider-side asset IDs,
+            or base64 data URIs. Providers that accept only a single input use the first entry.
+        aspect_ratio:
+          type: string
+          description: Aspect ratio of the generated image (e.g. `16:9`), for providers that accept one in place of `size`
+        type:
+          type: string
+          description: |
+            Operation selector for providers that expose more than one generation task
+            (e.g. `vectorize` for text-to-SVG on Runware). Omit for standard generation.
         background:
           type: string
           enum:
@@ -83,7 +100,9 @@ ImageGenerationRequest:
             - "png"
             - "webp"
             - "jpeg"
-          description: Output image format
+            - "tiff"
+            - "svg"
+          description: Output image format. `svg` applies to vectorize operations
         user:
           type: string
           description: User identifier for tracking
@@ -159,6 +178,11 @@ ImageGenerationResponse:
 ImageData:
   type: object
   properties:
+    id:
+      type: string
+      description: |
+        Provider-side asset identifier, when one is assigned. Providers that accept their own
+        asset IDs as inputs (e.g. Runware) allow this to be fed straight into a follow-up task.
     url:
       type: string
       format: uri
@@ -172,6 +196,24 @@ ImageData:
     index:
       type: integer
       description: Index of this image
+    detections:
+      type: array
+      items:
+        $ref: '#/ImageDetection'
+      description: Regions located by a masking or segmentation operation
+
+ImageDetection:
+  type: object
+  description: A region located by a masking model, in absolute input-image pixels
+  properties:
+    x_min:
+      type: integer
+    y_min:
+      type: integer
+    x_max:
+      type: integer
+    y_max:
+      type: integer
 
 ImageGenerationResponseParameters:
   type: object
@@ -293,7 +335,6 @@ ImageEditRequest:
   type: object
   required:
     - model
-    - image
   properties:
     model:
       type: string
@@ -301,23 +342,66 @@ ImageEditRequest:
     prompt:
       type: string
       description: |
-        Text prompt describing the edit. Required unless `type` is `background_removal`.
+        Text prompt describing the edit. Required except for the operation types that are driven
+        purely by the input image: `background_removal`, `erase_object`, `upscale`, `upscale_fast`,
+        `mask`, `segmentation`, `vectorize` and `controlnet_preprocess`.
     image:
       type: string
       format: binary
       description: |
         Image file to edit. Use field name `image` for a single file or `image[]` for multiple files.
+        Either `image` or `image_url` is required.
+    image_url:
+      type: string
+      description: |
+        Input image as a public URL or provider-side asset ID, for providers whose upstream fetches
+        the asset itself (e.g. Runware). Use `image_url` for one or `image_url[]` for several; this
+        avoids round-tripping the asset through the gateway as base64. Uploads keep their leading
+        position, and providers treat the first image as the primary one.
     mask:
       type: string
       format: binary
-      description: Optional mask image for inpainting (transparent areas indicate regions to edit)
+      description: |
+        Optional mask image for inpainting (transparent areas indicate regions to edit). Dropped for
+        models that declare no mask input.
     type:
       type: string
       enum:
         - "inpainting"
         - "outpainting"
         - "background_removal"
-      description: Type of edit operation
+        - "remove_background"
+        - "remove_bg"
+        - "erase_object"
+        - "recolor"
+        - "search_replace"
+        - "control_sketch"
+        - "control_structure"
+        - "style_guide"
+        - "style_transfer"
+        - "upscale"
+        - "upscale_fast"
+        - "upscale_creative"
+        - "upscale_conservative"
+        - "mask"
+        - "segmentation"
+        - "vectorize"
+        - "controlnet_preprocess"
+        - "controlnet"
+        - "preprocess"
+      description: |
+        Type of edit operation. Support varies by provider; unsupported values are dropped and the
+        request runs as a standard edit.
+    upscale_factor:
+      type: integer
+      description: |
+        Multiply each dimension by this factor. `type: "upscale"` only; mutually exclusive with
+        `target_megapixels`.
+    target_megapixels:
+      type: integer
+      description: |
+        Target output size in megapixels. `type: "upscale"` only; mutually exclusive with
+        `upscale_factor`.
     n:
       type: integer
       minimum: 1
@@ -338,8 +422,11 @@ ImageEditRequest:
       enum:
         - "url"
         - "b64_json"
+        - "data_uri"
       default: "url"
-      description: Format of the response
+      description: |
+        Format of the response. `data_uri` is supported by providers that return an inline
+        data URI (e.g. Runware).
     stream:
       type: boolean
       default: false
@@ -377,7 +464,9 @@ ImageEditRequest:
         - "png"
         - "webp"
         - "jpeg"
-      description: Output image format
+        - "tiff"
+        - "svg"
+      description: Output image format. `svg` applies to vectorize operations
     num_inference_steps:
       type: integer
       description: Number of inference steps

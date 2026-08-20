@@ -255,15 +255,22 @@ func (p *LoggerPlugin) applyErrorBillingFromBilledUsage(ctx *schemas.BifrostCont
 		return
 	}
 	if entry.TokenUsageParsed == nil {
-		entry.TokenUsageParsed = billed
+		usageCopy := *billed
+		entry.TokenUsageParsed = &usageCopy
 		entry.PromptTokens = billed.PromptTokens
 		entry.CompletionTokens = billed.CompletionTokens
 		entry.TotalTokens = billed.TotalTokens
 	}
 	if entry.Cost == nil && p.pricingManager != nil {
 		pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
-		if cost := p.pricingManager.CalculateCostForUsage(billed, schemas.ModelProvider(entry.Provider), entry.Model, requestType, pricingScopes); cost > 0 {
-			entry.Cost = &cost
+		if bd := p.pricingManager.CalculateCostBreakdownForUsage(billed, schemas.ModelProvider(entry.Provider), entry.Model, requestType, pricingScopes); bd != nil && bd.TotalCost > 0 {
+			total := bd.TotalCost
+			entry.Cost = &total
+			// Attach the breakdown to the stored usage so SerializeFields
+			// denormalizes the input/output/additional split, not just the total.
+			if entry.TokenUsageParsed != nil && entry.TokenUsageParsed.Cost == nil {
+				entry.TokenUsageParsed.Cost = bd
+			}
 		}
 	}
 }
@@ -285,21 +292,40 @@ func (p *LoggerPlugin) applyInternalCallCosts(ctx *schemas.BifrostContext, entry
 		return
 	}
 	pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
-	var cost float64
+	var cacheCost, guardrailCost float64
 	if cacheDebug, ok := schemas.CacheDebugFromContext(ctx); ok {
-		cost += p.pricingManager.CalculateCacheEmbeddingCost(cacheDebug, pricingScopes)
+		cacheCost = p.pricingManager.CalculateCacheEmbeddingCost(cacheDebug, pricingScopes)
 	}
 	if guardrailDebug != nil {
-		cost += p.pricingManager.CalculateGuardrailCost(guardrailDebug, pricingScopes)
+		guardrailCost = p.pricingManager.CalculateGuardrailCost(guardrailDebug, pricingScopes)
 	}
+	cost := cacheCost + guardrailCost
 	if cost <= 0 {
 		return
 	}
 	if entry.Cost == nil {
 		entry.Cost = &cost
-		return
+	} else {
+		*entry.Cost += cost
 	}
-	*entry.Cost += cost
+
+	// Both are additional-side sidecar costs. Merge onto the usage carrier's
+	// breakdown when one exists (SerializeFields denormalizes from it); otherwise
+	// write the additional_cost column directly. Don't synthesize a carrier: that
+	// suppresses the deferred-usage watcher.
+	sidecar := &schemas.BifrostCost{TotalCost: cost}
+	if cacheCost > 0 || guardrailCost > 0 {
+		sidecar.AdditionalCost = cacheCost + guardrailCost
+		sidecar.AdditionalCostDetails = &schemas.AdditionalCostDetails{
+			SemanticCacheCost: cacheCost,
+			GuardrailCost:     guardrailCost,
+		}
+	}
+	if entry.TokenUsageParsed != nil {
+		entry.TokenUsageParsed.Cost = entry.TokenUsageParsed.Cost.Add(sidecar)
+	} else {
+		entry.AdditionalCost += cacheCost + guardrailCost
+	}
 }
 
 const (
@@ -1773,6 +1799,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		if tracer != nil && traceID != "" {
 			tracer.CleanupStreamAccumulator(traceID)
 		}
+		// Attach the per-category cost split to the accumulated stream usage so
+		// log detail views can surface input / output / cache costs.
+		p.attachCostBreakdown(ctx, entry, result)
 		p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
 		p.scheduleDeferredUsageUpdate(ctx, requestID, entry.TokenUsageParsed != nil)
 		return result, bifrostErr, nil
@@ -1815,8 +1844,26 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	entry.CacheDebugParsed = cacheDebug
 	if p.pricingManager != nil {
 		pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
-		if cost := p.pricingManager.CalculateCost(result, pricingScopes); cost > 0 {
+		if breakdown := p.pricingManager.CalculateCostBreakdown(result, pricingScopes); breakdown != nil && breakdown.TotalCost > 0 {
+			cost := breakdown.TotalCost
 			entry.Cost = &cost
+			// Attach the per-category split (input / output / cache) to the
+			// stored usage so log detail views can surface it. Preserve any
+			// provider-supplied breakdown.
+			if entry.TokenUsageParsed != nil && entry.TokenUsageParsed.Cost == nil {
+				entry.TokenUsageParsed.Cost = breakdown
+			} else if entry.TokenUsageParsed == nil {
+				// No usage carrier: OCRUsageInfo has no tokens, so OCR is never
+				// aliased into TokenUsageParsed. SerializeFields skips its cost
+				// block when TokenUsageParsed is nil, so denormalize the split
+				// directly here for the columns to reconcile to the cost column.
+				entry.InputCost = breakdown.InputCost
+				entry.OutputCost = breakdown.OutputCost
+				entry.AdditionalCost = breakdown.AdditionalCost
+			}
+			// Speech / transcription / OCR usage is not aliased into
+			// TokenUsageParsed, so write the split onto the native response too.
+			attachCostToNativeUsage(result, breakdown)
 		}
 		if bifrostErr == nil &&
 			requestType == schemas.BatchResultsRequest &&

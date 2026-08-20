@@ -1659,31 +1659,33 @@ export function LogDetailView({
 									<DottedSeparator />
 									<div className="space-y-4">
 										<BlockHeader title="Batch Details" />
-										<div className="grid w-full grid-cols-3 md:grid-cols-1 items-start justify-between gap-4">
-											{batchDebug.batch_id && (
-												<LogEntryDetailsView
-													className="w-full"
-													label="Batch ID"
-													value={
-														<span className="flex items-center gap-1">
-															<code className="font-mono text-xs">{batchDebug.batch_id}</code>
-															<CopyInlineButton text={batchDebug.batch_id} testId="logdetails-copy-batch-id-button" />
-														</span>
-													}
-												/>
-											)}
-											{batchDebug.request_counts && (
-												<>
-													<LogEntryDetailsView className="w-full" label="Total Requests" value={String(batchDebug.request_counts.total)} />
-													{batchRequestStates(batchDebug.request_counts).map(([label, count]) => (
-														<LogEntryDetailsView key={label} className="w-full" label={label} value={String(count)} />
-													))}
-												</>
-											)}
-											{batchDebug.accounting?.cost != null && (
-												<LogEntryDetailsView className="w-full" label="Batch Cost" value={formatCost(batchDebug.accounting.cost)} />
-											)}
-										</div>
+										{batchDebug.batch_id && (
+											<LogEntryDetailsView
+												className="w-full"
+												label="Batch ID"
+												value={
+													<span className="flex items-center gap-1">
+														<code className="font-mono text-xs">{batchDebug.batch_id}</code>
+														<CopyInlineButton text={batchDebug.batch_id} testId="logdetails-copy-batch-id-button" />
+													</span>
+												}
+											/>
+										)}
+										{(batchDebug.request_counts || batchDebug.accounting?.cost != null) && (
+											<div className="grid w-full grid-cols-1 md:grid-cols-3 items-start justify-between gap-4">
+												{batchDebug.request_counts && (
+													<>
+														<LogEntryDetailsView className="w-full" label="Total Requests" value={String(batchDebug.request_counts.total)} />
+														{batchRequestStates(batchDebug.request_counts).map(([label, count]) => (
+															<LogEntryDetailsView key={label} className="w-full" label={label} value={String(count)} />
+														))}
+													</>
+												)}
+												{batchDebug.accounting?.cost != null && (
+													<LogEntryDetailsView className="w-full" label="Batch Cost" value={formatCost(batchDebug.accounting.cost)} />
+												)}
+											</div>
+										)}
 									</div>
 								</>
 							)}

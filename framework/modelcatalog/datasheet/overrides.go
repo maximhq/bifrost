@@ -550,6 +550,7 @@ func patchPricing(pricing configstoreTables.TableModelPricing, override Options)
 		{dst: &patched.OutputCostPerImageAbove64Megapixels, src: override.OutputCostPerImageAbove64Megapixels},
 		{dst: &patched.CacheReadInputImageTokenCost, src: override.CacheReadInputImageTokenCost},
 		{dst: &patched.SearchContextCostPerQuery, src: override.SearchContextCostPerQuery},
+		{dst: &patched.InputCostPerQuery, src: override.InputCostPerQuery},
 		{dst: &patched.CodeInterpreterCostPerSession, src: override.CodeInterpreterCostPerSession},
 		{dst: &patched.CostPerRequest, src: override.CostPerRequest},
 		{dst: &patched.OutputCostPerImageLowQuality, src: override.OutputCostPerImageLowQuality},

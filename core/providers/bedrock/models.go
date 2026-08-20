@@ -26,6 +26,9 @@ const (
 	bedrockRerankInlineDocumentTypeText   = "TEXT"
 	bedrockRerankInlineDocumentTypeJSON   = "JSON"
 	bedrockRerankConfigurationTypeBedrock = "BEDROCK_RERANKING_MODEL"
+
+	// bedrockRerankChunksPerQuery is how many document chunks AWS bills as a single rerank query.
+	bedrockRerankChunksPerQuery = 100
 )
 
 type BedrockRerankQuery struct {

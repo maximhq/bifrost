@@ -3475,6 +3475,7 @@ func parseOpenAIVideoEditRequest(ctx *fasthttp.RequestCtx, req interface{}) erro
 		if videoEditReq.Video.ID == "" {
 			return errors.New("video.id is required when the source video is not uploaded")
 		}
+		videoEditReq.Provider = resolveOpenAIVideoEditProvider(ctx, videoEditReq.Video.ID)
 		return nil
 	}
 
@@ -3507,15 +3508,47 @@ func parseOpenAIVideoEditRequest(ctx *fasthttp.RequestCtx, req interface{}) erro
 			return err
 		}
 		videoEditReq.Video.Bytes = fileData
+		// An uploaded source carries no ID, so the query parameter or header is the only hint.
+		videoEditReq.Provider = resolveOpenAIVideoEditProvider(ctx, "")
 		return nil
 	}
 
 	if idValues := form.Value["video[id]"]; len(idValues) > 0 && idValues[0] != "" {
 		videoEditReq.Video.ID = idValues[0]
+		videoEditReq.Provider = resolveOpenAIVideoEditProvider(ctx, videoEditReq.Video.ID)
 		return nil
 	}
 
 	return errors.New("a video file or video[id] field is required")
+}
+
+// resolveOpenAIVideoEditProvider picks the provider for a video edit from the routing hints the
+// request carries. The official SDKs send no model on this route, so without these a request that
+// uploads its source has nothing to route on. An empty result leaves resolution to the model.
+func resolveOpenAIVideoEditProvider(ctx *fasthttp.RequestCtx, videoID string) schemas.ModelProvider {
+	for _, candidate := range []string{
+		string(ctx.QueryArgs().Peek("provider")),
+		string(ctx.Request.Header.Peek("x-model-provider")),
+		videoIDProviderSuffix(videoID),
+	} {
+		if candidate != "" {
+			return schemas.ModelProvider(candidate)
+		}
+	}
+	return ""
+}
+
+// videoIDProviderSuffix returns the provider a video ID is scoped to, if it carries one. The suffix
+// counts only when it names a real provider, so an ID that merely contains a colon is left alone.
+func videoIDProviderSuffix(videoID string) string {
+	idx := strings.LastIndex(videoID, ":")
+	if idx <= 0 || idx == len(videoID)-1 {
+		return ""
+	}
+	if suffix := videoID[idx+1:]; schemas.IsKnownProvider(suffix) {
+		return suffix
+	}
+	return ""
 }
 
 // parseOpenAIImageEditMultipartRequest is a RequestParser that handles multipart/form-data for image edit requests
