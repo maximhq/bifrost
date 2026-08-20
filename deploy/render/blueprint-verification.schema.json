@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://www.getbifrost.ai/schemas/render-blueprint-verification.json",
+  "title": "Bifrost Render Blueprint verification record",
+  "type": "object",
+  "required": ["blueprints"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "_comment": { "type": "string" },
+    "blueprints": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "required": ["blueprint", "branch", "button_url", "last_verified", "verified_release"],
+        "properties": {
+          "blueprint": { "type": "string", "minLength": 1 },
+          "branch": { "type": "string", "minLength": 1 },
+          "button_url": { "type": ["string", "null"], "minLength": 1 },
+          "last_verified": { "type": ["string", "null"], "format": "date" },
+          "verified_release": { "type": ["string", "null"], "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,20 @@
+{
+  "$schema": "./blueprint-verification.schema.json",
+  "_comment": "Evidence for the public Render deploy buttons. A button may appear in the documentation only while its entry records a verified run; CI enforces both directions. Set last_verified (ISO-8601 date) and verified_release after deploying the Blueprint from the named branch against the qualified image and confirming the runtime contract.",
+  "blueprints": {
+    "postgres": {
+      "blueprint": "render.yaml",
+      "branch": "main",
+      "button_url": "https://render.com/deploy?repo=https://github.com/maximhq/bifrost/tree/main",
+      "last_verified": null,
+      "verified_release": null
+    },
+    "sqlite": {
+      "blueprint": "deploy/render/render-sqlite.yaml",
+      "branch": "render-sqlite",
+      "button_url": "https://render.com/deploy?repo=https://github.com/maximhq/bifrost/tree/render-sqlite",
+      "last_verified": null,
+      "verified_release": null
+    }
+  }
+}

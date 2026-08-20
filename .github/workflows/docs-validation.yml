@@ -1,10 +1,17 @@
 name: Docs Validation
 
 on:
+  pull_request:
+    paths:
+      - "docs/**"
+      - ".github/workflows/docs-validation.yml"
+      - ".github/workflows/scripts/check-new-broken-links.sh"
   push:
     branches: ["main"]
     paths:
       - "docs/**"
+      - ".github/workflows/docs-validation.yml"
+      - ".github/workflows/scripts/check-new-broken-links.sh"
 
 permissions:
   contents: read
@@ -29,15 +36,33 @@ jobs:
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "21"
 
-      - name: Check for broken links
-        working-directory: ./docs
+      # Compare against the branch this change is measured from: pull requests
+      # against their base, main pushes against the commit they advanced from.
+      - name: Resolve the comparison point
+        id: base
+        env:
+          BASE_REF: ${{ github.event_name == 'pull_request' && github.base_ref || github.event.before }}
         run: |
-          echo "Checking for broken links in documentation..."
-          npx --yes mintlify@latest broken-links
-          echo "✅ No broken links found"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch --no-tags origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+            echo "ref=origin/${BASE_REF}" >> "$GITHUB_OUTPUT"
+          elif [ -z "${BASE_REF}" ] || [ "${BASE_REF}" = "0000000000000000000000000000000000000000" ] || ! git rev-parse --verify --quiet "${BASE_REF}^{commit}" >/dev/null; then
+            # Branch creation, or a force-push whose previous tip is gone: the
+            # parent commit is the only comparison point still available.
+            echo "ref=HEAD~1" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${BASE_REF}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check for newly broken links
+        env:
+          COMPARE_REF: ${{ steps.base.outputs.ref }}
+        run: bash .github/workflows/scripts/check-new-broken-links.sh "$COMPARE_REF"

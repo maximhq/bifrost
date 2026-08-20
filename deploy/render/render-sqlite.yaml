@@ -1,0 +1,46 @@
+# Canonical source for the generated render-sqlite branch's root render.yaml.
+# Do not edit the generated branch directly.
+services:
+  - type: web
+    name: bifrost
+    runtime: image
+    plan: starter
+    autoDeploy: false
+    image:
+      url: docker.io/maximhq/bifrost:latest
+    numInstances: 1
+    healthCheckPath: /health
+    maxShutdownDelaySeconds: 60
+    disk:
+      name: bifrost-data
+      mountPath: /app/data
+      sizeGB: 1
+    envVars:
+      - key: APP_HOST
+        value: 0.0.0.0
+      - key: APP_PORT
+        value: "10000"
+      - key: PORT
+        value: "10000"
+      - key: BIFROST_CONFIG
+        value: |
+          {
+            "$schema": "https://www.getbifrost.ai/schema",
+            "version": 2,
+            "source_of_truth": "split",
+            "encryption_key": "env.BIFROST_ENCRYPTION_KEY",
+            "client": {
+              "enforce_auth_on_inference": true
+            },
+            "governance": {
+              "auth_config": {
+                "admin_username": "admin",
+                "admin_password": "env.BIFROST_ADMIN_PASSWORD",
+                "is_enabled": true
+              }
+            }
+          }
+      - key: BIFROST_ENCRYPTION_KEY
+        generateValue: true
+      - key: BIFROST_ADMIN_PASSWORD
+        generateValue: true

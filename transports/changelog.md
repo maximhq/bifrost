@@ -1,5 +1,6 @@
 ## ✨ Features
 
+- **One-Click Render and Railway Deployments** - Added validated platform templates, release gates, inline runtime configuration, and safe arbitrary-UID startup for persistent volumes (thanks [@hbmartin](https://github.com/hbmartin)!)
 - **MCP Per-User OAuth** - MCP clients can hold per-user OAuth credentials and per-user headers, configurable from `config.json` as well as the UI, with a documented shared vs per-identity token lookup contract and VK/Users filters on the OAuth Grants and MCP Auth Sessions sidebars
 - **Token Exchange IDP Credentials** - New `use_idp_credentials` on `token_exchange` reuses SSO login app credentials for providers that require it, such as Microsoft Entra ID; `client_id` becomes optional when it is set (#6068, #6069)
 - **Bedrock VPC Endpoints** - AWS Bedrock keys can target VPC endpoints (#6064)

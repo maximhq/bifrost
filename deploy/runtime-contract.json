@@ -1,0 +1,4 @@
+{
+  "_comment": "The deployment runtime contract shared by the one-click templates. minimum_release_tag names the transports release that first carried it: the release gate (.github/workflows/scripts/verify-deployment-release.sh) refuses to qualify anything older, and the recorded-verification check (.github/workflows/scripts/validate-deployment-templates.py) refuses to accept a verification claiming one. Both read this file so the two cannot disagree about what qualifies. See docs/deployment-guides/runtime-contract.mdx for what the contract requires of an image.",
+  "minimum_release_tag": "v1.6.12"
+}
