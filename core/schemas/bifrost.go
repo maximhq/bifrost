@@ -73,6 +73,7 @@ const (
 	Fireworks     ModelProvider = "fireworks"
 	Sarvam        ModelProvider = "sarvam"
 	Wafer         ModelProvider = "wafer"
+	GithubCopilot ModelProvider = "github-copilot"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -118,6 +119,7 @@ var StandardProviders = []ModelProvider{
 	Fireworks,
 	Sarvam,
 	Wafer,
+	GithubCopilot,
 }
 
 // RequestType represents the type of request being made to a provider.

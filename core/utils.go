@@ -212,6 +212,13 @@ func validateKey(providerKey schemas.ModelProvider, key *schemas.Key) error {
 		if key.SGLKeyConfig.URL.GetValue() == "" {
 			return fmt.Errorf("sgl_key_config.url is required")
 		}
+	case schemas.GithubCopilot:
+		// Key.Value holds a Copilot API token, GitHub's documented "direct API token"
+		// method. Copilot tokens live about 30 minutes, so this suits testing and
+		// short-lived setups.
+		if key.Value.GetValue() == "" {
+			return fmt.Errorf("value is required and must be a GitHub Copilot API token")
+		}
 	}
 	return nil
 }
