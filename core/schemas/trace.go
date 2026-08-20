@@ -841,6 +841,11 @@ const RedactedAttrValue = "REDACTED"
 // well-known exact names, substring/suffix patterns catch credential-bearing
 // variants like x-auth-token, x-amz-security-token, and provider-specific
 // *-api-key headers.
+//
+// Identity-aware-proxy headers are covered explicitly: Cloudflare Access
+// (cf-access-*, incl. the cf-access-jwt-assertion signed JWT) and AWS ALB OIDC
+// (x-amzn-oidc-*) inject signed identity tokens the substring rules would miss,
+// plus generic jwt/assertion-bearing headers.
 func IsSensitiveHeader(name string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(name))
 
@@ -852,6 +857,10 @@ func IsSensitiveHeader(name string) bool {
 	return strings.Contains(normalized, "api-key") ||
 		strings.Contains(normalized, "authorization") ||
 		strings.Contains(normalized, "secret") ||
+		strings.Contains(normalized, "assertion") ||
+		strings.Contains(normalized, "jwt") ||
+		strings.HasPrefix(normalized, "cf-access-") ||
+		strings.HasPrefix(normalized, "x-amzn-oidc-") ||
 		strings.HasSuffix(normalized, "-token") ||
 		strings.HasSuffix(normalized, "_token")
 }
