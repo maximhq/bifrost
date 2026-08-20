@@ -20,6 +20,9 @@ const (
 	taskTypeImageMasking = "imageMasking"
 	// taskTypeVectorize converts a raster image, or a prompt, into an SVG.
 	taskTypeVectorize = "vectorize"
+	// taskTypeControlNetPreprocess derives a ControlNet guide image (canny, depth, openpose, ...)
+	// from an input image. The result comes back under guideImage* rather than image*.
+	taskTypeControlNetPreprocess = "controlNetPreprocess"
 )
 
 // deliveryMethodAsync queues a task instead of holding the connection open; used for video.
@@ -37,13 +40,17 @@ type RunwareInputs struct {
 	Image  *string  `json:"image,omitempty"`  // image UUID, URL, or base64/data-URI string
 	Images []string `json:"images,omitempty"` // array form, used by some 3D models
 	Video  *string  `json:"video,omitempty"`  // video UUID or URL
+	Mask   *string  `json:"mask,omitempty"`   // paired with Image by the erase/outpaint models
 
-	// Frame and reference images are nested here rather than sent top-level: the newest video
+	// Newer image models take their edit inputs as an array under this key and reject the flat
+	// seedImage form; which key a model accepts is per-model, see runwareImageInputFormFor.
+	ReferenceImages []string `json:"referenceImages,omitempty"`
+
+	// Frame images are nested here rather than sent top-level: the newest video
 	// models (klingai kling-video 3.x, alibaba wan 2.6/2.7, lightricks ltx 2.x, xai grok-imagine,
 	// runway aleph) reject the flat form with unsupportedParameter, while every model accepts the
 	// nested one. Note the item key is "image" here, where the flat form used "inputImage".
-	FrameImages     []RunwareFrameImage `json:"frameImages,omitempty"`
-	ReferenceImages []string            `json:"referenceImages,omitempty"`
+	FrameImages []RunwareFrameImage `json:"frameImages,omitempty"`
 }
 
 // RunwareInferenceRequest is a single Runware task. taskType selects the operation; each
