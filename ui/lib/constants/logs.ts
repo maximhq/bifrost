@@ -31,6 +31,7 @@ export const KnownProvidersNames = [
 	"sarvam",
 	"wafer",
 	"databricks",
+	"github-copilot",
 ] as const;
 
 // Local Provider type derived from KNOWN_PROVIDERS constant
@@ -159,6 +160,7 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	sarvam: "Sarvam AI",
 	wafer: "Wafer",
 	databricks: "Databricks",
+	"github-copilot": "GitHub Copilot",
 } as const;
 
 // Helper function to get provider label, supporting custom providers
