@@ -15,6 +15,7 @@ import (
 	"github.com/tidwall/gjson"
 
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/tidwall/sjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -311,6 +312,7 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 
 	var provider schemas.ModelProvider
 	var model string
+	isMessagesRequest := false
 
 	switch r := req.(type) {
 	case *anthropic.AnthropicTextRequest:
@@ -318,6 +320,7 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 
 	case *anthropic.AnthropicMessageRequest:
 		provider, model = schemas.ParseModelString(r.Model, "")
+		isMessagesRequest = true
 	}
 
 	headers := extractHeadersFromRequest(ctx)
@@ -345,11 +348,23 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 				bifrostCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, passthroughHeaders)
 			}
 		}
-		if provider == schemas.Vertex && (hasPromptCachingScopeBetaHeader(headers) || hasFastModeBetaHeader(headers)) {
+		// These providers convert output_config.format through Bifrost, including
+		// their client-facing response events, so raw request and response text
+		// rewriters do not apply.
+		if (provider == schemas.Vertex || provider == schemas.BedrockMantle || provider == schemas.Azure) && hasOutputConfigFormat(req) {
 			bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
 			return nil
 		}
-		if (provider == schemas.Vertex || provider == schemas.BedrockMantle || provider == schemas.Azure) && hasOutputConfigFormat(req) {
+		if isMessagesRequest {
+			// Native Messages response forwarding is independent of raw request
+			// serialization. Vertex beta modes serialize the normalized request but
+			// still return Anthropic SSE that Guardrails must synchronize.
+			bifrostCtx.SetValue(
+				schemas.BifrostContextKeyRawStreamTextCodec,
+				schemas.RawStreamTextCodec(anthropicRawStreamTextCodec{}),
+			)
+		}
+		if provider == schemas.Vertex && (hasPromptCachingScopeBetaHeader(headers) || hasFastModeBetaHeader(headers)) {
 			bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
 			return nil
 		}
@@ -361,6 +376,46 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 		)
 	}
 	return nil
+}
+
+// anthropicRawStreamTextCodec owns Anthropic's native text-delta JSON shape.
+type anthropicRawStreamTextCodec struct{}
+
+// Inspect returns text only for assistant content_block_delta text_delta events.
+func (anthropicRawStreamTextCodec) Inspect(rawResponse string) (schemas.RawStreamTextEvent, bool, error) {
+	if !gjson.Valid(rawResponse) {
+		return schemas.RawStreamTextEvent{}, false, fmt.Errorf("anthropic raw stream event is not valid JSON")
+	}
+	if gjson.Get(rawResponse, "type").String() != "content_block_delta" ||
+		gjson.Get(rawResponse, "delta.type").String() != "text_delta" {
+		return schemas.RawStreamTextEvent{}, false, nil
+	}
+	index := gjson.Get(rawResponse, "index")
+	if !index.Exists() || index.Type != gjson.Number || index.Int() < 0 {
+		return schemas.RawStreamTextEvent{}, false, fmt.Errorf("anthropic text_delta event has invalid index")
+	}
+	text := gjson.Get(rawResponse, "delta.text")
+	if !text.Exists() || text.Type != gjson.String {
+		return schemas.RawStreamTextEvent{}, false, fmt.Errorf("anthropic text_delta event has invalid delta.text")
+	}
+	return schemas.RawStreamTextEvent{
+		TargetID: strconv.FormatInt(index.Int(), 10),
+		Text:     text.String(),
+	}, true, nil
+}
+
+// Rewrite replaces only delta.text on an eligible Anthropic raw stream event.
+func (codec anthropicRawStreamTextCodec) Rewrite(rawResponse string, text string) (string, error) {
+	if _, eligible, err := codec.Inspect(rawResponse); err != nil {
+		return "", err
+	} else if !eligible {
+		return "", fmt.Errorf("anthropic raw stream event is not an eligible text_delta")
+	}
+	rewritten, err := sjson.Set(rawResponse, "delta.text", text)
+	if err != nil {
+		return "", fmt.Errorf("rewrite anthropic text_delta: %w", err)
+	}
+	return rewritten, nil
 }
 
 // rewriteAnthropicRawRequestBody applies runtime replacements only to Anthropic fields mirrored as mutable normalized text.

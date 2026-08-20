@@ -11,6 +11,68 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// TestAnthropicRawStreamTextCodecRewritesOnlyTextDelta verifies the codec preserves provider-native event structure.
+func TestAnthropicRawStreamTextCodecRewritesOnlyTextDelta(t *testing.T) {
+	codec := anthropicRawStreamTextCodec{}
+	raw := `{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"Contact alice@example.com"},"usage":{"output_tokens":4}}`
+	event, eligible, err := codec.Inspect(raw)
+	if err != nil {
+		t.Fatalf("Inspect() error = %v", err)
+	}
+	if !eligible || event.TargetID != "2" || event.Text != "Contact alice@example.com" {
+		t.Fatalf("Inspect() = (%+v, %v), want target 2 text event", event, eligible)
+	}
+
+	rewritten, err := codec.Rewrite(raw, "Contact [EMAIL]\nnext")
+	if err != nil {
+		t.Fatalf("Rewrite() error = %v", err)
+	}
+	if got := gjson.Get(rewritten, "delta.text").String(); got != "Contact [EMAIL]\nnext" {
+		t.Errorf("delta.text = %q", got)
+	}
+	if got := gjson.Get(rewritten, "type").String(); got != "content_block_delta" {
+		t.Errorf("type = %q", got)
+	}
+	if got := gjson.Get(rewritten, "usage.output_tokens").Int(); got != 4 {
+		t.Errorf("usage.output_tokens = %d", got)
+	}
+	if got := gjson.Get(raw, "delta.text").String(); got != "Contact alice@example.com" {
+		t.Errorf("provider-original raw event changed to %q", got)
+	}
+}
+
+// TestAnthropicRawStreamTextCodecIgnoresNonTextEvents verifies reasoning, tool JSON, and lifecycle events remain opaque.
+func TestAnthropicRawStreamTextCodecIgnoresNonTextEvents(t *testing.T) {
+	codec := anthropicRawStreamTextCodec{}
+	cases := []string{
+		`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"alice@example.com"}}`,
+		`{"type":"content_block_delta","index":1,"delta":{"type":"signature_delta","signature":"alice@example.com"}}`,
+		`{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"email\":\"alice@example.com\"}"}}`,
+		`{"type":"content_block_stop","index":2}`,
+		`{"type":"message_stop"}`,
+	}
+	for _, raw := range cases {
+		if event, eligible, err := codec.Inspect(raw); err != nil || eligible {
+			t.Errorf("Inspect(%s) = (%+v, %v, %v), want ineligible", raw, event, eligible, err)
+		}
+	}
+}
+
+// TestAnthropicRawStreamTextCodecRejectsMalformedEligibleEvents verifies malformed native text events cannot be synchronized.
+func TestAnthropicRawStreamTextCodecRejectsMalformedEligibleEvents(t *testing.T) {
+	codec := anthropicRawStreamTextCodec{}
+	cases := []string{
+		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta"}}`,
+		`{"type":"content_block_delta","index":"zero","delta":{"type":"text_delta","text":"hello"}}`,
+		`{"type":`,
+	}
+	for _, raw := range cases {
+		if _, _, err := codec.Inspect(raw); err == nil {
+			t.Errorf("Inspect(%q) error = nil", raw)
+		}
+	}
+}
+
 // TestRewriteAnthropicRawRequestBodyRedactsOnlyContentFields verifies native redaction covers conversation content without touching request metadata or tool arguments.
 func TestRewriteAnthropicRawRequestBodyRedactsOnlyContentFields(t *testing.T) {
 	rawBody := []byte(`{
@@ -280,13 +342,81 @@ func TestCheckAnthropicPassthrough_OutputConfigEscapeHatch(t *testing.T) {
 				t.Errorf("expected UseRawRequestBody to stay true for %s, got false", tc.model)
 			}
 			_, hasRewriter := bifrostCtx.Value(schemas.BifrostContextKeyRawRequestBodyTextRewriter).(schemas.RawRequestBodyTextRewriter)
+			_, hasStreamCodec := bifrostCtx.Value(schemas.BifrostContextKeyRawStreamTextCodec).(schemas.RawStreamTextCodec)
 			if tc.wantRawOff && hasRewriter {
 				t.Errorf("expected raw request body text rewriter to remain unset for %s", tc.model)
 			}
 			if !tc.wantRawOff && !hasRewriter {
 				t.Errorf("expected Anthropic raw request body text rewriter for %s", tc.model)
 			}
+			if tc.wantRawOff && hasStreamCodec {
+				t.Errorf("expected raw stream text codec to remain unset for %s", tc.model)
+			}
+			if !tc.wantRawOff && !hasStreamCodec {
+				t.Errorf("expected Anthropic raw stream text codec for %s", tc.model)
+			}
 		})
+	}
+}
+
+// TestCheckAnthropicPassthrough_VertexBetaKeepsNativeResponseCodec verifies
+// request-only Vertex escape hatches do not disable native Messages response rewriting.
+func TestCheckAnthropicPassthrough_VertexBetaKeepsNativeResponseCodec(t *testing.T) {
+	betaHeaders := []string{
+		anthropic.AnthropicPromptCachingScopeBetaHeader,
+		anthropic.AnthropicFastModeBetaHeader,
+	}
+
+	for _, betaHeader := range betaHeaders {
+		t.Run(betaHeader, func(t *testing.T) {
+			reqCtx := &fasthttp.RequestCtx{}
+			reqCtx.Request.Header.SetMethod(fasthttp.MethodPost)
+			reqCtx.Request.Header.Set("user-agent", "claude-code/1.0")
+			reqCtx.Request.Header.Set("x-api-key", "sk-ant-test")
+			reqCtx.Request.Header.Set(anthropic.AnthropicBetaHeader, betaHeader)
+
+			bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+
+			req := &anthropic.AnthropicMessageRequest{
+				Model:     "vertex/claude-opus-4-6",
+				MaxTokens: 1024,
+			}
+			if err := checkAnthropicPassthrough(reqCtx, bifrostCtx, req); err != nil {
+				t.Fatalf("checkAnthropicPassthrough() error = %v", err)
+			}
+
+			if useRaw, _ := bifrostCtx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); useRaw {
+				t.Fatal("Vertex beta request kept raw request-body passthrough enabled")
+			}
+			if sendRaw, _ := bifrostCtx.Value(schemas.BifrostContextKeySendBackRawResponse).(bool); !sendRaw {
+				t.Fatal("Vertex beta request disabled native response forwarding")
+			}
+			if _, ok := bifrostCtx.Value(schemas.BifrostContextKeyRawRequestBodyTextRewriter).(schemas.RawRequestBodyTextRewriter); ok {
+				t.Fatal("Vertex beta request registered a raw request-body rewriter")
+			}
+			if _, ok := bifrostCtx.Value(schemas.BifrostContextKeyRawStreamTextCodec).(schemas.RawStreamTextCodec); !ok {
+				t.Fatal("Vertex beta request did not register the native response codec")
+			}
+		})
+	}
+}
+
+// TestCheckAnthropicPassthroughLegacyCompleteOmitsStreamCodec verifies only Messages streams register the native SSE codec.
+func TestCheckAnthropicPassthroughLegacyCompleteOmitsStreamCodec(t *testing.T) {
+	reqCtx := &fasthttp.RequestCtx{}
+	reqCtx.Request.Header.SetMethod(fasthttp.MethodPost)
+	reqCtx.Request.Header.Set("user-agent", "claude-code/1.0")
+	reqCtx.Request.Header.Set("x-api-key", "sk-ant-test")
+	bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	req := &anthropic.AnthropicTextRequest{Model: "anthropic/claude-haiku-4-5"}
+	if err := checkAnthropicPassthrough(reqCtx, bifrostCtx, req); err != nil {
+		t.Fatalf("checkAnthropicPassthrough() error = %v", err)
+	}
+	if _, ok := bifrostCtx.Value(schemas.BifrostContextKeyRawStreamTextCodec).(schemas.RawStreamTextCodec); ok {
+		t.Fatal("legacy complete request registered a Messages raw stream codec")
 	}
 }
 
