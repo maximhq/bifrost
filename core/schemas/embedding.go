@@ -24,6 +24,11 @@ type BifrostEmbeddingResponse struct {
 	Object      string                     `json:"object"` // "list"
 	Usage       *BifrostLLMUsage           `json:"usage"`
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+
+	// ProviderNativeResponse carries a provider response that the canonical
+	// embedding schema cannot represent losslessly. Native-surface integrations
+	// may re-emit it, but it must never appear in the normalized public response.
+	ProviderNativeResponse interface{} `json:"-"`
 }
 
 // BackfillParams copies request metadata into the response when the provider omitted it (e.g. model in JSON).

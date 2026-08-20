@@ -101,16 +101,35 @@ func (response *BedrockTitanEmbeddingResponse) ToBifrostEmbeddingResponse() *sch
 		},
 	}
 
-	data := schemas.EmbeddingData{Index: 0, Object: "embedding"}
-	switch {
-	case response.Embedding != nil:
-		data.Embedding.EmbeddingArray = response.Embedding
-	case response.EmbeddingsByType != nil && response.EmbeddingsByType.Float != nil:
-		data.Embedding.EmbeddingArray = response.EmbeddingsByType.Float
-	case response.EmbeddingsByType != nil && response.EmbeddingsByType.Binary != nil:
-		data.Embedding.EmbeddingInt8Array = response.EmbeddingsByType.Binary
+	if response.Embedding != nil {
+		bifrostResponse.Data = []schemas.EmbeddingData{{
+			Index:     0,
+			Object:    "embedding",
+			Embedding: schemas.EmbeddingStruct{EmbeddingArray: response.Embedding},
+		}}
+		return bifrostResponse
 	}
-	bifrostResponse.Data = []schemas.EmbeddingData{data}
+
+	if response.EmbeddingsByType != nil {
+		if response.EmbeddingsByType.Float != nil {
+			bifrostResponse.Data = append(bifrostResponse.Data, schemas.EmbeddingData{
+				Index:     0,
+				Object:    "embedding",
+				Embedding: schemas.EmbeddingStruct{EmbeddingArray: response.EmbeddingsByType.Float},
+			})
+		}
+		if response.EmbeddingsByType.Binary != nil {
+			bifrostResponse.Data = append(bifrostResponse.Data, schemas.EmbeddingData{
+				Index:     0,
+				Object:    "embedding",
+				Embedding: schemas.EmbeddingStruct{EmbeddingInt8Array: response.EmbeddingsByType.Binary},
+			})
+		}
+	}
+
+	if len(bifrostResponse.Data) == 0 {
+		bifrostResponse.Data = []schemas.EmbeddingData{{Index: 0, Object: "embedding"}}
+	}
 
 	return bifrostResponse
 }

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -112,6 +113,26 @@ func TestBedrockEmbeddingEncodingInvokeRoundTrip(t *testing.T) {
 			require.Nil(t, bifrostErr)
 			require.NotNil(t, response)
 			assert.JSONEq(t, test.providerBody, string(<-providerRequestBody))
+			if strings.Contains(test.providerResponse, "embeddingsByType") || strings.Contains(test.providerResponse, "embeddings_by_type") {
+				assert.Nil(t, response.ExtraFields.RawResponse, "typed native payload must not bypass raw-response policy")
+				assert.NotNil(t, response.ProviderNativeResponse, "native invoke conversion still needs the lossless provider envelope")
+				normalizedJSON, marshalErr := json.Marshal(response)
+				require.NoError(t, marshalErr)
+				assert.NotContains(t, string(normalizedJSON), "embeddingsByType")
+				assert.NotContains(t, string(normalizedJSON), "embeddings_by_type")
+
+				ctxWithRawCapture := testBedrockCtx()
+				ctxWithRawCapture.SetValue(schemas.BifrostContextKeyCaptureRawResponse, true)
+				responseWithRawCapture, rawCaptureErr := provider.Embedding(
+					ctxWithRawCapture,
+					testBedrockKey(),
+					invokeRequest.ToBifrostEmbeddingRequest(ctxWithRawCapture),
+				)
+				require.Nil(t, rawCaptureErr)
+				require.NotNil(t, responseWithRawCapture)
+				assert.JSONEq(t, test.providerBody, string(<-providerRequestBody))
+				assert.NotNil(t, responseWithRawCapture.ExtraFields.RawResponse, "explicit raw-response capture must remain supported")
+			}
 
 			invokeResponse, err := ToBedrockEmbeddingInvokeResponse(ctx, response)
 			require.NoError(t, err)
@@ -120,6 +141,23 @@ func TestBedrockEmbeddingEncodingInvokeRoundTrip(t *testing.T) {
 			assert.JSONEq(t, test.providerResponse, string(wireResponse))
 		})
 	}
+}
+
+func TestBedrockTitanEmbeddingResponsePreservesAllTypedEncodings(t *testing.T) {
+	response := (&BedrockTitanEmbeddingResponse{
+		EmbeddingsByType: &BedrockTitanEmbeddingsByType{
+			Float:  []float64{0.25, 0.75},
+			Binary: []int8{1, 0, -1},
+		},
+		InputTextTokenCount: 3,
+	}).ToBifrostEmbeddingResponse()
+
+	require.NotNil(t, response)
+	require.Len(t, response.Data, 2)
+	assert.Equal(t, []float64{0.25, 0.75}, response.Data[0].Embedding.EmbeddingArray)
+	assert.Equal(t, []int8{1, 0, -1}, response.Data[1].Embedding.EmbeddingInt8Array)
+	assert.Equal(t, 0, response.Data[0].Index)
+	assert.Equal(t, 0, response.Data[1].Index)
 }
 
 func TestToBedrockTitanEmbeddingRequestEncodingTypes(t *testing.T) {

@@ -2107,12 +2107,15 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 		bifrostResponse = titanResp.ToBifrostEmbeddingResponse()
 		bifrostResponse.Model = request.Model
 		// Titan V2 can return more than one representation under embeddingsByType.
-		// Preserve that native payload so the InvokeModel compatibility route can
-		// return every requested encoding without flattening or dropping one.
+		// Preserve it internally for native InvokeModel conversion, and expose it as
+		// raw_response only when the request's raw-response policy permits capture.
 		if titanResp.EmbeddingsByType != nil {
 			var rawResponseData interface{}
 			if err := sonic.Unmarshal(rawResponse, &rawResponseData); err == nil {
-				bifrostResponse.ExtraFields.RawResponse = rawResponseData
+				bifrostResponse.ProviderNativeResponse = rawResponseData
+				if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+					bifrostResponse.ExtraFields.RawResponse = rawResponseData
+				}
 			}
 		}
 
@@ -2127,13 +2130,16 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 		}
 		bifrostResponse = converted
 		bifrostResponse.Model = request.Model
-		// For embeddings_by_type responses preserve the raw Bedrock payload so the
-		// invoke-endpoint converter can return all encoding variants verbatim, since
-		// the internal BifrostEmbeddingResponse only has float32 and string fields.
+		// Typed variants cannot be reconstructed losslessly from the canonical data
+		// alone (int8 vs binary and uint8 vs ubinary share representations). Preserve
+		// the native payload internally, and honor the raw-response capture policy.
 		if cohereResp.ResponseType == "embeddings_by_type" {
 			var rawResponseData interface{}
 			if err := sonic.Unmarshal(rawResponse, &rawResponseData); err == nil {
-				bifrostResponse.ExtraFields.RawResponse = rawResponseData
+				bifrostResponse.ProviderNativeResponse = rawResponseData
+				if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+					bifrostResponse.ExtraFields.RawResponse = rawResponseData
+				}
 			}
 		}
 	}

@@ -1169,6 +1169,12 @@ func ToBedrockEmbeddingInvokeResponse(ctx *schemas.BifrostContext, resp *schemas
 	if resp.ExtraFields.RawResponse != nil {
 		return resp.ExtraFields.RawResponse, nil
 	}
+	// Typed embedding envelopes contain distinctions the canonical schema cannot
+	// represent losslessly. This internal field is never serialized on normalized
+	// endpoints, but native Bedrock and LangChain routes can re-emit it here.
+	if resp.ProviderNativeResponse != nil {
+		return resp.ProviderNativeResponse, nil
+	}
 
 	tokenCount := 0
 	if resp.Usage != nil {
