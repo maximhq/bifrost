@@ -323,6 +323,56 @@ func TestResponsesStreamTruncatedBeforeCompleted(t *testing.T) {
 	assertTruncationError(t, chunks[len(chunks)-1].BifrostError)
 }
 
+// Azure/OpenAI Responses can accept a request with HTTP 200, emit lifecycle
+// events, and then report a semantic failure in a terminal SSE event. The
+// transport status is already committed, so the shared decoder must preserve
+// the nested provider details in the semantic error event.
+func TestResponsesStreamAzureStyleErrorEvent(t *testing.T) {
+	server := completeSSEServer(t,
+		`data: {"type":"response.created","sequence_number":0,"response":{"id":"r1","object":"response","created_at":1,"model":"repro-model","status":"in_progress"}}
+
+`+
+			`data: {"type":"error","sequence_number":1,"error":{"type":"too_many_requests","code":"no_capacity","message":"The service is temporarily unable to process this request."}}
+
+`)
+	defer server.Close()
+
+	provider := newStreamTestProvider(server.URL)
+	request := &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "repro-model",
+		Input: []schemas.ResponsesMessage{{
+			Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+		}},
+	}
+	stream, bifrostErr := provider.ResponsesStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), request)
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+
+	var got *schemas.BifrostError
+	for _, chunk := range collectChunks(t, stream) {
+		if chunk.BifrostError != nil {
+			got = chunk.BifrostError
+			break
+		}
+	}
+	if got == nil || got.Error == nil {
+		t.Fatalf("expected an in-band Azure error chunk, got nil")
+	}
+	if got.Error.Type == nil || *got.Error.Type != "too_many_requests" {
+		t.Fatalf("error type = %#v, want too_many_requests", got.Error.Type)
+	}
+	if got.Error.Code == nil || *got.Error.Code != "no_capacity" {
+		t.Fatalf("error code = %#v, want no_capacity", got.Error.Code)
+	}
+	if got.Error.Message == "" {
+		t.Fatal("expected non-empty Azure stream error message")
+	}
+}
+
 // chatChunkNullDeltaFinish reproduces the terminal-chunk shape some OpenAI-compatible
 // upstreams send: "delta" is null (or absent) alongside "finish_reason", rather than
 // an empty object. ToBifrostResponsesStreamResponse must not discard finish_reason

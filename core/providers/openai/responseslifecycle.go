@@ -317,28 +317,7 @@ func (provider *OpenAIProvider) ResponsesRetrieveStream(ctx *schemas.BifrostCont
 			}
 
 			if response.Type == schemas.ResponsesStreamResponseTypeError {
-				bifrostErr := &schemas.BifrostError{
-					Type:           schemas.Ptr(string(schemas.ResponsesStreamResponseTypeError)),
-					IsBifrostError: false,
-					Error:          &schemas.ErrorField{},
-				}
-				if response.Message != nil {
-					bifrostErr.Error.Message = *response.Message
-				}
-				if response.Param != nil {
-					bifrostErr.Error.Param = *response.Param
-				}
-				if response.Code != nil {
-					bifrostErr.Error.Code = response.Code
-				}
-				if response.Error != nil {
-					if response.Error.Message != "" && bifrostErr.Error.Message == "" {
-						bifrostErr.Error.Message = response.Error.Message
-					}
-					if response.Error.Code != "" && (bifrostErr.Error.Code == nil || *bifrostErr.Error.Code == "") {
-						bifrostErr.Error.Code = &response.Error.Code
-					}
-				}
+				bifrostErr := responsesStreamError(&response)
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, nil, []byte(jsonData), sendBackRawRequest, sendBackRawResponse, latency), responseChan, provider.logger, postHookSpanFinalizer)
 				return
@@ -346,15 +325,7 @@ func (provider *OpenAIProvider) ResponsesRetrieveStream(ctx *schemas.BifrostCont
 
 			// Some providers send response.failed on HTTP 200 streams instead of a pre-stream 4xx.
 			if response.Type == schemas.ResponsesStreamResponseTypeFailed {
-				bifrostErr := &schemas.BifrostError{
-					Type:           schemas.Ptr(string(schemas.ResponsesStreamResponseTypeFailed)),
-					IsBifrostError: false,
-					Error:          &schemas.ErrorField{},
-				}
-				if response.Response != nil && response.Response.Error != nil {
-					bifrostErr.Error.Message = response.Response.Error.Message
-					bifrostErr.Error.Code = &response.Response.Error.Code
-				}
+				bifrostErr := responsesStreamError(&response)
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, nil, []byte(jsonData), sendBackRawRequest, sendBackRawResponse, latency), responseChan, provider.logger, postHookSpanFinalizer)
 				return

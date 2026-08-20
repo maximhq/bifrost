@@ -90,6 +90,11 @@ type TableModelPricing struct {
 	OutputCostPerImageAbove1024x1024PixelsPremium *float64 `gorm:"default:null;column:output_cost_per_image_above_1024x1024_pixels_premium" json:"output_cost_per_image_above_1024_and_1024_pixels_and_premium_image,omitempty"`
 	OutputCostPerImageAbove2048x2048Pixels        *float64 `gorm:"default:null;column:output_cost_per_image_above_2048_and_2048_pixels" json:"output_cost_per_image_above_2048_and_2048_pixels,omitempty"`
 	OutputCostPerImageAbove4096x4096Pixels        *float64 `gorm:"default:null;column:output_cost_per_image_above_4096_and_4096_pixels" json:"output_cost_per_image_above_4096_and_4096_pixels,omitempty"`
+	OutputCostPerImageAbove4Megapixels            *float64 `gorm:"default:null;column:output_cost_per_image_above_4_megapixels" json:"output_cost_per_image_above_4_megapixels,omitempty"`
+	OutputCostPerImageAbove8Megapixels            *float64 `gorm:"default:null;column:output_cost_per_image_above_8_megapixels" json:"output_cost_per_image_above_8_megapixels,omitempty"`
+	OutputCostPerImageAbove16Megapixels           *float64 `gorm:"default:null;column:output_cost_per_image_above_16_megapixels" json:"output_cost_per_image_above_16_megapixels,omitempty"`
+	OutputCostPerImageAbove32Megapixels           *float64 `gorm:"default:null;column:output_cost_per_image_above_32_megapixels" json:"output_cost_per_image_above_32_megapixels,omitempty"`
+	OutputCostPerImageAbove64Megapixels           *float64 `gorm:"default:null;column:output_cost_per_image_above_64_megapixels" json:"output_cost_per_image_above_64_megapixels,omitempty"`
 	OutputCostPerImageLowQuality                  *float64 `gorm:"default:null;column:output_cost_per_image_low_quality" json:"output_cost_per_image_low_quality,omitempty"`
 	OutputCostPerImageMediumQuality               *float64 `gorm:"default:null;column:output_cost_per_image_medium_quality" json:"output_cost_per_image_medium_quality,omitempty"`
 	OutputCostPerImageHighQuality                 *float64 `gorm:"default:null;column:output_cost_per_image_high_quality" json:"output_cost_per_image_high_quality,omitempty"`

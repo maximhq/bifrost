@@ -159,6 +159,11 @@
           "    } else if (j.object === 'response.deleted' && typeof j.id === 'string') {",
           "        shape = 'openai-responses-deleted';",
           "        hasContent = j.deleted === true;",
+          "    } else if (j.object === 'video' && typeof j.id === 'string') {",
+          "        shape = 'video-job';",
+          "        // An async video job is a receipt, not content: submit returns {id, status} and",
+          "        // the rendered asset only exists after polling. The id IS the payload.",
+          "        hasContent = !!j.id;",
           "    }",
           "    pm.expect(hasContent, 'expected non-empty content (shape=' + shape + ', body=' + JSON.stringify(j).slice(0, 200) + ')').to.be.true;",
           "  });",
@@ -131618,11 +131623,11 @@
     },
     {
       "name": "54. Runware Provider Coverage (text, image, image edits, video, 3D)",
-      "description": "Runware had zero harness coverage before this folder: no cases in the collection, no entry in PROVIDER_KEYWORDS, no provider_config env file, no provider-capabilities row, and the provider was not configured in the harness gateway config. It is also the first coverage of /v1/images/edits and /v1/videos for ANY provider.\n\nRunware is a task-based API: a single endpoint takes an array of tasks keyed by taskType. Bifrost maps its neutral `type` parameter onto those task types (upscale, removeBackground, imageMasking, vectorize, 3dInference), nests media under an `inputs` envelope, and keeps scalars top-level. Unknown keys are rejected with unsupportedParameter on BOTH levels, so a wrong envelope is a hard 400 - which is what these cases pin.\n\nModels are AIR ids (vendor:model@version), and Runware proxies third-party text models, so rows name vendors like anthropic/google/minimax inside the model string. filter-collection.mjs routes them exclusively to the runware partition, the same way it handles openrouter, bedrock_mantle and vertex.",
+      "description": "Runware had zero harness coverage before this folder: no cases in the collection, no entry in PROVIDER_KEYWORDS, no provider_config env file, no provider-capabilities row, and the provider was not configured in the harness gateway config. It is also the first coverage of /v1/images/edits and /v1/videos for ANY provider.\n\nRunware is a task-based API: a single endpoint takes an array of tasks keyed by taskType. Bifrost maps its neutral `type` parameter onto those task types (upscale, removeBackground, imageMasking, vectorize, 3dInference), nests media under an `inputs` envelope, and keeps scalars top-level. Unknown keys are rejected with unsupportedParameter on BOTH levels, so a wrong envelope is a hard 400 - which is what these rows pin.\n\nCapabilities Runware does not implement (embeddings, text completion, image variation, batches, files, containers, rerank) are declared false in provider-capabilities.json and are covered by the shared documented-unsupported checks; they are deliberately not duplicated here.\n\nModels are AIR ids (vendor:model@version), and Runware proxies third-party text models, so rows name vendors like anthropic/google/minimax inside the model string. filter-collection.mjs routes them exclusively to the runware partition, the same way it handles openrouter, bedrock_mantle and vertex.",
       "item": [
         {
           "name": "54.1 Text inference (OpenAI-compatible /v1/chat/completions + mux'd /v1/responses)",
-          "description": "Runware serves text inference at its OpenAI-compatible /chat/completions endpoint, so Bifrost reuses the OpenAI handlers unchanged; /v1/responses has no native Runware route and is muxed through chat. Models are AIR ids, not OpenAI names. These pin that both API surfaces work and that tools, vision and reasoning survive the AIR-id model naming.",
+          "description": "Runware serves text inference at its OpenAI-compatible /chat/completions endpoint, so Bifrost reuses the OpenAI handlers unchanged; /v1/responses has no native Runware route and is muxed through chat. Models are AIR ids, not OpenAI names.\n\nToken budgets are deliberately generous on the vision and reasoning rows: the models Runware proxies there spend the completion budget on reasoning tokens first, so a small max_tokens returns finish_reason=length with empty content rather than an answer.",
           "item": [
             {
               "name": "runware/anthropic:claude@haiku-4.5 chat completions",
@@ -131726,7 +131731,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"runware/anthropic:claude@haiku-4.5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Paris? Use the tool.\"\n    }\n  ],\n  \"max_tokens\": 128,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get current weather for a city\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\",\n              \"description\": \"City name\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ]\n}"
+                  "raw": "{\n  \"model\": \"runware/anthropic:claude@haiku-4.5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Paris? Use the tool.\"\n    }\n  ],\n  \"max_tokens\": 256,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get current weather for a city\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\",\n              \"description\": \"City name\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ]\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/v1/chat/completions",
@@ -131772,7 +131777,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"runware/google:gemini@3-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"What food is shown? Answer in one word.\"\n        },\n        {\n          \"type\": \"image_url\",\n          \"image_url\": {\n            \"url\": \"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\"\n          }\n        }\n      ]\n    }\n  ],\n  \"max_tokens\": 24\n}"
+                  "raw": "{\n  \"model\": \"runware/google:gemini@3-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"What food is shown? Answer in one word.\"\n        },\n        {\n          \"type\": \"image_url\",\n          \"image_url\": {\n            \"url\": \"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\"\n          }\n        }\n      ]\n    }\n  ],\n  \"max_tokens\": 768\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/v1/chat/completions",
@@ -131796,9 +131801,10 @@
                       "pm.test('vision request succeeds', function () {",
                       "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                       "});",
-                      "pm.test('returns a description', function () {",
-                      "  var c = pm.response.json().choices[0].message.content;",
-                      "  pm.expect(c, 'empty content: ' + pm.response.text()).to.be.a('string').that.is.not.empty;",
+                      "pm.test('returns a description rather than exhausting the budget on reasoning', function () {",
+                      "  var c = pm.response.json().choices[0];",
+                      "  pm.expect(c.finish_reason, 'budget exhausted before any content: ' + pm.response.text()).to.not.eql('length');",
+                      "  pm.expect(c.message.content, 'empty content: ' + pm.response.text()).to.be.a('string').that.is.not.empty;",
                       "});"
                     ]
                   }
@@ -131942,7 +131948,7 @@
         },
         {
           "name": "54.2 Image generation (/v1/images/generations)",
-          "description": "Runware's imageInference task via the native images route, plus the vectorize task type, which is a different Runware taskType selected through the neutral `type` parameter rather than a separate Bifrost endpoint.",
+          "description": "Runware's imageInference task via the native images route, plus the text-to-vector variant of the vectorize taskType, which the neutral `type` parameter selects without a separate Bifrost endpoint. Note recraft:v4@vector is the text-driven vectorizer (positivePrompt + dimensions, no inputs envelope); the image-driven vectorizers live on /v1/images/edits in 54.3.",
           "item": [
             {
               "name": "runware/runware:101@1 image generation url",
@@ -132040,7 +132046,7 @@
               ]
             },
             {
-              "name": "runware/recraft:v4@vector vectorize via type on generations",
+              "name": "runware/recraft:v4@vector text-to-vector via type=vectorize",
               "request": {
                 "method": "POST",
                 "header": [
@@ -132075,7 +132081,8 @@
                       "pm.test('vectorize task succeeds', function () {",
                       "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                       "});",
-                      "pm.test('returns a vector asset', function () {",
+                      "pm.test('type selects the vectorize taskType, not imageInference', function () {",
+                      "  pm.expect(pm.response.text(), 'vectorize envelope rejected').to.not.include('unsupportedParameter');",
                       "  var d = pm.response.json().data;",
                       "  pm.expect(d, 'no data: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
                       "  pm.expect(!!(d[0].url || d[0].b64_json), 'no asset returned').to.be.true;",
@@ -132089,10 +132096,10 @@
         },
         {
           "name": "54.3 Image edits (/v1/images/edits) - task types via the neutral `type` selector",
-          "description": "First /v1/images/edits coverage in the harness for any provider. Runware routes four distinct taskTypes off Bifrost's neutral `type` parameter - imageInference (no type), upscale, removeBackground and imageMasking - each with its own request envelope (inputs.* nested, scalars top-level) and its own output family (image*, maskImage*). Masking in particular returns maskImage* rather than image*, so reading only image* would yield an empty response. Covers the two upscalers a customer was blocked on: topazlabs Wonder 3.5 and prunaai P-Image.",
+          "description": "First /v1/images/edits coverage in the harness for any provider. Runware routes five distinct taskTypes off Bifrost's neutral `type` parameter - imageInference (no type), upscale, removeBackground, imageMasking and vectorize - each with its own envelope and its own output family. Masking returns maskImage* rather than image*, so reading only image* would surface an empty response; that row asserts the asset and the detections array both survive.\n\nModel choices are load-bearing. runware:101@1 is a plain image-to-image model, while runware:102@1 is FLUX Fill, which the provider rejects without a mask ('Model is of type Inpainting'), so the two are separate rows. The upscalers run at 4x, not 2x: the 360x360 fixture at 2x is 0.52 MP, and prunaai floors that to a target of 0 and rejects it.\n\nCovers the two upscalers a customer was blocked on: topazlabs Wonder 3.5 and prunaai P-Image.",
           "item": [
             {
-              "name": "runware/runware:102@1 image edit image-to-image",
+              "name": "runware/runware:101@1 image edit image-to-image (seed image, no mask)",
               "request": {
                 "method": "POST",
                 "header": [],
@@ -132101,7 +132108,7 @@
                   "formdata": [
                     {
                       "key": "model",
-                      "value": "runware/runware:102@1",
+                      "value": "runware/runware:101@1",
                       "type": "text"
                     },
                     {
@@ -132135,13 +132142,75 @@
                     "type": "text/javascript",
                     "exec": [
                       "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
-                      "pm.test('image edit succeeds', function () {",
+                      "pm.test('image-to-image edit succeeds', function () {",
                       "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                       "});",
                       "pm.test('returns an edited image', function () {",
                       "  var d = pm.response.json().data;",
                       "  pm.expect(d, 'no data: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
                       "  pm.expect(!!(d[0].url || d[0].b64_json), 'no asset returned').to.be.true;",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "runware/runware:102@1 image edit inpainting (FLUX Fill, mask required)",
+              "request": {
+                "method": "POST",
+                "header": [],
+                "body": {
+                  "mode": "formdata",
+                  "formdata": [
+                    {
+                      "key": "model",
+                      "value": "runware/runware:102@1",
+                      "type": "text"
+                    },
+                    {
+                      "key": "prompt",
+                      "value": "make the background a deep blue",
+                      "type": "text"
+                    },
+                    {
+                      "key": "image",
+                      "src": "tests/e2e/api/fixtures/sample.png",
+                      "type": "file"
+                    },
+                    {
+                      "key": "mask",
+                      "src": "tests/e2e/api/fixtures/sample.png",
+                      "type": "file"
+                    }
+                  ]
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/images/edits",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "images",
+                    "edits"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('inpainting edit succeeds', function () {",
+                      "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                      "});",
+                      "pm.test('the mask reaches the provider as maskImage', function () {",
+                      "  pm.expect(pm.response.text(), 'mask was not forwarded').to.not.include(\"Missing 'maskImage'\");",
+                      "  var d = pm.response.json().data;",
+                      "  pm.expect(d, 'no data: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
                       "});"
                     ]
                   }
@@ -132168,7 +132237,7 @@
                     },
                     {
                       "key": "upscale_factor",
-                      "value": "2",
+                      "value": "4",
                       "type": "text"
                     },
                     {
@@ -132230,7 +132299,7 @@
                     },
                     {
                       "key": "upscale_factor",
-                      "value": "2",
+                      "value": "4",
                       "type": "text"
                     },
                     {
@@ -132263,6 +132332,7 @@
                       "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                       "});",
                       "pm.test('returns an upscaled asset', function () {",
+                      "  pm.expect(pm.response.text(), 'target megapixels floored below the minimum').to.not.include('providerError');",
                       "  var d = pm.response.json().data;",
                       "  pm.expect(d, 'no data: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
                       "});"
@@ -132384,6 +132454,67 @@
                       "  var d = pm.response.json().data;",
                       "  pm.expect(d, 'no data: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
                       "  pm.expect(!!(d[0].url || d[0].b64_json), 'maskImage* not mapped into data[0]').to.be.true;",
+                      "});",
+                      "pm.test('located regions are surfaced as detections', function () {",
+                      "  var d = pm.response.json().data;",
+                      "  pm.expect(d[0].detections, 'detections dropped: ' + pm.response.text()).to.be.an('array');",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "runware/recraft:1@1 image-to-vector via type=vectorize",
+              "request": {
+                "method": "POST",
+                "header": [],
+                "body": {
+                  "mode": "formdata",
+                  "formdata": [
+                    {
+                      "key": "model",
+                      "value": "runware/recraft:1@1",
+                      "type": "text"
+                    },
+                    {
+                      "key": "type",
+                      "value": "vectorize",
+                      "type": "text"
+                    },
+                    {
+                      "key": "image",
+                      "src": "tests/e2e/api/fixtures/sample.png",
+                      "type": "file"
+                    }
+                  ]
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/images/edits",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "images",
+                    "edits"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('image-to-vector succeeds', function () {",
+                      "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                      "});",
+                      "pm.test('vectorize on the edits route nests the source under inputs', function () {",
+                      "  pm.expect(pm.response.text(), 'inputs envelope rejected').to.not.include('unsupportedParameter');",
+                      "  var d = pm.response.json().data;",
+                      "  pm.expect(d, 'no data: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
                       "});"
                     ]
                   }
@@ -132450,7 +132581,7 @@
         },
         {
           "name": "54.4 Video (/v1/videos, /v1/videos/edits) - nested inputs envelope",
-          "description": "First /v1/videos coverage in the harness for any provider. Runware's video tasks are async: submit returns a task id, callers poll GET /v1/videos/{id}.\n\nThe image-to-video case is the regression pin for PR #6270. Runware moved frame images into the nested `inputs` envelope with an `image` item key, while Bifrost was still sending a top-level `frameImages` array with an `inputImage` key. 17 of 79 frame-capable models rejected that flat form outright with unsupportedParameter, and a further 16 reject top-level width/height once a frame image is present because the output inherits the reference image's dimensions. klingai:kling-video@3-standard is in BOTH groups, so this single case fails on the pre-fix build and passes on the fixed one.\n\nThe video-source cases pin the wire contract with an unresolvable URL instead of a real clip: video upscale bills per second of source, and the only long-lived public sample is 98s.",
+          "description": "First /v1/videos coverage in the harness for any provider. Runware's video tasks are async: submit returns a task id, callers poll GET /v1/videos/{id}.\n\nThe image-to-video row is the regression pin for PR #6270. Runware moved frame images into the nested `inputs` envelope with an `image` item key, while Bifrost was still sending a top-level `frameImages` array with an `inputImage` key. 17 of 79 frame-capable models rejected that flat form with unsupportedParameter, and a further 16 reject top-level width/height once a frame image is present, because the output inherits the reference image's dimensions. klingai:kling-video@3-standard is in BOTH groups, so this single row fails on the pre-fix build and passes on the fixed one.\n\nBoth Hunyuan 3D variants are covered because they take DIFFERENT input arities - pro reads inputs.images[] and rapid reads inputs.image - so they exercise the two branches of uses3DImageArrayInput(). Sending the wrong form is a hard unsupportedParameter, and the per-model table that decides it is hand-maintained, so one row per branch is the point.\n\nThe source-video rows pin the wire contract with an unresolvable URL rather than a real clip: the only long-lived public sample is 98s, and video upscale bills per second of source. They assert the envelope was accepted and only the value was rejected.",
           "item": [
             {
               "name": "runware/klingai:kling-video@3-standard image-to-video (nested inputs.frameImages)",
@@ -132494,7 +132625,7 @@
                       "});",
                       "pm.test('width/height are not sent alongside a frame image', function () {",
                       "  var t = pm.response.text();",
-                      "  pm.expect(t, \"model rejected width/height with frameImages\").to.not.match(/'(width|height)' parameter/);",
+                      "  pm.expect(t, 'model rejected width/height with frameImages').to.not.match(/'(width|height)' parameter/);",
                       "});",
                       "pm.test('returns an async video job id', function () {",
                       "  var j = pm.response.json();",
@@ -132543,6 +132674,58 @@
                       "});",
                       "pm.test('3D uses the singular inputs.image form for this model', function () {",
                       "  pm.expect(pm.response.text(), 'input arity rejected').to.not.include('unsupportedParameter');",
+                      "});",
+                      "pm.test('prompt is not required for an image-driven 3D task', function () {",
+                      "  pm.expect(pm.response.text(), 'gateway demanded a prompt').to.not.include('prompt, input_reference or video_uri');",
+                      "});",
+                      "pm.test('returns an async job id', function () {",
+                      "  var j = pm.response.json();",
+                      "  pm.expect(j.id, 'no job id: ' + pm.response.text()).to.be.a('string').that.is.not.empty;",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "runware/tencent:hunyuan-3d@3.1-pro image-to-3D (array inputs.images[])",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"runware/tencent:hunyuan-3d@3.1-pro\",\n  \"input_reference\": \"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\",\n  \"type\": \"3d\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/videos",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "videos"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('3D pro submit accepted', function () {",
+                      "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                      "});",
+                      "pm.test('pro takes the ARRAY input form, unlike rapid', function () {",
+                      "  var t = pm.response.text();",
+                      "  pm.expect(t, 'inputs.images[] rejected - wrong arity for this model').to.not.include('unsupportedParameter');",
+                      "  pm.expect(t, 'singular inputs.image sent to an array-form model').to.not.include(\"'inputs.image'\");",
                       "});",
                       "pm.test('returns an async job id', function () {",
                       "  var j = pm.response.json();",
@@ -132593,7 +132776,7 @@
               ]
             },
             {
-              "name": "runware video edit - provider resolved from the video id suffix (no model)",
+              "name": "[EXPECT-4XX] runware/runway:aleph@2.0 video edit by reference (inputs.video envelope)",
               "request": {
                 "method": "POST",
                 "header": [
@@ -132604,7 +132787,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"prompt\": \"shift the palette to teal\",\n  \"video\": {\n    \"id\": \"00000000-0000-4000-8000-000000000000:runware\"\n  }\n}"
+                  "raw": "{\n  \"model\": \"runware/runway:aleph@2.0\",\n  \"prompt\": \"shift the palette to teal\",\n  \"video\": {\n    \"id\": \"00000000-0000-4000-8000-000000000000\"\n  }\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/v1/videos/edits",
@@ -132625,15 +132808,20 @@
                     "type": "text/javascript",
                     "exec": [
                       "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                      "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
                       "pm.test('the /v1/videos/edits route exists and reaches the Runware provider', function () {",
                       "  var t = pm.response.text();",
                       "  pm.expect(pm.response.code, 'route missing: ' + t).to.not.eql(404);",
                       "  pm.expect(pm.response.code, 'method not allowed: ' + t).to.not.eql(405);",
                       "  pm.expect(t, 'video edit reported as unsupported').to.not.include('unsupported_operation');",
                       "});",
-                      "pm.test('provider came from the id suffix, not from a model prefix', function () {",
+                      "pm.test('the source id is nested under inputs.video, not sent flat', function () {",
                       "  var t = pm.response.text();",
-                      "  pm.expect(t, 'provider was not resolved: ' + t).to.not.include('provider query parameter');",
+                      "  pm.expect(t, 'inputs.video envelope rejected').to.not.include('unsupportedParameter');",
+                      "});",
+                      "pm.test('only the unknown id is rejected, by the provider', function () {",
+                      "  var t = pm.response.text();",
+                      "  pm.expect(t, 'gateway failed before reaching the provider').to.not.include('model is required');",
                       "});"
                     ]
                   }
@@ -132641,7 +132829,7 @@
               ]
             },
             {
-              "name": "runware/bytedance:video-enhancement@standard video edit upscale (inputs.video shape)",
+              "name": "[EXPECT-4XX] runware/bytedance:video-enhancement@standard video edit upscale (multipart video_url)",
               "request": {
                 "method": "POST",
                 "header": [],
@@ -132684,9 +132872,9 @@
                     "type": "text/javascript",
                     "exec": [
                       "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                      "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
                       "pm.test('the source video is nested under inputs, not sent flat', function () {",
                       "  var t = pm.response.text();",
-                      "  pm.expect(t, 'inputs.video envelope rejected').to.not.include(\"'video' parameter\");",
                       "  pm.expect(t, 'unsupported parameter on the upscale envelope').to.not.include('unsupportedParameter');",
                       "});",
                       "pm.test('reaches provider-level validation of the source value', function () {",
@@ -132700,7 +132888,7 @@
               ]
             },
             {
-              "name": "runware/bria:51@1 video background removal via type on /v1/videos",
+              "name": "[EXPECT-4XX] runware/bria:51@1 video background removal via type on /v1/videos",
               "request": {
                 "method": "POST",
                 "header": [
@@ -132711,7 +132899,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"runware/bria:51@1\",\n  \"type\": \"background_removal\",\n  \"video_uri\": \"https://storage.googleapis.com/generativeai-downloads/video/__nonexistent__.mp4\"\n}"
+                  "raw": "{\n  \"model\": \"runware/bria:51@1\",\n  \"type\": \"background_removal\",\n  \"video_uri\": \"https://storage.googleapis.com/generativeai-downloads/video/__nonexistent__.mp4\",\n  \"outputFormat\": \"WEBM\"\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/v1/videos",
@@ -132731,146 +132919,15 @@
                     "type": "text/javascript",
                     "exec": [
                       "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                      "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
                       "pm.test('video_uri maps into the nested inputs.video envelope', function () {",
-                      "  var t = pm.response.text();",
-                      "  pm.expect(t, 'inputs.video envelope rejected').to.not.include('unsupportedParameter');",
+                      "  pm.expect(pm.response.text(), 'inputs.video envelope rejected').to.not.include('unsupportedParameter');",
+                      "});",
+                      "pm.test('outputFormat is promoted from extra params to a typed field', function () {",
+                      "  pm.expect(pm.response.text(), 'alpha-capable container not applied').to.not.include('invalidOutputFormat');",
                       "});",
                       "pm.test('prompt is not required for a source-driven video task', function () {",
-                      "  var t = pm.response.text();",
-                      "  pm.expect(t, 'gateway demanded a prompt').to.not.include('prompt, input_reference or video_uri');",
-                      "});"
-                    ]
-                  }
-                }
-              ]
-            }
-          ]
-        },
-        {
-          "name": "54.5 Unsupported operations degrade cleanly (4xx, not 5xx)",
-          "description": "Runware implements text, image and video inference only. Every other capability returns NewUnsupportedOperationError from the provider. These pin that the gateway surfaces that as a 4xx rather than a 500, so a caller probing Runware's surface gets an actionable answer.",
-          "item": [
-            {
-              "name": "runware embeddings is cleanly unsupported",
-              "request": {
-                "method": "POST",
-                "header": [
-                  {
-                    "key": "Content-Type",
-                    "value": "application/json"
-                  }
-                ],
-                "body": {
-                  "mode": "raw",
-                  "raw": "{\n  \"model\": \"runware/anthropic:claude@haiku-4.5\",\n  \"input\": \"hello\"\n}"
-                },
-                "url": {
-                  "raw": "{{baseUrl}}/v1/embeddings",
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "path": [
-                    "v1",
-                    "embeddings"
-                  ]
-                }
-              },
-              "event": [
-                {
-                  "listen": "test",
-                  "script": {
-                    "type": "text/javascript",
-                    "exec": [
-                      "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
-                      "pm.test('embeddings reports unsupported rather than crashing', function () {",
-                      "  var t = pm.response.text();",
-                      "  pm.expect(pm.response.code, 'server error instead of unsupported: ' + t).to.not.be.oneOf([500, 502, 503, 504]);",
-                      "  pm.expect(pm.response.code, 'unexpectedly succeeded: ' + t).to.be.at.least(400);",
-                      "});"
-                    ]
-                  }
-                }
-              ]
-            },
-            {
-              "name": "runware text completion is cleanly unsupported",
-              "request": {
-                "method": "POST",
-                "header": [
-                  {
-                    "key": "Content-Type",
-                    "value": "application/json"
-                  }
-                ],
-                "body": {
-                  "mode": "raw",
-                  "raw": "{\n  \"model\": \"runware/anthropic:claude@haiku-4.5\",\n  \"prompt\": \"hello\",\n  \"max_tokens\": 8\n}"
-                },
-                "url": {
-                  "raw": "{{baseUrl}}/v1/completions",
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "path": [
-                    "v1",
-                    "completions"
-                  ]
-                }
-              },
-              "event": [
-                {
-                  "listen": "test",
-                  "script": {
-                    "type": "text/javascript",
-                    "exec": [
-                      "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
-                      "pm.test('text completion reports unsupported rather than crashing', function () {",
-                      "  var t = pm.response.text();",
-                      "  pm.expect(pm.response.code, 'server error instead of unsupported: ' + t).to.not.be.oneOf([500, 502, 503, 504]);",
-                      "  pm.expect(pm.response.code, 'unexpectedly succeeded: ' + t).to.be.at.least(400);",
-                      "});"
-                    ]
-                  }
-                }
-              ]
-            },
-            {
-              "name": "runware image variation is cleanly unsupported",
-              "request": {
-                "method": "POST",
-                "header": [
-                  {
-                    "key": "Content-Type",
-                    "value": "application/json"
-                  }
-                ],
-                "body": {
-                  "mode": "raw",
-                  "raw": "{\n  \"model\": \"runware/runware:101@1\"\n}"
-                },
-                "url": {
-                  "raw": "{{baseUrl}}/v1/images/variations",
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "path": [
-                    "v1",
-                    "images",
-                    "variations"
-                  ]
-                }
-              },
-              "event": [
-                {
-                  "listen": "test",
-                  "script": {
-                    "type": "text/javascript",
-                    "exec": [
-                      "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
-                      "pm.test('image variation reports unsupported rather than crashing', function () {",
-                      "  var t = pm.response.text();",
-                      "  pm.expect(pm.response.code, 'server error instead of unsupported: ' + t).to.not.be.oneOf([500, 502, 503, 504]);",
-                      "  pm.expect(pm.response.code, 'unexpectedly succeeded: ' + t).to.be.at.least(400);",
+                      "  pm.expect(pm.response.text(), 'gateway demanded a prompt').to.not.include('prompt, input_reference or video_uri');",
                       "});"
                     ]
                   }

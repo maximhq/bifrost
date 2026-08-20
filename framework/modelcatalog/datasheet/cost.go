@@ -1092,28 +1092,68 @@ func computeImageOutputCost(pricing *configstoreTables.TableModelPricing, imageU
 		}
 	}
 	if perImageRate == nil {
-		const pixels512x512 = 512 * 512
-		const pixels1024x1024 = 1024 * 1024
-		const pixels2048x2048 = 2048 * 2048
-		const pixels4096x4096 = 4096 * 4096
-		switch {
-		case pixels >= pixels4096x4096 && pricing.OutputCostPerImageAbove4096x4096Pixels != nil:
-			perImageRate = pricing.OutputCostPerImageAbove4096x4096Pixels
-		case pixels >= pixels2048x2048 && pricing.OutputCostPerImageAbove2048x2048Pixels != nil:
-			perImageRate = pricing.OutputCostPerImageAbove2048x2048Pixels
-		case pixels >= pixels1024x1024 && pricing.OutputCostPerImageAbove1024x1024Pixels != nil:
-			perImageRate = pricing.OutputCostPerImageAbove1024x1024Pixels
-		case pixels >= pixels512x512 && pricing.OutputCostPerImageAbove512x512Pixels != nil:
-			perImageRate = pricing.OutputCostPerImageAbove512x512Pixels
-		default:
-			perImageRate = pricing.OutputCostPerImage
-		}
+		perImageRate = selectImageSizeTierRate(pricing, pixels)
 	}
 	if perImageRate != nil {
 		return float64(numOutputImages) * *perImageRate
 	}
 
 	return 0
+}
+
+// imageSizeTier is one step of the per-image size-tier ladder: the pixel
+// count above which the given rate applies.
+type imageSizeTier struct {
+	pixels int
+	rate   *float64
+}
+
+// selectImageSizeTierRate picks the flat per-image rate for the given output
+// pixel count, from whichever size-tier fields a model's pricing row has
+// populated. Two independent tier families exist because providers publish
+// resolution-based pricing in different units: some tier by exact
+// width×height threshold (output_cost_per_image_above_<N>x<N>_pixels),
+// others (e.g. Replicate's upscaler models) tier by total output megapixels
+// (output_cost_per_image_above_<N>_megapixels). A given model is expected to
+// populate only one family; both are checked here, interleaved by their
+// actual pixel threshold largest-first, so either (or in principle both)
+// resolve correctly without the caller needing to know which unit a model
+// uses. Falls back to pricing.OutputCostPerImage (via the nil return) when
+// no tier's threshold is met or no tier fields are populated.
+func selectImageSizeTierRate(pricing *configstoreTables.TableModelPricing, pixels int) *float64 {
+	const (
+		pixels512x512      = 512 * 512
+		pixels1024x1024    = 1024 * 1024
+		pixels2048x2048    = 2048 * 2048
+		pixels4Megapixels  = 4_000_000
+		pixels4096x4096    = 4096 * 4096
+		pixels8Megapixels  = 8_000_000
+		pixels16Megapixels = 16_000_000
+		pixels32Megapixels = 32_000_000
+		pixels64Megapixels = 64_000_000
+	)
+	// Ordered by threshold, largest first, so the first match wins.
+	// NOTE: ordered strictly by actual pixel threshold, largest first — NOT
+	// by field family — since 4096x4096 (16,777,216px) falls between the 16MP
+	// and 32MP megapixel thresholds, and 2048x2048 (4,194,304px) falls just
+	// above the 4MP threshold.
+	tiers := []imageSizeTier{
+		{pixels64Megapixels, pricing.OutputCostPerImageAbove64Megapixels},
+		{pixels32Megapixels, pricing.OutputCostPerImageAbove32Megapixels},
+		{pixels4096x4096, pricing.OutputCostPerImageAbove4096x4096Pixels},
+		{pixels16Megapixels, pricing.OutputCostPerImageAbove16Megapixels},
+		{pixels8Megapixels, pricing.OutputCostPerImageAbove8Megapixels},
+		{pixels2048x2048, pricing.OutputCostPerImageAbove2048x2048Pixels},
+		{pixels4Megapixels, pricing.OutputCostPerImageAbove4Megapixels},
+		{pixels1024x1024, pricing.OutputCostPerImageAbove1024x1024Pixels},
+		{pixels512x512, pricing.OutputCostPerImageAbove512x512Pixels},
+	}
+	for _, t := range tiers {
+		if pixels >= t.pixels && t.rate != nil {
+			return t.rate
+		}
+	}
+	return pricing.OutputCostPerImage
 }
 
 // computeVideoCost handles video generation requests.

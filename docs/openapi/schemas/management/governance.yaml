@@ -1861,6 +1861,21 @@ PricingPatch:
     output_cost_per_image_above_4096_and_4096_pixels:
       type: number
       minimum: 0
+    output_cost_per_image_above_4_megapixels:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_8_megapixels:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_16_megapixels:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_32_megapixels:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_64_megapixels:
+      type: number
+      minimum: 0
     output_cost_per_image_low_quality:
       type: number
       minimum: 0

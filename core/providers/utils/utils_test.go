@@ -2149,3 +2149,34 @@ func TestProcessAndSendResponse_CompletesSpanWhenFinalSendFails(t *testing.T) {
 		t.Errorf("successful stream whose delivery failed should end as %q, got %q", schemas.SpanStatusOk, tracer.endStatus)
 	}
 }
+
+// TestProviderSendsDoneMarker guards the stream termination switch: a provider
+// missing from the non-DONE case would make the stream loop in
+// core/providers/openai/openai.go wait indefinitely for a [DONE] marker it never sends.
+func TestProviderSendsDoneMarker(t *testing.T) {
+	tests := []struct {
+		provider schemas.ModelProvider
+		want     bool
+	}{
+		// Providers that don't send a [DONE] marker; stream ends on finish_reason.
+		{schemas.Cerebras, false},
+		{schemas.Perplexity, false},
+		{schemas.HuggingFace, false},
+		{schemas.Bedrock, false},
+		{schemas.BedrockMantle, false},
+		// Providers that do send a [DONE] marker.
+		{schemas.OpenAI, true},
+		{schemas.Azure, true},
+		{schemas.Anthropic, true},
+		{schemas.Groq, true},
+		{schemas.OpenRouter, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.provider), func(t *testing.T) {
+			if got := ProviderSendsDoneMarker(tt.provider); got != tt.want {
+				t.Errorf("ProviderSendsDoneMarker(%s) = %v, want %v", tt.provider, got, tt.want)
+			}
+		})
+	}
+}
