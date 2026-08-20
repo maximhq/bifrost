@@ -778,7 +778,7 @@ func HandleAnthropicChatCompletionStreaming(
 	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, []string{AnthropicBetaHeader})
 	// OAuth passthrough: forward the caller's raw headers, whose token is the upstream
 	// credential. Skips anthropic-beta — MergeBetaHeaders below owns the final value.
-	providerUtils.SetPassthroughHeaders(ctx, req, providerName, []string{AnthropicBetaHeader})
+	providerUtils.SetPassthroughHeadersForStreaming(ctx, req, providerName, []string{AnthropicBetaHeader})
 
 	if betaHeaders := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, extraHeaders), providerName, betaHeaderOverrides); len(betaHeaders) > 0 {
 		req.Header.Set(AnthropicBetaHeader, strings.Join(betaHeaders, ","))
@@ -1420,7 +1420,7 @@ func HandleAnthropicResponsesStream(
 	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, []string{AnthropicBetaHeader})
 	// OAuth passthrough: forward the caller's raw headers, whose token is the upstream
 	// credential. Skips anthropic-beta — MergeBetaHeaders below owns the final value.
-	providerUtils.SetPassthroughHeaders(ctx, req, providerName, []string{AnthropicBetaHeader})
+	providerUtils.SetPassthroughHeadersForStreaming(ctx, req, providerName, []string{AnthropicBetaHeader})
 
 	if betaHeaders := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, extraHeaders), providerName, betaHeaderOverrides); len(betaHeaders) > 0 {
 		req.Header.Set(AnthropicBetaHeader, strings.Join(betaHeaders, ","))
