@@ -2,6 +2,7 @@ package integrations
 
 import (
 	"context"
+	"strconv"
 	"testing"
 	"time"
 
@@ -594,7 +595,7 @@ func TestFileRequestConverter_RejectsEmptyUploadID(t *testing.T) {
 }
 
 // Test the complete resumable upload flow from start to upload and finalization.
-func TestGenAIFileUpload_ResumableUploadEndToEnd(t *testing.T) {
+func TestGenAIFileUpload_ResumableUploadIntegration(t *testing.T) {
 	t.Parallel()
 
 	kvStore, err := kvstore.New(kvstore.Config{})
@@ -610,17 +611,16 @@ func TestGenAIFileUpload_ResumableUploadEndToEnd(t *testing.T) {
 	require.NotEmpty(t, routes)
 
 	route := findGenAIRouteForTest(t, routes, "/genai/upload/v1beta/files", "POST")
-	bifrostCtx := schemas.NewBifrostContext(
-		context.Background(),
-		schemas.NoDeadline,
-	)
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
+	fileData := []byte("test file data")
 	startCtx := &fasthttp.RequestCtx{}
 	startCtx.Request.Header.Set("Host", "localhost:8080")
 	startCtx.Request.Header.Set("Content-Type", "application/json")
 	startCtx.Request.Header.Set("X-Goog-Upload-Protocol", "resumable")
 	startCtx.Request.Header.Set("X-Goog-Upload-Command", "start")
 	startCtx.Request.Header.Set("x-goog-upload-header-content-type", "application/pdf")
+	startCtx.Request.Header.Set("X-Goog-Upload-Header-Content-Length", strconv.Itoa(len(fileData)))
 	startCtx.Request.SetBody([]byte(`{"file": {"display_name": "test.pdf"}}`))
 
 	startReq := &gemini.GeminiFileUploadHandlerReq{}
