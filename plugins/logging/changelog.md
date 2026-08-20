@@ -5,3 +5,4 @@
 - feat: video requests info in logs ui (#5946)
 - feat: cost for prompt guardrails (#4931)
 - chore: upgraded core to v1.7.11 and framework to v1.5.9
+[feat]: record provider request IDs and retry trails in request logs [@qixiangyang](https://github.com/qixiangyang)

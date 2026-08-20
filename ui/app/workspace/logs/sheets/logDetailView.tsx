@@ -268,7 +268,10 @@ const isReasoningResponsesMessage = (m: ResponsesMessage): boolean => m.type ===
 const flattenDeclaredTools = (tools: any[]): any[] =>
 	tools.flatMap((tool) =>
 		tool?.type === "namespace" && Array.isArray(tool.tools)
-			? (tool.tools as any[]).map((nested) => ({ ...nested, name: `${tool.name ?? "namespace"}.${nested?.name ?? ""}` }))
+			? (tool.tools as any[]).map((nested) => ({
+					...nested,
+					name: `${tool.name ?? "namespace"}.${nested?.name ?? ""}`,
+				}))
 			: [tool],
 	);
 
@@ -867,7 +870,12 @@ export function LogDetailView({
 							{log.routing_rule && (
 								<Link
 									to="/workspace/logs"
-									search={(prev) => ({ ...prev, offset: 0, selected_log: "", routing_rule_ids: [log.routing_rule!.id] })}
+									search={(prev) => ({
+										...prev,
+										offset: 0,
+										selected_log: "",
+										routing_rule_ids: [log.routing_rule!.id],
+									})}
 									data-testid="logdetails-header-routing-rule-link"
 								>
 									<Badge variant="outline" className="bg-card text-muted-foreground rounded-sm px-2 py-0.5 font-normal hover:underline">
@@ -930,10 +938,29 @@ export function LogDetailView({
 							)}
 						</div>
 						<div className="mt-3 flex items-center gap-2">
-							<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">Request</div>
+							<div className="text-muted-foreground w-32 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">
+								Bifrost Request ID
+							</div>
 							<code className="text-foreground truncate font-mono text-[13px]">{log.id || "—"}</code>
 							{log.id ? <CopyInlineButton text={log.id} testId="logdetails-copy-request-id-button" /> : null}
 						</div>
+						{log.provider_request_id && (
+							<div className="mt-1 flex items-center gap-2">
+								<div className="text-muted-foreground w-32 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">
+									Provider Request ID
+								</div>
+								<code className="text-foreground truncate font-mono text-[13px]">{log.provider_request_id}</code>
+								<CopyInlineButton text={log.provider_request_id} testId="logdetails-copy-provider-request-id-button" />
+							</div>
+						)}
+						{log.provider_request_id_header && (
+							<div className="mt-1 flex items-center gap-2">
+								<div className="text-muted-foreground w-32 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">
+									Provider Request ID Header
+								</div>
+								<code className="text-foreground truncate font-mono text-[13px]">{log.provider_request_id_header}</code>
+							</div>
+						)}
 						{log.cache_debug?.cache_id && (
 							<div className="mt-1 flex items-center gap-2">
 								<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">
@@ -948,7 +975,12 @@ export function LogDetailView({
 								<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">Rule</div>
 								<Link
 									to="/workspace/logs"
-									search={(prev) => ({ ...prev, offset: 0, selected_log: "", routing_rule_ids: [log.routing_rule!.id] })}
+									search={(prev) => ({
+										...prev,
+										offset: 0,
+										selected_log: "",
+										routing_rule_ids: [log.routing_rule!.id],
+									})}
 									className="truncate text-[13px] font-medium text-blue-600 hover:underline dark:text-blue-400"
 									data-testid="logdetails-header-rule-link"
 								>
@@ -961,7 +993,12 @@ export function LogDetailView({
 								<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">Key</div>
 								<Link
 									to="/workspace/logs"
-									search={(prev) => ({ ...prev, offset: 0, selected_log: "", selected_key_ids: [log.selected_key_id] })}
+									search={(prev) => ({
+										...prev,
+										offset: 0,
+										selected_log: "",
+										selected_key_ids: [log.selected_key_id],
+									})}
 									className="truncate font-mono text-[13px] text-blue-600 hover:underline dark:text-blue-400"
 									data-testid="logdetails-header-selected-key-link"
 								>
@@ -1214,7 +1251,12 @@ export function LogDetailView({
 									value={
 										<Link
 											to="/workspace/logs"
-											search={(prev) => ({ ...prev, offset: 0, selected_log: "", selected_key_ids: [log.selected_key_id] })}
+											search={(prev) => ({
+												...prev,
+												offset: 0,
+												selected_log: "",
+												selected_key_ids: [log.selected_key_id],
+											})}
 											className="text-blue-600 hover:underline dark:text-blue-400"
 											data-testid="logdetails-selected-key-link"
 										>
@@ -1258,7 +1300,12 @@ export function LogDetailView({
 												<Link
 													key={t.id}
 													to="/workspace/logs"
-													search={(prev) => ({ ...prev, offset: 0, selected_log: "", team_ids: [t.id] })}
+													search={(prev) => ({
+														...prev,
+														offset: 0,
+														selected_log: "",
+														team_ids: [t.id],
+													})}
 													className="text-blue-600 hover:underline dark:text-blue-400"
 													data-testid={`logdetails-team-link-${t.id}`}
 												>
@@ -1277,13 +1324,21 @@ export function LogDetailView({
 									value={
 										<span className="inline-flex flex-wrap gap-x-1">
 											{(log.customer_ids?.length
-												? log.customer_ids.map((id, i) => ({ id, name: log.customer_names?.[i] || id }))
+												? log.customer_ids.map((id, i) => ({
+														id,
+														name: log.customer_names?.[i] || id,
+													}))
 												: [{ id: log.customer_id!, name: log.customer_name || log.customer_id! }]
 											).map((c, i, arr) => (
 												<Link
 													key={c.id}
 													to="/workspace/logs"
-													search={(prev) => ({ ...prev, offset: 0, selected_log: "", customer_ids: [c.id] })}
+													search={(prev) => ({
+														...prev,
+														offset: 0,
+														selected_log: "",
+														customer_ids: [c.id],
+													})}
 													className="text-blue-600 hover:underline dark:text-blue-400"
 													data-testid={`logdetails-customer-link-${c.id}`}
 												>
@@ -1302,13 +1357,26 @@ export function LogDetailView({
 									value={
 										<span className="inline-flex flex-wrap gap-x-1">
 											{(log.business_unit_ids?.length
-												? log.business_unit_ids.map((id, i) => ({ id, name: log.business_unit_names?.[i] || id }))
-												: [{ id: log.business_unit_id!, name: log.business_unit_name || log.business_unit_id! }]
+												? log.business_unit_ids.map((id, i) => ({
+														id,
+														name: log.business_unit_names?.[i] || id,
+													}))
+												: [
+														{
+															id: log.business_unit_id!,
+															name: log.business_unit_name || log.business_unit_id!,
+														},
+													]
 											).map((b, i, arr) => (
 												<Link
 													key={b.id}
 													to="/workspace/logs"
-													search={(prev) => ({ ...prev, offset: 0, selected_log: "", business_unit_ids: [b.id] })}
+													search={(prev) => ({
+														...prev,
+														offset: 0,
+														selected_log: "",
+														business_unit_ids: [b.id],
+													})}
 													className="text-blue-600 hover:underline dark:text-blue-400"
 													data-testid={`logdetails-business-unit-link-${b.id}`}
 												>
@@ -1389,7 +1457,12 @@ export function LogDetailView({
 									value={
 										<Link
 											to="/workspace/logs"
-											search={(prev) => ({ ...prev, offset: 0, selected_log: "", routing_rule_ids: [log.routing_rule!.id] })}
+											search={(prev) => ({
+												...prev,
+												offset: 0,
+												selected_log: "",
+												routing_rule_ids: [log.routing_rule!.id],
+											})}
 											className="text-blue-600 hover:underline dark:text-blue-400"
 											data-testid="logdetails-routing-rule-link"
 										>
@@ -2306,8 +2379,14 @@ export function LogDetailView({
 						const outputMsgs =
 							visibleRoles.size < allRoles.length ? rawOutput.filter((m) => visibleRoles.has(getResponsesRole(m))) : rawOutput;
 						const all: Array<{ msg: ResponsesMessage; mapping?: Record<string, string> }> = [
-							...coalesceResponsesMessages(inputMsgs).map((msg) => ({ msg, mapping: activeInputRevealMapping })),
-							...coalesceResponsesMessages(outputMsgs).map((msg) => ({ msg, mapping: activeOutputRevealMapping })),
+							...coalesceResponsesMessages(inputMsgs).map((msg) => ({
+								msg,
+								mapping: activeInputRevealMapping,
+							})),
+							...coalesceResponsesMessages(outputMsgs).map((msg) => ({
+								msg,
+								mapping: activeOutputRevealMapping,
+							})),
 						];
 						if (all.length === 0) return null;
 						return (
@@ -2612,6 +2691,37 @@ export function LogDetailView({
 				</TabsContent>
 
 				<TabsContent value="routing" className="space-y-3">
+					{log.provider_request_id_trail && log.provider_request_id_trail.length > 0 && (
+						<CollapsibleBox
+							title={`Provider Request ID Trail (${log.provider_request_id_trail.length} captured attempts)`}
+							onCopy={() => JSON.stringify(log.provider_request_id_trail, null, 2)}
+						>
+							<div className="overflow-x-auto px-6 py-3">
+								<table className="w-full border-collapse text-xs">
+									<thead>
+										<tr className="border-border text-muted-foreground border-b">
+											<th className="py-1 pr-6 text-left font-medium">#</th>
+											<th className="py-1 pr-6 text-left font-medium">Provider</th>
+											<th className="py-1 pr-6 text-left font-medium">Request ID</th>
+											<th className="py-1 pr-6 text-left font-medium">Header</th>
+											<th className="py-1 text-left font-medium">Status</th>
+										</tr>
+									</thead>
+									<tbody>
+										{log.provider_request_id_trail.map((record) => (
+											<tr key={`${record.attempt}-${record.request_id}`} className="border-border/50 border-b last:border-0">
+												<td className="text-muted-foreground py-1.5 pr-6 tabular-nums">{record.attempt + 1}</td>
+												<td className="py-1.5 pr-6">{record.provider || log.provider}</td>
+												<td className="py-1.5 pr-6 font-mono break-all">{record.request_id}</td>
+												<td className="py-1.5 pr-6 font-mono">{record.header_name || "—"}</td>
+												<td className="py-1.5 tabular-nums">{record.status_code ?? "—"}</td>
+											</tr>
+										))}
+									</tbody>
+								</table>
+							</div>
+						</CollapsibleBox>
+					)}
 					{log.attempt_trail && log.attempt_trail.length > 1 && (
 						<CollapsibleBox
 							title={`Attempt Trail (${log.attempt_trail.length} attempts)`}

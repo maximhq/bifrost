@@ -92600,6 +92600,25 @@
           }
         }
       },
+      "ProviderRequestIDConfig": {
+        "type": "object",
+        "description": "Configuration for capturing an upstream provider request ID from a response header.",
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether provider request ID capture is enabled. The provider_request_id object is disabled when omitted; this field is required when the object is present."
+          },
+          "header_name": {
+            "type": "string",
+            "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$",
+            "description": "Optional response header to capture. Sensitive headers such as Authorization are rejected. OpenAI, Anthropic, Azure, and compatible custom providers have built-in defaults."
+          }
+        },
+        "additionalProperties": false
+      },
       "ProviderResponse": {
         "type": "object",
         "description": "Provider configuration response",
@@ -92747,6 +92766,9 @@
                 }
               }
             }
+          },
+          "provider_request_id": {
+            "$ref": "#/components/schemas/ProviderRequestIDConfig"
           },
           "provider_status": {
             "type": "string",
@@ -92936,6 +92958,9 @@
                 }
               }
             }
+          },
+          "provider_request_id": {
+            "$ref": "#/components/schemas/ProviderRequestIDConfig"
           }
         }
       },
@@ -93083,6 +93108,9 @@
                 }
               }
             }
+          },
+          "provider_request_id": {
+            "$ref": "#/components/schemas/ProviderRequestIDConfig"
           }
         }
       },

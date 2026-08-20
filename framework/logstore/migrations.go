@@ -258,6 +258,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_add_has_object_column"}, run: migrationAddHasObjectColumn},
 	{IDs: []string{"mcp_tool_logs_add_has_object_column"}, run: migrationAddHasObjectColumnToMCPToolLogs},
 	{IDs: []string{"logs_add_attempt_trail_column"}, run: migrationAddAttemptTrailColumn},
+	{IDs: []string{"logs_add_provider_request_id_columns"}, run: migrationAddProviderRequestIDColumns},
 	{IDs: []string{"logs_add_selected_prompt_columns"}, run: migrationAddSelectedPromptColumns},
 	{IDs: []string{"logs_add_user_name_column"}, run: migrationAddUserNameColumn},
 	{IDs: []string{"logs_add_ocr_input_column"}, run: migrationAddOCRInputColumn},
@@ -2553,6 +2554,11 @@ const ftsInputCharLimit = 250000
 var performanceIndexes = []performanceIndexDef{
 	{
 		table: "logs",
+		name:  "idx_logs_provider_request_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_provider_request_id ON logs(provider_request_id)",
+	},
+	{
+		table: "logs",
 		name:  "idx_logs_latency",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_latency ON logs(latency)",
 	},
@@ -3567,6 +3573,57 @@ func migrationAddAttemptTrailColumn(ctx context.Context, db *gorm.DB, logger sch
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while adding attempt trail column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddProviderRequestIDColumns adds current/trail provider request ID metadata and an exact-match index.
+func migrationAddProviderRequestIDColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_provider_request_id_columns"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, column := range []string{"provider_request_id", "provider_request_id_header", "provider_request_id_trail"} {
+				if err := addColumnIfNotExists(tx, logger, &Log{}, column); err != nil {
+					return err
+				}
+			}
+			// PostgreSQL builds this index after startup with CREATE INDEX CONCURRENTLY
+			// so an upgrade cannot block writes to an existing logs table. SQLite has
+			// no concurrent index builder, so create its index synchronously here.
+			if tx.Dialector.Name() != "postgres" {
+				dbMigrator := tx.Migrator()
+				if !dbMigrator.HasIndex(&Log{}, "idx_logs_provider_request_id") {
+					if err := dbMigrator.CreateIndex(&Log{}, "idx_logs_provider_request_id"); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			dbMigrator := tx.Migrator()
+			if dbMigrator.HasIndex(&Log{}, "idx_logs_provider_request_id") {
+				if err := dbMigrator.DropIndex(&Log{}, "idx_logs_provider_request_id"); err != nil {
+					return err
+				}
+			}
+			for _, column := range []string{"provider_request_id_trail", "provider_request_id_header", "provider_request_id"} {
+				if err := dropColumnIfExists(tx, logger, &Log{}, column); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding provider request ID columns: %s", err.Error())
 	}
 	return nil
 }

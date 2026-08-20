@@ -706,6 +706,50 @@ export const formCustomProviderConfigSchema = z
 		},
 	);
 
+const providerRequestIDHeaderPattern = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+const sensitiveProviderRequestIDHeader = (name: string) => {
+	const normalized = name.trim().toLowerCase();
+	return (
+		["authorization", "proxy-authorization", "cookie", "set-cookie", "set-cookie2"].includes(normalized) ||
+		normalized.includes("api-key") ||
+		normalized.includes("authorization") ||
+		normalized.includes("secret") ||
+		normalized.endsWith("-token") ||
+		normalized.endsWith("_token")
+	);
+};
+
+export const providerRequestIDConfigSchema = z
+	.object({
+		enabled: z.boolean(),
+		header_name: z.string().trim().optional(),
+	})
+	.superRefine((data, ctx) => {
+		const header = data.header_name?.trim() ?? "";
+		if (data.enabled && !header) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["header_name"],
+				message: "Response header is required",
+			});
+			return;
+		}
+		if (header && !providerRequestIDHeaderPattern.test(header)) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["header_name"],
+				message: "Enter a valid HTTP response header name",
+			});
+		}
+		if (header && sensitiveProviderRequestIDHeader(header)) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["header_name"],
+				message: "Sensitive headers cannot be captured",
+			});
+		}
+	});
+
 // Full model provider config schema
 export const modelProviderConfigSchema = z.object({
 	keys: z.array(modelProviderKeySchema).min(1, "At least one key is required"),
@@ -715,6 +759,7 @@ export const modelProviderConfigSchema = z.object({
 	send_back_raw_request: z.boolean().optional(),
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
+	provider_request_id: providerRequestIDConfigSchema.optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
 });
 
@@ -732,6 +777,7 @@ export const formModelProviderConfigSchema = z.object({
 	send_back_raw_request: z.boolean().optional(),
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
+	provider_request_id: providerRequestIDConfigSchema.optional(),
 	custom_provider_config: formCustomProviderConfigSchema.optional(),
 });
 
@@ -750,6 +796,7 @@ export const addProviderRequestSchema = z.object({
 	send_back_raw_request: z.boolean().optional(),
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
+	provider_request_id: providerRequestIDConfigSchema.optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
 	openai_config: openaiConfigFormSchema.optional(),
 });
@@ -763,6 +810,7 @@ export const updateProviderRequestSchema = z.object({
 	send_back_raw_request: z.boolean().optional(),
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
+	provider_request_id: providerRequestIDConfigSchema.optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
 	openai_config: openaiConfigFormSchema.optional(),
 });
@@ -866,6 +914,7 @@ export const debuggingFormSchema = z.object({
 	send_back_raw_request: z.boolean(),
 	send_back_raw_response: z.boolean(),
 	store_raw_request_response: z.boolean(),
+	provider_request_id: providerRequestIDConfigSchema,
 });
 
 export type DebuggingFormSchema = z.infer<typeof debuggingFormSchema>;
