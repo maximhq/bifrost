@@ -566,7 +566,9 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.B
 	var reqHeaders map[string]string
 	if len(plugin.requestHeaders) > 0 {
 		allHeaders, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
-		reqHeaders = schemas.FilterHeaders(allHeaders, plugin.requestHeaders)
+		// Maxim captures from ctx directly (not trace.RequestHeaders), so redact
+		// credential-bearing headers here before forwarding them as tags.
+		reqHeaders = schemas.RedactSensitiveHeaders(schemas.FilterHeaders(allHeaders, plugin.requestHeaders))
 	}
 	hasReqHeaders := len(reqHeaders) > 0
 
