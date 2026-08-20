@@ -564,6 +564,7 @@ export interface PricingOverridePatch {
 	output_cost_per_second?: number;
 	// Other
 	search_context_cost_per_query?: number;
+	input_cost_per_query?: number;
 	code_interpreter_cost_per_session?: number;
 	inference_geo_us_multiplier?: number;
 	cost_per_request?: number;

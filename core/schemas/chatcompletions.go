@@ -1845,6 +1845,11 @@ type BifrostLLMUsage struct {
 	CompletionTokens        int                          `json:"completion_tokens,omitempty"`
 	CompletionTokensDetails *ChatCompletionTokensDetails `json:"completion_tokens_details,omitempty"`
 	TotalTokens             int                          `json:"total_tokens"`
+	// SearchUnits is the billable unit for rerank: Cohere and Bedrock both define one unit as
+	// a single query against up to 100 document chunks, so a request over that many chunks
+	// bills as several. Distinct from ChatCompletionTokensDetails.NumSearchQueries, which
+	// counts web-search calls made during a chat turn.
+	SearchUnits *int `json:"search_units,omitempty"`
 	Cost                    *BifrostCost                 `json:"cost,omitempty"` // Only for the providers which support cost calculation
 	// xAI-specific usage field, normalized into Cost by NormalizeProviderCost.
 	CostInUsdTicks *int64 `json:"cost_in_usd_ticks,omitempty"`

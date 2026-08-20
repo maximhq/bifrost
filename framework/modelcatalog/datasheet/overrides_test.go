@@ -986,3 +986,18 @@ func TestCatalogPricingOverrides_ReturnsDeepCopies(t *testing.T) {
 	require.NotNil(t, priced.InputCostPerToken)
 	assert.Equal(t, 3.0, *priced.InputCostPerToken, "runtime pricing must survive a caller mutating a catalog result")
 }
+
+func TestPatchPricing_InputCostPerQuery(t *testing.T) {
+	base := configstoreTables.TableModelPricing{
+		Model:    "rerank-v3.5",
+		Provider: "cohere",
+		Mode:     "rerank",
+	}
+
+	patched := patchPricing(base, Options{
+		InputCostPerQuery: bifrost.Ptr(0.002),
+	})
+
+	require.NotNil(t, patched.InputCostPerQuery)
+	assert.Equal(t, 0.002, *patched.InputCostPerQuery)
+}

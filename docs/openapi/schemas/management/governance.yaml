@@ -1920,6 +1920,12 @@ PricingPatch:
     search_context_cost_per_query:
       type: number
       minimum: 0
+    input_cost_per_query:
+      type: number
+      minimum: 0
+      description: >-
+        Per-query rate for rerank models. One query covers up to 100 document chunks, so a
+        request over that many chunks bills as several queries.
     code_interpreter_cost_per_session:
       type: number
       minimum: 0

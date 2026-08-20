@@ -2804,6 +2804,7 @@ var pricingSyncUpdateColumns = []string{
 	"output_cost_per_second",
 	// Costs - Other
 	"search_context_cost_per_query",
+	"input_cost_per_query",
 	"code_interpreter_cost_per_session",
 	"cost_per_request",
 	// Costs - OCR
