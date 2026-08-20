@@ -1,9 +1,14 @@
 package handlers
 
 import (
+	"bytes"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net/url"
+	"strings"
 
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
@@ -617,6 +622,28 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, updateKey schemas.Key) (sch
 			}
 		}
 	}
+	if mergedKey.GithubCopilotKeyConfig != nil {
+		var old *schemas.GithubCopilotKeyConfig
+		if oldRawKey.GithubCopilotKeyConfig != nil {
+			old = oldRawKey.GithubCopilotKeyConfig
+		}
+		for _, field := range []struct {
+			name    string
+			updated *schemas.SecretVar
+			stored  *schemas.SecretVar
+		}{
+			{"app_id", &mergedKey.GithubCopilotKeyConfig.AppID, fieldOrNil(old, func(c *schemas.GithubCopilotKeyConfig) *schemas.SecretVar { return &c.AppID })},
+			{"installation_id", &mergedKey.GithubCopilotKeyConfig.InstallationID, fieldOrNil(old, func(c *schemas.GithubCopilotKeyConfig) *schemas.SecretVar { return &c.InstallationID })},
+			{"repository_id", &mergedKey.GithubCopilotKeyConfig.RepositoryID, fieldOrNil(old, func(c *schemas.GithubCopilotKeyConfig) *schemas.SecretVar { return &c.RepositoryID })},
+			{"private_key", &mergedKey.GithubCopilotKeyConfig.PrivateKey, fieldOrNil(old, func(c *schemas.GithubCopilotKeyConfig) *schemas.SecretVar { return &c.PrivateKey })},
+			{"github_domain", &mergedKey.GithubCopilotKeyConfig.GithubDomain, fieldOrNil(old, func(c *schemas.GithubCopilotKeyConfig) *schemas.SecretVar { return &c.GithubDomain })},
+		} {
+			if err := preserve(field.updated, field.stored, "github_copilot_key_config."+field.name); err != nil {
+
+				return schemas.Key{}, err
+			}
+		}
+	}
 
 	mergedKey.ConfigHash = oldRawKey.ConfigHash
 	mergedKey.Status = oldRawKey.Status
@@ -631,6 +658,80 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, updateKey schemas.Key) (sch
 	}
 
 	return mergedKey, nil
+}
+
+// validateGithubCopilotLiteral applies a format check to a credential field, but only when
+// the operator supplied a literal. A secret reference resolves elsewhere and at another
+// time, so its shape cannot be judged here.
+func validateGithubCopilotLiteral(name string, value *schemas.SecretVar, ok func(string) bool) error {
+	if value.IsFromSecret() {
+		return nil
+	}
+	if !ok(strings.TrimSpace(value.GetValue())) {
+		return fmt.Errorf("github_copilot_key_config.%s is not valid for GitHub Copilot keys", name)
+	}
+	return nil
+}
+
+// isDigits reports whether s is a non-empty run of ASCII digits. GitHub installation and
+// repository IDs are numeric, and the installation ID is interpolated into an
+// api.github.com path, so a non-numeric value is a path-injection shape as well as a typo.
+func isDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// isPEMPrivateKey reports whether s is an RSA private key Bifrost can actually sign an App
+// JWT with. GitHub issues App keys as PKCS#1 ("RSA PRIVATE KEY"); openssl can convert them
+// to PKCS#8 ("PRIVATE KEY").
+//
+// The DER payload is parsed, not just the envelope. A envelope-only check accepts an EC key,
+// a passphrase-encrypted key and a block of random base64 alike, none of which can produce
+// an RS256 signature, so each would pass setup and fail at the first inference call.
+//
+// Literal backslash-n is repaired first, because that is how a PEM most often arrives from a
+// JSON config or an environment variable.
+func isPEMPrivateKey(s string) bool {
+	if !strings.Contains(s, "\n") && strings.Contains(s, `\n`) {
+		s = strings.ReplaceAll(s, `\n`, "\n")
+	}
+
+	block, rest := pem.Decode([]byte(strings.TrimSpace(s)))
+	if block == nil || len(bytes.TrimSpace(rest)) != 0 {
+		return false
+	}
+
+	switch block.Type {
+	case "RSA PRIVATE KEY":
+		_, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+		return err == nil
+	case "PRIVATE KEY":
+		key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err != nil {
+			return false
+		}
+		// PKCS#8 is a container: it can hold an EC or Ed25519 key just as happily.
+		_, isRSA := key.(*rsa.PrivateKey)
+		return isRSA
+	default:
+		return false
+	}
+}
+
+// fieldOrNil selects a field from a possibly-nil stored config, so a masked update against
+// a key that never had this section behaves the same as one against a missing field.
+func fieldOrNil(config *schemas.GithubCopilotKeyConfig, pick func(*schemas.GithubCopilotKeyConfig) *schemas.SecretVar) *schemas.SecretVar {
+	if config == nil {
+		return nil
+	}
+	return pick(config)
 }
 
 func getKeyIDFromCtx(ctx *fasthttp.RequestCtx) (string, error) {
@@ -666,6 +767,50 @@ func validateProviderKeyURL(provider schemas.ModelProvider, key schemas.Key) err
 		if key.SGLKeyConfig == nil || !key.SGLKeyConfig.URL.IsSet() {
 			return fmt.Errorf("sgl_key_config.url is required for SGL keys")
 		}
+	case schemas.GithubCopilot:
+		// A Copilot API token in value is a valid alternative to the GitHub App bundle. But a
+		// supplied App config is checked either way: a half-filled block sitting behind a
+		// token persists silently and only surfaces later, when the token expires or is
+		// removed and the key falls back to credentials that were never valid.
+		if key.GithubCopilotKeyConfig == nil {
+			if key.Value.IsSet() {
+				return nil
+			}
+			return fmt.Errorf("github_copilot_key_config is required for GitHub Copilot keys without a value")
+		}
+		for _, field := range []struct {
+			name  string
+			value schemas.SecretVar
+		}{
+			{"app_id", key.GithubCopilotKeyConfig.AppID},
+			{"installation_id", key.GithubCopilotKeyConfig.InstallationID},
+			{"repository_id", key.GithubCopilotKeyConfig.RepositoryID},
+			{"private_key", key.GithubCopilotKeyConfig.PrivateKey},
+		} {
+			if !field.value.IsSet() {
+				return fmt.Errorf("github_copilot_key_config.%s is required for GitHub Copilot keys", field.name)
+			}
+		}
+		// Check the shape of literal values too, not just their presence. A non-numeric
+		// installation ID or a mangled PEM otherwise persists and fails at the first
+		// inference call, where it reads as a runtime fault rather than a typo.
+		//
+		// Environment and vault references are exempt: their values are not resolvable
+		// here, so checking them would reject every legitimate headless configuration.
+		if err := validateGithubCopilotLiteral("installation_id", &key.GithubCopilotKeyConfig.InstallationID, isDigits); err != nil {
+			return err
+		}
+		if err := validateGithubCopilotLiteral("repository_id", &key.GithubCopilotKeyConfig.RepositoryID, isDigits); err != nil {
+			return err
+		}
+		if err := validateGithubCopilotLiteral("private_key", &key.GithubCopilotKeyConfig.PrivateKey, isPEMPrivateKey); err != nil {
+			return err
+		}
+		// app_id is deliberately not digit-checked. GitHub documents the App JWT issuer as
+		// "the client ID or application ID" and says "use of the client ID is recommended",
+		// and client IDs look like Iv1.b507a08c87ecfe98. A digits-only rule here would reject
+		// the configuration GitHub itself recommends.
+		// https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app
 	case schemas.Azure:
 		if key.AzureKeyConfig == nil || !key.AzureKeyConfig.Endpoint.IsSet() {
 			return fmt.Errorf("azure_key_config.endpoint is required for Azure keys")
