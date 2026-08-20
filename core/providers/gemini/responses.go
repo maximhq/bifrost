@@ -3088,6 +3088,7 @@ func reasoningFromThoughtSignature(part *Part) (schemas.ResponsesMessage, bool) 
 	}
 	thoughtSig := base64.StdEncoding.EncodeToString(part.ThoughtSignature)
 	return schemas.ResponsesMessage{
+		ID:   schemas.Ptr("rs_" + schemas.GetRandomString(50)),
 		Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
 		Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
 		ResponsesReasoning: &schemas.ResponsesReasoning{
@@ -3225,6 +3226,7 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 				if part.Text != "" || len(part.ThoughtSignature) > 0 {
 					text := part.Text
 					msg := schemas.ResponsesMessage{
+						ID:   schemas.Ptr("rs_" + schemas.GetRandomString(50)),
 						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
 						Content: &schemas.ResponsesMessageContent{
 							ContentBlocks: []schemas.ResponsesMessageContentBlock{
@@ -3235,6 +3237,13 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 							},
 						},
 						Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+						// Strict OpenAI Responses clients require both id and a summary
+						// array on every reasoning item; set summary unconditionally so
+						// signature-less thoughts serialize as `"summary": []` instead of
+						// omitting the key.
+						ResponsesReasoning: &schemas.ResponsesReasoning{
+							Summary: []schemas.ResponsesReasoningSummary{},
+						},
 					}
 					if len(part.ThoughtSignature) > 0 {
 						// Stored base64-encoded, which is the form
@@ -3242,10 +3251,7 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 						// thoughtSignatureFromEncryptedContent decodes on the way
 						// back out -- so the round trip is symmetric by construction.
 						encoded := base64.StdEncoding.EncodeToString(part.ThoughtSignature)
-						msg.ResponsesReasoning = &schemas.ResponsesReasoning{
-							Summary:          []schemas.ResponsesReasoningSummary{},
-							EncryptedContent: &encoded,
-						}
+						msg.ResponsesReasoning.EncryptedContent = &encoded
 						msg.Content.ContentBlocks[0].Signature = &encoded
 					}
 					messages = append(messages, msg)
@@ -3512,6 +3518,7 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 				// Handle thought signature
 				thoughtSig := base64.StdEncoding.EncodeToString(part.ThoughtSignature)
 				msg := schemas.ResponsesMessage{
+					ID:   schemas.Ptr("rs_" + schemas.GetRandomString(50)),
 					Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
 					Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
 					ResponsesReasoning: &schemas.ResponsesReasoning{
