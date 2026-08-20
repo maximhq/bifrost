@@ -194,6 +194,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Fireworks,
 		schemas.Sarvam,
 		schemas.Wafer,
+		schemas.GithubCopilot,
 		ProviderOpenAICustom,
 	}, nil
 }
@@ -492,6 +493,22 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
+	case schemas.GithubCopilot:
+		// Server-to-server auth: the credential is the GitHub App bundle, not a key value.
+		// GITHUB_COPILOT_API_KEY is the alternative direct-token mode and is left unset here.
+		return []schemas.Key{
+			{
+				Value:  *schemas.NewSecretVar("env.GITHUB_COPILOT_API_KEY"),
+				Models: []string{"*"},
+				Weight: 1.0,
+				GithubCopilotKeyConfig: &schemas.GithubCopilotKeyConfig{
+					AppID:          *schemas.NewSecretVar("env.GITHUB_COPILOT_APP_ID"),
+					InstallationID: *schemas.NewSecretVar("env.GITHUB_COPILOT_INSTALLATION_ID"),
+					RepositoryID:   *schemas.NewSecretVar("env.GITHUB_COPILOT_REPOSITORY_ID"),
+					PrivateKey:     *schemas.NewSecretVar("env.GITHUB_COPILOT_PRIVATE_KEY"),
+				},
 			},
 		}, nil
 	case schemas.Gemini:
@@ -873,6 +890,19 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 			},
 		}, nil
 	case schemas.Wafer:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            5 * time.Second,
+				RetryBackoffMax:                3 * time.Minute,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.GithubCopilot:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 120,
