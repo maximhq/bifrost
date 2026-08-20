@@ -4773,6 +4773,12 @@ func ToAnthropicResponsesResponse(ctx *schemas.BifrostContext, bifrostResp *sche
 		anthropicResp.ID = *bifrostResp.ID
 	}
 
+	// Carry Bifrost's extra_fields only when a raw capture is present. See the field's
+	// doc on AnthropicMessageResponse: this route's whole purpose is byte-conformance
+	// with Anthropic's Messages schema, so the extension appears exclusively for callers
+	// who asked for the capture and is absent for everyone else.
+	anthropicResp.ExtraFields = rawCaptureExtraFields(bifrostResp.ExtraFields)
+
 	// Convert usage information using common converter (handles iterations recursively)
 	anthropicResp.Usage = ConvertBifrostUsageToAnthropicUsage(bifrostResp.Usage)
 
@@ -9361,4 +9367,23 @@ func generateSyntheticInputJSONDeltas(argumentsJSON string, contentIndex *int) [
 	}
 
 	return events
+}
+
+// rawCaptureExtraFields returns the extra fields to echo on Anthropic-shaped responses, or
+// nil when the caller did not request a raw capture.
+//
+// The gate is the presence of RawRequest/RawResponse rather than a context flag, because
+// those are exactly what the send_back_raw_request / send_back_raw_response settings (and
+// the x-bf-send-back-raw-request header) populate. Reading the values themselves keeps the
+// echo correct no matter which of those switches turned it on, and keeps it off when a
+// provider silently declined to capture anything.
+//
+// The returned pointer aliases a copy, so a caller mutating the echo cannot reach back into
+// the BifrostResponse the rest of the pipeline (logging, tracing, plugins) still reads.
+func rawCaptureExtraFields(extra schemas.BifrostResponseExtraFields) *schemas.BifrostResponseExtraFields {
+	if extra.RawRequest == nil && extra.RawResponse == nil {
+		return nil
+	}
+	echo := extra
+	return &echo
 }

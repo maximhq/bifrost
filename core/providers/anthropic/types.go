@@ -1849,6 +1849,18 @@ type AnthropicMessageResponse struct {
 	// omitempty when absent; a present-but-null value (no divergence) is conveyed by a
 	// non-nil pointer with a nil CacheMissReason — see schemas.CacheDiagnostics.
 	Diagnostics *schemas.CacheDiagnostics `json:"diagnostics,omitempty"`
+
+	// ExtraFields carries Bifrost's own response metadata (raw_request, raw_response,
+	// routing info, latency) on this route, mirroring the extra_fields member that
+	// BifrostChatResponse and BifrostResponsesResponse serialize directly.
+	//
+	// Anthropic's Messages schema has no such member, so this is a Bifrost extension and
+	// is populated ONLY when a raw capture is actually present -- i.e. when the provider
+	// config enables send_back_raw_request/response, or a request sets
+	// x-bf-send-back-raw-request with allow_per_request_raw_override on. Without a
+	// capture it stays nil and omitempty keeps the response byte-identical to the
+	// documented Anthropic shape, so ordinary clients never see a non-conformant field.
+	ExtraFields *schemas.BifrostResponseExtraFields `json:"extra_fields,omitempty"`
 }
 
 // AnthropicTextResponse represents the response structure from Anthropic's text completion API
