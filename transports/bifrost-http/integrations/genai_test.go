@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"sync/atomic"
@@ -556,12 +557,76 @@ func TestFileUploadPostCallback_DeletesSessionAfterSuccessfulFinalization(t *tes
 	}
 
 	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("X-Goog-Upload-Command", "upload, finalize")
 	err = route.PostCallback(ctx, req, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, "final", string(ctx.Response.Header.Peek("X-Goog-Upload-Status")))
 
 	// Verify the session was deleted after finalization.
+	_, err = kvStore.Get(uploadID)
+	assert.ErrorIs(t, err, kvstore.ErrNotFound)
+}
+
+// Test that PostCallback preserves session for upload-only commands and deletes only on finalize.
+func TestFileUploadPostCallback_PreservesSessionForUploadOnly(t *testing.T) {
+	t.Parallel()
+
+	kvStore, err := kvstore.New(kvstore.Config{})
+	require.NoError(t, err)
+	defer kvStore.Close()
+
+	handlerStore := &fileUploadTestHandlerStore{
+		mockHandlerStore: &mockHandlerStore{},
+		kvStore:          kvStore,
+	}
+
+	routes := CreateGenAIFileRouteConfigs("/genai", handlerStore)
+	require.NotEmpty(t, routes)
+
+	route := findGenAIRouteForTest(t, routes, "/genai/upload/v1beta/files", "POST")
+	uploadID := "upload-retry-id"
+	session := &gemini.GeminiResumableUploadSession{
+		DisplayName: "upload-retry-test.pdf",
+		MimeType:    "application/pdf",
+		Provider:    schemas.Gemini,
+	}
+
+	err = kvStore.SetWithTTL(uploadID, session, time.Minute)
+	require.NoError(t, err)
+
+	req := &gemini.GeminiFileUploadHandlerReq{
+		UploadID: uploadID,
+		FileData: []byte("first chunk"),
+	}
+
+	// First request: "upload" command (no finalize) should preserve session
+	ctx1 := &fasthttp.RequestCtx{}
+	ctx1.Request.Header.Set("X-Goog-Upload-Command", "upload")
+	err = route.PostCallback(ctx1, req, nil)
+	require.NoError(t, err)
+
+	// Response should indicate upload in progress, not final
+	assert.Equal(t, "active", string(ctx1.Response.Header.Peek("X-Goog-Upload-Status")))
+
+	// Session should still exist for retries
+	stored, err := kvStore.Get(uploadID)
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	storedSession, ok := stored.(*gemini.GeminiResumableUploadSession)
+	require.True(t, ok)
+	assert.Equal(t, "upload-retry-test.pdf", storedSession.DisplayName)
+
+	// Second request: "upload, finalize" command should finalize and delete session
+	ctx2 := &fasthttp.RequestCtx{}
+	ctx2.Request.Header.Set("X-Goog-Upload-Command", "upload, finalize")
+	err = route.PostCallback(ctx2, req, nil)
+	require.NoError(t, err)
+
+	// Response should indicate finalization complete
+	assert.Equal(t, "final", string(ctx2.Response.Header.Peek("X-Goog-Upload-Status")))
+
+	// Session should now be deleted
 	_, err = kvStore.Get(uploadID)
 	assert.ErrorIs(t, err, kvstore.ErrNotFound)
 }
@@ -648,11 +713,6 @@ func TestGenAIResumableUploadE2EFlow(t *testing.T) {
 
 	var expectedUploadID atomic.Pointer[string]
 	var providerCallCount atomic.Int32
-	providerServer := http.Server{}
-	providerListener, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-
-	providerBaseURL := "http://" + providerListener.Addr().String()
 	providerHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		providerCallCount.Add(1)
 		if r.URL.Path != "/upload/v1beta/files" {
@@ -702,21 +762,19 @@ func TestGenAIResumableUploadE2EFlow(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"file":{"name":"files/test","displayName":"test.pdf","mimeType":"application/pdf","sizeBytes":"20","createTime":"2026-07-01T00:00:00Z","state":"ACTIVE","uri":"https://example.test/files/test"}}`))
 	})
-
-	providerServer.Handler = providerHandler
-	go func() { _ = providerServer.Serve(providerListener) }()
-	t.Cleanup(func() { _ = providerServer.Close() })
+	providerServer := httptest.NewServer(providerHandler)
+	t.Cleanup(providerServer.Close)
+	providerBaseURL := providerServer.URL
 
 	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
 		Account: &genAIUploadTestAccount{baseURL: providerBaseURL},
 		Logger:  bifrost.NewNoOpLogger(),
 	})
 	require.NoError(t, err)
-
 	t.Cleanup(client.Shutdown)
+
 	fileRoutes := CreateGenAIFileRouteConfigs("/genai", handlerStore)
 	genAIRouter := NewGenericRouter(client, handlerStore, fileRoutes, nil, bifrost.NewNoOpLogger())
-
 	httpRouter := router.New()
 	genAIRouter.RegisterRoutes(httpRouter)
 	gatewayServer := &fasthttp.Server{Handler: httpRouter.Handler}
@@ -730,11 +788,11 @@ func TestGenAIResumableUploadE2EFlow(t *testing.T) {
 	startBody := strings.NewReader(`{"file":{"display_name":"test.pdf"},"mime_type":"application/pdf"}`)
 	startRequest, err := http.NewRequest(http.MethodPost, "http://"+gatewayListener.Addr().String()+"/genai/upload/v1beta/files", startBody)
 	require.NoError(t, err)
-
 	startRequest.Header.Set("Content-Type", "application/json")
 	startRequest.Header.Set("X-Goog-Upload-Protocol", "resumable")
 	startRequest.Header.Set("X-Goog-Upload-Command", "start")
 	startRequest.Header.Set("X-Goog-Upload-Header-Content-Type", "application/pdf")
+
 	startResponse, err := httpClient.Do(startRequest)
 	require.NoError(t, err)
 	defer startResponse.Body.Close()
@@ -744,23 +802,25 @@ func TestGenAIResumableUploadE2EFlow(t *testing.T) {
 	uploadURL := startResponse.Header.Get("X-Goog-Upload-URL")
 	require.NotEmpty(t, uploadURL)
 
-	uploadURI, err := http.NewRequest(http.MethodPost, uploadURL, strings.NewReader("PDF file content here"))
-	require.NoError(t, err)
-	uploadURI.Header.Set("Content-Type", "application/octet-stream")
-	uploadURI.Header.Set("X-Goog-Upload-Command", "upload, finalize")
 	uploadURLParsed, err := url.Parse(uploadURL)
 	require.NoError(t, err)
-
 	uploadID := uploadURLParsed.Query().Get("upload_id")
 	require.NotEmpty(t, uploadID)
 	expectedUploadID.Store(&uploadID)
 
+	// Verify session exists after START
 	stored, err := kvStore.Get(uploadID)
 	require.NoError(t, err)
 	session, ok := stored.(*gemini.GeminiResumableUploadSession)
 	require.True(t, ok)
 	assert.Equal(t, "test.pdf", session.DisplayName)
 	assert.Equal(t, "application/pdf", session.MimeType)
+
+	// Upload with finalize command
+	uploadURI, err := http.NewRequest(http.MethodPost, uploadURL, strings.NewReader("PDF file content here"))
+	require.NoError(t, err)
+	uploadURI.Header.Set("Content-Type", "application/octet-stream")
+	uploadURI.Header.Set("X-Goog-Upload-Command", "upload, finalize")
 
 	uploadResponse, err := httpClient.Do(uploadURI)
 	require.NoError(t, err)

@@ -464,8 +464,6 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 		},
 		PreCallback: extractGeminiFileUploadParams,
 		PostCallback: func(ctx *fasthttp.RequestCtx, req interface{}, resp interface{}) error {
-			ctx.Response.Header.Set("X-Goog-Upload-Status", "final")
-
 			r, ok := req.(*gemini.GeminiFileUploadHandlerReq)
 			if !ok {
 				logger.Errorf("PostCallback: invalid request type: %T", req)
@@ -477,17 +475,40 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 				return nil
 			}
 
+			// Inspect X-Goog-Upload-Command header as comma-separated tokens.
+			// Only finalize and delete the session if "finalize" is present.
+			commandHeader := string(ctx.Request.Header.Peek("X-Goog-Upload-Command"))
+			commands := strings.Split(commandHeader, ",")
+
+			hasFinalize := false
+			for _, cmd := range commands {
+				if strings.TrimSpace(cmd) == "finalize" {
+					hasFinalize = true
+					break
+				}
+			}
+
+			// Set response status based on command
+			if hasFinalize {
+				ctx.Response.Header.Set("X-Goog-Upload-Status", "final")
+			} else {
+				ctx.Response.Header.Set("X-Goog-Upload-Status", "active")
+			}
+
 			kvStore := handlerStore.GetKVStore()
 			if kvStore == nil {
 				logger.Error("PostCallback: kvstore not initialized")
 				return nil
 			}
 
-			// Clean up the session after finalization; it was retained for upload retries.
-			_, err := kvStore.Delete(r.UploadID)
-			if err != nil {
-				logger.Errorf("PostCallback: failed to delete upload session, error=%v", err)
-				return nil
+			// Only delete the session if this is a finalize command.
+			// Preserve the session for upload-only chunks to support retries.
+			if hasFinalize {
+				_, err := kvStore.Delete(r.UploadID)
+				if err != nil {
+					logger.Errorf("PostCallback: failed to delete upload session, error=%v", err)
+					return nil
+				}
 			}
 
 			return nil
