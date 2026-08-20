@@ -56,6 +56,8 @@ Invoke Endpoint — Image Generation Tests (TestBedrockInvokeEndpoint):
 29. Titan image generation via invoke (taskType=TEXT_IMAGE)
 30. Titan embeddings via invoke (inputText)
 31. Titan embeddings with params via invoke (inputText + params)
+31a. Titan binary embeddings via invoke (embeddingTypes=["binary"])
+31b. Titan float+binary embeddings via invoke (embeddingTypes=["float","binary"])
 32. Cohere embeddings via invoke (texts array)
 33. Titan inpainting via invoke (taskType=INPAINTING)
 34. Titan outpainting via invoke (taskType=OUTPAINTING)
@@ -2201,6 +2203,68 @@ class TestBedrockInvokeEndpoint:
         _assert_invoke_embedding(out)
         assert len(out["embedding"]) == 256, (
             f"Expected 256-dim embedding, got {len(out['embedding'])}"
+        )
+
+    # ------------------------------------------------------------------ #
+    # 31a. Titan binary embeddings                                        #
+    # ------------------------------------------------------------------ #
+    @skip_if_no_api_key("bedrock")
+    def test_31a_invoke_titan_binary_embeddings(self, bedrock_client):
+        """Test Case 31a: Titan Embed Text v2 returns embeddingsByType.binary."""
+        print("\n=== Test 31a: Titan binary embeddings via invoke ===")
+
+        body = {
+            "inputText": "compact binary embedding",
+            "dimensions": 256,
+            "normalize": True,
+            "embeddingTypes": ["binary"],
+        }
+
+        response = bedrock_client.invoke_model(
+            modelId="amazon.titan-embed-text-v2:0",
+            contentType="application/json",
+            accept="application/json",
+            body=json.dumps(body),
+        )
+        out = json.loads(response["body"].read())
+        binary = out.get("embeddingsByType", {}).get("binary")
+        assert isinstance(binary, list) and len(binary) > 0, (
+            f"Expected non-empty embeddingsByType.binary, got: {out}"
+        )
+        assert all(isinstance(value, int) for value in binary), (
+            "Titan binary embedding values must be integers"
+        )
+
+    # ------------------------------------------------------------------ #
+    # 31b. Titan float + binary embeddings                                #
+    # ------------------------------------------------------------------ #
+    @skip_if_no_api_key("bedrock")
+    def test_31b_invoke_titan_float_and_binary_embeddings(self, bedrock_client):
+        """Test Case 31b: Titan Embed Text v2 preserves both requested encodings."""
+        print("\n=== Test 31b: Titan float + binary embeddings via invoke ===")
+
+        body = {
+            "inputText": "dual format embedding",
+            "dimensions": 256,
+            "normalize": True,
+            "embeddingTypes": ["float", "binary"],
+        }
+
+        response = bedrock_client.invoke_model(
+            modelId="amazon.titan-embed-text-v2:0",
+            contentType="application/json",
+            accept="application/json",
+            body=json.dumps(body),
+        )
+        out = json.loads(response["body"].read())
+        typed = out.get("embeddingsByType", {})
+        float_vector = typed.get("float")
+        binary_vector = typed.get("binary")
+        assert isinstance(float_vector, list) and len(float_vector) == 256, (
+            f"Expected 256-dim embeddingsByType.float, got: {out}"
+        )
+        assert isinstance(binary_vector, list) and len(binary_vector) > 0, (
+            f"Expected non-empty embeddingsByType.binary, got: {out}"
         )
 
     # ------------------------------------------------------------------ #
