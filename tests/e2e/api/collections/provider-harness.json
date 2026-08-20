@@ -136563,6 +136563,115 @@
           ]
         }
       ]
+    },
+    {
+      "name": "59. Strict zero-argument tools preserve required (#6404)",
+      "description": "A decoded strict zero-argument tool schema used to lose its explicit required: [] when Bifrost marshalled the provider request, allowing the upstream OpenAI schema validator to reject it. These cases pin the shared schema round-trip through both native OpenAI-compatible routes and verify that the forced tool is accepted with an empty argument object.",
+      "item": [
+        {
+          "name": "openai/gpt-4o-mini /v1/responses strict zero-argument tool - #6404",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": \"Call get_current_time. It takes no arguments.\",\n  \"max_output_tokens\": 64,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"get_current_time\",\n      \"description\": \"Return the current time.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {},\n        \"required\": [],\n        \"additionalProperties\": false\n      },\n      \"strict\": true\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"name\": \"get_current_time\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// 400 is deliberately not guarded: schema rejection is the regression signature.",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('strict zero-argument schema is accepted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw).to.be.below(400);",
+                  "});",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + raw.slice(0, 300)); return; }",
+                  "var calls = (j.output || []).filter(function (o) { return o && o.type === 'function_call'; });",
+                  "pm.test('forced zero-argument function is called with an empty object', function () {",
+                  "  pm.expect(calls.length, 'no tool call in response: ' + raw.slice(0, 500)).to.be.above(0);",
+                  "  pm.expect(calls[0].name).to.eql('get_current_time');",
+                  "  var args = JSON.parse(calls[0].arguments || '{}');",
+                  "  pm.expect(Object.keys(args), 'expected empty arguments: ' + calls[0].arguments).to.have.length(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai/gpt-4o-mini /v1/chat/completions strict zero-argument tool - #6404",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call get_current_time. It takes no arguments.\"\n    }\n  ],\n  \"max_tokens\": 64,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_current_time\",\n        \"description\": \"Return the current time.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {},\n          \"required\": [],\n          \"additionalProperties\": false\n        },\n        \"strict\": true\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"function\": {\n      \"name\": \"get_current_time\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// 400 is deliberately not guarded: schema rejection is the regression signature.",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('strict zero-argument schema is accepted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw).to.be.below(400);",
+                  "});",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + raw.slice(0, 300)); return; }",
+                  "var calls = (((j.choices || [])[0] || {}).message || {}).tool_calls || [];",
+                  "pm.test('forced zero-argument function is called with an empty object', function () {",
+                  "  pm.expect(calls.length, 'no tool call in response: ' + raw.slice(0, 500)).to.be.above(0);",
+                  "  pm.expect((calls[0].function || {}).name).to.eql('get_current_time');",
+                  "  var args = JSON.parse((calls[0].function || {}).arguments || '{}');",
+                  "  pm.expect(Object.keys(args), 'expected empty arguments: ' + (calls[0].function || {}).arguments).to.have.length(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
