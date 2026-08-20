@@ -114,6 +114,10 @@
           "        shape = 'rerank';",
           "        // A rerank response ranks the documents it was given; it generates no text, so the ranked list IS the content. Matched on index + a relevance score rather than on `results` alone, which is too generic to claim off other shapes. This branch went missing until now because no rerank row had ever returned 2xx: every bedrock row was rejected pre-flight for not naming its model as an ARN, and every vertex row 403s on discoveryengine IAM - and the content check is gated on code < 400, so it never ran.",
           "        hasContent = j.results.length > 0;",
+          "    } else if (Array.isArray(j.records) && j.records.length > 0 && j.records[0] && typeof j.records[0].id === 'string' && typeof j.records[0].score === 'number') {",
+          "        shape = 'rerank-records';",
+          "        // Discovery Engine's rank API is ID-keyed: it answers with records[] carrying id + score, not results[] with index + relevance_score, so the rerank branch above never claims it. Like that branch, the ranked list IS the content - a rank call generates no text. Matched on id + score rather than on `records` alone, which is too generic to claim off other shapes. This went missing because /genai/v1/rank only started returning the real Discovery Engine shape once the rank response converter landed; before that it leaked Bifrost's canonical results[] and was claimed by the rerank branch.",
+          "        hasContent = j.records.length > 0;",
           "    } else if (Array.isArray(j.predictions)) {",
           "        shape = 'vertex-predictions';",
           "        hasContent = j.predictions.length > 0;",
@@ -128718,10 +128722,11 @@
                       "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
                       "var j; try { j = pm.response.json(); } catch (e) {",
                       "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
-                      "pm.test('rerank returned ranked results', function () {",
-                      "  var r = j.results || j.data || [];",
-                      "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
-                      "  pm.expect(r[0]).to.have.property('index');",
+                      "pm.test('rank returned ranked records', function () {",
+                      "  var r = j.records || [];",
+                      "  pm.expect(r.length, 'no records (Discovery Engine returns records[], not results[]): ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                      "  pm.expect(r[0], 'record must be keyed by id').to.have.property('id');",
+                      "  pm.expect(r[0], 'record must carry score').to.have.property('score');",
                       "});"
                     ]
                   }
@@ -128763,10 +128768,11 @@
                       "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
                       "var j; try { j = pm.response.json(); } catch (e) {",
                       "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
-                      "pm.test('rerank returned ranked results', function () {",
-                      "  var r = j.results || j.data || [];",
-                      "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
-                      "  pm.expect(r[0]).to.have.property('index');",
+                      "pm.test('rank returned ranked records', function () {",
+                      "  var r = j.records || [];",
+                      "  pm.expect(r.length, 'no records (Discovery Engine returns records[], not results[]): ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                      "  pm.expect(r[0], 'record must be keyed by id').to.have.property('id');",
+                      "  pm.expect(r[0], 'record must carry score').to.have.property('score');",
                       "});"
                     ]
                   }
@@ -133694,6 +133700,1348 @@
             }
           },
           "response": []
+        }
+      ]
+    },
+    {
+      "name": "56. Rerank Wire Shapes and Neutral Schema (PR #6328)",
+      "description": "Rerank had route x provider reachability coverage in 48.6, but nothing pinned the wire shape or the neutral schema. The old assertions accepted `j.results || j.data` and only checked for an `index` field, so a Bedrock response carrying snake_case relevance_score (which AWS SDKs deserialize as 0.0) passed, and the /genai/v1/rank cases passed only while the route leaked Bifrost's canonical shape.\n\nThis folder completes the matrix and pins behaviour:\n- POST /v1/rerank across cohere, bedrock and vertex (the canonical route had zero cases)\n- the three drop-in routes served by the cohere provider (no prior coverage)\n- per-route wire shape: snake_case on /cohere, camelCase on /bedrock, records[] on /genai, and no canonical model/extra_fields leaking into a provider-shaped body\n- neutral schema: string|object documents, structured `data` bodies, result id identity, document echo as an object, ignoreRecordDetailsInResponse, and search-unit usage\n\nRanking assertions require the one relevant document to rank first rather than just checking for a 200, because a provider that drops document content still answers 200 with meaningless scores.",
+      "item": [
+        {
+          "name": "56. /v1/rerank string documents -> cohere/rerank-v3.5 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cohere/rerank-v3.5\",\n  \"query\": \"What is the capital of France?\",\n  \"documents\": [\n    \"Paris is the capital and most populous city of France.\",\n    \"Carrots are orange root vegetables rich in beta carotene.\",\n    \"Berlin is the capital of Germany and its largest city.\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "// Plain-string documents are the form every rerank SDK sends; they were rejected",
+                  "// before RerankDocument gained a string|object unmarshaller.",
+                  "pm.test('results are ranked, not merely returned', function () {",
+                  "  var r = j.results || [];",
+                  "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0], 'result must carry an index').to.have.property('index');",
+                  "  pm.expect(r[0], 'expected relevance_score on the wire').to.have.property('relevance_score');",
+                  "  pm.expect(r[0].index, 'the only relevant document must rank first').to.eql(0);",
+                  "  if (r.length > 1) { pm.expect(r[0].relevance_score, 'top and bottom scores indistinguishable').to.be.above(r[r.length - 1].relevance_score); }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. /v1/rerank string documents -> bedrock/cohere.rerank-v3-5:0 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/cohere.rerank-v3-5:0\",\n  \"query\": \"What is the capital of France?\",\n  \"documents\": [\n    \"Paris is the capital and most populous city of France.\",\n    \"Carrots are orange root vegetables rich in beta carotene.\",\n    \"Berlin is the capital of Germany and its largest city.\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "// Plain-string documents are the form every rerank SDK sends; they were rejected",
+                  "// before RerankDocument gained a string|object unmarshaller.",
+                  "pm.test('results are ranked, not merely returned', function () {",
+                  "  var r = j.results || [];",
+                  "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0], 'result must carry an index').to.have.property('index');",
+                  "  pm.expect(r[0], 'expected relevance_score on the wire').to.have.property('relevance_score');",
+                  "  pm.expect(r[0].index, 'the only relevant document must rank first').to.eql(0);",
+                  "  if (r.length > 1) { pm.expect(r[0].relevance_score, 'top and bottom scores indistinguishable').to.be.above(r[r.length - 1].relevance_score); }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. /v1/rerank string documents -> vertex/semantic-ranker-default-004 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/semantic-ranker-default-004\",\n  \"query\": \"What is the capital of France?\",\n  \"documents\": [\n    \"Paris is the capital and most populous city of France.\",\n    \"Carrots are orange root vegetables rich in beta carotene.\",\n    \"Berlin is the capital of Germany and its largest city.\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "// Plain-string documents are the form every rerank SDK sends; they were rejected",
+                  "// before RerankDocument gained a string|object unmarshaller.",
+                  "pm.test('results are ranked, not merely returned', function () {",
+                  "  var r = j.results || [];",
+                  "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0], 'result must carry an index').to.have.property('index');",
+                  "  pm.expect(r[0], 'expected relevance_score on the wire').to.have.property('relevance_score');",
+                  "  pm.expect(r[0].index, 'the only relevant document must rank first').to.eql(0);",
+                  "  if (r.length > 1) { pm.expect(r[0].relevance_score, 'top and bottom scores indistinguishable').to.be.above(r[r.length - 1].relevance_score); }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. /cohere/v2/rerank wire shape -> cohere/rerank-v3.5 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cohere/rerank-v3.5\",\n  \"query\": \"What is the capital of France?\",\n  \"documents\": [\n    \"Paris is the capital and most populous city of France.\",\n    \"Carrots are orange root vegetables rich in beta carotene.\",\n    \"Berlin is the capital of Germany and its largest city.\"\n  ],\n  \"top_n\": 3\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/cohere/v2/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "cohere",
+                "v2",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "pm.test('results are ranked, not merely returned', function () {",
+                  "  var r = j.results || [];",
+                  "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0], 'result must carry an index').to.have.property('index');",
+                  "  pm.expect(r[0], 'expected relevance_score on the wire').to.have.property('relevance_score');",
+                  "  pm.expect(r[0], 'relevanceScore must not appear on this route').to.not.have.property('relevanceScore');",
+                  "  pm.expect(r[0].index, 'the only relevant document must rank first').to.eql(0);",
+                  "  if (r.length > 1) { pm.expect(r[0].relevance_score, 'top and bottom scores indistinguishable').to.be.above(r[r.length - 1].relevance_score); }",
+                  "});",
+                  "pm.test('response is Cohere-shaped, with no Bifrost fields leaking', function () {",
+                  "  pm.expect(j, 'canonical Bifrost model field leaked').to.not.have.property('model');",
+                  "  pm.expect(j, 'canonical Bifrost extra_fields leaked').to.not.have.property('extra_fields');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. /bedrock/rerank camelCase wire shape -> cohere/rerank-v3.5 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"queries\": [\n    {\n      \"type\": \"TEXT\",\n      \"textQuery\": {\n        \"text\": \"What is the capital of France?\"\n      }\n    }\n  ],\n  \"sources\": [\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"TEXT\",\n        \"textDocument\": {\n          \"text\": \"Paris is the capital and most populous city of France.\"\n        }\n      }\n    },\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"TEXT\",\n        \"textDocument\": {\n          \"text\": \"Carrots are orange root vegetables rich in beta carotene.\"\n        }\n      }\n    },\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"TEXT\",\n        \"textDocument\": {\n          \"text\": \"Berlin is the capital of Germany and its largest city.\"\n        }\n      }\n    }\n  ],\n  \"rerankingConfiguration\": {\n    \"type\": \"BEDROCK_RERANKING_MODEL\",\n    \"bedrockRerankingConfiguration\": {\n      \"modelConfiguration\": {\n        \"modelArn\": \"cohere/rerank-v3.5\"\n      }\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "// AWS SDKs match response keys case-insensitively but not punctuation-insensitively, so a",
+                  "// snake_case body deserializes every score as 0.0 instead of raising. Pin the casing.",
+                  "pm.test('results are ranked, not merely returned', function () {",
+                  "  var r = j.results || [];",
+                  "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0], 'result must carry an index').to.have.property('index');",
+                  "  pm.expect(r[0], 'expected relevanceScore on the wire').to.have.property('relevanceScore');",
+                  "  pm.expect(r[0], 'relevance_score must not appear on this route').to.not.have.property('relevance_score');",
+                  "  pm.expect(r[0].index, 'the only relevant document must rank first').to.eql(0);",
+                  "  if (r.length > 1) { pm.expect(r[0].relevanceScore, 'top and bottom scores indistinguishable').to.be.above(r[r.length - 1].relevanceScore); }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. /genai/v1/rank caller record ids -> cohere/rerank-v3.5 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cohere/rerank-v3.5\",\n  \"query\": \"What is the capital of France?\",\n  \"records\": [\n    {\n      \"id\": \"record-0\",\n      \"title\": \"Doc 0\",\n      \"content\": \"Paris is the capital and most populous city of France.\"\n    },\n    {\n      \"id\": \"record-1\",\n      \"title\": \"Doc 1\",\n      \"content\": \"Carrots are orange root vegetables rich in beta carotene.\"\n    },\n    {\n      \"id\": \"record-2\",\n      \"title\": \"Doc 2\",\n      \"content\": \"Berlin is the capital of Germany and its largest city.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1/rank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1",
+                "rank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "pm.test('ranked records keep the caller ids, never synthetic ones', function () {",
+                  "  var r = j.records || [];",
+                  "  pm.expect(r.length, 'no records: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0].id, 'expected the caller record id').to.eql('record-0');",
+                  "  for (var i = 0; i < r.length; i++) {",
+                  "    pm.expect(r[i].id, 'upstream synthetic id leaked to the client').to.not.match(/^idx:/);",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. /v1/rerank object documents round-trip -> cohere/rerank-v3.5 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cohere/rerank-v3.5\",\n  \"query\": \"What is the capital of France?\",\n  \"documents\": [\n    {\n      \"text\": \"Paris is the capital and most populous city of France.\",\n      \"id\": \"doc-0\",\n      \"metadata\": {\n        \"position\": 0\n      }\n    },\n    {\n      \"text\": \"Carrots are orange root vegetables rich in beta carotene.\",\n      \"id\": \"doc-1\",\n      \"metadata\": {\n        \"position\": 1\n      }\n    },\n    {\n      \"text\": \"Berlin is the capital of Germany and its largest city.\",\n      \"id\": \"doc-2\",\n      \"metadata\": {\n        \"position\": 2\n      }\n    }\n  ],\n  \"return_documents\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "pm.test('results are ranked, not merely returned', function () {",
+                  "  var r = j.results || [];",
+                  "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0], 'result must carry an index').to.have.property('index');",
+                  "  pm.expect(r[0], 'expected relevance_score on the wire').to.have.property('relevance_score');",
+                  "  pm.expect(r[0].index, 'the only relevant document must rank first').to.eql(0);",
+                  "  if (r.length > 1) { pm.expect(r[0].relevance_score, 'top and bottom scores indistinguishable').to.be.above(r[r.length - 1].relevance_score); }",
+                  "});",
+                  "pm.test('document identity survives the round trip', function () {",
+                  "  var top = (j.results || [])[0];",
+                  "  pm.expect(top.id, 'result must carry the caller document id as identity').to.eql('doc-0');",
+                  "  pm.expect(top.document, 'return_documents did not echo the document').to.be.an('object');",
+                  "  pm.expect(top.document.text).to.be.a('string');",
+                  "  pm.expect(top.document.id).to.eql('doc-0');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. /v1/rerank structured data documents -> cohere/rerank-v3.5 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cohere/rerank-v3.5\",\n  \"query\": \"What is the capital of France?\",\n  \"documents\": [\n    {\n      \"data\": {\n        \"title\": \"France\",\n        \"body\": \"Paris is the capital and most populous city of France.\"\n      }\n    },\n    {\n      \"data\": {\n        \"title\": \"Carrots\",\n        \"body\": \"Carrots are orange root vegetables rich in beta carotene.\"\n      }\n    },\n    {\n      \"data\": {\n        \"title\": \"Germany\",\n        \"body\": \"Berlin is the capital of Germany and its largest city.\"\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "// A provider that dropped the structured body would still answer 200 with flat scores,",
+                  "// so the ordering assertion is what proves the content reached the model.",
+                  "pm.test('results are ranked, not merely returned', function () {",
+                  "  var r = j.results || [];",
+                  "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0], 'result must carry an index').to.have.property('index');",
+                  "  pm.expect(r[0], 'expected relevance_score on the wire').to.have.property('relevance_score');",
+                  "  pm.expect(r[0].index, 'the only relevant document must rank first').to.eql(0);",
+                  "  if (r.length > 1) { pm.expect(r[0].relevance_score, 'top and bottom scores indistinguishable').to.be.above(r[r.length - 1].relevance_score); }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. /v1/rerank reports search units -> cohere/rerank-v3.5 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cohere/rerank-v3.5\",\n  \"query\": \"What is the capital of France?\",\n  \"documents\": [\n    \"Paris is the capital and most populous city of France.\",\n    \"Carrots are orange root vegetables rich in beta carotene.\",\n    \"Berlin is the capital of Germany and its largest city.\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "// Rerank bills in search units rather than tokens; without this the request costs nothing.",
+                  "pm.test('usage carries a billable unit', function () {",
+                  "  pm.expect(j.usage, 'no usage block: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "  var d = j.usage.completion_tokens_details || {};",
+                  "  pm.expect(d.num_search_queries, 'search units missing, rerank would bill zero').to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. /cohere/v2/rerank cross-provider document echo -> bedrock/cohere.rerank-v3-5:0 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/cohere.rerank-v3-5:0\",\n  \"query\": \"What is the capital of France?\",\n  \"documents\": [\n    {\n      \"text\": \"Paris is the capital and most populous city of France.\",\n      \"id\": \"doc-0\",\n      \"metadata\": {\n        \"position\": 0\n      }\n    },\n    {\n      \"text\": \"Carrots are orange root vegetables rich in beta carotene.\",\n      \"id\": \"doc-1\",\n      \"metadata\": {\n        \"position\": 1\n      }\n    },\n    {\n      \"text\": \"Berlin is the capital of Germany and its largest city.\",\n      \"id\": \"doc-2\",\n      \"metadata\": {\n        \"position\": 2\n      }\n    }\n  ],\n  \"return_documents\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/cohere/v2/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "cohere",
+                "v2",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "pm.test('results are ranked, not merely returned', function () {",
+                  "  var r = j.results || [];",
+                  "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0], 'result must carry an index').to.have.property('index');",
+                  "  pm.expect(r[0], 'expected relevance_score on the wire').to.have.property('relevance_score');",
+                  "  pm.expect(r[0], 'relevanceScore must not appear on this route').to.not.have.property('relevanceScore');",
+                  "  pm.expect(r[0].index, 'the only relevant document must rank first').to.eql(0);",
+                  "  if (r.length > 1) { pm.expect(r[0].relevance_score, 'top and bottom scores indistinguishable').to.be.above(r[r.length - 1].relevance_score); }",
+                  "});",
+                  "// Cohere always returns document as an object. Emitting a bare string here breaks the",
+                  "// official SDK, which parses the field into a typed document.",
+                  "pm.test('document is echoed as an object, not a bare string', function () {",
+                  "  var top = (j.results || [])[0];",
+                  "  pm.expect(top.document, 'document must be an object').to.be.an('object');",
+                  "  pm.expect(top.document.id, 'id must survive cross-provider backfill').to.eql('doc-0');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. /cohere/v2/rerank error shape -> cohere/rerank-v3.5 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cohere/rerank-v3.5\",\n  \"query\": \"\",\n  \"documents\": [\n    \"Paris is the capital and most populous city of France.\",\n    \"Carrots are orange root vegetables rich in beta carotene.\",\n    \"Berlin is the capital of Germany and its largest city.\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/cohere/v2/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "cohere",
+                "v2",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No 4xx guard here: a 4xx IS the signature under test. Only infra noise is skipped.",
+                  "if ([429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.test('errors are Cohere-shaped, not a Bifrost envelope', function () {",
+                  "  pm.expect(pm.response.code, 'an empty query must be rejected').to.be.at.least(400);",
+                  "  pm.expect(j.message, 'expected Cohere {message}: ' + pm.response.text().slice(0, 300)).to.be.a('string');",
+                  "  pm.expect(j, 'Bifrost error envelope leaked').to.not.have.property('is_bifrost_error');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. /bedrock/rerank jsonDocument sources -> bedrock/cohere.rerank-v3-5:0 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"queries\": [\n    {\n      \"type\": \"TEXT\",\n      \"textQuery\": {\n        \"text\": \"What is the capital of France?\"\n      }\n    }\n  ],\n  \"sources\": [\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"JSON\",\n        \"jsonDocument\": {\n          \"title\": \"France\",\n          \"body\": \"Paris is the capital and most populous city of France.\"\n        }\n      }\n    },\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"JSON\",\n        \"jsonDocument\": {\n          \"title\": \"Carrots\",\n          \"body\": \"Carrots are orange root vegetables rich in beta carotene.\"\n        }\n      }\n    },\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"JSON\",\n        \"jsonDocument\": {\n          \"title\": \"Germany\",\n          \"body\": \"Berlin is the capital of Germany and its largest city.\"\n        }\n      }\n    }\n  ],\n  \"rerankingConfiguration\": {\n    \"type\": \"BEDROCK_RERANKING_MODEL\",\n    \"bedrockRerankingConfiguration\": {\n      \"modelConfiguration\": {\n        \"modelArn\": \"bedrock/cohere.rerank-v3-5:0\"\n      }\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "// JSON document sources were previously dropped to empty strings: a silent 200 with a",
+                  "// confident ranking over blank text. The ordering assertion is the only way to catch that.",
+                  "pm.test('results are ranked, not merely returned', function () {",
+                  "  var r = j.results || [];",
+                  "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0], 'result must carry an index').to.have.property('index');",
+                  "  pm.expect(r[0], 'expected relevanceScore on the wire').to.have.property('relevanceScore');",
+                  "  pm.expect(r[0], 'relevance_score must not appear on this route').to.not.have.property('relevance_score');",
+                  "  pm.expect(r[0].index, 'the only relevant document must rank first').to.eql(0);",
+                  "  if (r.length > 1) { pm.expect(r[0].relevanceScore, 'top and bottom scores indistinguishable').to.be.above(r[r.length - 1].relevanceScore); }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. /genai/v1/rank ignoreRecordDetailsInResponse -> bedrock/cohere.rerank-v3-5:0 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/cohere.rerank-v3-5:0\",\n  \"query\": \"What is the capital of France?\",\n  \"records\": [\n    {\n      \"id\": \"record-0\",\n      \"title\": \"Doc 0\",\n      \"content\": \"Paris is the capital and most populous city of France.\"\n    },\n    {\n      \"id\": \"record-1\",\n      \"title\": \"Doc 1\",\n      \"content\": \"Carrots are orange root vegetables rich in beta carotene.\"\n    },\n    {\n      \"id\": \"record-2\",\n      \"title\": \"Doc 2\",\n      \"content\": \"Berlin is the capital of Germany and its largest city.\"\n    }\n  ],\n  \"ignoreRecordDetailsInResponse\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1/rank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1",
+                "rank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "pm.test('details are suppressed but identity survives', function () {",
+                  "  var r = j.records || [];",
+                  "  pm.expect(r.length, 'no records: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  for (var i = 0; i < r.length; i++) {",
+                  "    pm.expect(r[i], 'content leaked despite suppression').to.not.have.property('content');",
+                  "    pm.expect(r[i], 'title leaked despite suppression').to.not.have.property('title');",
+                  "    pm.expect(r[i].id, 'id is identity, not a detail - it must survive').to.be.a('string');",
+                  "    pm.expect(r[i].score).to.be.a('number');",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. litellm drop-in prefix, cohere dialect -> cohere/rerank-v3.5 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cohere/rerank-v3.5\",\n  \"query\": \"What is the capital of France?\",\n  \"documents\": [\n    \"Paris is the capital and most populous city of France.\",\n    \"Carrots are orange root vegetables rich in beta carotene.\",\n    \"Berlin is the capital of Germany and its largest city.\"\n  ],\n  \"top_n\": 3\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/litellm/v2/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "litellm",
+                "v2",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "pm.test('drop-in prefix resolves to the right dialect and ranks', function () {",
+                  "  var r = j.results || [];",
+                  "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0], 'expected relevance_score on this dialect').to.have.property('relevance_score');",
+                  "  pm.expect(r[0], 'relevanceScore must not appear on this dialect').to.not.have.property('relevanceScore');",
+                  "  pm.expect(r[0].index, 'the only relevant document must rank first').to.eql(0);",
+                  "  pm.expect(j, 'canonical Bifrost model field leaked').to.not.have.property('model');",
+                  "  pm.expect(j, 'canonical Bifrost extra_fields leaked').to.not.have.property('extra_fields');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. litellm drop-in prefix, bedrock dialect -> bedrock/cohere.rerank-v3-5:0 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"queries\": [\n    {\n      \"type\": \"TEXT\",\n      \"textQuery\": {\n        \"text\": \"What is the capital of France?\"\n      }\n    }\n  ],\n  \"sources\": [\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"TEXT\",\n        \"textDocument\": {\n          \"text\": \"Paris is the capital and most populous city of France.\"\n        }\n      }\n    },\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"TEXT\",\n        \"textDocument\": {\n          \"text\": \"Carrots are orange root vegetables rich in beta carotene.\"\n        }\n      }\n    },\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"TEXT\",\n        \"textDocument\": {\n          \"text\": \"Berlin is the capital of Germany and its largest city.\"\n        }\n      }\n    }\n  ],\n  \"rerankingConfiguration\": {\n    \"type\": \"BEDROCK_RERANKING_MODEL\",\n    \"bedrockRerankingConfiguration\": {\n      \"modelConfiguration\": {\n        \"modelArn\": \"bedrock/cohere.rerank-v3-5:0\"\n      }\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/litellm/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "litellm",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "pm.test('drop-in prefix resolves to the right dialect and ranks', function () {",
+                  "  var r = j.results || [];",
+                  "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0], 'expected relevanceScore on this dialect').to.have.property('relevanceScore');",
+                  "  pm.expect(r[0], 'relevance_score must not appear on this dialect').to.not.have.property('relevance_score');",
+                  "  pm.expect(r[0].index, 'the only relevant document must rank first').to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. litellm drop-in prefix, rank dialect -> vertex/semantic-ranker-default-004 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/semantic-ranker-default-004\",\n  \"query\": \"What is the capital of France?\",\n  \"records\": [\n    {\n      \"id\": \"record-0\",\n      \"title\": \"Doc 0\",\n      \"content\": \"Paris is the capital and most populous city of France.\"\n    },\n    {\n      \"id\": \"record-1\",\n      \"title\": \"Doc 1\",\n      \"content\": \"Carrots are orange root vegetables rich in beta carotene.\"\n    },\n    {\n      \"id\": \"record-2\",\n      \"title\": \"Doc 2\",\n      \"content\": \"Berlin is the capital of Germany and its largest city.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/litellm/v1/rank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "litellm",
+                "v1",
+                "rank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "pm.test('drop-in prefix resolves to the rank dialect', function () {",
+                  "  var r = j.records || [];",
+                  "  pm.expect(r.length, 'no records (rank returns records[], not results[]): ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0].id, 'caller record id must be preserved').to.eql('record-0');",
+                  "  pm.expect(r[0]).to.have.property('score');",
+                  "  pm.expect(j, 'canonical Bifrost results[] leaked into the rank dialect').to.not.have.property('results');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. langchain drop-in prefix, cohere dialect -> bedrock/cohere.rerank-v3-5:0 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/cohere.rerank-v3-5:0\",\n  \"query\": \"What is the capital of France?\",\n  \"documents\": [\n    \"Paris is the capital and most populous city of France.\",\n    \"Carrots are orange root vegetables rich in beta carotene.\",\n    \"Berlin is the capital of Germany and its largest city.\"\n  ],\n  \"top_n\": 3\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/langchain/v2/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "langchain",
+                "v2",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "pm.test('drop-in prefix resolves to the right dialect and ranks', function () {",
+                  "  var r = j.results || [];",
+                  "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0], 'expected relevance_score on this dialect').to.have.property('relevance_score');",
+                  "  pm.expect(r[0], 'relevanceScore must not appear on this dialect').to.not.have.property('relevanceScore');",
+                  "  pm.expect(r[0].index, 'the only relevant document must rank first').to.eql(0);",
+                  "  pm.expect(j, 'canonical Bifrost model field leaked').to.not.have.property('model');",
+                  "  pm.expect(j, 'canonical Bifrost extra_fields leaked').to.not.have.property('extra_fields');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. langchain drop-in prefix, bedrock dialect -> vertex/semantic-ranker-default-004 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"queries\": [\n    {\n      \"type\": \"TEXT\",\n      \"textQuery\": {\n        \"text\": \"What is the capital of France?\"\n      }\n    }\n  ],\n  \"sources\": [\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"TEXT\",\n        \"textDocument\": {\n          \"text\": \"Paris is the capital and most populous city of France.\"\n        }\n      }\n    },\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"TEXT\",\n        \"textDocument\": {\n          \"text\": \"Carrots are orange root vegetables rich in beta carotene.\"\n        }\n      }\n    },\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"TEXT\",\n        \"textDocument\": {\n          \"text\": \"Berlin is the capital of Germany and its largest city.\"\n        }\n      }\n    }\n  ],\n  \"rerankingConfiguration\": {\n    \"type\": \"BEDROCK_RERANKING_MODEL\",\n    \"bedrockRerankingConfiguration\": {\n      \"modelConfiguration\": {\n        \"modelArn\": \"vertex/semantic-ranker-default-004\"\n      }\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/langchain/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "langchain",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "pm.test('drop-in prefix resolves to the right dialect and ranks', function () {",
+                  "  var r = j.results || [];",
+                  "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0], 'expected relevanceScore on this dialect').to.have.property('relevanceScore');",
+                  "  pm.expect(r[0], 'relevance_score must not appear on this dialect').to.not.have.property('relevance_score');",
+                  "  pm.expect(r[0].index, 'the only relevant document must rank first').to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. langchain drop-in prefix, rank dialect -> cohere/rerank-v3.5 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cohere/rerank-v3.5\",\n  \"query\": \"What is the capital of France?\",\n  \"records\": [\n    {\n      \"id\": \"record-0\",\n      \"title\": \"Doc 0\",\n      \"content\": \"Paris is the capital and most populous city of France.\"\n    },\n    {\n      \"id\": \"record-1\",\n      \"title\": \"Doc 1\",\n      \"content\": \"Carrots are orange root vegetables rich in beta carotene.\"\n    },\n    {\n      \"id\": \"record-2\",\n      \"title\": \"Doc 2\",\n      \"content\": \"Berlin is the capital of Germany and its largest city.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/langchain/v1/rank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "langchain",
+                "v1",
+                "rank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "pm.test('drop-in prefix resolves to the rank dialect', function () {",
+                  "  var r = j.records || [];",
+                  "  pm.expect(r.length, 'no records (rank returns records[], not results[]): ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0].id, 'caller record id must be preserved').to.eql('record-0');",
+                  "  pm.expect(r[0]).to.have.property('score');",
+                  "  pm.expect(j, 'canonical Bifrost results[] leaked into the rank dialect').to.not.have.property('results');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. pydanticai drop-in prefix, cohere dialect -> vertex/semantic-ranker-default-004 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/semantic-ranker-default-004\",\n  \"query\": \"What is the capital of France?\",\n  \"documents\": [\n    \"Paris is the capital and most populous city of France.\",\n    \"Carrots are orange root vegetables rich in beta carotene.\",\n    \"Berlin is the capital of Germany and its largest city.\"\n  ],\n  \"top_n\": 3\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/pydanticai/v2/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "pydanticai",
+                "v2",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "pm.test('drop-in prefix resolves to the right dialect and ranks', function () {",
+                  "  var r = j.results || [];",
+                  "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0], 'expected relevance_score on this dialect').to.have.property('relevance_score');",
+                  "  pm.expect(r[0], 'relevanceScore must not appear on this dialect').to.not.have.property('relevanceScore');",
+                  "  pm.expect(r[0].index, 'the only relevant document must rank first').to.eql(0);",
+                  "  pm.expect(j, 'canonical Bifrost model field leaked').to.not.have.property('model');",
+                  "  pm.expect(j, 'canonical Bifrost extra_fields leaked').to.not.have.property('extra_fields');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. pydanticai drop-in prefix, bedrock dialect -> cohere/rerank-v3.5 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"queries\": [\n    {\n      \"type\": \"TEXT\",\n      \"textQuery\": {\n        \"text\": \"What is the capital of France?\"\n      }\n    }\n  ],\n  \"sources\": [\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"TEXT\",\n        \"textDocument\": {\n          \"text\": \"Paris is the capital and most populous city of France.\"\n        }\n      }\n    },\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"TEXT\",\n        \"textDocument\": {\n          \"text\": \"Carrots are orange root vegetables rich in beta carotene.\"\n        }\n      }\n    },\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"TEXT\",\n        \"textDocument\": {\n          \"text\": \"Berlin is the capital of Germany and its largest city.\"\n        }\n      }\n    }\n  ],\n  \"rerankingConfiguration\": {\n    \"type\": \"BEDROCK_RERANKING_MODEL\",\n    \"bedrockRerankingConfiguration\": {\n      \"modelConfiguration\": {\n        \"modelArn\": \"cohere/rerank-v3.5\"\n      }\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/pydanticai/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "pydanticai",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "pm.test('drop-in prefix resolves to the right dialect and ranks', function () {",
+                  "  var r = j.results || [];",
+                  "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0], 'expected relevanceScore on this dialect').to.have.property('relevanceScore');",
+                  "  pm.expect(r[0], 'relevance_score must not appear on this dialect').to.not.have.property('relevance_score');",
+                  "  pm.expect(r[0].index, 'the only relevant document must rank first').to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. pydanticai drop-in prefix, rank dialect -> bedrock/cohere.rerank-v3-5:0 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/cohere.rerank-v3-5:0\",\n  \"query\": \"What is the capital of France?\",\n  \"records\": [\n    {\n      \"id\": \"record-0\",\n      \"title\": \"Doc 0\",\n      \"content\": \"Paris is the capital and most populous city of France.\"\n    },\n    {\n      \"id\": \"record-1\",\n      \"title\": \"Doc 1\",\n      \"content\": \"Carrots are orange root vegetables rich in beta carotene.\"\n    },\n    {\n      \"id\": \"record-2\",\n      \"title\": \"Doc 2\",\n      \"content\": \"Berlin is the capital of Germany and its largest city.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/pydanticai/v1/rank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "pydanticai",
+                "v1",
+                "rank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "pm.test('drop-in prefix resolves to the rank dialect', function () {",
+                  "  var r = j.records || [];",
+                  "  pm.expect(r.length, 'no records (rank returns records[], not results[]): ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0].id, 'caller record id must be preserved').to.eql('record-0');",
+                  "  pm.expect(r[0]).to.have.property('score');",
+                  "  pm.expect(j, 'canonical Bifrost results[] leaked into the rank dialect').to.not.have.property('results');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. cursor drop-in prefix, cohere dialect -> cohere/rerank-v3.5 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cohere/rerank-v3.5\",\n  \"query\": \"What is the capital of France?\",\n  \"documents\": [\n    \"Paris is the capital and most populous city of France.\",\n    \"Carrots are orange root vegetables rich in beta carotene.\",\n    \"Berlin is the capital of Germany and its largest city.\"\n  ],\n  \"top_n\": 3\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/cursor/v2/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "cursor",
+                "v2",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "pm.test('drop-in prefix resolves to the right dialect and ranks', function () {",
+                  "  var r = j.results || [];",
+                  "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0], 'expected relevance_score on this dialect').to.have.property('relevance_score');",
+                  "  pm.expect(r[0], 'relevanceScore must not appear on this dialect').to.not.have.property('relevanceScore');",
+                  "  pm.expect(r[0].index, 'the only relevant document must rank first').to.eql(0);",
+                  "  pm.expect(j, 'canonical Bifrost model field leaked').to.not.have.property('model');",
+                  "  pm.expect(j, 'canonical Bifrost extra_fields leaked').to.not.have.property('extra_fields');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. cursor drop-in prefix, bedrock dialect -> bedrock/cohere.rerank-v3-5:0 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"queries\": [\n    {\n      \"type\": \"TEXT\",\n      \"textQuery\": {\n        \"text\": \"What is the capital of France?\"\n      }\n    }\n  ],\n  \"sources\": [\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"TEXT\",\n        \"textDocument\": {\n          \"text\": \"Paris is the capital and most populous city of France.\"\n        }\n      }\n    },\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"TEXT\",\n        \"textDocument\": {\n          \"text\": \"Carrots are orange root vegetables rich in beta carotene.\"\n        }\n      }\n    },\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"TEXT\",\n        \"textDocument\": {\n          \"text\": \"Berlin is the capital of Germany and its largest city.\"\n        }\n      }\n    }\n  ],\n  \"rerankingConfiguration\": {\n    \"type\": \"BEDROCK_RERANKING_MODEL\",\n    \"bedrockRerankingConfiguration\": {\n      \"modelConfiguration\": {\n        \"modelArn\": \"bedrock/cohere.rerank-v3-5:0\"\n      }\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/cursor/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "cursor",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "pm.test('drop-in prefix resolves to the right dialect and ranks', function () {",
+                  "  var r = j.results || [];",
+                  "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0], 'expected relevanceScore on this dialect').to.have.property('relevanceScore');",
+                  "  pm.expect(r[0], 'relevance_score must not appear on this dialect').to.not.have.property('relevance_score');",
+                  "  pm.expect(r[0].index, 'the only relevant document must rank first').to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. cursor drop-in prefix, rank dialect -> vertex/semantic-ranker-default-004 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/semantic-ranker-default-004\",\n  \"query\": \"What is the capital of France?\",\n  \"records\": [\n    {\n      \"id\": \"record-0\",\n      \"title\": \"Doc 0\",\n      \"content\": \"Paris is the capital and most populous city of France.\"\n    },\n    {\n      \"id\": \"record-1\",\n      \"title\": \"Doc 1\",\n      \"content\": \"Carrots are orange root vegetables rich in beta carotene.\"\n    },\n    {\n      \"id\": \"record-2\",\n      \"title\": \"Doc 2\",\n      \"content\": \"Berlin is the capital of Germany and its largest city.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/cursor/v1/rank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "cursor",
+                "v1",
+                "rank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "pm.test('drop-in prefix resolves to the rank dialect', function () {",
+                  "  var r = j.records || [];",
+                  "  pm.expect(r.length, 'no records (rank returns records[], not results[]): ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0].id, 'caller record id must be preserved').to.eql('record-0');",
+                  "  pm.expect(r[0]).to.have.property('score');",
+                  "  pm.expect(j, 'canonical Bifrost results[] leaked into the rank dialect').to.not.have.property('results');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. /v1/rerank priority is dropped for bedrock -> bedrock/cohere.rerank-v3-5:0 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/cohere.rerank-v3-5:0\",\n  \"query\": \"What is the capital of France?\",\n  \"documents\": [\n    \"Paris is the capital and most populous city of France.\",\n    \"Carrots are orange root vegetables rich in beta carotene.\",\n    \"Berlin is the capital of Germany and its largest city.\"\n  ],\n  \"priority\": 1\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "// priority is a Cohere concept with no Bedrock equivalent. Forwarding it 400s a request",
+                  "// that succeeds on Cohere, which silently breaks fallback chains.",
+                  "pm.test('canonical params survive routing to bedrock', function () {",
+                  "  pm.expect(pm.response.text(), 'priority leaked into additionalModelRequestFields').to.not.include('additionalModelRequestField');",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "  var r = j.results || [];",
+                  "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0].index, 'the only relevant document must rank first').to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. /v1/rerank next_token is a first-class param -> bedrock/cohere.rerank-v3-5:0 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/cohere.rerank-v3-5:0\",\n  \"query\": \"What is the capital of France?\",\n  \"documents\": [\n    \"Paris is the capital and most populous city of France.\",\n    \"Carrots are orange root vegetables rich in beta carotene.\",\n    \"Berlin is the capital of Germany and its largest city.\"\n  ],\n  \"next_token\": \"harness-cursor-probe\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "// next_token must bind to RerankParameters. When it is not a known field it falls through",
+                  "// to ExtraParams and is forwarded as a model request field, which Bedrock rejects.",
+                  "pm.test('canonical params survive routing to bedrock', function () {",
+                  "  pm.expect(pm.response.text(), 'next_token leaked into additionalModelRequestFields').to.not.include('additionalModelRequestField');",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "  var r = j.results || [];",
+                  "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0].index, 'the only relevant document must rank first').to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     }

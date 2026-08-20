@@ -1370,11 +1370,12 @@ func (bifrost *Bifrost) RerankRequest(ctx *schemas.BifrostContext, req *schemas.
 		}
 	}
 	for i, doc := range req.Documents {
-		if strings.TrimSpace(doc.Text) == "" {
+		// A document carries either prose or a structured body; only an empty pair is unrankable.
+		if strings.TrimSpace(doc.Text) == "" && len(doc.Data) == 0 {
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
 				Error: &schemas.ErrorField{
-					Message: fmt.Sprintf("document text is empty at index %d", i),
+					Message: fmt.Sprintf("document has no text or data at index %d", i),
 				},
 				ExtraFields: schemas.BifrostErrorExtraFields{
 					RequestType:            schemas.RerankRequest,

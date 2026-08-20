@@ -66,20 +66,28 @@ func ToBedrockRerankRequest(bifrostReq *schemas.BifrostRerankRequest, modelARN s
 	}
 
 	for i, doc := range bifrostReq.Documents {
+		inlineSource := BedrockRerankInlineSource{
+			Type:         bedrockRerankInlineDocumentTypeText,
+			TextDocument: &BedrockRerankTextValue{Text: doc.Text},
+		}
+		// Bedrock ranks structured bodies natively, so a JSON document goes over as-is.
+		if doc.Text == "" && len(doc.Data) > 0 {
+			inlineSource = BedrockRerankInlineSource{
+				Type:         bedrockRerankInlineDocumentTypeJSON,
+				JSONDocument: doc.Data,
+			}
+		}
 		bedrockReq.Sources[i] = BedrockRerankSource{
-			Type: bedrockRerankSourceTypeInline,
-			InlineDocumentSource: BedrockRerankInlineSource{
-				Type: bedrockRerankInlineDocumentTypeText,
-				TextDocument: BedrockRerankTextValue{
-					Text: doc.Text,
-				},
-			},
+			Type:                 bedrockRerankSourceTypeInline,
+			InlineDocumentSource: inlineSource,
 		}
 	}
 
 	if bifrostReq.Params == nil {
 		return bedrockReq, nil
 	}
+
+	bedrockReq.NextToken = bifrostReq.Params.NextToken
 
 	if bifrostReq.Params.TopN != nil {
 		topN := *bifrostReq.Params.TopN
@@ -92,12 +100,14 @@ func ToBedrockRerankRequest(bifrostReq *schemas.BifrostRerankRequest, modelARN s
 		bedrockReq.RerankingConfiguration.BedrockRerankingConfiguration.NumberOfResults = schemas.Ptr(topN)
 	}
 
+	// Bedrock validates this map against a per-model allowlist and rejects the whole request on
+	// an unknown key: COHERE_RERANK accepts only max_tokens_per_doc. Priority has no Bedrock
+	// equivalent, so it is dropped rather than forwarded - sending it 400s a request that
+	// succeeds on Cohere, which would break fallback chains. ExtraParams stays a passthrough:
+	// the caller opted into those keys explicitly.
 	additionalFields := make(map[string]interface{})
 	if bifrostReq.Params.MaxTokensPerDoc != nil {
 		additionalFields["max_tokens_per_doc"] = *bifrostReq.Params.MaxTokensPerDoc
-	}
-	if bifrostReq.Params.Priority != nil {
-		additionalFields["priority"] = *bifrostReq.Params.Priority
 	}
 	for k, v := range bifrostReq.Params.ExtraParams {
 		additionalFields[k] = v
@@ -116,7 +126,8 @@ func (response *BedrockRerankResponse) ToBifrostRerankResponse(documents []schem
 	}
 
 	bifrostResponse := &schemas.BifrostRerankResponse{
-		Results: make([]schemas.RerankResult, 0, len(response.Results)),
+		Results:   make([]schemas.RerankResult, 0, len(response.Results)),
+		NextToken: response.NextToken,
 	}
 
 	for _, result := range response.Results {
@@ -124,9 +135,14 @@ func (response *BedrockRerankResponse) ToBifrostRerankResponse(documents []schem
 			Index:          result.Index,
 			RelevanceScore: result.RelevanceScore,
 		}
-		if result.Document != nil && result.Document.TextDocument != nil {
-			rerankResult.Document = &schemas.RerankDocument{
-				Text: result.Document.TextDocument.Text,
+		if result.Index >= 0 && result.Index < len(documents) {
+			rerankResult.ID = documents[result.Index].ID
+		}
+		if result.Document != nil {
+			if result.Document.TextDocument != nil {
+				rerankResult.Document = &schemas.RerankDocument{Text: result.Document.TextDocument.Text}
+			} else if len(result.Document.JSONDocument) > 0 {
+				rerankResult.Document = &schemas.RerankDocument{Data: result.Document.JSONDocument}
 			}
 		}
 		bifrostResponse.Results = append(bifrostResponse.Results, rerankResult)
@@ -152,15 +168,16 @@ func (response *BedrockRerankResponse) ToBifrostRerankResponse(documents []schem
 }
 
 // ToBedrockRerankResponse converts a Bifrost rerank response into Bedrock Agent Runtime format.
-// Bedrock echoes the ranked document, which is only present when the rerank was requested
-// with ReturnDocuments enabled.
+// The live Rerank API returns only index and score per result, so a document is echoed back only
+// when the canonical response actually carries one.
 func ToBedrockRerankResponse(bifrostResp *schemas.BifrostRerankResponse) *BedrockRerankResponse {
 	if bifrostResp == nil {
 		return nil
 	}
 
 	bedrockResp := &BedrockRerankResponse{
-		Results: make([]BedrockRerankResult, 0, len(bifrostResp.Results)),
+		Results:   make([]BedrockRerankResult, 0, len(bifrostResp.Results)),
+		NextToken: bifrostResp.NextToken,
 	}
 
 	for _, result := range bifrostResp.Results {
@@ -169,9 +186,17 @@ func ToBedrockRerankResponse(bifrostResp *schemas.BifrostRerankResponse) *Bedroc
 			RelevanceScore: result.RelevanceScore,
 		}
 		if result.Document != nil {
-			bedrockResult.Document = &BedrockRerankResponseDocument{
-				Type:         bedrockRerankInlineDocumentTypeText,
-				TextDocument: &BedrockRerankTextValue{Text: result.Document.Text},
+			switch {
+			case len(result.Document.Data) > 0:
+				bedrockResult.Document = &BedrockRerankResponseDocument{
+					Type:         bedrockRerankInlineDocumentTypeJSON,
+					JSONDocument: result.Document.Data,
+				}
+			default:
+				bedrockResult.Document = &BedrockRerankResponseDocument{
+					Type:         bedrockRerankInlineDocumentTypeText,
+					TextDocument: &BedrockRerankTextValue{Text: result.Document.Text},
+				}
 			}
 		}
 
@@ -203,10 +228,17 @@ func (req *BedrockRerankRequest) ToBifrostRerankRequest(ctx *schemas.BifrostCont
 
 	// Convert sources to documents
 	for _, source := range req.Sources {
-		bifrostReq.Documents = append(bifrostReq.Documents, schemas.RerankDocument{
-			Text: source.InlineDocumentSource.TextDocument.Text,
-		})
+		doc := schemas.RerankDocument{}
+		if source.InlineDocumentSource.TextDocument != nil {
+			doc.Text = source.InlineDocumentSource.TextDocument.Text
+		}
+		if len(source.InlineDocumentSource.JSONDocument) > 0 {
+			doc.Data = source.InlineDocumentSource.JSONDocument
+		}
+		bifrostReq.Documents = append(bifrostReq.Documents, doc)
 	}
+
+	bifrostReq.Params.NextToken = req.NextToken
 
 	// Extract TopN from NumberOfResults
 	if req.RerankingConfiguration.BedrockRerankingConfiguration.NumberOfResults != nil {

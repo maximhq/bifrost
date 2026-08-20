@@ -216,6 +216,7 @@ var rerankParamsKnownFields = map[string]bool{
 	"max_tokens_per_doc": true,
 	"priority":           true,
 	"return_documents":   true,
+	"next_token":         true,
 }
 
 var ocrParamsKnownFields = map[string]bool{
@@ -1213,8 +1214,8 @@ func prepareRerankRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Rerank
 		return nil, nil, fmt.Errorf("documents are required for rerank")
 	}
 	for i, doc := range req.Documents {
-		if strings.TrimSpace(doc.Text) == "" {
-			return nil, nil, fmt.Errorf("document text is required for rerank at index %d", i)
+		if strings.TrimSpace(doc.Text) == "" && len(doc.Data) == 0 {
+			return nil, nil, fmt.Errorf("document text or data is required for rerank at index %d", i)
 		}
 	}
 	if req.RerankParameters == nil {

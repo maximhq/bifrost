@@ -489,7 +489,7 @@ func Test_createBedrockRerankRouteRequestConverter(t *testing.T) {
 				Type: "INLINE",
 				InlineDocumentSource: bedrock.BedrockRerankInlineSource{
 					Type:         "TEXT",
-					TextDocument: bedrock.BedrockRerankTextValue{Text: "Paris is capital of France"},
+					TextDocument: &bedrock.BedrockRerankTextValue{Text: "Paris is capital of France"},
 				},
 			},
 		},
@@ -518,9 +518,8 @@ func Test_createBedrockRerankRouteRequestConverter(t *testing.T) {
 	require.NotNil(t, bifrostReq.RerankRequest.Params)
 	require.NotNil(t, bifrostReq.RerankRequest.Params.TopN)
 	assert.Equal(t, 1, *bifrostReq.RerankRequest.Params.TopN)
-	// Bedrock echoes the ranked document, so the route always asks for documents back.
-	require.NotNil(t, bifrostReq.RerankRequest.Params.ReturnDocuments)
-	assert.True(t, *bifrostReq.RerankRequest.Params.ReturnDocuments)
+	// The live Rerank API returns no document, so the route must not force documents on.
+	assert.Nil(t, bifrostReq.RerankRequest.Params.ReturnDocuments)
 }
 
 func Test_createBedrockRouteConfigsIncludesRerankForCompositePrefixes(t *testing.T) {
