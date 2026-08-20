@@ -12,7 +12,6 @@ package modelcatalog
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -20,6 +19,8 @@ import (
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/gencache"
+	"github.com/maximhq/bifrost/framework/lrucache"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/maximhq/bifrost/framework/modelcatalog/keyconfig"
 	"github.com/maximhq/bifrost/framework/modelcatalog/live"
@@ -33,6 +34,15 @@ type ModelCatalog struct {
 	datasheet *datasheet.Store
 	live      *live.Store
 	keyconf   *keyconfig.Store
+
+	// capabilities caches datasheet capability records by (provider, model).
+	// Flushed whenever a sync applies a new sheet.
+	capabilities *lrucache.Cache[*schemas.ModelCapabilities]
+	// loadCapabilities fills a capability cache miss.
+	loadCapabilities func(schemas.ModelProvider, string) (*schemas.ModelCapabilities, error)
+
+	providersForModel *gencache.Cache[[]schemas.ModelProvider]
+	modelsForProvider *gencache.Cache[[]string]
 
 	// MCP library sync configuration (protected by syncMu)
 	mcpLibraryURL          string
@@ -105,11 +115,21 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 			ModelParametersURL: modelParametersURL,
 			SyncInterval:       syncInterval,
 		}),
-		live:    live.New(logger),
-		keyconf: keyconfig.New(logger),
-		done:    make(chan struct{}),
+		live:         live.New(logger),
+		keyconf:      keyconfig.New(logger),
+		capabilities: lrucache.New[*schemas.ModelCapabilities](capabilityCacheSize),
+		done:         make(chan struct{}),
 	}
+	mc.initCaches()
 	mc.syncCtx, mc.syncCancel = context.WithCancel(ctx)
+
+	// Core providers reach capabilities through this hook — they cannot import
+	// framework, and the catalog owns the datasheet. Every sync that applies a
+	// new sheet drops the cache, so records never outlive their source by more
+	// than one sync.
+	mc.loadCapabilities = mc.datasheetCapabilityLoader
+	providerUtils.SetCapabilityResolver(mc.GetModelCapabilities)
+	mc.datasheet.SetOnModelParametersApplied(mc.capabilities.Flush)
 
 	// If Init returns an error the caller never owns mc and will never call
 	// Cleanup(), so cancel syncCtx to stop any background goroutines that
@@ -117,38 +137,17 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 	initSucceeded := false
 	defer func() {
 		if !initSucceeded {
+			// The resolver installed above is process-global and closes over mc.
+			// Left in place it would keep serving capability lookups from a
+			// catalog the caller discarded — and the loader builds its own
+			// context, so cancelling syncCtx does not stop it.
+			providerUtils.SetCapabilityResolver(nil)
 			mc.syncCancel()
 		}
 	}()
 
 	logger.Info("initializing model catalog...")
 	if configStore != nil {
-		// Lazy load on cache miss: providers may need params for models not
-		// covered by the startup bulk load (e.g. just-uploaded models). The
-		// bulk load still warms the common case so this only fires on misses.
-		providerUtils.SetCacheMissHandler(func(model string) *providerUtils.ModelParams {
-			missCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancel()
-			params, err := mc.datasheet.GetModelParametersByModel(missCtx, model)
-			if err != nil || params == nil {
-				return nil
-			}
-			var p struct {
-				MaxOutputTokens       *int  `json:"max_output_tokens"`
-				VertexMultiRegionOnly *bool `json:"vertex_multi_region_only"`
-			}
-			if err := json.Unmarshal([]byte(params.Data), &p); err != nil {
-				return nil
-			}
-			if p.MaxOutputTokens == nil && p.VertexMultiRegionOnly == nil {
-				return nil
-			}
-			return &providerUtils.ModelParams{
-				MaxOutputTokens:         p.MaxOutputTokens,
-				IsVertexMultiRegionOnly: p.VertexMultiRegionOnly,
-			}
-		})
-
 		var wg sync.WaitGroup
 		var pricingErr, paramsErr error
 		wg.Add(2)
@@ -348,6 +347,11 @@ func (mc *ModelCatalog) UpdateSyncConfig(ctx context.Context, config *Config) er
 	})
 
 	mc.syncCtx, mc.syncCancel = context.WithCancel(ctx)
+
+	// The capability hooks are NOT re-registered here. Init already installed
+	// them, this path keeps the same datasheet store and cache, and the writes
+	// are unsynchronised — UpdateSyncConfig runs from the live config handler,
+	// so they would race with requests reading loadCapabilities.
 	mc.startSyncWorker(mc.syncCtx)
 
 	return mc.ForceReloadPricing(ctx)
@@ -407,6 +411,10 @@ func (mc *ModelCatalog) ForceReloadPricing(ctx context.Context) error {
 }
 
 func (mc *ModelCatalog) Cleanup() error {
+	// Drop the process-global resolver first: it closes over mc, and capability
+	// lookups would otherwise keep running against a torn-down catalog. With no
+	// resolver installed every gate falls back to name detection.
+	providerUtils.SetCapabilityResolver(nil)
 	if mc.syncCancel != nil {
 		mc.syncCancel()
 	}
@@ -639,12 +647,14 @@ func (mc *ModelCatalog) knownProviders() []schemas.ModelProvider {
 // NewTestCatalog constructs a minimal ModelCatalog for unit tests. Does not
 // start background workers or hit external services.
 func NewTestCatalog(baseModelIndex map[string]string) *ModelCatalog {
-	return &ModelCatalog{
+	mc := &ModelCatalog{
 		datasheet: datasheet.NewTestStore(baseModelIndex),
 		live:      live.New(nil),
 		keyconf:   keyconfig.New(nil),
 		done:      make(chan struct{}),
 	}
+	mc.initCaches()
+	return mc
 }
 
 // NewTestCatalogWithDatasheet wraps a caller-provided datasheet.Store (e.g. one
@@ -652,10 +662,12 @@ func NewTestCatalog(baseModelIndex map[string]string) *ModelCatalog {
 // LoadFromURLIntoMemory) in a ModelCatalog, so tests in other packages can
 // exercise real pricing/cost computation without reaching the network.
 func NewTestCatalogWithDatasheet(ds *datasheet.Store) *ModelCatalog {
-	return &ModelCatalog{
+	mc := &ModelCatalog{
 		datasheet: ds,
 		live:      live.New(nil),
 		keyconf:   keyconfig.New(nil),
 		done:      make(chan struct{}),
 	}
+	mc.initCaches()
+	return mc
 }

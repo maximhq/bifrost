@@ -75,6 +75,7 @@ func trySetupPostgresDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		return nil
 	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
 	if err := sqlDB.Ping(); err != nil {
 		return nil
 	}

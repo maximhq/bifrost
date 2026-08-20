@@ -11,6 +11,7 @@ package datasheet
 
 import (
 	"context"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -164,6 +165,11 @@ type Options struct {
 	OutputCostPerImageAbove1024x1024PixelsPremium *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels_and_premium_image,omitempty"`
 	OutputCostPerImageAbove2048x2048Pixels        *float64 `json:"output_cost_per_image_above_2048_and_2048_pixels,omitempty"`
 	OutputCostPerImageAbove4096x4096Pixels        *float64 `json:"output_cost_per_image_above_4096_and_4096_pixels,omitempty"`
+	OutputCostPerImageAbove4Megapixels            *float64 `json:"output_cost_per_image_above_4_megapixels,omitempty"`
+	OutputCostPerImageAbove8Megapixels            *float64 `json:"output_cost_per_image_above_8_megapixels,omitempty"`
+	OutputCostPerImageAbove16Megapixels           *float64 `json:"output_cost_per_image_above_16_megapixels,omitempty"`
+	OutputCostPerImageAbove32Megapixels           *float64 `json:"output_cost_per_image_above_32_megapixels,omitempty"`
+	OutputCostPerImageAbove64Megapixels           *float64 `json:"output_cost_per_image_above_64_megapixels,omitempty"`
 	OutputCostPerImageLowQuality                  *float64 `json:"output_cost_per_image_low_quality,omitempty"`
 	OutputCostPerImageMediumQuality               *float64 `json:"output_cost_per_image_medium_quality,omitempty"`
 	OutputCostPerImageHighQuality                 *float64 `json:"output_cost_per_image_high_quality,omitempty"`
@@ -324,27 +330,6 @@ type customPricingData struct {
 	wildcard []customPricingEntry
 }
 
-// modelParametersParseResult is the parsed result type used by
-// extractSupportedParams (consumed by params.go's applyModelParameters).
-type modelParametersParseResult struct {
-	Mode               *string  `json:"mode,omitempty"`
-	SupportedEndpoints []string `json:"supported_endpoints,omitempty"`
-	ModelParameters    []struct {
-		ID string `json:"id"`
-	} `json:"model_parameters,omitempty"`
-	SupportsAssistantPrefill        *bool `json:"supports_assistant_prefill,omitempty"`
-	SupportsFunctionCalling         *bool `json:"supports_function_calling,omitempty"`
-	SupportsParallelFunctionCalling *bool `json:"supports_parallel_function_calling,omitempty"`
-	SupportsToolChoice              *bool `json:"supports_tool_choice,omitempty"`
-	SupportsReasoning               *bool `json:"supports_reasoning,omitempty"`
-	SupportsResponseSchema          *bool `json:"supports_response_schema,omitempty"`
-	SupportsReasoningWithToolCalls  *bool `json:"supports_reasoning_with_tool_calls,omitempty"`
-	SupportsServiceTier             *bool `json:"supports_service_tier,omitempty"`
-	SupportsPromptCaching           *bool `json:"supports_prompt_caching,omitempty"`
-	SupportsWebSearch               *bool `json:"supports_web_search,omitempty"`
-	VertexMultiRegionOnly           *bool `json:"vertex_multi_region_only,omitempty"`
-}
-
 // --- private helpers (shared across pricing/*.go files) ---
 
 // makeKey is the composite map key used by pricingData: model|provider|mode.
@@ -356,7 +341,7 @@ func makeKey(model, provider, mode string) string {
 // provider name used by the pricing catalog.
 func normalizeProvider(p string) string {
 	switch {
-	case p == "together":
+	case strings.Contains(p, "together"):
 		return "together_ai"
 	case strings.Contains(p, "vertex_ai") || p == "google-vertex":
 		return string(schemas.Vertex)
@@ -379,7 +364,7 @@ func normalizeRequestType(reqType schemas.RequestType) string {
 	switch reqType {
 	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
 		return "completion"
-	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
+	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest, schemas.BatchResultsRequest:
 		return "chat"
 	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest, schemas.RealtimeRequest, schemas.CompactionRequest:
 		return "responses"
@@ -485,7 +470,7 @@ func normalizeModeToOutputType(mode string) string {
 
 // extractSupportedParams builds a list of supported OpenAI-compatible parameter
 // names from model_parameters[].id values and supports_* boolean flags.
-func extractSupportedParams(parsed *modelParametersParseResult) []string {
+func extractSupportedParams(parsed *schemas.ModelCapabilities) []string {
 	var supported []string
 	addParam := func(name string) {
 		if !slices.Contains(supported, name) {
@@ -532,6 +517,9 @@ func extractSupportedParams(parsed *modelParametersParseResult) []string {
 	}
 	if parsed.SupportsReasoningWithToolCalls == nil || *parsed.SupportsReasoningWithToolCalls {
 		addParam("reasoning_with_tool_calls")
+	}
+	if parsed.SupportsNoneReasoningEffort != nil && *parsed.SupportsNoneReasoningEffort {
+		addParam("supports_none_reasoning_effort")
 	}
 	if parsed.SupportsResponseSchema != nil && *parsed.SupportsResponseSchema {
 		addParam("response_format")
@@ -667,6 +655,11 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 		OutputCostPerImageAbove1024x1024PixelsPremium: entry.OutputCostPerImageAbove1024x1024PixelsPremium,
 		OutputCostPerImageAbove2048x2048Pixels:        entry.OutputCostPerImageAbove2048x2048Pixels,
 		OutputCostPerImageAbove4096x4096Pixels:        entry.OutputCostPerImageAbove4096x4096Pixels,
+		OutputCostPerImageAbove4Megapixels:            entry.OutputCostPerImageAbove4Megapixels,
+		OutputCostPerImageAbove8Megapixels:            entry.OutputCostPerImageAbove8Megapixels,
+		OutputCostPerImageAbove16Megapixels:           entry.OutputCostPerImageAbove16Megapixels,
+		OutputCostPerImageAbove32Megapixels:           entry.OutputCostPerImageAbove32Megapixels,
+		OutputCostPerImageAbove64Megapixels:           entry.OutputCostPerImageAbove64Megapixels,
 		OutputCostPerImageLowQuality:                  entry.OutputCostPerImageLowQuality,
 		OutputCostPerImageMediumQuality:               entry.OutputCostPerImageMediumQuality,
 		OutputCostPerImageHighQuality:                 entry.OutputCostPerImageHighQuality,
@@ -756,6 +749,11 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		OutputCostPerImageAbove1024x1024PixelsPremium: pricing.OutputCostPerImageAbove1024x1024PixelsPremium,
 		OutputCostPerImageAbove2048x2048Pixels:        pricing.OutputCostPerImageAbove2048x2048Pixels,
 		OutputCostPerImageAbove4096x4096Pixels:        pricing.OutputCostPerImageAbove4096x4096Pixels,
+		OutputCostPerImageAbove4Megapixels:            pricing.OutputCostPerImageAbove4Megapixels,
+		OutputCostPerImageAbove8Megapixels:            pricing.OutputCostPerImageAbove8Megapixels,
+		OutputCostPerImageAbove16Megapixels:           pricing.OutputCostPerImageAbove16Megapixels,
+		OutputCostPerImageAbove32Megapixels:           pricing.OutputCostPerImageAbove32Megapixels,
+		OutputCostPerImageAbove64Megapixels:           pricing.OutputCostPerImageAbove64Megapixels,
 		OutputCostPerImageLowQuality:                  pricing.OutputCostPerImageLowQuality,
 		OutputCostPerImageMediumQuality:               pricing.OutputCostPerImageMediumQuality,
 		OutputCostPerImageHighQuality:                 pricing.OutputCostPerImageHighQuality,
@@ -779,7 +777,7 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		OCRCostPerPage:        pricing.OCRCostPerPage,
 		AnnotationCostPerPage: pricing.AnnotationCostPerPage,
 	}
-	return &Entry{
+	entry := &Entry{
 		BaseModel:            pricing.BaseModel,
 		Provider:             pricing.Provider,
 		Mode:                 pricing.Mode,
@@ -791,6 +789,16 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		AdditionalAttributes: pricing.AdditionalAttributes,
 		Options:              options,
 	}
+	return entry
+}
+
+// IsEmptyModelCapabilities reports whether no field on the override struct is
+// set. Compared against the zero value so new fields need no maintenance here.
+func IsEmptyModelCapabilities(ov *schemas.ModelCapabilities) bool {
+	if ov == nil {
+		return true
+	}
+	return reflect.DeepEqual(*ov, schemas.ModelCapabilities{})
 }
 
 // convertTableOverride converts a TablePricingOverride to an Override.

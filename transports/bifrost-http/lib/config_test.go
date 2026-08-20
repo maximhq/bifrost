@@ -376,7 +376,7 @@ import (
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/objectstore"
 	"github.com/maximhq/bifrost/framework/vectorstore"
-	"github.com/maximhq/bifrost/plugins/governance/complexity"
+	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	otelPlugin "github.com/maximhq/bifrost/plugins/otel"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1740,6 +1740,43 @@ func (m *MockConfigStore) DeleteRoutingRule(ctx context.Context, id string, tx .
 }
 
 func (m *MockConfigStore) SyncRoutingRules(ctx context.Context, toAdd []tables.TableRoutingRule, toUpdate []tables.TableRoutingRule, tx ...*gorm.DB) error {
+	return nil
+}
+
+// Batch jobs
+func (m *MockConfigStore) UpsertBatchJob(ctx context.Context, job *tables.TableBatchJob) error {
+	return nil
+}
+
+func (m *MockConfigStore) GetBatchJob(ctx context.Context, jobID string) (*tables.TableBatchJob, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) ListDueBatchJobs(ctx context.Context, provider string, now time.Time, limit int) ([]*tables.TableBatchJob, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) ClaimBatchJob(ctx context.Context, jobID, runnerID string, staleBefore time.Time, allowUnpriceable bool) (bool, error) {
+	return false, nil
+}
+
+func (m *MockConfigStore) MarkBatchJobAggregateLogWritten(ctx context.Context, jobID, runnerID string) error {
+	return nil
+}
+
+func (m *MockConfigStore) MarkBatchJobGovernanceReported(ctx context.Context, jobID, runnerID string) error {
+	return nil
+}
+
+func (m *MockConfigStore) CompleteBatchJob(ctx context.Context, jobID, runnerID string) error {
+	return nil
+}
+
+func (m *MockConfigStore) MarkBatchJobUnpriceable(ctx context.Context, jobID, runnerID, reason string, err error) error {
+	return nil
+}
+
+func (m *MockConfigStore) FailBatchJob(ctx context.Context, jobID, runnerID string, err error) error {
 	return nil
 }
 

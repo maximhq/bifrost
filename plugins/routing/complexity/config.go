@@ -1,4 +1,4 @@
-// Package complexity provides request-complexity scoring for governance routing.
+// Package complexity provides request-complexity scoring for routing rules.
 package complexity
 
 import "github.com/maximhq/bifrost/framework/configstore"

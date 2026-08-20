@@ -240,11 +240,10 @@ type Log struct {
 	VideoListOutput         string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostVideoListResponse
 	VideoDeleteOutput       string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostVideoDeleteResponse
 	CacheDebug              string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostCacheDebug
-<<<<<<< HEAD
 	GuardrailDebug          string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostGuardrailDebug
-=======
->>>>>>> f4a637df4 (V2.0.0 (#4365))
 	Latency                 *float64  `gorm:"index:idx_logs_latency" json:"latency,omitempty"`
+	UpstreamLatency         *float64  `gorm:"index:idx_logs_upstream_latency" json:"upstream_latency,omitempty"`                          // Provider socket time across all attempts, ms; nil = unmeasured
+	OverheadLatency         *float64  `gorm:"index:idx_logs_overhead_latency" json:"overhead_latency,omitempty"`                          // Bifrost overhead (total minus upstream), ms; nil = unmeasured
 	TokenUsage              string    `gorm:"type:text" json:"-"`                                                                         // JSON serialized *schemas.LLMUsage
 	Cost                    *float64  `gorm:"index" json:"cost,omitempty"`                                                                // Cost in dollars (total cost of the request - includes cache lookup cost)
 	Status                  string    `gorm:"type:varchar(50);index;index:idx_logs_ts_provider_status,priority:3;not null" json:"status"` // "processing", "success", or "error"
@@ -300,6 +299,13 @@ type Log struct {
 	// `json:"-"`, so they never appear in any serialized usage payload. Without
 	// these columns tierFromResponse sees nothing and reprices flex traffic at
 	// standard rates.
+	// Batch detail for batch_create / batch_retrieve rows and for the aggregate
+	// cost row. Like the served-tier fields below, this is deliberately NOT a
+	// payload field (see payload.go): request counts and per-model pricing are
+	// operational records rather than request content, so they must survive
+	// object-storage offload and content-hidden rows.
+	BatchDebug string `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostBatchDebug
+
 	ServiceTier  *string `gorm:"type:varchar(32)" json:"service_tier,omitempty"`  // OpenAI served tier: "priority" / "flex" / "default"
 	Speed        *string `gorm:"type:varchar(32)" json:"speed,omitempty"`         // Anthropic served speed: "fast" / "standard"
 	InferenceGeo *string `gorm:"type:varchar(32)" json:"inference_geo,omitempty"` // Anthropic data residency, e.g. "us"
@@ -330,6 +336,7 @@ type Log struct {
 	TranscriptionOutputParsed   *schemas.BifrostTranscriptionResponse   `gorm:"-" json:"transcription_output,omitempty"`
 	ImageGenerationOutputParsed *schemas.BifrostImageGenerationResponse `gorm:"-" json:"image_generation_output,omitempty"`
 	CacheDebugParsed            *schemas.BifrostCacheDebug              `gorm:"-" json:"cache_debug,omitempty"`
+	BatchDebugParsed            *schemas.BifrostBatchDebug              `gorm:"-" json:"batch_debug,omitempty"`
 	GuardrailDebugParsed        *schemas.BifrostGuardrailDebug          `gorm:"-" json:"guardrail_debug,omitempty"`
 	ListModelsOutputParsed      []schemas.Model                         `gorm:"-" json:"list_models_output,omitempty"`
 	MetadataParsed              map[string]interface{}                  `gorm:"-" json:"metadata,omitempty"`
@@ -671,6 +678,14 @@ func (l *Log) SerializeFields() error {
 		}
 	}
 
+	if !l.BatchDebugParsed.IsZero() {
+		if data, err := sonic.Marshal(l.BatchDebugParsed); err != nil {
+			return err
+		} else {
+			l.BatchDebug = string(data)
+		}
+	}
+
 	if l.GuardrailDebugParsed != nil {
 		if data, err := sonic.Marshal(l.GuardrailDebugParsed); err != nil {
 			return err
@@ -995,6 +1010,13 @@ func (l *Log) DeserializeFields() error {
 		if err := sonic.Unmarshal([]byte(l.CacheDebug), &l.CacheDebugParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.CacheDebugParsed = nil
+		}
+	}
+
+	if l.BatchDebug != "" {
+		if err := sonic.Unmarshal([]byte(l.BatchDebug), &l.BatchDebugParsed); err != nil {
+			// Log error but don't fail the operation - initialize as nil
+			l.BatchDebugParsed = nil
 		}
 	}
 
@@ -1660,6 +1682,10 @@ type LatencyHistogramBucket struct {
 	P90Latency    float64   `json:"p90_latency"`
 	P95Latency    float64   `json:"p95_latency"`
 	P99Latency    float64   `json:"p99_latency"`
+	AvgOverhead   float64   `json:"avg_overhead"`
+	P90Overhead   float64   `json:"p90_overhead"`
+	P95Overhead   float64   `json:"p95_overhead"`
+	P99Overhead   float64   `json:"p99_overhead"`
 	TotalRequests int64     `json:"total_requests"`
 }
 

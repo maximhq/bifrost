@@ -55,7 +55,7 @@ func (request *GeminiGenerationRequest) ToBifrostResponsesRequest(ctx *schemas.B
 		Fallbacks: schemas.ParseFallbacks(request.Fallbacks),
 	}
 
-	params := request.convertGenerationConfigToResponsesParameters()
+	params := request.convertGenerationConfigToResponsesParameters(provider, model)
 
 	// Convert SystemInstruction to system messages first
 	var inputMessages []schemas.ResponsesMessage
@@ -146,7 +146,7 @@ func ToGeminiResponsesRequestWithImageURLSchemes(ctx *schemas.BifrostContext, bi
 	// Convert parameters to generation config
 	if bifrostReq.Params != nil {
 		var err error
-		geminiReq.GenerationConfig, err = geminiReq.convertParamsToGenerationConfigResponses(bifrostReq.Params, capModel)
+		geminiReq.GenerationConfig, err = geminiReq.convertParamsToGenerationConfigResponses(bifrostReq.Params, bifrostReq.Provider, capModel)
 		if err != nil {
 			return nil, err
 		}
@@ -265,7 +265,7 @@ func (response *GenerateContentResponse) ToResponsesBifrostResponsesResponse() *
 
 	// Create the BifrostResponse with Responses structure
 	bifrostResp := &schemas.BifrostResponsesResponse{
-		ID:        schemas.Ptr("resp_" + providerUtils.GetRandomString(50)),
+		ID:        schemas.Ptr("resp_" + schemas.GetRandomString(50)),
 		CreatedAt: int(time.Now().Unix()),
 		Model:     response.ModelVersion,
 	}
@@ -3254,7 +3254,7 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 			case part.Text != "":
 				// Regular text message
 				msg := schemas.ResponsesMessage{
-					ID:     schemas.Ptr("msg_" + providerUtils.GetRandomString(50)),
+					ID:     schemas.Ptr("msg_" + schemas.GetRandomString(50)),
 					Role:   schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
 					Status: schemas.Ptr("completed"),
 					Content: &schemas.ResponsesMessageContent{
@@ -3307,7 +3307,7 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 					Arguments: &argumentsStr,
 				}
 				msg := schemas.ResponsesMessage{
-					ID:                   schemas.Ptr("fc_" + providerUtils.GetRandomString(50)),
+					ID:                   schemas.Ptr("fc_" + schemas.GetRandomString(50)),
 					Role:                 schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
 					Type:                 schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
 					Status:               schemas.Ptr("completed"),
@@ -3754,7 +3754,7 @@ func reconstructSchemaFromJSONSchema(jsonSchema *schemas.ResponsesTextConfigForm
 }
 
 // convertParamsToGenerationConfigResponses converts ChatParameters to GenerationConfig for Responses
-func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(params *schemas.ResponsesParameters, capModel string) (GenerationConfig, error) {
+func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(params *schemas.ResponsesParameters, provider schemas.ModelProvider, capModel string) (GenerationConfig, error) {
 	config := GenerationConfig{}
 
 	if params.Temperature != nil {
@@ -3767,32 +3767,33 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 		config.MaxOutputTokens = int32(*params.MaxOutputTokens)
 	}
 	// Only set ThinkingConfig if the model actually supports thinking
-	if params.Reasoning != nil && supportsThinkingConfig(capModel) {
+	caps := schemas.ResolveModelCaps(provider, capModel)
+	if params.Reasoning != nil && caps.SupportsReasoning(defaultSupportsReasoning(capModel)) {
 		config.ThinkingConfig = &GenerationConfigThinkingConfig{
 			IncludeThoughts: true,
 		}
 
 		hasMaxTokens := params.Reasoning.MaxTokens != nil
 		hasEffort := params.Reasoning.Effort != nil
-		supportsLevel := isGemini3Plus(capModel) // Check if model is 3.0+
+		supportsLevel := caps.SupportsReasoningEffort(isGemini3Plus(capModel)) // thinkingLevel vs thinkingBudget
 
 		// PRIORITY RULE: If both max_tokens and effort are present, use ONLY max_tokens (budget)
 		// This ensures we send only thinkingBudget to Gemini, not thinkingLevel
 
 		// Handle "none" effort explicitly (only if max_tokens not present)
 		if !hasMaxTokens && hasEffort && *params.Reasoning.Effort == "none" {
-			setThinkingBudgetZeroIfSupported(&config, capModel)
+			setThinkingBudgetZeroIfSupported(&config, caps)
 		} else if hasMaxTokens {
 			// User provided max_tokens - use thinkingBudget (all Gemini models support this)
 			// If both max_tokens and effort are present, we ignore effort and use ONLY max_tokens
 			budget := *params.Reasoning.MaxTokens
 			switch budget {
 			case 0:
-				setThinkingBudgetZeroIfSupported(&config, capModel)
+				setThinkingBudgetZeroIfSupported(&config, caps)
 			case DynamicReasoningBudget: // Special case: -1 means dynamic budget
 				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(DynamicReasoningBudget))
 			default:
-				if err := validateThinkingBudget(capModel, budget); err != nil {
+				if err := validateThinkingBudget(caps, budget); err != nil {
 					return config, err
 				}
 				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(budget))
@@ -3801,15 +3802,15 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 			// User provided effort only (no max_tokens)
 			if supportsLevel {
 				// Gemini 3.0+ - use thinkingLevel (more native)
-				if level := effortToThinkingLevel(*params.Reasoning.Effort, capModel); level != "" {
+				if level := effortToThinkingLevel(caps, *params.Reasoning.Effort); level != "" {
 					config.ThinkingConfig.ThinkingLevel = schemas.Ptr(level)
 				}
 			} else {
-				maxTokens := providerUtils.GetMaxOutputTokensOrDefault(capModel, DefaultCompletionMaxTokens)
+				maxTokens := providerUtils.GetMaxOutputTokensOrDefault(provider, capModel, DefaultCompletionMaxTokens)
 				if config.MaxOutputTokens > 0 {
 					maxTokens = int(config.MaxOutputTokens)
 				}
-				budgetRange := getThinkingBudgetRange(capModel, maxTokens)
+				budgetRange := getThinkingBudgetRange(caps, maxTokens)
 				// Gemini < 3.0 - must convert effort to budget
 				budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(
 					*params.Reasoning.Effort,
@@ -4079,6 +4080,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 	}
 
 	isVertex := provider == schemas.Vertex
+	caps := schemas.ResolveModelCaps(provider, model)
 	// if only system / developer message is there, convert it to user message (since openai allows it)
 	if len(messages) == 1 && messages[0].Role != nil && (*messages[0].Role == schemas.ResponsesInputMessageRoleSystem || *messages[0].Role == schemas.ResponsesInputMessageRoleDeveloper) {
 		content := Content{Role: "user"}
@@ -4330,7 +4332,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 						//   - Gemini Developer API: do NOT emit $ref — the API rejects it
 						//     ("does not match to a display_name", a known upstream bug). The model
 						//     still reads the media directly from parts.
-						supportsMultimodalToolOutput := isGemini3Plus(model)
+						supportsMultimodalToolOutput := caps.SupportsMultimodalToolOutput(isGemini3Plus(model))
 						var textParts []string
 						for _, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
 							if block.Text != nil && *block.Text != "" {

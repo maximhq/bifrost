@@ -132,6 +132,110 @@ func (s *Store) computeGuardrailJudgeCost(call schemas.BifrostGuardrailJudgeCall
 	)
 }
 
+// BatchCostDetails captures the rate inputs used to price a batch result row.
+// InputCostPerTokenBatches/OutputCostPerTokenBatches are the rates actually
+// applied — the catalog's explicit batch rate when set, otherwise
+// defaultBatchPricingRatio of the standard rate. There is no field marking
+// which case occurred; callers that need to distinguish an authoritative
+// catalog rate from an assumed default must compare against the standard rate
+// themselves.
+type BatchCostDetails struct {
+	Cost                      float64
+	Priced                    bool
+	ProviderCostUsed          bool
+	InputCostPerTokenBatches  *float64
+	OutputCostPerTokenBatches *float64
+}
+
+// defaultBatchPricingRatio is the fraction of the standard synchronous rate
+// used to price a batch request when the catalog has no batch-specific rate
+// for the model.
+const defaultBatchPricingRatio = 0.5
+
+// resolveBatchRate returns the catalog's explicit batch rate when set, else
+// defaultBatchPricingRatio times the standard rate when that's available, else
+// nil — meaning there is truly nothing to price this with.
+func resolveBatchRate(standard, batch *float64) *float64 {
+	if batch != nil {
+		return cloneFloat64Pointer(batch)
+	}
+	if standard != nil {
+		defaulted := *standard * defaultBatchPricingRatio
+		return &defaulted
+	}
+	return nil
+}
+
+// CalculateBatchCostDetailsForUsage computes batch result cost and returns the
+// explicit batch rates used so aggregate logs can explain historical pricing.
+// When the catalog has no batch-specific rate, it defaults to
+// defaultBatchPricingRatio of the standard rate rather than refusing to price —
+// only a model with no pricing at all (neither batch nor standard) is unpriced.
+func (s *Store) CalculateBatchCostDetailsForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *LookupScopes) BatchCostDetails {
+	if usage == nil {
+		return BatchCostDetails{}
+	}
+	// Only honor a provider-supplied cost when it is actually populated. A
+	// non-nil but zero cost (e.g. a partial cost object on the wire) must fall
+	// through to the catalog rates rather than price the row at zero — matching
+	// CalculateCostForUsage and calculateBaseCost.
+	if usage.Cost != nil && usage.Cost.TotalCost > 0 {
+		return BatchCostDetails{
+			Cost:             usage.Cost.TotalCost,
+			Priced:           true,
+			ProviderCostUsed: true,
+		}
+	}
+
+	var lookupScopes LookupScopes
+	if scopes != nil {
+		lookupScopes = *scopes
+	}
+	pricing := s.resolvePricing(schemas.RoutingInfo{Provider: provider, Model: model}, normalizeStreamRequestType(requestType), lookupScopes)
+	if pricing == nil {
+		return BatchCostDetails{}
+	}
+
+	switch normalizeStreamRequestType(requestType) {
+	case schemas.BatchResultsRequest, schemas.ChatCompletionRequest, schemas.TextCompletionRequest, schemas.ResponsesRequest, schemas.EmbeddingRequest:
+		inputRate := resolveBatchRate(pricing.InputCostPerToken, pricing.InputCostPerTokenBatches)
+		outputRate := resolveBatchRate(pricing.OutputCostPerToken, pricing.OutputCostPerTokenBatches)
+		if usage.PromptTokens > 0 && inputRate == nil {
+			return BatchCostDetails{}
+		}
+		if usage.CompletionTokens > 0 && outputRate == nil {
+			return BatchCostDetails{}
+		}
+		// Speed or InferenceGeo are carried on BifrostLLMUsage for exactly this —
+		// the bare-usage batch path never sees a full response to read a served
+		// tier off, mirroring CalculateCostForUsage.
+		tier := tierFromResponse(nil, usage.Speed, usage.InferenceGeo)
+		cost := computeBatchTextCost(pricing, usage, tier)
+		// Flat per-request surcharge, mirroring computeCostFromInput: each row in
+		// a batch is its own distinct request, so a per-request fee applies once
+		// per row exactly as it would have applied once per synchronous call.
+		if pricing.CostPerRequest != nil {
+			cost += *pricing.CostPerRequest
+		}
+		return BatchCostDetails{
+			Cost:                      cost,
+			Priced:                    true,
+			InputCostPerTokenBatches:  inputRate,
+			OutputCostPerTokenBatches: outputRate,
+		}
+	default:
+		return BatchCostDetails{}
+	}
+}
+
+func cloneFloat64Pointer(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
+}
+
 // calculateCostWithCache handles cost calculation when semantic cache debug info is present.
 func (s *Store) calculateCostWithCache(result *schemas.BifrostResponse, cacheDebug *schemas.BifrostCacheDebug, scopes LookupScopes) float64 {
 	if cacheDebug.CacheHit {
@@ -330,6 +434,8 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 	switch requestType {
 	case schemas.ChatCompletionRequest, schemas.TextCompletionRequest, schemas.ResponsesRequest, schemas.RealtimeRequest, schemas.CompactionRequest:
 		cost = computeTextCost(pricing, input.usage, input.tier)
+	case schemas.BatchResultsRequest:
+		cost = computeBatchTextCost(pricing, input.usage, input.tier)
 	case schemas.EmbeddingRequest:
 		cost = computeEmbeddingCost(pricing, input.usage, input.tier)
 	case schemas.RerankRequest:
@@ -649,6 +755,127 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 	return tokenCost + searchCost
 }
 
+// computeBatchTextCost handles token usage returned by batch result retrieval.
+// When the catalog has an explicit batch rate, that rate is used. When it does
+// not, the rate defaults to defaultBatchPricingRatio of the synchronous rate.
+// A model with neither rate is left unpriced.
+func computeBatchTextCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, tier serviceTier) float64 {
+	if usage == nil {
+		return 0
+	}
+	// Falls back to defaultBatchPricingRatio of the standard rate when the
+	// catalog has no batch-specific rate; nil only when neither rate exists.
+	resolvedInputRate := resolveBatchRate(pricing.InputCostPerToken, pricing.InputCostPerTokenBatches)
+	resolvedOutputRate := resolveBatchRate(pricing.OutputCostPerToken, pricing.OutputCostPerTokenBatches)
+	if usage.PromptTokens > 0 && resolvedInputRate == nil {
+		return 0
+	}
+	if usage.CompletionTokens > 0 && resolvedOutputRate == nil {
+		return 0
+	}
+
+	inputCost := 0.0
+	if usage.PromptTokens > 0 {
+		promptTokens := usage.PromptTokens
+		cachedReadTokens := 0
+		cachedWriteTokens := 0
+		cachedWriteTokensAbove1hr := 0
+		if usage.PromptTokensDetails != nil {
+			cachedReadTokens = usage.PromptTokensDetails.CachedReadTokens
+			cachedWriteTokens = usage.PromptTokensDetails.CachedWriteTokens
+			if usage.PromptTokensDetails.CachedWriteTokenDetails != nil {
+				cachedWriteTokensAbove1hr = usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h
+			}
+		}
+		cachedReadTokens = min(max(cachedReadTokens, 0), promptTokens)
+		cachedWriteTokens = min(max(cachedWriteTokens, 0), promptTokens-cachedReadTokens)
+		cachedWriteTokensAbove1hr = min(max(cachedWriteTokensAbove1hr, 0), cachedWriteTokens)
+
+		batchInputRate := *resolvedInputRate
+		inputRate := batchInputRate
+		cacheReadRate := batchInputRate
+		cacheWriteRate := batchInputRate
+		cacheWriteAbove1hrRate := batchInputRate
+		// Catalog long-context tiers and cache rates describe synchronous pricing.
+		// Batch discounts stack with them, so scale each category by the same
+		// batch/input ratio instead of charging every token at the flat batch rate.
+		if pricing.InputCostPerToken != nil && *pricing.InputCostPerToken > 0 {
+			batchRatio := batchInputRate / *pricing.InputCostPerToken
+
+			switch {
+			case promptTokens > TokenTierAbove272K && pricing.InputCostPerTokenAbove272kTokens != nil:
+				inputRate = *pricing.InputCostPerTokenAbove272kTokens * batchRatio
+			case promptTokens > TokenTierAbove200K && pricing.InputCostPerTokenAbove200kTokens != nil:
+				inputRate = *pricing.InputCostPerTokenAbove200kTokens * batchRatio
+			case promptTokens > TokenTierAbove128K && pricing.InputCostPerTokenAbove128kTokens != nil:
+				inputRate = *pricing.InputCostPerTokenAbove128kTokens * batchRatio
+			}
+
+			if pricing.CacheReadInputTokenCost != nil {
+				cacheReadRate = *pricing.CacheReadInputTokenCost * batchRatio
+			}
+			if promptTokens > TokenTierAbove272K && pricing.CacheReadInputTokenCostAbove272kTokens != nil {
+				cacheReadRate = *pricing.CacheReadInputTokenCostAbove272kTokens * batchRatio
+			} else if promptTokens > TokenTierAbove200K && pricing.CacheReadInputTokenCostAbove200kTokens != nil {
+				cacheReadRate = *pricing.CacheReadInputTokenCostAbove200kTokens * batchRatio
+			}
+
+			if pricing.CacheCreationInputTokenCost != nil {
+				cacheWriteRate = *pricing.CacheCreationInputTokenCost * batchRatio
+			}
+			if promptTokens > TokenTierAbove272K && pricing.CacheCreationInputTokenCostAbove272kTokens != nil {
+				cacheWriteRate = *pricing.CacheCreationInputTokenCostAbove272kTokens * batchRatio
+			} else if promptTokens > TokenTierAbove200K && pricing.CacheCreationInputTokenCostAbove200kTokens != nil {
+				cacheWriteRate = *pricing.CacheCreationInputTokenCostAbove200kTokens * batchRatio
+			}
+
+			if promptTokens > TokenTierAbove200K && pricing.CacheCreationInputTokenCostAbove1hrAbove200kTokens != nil {
+				cacheWriteAbove1hrRate = *pricing.CacheCreationInputTokenCostAbove1hrAbove200kTokens * batchRatio
+			} else if pricing.CacheCreationInputTokenCostAbove1hr != nil {
+				cacheWriteAbove1hrRate = *pricing.CacheCreationInputTokenCostAbove1hr * batchRatio
+			} else {
+				cacheWriteAbove1hrRate = cacheWriteRate
+			}
+		}
+
+		nonCachedPrompt := promptTokens - cachedReadTokens - cachedWriteTokens
+		inputCost = float64(nonCachedPrompt)*inputRate +
+			float64(cachedReadTokens)*cacheReadRate +
+			float64(cachedWriteTokens-cachedWriteTokensAbove1hr)*cacheWriteRate +
+			float64(cachedWriteTokensAbove1hr)*cacheWriteAbove1hrRate
+	}
+
+	outputCost := 0.0
+	if usage.CompletionTokens > 0 {
+		outputRate := *resolvedOutputRate
+		// Tier is selected by prompt/context size, mirroring computeTextCost's
+		// tieredOutputRate — output pricing tiers key off input context length,
+		// not completion length.
+		if pricing.OutputCostPerToken != nil && *pricing.OutputCostPerToken > 0 {
+			outputBatchRatio := outputRate / *pricing.OutputCostPerToken
+			promptTokens := usage.PromptTokens
+			switch {
+			case promptTokens > TokenTierAbove272K && pricing.OutputCostPerTokenAbove272kTokens != nil:
+				outputRate = *pricing.OutputCostPerTokenAbove272kTokens * outputBatchRatio
+			case promptTokens > TokenTierAbove200K && pricing.OutputCostPerTokenAbove200kTokens != nil:
+				outputRate = *pricing.OutputCostPerTokenAbove200kTokens * outputBatchRatio
+			case promptTokens > TokenTierAbove128K && pricing.OutputCostPerTokenAbove128kTokens != nil:
+				outputRate = *pricing.OutputCostPerTokenAbove128kTokens * outputBatchRatio
+			}
+		}
+		outputCost = float64(usage.CompletionTokens) * outputRate
+	}
+
+	// Data residency (Anthropic inference_geo:"us") scales all token or cache costs
+	// by a flat multiplier, mirroring computeTextCost — batch and data residency
+	// are independent axes, so a batch request can still carry it.
+	tokenCost := inputCost + outputCost
+	if tier.inferenceGeoUS && pricing.InferenceGeoUSMultiplier != nil {
+		tokenCost *= *pricing.InferenceGeoUSMultiplier
+	}
+	return tokenCost
+}
+
 // computeEmbeddingCost handles embedding requests (input-only).
 func computeEmbeddingCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, tier serviceTier) float64 {
 	if usage == nil {
@@ -865,28 +1092,68 @@ func computeImageOutputCost(pricing *configstoreTables.TableModelPricing, imageU
 		}
 	}
 	if perImageRate == nil {
-		const pixels512x512 = 512 * 512
-		const pixels1024x1024 = 1024 * 1024
-		const pixels2048x2048 = 2048 * 2048
-		const pixels4096x4096 = 4096 * 4096
-		switch {
-		case pixels >= pixels4096x4096 && pricing.OutputCostPerImageAbove4096x4096Pixels != nil:
-			perImageRate = pricing.OutputCostPerImageAbove4096x4096Pixels
-		case pixels >= pixels2048x2048 && pricing.OutputCostPerImageAbove2048x2048Pixels != nil:
-			perImageRate = pricing.OutputCostPerImageAbove2048x2048Pixels
-		case pixels >= pixels1024x1024 && pricing.OutputCostPerImageAbove1024x1024Pixels != nil:
-			perImageRate = pricing.OutputCostPerImageAbove1024x1024Pixels
-		case pixels >= pixels512x512 && pricing.OutputCostPerImageAbove512x512Pixels != nil:
-			perImageRate = pricing.OutputCostPerImageAbove512x512Pixels
-		default:
-			perImageRate = pricing.OutputCostPerImage
-		}
+		perImageRate = selectImageSizeTierRate(pricing, pixels)
 	}
 	if perImageRate != nil {
 		return float64(numOutputImages) * *perImageRate
 	}
 
 	return 0
+}
+
+// imageSizeTier is one step of the per-image size-tier ladder: the pixel
+// count above which the given rate applies.
+type imageSizeTier struct {
+	pixels int
+	rate   *float64
+}
+
+// selectImageSizeTierRate picks the flat per-image rate for the given output
+// pixel count, from whichever size-tier fields a model's pricing row has
+// populated. Two independent tier families exist because providers publish
+// resolution-based pricing in different units: some tier by exact
+// width×height threshold (output_cost_per_image_above_<N>x<N>_pixels),
+// others (e.g. Replicate's upscaler models) tier by total output megapixels
+// (output_cost_per_image_above_<N>_megapixels). A given model is expected to
+// populate only one family; both are checked here, interleaved by their
+// actual pixel threshold largest-first, so either (or in principle both)
+// resolve correctly without the caller needing to know which unit a model
+// uses. Falls back to pricing.OutputCostPerImage (via the nil return) when
+// no tier's threshold is met or no tier fields are populated.
+func selectImageSizeTierRate(pricing *configstoreTables.TableModelPricing, pixels int) *float64 {
+	const (
+		pixels512x512      = 512 * 512
+		pixels1024x1024    = 1024 * 1024
+		pixels2048x2048    = 2048 * 2048
+		pixels4Megapixels  = 4_000_000
+		pixels4096x4096    = 4096 * 4096
+		pixels8Megapixels  = 8_000_000
+		pixels16Megapixels = 16_000_000
+		pixels32Megapixels = 32_000_000
+		pixels64Megapixels = 64_000_000
+	)
+	// Ordered by threshold, largest first, so the first match wins.
+	// NOTE: ordered strictly by actual pixel threshold, largest first — NOT
+	// by field family — since 4096x4096 (16,777,216px) falls between the 16MP
+	// and 32MP megapixel thresholds, and 2048x2048 (4,194,304px) falls just
+	// above the 4MP threshold.
+	tiers := []imageSizeTier{
+		{pixels64Megapixels, pricing.OutputCostPerImageAbove64Megapixels},
+		{pixels32Megapixels, pricing.OutputCostPerImageAbove32Megapixels},
+		{pixels4096x4096, pricing.OutputCostPerImageAbove4096x4096Pixels},
+		{pixels16Megapixels, pricing.OutputCostPerImageAbove16Megapixels},
+		{pixels8Megapixels, pricing.OutputCostPerImageAbove8Megapixels},
+		{pixels2048x2048, pricing.OutputCostPerImageAbove2048x2048Pixels},
+		{pixels4Megapixels, pricing.OutputCostPerImageAbove4Megapixels},
+		{pixels1024x1024, pricing.OutputCostPerImageAbove1024x1024Pixels},
+		{pixels512x512, pricing.OutputCostPerImageAbove512x512Pixels},
+	}
+	for _, t := range tiers {
+		if pixels >= t.pixels && t.rate != nil {
+			return t.rate
+		}
+	}
+	return pricing.OutputCostPerImage
 }
 
 // computeVideoCost handles video generation requests.

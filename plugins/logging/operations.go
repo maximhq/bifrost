@@ -12,6 +12,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/batchaccounting"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/streaming"
@@ -1532,6 +1533,7 @@ func (p *LoggerPlugin) RecalculateCostsWithProgress(ctx context.Context, filters
 		}
 
 		costUpdates := make(map[string]float64, len(searchResult.Logs))
+		batchDebugUpdated := 0
 		stillMissingInBatch := 0
 
 		for i := range searchResult.Logs {
@@ -1558,6 +1560,20 @@ func (p *LoggerPlugin) RecalculateCostsWithProgress(ctx context.Context, filters
 				stillMissingInBatch++
 				continue
 			}
+			if outcomes[i].batchDebugUpdate != "" {
+				// A repriced batch aggregate row needs cost and batch_debug written
+				// together so model_breakdowns never disagrees with the row's own
+				// cost — BulkUpdateCost only ever writes the cost column, so this one
+				// row goes through a dedicated update instead of the bulk path below.
+				if err := p.store.Update(ctx, logEntry.ID, map[string]any{
+					"cost":        cost,
+					"batch_debug": outcomes[i].batchDebugUpdate,
+				}); err != nil {
+					return nil, fmt.Errorf("failed to update batch cost for log %s: %w", logEntry.ID, err)
+				}
+				batchDebugUpdated++
+				continue
+			}
 			costUpdates[logEntry.ID] = cost
 		}
 
@@ -1567,6 +1583,7 @@ func (p *LoggerPlugin) RecalculateCostsWithProgress(ctx context.Context, filters
 			}
 			result.Updated += len(costUpdates)
 		}
+		result.Updated += batchDebugUpdated
 
 		if filters.MissingCostOnly {
 			// Updated rows drop out of the result set, so only advance past rows
@@ -1634,6 +1651,12 @@ type billingOutcome struct {
 	// is derived from CacheDebugParsed and ReleaseBillingPayloads clears that. Callers
 	// run after the release, so they cannot re-derive it.
 	knownZeroCost bool
+	// batchDebugUpdate is the serialized batch_debug JSON to persist alongside cost,
+	// set only for a batch aggregate row repriced via calculateBatchAggregateCost.
+	// BulkUpdateCost only ever touches the cost column, so without this the row's
+	// model_breakdowns would stay stuck showing the pre-recalculation (unpriced)
+	// state even after cost is fixed.
+	batchDebugUpdate string
 }
 
 // priceLogsInChunks hydrates and prices a batch a few rows at a time, releasing each
@@ -1693,7 +1716,11 @@ func (p *LoggerPlugin) priceLogsInChunks(ctx context.Context, batch []logstore.L
 				outcomes[i].err = fmt.Errorf("%w: log %s", errPricingInputsUnavailable, batch[i].ID)
 				continue
 			}
-			outcomes[i].cost, outcomes[i].err = p.calculateCostForLog(&batch[i])
+			if isBatchAggregateRow(&batch[i]) {
+				outcomes[i].cost, outcomes[i].batchDebugUpdate, outcomes[i].err = p.calculateBatchAggregateCost(&batch[i])
+			} else {
+				outcomes[i].cost, outcomes[i].err = p.calculateCostForLog(&batch[i])
+			}
 			// Must be read here, before the release below drops cache_debug.
 			outcomes[i].knownZeroCost = isKnownZeroCostLog(&batch[i])
 			// Pricing metadata belongs in the log store even when request/response
@@ -1720,6 +1747,90 @@ func (p *LoggerPlugin) priceLogsInChunks(ctx context.Context, batch []logstore.L
 	}
 
 	return outcomes, nil
+}
+
+// isBatchAggregateRow reports whether logEntry is a batch settlement row with
+// per-model usage to reprice from. AfterFind deserializes BatchDebug on every
+// load, so BatchDebugParsed is normally already populated; the direct-field
+// check here is a cheap defensive fallback, not the primary path.
+func isBatchAggregateRow(logEntry *logstore.Log) bool {
+	if logEntry.BatchDebugParsed == nil && logEntry.BatchDebug != "" {
+		if err := logEntry.DeserializeFields(); err != nil {
+			return false
+		}
+	}
+	return logEntry.Object == string(schemas.BatchResultsRequest) &&
+		logEntry.BatchDebugParsed != nil &&
+		logEntry.BatchDebugParsed.Accounting != nil &&
+		len(logEntry.BatchDebugParsed.Accounting.ModelBreakdowns) > 0
+}
+
+// calculateBatchAggregateCost reprices a batch aggregate row from its per-model
+// breakdowns rather than the row's single blended token_usage. A batch can span
+// multiple models, and the row's own Model field is "mixed" in that case —
+// pricing that literal string against the catalog never finds an entry, so the
+// row prices at zero forever through the generic calculateCostForLog path.
+// Repricing per model, the same way settlement (batchaccounting.summarizeResults)
+// originally priced each result item, is the only way a mixed-model batch — or a
+// single-model batch whose rate only arrived after settlement — can recover a
+// cost here.
+//
+// Mutates logEntry.BatchDebugParsed.Accounting.ModelBreakdowns in place (each
+// entry's Cost refreshed, nil if that model still has no rate) and returns the
+// row's total cost — the sum of every model that priced this time — plus the
+// batch_debug JSON to persist alongside it, since BulkUpdateCost only ever
+// writes the cost column and would otherwise leave model_breakdowns stuck
+// showing the pre-recalculation state.
+func (p *LoggerPlugin) calculateBatchAggregateCost(logEntry *logstore.Log) (float64, string, error) {
+	accounting := logEntry.BatchDebugParsed.Accounting
+	scopes := pricingScopesForLog(logEntry)
+	// The row's Object is always "batch_results", which normalizes to "chat" — so
+	// repricing by it alone charged every batch at chat rates and could never find
+	// an embedding model's catalog entry at all. Settlement now records the batch's
+	// endpoint, so use the same endpoint→request-type mapping it priced with. Rows
+	// written before that field existed have no endpoint; they keep the old behavior
+	// rather than being guessed at.
+	requestType := schemas.RequestType(logEntry.Object)
+	if endpoint := logEntry.BatchDebugParsed.Endpoint; endpoint != "" {
+		requestType = batchaccounting.BatchRequestType(schemas.BatchEndpoint(endpoint))
+	}
+
+	var total float64
+	priced := 0
+	for model, breakdown := range accounting.ModelBreakdowns {
+		usage := breakdown.Usage
+		details := p.pricingManager.CalculateBatchCostDetailsForUsage(&usage, schemas.ModelProvider(logEntry.Provider), model, requestType, &scopes)
+		if details.Priced {
+			cost := details.Cost
+			breakdown.Cost = &cost
+			total += cost
+			priced++
+		} else {
+			breakdown.Cost = nil
+		}
+		accounting.ModelBreakdowns[model] = breakdown
+	}
+	if priced == 0 {
+		return 0, "", fmt.Errorf("%w: log %s", errPricingInputsUnavailable, logEntry.ID)
+	}
+	// Recovering some of the cost is worth persisting — refusing to write anything
+	// would leave the operator with nothing — but the total must not present itself
+	// as whole while models are still rateless. Settlement uses the same flag for
+	// the same reason, so the two agree on what the number means.
+	//
+	// Only ever set, never cleared: the flag can also stand for usage that is not in
+	// ModelBreakdowns at all (rows whose model the provider never named, rows lost to
+	// parse errors), and repricing the breakdowns that did land says nothing about
+	// those. Clearing it here would close a gap this pass cannot see.
+	if priced < len(accounting.ModelBreakdowns) {
+		accounting.Incomplete = true
+	}
+
+	batchDebugJSON, err := sonic.Marshal(logEntry.BatchDebugParsed)
+	if err != nil {
+		return 0, "", fmt.Errorf("failed to serialize batch_debug for log %s: %w", logEntry.ID, err)
+	}
+	return total, string(batchDebugJSON), nil
 }
 
 func isKnownZeroCostLog(logEntry *logstore.Log) bool {

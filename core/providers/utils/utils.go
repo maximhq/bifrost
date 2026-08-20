@@ -13,7 +13,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/rand"
 	"net"
 	"net/http"
 	"net/textproto"
@@ -198,6 +197,19 @@ var sortedAPI = sonic.Config{SortMapKeys: true}.Froze()
 // MarshalSorted marshals v to JSON with map keys sorted alphabetically.
 func MarshalSorted(v interface{}) ([]byte, error) {
 	return sortedAPI.Marshal(v)
+}
+
+// MarshalProviderRequest marshals a converted provider request body to wire JSON.
+// Typed provider requests implement json.Marshaler (they strip Bifrost-only fields
+// and already emit sorted, minified JSON), so we call MarshalJSON directly. Wrapping
+// that in MarshalSorted would only make sonic re-compact the whole body a second time
+// through its slow marshaler path, and SortMapKeys does not reorder a marshaler's
+// opaque output anyway. Plain structs fall back to MarshalSorted. Output is identical.
+func MarshalProviderRequest(v interface{}) ([]byte, error) {
+	if m, ok := v.(json.Marshaler); ok {
+		return m.MarshalJSON()
+	}
+	return MarshalSorted(v)
 }
 
 // MarshalSortedIndent marshals v to indented JSON with map keys sorted alphabetically.
@@ -1576,7 +1588,7 @@ func MergeExtraParamsIntoJSON(jsonBody []byte, extraParams map[string]interface{
 		}
 	}
 
-	// Rebuild compact JSON, then indent for consistent formatting
+	// Rebuild compact JSON in the original key order
 	var compact bytes.Buffer
 	compact.WriteByte('{')
 	for i, kv := range pairs {
@@ -1594,12 +1606,7 @@ func MergeExtraParamsIntoJSON(jsonBody []byte, extraParams map[string]interface{
 	}
 	compact.WriteByte('}')
 
-	// Re-indent to match the expected formatting
-	var indented bytes.Buffer
-	if err := json.Indent(&indented, compact.Bytes(), "", "  "); err != nil {
-		return compact.Bytes(), nil
-	}
-	return indented.Bytes(), nil
+	return compact.Bytes(), nil
 }
 
 // CheckContextAndGetRequestBody checks if the raw request body should be used, and returns it if it exists.
@@ -1618,7 +1625,8 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 			return nil, NewBifrostOperationError("request body is not provided", nil)
 		}
 
-		jsonBody, err := MarshalSortedIndent(convertedBody, "", "  ")
+		// Indenting is removed to reduce data on wire
+		jsonBody, err := MarshalProviderRequest(convertedBody)
 		if err != nil {
 			return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 		}
@@ -1837,8 +1845,7 @@ func EnrichError(
 // on responses that are almost certainly valid JSON.
 func HandleProviderResponse[T any](responseBody []byte, response *T, requestBody []byte, sendBackRawRequest bool, sendBackRawResponse bool) (rawRequest interface{}, rawResponse interface{}, bifrostErr *schemas.BifrostError) {
 	// Check for empty response
-	trimmed := strings.TrimSpace(string(responseBody))
-	if len(trimmed) == 0 {
+	if len(bytes.TrimSpace(responseBody)) == 0 {
 		return nil, nil, &schemas.BifrostError{
 			IsBifrostError: true,
 			Error: &schemas.ErrorField{
@@ -2506,6 +2513,17 @@ func ProcessAndSendResponse(
 	if tracer, ok := ctx.Value(schemas.BifrostContextKeyTracer).(schemas.Tracer); ok && tracer != nil {
 		if traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
 			tracer.AddStreamingChunk(traceID, response)
+		}
+	}
+
+	// Final chunk: the stream has drained, so upstream is complete. Stamp the body
+	// before post-hooks persist it (completeDeferredSpan handles the trace span).
+	if isFinalChunk := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator); isFinalChunk != nil {
+		if final, ok := isFinalChunk.(bool); ok && final && response != nil {
+			response.PopulateUpstreamLatency(ctx)
+			if ef := response.GetExtraFields(); ef != nil && ef.Latency > 0 {
+				response.PopulateOverheadLatency(ctx, time.Duration(ef.Latency)*time.Millisecond)
+			}
 		}
 	}
 
@@ -3180,8 +3198,8 @@ func GetProviderName(defaultProvider schemas.ModelProvider, customConfig *schema
 // after sending the finish_reason. This function helps determine the correct stream termination logic.
 func ProviderSendsDoneMarker(providerName schemas.ModelProvider) bool {
 	switch providerName {
-	case schemas.Cerebras, schemas.Perplexity, schemas.HuggingFace, schemas.Bedrock:
-		// Cerebras, Perplexity, HuggingFace, and Bedrock mantle don't send [DONE] marker, ends stream after finish_reason
+	case schemas.Cerebras, schemas.Perplexity, schemas.HuggingFace, schemas.Bedrock, schemas.BedrockMantle:
+		// Cerebras, Perplexity, HuggingFace, Bedrock and Bedrock mantle don't send [DONE] marker, ends stream after finish_reason
 		return false
 	default:
 		// Default to expecting [DONE] marker for safety
@@ -3479,20 +3497,6 @@ func HandleMultipleListModelsRequests(
 	response.ExtraFields.Latency = latency.Milliseconds()
 
 	return response, nil
-}
-
-// GetRandomString generates a random alphanumeric string of the given length.
-func GetRandomString(length int) string {
-	if length <= 0 {
-		return ""
-	}
-	randomSource := rand.New(rand.NewSource(time.Now().UnixNano()))
-	letters := []rune("abcdef0123456789")
-	b := make([]rune, length)
-	for i := range b {
-		b[i] = letters[randomSource.Intn(len(letters))]
-	}
-	return string(b)
 }
 
 // GetReasoningEffortFromBudgetTokens maps a reasoning token budget to OpenAI reasoning effort.

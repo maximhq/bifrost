@@ -14,7 +14,7 @@ Bifrost provides request options that control behavior, enable features, and pas
 | `BifrostContextKeyAPIKeyName`              | `x-bf-api-key`                                       | `string`              | Explicit API key name selection                                                                                                       |
 | `BifrostContextKeyAPIKeyID`                | `x-bf-api-key-id`                                    | `string`              | Explicit API key ID selection (takes priority over name)                                                                              |
 | `BifrostContextKeyDirectKey`               | `x-bf-direct-key` (+ `Authorization` / `x-api-key` / `x-goog-api-key`) | `schemas.Key`         | Use a caller-supplied raw provider key directly, bypassing the registered key pool. On the gateway, requires `allow_direct_keys` server-side |
-| `BifrostContextKeySessionID`               | `x-bf-session-id`                                    | `string`              | Session ID for key stickiness (requires KV store)                                                                                     |
+| `BifrostContextKeySessionID`               | `x-bf-session-id` (falls back to coding-harness session headers) | `string`              | Session ID for key stickiness (requires KV store)                                                                                     |
 | `BifrostContextKeySessionTTL`              | `x-bf-session-ttl`                                   | `time.Duration`       | Session-to-key cache TTL (duration string or seconds)                                                                                 |
 | `BifrostContextKeyRequestID`               | `x-request-id`                                       | `string`              | Custom request ID for tracking                                                                                                        |
 | `BifrostContextKeySendBackRawRequest`      | `x-bf-send-back-raw-request`                         | `bool`                | Include raw provider request in the response                                                                                          |
@@ -235,6 +235,26 @@ On the first request for a session ID, Bifrost selects a key and caches the bind
 **Retry and Fallback Behavior:**
 - **Retries**: Session stickiness persists across retry attempts. If a request fails and is retried, the same sticky key is used.
 - **Fallbacks**: When falling back to a different provider (e.g., from OpenAI to Anthropic), session stickiness is disabled and a new key is selected for the fallback provider. This ensures availability when the primary provider's keys are exhausted or failing.
+
+**Coding Harness Headers:**
+
+Coding harnesses already send a session identifier on every request under their own header name. When `x-bf-session-id` is absent, Bifrost adopts the first of these it finds, so pointing a harness at Bifrost gives you session stickiness and session-grouped traces with no configuration:
+
+| Header                      | Sent by                                                          |
+| --------------------------- | ---------------------------------------------------------------- |
+| `x-claude-code-session-id`  | Claude Code, and tools that run it (for example Conductor)        |
+| `x-session-affinity`        | OpenCode                                                          |
+| `x-session-id`              | OpenCode (alongside the above), and clients using the generic convention |
+| `session-id`                | Codex CLI                                                         |
+| `session_id`                | Codex CLI, builds predating its dashed-header rename              |
+| `thread-id`                 | Codex CLI thread, used only when no session header is sent        |
+| `conversation_id`           | Codex CLI, builds predating its dashed-header rename              |
+
+The list is ordered: the first non-empty header whose value is at most 255 runes wins, so a blank or over-long header is skipped and the next one is tried.
+
+An explicit `x-bf-session-id` always overrides all of them, so you can group requests your own way regardless of what the client sends. It also decides the outcome when it is unusable: a request that sends an `x-bf-session-id` longer than 255 runes gets no session at all rather than falling back to a harness header, because silently grouping it under a session you did not ask for is worse than leaving it ungrouped.
+
+Claude Code documents `x-claude-code-session-id` in its [gateway protocol reference](https://code.claude.com/docs/en/llm-gateway-protocol#request-headers), where it is listed as a header a gateway may consume for attribution rather than forward upstream. Subagent requests carry the same session ID as their parent, so an agent run with parallel subagents stays on one key.
 
 <Tabs>
 <Tab title="Gateway (cURL)">

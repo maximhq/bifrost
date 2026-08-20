@@ -77,12 +77,12 @@ Sources:
 - [ ] **Image generation** (`POST /v1/images/generations`)
 - [ ] **Image edit** (`POST /v1/images/edits`)
 - [ ] **Image variation** (`POST /v1/images/variations`)
-- [ ] **Batch API** (`POST /v1/batches` + `GET /v1/batches/{id}`)
+- [x] **Batch API** (`POST /v1/batches` + `GET /v1/batches/{id}`): OpenAI/Anthropic covered in folder `12. Backlog Coverage / OpenAI/Anthropic/Gemini/Azure Round 3` — upload input file (OpenAI only), create, retrieve, cancel, all asserted. Gemini native batch (`/genai/v1beta/models/{model}:batchGenerateContent` + `/genai/v1beta/batches`) covered separately in folder `55. Gemini Native Batch API` — create/list/retrieve/cancel, inline requests (no file upload needed). Vertex batch covered in folder `11c. Vertex Batches`. Azure batch (via `/openai/v1/batches` with `provider:"azure"` / `?provider=azure`, no dedicated route - reuses the OpenAI drop-in with inline `requests` auto-uploaded server-side) and Bedrock batch create/retrieve/cancel (`/bedrock/model-invocation-job*`, needs an S3 bucket + IAM role_arn not yet in the harness env) remain uncovered. Settled cost/pricing not covered here (async, no test hook for the sweeper) - see `plugins/logging/costfidelity_test.go` / `framework/batchaccounting/*_test.go` for that.
 - [ ] **Files API** (`POST /v1/files`, etc.)
 - [ ] **Models list** (`GET /v1/models`)
 - [ ] **Containers API** (`POST /v1/containers` for code-interpreter sandboxes)
 - [ ] **Videos API** (`POST /v1/videos` for Sora)
-- [ ] **Rerank** (`POST /v1/rerank`)
+- [x] **Rerank** (`POST /v1/rerank`) - folder 56, cross-provider across cohere/bedrock/vertex
 
 ---
 
@@ -160,7 +160,7 @@ Sources:
 ### Other endpoints
 
 - [ ] **Token counting** (`POST /v1/messages/count_tokens`)
-- [ ] **Message Batches** (`POST /v1/messages/batches` + cancel + retrieve + results)
+- [~] **Message Batches** (`POST /v1/messages/batches` + cancel + retrieve + results): create/retrieve/cancel/list asserted in folder `12. Backlog Coverage / OpenAI/Anthropic/Gemini/Azure Round 3` and `Anthropic Backlog`; `results` (post-settlement) not covered - requires a completed batch, no fast test path (sweeper poll is real-time, hard-coded 1 min interval)
 - [ ] **Files API** (`POST /v1/files`, list, retrieve, delete, content)
 - [ ] **Models list** (`GET /v1/models`)
 - [ ] **Text Completions API** (legacy `POST /v1/complete`)

@@ -137,7 +137,7 @@ export function MCPClientsFilterSidebar({ filters, onFiltersChange }: SidebarPro
 	}
 
 	return (
-		<div className="bg-card fixed inset-y-2 left-2 z-40 flex h-auto w-[calc(100vw-1rem)] max-w-72 shrink-0 flex-col rounded-md border shadow-xl md:static md:h-full md:w-64 md:max-w-none md:rounded-l-none md:rounded-r-md md:border-0 md:shadow-none">
+		<div className="bg-card fixed inset-y-2 left-2 z-40 flex h-auto w-[calc(100vw-1rem)] max-w-72 shrink-0 flex-col rounded-md border shadow-xl md:static md:h-full md:w-64 md:max-w-none md:rounded-md md:shadow-none">
 			<div className="flex h-11 items-center justify-between border-b pr-2 pl-5">
 				<span className="text-sm font-semibold">Filters</span>
 				<div className="flex items-center gap-1">

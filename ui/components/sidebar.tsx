@@ -1486,7 +1486,7 @@ export default function AppSidebar() {
 				</div>
 			)}
 			<div className="mx-2 pb-1 group-data-[collapsible=icon]:hidden">
-				<div className="relative">
+				<div className="dark:bg-card relative bg-white">
 					<Search className="text-muted-foreground absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2" />
 					<input
 						ref={searchInputRef}

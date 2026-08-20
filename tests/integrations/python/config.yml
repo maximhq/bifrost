@@ -159,6 +159,9 @@ providers:
     file: "gemini-2.5-flash"
     thinking: "gemini-2.5-pro"
     embeddings: "gemini-embedding-001"
+    # Discovery Engine's ranker is not part of Vertex's discoverable model catalog, so it is
+    # named with an explicit provider prefix to route deterministically.
+    rerank: "vertex/semantic-ranker-default@latest"
     image_generation: "imagen-4.0-generate-001"
     image_edit: "imagen-3.0-capability-001"
     imagen: "imagen-4.0-generate-001"
@@ -185,6 +188,7 @@ providers:
     thinking: "us.anthropic.claude-opus-4-5-20251101-v1:0"
     text_completion: "mistral.mistral-7b-instruct-v0:2"
     embeddings: "global.cohere.embed-v4:0"
+    rerank: "cohere.rerank-v3-5:0"
     image_generation: "amazon.titan-image-generator-v2:0"
     image_variation: "amazon.titan-image-generator-v2:0"
     batch_inline: "anthropic.claude-3-5-sonnet-20240620-v1:0"
@@ -207,6 +211,7 @@ providers:
     vision: "command-a-vision-07-2025"
     tools: "command-a-03-2025"
     embeddings: "embed-v4.0"
+    rerank: "rerank-v3.5"
     streaming: "command-a-03-2025"
     count_tokens: "command-a-03-2025"
     alternatives:
@@ -302,6 +307,7 @@ provider_scenarios:
     video_generation: false # disabled for now because of long running operations
 
   azure:
+    rerank: false  # Azure hosts Cohere rerank models, but Bifrost's azure provider does not implement rerank yet
     simple_chat: true
     multi_turn_conversation: true
     streaming: true
@@ -457,6 +463,7 @@ provider_scenarios:
     context_caching: true  # Gemini context caching (Caches API) via Bifrost passthrough
 
   vertex:
+    rerank: true
     simple_chat: true
     multi_turn_conversation: true
     streaming: true
@@ -502,6 +509,7 @@ provider_scenarios:
     count_tokens: false
 
   bedrock:
+    rerank: true
     simple_chat: true
     multi_turn_conversation: true
     streaming: true
@@ -547,6 +555,7 @@ provider_scenarios:
     count_tokens: true  # Bedrock supports token counting via CountTokens API
 
   cohere:
+    rerank: true
     simple_chat: true
     multi_turn_conversation: true
     streaming: true
@@ -662,6 +671,7 @@ scenario_capabilities:
   transcription: "transcription"
   transcription_streaming: "transcription"
   embeddings: "embeddings"
+  rerank: "rerank"
   image_generation: "image_generation"  # Uses image_generation model
   image_edit: "image_edit"  # Uses image_edit model
   imagen: "imagen"  # Uses imagen model (Gemini/Vertex)

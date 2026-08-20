@@ -231,7 +231,7 @@ type ChatParameters struct {
 	// in core/providers/anthropic/types.go). Non-Anthropic providers (OpenAI
 	// etc.) silently ignore them.
 	TopK              *int            `json:"top_k,omitempty"`              // Anthropic top_k sampling
-	Speed             *string         `json:"speed,omitempty"`              // "fast" (Anthropic fast-mode-2026-02-01 beta, Opus 4.6 only)
+	Speed             *string         `json:"speed,omitempty"`              // "fast" (Anthropic fast-mode-2026-02-01 beta, Opus 4.6 and 4.7+)
 	InferenceGeo      *string         `json:"inference_geo,omitempty"`      // Anthropic inference_geo (Claude API only)
 	MCPServers        []ChatMCPServer `json:"mcp_servers,omitempty"`        // Anthropic MCP connector (mcp-client-2025-11-20)
 	Container         *ChatContainer  `json:"container,omitempty"`          // Anthropic container (string id, or object with skills[] — beta skills-2025-10-02)
@@ -459,6 +459,13 @@ type ChatTool struct {
 	MCPServerName string                           `json:"mcp_server_name,omitempty"`
 	DefaultConfig *ChatMCPToolsetConfig            `json:"default_config,omitempty"`
 	Configs       map[string]*ChatMCPToolsetConfig `json:"configs,omitempty"`
+
+	// serialized caches this tool's MarshalJSON output. Set only for immutable,
+	// shared tools (MCP catalog entries precomputed once per refresh via
+	// EnsureSerialized) so logging/marshal reuse the bytes instead of re-running
+	// the full tool marshal per request. nil for client-supplied tools, which
+	// marshal normally. Unexported so it never appears in JSON.
+	serialized []byte
 }
 
 // normalizeShape clears fields that don't belong to the ChatTool's active
@@ -513,10 +520,37 @@ func (t *ChatTool) clearServerToolVariantFields() {
 // dispatch on the top-level Type/Name shape — could misinterpret or
 // silently forward the stray fields.
 func (t ChatTool) MarshalJSON() ([]byte, error) {
+	if len(t.serialized) > 0 {
+		return t.serialized, nil
+	}
 	normalized := t
 	normalized.normalizeShape()
 	type Alias ChatTool
 	return MarshalSorted((*Alias)(&normalized))
+}
+
+// EnsureSerialized precomputes and caches this tool's MarshalJSON output so later
+// marshals (logging especially) reuse the bytes. Call ONLY on immutable, shared
+// tools (e.g. MCP catalog entries at refresh time) — a later mutation would leave
+// the cache stale. Idempotent; a no-op once cached.
+func (t *ChatTool) EnsureSerialized() error {
+	if len(t.serialized) > 0 {
+		return nil
+	}
+	b, err := t.MarshalJSON()
+	if err != nil {
+		return err
+	}
+	t.serialized = b
+	return nil
+}
+
+// InvalidateSerialized drops the cached MarshalJSON bytes so the next
+// EnsureSerialized (or MarshalJSON) recomputes them. Call after mutating any
+// field that changes the wire output (e.g. Function.Name); otherwise the stale
+// cache keeps emitting the old bytes.
+func (t *ChatTool) InvalidateSerialized() {
+	t.serialized = nil
 }
 
 // UnmarshalJSON tolerantly decodes whatever JSON shape arrives, then
@@ -1921,6 +1955,118 @@ type BifrostCost struct {
 	SearchQueriesCost   float64 `json:"search_queries_cost,omitempty"`
 	RequestCost         float64 `json:"request_cost,omitempty"`
 	TotalCost           float64 `json:"total_cost,omitempty"`
+}
+
+// MergeBifrostLLMUsage returns a usage value containing the sum of base and add.
+// Nil inputs are treated as absent values; if both inputs are nil, nil is returned.
+func MergeBifrostLLMUsage(base, add *BifrostLLMUsage) *BifrostLLMUsage {
+	if add == nil {
+		return base
+	}
+	if base == nil {
+		return add
+	}
+
+	merged := &BifrostLLMUsage{
+		PromptTokens:     base.PromptTokens + add.PromptTokens,
+		CompletionTokens: base.CompletionTokens + add.CompletionTokens,
+		TotalTokens:      base.TotalTokens + add.TotalTokens,
+	}
+
+	if base.PromptTokensDetails != nil || add.PromptTokensDetails != nil {
+		baseDetails := base.PromptTokensDetails
+		addDetails := add.PromptTokensDetails
+		if baseDetails == nil {
+			baseDetails = &ChatPromptTokensDetails{}
+		}
+		if addDetails == nil {
+			addDetails = &ChatPromptTokensDetails{}
+		}
+		merged.PromptTokensDetails = &ChatPromptTokensDetails{
+			TextTokens:        baseDetails.TextTokens + addDetails.TextTokens,
+			AudioTokens:       baseDetails.AudioTokens + addDetails.AudioTokens,
+			ImageTokens:       baseDetails.ImageTokens + addDetails.ImageTokens,
+			CachedReadTokens:  baseDetails.CachedReadTokens + addDetails.CachedReadTokens,
+			CachedWriteTokens: baseDetails.CachedWriteTokens + addDetails.CachedWriteTokens,
+		}
+		if baseDetails.CachedWriteTokenDetails != nil || addDetails.CachedWriteTokenDetails != nil {
+			merged.PromptTokensDetails.CachedWriteTokenDetails = &ChatCachedWriteTokenDetails{
+				CachedWriteTokens5m: cachedWriteTokens5m(baseDetails) + cachedWriteTokens5m(addDetails),
+				CachedWriteTokens1h: cachedWriteTokens1h(baseDetails) + cachedWriteTokens1h(addDetails),
+			}
+		}
+	}
+
+	if base.CompletionTokensDetails != nil || add.CompletionTokensDetails != nil {
+		baseDetails := base.CompletionTokensDetails
+		addDetails := add.CompletionTokensDetails
+		if baseDetails == nil {
+			baseDetails = &ChatCompletionTokensDetails{}
+		}
+		if addDetails == nil {
+			addDetails = &ChatCompletionTokensDetails{}
+		}
+		merged.CompletionTokensDetails = &ChatCompletionTokensDetails{
+			TextTokens:               baseDetails.TextTokens + addDetails.TextTokens,
+			AcceptedPredictionTokens: baseDetails.AcceptedPredictionTokens + addDetails.AcceptedPredictionTokens,
+			AudioTokens:              baseDetails.AudioTokens + addDetails.AudioTokens,
+			ReasoningTokens:          baseDetails.ReasoningTokens + addDetails.ReasoningTokens,
+			RejectedPredictionTokens: baseDetails.RejectedPredictionTokens + addDetails.RejectedPredictionTokens,
+		}
+		merged.CompletionTokensDetails.CitationTokens = sumOptionalInts(baseDetails.CitationTokens, addDetails.CitationTokens)
+		merged.CompletionTokensDetails.NumSearchQueries = sumOptionalInts(baseDetails.NumSearchQueries, addDetails.NumSearchQueries)
+		merged.CompletionTokensDetails.ImageTokens = sumOptionalInts(baseDetails.ImageTokens, addDetails.ImageTokens)
+	}
+
+	if base.Cost != nil || add.Cost != nil {
+		baseCost := base.Cost
+		addCost := add.Cost
+		if baseCost == nil {
+			baseCost = &BifrostCost{}
+		}
+		if addCost == nil {
+			addCost = &BifrostCost{}
+		}
+		merged.Cost = &BifrostCost{
+			InputTokensCost:     baseCost.InputTokensCost + addCost.InputTokensCost,
+			OutputTokensCost:    baseCost.OutputTokensCost + addCost.OutputTokensCost,
+			ReasoningTokensCost: baseCost.ReasoningTokensCost + addCost.ReasoningTokensCost,
+			CitationTokensCost:  baseCost.CitationTokensCost + addCost.CitationTokensCost,
+			SearchQueriesCost:   baseCost.SearchQueriesCost + addCost.SearchQueriesCost,
+			RequestCost:         baseCost.RequestCost + addCost.RequestCost,
+			TotalCost:           baseCost.TotalCost + addCost.TotalCost,
+		}
+	}
+
+	return merged
+}
+
+func cachedWriteTokens5m(details *ChatPromptTokensDetails) int {
+	if details == nil || details.CachedWriteTokenDetails == nil {
+		return 0
+	}
+	return details.CachedWriteTokenDetails.CachedWriteTokens5m
+}
+
+func cachedWriteTokens1h(details *ChatPromptTokensDetails) int {
+	if details == nil || details.CachedWriteTokenDetails == nil {
+		return 0
+	}
+	return details.CachedWriteTokenDetails.CachedWriteTokens1h
+}
+
+func sumOptionalInts(base, add *int) *int {
+	if base == nil && add == nil {
+		return nil
+	}
+	sum := 0
+	if base != nil {
+		sum += *base
+	}
+	if add != nil {
+		sum += *add
+	}
+	return &sum
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for BifrostCost.

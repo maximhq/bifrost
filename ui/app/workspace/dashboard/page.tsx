@@ -65,6 +65,7 @@ export default function DashboardPage() {
 			cost_chart: parseAsString.withDefault("bar"),
 			model_chart: parseAsString.withDefault("bar"),
 			latency_chart: parseAsString.withDefault("bar"),
+			overhead_chart: parseAsString.withDefault("bar"),
 			throughput_chart: parseAsString.withDefault("bar"),
 			cost_model: parseAsString.withDefault("all"),
 			usage_model: parseAsString.withDefault("all"),
@@ -307,6 +308,7 @@ export default function DashboardPage() {
 	const handleCostChartToggle = useCallback((type: ChartType) => setUrlState({ cost_chart: type }), [setUrlState]);
 	const handleModelChartToggle = useCallback((type: ChartType) => setUrlState({ model_chart: type }), [setUrlState]);
 	const handleLatencyChartToggle = useCallback((type: ChartType) => setUrlState({ latency_chart: type }), [setUrlState]);
+	const handleOverheadChartToggle = useCallback((type: ChartType) => setUrlState({ overhead_chart: type }), [setUrlState]);
 	const handleThroughputChartToggle = useCallback((type: ChartType) => setUrlState({ throughput_chart: type }), [setUrlState]);
 	const handleProviderCostChartToggle = useCallback((type: ChartType) => setUrlState({ provider_cost_chart: type }), [setUrlState]);
 	const handleProviderTokenChartToggle = useCallback((type: ChartType) => setUrlState({ provider_token_chart: type }), [setUrlState]);
@@ -475,7 +477,7 @@ export default function DashboardPage() {
 			<LogsFilterSidebar filters={filters} onFiltersChange={setFilters} />
 
 			{/* Main Content */}
-			<ScrollArea className="bg-card flex min-w-0 flex-1 flex-col gap-4 rounded-l-md" viewportClassName="no-table">
+			<ScrollArea className="bg-card flex min-w-0 flex-1 flex-col gap-4 rounded-md border" viewportClassName="no-table">
 				<div className="p-4">
 					{/* Tabs */}
 					<Tabs value={activeTab} onValueChange={handleTabChange}>
@@ -589,6 +591,7 @@ export default function DashboardPage() {
 									costChartType={toChartType(urlState.cost_chart)}
 									modelChartType={toChartType(urlState.model_chart)}
 									latencyChartType={toChartType(urlState.latency_chart)}
+									overheadChartType={toChartType(urlState.overhead_chart)}
 									throughputChartType={toChartType(urlState.throughput_chart)}
 									costModel={urlState.cost_model}
 									usageModel={urlState.usage_model}
@@ -597,6 +600,7 @@ export default function DashboardPage() {
 									onCostChartToggle={handleCostChartToggle}
 									onModelChartToggle={handleModelChartToggle}
 									onLatencyChartToggle={handleLatencyChartToggle}
+									onOverheadChartToggle={handleOverheadChartToggle}
 									onThroughputChartToggle={handleThroughputChartToggle}
 									onCostModelChange={handleCostModelChange}
 									onUsageModelChange={handleUsageModelChange}

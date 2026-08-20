@@ -8,6 +8,8 @@ import (
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 )
 
+type BatchCostDetails = datasheet.BatchCostDetails
+
 // GetModelCapabilityEntryForModel returns capability metadata for a
 // (model, provider) pair. Alias lookups try the canonical model name, wire
 // model ID, and original alias key in that order. Within each model, chat,
@@ -82,6 +84,12 @@ func (mc *ModelCatalog) CalculateGuardrailCost(debug *schemas.BifrostGuardrailDe
 // CalculateCacheEmbeddingCost computes the semantic-cache embedding lookup cost.
 func (mc *ModelCatalog) CalculateCacheEmbeddingCost(debug *schemas.BifrostCacheDebug, scopes *PricingLookupScopes) float64 {
 	return mc.datasheet.CalculateCacheEmbeddingCost(debug, (*datasheet.LookupScopes)(scopes))
+}
+
+// CalculateBatchCostDetailsForUsage computes batch cost and exposes the
+// explicit batch rates used for durable accounting metadata.
+func (mc *ModelCatalog) CalculateBatchCostDetailsForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *PricingLookupScopes) BatchCostDetails {
+	return mc.datasheet.CalculateBatchCostDetailsForUsage(usage, provider, model, requestType, (*datasheet.LookupScopes)(scopes))
 }
 
 // UpsertModelPricingAttributes writes additional_attributes for every row

@@ -108,7 +108,6 @@
             "pages": [
               "migration-guides/v2.0.0",
               "migration-guides/v1.5.0",
-              "migration-guides/governance-api-namespace",
               "migration-guides/litellm"
             ]
           },
@@ -541,6 +540,7 @@
               "features/observability/kafka",
               "features/observability/bigquery",
               "features/observability/pubsub",
+              "features/observability/splunk",
               "features/observability/content-logging"
             ]
           },
@@ -1450,17 +1450,6 @@
                 "pages": ["GET /api/governance/budgets", "GET /api/governance/rate-limits"]
               },
               {
-                "group": "Routing Rules",
-                "expanded": false,
-                "pages": [
-                  "GET /api/governance/routing-rules",
-                  "POST /api/governance/routing-rules",
-                  "GET /api/governance/routing-rules/{rule_id}",
-                  "PUT /api/governance/routing-rules/{rule_id}",
-                  "DELETE /api/governance/routing-rules/{rule_id}"
-                ]
-              },
-              {
                 "group": "Model Configs",
                 "expanded": false,
                 "pages": [
@@ -1489,14 +1478,30 @@
                   "PUT /api/governance/pricing-overrides/{id}",
                   "DELETE /api/governance/pricing-overrides/{id}"
                 ]
+              }
+            ]
+          },
+          {
+            "group": "Routing",
+            "pages": [
+              {
+                "group": "Routing Rules",
+                "expanded": false,
+                "pages": [
+                  "GET /api/routing/rules",
+                  "POST /api/routing/rules",
+                  "GET /api/routing/rules/{rule_id}",
+                  "PUT /api/routing/rules/{rule_id}",
+                  "DELETE /api/routing/rules/{rule_id}"
+                ]
               },
               {
                 "group": "Complexity Analyzer",
                 "expanded": false,
                 "pages": [
-                  "GET /api/governance/complexity-analyzer-config",
-                  "PUT /api/governance/complexity-analyzer-config",
-                  "POST /api/governance/complexity-analyzer-config/reset"
+                  "GET /api/routing/complexity-analyzer-config",
+                  "PUT /api/routing/complexity-analyzer-config",
+                  "POST /api/routing/complexity-analyzer-config/reset"
                 ]
               }
             ]
@@ -2093,6 +2098,10 @@
   },
   "redirects": [
     {
+      "source": "/migration-guides/governance-api-namespace",
+      "destination": "/migration-guides/v2.0.0#breaking-change-3-governance-apis-moved-to-the-api-governance-namespace"
+    },
+    {
       "source": "/features/fallbacks",
       "destination": "/features/retries-and-fallbacks"
     },
@@ -2255,6 +2264,38 @@
     {
       "source": "/alerting/:slug*",
       "destination": "/enterprise/alerting/:slug*"
+    },
+    {
+      "source": "/api-reference/governance/list-routing-rules",
+      "destination": "/api-reference/routing/list-routing-rules"
+    },
+    {
+      "source": "/api-reference/governance/create-routing-rule",
+      "destination": "/api-reference/routing/create-routing-rule"
+    },
+    {
+      "source": "/api-reference/governance/get-routing-rule",
+      "destination": "/api-reference/routing/get-routing-rule"
+    },
+    {
+      "source": "/api-reference/governance/update-routing-rule",
+      "destination": "/api-reference/routing/update-routing-rule"
+    },
+    {
+      "source": "/api-reference/governance/delete-routing-rule",
+      "destination": "/api-reference/routing/delete-routing-rule"
+    },
+    {
+      "source": "/api-reference/governance/get-complexity-analyzer-config",
+      "destination": "/api-reference/routing/get-complexity-analyzer-config"
+    },
+    {
+      "source": "/api-reference/governance/update-complexity-analyzer-config",
+      "destination": "/api-reference/routing/update-complexity-analyzer-config"
+    },
+    {
+      "source": "/api-reference/governance/reset-complexity-analyzer-config",
+      "destination": "/api-reference/routing/reset-complexity-analyzer-config"
     }
   ],
   "footer": {

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
+	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -390,6 +391,50 @@ func Test_createBedrockRerankRouteConfig(t *testing.T) {
 	assert.True(t, ok, "GetRequestTypeInstance should return *bedrock.BedrockRerankRequest")
 }
 
+func Test_createBedrockRerankResponseConverterEmitsBedrockShape(t *testing.T) {
+	handlerStore := &mockHandlerStore{}
+	route := createBedrockRerankRouteConfig("/bedrock", handlerStore)
+	require.NotNil(t, route.RerankResponseConverter)
+
+	resp := &schemas.BifrostRerankResponse{
+		Results: []schemas.RerankResult{
+			{Index: 1, RelevanceScore: 0.92, Document: &schemas.RerankDocument{Text: "Paris is capital of France"}},
+			{Index: 0, RelevanceScore: 0.11, Document: &schemas.RerankDocument{Text: "Berlin is capital of Germany"}},
+		},
+		Model: "arn:aws:bedrock:us-east-1::foundation-model/cohere.rerank-v3-5:0",
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Provider: schemas.Bedrock,
+		},
+	}
+
+	converted, err := route.RerankResponseConverter(nil, resp)
+	require.NoError(t, err)
+
+	bedrockResp, ok := converted.(*bedrock.BedrockRerankResponse)
+	require.True(t, ok, "converter should emit *bedrock.BedrockRerankResponse")
+	require.Len(t, bedrockResp.Results, 2)
+	assert.Equal(t, 1, bedrockResp.Results[0].Index)
+	assert.InDelta(t, 0.92, bedrockResp.Results[0].RelevanceScore, 1e-9)
+	require.NotNil(t, bedrockResp.Results[0].Document)
+	require.NotNil(t, bedrockResp.Results[0].Document.TextDocument)
+	assert.Equal(t, "Paris is capital of France", bedrockResp.Results[0].Document.TextDocument.Text)
+	assert.Equal(t, "Berlin is capital of Germany", bedrockResp.Results[1].Document.TextDocument.Text)
+
+	// AWS SDKs key off camelCase relevanceScore; the Bifrost shape must not leak.
+	encoded, err := sonic.Marshal(bedrockResp)
+	require.NoError(t, err)
+	var payload map[string]interface{}
+	require.NoError(t, sonic.Unmarshal(encoded, &payload))
+	assert.NotContains(t, payload, "model")
+	assert.NotContains(t, payload, "extra_fields")
+	results, ok := payload["results"].([]interface{})
+	require.True(t, ok)
+	first, ok := results[0].(map[string]interface{})
+	require.True(t, ok)
+	assert.Contains(t, first, "relevanceScore")
+	assert.NotContains(t, first, "relevance_score")
+}
+
 func Test_createBedrockRerankResponseConverterUsesRawResponse(t *testing.T) {
 	handlerStore := &mockHandlerStore{}
 	route := createBedrockRerankRouteConfig("/bedrock", handlerStore)
@@ -405,6 +450,25 @@ func Test_createBedrockRerankResponseConverterUsesRawResponse(t *testing.T) {
 	converted, err := route.RerankResponseConverter(nil, resp)
 	require.NoError(t, err)
 	assert.Equal(t, raw, converted)
+}
+
+func Test_createBedrockRerankResponseConverterConvertsForCrossProvider(t *testing.T) {
+	handlerStore := &mockHandlerStore{}
+	route := createBedrockRerankRouteConfig("/bedrock", handlerStore)
+
+	// A Cohere-shaped raw body must never reach a Bedrock client.
+	resp := &schemas.BifrostRerankResponse{
+		Results: []schemas.RerankResult{{Index: 0, RelevanceScore: 0.5}},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Provider:    schemas.Cohere,
+			RawResponse: map[string]interface{}{"id": "r-123"},
+		},
+	}
+	converted, err := route.RerankResponseConverter(nil, resp)
+	require.NoError(t, err)
+	bedrockResp, ok := converted.(*bedrock.BedrockRerankResponse)
+	require.True(t, ok, "cross-provider responses must be converted, not passed through")
+	require.Len(t, bedrockResp.Results, 1)
 }
 
 func Test_createBedrockRerankRouteRequestConverter(t *testing.T) {
@@ -425,7 +489,7 @@ func Test_createBedrockRerankRouteRequestConverter(t *testing.T) {
 				Type: "INLINE",
 				InlineDocumentSource: bedrock.BedrockRerankInlineSource{
 					Type:         "TEXT",
-					TextDocument: bedrock.BedrockRerankTextValue{Text: "Paris is capital of France"},
+					TextDocument: &bedrock.BedrockRerankTextValue{Text: "Paris is capital of France"},
 				},
 			},
 		},
@@ -454,6 +518,8 @@ func Test_createBedrockRerankRouteRequestConverter(t *testing.T) {
 	require.NotNil(t, bifrostReq.RerankRequest.Params)
 	require.NotNil(t, bifrostReq.RerankRequest.Params.TopN)
 	assert.Equal(t, 1, *bifrostReq.RerankRequest.Params.TopN)
+	// The live Rerank API returns no document, so the route must not force documents on.
+	assert.Nil(t, bifrostReq.RerankRequest.Params.ReturnDocuments)
 }
 
 func Test_createBedrockRouteConfigsIncludesRerankForCompositePrefixes(t *testing.T) {

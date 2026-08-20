@@ -216,6 +216,7 @@ var rerankParamsKnownFields = map[string]bool{
 	"max_tokens_per_doc": true,
 	"priority":           true,
 	"return_documents":   true,
+	"next_token":         true,
 }
 
 var ocrParamsKnownFields = map[string]bool{
@@ -1213,8 +1214,8 @@ func prepareRerankRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Rerank
 		return nil, nil, fmt.Errorf("documents are required for rerank")
 	}
 	for i, doc := range req.Documents {
-		if strings.TrimSpace(doc.Text) == "" {
-			return nil, nil, fmt.Errorf("document text is required for rerank at index %d", i)
+		if strings.TrimSpace(doc.Text) == "" && len(doc.Data) == 0 {
+			return nil, nil, fmt.Errorf("document text or data is required for rerank at index %d", i)
 		}
 	}
 	if req.RerankParameters == nil {
@@ -3344,9 +3345,24 @@ func (h *CompletionHandler) batchCreate(ctx *fasthttp.RequestCtx) {
 		logger.Warn("Failed to extract extra params: %v", err)
 	}
 
+	// Model is optional at the batch level per OpenAI spec — it lives inside
+	// each JSONL request body. When absent, lift it from the first inline request
+	// so the sweeper has a fallback model for pricing lookups.
+	//
+	// Taking Requests[0] is deliberate, not a mixed-model hazard. It is only ever
+	// a fallback: accounting prefers the model echoed on each result row, and the
+	// providers where the fallback actually decides pricing run one model per job
+	// anyway — Gemini carries it in the URL (models/%s:batchGenerateContent) and
+	// Bedrock requires a job-level model. Leaving it unset when inline models
+	// differ would break Bedrock batch creation and make Gemini silently run its
+	// default model.
 	var model *string
 	if modelName != "" {
 		model = schemas.Ptr(modelName)
+	} else if len(req.Requests) > 0 && req.Requests[0].Body != nil {
+		if m, ok := req.Requests[0].Body["model"].(string); ok && m != "" {
+			model = schemas.Ptr(m)
+		}
 	}
 
 	// Build Bifrost batch create request

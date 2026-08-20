@@ -1,3 +1,4 @@
+import { Badge } from "@/components/ui/badge";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hoverCard";
 import { useDescriptionSlot, useSetTopbarTitle } from "@/lib/contexts/topbarContext";
 import { Info } from "lucide-react";
@@ -23,33 +24,46 @@ import { createPortal } from "react-dom";
  * `title` is only needed when the route slug wouldn't produce the right label
  * (tab views, "&"-joined names). Without it the topbar falls back to the last
  * path segment.
+ *
+ * `beta` marks the page as in beta, rendering a badge beside the title:
+ *
+ *   <PageTitle title="Alert Rules" beta>Create rules that…</PageTitle>
  */
-export default function PageTitle({ title, children }: { title?: string; children?: React.ReactNode }) {
+export default function PageTitle({ title, beta, children }: { title?: string; beta?: boolean; children?: React.ReactNode }) {
 	useSetTopbarTitle(title);
 	const slot = useDescriptionSlot();
 
-	if (!children || !slot) return null;
+	if (!slot || (!children && !beta)) return null;
 
 	return createPortal(
-		<HoverCard openDelay={100} closeDelay={100}>
-			<HoverCardTrigger asChild>
-				<button
-					type="button"
-					data-testid="page-description-trigger"
-					aria-label="About this page"
-					className="text-muted-foreground hover:text-foreground flex size-5 shrink-0 cursor-help items-center justify-center rounded-sm transition-colors"
-				>
-					<Info className="size-4" strokeWidth={2} />
-				</button>
-			</HoverCardTrigger>
-			<HoverCardContent
-				align="start"
-				side="bottom"
-				className="text-muted-foreground w-80 rounded-sm text-sm leading-relaxed font-normal shadow-none"
-			>
-				{children}
-			</HoverCardContent>
-		</HoverCard>,
+		<>
+			{beta && (
+				<Badge className="shrink-0" aria-label={title ? `${title} is in beta` : "This page is in beta"}>
+					Beta
+				</Badge>
+			)}
+			{children && (
+				<HoverCard openDelay={100} closeDelay={100}>
+					<HoverCardTrigger asChild>
+						<button
+							type="button"
+							data-testid="page-description-trigger"
+							aria-label="About this page"
+							className="text-muted-foreground hover:text-foreground flex size-5 shrink-0 cursor-help items-center justify-center rounded-sm transition-colors"
+						>
+							<Info className="size-4" strokeWidth={2} />
+						</button>
+					</HoverCardTrigger>
+					<HoverCardContent
+						align="start"
+						side="bottom"
+						className="text-muted-foreground w-80 rounded-sm text-sm leading-relaxed font-normal shadow-none"
+					>
+						{children}
+					</HoverCardContent>
+				</HoverCard>
+			)}
+		</>,
 		slot,
 	);
 }

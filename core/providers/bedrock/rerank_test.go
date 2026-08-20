@@ -44,8 +44,30 @@ func TestToBedrockRerankRequest(t *testing.T) {
 	fields := req.RerankingConfiguration.BedrockRerankingConfiguration.ModelConfiguration.AdditionalModelRequestFields
 	require.NotNil(t, fields)
 	assert.Equal(t, maxTokensPerDoc, fields["max_tokens_per_doc"])
-	assert.Equal(t, priority, fields["priority"])
 	assert.Equal(t, "END", fields["truncate"])
+
+	// Bedrock rejects the whole request on an unknown additional field: COHERE_RERANK allows
+	// only max_tokens_per_doc. Forwarding priority 400s a request that succeeds on Cohere.
+	assert.NotContains(t, fields, "priority",
+		"priority has no Bedrock equivalent and must be dropped, not forwarded")
+}
+
+func TestToBedrockRerankRequestNextToken(t *testing.T) {
+	req, err := ToBedrockRerankRequest(&schemas.BifrostRerankRequest{
+		Model:     "arn:aws:bedrock:us-east-1::foundation-model/cohere.rerank-v3-5:0",
+		Query:     "capital of france",
+		Documents: []schemas.RerankDocument{{Text: "Paris is the capital of France."}},
+		Params:    &schemas.RerankParameters{NextToken: schemas.Ptr("cursor-1")},
+	}, "arn:aws:bedrock:us-east-1::foundation-model/cohere.rerank-v3-5:0")
+	require.NoError(t, err)
+
+	// nextToken is a top-level request field. Landing in additionalModelRequestFields instead
+	// makes Bedrock reject the request outright.
+	require.NotNil(t, req.NextToken)
+	assert.Equal(t, "cursor-1", *req.NextToken)
+	assert.NotContains(t,
+		req.RerankingConfiguration.BedrockRerankingConfiguration.ModelConfiguration.AdditionalModelRequestFields,
+		"next_token")
 }
 
 func TestBedrockRerankResponseToBifrostRerankResponse(t *testing.T) {
@@ -146,14 +168,14 @@ func TestBedrockRerankRequestToBifrostRerankRequest(t *testing.T) {
 				Type: bedrockRerankSourceTypeInline,
 				InlineDocumentSource: BedrockRerankInlineSource{
 					Type:         bedrockRerankInlineDocumentTypeText,
-					TextDocument: BedrockRerankTextValue{Text: "Paris is the capital of France."},
+					TextDocument: &BedrockRerankTextValue{Text: "Paris is the capital of France."},
 				},
 			},
 			{
 				Type: bedrockRerankSourceTypeInline,
 				InlineDocumentSource: BedrockRerankInlineSource{
 					Type:         bedrockRerankInlineDocumentTypeText,
-					TextDocument: BedrockRerankTextValue{Text: "Berlin is the capital of Germany."},
+					TextDocument: &BedrockRerankTextValue{Text: "Berlin is the capital of Germany."},
 				},
 			},
 		},
@@ -332,4 +354,37 @@ func TestBedrockRerankRejectsEmptyModelIdentifier(t *testing.T) {
 	require.NotNil(t, bifrostErr)
 	require.NotNil(t, bifrostErr.Error)
 	assert.Contains(t, bifrostErr.Error.Message, "model identifier")
+}
+
+func TestToBedrockRerankResponse(t *testing.T) {
+	response := ToBedrockRerankResponse(&schemas.BifrostRerankResponse{
+		Results: []schemas.RerankResult{
+			{Index: 1, RelevanceScore: 0.92, Document: &schemas.RerankDocument{Text: "Paris is capital of France"}},
+			{Index: 0, RelevanceScore: 0.11, Document: &schemas.RerankDocument{Text: "Berlin is capital of Germany"}},
+		},
+		Model: "arn:aws:bedrock:us-east-1::foundation-model/cohere.rerank-v3-5:0",
+	})
+
+	require.NotNil(t, response)
+	require.Len(t, response.Results, 2)
+	assert.Equal(t, 1, response.Results[0].Index)
+	assert.InDelta(t, 0.92, response.Results[0].RelevanceScore, 1e-9)
+	require.NotNil(t, response.Results[0].Document)
+	assert.Equal(t, bedrockRerankInlineDocumentTypeText, response.Results[0].Document.Type)
+	require.NotNil(t, response.Results[0].Document.TextDocument)
+	assert.Equal(t, "Paris is capital of France", response.Results[0].Document.TextDocument.Text)
+	require.NotNil(t, response.Results[1].Document)
+	assert.Equal(t, "Berlin is capital of Germany", response.Results[1].Document.TextDocument.Text)
+}
+
+func TestToBedrockRerankResponseOmitsMissingDocument(t *testing.T) {
+	response := ToBedrockRerankResponse(&schemas.BifrostRerankResponse{
+		Results: []schemas.RerankResult{{Index: 0, RelevanceScore: 0.7}},
+	})
+
+	require.NotNil(t, response)
+	require.Len(t, response.Results, 1)
+	assert.Nil(t, response.Results[0].Document)
+
+	assert.Nil(t, ToBedrockRerankResponse(nil))
 }

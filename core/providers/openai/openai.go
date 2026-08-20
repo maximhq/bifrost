@@ -934,7 +934,17 @@ func HandleOpenAIChatCompletionRequest(
 	// A 200 is not proof of success on every OpenAI-compatible provider: some report
 	// failures in-band once the status line is already committed. Left unchecked those
 	// surface to the caller as a 200 with null choices and null usage.
-	if inBandErr := ErrorInSuccessfulChatBody(body); inBandErr != nil {
+	// The non-custom path already validated body via HandleProviderResponse's
+	// sonic.Unmarshal, so it skips the redundant gjson.ValidBytes rescan. A custom
+	// handler makes no such guarantee, so validate before scanning to avoid reading an
+	// "error" object out of malformed JSON.
+	var inBandErr *schemas.BifrostError
+	if customResponseHandler != nil {
+		inBandErr = ErrorInSuccessfulChatBody(body)
+	} else {
+		inBandErr = errorInValidatedChatBody(body)
+	}
+	if inBandErr != nil {
 		logger.Debug("in-band error on a 200 from %s provider: %s", providerName, inBandErr.Error.Message)
 		return nil, providerUtils.EnrichError(ctx, inBandErr, jsonData, body, sendBackRawRequest, sendBackRawResponse, latency)
 	}
@@ -1968,37 +1978,7 @@ func HandleOpenAIResponsesStreaming(
 			}
 
 			if response.Type == schemas.ResponsesStreamResponseTypeError {
-				bifrostErr := &schemas.BifrostError{
-					Type:           schemas.Ptr(string(schemas.ResponsesStreamResponseTypeError)),
-					IsBifrostError: false,
-					Error:          &schemas.ErrorField{},
-				}
-
-				if response.Message != nil {
-					bifrostErr.Error.Message = *response.Message
-				}
-				if response.Param != nil {
-					bifrostErr.Error.Param = *response.Param
-				}
-				if response.Code != nil {
-					bifrostErr.Error.Code = response.Code
-				}
-				if response.Error != nil {
-					if response.Error.Message != "" && bifrostErr.Error.Message == "" {
-						bifrostErr.Error.Message = response.Error.Message
-					}
-					if response.Error.Code != "" && (bifrostErr.Error.Code == nil || *bifrostErr.Error.Code == "") {
-						bifrostErr.Error.Code = &response.Error.Code
-					}
-				}
-				if response.Response != nil && response.Response.Error != nil {
-					if response.Response.Error.Message != "" && bifrostErr.Error.Message == "" {
-						bifrostErr.Error.Message = response.Response.Error.Message
-					}
-					if response.Response.Error.Code != "" && (bifrostErr.Error.Code == nil || *bifrostErr.Error.Code == "") {
-						bifrostErr.Error.Code = new(response.Response.Error.Code)
-					}
-				}
+				bifrostErr := responsesStreamError(&response)
 
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, []byte(jsonData), sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
@@ -2008,15 +1988,7 @@ func HandleOpenAIResponsesStreaming(
 			// Some providers (e.g. Fireworks) send response.failed on HTTP 200 streams
 			// instead of a pre-stream 4xx. Convert to BifrostError for consistent handling.
 			if response.Type == schemas.ResponsesStreamResponseTypeFailed {
-				bifrostErr := &schemas.BifrostError{
-					Type:           schemas.Ptr(string(schemas.ResponsesStreamResponseTypeFailed)),
-					IsBifrostError: false,
-					Error:          &schemas.ErrorField{},
-				}
-				if response.Response != nil && response.Response.Error != nil {
-					bifrostErr.Error.Message = response.Response.Error.Message
-					bifrostErr.Error.Code = &response.Response.Error.Code
-				}
+				bifrostErr := responsesStreamError(&response)
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, []byte(jsonData), sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
 				return
@@ -6529,8 +6501,9 @@ func (provider *OpenAIProvider) BatchResults(ctx *schemas.BifrostContext, keys [
 		})
 
 		batchResultsResp := &schemas.BifrostBatchResultsResponse{
-			BatchID: request.BatchID,
-			Results: results,
+			BatchID:  request.BatchID,
+			Endpoint: schemas.BatchEndpoint(batchResp.Endpoint),
+			Results:  results,
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				Latency: latency.Milliseconds(),
 			},

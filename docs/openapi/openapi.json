@@ -166,6 +166,10 @@
       "description": "Virtual keys, teams, and customers management"
     },
     {
+      "name": "Routing",
+      "description": "Routing rules and complexity analyzer configuration"
+    },
+    {
       "name": "Logging",
       "description": "Log search and management endpoints"
     },
@@ -49154,311 +49158,6 @@
         }
       }
     },
-    "/api/governance/routing-rules": {
-      "get": {
-        "operationId": "listRoutingRules",
-        "summary": "List routing rules",
-        "description": "Returns a list of all routing rules configured for intelligent request routing across providers.",
-        "tags": [
-          "Governance"
-        ],
-        "parameters": [
-          {
-            "name": "scope",
-            "in": "query",
-            "description": "Filter routing rules by scope (global, team, customer, virtual_key)",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "scope_id",
-            "in": "query",
-            "description": "Filter routing rules by scope ID",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "security": [
-          {
-            "ManagementBearerAuth": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ListRoutingRulesResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "post": {
-        "operationId": "createRoutingRule",
-        "summary": "Create routing rule",
-        "description": "Creates a new CEL-based routing rule for intelligent request routing. Provider and model can be left empty to use the incoming request values.",
-        "tags": [
-          "Governance"
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateRoutingRuleRequest"
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "ManagementBearerAuth": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Routing rule created successfully",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RoutingRuleResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Bad request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/governance/routing-rules/{rule_id}": {
-      "get": {
-        "operationId": "getRoutingRule",
-        "summary": "Get routing rule",
-        "description": "Returns a specific routing rule by ID.",
-        "tags": [
-          "Governance"
-        ],
-        "parameters": [
-          {
-            "name": "rule_id",
-            "in": "path",
-            "required": true,
-            "description": "Routing rule ID",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "security": [
-          {
-            "ManagementBearerAuth": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "rule": {
-                      "$ref": "#/components/schemas/RoutingRule"
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Routing rule not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "put": {
-        "operationId": "updateRoutingRule",
-        "summary": "Update routing rule",
-        "description": "Updates an existing routing rule's configuration.",
-        "tags": [
-          "Governance"
-        ],
-        "parameters": [
-          {
-            "name": "rule_id",
-            "in": "path",
-            "required": true,
-            "description": "Routing rule ID",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/UpdateRoutingRuleRequest"
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "ManagementBearerAuth": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Routing rule updated successfully",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RoutingRuleResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Bad request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Routing rule not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "delete": {
-        "operationId": "deleteRoutingRule",
-        "summary": "Delete routing rule",
-        "description": "Deletes a routing rule.",
-        "tags": [
-          "Governance"
-        ],
-        "parameters": [
-          {
-            "name": "rule_id",
-            "in": "path",
-            "required": true,
-            "description": "Routing rule ID",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "security": [
-          {
-            "ManagementBearerAuth": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Routing rule deleted successfully",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/MessageResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Routing rule not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/governance/model-configs": {
       "get": {
         "operationId": "listModelConfigs",
@@ -67455,13 +67154,323 @@
         }
       }
     },
-    "/api/governance/complexity-analyzer-config": {
+    "/api/routing/rules": {
+      "get": {
+        "operationId": "listRoutingRules",
+        "summary": "List routing rules",
+        "description": "Returns a list of all routing rules configured for intelligent request routing across providers.",
+        "tags": [
+          "Routing"
+        ],
+        "parameters": [
+          {
+            "name": "scope",
+            "in": "query",
+            "description": "Filter routing rules by scope (global, team, customer, virtual_key)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "scope_id",
+            "in": "query",
+            "description": "Filter routing rules by scope ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListRoutingRulesResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createRoutingRule",
+        "summary": "Create routing rule",
+        "description": "Creates a new CEL-based routing rule for intelligent request routing. Provider and model can be left empty to use the incoming request values.",
+        "tags": [
+          "Routing"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRoutingRuleRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Routing rule created successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoutingRuleResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/routing/rules/{rule_id}": {
+      "get": {
+        "operationId": "getRoutingRule",
+        "summary": "Get routing rule",
+        "description": "Returns a specific routing rule by ID.",
+        "tags": [
+          "Routing"
+        ],
+        "parameters": [
+          {
+            "name": "rule_id",
+            "in": "path",
+            "required": true,
+            "description": "Routing rule ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "rule": {
+                      "$ref": "#/components/schemas/RoutingRule"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Routing rule not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "updateRoutingRule",
+        "summary": "Update routing rule",
+        "description": "Updates an existing routing rule's configuration.",
+        "tags": [
+          "Routing"
+        ],
+        "parameters": [
+          {
+            "name": "rule_id",
+            "in": "path",
+            "required": true,
+            "description": "Routing rule ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateRoutingRuleRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Routing rule updated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoutingRuleResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Routing rule not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteRoutingRule",
+        "summary": "Delete routing rule",
+        "description": "Deletes a routing rule.",
+        "tags": [
+          "Routing"
+        ],
+        "parameters": [
+          {
+            "name": "rule_id",
+            "in": "path",
+            "required": true,
+            "description": "Routing rule ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Routing rule deleted successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Routing rule not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/routing/complexity-analyzer-config": {
       "get": {
         "operationId": "getComplexityAnalyzerConfig",
         "summary": "Get complexity analyzer config",
         "description": "Returns the full complexity analyzer runtime config, including tier thresholds and editable keyword lists. Returns built-in defaults if none have been configured.",
         "tags": [
-          "Governance"
+          "Routing"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
         ],
         "responses": {
           "200": {
@@ -67578,9 +67587,9 @@
       "put": {
         "operationId": "updateComplexityAnalyzerConfig",
         "summary": "Update complexity analyzer config",
-        "description": "Replaces the full complexity analyzer runtime config and hot-reloads the governance plugin. Tier thresholds must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.",
+        "description": "Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Tier thresholds must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.",
         "tags": [
-          "Governance"
+          "Routing"
         ],
         "requestBody": {
           "required": true,
@@ -67671,6 +67680,798 @@
             }
           }
         },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Complexity analyzer config updated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Full runtime configuration for complexity routing analysis.",
+                  "additionalProperties": false,
+                  "required": [
+                    "tier_boundaries",
+                    "keywords"
+                  ],
+                  "properties": {
+                    "tier_boundaries": {
+                      "type": "object",
+                      "description": "Score thresholds for complexity tier classification. All values must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.",
+                      "additionalProperties": false,
+                      "required": [
+                        "simple_medium",
+                        "medium_complex",
+                        "complex_reasoning"
+                      ],
+                      "properties": {
+                        "simple_medium": {
+                          "type": "number",
+                          "description": "Score boundary between SIMPLE and MEDIUM tiers",
+                          "exclusiveMinimum": 0,
+                          "exclusiveMaximum": 1
+                        },
+                        "medium_complex": {
+                          "type": "number",
+                          "description": "Score boundary between MEDIUM and COMPLEX tiers",
+                          "exclusiveMinimum": 0,
+                          "exclusiveMaximum": 1
+                        },
+                        "complex_reasoning": {
+                          "type": "number",
+                          "description": "Score boundary between COMPLEX and REASONING tiers",
+                          "exclusiveMinimum": 0,
+                          "exclusiveMaximum": 1
+                        }
+                      }
+                    },
+                    "keywords": {
+                      "type": "object",
+                      "description": "Editable keyword lists used by the complexity analyzer. Only the four user-facing\ndimensions are exposed; `reasoning_keywords` entries drive the reasoning tier\noverride. Matching is normalized to lowercase and duplicates are removed on save.\n",
+                      "additionalProperties": false,
+                      "required": [
+                        "code_keywords",
+                        "reasoning_keywords",
+                        "technical_keywords",
+                        "simple_keywords"
+                      ],
+                      "properties": {
+                        "code_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "reasoning_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "technical_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "simple_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/routing/complexity-analyzer-config/reset": {
+      "post": {
+        "operationId": "resetComplexityAnalyzerConfig",
+        "summary": "Reset complexity analyzer config",
+        "description": "Restores the built-in complexity analyzer runtime config defaults and hot-reloads the routing plugin.",
+        "tags": [
+          "Routing"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Complexity analyzer config reset successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Full runtime configuration for complexity routing analysis.",
+                  "additionalProperties": false,
+                  "required": [
+                    "tier_boundaries",
+                    "keywords"
+                  ],
+                  "properties": {
+                    "tier_boundaries": {
+                      "type": "object",
+                      "description": "Score thresholds for complexity tier classification. All values must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.",
+                      "additionalProperties": false,
+                      "required": [
+                        "simple_medium",
+                        "medium_complex",
+                        "complex_reasoning"
+                      ],
+                      "properties": {
+                        "simple_medium": {
+                          "type": "number",
+                          "description": "Score boundary between SIMPLE and MEDIUM tiers",
+                          "exclusiveMinimum": 0,
+                          "exclusiveMaximum": 1
+                        },
+                        "medium_complex": {
+                          "type": "number",
+                          "description": "Score boundary between MEDIUM and COMPLEX tiers",
+                          "exclusiveMinimum": 0,
+                          "exclusiveMaximum": 1
+                        },
+                        "complex_reasoning": {
+                          "type": "number",
+                          "description": "Score boundary between COMPLEX and REASONING tiers",
+                          "exclusiveMinimum": 0,
+                          "exclusiveMaximum": 1
+                        }
+                      }
+                    },
+                    "keywords": {
+                      "type": "object",
+                      "description": "Editable keyword lists used by the complexity analyzer. Only the four user-facing\ndimensions are exposed; `reasoning_keywords` entries drive the reasoning tier\noverride. Matching is normalized to lowercase and duplicates are removed on save.\n",
+                      "additionalProperties": false,
+                      "required": [
+                        "code_keywords",
+                        "reasoning_keywords",
+                        "technical_keywords",
+                        "simple_keywords"
+                      ],
+                      "properties": {
+                        "code_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "reasoning_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "technical_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "simple_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/governance/routing-rules": {
+      "get": {
+        "operationId": "listRoutingRulesLegacy",
+        "deprecated": true,
+        "summary": "List routing rules (deprecated path)",
+        "description": "Returns a list of all routing rules configured for intelligent request routing across providers. Deprecated, use /api/routing/rules instead. This path is kept for backwards compatibility and behaves identically.",
+        "tags": [
+          "Routing"
+        ],
+        "parameters": [
+          {
+            "name": "scope",
+            "in": "query",
+            "description": "Filter routing rules by scope (global, team, customer, virtual_key)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "scope_id",
+            "in": "query",
+            "description": "Filter routing rules by scope ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListRoutingRulesResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createRoutingRuleLegacy",
+        "deprecated": true,
+        "summary": "Create routing rule (deprecated path)",
+        "description": "Creates a new CEL-based routing rule for intelligent request routing. Provider and model can be left empty to use the incoming request values. Deprecated, use /api/routing/rules instead. This path is kept for backwards compatibility and behaves identically.",
+        "tags": [
+          "Routing"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRoutingRuleRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Routing rule created successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoutingRuleResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/governance/routing-rules/{rule_id}": {
+      "get": {
+        "operationId": "getRoutingRuleLegacy",
+        "deprecated": true,
+        "summary": "Get routing rule (deprecated path)",
+        "description": "Returns a specific routing rule by ID. Deprecated, use /api/routing/rules/{rule_id} instead. This path is kept for backwards compatibility and behaves identically.",
+        "tags": [
+          "Routing"
+        ],
+        "parameters": [
+          {
+            "name": "rule_id",
+            "in": "path",
+            "required": true,
+            "description": "Routing rule ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "rule": {
+                      "$ref": "#/components/schemas/RoutingRule"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Routing rule not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "updateRoutingRuleLegacy",
+        "deprecated": true,
+        "summary": "Update routing rule (deprecated path)",
+        "description": "Updates an existing routing rule's configuration. Deprecated, use /api/routing/rules/{rule_id} instead. This path is kept for backwards compatibility and behaves identically.",
+        "tags": [
+          "Routing"
+        ],
+        "parameters": [
+          {
+            "name": "rule_id",
+            "in": "path",
+            "required": true,
+            "description": "Routing rule ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateRoutingRuleRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Routing rule updated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoutingRuleResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Routing rule not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteRoutingRuleLegacy",
+        "deprecated": true,
+        "summary": "Delete routing rule (deprecated path)",
+        "description": "Deletes a routing rule. Deprecated, use /api/routing/rules/{rule_id} instead. This path is kept for backwards compatibility and behaves identically.",
+        "tags": [
+          "Routing"
+        ],
+        "parameters": [
+          {
+            "name": "rule_id",
+            "in": "path",
+            "required": true,
+            "description": "Routing rule ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Routing rule deleted successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Routing rule not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/governance/complexity-analyzer-config": {
+      "get": {
+        "operationId": "getComplexityAnalyzerConfigLegacy",
+        "deprecated": true,
+        "summary": "Get complexity analyzer config (deprecated path)",
+        "description": "Returns the full complexity analyzer runtime config, including tier thresholds and editable keyword lists. Returns built-in defaults if none have been configured. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.",
+        "tags": [
+          "Routing"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Complexity analyzer config retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Full runtime configuration for complexity routing analysis.",
+                  "additionalProperties": false,
+                  "required": [
+                    "tier_boundaries",
+                    "keywords"
+                  ],
+                  "properties": {
+                    "tier_boundaries": {
+                      "type": "object",
+                      "description": "Score thresholds for complexity tier classification. All values must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.",
+                      "additionalProperties": false,
+                      "required": [
+                        "simple_medium",
+                        "medium_complex",
+                        "complex_reasoning"
+                      ],
+                      "properties": {
+                        "simple_medium": {
+                          "type": "number",
+                          "description": "Score boundary between SIMPLE and MEDIUM tiers",
+                          "exclusiveMinimum": 0,
+                          "exclusiveMaximum": 1
+                        },
+                        "medium_complex": {
+                          "type": "number",
+                          "description": "Score boundary between MEDIUM and COMPLEX tiers",
+                          "exclusiveMinimum": 0,
+                          "exclusiveMaximum": 1
+                        },
+                        "complex_reasoning": {
+                          "type": "number",
+                          "description": "Score boundary between COMPLEX and REASONING tiers",
+                          "exclusiveMinimum": 0,
+                          "exclusiveMaximum": 1
+                        }
+                      }
+                    },
+                    "keywords": {
+                      "type": "object",
+                      "description": "Editable keyword lists used by the complexity analyzer. Only the four user-facing\ndimensions are exposed; `reasoning_keywords` entries drive the reasoning tier\noverride. Matching is normalized to lowercase and duplicates are removed on save.\n",
+                      "additionalProperties": false,
+                      "required": [
+                        "code_keywords",
+                        "reasoning_keywords",
+                        "technical_keywords",
+                        "simple_keywords"
+                      ],
+                      "properties": {
+                        "code_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "reasoning_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "technical_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        },
+                        "simple_keywords": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "updateComplexityAnalyzerConfigLegacy",
+        "deprecated": true,
+        "summary": "Update complexity analyzer config (deprecated path)",
+        "description": "Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Tier thresholds must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.",
+        "tags": [
+          "Routing"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Full runtime configuration for complexity routing analysis.",
+                "additionalProperties": false,
+                "required": [
+                  "tier_boundaries",
+                  "keywords"
+                ],
+                "properties": {
+                  "tier_boundaries": {
+                    "type": "object",
+                    "description": "Score thresholds for complexity tier classification. All values must satisfy 0 < simple_medium < medium_complex < complex_reasoning < 1.",
+                    "additionalProperties": false,
+                    "required": [
+                      "simple_medium",
+                      "medium_complex",
+                      "complex_reasoning"
+                    ],
+                    "properties": {
+                      "simple_medium": {
+                        "type": "number",
+                        "description": "Score boundary between SIMPLE and MEDIUM tiers",
+                        "exclusiveMinimum": 0,
+                        "exclusiveMaximum": 1
+                      },
+                      "medium_complex": {
+                        "type": "number",
+                        "description": "Score boundary between MEDIUM and COMPLEX tiers",
+                        "exclusiveMinimum": 0,
+                        "exclusiveMaximum": 1
+                      },
+                      "complex_reasoning": {
+                        "type": "number",
+                        "description": "Score boundary between COMPLEX and REASONING tiers",
+                        "exclusiveMinimum": 0,
+                        "exclusiveMaximum": 1
+                      }
+                    }
+                  },
+                  "keywords": {
+                    "type": "object",
+                    "description": "Editable keyword lists used by the complexity analyzer. Only the four user-facing\ndimensions are exposed; `reasoning_keywords` entries drive the reasoning tier\noverride. Matching is normalized to lowercase and duplicates are removed on save.\n",
+                    "additionalProperties": false,
+                    "required": [
+                      "code_keywords",
+                      "reasoning_keywords",
+                      "technical_keywords",
+                      "simple_keywords"
+                    ],
+                    "properties": {
+                      "code_keywords": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "minItems": 1
+                      },
+                      "reasoning_keywords": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "minItems": 1
+                      },
+                      "technical_keywords": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "minItems": 1
+                      },
+                      "simple_keywords": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "minItems": 1
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Complexity analyzer config updated successfully",
@@ -67796,11 +68597,17 @@
     },
     "/api/governance/complexity-analyzer-config/reset": {
       "post": {
-        "operationId": "resetComplexityAnalyzerConfig",
-        "summary": "Reset complexity analyzer config",
-        "description": "Restores the built-in complexity analyzer runtime config defaults and hot-reloads the governance plugin.",
+        "operationId": "resetComplexityAnalyzerConfigLegacy",
+        "deprecated": true,
+        "summary": "Reset complexity analyzer config (deprecated path)",
+        "description": "Restores the built-in complexity analyzer runtime config defaults and hot-reloads the routing plugin. Deprecated, use /api/routing/complexity-analyzer-config/reset instead. This path is kept for backwards compatibility and behaves identically.",
         "tags": [
-          "Governance"
+          "Routing"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
         ],
         "responses": {
           "200": {
@@ -96653,6 +97460,26 @@
             "minimum": 0
           },
           "output_cost_per_image_above_4096_and_4096_pixels": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_4_megapixels": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_8_megapixels": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_16_megapixels": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_32_megapixels": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_64_megapixels": {
             "type": "number",
             "minimum": 0
           },

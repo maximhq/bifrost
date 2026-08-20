@@ -25,6 +25,7 @@ import { DottedSeparator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { TruncatedLabel } from "@/components/ui/truncatedLabel";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { ProviderIconType, RenderProviderIcon, RoutingEngineUsedIcons } from "@/lib/constants/icons";
 import {
@@ -37,7 +38,7 @@ import {
 	RoutingEngineUsedLabels,
 	Status,
 } from "@/lib/constants/logs";
-import { ContentBlock, LogEntry, ResponsesMessage } from "@/lib/types/logs";
+import { BatchRequestCounts, ContentBlock, LogEntry, ResponsesMessage } from "@/lib/types/logs";
 import { useGetUserAgentMappingsQuery } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { downloadAsJson } from "@/lib/utils/browser-download";
@@ -364,6 +365,25 @@ const formatToolChoice = (value: unknown): string => {
 	}
 };
 
+// batchRequestStates lists the provider's per-state request tallies as discrete
+// label/count pairs. Total, Completed, and Failed are universal (every provider
+// sets them, and a 0 is a real, useful count — e.g. "no failures yet"), so they
+// always render. The remaining states are Anthropic-specific and simply absent
+// for other providers, so those are dropped when not reported.
+const batchRequestStates = (counts: BatchRequestCounts): [string, number][] => {
+	const optional: [string, number | undefined][] = [
+		["Succeeded", counts.succeeded],
+		["Expired", counts.expired],
+		["Canceled", counts.canceled],
+		["Pending", counts.pending],
+	];
+	return [
+		["Completed", counts.completed],
+		["Failed", counts.failed],
+		...optional.filter((entry): entry is [string, number] => Boolean(entry[1])),
+	];
+};
+
 // Helper to detect passthrough operations
 const isPassthroughOperation = (object: string) => object === "passthrough" || object === "passthrough_stream";
 
@@ -396,6 +416,16 @@ const statusDotStyles: Record<string, string> = {
 	cancelled: "bg-gray-400",
 };
 
+const batchStatusBadgeStyles: Record<string, string> = {
+	completed: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
+	ended: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
+	failed: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200",
+	expired: "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300",
+	cancelled: "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300",
+	deleted: "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300",
+};
+const batchStatusBadgeDefault = "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200";
+
 function StatusPill({ status }: { status: Status }) {
 	return (
 		<span
@@ -408,6 +438,17 @@ function StatusPill({ status }: { status: Status }) {
 			{status}
 		</span>
 	);
+}
+
+// Colors an HTTP status code badge by response class.
+function statusCodeBadgeClass(code: number): string {
+	if (code >= 200 && code < 300)
+		return "bg-green-50 text-green-700 border-green-200 dark:bg-green-950/40 dark:text-green-400 dark:border-green-900";
+	if (code >= 300 && code < 400)
+		return "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/40 dark:text-blue-400 dark:border-blue-900";
+	if (code >= 400 && code < 500)
+		return "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-900";
+	return "bg-red-50 text-red-700 border-red-200 dark:bg-red-950/40 dark:text-red-400 dark:border-red-900";
 }
 
 function HeroStat({
@@ -658,6 +699,7 @@ export function LogDetailView({
 	const showTabs = !isContainer;
 	const isPassthrough = isPassthroughOperation(log.object);
 	const isRealtimeTurn = log.object === "realtime.turn";
+	const batchDebug = log.batch_debug;
 	const passthroughParams = isPassthrough
 		? (log.params as {
 				method?: string;
@@ -666,6 +708,11 @@ export function LogDetailView({
 				status_code?: number;
 			})
 		: null;
+	// Only errors and passthrough requests carry a real HTTP status code; others have none.
+	// Non-HTTP errors (timeouts, network, marshal) default to 0; treat that as no status
+	// so the header doesn't render a misleading red "0" badge.
+	const rawStatusCode = log.error_details?.status_code ?? passthroughParams?.status_code ?? null;
+	const statusCode = rawStatusCode === 0 ? null : rawStatusCode;
 
 	// Tools can also be declared inside Responses input items instead of the
 	// top-level tools param (codex code-mode models send an `additional_tools`
@@ -799,7 +846,6 @@ export function LogDetailView({
 				<div className="flex items-start justify-between gap-6 px-5 pt-5 pb-4">
 					<div className="min-w-0 flex-1">
 						<div className="flex flex-wrap items-center gap-2">
-							<StatusPill status={log.status as Status} />
 							<Badge
 								variant="outline"
 								className={cn(
@@ -809,6 +855,15 @@ export function LogDetailView({
 							>
 								{RequestTypeLabels[log.object as keyof typeof RequestTypeLabels] ?? log.object}
 							</Badge>
+							<StatusPill status={log.status as Status} />
+							{statusCode != null && (
+								<Badge
+									variant="outline"
+									className={cn("rounded-sm px-2 py-0.5 font-medium tabular-nums", statusCodeBadgeClass(statusCode))}
+								>
+									{statusCode}
+								</Badge>
+							)}
 							{log.routing_rule && (
 								<Link
 									to="/workspace/logs"
@@ -860,6 +915,17 @@ export function LogDetailView({
 									className="rounded-sm border-amber-300 bg-amber-50 px-2 py-0.5 font-medium text-amber-700 dark:border-amber-600 dark:bg-amber-950 dark:text-amber-300"
 								>
 									{log.metadata.realtime_voice}
+								</Badge>
+							)}
+							{batchDebug?.status && (
+								<Badge
+									variant="outline"
+									className={cn(
+										"rounded-sm px-2 py-0.5 font-medium uppercase",
+										batchStatusBadgeStyles[batchDebug.status] ?? batchStatusBadgeDefault,
+									)}
+								>
+									{batchDebug.status.replace(/_/g, " ")}
 								</Badge>
 							)}
 						</div>
@@ -1007,7 +1073,20 @@ export function LogDetailView({
 							<LogEntryDetailsView
 								className="w-full"
 								label="Latency"
+								tooltip="Total end-to-end request time: upstream plus Bifrost overhead."
 								value={log.latency == null || isNaN(log.latency) ? "N/A" : <div>{log.latency.toFixed(2)}ms</div>}
+							/>
+							<LogEntryDetailsView
+								className="w-full"
+								label="Upstream Latency"
+								tooltip="Time spent waiting on the provider, summed across every attempt."
+								value={log.upstream_latency == null || isNaN(log.upstream_latency) ? "N/A" : <div>{log.upstream_latency.toFixed(2)}ms</div>}
+							/>
+							<LogEntryDetailsView
+								className="w-full"
+								label="Bifrost Overhead"
+								tooltip="Time added by Bifrost itself: routing, plugins, and processing."
+								value={log.overhead_latency == null || isNaN(log.overhead_latency) ? "N/A" : <div>{log.overhead_latency.toFixed(2)}ms</div>}
 							/>
 						</div>
 					</div>
@@ -1110,16 +1189,20 @@ export function LogDetailView({
 											<Tooltip>
 												<TooltipTrigger asChild>
 													<code
-														className="block min-w-0 cursor-pointer font-normal break-all text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
+														className="block max-w-full min-w-0 cursor-pointer truncate font-normal text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
 														onClick={() => onFilterByParentRequestId(log.parent_request_id as string)}
 													>
 														{log.parent_request_id}
 													</code>
 												</TooltipTrigger>
-												<TooltipContent sideOffset={6}>Filter this session</TooltipContent>
+												<TooltipContent sideOffset={6} className="max-w-md break-all">
+													{log.parent_request_id} · Filter this session
+												</TooltipContent>
 											</Tooltip>
 										) : (
-											<code className="block min-w-0 font-normal break-all">{log.parent_request_id}</code>
+											<TruncatedLabel className="block max-w-full min-w-0 font-normal" tooltipSide="top">
+												{log.parent_request_id}
+											</TruncatedLabel>
 										)
 									}
 								/>
@@ -1247,7 +1330,7 @@ export function LogDetailView({
 												<Link
 													to="/workspace/logs"
 													search={(prev) => ({ ...prev, offset: 0, selected_log: "", user_ids: [log.user_id] })}
-													className={`block min-w-0 cursor-pointer text-sm font-normal break-all text-blue-600 underline-offset-2 hover:underline dark:text-blue-400${log.user_name ? "" : " font-mono"}`}
+													className={`block max-w-full min-w-0 cursor-pointer truncate text-sm font-normal text-blue-600 underline-offset-2 hover:underline dark:text-blue-400${log.user_name ? "" : " font-mono"}`}
 													data-testid="logdetails-user-link"
 												>
 													{log.user_name || log.user_id}
@@ -1571,6 +1654,40 @@ export function LogDetailView({
 									</>
 								);
 							})()}
+							{batchDebug && (
+								<>
+									<DottedSeparator />
+									<div className="space-y-4">
+										<BlockHeader title="Batch Details" />
+										<div className="grid w-full grid-cols-3 md:grid-cols-1 items-start justify-between gap-4">
+											{batchDebug.batch_id && (
+												<LogEntryDetailsView
+													className="w-full"
+													label="Batch ID"
+													value={
+														<span className="flex items-center gap-1">
+															<code className="font-mono text-xs">{batchDebug.batch_id}</code>
+															<CopyInlineButton text={batchDebug.batch_id} testId="logdetails-copy-batch-id-button" />
+														</span>
+													}
+												/>
+											)}
+											{batchDebug.request_counts && (
+												<>
+													<LogEntryDetailsView className="w-full" label="Total Requests" value={String(batchDebug.request_counts.total)} />
+													{batchRequestStates(batchDebug.request_counts).map(([label, count]) => (
+														<LogEntryDetailsView key={label} className="w-full" label={label} value={String(count)} />
+													))}
+												</>
+											)}
+											{batchDebug.accounting?.cost != null && (
+												<LogEntryDetailsView className="w-full" label="Batch Cost" value={formatCost(batchDebug.accounting.cost)} />
+											)}
+										</div>
+									</div>
+								</>
+							)}
+
 							{log.cache_debug && (
 								<>
 									<DottedSeparator />

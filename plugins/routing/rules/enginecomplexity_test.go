@@ -1,4 +1,4 @@
-package governance
+package rules
 
 import (
 	"context"
@@ -7,9 +7,8 @@ import (
 
 	"github.com/google/cel-go/cel"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/plugins/governance/complexity"
+	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -267,21 +266,21 @@ func TestEvaluateRoutingRules_ComplexityUnavailableNegativePredicatesDoNotMatch(
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
-			store, err := NewLocalGovernanceStore(ctx, NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+			store, err := newTestRuleStore()
 			require.NoError(t, err)
 
 			rule := complexityRoutingRule("complexity-unavailable-"+tt.name, tt.expression)
-			require.NoError(t, store.UpdateRoutingRuleInMemory(ctx, rule))
+			require.NoError(t, store.UpsertRule(ctx, rule))
 
-			engine, err := NewRoutingEngine(store, NewMockLogger(), schemas.Ptr(10))
+			engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
 			require.NoError(t, err)
 
 			computeCalls := 0
-			decision, err := engine.EvaluateRoutingRules(schemas.NewBifrostContext(ctx, time.Now()), &RoutingContext{
+			decision, err := engine.EvaluateRoutingRules(schemas.NewBifrostContext(ctx, time.Now()), &EvaluationContext{
 				Provider:    schemas.OpenAI,
 				Model:       "gpt-4o",
 				RequestType: "chat_completion",
-				computeComplexity: func() *complexity.ComplexityResult {
+				ComputeComplexity: func() *complexity.ComplexityResult {
 					computeCalls++
 					return nil
 				},
@@ -296,21 +295,21 @@ func TestEvaluateRoutingRules_ComplexityUnavailableNegativePredicatesDoNotMatch(
 
 func TestEvaluateRoutingRules_ComplexityTierLiteralDoesNotComputeComplexity(t *testing.T) {
 	ctx := context.Background()
-	store, err := NewLocalGovernanceStore(ctx, NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+	store, err := newTestRuleStore()
 	require.NoError(t, err)
 
 	rule := complexityRoutingRule("complexity-tier-literal", `model == "complexity_tier"`)
-	require.NoError(t, store.UpdateRoutingRuleInMemory(ctx, rule))
+	require.NoError(t, store.UpsertRule(ctx, rule))
 
-	engine, err := NewRoutingEngine(store, NewMockLogger(), schemas.Ptr(10))
+	engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
 	require.NoError(t, err)
 
 	computeCalls := 0
-	decision, err := engine.EvaluateRoutingRules(schemas.NewBifrostContext(ctx, time.Now()), &RoutingContext{
+	decision, err := engine.EvaluateRoutingRules(schemas.NewBifrostContext(ctx, time.Now()), &EvaluationContext{
 		Provider:    schemas.OpenAI,
 		Model:       "complexity_tier",
 		RequestType: "chat_completion",
-		computeComplexity: func() *complexity.ComplexityResult {
+		ComputeComplexity: func() *complexity.ComplexityResult {
 			computeCalls++
 			return &complexity.ComplexityResult{Tier: "SIMPLE"}
 		},
@@ -325,20 +324,20 @@ func TestEvaluateRoutingRules_ComplexityTierLiteralDoesNotComputeComplexity(t *t
 
 func TestEvaluateRoutingRules_ComplexityNegativePredicateMatchesAvailableTier(t *testing.T) {
 	ctx := context.Background()
-	store, err := NewLocalGovernanceStore(ctx, NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+	store, err := newTestRuleStore()
 	require.NoError(t, err)
 
 	rule := complexityRoutingRule("complexity-available-not-simple", `complexity_tier != "SIMPLE"`)
-	require.NoError(t, store.UpdateRoutingRuleInMemory(ctx, rule))
+	require.NoError(t, store.UpsertRule(ctx, rule))
 
-	engine, err := NewRoutingEngine(store, NewMockLogger(), schemas.Ptr(10))
+	engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
 	require.NoError(t, err)
 
-	decision, err := engine.EvaluateRoutingRules(schemas.NewBifrostContext(ctx, time.Now()), &RoutingContext{
+	decision, err := engine.EvaluateRoutingRules(schemas.NewBifrostContext(ctx, time.Now()), &EvaluationContext{
 		Provider:    schemas.OpenAI,
 		Model:       "gpt-4o",
 		RequestType: "chat_completion",
-		computeComplexity: func() *complexity.ComplexityResult {
+		ComputeComplexity: func() *complexity.ComplexityResult {
 			return &complexity.ComplexityResult{Tier: "COMPLEX"}
 		},
 	})
@@ -374,7 +373,7 @@ func complexityRoutingRule(id string, expression string) *configstoreTables.Tabl
 	return &configstoreTables.TableRoutingRule{
 		ID:            id,
 		Name:          id,
-		Enabled:       boolPtr(true),
+		Enabled:       schemas.Ptr(true),
 		CelExpression: expression,
 		Scope:         "global",
 		Priority:      1,

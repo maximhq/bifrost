@@ -8,6 +8,10 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 
 ## Changelog
 
+### Upcoming
+
+- Added `bifrost.plugins.splunk` — the Splunk HTTP Event Collector (HEC) observability connector (Enterprise): one flattened event per request to `events_index` plus the derived metric set to `metrics_index`, with TLS (`ca_cert` / `insecure_skip_verify`), a content toggle (`disable_content_logging`), request-header capture, and indexer acknowledgement (`indexer_ack`, `ack_poll_interval_ms`, `ack_timeout_ms`, `max_ack_attempts`). Renders into the `splunk` plugin config.
+
 ### 2.1.36
 
 - Added `bifrost.scim.config.claimsSyncMode` (`both` default, or `scim`) to every SCIM/SSO provider — selects, when SCIM is enabled, whether IdP login/refresh claims still drive role/team/business-unit/profile sync and JIT user creation (`both`) or SCIM is the sole source of truth (`scim`). Renders into the provider's `claimsSyncMode`.

@@ -47,7 +47,7 @@ export function FilterSidebarTrigger({ activeFilterCount, onClick, testId }: Fil
 				onClick={onClick}
 				variant="outline"
 				size="sm"
-				className="group bg-card hover:bg-card dark:bg-card dark:hover:bg-card hidden h-full w-10 shrink-0 flex-col items-center justify-start gap-3 rounded-l-none rounded-r-md border-0 py-4 shadow-none hover:text-current active:scale-100 md:flex"
+				className="group bg-card hover:bg-card dark:bg-card dark:hover:bg-card hidden h-full w-10 shrink-0 flex-col items-center justify-start gap-3 rounded-md py-4 shadow-none hover:text-current active:scale-100 md:flex"
 				title="Show filters"
 				aria-label="Show filters"
 				data-testid={testId}

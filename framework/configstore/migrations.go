@@ -469,6 +469,8 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_bedrock_endpoints_columns"}, run: migrationAddBedrockEndpointsColumns},
 	{IDs: []string{"add_cost_per_request_pricing_column"}, run: migrationAddCostPerRequestPricingColumn},
 	{IDs: []string{"add_notifications_table"}, run: migrationAddNotificationsTable},
+	{IDs: []string{"add_batch_jobs_table"}, run: migrationAddBatchJobsTable},
+	{IDs: []string{"add_image_megapixel_tier_pricing_columns"}, run: migrationAddImageMegapixelTierPricingColumns},
 }
 
 func migrationAddNotificationsTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
@@ -11933,6 +11935,153 @@ func migrationAddBedrockEndpointsColumns(ctx context.Context, db *gorm.DB, logge
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddBatchJobsTable creates the batch_jobs coordination table that tracks
+// the provider batch lifecycle and delayed accounting state. Uses raw SQL (not
+// GORM auto-DDL) so the schema is explicit and stable; idempotent via CREATE TABLE
+// IF NOT EXISTS; covers postgres and sqlite dialects with a GORM fallback.
+func migrationAddBatchJobsTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_batch_jobs_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+  m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+  ID: migrationName,
+  Migrate: func(tx *gorm.DB) error {
+    tx = tx.WithContext(ctx)
+    var createTable string
+			switch tx.Dialector.Name() {
+			case "postgres":
+				createTable = `
+					CREATE TABLE IF NOT EXISTS batch_jobs (
+						id                       VARCHAR(512) PRIMARY KEY,
+						provider                 VARCHAR(255) NOT NULL,
+						batch_id                 VARCHAR(255) NOT NULL,
+						model                    VARCHAR(255),
+						endpoint                 VARCHAR(255),
+						provider_status          VARCHAR(50),
+						input_file_id            VARCHAR(255),
+						output_file_id           VARCHAR(255),
+						error_file_id            VARCHAR(255),
+						results_url              TEXT,
+						next_check_at            TIMESTAMPTZ,
+						poll_attempts            INTEGER NOT NULL DEFAULT 0,
+						accounting_status        VARCHAR(50) NOT NULL,
+						runner_id                VARCHAR(255),
+						claimed_at               TIMESTAMPTZ,
+						unpriceable_reason       VARCHAR(255),
+						last_error               TEXT,
+						aggregate_log_written_at TIMESTAMPTZ,
+						governance_reported_at   TIMESTAMPTZ,
+						selected_key_id          VARCHAR(255),
+						virtual_key_id           VARCHAR(255),
+						budget_ids               TEXT,
+						rate_limit_ids           TEXT,
+						created_at               TIMESTAMPTZ NOT NULL,
+						updated_at               TIMESTAMPTZ NOT NULL
+					)`
+			case "sqlite":
+				createTable = `
+					CREATE TABLE IF NOT EXISTS batch_jobs (
+						id                       TEXT PRIMARY KEY,
+						provider                 TEXT NOT NULL,
+						batch_id                 TEXT NOT NULL,
+						model                    TEXT,
+						endpoint                 TEXT,
+						provider_status          TEXT,
+						input_file_id            TEXT,
+						output_file_id           TEXT,
+						error_file_id            TEXT,
+						results_url              TEXT,
+						next_check_at            DATETIME,
+						poll_attempts            INTEGER NOT NULL DEFAULT 0,
+						accounting_status        TEXT NOT NULL,
+						runner_id                TEXT,
+						claimed_at               DATETIME,
+						unpriceable_reason       TEXT,
+						last_error               TEXT,
+						aggregate_log_written_at DATETIME,
+						governance_reported_at   DATETIME,
+						selected_key_id          TEXT,
+						virtual_key_id           TEXT,
+						budget_ids               TEXT,
+						rate_limit_ids           TEXT,
+						created_at               DATETIME NOT NULL,
+						updated_at               DATETIME NOT NULL
+					)`
+			default:
+				// Fall back to GORM for any other dialect so the migration does not
+				// hard-fail on an unsupported backend.
+				return tx.Migrator().AutoMigrate(&tables.TableBatchJob{})
+			}
+
+			if err := tx.Exec(createTable).Error; err != nil {
+				return err
+			}
+
+			// idx_batch_jobs_identity enforces one row per (provider, batch_id).
+			if err := tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_batch_jobs_identity ON batch_jobs (provider, batch_id)`).Error; err != nil {
+				return err
+			}
+			// idx_batch_jobs_sweeper backs the due-job poll scan.
+			if err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_batch_jobs_sweeper ON batch_jobs (provider, accounting_status, next_check_at)`).Error; err != nil {
+				return err
+			}
+			// idx_batch_jobs_runner_id supports fencing lookups by runner_id.
+			return tx.Exec(`CREATE INDEX IF NOT EXISTS idx_batch_jobs_runner_id ON batch_jobs (runner_id)`).Error
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return tx.Migrator().DropTable(&tables.TableBatchJob{})
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while creating batch_jobs table: %s", err.Error())
+  }
+	return nil
+}
+
+// migrationAddImageMegapixelTierPricingColumns adds the megapixel-banded output
+// image cost tier columns (output_cost_per_image_above_{4,8,16,32,64}_megapixels),
+// used by providers (e.g. Replicate's upscaler models) that publish tiered
+// per-image pricing by total output megapixels rather than by a squared
+// width/height threshold.
+func migrationAddImageMegapixelTierPricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_image_megapixel_tier_pricing_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	columns := []string{
+		"output_cost_per_image_above_4_megapixels",
+		"output_cost_per_image_above_8_megapixels",
+		"output_cost_per_image_above_16_megapixels",
+		"output_cost_per_image_above_32_megapixels",
+		"output_cost_per_image_above_64_megapixels",
+	}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_image_megapixel_tier_pricing_columns migration: %s", err.Error())
 	}
 	return nil
 }

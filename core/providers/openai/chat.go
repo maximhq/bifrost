@@ -38,6 +38,7 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 
 	// Canonical model for capability gating only; wire model (openaiReq.Model) is untouched.
 	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
+	caps := schemas.ResolveModelCaps(bifrostReq.Provider, capModel)
 
 	if bifrostReq.Params != nil {
 		openaiReq.ChatParameters = *bifrostReq.Params
@@ -57,6 +58,10 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 					funcCopy := *tool.Function
 					funcCopy.Parameters = tool.Function.Parameters.Normalized()
 					normalizedTools[i].Function = &funcCopy
+					// The by-value copy carried over any precomputed serialized cache
+					// (shared MCP tools cache it at the source). Drop it so MarshalJSON
+					// re-emits from the normalized params instead of the stale bytes.
+					normalizedTools[i].InvalidateSerialized()
 				}
 			}
 			openaiReq.ChatParameters.Tools = normalizedTools
@@ -65,18 +70,18 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 
 	switch bifrostReq.Provider {
 	case schemas.OpenAI, schemas.Azure:
-		openaiReq.normalizeReasoningEffort(capModel)
+		openaiReq.normalizeReasoningEffort(caps)
 		// URL-sourced documents are NOT inlined here. Chat Completions rejects file_url, so they
 		// still have to be resolved before the request goes out - but that is a network fetch that
 		// can fail, and this function has no way to report a failure. Callers invoke
 		// ResolveChatFileURLs after conversion, where the error can propagate; see its doc comment.
 		return openaiReq
 	case schemas.Cerebras, schemas.Wafer:
-		openaiReq.filterOpenAISpecificParameters(capModel)
+		openaiReq.filterOpenAISpecificParameters(caps)
 		openaiReq.stripReasoningDetails()
 		return openaiReq
 	case schemas.DeepSeek:
-		openaiReq.filterOpenAISpecificParameters(capModel)
+		openaiReq.filterOpenAISpecificParameters(caps)
 		// DeepSeek is asymmetric: it rejects reasoning_content on ordinary assistant
 		// turns, but *requires* it to be replayed on assistant tool_call turns and 400s
 		// without it. Stripping both (as Cerebras/Wafer do) forced thinking off for every
@@ -84,20 +89,20 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		openaiReq.stripReasoningDetailsExceptToolCalls()
 		return openaiReq
 	case schemas.XAI:
-		openaiReq.filterOpenAISpecificParameters(capModel)
-		openaiReq.applyXAICompatibility(capModel)
+		openaiReq.filterOpenAISpecificParameters(caps)
+		openaiReq.applyXAICompatibility(caps)
 		return openaiReq
 	case schemas.Gemini:
-		openaiReq.filterOpenAISpecificParameters(capModel)
+		openaiReq.filterOpenAISpecificParameters(caps)
 		// Removing extra parameters that are not supported by Gemini
 		openaiReq.ServiceTier = nil
 		return openaiReq
 	case schemas.Mistral:
-		openaiReq.filterOpenAISpecificParameters(capModel)
+		openaiReq.filterOpenAISpecificParameters(caps)
 		openaiReq.applyMistralCompatibility()
 		return openaiReq
 	case schemas.Vertex:
-		openaiReq.filterOpenAISpecificParameters(capModel)
+		openaiReq.filterOpenAISpecificParameters(caps)
 
 		// Apply Mistral-specific transformations for Vertex Mistral models
 		if schemas.IsMistralModel(bifrostReq.Model) {
@@ -120,7 +125,7 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		}
 		// Fireworks supports predicted outputs; save before the filter strips them.
 		prediction := openaiReq.ChatParameters.Prediction
-		openaiReq.filterOpenAISpecificParameters(capModel)
+		openaiReq.filterOpenAISpecificParameters(caps)
 		openaiReq.ChatParameters.Prediction = prediction
 		return openaiReq
 	default:
@@ -128,54 +133,56 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		if isCustomProvider, ok := ctx.Value(schemas.BifrostContextKeyIsCustomProvider).(bool); ok && isCustomProvider {
 			return openaiReq
 		}
-		openaiReq.filterOpenAISpecificParameters(capModel)
+		openaiReq.filterOpenAISpecificParameters(caps)
 		return openaiReq
 	}
 }
 
 // Filter OpenAI Specific Parameters
-func (req *OpenAIChatRequest) filterOpenAISpecificParameters(capModel string) {
+func (req *OpenAIChatRequest) filterOpenAISpecificParameters(caps schemas.ModelCaps) {
 	// Handle reasoning parameter: OpenAI uses effort-based reasoning
 	// Priority: effort (native) > max_tokens (estimated)
-	req.normalizeReasoningEffort(capModel)
+	req.normalizeReasoningEffort(caps)
 
-	if req.ChatParameters.Prediction != nil {
+	// OpenAI-native passthrough params. Compat providers reject them, so the
+	// fallback strips; a datasheet row can opt an individual model back in.
+	if caps.FieldUnsupported(schemas.FieldPrediction, true) {
 		req.ChatParameters.Prediction = nil
 	}
-	if req.ChatParameters.PromptCacheKey != nil {
+	if caps.FieldUnsupported(schemas.FieldPromptCacheKey, true) {
 		req.ChatParameters.PromptCacheKey = nil
 	}
-	if req.ChatParameters.PromptCacheRetention != nil {
+	if caps.FieldUnsupported(schemas.FieldPromptCacheRetention, true) {
 		req.ChatParameters.PromptCacheRetention = nil
 	}
-	if req.ChatParameters.PromptCacheOptions != nil {
+	if caps.FieldUnsupported(schemas.FieldPromptCacheOptions, true) {
 		req.ChatParameters.PromptCacheOptions = nil
 	}
-	if req.ChatParameters.Verbosity != nil {
+	if caps.FieldUnsupported(schemas.FieldVerbosity, true) {
 		req.ChatParameters.Verbosity = nil
 	}
-	if req.ChatParameters.Store != nil {
+	if caps.FieldUnsupported(schemas.FieldStore, true) {
 		req.ChatParameters.Store = nil
 	}
-	if req.ChatParameters.WebSearchOptions != nil {
+	if caps.FieldUnsupported(schemas.FieldWebSearchOptions, true) {
 		req.ChatParameters.WebSearchOptions = nil
 	}
 }
 
-func (req *OpenAIChatRequest) normalizeReasoningEffort(capModel string) {
+func (req *OpenAIChatRequest) normalizeReasoningEffort(caps schemas.ModelCaps) {
 	if req.ChatParameters.Reasoning != nil {
 		reasoningCopy := *req.ChatParameters.Reasoning
 		req.ChatParameters.Reasoning = &reasoningCopy
 		if req.ChatParameters.Reasoning.Effort != nil {
 			// Native field is provided, use it (and clear max_tokens)
 			effort := *req.ChatParameters.Reasoning.Effort
-			req.ChatParameters.Reasoning.Effort = schemas.Ptr(normalizeOpenAIReasoningEffort(capModel, effort))
+			req.ChatParameters.Reasoning.Effort = schemas.Ptr(caps.NormalizeReasoningEffort(effort, defaultEffortControl(caps.Model())))
 			// Clear max_tokens since OpenAI doesn't use it
 			req.ChatParameters.Reasoning.MaxTokens = nil
 		} else if req.ChatParameters.Reasoning.MaxTokens != nil {
 			// Estimate effort from max_tokens
 			maxTokens := *req.ChatParameters.Reasoning.MaxTokens
-			maxCompletionTokens := utils.GetMaxOutputTokensOrDefault(req.Model, DefaultCompletionMaxTokens)
+			maxCompletionTokens := utils.GetMaxOutputTokensOrDefault(req.Provider, req.Model, DefaultCompletionMaxTokens)
 			if req.ChatParameters.MaxCompletionTokens != nil {
 				maxCompletionTokens = *req.ChatParameters.MaxCompletionTokens
 			}
@@ -239,26 +246,33 @@ func (req *OpenAIChatRequest) stripReasoningDetailsExceptToolCalls() {
 	}
 }
 
-// applyXAICompatibility applies xAI-specific transformations to the request
-func (req *OpenAIChatRequest) applyXAICompatibility(model string) {
-	// Only apply filters if this is a grok reasoning model
-	if !schemas.IsGrokReasoningModel(model) {
-		return
-	}
+// applyXAICompatibility applies xAI-specific transformations to the request.
+// Each gate prefers the datasheet's unsupported_fields entry, falling back to
+// the per-model name detection below.
+func (req *OpenAIChatRequest) applyXAICompatibility(caps schemas.ModelCaps) {
+	model := caps.Model()
+	isGrokReasoning := schemas.IsGrokReasoningModel(model)
 
-	req.ChatParameters.PresencePenalty = nil
+	if caps.FieldUnsupported(schemas.FieldPresencePenalty, isGrokReasoning) {
+		req.ChatParameters.PresencePenalty = nil
+	}
 
 	// Only non-mini grok-3 models support frequency_penalty and stop
 	// grok-3-mini only supports reasoning_effort in reasoning mode
-	if !strings.Contains(model, "grok-3") || strings.Contains(model, "grok-3-mini") {
+	penaltyUnsupported := isGrokReasoning &&
+		(!strings.Contains(model, "grok-3") || strings.Contains(model, "grok-3-mini"))
+	if caps.FieldUnsupported(schemas.FieldFrequencyPenalty, penaltyUnsupported) {
 		req.ChatParameters.FrequencyPenalty = nil
+	}
+	if caps.FieldUnsupported(schemas.FieldStop, penaltyUnsupported) {
 		req.ChatParameters.Stop = nil
 	}
 
 	// Strip reasoning_effort only for the models known to reject it; current-generation
 	// models (grok-4.5, grok-4.6, grok-4.20-*) accept it. See SupportsGrokReasoningEffort.
+	effortUnsupported := isGrokReasoning && !schemas.SupportsGrokReasoningEffort(model)
 	if req.ChatParameters.Reasoning != nil &&
-		!schemas.SupportsGrokReasoningEffort(model) {
+		caps.FieldUnsupported(schemas.FieldReasoningEffort, effortUnsupported) {
 		req.ChatParameters.Reasoning.Effort = nil
 	}
 }

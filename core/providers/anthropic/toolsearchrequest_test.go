@@ -83,7 +83,7 @@ func TestConvertBifrostToolToAnthropicDatedToolSearch(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			tool := responsesToolFromJSON(t, tc.raw)
 
-			got := convertBifrostToolToAnthropic("claude-sonnet-4-5-20250929", &tool, schemas.Anthropic, false)
+			got := convertBifrostToolToAnthropic(schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-5-20250929"), &tool, schemas.Anthropic, false)
 			require.NotNil(t, got, "tool_search meta-tool must not be dropped")
 
 			require.NotNil(t, got.Type,
@@ -112,7 +112,7 @@ func TestConvertBifrostToolsToAnthropicToolSearchCatalog(t *testing.T) {
 		responsesToolFromJSON(t, `{"type":"function","name":"get_weather","description":"Get the weather","parameters":{"type":"object","properties":{"location":{"type":"string"}}},"defer_loading":true}`),
 	}
 
-	got, mcpServers := convertBifrostToolsToAnthropic("claude-sonnet-4-5-20250929", tools, schemas.Anthropic)
+	got, mcpServers := convertBifrostToolsToAnthropic(schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-5-20250929"), tools, schemas.Anthropic)
 	require.Empty(t, mcpServers)
 	require.Len(t, got, 2)
 
@@ -169,7 +169,7 @@ func TestValidateResponsesToolsForProviderDatedToolSearch(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			tool := responsesToolFromJSON(t, tc.raw)
-			keep, dropped := ValidateResponsesToolsForProvider([]schemas.ResponsesTool{tool}, tc.provider)
+			keep, dropped := ValidateResponsesToolsForProvider([]schemas.ResponsesTool{tool}, schemas.ResolveModelCaps(tc.provider, "claude-opus-4-5"))
 			assert.Len(t, keep, tc.wantKeep)
 			assert.Equal(t, tc.wantDropped, dropped)
 		})
@@ -197,7 +197,7 @@ func TestConvertAnthropicToolToBifrostToolSearchRoundTrip(t *testing.T) {
 			require.NotNil(t, neutral)
 			assert.Equal(t, schemas.ResponsesToolTypeToolSearch, neutral.Type)
 
-			back := convertBifrostToolToAnthropic("claude-sonnet-4-5-20250929", neutral, schemas.Anthropic, false)
+			back := convertBifrostToolToAnthropic(schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-5-20250929"), neutral, schemas.Anthropic, false)
 			require.NotNil(t, back)
 			require.NotNil(t, back.Type)
 			assert.Equal(t, tc.wantType, *back.Type, "variant must survive the round trip")

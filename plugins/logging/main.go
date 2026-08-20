@@ -5,8 +5,11 @@ package logging
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,6 +19,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/batchaccounting"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/mcpcatalog"
@@ -324,6 +328,197 @@ func (p *LoggerPlugin) sleepCtx(d time.Duration) bool {
 	}
 }
 
+// batchAccountingTimeout bounds inline batch settlement on the /results response
+// path so a stalled store or reporter cannot hang the caller. Anything that times
+// out is not lost: the job stays due and the sweeper re-drives it.
+const batchAccountingTimeout = 30 * time.Second
+
+// batchRunnerProcessID distinguishes this process when no cluster node id is set.
+// Deliberately random rather than PID-based: two replicas on different hosts can
+// share a PID, and this identity is what keeps their batch claims apart.
+var batchRunnerProcessID = newBatchRunnerProcessID()
+
+func newBatchRunnerProcessID() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// crypto/rand is effectively infallible here; a time-based value still
+		// separates processes far better than a shared constant would.
+		return strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+	return hex.EncodeToString(b[:])
+}
+
+// batchRunnerID builds the ownership-fence identity for a batch accounting worker.
+//
+// Batch claims are fenced on this value, so it must differ between workers that
+// could contend for the same job. SetClusterNodeID supplies a stable id in
+// clustered deployments, but it is never called in OSS — so without the
+// per-process fallback every replica sharing a database would present the same
+// identity ("logging" / "batch-sweeper") and the fence would not tell them apart.
+// A per-process id is the right granularity: the fence only needs to separate
+// live workers, and a restarted process should not inherit its predecessor's
+// claims — those are recovered through the staleness path instead.
+func (p *LoggerPlugin) batchRunnerID(prefix string) string {
+	if nodeID, _ := p.clusterNodeID.Load().(string); nodeID != "" {
+		return prefix + ":" + nodeID
+	}
+	return prefix + ":" + batchRunnerProcessID
+}
+
+func (p *LoggerPlugin) accountBatchResults(entry *logstore.Log, result *schemas.BifrostResponse, pricingScopes *modelcatalog.PricingLookupScopes) {
+	if result == nil || result.BatchResultsResponse == nil || entry == nil || p.pricingManager == nil || p.batchStore == nil {
+		return
+	}
+	batchResp := result.BatchResultsResponse
+	if batchResp.BatchID == "" {
+		return
+	}
+
+	// This runs inline on the /results response path, and settlement touches the
+	// config store, the log store and the governance reporter. p.ctx is the
+	// plugin's lifetime context and has no deadline, so any one of those stalling
+	// would hang the caller's HTTP response indefinitely. Bound the whole
+	// settlement instead; the sweeper re-drives anything that times out, since a
+	// job left un-accounted stays due.
+	ctx, cancel := context.WithTimeout(p.ctx, batchAccountingTimeout)
+	defer cancel()
+
+	claimedBy := p.batchRunnerID("logging")
+	p.mu.Lock()
+	usageReporter := p.batchUsageReporter
+	p.mu.Unlock()
+
+	summary, err := batchaccounting.AccountBatchResults(ctx, p.batchStore, p.store, p.pricingManager, batchaccounting.Request{
+		Provider:      schemas.ModelProvider(entry.Provider),
+		BatchID:       batchResp.BatchID,
+		FallbackModel: entry.Model,
+		Endpoint:      batchResp.Endpoint,
+		Results:       batchResp.Results,
+		ParseErrors:   batchResp.ExtraFields.ParseErrors,
+		BatchJob:      batchJobFromEntry(entry, batchResp.BatchID, entry.Model, string(batchResp.Endpoint), string(schemas.BatchStatusCompleted)),
+		BaseLog:       entry,
+		Emitter:       p,
+		UsageReporter: usageReporter,
+		ClaimedBy:     claimedBy,
+		Scopes:        pricingScopes,
+	})
+	if err != nil {
+		p.logger.Warn("failed to account batch results for provider=%s batch_id=%s: %v", entry.Provider, batchResp.BatchID, err)
+		return
+	}
+	if summary != nil && summary.Accounted {
+		p.logger.Info("accounted batch results for provider=%s batch_id=%s cost=%f log_id=%s", entry.Provider, batchResp.BatchID, summary.Cost, summary.LogID)
+	}
+	attachBatchResultsDisplay(entry, batchResp, summary)
+}
+
+func attachBatchResultsDisplay(entry *logstore.Log, batchResp *schemas.BifrostBatchResultsResponse, summary *batchaccounting.Summary) {
+	debug := &schemas.BifrostBatchDebug{BatchID: batchResp.BatchID}
+	if counts := schemas.BatchRequestCountsFromResults(batchResp.Results); !counts.IsZero() {
+		debug.RequestCounts = &counts
+	}
+	if summary != nil {
+		debug.Status = summary.Status
+		if summary.Complete || len(summary.ModelBreakdowns) > 0 {
+			accounting := &schemas.BatchAccountingDebug{
+				ModelBreakdowns: summary.ModelBreakdowns,
+				Incomplete:      !summary.Complete,
+			}
+			if summary.Complete {
+				cost := summary.Cost
+				accounting.Cost = &cost
+			}
+			debug.Accounting = accounting
+		}
+	}
+	if debug.IsZero() {
+		return
+	}
+	entry.BatchDebugParsed = debug
+}
+
+func (p *LoggerPlugin) EmitBatchAggregateLog(ctx context.Context, entry *logstore.Log) {
+	p.makePostWriteCallback(nil)(entry)
+}
+
+func (p *LoggerPlugin) recordBatchJobLifecycle(entry *logstore.Log, result *schemas.BifrostResponse) {
+	if entry == nil || result == nil || p.batchStore == nil {
+		return
+	}
+
+	var job *tables.TableBatchJob
+	now := time.Now().UTC()
+	switch {
+	case result.BatchCreateResponse != nil:
+		resp := result.BatchCreateResponse
+		job = batchJobFromEntry(entry, resp.ID, entry.Model, resp.Endpoint, string(resp.Status))
+		job.InputFileID = resp.InputFileID
+		job.OutputFileID = resp.OutputFileID
+		job.ErrorFileID = resp.ErrorFileID
+		job.ResultsURL = resp.ResultsURL
+		addBatchDetailToLog(entry, resp.ID, string(resp.Status), resp.RequestCounts)
+	case result.BatchRetrieveResponse != nil:
+		resp := result.BatchRetrieveResponse
+		job = batchJobFromEntry(entry, resp.ID, entry.Model, resp.Endpoint, string(resp.Status))
+		job.InputFileID = resp.InputFileID
+		job.OutputFileID = resp.OutputFileID
+		job.ErrorFileID = resp.ErrorFileID
+		job.ResultsURL = resp.ResultsURL
+		addBatchDetailToLog(entry, resp.ID, string(resp.Status), resp.RequestCounts)
+	default:
+		return
+	}
+
+	if job.BatchID == "" {
+		return
+	}
+	if !tables.IsTerminalBatchProviderStatus(job.ProviderStatus) {
+		next := now.Add(time.Minute)
+		job.NextCheckAt = &next
+	} else if job.ProviderStatus == string(schemas.BatchStatusCompleted) ||
+		job.ProviderStatus == string(schemas.BatchStatusEnded) {
+		job.NextCheckAt = &now
+	}
+	if err := p.batchStore.UpsertBatchJob(p.ctx, job); err != nil {
+		p.logger.Warn("failed to record batch job lifecycle for provider=%s batch_id=%s: %v", job.Provider, job.BatchID, err)
+	}
+}
+
+// addBatchDetailToLog records which batch a batch_create / batch_retrieve row
+// addressed and the provider's progress counts for it.
+func addBatchDetailToLog(entry *logstore.Log, batchID string, status string, counts schemas.BatchRequestCounts) {
+	if entry == nil {
+		return
+	}
+	debug := &schemas.BifrostBatchDebug{BatchID: batchID, Status: status}
+	if !counts.IsZero() {
+		debug.RequestCounts = &counts
+	}
+	if debug.IsZero() {
+		return
+	}
+	entry.BatchDebugParsed = debug
+}
+
+func batchJobFromEntry(entry *logstore.Log, batchID string, model string, endpoint string, status string) *tables.TableBatchJob {
+	job := &tables.TableBatchJob{
+		Provider:         entry.Provider,
+		BatchID:          batchID,
+		Model:            model,
+		Endpoint:         endpoint,
+		ProviderStatus:   status,
+		AccountingStatus: tables.BatchJobAccountingStatusPending,
+		SelectedKeyID:    entry.SelectedKeyID,
+		VirtualKeyID:     entry.VirtualKeyID,
+		BudgetIDs:        stringSlicePtr(entry.BudgetIDsParsed),
+		RateLimitIDs:     stringSlicePtr(entry.RateLimitIDsParsed),
+	}
+	if job.ID == "" && job.Provider != "" && job.BatchID != "" {
+		job.ID = tables.BatchJobID(job.Provider, job.BatchID)
+	}
+	return job
+}
+
 func (p *LoggerPlugin) scheduleDeferredUsageUpdate(ctx *schemas.BifrostContext, requestID string, usageAlreadyPresent bool) {
 	if usageAlreadyPresent || ctx == nil {
 		return
@@ -552,6 +747,7 @@ type compiledUserAgentMapping struct {
 type LoggerPlugin struct {
 	ctx                          context.Context
 	store                        logstore.LogStore
+	batchStore                   batchaccounting.SweepStore // configstore-backed mutable batch coordination state (nil disables batch accounting)
 	disableContentLogging        *bool
 	retainContentInObjectStorage *bool     // Pointer to live config value; when true, content-disabled requests are stored hidden instead of dropped
 	objectStorageEnabled         bool      // Log store offloads payloads to object storage; required for retain_content_in_object_storage
@@ -565,6 +761,7 @@ type LoggerPlugin struct {
 	wg                           sync.WaitGroup
 	logger                       schemas.Logger
 	logCallback                  LogCallback
+	batchUsageReporter           batchaccounting.UsageReporter
 	mcpToolLogCallback           MCPToolLogCallback // Callback for MCP tool log entries
 	droppedRequests              atomic.Int64
 	cleanupTicker                *time.Ticker          // Ticker for cleaning up old processing logs
@@ -582,14 +779,17 @@ type LoggerPlugin struct {
 	clusterNodeID                atomic.Value          // Cluster node ID (string) for log attribution in clustered deployments
 	batchCtx                     context.Context       // Cancelled by Cleanup to stop the batchWriter goroutine before any further DB work
 	batchCancel                  context.CancelFunc    // Cancels batchCtx
+	batchSweeperCancel           context.CancelFunc    // Cancels the batch accounting sweeper, when enabled
 	batchWriterDone              chan struct{}         // Closed by batchWriter on exit; receiving from it transfers writeQueue ownership to Cleanup
 	recoveredBatch               []*writeQueueEntry    // batchWriter parks its in-memory batch here before exiting; safe to read after batchWriterDone closes (happens-before)
 	userAgentMappings            atomic.Value          // []compiledUserAgentMapping, read from request hot paths
 	userAgentMappingMu           sync.Mutex            // serializes user-agent mapping write+reload sequences to keep the cache consistent
 }
 
-// Init creates new logger plugin with given log store
-func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore logstore.LogStore, pricingManager *modelcatalog.ModelCatalog, mcpCatalog *mcpcatalog.MCPCatalog) (*LoggerPlugin, error) {
+// Init creates new logger plugin with given log store. batchStore is the
+// configstore-backed coordination store for delayed batch accounting; it may be
+// nil, which disables batch accounting.
+func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore logstore.LogStore, batchStore batchaccounting.SweepStore, pricingManager *modelcatalog.ModelCatalog, mcpCatalog *mcpcatalog.MCPCatalog) (*LoggerPlugin, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config is required")
 	}
@@ -619,6 +819,7 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore 
 	plugin := &LoggerPlugin{
 		ctx:                          ctx,
 		store:                        logsStore,
+		batchStore:                   batchStore,
 		pricingManager:               pricingManager,
 		mcpCatalog:                   mcpCatalog,
 		disableContentLogging:        config.DisableContentLogging,
@@ -766,6 +967,58 @@ func (p *LoggerPlugin) SetLogCallback(callback LogCallback) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.logCallback = callback
+}
+
+func (p *LoggerPlugin) SetBatchUsageReporter(reporter batchaccounting.UsageReporter) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.batchUsageReporter = reporter
+}
+
+func (p *LoggerPlugin) StartBatchAccountingSweeper(fetcher batchaccounting.BatchResultFetcher, interval time.Duration, kvStore schemas.KVStore) context.CancelFunc {
+	if fetcher == nil || p.store == nil || p.batchStore == nil || p.pricingManager == nil {
+		if p.logger != nil {
+			p.logger.Warn("batch accounting sweeper not started: missing fetcher, store, batch store, or pricing manager")
+		}
+		return func() {}
+	}
+	if kvStore == nil && p.logger != nil {
+		p.logger.Debug("batch accounting sweeper starting without KV store")
+	}
+	ctx, cancel := context.WithCancel(p.ctx)
+	p.mu.Lock()
+	// Cleanup sets p.closed and cancels the sweeper under this same lock before it
+	// reaches p.wg.Wait(), so checking it here is what keeps the wg.Add below from
+	// racing that Wait — a reload wiring a sweeper onto an instance already shutting
+	// down would otherwise violate the WaitGroup contract and start a goroutine
+	// writing through a closed plugin.
+	if p.closed.Load() {
+		p.mu.Unlock()
+		cancel()
+		if p.logger != nil {
+			p.logger.Warn("batch accounting sweeper not started: logging plugin is shutting down")
+		}
+		return func() {}
+	}
+	if p.batchSweeperCancel != nil {
+		p.batchSweeperCancel()
+	}
+	p.batchSweeperCancel = cancel
+	usageReporter := p.batchUsageReporter
+	p.mu.Unlock()
+	claimedBy := p.batchRunnerID("batch-sweeper")
+	sweeper := batchaccounting.NewSweeper(p.batchStore, p.store, p.pricingManager, fetcher, p, usageReporter, batchaccounting.SweeperConfig{
+		Interval:  interval,
+		ClaimedBy: claimedBy,
+		KVStore:   kvStore,
+		Logger:    p.logger,
+	})
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		sweeper.Run(ctx)
+	}()
+	return cancel
 }
 
 // GetName returns the name of the plugin
@@ -1166,26 +1419,6 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	if ok && fallbackRequestID != "" {
 		requestID = fallbackRequestID
 	}
-	selectedKeyID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyID)
-	selectedKeyName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyName)
-	virtualKeyID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyID)
-	virtualKeyName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyName)
-	routingRuleID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleID)
-	routingRuleName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleName)
-	selectedPromptName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedPromptName)
-	selectedPromptVersion := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedPromptVersion)
-	selectedPromptID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedPromptID)
-	teamID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamID)
-	teamName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamName)
-	customerID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerID)
-	customerName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerName)
-	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
-	userName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserName)
-	businessUnitID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceBusinessUnitID)
-	businessUnitName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceBusinessUnitName)
-	numberOfRetries := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyNumberOfRetries)
-	attemptTrail, _ := ctx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord)
-
 	requestType, _, originalModelRequested, resolvedModelUsed := bifrost.GetResponseFields(result, bifrostErr)
 	resolvedKeyAlias := bifrost.GetResponseRoutingInfo(result, bifrostErr).ResolvedKeyAlias
 	shouldStoreRaw, _ := ctx.Value(schemas.BifrostContextKeyShouldStoreRawInLogs).(bool)
@@ -1291,6 +1524,30 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		}
 		return result, bifrostErr, nil
 	}
+
+	// Governance/key/prompt fields, needed only by the final/error/non-streaming
+	// paths below (applyOutputFieldsToEntry). Read here, after the non-final-chunk
+	// fast path, so intermediate chunks skip these ~19 locked context lookups.
+	selectedKeyID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyID)
+	selectedKeyName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyName)
+	virtualKeyID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyID)
+	virtualKeyName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyName)
+	routingRuleID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleID)
+	routingRuleName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleName)
+	selectedPromptName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedPromptName)
+	selectedPromptVersion := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedPromptVersion)
+	selectedPromptID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedPromptID)
+	teamID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamID)
+	teamName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamName)
+	customerID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerID)
+	customerName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerName)
+	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
+	userName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserName)
+	businessUnitID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceBusinessUnitID)
+	businessUnitName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceBusinessUnitName)
+	numberOfRetries := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyNumberOfRetries)
+	attemptTrail, _ := ctx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord)
+
 	// Extract routing engine logs from context before entering goroutine
 	routingEngineLogs := formatRoutingEngineLogs(ctx.GetRoutingEngineLogs())
 	if requestType == schemas.RealtimeRequest {
@@ -1311,9 +1568,12 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	// latency stamped by the semantic cache plugin over the original provider
 	// latency preserved in the cached response.
 	var latency int64
+	var upstreamLatency, overheadLatency *int64
 	if result != nil {
 		ef := result.GetExtraFields()
 		latency = ef.Latency
+		upstreamLatency = ef.UpstreamLatency
+		overheadLatency = ef.OverheadLatency
 		// Model that actually served the turn when the provider swapped models inside
 		// one call. entry.Model still names what the caller asked for.
 		if ef.RoutingInfo.ServerSideFallbackModel != nil {
@@ -1333,7 +1593,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			entry.ServerSideFallbackModel = &m
 		}
 	}
-	applyOutputFieldsToEntry(entry, selectedKeyID, selectedKeyName, virtualKeyID, virtualKeyName, routingRuleID, routingRuleName, selectedPromptID, selectedPromptName, selectedPromptVersion, teamID, teamName, customerID, customerName, userID, userName, businessUnitID, businessUnitName, numberOfRetries, latency, attemptTrail)
+	applyOutputFieldsToEntry(entry, selectedKeyID, selectedKeyName, virtualKeyID, virtualKeyName, routingRuleID, routingRuleName, selectedPromptID, selectedPromptName, selectedPromptVersion, teamID, teamName, customerID, customerName, userID, userName, businessUnitID, businessUnitName, numberOfRetries, latency, upstreamLatency, overheadLatency, attemptTrail)
 	applyResolvedAliasInfo(entry, resolvedKeyAlias)
 	// Attach cluster governance metadata for disconnected node usage recovery
 	if nodeID, _ := p.clusterNodeID.Load().(string); nodeID != "" {
@@ -1481,6 +1741,10 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			// Apply streaming output fields to the entry
 			entry.Stream = true
 			p.applyStreamingOutputToEntry(entry, streamResponse, shouldStoreRaw, contentLoggingEnabled)
+			// Read off the raw final-chunk ExtraFields, not the rebuilt streamResponse.
+			if result != nil {
+				applyUpstreamOverheadToEntry(entry, result.GetExtraFields())
+			}
 		}
 		if entry.ErrorDetailsParsed != nil {
 			entry.Status = logStatusForError(entry.ErrorDetailsParsed)
@@ -1539,6 +1803,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		}
 	}
 	applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)
+	if bifrostErr == nil && (requestType == schemas.BatchCreateRequest || requestType == schemas.BatchRetrieveRequest) {
+		p.recordBatchJobLifecycle(entry, result)
+	}
 
 	// Calculate cost
 	var cacheDebug *schemas.BifrostCacheDebug
@@ -1550,6 +1817,12 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
 		if cost := p.pricingManager.CalculateCost(result, pricingScopes); cost > 0 {
 			entry.Cost = &cost
+		}
+		if bifrostErr == nil &&
+			requestType == schemas.BatchResultsRequest &&
+			result != nil &&
+			result.BatchResultsResponse != nil {
+			p.accountBatchResults(entry, result, pricingScopes)
 		}
 	}
 
@@ -1585,15 +1858,25 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 // cannot wedge the server's overall 30s shutdown budget.
 func (p *LoggerPlugin) Cleanup() error {
 	p.cleanupOnce.Do(func() {
+		p.mu.Lock()
+		// Under the same lock as the sweeper cancel, and before anything below can
+		// reach p.wg.Wait(): StartBatchAccountingSweeper reads this flag while holding
+		// p.mu, so once it is set no further wg.Add can slip in behind the Wait.
+		p.closed.Store(true)
+		if p.batchSweeperCancel != nil {
+			p.batchSweeperCancel()
+			p.batchSweeperCancel = nil
+		}
+		p.mu.Unlock()
 		if p.cleanupTicker != nil {
 			p.cleanupTicker.Stop()
 		}
 		// Signal the cleanup worker to stop.
 		close(p.done)
-		// Stop new producers before killing batchWriter so the channel does
-		// not grow further while we drain it ourselves. Any producer that raced
-		// past this check is absorbed by the enqueue recover path.
-		p.closed.Store(true)
+		// p.closed was already set above (it doubles as the sweeper-start guard),
+		// which is what stops new producers before we kill batchWriter so the queue
+		// does not grow while we drain it. Any producer that raced past that check is
+		// absorbed by the enqueue recover path.
 		// Kill batchWriter. Its current in-memory batch is handed back via
 		// p.recoveredBatch; it does not issue any further DB writes.
 		p.batchCancel()
@@ -1708,10 +1991,64 @@ func (p *LoggerPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
 	}
 	// Serialize plugin logs once for all entries
 	pluginLogsJSON := serializePluginLogs(trace.PluginLogs)
+	// Backfill upstream/overhead from the authoritative values the tracer stamped on
+	// the root span at completion, so the log matches the trace connectors exactly.
+	// Supersedes the mid-request PostLLMHook estimate. Only overwrite when present.
+	var upstreamMs, overheadMs float64
+	var upOK, ovOK bool
+	if trace.RootSpan != nil && trace.RootSpan.Attributes != nil {
+		upstreamMs, upOK = traceAttrFloatMs(trace.RootSpan.Attributes, schemas.AttrBifrostUpstreamDurationMs)
+		overheadMs, ovOK = traceAttrFloatMs(trace.RootSpan.Attributes, schemas.AttrBifrostOverheadDurationMs)
+	}
+
 	p.logger.Debug("Inject: enqueuing %d log entries", len(pending.entries))
-	// Enqueue each log entry (supports multiple attempts per trace)
-	for _, entry := range pending.entries {
+	// Upstream/overhead are request-level: put them on one row per trace, not all.
+	// A trace can log many rows (list_models fans out per provider; fallbacks add a
+	// row per attempt), and stamping every one would count the same overhead N times
+	// in the graphs. Clear the rest, keeping their per-row latency.
+	//
+	// Pick the target row deterministically (latest Timestamp, tie-broken by ID)
+	// rather than by slice position: list_models fans out concurrently under one
+	// trace, so entries append in nondeterministic completion order and a positional
+	// "last" would attach trace latency to a random provider row. For sequential
+	// fallbacks the latest Timestamp is still the terminal attempt.
+	stampIdx := 0
+	for i, entry := range pending.entries {
+		best := pending.entries[stampIdx]
+		if entry.Timestamp.After(best.Timestamp) ||
+			(entry.Timestamp.Equal(best.Timestamp) && entry.ID > best.ID) {
+			stampIdx = i
+		}
+	}
+	for i, entry := range pending.entries {
 		entry.PluginLogs = pluginLogsJSON
+		if i == stampIdx {
+			// Clear both provisional components before backfilling. A partial root
+			// span (only one attribute present) would otherwise leave the other as
+			// a stale PostLLMHook estimate, mixing the breakdown's two sources.
+			if upOK || ovOK {
+				entry.UpstreamLatency = nil
+				entry.OverheadLatency = nil
+			}
+			if upOK {
+				u := upstreamMs
+				entry.UpstreamLatency = &u
+			}
+			if ovOK {
+				o := overheadMs
+				entry.OverheadLatency = &o
+			}
+			// Latency = full-request wall-clock = upstream + overhead. Summing (not
+			// the raw span duration) keeps latency >= upstream when overhead clamps
+			// to zero, so the breakdown always adds up.
+			if upOK && ovOK {
+				total := upstreamMs + overheadMs
+				entry.Latency = &total
+			}
+		} else if upOK || ovOK {
+			entry.UpstreamLatency = nil
+			entry.OverheadLatency = nil
+		}
 		p.logger.Debug("Inject: enqueuing log entry %s", entry.ID)
 		p.enqueueLogEntry(entry, p.makePostWriteCallback(nil))
 	}
@@ -1728,6 +2065,20 @@ func serializePluginLogs(logs []schemas.PluginLogEntry) string {
 		return ""
 	}
 	return string(data)
+}
+
+// traceAttrFloatMs reads a millisecond span attribute, tolerating int/int64/float64.
+func traceAttrFloatMs(attrs map[string]any, key string) (float64, bool) {
+	switch v := attrs[key].(type) {
+	case float64:
+		return v, true
+	case int64:
+		return float64(v), true
+	case int:
+		return float64(v), true
+	default:
+		return 0, false
+	}
 }
 
 // MCP Plugin Interface Implementation
