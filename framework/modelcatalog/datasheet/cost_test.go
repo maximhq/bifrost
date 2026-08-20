@@ -343,7 +343,7 @@ func TestComputeTextCost_Breakdown(t *testing.T) {
 	assert.InDelta(t, 0.0075, bd.OutputCost, 1e-12)
 	// Cache read/write are input sub-categories surfaced in the details.
 	require.NotNil(t, bd.InputCostDetails)
-	assert.InDelta(t, 0.00045, bd.InputCostDetails.CachedReadCost, 1e-12) // 1500*3e-7
+	assert.InDelta(t, 0.00045, bd.InputCostDetails.CachedReadCost, 1e-12)  // 1500*3e-7
 	assert.InDelta(t, 0.00075, bd.InputCostDetails.CachedWriteCost, 1e-12) // 200*3.75e-6
 	// Detail components sum back to the input total.
 	assert.InDelta(t, bd.InputCost,
@@ -1148,9 +1148,9 @@ func TestComputeRerankCost_BreakdownDetails(t *testing.T) {
 	require.NotNil(t, cost)
 	require.NotNil(t, cost.InputCostDetails)
 	require.NotNil(t, cost.OutputCostDetails)
-	assert.InDelta(t, 0.01, cost.InputCost, 1e-12)             // 10 * 0.001
-	assert.InDelta(t, 0.013, cost.OutputCost, 1e-12)           // 5*0.002 + 3*0.001
-	assert.InDelta(t, 0.023, cost.TotalCost, 1e-12)            // input + output
+	assert.InDelta(t, 0.01, cost.InputCost, 1e-12)   // 10 * 0.001
+	assert.InDelta(t, 0.013, cost.OutputCost, 1e-12) // 5*0.002 + 3*0.001
+	assert.InDelta(t, 0.023, cost.TotalCost, 1e-12)  // input + output
 	assert.InDelta(t, 0.01, cost.InputCostDetails.TextCost, 1e-12)
 	assert.InDelta(t, 0.01, cost.OutputCostDetails.TextCost, 1e-12)
 	assert.InDelta(t, 0.003, cost.OutputCostDetails.SearchQueriesCost, 1e-12)
@@ -1171,7 +1171,7 @@ func TestComputeSpeechCost_BreakdownDetails(t *testing.T) {
 	require.NotNil(t, cost)
 	require.NotNil(t, cost.InputCostDetails)
 	require.NotNil(t, cost.OutputCostDetails)
-	assert.InDelta(t, 0.0002, cost.InputCostDetails.TextCost, 1e-12) // 200 * 0.000001
+	assert.InDelta(t, 0.0002, cost.InputCostDetails.TextCost, 1e-12)  // 200 * 0.000001
 	assert.InDelta(t, 0.005, cost.OutputCostDetails.AudioCost, 1e-12) // 100 * 0.00005
 	assert.Zero(t, cost.OutputCostDetails.TextCost)
 }
@@ -1197,8 +1197,8 @@ func TestComputeTranscriptionCost_BreakdownDetails(t *testing.T) {
 	require.NotNil(t, cost)
 	require.NotNil(t, cost.InputCostDetails)
 	require.NotNil(t, cost.OutputCostDetails)
-	assert.InDelta(t, 0.015, cost.InputCostDetails.AudioCost, 1e-12) // 1500 * 0.00001
-	assert.InDelta(t, 0.0025, cost.InputCostDetails.TextCost, 1e-12) // 500 * 0.000005
+	assert.InDelta(t, 0.015, cost.InputCostDetails.AudioCost, 1e-12)  // 1500 * 0.00001
+	assert.InDelta(t, 0.0025, cost.InputCostDetails.TextCost, 1e-12)  // 500 * 0.000005
 	assert.InDelta(t, 0.0075, cost.OutputCostDetails.TextCost, 1e-12) // 500 * 0.000015
 	// Details reconcile with the authoritative side totals.
 	assert.InDelta(t, cost.InputCost, cost.InputCostDetails.AudioCost+cost.InputCostDetails.TextCost, 1e-12)
@@ -2041,6 +2041,184 @@ func TestCalculateCost_SemanticCacheHitNoEmbeddingInfo(t *testing.T) {
 
 	cost := s.CalculateCost(resp, nil)
 	assert.Equal(t, 0.0, cost)
+}
+
+// TestCalculateCostBreakdown_SemanticCacheHitIsAdditional verifies a semantic
+// cache hit's embedding-lookup cost lands on the additional side
+// (SemanticCacheCost), not folded into the request's input.
+func TestCalculateCostBreakdown_SemanticCacheHitIsAdditional(t *testing.T) {
+	embProvider := "openai"
+	embModel := "text-embedding-3-small"
+	embTokens := 500
+
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o", "openai", "chat"): {
+			Model: "gpt-4o", Provider: "openai", Mode: "chat",
+			InputCostPerToken: bifrost.Ptr(0.000005), OutputCostPerToken: bifrost.Ptr(0.000015),
+		},
+		makeKey("text-embedding-3-small", "openai", "embedding"): {
+			Model: "text-embedding-3-small", Provider: "openai", Mode: "embedding",
+			InputCostPerToken: bifrost.Ptr(0.00000002),
+		},
+	})
+
+	hitType := "semantic"
+	resp := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Usage: &schemas.BifrostLLMUsage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ChatCompletionRequest,
+				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
+				CacheDebug: &schemas.BifrostCacheDebug{
+					CacheHit: true, HitType: &hitType,
+					ProviderUsed: &embProvider, ModelUsed: &embModel, InputTokens: &embTokens,
+				},
+			},
+		},
+	}
+
+	bd := s.CalculateCostBreakdown(resp, nil)
+	require.NotNil(t, bd)
+	require.NotNil(t, bd.AdditionalCostDetails)
+	// Only the embedding lookup: 500 * 0.00000002 = 0.00001, all on the additional side.
+	assert.InDelta(t, 0.00001, bd.AdditionalCost, 1e-12)
+	assert.InDelta(t, 0.00001, bd.AdditionalCostDetails.SemanticCacheCost, 1e-12)
+	assert.Zero(t, bd.InputCost)
+	assert.InDelta(t, 0.00001, bd.TotalCost, 1e-12)
+}
+
+// TestCalculateCostBreakdown_SemanticCacheMissAddsAdditional verifies a cache
+// miss prices the full LLM call plus the embedding lookup, with the lookup on
+// the additional side and the three sides reconciling to the total.
+func TestCalculateCostBreakdown_SemanticCacheMissAddsAdditional(t *testing.T) {
+	embProvider := "openai"
+	embModel := "text-embedding-3-small"
+	embTokens := 500
+
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o", "openai", "chat"): {
+			Model: "gpt-4o", Provider: "openai", Mode: "chat",
+			InputCostPerToken: bifrost.Ptr(0.000005), OutputCostPerToken: bifrost.Ptr(0.000015),
+		},
+		makeKey("text-embedding-3-small", "openai", "embedding"): {
+			Model: "text-embedding-3-small", Provider: "openai", Mode: "embedding",
+			InputCostPerToken: bifrost.Ptr(0.00000002),
+		},
+	})
+
+	resp := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Usage: &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ChatCompletionRequest,
+				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
+				CacheDebug: &schemas.BifrostCacheDebug{
+					CacheHit:     false,
+					ProviderUsed: &embProvider, ModelUsed: &embModel, InputTokens: &embTokens,
+				},
+			},
+		},
+	}
+
+	bd := s.CalculateCostBreakdown(resp, nil)
+	require.NotNil(t, bd)
+	require.NotNil(t, bd.AdditionalCostDetails)
+	// Base: 1000*5e-6 + 500*1.5e-5 = 0.0125. Embedding: 500*2e-8 = 0.00001 (additional).
+	assert.InDelta(t, 0.005, bd.InputCost, 1e-12)
+	assert.InDelta(t, 0.0075, bd.OutputCost, 1e-12)
+	assert.InDelta(t, 0.00001, bd.AdditionalCost, 1e-12)
+	assert.InDelta(t, 0.00001, bd.AdditionalCostDetails.SemanticCacheCost, 1e-12)
+	assert.InDelta(t, 0.01251, bd.TotalCost, 1e-12)
+	assert.InDelta(t, bd.TotalCost, bd.InputCost+bd.OutputCost+bd.AdditionalCost, 1e-12)
+}
+
+// TestCalculateCostBreakdown_SemanticCacheHitAddsRequestSurcharge verifies the
+// embedding model's flat CostPerRequest fee is included in the semantic-cache
+// lookup cost on a hit, not just the per-token charge.
+func TestCalculateCostBreakdown_SemanticCacheHitAddsRequestSurcharge(t *testing.T) {
+	embProvider := "openai"
+	embModel := "text-embedding-3-small"
+	embTokens := 500
+
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o", "openai", "chat"): {
+			Model: "gpt-4o", Provider: "openai", Mode: "chat",
+			InputCostPerToken: bifrost.Ptr(0.000005), OutputCostPerToken: bifrost.Ptr(0.000015),
+		},
+		makeKey("text-embedding-3-small", "openai", "embedding"): {
+			Model: "text-embedding-3-small", Provider: "openai", Mode: "embedding",
+			InputCostPerToken: bifrost.Ptr(0.00000002), CostPerRequest: bifrost.Ptr(0.001),
+		},
+	})
+
+	hitType := "semantic"
+	resp := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Usage: &schemas.BifrostLLMUsage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ChatCompletionRequest,
+				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
+				CacheDebug: &schemas.BifrostCacheDebug{
+					CacheHit: true, HitType: &hitType,
+					ProviderUsed: &embProvider, ModelUsed: &embModel, InputTokens: &embTokens,
+				},
+			},
+		},
+	}
+
+	bd := s.CalculateCostBreakdown(resp, nil)
+	require.NotNil(t, bd)
+	require.NotNil(t, bd.AdditionalCostDetails)
+	// Lookup: 500*2e-8 + 0.001 request fee = 0.00101, all on the additional side.
+	assert.InDelta(t, 0.00101, bd.AdditionalCost, 1e-12)
+	assert.InDelta(t, 0.00101, bd.AdditionalCostDetails.SemanticCacheCost, 1e-12)
+	assert.Zero(t, bd.InputCost)
+	assert.InDelta(t, 0.00101, bd.TotalCost, 1e-12)
+}
+
+// TestCalculateCostBreakdown_SemanticCacheMissAddsRequestSurcharge verifies the
+// embedding CostPerRequest fee is included in the lookup cost on a miss, on top
+// of the full LLM call, with the three sides reconciling to the total.
+func TestCalculateCostBreakdown_SemanticCacheMissAddsRequestSurcharge(t *testing.T) {
+	embProvider := "openai"
+	embModel := "text-embedding-3-small"
+	embTokens := 500
+
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o", "openai", "chat"): {
+			Model: "gpt-4o", Provider: "openai", Mode: "chat",
+			InputCostPerToken: bifrost.Ptr(0.000005), OutputCostPerToken: bifrost.Ptr(0.000015),
+		},
+		makeKey("text-embedding-3-small", "openai", "embedding"): {
+			Model: "text-embedding-3-small", Provider: "openai", Mode: "embedding",
+			InputCostPerToken: bifrost.Ptr(0.00000002), CostPerRequest: bifrost.Ptr(0.001),
+		},
+	})
+
+	resp := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Usage: &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ChatCompletionRequest,
+				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
+				CacheDebug: &schemas.BifrostCacheDebug{
+					CacheHit:     false,
+					ProviderUsed: &embProvider, ModelUsed: &embModel, InputTokens: &embTokens,
+				},
+			},
+		},
+	}
+
+	bd := s.CalculateCostBreakdown(resp, nil)
+	require.NotNil(t, bd)
+	require.NotNil(t, bd.AdditionalCostDetails)
+	// Base: 1000*5e-6 + 500*1.5e-5 = 0.0125. Embedding: 500*2e-8 + 0.001 = 0.00101 (additional).
+	assert.InDelta(t, 0.005, bd.InputCost, 1e-12)
+	assert.InDelta(t, 0.0075, bd.OutputCost, 1e-12)
+	assert.InDelta(t, 0.00101, bd.AdditionalCost, 1e-12)
+	assert.InDelta(t, 0.00101, bd.AdditionalCostDetails.SemanticCacheCost, 1e-12)
+	assert.InDelta(t, 0.01351, bd.TotalCost, 1e-12)
+	assert.InDelta(t, bd.TotalCost, bd.InputCost+bd.OutputCost+bd.AdditionalCost, 1e-12)
 }
 
 // TestCalculateCostAddsGuardrailJudgeCost verifies judge cost is additive to the main request.

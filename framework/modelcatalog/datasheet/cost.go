@@ -295,22 +295,24 @@ func (s *Store) calculateCostWithCache(result *schemas.BifrostResponse, cacheDeb
 		if cacheDebug.HitType != nil && *cacheDebug.HitType == "direct" {
 			return nil
 		}
-		// Semantic cache hit — only the embedding lookup cost (an input cost)
+		// Semantic cache hit — only the embedding lookup cost. It's an internal
+		// sidecar cost (a separate embedding call), so it lands on the additional
+		// side, alongside guardrail/MCP, not folded into the request's input.
 		if cacheDebug.ProviderUsed != nil && cacheDebug.ModelUsed != nil && cacheDebug.InputTokens != nil {
 			c := s.computeCacheEmbeddingCost(cacheDebug, scopes)
 			if c == 0 {
 				return nil
 			}
 			return &schemas.BifrostCost{
-				InputCost:        c,
-				InputCostDetails: &schemas.InputCostDetails{TextCost: c},
-				TotalCost:        c,
+				AdditionalCost:        c,
+				AdditionalCostDetails: &schemas.AdditionalCostDetails{SemanticCacheCost: c},
+				TotalCost:             c,
 			}
 		}
 		return nil
 	}
 
-	// Cache miss — full LLM cost + embedding lookup cost (added on the input side)
+	// Cache miss — full LLM cost + embedding lookup cost (a sidecar additional cost)
 	base := s.calculateBaseCost(result, scopes)
 	embeddingCost := s.computeCacheEmbeddingCost(cacheDebug, scopes)
 	if embeddingCost == 0 {
@@ -320,16 +322,16 @@ func (s *Store) calculateCostWithCache(result *schemas.BifrostResponse, cacheDeb
 	merged := &schemas.BifrostCost{}
 	if base != nil {
 		*merged = *base
-		if base.InputCostDetails != nil {
-			d := *base.InputCostDetails
-			merged.InputCostDetails = &d
+		if base.AdditionalCostDetails != nil {
+			d := *base.AdditionalCostDetails
+			merged.AdditionalCostDetails = &d
 		}
 	}
-	if merged.InputCostDetails == nil {
-		merged.InputCostDetails = &schemas.InputCostDetails{}
+	if merged.AdditionalCostDetails == nil {
+		merged.AdditionalCostDetails = &schemas.AdditionalCostDetails{}
 	}
-	merged.InputCost += embeddingCost
-	merged.InputCostDetails.TextCost += embeddingCost
+	merged.AdditionalCost += embeddingCost
+	merged.AdditionalCostDetails.SemanticCacheCost += embeddingCost
 	merged.TotalCost += embeddingCost
 	return merged
 }
@@ -352,7 +354,13 @@ func (s *Store) computeCacheEmbeddingCost(cacheDebug *schemas.BifrostCacheDebug,
 	if pricing == nil {
 		return 0
 	}
-	return float64(*cacheDebug.InputTokens) * tieredInputRate(pricing, *cacheDebug.InputTokens, serviceTier{})
+	cost := float64(*cacheDebug.InputTokens) * tieredInputRate(pricing, *cacheDebug.InputTokens, serviceTier{})
+	// The lookup is a separate embedding call, so the embedding model's flat
+	// per-request fee applies once, mirroring the synchronous/batch paths.
+	if pricing.CostPerRequest != nil {
+		cost += *pricing.CostPerRequest
+	}
+	return cost
 }
 
 // CalculateCacheEmbeddingCost computes the semantic-cache embedding lookup cost.
@@ -1403,7 +1411,6 @@ func computeOCRCost(pricing *configstoreTables.TableModelPricing, ocrProcessedPa
 	// folds onto the input side as a request cost.
 	return totalOnlyCost(cost)
 }
-
 
 // totalOnlyCost wraps a non-token-based cost (per-page, per-session) into a
 // BifrostCost, folding it onto the input side as a flat request cost, or nil

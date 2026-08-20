@@ -1954,8 +1954,8 @@ type ChatCompletionTokensDetails struct {
 // AdditionalCost == TotalCost. Flat, non-token request costs (per-request
 // surcharge, OCR per-page, container per-session) fold into the input side as
 // InputCostDetails.RequestCost. Internal sidecar costs that map to no token
-// category (guardrail judge calls, MCP tool executions) go on the additional
-// side as AdditionalCostDetails.
+// category (guardrail judge calls, MCP tool executions, semantic cache embedding
+// lookups) go on the additional side as AdditionalCostDetails.
 type BifrostCost struct {
 	InputCost             float64                `json:"input_cost,omitempty"`
 	InputCostDetails      *InputCostDetails      `json:"input_cost_details,omitempty"`
@@ -2087,8 +2087,9 @@ type OutputCostDetails struct {
 // AdditionalCost. These are internal sidecar costs with no input/output token
 // category. Extend with new fields as more such cost sources are billed.
 type AdditionalCostDetails struct {
-	GuardrailCost float64 `json:"guardrail_cost,omitempty"` // Guardrail judge-call cost
-	MCPCost       float64 `json:"mcp_cost,omitempty"`       // MCP tool-execution cost
+	GuardrailCost     float64 `json:"guardrail_cost,omitempty"`      // Guardrail judge-call cost
+	MCPCost           float64 `json:"mcp_cost,omitempty"`            // MCP tool-execution cost
+	SemanticCacheCost float64 `json:"semantic_cache_cost,omitempty"` // Semantic-cache embedding-lookup cost
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for BifrostCost. It accepts
@@ -2233,8 +2234,9 @@ func (a *AdditionalCostDetails) add(b *AdditionalCostDetails) *AdditionalCostDet
 		return a
 	}
 	return &AdditionalCostDetails{
-		GuardrailCost: a.GuardrailCost + b.GuardrailCost,
-		MCPCost:       a.MCPCost + b.MCPCost,
+		GuardrailCost:     a.GuardrailCost + b.GuardrailCost,
+		MCPCost:           a.MCPCost + b.MCPCost,
+		SemanticCacheCost: a.SemanticCacheCost + b.SemanticCacheCost,
 	}
 }
 
