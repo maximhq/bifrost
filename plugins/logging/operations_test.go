@@ -221,7 +221,7 @@ func assertProviderRequestIDLogFields(t *testing.T, entry *logstore.Log, request
 func TestPostLLMHookSuccessPersistsProviderRequestIDWhenContentAndRawLoggingDisabled(t *testing.T) {
 	store := newTestStore(t)
 	disableContentLogging := true
-	plugin, err := Init(context.Background(), &Config{DisableContentLogging: &disableContentLogging}, testLogger{}, store, nil, nil)
+	plugin, err := Init(context.Background(), &Config{DisableContentLogging: &disableContentLogging}, testLogger{}, store, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -272,7 +272,7 @@ func TestPostLLMHookSuccessPersistsProviderRequestIDWhenContentAndRawLoggingDisa
 
 func TestFallbackLogsKeepProviderRequestIDTrailsSeparate(t *testing.T) {
 	store := newTestStore(t)
-	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -375,7 +375,7 @@ func TestFallbackLogsKeepProviderRequestIDTrailsSeparate(t *testing.T) {
 
 func TestPostLLMHookStreamingWritesProviderRequestIDTrailOnlyOnFinalChunk(t *testing.T) {
 	store := newTestStore(t)
-	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}

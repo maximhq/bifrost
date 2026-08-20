@@ -1414,6 +1414,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		p.logger.Error("request-id not found in context or is empty")
 		return result, bifrostErr, nil
 	}
+	providerRequestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyProviderRequestID)
+	providerRequestIDHeader := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyProviderRequestIDHeader)
+	providerRequestIDTrail, _ := ctx.Value(schemas.BifrostContextKeyProviderRequestIDTrail).([]schemas.ProviderRequestIDRecord)
 	// If fallback request ID is present, use it instead of the primary request ID
 	fallbackRequestID, ok := ctx.Value(schemas.BifrostContextKeyFallbackRequestID).(string)
 	if ok && fallbackRequestID != "" {
@@ -1552,9 +1555,6 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	businessUnitName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceBusinessUnitName)
 	numberOfRetries := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyNumberOfRetries)
 	attemptTrail, _ := ctx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord)
-	providerRequestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyProviderRequestID)
-	providerRequestIDHeader := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyProviderRequestIDHeader)
-	providerRequestIDTrail, _ := ctx.Value(schemas.BifrostContextKeyProviderRequestIDTrail).([]schemas.ProviderRequestIDRecord)
 
 	// Extract routing engine logs from context before entering goroutine
 	routingEngineLogs := formatRoutingEngineLogs(ctx.GetRoutingEngineLogs())
