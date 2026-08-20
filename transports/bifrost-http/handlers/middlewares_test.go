@@ -2256,7 +2256,7 @@ func TestTracingMiddleware_StreamingRootSpanEndsAfterLLMSpan(t *testing.T) {
 	defer tracer.Stop()
 
 	plugin := &captureTracePlugin{done: make(chan struct{})}
-	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin})
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin}, nil)
 
 	tm := NewTracingMiddleware(tracer)
 

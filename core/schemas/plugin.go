@@ -5,6 +5,7 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"time"
 )
 
 // PluginStatus constants
@@ -368,6 +369,17 @@ type PluginConfig struct {
 	Config    any              `json:"config,omitempty"`
 	Placement *PluginPlacement `json:"placement,omitempty"` // "pre_builtin" or "post_builtin". Default: "post_builtin"
 	Order     *int             `json:"order,omitempty"`     // Position within placement group. Lower = earlier. Default: 0
+
+	// SemaphoreSize caps concurrent in-flight Inject calls the tracer will send this
+	// plugin, if it implements ObservabilityPlugin. Generic (like Enabled) rather than
+	// part of each plugin's own Config, since the tracer holds one semaphore per plugin
+	// regardless of that plugin's internal shape. Zero/unset falls back to the tracer's
+	// default (10000). Ignored by plugins that don't implement ObservabilityPlugin.
+	SemaphoreSize *int `json:"semaphore_size,omitempty"`
+	// InjectTimeout bounds a single Inject call, as a Go duration string (e.g. "5s").
+	// Generic for the same reason as SemaphoreSize. Zero/unset falls back to the
+	// tracer's default (5s). Ignored by plugins that don't implement ObservabilityPlugin.
+	InjectTimeout *string `json:"inject_timeout,omitempty"`
 }
 
 // ConfigMarshallerPlugin is optionally implemented by plugins that need custom
@@ -414,11 +426,29 @@ type ObservabilityPlugin interface {
 	// - Send the trace to the backend (can be async, but see retention note below)
 	// - Handle errors gracefully (log and continue)
 	//
-	// The context passed is a fresh background context, not the request context.
+	// The context passed is derived from a fresh background context (not the request
+	// context), bounded by the plugin's inject timeout (see ObservabilityLimits).
+	// Implementations that perform network I/O should propagate ctx into their client
+	// calls so a hung backend is actually unblocked when the timeout fires, rather than
+	// leaking the goroutine and its concurrency-budget slot indefinitely.
 	//
 	// Retention: implementations MUST NOT retain the *Trace pointer after Inject
 	// returns. The caller releases the underlying trace back to a sync.Pool
 	// immediately after Inject completes. If a plugin needs to forward the trace
 	// asynchronously, it must copy the data it needs before returning.
 	Inject(ctx context.Context, trace *Trace) error
+}
+
+// ObservabilityLimits configures how the tracer bounds a single observability plugin's
+// Inject calls: how many may run concurrently, and how long any one call is allowed to take.
+// Resolved from the plugin's generic PluginConfig.SemaphoreSize/InjectTimeout — plugins
+// themselves have no say in this, the same way they don't decide their own Enabled state.
+type ObservabilityLimits struct {
+	// SemaphoreSize caps concurrent in-flight Inject calls for this plugin. A trace is
+	// dropped for this plugin (not process-wide) when the cap is already saturated.
+	// Zero/unset falls back to the tracer's default (10000).
+	SemaphoreSize int
+	// InjectTimeout bounds a single Inject call. Zero/unset falls back to the tracer's
+	// default (5s).
+	InjectTimeout time.Duration
 }

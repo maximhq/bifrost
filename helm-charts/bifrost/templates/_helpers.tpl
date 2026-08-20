@@ -1316,6 +1316,12 @@ false
 {{- if .Values.bifrost.plugins.logging.enabled }}
 {{- $plugin := dict "enabled" true "name" "logging" "config" .Values.bifrost.plugins.logging.config }}
 {{- if hasKey .Values.bifrost.plugins.logging "version" }}{{- $_ := set $plugin "version" (.Values.bifrost.plugins.logging.version | int) }}{{- end }}
+{{- if .Values.bifrost.plugins.logging.semaphore_size }}
+{{- $_ := set $plugin "semaphore_size" (.Values.bifrost.plugins.logging.semaphore_size | int) }}
+{{- end }}
+{{- if .Values.bifrost.plugins.logging.inject_timeout }}
+{{- $_ := set $plugin "inject_timeout" .Values.bifrost.plugins.logging.inject_timeout }}
+{{- end }}
 {{- $plugins = append $plugins $plugin }}
 {{- end }}
 {{- if .Values.bifrost.plugins.governance.enabled }}
@@ -1462,6 +1468,12 @@ false
 {{- end }}
 {{- $plugin := dict "enabled" true "name" "otel" "config" $otelConfig }}
 {{- if hasKey .Values.bifrost.plugins.otel "version" }}{{- $_ := set $plugin "version" (.Values.bifrost.plugins.otel.version | int) }}{{- end }}
+{{- if .Values.bifrost.plugins.otel.semaphore_size }}
+{{- $_ := set $plugin "semaphore_size" (.Values.bifrost.plugins.otel.semaphore_size | int) }}
+{{- end }}
+{{- if .Values.bifrost.plugins.otel.inject_timeout }}
+{{- $_ := set $plugin "inject_timeout" .Values.bifrost.plugins.otel.inject_timeout }}
+{{- end }}
 {{- $plugins = append $plugins $plugin }}
 {{- end }}
 {{- if .Values.bifrost.plugins.datadog.enabled }}
@@ -1730,6 +1742,8 @@ false
 {{- if .config }}{{- $_ := set $customPlugin "config" .config }}{{- end }}
 {{- if .placement }}{{- $_ := set $customPlugin "placement" .placement }}{{- end }}
 {{- if .order }}{{- $_ := set $customPlugin "order" (.order | int) }}{{- end }}
+{{- if .semaphore_size }}{{- $_ := set $customPlugin "semaphore_size" (.semaphore_size | int) }}{{- end }}
+{{- if .inject_timeout }}{{- $_ := set $customPlugin "inject_timeout" .inject_timeout }}{{- end }}
 {{- $plugins = append $plugins $customPlugin }}
 {{- end }}
 {{- end }}

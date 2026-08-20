@@ -60,7 +60,7 @@ func TestTracer_CompleteAndFlushTraceInjectsObservabilityPlugins(t *testing.T) {
 		injected: make(chan *schemas.Trace, 1),
 	}
 
-	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin})
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin}, nil)
 	tracer.CompleteAndFlushTrace(traceID)
 
 	select {
@@ -88,7 +88,7 @@ func TestTracer_CompleteAndFlushTraceRedactsContentBeforeInject(t *testing.T) {
 	plugin := &testRealtimeObservabilityPlugin{
 		injectedPayload: make(chan string, 1),
 	}
-	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin})
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin}, nil)
 
 	// Store replacements before output attributes are populated. This mirrors
 	// streaming, where the final accumulated output lands near trace completion.
@@ -142,7 +142,7 @@ func TestTracer_SetTraceRedactionReplacementsSurvivesLaterObservabilityPlugins(t
 	plugin := &testRealtimeObservabilityPlugin{
 		injectedPayload: make(chan string, 1),
 	}
-	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin})
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin}, nil)
 
 	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID)
 	_, rootHandle := tracer.StartSpan(ctx, "http-request", schemas.SpanKindHTTPRequest)
