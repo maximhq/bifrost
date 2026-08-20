@@ -2,6 +2,7 @@ package runware
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/google/uuid"
@@ -68,13 +69,17 @@ func ToRunwareImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationR
 		// input_images drives image-to-image on the generation path. A seedImage supplied through
 		// extra params is the provider-native form of the same thing and wins outright — sending
 		// both would put two input keys on a request that accepts one.
-		// Empty entries are dropped: Runware rejects a blank input key, and the edit path already
-		// filters the same way through runwareImageInput.
+		// Each entry is normalized the way the other image providers normalize theirs; empty ones are
+		// dropped, since Runware rejects a blank input key.
 		if request.SeedImage == nil {
 			inputImages := make([]string, 0, len(params.InputImages))
 			for _, img := range params.InputImages {
-				if trimmed := strings.TrimSpace(img); trimmed != "" {
-					inputImages = append(inputImages, trimmed)
+				reference, err := runwareImageReference(img)
+				if err != nil {
+					return nil, fmt.Errorf("invalid input image: %w", err)
+				}
+				if reference != "" {
+					inputImages = append(inputImages, reference)
 				}
 			}
 			if len(inputImages) > 0 {
@@ -177,16 +182,39 @@ func ToRunwareImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) (*Ru
 }
 
 // runwareImageInput resolves an input image to the reference Runware expects. A caller-supplied
-// URL passes through untouched — Runware accepts UUIDs and URLs natively, so forwarding it avoids
-// round-tripping the asset through the gateway as base64 — while raw bytes become a data URI.
+// URL is normalized rather than round-tripped through the gateway as base64; raw bytes become a
+// data URI. An unusable reference yields "", which callers treat as absent.
 func runwareImageInput(img schemas.ImageInput) string {
 	if img.URL != "" {
-		return img.URL
+		reference, err := runwareImageReference(img.URL)
+		if err != nil {
+			return ""
+		}
+		return reference
 	}
 	if len(img.Image) == 0 {
 		return ""
 	}
 	return providerUtils.FileBytesToBase64DataURL(img.Image)
+}
+
+// runwareImageReference normalizes a caller-supplied image reference. URLs and base64 payloads go
+// through the same sanitizer the other image providers use, which validates data URLs and wraps
+// bare base64 into one. A value carrying no URL scheme is left alone: Runware accepts its own asset
+// UUIDs as inputs — the ids it returns on data[].id — and those would otherwise be rejected as
+// schemeless URLs. Returns "" for an empty reference so callers can skip it.
+func runwareImageReference(image string) (string, error) {
+	trimmed := strings.TrimSpace(image)
+	if trimmed == "" {
+		return "", nil
+	}
+	if sanitized, err := schemas.SanitizeImageURL(trimmed); err == nil {
+		return sanitized, nil
+	} else if parsed, parseErr := url.Parse(trimmed); parseErr != nil || parsed.Scheme != "" {
+		// A scheme means it was meant to be a URL, so a sanitizer failure is a real error.
+		return "", err
+	}
+	return trimmed, nil
 }
 
 // runwareImageEditTaskType maps the neutral edit type onto a Runware tool task type. An empty

@@ -755,3 +755,51 @@ func TestToRunwareImageGenerationRequest_InputImagesSkipsEmpty(t *testing.T) {
 		t.Fatalf("all-empty input_images must leave no input key, got seedImage=%v inputs=%+v", blank.SeedImage, blank.Inputs)
 	}
 }
+
+// Input images are normalized the way the other image providers normalize theirs: bare base64 is
+// wrapped into a data URI, malformed URLs are rejected, and Runware's own asset UUIDs survive —
+// those carry no scheme, so a generic URL sanitizer would otherwise reject them.
+func TestRunwareImageReference(t *testing.T) {
+	const bareBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+	for _, tc := range []struct {
+		name, in, want string
+		wantErr        bool
+	}{
+		{"asset uuid preserved", "2f670f32-dece-4c44-aef0-e62b52ca7d55", "2f670f32-dece-4c44-aef0-e62b52ca7d55", false},
+		{"https untouched", "https://example.com/a.jpg", "https://example.com/a.jpg", false},
+		{"data uri untouched", "data:image/png;base64,iVBORw0KGgo=", "data:image/png;base64,iVBORw0KGgo=", false},
+		{"bare base64 wrapped", bareBase64, "data:image/png;base64," + bareBase64, false},
+		{"whitespace trimmed", "  2f670f32-dece-4c44-aef0-e62b52ca7d55  ", "2f670f32-dece-4c44-aef0-e62b52ca7d55", false},
+		{"empty yields empty", "   ", "", false},
+		{"malformed data url errors", "data:garbage", "", true},
+		{"disallowed scheme errors", "ftp://example.com/a.jpg", "", true},
+	} {
+		got, err := runwareImageReference(tc.in)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("%s: expected an error, got %q", tc.name, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%s: unexpected error: %v", tc.name, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// The generation path rejects a malformed reference rather than forwarding it for Runware to
+// reject, matching how replicate and runway handle input_images.
+func TestToRunwareImageGenerationRequest_InputImagesRejectsMalformed(t *testing.T) {
+	_, err := ToRunwareImageGenerationRequest(&schemas.BifrostImageGenerationRequest{
+		Model:  "runware:101@1",
+		Input:  &schemas.ImageGenerationInput{Prompt: "a cat"},
+		Params: &schemas.ImageGenerationParameters{InputImages: []string{"ftp://example.com/a.jpg"}},
+	})
+	if err == nil {
+		t.Fatalf("expected an error for a disallowed scheme")
+	}
+}
