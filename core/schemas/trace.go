@@ -456,6 +456,59 @@ func (s *Span) End(status SpanStatus, statusMsg string) {
 	s.StatusMsg = statusMsg
 }
 
+// EndIfMatch ends the span only if its SpanID still equals id, and reports whether
+// it did. It exists for the tracer's cached-pointer fast path: a span pooled by
+// ReleaseTrace has its SpanID cleared under this same lock (see Reset), and a span
+// reused by another trace carries a different SpanID, so a stale handle fails the
+// check and the caller falls back to the by-ID store lookup instead of mutating a
+// recycled span. The check rides inside the lock End already takes, so it adds no
+// extra locking.
+func (s *Span) EndIfMatch(id string, status SpanStatus, statusMsg string) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.SpanID != id {
+		return false
+	}
+	s.EndTime = time.Now()
+	s.Status = status
+	s.StatusMsg = statusMsg
+	return true
+}
+
+// SetAttributeIfMatch sets an attribute only if the span's SpanID still equals id,
+// and reports whether it did. Same recycling guard as EndIfMatch, for the tracer's
+// cached-pointer fast path.
+func (s *Span) SetAttributeIfMatch(id, key string, value any) bool {
+	if s == nil || value == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.SpanID != id {
+		return false
+	}
+	if s.Attributes == nil {
+		s.Attributes = make(map[string]any)
+	}
+	s.Attributes[key] = value
+	return true
+}
+
+// MatchesID reports whether the span's SpanID still equals id, read under the span
+// lock so it does not race a concurrent Reset. Used by the tracer to decide whether
+// a cached span pointer is still the one the handle refers to before returning it.
+func (s *Span) MatchesID(id string) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.SpanID == id
+}
+
 // Reset clears the span for reuse from pool. It holds s.mu — like every other
 // Span mutator — so a straggling writer (e.g. streaming finalization) that races
 // pool release can't trigger a fatal concurrent map access on s.Attributes.
