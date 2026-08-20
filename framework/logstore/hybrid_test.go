@@ -69,6 +69,16 @@ func waitForOffload(t *testing.T, inner LogStore, id string) {
 	})
 }
 
+// waitForMCPOffload is waitForOffload for MCP tool logs: it waits for the row's
+// has_object flag, which processUpload commits only after the object Put.
+func waitForMCPOffload(t *testing.T, inner LogStore, id string) {
+	t.Helper()
+	waitForUploads(t, func() bool {
+		row, err := inner.FindMCPToolLog(context.Background(), id)
+		return err == nil && row.HasObject
+	})
+}
+
 func TestHybridScopedDBDelegatesToInnerRDBStore(t *testing.T) {
 	hybrid, _, _ := newTestHybrid(t)
 	defer hybrid.Close(context.Background())
@@ -91,7 +101,7 @@ func TestHybridScopedDBDelegatesToInnerRDBStore(t *testing.T) {
 }
 
 func TestHybrid_CreateAndFindByID(t *testing.T) {
-	hybrid, _, objStore := newTestHybrid(t)
+	hybrid, inner, objStore := newTestHybrid(t)
 	defer hybrid.Close(context.Background())
 	ctx := context.Background()
 
@@ -117,7 +127,7 @@ func TestHybrid_CreateAndFindByID(t *testing.T) {
 	err := hybrid.CreateIfNotExists(ctx, entry)
 	require.NoError(t, err)
 
-	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+	waitForOffload(t, inner, "log-1")
 
 	// Verify object was uploaded.
 	assert.Equal(t, 1, objStore.Len(), "expected 1 object in store")
@@ -212,7 +222,7 @@ func TestHybrid_FindByID_NoObject(t *testing.T) {
 }
 
 func TestHybrid_FindByID_GracefulDegradation(t *testing.T) {
-	hybrid, _, objStore := newTestHybrid(t)
+	hybrid, inner, objStore := newTestHybrid(t)
 	defer hybrid.Close(context.Background())
 	ctx := context.Background()
 
@@ -230,7 +240,7 @@ func TestHybrid_FindByID_GracefulDegradation(t *testing.T) {
 	}
 	require.NoError(t, entry.SerializeFields())
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+	waitForOffload(t, inner, "degrade-1")
 
 	// Simulate S3 failure.
 	objStore.GetErr = assert.AnError
@@ -292,7 +302,7 @@ func TestHybrid_CreateAndFindMCPToolLog(t *testing.T) {
 }
 
 func TestHybrid_BatchCreateMCPToolLogsIfNotExists(t *testing.T) {
-	hybrid, inner, objStore := newTestHybrid(t)
+	hybrid, inner, _ := newTestHybrid(t)
 	defer hybrid.Close(context.Background())
 	ctx := context.Background()
 
@@ -335,7 +345,8 @@ func TestHybrid_BatchCreateMCPToolLogsIfNotExists(t *testing.T) {
 	}
 
 	require.NoError(t, hybrid.BatchCreateMCPToolLogsIfNotExists(ctx, entries))
-	waitForUploads(t, func() bool { return objStore.Len() == 2 })
+	waitForMCPOffload(t, inner, "mcp-batch-1")
+	waitForMCPOffload(t, inner, "mcp-batch-2")
 
 	dbOnly, err := inner.FindMCPToolLog(ctx, "mcp-batch-1")
 	require.NoError(t, err)
@@ -363,7 +374,7 @@ func TestHybrid_BatchCreateMCPToolLogsIfNotExists(t *testing.T) {
 }
 
 func TestHybrid_UpdateMCPToolLogOffloadsFullLog(t *testing.T) {
-	hybrid, inner, objStore := newTestHybrid(t)
+	hybrid, inner, _ := newTestHybrid(t)
 	defer hybrid.Close(context.Background())
 	ctx := context.Background()
 
@@ -379,7 +390,7 @@ func TestHybrid_UpdateMCPToolLogOffloadsFullLog(t *testing.T) {
 		},
 	}
 	require.NoError(t, hybrid.CreateMCPToolLog(ctx, entry))
-	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+	waitForMCPOffload(t, inner, entry.ID)
 
 	require.NoError(t, hybrid.UpdateMCPToolLog(ctx, entry.ID, MCPToolLog{
 		Status:           "success",
@@ -433,7 +444,7 @@ func TestHybrid_UpdateMCPToolLogRequiresObjectHydration(t *testing.T) {
 		},
 	}
 	require.NoError(t, hybrid.CreateMCPToolLog(ctx, entry))
-	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+	waitForMCPOffload(t, inner, entry.ID)
 
 	objStore.GetErr = assert.AnError
 	err := hybrid.UpdateMCPToolLog(ctx, entry.ID, MCPToolLog{
@@ -744,7 +755,7 @@ func TestHybrid_ResponsesInputHistoryPreservesLastUserMessage(t *testing.T) {
 	}
 	require.NoError(t, entry.SerializeFields())
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+	waitForOffload(t, inner, "resp-1")
 
 	// DB row keeps only the last user message as a preview — not the system message.
 	dbLog, err := inner.FindByID(ctx, "resp-1")
@@ -793,7 +804,7 @@ func TestHybrid_AttachmentsStrippedFromChatPreview(t *testing.T) {
 	}
 	require.NoError(t, entry.SerializeFields())
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+	waitForOffload(t, inner, "chat-attach-1")
 
 	// DB preview keeps the text and block structure but not the payloads.
 	dbLog, err := inner.FindByID(ctx, "chat-attach-1")
@@ -850,7 +861,7 @@ func TestHybrid_AttachmentsStrippedFromResponsesPreview(t *testing.T) {
 	}
 	require.NoError(t, entry.SerializeFields())
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+	waitForOffload(t, inner, "resp-attach-1")
 
 	dbLog, err := inner.FindByID(ctx, "resp-attach-1")
 	require.NoError(t, err)
@@ -933,7 +944,7 @@ func TestHybrid_SpeechInputSummaryForListPreview(t *testing.T) {
 	// retain a content_summary so the log list renders the text instead of "-"
 	// (the UI uses content_summary as its display fallback once payload fields
 	// are offloaded). Same gap exists for responses/image/video inputs.
-	hybrid, inner, objStore := newTestHybrid(t)
+	hybrid, inner, _ := newTestHybrid(t)
 	defer hybrid.Close(context.Background())
 	ctx := context.Background()
 
@@ -949,7 +960,7 @@ func TestHybrid_SpeechInputSummaryForListPreview(t *testing.T) {
 	}
 	require.NoError(t, entry.SerializeFields())
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+	waitForOffload(t, inner, "speech-1")
 
 	// speech_input is offloaded to S3 and cleared from the DB row, but the
 	// content_summary fallback retains the text for the list preview.
