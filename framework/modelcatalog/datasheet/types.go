@@ -364,7 +364,7 @@ func normalizeRequestType(reqType schemas.RequestType) string {
 	switch reqType {
 	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
 		return "completion"
-	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
+	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest, schemas.BatchResultsRequest:
 		return "chat"
 	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest, schemas.RealtimeRequest, schemas.CompactionRequest:
 		return "responses"
@@ -499,8 +499,11 @@ func extractSupportedParams(parsed *schemas.ModelCapabilities) []string {
 	}
 
 	if parsed.SupportsAssistantPrefill != nil && *parsed.SupportsAssistantPrefill {
-		// Not an actual request parameter; if present, trailing assistant messages
-		// for anthropic and bedrock's anthropic models will not be trimmed.
+		// Not an actual request parameter; if present, trailing assistant messages are
+		// left in place instead of being trimmed. Read by anthropic and by bedrock's
+		// anthropic models, and by gemini/vertex -- where the default is the opposite
+		// (no model supports prefill, so the trim is on unless a record turns it off),
+		// because Gemini rejects any conversation ending on a role:"model" turn.
 		addParam("assistant_prefill")
 	}
 	if parsed.SupportsFunctionCalling != nil && *parsed.SupportsFunctionCalling {

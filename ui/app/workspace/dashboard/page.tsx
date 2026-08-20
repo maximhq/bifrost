@@ -471,7 +471,7 @@ export default function DashboardPage() {
 	return (
 		<div
 			id="dashboard-root"
-			className="no-padding-parent no-border-parent bg-background flex h-[calc(var(--app-content-viewport)_-_16px)] w-full gap-3"
+			className="no-padding-parent no-border-parent bg-background flex h-[calc(var(--app-content-viewport)_-_var(--app-bottom-padding))] w-full gap-3"
 		>
 			{/* Sidebar Filters */}
 			<LogsFilterSidebar filters={filters} onFiltersChange={setFilters} />

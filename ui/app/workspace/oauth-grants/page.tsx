@@ -144,7 +144,7 @@ export default function OAuthGrantsPage() {
 	}
 
 	return (
-		<div className="dark:bg-card no-padding-parent no-border-parent h-[calc(var(--app-content-viewport)_-_16px)]">
+		<div className="dark:bg-card no-padding-parent no-border-parent h-[calc(var(--app-content-viewport)_-_var(--app-bottom-padding))]">
 			<div className="bg-background flex h-full w-full grow gap-3">
 				<OAuthGrantsFilterSidebar filters={filters} onFiltersChange={setFilters} />
 				<div className="bg-card h-full w-full overflow-hidden rounded-md border">

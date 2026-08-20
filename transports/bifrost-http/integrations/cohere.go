@@ -102,7 +102,7 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 			return resp, nil
 		},
 		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-			return err
+			return cohere.ToCohereError(err)
 		},
 		StreamConfig: &StreamConfig{
 			ChatStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostChatResponse) (string, interface{}, error) {
@@ -114,7 +114,7 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 				return "", resp, nil
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-				return err
+				return cohere.ToCohereError(err)
 			},
 		},
 	})
@@ -148,7 +148,7 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 			return resp, nil
 		},
 		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-			return err
+			return cohere.ToCohereError(err)
 		},
 	})
 
@@ -181,7 +181,7 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 			return cohere.ToCohereRerankResponse(resp), nil
 		},
 		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-			return err
+			return cohere.ToCohereError(err)
 		},
 	})
 
@@ -214,7 +214,7 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 			return resp, nil
 		},
 		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-			return err
+			return cohere.ToCohereError(err)
 		},
 	})
 

@@ -87,7 +87,7 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 				bifrostConfig.LogsStoreConfig.ObjectStorage != nil
 		}
 		return logging.Init(ctx, loggingConfig, logger, bifrostConfig.LogsStore,
-			bifrostConfig.ModelCatalog, bifrostConfig.MCPCatalog)
+			bifrostConfig.ConfigStore, bifrostConfig.ModelCatalog, bifrostConfig.MCPCatalog)
 
 	case governance.PluginName:
 		governanceConfig, err := MarshalPluginConfig[governance.Config](pluginConfig)

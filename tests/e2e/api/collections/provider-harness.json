@@ -56,7 +56,7 @@
           "// Only register the content-shape test when the request actually succeeded.",
           "// Otherwise newman reports it as passing (because of an early return) which is misleading next to a failing status.",
           "var __u = (pm.request && pm.request.url && pm.request.url.toString()) || '';",
-          "var __skipShape = (__u.indexOf('/files/') !== -1 && (__u.indexOf('/content?') !== -1 || __u.slice(-8) === '/content')) || __u.indexOf('storage.googleapis.com') !== -1 || __u.indexOf('batchPredictionJobs') !== -1;",
+          "var __skipShape = (__u.indexOf('/files/') !== -1 && (__u.indexOf('/content?') !== -1 || __u.slice(-8) === '/content')) || __u.indexOf('storage.googleapis.com') !== -1 || __u.indexOf('batchPredictionJobs') !== -1 || (__u.indexOf('/genai/v1beta/batches/') !== -1 && __u.indexOf(':cancel') !== -1);",
           "if (pm.response.code < 400 && !__skipShape && (pm.response.headers.get('content-type') || '').indexOf('text/event-stream') === -1 && (pm.response.headers.get('content-type') || '').indexOf('vnd.amazon.eventstream') === -1 && (pm.response.headers.get('content-type') || '').indexOf('audio/') === -1) {",
           "  pm.test('Response has content (text or tool_use)', function () {",
           "    var j;",
@@ -114,6 +114,10 @@
           "        shape = 'rerank';",
           "        // A rerank response ranks the documents it was given; it generates no text, so the ranked list IS the content. Matched on index + a relevance score rather than on `results` alone, which is too generic to claim off other shapes. This branch went missing until now because no rerank row had ever returned 2xx: every bedrock row was rejected pre-flight for not naming its model as an ARN, and every vertex row 403s on discoveryengine IAM - and the content check is gated on code < 400, so it never ran.",
           "        hasContent = j.results.length > 0;",
+          "    } else if (Array.isArray(j.records) && j.records.length > 0 && j.records[0] && typeof j.records[0].id === 'string' && typeof j.records[0].score === 'number') {",
+          "        shape = 'rerank-records';",
+          "        // Discovery Engine's rank API is ID-keyed: it answers with records[] carrying id + score, not results[] with index + relevance_score, so the rerank branch above never claims it. Like that branch, the ranked list IS the content - a rank call generates no text. Matched on id + score rather than on `records` alone, which is too generic to claim off other shapes. This went missing because /genai/v1/rank only started returning the real Discovery Engine shape once the rank response converter landed; before that it leaked Bifrost's canonical results[] and was claimed by the rerank branch.",
+          "        hasContent = j.records.length > 0;",
           "    } else if (Array.isArray(j.predictions)) {",
           "        shape = 'vertex-predictions';",
           "        hasContent = j.predictions.length > 0;",
@@ -144,6 +148,12 @@
           "    } else if (j.type === 'message_batch' && typeof j.id === 'string') {",
           "        shape = 'anthropic-batch-create';",
           "        hasContent = !!j.id;",
+          "    } else if (typeof j.name === 'string' && j.name.indexOf('batches/') === 0) {",
+          "        shape = 'gemini-batch';",
+          "        hasContent = true;",
+          "    } else if (Array.isArray(j.operations)) {",
+          "        shape = 'gemini-batch-list';",
+          "        hasContent = true;",
           "    } else if (j.background === true && typeof j.id === 'string') {",
           "        shape = 'openai-responses-background';",
           "        hasContent = !!j.id;",
@@ -16301,7 +16311,21 @@
                     "batches"
                   ]
                 }
-              }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('Anthropic list batches: 2xx', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(300); });",
+                      "var j = pm.response.json();",
+                      "pm.test('Anthropic list batches: data is array', function () { pm.expect(j.data).to.be.an('array'); });"
+                    ]
+                  }
+                }
+              ]
             },
             {
               "name": "Anthropic: list files",
@@ -20010,7 +20034,22 @@
                     "batches"
                   ]
                 }
-              }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('OpenAI list batches: 2xx', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(300); });",
+                      "var j = pm.response.json();",
+                      "pm.test('OpenAI list batches: object list', function () { pm.expect(j.object).to.eql('list'); });",
+                      "pm.test('OpenAI list batches: data is array', function () { pm.expect(j.data).to.be.an('array'); });"
+                    ]
+                  }
+                }
+              ]
             },
             {
               "name": "OpenAI: list files",
@@ -22098,6 +22137,59 @@
               }
             },
             {
+              "name": "OpenAI: upload batch input file",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{openaiKey}}"
+                  }
+                ],
+                "body": {
+                  "mode": "formdata",
+                  "formdata": [
+                    {
+                      "key": "file",
+                      "src": "tests/e2e/api/fixtures/openai-batch-input.jsonl",
+                      "type": "file"
+                    },
+                    {
+                      "key": "purpose",
+                      "value": "batch",
+                      "type": "text"
+                    }
+                  ]
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/openai/v1/files",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "openai",
+                    "v1",
+                    "files"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('OpenAI batch input upload: 2xx', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(300); });",
+                      "var j = pm.response.json();",
+                      "pm.test('OpenAI batch input upload: has id', function () { pm.expect(j.id).to.be.a('string').and.not.empty; });",
+                      "pm.collectionVariables.set('openaiBatchInputFileId', j.id);"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
               "name": "OpenAI: create batch",
               "request": {
                 "method": "POST",
@@ -22113,7 +22205,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"input_file_id\": \"file_REPLACE_ME\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"completion_window\": \"24h\"\n}"
+                  "raw": "{\n  \"input_file_id\": \"{{openaiBatchInputFileId}}\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"completion_window\": \"24h\"\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/openai/v1/batches",
@@ -22126,7 +22218,178 @@
                     "batches"
                   ]
                 }
-              }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Clear any stale id from a previous run so a guarded skip below (401/403/429/5xx)",
+                      "// can't leave 'OpenAI: retrieve batch'/'cancel batch' chaining onto an old batch.",
+                      "pm.collectionVariables.unset('openaiBatchId');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('OpenAI create batch: 2xx', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(300); });",
+                      "var j = pm.response.json();",
+                      "pm.test('OpenAI create batch: object batch', function () { pm.expect(j.object).to.eql('batch'); });",
+                      "pm.test('OpenAI create batch: has id', function () { pm.expect(j.id).to.be.a('string').and.not.empty; });",
+                      "pm.test('OpenAI create batch: input_file_id round-trips', function () { pm.expect(j.input_file_id).to.eql(pm.collectionVariables.get('openaiBatchInputFileId')); });",
+                      "pm.test('OpenAI create batch: has status', function () { pm.expect(j.status).to.be.a('string').and.not.empty; });",
+                      "if (typeof j.id === 'string' && j.id) { pm.collectionVariables.set('openaiBatchId', j.id); }"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "OpenAI: retrieve batch",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{openaiKey}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/openai/v1/batches/{{openaiBatchId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "openai",
+                    "v1",
+                    "batches",
+                    "{{openaiBatchId}}"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Create didn't set an id (skipped on a guarded code, or failed) - nothing to retrieve.",
+                      "if (!pm.collectionVariables.get('openaiBatchId')) { pm.execution.skipRequest(); return; }"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('OpenAI retrieve batch: 2xx', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(300); });",
+                      "var j = pm.response.json();",
+                      "pm.test('OpenAI retrieve batch: object batch', function () { pm.expect(j.object).to.eql('batch'); });",
+                      "pm.test('OpenAI retrieve batch: id matches create', function () { pm.expect(j.id).to.eql(pm.collectionVariables.get('openaiBatchId')); });"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "OpenAI: cancel batch",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{openaiKey}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/openai/v1/batches/{{openaiBatchId}}/cancel",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "openai",
+                    "v1",
+                    "batches",
+                    "{{openaiBatchId}}",
+                    "cancel"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Create didn't set an id (skipped on a guarded code, or failed) - nothing to cancel.",
+                      "if (!pm.collectionVariables.get('openaiBatchId')) { pm.execution.skipRequest(); return; }",
+                      "// OpenAI's real batch API can 500 on a cancel fired within ~1s of create (the",
+                      "// batch is still transitioning out of 'validating'). Give it a moment to settle.",
+                      "// Top-level await isn't supported by this sandbox, so block synchronously instead.",
+                      "var __until = Date.now() + 3000;",
+                      "while (Date.now() < __until) { /* busy-wait */ }"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('OpenAI cancel batch: 2xx', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(300); });",
+                      "var j = pm.response.json();",
+                      "pm.test('OpenAI cancel batch: has id', function () { pm.expect(j.id).to.be.a('string').and.not.empty; });",
+                      "pm.test('OpenAI cancel batch: cancelling/cancelled', function () { pm.expect(['cancelling','cancelled','completed']).to.include(j.status); });"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "OpenAI: delete batch input file (cleanup)",
+              "request": {
+                "method": "DELETE",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{openaiKey}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/openai/v1/files/{{openaiBatchInputFileId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "openai",
+                    "v1",
+                    "files",
+                    "{{openaiBatchInputFileId}}"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('OpenAI delete batch input file: 2xx', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(300); });",
+                      "var j = pm.response.json();",
+                      "pm.test('OpenAI delete batch input file: deleted', function () { pm.expect(j.deleted).to.eql(true); });"
+                    ]
+                  }
+                }
+              ]
             },
             {
               "name": "Anthropic: token counting endpoint",
@@ -22198,7 +22461,144 @@
                     "batches"
                   ]
                 }
-              }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Clear any stale id from a previous run so a guarded skip below (401/403/429/5xx/529)",
+                      "// can't leave 'Anthropic: retrieve batch'/'cancel batch' chaining onto an old batch.",
+                      "pm.collectionVariables.unset('anthropicBatchId');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('Anthropic create batch: 2xx', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(300); });",
+                      "var j = pm.response.json();",
+                      "pm.test('Anthropic create batch: type message_batch', function () { pm.expect(j.type).to.eql('message_batch'); });",
+                      "pm.test('Anthropic create batch: has id', function () { pm.expect(j.id).to.be.a('string').and.not.empty; });",
+                      "pm.test('Anthropic create batch: has processing_status', function () { pm.expect(j.processing_status).to.be.a('string').and.not.empty; });",
+                      "if (typeof j.id === 'string' && j.id) { pm.collectionVariables.set('anthropicBatchId', j.id); }"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Anthropic: retrieve batch",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "x-api-key",
+                    "value": "{{anthropicKey}}"
+                  },
+                  {
+                    "key": "anthropic-version",
+                    "value": "2023-06-01"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/anthropic/v1/messages/batches/{{anthropicBatchId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "anthropic",
+                    "v1",
+                    "messages",
+                    "batches",
+                    "{{anthropicBatchId}}"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Create didn't set an id (skipped on a guarded code, or failed) - nothing to retrieve.",
+                      "if (!pm.collectionVariables.get('anthropicBatchId')) { pm.execution.skipRequest(); return; }"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('Anthropic retrieve batch: 2xx', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(300); });",
+                      "var j = pm.response.json();",
+                      "pm.test('Anthropic retrieve batch: type message_batch', function () { pm.expect(j.type).to.eql('message_batch'); });",
+                      "pm.test('Anthropic retrieve batch: id matches create', function () { pm.expect(j.id).to.eql(pm.collectionVariables.get('anthropicBatchId')); });"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Anthropic: cancel batch",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "x-api-key",
+                    "value": "{{anthropicKey}}"
+                  },
+                  {
+                    "key": "anthropic-version",
+                    "value": "2023-06-01"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/anthropic/v1/messages/batches/{{anthropicBatchId}}/cancel",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "anthropic",
+                    "v1",
+                    "messages",
+                    "batches",
+                    "{{anthropicBatchId}}",
+                    "cancel"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Create didn't set an id (skipped on a guarded code, or failed) - nothing to cancel.",
+                      "if (!pm.collectionVariables.get('anthropicBatchId')) { pm.execution.skipRequest(); return; }"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('Anthropic cancel batch: 2xx', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(300); });",
+                      "var j = pm.response.json();",
+                      "pm.test('Anthropic cancel batch: has id', function () { pm.expect(j.id).to.be.a('string').and.not.empty; });",
+                      "pm.test('Anthropic cancel batch: canceling/ended', function () { pm.expect(['canceling','ended']).to.include(j.processing_status); });"
+                    ]
+                  }
+                }
+              ]
             },
             {
               "name": "Gemini: tool_choice forced via toolConfig",
@@ -128322,10 +128722,11 @@
                       "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
                       "var j; try { j = pm.response.json(); } catch (e) {",
                       "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
-                      "pm.test('rerank returned ranked results', function () {",
-                      "  var r = j.results || j.data || [];",
-                      "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
-                      "  pm.expect(r[0]).to.have.property('index');",
+                      "pm.test('rank returned ranked records', function () {",
+                      "  var r = j.records || [];",
+                      "  pm.expect(r.length, 'no records (Discovery Engine returns records[], not results[]): ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                      "  pm.expect(r[0], 'record must be keyed by id').to.have.property('id');",
+                      "  pm.expect(r[0], 'record must carry score').to.have.property('score');",
                       "});"
                     ]
                   }
@@ -128367,10 +128768,11 @@
                       "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
                       "var j; try { j = pm.response.json(); } catch (e) {",
                       "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
-                      "pm.test('rerank returned ranked results', function () {",
-                      "  var r = j.results || j.data || [];",
-                      "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
-                      "  pm.expect(r[0]).to.have.property('index');",
+                      "pm.test('rank returned ranked records', function () {",
+                      "  var r = j.records || [];",
+                      "  pm.expect(r.length, 'no records (Discovery Engine returns records[], not results[]): ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                      "  pm.expect(r[0], 'record must be keyed by id').to.have.property('id');",
+                      "  pm.expect(r[0], 'record must carry score').to.have.property('score');",
                       "});"
                     ]
                   }
@@ -132948,10 +133350,2227 @@
       ]
     },
     {
-      "name": "55. Bedrock Typed Embeddings + LangChain Cohere (PR #6335)",
+      "name": "55. Gemini Native Batch API (create/list/retrieve/cancel)",
+      "description": "Bifrost wires up Gemini's native batch surface (/genai/v1beta/models/{model}:batchGenerateContent, /genai/v1beta/batches[...]) alongside the already-covered OpenAI and Anthropic batch APIs (folder 12 Round 3), but it had zero harness coverage of its own. Unlike OpenAI, Gemini batch create takes inline requests directly in the body (batch.inputConfig.requests), so no file-upload step is required - same shape as Anthropic. These cases pin: create accepts inline requests and returns an operation name + pending state, list returns an array, retrieve round-trips the created batch's id, and cancel transitions it to a cancelling/cancelled-ish state without erroring.",
       "item": [
         {
-          "name": "55.A bedrock/model Titan V2 binary-only native envelope - PR #6335",
+          "name": "Gemini: create batch (gemini-2.5-pro)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"batch\": {\n    \"displayName\": \"bifrost-harness-batch\",\n    \"inputConfig\": {\n      \"requests\": {\n        \"requests\": [\n          {\"request\": {\"contents\": [{\"role\": \"user\", \"parts\": [{\"text\": \"Say hello\"}]}], \"generationConfig\": {\"maxOutputTokens\": 16}}, \"metadata\": {\"key\": \"req-1\"}},\n          {\"request\": {\"contents\": [{\"role\": \"user\", \"parts\": [{\"text\": \"Say goodbye\"}]}], \"generationConfig\": {\"maxOutputTokens\": 16}}, \"metadata\": {\"key\": \"req-2\"}}\n        ]\n      }\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/{{genaiModel}}:batchGenerateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "{{genaiModel}}:batchGenerateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Clear any stale id from a previous run so a guarded skip below (401/403/429/5xx)",
+                  "// can't leave 'Gemini: retrieve batch'/'cancel batch' chaining onto an old batch.",
+                  "pm.collectionVariables.unset('genaiBatchId');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Gemini create batch: 2xx', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(300); });",
+                  "var j = pm.response.json();",
+                  "pm.test('Gemini create batch: has name', function () { pm.expect(j.name).to.be.a('string').and.not.empty; });",
+                  "pm.test('Gemini create batch: has metadata.state', function () { pm.expect(j.metadata).to.be.an('object'); pm.expect(j.metadata.state).to.be.a('string').and.not.empty; });",
+                  "if (typeof j.name === 'string' && j.name) { pm.collectionVariables.set('genaiBatchId', j.name.replace(/^batches\\//, '')); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Gemini: list batches",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/batches",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "batches"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Gemini list batches: 2xx', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(300); });",
+                  "var j = pm.response.json();",
+                  "pm.test('Gemini list batches: operations is array (or omitted when empty)', function () { pm.expect(j.operations === undefined || Array.isArray(j.operations)).to.eql(true); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Gemini: retrieve batch",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/batches/{{genaiBatchId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "batches",
+                "{{genaiBatchId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Create didn't set an id (skipped on a guarded code, or failed) - nothing to retrieve.",
+                  "if (!pm.collectionVariables.get('genaiBatchId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Gemini retrieve batch: 2xx', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(300); });",
+                  "var j = pm.response.json();",
+                  "pm.test('Gemini retrieve batch: name matches create', function () { pm.expect(typeof j.name === 'string' ? j.name.replace(/^batches\\//, '') : j.name).to.eql(pm.collectionVariables.get('genaiBatchId')); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Gemini: cancel batch",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/batches/{{genaiBatchId}}:cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "batches",
+                "{{genaiBatchId}}:cancel"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Create didn't set an id (skipped on a guarded code, or failed) - nothing to cancel.",
+                  "if (!pm.collectionVariables.get('genaiBatchId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Gemini cancel batch: 2xx', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(300); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "56. Anthropic message_start.usage Omission on Stream Open (#5885 / PR #5907)",
+      "description": "Regression coverage for #5885 (fixed by PR #5907, db388c35c): strict Anthropic-dialect clients - @ai-sdk/anthropic, the official Anthropic Python SDK, and Claude Code (its subagent token-accounting path dereferences message.usage unguarded) - validate the very first SSE frame and crash with \"undefined is not an object (evaluating 'o.input_tokens')\" if message_start.message.usage is missing. Pre-fix, Bifrost's Anthropic-dialect SSE translators omitted usage from message_start whenever real token counts were not yet known at stream-open time (the normal case: OpenAI/xAI report usage only on the terminal event of their Responses API, and Bedrock Converse reports it only on its terminal event too), because a nil *AnthropicUsage silently vanished under Go's `usage,omitempty` JSON tag instead of serializing as an all-zero placeholder. Case 1 pins the OpenAI Responses API path (responses.go, the exact route in this report - gpt-model requests to /anthropic/v1/messages are always served via OpenAI's /v1/responses and translated back by toAnthropicResponsesStreamEvents). Case 2 pins the same converter against xAI's Responses-API-compatible upstream (the \"Grok\" half of the report). Case 3 pins the independent Bedrock Converse invoke-with-response-stream path (bedrock/invoke.go's toAnthropicInvokeStreamBytes), the route originally reported in #5885 and the one that broke Claude Code's Bedrock-backed subagents. All three assert message_start.message.usage is present as an object with numeric input_tokens/output_tokens, not merely that the stream completes.",
+      "item": [
+        {
+          "name": "openai/gpt-4o-mini /anthropic/v1/messages streaming: message_start carries usage - #5885",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('message_start carries usage object with input_tokens/output_tokens - #5885', function () {",
+                  "  pm.expect(pm.response.code, 'stream request failed: ' + pm.response.text()).to.be.below(400);",
+                  "  var body = pm.response.text() || '';",
+                  "  var lines = body.split(/\\r?\\n/);",
+                  "  var line = lines.filter(function (l) { return l.indexOf('data:') === 0 && l.indexOf('message_start') !== -1; })[0];",
+                  "  pm.expect(line, 'no message_start data line found in stream: ' + body.slice(0, 300)).to.be.a('string');",
+                  "  var frame = JSON.parse(line.replace(/^data:\\s*/, ''));",
+                  "  pm.expect(frame.message, 'message_start missing message object').to.be.an('object');",
+                  "  pm.expect(frame.message.usage, 'message_start.message.usage missing (regression of #5885 - strict Anthropic-dialect clients like @ai-sdk/anthropic, the official Anthropic Python SDK, and Claude Code subagents crash with \"undefined is not an object (evaluating \\'o.input_tokens\\')\" on this frame)').to.be.an('object');",
+                  "  pm.expect(frame.message.usage.input_tokens, 'usage.input_tokens must be a number').to.be.a('number');",
+                  "  pm.expect(frame.message.usage.output_tokens, 'usage.output_tokens must be a number').to.be.a('number');",
+                  "  pm.expect(frame.message.content, 'message_start.message.content must be an array').to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"max_tokens\":64,\"messages\":[{\"role\":\"user\",\"content\":\"Say OK.\"}],\"stream\":true}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "xai/grok-4-0709 /anthropic/v1/messages streaming: message_start carries usage - #5885",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('message_start carries usage object with input_tokens/output_tokens - #5885', function () {",
+                  "  pm.expect(pm.response.code, 'stream request failed: ' + pm.response.text()).to.be.below(400);",
+                  "  var body = pm.response.text() || '';",
+                  "  var lines = body.split(/\\r?\\n/);",
+                  "  var line = lines.filter(function (l) { return l.indexOf('data:') === 0 && l.indexOf('message_start') !== -1; })[0];",
+                  "  pm.expect(line, 'no message_start data line found in stream: ' + body.slice(0, 300)).to.be.a('string');",
+                  "  var frame = JSON.parse(line.replace(/^data:\\s*/, ''));",
+                  "  pm.expect(frame.message, 'message_start missing message object').to.be.an('object');",
+                  "  pm.expect(frame.message.usage, 'message_start.message.usage missing (regression of #5885 - strict Anthropic-dialect clients like @ai-sdk/anthropic, the official Anthropic Python SDK, and Claude Code subagents crash with \"undefined is not an object (evaluating \\'o.input_tokens\\')\" on this frame)').to.be.an('object');",
+                  "  pm.expect(frame.message.usage.input_tokens, 'usage.input_tokens must be a number').to.be.a('number');",
+                  "  pm.expect(frame.message.usage.output_tokens, 'usage.output_tokens must be a number').to.be.a('number');",
+                  "  pm.expect(frame.message.content, 'message_start.message.content must be an array').to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"xai/grok-4-0709\",\"max_tokens\":64,\"messages\":[{\"role\":\"user\",\"content\":\"Say OK.\"}],\"stream\":true}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock invoke-with-response-stream: message_start carries usage (Haiku 4.5) - #5885",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('invoke-with-response-stream succeeds - #5885', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('invoke-with-response-stream message_start carries usage (regression of #5885 - this route previously omitted message_start.message.usage entirely on Bedrock Converse, breaking @ai-sdk/anthropic, the official Anthropic Python SDK, and Claude Code subagents) - #5885', function () {",
+                  "  var rawText = pm.response.text() || '';",
+                  "  var b64Matches = rawText.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/g) || [];",
+                  "  pm.expect(b64Matches.length, 'expected at least one invoke-stream chunk event: ' + rawText.slice(0, 300)).to.be.above(0);",
+                  "  var events = b64Matches.map(function (m) {",
+                  "    var b64 = m.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/)[1];",
+                  "    try { return JSON.parse(Buffer.from(b64, 'base64').toString('utf8')); } catch (e) { return null; }",
+                  "  }).filter(function (e) { return e; });",
+                  "  var messageStart = events.filter(function (e) { return e.type === 'message_start'; })[0];",
+                  "  pm.expect(messageStart, 'expected a message_start event in the decoded stream: ' + JSON.stringify(events).slice(0, 500)).to.be.an('object');",
+                  "  pm.expect(messageStart.message, 'message_start missing message object').to.be.an('object');",
+                  "  pm.expect(messageStart.message.usage, 'message_start.message.usage missing').to.be.an('object');",
+                  "  pm.expect(messageStart.message.usage.input_tokens, 'usage.input_tokens must be a number').to.be.a('number');",
+                  "  pm.expect(messageStart.message.usage.output_tokens, 'usage.output_tokens must be a number').to.be.a('number');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"anthropic_version\":\"bedrock-2023-05-31\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"Say OK.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-haiku-4-5-20251001-v1:0/invoke-with-response-stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "invoke-with-response-stream"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "56. Rerank Wire Shapes and Neutral Schema (PR #6328)",
+      "description": "Rerank had route x provider reachability coverage in 48.6, but nothing pinned the wire shape or the neutral schema. The old assertions accepted `j.results || j.data` and only checked for an `index` field, so a Bedrock response carrying snake_case relevance_score (which AWS SDKs deserialize as 0.0) passed, and the /genai/v1/rank cases passed only while the route leaked Bifrost's canonical shape.\n\nThis folder completes the matrix and pins behaviour:\n- POST /v1/rerank across cohere, bedrock and vertex (the canonical route had zero cases)\n- the three drop-in routes served by the cohere provider (no prior coverage)\n- per-route wire shape: snake_case on /cohere, camelCase on /bedrock, records[] on /genai, and no canonical model/extra_fields leaking into a provider-shaped body\n- neutral schema: string|object documents, structured `data` bodies, result id identity, document echo as an object, ignoreRecordDetailsInResponse, and search-unit usage\n\nRanking assertions require the one relevant document to rank first rather than just checking for a 200, because a provider that drops document content still answers 200 with meaningless scores.",
+      "item": [
+        {
+          "name": "56. /v1/rerank string documents -> cohere/rerank-v3.5 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cohere/rerank-v3.5\",\n  \"query\": \"What is the capital of France?\",\n  \"documents\": [\n    \"Paris is the capital and most populous city of France.\",\n    \"Carrots are orange root vegetables rich in beta carotene.\",\n    \"Berlin is the capital of Germany and its largest city.\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "// Plain-string documents are the form every rerank SDK sends; they were rejected",
+                  "// before RerankDocument gained a string|object unmarshaller.",
+                  "pm.test('results are ranked, not merely returned', function () {",
+                  "  var r = j.results || [];",
+                  "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0], 'result must carry an index').to.have.property('index');",
+                  "  pm.expect(r[0], 'expected relevance_score on the wire').to.have.property('relevance_score');",
+                  "  pm.expect(r[0].index, 'the only relevant document must rank first').to.eql(0);",
+                  "  if (r.length > 1) { pm.expect(r[0].relevance_score, 'top and bottom scores indistinguishable').to.be.above(r[r.length - 1].relevance_score); }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. /v1/rerank string documents -> bedrock/cohere.rerank-v3-5:0 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/cohere.rerank-v3-5:0\",\n  \"query\": \"What is the capital of France?\",\n  \"documents\": [\n    \"Paris is the capital and most populous city of France.\",\n    \"Carrots are orange root vegetables rich in beta carotene.\",\n    \"Berlin is the capital of Germany and its largest city.\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "// Plain-string documents are the form every rerank SDK sends; they were rejected",
+                  "// before RerankDocument gained a string|object unmarshaller.",
+                  "pm.test('results are ranked, not merely returned', function () {",
+                  "  var r = j.results || [];",
+                  "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0], 'result must carry an index').to.have.property('index');",
+                  "  pm.expect(r[0], 'expected relevance_score on the wire').to.have.property('relevance_score');",
+                  "  pm.expect(r[0].index, 'the only relevant document must rank first').to.eql(0);",
+                  "  if (r.length > 1) { pm.expect(r[0].relevance_score, 'top and bottom scores indistinguishable').to.be.above(r[r.length - 1].relevance_score); }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. /v1/rerank string documents -> vertex/semantic-ranker-default-004 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/semantic-ranker-default-004\",\n  \"query\": \"What is the capital of France?\",\n  \"documents\": [\n    \"Paris is the capital and most populous city of France.\",\n    \"Carrots are orange root vegetables rich in beta carotene.\",\n    \"Berlin is the capital of Germany and its largest city.\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "// Plain-string documents are the form every rerank SDK sends; they were rejected",
+                  "// before RerankDocument gained a string|object unmarshaller.",
+                  "pm.test('results are ranked, not merely returned', function () {",
+                  "  var r = j.results || [];",
+                  "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0], 'result must carry an index').to.have.property('index');",
+                  "  pm.expect(r[0], 'expected relevance_score on the wire').to.have.property('relevance_score');",
+                  "  pm.expect(r[0].index, 'the only relevant document must rank first').to.eql(0);",
+                  "  if (r.length > 1) { pm.expect(r[0].relevance_score, 'top and bottom scores indistinguishable').to.be.above(r[r.length - 1].relevance_score); }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. /cohere/v2/rerank wire shape -> cohere/rerank-v3.5 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cohere/rerank-v3.5\",\n  \"query\": \"What is the capital of France?\",\n  \"documents\": [\n    \"Paris is the capital and most populous city of France.\",\n    \"Carrots are orange root vegetables rich in beta carotene.\",\n    \"Berlin is the capital of Germany and its largest city.\"\n  ],\n  \"top_n\": 3\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/cohere/v2/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "cohere",
+                "v2",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "pm.test('results are ranked, not merely returned', function () {",
+                  "  var r = j.results || [];",
+                  "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0], 'result must carry an index').to.have.property('index');",
+                  "  pm.expect(r[0], 'expected relevance_score on the wire').to.have.property('relevance_score');",
+                  "  pm.expect(r[0], 'relevanceScore must not appear on this route').to.not.have.property('relevanceScore');",
+                  "  pm.expect(r[0].index, 'the only relevant document must rank first').to.eql(0);",
+                  "  if (r.length > 1) { pm.expect(r[0].relevance_score, 'top and bottom scores indistinguishable').to.be.above(r[r.length - 1].relevance_score); }",
+                  "});",
+                  "pm.test('response is Cohere-shaped, with no Bifrost fields leaking', function () {",
+                  "  pm.expect(j, 'canonical Bifrost model field leaked').to.not.have.property('model');",
+                  "  pm.expect(j, 'canonical Bifrost extra_fields leaked').to.not.have.property('extra_fields');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. /bedrock/rerank camelCase wire shape -> cohere/rerank-v3.5 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"queries\": [\n    {\n      \"type\": \"TEXT\",\n      \"textQuery\": {\n        \"text\": \"What is the capital of France?\"\n      }\n    }\n  ],\n  \"sources\": [\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"TEXT\",\n        \"textDocument\": {\n          \"text\": \"Paris is the capital and most populous city of France.\"\n        }\n      }\n    },\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"TEXT\",\n        \"textDocument\": {\n          \"text\": \"Carrots are orange root vegetables rich in beta carotene.\"\n        }\n      }\n    },\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"TEXT\",\n        \"textDocument\": {\n          \"text\": \"Berlin is the capital of Germany and its largest city.\"\n        }\n      }\n    }\n  ],\n  \"rerankingConfiguration\": {\n    \"type\": \"BEDROCK_RERANKING_MODEL\",\n    \"bedrockRerankingConfiguration\": {\n      \"modelConfiguration\": {\n        \"modelArn\": \"cohere/rerank-v3.5\"\n      }\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "// AWS SDKs match response keys case-insensitively but not punctuation-insensitively, so a",
+                  "// snake_case body deserializes every score as 0.0 instead of raising. Pin the casing.",
+                  "pm.test('results are ranked, not merely returned', function () {",
+                  "  var r = j.results || [];",
+                  "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0], 'result must carry an index').to.have.property('index');",
+                  "  pm.expect(r[0], 'expected relevanceScore on the wire').to.have.property('relevanceScore');",
+                  "  pm.expect(r[0], 'relevance_score must not appear on this route').to.not.have.property('relevance_score');",
+                  "  pm.expect(r[0].index, 'the only relevant document must rank first').to.eql(0);",
+                  "  if (r.length > 1) { pm.expect(r[0].relevanceScore, 'top and bottom scores indistinguishable').to.be.above(r[r.length - 1].relevanceScore); }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. /genai/v1/rank caller record ids -> cohere/rerank-v3.5 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cohere/rerank-v3.5\",\n  \"query\": \"What is the capital of France?\",\n  \"records\": [\n    {\n      \"id\": \"record-0\",\n      \"title\": \"Doc 0\",\n      \"content\": \"Paris is the capital and most populous city of France.\"\n    },\n    {\n      \"id\": \"record-1\",\n      \"title\": \"Doc 1\",\n      \"content\": \"Carrots are orange root vegetables rich in beta carotene.\"\n    },\n    {\n      \"id\": \"record-2\",\n      \"title\": \"Doc 2\",\n      \"content\": \"Berlin is the capital of Germany and its largest city.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1/rank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1",
+                "rank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "pm.test('ranked records keep the caller ids, never synthetic ones', function () {",
+                  "  var r = j.records || [];",
+                  "  pm.expect(r.length, 'no records: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0].id, 'expected the caller record id').to.eql('record-0');",
+                  "  for (var i = 0; i < r.length; i++) {",
+                  "    pm.expect(r[i].id, 'upstream synthetic id leaked to the client').to.not.match(/^idx:/);",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. /v1/rerank object documents round-trip -> cohere/rerank-v3.5 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cohere/rerank-v3.5\",\n  \"query\": \"What is the capital of France?\",\n  \"documents\": [\n    {\n      \"text\": \"Paris is the capital and most populous city of France.\",\n      \"id\": \"doc-0\",\n      \"metadata\": {\n        \"position\": 0\n      }\n    },\n    {\n      \"text\": \"Carrots are orange root vegetables rich in beta carotene.\",\n      \"id\": \"doc-1\",\n      \"metadata\": {\n        \"position\": 1\n      }\n    },\n    {\n      \"text\": \"Berlin is the capital of Germany and its largest city.\",\n      \"id\": \"doc-2\",\n      \"metadata\": {\n        \"position\": 2\n      }\n    }\n  ],\n  \"return_documents\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "pm.test('results are ranked, not merely returned', function () {",
+                  "  var r = j.results || [];",
+                  "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0], 'result must carry an index').to.have.property('index');",
+                  "  pm.expect(r[0], 'expected relevance_score on the wire').to.have.property('relevance_score');",
+                  "  pm.expect(r[0].index, 'the only relevant document must rank first').to.eql(0);",
+                  "  if (r.length > 1) { pm.expect(r[0].relevance_score, 'top and bottom scores indistinguishable').to.be.above(r[r.length - 1].relevance_score); }",
+                  "});",
+                  "pm.test('document identity survives the round trip', function () {",
+                  "  var top = (j.results || [])[0];",
+                  "  pm.expect(top.id, 'result must carry the caller document id as identity').to.eql('doc-0');",
+                  "  pm.expect(top.document, 'return_documents did not echo the document').to.be.an('object');",
+                  "  pm.expect(top.document.text).to.be.a('string');",
+                  "  pm.expect(top.document.id).to.eql('doc-0');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. /v1/rerank structured data documents -> cohere/rerank-v3.5 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cohere/rerank-v3.5\",\n  \"query\": \"What is the capital of France?\",\n  \"documents\": [\n    {\n      \"data\": {\n        \"title\": \"France\",\n        \"body\": \"Paris is the capital and most populous city of France.\"\n      }\n    },\n    {\n      \"data\": {\n        \"title\": \"Carrots\",\n        \"body\": \"Carrots are orange root vegetables rich in beta carotene.\"\n      }\n    },\n    {\n      \"data\": {\n        \"title\": \"Germany\",\n        \"body\": \"Berlin is the capital of Germany and its largest city.\"\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "// A provider that dropped the structured body would still answer 200 with flat scores,",
+                  "// so the ordering assertion is what proves the content reached the model.",
+                  "pm.test('results are ranked, not merely returned', function () {",
+                  "  var r = j.results || [];",
+                  "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0], 'result must carry an index').to.have.property('index');",
+                  "  pm.expect(r[0], 'expected relevance_score on the wire').to.have.property('relevance_score');",
+                  "  pm.expect(r[0].index, 'the only relevant document must rank first').to.eql(0);",
+                  "  if (r.length > 1) { pm.expect(r[0].relevance_score, 'top and bottom scores indistinguishable').to.be.above(r[r.length - 1].relevance_score); }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. /v1/rerank reports search units -> cohere/rerank-v3.5 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cohere/rerank-v3.5\",\n  \"query\": \"What is the capital of France?\",\n  \"documents\": [\n    \"Paris is the capital and most populous city of France.\",\n    \"Carrots are orange root vegetables rich in beta carotene.\",\n    \"Berlin is the capital of Germany and its largest city.\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "// Rerank bills in search units rather than tokens; without this the request costs nothing.",
+                  "pm.test('usage carries a billable unit', function () {",
+                  "  pm.expect(j.usage, 'no usage block: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "  var d = j.usage.completion_tokens_details || {};",
+                  "  pm.expect(d.num_search_queries, 'search units missing, rerank would bill zero').to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. /cohere/v2/rerank cross-provider document echo -> bedrock/cohere.rerank-v3-5:0 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/cohere.rerank-v3-5:0\",\n  \"query\": \"What is the capital of France?\",\n  \"documents\": [\n    {\n      \"text\": \"Paris is the capital and most populous city of France.\",\n      \"id\": \"doc-0\",\n      \"metadata\": {\n        \"position\": 0\n      }\n    },\n    {\n      \"text\": \"Carrots are orange root vegetables rich in beta carotene.\",\n      \"id\": \"doc-1\",\n      \"metadata\": {\n        \"position\": 1\n      }\n    },\n    {\n      \"text\": \"Berlin is the capital of Germany and its largest city.\",\n      \"id\": \"doc-2\",\n      \"metadata\": {\n        \"position\": 2\n      }\n    }\n  ],\n  \"return_documents\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/cohere/v2/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "cohere",
+                "v2",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "pm.test('results are ranked, not merely returned', function () {",
+                  "  var r = j.results || [];",
+                  "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0], 'result must carry an index').to.have.property('index');",
+                  "  pm.expect(r[0], 'expected relevance_score on the wire').to.have.property('relevance_score');",
+                  "  pm.expect(r[0], 'relevanceScore must not appear on this route').to.not.have.property('relevanceScore');",
+                  "  pm.expect(r[0].index, 'the only relevant document must rank first').to.eql(0);",
+                  "  if (r.length > 1) { pm.expect(r[0].relevance_score, 'top and bottom scores indistinguishable').to.be.above(r[r.length - 1].relevance_score); }",
+                  "});",
+                  "// Cohere always returns document as an object. Emitting a bare string here breaks the",
+                  "// official SDK, which parses the field into a typed document.",
+                  "pm.test('document is echoed as an object, not a bare string', function () {",
+                  "  var top = (j.results || [])[0];",
+                  "  pm.expect(top.document, 'document must be an object').to.be.an('object');",
+                  "  pm.expect(top.document.id, 'id must survive cross-provider backfill').to.eql('doc-0');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. /cohere/v2/rerank error shape -> cohere/rerank-v3.5 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cohere/rerank-v3.5\",\n  \"query\": \"\",\n  \"documents\": [\n    \"Paris is the capital and most populous city of France.\",\n    \"Carrots are orange root vegetables rich in beta carotene.\",\n    \"Berlin is the capital of Germany and its largest city.\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/cohere/v2/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "cohere",
+                "v2",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No 4xx guard here: a 4xx IS the signature under test. Only infra noise is skipped.",
+                  "if ([429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.test('errors are Cohere-shaped, not a Bifrost envelope', function () {",
+                  "  pm.expect(pm.response.code, 'an empty query must be rejected').to.be.at.least(400);",
+                  "  pm.expect(j.message, 'expected Cohere {message}: ' + pm.response.text().slice(0, 300)).to.be.a('string');",
+                  "  pm.expect(j, 'Bifrost error envelope leaked').to.not.have.property('is_bifrost_error');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. /bedrock/rerank jsonDocument sources -> bedrock/cohere.rerank-v3-5:0 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"queries\": [\n    {\n      \"type\": \"TEXT\",\n      \"textQuery\": {\n        \"text\": \"What is the capital of France?\"\n      }\n    }\n  ],\n  \"sources\": [\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"JSON\",\n        \"jsonDocument\": {\n          \"title\": \"France\",\n          \"body\": \"Paris is the capital and most populous city of France.\"\n        }\n      }\n    },\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"JSON\",\n        \"jsonDocument\": {\n          \"title\": \"Carrots\",\n          \"body\": \"Carrots are orange root vegetables rich in beta carotene.\"\n        }\n      }\n    },\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"JSON\",\n        \"jsonDocument\": {\n          \"title\": \"Germany\",\n          \"body\": \"Berlin is the capital of Germany and its largest city.\"\n        }\n      }\n    }\n  ],\n  \"rerankingConfiguration\": {\n    \"type\": \"BEDROCK_RERANKING_MODEL\",\n    \"bedrockRerankingConfiguration\": {\n      \"modelConfiguration\": {\n        \"modelArn\": \"bedrock/cohere.rerank-v3-5:0\"\n      }\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "// JSON document sources were previously dropped to empty strings: a silent 200 with a",
+                  "// confident ranking over blank text. The ordering assertion is the only way to catch that.",
+                  "pm.test('results are ranked, not merely returned', function () {",
+                  "  var r = j.results || [];",
+                  "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0], 'result must carry an index').to.have.property('index');",
+                  "  pm.expect(r[0], 'expected relevanceScore on the wire').to.have.property('relevanceScore');",
+                  "  pm.expect(r[0], 'relevance_score must not appear on this route').to.not.have.property('relevance_score');",
+                  "  pm.expect(r[0].index, 'the only relevant document must rank first').to.eql(0);",
+                  "  if (r.length > 1) { pm.expect(r[0].relevanceScore, 'top and bottom scores indistinguishable').to.be.above(r[r.length - 1].relevanceScore); }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. /genai/v1/rank ignoreRecordDetailsInResponse -> bedrock/cohere.rerank-v3-5:0 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/cohere.rerank-v3-5:0\",\n  \"query\": \"What is the capital of France?\",\n  \"records\": [\n    {\n      \"id\": \"record-0\",\n      \"title\": \"Doc 0\",\n      \"content\": \"Paris is the capital and most populous city of France.\"\n    },\n    {\n      \"id\": \"record-1\",\n      \"title\": \"Doc 1\",\n      \"content\": \"Carrots are orange root vegetables rich in beta carotene.\"\n    },\n    {\n      \"id\": \"record-2\",\n      \"title\": \"Doc 2\",\n      \"content\": \"Berlin is the capital of Germany and its largest city.\"\n    }\n  ],\n  \"ignoreRecordDetailsInResponse\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1/rank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1",
+                "rank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "pm.test('details are suppressed but identity survives', function () {",
+                  "  var r = j.records || [];",
+                  "  pm.expect(r.length, 'no records: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  for (var i = 0; i < r.length; i++) {",
+                  "    pm.expect(r[i], 'content leaked despite suppression').to.not.have.property('content');",
+                  "    pm.expect(r[i], 'title leaked despite suppression').to.not.have.property('title');",
+                  "    pm.expect(r[i].id, 'id is identity, not a detail - it must survive').to.be.a('string');",
+                  "    pm.expect(r[i].score).to.be.a('number');",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. litellm drop-in prefix, cohere dialect -> cohere/rerank-v3.5 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cohere/rerank-v3.5\",\n  \"query\": \"What is the capital of France?\",\n  \"documents\": [\n    \"Paris is the capital and most populous city of France.\",\n    \"Carrots are orange root vegetables rich in beta carotene.\",\n    \"Berlin is the capital of Germany and its largest city.\"\n  ],\n  \"top_n\": 3\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/litellm/v2/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "litellm",
+                "v2",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "pm.test('drop-in prefix resolves to the right dialect and ranks', function () {",
+                  "  var r = j.results || [];",
+                  "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0], 'expected relevance_score on this dialect').to.have.property('relevance_score');",
+                  "  pm.expect(r[0], 'relevanceScore must not appear on this dialect').to.not.have.property('relevanceScore');",
+                  "  pm.expect(r[0].index, 'the only relevant document must rank first').to.eql(0);",
+                  "  pm.expect(j, 'canonical Bifrost model field leaked').to.not.have.property('model');",
+                  "  pm.expect(j, 'canonical Bifrost extra_fields leaked').to.not.have.property('extra_fields');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. litellm drop-in prefix, bedrock dialect -> bedrock/cohere.rerank-v3-5:0 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"queries\": [\n    {\n      \"type\": \"TEXT\",\n      \"textQuery\": {\n        \"text\": \"What is the capital of France?\"\n      }\n    }\n  ],\n  \"sources\": [\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"TEXT\",\n        \"textDocument\": {\n          \"text\": \"Paris is the capital and most populous city of France.\"\n        }\n      }\n    },\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"TEXT\",\n        \"textDocument\": {\n          \"text\": \"Carrots are orange root vegetables rich in beta carotene.\"\n        }\n      }\n    },\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"TEXT\",\n        \"textDocument\": {\n          \"text\": \"Berlin is the capital of Germany and its largest city.\"\n        }\n      }\n    }\n  ],\n  \"rerankingConfiguration\": {\n    \"type\": \"BEDROCK_RERANKING_MODEL\",\n    \"bedrockRerankingConfiguration\": {\n      \"modelConfiguration\": {\n        \"modelArn\": \"bedrock/cohere.rerank-v3-5:0\"\n      }\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/litellm/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "litellm",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "pm.test('drop-in prefix resolves to the right dialect and ranks', function () {",
+                  "  var r = j.results || [];",
+                  "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0], 'expected relevanceScore on this dialect').to.have.property('relevanceScore');",
+                  "  pm.expect(r[0], 'relevance_score must not appear on this dialect').to.not.have.property('relevance_score');",
+                  "  pm.expect(r[0].index, 'the only relevant document must rank first').to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. litellm drop-in prefix, rank dialect -> vertex/semantic-ranker-default-004 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/semantic-ranker-default-004\",\n  \"query\": \"What is the capital of France?\",\n  \"records\": [\n    {\n      \"id\": \"record-0\",\n      \"title\": \"Doc 0\",\n      \"content\": \"Paris is the capital and most populous city of France.\"\n    },\n    {\n      \"id\": \"record-1\",\n      \"title\": \"Doc 1\",\n      \"content\": \"Carrots are orange root vegetables rich in beta carotene.\"\n    },\n    {\n      \"id\": \"record-2\",\n      \"title\": \"Doc 2\",\n      \"content\": \"Berlin is the capital of Germany and its largest city.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/litellm/v1/rank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "litellm",
+                "v1",
+                "rank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "pm.test('drop-in prefix resolves to the rank dialect', function () {",
+                  "  var r = j.records || [];",
+                  "  pm.expect(r.length, 'no records (rank returns records[], not results[]): ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0].id, 'caller record id must be preserved').to.eql('record-0');",
+                  "  pm.expect(r[0]).to.have.property('score');",
+                  "  pm.expect(j, 'canonical Bifrost results[] leaked into the rank dialect').to.not.have.property('results');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. langchain drop-in prefix, cohere dialect -> bedrock/cohere.rerank-v3-5:0 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/cohere.rerank-v3-5:0\",\n  \"query\": \"What is the capital of France?\",\n  \"documents\": [\n    \"Paris is the capital and most populous city of France.\",\n    \"Carrots are orange root vegetables rich in beta carotene.\",\n    \"Berlin is the capital of Germany and its largest city.\"\n  ],\n  \"top_n\": 3\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/langchain/v2/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "langchain",
+                "v2",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "pm.test('drop-in prefix resolves to the right dialect and ranks', function () {",
+                  "  var r = j.results || [];",
+                  "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0], 'expected relevance_score on this dialect').to.have.property('relevance_score');",
+                  "  pm.expect(r[0], 'relevanceScore must not appear on this dialect').to.not.have.property('relevanceScore');",
+                  "  pm.expect(r[0].index, 'the only relevant document must rank first').to.eql(0);",
+                  "  pm.expect(j, 'canonical Bifrost model field leaked').to.not.have.property('model');",
+                  "  pm.expect(j, 'canonical Bifrost extra_fields leaked').to.not.have.property('extra_fields');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. langchain drop-in prefix, bedrock dialect -> vertex/semantic-ranker-default-004 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"queries\": [\n    {\n      \"type\": \"TEXT\",\n      \"textQuery\": {\n        \"text\": \"What is the capital of France?\"\n      }\n    }\n  ],\n  \"sources\": [\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"TEXT\",\n        \"textDocument\": {\n          \"text\": \"Paris is the capital and most populous city of France.\"\n        }\n      }\n    },\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"TEXT\",\n        \"textDocument\": {\n          \"text\": \"Carrots are orange root vegetables rich in beta carotene.\"\n        }\n      }\n    },\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"TEXT\",\n        \"textDocument\": {\n          \"text\": \"Berlin is the capital of Germany and its largest city.\"\n        }\n      }\n    }\n  ],\n  \"rerankingConfiguration\": {\n    \"type\": \"BEDROCK_RERANKING_MODEL\",\n    \"bedrockRerankingConfiguration\": {\n      \"modelConfiguration\": {\n        \"modelArn\": \"vertex/semantic-ranker-default-004\"\n      }\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/langchain/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "langchain",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "pm.test('drop-in prefix resolves to the right dialect and ranks', function () {",
+                  "  var r = j.results || [];",
+                  "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0], 'expected relevanceScore on this dialect').to.have.property('relevanceScore');",
+                  "  pm.expect(r[0], 'relevance_score must not appear on this dialect').to.not.have.property('relevance_score');",
+                  "  pm.expect(r[0].index, 'the only relevant document must rank first').to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. langchain drop-in prefix, rank dialect -> cohere/rerank-v3.5 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cohere/rerank-v3.5\",\n  \"query\": \"What is the capital of France?\",\n  \"records\": [\n    {\n      \"id\": \"record-0\",\n      \"title\": \"Doc 0\",\n      \"content\": \"Paris is the capital and most populous city of France.\"\n    },\n    {\n      \"id\": \"record-1\",\n      \"title\": \"Doc 1\",\n      \"content\": \"Carrots are orange root vegetables rich in beta carotene.\"\n    },\n    {\n      \"id\": \"record-2\",\n      \"title\": \"Doc 2\",\n      \"content\": \"Berlin is the capital of Germany and its largest city.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/langchain/v1/rank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "langchain",
+                "v1",
+                "rank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "pm.test('drop-in prefix resolves to the rank dialect', function () {",
+                  "  var r = j.records || [];",
+                  "  pm.expect(r.length, 'no records (rank returns records[], not results[]): ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0].id, 'caller record id must be preserved').to.eql('record-0');",
+                  "  pm.expect(r[0]).to.have.property('score');",
+                  "  pm.expect(j, 'canonical Bifrost results[] leaked into the rank dialect').to.not.have.property('results');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. pydanticai drop-in prefix, cohere dialect -> vertex/semantic-ranker-default-004 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/semantic-ranker-default-004\",\n  \"query\": \"What is the capital of France?\",\n  \"documents\": [\n    \"Paris is the capital and most populous city of France.\",\n    \"Carrots are orange root vegetables rich in beta carotene.\",\n    \"Berlin is the capital of Germany and its largest city.\"\n  ],\n  \"top_n\": 3\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/pydanticai/v2/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "pydanticai",
+                "v2",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "pm.test('drop-in prefix resolves to the right dialect and ranks', function () {",
+                  "  var r = j.results || [];",
+                  "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0], 'expected relevance_score on this dialect').to.have.property('relevance_score');",
+                  "  pm.expect(r[0], 'relevanceScore must not appear on this dialect').to.not.have.property('relevanceScore');",
+                  "  pm.expect(r[0].index, 'the only relevant document must rank first').to.eql(0);",
+                  "  pm.expect(j, 'canonical Bifrost model field leaked').to.not.have.property('model');",
+                  "  pm.expect(j, 'canonical Bifrost extra_fields leaked').to.not.have.property('extra_fields');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. pydanticai drop-in prefix, bedrock dialect -> cohere/rerank-v3.5 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"queries\": [\n    {\n      \"type\": \"TEXT\",\n      \"textQuery\": {\n        \"text\": \"What is the capital of France?\"\n      }\n    }\n  ],\n  \"sources\": [\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"TEXT\",\n        \"textDocument\": {\n          \"text\": \"Paris is the capital and most populous city of France.\"\n        }\n      }\n    },\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"TEXT\",\n        \"textDocument\": {\n          \"text\": \"Carrots are orange root vegetables rich in beta carotene.\"\n        }\n      }\n    },\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"TEXT\",\n        \"textDocument\": {\n          \"text\": \"Berlin is the capital of Germany and its largest city.\"\n        }\n      }\n    }\n  ],\n  \"rerankingConfiguration\": {\n    \"type\": \"BEDROCK_RERANKING_MODEL\",\n    \"bedrockRerankingConfiguration\": {\n      \"modelConfiguration\": {\n        \"modelArn\": \"cohere/rerank-v3.5\"\n      }\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/pydanticai/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "pydanticai",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "pm.test('drop-in prefix resolves to the right dialect and ranks', function () {",
+                  "  var r = j.results || [];",
+                  "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0], 'expected relevanceScore on this dialect').to.have.property('relevanceScore');",
+                  "  pm.expect(r[0], 'relevance_score must not appear on this dialect').to.not.have.property('relevance_score');",
+                  "  pm.expect(r[0].index, 'the only relevant document must rank first').to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. pydanticai drop-in prefix, rank dialect -> bedrock/cohere.rerank-v3-5:0 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/cohere.rerank-v3-5:0\",\n  \"query\": \"What is the capital of France?\",\n  \"records\": [\n    {\n      \"id\": \"record-0\",\n      \"title\": \"Doc 0\",\n      \"content\": \"Paris is the capital and most populous city of France.\"\n    },\n    {\n      \"id\": \"record-1\",\n      \"title\": \"Doc 1\",\n      \"content\": \"Carrots are orange root vegetables rich in beta carotene.\"\n    },\n    {\n      \"id\": \"record-2\",\n      \"title\": \"Doc 2\",\n      \"content\": \"Berlin is the capital of Germany and its largest city.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/pydanticai/v1/rank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "pydanticai",
+                "v1",
+                "rank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "pm.test('drop-in prefix resolves to the rank dialect', function () {",
+                  "  var r = j.records || [];",
+                  "  pm.expect(r.length, 'no records (rank returns records[], not results[]): ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0].id, 'caller record id must be preserved').to.eql('record-0');",
+                  "  pm.expect(r[0]).to.have.property('score');",
+                  "  pm.expect(j, 'canonical Bifrost results[] leaked into the rank dialect').to.not.have.property('results');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. cursor drop-in prefix, cohere dialect -> cohere/rerank-v3.5 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cohere/rerank-v3.5\",\n  \"query\": \"What is the capital of France?\",\n  \"documents\": [\n    \"Paris is the capital and most populous city of France.\",\n    \"Carrots are orange root vegetables rich in beta carotene.\",\n    \"Berlin is the capital of Germany and its largest city.\"\n  ],\n  \"top_n\": 3\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/cursor/v2/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "cursor",
+                "v2",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "pm.test('drop-in prefix resolves to the right dialect and ranks', function () {",
+                  "  var r = j.results || [];",
+                  "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0], 'expected relevance_score on this dialect').to.have.property('relevance_score');",
+                  "  pm.expect(r[0], 'relevanceScore must not appear on this dialect').to.not.have.property('relevanceScore');",
+                  "  pm.expect(r[0].index, 'the only relevant document must rank first').to.eql(0);",
+                  "  pm.expect(j, 'canonical Bifrost model field leaked').to.not.have.property('model');",
+                  "  pm.expect(j, 'canonical Bifrost extra_fields leaked').to.not.have.property('extra_fields');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. cursor drop-in prefix, bedrock dialect -> bedrock/cohere.rerank-v3-5:0 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"queries\": [\n    {\n      \"type\": \"TEXT\",\n      \"textQuery\": {\n        \"text\": \"What is the capital of France?\"\n      }\n    }\n  ],\n  \"sources\": [\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"TEXT\",\n        \"textDocument\": {\n          \"text\": \"Paris is the capital and most populous city of France.\"\n        }\n      }\n    },\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"TEXT\",\n        \"textDocument\": {\n          \"text\": \"Carrots are orange root vegetables rich in beta carotene.\"\n        }\n      }\n    },\n    {\n      \"type\": \"INLINE\",\n      \"inlineDocumentSource\": {\n        \"type\": \"TEXT\",\n        \"textDocument\": {\n          \"text\": \"Berlin is the capital of Germany and its largest city.\"\n        }\n      }\n    }\n  ],\n  \"rerankingConfiguration\": {\n    \"type\": \"BEDROCK_RERANKING_MODEL\",\n    \"bedrockRerankingConfiguration\": {\n      \"modelConfiguration\": {\n        \"modelArn\": \"bedrock/cohere.rerank-v3-5:0\"\n      }\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/cursor/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "cursor",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "pm.test('drop-in prefix resolves to the right dialect and ranks', function () {",
+                  "  var r = j.results || [];",
+                  "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0], 'expected relevanceScore on this dialect').to.have.property('relevanceScore');",
+                  "  pm.expect(r[0], 'relevance_score must not appear on this dialect').to.not.have.property('relevance_score');",
+                  "  pm.expect(r[0].index, 'the only relevant document must rank first').to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. cursor drop-in prefix, rank dialect -> vertex/semantic-ranker-default-004 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/semantic-ranker-default-004\",\n  \"query\": \"What is the capital of France?\",\n  \"records\": [\n    {\n      \"id\": \"record-0\",\n      \"title\": \"Doc 0\",\n      \"content\": \"Paris is the capital and most populous city of France.\"\n    },\n    {\n      \"id\": \"record-1\",\n      \"title\": \"Doc 1\",\n      \"content\": \"Carrots are orange root vegetables rich in beta carotene.\"\n    },\n    {\n      \"id\": \"record-2\",\n      \"title\": \"Doc 2\",\n      \"content\": \"Berlin is the capital of Germany and its largest city.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/cursor/v1/rank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "cursor",
+                "v1",
+                "rank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "pm.test('drop-in prefix resolves to the rank dialect', function () {",
+                  "  var r = j.records || [];",
+                  "  pm.expect(r.length, 'no records (rank returns records[], not results[]): ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0].id, 'caller record id must be preserved').to.eql('record-0');",
+                  "  pm.expect(r[0]).to.have.property('score');",
+                  "  pm.expect(j, 'canonical Bifrost results[] leaked into the rank dialect').to.not.have.property('results');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. /v1/rerank priority is dropped for bedrock -> bedrock/cohere.rerank-v3-5:0 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/cohere.rerank-v3-5:0\",\n  \"query\": \"What is the capital of France?\",\n  \"documents\": [\n    \"Paris is the capital and most populous city of France.\",\n    \"Carrots are orange root vegetables rich in beta carotene.\",\n    \"Berlin is the capital of Germany and its largest city.\"\n  ],\n  \"priority\": 1\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "// priority is a Cohere concept with no Bedrock equivalent. Forwarding it 400s a request",
+                  "// that succeeds on Cohere, which silently breaks fallback chains.",
+                  "pm.test('canonical params survive routing to bedrock', function () {",
+                  "  pm.expect(pm.response.text(), 'priority leaked into additionalModelRequestFields').to.not.include('additionalModelRequestField');",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "  var r = j.results || [];",
+                  "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0].index, 'the only relevant document must rank first').to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "56. /v1/rerank next_token is a first-class param -> bedrock/cohere.rerank-v3-5:0 - PR #6328",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/cohere.rerank-v3-5:0\",\n  \"query\": \"What is the capital of France?\",\n  \"documents\": [\n    \"Paris is the capital and most populous city of France.\",\n    \"Carrots are orange root vegetables rich in beta carotene.\",\n    \"Berlin is the capital of Germany and its largest city.\"\n  ],\n  \"next_token\": \"harness-cursor-probe\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/rerank",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "rerank"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "// next_token must bind to RerankParameters. When it is not a known field it falls through",
+                  "// to ExtraParams and is forwarded as a model request field, which Bedrock rejects.",
+                  "pm.test('canonical params survive routing to bedrock', function () {",
+                  "  pm.expect(pm.response.text(), 'next_token leaked into additionalModelRequestFields').to.not.include('additionalModelRequestField');",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.below(400);",
+                  "  var r = j.results || [];",
+                  "  pm.expect(r.length, 'no results: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  pm.expect(r[0].index, 'the only relevant document must rank first').to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "57. Claude Code turn normalization - assistant prefill trim + mid-conversation system inlining (#6334)",
+      "description": "Claude Code sends two shapes that Gemini/Vertex cannot accept verbatim, and until #6334 the Gemini egress\nconverter (core/providers/gemini/responses.go) normalized neither, so /anthropic/v1/messages traffic pointed at\ngemini/vertex failed upstream with HTTP 400.\n\n1. TRAILING ASSISTANT PREFILL. Claude Code routinely ends its messages array with a role:\"assistant\" turn for the\n   model to continue. Bifrost mapped it to a Gemini role:\"model\" content. Gemini's Content.role is documented as\n   \"Must be either 'user' or 'model'\" and generateContent rejects a history whose final turn is \"model\"\n   (\"Please ensure that multiturn requests ends with a user role or a function response\"). Gemini exposes no\n   prefill mechanism at all, so the turn is trimmed. Bedrock has done this since #3517.\n\n2. MID-CONVERSATION SYSTEM TURN. Claude Code injects runtime state as role:\"system\" entries inside messages.\n   Gemini has no message-level system role, so Bifrost hoisted them into systemInstruction - which renders ahead\n   of every message, presenting a turn-40 reminder as though it were said at turn 0, and invalidating the cached\n   prefix behind it on every injection. They are now inlined in place as user turns wrapped in\n   <system-reminder>, matching convertBifrostSystemReminderToBedrockUserMessage (#4068) and the native Anthropic\n   fallback inlineMidConversationSystem.\n\nEvery case asserts the OUTBOUND provider payload via x-bf-send-back-raw-request rather than merely checking that\nthe call did not 400. A \"no 400\" assertion would pass on a provider that silently tolerated the bad shape and\nwould tell us nothing about which normalization ran; raw_request pins the converter itself.\n\nFIXTURE CONSTRAINTS - do not \"tidy\" these bodies:\n - Case B needs TWO consecutive trailing assistant turns. A fix that drops only messages[len-1] passes case A\n   and still fails case B.\n - Case E needs a leading top-level `system` AND a later role:\"system\" entry. Without the leading one the case\n   cannot distinguish \"inlined correctly\" from \"system handling dropped entirely\".\n - Case G is the anti-over-trim guard: its trailing assistant turn carries tool_use, which is unanswered history\n   rather than a prefill and must survive. A trim that keys only on role:\"assistant\" passes A-C and breaks G.\n - A 400 is NOT guarded away in these scripts - a 400 IS the regression signature here.",
+      "item": [
+        {
+          "name": "gemini/gemini-3.7-flash /anthropic/v1/messages trailing assistant prefill is trimmed - #6334",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('gemini prefill: 2xx (Gemini 400s on an illegal turn sequence)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('gemini prefill: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var contents = rr.contents || [];",
+                  "var dump = JSON.stringify(contents);",
+                  "pm.test('gemini prefill: conversation does not end on a model turn', function () {",
+                  "  pm.expect(contents.length, 'contents empty: ' + dump).to.be.above(0);",
+                  "  pm.expect(contents[contents.length - 1].role, 'contents: ' + dump).to.not.eql('model');",
+                  "});",
+                  "pm.test('gemini prefill: the assistant prefill never reached the wire', function () {",
+                  "  pm.expect(dump).to.not.include('The answer is');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-3.7-flash\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is 2+2? Answer with just the number.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"The answer is\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-3.7-flash /anthropic/v1/messages consecutive trailing prefills are all trimmed - #6334",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('gemini multi-prefill: 2xx (Gemini 400s on an illegal turn sequence)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('gemini multi-prefill: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var contents = rr.contents || [];",
+                  "var dump = JSON.stringify(contents);",
+                  "pm.test('gemini multi-prefill: conversation does not end on a model turn', function () {",
+                  "  pm.expect(contents.length, 'contents empty: ' + dump).to.be.above(0);",
+                  "  pm.expect(contents[contents.length - 1].role, 'contents: ' + dump).to.not.eql('model');",
+                  "});",
+                  "pm.test('gemini multi-prefill: the assistant prefill never reached the wire', function () {",
+                  "  pm.expect(dump).to.not.include('The answer is');",
+                  "});",
+                  "pm.test('gemini multi-prefill: the earlier prefill went too', function () {",
+                  "  pm.expect(dump).to.not.include('Let me think.');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-3.7-flash\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is 2+2? Answer with just the number.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"Let me think.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"The answer is\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/gemini-2.5-pro /anthropic/v1/messages trailing assistant prefill is trimmed - #6334",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('vertex prefill: 2xx (Gemini 400s on an illegal turn sequence)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('vertex prefill: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var contents = rr.contents || [];",
+                  "var dump = JSON.stringify(contents);",
+                  "pm.test('vertex prefill: conversation does not end on a model turn', function () {",
+                  "  pm.expect(contents.length, 'contents empty: ' + dump).to.be.above(0);",
+                  "  pm.expect(contents[contents.length - 1].role, 'contents: ' + dump).to.not.eql('model');",
+                  "});",
+                  "pm.test('vertex prefill: the assistant prefill never reached the wire', function () {",
+                  "  pm.expect(dump).to.not.include('The answer is');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-pro\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is 2+2? Answer with just the number.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"The answer is\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-3.7-flash /anthropic/v1/messages streaming trailing prefill does not 400 - #6334",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('gemini prefill stream: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "var text = pm.response.text() || '';",
+                  "pm.test('gemini prefill stream: the stream actually carried data', function () {",
+                  "  pm.expect(text.length, 'empty body - the negative checks below would pass vacuously').to.be.above(0);",
+                  "  pm.expect(text, 'no SSE data frame in body: ' + text.slice(0, 800)).to.include('data:');",
+                  "});",
+                  "pm.test('gemini prefill stream: no turn-order refusal in the stream', function () {",
+                  "  var low = String(text).toLowerCase();",
+                  "  pm.expect(low, 'stream body: ' + String(text).slice(0, 800)).to.not.include('ends with a user role');",
+                  "  pm.expect(low, 'stream body: ' + String(text).slice(0, 800)).to.not.include('last turn cannot be model');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-3.7-flash\",\n  \"max_tokens\": 64,\n  \"stream\": true,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is 2+2? Answer with just the number.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"The answer is\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-3.7-flash /anthropic/v1/messages mid-conversation system turn is inlined as a user turn - #6334",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('gemini mid-conv system: 2xx (Gemini 400s on an illegal turn sequence)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('gemini mid-conv system: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var contents = rr.contents || [];",
+                  "var dump = JSON.stringify(contents);",
+                  "var sysInstr = JSON.stringify(rr.systemInstruction || rr.system_instruction || {});",
+                  "pm.test('gemini mid-conv system: reminder is NOT hoisted into systemInstruction', function () {",
+                  "  pm.expect(sysInstr, 'systemInstruction: ' + sysInstr).to.not.include('The user just opened src/main.go.');",
+                  "});",
+                  "pm.test('gemini mid-conv system: leading system prompt still hoisted', function () {",
+                  "  pm.expect(sysInstr, 'systemInstruction: ' + sysInstr).to.include('terse assistant');",
+                  "});",
+                  "pm.test('gemini mid-conv system: reminder inlined in contents as a user turn', function () {",
+                  "  var hit = null;",
+                  "  for (var i = 0; i < contents.length; i++) {",
+                  "    if (JSON.stringify(contents[i]).indexOf('The user just opened src/main.go.') !== -1) { hit = contents[i]; }",
+                  "  }",
+                  "  pm.expect(hit, 'reminder absent from contents: ' + dump).to.not.eql(null);",
+                  "  pm.expect(hit.role, 'contents: ' + dump).to.eql('user');",
+                  "});",
+                  "pm.test('gemini mid-conv system: reminder keeps its <system-reminder> envelope', function () {",
+                  "  pm.expect(dump, 'contents: ' + dump).to.include('system-reminder');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-3.7-flash\",\n  \"max_tokens\": 64,\n  \"system\": \"You are a terse assistant.\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"Hi.\"\n    },\n    {\n      \"role\": \"system\",\n      \"content\": \"The user just opened src/main.go.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"What file am I in? Answer with the path only.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-3.7-flash /v1/chat/completions trailing assistant prefill is trimmed - #6334",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('gemini chat prefill: 2xx (Gemini 400s on an illegal turn sequence)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('gemini chat prefill: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var contents = rr.contents || [];",
+                  "var dump = JSON.stringify(contents);",
+                  "pm.test('gemini chat prefill: conversation does not end on a model turn', function () {",
+                  "  pm.expect(contents.length, 'contents empty: ' + dump).to.be.above(0);",
+                  "  pm.expect(contents[contents.length - 1].role, 'contents: ' + dump).to.not.eql('model');",
+                  "});",
+                  "pm.test('gemini chat prefill: the assistant prefill never reached the wire', function () {",
+                  "  pm.expect(dump).to.not.include('The answer is');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-3.7-flash\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is 2+2? Answer with just the number.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"The answer is\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-3.7-flash /anthropic/v1/messages trailing assistant tool_use is NOT trimmed - #6334",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('gemini tool_use guard: 2xx (Gemini 400s on an illegal turn sequence)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('gemini tool_use guard: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var contents = rr.contents || [];",
+                  "var dump = JSON.stringify(contents);",
+                  "pm.test('gemini tool_use guard: the trailing tool round survived the prefill trim', function () {",
+                  "  var modelCall = null;",
+                  "  for (var i = 0; i < contents.length; i++) {",
+                  "    var parts = contents[i].parts || [];",
+                  "    for (var j = 0; j < parts.length; j++) {",
+                  "      if (parts[j].functionCall && parts[j].functionCall.name === 'get_weather') { modelCall = parts[j]; }",
+                  "    }",
+                  "  }",
+                  "  pm.expect(modelCall, 'no functionCall survived - a substring match on get_weather would also match the tool_result functionResponse. contents: ' + dump).to.not.eql(null);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-3.7-flash\",\n  \"max_tokens\": 128,\n  \"tools\": [\n    {\n      \"name\": \"get_weather\",\n      \"description\": \"Get weather for a city\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in SF?\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_bf6334\",\n          \"name\": \"get_weather\",\n          \"input\": {\n            \"city\": \"SF\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_bf6334\",\n          \"content\": \"sunny, 20C\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-opus-4-7 /anthropic/v1/messages mid-conversation system turn is inlined, not hoisted - #6334",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('bedrock mid-conv system: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('bedrock mid-conv system: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var msgs = JSON.stringify(rr.messages || []);",
+                  "var sys = JSON.stringify(rr.system || []);",
+                  "pm.test('bedrock mid-conv system: reminder is NOT hoisted into the system block', function () {",
+                  "  pm.expect(sys, 'system: ' + sys).to.not.include('The user just opened src/main.go.');",
+                  "});",
+                  "pm.test('bedrock mid-conv system: reminder inlined into messages with its envelope', function () {",
+                  "  pm.expect(msgs, 'messages: ' + msgs).to.include('The user just opened src/main.go.');",
+                  "  pm.expect(msgs, 'messages: ' + msgs).to.include('system-reminder');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-opus-4-7\",\n  \"max_tokens\": 64,\n  \"system\": \"You are a terse assistant.\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"Hi.\"\n    },\n    {\n      \"role\": \"system\",\n      \"content\": \"The user just opened src/main.go.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"What file am I in? Answer with the path only.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "58. Bedrock Typed Embeddings + LangChain Cohere (PR #6335)",
+      "item": [
+        {
+          "name": "58.A bedrock/model Titan V2 binary-only native envelope - PR #6335",
           "request": {
             "method": "POST",
             "header": [
@@ -133003,7 +135622,7 @@
           ]
         },
         {
-          "name": "55.B bedrock/model Titan V2 float+binary native envelope - PR #6335",
+          "name": "58.B bedrock/model Titan V2 float+binary native envelope - PR #6335",
           "request": {
             "method": "POST",
             "header": [
@@ -133052,7 +135671,7 @@
           ]
         },
         {
-          "name": "55.C bedrock/model Cohere v4 all typed encodings native envelope - PR #6335",
+          "name": "58.C bedrock/model Cohere v4 all typed encodings native envelope - PR #6335",
           "request": {
             "method": "POST",
             "header": [
@@ -133108,7 +135727,7 @@
           ]
         },
         {
-          "name": "55.D langchain/model Cohere v3 singular embedding alias - PR #6335",
+          "name": "58.D langchain/model Cohere v3 singular embedding alias - PR #6335",
           "request": {
             "method": "POST",
             "header": [
@@ -133159,7 +135778,7 @@
           ]
         },
         {
-          "name": "55.E bedrock/v1 Titan float+binary normalized without raw leakage - PR #6335",
+          "name": "58.E bedrock/v1 Titan float+binary normalized without raw leakage - PR #6335",
           "request": {
             "method": "POST",
             "header": [

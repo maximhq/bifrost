@@ -1045,11 +1045,8 @@ func createGenAIRerankRouteConfig(pathPrefix string) RouteConfig {
 		},
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 			if vertexReq, ok := req.(*vertex.VertexRankRequest); ok {
-				rerankRequest := vertexReq.ToBifrostRerankRequest(ctx)
-				// Ranked records are keyed by the caller's record ID, which only the document carries.
-				rerankRequest.Params.ReturnDocuments = new(true)
 				return &schemas.BifrostRequest{
-					RerankRequest: rerankRequest,
+					RerankRequest: vertexReq.ToBifrostRerankRequest(ctx),
 				}, nil
 			}
 			return nil, errors.New("invalid rerank request type")
@@ -1061,6 +1058,12 @@ func createGenAIRerankRouteConfig(pathPrefix string) RouteConfig {
 		},
 		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return gemini.ToGeminiError(err)
+		},
+		// Resolve the provider from x-model-provider (Vertex by default) so the route can be
+		// served cross-provider like /cohere/v2/rerank and /bedrock/rerank.
+		PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+			bifrostCtx.SetValue(bifrostContextKeyProvider, getProviderFromHeader(ctx, schemas.Vertex))
+			return nil
 		},
 	}
 }

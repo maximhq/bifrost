@@ -1344,7 +1344,11 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 				// asynchronously and must never observe later mutations.
 				tracer.SetTraceAttribute(traceID, schemas.TraceAttrDimensions, maps.Clone(dimensions))
 			}
-			if sessionID := strings.TrimSpace(string(ctx.Request.Header.Peek("x-bf-session-id"))); sessionID != "" {
+			// Resolved rather than peeked: this middleware runs before context
+			// conversion, so it repeats the same x-bf-session-id-then-harness-header
+			// lookup ConvertToBifrostContext does. Both read the same headers with
+			// the same priority list, so key stickiness and session.id agree.
+			if sessionID := lib.ResolveSessionIDFromRequest(&ctx.Request.Header); sessionID != "" {
 				tracer.SetTraceAttribute(traceID, schemas.TraceAttrSessionID, sessionID)
 			}
 			// Only trace ID goes into context (lightweight, no bloat)

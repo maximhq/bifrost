@@ -110,8 +110,14 @@ func ToGeminiChatCompletionRequestWithImageURLSchemes(ctx *schemas.BifrostContex
 			}
 		}
 	}
-	// Convert chat completion messages to Gemini format
-	contents, systemInstruction, err := convertBifrostMessagesToGemini(bifrostReq.Input, allowedImageURLSchemes...)
+	// Convert chat completion messages to Gemini format.
+	//
+	// The trailing-assistant trim is the Chat Completions counterpart of the one in
+	// convertResponsesMessagesToGeminiContents: Gemini answers 400 for any conversation whose
+	// last turn is role:"model", regardless of which Bifrost API shaped it. See
+	// trimTrailingAssistantPrefill for why prefill is the only trailing model turn dropped.
+	input := trimTrailingChatAssistantPrefill(bifrostReq.Input, schemas.ResolveModelCaps(bifrostReq.Provider, capModel))
+	contents, systemInstruction, err := convertBifrostMessagesToGemini(input, allowedImageURLSchemes...)
 	if err != nil {
 		return nil, err
 	}
@@ -691,4 +697,33 @@ func createErrorResponse(response *GenerateContentResponse, finishReason string,
 	}
 
 	return errorResp
+}
+
+// isChatAssistantPrefillMessage reports whether msg is a plain assistant text turn, the Chat
+// Completions analogue of isAssistantPrefillMessage. A message carrying tool calls, reasoning, or
+// audio is not a prefill: it is history the model must see replayed, so it is never trimmed.
+func isChatAssistantPrefillMessage(msg *schemas.ChatMessage) bool {
+	if msg.Role != schemas.ChatMessageRoleAssistant {
+		return false
+	}
+	if a := msg.ChatAssistantMessage; a != nil {
+		if len(a.ToolCalls) > 0 || a.Audio != nil || a.Reasoning != nil || len(a.ReasoningDetails) > 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// trimTrailingChatAssistantPrefill drops the trailing run of assistant prefill turns so the
+// conversation ends on a user or tool turn. See trimTrailingAssistantPrefill for the rationale
+// and for the datasheet opt-out.
+func trimTrailingChatAssistantPrefill(messages []schemas.ChatMessage, caps schemas.ModelCaps) []schemas.ChatMessage {
+	if caps.SupportsAssistantPrefill(false) {
+		return messages
+	}
+	trimmed := len(messages)
+	for trimmed > 0 && isChatAssistantPrefillMessage(&messages[trimmed-1]) {
+		trimmed--
+	}
+	return messages[:trimmed]
 }

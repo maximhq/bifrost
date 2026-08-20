@@ -21,7 +21,7 @@ import { KnownProvider, ModelProviderName, ProviderStatus } from "@/lib/types/co
 import { cn } from "@/lib/utils";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useNavigate } from "@tanstack/react-router";
-import { AlertCircle, ArrowLeft } from "lucide-react";
+import { AlertCircle, ArrowLeft, Server } from "lucide-react";
 import { useQueryState } from "nuqs";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
@@ -202,69 +202,84 @@ export default function Providers() {
 					setShowCustomProviderSheet(false);
 				}}
 			/>
-			<div className={cn("w-full flex-col md:flex md:max-h-[calc(var(--app-content-viewport)_-_70px)] md:w-[300px]", mobileDetailOpen ? "hidden" : "flex")}>
+			<div
+				className={cn(
+					"w-full flex-col md:flex md:h-[calc(var(--app-content-viewport)_-_70px)] md:w-[300px]",
+					mobileDetailOpen ? "hidden" : "flex",
+				)}
+			>
 				<TooltipProvider>
-					<div className="custom-scrollbar flex-1 overflow-y-auto">
-						<div className="rounded-md bg-zinc-50/50 md:p-4 dark:bg-zinc-800/20">
-							{/* Configured Providers (standard with keys + custom) */}
-							{configuredProviders.length > 0 && (
-								<div className="mb-4">
-									<div className="text-muted-foreground mb-2 text-xs font-medium">Configured Providers</div>
-									{configuredProviders.map((p) => {
-										const isCustom = !ProviderNames.includes(p.name as KnownProvider);
-										const label = isCustom ? p.name : ProviderLabels[p.name as keyof typeof ProviderLabels];
-										return (
-											<div
-												key={p.name}
-												data-testid={`provider-item-${p.name.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}`}
-												className={cn(
-													"mb-1 flex h-8 w-full min-w-0 cursor-pointer items-center gap-2 rounded-sm border px-3 text-sm",
-													selectedProvider?.name === p.name
-														? "bg-secondary opacity-100 hover:opacity-100"
-														: "hover:bg-secondary cursor-pointer border-transparent opacity-100 hover:border",
-												)}
-												onClick={(e) => {
-													e.preventDefault();
-													e.stopPropagation();
-													if (providerFormIsDirty) {
-														setPendingRedirection(p.name);
-														setShowRedirectionDialog(true);
-														return;
-													}
-													setProvider(p.name);
-													if (isMobile) setMobileDetailOpen(true);
-												}}
-											>
-												<RenderProviderIcon
-													provider={(isCustom ? p.custom_provider_config?.base_provider_type : p.name) as ProviderIconType}
-													size="sm"
-													className="h-4 w-4 shrink-0"
-												/>
-												<TruncatedLabel className="flex-1 text-sm">{label}</TruncatedLabel>
-												<KeyDiscoveryFailedBadge provider={p} />
-												<ProviderStatusBadge status={p.provider_status} />
-												{isCustom && (
-													<Badge variant="secondary" className="text-muted-foreground ml-auto shrink-0 px-1.5 py-0.5 text-[10px] font-bold">
-														CUSTOM
-													</Badge>
-												)}
-											</div>
-										);
-									})}
+					<div className="flex min-h-0 flex-1 flex-col rounded-md bg-zinc-50/50 md:p-4 dark:bg-zinc-800/20">
+						{/* Pinned lane title */}
+						<div className="text-muted-foreground mb-2 shrink-0 text-xs font-medium">Configured Providers</div>
+
+						{/* Configured providers (standard with keys + custom): the only scrolling region */}
+						<div className="custom-scrollbar min-h-0 flex-1 overflow-y-auto">
+							{configuredProviders.length > 0 ? (
+								configuredProviders.map((p) => {
+									const isCustom = !ProviderNames.includes(p.name as KnownProvider);
+									const label = isCustom ? p.name : ProviderLabels[p.name as keyof typeof ProviderLabels];
+									return (
+										<div
+											key={p.name}
+											data-testid={`provider-item-${p.name.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}`}
+											className={cn(
+												"mb-1 flex h-8 w-full min-w-0 cursor-pointer items-center gap-2 rounded-sm border px-3 text-sm",
+												selectedProvider?.name === p.name
+													? "bg-secondary opacity-100 hover:opacity-100"
+													: "hover:bg-secondary cursor-pointer border-transparent opacity-100 hover:border",
+											)}
+											onClick={(e) => {
+												e.preventDefault();
+												e.stopPropagation();
+												if (providerFormIsDirty) {
+													setPendingRedirection(p.name);
+													setShowRedirectionDialog(true);
+													return;
+												}
+												setProvider(p.name);
+												if (isMobile) setMobileDetailOpen(true);
+											}}
+										>
+											<RenderProviderIcon
+												provider={(isCustom ? p.custom_provider_config?.base_provider_type : p.name) as ProviderIconType}
+												size="sm"
+												className="h-4 w-4 shrink-0"
+											/>
+											<TruncatedLabel className="flex-1 text-sm">{label}</TruncatedLabel>
+											<KeyDiscoveryFailedBadge provider={p} />
+											<ProviderStatusBadge status={p.provider_status} />
+											{isCustom && (
+												<Badge variant="secondary" className="text-muted-foreground ml-auto shrink-0 px-1.5 py-0.5 text-[10px] font-bold">
+													CUSTOM
+												</Badge>
+											)}
+										</div>
+									);
+								})
+							) : (
+								<div
+									data-testid="providers-lane-empty"
+									className="flex h-full flex-col items-center justify-center gap-2 px-4 py-8 text-center"
+								>
+									<Server className="text-muted-foreground h-8 w-8" strokeWidth={1} />
+									<div className="text-muted-foreground text-xs">No providers configured yet</div>
 								</div>
 							)}
-							{hasProviderCreateAccess ? (
-								<div className="pb-4">
-									<AddProviderDropdown
-										disabled={!hasProviderCreateAccess}
-										existingInSidebar={existingInSidebarNames}
-										knownProviders={knownProviders}
-										onSelectKnownProvider={handleSelectKnownProvider}
-										onAddCustomProvider={() => setShowCustomProviderSheet(true)}
-									/>
-								</div>
-							) : null}
 						</div>
+
+						{/* Pinned add action */}
+						{hasProviderCreateAccess ? (
+							<div className="shrink-0 pt-3">
+								<AddProviderDropdown
+									disabled={!hasProviderCreateAccess}
+									existingInSidebar={existingInSidebarNames}
+									knownProviders={knownProviders}
+									onSelectKnownProvider={handleSelectKnownProvider}
+									onAddCustomProvider={() => setShowCustomProviderSheet(true)}
+								/>
+							</div>
+						) : null}
 					</div>
 				</TooltipProvider>
 			</div>

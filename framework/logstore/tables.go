@@ -299,6 +299,13 @@ type Log struct {
 	// `json:"-"`, so they never appear in any serialized usage payload. Without
 	// these columns tierFromResponse sees nothing and reprices flex traffic at
 	// standard rates.
+	// Batch detail for batch_create / batch_retrieve rows and for the aggregate
+	// cost row. Like the served-tier fields below, this is deliberately NOT a
+	// payload field (see payload.go): request counts and per-model pricing are
+	// operational records rather than request content, so they must survive
+	// object-storage offload and content-hidden rows.
+	BatchDebug string `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostBatchDebug
+
 	ServiceTier  *string `gorm:"type:varchar(32)" json:"service_tier,omitempty"`  // OpenAI served tier: "priority" / "flex" / "default"
 	Speed        *string `gorm:"type:varchar(32)" json:"speed,omitempty"`         // Anthropic served speed: "fast" / "standard"
 	InferenceGeo *string `gorm:"type:varchar(32)" json:"inference_geo,omitempty"` // Anthropic data residency, e.g. "us"
@@ -329,6 +336,7 @@ type Log struct {
 	TranscriptionOutputParsed   *schemas.BifrostTranscriptionResponse   `gorm:"-" json:"transcription_output,omitempty"`
 	ImageGenerationOutputParsed *schemas.BifrostImageGenerationResponse `gorm:"-" json:"image_generation_output,omitempty"`
 	CacheDebugParsed            *schemas.BifrostCacheDebug              `gorm:"-" json:"cache_debug,omitempty"`
+	BatchDebugParsed            *schemas.BifrostBatchDebug              `gorm:"-" json:"batch_debug,omitempty"`
 	GuardrailDebugParsed        *schemas.BifrostGuardrailDebug          `gorm:"-" json:"guardrail_debug,omitempty"`
 	ListModelsOutputParsed      []schemas.Model                         `gorm:"-" json:"list_models_output,omitempty"`
 	MetadataParsed              map[string]interface{}                  `gorm:"-" json:"metadata,omitempty"`
@@ -670,6 +678,14 @@ func (l *Log) SerializeFields() error {
 		}
 	}
 
+	if !l.BatchDebugParsed.IsZero() {
+		if data, err := sonic.Marshal(l.BatchDebugParsed); err != nil {
+			return err
+		} else {
+			l.BatchDebug = string(data)
+		}
+	}
+
 	if l.GuardrailDebugParsed != nil {
 		if data, err := sonic.Marshal(l.GuardrailDebugParsed); err != nil {
 			return err
@@ -994,6 +1010,13 @@ func (l *Log) DeserializeFields() error {
 		if err := sonic.Unmarshal([]byte(l.CacheDebug), &l.CacheDebugParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.CacheDebugParsed = nil
+		}
+	}
+
+	if l.BatchDebug != "" {
+		if err := sonic.Unmarshal([]byte(l.BatchDebug), &l.BatchDebugParsed); err != nil {
+			// Log error but don't fail the operation - initialize as nil
+			l.BatchDebugParsed = nil
 		}
 	}
 
