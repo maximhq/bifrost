@@ -43,7 +43,7 @@ const (
 		`"usage":{"output_tokens":426}}`
 )
 
-func observe(t *testing.T, events ...string) (prompt, completion int) {
+func observePassthroughUsage(t *testing.T, events ...string) (prompt, completion int) {
 	t.Helper()
 	var acc AnthropicPassthroughStreamUsage
 	var last = struct{ p, c int }{}
@@ -60,7 +60,7 @@ func TestPassthroughStreamUsageQwenDoesNotDoubleCountCachedPrompt(t *testing.T) 
 	//   {"input_tokens":18,"cache_creation_input_tokens":0,"cache_read_input_tokens":8831}
 	const wantPrompt = 18 + 8831
 
-	got, gotOut := observe(t, qwenMessageStart, qwenMessageDelta)
+	got, gotOut := observePassthroughUsage(t, qwenMessageStart, qwenMessageDelta)
 	if got != wantPrompt {
 		t.Errorf("prompt tokens = %d, want %d (inflated by %d — message_start.input_tokens "+
 			"counted on top of cache_read)", got, wantPrompt, got-wantPrompt)
@@ -72,8 +72,8 @@ func TestPassthroughStreamUsageQwenDoesNotDoubleCountCachedPrompt(t *testing.T) 
 
 // Event order must not change the result: the merge is documented as order-independent.
 func TestPassthroughStreamUsageQwenOrderIndependent(t *testing.T) {
-	forward, _ := observe(t, qwenMessageStart, qwenMessageDelta)
-	reverse, _ := observe(t, qwenMessageDelta, qwenMessageStart)
+	forward, _ := observePassthroughUsage(t, qwenMessageStart, qwenMessageDelta)
+	reverse, _ := observePassthroughUsage(t, qwenMessageDelta, qwenMessageStart)
 	if forward != reverse {
 		t.Errorf("order-dependent: forward=%d reverse=%d", forward, reverse)
 	}
@@ -90,7 +90,7 @@ func TestPassthroughStreamUsageCorrectUpstreamsUnchanged(t *testing.T) {
 		{"anthropic", stockAnthropicMessageStart, stockAnthropicMessageDelta, 18 + 8831, 426},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p, c := observe(t, tc.start, tc.delta)
+			p, c := observePassthroughUsage(t, tc.start, tc.delta)
 			if p != tc.wantPrompt {
 				t.Errorf("prompt tokens = %d, want %d", p, tc.wantPrompt)
 			}
@@ -103,7 +103,7 @@ func TestPassthroughStreamUsageCorrectUpstreamsUnchanged(t *testing.T) {
 
 // A stream that never sends a cache-aware event must still report its input_tokens.
 func TestPassthroughStreamUsageNoCacheCountersFallsBackToLooseInput(t *testing.T) {
-	p, _ := observe(t,
+	p, _ := observePassthroughUsage(t,
 		`{"type":"message_start","message":{"usage":{"input_tokens":500,"output_tokens":0}}}`,
 		`{"type":"message_delta","usage":{"output_tokens":7}}`)
 	if p != 500 {
