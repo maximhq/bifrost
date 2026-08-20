@@ -237,16 +237,28 @@ func (t *UsageTracker) resetWorker(ctx context.Context) {
 	}
 }
 
-// resetExpiredCounters manages periodic resets of usage counters AND budgets using flexible durations
+// resetExpiredCounters manages periodic resets of usage counters AND budgets using flexible durations.
+//
+// This pass is the only thing that advances the persisted last_reset boundary
+// for a budget under steady traffic, because the request-time reset path in
+// BumpBudgetUsage rolls counters over in memory and leaves persistence to the
+// dump below. It also runs on a ticker, and a Go ticker drops ticks when the
+// receiver is slow, so a pass that overruns workerInterval silently stretches
+// the real reset cadence for the whole node. That is otherwise invisible:
+// enforcement keeps working off the in-memory counters while the persisted
+// boundary falls further behind, so the only symptom is a stale last_reset.
+// The overrun warning below exists to make that state say so out loud.
 func (t *UsageTracker) resetExpiredCounters(ctx context.Context) {
+	start := time.Now()
+
 	// ==== PART 1: Reset Rate Limits ====
-	resetRateLimits := t.store.ResetExpiredRateLimitsInMemory(ctx)
+	resetRateLimits := t.store.ResetExpiredRateLimitsInMemory(ctx, true)
 	if err := t.store.ResetExpiredRateLimits(ctx, resetRateLimits); err != nil {
 		t.logger.Error("failed to reset expired rate limits: %v", err)
 	}
 
 	// ==== PART 2: Reset Budgets ====
-	resetBudgets := t.store.ResetExpiredBudgetsInMemory(ctx)
+	resetBudgets := t.store.ResetExpiredBudgetsInMemory(ctx, true)
 	if err := t.store.ResetExpiredBudgets(ctx, resetBudgets); err != nil {
 		t.logger.Error("failed to reset expired budgets: %v", err)
 	}
@@ -261,6 +273,13 @@ func (t *UsageTracker) resetExpiredCounters(ctx context.Context) {
 
 	// ==== PART 4: Sweep expired billing-idempotency keys ====
 	t.sweepBilled()
+
+	if total := time.Since(start); total > workerInterval {
+		// The next tick is already overdue, so resets are no longer landing at
+		// workerInterval granularity.
+		t.logger.Warn("reset cycle took %s, longer than the %s worker interval (%d rate limits, %d budgets reset): reset cadence has slipped and persisted last_reset will lag the window boundary",
+			total, workerInterval, len(resetRateLimits), len(resetBudgets))
+	}
 }
 
 // tryClaimBilling records that the physical provider call identified by
@@ -315,7 +334,7 @@ func (t *UsageTracker) PerformStartupResets(ctx context.Context) error {
 	// Reuse the shared in-memory reset path so startup, ticker, and request-time
 	// resets all apply the same LastDB baseline and reset-hook side effects.
 	rateLimitResetStart := time.Now()
-	resetRateLimits := t.store.ResetExpiredRateLimitsInMemory(ctx)
+	resetRateLimits := t.store.ResetExpiredRateLimitsInMemory(ctx, true)
 	t.logger.Info("[startup-timing] PerformStartupResets in-memory reset of %d rate limits took %v", len(resetRateLimits), time.Since(rateLimitResetStart))
 	if err := t.store.ResetExpiredRateLimits(ctx, resetRateLimits); err != nil {
 		errs = append(errs, fmt.Sprintf("failed to reset expired rate limits: %s", err.Error()))
@@ -323,7 +342,7 @@ func (t *UsageTracker) PerformStartupResets(ctx context.Context) error {
 
 	// DB reset is also handled by this function
 	budgetResetStart := time.Now()
-	resetBudgets := t.store.ResetExpiredBudgetsInMemory(ctx)
+	resetBudgets := t.store.ResetExpiredBudgetsInMemory(ctx, true)
 	t.logger.Info("[startup-timing] PerformStartupResets in-memory reset of %d budgets took %v", len(resetBudgets), time.Since(budgetResetStart))
 	if err := t.store.ResetExpiredBudgets(ctx, resetBudgets); err != nil {
 		errs = append(errs, fmt.Sprintf("failed to reset expired budgets: %s", err.Error()))

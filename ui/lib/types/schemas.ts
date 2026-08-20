@@ -116,6 +116,7 @@ export const vertexKeyConfigSchema = z
 		project_number: secretVarSchema.optional(),
 		region: secretVarSchema.optional(),
 		auth_credentials: secretVarSchema.optional(),
+		force_single_region: z.boolean().optional(),
 	})
 	.refine((data) => isSecretVarSet(data.project_id), {
 		message: "Project ID is required",
@@ -150,6 +151,15 @@ export const batchS3ConfigSchema = z.object({
 	buckets: z.array(s3BucketConfigSchema).optional(),
 });
 
+// Interface VPC endpoint hosts, one per AWS endpoint service Bifrost dials for Bedrock.
+export const bedrockEndpointsSchema = z.object({
+	runtime: secretVarSchema.optional(),
+	control_plane: secretVarSchema.optional(),
+	mantle: secretVarSchema.optional(),
+	agent_runtime: secretVarSchema.optional(),
+	s3: secretVarSchema.optional(),
+});
+
 // Bedrock key config schema
 export const bedrockKeyConfigSchema = z
 	.object({
@@ -161,8 +171,11 @@ export const bedrockKeyConfigSchema = z
 		role_arn: secretVarSchema.optional(),
 		external_id: secretVarSchema.optional(),
 		session_name: secretVarSchema.optional(),
+		batch_role_arn: secretVarSchema.optional(),
 		arn: secretVarSchema.optional(),
+		project_id: secretVarSchema.optional(),
 		batch_s3_config: batchS3ConfigSchema.optional(),
+		endpoints: bedrockEndpointsSchema.optional(),
 	})
 	.refine(
 		(data) => {
@@ -184,6 +197,43 @@ export const bedrockKeyConfigSchema = z
 			const hasAccessKey = isSecretVarSet(data.access_key);
 			const hasSecretKey = isSecretVarSet(data.secret_key);
 			if (!hasAccessKey && !hasSecretKey) return true;
+			return hasAccessKey && hasSecretKey;
+		},
+		{
+			message: "Both Access Key and Secret Key are required for explicit credentials",
+			path: ["access_key"],
+		},
+	);
+
+// Bedrock Mantle key config schema (SigV4 credentials; no ARN / batch S3 config)
+export const bedrockMantleKeyConfigSchema = z
+	.object({
+		_auth_type: z.enum(["iam_role", "explicit", "api_key"]).optional(),
+		access_key: secretVarSchema.optional(),
+		secret_key: secretVarSchema.optional(),
+		session_token: secretVarSchema.optional(),
+		region: secretVarSchema.optional(),
+		role_arn: secretVarSchema.optional(),
+		external_id: secretVarSchema.optional(),
+		session_name: secretVarSchema.optional(),
+		project_id: secretVarSchema.optional(),
+		endpoints: bedrockEndpointsSchema.optional(),
+	})
+	.refine((data) => isSecretVarSet(data.region), {
+		message: "Region is required",
+		path: ["region"],
+	})
+	.refine(
+		(data) => {
+			// Explicit auth must carry both keys; a region-only config fails at request time.
+			if (data._auth_type === "explicit") {
+				return isSecretVarSet(data.access_key) && isSecretVarSet(data.secret_key);
+			}
+			// If either access_key or secret_key is set, both must be set.
+			const hasAccessKey = isSecretVarSet(data.access_key);
+			const hasSecretKey = isSecretVarSet(data.secret_key);
+			// IAM-role path: both keys empty is valid, but a lone session token cannot sign SigV4.
+			if (!hasAccessKey && !hasSecretKey) return !isSecretVarSet(data.session_token);
 			return hasAccessKey && hasSecretKey;
 		},
 		{
@@ -255,13 +305,16 @@ const aliasConfigObjectSchema = z.object({
 	api_version: z.string().optional(),
 	anthropic_version: z.string().optional(),
 	endpoint: secretVarSchema.optional(),
-	// Vertex overrides
+	// Shared per-alias project override (Vertex / Bedrock / Bedrock Mantle)
 	project_id: secretVarSchema.optional(),
+	// Vertex overrides
 	project_number: secretVarSchema.optional(),
+	force_single_region: z.boolean().optional(),
 	// Bedrock overrides
 	inference_profile_arn: secretVarSchema.optional(),
 	// Replicate overrides
 	use_deployments_endpoint: z.boolean().optional(),
+	use_anthropic_endpoints: z.boolean().optional(),
 });
 
 // The Go server emits the legacy string wire shape (`{"my-alias": "model-id"}`)
@@ -302,17 +355,27 @@ export const modelProviderKeySchema = z
 		azure_key_config: azureKeyConfigSchema.optional(),
 		vertex_key_config: vertexKeyConfigSchema.optional(),
 		bedrock_key_config: bedrockKeyConfigSchema.optional(),
+		bedrock_mantle_key_config: bedrockMantleKeyConfigSchema.optional(),
 		vllm_key_config: vllmKeyConfigSchema.optional(),
 		replicate_key_config: replicateKeyConfigSchema.optional(),
 		ollama_key_config: ollamaKeyConfigSchema.optional(),
 		sgl_key_config: sglKeyConfigSchema.optional(),
 		use_for_batch_api: z.boolean().optional(),
+		use_anthropic_endpoints: z.boolean().optional(),
 		enabled: z.boolean().optional(),
 	})
 	.refine(
 		(data) => {
 			// Providers with dedicated config that never need a top-level API key
 			if (data.vllm_key_config || data.replicate_key_config || data.ollama_key_config || data.sgl_key_config) {
+				return true;
+			}
+			// Bedrock Mantle authenticates via SigV4 (its key config) or a Bearer key — only require
+			// a top-level API key when the user explicitly chose the api_key auth method.
+			if (data.bedrock_mantle_key_config) {
+				if (data.bedrock_mantle_key_config._auth_type === "api_key") {
+					return isSecretVarSet(data.value);
+				}
 				return true;
 			}
 			// Azure requires API key only when using api_key auth
@@ -365,6 +428,12 @@ export const networkConfigSchema = z
 			.min(5, "Stream idle timeout must be at least 5 seconds")
 			.max(3600, "Stream idle timeout must be at most 3600 seconds i.e. 60 minutes")
 			.optional(),
+		keep_alive_timeout_in_seconds: z
+			.number()
+			.int("Keep-alive timeout must be a whole number of seconds")
+			.min(1, "Keep-alive timeout must be at least 1 second")
+			.max(3600, "Keep-alive timeout must be at most 3600 seconds i.e. 60 minutes")
+			.optional(),
 		max_conns_per_host: z
 			.number()
 			.int("Max connections must be a whole number")
@@ -372,6 +441,12 @@ export const networkConfigSchema = z
 			.max(10000, "Max connections must be at most 10000")
 			.optional(),
 		enforce_http2: z.boolean().optional(),
+		http2_ping_interval_in_seconds: z
+			.number()
+			.int("HTTP/2 ping interval must be a whole number of seconds")
+			.min(0, "HTTP/2 ping interval must be at least 0 seconds")
+			.max(3600, "HTTP/2 ping interval must be at most 3600 seconds i.e. 60 minutes")
+			.optional(),
 		allow_private_network: z.boolean().optional(),
 	})
 	.refine((d) => d.retry_backoff_initial <= d.retry_backoff_max, {
@@ -418,6 +493,12 @@ export const networkFormConfigSchema = z
 			.min(5, "Stream idle timeout must be at least 5 seconds")
 			.max(3600, "Stream idle timeout must be at most 3600 seconds i.e. 60 minutes")
 			.optional(),
+		keep_alive_timeout_in_seconds: z.coerce
+			.number("Keep-alive timeout must be a number")
+			.int("Keep-alive timeout must be a whole number of seconds")
+			.min(1, "Keep-alive timeout must be at least 1 second")
+			.max(3600, "Keep-alive timeout must be at most 3600 seconds i.e. 60 minutes")
+			.optional(),
 		max_conns_per_host: z.coerce
 			.number("Max connections must be a number")
 			.int("Max connections must be a whole number")
@@ -425,6 +506,12 @@ export const networkFormConfigSchema = z
 			.max(10000, "Max connections must be at most 10000")
 			.optional(),
 		enforce_http2: z.boolean().optional(),
+		http2_ping_interval_in_seconds: z.coerce
+			.number("HTTP/2 ping interval must be a number")
+			.int("HTTP/2 ping interval must be a whole number of seconds")
+			.min(0, "HTTP/2 ping interval must be at least 0 seconds")
+			.max(3600, "HTTP/2 ping interval must be at most 3600 seconds i.e. 60 minutes")
+			.optional(),
 		allow_private_network: z.boolean().optional(),
 	})
 	.refine((d) => d.retry_backoff_initial <= d.retry_backoff_max, {
@@ -547,6 +634,10 @@ export const allowedRequestsSchema = z.object({
 	chat_completion_stream: z.boolean(),
 	responses: z.boolean(),
 	responses_stream: z.boolean(),
+	responses_retrieve: z.boolean().optional(),
+	responses_delete: z.boolean().optional(),
+	responses_cancel: z.boolean().optional(),
+	responses_input_items: z.boolean().optional(),
 	embedding: z.boolean(),
 	speech: z.boolean(),
 	speech_stream: z.boolean(),
@@ -790,6 +881,8 @@ export const otelConfigSchema = z
 	.object({
 		// Per-profile enable toggle. A disabled profile exports nothing and is not validated.
 		enabled: z.boolean().default(true),
+		// Trace export toggle. When false the profile is metrics-only; collector_url isn't required.
+		traces_enabled: z.boolean().default(true),
 		service_name: z.string().optional(),
 		collector_url: secretVarSchema.default({ value: "" }),
 		trace_type: z
@@ -797,7 +890,10 @@ export const otelConfigSchema = z
 				message: "Please select a trace type",
 			})
 			.default("genai_extension"),
+		// Common headers go to both endpoints; per-signal headers override on collision.
 		headers: z.record(z.string(), secretVarSchema).optional(),
+		trace_headers: z.record(z.string(), secretVarSchema).optional(),
+		metrics_headers: z.record(z.string(), secretVarSchema).optional(),
 		protocol: z
 			.enum(["http", "grpc"], {
 				message: "Please select a protocol",
@@ -806,6 +902,10 @@ export const otelConfigSchema = z
 		// TLS configuration
 		tls_ca_cert: z.string().optional(),
 		insecure: z.boolean().default(true),
+		// Bounds a single trace export. gRPC exports have no other timeout, so an
+		// endpoint that accepts the connection but never replies would otherwise block
+		// an export goroutine indefinitely.
+		export_timeout: z.number().int().min(1).max(60).default(5),
 		// Metrics push configuration
 		metrics_enabled: z.boolean().default(false),
 		metrics_endpoint: secretVarSchema.optional(),
@@ -868,21 +968,23 @@ export const otelConfigSchema = z
 			return true;
 		};
 
-		// Collector address is required for an enabled profile.
-		if (!isSecretVarSet(data.collector_url)) {
-			ctx.addIssue({
-				code: "custom",
-				path: ["collector_url"],
-				message: "Collector address is required",
-			});
-		}
+		// collector_url is required and validated only when traces are enabled.
+		if (data.traces_enabled) {
+			if (!isSecretVarSet(data.collector_url)) {
+				ctx.addIssue({
+					code: "custom",
+					path: ["collector_url"],
+					message: "Collector address is required",
+				});
+			}
 
-		// Validate collector_url format — skip format check for env var references
-		const collectorUrl = (data.collector_url?.value || "").trim();
-		if (collectorUrl && (data.collector_url?.type === "plain_text" || !data.collector_url?.type) && protocol === "http") {
-			validateHttpUrl(collectorUrl, ["collector_url"]);
-		} else if (collectorUrl && (data.collector_url?.type === "plain_text" || !data.collector_url?.type) && protocol === "grpc") {
-			validateHostPort(collectorUrl, ["collector_url"], "otel-collector:4317");
+			// Validate collector_url format — skip format check for env var references
+			const collectorUrl = (data.collector_url?.value || "").trim();
+			if (collectorUrl && (data.collector_url?.type === "plain_text" || !data.collector_url?.type) && protocol === "http") {
+				validateHttpUrl(collectorUrl, ["collector_url"]);
+			} else if (collectorUrl && (data.collector_url?.type === "plain_text" || !data.collector_url?.type) && protocol === "grpc") {
+				validateHostPort(collectorUrl, ["collector_url"], "otel-collector:4317");
+			}
 		}
 
 		// Validate metrics_endpoint when metrics_enabled is true
@@ -1013,97 +1115,141 @@ export const prometheusFormSchema = z
 	});
 
 // MCP Client update schema
-export const mcpClientUpdateSchema = z.object({
-	is_code_mode_client: z.boolean().optional(),
-	is_ping_available: z.boolean().optional(),
-	allow_on_all_virtual_keys: z.boolean().optional(),
-	disabled: z.boolean().optional(),
-	name: z
-		.string()
-		.min(1, "Name is required")
-		.refine((val) => !val.includes("-"), {
-			message: "Client name cannot contain hyphens",
-		})
-		.refine((val) => !val.includes(" "), {
-			message: "Client name cannot contain spaces",
-		})
-		.refine((val) => !/^[0-9]/.test(val), {
-			message: "Client name cannot start with a number",
-		}),
-	headers: z.record(z.string(), secretVarSchema).optional().nullable(),
-	per_user_header_keys: z
-		.array(z.string().trim().min(1, "Header name cannot be empty"))
-		.optional()
-		.refine(
-			(headers) => {
-				if (!headers) return true;
-				const normalized = headers.map((h) => h.trim().toLowerCase());
-				return normalized.length === new Set(normalized).size;
-			},
-			{ message: "Duplicate header names are not allowed" },
-		),
-	tools_to_execute: z
-		.array(z.string())
-		.optional()
-		.refine(
-			(tools) => {
-				if (!tools || tools.length === 0) return true;
-				const hasWildcard = tools.includes("*");
-				return !hasWildcard || tools.length === 1;
-			},
-			{ message: "Wildcard '*' cannot be combined with other tool names" },
-		)
-		.refine(
-			(tools) => {
-				if (!tools) return true;
-				return tools.length === new Set(tools).size;
-			},
-			{ message: "Duplicate tool names are not allowed" },
-		),
-	tools_to_auto_execute: z
-		.array(z.string())
-		.optional()
-		.refine(
-			(tools) => {
-				if (!tools || tools.length === 0) return true;
-				const hasWildcard = tools.includes("*");
-				return !hasWildcard || tools.length === 1;
-			},
-			{ message: "Wildcard '*' cannot be combined with other tool names" },
-		)
-		.refine(
-			(tools) => {
-				if (!tools) return true;
-				return tools.length === new Set(tools).size;
-			},
-			{ message: "Duplicate tool names are not allowed" },
-		),
-	tool_pricing: z.record(z.string(), z.number().min(0, "Cost must be non-negative")).optional(),
-	tool_sync_interval: z.number().optional(), // -1 = disabled, 0 = use global, >0 = custom interval in minutes
-	allowed_extra_headers: z
-		.array(z.string())
-		.optional()
-		.refine(
-			(headers) => {
-				if (!headers || headers.length === 0) return true;
-				const hasWildcard = headers.includes("*");
-				return !hasWildcard || headers.length === 1;
-			},
-			{ message: "Wildcard '*' cannot be combined with specific header names" },
-		),
-	oauth_config: z
-		.object({
-			client_id: secretVarSchema.optional(),
-			client_secret: secretVarSchema.optional(),
-		})
-		.optional(),
-	tls_config: z
-		.object({
-			insecure_skip_verify: z.boolean().optional(),
-			ca_cert_pem: secretVarSchema.optional(),
-		})
-		.optional(),
-});
+export const mcpClientUpdateSchema = z
+	.object({
+		is_code_mode_client: z.boolean().optional(),
+		is_ping_available: z.boolean().optional(),
+		needs_session_stickiness: z.boolean().optional(),
+		allow_on_all_virtual_keys: z.boolean().optional(),
+		disabled: z.boolean().optional(),
+		name: z
+			.string()
+			.min(1, "Name is required")
+			.refine((val) => !val.includes("-"), {
+				message: "Client name cannot contain hyphens",
+			})
+			.refine((val) => !val.includes(" "), {
+				message: "Client name cannot contain spaces",
+			})
+			.refine((val) => !/^[0-9]/.test(val), {
+				message: "Client name cannot start with a number",
+			}),
+		headers: z.record(z.string(), secretVarSchema).optional().nullable(),
+		per_user_header_keys: z
+			.array(z.string().trim().min(1, "Header name cannot be empty"))
+			.optional()
+			.refine(
+				(headers) => {
+					if (!headers) return true;
+					const normalized = headers.map((h) => h.trim().toLowerCase());
+					return normalized.length === new Set(normalized).size;
+				},
+				{ message: "Duplicate header names are not allowed" },
+			),
+		tools_to_execute: z
+			.array(z.string())
+			.optional()
+			.refine(
+				(tools) => {
+					if (!tools || tools.length === 0) return true;
+					const hasWildcard = tools.includes("*");
+					return !hasWildcard || tools.length === 1;
+				},
+				{ message: "Wildcard '*' cannot be combined with other tool names" },
+			)
+			.refine(
+				(tools) => {
+					if (!tools) return true;
+					return tools.length === new Set(tools).size;
+				},
+				{ message: "Duplicate tool names are not allowed" },
+			),
+		tools_to_auto_execute: z
+			.array(z.string())
+			.optional()
+			.refine(
+				(tools) => {
+					if (!tools || tools.length === 0) return true;
+					const hasWildcard = tools.includes("*");
+					return !hasWildcard || tools.length === 1;
+				},
+				{ message: "Wildcard '*' cannot be combined with other tool names" },
+			)
+			.refine(
+				(tools) => {
+					if (!tools) return true;
+					return tools.length === new Set(tools).size;
+				},
+				{ message: "Duplicate tool names are not allowed" },
+			),
+		tool_pricing: z.record(z.string(), z.number().min(0, "Cost must be non-negative")).optional(),
+		tool_sync_interval: z.number().optional(), // -1 = disabled, 0 = use global, >0 = custom interval in minutes
+		tool_execution_timeout: z.number().int().min(0).optional(), // 0 = use global, >0 = per-server timeout in seconds
+		allowed_extra_headers: z
+			.array(z.string())
+			.optional()
+			.refine(
+				(headers) => {
+					if (!headers || headers.length === 0) return true;
+					const hasWildcard = headers.includes("*");
+					return !hasWildcard || headers.length === 1;
+				},
+				{ message: "Wildcard '*' cannot be combined with specific header names" },
+			),
+		oauth_config: z
+			.object({
+				client_id: secretVarSchema.optional(),
+				client_secret: secretVarSchema.optional(),
+				authorize_url: z
+					.string()
+					.optional()
+					.refine((val) => !val || /^https?:\/\/.+$/.test(val), { message: "Authorize URL must start with http:// or https://" }),
+				token_url: z
+					.string()
+					.optional()
+					.refine((val) => !val || /^https?:\/\/.+$/.test(val), { message: "Token URL must start with http:// or https://" }),
+				registration_url: z
+					.string()
+					.optional()
+					.refine((val) => !val || /^https?:\/\/.+$/.test(val), { message: "Registration URL must start with http:// or https://" }),
+				scopes: z.array(z.string()).optional(),
+				resource: z.string().optional(),
+			})
+			.optional(),
+		token_exchange: z
+			.object({
+				audience: z.string().trim().min(1, "Audience is required"),
+				use_idp_credentials: z.boolean().optional(),
+				client_id: secretVarSchema.optional(),
+				client_secret: secretVarSchema.optional(),
+				authorization_server_url: z
+					.string()
+					.optional()
+					.refine((val) => !val || /^https?:\/\/.+$/.test(val), {
+						message: "Authorization Server URL must start with http:// or https://",
+					}),
+				scopes: z.array(z.string()).optional(),
+			})
+			.optional(),
+		tls_config: z
+			.object({
+				insecure_skip_verify: z.boolean().optional(),
+				ca_cert_pem: secretVarSchema.optional(),
+			})
+			.optional(),
+	})
+	.superRefine((data, ctx) => {
+		// per_user_header_keys is only ever set on the form for per_user_headers
+		// auth clients (undefined otherwise), so an empty array here means the
+		// admin cleared every entry, not that the field doesn't apply.
+		if (data.per_user_header_keys !== undefined && data.per_user_header_keys.length === 0) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["per_user_header_keys"],
+				message: "Declare at least one header name users must supply.",
+			});
+		}
+	});
 
 // Global proxy type schema
 export const globalProxyTypeSchema = z.enum(["http", "socks5", "tcp"]);
@@ -1193,6 +1339,18 @@ export const routingRuleSchema = z
 		path: ["scope_id"],
 	});
 
+// Budget override form schema (BudgetOverrideDialog)
+export const budgetOverrideFormSchema = z
+	.object({
+		amount: z.number("Additional budget must be greater than 0.").positive("Additional budget must be greater than 0."),
+		mode: z.enum(["cycles", "forever"]),
+		cycles: z.number().optional(),
+	})
+	.refine((data) => data.mode !== "cycles" || (data.cycles !== undefined && Number.isSafeInteger(data.cycles) && data.cycles > 0), {
+		message: "Reset cycles must be a positive whole number.",
+		path: ["cycles"],
+	});
+
 // Export type inference helpers
 export type SecretVar = z.infer<typeof secretVarSchema>;
 export type MCPClientUpdateSchema = z.infer<typeof mcpClientUpdateSchema>;
@@ -1216,3 +1374,4 @@ export type GlobalProxyFormSchema = z.infer<typeof globalProxyFormSchema>;
 export type GlobalHeaderFilterConfigSchema = z.infer<typeof globalHeaderFilterConfigSchema>;
 export type GlobalHeaderFilterFormSchema = z.infer<typeof globalHeaderFilterFormSchema>;
 export type RoutingRuleSchema = z.infer<typeof routingRuleSchema>;
+export type BudgetOverrideFormSchema = z.infer<typeof budgetOverrideFormSchema>;

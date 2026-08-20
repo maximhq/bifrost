@@ -2,6 +2,7 @@ package logging
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
+	"github.com/maximhq/bifrost/framework/streaming"
 )
 
 type testLogger struct{}
@@ -41,6 +43,213 @@ func newTestStore(t *testing.T) logstore.LogStore {
 		t.Fatalf("NewLogStore() error = %v", err)
 	}
 	return store
+}
+
+func TestUserAgentFromContextUsesRequestHeaders(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{
+		"user-agent": "codex-tui/1.0",
+	})
+	ctx.SetValue(schemas.BifrostContextKeyUserAgent, "fallback/1.0")
+
+	if got := userAgentFromContext(ctx); got != "codex-tui/1.0" {
+		t.Fatalf("expected request-header user agent, got %q", got)
+	}
+}
+
+func TestUserAgentFromContextUsesCanonicalRequestHeader(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{
+		"User-Agent": "Claude-Code/1.0",
+	})
+
+	if got := userAgentFromContext(ctx); got != "Claude-Code/1.0" {
+		t.Fatalf("expected canonical request-header user agent, got %q", got)
+	}
+}
+
+func TestUserAgentFromContextUsesUppercaseRequestHeader(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{
+		"USER-AGENT": "Cursor/0.47",
+	})
+
+	if got := userAgentFromContext(ctx); got != "Cursor/0.47" {
+		t.Fatalf("expected uppercase request-header user agent, got %q", got)
+	}
+}
+
+func TestUserAgentFromContextFallsBackWhenHeaderValueIsEmpty(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{
+		"user-agent": "",
+	})
+	ctx.SetValue(schemas.BifrostContextKeyUserAgent, "fallback/1.0")
+
+	if got := userAgentFromContext(ctx); got != "fallback/1.0" {
+		t.Fatalf("expected fallback user agent for empty header, got %q", got)
+	}
+}
+
+func TestUserAgentFromContextFallsBackToUserAgentKey(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyUserAgent, "cursor/0.47")
+
+	if got := userAgentFromContext(ctx); got != "cursor/0.47" {
+		t.Fatalf("expected fallback user agent, got %q", got)
+	}
+}
+
+func TestPreLLMHookSetsAppContextFromDetectedApp(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close(context.Background())
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if cleanupErr := plugin.Cleanup(); cleanupErr != nil {
+			t.Errorf("Cleanup() error = %v", cleanupErr)
+		}
+	})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-app-context")
+	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{
+		"user-agent":   "claude-cli/2.1.168 (external, cli)",
+		"x-bf-vk":      "vk-test",
+		"x-bf-user-id": "user-test",
+	})
+
+	_, _, err = plugin.PreLLMHook(ctx, &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o-mini",
+			Params:   &schemas.ChatParameters{},
+		},
+	})
+	if err != nil {
+		t.Fatalf("PreLLMHook() error = %v", err)
+	}
+	if got, _ := ctx.Value(schemas.BifrostContextKeyApp).(string); got != "claude-code" {
+		t.Fatalf("app context = %q, want claude-code", got)
+	}
+}
+
+// TestPreLLMHookContextKeyComesFromUserAgentNotAgentHeader replays the header
+// shape the desktop agent stamps for a Claude Cowork request: Cowork's runtime
+// shares Claude Code's CLI User-Agent, so the logging plugin derives
+// claude-code for the context key. Header-based app enforcement (X-Bf-App)
+// lives in the enterprise agent policy plugin, which prefers the header over
+// this context key.
+func TestPreLLMHookContextKeyComesFromUserAgentNotAgentHeader(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close(context.Background())
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if cleanupErr := plugin.Cleanup(); cleanupErr != nil {
+			t.Errorf("Cleanup() error = %v", cleanupErr)
+		}
+	})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-cowork-context")
+	// Captured from the agent's MITM → GATEWAY forwarding of a Cowork request.
+	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{
+		"user-agent":                "claude-cli/2.1.170 (external, local-agent, agent-sdk/0.3.170)",
+		"anthropic-client-platform": "desktop_app",
+		"x-app":                     "cli",
+		"x-bf-app":                  "claude-cowork",
+		"x-bifrost-agent":           "bifrost-agent/0.1.0",
+	})
+
+	_, _, err = plugin.PreLLMHook(ctx, &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.Anthropic,
+			Model:    "claude-opus-4-8",
+			Params:   &schemas.ChatParameters{},
+		},
+	})
+	if err != nil {
+		t.Fatalf("PreLLMHook() error = %v", err)
+	}
+	if got, _ := ctx.Value(schemas.BifrostContextKeyApp).(string); got != "claude-code" {
+		t.Fatalf("app context = %q, want claude-code (derived from User-Agent)", got)
+	}
+}
+
+func TestCustomUserAgentMappingOverridesBuiltInDetection(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close(context.Background())
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if cleanupErr := plugin.Cleanup(); cleanupErr != nil {
+			t.Errorf("Cleanup() error = %v", cleanupErr)
+		}
+	})
+
+	_, err = plugin.CreateUserAgentMapping(context.Background(), &logstore.UserAgentMapping{
+		Pattern:   `claude-cli/\d+\.\d+`,
+		MatchType: string(schemas.UserAgentMappingMatchTypeRegex),
+		App:       "Internal Claude Wrapper",
+		IsActive:  true,
+	})
+	if err != nil {
+		t.Fatalf("CreateUserAgentMapping() error = %v", err)
+	}
+
+	if got := plugin.detectAppFromUserAgent("claude-cli/2.1.168 (external, cli)"); got != "Internal Claude Wrapper" {
+		t.Fatalf("expected custom app mapping, got %q", got)
+	}
+}
+
+func TestPreLLMHookSetsAppContextFromCustomMapping(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close(context.Background())
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if cleanupErr := plugin.Cleanup(); cleanupErr != nil {
+			t.Errorf("Cleanup() error = %v", cleanupErr)
+		}
+	})
+	_, err = plugin.CreateUserAgentMapping(context.Background(), &logstore.UserAgentMapping{
+		Pattern:   `custom-wrapper/\d+`,
+		MatchType: string(schemas.UserAgentMappingMatchTypeRegex),
+		App:       "Internal Claude Wrapper",
+		IsActive:  true,
+	})
+	if err != nil {
+		t.Fatalf("CreateUserAgentMapping() error = %v", err)
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-custom-app-context")
+	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{
+		"user-agent": "custom-wrapper/42",
+	})
+
+	_, _, err = plugin.PreLLMHook(ctx, &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o-mini",
+			Params:   &schemas.ChatParameters{},
+		},
+	})
+	if err != nil {
+		t.Fatalf("PreLLMHook() error = %v", err)
+	}
+	if got, _ := ctx.Value(schemas.BifrostContextKeyApp).(string); got != "internal-claude-wrapper" {
+		t.Fatalf("app context = %q, want internal-claude-wrapper", got)
+	}
 }
 
 func TestPostLLMHookNoPendingErrorPreservesMetadata(t *testing.T) {
@@ -138,7 +347,6 @@ func TestPostLLMHookStreamingErrorPreservesHeaderMetadata(t *testing.T) {
 	if _, _, err = plugin.PreLLMHook(ctx, req); err != nil {
 		t.Fatalf("PreLLMHook() error = %v", err)
 	}
-
 	statusCode := 500
 	bifrostErr := &schemas.BifrostError{
 		IsBifrostError: true,
@@ -186,9 +394,10 @@ func TestPostLLMHookStreamingErrorPreservesHeaderMetadata(t *testing.T) {
 }
 
 // TestPostLLMHookCancelledStreamLogsCost verifies #3357 at the logging layer: a
-// streaming request cancelled mid-flight (result==nil) whose error carries the
+// streaming request cancelled mid-flight (including when a chunk is returned)
+// whose error carries the
 // partial usage the provider already processed (BifrostError.ExtraFields.BilledUsage)
-// must produce a log row with status="error", the consumed tokens, AND an
+// must produce a log row with status="cancelled", the consumed tokens, AND an
 // accurate cost computed from the datasheet rates.
 func TestPostLLMHookCancelledStreamLogsCost(t *testing.T) {
 	store := newTestStore(t)
@@ -224,6 +433,26 @@ func TestPostLLMHookCancelledStreamLogsCost(t *testing.T) {
 	if _, _, err = plugin.PreLLMHook(ctx, req); err != nil {
 		t.Fatalf("PreLLMHook() error = %v", err)
 	}
+	embeddingProvider := "openai"
+	embeddingModel := "text-embedding-3-small"
+	embeddingTokens := 12
+	if !schemas.SetCacheDebugOnContext(ctx, &schemas.BifrostCacheDebug{
+		ProviderUsed: &embeddingProvider,
+		ModelUsed:    &embeddingModel,
+		InputTokens:  &embeddingTokens,
+	}) {
+		t.Fatal("expected semantic cache debug to be stored on context")
+	}
+	if !schemas.AppendGuardrailJudgeCallOnContext(ctx, schemas.BifrostGuardrailJudgeCall{
+		JudgeProvider:    schemas.OpenAI,
+		JudgeModel:       "gpt-4o",
+		JudgeRequestType: schemas.ChatCompletionRequest,
+		PromptTokens:     10,
+		CompletionTokens: 5,
+		TotalTokens:      15,
+	}) {
+		t.Fatal("expected guardrail judge call to be stored on context")
+	}
 
 	const promptTokens, completionTokens = 100, 50
 	statusCode := 499 // client closed request (mid-stream cancel)
@@ -244,7 +473,17 @@ func TestPostLLMHookCancelledStreamLogsCost(t *testing.T) {
 			},
 		},
 	}
-	if _, _, err = plugin.PostLLMHook(ctx, nil, bifrostErr); err != nil {
+	streamChunk := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:            schemas.ChatCompletionStreamRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4o",
+				ResolvedModelUsed:      "gpt-4o",
+			},
+		},
+	}
+	if _, _, err = plugin.PostLLMHook(ctx, streamChunk, bifrostErr); err != nil {
 		t.Fatalf("PostLLMHook() error = %v", err)
 	}
 	if err := plugin.Cleanup(); err != nil {
@@ -255,8 +494,8 @@ func TestPostLLMHookCancelledStreamLogsCost(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FindByID() error = %v", err)
 	}
-	if entry.Status != "error" {
-		t.Fatalf("expected error status, got %q", entry.Status)
+	if entry.Status != "cancelled" {
+		t.Fatalf("expected cancelled status, got %q", entry.Status)
 	}
 	if entry.TokenUsageParsed == nil {
 		t.Fatalf("expected token usage recorded from BilledUsage on the cancel path")
@@ -268,9 +507,194 @@ func TestPostLLMHookCancelledStreamLogsCost(t *testing.T) {
 		t.Fatalf("expected a cost to be logged for a cancelled request that consumed tokens (#3357)")
 	}
 	// gpt-4o testdata rates: input 2.5e-6/token, output 1e-5/token.
-	want := float64(promptTokens)*2.5e-6 + float64(completionTokens)*1e-5
+	// text-embedding-3-small is 2e-8/token. The cache lookup and the judge call
+	// must both be added even though the stream ended with an error chunk.
+	want := float64(promptTokens)*2.5e-6 + float64(completionTokens)*1e-5 +
+		float64(embeddingTokens)*2e-8 + float64(10)*2.5e-6 + float64(5)*1e-5
 	if diff := *entry.Cost - want; diff < -1e-9 || diff > 1e-9 {
 		t.Fatalf("logged cost %v does not match datasheet-computed cost %v", *entry.Cost, want)
+	}
+}
+
+func TestPostLLMHookContextTimeoutLogsCancelledStatus(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-context-timeout")
+
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o",
+			Params:   &schemas.ChatParameters{},
+		},
+	}
+	if _, _, err = plugin.PreLLMHook(ctx, req); err != nil {
+		t.Fatalf("PreLLMHook() error = %v", err)
+	}
+
+	statusCode := 504
+	bifrostErr := &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     &statusCode,
+		Error: &schemas.ErrorField{
+			Message: "Request timed out by context: context deadline exceeded",
+			Type:    schemas.Ptr(schemas.RequestTimedOut),
+		},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			RequestType:            schemas.ChatCompletionRequest,
+			Provider:               schemas.OpenAI,
+			OriginalModelRequested: "gpt-4o",
+			ResolvedModelUsed:      "gpt-4o",
+		},
+	}
+	if _, _, err = plugin.PostLLMHook(ctx, nil, bifrostErr); err != nil {
+		t.Fatalf("PostLLMHook() error = %v", err)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	entry, err := store.FindByID(context.Background(), "req-context-timeout")
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if entry.Status != "cancelled" {
+		t.Fatalf("expected cancelled status, got %q", entry.Status)
+	}
+}
+
+func TestPostLLMHookProviderTimeoutRemainsErrorStatus(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-provider-timeout")
+
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o",
+			Params:   &schemas.ChatParameters{},
+		},
+	}
+	if _, _, err = plugin.PreLLMHook(ctx, req); err != nil {
+		t.Fatalf("PreLLMHook() error = %v", err)
+	}
+
+	statusCode := 504
+	bifrostErr := &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     &statusCode,
+		Error: &schemas.ErrorField{
+			Message: schemas.ErrProviderRequestTimedOut,
+			Type:    schemas.Ptr(schemas.RequestTimedOut),
+		},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			RequestType:            schemas.ChatCompletionRequest,
+			Provider:               schemas.OpenAI,
+			OriginalModelRequested: "gpt-4o",
+			ResolvedModelUsed:      "gpt-4o",
+		},
+	}
+	if _, _, err = plugin.PostLLMHook(ctx, nil, bifrostErr); err != nil {
+		t.Fatalf("PostLLMHook() error = %v", err)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	entry, err := store.FindByID(context.Background(), "req-provider-timeout")
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if entry.Status != "error" {
+		t.Fatalf("expected error status, got %q", entry.Status)
+	}
+}
+
+func TestLogStatusForErrorDoesNotTreatGenericDeadlineMessageAsCancelled(t *testing.T) {
+	statusCode := 504
+	bifrostErr := &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     &statusCode,
+		Error: &schemas.ErrorField{
+			Message: "provider request hit project deadline exceeded limit",
+			Type:    schemas.Ptr(schemas.RequestTimedOut),
+		},
+	}
+
+	if got := logStatusForError(bifrostErr); got != "error" {
+		t.Fatalf("expected generic provider deadline message to remain error, got %q", got)
+	}
+}
+
+func TestApplyStreamingOutputToEntryPreservesAccumulatorCancelledStatus(t *testing.T) {
+	plugin := &LoggerPlugin{}
+	entry := &logstore.Log{}
+	statusCode := 499
+	streamResponse := &streaming.ProcessedStreamResponse{
+		Data: &streaming.AccumulatedData{
+			ErrorDetails: &schemas.BifrostError{
+				IsBifrostError: true,
+				StatusCode:     &statusCode,
+				Error: &schemas.ErrorField{
+					Message: "Request cancelled: client disconnected",
+					Type:    schemas.Ptr(schemas.RequestCancelled),
+				},
+			},
+			Latency: 42,
+		},
+	}
+
+	plugin.applyStreamingOutputToEntry(entry, streamResponse, false, true)
+	if entry.Status != "cancelled" {
+		t.Fatalf("expected initial cancelled status, got %q", entry.Status)
+	}
+	if entry.ErrorDetailsParsed == nil {
+		t.Fatalf("expected parsed error details to be set")
+	}
+	if err := entry.SerializeFields(); err != nil {
+		t.Fatalf("SerializeFields() error: %v", err)
+	}
+	if entry.ErrorDetails == "" {
+		t.Fatalf("expected serialized error details after SerializeFields")
+	}
+
+	// Match the downstream Path B re-derivation in PostLLMHook. If
+	// ErrorDetailsParsed is missing, this collapses accumulator-originated
+	// cancellations back to "error".
+	if entry.ErrorDetailsParsed != nil {
+		entry.Status = logStatusForError(entry.ErrorDetailsParsed)
+	}
+	if entry.Status != "cancelled" {
+		t.Fatalf("expected downstream reclassification to preserve cancelled status, got %q", entry.Status)
+	}
+}
+
+func TestApplyStreamingOutputToEntryPreservesServiceTier(t *testing.T) {
+	plugin := &LoggerPlugin{}
+	entry := &logstore.Log{}
+	priority := schemas.BifrostServiceTierPriority
+
+	plugin.applyStreamingOutputToEntry(entry, &streaming.ProcessedStreamResponse{
+		Data: &streaming.AccumulatedData{
+			ServiceTier: &priority,
+			TokenUsage:  &schemas.BifrostLLMUsage{TotalTokens: 1},
+		},
+	}, false, true)
+
+	if entry.ServiceTier == nil || *entry.ServiceTier != string(schemas.BifrostServiceTierPriority) {
+		t.Fatalf("expected priority service tier, got %v", entry.ServiceTier)
 	}
 }
 
@@ -360,6 +784,186 @@ func TestApplyErrorBillingFromBilledUsage_FillsTokensAndCostWhenUnparsed(t *test
 	}
 }
 
+func TestRecalculateCostsProcessesAllBatches(t *testing.T) {
+	store := newTestStore(t)
+	plugin := &LoggerPlugin{
+		store:          store,
+		pricingManager: newTestPricingManager(t),
+		logger:         testLogger{},
+	}
+
+	now := time.Now().UTC()
+	for i := range 5 {
+		if err := store.Create(context.Background(), testRecalculateCostLog(
+			"req-recalc-batch-"+string(rune('a'+i)),
+			now.Add(time.Duration(i)*time.Second),
+			100+i,
+			50,
+		)); err != nil {
+			t.Fatalf("Create() error = %v", err)
+		}
+	}
+
+	result, err := plugin.RecalculateCosts(context.Background(), logstore.SearchFilters{}, 2)
+	if err != nil {
+		t.Fatalf("RecalculateCosts() error = %v", err)
+	}
+	if result.TotalMatched != 5 || result.Updated != 5 || result.Skipped != 0 || result.Remaining != 0 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+
+	for _, id := range []string{"req-recalc-batch-a", "req-recalc-batch-b", "req-recalc-batch-c", "req-recalc-batch-d", "req-recalc-batch-e"} {
+		entry, err := store.FindByID(context.Background(), id)
+		if err != nil {
+			t.Fatalf("FindByID(%s) error = %v", id, err)
+		}
+		if entry.Cost == nil || *entry.Cost <= 0 {
+			t.Fatalf("expected positive cost for %s, got %v", id, entry.Cost)
+		}
+	}
+}
+
+func TestRecalculateCostsSkipsUnresolvableRowsAndContinues(t *testing.T) {
+	store := newTestStore(t)
+	plugin := &LoggerPlugin{
+		store:          store,
+		pricingManager: newTestPricingManager(t),
+		logger:         testLogger{},
+	}
+
+	now := time.Now().UTC()
+	if err := store.Create(context.Background(), &logstore.Log{
+		ID:        "req-recalc-skip",
+		Timestamp: now,
+		Object:    string(schemas.ChatCompletionRequest),
+		Provider:  string(schemas.OpenAI),
+		Model:     "gpt-4o",
+		Status:    "success",
+	}); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	for i := range 3 {
+		if err := store.Create(context.Background(), testRecalculateCostLog(
+			"req-recalc-continue-"+string(rune('a'+i)),
+			now.Add(time.Duration(i+1)*time.Second),
+			100+i,
+			50,
+		)); err != nil {
+			t.Fatalf("Create() error = %v", err)
+		}
+	}
+
+	result, err := plugin.RecalculateCosts(context.Background(), logstore.SearchFilters{}, 2)
+	if err != nil {
+		t.Fatalf("RecalculateCosts() error = %v", err)
+	}
+	if result.TotalMatched != 4 || result.Updated != 3 || result.Skipped != 1 || result.Remaining != 1 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+
+	skipped, err := store.FindByID(context.Background(), "req-recalc-skip")
+	if err != nil {
+		t.Fatalf("FindByID(req-recalc-skip) error = %v", err)
+	}
+	if skipped.Cost != nil {
+		t.Fatalf("expected skipped row cost to remain nil, got %v", skipped.Cost)
+	}
+	for _, id := range []string{"req-recalc-continue-a", "req-recalc-continue-b", "req-recalc-continue-c"} {
+		entry, err := store.FindByID(context.Background(), id)
+		if err != nil {
+			t.Fatalf("FindByID(%s) error = %v", id, err)
+		}
+		if entry.Cost == nil || *entry.Cost <= 0 {
+			t.Fatalf("expected positive cost for %s, got %v", id, entry.Cost)
+		}
+	}
+}
+
+func TestRecalculateCostsDoesNotWriteZeroForUnresolvedPricing(t *testing.T) {
+	store := newTestStore(t)
+	plugin := &LoggerPlugin{
+		store:          store,
+		pricingManager: newTestPricingManager(t),
+		logger:         testLogger{},
+	}
+
+	entry := testRecalculateCostLog("req-recalc-unpriced", time.Now().UTC(), 100, 50)
+	entry.Model = "unknown-model"
+	if err := store.Create(context.Background(), entry); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	result, err := plugin.RecalculateCosts(context.Background(), logstore.SearchFilters{}, 2)
+	if err != nil {
+		t.Fatalf("RecalculateCosts() error = %v", err)
+	}
+	if result.TotalMatched != 1 || result.Updated != 0 || result.Skipped != 1 || result.Remaining != 1 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+
+	logEntry, err := store.FindByID(context.Background(), "req-recalc-unpriced")
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if logEntry.Cost != nil {
+		t.Fatalf("expected unresolved pricing to leave cost nil, got %v", *logEntry.Cost)
+	}
+}
+
+func TestRecalculateCostsNormalizesProviderObjectForPricing(t *testing.T) {
+	store := newTestStore(t)
+	plugin := &LoggerPlugin{
+		store:          store,
+		pricingManager: newTestPricingManager(t),
+		logger:         testLogger{},
+	}
+
+	entry := testRecalculateCostLog("req-recalc-provider-object", time.Now().UTC(), 100, 50)
+	entry.Object = "chat.completion"
+	zeroCost := 0.0
+	entry.Cost = &zeroCost
+	if err := store.Create(context.Background(), entry); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	result, err := plugin.RecalculateCosts(context.Background(), logstore.SearchFilters{}, 2)
+	if err != nil {
+		t.Fatalf("RecalculateCosts() error = %v", err)
+	}
+	if result.TotalMatched != 1 || result.Updated != 1 || result.Skipped != 0 || result.Remaining != 0 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+
+	logEntry, err := store.FindByID(context.Background(), "req-recalc-provider-object")
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if logEntry.Cost == nil || *logEntry.Cost <= 0 {
+		t.Fatalf("expected legacy provider object to recalculate positive cost, got %v", logEntry.Cost)
+	}
+}
+
+func testRecalculateCostLog(id string, timestamp time.Time, promptTokens int, completionTokens int) *logstore.Log {
+	totalTokens := promptTokens + completionTokens
+	return &logstore.Log{
+		ID:               id,
+		Timestamp:        timestamp,
+		Object:           string(schemas.ChatCompletionRequest),
+		Provider:         string(schemas.OpenAI),
+		Model:            "gpt-4o",
+		Status:           "success",
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionTokens,
+		TotalTokens:      totalTokens,
+		TokenUsageParsed: &schemas.BifrostLLMUsage{
+			PromptTokens:     promptTokens,
+			CompletionTokens: completionTokens,
+			TotalTokens:      totalTokens,
+		},
+	}
+}
+
 func TestBuildInitialLogEntryPreservesMetadata(t *testing.T) {
 	metadata := map[string]any{"tenant": "acme"}
 	entry := buildInitialLogEntry(&PendingLogData{
@@ -382,9 +986,89 @@ func TestBuildInitialLogEntryPreservesMetadata(t *testing.T) {
 	}
 }
 
-// TestMCPHooksDeferDBWriteUntilPostHookBatch verifies MCP logs are kept in
-// memory after PreMCPHook and persisted by the batch writer after PostMCPHook.
-func TestMCPHooksDeferDBWriteUntilPostHookBatch(t *testing.T) {
+func TestBuildInitialLogEntryPreservesUserAgent(t *testing.T) {
+	userAgent := "codex-cli/1.0"
+	entry := buildInitialLogEntry(&PendingLogData{
+		RequestID:     "req-initial-user-agent",
+		Timestamp:     time.Now().UTC(),
+		FallbackIndex: 1,
+		InitialData: &InitialLogData{
+			Provider:  string(schemas.OpenAI),
+			Model:     "gpt-4o",
+			Object:    string(schemas.ChatCompletionRequest),
+			UserAgent: userAgent,
+		},
+	})
+
+	if entry.UserAgent == nil {
+		t.Fatalf("expected user agent on initial log entry")
+	}
+	if got := *entry.UserAgent; got != userAgent {
+		t.Fatalf("expected user agent %q, got %q", userAgent, got)
+	}
+	if entry.App == nil {
+		t.Fatalf("expected app on initial log entry")
+	}
+	if got := *entry.App; got != "Codex CLI" {
+		t.Fatalf("expected app Codex CLI, got %q", got)
+	}
+}
+
+func TestBuildCompleteLogEntryPreservesUserAgent(t *testing.T) {
+	userAgent := "cursor/0.47"
+	entry := buildCompleteLogEntryFromPending(&PendingLogData{
+		RequestID:     "req-complete-user-agent",
+		Timestamp:     time.Now().UTC(),
+		FallbackIndex: 1,
+		InitialData: &InitialLogData{
+			Provider:  string(schemas.OpenAI),
+			Model:     "gpt-4o",
+			Object:    string(schemas.ChatCompletionRequest),
+			UserAgent: userAgent,
+		},
+	})
+
+	if entry.UserAgent == nil {
+		t.Fatalf("expected user agent on complete log entry")
+	}
+	if got := *entry.UserAgent; got != userAgent {
+		t.Fatalf("expected user agent %q, got %q", userAgent, got)
+	}
+	if entry.App == nil {
+		t.Fatalf("expected app on complete log entry")
+	}
+	if got := *entry.App; got != "Cursor" {
+		t.Fatalf("expected app Cursor, got %q", got)
+	}
+}
+
+func TestBuildLogEntriesOmitEmptyUserAgent(t *testing.T) {
+	pending := &PendingLogData{
+		RequestID:     "req-empty-user-agent",
+		Timestamp:     time.Now().UTC(),
+		FallbackIndex: 1,
+		InitialData: &InitialLogData{
+			Provider: string(schemas.OpenAI),
+			Model:    "gpt-4o",
+			Object:   string(schemas.ChatCompletionRequest),
+		},
+	}
+
+	if entry := buildInitialLogEntry(pending); entry.UserAgent != nil {
+		t.Fatalf("expected nil initial user agent, got %#v", entry.UserAgent)
+	} else if entry.App != nil {
+		t.Fatalf("expected nil initial app, got %#v", entry.App)
+	}
+	if entry := buildCompleteLogEntryFromPending(pending); entry.UserAgent != nil {
+		t.Fatalf("expected nil complete user agent, got %#v", entry.UserAgent)
+	} else if entry.App != nil {
+		t.Fatalf("expected nil complete app, got %#v", entry.App)
+	}
+}
+
+// TestMCPHooksPersistPluginLogs verifies PostMCPHook stores the plugin-log
+// snapshot accumulated before logging's post-hook runs.
+func TestMCPHooksPersistPluginLogs(t *testing.T) {
 	store := newTestStore(t)
 	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
 	if err != nil {
@@ -398,6 +1082,12 @@ func TestMCPHooksDeferDBWriteUntilPostHookBatch(t *testing.T) {
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, "team-1")
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, "customer-1")
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceBusinessUnitID, "bu-1")
+	schemas.SetRedactionDataOnContext(ctx, schemas.RedactionData{
+		ReversibleMappings: schemas.RedactionMapsByPhase{
+			Input:  map[string]string{"EMAIL-1": "private@example.com"},
+			Output: map[string]string{"EMAIL-2": "result@example.com"},
+		},
+	})
 
 	toolName := "docs-search"
 	_, _, err = plugin.PreMCPHook(ctx, &schemas.BifrostMCPRequest{
@@ -416,8 +1106,24 @@ func TestMCPHooksDeferDBWriteUntilPostHookBatch(t *testing.T) {
 	if _, err := store.FindMCPToolLog(context.Background(), "mcp-batch-flow"); !errors.Is(err, logstore.ErrNotFound) {
 		t.Fatalf("expected MCP log to stay in memory before PostMCPHook, got err=%v", err)
 	}
+	pendingValue, ok := plugin.pendingMCPLogsToInject.Load("mcp-batch-flow")
+	if !ok {
+		t.Fatal("expected pending MCP log entry")
+	}
+	pendingEntry, ok := pendingValue.(*logstore.MCPToolLog)
+	if !ok {
+		t.Fatalf("pending MCP log entry has type %T", pendingValue)
+	}
+	if pendingEntry.RedactionData != nil {
+		t.Fatal("expected redaction data to be attached only after PostMCPHook")
+	}
 
 	result := `{"answer":"done"}`
+	guardrailsName := "guardrails"
+	guardrailsCtx := ctx.WithPluginScope(&guardrailsName)
+	guardrailsCtx.Log(schemas.LogLevelInfo, "MCP tool arguments redacted")
+	guardrailsCtx.ReleasePluginScope()
+
 	_, _, err = plugin.PostMCPHook(ctx, &schemas.BifrostMCPResponse{
 		ChatMessage: &schemas.ChatMessage{
 			Role:    schemas.ChatMessageRoleTool,
@@ -433,7 +1139,12 @@ func TestMCPHooksDeferDBWriteUntilPostHookBatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PostMCPHook() error = %v", err)
 	}
-
+	if pendingEntry.RedactionData == nil {
+		t.Fatal("expected PostMCPHook to attach redaction data")
+	}
+	if got := pendingEntry.RedactionData.ReversibleMappings.Output["EMAIL-2"]; got != "result@example.com" {
+		t.Fatalf("output redaction mapping = %q, want %q", got, "result@example.com")
+	}
 	if err := plugin.Cleanup(); err != nil {
 		t.Fatalf("Cleanup() error = %v", err)
 	}
@@ -454,6 +1165,13 @@ func TestMCPHooksDeferDBWriteUntilPostHookBatch(t *testing.T) {
 	}
 	if logEntry.Latency == nil || *logEntry.Latency != 42 {
 		t.Fatalf("expected latency 42, got %#v", logEntry.Latency)
+	}
+	var pluginLogs map[string][]schemas.PluginLogEntry
+	if err := json.Unmarshal([]byte(logEntry.PluginLogs), &pluginLogs); err != nil {
+		t.Fatalf("expected valid plugin logs JSON, got %q: %v", logEntry.PluginLogs, err)
+	}
+	if got := pluginLogs[guardrailsName]; len(got) != 1 || got[0].Message != "MCP tool arguments redacted" {
+		t.Fatalf("expected guardrails plugin log to be persisted, got %#v", pluginLogs)
 	}
 	assertMCPLogGovernanceFields(t, logEntry, "user-1", "team-1", "customer-1", "bu-1")
 }
@@ -491,7 +1209,6 @@ func TestPostMCPHookFallbackStampsGovernanceFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PostMCPHook() error = %v", err)
 	}
-
 	if err := plugin.Cleanup(); err != nil {
 		t.Fatalf("Cleanup() error = %v", err)
 	}
@@ -1482,5 +2199,146 @@ func TestApplyNonStreamingOutputToEntryContentLoggingEnabled(t *testing.T) {
 
 	if entry.OutputMessageParsed == nil {
 		t.Error("expected OutputMessageParsed to be set when contentLoggingEnabled=true")
+	}
+}
+
+// TestApplyNonStreamingOutputToEntryVideoOutputs verifies that each video response lands in
+// its own log column. Generation, remix and retrieve all return BifrostVideoGenerationResponse,
+// so the request type is the only thing separating generation from retrieve.
+func TestApplyNonStreamingOutputToEntryVideoOutputs(t *testing.T) {
+	videoResponse := func(requestType schemas.RequestType) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{
+			VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+				ID:          "vid_123:openai",
+				Status:      schemas.VideoStatusQueued,
+				ExtraFields: schemas.BifrostResponseExtraFields{RequestType: requestType},
+			},
+		}
+	}
+
+	tests := []struct {
+		name   string
+		result *schemas.BifrostResponse
+		verify func(t *testing.T, entry *logstore.Log)
+	}{
+		{
+			name:   "generation",
+			result: videoResponse(schemas.VideoGenerationRequest),
+			verify: func(t *testing.T, entry *logstore.Log) {
+				if entry.VideoGenerationOutputParsed == nil {
+					t.Fatal("expected VideoGenerationOutputParsed to be set")
+				}
+				if entry.VideoRetrieveOutputParsed != nil {
+					t.Error("expected VideoRetrieveOutputParsed to stay nil")
+				}
+				if entry.VideoGenerationOutputParsed.ID != "vid_123:openai" {
+					t.Errorf("expected provider-scoped ID, got %q", entry.VideoGenerationOutputParsed.ID)
+				}
+			},
+		},
+		{
+			name:   "remix routes to generation",
+			result: videoResponse(schemas.VideoRemixRequest),
+			verify: func(t *testing.T, entry *logstore.Log) {
+				if entry.VideoGenerationOutputParsed == nil {
+					t.Error("expected VideoGenerationOutputParsed to be set")
+				}
+			},
+		},
+		{
+			name:   "retrieve",
+			result: videoResponse(schemas.VideoRetrieveRequest),
+			verify: func(t *testing.T, entry *logstore.Log) {
+				if entry.VideoRetrieveOutputParsed == nil {
+					t.Fatal("expected VideoRetrieveOutputParsed to be set")
+				}
+				if entry.VideoGenerationOutputParsed != nil {
+					t.Error("expected VideoGenerationOutputParsed to stay nil")
+				}
+			},
+		},
+		{
+			name: "download",
+			result: &schemas.BifrostResponse{
+				VideoDownloadResponse: &schemas.BifrostVideoDownloadResponse{
+					VideoID:     "vid_123:openai",
+					ContentType: "video/mp4",
+					ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.VideoDownloadRequest},
+				},
+			},
+			verify: func(t *testing.T, entry *logstore.Log) {
+				if entry.VideoDownloadOutputParsed == nil {
+					t.Error("expected VideoDownloadOutputParsed to be set")
+				}
+			},
+		},
+		{
+			name: "list",
+			result: &schemas.BifrostResponse{
+				VideoListResponse: &schemas.BifrostVideoListResponse{
+					Object:      "list",
+					Data:        []schemas.VideoObject{{ID: "vid_123:openai"}},
+					ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.VideoListRequest},
+				},
+			},
+			verify: func(t *testing.T, entry *logstore.Log) {
+				if entry.VideoListOutputParsed == nil {
+					t.Error("expected VideoListOutputParsed to be set")
+				}
+			},
+		},
+		{
+			name: "delete",
+			result: &schemas.BifrostResponse{
+				VideoDeleteResponse: &schemas.BifrostVideoDeleteResponse{
+					ID:          "vid_123:openai",
+					Deleted:     true,
+					ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.VideoDeleteRequest},
+				},
+			},
+			verify: func(t *testing.T, entry *logstore.Log) {
+				if entry.VideoDeleteOutputParsed == nil {
+					t.Error("expected VideoDeleteOutputParsed to be set")
+				}
+			},
+		},
+	}
+
+	plugin := &LoggerPlugin{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			entry := &logstore.Log{}
+			plugin.applyNonStreamingOutputToEntry(entry, tt.result, false, true)
+			tt.verify(t, entry)
+		})
+	}
+
+	t.Run("content logging disabled", func(t *testing.T) {
+		entry := &logstore.Log{}
+		plugin.applyNonStreamingOutputToEntry(entry, videoResponse(schemas.VideoGenerationRequest), false, false)
+		if entry.VideoGenerationOutputParsed != nil {
+			t.Error("expected VideoGenerationOutputParsed to be nil when contentLoggingEnabled=false")
+		}
+	})
+}
+
+// TestGuardrailDebugForLogReadsContextWithoutResponse verifies input blocks remain observable.
+func TestGuardrailDebugForLogReadsContextWithoutResponse(t *testing.T) {
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	requireCall := schemas.BifrostGuardrailJudgeCall{
+		JudgeProvider: schemas.OpenAI,
+		JudgeModel:    "gpt-test",
+		TotalTokens:   18,
+	}
+	if !schemas.AppendGuardrailJudgeCallOnContext(ctx, requireCall) {
+		t.Fatal("failed to append guardrail judge call")
+	}
+
+	debug := guardrailDebugForLog(ctx, nil)
+	if debug == nil || len(debug.JudgeCalls) != 1 {
+		t.Fatalf("guardrail debug = %#v; want one context judge call", debug)
+	}
+	if debug.JudgeCalls[0] != requireCall {
+		t.Fatalf("guardrail call = %#v; want %#v", debug.JudgeCalls[0], requireCall)
 	}
 }

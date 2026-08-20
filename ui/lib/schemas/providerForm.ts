@@ -40,8 +40,10 @@ const NetworkConfigSchema = z
 		insecure_skip_verify: z.boolean().optional(),
 		ca_cert_pem: z.union([z.string(), secretVarSchema]).optional(),
 		stream_idle_timeout_in_seconds: z.number().int().min(5).max(3600).optional(),
+		keep_alive_timeout_in_seconds: z.number().int().min(1).max(3600).optional(),
 		max_conns_per_host: z.number().int().min(1).max(10000).optional(),
 		enforce_http2: z.boolean().optional(),
+		http2_ping_interval_in_seconds: z.number().int().min(0).max(3600).optional(),
 	})
 	.refine((v) => v.retry_backoff_initial <= v.retry_backoff_max, {
 		message: "Initial backoff must be <= max backoff",
@@ -89,6 +91,7 @@ const VertexKeyConfigSchema = z.object({
 		.refine((value) => !value || isValidVertexAuthCredentials(value), {
 			message: "Auth Credentials must be a valid JSON object or env.VAR format when provided",
 		}),
+	force_single_region: z.boolean().optional(),
 });
 
 // S3 bucket configuration for Bedrock batch operations
@@ -102,6 +105,22 @@ const BatchS3ConfigSchema = z.object({
 	buckets: z.array(S3BucketConfigSchema).optional(),
 });
 
+// A VPC endpoint value must be a DNS name, so it always contains a dot. The check exists to
+// catch a pasted endpoint ID, which resolves to nothing: AWS appends a random string to the ID
+// that the DNS name carries and the ID does not.
+const VPCEndpointHostSchema = z
+	.string()
+	.refine((v) => v.trim() === "" || v.includes("."), "Enter the endpoint's DNS name from the VPC console, not its ID")
+	.optional();
+
+const BedrockEndpointsSchema = z.object({
+	runtime: VPCEndpointHostSchema,
+	control_plane: VPCEndpointHostSchema,
+	mantle: VPCEndpointHostSchema,
+	agent_runtime: VPCEndpointHostSchema,
+	s3: VPCEndpointHostSchema,
+});
+
 const BedrockKeyConfigSchema = z
 	.object({
 		access_key: z.string(),
@@ -111,8 +130,11 @@ const BedrockKeyConfigSchema = z
 		role_arn: z.string().optional(),
 		external_id: z.string().optional(),
 		session_name: z.string().optional(),
+		batch_role_arn: z.string().optional(),
 		arn: z.string().optional(),
+		project_id: z.string().optional(),
 		batch_s3_config: BatchS3ConfigSchema.optional(),
+		endpoints: BedrockEndpointsSchema.optional(),
 	})
 	.refine(
 		(data) => {
@@ -140,6 +162,38 @@ const BedrockKeyConfigSchema = z
 		},
 	);
 
+const BedrockMantleKeyConfigSchema = z
+	.object({
+		access_key: z.string(),
+		secret_key: z.string(),
+		session_token: z.string().optional(),
+		region: z.string().min(1, "Region is required for Bedrock Mantle keys"),
+		role_arn: z.string().optional(),
+		external_id: z.string().optional(),
+		session_name: z.string().optional(),
+		project_id: z.string().optional(),
+		endpoints: BedrockEndpointsSchema.optional(),
+	})
+	.refine(
+		(data) => {
+			const accessKey = data.access_key?.trim() || "";
+			const secretKey = data.secret_key?.trim() || "";
+			const bothEmpty = accessKey === "" && secretKey === "";
+			const bothProvided = accessKey !== "" && secretKey !== "";
+			// A session token alone cannot sign SigV4 requests; reject it without both keys.
+			const sessionToken = data.session_token?.trim() || "";
+			if (bothEmpty && sessionToken !== "") {
+				return false;
+			}
+			// Either both empty (IAM role auth) or both provided (explicit credentials)
+			return bothEmpty || bothProvided;
+		},
+		{
+			message: "For Bedrock Mantle: either provide both Access Key and Secret Key, or leave both empty for IAM role authentication",
+			path: ["access_key"],
+		},
+	);
+
 const ReplicateKeyConfigSchema = z.object({
 	use_deployments_endpoint: z.boolean(),
 });
@@ -157,6 +211,7 @@ const KeySchema = z.object({
 	azure_key_config: AzureKeyConfigSchema.optional(),
 	vertex_key_config: VertexKeyConfigSchema.optional(),
 	bedrock_key_config: BedrockKeyConfigSchema.optional(),
+	bedrock_mantle_key_config: BedrockMantleKeyConfigSchema.optional(),
 	replicate_key_config: ReplicateKeyConfigSchema.optional(),
 	use_for_batch_api: z.boolean().optional(),
 });

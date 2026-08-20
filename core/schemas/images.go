@@ -60,7 +60,7 @@ type BifrostImageGenerationResponse struct {
 	*ImageGenerationResponseParameters
 
 	Usage       *ImageUsage                `json:"usage,omitempty"`
-	ExtraFields BifrostResponseExtraFields `json:"extra_fields,omitempty"`
+	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }
 
 // BackfillParams populates response fields from the original request that are needed
@@ -119,22 +119,6 @@ func (r *BifrostImageGenerationResponse) BackfillParams(req *BifrostRequest) {
 		}
 		r.ImageGenerationResponseParameters.AspectRatio = aspectRatio
 	}
-}
-
-// getModelFromRequest extracts the model from any image-related request.
-func getModelFromRequest(req *BifrostRequest) string {
-	if req == nil {
-		return ""
-	}
-	switch {
-	case req.ImageGenerationRequest != nil:
-		return req.ImageGenerationRequest.Model
-	case req.ImageEditRequest != nil:
-		return req.ImageEditRequest.Model
-	case req.ImageVariationRequest != nil:
-		return req.ImageVariationRequest.Model
-	}
-	return ""
 }
 
 // getNumInputImagesSizeQualityAndAspectRatioFromRequest extracts request params for cost
@@ -218,7 +202,18 @@ type ImageUsage struct {
 	TotalTokens         int                `json:"total_tokens,omitempty"`
 	OutputTokens        int                `json:"output_tokens,omitempty"` // Always image tokens unless OutputTokensDetails is not nil
 	OutputTokensDetails *ImageTokenDetails `json:"output_tokens_details,omitempty"`
-	NumInputImages      int                `json:"num_input_images,omitempty"` // Number of input images from the request (populated by Bifrost)
+	NumInputImages      int                `json:"-"` // Number of input images from the request (populated by Bifrost)
+	Cost                *BifrostCost       `json:"cost,omitempty"` // Only for the providers which support cost calculation
+	// xAI-specific usage field, normalized into Cost by NormalizeProviderCost.
+	CostInUsdTicks *int64 `json:"cost_in_usd_ticks,omitempty"`
+}
+
+// NormalizeProviderCost mirrors BifrostLLMUsage.NormalizeProviderCost for the image path.
+func (u *ImageUsage) NormalizeProviderCost() {
+	if u == nil || u.Cost != nil {
+		return
+	}
+	u.Cost = costFromUSDTicks(u.CostInUsdTicks)
 }
 
 type ImageTokenDetails struct {
@@ -242,6 +237,12 @@ func (u *ImageUsage) DeepCopy() *ImageUsage {
 	if u.OutputTokensDetails != nil {
 		details := *u.OutputTokensDetails
 		out.OutputTokensDetails = &details
+	}
+	if u.CostInUsdTicks != nil {
+		out.CostInUsdTicks = new(*u.CostInUsdTicks)
+	}
+	if u.Cost != nil {
+		out.Cost = new(*u.Cost)
 	}
 	return &out
 }
@@ -267,7 +268,7 @@ type BifrostImageGenerationStreamResponse struct {
 	Error             *BifrostError              `json:"error,omitempty"`
 	RawRequest        string                     `json:"-"`
 	RawResponse       string                     `json:"-"`
-	ExtraFields       BifrostResponseExtraFields `json:"extra_fields,omitempty"`
+	ExtraFields       BifrostResponseExtraFields `json:"extra_fields"`
 }
 
 // BackfillParams populates response fields from the original request that are needed

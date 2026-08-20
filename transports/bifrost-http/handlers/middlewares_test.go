@@ -773,6 +773,52 @@ func TestAuthMiddleware_WhitelistedRoutes(t *testing.T) {
 	}
 }
 
+// TestAuthMiddleware_APIMiddleware_DevPrefixDoesNotMatchDevices guards against the
+// prefix-matching bug where the "/api/dev" whitelist prefix (intended for the dev pprof
+// routes under "/api/dev/pprof") also matched "/api/devices", silently bypassing auth on
+// the edge-control devices route. With the trailing-slash fix, "/api/dev/pprof" must still
+// bypass auth while "/api/devices" must NOT.
+func TestAuthMiddleware_APIMiddleware_DevPrefixDoesNotMatchDevices(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	am := &AuthMiddleware{}
+	am.UpdateAuthConfig(&configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar("hashedpassword"),
+		IsEnabled:     true,
+	})
+
+	cases := []struct {
+		name           string
+		uri            string
+		wantNextCalled bool // true => route is whitelisted (auth bypassed)
+	}{
+		{name: "dev pprof is whitelisted", uri: "/api/dev/pprof", wantNextCalled: true},
+		{name: "dev pprof subpath is whitelisted", uri: "/api/dev/pprof/goroutines", wantNextCalled: true},
+		{name: "devices is NOT whitelisted", uri: "/api/devices?limit=25&offset=0", wantNextCalled: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetRequestURI(tc.uri)
+
+			nextCalled := false
+			next := func(ctx *fasthttp.RequestCtx) { nextCalled = true }
+
+			am.APIMiddleware()(next)(ctx)
+
+			if nextCalled != tc.wantNextCalled {
+				t.Fatalf("route %q: nextCalled = %v, want %v (status %d)", tc.uri, nextCalled, tc.wantNextCalled, ctx.Response.StatusCode())
+			}
+			// A non-whitelisted route with no credentials must be rejected, not passed through.
+			if !tc.wantNextCalled && ctx.Response.StatusCode() != fasthttp.StatusUnauthorized {
+				t.Fatalf("route %q: expected 401 for unauthenticated non-whitelisted route, got %d", tc.uri, ctx.Response.StatusCode())
+			}
+		})
+	}
+}
+
 func TestAuthMiddleware_InferenceMiddleware_RealtimeTransportBypassesAuth(t *testing.T) {
 	SetLogger(&mockLogger{})
 
@@ -930,6 +976,70 @@ func TestAuthMiddleware_UpdateAuthConfig_NilToEnabled(t *testing.T) {
 	}
 	if ctx2.Response.StatusCode() != fasthttp.StatusUnauthorized {
 		t.Errorf("Expected status code %d, got %d", fasthttp.StatusUnauthorized, ctx2.Response.StatusCode())
+	}
+}
+
+// TestAuthMiddleware_BootstrapToken_NoAdminNoToken tests that CheckBootstrapToken fails
+// closed when no admin account exists yet and no setup token was configured at boot (e.g.
+// the operator hasn't set setup_token / BIFROST_SETUP_TOKEN) — the very first admin account
+// cannot be created until the operator configures one.
+func TestAuthMiddleware_BootstrapToken_NoAdminNoToken(t *testing.T) {
+	am := &AuthMiddleware{}
+
+	if am.CheckBootstrapToken("") {
+		t.Error("CheckBootstrapToken should reject when no admin exists and no setup token is configured")
+	}
+	if am.CheckBootstrapToken("anything") {
+		t.Error("CheckBootstrapToken should reject when no admin exists and no setup token is configured")
+	}
+}
+
+// TestAuthMiddleware_BootstrapToken_AdminExists tests that CheckBootstrapToken allows any
+// value through once an admin account already exists, regardless of bootstrapToken state.
+func TestAuthMiddleware_BootstrapToken_AdminExists(t *testing.T) {
+	am := &AuthMiddleware{}
+	am.UpdateAuthConfig(&configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar("password"),
+		IsEnabled:     true,
+	})
+
+	if !am.CheckBootstrapToken("") {
+		t.Error("CheckBootstrapToken should allow through once an admin account exists")
+	}
+	if !am.CheckBootstrapToken("anything") {
+		t.Error("CheckBootstrapToken should allow through once an admin account exists")
+	}
+}
+
+// TestAuthMiddleware_BootstrapToken_ValidatesAndClears tests that once a bootstrap token is
+// set (simulating InitAuthMiddleware booting with a configured setup token and no admin
+// account yet), only the exact token validates, and creating the admin account — which sets
+// authConfig, mirroring BifrostHTTPServer.UpdateAuthConfig — permanently reopens the gate.
+func TestAuthMiddleware_BootstrapToken_ValidatesAndClears(t *testing.T) {
+	am := &AuthMiddleware{}
+	token := "test-bootstrap-token"
+	am.bootstrapToken.Store(&token)
+
+	if am.CheckBootstrapToken("") {
+		t.Error("CheckBootstrapToken should reject an empty token once a bootstrap token is set")
+	}
+	if am.CheckBootstrapToken("wrong-token") {
+		t.Error("CheckBootstrapToken should reject a mismatched token")
+	}
+	if !am.CheckBootstrapToken(token) {
+		t.Error("CheckBootstrapToken should accept the exact bootstrap token")
+	}
+
+	am.UpdateAuthConfig(&configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar("password"),
+		IsEnabled:     true,
+	})
+	am.ClearBootstrapToken()
+
+	if !am.CheckBootstrapToken("wrong-token") {
+		t.Error("CheckBootstrapToken should allow anything through once an admin account exists")
 	}
 }
 
@@ -2225,5 +2335,133 @@ func TestCollectDimensionHeaders(t *testing.T) {
 	}
 	if got := collectDimensionHeaders(nil); got != nil {
 		t.Errorf("collectDimensionHeaders(nil) = %v, want nil", got)
+	}
+}
+
+// TestTracingMiddleware_SetsCorrelationHeaders asserts that every traced response
+// carries x-request-id and x-bifrost-trace-id so callers can pivot a request into
+// its logs and trace in Grafana/Tempo/Loki (BF-1041).
+func TestTracingMiddleware_SetsCorrelationHeaders(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	store := tracing.NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := tracing.NewTracer(store, nil, nil)
+	defer tracer.Stop()
+	mw := NewTracingMiddleware(tracer).Middleware()
+
+	newCtx := func() *fasthttp.RequestCtx {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI("/openai/v1/chat/completions")
+		ctx.Request.Header.SetMethod("POST")
+		return ctx
+	}
+
+	t.Run("generates request id when absent", func(t *testing.T) {
+		ctx := newCtx()
+		mw(func(*fasthttp.RequestCtx) {})(ctx)
+
+		if got := string(ctx.Response.Header.Peek("x-bifrost-trace-id")); got == "" {
+			t.Error("expected x-bifrost-trace-id response header to be set")
+		}
+		if got := string(ctx.Response.Header.Peek("x-request-id")); got == "" {
+			t.Error("expected x-request-id response header to be set")
+		}
+	})
+
+	t.Run("echoes caller-supplied request id", func(t *testing.T) {
+		ctx := newCtx()
+		ctx.Request.Header.Set("x-request-id", "req-abc-123")
+		mw(func(*fasthttp.RequestCtx) {})(ctx)
+
+		if got := string(ctx.Response.Header.Peek("x-request-id")); got != "req-abc-123" {
+			t.Errorf("x-request-id = %q, want req-abc-123", got)
+		}
+		if got := string(ctx.Response.Header.Peek("x-bifrost-trace-id")); got == "" {
+			t.Error("expected x-bifrost-trace-id response header to be set")
+		}
+	})
+
+	t.Run("headers survive the error path", func(t *testing.T) {
+		ctx := newCtx()
+		mw(func(c *fasthttp.RequestCtx) {
+			SendError(c, fasthttp.StatusBadGateway, "boom")
+		})(ctx)
+
+		if ctx.Response.StatusCode() != fasthttp.StatusBadGateway {
+			t.Fatalf("status = %d, want %d", ctx.Response.StatusCode(), fasthttp.StatusBadGateway)
+		}
+		if got := string(ctx.Response.Header.Peek("x-bifrost-trace-id")); got == "" {
+			t.Error("expected x-bifrost-trace-id to survive the error path")
+		}
+		if got := string(ctx.Response.Header.Peek("x-request-id")); got == "" {
+			t.Error("expected x-request-id to survive the error path")
+		}
+	})
+}
+
+// captureLogEvent records the structured string fields emitted on the access log so
+// a test can assert which correlation keys were written.
+type captureLogEvent struct {
+	strFields map[string]string
+}
+
+func (c *captureLogEvent) Str(key, val string) schemas.LogEventBuilder {
+	c.strFields[key] = val
+	return c
+}
+func (c *captureLogEvent) Int(string, int) schemas.LogEventBuilder     { return c }
+func (c *captureLogEvent) Int64(string, int64) schemas.LogEventBuilder { return c }
+func (c *captureLogEvent) Send()                                       {}
+
+type captureLogger struct {
+	mockLogger
+	events []*captureLogEvent
+}
+
+func (l *captureLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuilder {
+	e := &captureLogEvent{strFields: map[string]string{}}
+	l.events = append(l.events, e)
+	return e
+}
+
+// TestTracingMiddleware_AccessLogIncludesRequestID asserts the stdout access log
+// carries both trace_id and request_id, so Loki can index on either (BF-1041).
+func TestTracingMiddleware_AccessLogIncludesRequestID(t *testing.T) {
+	logger := &captureLogger{}
+	SetLogger(logger)
+	defer SetLogger(&mockLogger{})
+
+	config := &lib.Config{
+		ClientConfig: &configstore.ClientConfig{
+			AllowedOrigins: []string{},
+		},
+	}
+	cors := NewCorsMiddleware(config).Middleware()
+
+	store := tracing.NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := tracing.NewTracer(store, nil, nil)
+	defer tracer.Stop()
+	tm := NewTracingMiddleware(tracer).Middleware()
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/openai/v1/chat/completions")
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("x-request-id", "req-xyz")
+
+	// CORS owns the access-log defer and wraps TracingMiddleware, so the trace_id
+	// UserValue and x-request-id header set by tracing are visible when it runs.
+	cors(tm(func(*fasthttp.RequestCtx) {}))(ctx)
+
+	if len(logger.events) != 1 {
+		t.Fatalf("access log events = %d, want 1", len(logger.events))
+	}
+	fields := logger.events[0].strFields
+	if got := fields["request_id"]; got != "req-xyz" {
+		t.Errorf("access log request_id = %q, want req-xyz", got)
+	}
+	if got := fields["trace_id"]; got == "" {
+		t.Error("expected access log to include a non-empty trace_id")
 	}
 }

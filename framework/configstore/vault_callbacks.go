@@ -1,6 +1,7 @@
 package configstore
 
 import (
+	"log"
 	"reflect"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -59,7 +60,10 @@ func vaultRemoveCallback(tx *gorm.DB) {
 	forEachModel(tx, func(model interface{}, keyer schemas.VaultPathKeyer) {
 		tableName := tx.Statement.Table
 		base := schemas.VaultBasePath(tableName, keyer.VaultPathKey())
-		schemas.RemoveOwnedVaultSecretVars(tx.Statement.Context, base, model)
+		errs := schemas.RemoveOwnedVaultSecretVars(tx.Statement.Context, base, model)
+		for _, err := range errs {
+			log.Printf("vault: failed to remove secret for %s/%s: %v", tableName, keyer.VaultPathKey(), err)
+		}
 	})
 }
 

@@ -1,6 +1,7 @@
 package schemas
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -48,6 +49,136 @@ func TestBifrostResponsesStreamResponsePreservesOpenAIStreamMetadata(t *testing.
 	}
 	if !strings.Contains(string(encodedChunk), `"obfuscation":"opaque"`) {
 		t.Fatalf("expected encoded stream chunk to contain obfuscation, got %s", encodedChunk)
+	}
+}
+
+// Cursor (and other Chat Completions clients) send function tools nested under
+// a "function" wrapper. The unmarshal must lift name/description/parameters so
+// providers that require a top-level name (e.g. Bedrock) don't reject the tool.
+func TestResponsesToolUnmarshalLiftsChatCompletionsFunctionWrapper(t *testing.T) {
+	raw := []byte(`{
+		"type": "function",
+		"function": {
+			"name": "read_file",
+			"description": "Reads a file",
+			"parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
+			"strict": true
+		}
+	}`)
+
+	var tool ResponsesTool
+	if err := Unmarshal(raw, &tool); err != nil {
+		t.Fatalf("unmarshal chat-completions-format tool: %v", err)
+	}
+
+	if tool.Name == nil || *tool.Name != "read_file" {
+		t.Fatalf("expected name lifted from function wrapper, got %#v", tool.Name)
+	}
+	if tool.Description == nil || *tool.Description != "Reads a file" {
+		t.Fatalf("expected description lifted from function wrapper, got %#v", tool.Description)
+	}
+	if tool.ResponsesToolFunction == nil || tool.ResponsesToolFunction.Parameters == nil {
+		t.Fatalf("expected parameters lifted from function wrapper, got %#v", tool.ResponsesToolFunction)
+	}
+	if len(tool.ResponsesToolFunction.Parameters.Required) != 1 || tool.ResponsesToolFunction.Parameters.Required[0] != "path" {
+		t.Fatalf("expected parameters schema to survive, got %#v", tool.ResponsesToolFunction.Parameters)
+	}
+	if tool.ResponsesToolFunction.Strict == nil || !*tool.ResponsesToolFunction.Strict {
+		t.Fatalf("expected strict lifted from function wrapper, got %#v", tool.ResponsesToolFunction.Strict)
+	}
+}
+
+func TestResponsesToolUnmarshalTopLevelFieldsWinOverFunctionWrapper(t *testing.T) {
+	tests := []struct {
+		name            string
+		raw             string
+		wantName        string
+		wantDescription string
+		wantStrict      *bool
+		wantParamKey    string
+	}{
+		{
+			name: "name_and_parameters",
+			raw: `{
+				"type": "function",
+				"name": "top_level_name",
+				"parameters": {"type": "object", "properties": {"a": {"type": "string"}}},
+				"function": {
+					"name": "nested_name",
+					"parameters": {"type": "object", "properties": {"b": {"type": "string"}}}
+				}
+			}`,
+			wantName:     "top_level_name",
+			wantParamKey: "a",
+		},
+		{
+			name: "description",
+			raw: `{
+				"type": "function",
+				"name": "top_level_name",
+				"description": "top-level description",
+				"function": {"name": "nested_name", "description": "nested description"}
+			}`,
+			wantName:        "top_level_name",
+			wantDescription: "top-level description",
+		},
+		{
+			name: "explicit_strict_false",
+			raw: `{
+				"type": "function",
+				"strict": false,
+				"function": {"name": "nested_name", "strict": true}
+			}`,
+			// Name is still lifted from the wrapper; the explicit top-level
+			// strict:false must not be overwritten by the nested strict:true.
+			wantName:   "nested_name",
+			wantStrict: Ptr(false),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var tool ResponsesTool
+			if err := Unmarshal([]byte(tt.raw), &tool); err != nil {
+				t.Fatalf("unmarshal mixed-format tool: %v", err)
+			}
+
+			if tool.Name == nil || *tool.Name != tt.wantName {
+				t.Fatalf("expected name %q, got %#v", tt.wantName, tool.Name)
+			}
+			if tool.ResponsesToolFunction == nil {
+				t.Fatalf("expected function tool payload, got nil")
+			}
+			if tt.wantDescription != "" && (tool.Description == nil || *tool.Description != tt.wantDescription) {
+				t.Fatalf("expected description %q, got %#v", tt.wantDescription, tool.Description)
+			}
+			if tt.wantStrict != nil {
+				if tool.ResponsesToolFunction.Strict == nil || *tool.ResponsesToolFunction.Strict != *tt.wantStrict {
+					t.Fatalf("expected strict %v, got %#v", *tt.wantStrict, tool.ResponsesToolFunction.Strict)
+				}
+			}
+			if tt.wantParamKey != "" {
+				if tool.ResponsesToolFunction.Parameters == nil || tool.ResponsesToolFunction.Parameters.Properties == nil {
+					t.Fatalf("expected parameters present, got %#v", tool.ResponsesToolFunction)
+				}
+				if _, ok := tool.ResponsesToolFunction.Parameters.Properties.Get(tt.wantParamKey); !ok {
+					t.Fatalf("expected top-level parameters to win, got %#v", tool.ResponsesToolFunction.Parameters)
+				}
+			}
+		})
+	}
+}
+
+func TestResponsesToolUnmarshalRejectsMalformedFunctionWrapper(t *testing.T) {
+	raw := []byte(`{"type": "function", "function": "not_an_object"}`)
+
+	var tool ResponsesTool
+	err := Unmarshal(raw, &tool)
+	if err == nil {
+		t.Fatalf("expected error for malformed function wrapper, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid 'function' object") {
+		t.Fatalf("expected contextual error, got %v", err)
 	}
 }
 
@@ -231,29 +362,286 @@ func TestResponsesMessageToolCallArguments(t *testing.T) {
 	// Real tool_search_call frames captured from api.openai.com by replaying
 	// Codex's request (which enables the `tool_search` tool). These are the exact
 	// frames that triggered the production "Mismatch type string with value
-	// object" failure.
+	// object" failure. tool_search items are preserved verbatim (see
+	// rawPreserved), so the item must decode without error and re-encode
+	// byte-identically, object-form arguments included.
 	t.Run("real tool_search_call frames from openai", func(t *testing.T) {
-		frames := map[string]string{
-			"in_progress (empty object)":   `{"type":"response.output_item.added","output_index":1,"sequence_number":4,"item":{"id":"tsc_01429bcd111d3db1016a3abc8e12948191a9efb0edcbd7f68a","type":"tool_search_call","status":"in_progress","arguments":{},"call_id":"call_OYgDGFxcFL8POxRYssDHUsaM","execution":"client"}}`,
-			"completed (populated object)": `{"type":"response.output_item.done","output_index":1,"sequence_number":5,"item":{"id":"tsc_01429bcd111d3db1016a3abc8e12948191a9efb0edcbd7f68a","type":"tool_search_call","status":"completed","arguments":{"query":"observability_repro sentry grafana websocket responses","limit":10},"call_id":"call_OYgDGFxcFL8POxRYssDHUsaM","execution":"client"}}`,
+		items := map[string]string{
+			"in_progress (empty object)":   `{"id":"tsc_01429bcd111d3db1016a3abc8e12948191a9efb0edcbd7f68a","type":"tool_search_call","status":"in_progress","arguments":{},"call_id":"call_OYgDGFxcFL8POxRYssDHUsaM","execution":"client"}`,
+			"completed (populated object)": `{"id":"tsc_01429bcd111d3db1016a3abc8e12948191a9efb0edcbd7f68a","type":"tool_search_call","status":"completed","arguments":{"query":"observability_repro sentry grafana websocket responses","limit":10},"call_id":"call_OYgDGFxcFL8POxRYssDHUsaM","execution":"client"}`,
 		}
-		want := map[string]string{
-			"in_progress (empty object)":   `{}`,
-			"completed (populated object)": `{"query":"observability_repro sentry grafana websocket responses","limit":10}`,
+		events := map[string]string{
+			"in_progress (empty object)":   `{"type":"response.output_item.added","output_index":1,"sequence_number":4,"item":` + items["in_progress (empty object)"] + `}`,
+			"completed (populated object)": `{"type":"response.output_item.done","output_index":1,"sequence_number":5,"item":` + items["completed (populated object)"] + `}`,
 		}
-		for name, raw := range frames {
+		for name, raw := range events {
 			var resp BifrostResponsesStreamResponse
 			if err := Unmarshal([]byte(raw), &resp); err != nil {
 				t.Fatalf("[%s] unmarshal tool_search_call frame: %v", name, err)
 			}
-			if resp.Item == nil || resp.Item.ResponsesToolMessage == nil || resp.Item.Arguments == nil {
-				t.Fatalf("[%s] expected tool_search_call arguments to be set, got %#v", name, resp.Item)
+			if resp.Item == nil || resp.Item.Type == nil || *resp.Item.Type != ResponsesMessageTypeToolSearchCall {
+				t.Fatalf("[%s] expected tool_search_call item, got %#v", name, resp.Item)
 			}
-			if *resp.Item.Arguments != want[name] {
-				t.Fatalf("[%s] expected arguments %q, got %q", name, want[name], *resp.Item.Arguments)
+			encoded, err := MarshalSorted(resp.Item)
+			if err != nil {
+				t.Fatalf("[%s] marshal preserved tool_search_call item: %v", name, err)
+			}
+			if string(encoded) != items[name] {
+				t.Fatalf("[%s] expected item to round-trip verbatim\nwant: %s\ngot:  %s", name, items[name], encoded)
 			}
 		}
 	})
+}
+
+func TestResponsesMessageMarshalsToolSearchArgumentsAsObject(t *testing.T) {
+	toolSearchType := ResponsesMessageTypeToolSearchCall
+	functionType := ResponsesMessageTypeFunctionCall
+	callID := "call_123"
+
+	t.Run("tool_search_call arguments marshal as a JSON object", func(t *testing.T) {
+		args := `{"query":"observability logs","limit":10}`
+		msg := ResponsesMessage{
+			Type:                 &toolSearchType,
+			ResponsesToolMessage: &ResponsesToolMessage{CallID: &callID, Arguments: &args},
+		}
+		encoded, err := MarshalSorted(msg)
+		if err != nil {
+			t.Fatalf("marshal tool_search_call: %v", err)
+		}
+		if !strings.Contains(string(encoded), `"arguments":{"query":"observability logs","limit":10}`) {
+			t.Fatalf("expected object-valued arguments, got %s", encoded)
+		}
+		if strings.Contains(string(encoded), `"arguments":"`) {
+			t.Fatalf("tool_search_call arguments must not be stringified, got %s", encoded)
+		}
+	})
+
+	t.Run("tool_search_call empty arguments marshal as an empty object", func(t *testing.T) {
+		args := `{}`
+		msg := ResponsesMessage{
+			Type:                 &toolSearchType,
+			ResponsesToolMessage: &ResponsesToolMessage{CallID: &callID, Arguments: &args},
+		}
+		encoded, err := MarshalSorted(msg)
+		if err != nil {
+			t.Fatalf("marshal tool_search_call: %v", err)
+		}
+		if !strings.Contains(string(encoded), `"arguments":{}`) {
+			t.Fatalf("expected empty object arguments, got %s", encoded)
+		}
+	})
+
+	t.Run("function_call arguments stay a JSON string", func(t *testing.T) {
+		args := `{"city":"Paris"}`
+		msg := ResponsesMessage{
+			Type:                 &functionType,
+			ResponsesToolMessage: &ResponsesToolMessage{CallID: &callID, Arguments: &args},
+		}
+		encoded, err := MarshalSorted(msg)
+		if err != nil {
+			t.Fatalf("marshal function_call: %v", err)
+		}
+		if !strings.Contains(string(encoded), `"arguments":"{\"city\":\"Paris\"}"`) {
+			t.Fatalf("expected stringified arguments, got %s", encoded)
+		}
+	})
+
+	t.Run("real tool_search_call frame round-trips object -> string -> object", func(t *testing.T) {
+		raw := []byte(`{"type":"response.output_item.done","output_index":1,"sequence_number":5,"item":{"id":"tsc_1","type":"tool_search_call","status":"completed","arguments":{"query":"observability logs","limit":10},"call_id":"call_1","execution":"client"}}`)
+
+		var resp BifrostResponsesStreamResponse
+		if err := Unmarshal(raw, &resp); err != nil {
+			t.Fatalf("unmarshal tool_search_call frame: %v", err)
+		}
+		if resp.Item == nil || resp.Item.Arguments == nil {
+			t.Fatalf("expected parsed item arguments, got %#v", resp.Item)
+		}
+		if *resp.Item.Arguments != `{"query":"observability logs","limit":10}` {
+			t.Fatalf("expected stringified internal arguments, got %q", *resp.Item.Arguments)
+		}
+
+		encoded, err := MarshalSorted(resp.Item)
+		if err != nil {
+			t.Fatalf("marshal parsed item: %v", err)
+		}
+		if !strings.Contains(string(encoded), `"arguments":{"query":"observability logs","limit":10}`) {
+			t.Fatalf("expected re-emitted object arguments, got %s", encoded)
+		}
+		if strings.Contains(string(encoded), `"arguments":"`) {
+			t.Fatalf("tool_search_call arguments must round-trip as an object, got %s", encoded)
+		}
+	})
+
+	t.Run("non-tool item without arguments marshals without panicking", func(t *testing.T) {
+		reasoningType := ResponsesMessageTypeReasoning
+		msg := ResponsesMessage{Type: &reasoningType}
+		encoded, err := MarshalSorted(msg)
+		if err != nil {
+			t.Fatalf("marshal reasoning item: %v", err)
+		}
+		if strings.Contains(string(encoded), `"arguments"`) {
+			t.Fatalf("did not expect arguments key, got %s", encoded)
+		}
+	})
+}
+
+func TestResponsesMessagePreservesToolSearchExecution(t *testing.T) {
+	raw := []byte(`{"id":"tsc_1","type":"tool_search_call","status":"completed","arguments":{"query":"loki"},"call_id":"call_1","execution":"client"}`)
+
+	var msg ResponsesMessage
+	if err := Unmarshal(raw, &msg); err != nil {
+		t.Fatalf("unmarshal tool_search_call: %v", err)
+	}
+	if msg.ResponsesToolMessage == nil || msg.Execution == nil || *msg.Execution != "client" {
+		t.Fatalf("expected execution=client to survive unmarshal, got %#v", msg.ResponsesToolMessage)
+	}
+
+	encoded, err := MarshalSorted(msg)
+	if err != nil {
+		t.Fatalf("marshal tool_search_call: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"execution":"client"`) {
+		t.Fatalf("expected execution to round-trip, got %s", encoded)
+	}
+}
+
+func TestResponsesMessageRoundTripsToolSearchOutputTools(t *testing.T) {
+	raw := []byte(`{"id":"tso_1","type":"tool_search_output","call_id":"call_1","tools":[{"type":"namespace","name":"telemetry","tools":[{"type":"function","name":"query_loki_logs","description":"query loki","parameters":{"type":"object","properties":{"run_id":{"type":"string"}}}}]}]}`)
+
+	var msg ResponsesMessage
+	if err := Unmarshal(raw, &msg); err != nil {
+		t.Fatalf("unmarshal tool_search_output: %v", err)
+	}
+	if msg.Type == nil || *msg.Type != ResponsesMessageTypeToolSearchOutput {
+		t.Fatalf("expected tool_search_output type, got %#v", msg.Type)
+	}
+	if len(msg.ToolSearchOutputTools) == 0 {
+		t.Fatalf("expected raw tools to be captured, got none")
+	}
+
+	encoded, err := MarshalSorted(msg)
+	if err != nil {
+		t.Fatalf("marshal tool_search_output: %v", err)
+	}
+	for _, want := range []string{`"type":"namespace"`, `"type":"function"`, `"name":"query_loki_logs"`} {
+		if !strings.Contains(string(encoded), want) {
+			t.Fatalf("expected re-emitted tools to contain %s, got %s", want, encoded)
+		}
+	}
+}
+
+func TestResponsesMessageMarshalsToolSearchOutputArgumentsAsObject(t *testing.T) {
+	toolSearchOutputType := ResponsesMessageTypeToolSearchOutput
+	callID := "call_1"
+	args := `{"query":"loki"}`
+	tools := json.RawMessage(`[{"type":"namespace","name":"telemetry","tools":[{"type":"function","name":"query_loki_logs"}]}]`)
+	msg := ResponsesMessage{
+		Type:                  &toolSearchOutputType,
+		ToolSearchOutputTools: tools,
+		ResponsesToolMessage:  &ResponsesToolMessage{CallID: &callID, Arguments: &args},
+	}
+
+	encoded, err := MarshalSorted(msg)
+	if err != nil {
+		t.Fatalf("marshal tool_search_output: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"arguments":{"query":"loki"}`) {
+		t.Fatalf("expected object-valued arguments, got %s", encoded)
+	}
+	if strings.Contains(string(encoded), `"arguments":"`) {
+		t.Fatalf("tool_search_output arguments must not be stringified, got %s", encoded)
+	}
+}
+
+// TestDeepCopyResponsesMessagePreservesRawPreserved verifies that a raw-preserved
+// item survives the copy. rawPreserved is unexported, so a copy that misses it
+// re-marshals field-by-field and reduces the item to just its type.
+func TestDeepCopyResponsesMessagePreservesRawPreserved(t *testing.T) {
+	raw := `{"type":"additional_tools","role":"developer","tools":[{"type":"custom","name":"exec","format":{"type":"grammar","syntax":"lark","definition":"start: x"}}]}`
+
+	var msg ResponsesMessage
+	if err := msg.UnmarshalJSON([]byte(raw)); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	encoded, err := DeepCopyResponsesMessage(msg).MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal copy: %v", err)
+	}
+	if string(encoded) != raw {
+		t.Fatalf("copy did not round-trip verbatim:\n got: %s\nwant: %s", encoded, raw)
+	}
+}
+
+func TestDeepCopyResponsesMessagePreservesToolSearchFields(t *testing.T) {
+	toolSearchOutputType := ResponsesMessageTypeToolSearchOutput
+	callID := "call_1"
+	name := "query_loki_logs"
+	namespace := "telemetry"
+	args := `{"query":"loki"}`
+	execution := "client"
+	tools := json.RawMessage(`[{"type":"namespace","name":"telemetry","tools":[{"type":"function","name":"query_loki_logs"}]}]`)
+
+	copied := DeepCopyResponsesMessage(ResponsesMessage{
+		Type:                  &toolSearchOutputType,
+		ToolSearchOutputTools: tools,
+		ResponsesToolMessage: &ResponsesToolMessage{
+			CallID:    &callID,
+			Name:      &name,
+			Namespace: &namespace,
+			Arguments: &args,
+			Execution: &execution,
+		},
+	})
+
+	if copied.ToolSearchOutputTools == nil || string(copied.ToolSearchOutputTools) != string(tools) {
+		t.Fatalf("expected raw tool_search_output tools to survive copy, got %s", copied.ToolSearchOutputTools)
+	}
+	if copied.ResponsesToolMessage == nil || copied.Namespace == nil || *copied.Namespace != namespace {
+		t.Fatalf("expected namespace to survive copy, got %#v", copied.ResponsesToolMessage)
+	}
+	if copied.Execution == nil || *copied.Execution != execution {
+		t.Fatalf("expected execution to survive copy, got %#v", copied.ResponsesToolMessage)
+	}
+}
+
+// TestResponsesMessagePreservesAdditionalTools verifies that codex
+// `additional_tools` input items (sent for code-mode models such as
+// gpt-5.6-sol) round-trip byte-identically. These items carry a `tools` array
+// whose entries have their own `type` discriminators (custom / function /
+// namespace with nested tool lists); a typed decode promotes the array into
+// the embedded mcp_list_tools fields and strips `type`, making OpenAI reject
+// the forwarded request with "Missing required parameter:
+// 'input[0].tools[0].type'".
+func TestResponsesMessagePreservesAdditionalTools(t *testing.T) {
+	raw := `{"type":"additional_tools","role":"developer","tools":[{"type":"custom","name":"apply_patch","description":"Apply a patch"},{"type":"function","name":"shell","description":"Runs a shell command","parameters":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}},{"type":"namespace","name":"repo_tools","description":"Repository helper tools","tools":[{"type":"function","name":"open_file","description":"Open a file","parameters":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}]}]}`
+
+	var msg ResponsesMessage
+	if err := Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatalf("unmarshal additional_tools item: %v", err)
+	}
+	if msg.Type == nil || *msg.Type != ResponsesMessageTypeAdditionalTools {
+		t.Fatalf("expected additional_tools item, got %#v", msg.Type)
+	}
+	encoded, err := MarshalSorted(msg)
+	if err != nil {
+		t.Fatalf("marshal preserved additional_tools item: %v", err)
+	}
+	if string(encoded) != raw {
+		t.Fatalf("expected item to round-trip verbatim\nwant: %s\ngot:  %s", raw, encoded)
+	}
+
+	// A reused receiver must not leak preserved bytes into the next decode.
+	if err := Unmarshal([]byte(`{"type":"message","role":"user","content":"hi"}`), &msg); err != nil {
+		t.Fatalf("unmarshal follow-up message: %v", err)
+	}
+	encoded, err = MarshalSorted(msg)
+	if err != nil {
+		t.Fatalf("marshal follow-up message: %v", err)
+	}
+	if strings.Contains(string(encoded), "additional_tools") {
+		t.Fatalf("expected reused receiver to drop preserved bytes, got %s", encoded)
+	}
 }
 
 func TestResponsesMessagePreservesOpenAIPhase(t *testing.T) {

@@ -1,4 +1,5 @@
 import { Budget, RateLimit, VirtualKey } from "@/lib/types/governance";
+import { getEffectiveBudgetLimit } from "@/lib/utils/governance";
 import { useGetUserAccessProfilesQuery } from "@enterprise/lib/store/apis/accessProfileApi";
 import { useGetVirtualKeyUsersQuery } from "@enterprise/lib/store/apis/virtualKeyUsersApi";
 import { UserAccessProfile } from "@enterprise/lib/types/accessProfile";
@@ -38,7 +39,11 @@ export function useVirtualKeyUsage(vk: VirtualKey | null | undefined): {
 	// Only treat the VK as AP-managed when an AP explicitly lists this VK in its virtual_key_ids.
 	// No fallback to "first active" / "first AP" — that misattributed budgets in multi-AP setups.
 	const managingProfile = vk ? userAPs.find((p) => p.virtual_key_ids?.includes(vk.id)) : undefined;
-	const isManagedByProfile = managingProfile !== undefined;
+	// The server-computed flag is the source of truth for "is this managed" — it does not
+	// depend on the RBAC-gated access-profile call. managingProfile still resolves the profile
+	// name/actions when the caller can view access profiles; without that permission the VK is
+	// still known to be managed (lock + notice), just without the profile name.
+	const isManagedByProfile = (vk?.is_access_profile_managed ?? false) || managingProfile !== undefined;
 
 	const displayBudgets: Budget[] | undefined = managingProfile
 		? (managingProfile.budgets ?? []).map((line) => ({
@@ -47,6 +52,9 @@ export function useVirtualKeyUsage(vk: VirtualKey | null | undefined): {
 				reset_duration: line.reset_duration,
 				current_usage: line.current_usage,
 				last_reset: line.last_reset,
+				override_amount: line.override_amount,
+				override_mode: line.override_mode,
+				override_cycles_remaining: line.override_cycles_remaining,
 			}))
 		: vk?.budgets;
 
@@ -71,7 +79,7 @@ export function useVirtualKeyUsage(vk: VirtualKey | null | undefined): {
 		: vk?.rate_limit;
 
 	const isExhausted =
-		(displayBudgets?.some((b) => b.current_usage >= b.max_limit) ?? false) ||
+		(displayBudgets?.some((b) => b.current_usage >= getEffectiveBudgetLimit(b)) ?? false) ||
 		(displayRateLimit?.token_current_usage != null &&
 			displayRateLimit?.token_max_limit != null &&
 			displayRateLimit.token_current_usage >= displayRateLimit.token_max_limit) ||

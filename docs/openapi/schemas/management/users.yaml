@@ -68,26 +68,46 @@ UserResponse:
 
 ListUsersResponse:
   type: object
+  required: [users, count, total_count, limit, offset]
   properties:
     users:
       type: array
       items:
         $ref: '#/UserObject'
-    total:
+    count:
+      type: integer
+      description: Number of users in this response
+    total_count:
       type: integer
       description: Total number of users matching the query
-    page:
-      type: integer
-      description: Current page number
     limit:
       type: integer
-      description: Number of users per page
-    total_pages:
+      description: Requested page size, or the returned collection size when unpaged
+    offset:
       type: integer
-      description: Total number of pages
-    has_more:
-      type: boolean
-      description: Whether more pages are available
+      description: Zero-based result offset
+
+UserGovernanceRequest:
+  type: object
+  description: User-scoped governance settings. POST creates settings and PUT partially updates them.
+  properties:
+    user_id:
+      type: string
+      description: Optional body copy of the path user ID. When present, it must match the path.
+    budget:
+      $ref: './governance.yaml#/CreateBudgetRequest'
+    budgets:
+      type: array
+      items:
+        $ref: './governance.yaml#/CreateBudgetRequest'
+    rate_limit:
+      $ref: './governance.yaml#/CreateRateLimitRequest'
+    provider_configs:
+      type: array
+      description: Optional Enterprise per-provider governance overrides.
+      items:
+        type: object
+        additionalProperties: true
 
 # ---- User Permissions ----
 
@@ -195,74 +215,6 @@ UpdateUserTeamsRequest:
       description: List of team IDs to assign (replaces existing manual assignments; synced memberships are preserved)
 
 # ---- Teams ----
-
-TeamObject:
-  type: object
-  properties:
-    id:
-      type: string
-      description: Team ID (derived from name)
-    name:
-      type: string
-      description: Team name
-    member_count:
-      type: integer
-      description: Number of members in the team
-    virtual_key_count:
-      type: integer
-      description: Number of virtual keys assigned to the team
-    created_at:
-      type: string
-      format: date-time
-    updated_at:
-      type: string
-      format: date-time
-
-CreateTeamRequest:
-  type: object
-  required:
-    - name
-  properties:
-    name:
-      type: string
-      description: Team name (must be unique)
-
-UpdateTeamRequest:
-  type: object
-  properties:
-    description:
-      type: string
-      description: Updated team description
-
-CreateTeamResponse:
-  type: object
-  properties:
-    id:
-      type: string
-    name:
-      type: string
-
-ListTeamsResponse:
-  type: object
-  properties:
-    teams:
-      type: array
-      items:
-        $ref: '#/TeamObject'
-    total:
-      type: integer
-    page:
-      type: integer
-    limit:
-      type: integer
-    total_pages:
-      type: integer
-      description: Total number of pages
-    has_more:
-      type: boolean
-      description: Whether more pages are available
-
-# ---- Team Members ----
 
 TeamMemberObject:
   type: object

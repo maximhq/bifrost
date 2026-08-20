@@ -57,6 +57,17 @@ deploymentLabels: {}
 podAnnotations: {}
 podLabels: {}
 
+# Pod-level security context. Defaults pin UID 1000 and chown freshly
+# provisioned PVCs (fsGroup), which vanilla Kubernetes needs for restrictive
+# storage classes. runAsUser is also required by kubelet to verify
+# runAsNonRoot against images whose USER is non-numeric (bifrost images
+# before v1.6.4 use `USER appuser`).
+# On OpenShift (restricted-v2), unset the UID pins so the SCC can assign an
+# arbitrary UID: set `podSecurityContext.runAsUser: null`,
+# `podSecurityContext.fsGroup: null`, and `securityContext.runAsUser: null`
+# (Helm merges maps, so explicit `null` is required; `{}` keeps these
+# defaults). The image supports arbitrary UIDs with group 0, so no custom
+# SCC is needed.
 podSecurityContext:
   fsGroup: 1000
   runAsUser: 1000
@@ -67,8 +78,8 @@ securityContext:
     drop:
       - ALL
   readOnlyRootFilesystem: false
-  runAsNonRoot: true
   runAsUser: 1000
+  runAsNonRoot: true
 
 service:
   type: ClusterIP
@@ -200,10 +211,25 @@ bifrost:
   # Application settings
   appDir: /app/data
   port: 8080
+  # 0.0.0.0 binds IPv4 interfaces only; use "::" for dual-stack/IPv6-only clusters
   host: 0.0.0.0
   logLevel: info
   logStyle: json
   # envLabel: staging  # Short label (max 10 chars) shown in the UI sidebar to identify the environment
+
+  # Operator-provisioned bootstrap secret required to create the very first admin account
+  # when none exists yet. Identical across every node so any node can authorize first-admin
+  # creation. Never persisted or logged. Also read from the BIFROST_SETUP_TOKEN env var.
+  # Whitespace-only values are rejected. Use env.<ENV_VAR_NAME> or vault.<path> for indirection.
+  # Renders into config.json `setup_token`.
+  # setupToken: "env.BIFROST_SETUP_TOKEN"
+
+  # Schema location written to config.json $schema and exported as BIFROST_SCHEMA_URL.
+  # Leave empty to use the default (https://www.getbifrost.ai/schema); set it only for
+  # isolated deployments that mirror the schema internally. When empty, the env var is
+  # not injected, so a $schema override in a mounted config.json still takes effect.
+  # Accepts an HTTP(S) URL, file:// URL, or filesystem path.
+  schemaUrl: ""
 
   # Controls how config.json is reconciled with the database on startup.
   # "split" (default): existing merge behavior — file and DB rows coexist.
@@ -261,14 +287,28 @@ bifrost:
       - "*"
     enableLogging: true
     disableContentLogging: false
+    # retainContentInObjectStorage -- When content logging is disabled (global setting above or
+    # the x-bf-disable-content-logging header), offload the full content to object storage as
+    # hidden instead of dropping it. Hidden content is never served back through the API/UI: the
+    # database row stays metadata-only and the payload is only readable with direct access to the
+    # bucket. Requires storage.logsStore.objectStorage.enabled: true; without it the content is
+    # dropped as before.
+    # retainContentInObjectStorage: false
     disableDbPingsInHealth: false
     dumpErrorsInConsoleLogs: false
+    # Global webhook delivery settings; per-endpoint tuning lives on each bifrost.webhooks[] entry.
+    # webhookConfig:
+    #   deliveryHistoryRetentionDays: 30   # How long delivery history records are kept before being reaped.
     logRetentionDays: 365
     # Deprecated: use enforceAuthOnInference instead.
     enforceGovernanceHeader: false
     # Require auth (VK, API key, or user token) on inference endpoints.
     # Open by default in the raw binary; this chart enables enforcement for production.
     enforceAuthOnInference: true
+    # dualCredentialConflictBehavior -- Behavior when an inference request presents both an IDP
+    # access token and a virtual key (x-bf-vk). Options: "error" (reject with 400),
+    # "prefer_vk" (drop IDP token, use VK), "prefer_idp" (default, IDP token wins for identity).
+    # dualCredentialConflictBehavior: "prefer_idp"
     maxRequestBodySizeMb: 100
     compat:
       convertTextToChat: false
@@ -296,10 +336,25 @@ bifrost:
     # routingChainMaxDepth: 10        # Maximum depth for routing rule chain evaluation
     # allowDirectKeys: false          # Allow callers to bypass the key pool via x-bf-direct-key + Authorization header
     # mcpExternalClientUrl: ""        # Public base URL used as redirect_uri when Bifrost is an OAuth client to MCP servers
+    # How /mcp authenticates inbound MCP clients: headers (default), both, or oauth
+    # mcpServerAuthMode: "headers"
+    # OAuth2 authorization server settings for /mcp (only used when mcpServerAuthMode is "both" or "oauth")
+    # oauth2ServerConfig:
+    #   issuerUrl: ""             # Stable public issuer URL; required for multi-host deployments. Supports env.VAR_NAME
+    #   authCodeTtl: 300          # Authorization code lifetime in seconds (default 300, max 900)
+    #   accessTokenTtl: 600       # Issued JWT lifetime in seconds (default 600)
+    #   disableVkIdentity: false  # Only valid when mcpServerAuthMode is "oauth"
 
   # Server configuration
   server:
     readBufferSize: 65536 # Read buffer size in bytes for reading HTTP headers (default: 64 KiB)
+    # Hostnames, IPs, or CIDR ranges that custom plugin (.so) downloads may reach even when they
+    # resolve to a private/loopback/link-local/CGNAT address (blocked by default to prevent SSRF).
+    # Deploy-time only — read at startup, never settable via the plugin admin API.
+    # Renders into config.json `server.plugin_download_private_allowlist`.
+    # pluginDownloadPrivateAllowlist:
+    #   - "artifacts.internal.corp"
+    #   - "10.0.0.0/8"
 
   # Framework configuration
   framework:
@@ -314,6 +369,9 @@ bifrost:
       # mcpLibraryUrl: ""
       # MCP library sync interval in seconds (default: 86400 = 24 hours, minimum: 3600)
       # mcpLibrarySyncInterval: 86400
+      # How often each provider's model list is re-fetched in the background, in seconds
+      # (default: 3600 = 1 hour, minimum: 60; set to 0 to disable background refresh)
+      # liveModelsSyncInterval: 3600
 
   # Provider configurations (add your provider keys here)
   # You can specify API keys directly or use env.VAR_NAME syntax to reference environment variables
@@ -329,6 +387,9 @@ bifrost:
     #       weight: 1
     #       models: ["gpt-4o", "gpt-4o-mini"]  # Restrict key to specific models
     #       use_for_batch_api: false     # Whether this key can be used for batch API
+    #       # use_anthropic_endpoints: false  # deepseek/fireworks/vllm/sgl keys only: route chat completions
+    #                                         # and responses through Anthropic-compatible endpoints (also
+    #                                         # settable per-alias alongside use_deployments_endpoint)
     #     - name: "secondary-key"
     #       value: "env.OPENAI_KEY"     # Reference to environment variable
     #       weight: 1
@@ -341,8 +402,10 @@ bifrost:
     #     retry_backoff_initial_ms: 500                 # Initial retry backoff in ms
     #     retry_backoff_max_ms: 5000                    # Max retry backoff in ms
     #     stream_idle_timeout_in_seconds: 60            # Max wait for next stream chunk (default: 60)
+    #     keep_alive_timeout_in_seconds: 30             # Idle keep-alive for pooled connections; set below the upstream's keep-alive (default: 30)
     #     max_conns_per_host: 5000                      # Max TCP connections per host (default: 5000)
     #     enforce_http2: false                           # Force HTTP/2 on provider connections (e.g. Bedrock)
+    #     http2_ping_interval_in_seconds: 0              # Idle seconds before a client-initiated HTTP/2 keepalive PING (0 = disabled; only when enforce_http2). Max 3600.
     #     insecure_skip_verify: false                   # Disable TLS certificate verification (last resort)
     #     ca_cert_pem: ""                               # PEM-encoded CA cert for self-signed/private CA
     #     allow_private_network: false                  # Allow connections to RFC 1918 private IPs (k8s pod network, LAN, VPC)
@@ -390,6 +453,7 @@ bifrost:
   #         project_id: "my-gcp-project"
   #         region: "us-central1"
   #         auth_credentials: "env.GOOGLE_CREDENTIALS"
+  #         force_single_region: false  # Set true for provisioned throughput to skip multi-region promotion
   #
   # # AWS Bedrock example (requires bedrock_key_config)
   # bedrock:
@@ -401,6 +465,35 @@ bifrost:
   #         region: "us-east-1"
   #         access_key: "env.AWS_ACCESS_KEY_ID"
   #         secret_key: "env.AWS_SECRET_ACCESS_KEY"
+  #         # batch_role_arn: ""  # Optional: service role Bedrock assumes for batch S3 access; takes priority over role_arn sent in the request (can use env. prefix)
+  #         project_id: ""  # Optional: Bedrock project ID scoping inference and model listing (can use env. prefix)
+  #         # Optional: route through interface VPC endpoints (AWS PrivateLink) instead of the public regional hosts.
+  #         # Use each endpoint's DNS name from the VPC console, not its ID. Region above still sets the SigV4 scope.
+  #         # endpoints:
+  #         #   runtime: "vpce-0abc123-x1y2z3.bedrock-runtime.us-east-1.vpce.amazonaws.com"        # All inference
+  #         #   control_plane: "vpce-0abc123-x1y2z3.bedrock.us-east-1.vpce.amazonaws.com"          # Model listing, batch jobs
+  #         #   mantle: "vpce-0abc123-x1y2z3.bedrock-mantle.us-east-1.vpce.amazonaws.com"          # Mantle-routed models
+  #         #   agent_runtime: "vpce-0abc123-x1y2z3.bedrock-agent-runtime.us-east-1.vpce.amazonaws.com"  # Rerank
+  #         #   s3: "bucket.vpce-0abc123-x1y2z3.s3.us-east-1.vpce.amazonaws.com"                   # Batch file I/O; needs the bucket. prefix
+  #
+  # # AWS Bedrock Mantle example (requires bedrock_mantle_key_config)
+  # bedrock_mantle:
+  #   keys:
+  #     - name: "bedrock-mantle-key"
+  #       value: ""
+  #       weight: 1
+  #       bedrock_mantle_key_config:
+  #         region: "us-east-1"                     # Required
+  #         access_key: "env.AWS_ACCESS_KEY_ID"
+  #         secret_key: "env.AWS_SECRET_ACCESS_KEY"
+  #         project_id: ""                          # Optional: Bedrock project ID sent as the OpenAI-Project header (can use env. prefix)
+  #         # session_token: "env.AWS_SESSION_TOKEN"
+  #         # role_arn: ""                          # For AssumeRole
+  #         # external_id: ""
+  #         # session_name: ""
+  #         # Optional: route through an interface VPC endpoint (AWS PrivateLink) instead of the public regional host.
+  #         # endpoints:
+  #         #   mantle: "vpce-0abc123-x1y2z3.bedrock-mantle.us-east-1.vpce.amazonaws.com"
 
   # Provider secrets - use existing Kubernetes secrets for provider API keys
   # These will be injected as environment variables that can be referenced in providers config
@@ -435,6 +528,10 @@ bifrost:
       # - name: "example-https-mcp"
       #   connectionType: "http"
       #   connectionString: "https://my-internal-mcp.corp/mcp"
+      #   # Per-server tool execution timeout override. Go duration string ("30s", "2m")
+      #   # or a bare integer treated as seconds. Overrides toolManagerConfig.toolExecutionTimeout
+      #   # for this server only. Omit or set to 0 to use the global default.
+      #   toolExecutionTimeout: "30s"
       #   # TLS configuration for HTTP and SSE connection types.
       #   # Use when the MCP server presents a self-signed or private CA certificate.
       #   tlsConfig:
@@ -444,12 +541,53 @@ bifrost:
       # - name: "example-oauth-mcp"
       #   connectionType: "http"
       #   connectionString: "https://my-mcp.corp/mcp"
-      #   # authType "oauth": shared OAuth token; provide oauthConfigId referencing an existing oauth_config.
-      #   # authType "per_user_oauth": each user authenticates individually via OAuth flow;
-      #   #   oauth_config is registered via the API (POST /api/mcp/clients), not configured here.
+      #   # authType "oauth": shared inline OAuth. authType "per_user_oauth": each user authenticates
+      #   # individually. In both cases the client boots into `pending_verification`; an admin runs the
+      #   # verification flow once from the MCP Gateway UI. (oauth_config_id is minted by that flow and
+      #   # is Bifrost-managed — it cannot be set here and is ignored if supplied via config.json.)
       #   authType: "oauth"
-      #   oauthConfigId: "my-oauth-config-id"   # ID of the OAuth config created in Bifrost
+      #   # Inline OAuth provider config. All fields optional — omitted URLs are discovered from the
+      #   # connection_string (RFC 8414) and a missing clientId triggers dynamic client registration
+      #   # (RFC 7591) at admin-click time. Omit the whole block to rely entirely on discovery.
+      #   # Omit any field to have it discovered/registered during admin verification.
+      #   # Leaving every field blank is the same as omitting oauthConfig entirely (full discovery);
+      #   # blank/empty values are dropped, not written as an empty oauth_config block.
+      #   oauthConfig:
+      #     clientId: "env.MY_MCP_OAUTH_CLIENT_ID"       # optional (can use env./vault. prefix)
+      #     clientSecret: "env.MY_MCP_OAUTH_CLIENT_SECRET"  # optional (omit for PKCE/DCR public clients)
+      #     # authorizeUrl: "https://idp.corp/oauth2/authorize"   # optional — discovered when omitted
+      #     # tokenUrl: "https://idp.corp/oauth2/token"           # optional — discovered when omitted
+      #     # registrationUrl: "https://idp.corp/oauth2/register" # optional — discovered when omitted
+      #     # scopes: ["read", "write"]                           # optional — OAuth scopes to request
+      #   # Only meaningful for connectionType "http": true keeps one persistent connection reused
+      #   # across every caller; false (default for new clients) connects fresh per call.
+      #   needsSessionStickiness: false
+      #   # When true, this MCP server is accessible to all virtual keys without explicit per-key assignment.
+      #   # If a virtual key has an explicit MCP config for this server, that config takes precedence.
+      #   allowOnAllVirtualKeys: false
+      #
+      # - name: "example-token-exchange-mcp"
+      #   connectionType: "http"
+      #   connectionString: "https://my-mcp.corp/mcp"
+      #   # authType "token_exchange" (Enterprise builds only): each caller's IdP token is exchanged at
+      #   # runtime for a short-lived token scoped to this server's audience. Requires user-identity auth.
+      #   authType: "token_exchange"
+      #   tokenExchange:
+      #     audience: "api://jira-mcp"                   # required — resource the exchanged token is scoped to
+      #     useIdpCredentials: false                     # true = exchange as the SSO login app (ignores clientId/secret)
+      #     clientId: "env.MY_EXCHANGE_CLIENT_ID"        # required unless useIdpCredentials is true (env./vault. prefix)
+      #     clientSecret: "env.MY_EXCHANGE_CLIENT_SECRET"  # omit for public clients
+      #     authorizationServerUrl: ""                   # optional — override exchange endpoint (e.g. Okta custom AS)
+      #     scopes: []                                   # optional; include 'offline_access' for refresh tokens
     # toolSyncInterval: "10m"   # Global tool sync interval (Go duration string, e.g. "10m", "1h", "0s")
+    # Assign groups of MCP tools to virtual keys / access profiles.
+    # toolGroups:
+    #   - id: 5                        # Optional: DB ID of an existing group; when set, reconciler updates it by ID instead of name
+    #     name: "Platform Tools"
+    #     enabled: true
+    #     tools:
+    #       - mcpClientName: "github"
+    #         toolNames: ["create_pull_request", "list_issues"]
     # Tool manager configuration
     toolManagerConfig:
       toolExecutionTimeout: "30s"
@@ -530,44 +668,62 @@ bifrost:
         # Multi-profile shape (use profiles OR the flat single-profile fields below, not both):
         # profiles:
         #   - service_name: "bifrost"
+        #     traces_enabled: true    # Set false for a metrics-only profile (collector_url not required)
         #     collector_url: ""       # e.g., http://otel-collector:4318 (HTTP) or otel-collector:4317 (gRPC)
         #     trace_type: "genai_extension" # genai_extension | vercel | open_inference
         #     protocol: "grpc"        # http | grpc
+        #     export_timeout: 5       # Max seconds for one trace export (1-60); the only timeout on gRPC exports
         #     metrics_enabled: false
         #     metrics_endpoint: ""    # e.g., http://otel-collector:4318/v1/metrics (HTTP) or otel-collector:4317 (gRPC)
         #     metrics_push_interval: 15 # Push interval in seconds (1-300)
-        #     headers: {}
+        #     headers: {}             # Sent to both endpoints (supports env.VAR_NAME prefix)
+        #     trace_headers: {}       # Sent only to the trace endpoint, on top of headers (same key overrides)
+        #     metrics_headers: {}     # Sent only to the metrics endpoint, on top of headers (e.g. a Databricks table name)
         #     tls_ca_cert: ""         # Path to TLS CA certificate file
         #     insecure: true          # Skip TLS verification (ignored if tls_ca_cert is set)
         #     disable_content_logging: false
         #     group_traces_by_session: false # Group requests sharing x-bf-session-id into one trace (traceparent takes precedence)
         #     disable_root_span_content: false # Drop input/output from the root span only (keeps it on the llm.call span)
+        #     request_headers: []     # Header name patterns (exact or wildcard like "x-custom-*") captured as span attributes; "*" includes sensitive headers like Authorization
         #
         # Single-profile shape:
         service_name: "bifrost"
+        # Set false for a metrics-only profile (collector_url not required)
+        # traces_enabled: true
         collector_url: "" # e.g., http://otel-collector:4318 (HTTP) or otel-collector:4317 (gRPC)
         trace_type: "genai_extension" # genai_extension | vercel | open_inference
         protocol: "grpc" # http | grpc
+        # Max seconds for a single trace export (1-60). This is the only timeout on gRPC
+        # exports: an endpoint that accepts the connection but never replies would
+        # otherwise block an export goroutine indefinitely.
+        # export_timeout: 5
         # Push-based metrics export via OTLP (recommended for multi-node clusters)
         metrics_enabled: false
         metrics_endpoint: "" # e.g., http://otel-collector:4318/v1/metrics (HTTP) or otel-collector:4317 (gRPC)
         metrics_push_interval: 15 # Push interval in seconds (1-300)
-        # Custom headers for the collector (supports env.VAR_NAME prefix)
+        # Custom headers sent to both the trace and metrics endpoints (supports env.VAR_NAME prefix)
         headers: {}
+        # Extra headers sent only to the trace endpoint, on top of headers (same key overrides)
+        # trace_headers: {}
+        # Extra headers sent only to the metrics endpoint, on top of headers (e.g. a Databricks table name)
+        # metrics_headers: {}
         # TLS configuration
         tls_ca_cert: "" # Path to TLS CA certificate file
-        insecure: false # Skip TLS verification (ignored if tls_ca_cert is set)
+        # insecure: false # Skip TLS verification (ignored if tls_ca_cert is set)
         # Drop message content (input/output messages, embeddings, tool defs/args/results) from exported spans
         disable_content_logging: false
         # Group requests sharing the same x-bf-session-id header into one trace (an inbound W3C traceparent takes precedence)
         group_traces_by_session: false
         # Drop input/output content from the root span only (the llm.call generation span keeps it)
         disable_root_span_content: false
+        # Request header name patterns (exact or wildcard like "x-custom-*") captured and emitted as span attributes.
+        # Note: "*" captures all headers including sensitive ones like Authorization.
+        # request_headers: []
     datadog:
       enabled: false
       version: 1
       config:
-        service_name: "bifrost"
+        service_name: "bifrost"  # Service name reported to Datadog (supports env.VAR_NAME)
         # Datadog Agent address. Supports env.VAR_NAME references — e.g. set
         # agent_addr: "env.DD_AGENT_ADDR" and inject DD_AGENT_ADDR via the
         # top-level `env:` (e.g. from status.hostIP for a node-local agent DaemonSet).
@@ -581,11 +737,11 @@ bifrost:
         # agent_port: "8126"
         # dogstatsd_host: "env.DD_AGENT_HOST"
         # dogstatsd_port: "8125"
-        env: ""
-        version: ""
+        env: ""                     # Environment tag, e.g. production (supports env.VAR_NAME)
+        version: ""                 # Service version tag (supports env.VAR_NAME)
         custom_tags: {}
         enable_traces: true
-        # ml_app: ""                  # ML app name for LLM Observability (defaults to service_name)
+        # ml_app: ""                  # ML app name for LLM Observability (defaults to service_name, supports env.VAR_NAME)
         # enable_metrics: true
         # enable_llm_obs: true
         # group_traces_by_session: false  # Group requests sharing x-bf-session-id into one APM trace (agent mode only)
@@ -669,7 +825,11 @@ bifrost:
     budgets: []
       # - id: "budget-1"
       #   max_limit: 100
-      #   reset_duration: "1M"     # Supports: 30s, 5m, 1h, 1d, 1w, 1M, 1Y
+      #   reset_duration: "1M"     # Supports: 30s, 5m, 1h, 1d, 1w, 1M, 1Q, 1Y
+      #   calendar_aligned: false  # Snap reset to calendar boundaries (e.g. 1M resets on the 1st)
+      #   # reset_config only applies to quarterly ("1Q") budgets:
+      #   reset_config:
+      #     quarter_start_month: 4  # First month of Q1 as 1-12 (e.g. 4 = fiscal year starting April). 0/omitted = January.
     rateLimits: []
       # - id: "rate-limit-1"
       #   token_max_limit: 100000
@@ -717,6 +877,8 @@ bifrost:
       #   description: "Virtual key description"
       #   value: "sk-bf-..."           # Optional - auto-generated if omitted
       #   is_active: true
+      #   expires_at: "2026-12-31T23:59:59Z"  # Optional RFC3339 expiry; requests rejected once passed. Omit for no expiry
+      #   calendar_aligned: false  # Snap all budget resets for this key to calendar boundaries
       #   team_id: "team-1"        # Mutually exclusive with customer_id
       #   customer_id: ""          # Mutually exclusive with team_id
       #   rate_limit_id: "rate-limit-1"
@@ -835,7 +997,7 @@ bifrost:
   # SCIM/SSO configuration for enterprise SSO
   scim:
     enabled: false
-    # Provider: okta, entra, keycloak, zitadel, google
+    # Provider: okta, entra, keycloak, zitadel, google, sailpoint, generic
     provider: ""
     config: {}
       # Okta configuration:
@@ -843,8 +1005,12 @@ bifrost:
       # authServerType: "org"  # "org" or "custom"; auto-detected from issuer URL when omitted
       # clientId: ""
       # clientSecret: ""
-      # apiToken: ""
+      # apiToken: ""  # optional — enables 24-hour background user/group reconciliation
       # audience: ""
+      # # Extra OAuth scopes on top of the base openid/profile/email/offline_access set
+      # # (for Custom Authorization Servers where claims like "groups" are gated behind a scope).
+      # additionalScopes:
+      #   - "groups"
       # userIdField: "sub"
       # teamIdsField: "groups"
       # rolesField: "roles"
@@ -854,6 +1020,9 @@ bifrost:
       #   - attribute: "groups"
       #     value: "bifrost-admins"
       #     role: "admin"
+      # # Strategy for picking one role when a user resolves to more than one:
+      # # "highestPermissionCount" (default) = role with the most permissions; "order" = evaluate top to bottom, first matching rule wins.
+      # roleResolutionStrategy: "highestPermissionCount"
       # attributeTeamMappings:
       #   - attribute: "groups"
       #     value: "*"            # pass-through: every group becomes a team
@@ -874,6 +1043,36 @@ bifrost:
       #   - attribute: "department"
       #     value: "platform"
       #     business_unit: "Platform"
+      # # SCIM inbound provisioning (Enterprise): the IdP pushes users/groups to Bifrost's SCIM 2.0 endpoint.
+      # claimScimAttributes:                         # per-claim SCIM interpretation
+      #   groups:
+      #     attributeType: "group"                   # "user" (SCIM User attribute) or "group" (match SCIM Group)
+      #     attributeValue: "displayName"
+      # provisioningToken: "env.SCIM_PROVISIONING_TOKEN"  # bearer token the IdP presents; generate: openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
+      # # Claims-sync mode (Enterprise). Shared across every provider above; only matters when SCIM is enabled:
+      # # "both" (default) = login/refresh claims and SCIM both sync roles/teams/business-units/profile and can JIT-create users;
+      # # "scim" = SCIM is the sole source of truth — claims are ignored for provisioning and new users must be pushed by SCIM.
+      # claimsSyncMode: "both"
+      #
+      # # Auth proxy / identity-aware proxy (Enterprise). Shared across every provider above:
+      # # when a Zero Trust / ZTNA proxy fronts the IdP, Bifrost reads the login credential from the
+      # # proxy's header and validates it against the proxy's own keys (not the IdP's).
+      # authProxy:
+      #   enabled: true
+      #   provider: "cloudflare-access"      # cloudflare-access | generic | aws-alb
+      #   mode: "login_only"                 # login_only (default; auth only) | full (also maps roles/teams from token claims)
+      #   # Cloudflare Access / generic OIDC proxy (JWKS):
+      #   issuerUrl: "https://<team>.cloudflareaccess.com"   # required; must be https (env. prefix supported)
+      #   audience: "env.CF_ACCESS_AUD"      # required unless allowedAudiences is set — binds the token to this app
+      #   # headerName: "Cf-Access-Jwt-Assertion"  # defaulted per provider; required for the generic provider
+      #   # jwksUrl: ""                       # explicit JWKS; derived for cloudflare-access, OIDC discovery for generic
+      #   # allowedAudiences: []              # alternative to a single audience
+      #   # userIdClaim: "email"              # identity claim (default: email)
+      #   # AWS ALB (OIDC) instead of the JWKS fields above:
+      #   # provider: "aws-alb"
+      #   # expectedSigner: "arn:aws:elasticloadbalancing:...:loadbalancer/app/..."  # required — pins the ALB signer
+      #   # region: "us-east-1"               # derived from the signer ARN when omitted
+      #   # publicKeyBaseUrl: ""              # override for non-standard partitions (e.g. GovCloud)
       #
       # Entra (Azure AD) configuration:
       # tenantId: ""
@@ -894,6 +1093,12 @@ bifrost:
       #     value: "<group-object-id>"
       #     team: "platform-team"
       # attributeBusinessUnitMappings: []
+      # # SCIM inbound provisioning (Enterprise): the IdP pushes users/groups to Bifrost's SCIM 2.0 endpoint.
+      # claimScimAttributes:                         # per-claim SCIM interpretation
+      #   groups:
+      #     attributeType: "group"                   # "user" (SCIM User attribute) or "group" (match SCIM Group)
+      #     attributeValue: "displayName"
+      # provisioningToken: "env.SCIM_PROVISIONING_TOKEN"  # bearer token the IdP presents; generate: openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
       #
       # Keycloak configuration:
       # serverUrl: "https://keycloak.company.com"  # base URL, must NOT include /realms/{realm}
@@ -938,12 +1143,35 @@ bifrost:
       # attributeRoleMappings: []
       # attributeTeamMappings: []
       # attributeBusinessUnitMappings: []
+      #
+      # Generic OIDC configuration (any standards-compliant OIDC IdP):
+      # issuerUrl: "https://idp.company.com"        # required; endpoints resolved via OIDC discovery (.well-known/openid-configuration)
+      # clientId: ""                                # required
+      # clientSecret: "env.OIDC_CLIENT_SECRET"      # optional, for confidential clients; supports env. prefix
+      # audience: ""                                # optional, JWT audience for token validation
+      # # Optional manual endpoint overrides (used in preference to discovery when the IdP has no compliant discovery document):
+      # authorizationEndpoint: "https://idp.company.com/oauth2/authorize"
+      # tokenEndpoint: "https://idp.company.com/oauth2/token"
+      # userinfoEndpoint: "https://idp.company.com/oauth2/userinfo"
+      # teamIdsField: "groups"                      # JWT claim for team/group IDs (default: "groups")
+      # rolesField: "roles"                         # JWT claim for role names (optional)
+      # scopes: []                                  # override the default OIDC scopes requested during login
+      # attributeRoleMappings: []
+      # attributeTeamMappings: []
+      # attributeBusinessUnitMappings: []
+      # # SCIM inbound provisioning (Enterprise): the IdP pushes users/groups to Bifrost's SCIM 2.0 endpoint.
+      # claimScimAttributes:                         # per-claim SCIM interpretation
+      #   groups:
+      #     attributeType: "group"                   # "user" (SCIM User attribute) or "group" (match SCIM Group)
+      #     attributeValue: "displayName"
+      # provisioningToken: "env.SCIM_PROVISIONING_TOKEN"  # bearer token the IdP presents; generate: openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
 
   # Load balancer configuration for intelligent request routing
   loadBalancer:
     enabled: false
     # directionSelectionEnabled: true   # Enable adaptive provider selection. Defaults to true; omit to leave on.
     # routeSelectionEnabled: true       # Enable adaptive per-key (route) selection. Defaults to true; omit to leave on.
+    # appendFallbacksToPinned: false    # When a request already carries a provider, append the healthy providers eligible for its model as fallbacks behind any it configured. Defaults to false.
     # rerouteFailedDirections: false    # Re-route to a healthy provider when a pinned direction is unhealthy. Defaults to false.
     # pruneFailedFallbacks: false       # Drop unhealthy directions from a request's configured fallbacks. Defaults to false.
     trackerConfig: {}
@@ -956,12 +1184,14 @@ bifrost:
       #   name: "Block PII"
       #   description: "Block requests containing PII"
       #   enabled: true
-      #   cel_expression: "!contains(request.body, 'SSN')"
+      #   target: "llm"     # "llm" (default) | "mcp"
+      #   cel_expression: "true"
       #   apply_to: "input"
       #   sampling_rate: 100
       #   timeout: 60        # Timeout in seconds for rule execution (default: 60)
       #   max_turns_to_send: 0
       #   evaluation_mode: "bundled"   # "bundled" (default) | "per_turn" (each turn scanned in isolation; avoids cross-turn false positives, more provider calls)
+      #   stream_replay_event_interval_ms: 25  # Delay between buffered events after an allowed response; 0 sends them immediately
     providers: []
       # - id: 1
       #   provider_name: "bedrock"
@@ -997,11 +1227,13 @@ bifrost:
     # - name: "platform-default"
     #   description: "Default platform profile"
     #   is_active: true
+    #   calendar_aligned: false  # Snap all budget/rate-limit resets to calendar boundaries
     #   tags: ["platform", "default"]
     #   budgets:
     #     - id: "ap-budget-1"
     #       max_limit: 100
     #       reset_duration: "1M"
+    #       calendar_aligned: false  # Snap this budget's reset to calendar boundaries
     #   rate_limit:
     #     id: "ap-rate-limit-1"
     #     token_max_limit: 200000
@@ -1010,6 +1242,20 @@ bifrost:
     #     - provider_name: "openai"
     #       all_models_allowed: false
     #       allowed_models: ["gpt-4o", "gpt-4o-mini"]
+    #       blacklisted_models: ["gpt-4o-realtime-preview"]  # Denylist wins over allowed_models; ["*"] blocks all
+    #       weight: 1.0  # Load-balancer seed weight; null/omit opts out of weighted routing
+    #       model_budgets:  # Per-model budgets + rate limits scoped to this provider
+    #         - model_name: "gpt-4o"
+    #           budgets:
+    #             - id: "ap-openai-gpt4o-budget"
+    #               max_limit: 50
+    #               reset_duration: "1M"
+    #           rate_limit:
+    #             id: "ap-openai-gpt4o-rl"
+    #             token_max_limit: 100000
+    #             token_reset_duration: "1h"
+    #             request_max_limit: 500
+    #             request_reset_duration: "1h"
     #   mcp_tool_groups:
     #     - tool_group_id: 1
     #   mcp_servers:
@@ -1019,10 +1265,119 @@ bifrost:
     #       tool_name: "create_pull_request"
     #       action: "include"
 
+  # Alerting: declarative alert channels and rules seeded from Helm.
+  # Rendered directly as top-level `alerting` in config.json.
+  # alerting:
+  #   history_retention_days: 365   # Days to retain alert history (0 = no pruning)
+  #   webhook_network:
+  #     allow_http: false            # Allow http (not just https) webhook URLs
+  #     allow_private_network: false # Allow webhooks targeting private/loopback addresses
+  #   channels:
+  #     - id: "slack-ops"
+  #       name: "Ops Slack"
+  #       type: slack                # Options: slack, microsoft_teams, pagerduty, webhook
+  #       enabled: true
+  #       cooldown_seconds: 300
+  #       config:
+  #         webhook_url: "env.SLACK_WEBHOOK_URL"
+  #     - id: "pagerduty-critical"
+  #       name: "PagerDuty Critical"
+  #       type: pagerduty
+  #       enabled: true
+  #       config:
+  #         routing_key: "env.PAGERDUTY_ROUTING_KEY"
+  #     - id: "teams-alerts"
+  #       name: "Teams Alerts"
+  #       type: microsoft_teams
+  #       enabled: true
+  #       config:
+  #         webhook_url: "env.TEAMS_WEBHOOK_URL"
+  #     - id: "generic-webhook"
+  #       name: "Generic Webhook"
+  #       type: webhook
+  #       enabled: true
+  #       config:
+  #         url: "https://my-internal-hook.corp/alerts"
+  #         headers:
+  #           X-Alert-Token: "env.WEBHOOK_AUTH_HEADER"
+  #   rules:
+  #     - id: "budget-80pct"
+  #       name: "Budget 80% Alert"
+  #       enabled: true
+  #       scope_type: virtual_key    # Options: virtual_key, team, customer
+  #       scope_id: "vk-1"
+  #       cel_expression: "budget_usage_percent >= 80"
+  #       cooldown_seconds: 3600
+  #       notify_once_per_reset_cycle: false
+  #       channel_ids: ["slack-ops"]
+  #       # Optionally target a specific budget:
+  #       # target_type: budget
+  #       # target_id: "budget-1"
+
+  # Webhooks: endpoint declarations synced into the database at startup, reconciled by name.
+  # Rendered directly as top-level `webhooks` in config.json.
+  # webhooks:
+  #   - name: "async-jobs"
+  #     url: "https://my-internal-hook.corp/webhooks/async-jobs"
+  #     secret: "env.WEBHOOK_SIGNING_SECRET"   # whsec_ format; generated when omitted
+  #     events: ["async_job.completed", "async_job.failed"]
+  #     headers:
+  #       Authorization: "env.WEBHOOK_AUTH_HEADER"
+  #     include_response: false        # Inline the job response into delivery payloads
+  #     allow_private_network: false   # Permit private-network receivers and plain http
+  #     disabled: false
+  #     max_retries: 4
+  #     retry_backoff_initial_seconds: 30
+  #     retry_backoff_max_seconds: 1800
+  #     attempt_timeout_seconds: 10
+  #     max_response_payload_kbs: 256
+  #     max_concurrent_deliveries: 10
+
   # Audit logs configuration for CADF-compliant activity logging
   auditLogs:
     disabled: false
     hmacKey: ""
+    # Object storage archival for audit events (optional).
+    #
+    # When configured, a background job periodically copies audit events from the
+    # database to object storage, one closed time window at a time. Each window is
+    # written as one or more JSONL part objects plus a manifest that lists them:
+    #   {prefix}/audit-logs/YYYY/MM/DD/<start>-<end>/part-00000.jsonl[.gz]
+    #   {prefix}/audit-logs/YYYY/MM/DD/<start>-<end>/manifest.json[.gz]
+    # Read the manifest to enumerate a window; ignore any object it does not list.
+    #
+    # The database remains the source of truth. Archival never deletes rows —
+    # retentionDays handles that independently. In a cluster, only the leader
+    # archives. Events written before archival is first enabled are not backfilled.
+    #
+    # Window size and job period. Default 24h, minimum 5m.
+    # archiveInterval: "24h"
+    # A window only closes once (now - grace) has passed its end, which absorbs
+    # clock skew and late inserts. Must be less than archiveInterval. Default 15m.
+    # archiveGracePeriod: "15m"
+    # Roll a new part object once the current part reaches this many uncompressed
+    # bytes. Default 134217728 (128MiB). Raising it produces fewer, larger objects;
+    # note peak memory on the archiving node is roughly 2x this when compress: true,
+    # so size pod memory limits accordingly.
+    # archiveMaxObjectBytes: 134217728
+    # objectStorage:
+    #   type: s3        # Options: s3, gcs
+    #   bucket: ""      # Bucket name
+    #   prefix: bifrost # Base key path (audit-logs/ is appended under it)
+    #   compress: false # Enable gzip compression for stored objects
+    #
+    #   # S3 configuration (when type is s3)
+    #   region: us-east-1
+    #   endpoint: ""          # Custom endpoint for MinIO/R2
+    #   accessKeyId: ""       # Leave empty to use default AWS credential chain
+    #   secretAccessKey: ""
+    #   sessionToken: ""      # AWS STS session token (optional)
+    #   roleArn: ""           # AWS IAM role ARN to assume via STS
+    #   forcePathStyle: false # Set true for MinIO
+    #
+    #   # GCS configuration (when type is gcs)
+    #   projectId: ""
+    #   credentialsJson: ""   # Service account JSON, omit for default credentials
 
   # Large payload optimization - streams large payloads without full materialization
   # largePayloadOptimization:
@@ -1086,6 +1441,7 @@ storage:
     # PostgreSQL connection pool tuning (only applies when type is postgres)
     # maxIdleConns: 5
     # maxOpenConns: 50
+    # connMaxIdleTime: "5m"  # How long an idle connection is kept. Without this the idle cap alone controls pool size, so bursts above maxIdleConns churn physical connections. Note the config store and logs store open separate pools.
 
     # Vault store for external secret management (enterprise).
     # Resolves "vault.<path>" references in config fields at load time.
@@ -1122,11 +1478,24 @@ storage:
   logsStore:
     enabled: true
     # Backend type for logs store. Empty string uses storage.mode as default
-    type: "" # Options: sqlite, postgres, or "" (uses storage.mode)
+    type: "" # Options: sqlite, postgres, clickhouse, or "" (uses storage.mode)
     # PostgreSQL connection pool tuning (only applies when type is postgres)
     # maxIdleConns: 5
     # maxOpenConns: 50
+    # connMaxIdleTime: "5m"  # How long an idle connection is kept. Without this the idle cap alone controls pool size, so bursts above maxIdleConns churn physical connections. Note the config store and logs store open separate pools.
     # matviewRefreshInterval: "30s"  # How often to refresh materialized views. Go duration string (e.g. '30s', '5m', '1h'). Minimum 5s.
+    # matviewRefreshTimeout: "5m"  # Max time for one refresh pass (min 30s, max 30m). Unset derives 5x the interval, at least 5m. A cancelled refresh leaves the existing views intact and readable, just staler; the next tick retries.
+    # ClickHouse connection settings (only applies when type is clickhouse)
+    # clickhouse:
+    #   host: "clickhouse.default.svc.cluster.local"  # Required
+    #   port: "9000"          # Defaults by protocol: native 9000 (9440 TLS), http 8123 (8443 TLS)
+    #   database: "default"
+    #   username: "default"
+    #   password: "env.CLICKHOUSE_PASSWORD"
+    #   protocol: "native"    # Options: native, http (default: native)
+    #   secure: false         # Enable TLS
+    #   dialTimeout: 10000    # Connection dial timeout in milliseconds
+    #   cluster: ""           # Optional cluster name; runs DDL ON CLUSTER with replicated engines
     # Async writer queue and batch tuning. Omitted fields use Bifrost defaults.
     # writer:
     #   maxBatchSize: 1000
@@ -1175,6 +1544,9 @@ postgresql:
     password: ""
     # Command executed by Bifrost to produce the PostgreSQL password on stdout.
     # Use for dynamic credentials such as AWS RDS IAM auth tokens.
+    # The result is cached for cache_ttl (default 60s) and shared across new
+    # physical connections, so the command is not re-run for every connection.
+    # Keep cache_ttl below the credential's validity window.
     # passwordCommand:
     #   command: aws
     #   args:
@@ -1189,6 +1561,7 @@ postgresql:
     #     - --username
     #     - bifrost
     #   timeout: 10s
+    #   cache_ttl: 60s
     # connMaxLifetime: 10m
     database: bifrost
     sslMode: disable

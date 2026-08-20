@@ -37,7 +37,7 @@ import { z } from "zod";
 
 type TierBoundaryKey = keyof TierBoundaries;
 
-const COMPLEXITY_ROUTER_DOCS_URL = "https://docs.getbifrost.ai/features/governance/complexity-router";
+const KEYWORD_COLLAPSED_LIMIT = 8;
 
 // Four progressive shades of --primary: faintest → full
 const P1 = "color-mix(in oklch, var(--primary) 30%, transparent)";
@@ -199,7 +199,7 @@ function TierSpectrumBar({ boundaries }: { boundaries: TierBoundaries }) {
 
 	return (
 		<div className="space-y-1.5">
-			<div className="relative flex h-9 w-full gap-[1.5px] overflow-hidden rounded-md">
+			<div className="relative flex h-9 w-full gap-[1.5px] overflow-hidden rounded-sm">
 				{segments.map(({ tier, width, color }) => (
 					<div
 						key={tier}
@@ -336,18 +336,19 @@ export default function ComplexityRouterPage() {
 
 	return (
 		<ScrollArea className="no-padding-parent h-[calc(100vh_-_16px)] w-full px-14 pt-4">
-			<form className="mx-auto w-full max-w-7xl space-y-8 pb-4" onSubmit={handleSubmit(onValid)} noValidate>
+			<form className="mx-auto w-full max-w-7xl space-y-8" onSubmit={handleSubmit(onValid)} noValidate>
 				{/* ── Page header ── */}
 				<div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
 					<div className="space-y-1.5">
 						<h1 className="text-2xl font-semibold tracking-tight">Complexity Router</h1>
 						<p className="text-muted-foreground max-w-2xl text-sm leading-relaxed">
 							Tune how incoming requests are classified into four tiers. Thresholds and keyword lists feed the{" "}
-							<code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">complexity_tier</code> field that routing rules can target.
+							<code className="bg-muted rounded-sm px-1 py-0.5 font-mono text-xs">complexity_tier</code> field that routing rules can
+							target.
 						</p>
 					</div>
 					<Button asChild variant="outline" size="sm" className="w-fit shrink-0" data-testid="complexity-router-docs-link">
-						<a href={COMPLEXITY_ROUTER_DOCS_URL} target="_blank" rel="noopener noreferrer">
+						<a href={"https://docs.getbifrost.ai/features/governance/complexity-router"} target="_blank" rel="noopener noreferrer">
 							<ExternalLink className="size-3.5" />
 							Docs
 						</a>
@@ -355,7 +356,7 @@ export default function ComplexityRouterPage() {
 				</div>
 
 				{/* ── Complexity Spectrum ── */}
-				<div className="bg-card space-y-4 rounded-lg border p-5">
+				<div className="bg-card space-y-4 rounded-sm border p-5">
 					<div className="flex items-center justify-between">
 						<p className="text-muted-foreground font-mono text-xs font-semibold tracking-widest uppercase">Complexity Spectrum</p>
 						<div className="flex items-center gap-4">
@@ -404,7 +405,7 @@ export default function ComplexityRouterPage() {
 							});
 
 							return (
-								<div key={key} className="bg-card relative space-y-3 overflow-hidden rounded-lg border p-4">
+								<div key={key} className="bg-card relative space-y-3 overflow-hidden rounded-sm border p-4">
 									{/* Tier transition label */}
 									<div className="flex items-center gap-1.5 pt-0.5">
 										<span className="font-mono text-[10px] font-bold tracking-widest" style={{ color: fromColor }}>
@@ -470,7 +471,7 @@ export default function ComplexityRouterPage() {
 							const fieldError = keywordErrors?.[key as KeywordListKey];
 							const errorId = `keywords-${key}-error`;
 							return (
-								<div key={key} className="bg-card relative overflow-hidden rounded-lg border">
+								<div key={key} className="bg-card relative overflow-hidden rounded-sm border">
 									<Controller
 										control={control}
 										name={`keywords.${key}` as const}
@@ -488,6 +489,8 @@ export default function ComplexityRouterPage() {
 													data-testid={`complexity-router-keywords-${testIdPart(key)}-input`}
 													value={field.value}
 													onValueChange={field.onChange}
+													collapsedTagLimit={KEYWORD_COLLAPSED_LIMIT}
+													expandButtonTestId={`complexity-router-keywords-${testIdPart(key)}-expand-button`}
 													placeholder="Type a keyword and press Enter"
 													aria-invalid={fieldError ? true : undefined}
 													aria-describedby={fieldError ? errorId : undefined}
@@ -511,14 +514,14 @@ export default function ComplexityRouterPage() {
 				{submitError && (
 					<div
 						role="alert"
-						className="border-destructive/40 bg-destructive/10 text-destructive rounded-md border px-3 py-2 font-mono text-sm"
+						className="border-destructive/40 bg-destructive/10 text-destructive rounded-sm border px-3 py-2 font-mono text-sm"
 					>
 						{submitError}
 					</div>
 				)}
 
 				{/* ── Action footer ── */}
-				<div className="bg-card sticky bottom-0 flex flex-wrap items-center justify-end gap-2.5 border-t py-4">
+				<div className="bg-card sticky bottom-0 flex flex-wrap items-center justify-end gap-2.5 border-t py-4 z-10">
 					<Button
 						data-testid="complexity-router-restore-defaults-button"
 						type="button"

@@ -10,6 +10,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"strings"
 	"time"
@@ -67,7 +68,7 @@ func NewGeminiProvider(config *schemas.ProviderConfig, logger schemas.Logger) *G
 		ReadTimeout:         requestTimeout,
 		WriteTimeout:        requestTimeout,
 		MaxConnsPerHost:     config.NetworkConfig.MaxConnsPerHost,
-		MaxIdleConnDuration: 30 * time.Second,
+		MaxIdleConnDuration: time.Second * time.Duration(config.NetworkConfig.KeepAliveTimeoutInSeconds),
 		MaxConnWaitTimeout:  requestTimeout,
 		MaxConnDuration:     time.Second * time.Duration(schemas.DefaultMaxConnDurationInSeconds),
 		ConnPoolStrategy:    fasthttp.FIFO,
@@ -152,7 +153,7 @@ func (provider *GeminiProvider) completeRequest(ctx *schemas.BifrostContext, mod
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		providerUtils.MaterializeStreamErrorBody(ctx, resp)
-		return nil, nil, latency, providerResponseHeaders, parseGeminiError(resp)
+		return nil, nil, latency, providerResponseHeaders, providerUtils.SetErrorLatency(parseGeminiError(resp), latency)
 	}
 
 	body, isLargeResp, decodeErr := providerUtils.FinalizeResponseWithLargeDetection(ctx, resp, provider.logger)
@@ -213,7 +214,7 @@ func (provider *GeminiProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, parseGeminiError(resp)
+		return nil, providerUtils.SetErrorLatency(parseGeminiError(resp), latency)
 	}
 
 	// Parse Gemini's response
@@ -299,7 +300,7 @@ func (provider *GeminiProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Large response mode: return lightweight response with metadata only
@@ -366,8 +367,6 @@ func (provider *GeminiProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		headers["x-goog-api-key"] = key.Value.GetValue()
 	}
 
-	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
-
 	// Use shared Gemini streaming logic
 	return HandleGeminiChatCompletionStream(
 		ctx,
@@ -376,6 +375,7 @@ func (provider *GeminiProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		jsonData,
 		headers,
 		provider.networkConfig.ExtraHeaders,
+		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
@@ -395,6 +395,7 @@ func HandleGeminiChatCompletionStream(
 	jsonBody []byte,
 	headers map[string]string,
 	extraHeaders map[string]string,
+	streamIdleTimeoutInSeconds int,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
@@ -404,6 +405,7 @@ func HandleGeminiChatCompletionStream(
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, streamIdleTimeoutInSeconds)
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	resp.StreamBody = true
@@ -427,7 +429,8 @@ func HandleGeminiChatCompletionStream(
 
 	startTime := time.Now()
 	// Make the request — caller is responsible for passing a streaming-configured client.
-	doErr := client.Do(req, resp)
+	doErr := providerUtils.DoStreamingRequest(ctx, client, req, resp)
+	latency := time.Since(startTime)
 	if doErr != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		if errors.Is(doErr, context.Canceled) {
@@ -438,12 +441,12 @@ func HandleGeminiChatCompletionStream(
 					Message: schemas.ErrRequestCancelled,
 					Error:   doErr,
 				},
-			}, jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
+			}, jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
 		}
 		if errors.Is(doErr, fasthttp.ErrTimeout) || errors.Is(doErr, context.DeadlineExceeded) {
-			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, doErr), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, doErr), jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
 		}
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, doErr), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, doErr), jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
 	// Extract provider response headers before status check so error responses also forward them
@@ -453,7 +456,7 @@ func HandleGeminiChatCompletionStream(
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		respBody := append([]byte(nil), resp.Body()...)
-		return nil, providerUtils.EnrichError(ctx, parseGeminiError(resp), jsonBody, respBody, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseGeminiError(resp), jsonBody, respBody, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
 	// Large payload streaming passthrough — pipe raw upstream SSE to client
@@ -485,7 +488,7 @@ func HandleGeminiChatCompletionStream(
 				fmt.Errorf("provider returned an empty response"),
 			)
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-			providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse), responseChan, logger, postHookSpanFinalizer)
+			providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
 			return
 		}
 
@@ -557,16 +560,9 @@ func HandleGeminiChatCompletionStream(
 			if err != nil {
 				if strings.Contains(err.Error(), "gemini api error") {
 					// Handle API error
-					bifrostErr := &schemas.BifrostError{
-						Type:           schemas.Ptr("gemini_api_error"),
-						IsBifrostError: false,
-						Error: &schemas.ErrorField{
-							Message: err.Error(),
-							Error:   err,
-						},
-					}
+					bifrostErr := toGeminiStreamBifrostError(err)
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse), responseChan, logger, postHookSpanFinalizer)
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
 					return
 				}
 				logger.Warn("Failed to process chunk: %v", err)
@@ -585,7 +581,7 @@ func HandleGeminiChatCompletionStream(
 			response, bifrostErr, isLastChunk := geminiResponse.ToBifrostChatCompletionStream(streamState)
 			if bifrostErr != nil {
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse), responseChan, logger, postHookSpanFinalizer)
+				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
 				return
 			}
 
@@ -692,7 +688,7 @@ func (provider *GeminiProvider) Responses(ctx *schemas.BifrostContext, key schem
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Large response mode: return lightweight response with metadata only
@@ -778,7 +774,7 @@ func (provider *GeminiProvider) responsesWithLargeResponseDetection(
 		bifrostErr := parseGeminiError(resp)
 		wait()
 		fasthttp.ReleaseResponse(resp)
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Delegate large response detection + normal buffered path to shared utility
@@ -786,7 +782,7 @@ func (provider *GeminiProvider) responsesWithLargeResponseDetection(
 	if respErr != nil {
 		wait()
 		fasthttp.ReleaseResponse(resp)
-		return nil, providerUtils.EnrichError(ctx, respErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, respErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 	if isLarge {
 		// Build lightweight response with usage from preview for plugin pipeline
@@ -877,8 +873,6 @@ func (provider *GeminiProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		headers["x-goog-api-key"] = key.Value.GetValue()
 	}
 
-	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
-
 	return HandleGeminiResponsesStream(
 		ctx,
 		provider.streamingClient,
@@ -886,6 +880,7 @@ func (provider *GeminiProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		jsonData,
 		headers,
 		provider.networkConfig.ExtraHeaders,
+		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
@@ -905,6 +900,7 @@ func HandleGeminiResponsesStream(
 	jsonBody []byte,
 	headers map[string]string,
 	extraHeaders map[string]string,
+	streamIdleTimeoutInSeconds int,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
@@ -914,6 +910,7 @@ func HandleGeminiResponsesStream(
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, streamIdleTimeoutInSeconds)
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	resp.StreamBody = true
@@ -937,7 +934,8 @@ func HandleGeminiResponsesStream(
 
 	startTime := time.Now()
 	// Make the request — caller is responsible for passing a streaming-configured client.
-	doErr := client.Do(req, resp)
+	doErr := providerUtils.DoStreamingRequest(ctx, client, req, resp)
+	latency := time.Since(startTime)
 	if doErr != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		if errors.Is(doErr, context.Canceled) {
@@ -948,12 +946,12 @@ func HandleGeminiResponsesStream(
 					Message: schemas.ErrRequestCancelled,
 					Error:   doErr,
 				},
-			}, jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
+			}, jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
 		}
 		if errors.Is(doErr, fasthttp.ErrTimeout) || errors.Is(doErr, context.DeadlineExceeded) {
-			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, doErr), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, doErr), jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
 		}
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, doErr), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, doErr), jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
 	// Extract provider response headers before status check so error responses also forward them
@@ -962,7 +960,7 @@ func HandleGeminiResponsesStream(
 	// Check for HTTP errors — use parseGeminiError to preserve upstream error details
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
-		return nil, providerUtils.EnrichError(ctx, parseGeminiError(resp), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseGeminiError(resp), jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
 	// Large payload streaming passthrough — pipe raw upstream SSE to client
@@ -1075,14 +1073,7 @@ func HandleGeminiResponsesStream(
 			if err != nil {
 				if strings.Contains(err.Error(), "gemini api error") {
 					// Handle API error
-					bifrostErr := &schemas.BifrostError{
-						Type:           schemas.Ptr("gemini_api_error"),
-						IsBifrostError: false,
-						Error: &schemas.ErrorField{
-							Message: err.Error(),
-							Error:   err,
-						},
-					}
+					bifrostErr := toGeminiStreamBifrostError(err)
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse), responseChan, logger, postHookSpanFinalizer)
 					return
@@ -1246,7 +1237,7 @@ func (provider *GeminiProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	if bifrostErr != nil {
 		wait()
 		fasthttp.ReleaseResponse(resp)
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 	// When upstream responds before consuming full upload, drain remaining bytes from
 	// ingress reader so proxy hops (e.g., Caddy) don't surface broken-pipe 502s.
@@ -1261,8 +1252,8 @@ func (provider *GeminiProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		providerUtils.MaterializeStreamErrorBody(ctx, resp)
-		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
-		parsedErr := providerUtils.EnrichError(ctx, parseGeminiError(resp), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		provider.logger.Debug(fmt.Sprintf("error from %s provider: status %d", providerName, resp.StatusCode()))
+		parsedErr := providerUtils.EnrichError(ctx, parseGeminiError(resp), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		wait()
 		fasthttp.ReleaseResponse(resp)
 		return nil, parsedErr
@@ -1272,7 +1263,7 @@ func (provider *GeminiProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	if decodeErr != nil {
 		wait()
 		fasthttp.ReleaseResponse(resp)
-		return nil, providerUtils.EnrichError(ctx, decodeErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, decodeErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 	if isLargeResp {
 		// Large response detected — return lightweight response with metadata only;
@@ -1295,7 +1286,7 @@ func (provider *GeminiProvider) Embedding(ctx *schemas.BifrostContext, key schem
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, body, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, body, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Convert to Bifrost format
@@ -1344,7 +1335,7 @@ func (provider *GeminiProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Large response mode: return lightweight response with metadata only
@@ -1362,7 +1353,7 @@ func (provider *GeminiProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 	}
 	response, convErr := geminiResponse.ToBifrostSpeechResponse(ctx)
 	if convErr != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, convErr), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, convErr), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Set ExtraFields
@@ -1435,7 +1426,8 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 
 	startTime := time.Now()
 	// Make the request
-	err := provider.streamingClient.Do(req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, provider.streamingClient, req, resp)
+	latency := time.Since(startTime)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		if errors.Is(err, context.Canceled) {
@@ -1446,16 +1438,16 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 					Message: schemas.ErrRequestCancelled,
 					Error:   err,
 				},
-			}, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+			}, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 		// Request failed before the first response byte (server closed an idle/pooled connection,
 		// broken pipe, connection refused, DNS failure, etc.). Surface as a retriable upstream
 		// connection error (502) so executeRequestWithRetries honors max_retries, matching the
 		// non-streaming path - see https://github.com/maximhq/bifrost/issues/4496.
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Extract provider response headers before status check so error responses also forward them
@@ -1464,8 +1456,10 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
-		return nil, providerUtils.EnrichError(ctx, parseGeminiError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseGeminiError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
+
+	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
 
 	// Large payload streaming passthrough — pipe raw upstream SSE to client
 	if providerUtils.SetupStreamingPassthrough(ctx, resp) {
@@ -1476,8 +1470,6 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 
 	// Create response channel
 	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
-
-	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
 
 	// Start streaming in a goroutine
 	go func() {
@@ -1539,14 +1531,7 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 			if err != nil {
 				if strings.Contains(err.Error(), "gemini api error") {
 					// Handle API error
-					bifrostErr := &schemas.BifrostError{
-						Type:           schemas.Ptr("gemini_api_error"),
-						IsBifrostError: false,
-						Error: &schemas.ErrorField{
-							Message: err.Error(),
-							Error:   err,
-						},
-					}
+					bifrostErr := toGeminiStreamBifrostError(err)
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger, postHookSpanFinalizer)
 					return
@@ -1654,7 +1639,7 @@ func (provider *GeminiProvider) Transcription(ctx *schemas.BifrostContext, key s
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Large response mode: return lightweight response with metadata only
@@ -1729,7 +1714,8 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 
 	startTime := time.Now()
 	// Make the request
-	err := provider.streamingClient.Do(req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, provider.streamingClient, req, resp)
+	latency := time.Since(startTime)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		if errors.Is(err, context.Canceled) {
@@ -1740,16 +1726,16 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 					Message: schemas.ErrRequestCancelled,
 					Error:   err,
 				},
-			}, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+			}, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 		// Request failed before the first response byte (server closed an idle/pooled connection,
 		// broken pipe, connection refused, DNS failure, etc.). Surface as a retriable upstream
 		// connection error (502) so executeRequestWithRetries honors max_retries, matching the
 		// non-streaming path - see https://github.com/maximhq/bifrost/issues/4496.
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Extract provider response headers before status check so error responses also forward them
@@ -1758,8 +1744,10 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
-		return nil, providerUtils.EnrichError(ctx, parseGeminiError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseGeminiError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
+
+	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
 
 	// Large payload streaming passthrough — pipe raw upstream SSE to client
 	if providerUtils.SetupStreamingPassthrough(ctx, resp) {
@@ -1770,8 +1758,6 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 
 	// Create response channel
 	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
-
-	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
 
 	// Start streaming in a goroutine
 	go func() {
@@ -1832,14 +1818,7 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 			geminiResponse, err := processGeminiStreamChunk(jsonData)
 			if err != nil {
 				if strings.Contains(err.Error(), "gemini api error") {
-					bifrostErr := &schemas.BifrostError{
-						Type:           schemas.Ptr("gemini_api_error"),
-						IsBifrostError: false,
-						Error: &schemas.ErrorField{
-							Message: err.Error(),
-							Error:   err,
-						},
-					}
+					bifrostErr := toGeminiStreamBifrostError(err)
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger, postHookSpanFinalizer)
 					return
@@ -1952,7 +1931,7 @@ func (provider *GeminiProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Large response mode: return lightweight response with metadata only
@@ -2039,7 +2018,7 @@ func (provider *GeminiProvider) handleImagenImageGeneration(ctx *schemas.Bifrost
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		providerUtils.MaterializeStreamErrorBody(ctx, resp)
-		return nil, providerUtils.EnrichError(ctx, parseGeminiError(resp), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseGeminiError(resp), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Parse Imagen response
@@ -2129,7 +2108,7 @@ func (provider *GeminiProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 
 		if resp.StatusCode() != fasthttp.StatusOK {
 			providerUtils.MaterializeStreamErrorBody(ctx, resp)
-			return nil, providerUtils.EnrichError(ctx, parseGeminiError(resp), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+			return nil, providerUtils.EnrichError(ctx, parseGeminiError(resp), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 
 		body, isLargeResp, decodeErr := providerUtils.FinalizeResponseWithLargeDetection(ctx, resp, provider.logger)
@@ -2181,7 +2160,7 @@ func (provider *GeminiProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Large response mode: return lightweight response with metadata only
@@ -2279,13 +2258,13 @@ func (provider *GeminiProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, providerUtils.EnrichError(ctx, parseGeminiError(resp), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseGeminiError(resp), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// use handle provider response
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Parse response
@@ -2349,7 +2328,7 @@ func (provider *GeminiProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		respBody := append([]byte(nil), resp.Body()...)
-		return nil, providerUtils.EnrichError(ctx, parseGeminiError(resp), nil, respBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseGeminiError(resp), nil, respBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Parse response
@@ -2436,12 +2415,11 @@ func (provider *GeminiProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 			return nil, bifrostErr
 		}
 		if resp.StatusCode() != fasthttp.StatusOK {
-			// log full error
-			provider.logger.Error("failed to download video: " + string(resp.Body()))
-			return nil, providerUtils.NewBifrostOperationError(
+			provider.logger.Error("failed to download video: status %d", resp.StatusCode())
+			return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(
 				fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()),
 				nil,
-			)
+			), latency)
 		}
 		body, err := providerUtils.CheckAndDecodeBody(resp)
 		if err != nil {
@@ -2591,24 +2569,24 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, providerUtils.EnrichError(ctx, parseGeminiError(resp), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseGeminiError(resp), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Parse the batch job response
 	var geminiResp GeminiBatchJobResponse
 	if err := sonic.Unmarshal(body, &geminiResp); err != nil {
 		provider.logger.Error("gemini batch create unmarshal error: " + err.Error())
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err), jsonData, body, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err), jsonData, body, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 	// Check for metadata
 	if geminiResp.Metadata == nil {
@@ -2624,8 +2602,9 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 	failedCount := 0
 
 	// If results are already available (fast completion), count them
-	if geminiResp.Dest != nil && len(geminiResp.Dest.InlinedResponses) > 0 {
-		for _, inlineResp := range geminiResp.Dest.InlinedResponses {
+	outputFile, inlinedResponses := geminiBatchOutput(&geminiResp)
+	if len(inlinedResponses) > 0 {
+		for _, inlineResp := range inlinedResponses {
 			if inlineResp.Error != nil {
 				failedCount++
 			} else if inlineResp.Response != nil {
@@ -2640,9 +2619,9 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 	status := ToBifrostBatchStatus(geminiResp.Metadata.State)
 
 	// If state is empty but we have results, it's completed
-	if geminiResp.Metadata.State == "" && geminiResp.Dest != nil && len(geminiResp.Dest.InlinedResponses) > 0 {
+	if geminiResp.Metadata.State == "" && len(inlinedResponses) > 0 {
 		status = schemas.BatchStatusCompleted
-		completedCount = len(geminiResp.Dest.InlinedResponses) - failedCount
+		completedCount = len(inlinedResponses) - failedCount
 	}
 
 	// Build response
@@ -2669,8 +2648,8 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 	}
 
 	// Include output file ID if results are in a file
-	if geminiResp.Dest != nil && geminiResp.Dest.FileName != "" {
-		result.OutputFileID = &geminiResp.Dest.FileName
+	if outputFile != "" {
+		result.OutputFileID = &outputFile
 	}
 
 	return result, nil
@@ -2729,7 +2708,7 @@ func (provider *GeminiProvider) batchListByKey(ctx *schemas.BifrostContext, key 
 				},
 			}, latency, nil
 		}
-		return nil, latency, parseGeminiError(resp)
+		return nil, latency, providerUtils.SetErrorLatency(parseGeminiError(resp), latency)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -2875,7 +2854,7 @@ func (provider *GeminiProvider) batchRetrieveByKey(ctx *schemas.BifrostContext, 
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, parseGeminiError(resp)
+		return nil, providerUtils.SetErrorLatency(parseGeminiError(resp), latency)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -2899,7 +2878,7 @@ func (provider *GeminiProvider) batchRetrieveByKey(ctx *schemas.BifrostContext, 
 		geminiResp.Metadata.State == GeminiBatchStateCancelled ||
 		geminiResp.Metadata.State == GeminiBatchStateExpired
 
-	return &schemas.BifrostBatchRetrieveResponse{
+	result := &schemas.BifrostBatchRetrieveResponse{
 		ID:            geminiResp.Metadata.Name,
 		Object:        "batch",
 		Status:        ToBifrostBatchStatus(geminiResp.Metadata.State),
@@ -2916,7 +2895,16 @@ func (provider *GeminiProvider) batchRetrieveByKey(ctx *schemas.BifrostContext, 
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Latency: latency.Milliseconds(),
 		},
-	}, nil
+	}
+
+	// Surface the output file id for file-based batches so callers can download the
+	// results via files.content. Inline batches carry no file; their responses are
+	// exposed through BatchResults instead.
+	if outputFile, _ := geminiBatchOutput(&geminiResp); outputFile != "" {
+		result.OutputFileID = &outputFile
+	}
+
+	return result, nil
 }
 
 // BatchRetrieve retrieves a specific batch job for Gemini, trying each key until successful.
@@ -2986,9 +2974,9 @@ func (provider *GeminiProvider) batchCancelByKey(ctx *schemas.BifrostContext, ke
 		if resp.StatusCode() == fasthttp.StatusNotFound || resp.StatusCode() == fasthttp.StatusMethodNotAllowed {
 			// 404 could mean batch not found or cancel not supported
 			// Return the error instead of assuming completed
-			return nil, parseGeminiError(resp)
+			return nil, providerUtils.SetErrorLatency(parseGeminiError(resp), latency)
 		}
-		return nil, parseGeminiError(resp)
+		return nil, providerUtils.SetErrorLatency(parseGeminiError(resp), latency)
 	}
 
 	now := time.Now().Unix()
@@ -3065,7 +3053,7 @@ func (provider *GeminiProvider) batchDeleteByKey(ctx *schemas.BifrostContext, ke
 	}
 
 	if resp.StatusCode() != fasthttp.StatusOK && resp.StatusCode() != fasthttp.StatusNoContent {
-		return nil, parseGeminiError(resp)
+		return nil, providerUtils.SetErrorLatency(parseGeminiError(resp), latency)
 	}
 
 	return &schemas.BifrostBatchDeleteResponse{
@@ -3111,6 +3099,10 @@ func (provider *GeminiProvider) BatchDelete(ctx *schemas.BifrostContext, keys []
 func processGeminiStreamChunk(jsonData []byte) (*GenerateContentResponse, error) {
 	// Error chunks are rare; avoid a second decode in the common path.
 	if bytes.Contains(jsonData, []byte(`"error"`)) {
+		var errorResp GeminiGenerationError
+		if err := sonic.Unmarshal(jsonData, &errorResp); err == nil && errorResp.Error != nil {
+			return nil, &GeminiStreamAPIError{Err: errorResp.Error}
+		}
 		var errorCheck map[string]interface{}
 		if err := sonic.Unmarshal(jsonData, &errorCheck); err == nil {
 			if errValue, hasError := errorCheck["error"]; hasError {
@@ -3272,7 +3264,7 @@ func (provider *GeminiProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, parseGeminiError(resp)
+		return nil, providerUtils.SetErrorLatency(parseGeminiError(resp), latency)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -3297,66 +3289,21 @@ func (provider *GeminiProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 	var results []schemas.BatchResultItem
 	var parseErrors []schemas.BatchError
 
-	if geminiResp.Dest != nil && geminiResp.Dest.FileName != "" {
+	outputFile, inlinedResponses := geminiBatchOutput(&geminiResp)
+	if outputFile != "" {
 		// File-based results: download and parse the results file
-		provider.logger.Debug("gemini batch results in file: " + geminiResp.Dest.FileName)
-		fileResults, fileParseErrors, bifrostErr := provider.downloadBatchResultsFile(ctx, key, geminiResp.Dest.FileName)
+		provider.logger.Debug("gemini batch results in file: " + outputFile)
+		fileResults, fileParseErrors, bifrostErr := provider.downloadBatchResultsFile(ctx, key, outputFile)
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
 		results = fileResults
 		parseErrors = fileParseErrors
-	} else if geminiResp.Dest != nil && len(geminiResp.Dest.InlinedResponses) > 0 {
-		// Inline results: extract from inlinedResponses
-		results = make([]schemas.BatchResultItem, 0, len(geminiResp.Dest.InlinedResponses))
-		for i, inlineResp := range geminiResp.Dest.InlinedResponses {
-			customID := fmt.Sprintf("request-%d", i)
-			if inlineResp.Metadata != nil && inlineResp.Metadata.Key != "" {
-				customID = inlineResp.Metadata.Key
-			}
-
-			resultItem := schemas.BatchResultItem{
-				CustomID: customID,
-			}
-
-			if inlineResp.Error != nil {
-				resultItem.Error = &schemas.BatchResultError{
-					Code:    fmt.Sprintf("%d", inlineResp.Error.Code),
-					Message: inlineResp.Error.Message,
-				}
-			} else if inlineResp.Response != nil {
-				// Convert the response to a map for the Body field
-				respBody := make(map[string]interface{})
-				if len(inlineResp.Response.Candidates) > 0 {
-					candidate := inlineResp.Response.Candidates[0]
-					if candidate.Content != nil && len(candidate.Content.Parts) > 0 {
-						var textParts []string
-						for _, part := range candidate.Content.Parts {
-							if part.Text != "" {
-								textParts = append(textParts, part.Text)
-							}
-						}
-						if len(textParts) > 0 {
-							respBody["text"] = strings.Join(textParts, "")
-						}
-					}
-					respBody["finish_reason"] = string(candidate.FinishReason)
-				}
-				if inlineResp.Response.UsageMetadata != nil {
-					respBody["usage"] = map[string]interface{}{
-						"prompt_tokens":     inlineResp.Response.UsageMetadata.PromptTokenCount,
-						"completion_tokens": inlineResp.Response.UsageMetadata.CandidatesTokenCount,
-						"total_tokens":      inlineResp.Response.UsageMetadata.TotalTokenCount,
-					}
-				}
-
-				resultItem.Response = &schemas.BatchResultResponse{
-					StatusCode: 200,
-					Body:       respBody,
-				}
-			}
-
-			results = append(results, resultItem)
+	} else if len(inlinedResponses) > 0 {
+		// Inline results: extract from response.inlinedResponses
+		results = make([]schemas.BatchResultItem, 0, len(inlinedResponses))
+		for i, inlineResp := range inlinedResponses {
+			results = append(results, geminiInlineResponseToBatchResultItem(inlineResp, fmt.Sprintf("request-%d", i)))
 		}
 	}
 
@@ -3389,8 +3336,9 @@ func (provider *GeminiProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 }
 
 // BatchResults retrieves batch results for Gemini, trying each key until successful.
-// Results are extracted from dest.inlinedResponses for inline batches,
-// or downloaded from dest.fileName for file-based batches.
+// Results are extracted from the batch response's inline responses
+// (response.inlinedResponses) for inline batches, or downloaded from the responses
+// file (response.responsesFile) for file-based batches.
 func (provider *GeminiProvider) BatchResults(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostBatchResultsRequest) (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.BatchResultsRequest); err != nil {
 		return nil, err
@@ -3442,6 +3390,16 @@ func (provider *GeminiProvider) FileUpload(ctx *schemas.BifrostContext, key sche
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to marshal metadata", err)
 	}
+	contentType := ""
+	if request.ContentType != nil {
+		contentType = strings.TrimSpace(*request.ContentType)
+	}
+	if contentType != "" {
+		metadataJSON, err = providerUtils.SetJSONField(metadataJSON, "file.mimeType", contentType)
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError("failed to marshal metadata", err)
+		}
+	}
 	if _, err := metadataField.Write(metadataJSON); err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to write metadata", err)
 	}
@@ -3451,7 +3409,15 @@ func (provider *GeminiProvider) FileUpload(ctx *schemas.BifrostContext, key sche
 	if filename == "" {
 		filename = "file.bin"
 	}
-	part, err := writer.CreateFormFile("file", filename)
+	var part io.Writer
+	if contentType != "" {
+		header := make(textproto.MIMEHeader)
+		header.Set("Content-Disposition", multipart.FileContentDisposition("file", filename))
+		header.Set("Content-Type", contentType)
+		part, err = writer.CreatePart(header)
+	} else {
+		part, err = writer.CreateFormFile("file", filename)
+	}
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to create form file", err)
 	}
@@ -3491,7 +3457,7 @@ func (provider *GeminiProvider) FileUpload(ctx *schemas.BifrostContext, key sche
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK && resp.StatusCode() != fasthttp.StatusCreated {
-		return nil, parseGeminiError(resp)
+		return nil, providerUtils.SetErrorLatency(parseGeminiError(resp), latency)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -3583,7 +3549,7 @@ func (provider *GeminiProvider) fileListByKey(ctx *schemas.BifrostContext, key s
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, latency, parseGeminiError(resp)
+		return nil, latency, providerUtils.SetErrorLatency(parseGeminiError(resp), latency)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -3746,7 +3712,7 @@ func (provider *GeminiProvider) fileRetrieveByKey(ctx *schemas.BifrostContext, k
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, parseGeminiError(resp)
+		return nil, providerUtils.SetErrorLatency(parseGeminiError(resp), latency)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -3859,7 +3825,7 @@ func (provider *GeminiProvider) fileDeleteByKey(ctx *schemas.BifrostContext, key
 
 	// Handle error response - DELETE returns 200 with empty body on success
 	if resp.StatusCode() != fasthttp.StatusOK && resp.StatusCode() != fasthttp.StatusNoContent {
-		return nil, parseGeminiError(resp)
+		return nil, providerUtils.SetErrorLatency(parseGeminiError(resp), latency)
 	}
 
 	return &schemas.BifrostFileDeleteResponse{
@@ -3932,6 +3898,13 @@ func (provider *GeminiProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		isLargePayload = true
 	}
 
+	if strings.TrimSpace(request.Model) == "" {
+		return nil, providerUtils.NewBifrostOperationError("model is required for Gemini count tokens request", fmt.Errorf("missing model"))
+	}
+
+	// Determine native model name (e.g., parse any provider prefix)
+	_, model := schemas.ParseModelString(request.Model, schemas.Gemini)
+
 	var (
 		jsonData   []byte
 		bifrostErr *schemas.BifrostError
@@ -3950,24 +3923,13 @@ func (provider *GeminiProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		}
 
 		jsonData = normalizeRawGenerateContentBody(ctx, jsonData)
-
-		// Use sjson to delete fields directly from JSON bytes, preserving key ordering
-		jsonData, _ = providerUtils.DeleteJSONField(jsonData, "toolConfig")
-		jsonData, _ = providerUtils.DeleteJSONField(jsonData, "generationConfig")
-		jsonData, _ = providerUtils.DeleteJSONField(jsonData, "systemInstruction")
+		jsonData = wrapGeminiCountTokensBody(jsonData, model)
 	}
 
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
-
-	if strings.TrimSpace(request.Model) == "" {
-		return nil, providerUtils.NewBifrostOperationError("model is required for Gemini count tokens request", fmt.Errorf("missing model"))
-	}
-
-	// Determine native model name (e.g., parse any provider prefix)
-	_, model := schemas.ParseModelString(request.Model, schemas.Gemini)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	path := fmt.Sprintf("/models/%s:countTokens", model)
@@ -3985,7 +3947,7 @@ func (provider *GeminiProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 	// Keep passthrough request mode for countTokens, but fully drain the remaining
 	// client upload before returning. This avoids proxy-layer broken-pipe 502s when
@@ -3996,12 +3958,12 @@ func (provider *GeminiProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 	}
 
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, providerUtils.EnrichError(ctx, parseGeminiError(resp), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseGeminiError(resp), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	responseBody := append([]byte(nil), body...)
@@ -4015,7 +3977,7 @@ func (provider *GeminiProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 	)
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	response := geminiResponse.ToBifrostCountTokensResponse(request.Model)
@@ -4119,7 +4081,16 @@ func (provider *GeminiProvider) Passthrough(
 
 	fasthttpReq.SetBody(req.Body)
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, fasthttpReq, resp)
+	var latency time.Duration
+	var bifrostErr *schemas.BifrostError
+	var wait func()
+	// Google redirects file downloads to /download/v1beta, and only Bifrost holds
+	// the API key that the redirect target requires — so follow it here.
+	if req.Method == http.MethodGet && strings.Contains(req.Path, ":download") {
+		latency, bifrostErr, wait = providerUtils.MakeRequestWithContextFollowRedirects(ctx, provider.client, fasthttpReq, resp, 5)
+	} else {
+		latency, bifrostErr, wait = providerUtils.MakeRequestWithContext(ctx, provider.client, fasthttpReq, resp)
+	}
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -4195,22 +4166,24 @@ func (provider *GeminiProvider) PassthroughStream(
 	fasthttpReq.SetBody(req.Body)
 
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.streamingClient, resp)
-	if err := activeClient.Do(fasthttpReq, resp); err != nil {
+	err := providerUtils.DoStreamingRequest(ctx, activeClient, fasthttpReq, resp)
+	latency := time.Since(startTime)
+	if err != nil {
 		providerUtils.ReleaseStreamingResponse(ctx, resp)
 		if errors.Is(err, context.Canceled) {
-			return nil, &schemas.BifrostError{
+			return nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
 				IsBifrostError: false,
 				Error: &schemas.ErrorField{
 					Type:    schemas.Ptr(schemas.RequestCancelled),
 					Message: schemas.ErrRequestCancelled,
 					Error:   err,
 				},
-			}
+			}, latency)
 		}
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err)
+			return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency)
 		}
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err)
+		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), latency)
 	}
 
 	headers := providerUtils.ExtractPassthroughProviderResponseHeaders(resp)

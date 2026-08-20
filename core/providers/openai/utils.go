@@ -3,6 +3,7 @@ package openai
 import (
 	"strings"
 
+	"github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -20,17 +21,39 @@ func ConvertOpenAIMessagesToBifrostMessages(messages []OpenAIMessage) []schemas.
 			ChatToolMessage: message.ChatToolMessage,
 		}
 		if message.OpenAIChatAssistantMessage != nil {
+			// Callers replay assistant reasoning under any of three keys. Normalize them
+			// onto Reasoning so downstream provider logic sees replayed reasoning
+			// regardless of spelling — DeepSeek in particular gates thinking on it.
+			reasoning := message.OpenAIChatAssistantMessage.Reasoning
+			if reasoning == nil {
+				reasoning = message.OpenAIChatAssistantMessage.ReasoningAlias
+			}
+			if reasoning == nil {
+				for _, detail := range message.OpenAIChatAssistantMessage.ReasoningDetails {
+					if detail.Text != nil {
+						reasoning = detail.Text
+						break
+					}
+				}
+			}
 			bifrostMessages[i].ChatAssistantMessage = &schemas.ChatAssistantMessage{
-				Refusal:     message.OpenAIChatAssistantMessage.Refusal,
-				Reasoning:   message.OpenAIChatAssistantMessage.Reasoning,
-				Annotations: message.OpenAIChatAssistantMessage.Annotations,
-				ToolCalls:   message.OpenAIChatAssistantMessage.ToolCalls,
+				Refusal:          message.OpenAIChatAssistantMessage.Refusal,
+				Reasoning:        reasoning,
+				ReasoningDetails: message.OpenAIChatAssistantMessage.ReasoningDetails,
+				Annotations:      message.OpenAIChatAssistantMessage.Annotations,
+				ToolCalls:        message.OpenAIChatAssistantMessage.ToolCalls,
 			}
 		}
 	}
 	return bifrostMessages
 }
 
+// ConvertBifrostMessagesToOpenAIMessages converts Bifrost chat messages to the
+// OpenAI wire format, dropping neutral-format fields the OpenAI wire has no
+// carrier for. Over-long tool call IDs are stripped of embedded provider
+// reasoning signatures, and tool messages lose is_error so providers that reject
+// unknown message parameters never see it.
+// The caller's messages are never mutated: shared pointers are cloned before edit.
 func ConvertBifrostMessagesToOpenAIMessages(messages []schemas.ChatMessage) []OpenAIMessage {
 	openaiMessages := make([]OpenAIMessage, len(messages))
 	for i, message := range messages {
@@ -40,12 +63,54 @@ func ConvertBifrostMessagesToOpenAIMessages(messages []schemas.ChatMessage) []Op
 			Content:         message.Content,
 			ChatToolMessage: message.ChatToolMessage,
 		}
+		// Strip provider reasoning signatures (e.g. Gemini thoughtSignatures embedded in
+		// call_id as "<baseID>_ts_<sig>") from the tool result's tool_call_id, but only when it
+		// exceeds OpenAI's limit — shorter IDs are left intact so distinct upstream IDs are
+		// preserved. Clone first — ChatToolMessage is shared with the caller's input.
+		if message.ChatToolMessage != nil && message.ChatToolMessage.ToolCallID != nil &&
+			len(*message.ChatToolMessage.ToolCallID) > MaxToolCallIDLength {
+			if stripped := utils.StripThoughtSignature(*message.ChatToolMessage.ToolCallID); stripped != *message.ChatToolMessage.ToolCallID {
+				toolMsgCopy := *message.ChatToolMessage
+				toolMsgCopy.ToolCallID = &stripped
+				openaiMessages[i].ChatToolMessage = &toolMsgCopy
+			}
+		}
+		// The OpenAI wire format has no tool-error field; strip is_error so
+		// providers that reject unknown message parameters never see it. Clone
+		// first — ChatToolMessage is shared with the caller's input.
+		if openaiMessages[i].ChatToolMessage != nil && openaiMessages[i].ChatToolMessage.IsError != nil {
+			toolMsgCopy := *openaiMessages[i].ChatToolMessage
+			toolMsgCopy.IsError = nil
+			openaiMessages[i].ChatToolMessage = &toolMsgCopy
+		}
 		if message.ChatAssistantMessage != nil {
+			// Strip the same embedded signature from over-long assistant tool call IDs. Clone the
+			// slice only when a strip is actually needed so the caller's input is never mutated.
+			toolCalls := message.ChatAssistantMessage.ToolCalls
+			needsStrip := false
+			for j := range toolCalls {
+				if toolCalls[j].ID != nil && len(*toolCalls[j].ID) > MaxToolCallIDLength &&
+					strings.Contains(*toolCalls[j].ID, utils.ThoughtSignatureSeparator) {
+					needsStrip = true
+					break
+				}
+			}
+			if needsStrip {
+				cloned := make([]schemas.ChatAssistantMessageToolCall, len(toolCalls))
+				copy(cloned, toolCalls)
+				for j := range cloned {
+					if cloned[j].ID != nil && len(*cloned[j].ID) > MaxToolCallIDLength {
+						stripped := utils.StripThoughtSignature(*cloned[j].ID)
+						cloned[j].ID = &stripped
+					}
+				}
+				toolCalls = cloned
+			}
 			openaiMessages[i].OpenAIChatAssistantMessage = &OpenAIChatAssistantMessage{
 				Refusal:     message.ChatAssistantMessage.Refusal,
 				Reasoning:   message.ChatAssistantMessage.Reasoning,
 				Annotations: message.ChatAssistantMessage.Annotations,
-				ToolCalls:   message.ChatAssistantMessage.ToolCalls,
+				ToolCalls:   toolCalls,
 			}
 		}
 	}
@@ -90,7 +155,7 @@ func isOpenAIReasoningModel(model string) bool {
 		}
 	}
 	// Check for GPT-5 series models which support reasoning.effort
-	if strings.HasPrefix(modelLower, "gpt-5") {
+	if strings.Contains(modelLower, "gpt-5") {
 		return true
 	}
 	return false
@@ -99,6 +164,9 @@ func isOpenAIReasoningModel(model string) bool {
 func normalizeOpenAIReasoningEffort(model string, effort string) string {
 	switch effort {
 	case "minimal":
+		if supportsOpenAIMinimalReasoningEffort(model) {
+			return effort
+		}
 		return "low"
 	case "max":
 		if supportsMaxReasoningEffort(model) {
@@ -124,25 +192,58 @@ func supportsOpenAIXHighReasoningEffort(model string) bool {
 		model = parsedModel
 	}
 	modelLower := strings.ToLower(model)
+	// This normalizer is shared by every OpenAI-dialect provider, not just OpenAI, so
+	// non-OpenAI families that support the tier have to be recognised here too -
+	// otherwise their "xhigh" is silently downgraded to "high" before the
+	// provider-specific compat pass ever runs.
+	if schemas.SupportsGrokXHighReasoningEffort(modelLower) {
+		return true
+	}
 	return strings.HasPrefix(modelLower, "gpt-5.2") ||
 		strings.HasPrefix(modelLower, "gpt-5.3-codex") ||
 		strings.HasPrefix(modelLower, "gpt-5.4") ||
-		strings.HasPrefix(modelLower, "gpt-5.5")
+		strings.HasPrefix(modelLower, "gpt-5.5") ||
+		strings.HasPrefix(modelLower, "gpt-5.6")
 }
 
-// supportsMaxReasoningEffort reports models that natively accept "max" effort (e.g. DeepSeek V4, GLM-5.2).
+// supportsOpenAIMinimalReasoningEffort reports models that natively accept "minimal" effort.
+// Per OpenAI's official docs (developers.openai.com/api/docs/guides/latest-model), the original
+// GPT-5 family — "gpt-5", "gpt-5-mini", "gpt-5-nano" — supports "minimal, low, medium, high".
+// Every later GPT-5 dot-revision (5.1, 5.2, 5.3-codex, 5.4, 5.5, 5.6-family, and their own
+// mini/nano/pro/codex variants) dropped "minimal" from their reasoning.effort enum in favor of
+// "none"/"xhigh"/"max". o1/o3/o4-series and gpt-oss also do not support it. Models without
+// confirmed capability data conservatively fall back to "low".
+func supportsOpenAIMinimalReasoningEffort(model string) bool {
+	_, parsedModel := schemas.ParseModelString(model, schemas.OpenAI)
+	if parsedModel != "" {
+		model = parsedModel
+	}
+	modelLower := strings.ToLower(model)
+	switch modelLower {
+	case "gpt-5", "gpt-5-mini", "gpt-5-nano":
+		return true
+	default:
+		return false
+	}
+}
+
+// supportsMaxReasoningEffort reports models that natively accept "max" effort (e.g. GPT-5.6, DeepSeek V4, GLM-5.2).
 func supportsMaxReasoningEffort(model string) bool {
 	_, parsedModel := schemas.ParseModelString(model, schemas.OpenAI)
 	if parsedModel != "" {
 		model = parsedModel
 	}
 	modelLower := strings.ToLower(model)
-	return strings.HasPrefix(modelLower, "deepseek-v4") ||
+	return strings.HasPrefix(modelLower, "gpt-5.6") ||
+		strings.HasPrefix(modelLower, "deepseek-v4") ||
 		strings.HasPrefix(modelLower, "glm-5.2")
 }
 
 // MaxUserFieldLength for OpenAI enforces a 64 character maximum on the user field
 const MaxUserFieldLength = 64
+
+// MaxToolCallIDLength is OpenAI's 64 character maximum on tool call IDs (call_id / input[].id).
+const MaxToolCallIDLength = 64
 
 // SanitizeUserField returns nil if user exceeds MaxUserFieldLength, otherwise returns the original value
 func SanitizeUserField(user *string) *string {

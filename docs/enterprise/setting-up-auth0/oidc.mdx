@@ -102,11 +102,11 @@ exports.onExecutePostLogin = async (event, api) => {
 };
 ```
 
-<Frame caption="Post Login Action — deploy the action and wire it into the post-login flow between Start and Complete.">
+<Frame caption="Post Login Action - deploy the action and wire it into the post-login flow between Start and Complete.">
   <img src="/media/user-provisioning/auth0/auth0-action-code.png" alt="Auth0 action code editor showing the roles claims in token action" />
 </Frame>
 
-You can add any other user metadata the same way — `event.user.department`, `event.user.app_metadata.team`, etc. Any claim you set here will be available in Bifrost's Attribute Mapping step.
+You can add any other user metadata the same way - `event.user.department`, `event.user.app_metadata.team`, etc. Any claim you set here will be available in Bifrost's Attribute Mapping step.
 
 <Note>
   Using a plain claim name (e.g. `roles`) keeps the mapping simple. If your org policy requires a URL-namespaced claim (e.g. `https://your-domain.com/roles`), use the full namespaced string as the claim name in Bifrost's attribute mappings.
@@ -214,10 +214,12 @@ Use the sections below the claim list to map Auth0 claim values to Bifrost roles
 
 **Attribute-to-Role Mappings**
 
-Map a claim value to a Bifrost role.
+Map a claim value to a Bifrost role. All matching rules are evaluated. If several rules match, Bifrost picks one using your chosen resolution strategy:
 
-- All matching rules are evaluated - if multiple rules match, the role with the highest permissions is assigned
-- If no rule matches, the user is not assigned a role and login is denied
+- **The role with the most permissions** (default)
+- **The first matching role, by list order** (drag rows to set priority)
+
+If no rule matches, no role is assigned and login is denied.
 
 **Attribute-to-Team Mappings**
 

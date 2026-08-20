@@ -189,9 +189,10 @@ func TestCapabilityFieldsRoundTripThroughPricingConversions(t *testing.T) {
 	inputCost := float64(1)
 	outputCost := float64(2)
 	entry := Entry{
-		BaseModel: "gpt-4o",
-		Provider:  "openai",
-		Mode:      "chat",
+		BaseModel:    "gpt-4o",
+		Provider:     "openai",
+		Mode:         "chat",
+		IsDeprecated: true,
 		Options: Options{
 			InputCostPerToken:  &inputCost,
 			OutputCostPerToken: &outputCost,
@@ -219,11 +220,32 @@ func TestCapabilityFieldsRoundTripThroughPricingConversions(t *testing.T) {
 	if roundTrip.Architecture == nil || roundTrip.Architecture.Modality == nil || *roundTrip.Architecture.Modality != modality {
 		t.Fatalf("expected architecture to round-trip, got %#v", roundTrip.Architecture)
 	}
+	if !roundTrip.IsDeprecated {
+		t.Fatalf("expected is_deprecated to round-trip")
+	}
 }
 
 func capabilityIntPtr(v int) *int { return &v }
 
 func capabilityBoolPtr(v bool) *bool { return &v }
+
+// TestExtractSupportedParams_StopSpellings guards both datasheet spellings of the
+// stop parameter. Anthropic rows use stop_sequences and Bedrock's Nova/Titan rows use
+// the Converse camelCase stopSequences; compat's dropUnsupportedParams gates only on
+// the neutral "stop", so a spelling that fails to map makes the model silently lose
+// its stop sequences and run to end_turn.
+func TestExtractSupportedParams_StopSpellings(t *testing.T) {
+	for _, id := range []string{"stop", "stop_sequences", "stopSequences"} {
+		t.Run(id, func(t *testing.T) {
+			parsed := &modelParametersParseResult{ModelParameters: []struct {
+				ID string `json:"id"`
+			}{{ID: id}}}
+			if got := extractSupportedParams(parsed); !slices.Contains(got, "stop") {
+				t.Errorf("model_parameters id %q must yield supported param \"stop\", got %v", id, got)
+			}
+		})
+	}
+}
 
 // TestExtractSupportedParams_WebSearch guards the two web-search keys: the
 // model_parameters "web_search" id and the supports_web_search flag must each

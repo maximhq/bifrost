@@ -342,6 +342,17 @@ Input: messages,
 </Tab>
 </Tabs>
 
+#### Correlation response headers
+
+Every traced gateway request echoes the correlation IDs so you can pivot from a single request into its logs and trace in tools like Grafana (Loki + Tempo):
+
+| Response header | Description |
+| --- | --- |
+| `x-request-id` | The request ID you sent, or the UUID Bifrost generated when none was provided. |
+| `x-bifrost-trace-id` | The trace ID linking all spans for the request. Inherited from an incoming W3C `traceparent` when present, otherwise generated. |
+
+The same `trace_id` and `request_id` appear as fields on Bifrost's structured access logs, so the value returned to the caller can be searched directly in your log store.
+
 ### Send Back Raw Request
 
 **Context Key:** `BifrostContextKeySendBackRawRequest`

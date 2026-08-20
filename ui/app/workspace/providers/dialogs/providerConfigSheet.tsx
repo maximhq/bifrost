@@ -21,7 +21,7 @@ interface Props {
 	provider: ModelProvider;
 }
 
-const ANTHROPIC_FAMILY_PROVIDERS = ["anthropic", "vertex", "bedrock", "azure"];
+const ANTHROPIC_FAMILY_PROVIDERS = ["anthropic", "vertex", "bedrock", "bedrock_mantle", "azure"];
 
 const availableTabs = (hasCustomProviderConfig: boolean, hasGovernanceAccess: boolean, isOpenAI: boolean, isAnthropicFamily: boolean) => {
 	const tabs = [];

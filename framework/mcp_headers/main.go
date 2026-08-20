@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -44,6 +45,15 @@ type Provider struct {
 	// once at startup and read lock-free on the request path. Mirrors
 	// oauth2.OAuth2Provider.tempTokens exactly.
 	tempTokens atomic.Pointer[temptoken.Service]
+
+	// credentials caches per-user header credential lookups keyed by
+	// (auth mode, identity, mcp client). It owns its own locking; the
+	// provider itself is lock-free, so the cache's mutexes only ever guard
+	// map and list surgery. Header credentials have no expiry and no
+	// refresh machinery, so cached entries never self-heal: write paths in
+	// this file evict inline, and handler-level database writes that bypass
+	// the provider evict through the exported eviction methods.
+	credentials *headerCredentialCache
 }
 
 // NewProvider constructs a configstore-backed MCPHeadersProvider. Mirrors
@@ -53,7 +63,11 @@ func NewProvider(configStore configstore.ConfigStore, logger schemas.Logger) *Pr
 	if logger == nil {
 		logger = bifrost.NewDefaultLogger(schemas.LogLevelInfo)
 	}
-	return &Provider{configStore: configStore, logger: logger}
+	return &Provider{
+		configStore: configStore,
+		logger:      logger,
+		credentials: newHeaderCredentialCache(defaultCredentialCacheCapacity),
+	}
 }
 
 // SetTempTokenService installs the temp-token service used by
@@ -89,26 +103,92 @@ func (p *Provider) mcpTempTokenAuthEnabled(ctx context.Context) bool {
 
 // GetCredentialByMode looks up the active credential row for the given
 // identity dimension. Returns ErrHeadersCredentialNotFound when the row is
-// absent so callers can switch on the sentinel.
+// absent so callers can switch on the sentinel. mode can also be
+// MCPAuthModeAdmin: the retained bootstrap credential has no per-caller
+// identity, so identity is allowed empty in that case alone.
+//
+// Reads are served from an in-memory cache when possible. Both 'active' and
+// 'needs_update' rows are cached with their status carried through, since
+// the store lookup deliberately returns both and callers decide usability
+// themselves. Header credentials have no expiry, so a cached entry is
+// served until an eviction removes it. Failed lookups (including not-found)
+// are never cached, so a caller completing a submission flow becomes
+// visible on the very next call. Every hit returns a fresh deep copy so a
+// caller mutating the result can never corrupt the cached value.
 func (p *Provider) GetCredentialByMode(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*schemas.MCPHeadersUserCredential, error) {
 	if p.configStore == nil {
 		return nil, schemas.ErrHeadersCredentialProviderNotAvailable
 	}
-	if strings.TrimSpace(identity) == "" || strings.TrimSpace(mcpClientID) == "" {
+	if strings.TrimSpace(mcpClientID) == "" {
 		return nil, schemas.ErrHeadersCredentialNotFound
 	}
-	row, err := p.configStore.GetMCPPerUserHeaderCredentialByMode(ctx, mode, identity, mcpClientID)
-	if err != nil {
-		return nil, fmt.Errorf("load mcp per-user header credential: %w", err)
-	}
-	if row == nil {
+	if mode != schemas.MCPAuthModeAdmin && strings.TrimSpace(identity) == "" {
 		return nil, schemas.ErrHeadersCredentialNotFound
 	}
-	cred, err := rowToCredential(row)
+	if mode == schemas.MCPAuthModeAdmin {
+		// The store lookup ignores identity for admin mode (the retained
+		// bootstrap credential is keyed by client alone), so normalize it
+		// before building the cache key. A non-empty identity would alias
+		// the same row under multiple keys, and the byID index can only
+		// evict one of them.
+		identity = ""
+	}
+	key := headerCredentialCacheKey(mode, identity, mcpClientID)
+	if cached, ok := p.credentials.Get(key); ok {
+		return copyHeaderCredential(cached.credential), nil
+	}
+	cached, err := p.credentials.Fill(ctx, key, func() (cachedHeaderCredential, error) {
+		return p.loadCredentialByMode(ctx, mode, identity, mcpClientID)
+	})
 	if err != nil {
 		return nil, err
 	}
-	return cred, nil
+	return copyHeaderCredential(cached.credential), nil
+}
+
+// loadCredentialByMode is GetCredentialByMode's cache-miss path: the full
+// database lookup plus row-to-schema conversion.
+func (p *Provider) loadCredentialByMode(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (cachedHeaderCredential, error) {
+	row, err := p.configStore.GetMCPPerUserHeaderCredentialByMode(ctx, mode, identity, mcpClientID)
+	if err != nil {
+		return cachedHeaderCredential{}, fmt.Errorf("load mcp per-user header credential: %w", err)
+	}
+	if row == nil {
+		return cachedHeaderCredential{}, schemas.ErrHeadersCredentialNotFound
+	}
+	cred, err := rowToCredential(row)
+	if err != nil {
+		return cachedHeaderCredential{}, err
+	}
+	return cachedHeaderCredential{credentialID: cred.ID, credential: cred}, nil
+}
+
+// copyHeaderCredential returns a deep copy of a cached credential: fresh
+// Headers map and fresh identity pointers, so no two callers (and never the
+// cache itself) share mutable state.
+func copyHeaderCredential(cred *schemas.MCPHeadersUserCredential) *schemas.MCPHeadersUserCredential {
+	if cred == nil {
+		return nil
+	}
+	out := *cred
+	if cred.Headers != nil {
+		headers := make(map[string]string, len(cred.Headers))
+		maps.Copy(headers, cred.Headers)
+		out.Headers = headers
+	}
+	if cred.UserID != nil {
+		v := *cred.UserID
+		out.UserID = &v
+	}
+	if cred.VirtualKeyID != nil {
+		v := *cred.VirtualKeyID
+		out.VirtualKeyID = &v
+	}
+	if cred.SessionID != nil {
+		v := *cred.SessionID
+		out.SessionID = &v
+	}
+	return &out
 }
 
 // UpsertCredential persists the caller-supplied credential. The caller is
@@ -136,6 +216,11 @@ func (p *Provider) UpsertCredential(ctx context.Context, cred *schemas.MCPHeader
 	cred.ID = row.ID
 	cred.CreatedAt = row.CreatedAt
 	cred.UpdatedAt = row.UpdatedAt
+	// UpsertMCPPerUserHeaderCredential upserts by binding and rewrites
+	// row.ID to the reused row's ID when one existed, so this evicts exactly
+	// the row that was written; the next lookup for this binding reads the
+	// new values. A fresh row has nothing cached and the evict is a no-op.
+	p.EvictCredentialByID(row.ID)
 	return nil
 }
 
@@ -150,7 +235,79 @@ func (p *Provider) DeleteCredential(ctx context.Context, id string) error {
 	if err := p.configStore.DeleteMCPPerUserHeaderCredential(ctx, id); err != nil {
 		return fmt.Errorf("delete mcp per-user header credential: %w", err)
 	}
+	p.EvictCredentialByID(id)
 	return nil
+}
+
+// EvictCredential drops the cached credential for one (mode, identity,
+// mcp client) binding. Side-effect only and safe to call when the cache is
+// absent; the next lookup for the binding reads the database.
+func (p *Provider) EvictCredential(mode schemas.MCPAuthMode, identity, mcpClientID string) {
+	if p == nil {
+		return
+	}
+	if mode == schemas.MCPAuthModeAdmin {
+		// Admin-mode entries are always cached under an empty identity (see
+		// GetCredentialByMode's normalization); without this, an eviction
+		// call carrying a non-empty identity would compute a key that was
+		// never installed, leaving the stale admin credential cached.
+		identity = ""
+	}
+	p.credentials.Evict(headerCredentialCacheKey(mode, identity, mcpClientID))
+}
+
+// EvictCredentialByID drops the cached credential backed by the given row
+// ID, if any binding currently holds it. Side-effect only and safe to call
+// when the cache is absent or the ID is not cached.
+func (p *Provider) EvictCredentialByID(id string) {
+	if p == nil {
+		return
+	}
+	p.credentials.EvictByCredentialID(id)
+}
+
+// EvictCredentialsByMCPClient drops every cached credential bound to the
+// given MCP client, across all auth modes and identities. Used after
+// client-level mutations that invalidate its credential rows as a set, such
+// as a needs_update schema flip, access reconciliation, or client deletion.
+// Side-effect only and safe to call when the cache is absent.
+func (p *Provider) EvictCredentialsByMCPClient(mcpClientID string) {
+	if p == nil {
+		return
+	}
+	p.credentials.EvictByMCPClient(mcpClientID)
+}
+
+// EvictCredentialsByVirtualKey drops every cached vk-mode credential bound
+// to the given virtual key, across all MCP clients. Used after virtual key
+// mutations that orphan or delete its credential rows as a set. Side-effect
+// only and safe to call when the cache is absent.
+func (p *Provider) EvictCredentialsByVirtualKey(virtualKeyID string) {
+	if p == nil {
+		return
+	}
+	p.credentials.EvictByVirtualKey(virtualKeyID)
+}
+
+// EvictCredentialsByUser drops every cached user-mode credential bound to
+// the given user, across all MCP clients. Used after user-level mutations
+// that orphan or delete the user's credential rows as a set. Side-effect
+// only and safe to call when the cache is absent.
+func (p *Provider) EvictCredentialsByUser(userID string) {
+	if p == nil {
+		return
+	}
+	p.credentials.EvictByUser(userID)
+}
+
+// FlushCredentialCache drops every cached per-user header credential. The
+// coarse fallback for mutations whose blast radius cannot be scoped to one
+// client or virtual key. Side-effect only.
+func (p *Provider) FlushCredentialCache() {
+	if p == nil {
+		return
+	}
+	p.credentials.Flush()
 }
 
 // InitiateUserSubmissionFlow creates a pending mcp_per_user_header_flows

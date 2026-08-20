@@ -385,7 +385,6 @@ func TestPreLLMHook_EmitsPluginLogOnEmbeddingFailure(t *testing.T) {
 	if _, _, err := plugin.PreLLMHook(ctx, req); err != nil {
 		t.Fatalf("PreLLMHook failed: %v", err)
 	}
-
 	logs := ctx.GetPluginLogs()
 	if len(logs) == 0 {
 		t.Fatal("expected at least one plugin log entry on embedding failure, got none")
@@ -440,7 +439,6 @@ func TestPreLLMHook_NoDebugLogsOnFlow(t *testing.T) {
 	if _, _, err := plugin.PreLLMHook(ctx, req); err != nil {
 		t.Fatalf("PreLLMHook failed: %v", err)
 	}
-
 	logs := ctx.GetPluginLogs()
 	for _, l := range logs {
 		if l.PluginName != PluginName {
@@ -449,6 +447,41 @@ func TestPreLLMHook_NoDebugLogsOnFlow(t *testing.T) {
 		if l.Level == schemas.LogLevelDebug {
 			t.Fatalf("expected no Debug plugin logs on normal flow, got %+v", l)
 		}
+	}
+}
+
+// TestPreLLMHookStoresEmbeddingDebug verifies a successful semantic lookup remains billable if the main request later fails.
+func TestPreLLMHookStoresEmbeddingDebug(t *testing.T) {
+	plugin := newTestPlugin(t, newObservableStore())
+	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		return &schemas.BifrostEmbeddingResponse{
+			Data: []schemas.EmbeddingData{{
+				Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{0.1, 0.2, 0.3}},
+			}},
+			Usage: &schemas.BifrostLLMUsage{TotalTokens: 12},
+		}, nil
+	})
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: CreateBasicChatRequest("first request", 0.7, 50),
+	}
+	ctx := scopedTestContext(t, "")
+
+	if _, _, err := plugin.PreLLMHook(ctx, req); err != nil {
+		t.Fatalf("PreLLMHook failed: %v", err)
+	}
+	cacheDebug, ok := schemas.CacheDebugFromContext(ctx)
+	if !ok {
+		t.Fatal("expected semantic embedding debug on request context")
+	}
+	if cacheDebug.ProviderUsed == nil || *cacheDebug.ProviderUsed != string(plugin.config.Provider) {
+		t.Fatalf("cache debug provider = %v, want %q", cacheDebug.ProviderUsed, plugin.config.Provider)
+	}
+	if cacheDebug.ModelUsed == nil || *cacheDebug.ModelUsed != plugin.config.EmbeddingModel {
+		t.Fatalf("cache debug model = %v, want %q", cacheDebug.ModelUsed, plugin.config.EmbeddingModel)
+	}
+	if cacheDebug.InputTokens == nil || *cacheDebug.InputTokens != 12 {
+		t.Fatalf("cache debug input tokens = %v, want 12", cacheDebug.InputTokens)
 	}
 }
 
@@ -560,5 +593,197 @@ func TestPreLLMHook_ConcurrentSameRequestID(t *testing.T) {
 	// State for the shared requestID should exist (one of them won).
 	if state := plugin.getCacheState(requestID); state == nil {
 		t.Fatal("expected cache state to exist after concurrent PreLLMHook")
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Internal embedding request must not inherit the caller's key-routing state
+// (issue #4756) or body-transport state. Otherwise governance/key-selection
+// context resolved for the caller's chat provider leaks into the embedding
+// request and rejects every embedding-provider key ("no keys found for
+// provider"), and raw-body/large-payload passthrough state makes providers
+// build the embedding request from the caller's body instead of embeddingReq.
+// -----------------------------------------------------------------------------
+
+// vectorRequiringStore is an observableStore that reports RequiresVectors()=true,
+// mirroring dedicated vector DBs (Qdrant, Pinecone) that reject empty-vector
+// upserts. All other behavior is inherited from observableStore.
+type vectorRequiringStore struct {
+	*observableStore
+}
+
+func (s *vectorRequiringStore) RequiresVectors() bool { return true }
+
+func TestGenerateEmbedding_ClearsInheritedKeyRoutingState(t *testing.T) {
+	plugin := newTestPlugin(t, newObservableStore())
+
+	var captured *schemas.BifrostContext
+	plugin.SetEmbeddingRequestExecutor(func(ctx *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		captured = ctx
+		return &schemas.BifrostEmbeddingResponse{
+			Data: []schemas.EmbeddingData{{
+				Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{0.1, 0.2, 0.3}},
+			}},
+		}, nil
+	})
+
+	// Simulate the caller's request context after governance resolved key
+	// routing for the CALLER's (chat) provider — none of these keys belong to
+	// the embedding provider.
+	ctx := scopedTestContext(t, "")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys, []string{"chat-provider-key-id"})
+	ctx.SetValue(schemas.BifrostContextKeyRoutingPinnedAPIKeyID, "chat-provider-key-id")
+	ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, "chat-provider-key-id")
+	ctx.SetValue(schemas.BifrostContextKeyAPIKeyName, "chat-provider-key-name")
+	ctx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{ID: "direct-key-id"})
+	ctx.SetValue(schemas.BifrostContextKeySkipKeySelection, true)
+	// Body-transport state from the caller's request. Inherited raw-body
+	// passthrough makes providers send the internal request's (absent) raw
+	// body instead of converting it; inherited large-payload mode streams the
+	// caller's original body to the embedding endpoint; inherited extra
+	// headers and URL path ride along to the embedding provider.
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+	ctx.SetValue(schemas.BifrostContextKeySendBackRawRequest, true)
+	ctx.SetValue(schemas.BifrostContextKeySendBackRawResponse, true)
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughOverridesPresent, true)
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
+	ctx.SetValue(schemas.BifrostContextKeyLargeResponseMode, true)
+	ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{"x-custom": {"v"}})
+	ctx.SetValue(schemas.BifrostContextKeyURLPath, "/v1/chat/completions")
+
+	emb, _, err := plugin.generateEmbedding(ctx, "some text")
+	if err != nil {
+		t.Fatalf("generateEmbedding failed: %v", err)
+	}
+	if len(emb) == 0 {
+		t.Fatal("expected non-empty embedding")
+	}
+	if captured == nil {
+		t.Fatal("embedding executor was not invoked")
+	}
+
+	// The internal embedding context must not carry the caller's key-routing
+	// or body-transport state, so key selection resolves against the embedding
+	// provider's own keys and providers build the request body from
+	// embeddingReq rather than the caller's raw/streamed body.
+	for _, key := range []schemas.BifrostContextKey{
+		schemas.BifrostContextKeyGovernanceIncludeOnlyKeys,
+		schemas.BifrostContextKeyRoutingPinnedAPIKeyID,
+		schemas.BifrostContextKeyAPIKeyID,
+		schemas.BifrostContextKeyAPIKeyName,
+		schemas.BifrostContextKeyDirectKey,
+		schemas.BifrostContextKeySkipKeySelection,
+		schemas.BifrostContextKeyUseRawRequestBody,
+		schemas.BifrostContextKeySendBackRawRequest,
+		schemas.BifrostContextKeySendBackRawResponse,
+		schemas.BifrostContextKeyPassthroughOverridesPresent,
+		schemas.BifrostContextKeyLargePayloadMode,
+		schemas.BifrostContextKeyLargeResponseMode,
+		schemas.BifrostContextKeyExtraHeaders,
+		schemas.BifrostContextKeyURLPath,
+	} {
+		if v := captured.Value(key); v != nil {
+			t.Fatalf("expected %q cleared on internal embedding context, got %v", key, v)
+		}
+	}
+
+	// SkipPluginPipeline must remain set — the internal embedding still bypasses
+	// the plugin pipeline; only the leaked key-routing state is cleared.
+	if skip, _ := captured.Value(schemas.BifrostContextKeySkipPluginPipeline).(bool); !skip {
+		t.Fatal("expected SkipPluginPipeline to remain set on internal embedding context")
+	}
+}
+
+// -----------------------------------------------------------------------------
+// A failed embedding must not produce an empty-vector upsert on a store that
+// requires vectors (issue #4756: Qdrant "Expected some vectors").
+// -----------------------------------------------------------------------------
+
+func TestPostLLMHook_SkipsWriteWhenVectorRequiredButEmbeddingMissing(t *testing.T) {
+	base := newObservableStore()
+	plugin := newTestPlugin(t, &vectorRequiringStore{observableStore: base})
+	// Embedding executor fails, mirroring the "no keys found" resolution error
+	// that leaves state.Embeddings unset.
+	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "no keys found for provider"}}
+	})
+
+	ctx := CreateContextWithCacheKey(t, "")
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: CreateBasicChatRequest("hello", 0.7, 50),
+	}
+	if _, sc, err := plugin.PreLLMHook(ctx, req); err != nil {
+		t.Fatalf("PreLLMHook failed: %v", err)
+	} else if sc != nil {
+		t.Fatalf("expected miss, got short-circuit %+v", sc)
+	}
+
+	requestID, _ := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
+	state := plugin.getCacheState(requestID)
+	if state == nil {
+		t.Fatal("expected cache state to exist")
+	}
+	if len(state.Embeddings) != 0 {
+		t.Fatalf("expected no embedding after failed generation, got %v", state.Embeddings)
+	}
+
+	res := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.ChatCompletionRequest},
+		},
+	}
+	if _, _, err := plugin.PostLLMHook(ctx, res, nil); err != nil {
+		t.Fatalf("PostLLMHook failed: %v", err)
+	}
+	plugin.WaitForPendingOperations()
+
+	base.mu.Lock()
+	defer base.mu.Unlock()
+	if len(base.addIDs) != 0 {
+		t.Fatalf("expected zero cache writes when embedding is missing on a vector-requiring store, got %d", len(base.addIDs))
+	}
+}
+
+func TestPostLLMHook_WritesWhenVectorRequiredAndEmbeddingPresent(t *testing.T) {
+	base := newObservableStore()
+	plugin := newTestPlugin(t, &vectorRequiringStore{observableStore: base})
+	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		return &schemas.BifrostEmbeddingResponse{
+			Data: []schemas.EmbeddingData{{
+				Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{0.1, 0.2, 0.3}},
+			}},
+		}, nil
+	})
+
+	ctx := CreateContextWithCacheKey(t, "")
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: CreateBasicChatRequest("hello", 0.7, 50),
+	}
+	if _, _, err := plugin.PreLLMHook(ctx, req); err != nil {
+		t.Fatalf("PreLLMHook failed: %v", err)
+	}
+
+	requestID, _ := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
+	state := plugin.getCacheState(requestID)
+	if state == nil || len(state.Embeddings) == 0 {
+		t.Fatalf("expected embedding populated after successful generation, got %+v", state)
+	}
+
+	res := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.ChatCompletionRequest},
+		},
+	}
+	if _, _, err := plugin.PostLLMHook(ctx, res, nil); err != nil {
+		t.Fatalf("PostLLMHook failed: %v", err)
+	}
+	plugin.WaitForPendingOperations()
+
+	base.mu.Lock()
+	defer base.mu.Unlock()
+	if len(base.addIDs) != 1 {
+		t.Fatalf("expected one cache write when embedding is present, got %d", len(base.addIDs))
 	}
 }

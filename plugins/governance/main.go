@@ -29,6 +29,8 @@ const (
 	governanceRejectedContextKey schemas.BifrostContextKey = "bf-governance-rejected"
 
 	VirtualKeyPrefix = "sk-bf-"
+
+	noComplexitySignalLog = "Complexity analysis skipped: no configured complexity signal matched the latest user message; continuing with existing routing path"
 )
 
 // Config is the configuration for the governance plugin
@@ -700,6 +702,13 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 			}
 
 			result := analyzer.Analyze(input)
+			if result == nil {
+				if p.logger != nil {
+					p.logger.Debug("[Governance] %s", noComplexitySignalLog)
+				}
+				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelDebug, noComplexitySignalLog)
+				return nil
+			}
 			if p.logger != nil {
 				p.logger.Debug(
 					"[Governance] Complexity analysis details: tier=%s score=%.2f words=%d",
@@ -719,6 +728,7 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 
 	routingCtx := &RoutingContext{
 		VirtualKey:               virtualKey,
+		UserID:                   bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID),
 		Provider:                 provider,
 		Model:                    model,
 		RequestType:              requestType,
@@ -934,7 +944,7 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 		}
 	}
 	p.cfgMutex.RLock()
-	if !isVirtualKeyValid && evaluationRequest.UserID == "" && p.isVkMandatory != nil && *p.isVkMandatory {
+	if !isVirtualKeyValid && !hasDirectKeyAuth(ctx) && evaluationRequest.UserID == "" && p.isVkMandatory != nil && *p.isVkMandatory {
 		message := "virtual key is required. Provide a virtual key via the x-bf-vk header."
 		if p.isEnterprise {
 			message = "authentication is required. Provide a virtual key (x-bf-vk), API key, or user token."
@@ -950,8 +960,23 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 	}
 	p.cfgMutex.RUnlock()
 
+	// Read-only metadata calls (e.g. list models) set this flag to skip budget/rate-limit
+	// checks while still enforcing VK identity (existence, active status, provider/model filtering).
+	skipBudgetsAndRateLimits := bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipBudgetAndRateLimits)
+
+	// Requests that are evaluated but never routed set this flag. Their provider is
+	// whatever upstream the caller was already talking to, not a provider an operator
+	// picked, so the VK provider allowlist carries no meaning for them.
+	skipProviderCheck := bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipProviderCheck)
+
 	// First evaluate model and provider checks (applies even when virtual keys are disabled or not present)
-	result := p.resolver.EvaluateModelAndProviderRequest(ctx, evaluationRequest.Provider, evaluationRequest.Model)
+	result := &EvaluationResult{
+		Decision: DecisionAllow,
+		Reason:   "Provider-level and model-level checks skipped for read-only request",
+	}
+	if !skipBudgetsAndRateLimits {
+		result = p.resolver.EvaluateModelAndProviderRequest(ctx, evaluationRequest.Provider, evaluationRequest.Model)
+	}
 
 	// The flow for governance checks is:
 	//   VK (identity + VK-level budget/rate-limit) -> Customer -> Team -> User
@@ -969,16 +994,12 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 		}
 	}
 
-	// Read-only metadata calls (e.g. list models) set this flag to skip budget/rate-limit
-	// checks while still enforcing VK identity (existence, active status, provider/model filtering).
-	skipBudgetsAndRateLimits := bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipBudgetAndRateLimits)
-
 	// Step 1: Evaluate virtual key (identity + VK-level budget/rate-limit hierarchy).
 	// Short-circuits with VirtualKeyBlocked / ProviderBlocked / ModelBlocked before
 	// we touch Customer / Team / User.
 	if result.Decision == DecisionAllow && evaluationRequest.VirtualKey != "" {
 		skipVKBudgetLimit := evaluationRequest.UserID != "" || skipBudgetsAndRateLimits
-		result = p.resolver.EvaluateVirtualKeyRequest(ctx, evaluationRequest.VirtualKey, evaluationRequest.Provider, evaluationRequest.Model, requestType, skipVKBudgetLimit)
+		result = p.resolver.EvaluateVirtualKeyRequest(ctx, evaluationRequest.VirtualKey, evaluationRequest.Provider, evaluationRequest.Model, requestType, skipVKBudgetLimit, skipProviderCheck)
 	}
 
 	// Step 2: Customer-level budget (customer attached directly to VK, or via the VK's team).
@@ -1125,6 +1146,15 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 	}
 }
 
+// hasDirectKeyAuth returns true when the transport accepted an admin-enabled direct provider key.
+func hasDirectKeyAuth(ctx *schemas.BifrostContext) bool {
+	if ctx == nil {
+		return false
+	}
+	_, ok := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key)
+	return ok
+}
+
 // isMCPToolAllowedByVK checks whether a tool pattern (in "clientName-toolName" or "clientName-*"
 // format) is permitted by the virtual key's MCPConfigs.
 //
@@ -1195,7 +1225,7 @@ func (p *GovernancePlugin) PreRequestHook(ctx *schemas.BifrostContext, req *sche
 	if virtualKeyValue != "" {
 		var ok bool
 		virtualKey, ok = p.store.GetVirtualKey(ctx, virtualKeyValue)
-		if !ok || virtualKey == nil || !virtualKey.IsActiveValue() {
+		if !ok || virtualKey == nil || !virtualKey.IsActiveValue() || virtualKey.IsExpiredAt(time.Now().UTC()) {
 			return nil
 		}
 	}
@@ -1273,10 +1303,8 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 	if headerErr := p.validateRequiredHeaders(ctx); headerErr != nil {
 		return req, &schemas.LLMPluginShortCircuit{Error: headerErr}, nil
 	}
-
 	// Extract virtual key using utility functions
 	virtualKeyValue := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
-
 	// Extract user ID for enterprise user-level governance
 	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
 	// Getting provider and mode from the request
@@ -1431,7 +1459,7 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 	// This runs independently of EvaluateGovernanceRequest to enforce execution-time allow-list.
 	if virtualKeyValue != "" {
 		vk, ok := p.store.GetVirtualKey(ctx, virtualKeyValue)
-		if !ok || vk == nil || !vk.IsActiveValue() {
+		if !ok || vk == nil {
 			// VK became invalid after initial check - fail closed for security
 			ctx.SetValue(governanceRejectedContextKey, true)
 			return req, &schemas.MCPPluginShortCircuit{Error: &schemas.BifrostError{
@@ -1439,6 +1467,26 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 				StatusCode: bifrost.Ptr(403),
 				Error: &schemas.ErrorField{
 					Message: "Virtual key not found",
+				},
+			}}, nil
+		}
+		if !vk.IsActiveValue() {
+			ctx.SetValue(governanceRejectedContextKey, true)
+			return req, &schemas.MCPPluginShortCircuit{Error: &schemas.BifrostError{
+				Type:       bifrost.Ptr(string(DecisionVirtualKeyBlocked)),
+				StatusCode: bifrost.Ptr(403),
+				Error: &schemas.ErrorField{
+					Message: "Virtual key is inactive",
+				},
+			}}, nil
+		}
+		if vk.IsExpiredAt(time.Now().UTC()) {
+			ctx.SetValue(governanceRejectedContextKey, true)
+			return req, &schemas.MCPPluginShortCircuit{Error: &schemas.BifrostError{
+				Type:       bifrost.Ptr(string(DecisionVirtualKeyBlocked)),
+				StatusCode: bifrost.Ptr(403),
+				Error: &schemas.ErrorField{
+					Message: "Virtual key has expired",
 				},
 			}}, nil
 		}

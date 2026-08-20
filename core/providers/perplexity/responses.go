@@ -1,8 +1,18 @@
 package perplexity
 
 import (
+	"strings"
+
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// isPerplexityResponsesSupported reports whether the model should use /v1/responses vs /chat/completions.
+// Denylist by design: /chat/completions serves only the Sonar family, so sonar-* variants go to chat and
+// every other model (base sonar + non-Sonar) goes to responses. This keeps newly-shipped non-Sonar models
+// working without a code change; they'd fail on chat, which doesn't serve them.
+func isPerplexityResponsesSupported(model string) bool {
+	return !strings.HasPrefix(strings.TrimPrefix(model, "perplexity/"), "sonar-")
+}
 
 // ToPerplexityResponsesRequest converts a BifrostResponsesRequest to PerplexityChatRequest
 func ToPerplexityResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *PerplexityChatRequest {
@@ -20,6 +30,12 @@ func ToPerplexityResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *
 		perplexityReq.MaxTokens = bifrostReq.Params.MaxOutputTokens
 		perplexityReq.Temperature = bifrostReq.Params.Temperature
 		perplexityReq.TopP = bifrostReq.Params.TopP
+
+		// Structured output: Perplexity speaks chat-completions, so the Responses
+		// text.format has to be carried over as response_format. Without this a
+		// Responses request reaches Perplexity with no schema at all. An explicit
+		// response_format in ExtraParams still wins; it is applied further below.
+		perplexityReq.ResponseFormat = schemas.ChatResponseFormatFromResponsesFormat(bifrostReq.Params.Text.GetFormat())
 
 		// Handle reasoning effort mapping
 		if bifrostReq.Params.Reasoning != nil && bifrostReq.Params.Reasoning.Effort != nil {
@@ -100,6 +116,7 @@ func ToPerplexityResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *
 			if responseFormat, ok := schemas.SafeExtractFromMap(bifrostReq.Params.ExtraParams, "response_format"); ok {
 				perplexityReq.ResponseFormat = &responseFormat
 			}
+
 
 			// Perplexity-specific request fields
 			if numSearchResults, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["num_search_results"]); ok {

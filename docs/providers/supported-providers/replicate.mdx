@@ -89,7 +89,7 @@ Refer to the API documentation for [Provider Keys Management](https://docs.getbi
 case schemas.Replicate:
     return []schemas.Key{{
         Name:   "replicate-key-1",
-        Value:  *schemas.NewEnvVar("env.REPLICATE_API_TOKEN"),
+        Value:  *schemas.NewSecretVar("env.REPLICATE_API_TOKEN"),
         Models: []string{"*"},
         Weight: 1.0,
         ReplicateKeyConfig: &schemas.ReplicateKeyConfig{
@@ -770,7 +770,6 @@ Each Replicate model has unique parameters. To find available parameters:
 **Behavior**: Not all models support `system_prompt` field. For unsupported models, system prompt is prepended to conversation prompt.
 **Impact**: Prompt structure differs between models
 **Models Affected**: `meta/meta-llama-3-8b`, `meta/llama-2-70b`, `openai/gpt-oss-20b`, `openai/o1-mini`, `xai/grok-4`, and all `deepseek-ai/deepseek*` models
-**Code**: `chat.go:300-318`
 </Accordion>
 
 <Accordion title="Input Image Field Mapping">
@@ -778,14 +777,12 @@ Each Replicate model has unique parameters. To find available parameters:
 **Behavior**: Different models expect input images in different fields (`image_prompt`, `input_image`, `image`, `input_images`)
 **Impact**: Bifrost automatically maps to correct field based on model
 **Models Affected**: Flux family models (see Input Image Field Mapping table)
-**Code**: `images.go:192-209`
 </Accordion>
 
 <Accordion title="Image Content in Chat">
 **Severity**: Low
 **Behavior**: Only non-base64 image URLs from message content blocks are extracted to `image_input`
 **Impact**: Base64-encoded images in messages are ignored
-**Code**: `chat.go:58-63`
 </Accordion>
 
 <Accordion title="Model-Specific Parameters">

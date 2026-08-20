@@ -1,0 +1,121 @@
+---
+title: "v1.6.8"
+description: "v1.6.8 changelog - 2026-08-05"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.6.8
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.6.8
+    docker run -p 8080:8080 maximhq/bifrost:v1.6.8
+    ```
+  </Tab>
+</Tabs>
+
+<Warning>
+    v1.6.8 has an SSE heartbeat parsing issue that affects certain SDK versions (LangChain, OpenAI Go). Upgrade to v1.6.9.
+</Warning>
+
+<Update label="Bifrost(HTTP)" description="1.6.8">
+## ✨ Features
+
+- **WebSocket Proxy Support**: Realtime and Responses WebSocket connections now route through the configured provider-level proxy (HTTP, SOCKS5, env-based) instead of always dialing direct
+- **Configurable SCIM Buffer Sizes**: Added `WithFasthttpBufferSizes` option to `HTTPClientFactory` so IdP token endpoints returning headers larger than the 4KB default no longer fail SCIM/OAuth clients
+
+## 🐞 Fixed
+
+- **Proactive SSE Disconnect Detection**: Moved SSE heartbeat handling into a shared structure so client disconnects during streaming are detected proactively instead of only when a producer loop attempts a write, fixing false-success logging on fast/bursty upstreams like Vertex
+- **Closed Channel Panic on Stream Shutdown**: Fixed a race where a heartbeat goroutine mid-send on `eventCh` at shutdown could panic with "send on closed channel"
+- **Budget Pruning Crash with `config.json` Source of Truth**: Tolerate `ErrNotFound` when pruning cascade-deleted budgets and configs, fixing a startup crash for API-created model configs absent from `config.json`
+- **Bedrock Header Signing Denylist**: Fixed credential isolation so caller headers stored for Anthropic OAuth passthrough are no longer forwarded to other providers, preventing SigV4 signature mismatches on Bedrock
+- **Deterministic Bedrock Tool Ordering**: Fixed non-deterministic tool ordering in `toolConfig` caused by map iteration, which was breaking Bedrock prompt-cache hits
+- **Bedrock `cache_control` Translation**: `cache_control` markers on Anthropic-format content blocks, system blocks, and tools are now correctly translated through the Bedrock invoke and Converse paths instead of being silently dropped
+- **Bedrock Adaptive Thinking Fixes**: Reasoning/thinking `max_tokens` validation errors now return HTTP 400 instead of 500; `tool.defer_loading` is gated on its own beta header; Nova2 web search and code execution tools handled correctly
+- **Encrypted Reasoning Content Mismatch**: Fixed a mismatch where replaying OpenAI Responses API reasoning items through the Anthropic surface minted a fresh item id while forwarding the original encrypted content, which OpenAI rejected
+- **Bedrock Invoke Content Retention**: Bedrock's InvokeModel route now correctly decodes Anthropic's type-discriminated image/tool_use/tool_result blocks instead of silently dropping them
+- **Bedrock Document Message Placeholder**: Messages containing a document block without accompanying text no longer get rejected by Bedrock's Converse API
+- **VK Provider Bulk Replace**: Virtual key provider config replacement is now a single bulk operation instead of per-provider round trips, fixing a hot-path slowdown at scale
+
+## 🗄️ Database Migrations
+
+- No new database migrations in this release.
+
+## 🐙 Closed GitHub Issues
+
+- [#5010](https://github.com/maximhq/bifrost/issues/5010): Server-side SSE keepalive (comment heartbeat) to keep long-idle streams alive through intermediaries
+- [#5186](https://github.com/maximhq/bifrost/issues/5186): Anthropic-surface replay of OpenAI encrypted reasoning mints a fresh item id, OpenAI 400s with "Encrypted content item_id did not match the target item id"
+
+## 🔧 Maintenance
+
+- **Dependency Upgrades**: Bumped core to v1.7.6, framework to v1.5.6, and governance to v1.6.10; all other plugins bumped to pick up the cascade (compat v0.1.32, jsonparser v1.5.33, logging v1.6.6, maxim v1.6.33, mocker v1.5.33, modelcatalogresolver v1.0.14, otel v1.4.5, prompts v1.0.33, semanticcache v1.5.33, telemetry v1.5.33)
+
+</Update>
+<Update label="Core" description="1.7.6">
+- feat: added proxy support for WebSocket-based realtime calls, mirroring existing HTTP proxy configuration (#5788)
+- feat: added `WithFasthttpBufferSizes` option to `HTTPClientFactory` for configurable SCIM read/write buffers, fixing failures when IdP token endpoints return headers larger than the 4KB default (#5808)
+- fix: moved SSE heartbeat handling into a common structure so client-disconnect detection is proactive instead of only firing on the next write attempt (#5850)
+- fix: bedrock headers signing denylist to prevent credential/header leakage across providers and SigV4 signature mismatches (#5833)
+- fix: corrected tool ordering in `extractToolsFromResponsesConversationHistory`, which was non-deterministic due to map iteration and caused Bedrock prompt-cache misses (#5828)
+- fix: translated `cache_control` on Anthropic-format content blocks through the Bedrock invoke path, which previously silently dropped it (#5824)
+- fix: bedrock + anthropic patches for adaptive thinking correctness bugs across reasoning validation and tool-search-tool gating (#5821)
+- fix: fixed encrypted reasoning content mismatch when the Anthropic surface replays OpenAI Responses API reasoning items back to OpenAI (#5819)
+- fix: bedrock invoke flow now retains image/tool_use/tool_return content blocks that were previously dropped by the decoder (#5814)
+- fix: injected placeholder text block for document-only messages on Bedrock, which otherwise rejected the request (#5817)
+- fix: retained tool `cache_control` markers through Bedrock Converse invoke requests so prompt caching applies to system blocks and tools (#5811)
+
+</Update>
+<Update label="Framework" description="1.5.6">
+- feat: added proxy support for WebSocket-based realtime calls, mirroring existing HTTP proxy configuration (#5788)
+- perf: bulk virtual key provider replacement and direct VK lookup to eliminate per-provider round trips in the config store (#5844)
+- chore: upgraded core to v1.7.6
+
+</Update>
+<Update label="compat" description="0.1.32">
+- chore: upgraded core to v1.7.6 and framework to v1.5.6
+
+</Update>
+<Update label="governance" description="1.6.10">
+- perf: bulk virtual key provider replacement and direct VK lookup to eliminate per-provider round trips in the governance store (#5844)
+- chore: upgraded core to v1.7.6 and framework to v1.5.6
+
+</Update>
+<Update label="jsonparser" description="1.5.33">
+- chore: upgraded core to v1.7.6 and framework to v1.5.6
+
+</Update>
+<Update label="logging" description="1.6.6">
+- chore: upgraded core to v1.7.6 and framework to v1.5.6
+
+</Update>
+<Update label="maxim" description="1.6.33">
+- chore: upgraded core to v1.7.6 and framework to v1.5.6
+
+</Update>
+<Update label="mocker" description="1.5.33">
+- chore: upgraded core to v1.7.6 and framework to v1.5.6
+
+</Update>
+<Update label="modelcatalogresolver" description="1.0.14">
+- chore: upgraded core to v1.7.6 and framework to v1.5.6
+
+</Update>
+<Update label="otel" description="1.4.5">
+- chore: upgraded core to v1.7.6 and framework to v1.5.6
+
+</Update>
+<Update label="prompts" description="1.0.33">
+- chore: upgraded core to v1.7.6 and framework to v1.5.6
+
+</Update>
+<Update label="semanticcache" description="1.5.33">
+- chore: upgraded core to v1.7.6 and framework to v1.5.6
+
+</Update>
+<Update label="telemetry" description="1.5.33">
+- chore: upgraded core to v1.7.6 and framework to v1.5.6
+
+</Update>

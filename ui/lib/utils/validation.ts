@@ -166,7 +166,13 @@ export function isRedacted(value: string): boolean {
 	}
 
 	// Check if it's an environment variable reference
-	if (value.startsWith("env.")) {
+	if (value.startsWith("env.") || value.startsWith("vault.")) {
+		return true;
+	}
+
+	// Check for fixed sentinels returned by backend secret redaction.
+	const normalizedValue = value.toLowerCase();
+	if (normalizedValue === "<redacted>" || normalizedValue === "[redacted]") {
 		return true;
 	}
 
@@ -184,6 +190,24 @@ export function isRedacted(value: string): boolean {
 	}
 
 	return false;
+}
+
+const PASSWORD_REQUIREMENTS = [
+	{ label: "at least 12 characters", test: (password: string) => password.length >= 12 },
+	{ label: "one uppercase letter", test: (password: string) => /[A-Z]/.test(password) },
+	{ label: "one lowercase letter", test: (password: string) => /[a-z]/.test(password) },
+	{ label: "one number", test: (password: string) => /\d/.test(password) },
+	{ label: "one special character", test: (password: string) => /[^A-Za-z0-9]/.test(password) },
+];
+
+/**
+ * Returns the password-policy requirements that are not satisfied.
+ * Existing credentials are skipped only when the caller explicitly confirms
+ * that the password field has not been edited.
+ */
+export function getPasswordPolicyFailures(password?: string, isUnchanged = false): string[] {
+	if (!password || isUnchanged) return [];
+	return PASSWORD_REQUIREMENTS.filter((requirement) => !requirement.test(password)).map((requirement) => requirement.label);
 }
 
 /**
@@ -216,7 +240,7 @@ export function isValidVertexAuthCredentials(value: string): boolean {
 	}
 
 	// If environment variable, validate format
-	if (value.startsWith("env.")) {
+	if (value.startsWith("env.") || value.startsWith("vault.")) {
 		return value.length > 4;
 	}
 

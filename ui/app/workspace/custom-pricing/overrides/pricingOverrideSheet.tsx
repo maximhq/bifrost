@@ -1,3 +1,4 @@
+import { VirtualKeySelector } from "@/components/entitySelectors/virtualKeySelector";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { CodeEditor } from "@/components/ui/codeEditor";
@@ -14,10 +15,10 @@ import {
 	getErrorMessage,
 	useCreatePricingOverrideMutation,
 	useGetProvidersQuery,
-	useGetVirtualKeysQuery,
 	useUpdatePricingOverrideMutation,
 } from "@/lib/store";
 import { useGetAllKeysQuery } from "@/lib/store/apis/providersApi";
+import { getUserPicker } from "@/lib/registries/userPicker";
 import { ModelProvider, RequestType } from "@/lib/types/config";
 import {
 	CreatePricingOverrideRequest,
@@ -32,228 +33,29 @@ import { Dispatch, SetStateAction, useCallback, useEffect, useMemo, useRef, useS
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { PricingFieldSelector } from "./pricingFieldSelector";
+// Side-effect import: registers the enterprise user picker (no-op in OSS builds).
+import "@enterprise/lib/registrations/userPicker";
 
-export const REQUEST_TYPE_GROUPS = [
-	{
-		label: "Chat / Text / Responses",
-		types: ["chat_completion", "text_completion", "responses"],
-	},
-	{
-		label: "Embedding",
-		types: ["embedding"],
-	},
-	{
-		label: "Rerank",
-		types: ["rerank"],
-	},
-	{
-		label: "Audio",
-		types: ["speech", "transcription"],
-	},
-	{
-		label: "Image",
-		types: ["image_generation", "image_variation", "image_edit"],
-	},
-	{
-		label: "Video",
-		types: ["video_generation", "video_remix"],
-	},
-	{
-		label: "OCR",
-		types: ["ocr"],
-	},
-] as const;
+// Field metadata lives in ./pricingFields; re-exported here so existing
+// importers of this module keep working unchanged.
+export {
+	fieldLabelByKey,
+	getRequestTypeGroup,
+	patchKeys,
+	PRICING_FIELDS,
+	REQUEST_TYPE_GROUPS,
+	REQUEST_TYPE_OPTIONS,
+} from "./pricingFields";
+export type { FieldErrors, PricingFieldKey } from "./pricingFields";
+import { fieldLabelByKey, patchKeys, PRICING_FIELDS, REQUEST_TYPE_GROUPS, REQUEST_TYPE_OPTIONS } from "./pricingFields";
+import type { FieldErrors, PricingFieldKey } from "./pricingFields";
 
-export const REQUEST_TYPE_OPTIONS = REQUEST_TYPE_GROUPS.flatMap((g) => g.types);
-
-export function getRequestTypeGroup(rt: string): string | undefined {
-	return REQUEST_TYPE_GROUPS.find((g) => (g.types as readonly string[]).includes(rt))?.label;
-}
-
-export const PRICING_FIELDS = [
-	// Chat / Text / Responses fields
-	{
-		key: "input_cost_per_token",
-		label: "Input / token",
-		group: "chat",
-		requestTypeGroups: ["chat", "embedding", "rerank", "audio", "image", "video"],
-	},
-	{
-		key: "output_cost_per_token",
-		label: "Output / token",
-		group: "chat",
-		requestTypeGroups: ["chat", "rerank", "audio", "image", "video"],
-	},
-	{ key: "input_cost_per_token_batches", label: "Input / token (batch)", group: "chat", requestTypeGroups: ["chat"] },
-	{ key: "output_cost_per_token_batches", label: "Output / token (batch)", group: "chat", requestTypeGroups: ["chat"] },
-	{ key: "input_cost_per_token_priority", label: "Input / token (priority)", group: "chat", requestTypeGroups: ["chat"] },
-	{ key: "output_cost_per_token_priority", label: "Output / token (priority)", group: "chat", requestTypeGroups: ["chat"] },
-	{ key: "input_cost_per_token_flex", label: "Input / token (flex)", group: "chat", requestTypeGroups: ["chat"] },
-	{ key: "output_cost_per_token_flex", label: "Output / token (flex)", group: "chat", requestTypeGroups: ["chat"] },
-	{ key: "input_cost_per_token_fast", label: "Input / token (fast)", group: "chat", requestTypeGroups: ["chat"] },
-	{ key: "output_cost_per_token_fast", label: "Output / token (fast)", group: "chat", requestTypeGroups: ["chat"] },
-	{
-		key: "input_cost_per_token_above_128k_tokens",
-		label: "Input / token (>128k)",
-		group: "chat",
-		requestTypeGroups: ["chat", "embedding", "rerank"],
-	},
-	{
-		key: "output_cost_per_token_above_128k_tokens",
-		label: "Output / token (>128k)",
-		group: "chat",
-		requestTypeGroups: ["chat", "rerank", "audio"],
-	},
-	{
-		key: "input_cost_per_token_above_200k_tokens",
-		label: "Input / token (>200k)",
-		group: "chat",
-		requestTypeGroups: ["chat", "embedding", "rerank"],
-	},
-	{
-		key: "input_cost_per_token_above_200k_tokens_priority",
-		label: "Input / token (>200k, priority)",
-		group: "chat",
-		requestTypeGroups: ["chat"],
-	},
-	{
-		key: "output_cost_per_token_above_200k_tokens",
-		label: "Output / token (>200k)",
-		group: "chat",
-		requestTypeGroups: ["chat", "rerank", "audio"],
-	},
-	{
-		key: "output_cost_per_token_above_200k_tokens_priority",
-		label: "Output / token (>200k, priority)",
-		group: "chat",
-		requestTypeGroups: ["chat"],
-	},
-	{
-		key: "input_cost_per_token_above_272k_tokens",
-		label: "Input / token (>272k)",
-		group: "chat",
-		requestTypeGroups: ["chat"],
-	},
-	{
-		key: "input_cost_per_token_above_272k_tokens_priority",
-		label: "Input / token (>272k, priority)",
-		group: "chat",
-		requestTypeGroups: ["chat"],
-	},
-	{
-		key: "output_cost_per_token_above_272k_tokens",
-		label: "Output / token (>272k)",
-		group: "chat",
-		requestTypeGroups: ["chat"],
-	},
-	{
-		key: "output_cost_per_token_above_272k_tokens_priority",
-		label: "Output / token (>272k, priority)",
-		group: "chat",
-		requestTypeGroups: ["chat"],
-	},
-	{ key: "cache_creation_input_token_cost", label: "Cache creation / token", group: "chat", requestTypeGroups: ["chat"] },
-	{ key: "cache_read_input_token_cost", label: "Cache read / token", group: "chat", requestTypeGroups: ["chat"] },
-	{
-		key: "cache_creation_input_token_cost_above_200k_tokens",
-		label: "Cache creation / token (>200k)",
-		group: "chat",
-		requestTypeGroups: ["chat"],
-	},
-	{ key: "cache_read_input_token_cost_above_200k_tokens", label: "Cache read / token (>200k)", group: "chat", requestTypeGroups: ["chat"] },
-	{ key: "cache_creation_input_token_cost_above_1hr", label: "Cache creation / token (>1hr)", group: "chat", requestTypeGroups: ["chat"] },
-	{
-		key: "cache_creation_input_token_cost_above_1hr_above_200k_tokens",
-		label: "Cache creation / token (>1hr, >200k)",
-		group: "chat",
-		requestTypeGroups: ["chat"],
-	},
-	{ key: "cache_read_input_token_cost_priority", label: "Cache read / token (priority)", group: "chat", requestTypeGroups: ["chat"] },
-	{ key: "cache_read_input_token_cost_flex", label: "Cache read / token (flex)", group: "chat", requestTypeGroups: ["chat"] },
-	{
-		key: "cache_read_input_token_cost_above_200k_tokens_priority",
-		label: "Cache read / token (>200k, priority)",
-		group: "chat",
-		requestTypeGroups: ["chat"],
-	},
-	{ key: "cache_read_input_token_cost_above_272k_tokens", label: "Cache read / token (>272k)", group: "chat", requestTypeGroups: ["chat"] },
-	{
-		key: "cache_read_input_token_cost_above_272k_tokens_priority",
-		label: "Cache read / token (>272k, priority)",
-		group: "chat",
-		requestTypeGroups: ["chat"],
-	},
-	{ key: "search_context_cost_per_query", label: "Search context / query", group: "chat", requestTypeGroups: ["chat", "rerank"] },
-	{ key: "code_interpreter_cost_per_session", label: "Code interpreter / session", group: "chat", requestTypeGroups: ["chat"] },
-	// Audio fields
-	{ key: "input_cost_per_character", label: "Input / character", group: "audio", requestTypeGroups: ["audio"] },
-	{ key: "input_cost_per_audio_token", label: "Input / audio token", group: "audio", requestTypeGroups: ["audio"] },
-	{ key: "input_cost_per_audio_per_second", label: "Input / audio second", group: "audio", requestTypeGroups: ["audio"] },
-	{
-		key: "input_cost_per_audio_per_second_above_128k_tokens",
-		label: "Input / audio second (>128k)",
-		group: "audio",
-		requestTypeGroups: ["audio"],
-	},
-	{ key: "input_cost_per_second", label: "Input / second", group: "audio", requestTypeGroups: ["audio", "video"] },
-	{ key: "output_cost_per_audio_token", label: "Output / audio token", group: "audio", requestTypeGroups: ["audio"] },
-	{ key: "output_cost_per_second", label: "Output / second", group: "audio", requestTypeGroups: ["audio", "video"] },
-	{ key: "cache_creation_input_audio_token_cost", label: "Cache creation / audio token", group: "audio", requestTypeGroups: ["audio"] },
-	// Image fields
-	{ key: "input_cost_per_image_token", label: "Input / image token", group: "image", requestTypeGroups: ["image"] },
-	{ key: "input_cost_per_image", label: "Input / image", group: "image", requestTypeGroups: ["image"] },
-	{ key: "input_cost_per_image_above_128k_tokens", label: "Input / image (>128k)", group: "image", requestTypeGroups: ["image"] },
-	{ key: "input_cost_per_pixel", label: "Input / pixel", group: "image", requestTypeGroups: ["image"] },
-	{ key: "output_cost_per_image_token", label: "Output / image token", group: "image", requestTypeGroups: ["image"] },
-	{ key: "output_cost_per_image", label: "Output / image", group: "image", requestTypeGroups: ["image"] },
-	{ key: "output_cost_per_pixel", label: "Output / pixel", group: "image", requestTypeGroups: ["image"] },
-	{ key: "output_cost_per_image_premium_image", label: "Output / image (premium)", group: "image", requestTypeGroups: ["image"] },
-	{ key: "output_cost_per_image_above_512_and_512_pixels", label: "Output / image (>512px)", group: "image", requestTypeGroups: ["image"] },
-	{
-		key: "output_cost_per_image_above_512_and_512_pixels_and_premium_image",
-		label: "Output / image (>512px, premium)",
-		group: "image",
-		requestTypeGroups: ["image"],
-	},
-	{
-		key: "output_cost_per_image_above_1024_and_1024_pixels",
-		label: "Output / image (>1024px)",
-		group: "image",
-		requestTypeGroups: ["image"],
-	},
-	{
-		key: "output_cost_per_image_above_1024_and_1024_pixels_and_premium_image",
-		label: "Output / image (>1024px, premium)",
-		group: "image",
-		requestTypeGroups: ["image"],
-	},
-	{ key: "output_cost_per_image_low_quality", label: "Output / image (low quality)", group: "image", requestTypeGroups: ["image"] },
-	{ key: "output_cost_per_image_medium_quality", label: "Output / image (medium quality)", group: "image", requestTypeGroups: ["image"] },
-	{ key: "output_cost_per_image_high_quality", label: "Output / image (high quality)", group: "image", requestTypeGroups: ["image"] },
-	{ key: "output_cost_per_image_auto_quality", label: "Output / image (auto quality)", group: "image", requestTypeGroups: ["image"] },
-	{ key: "cache_read_input_image_token_cost", label: "Cache read / image token", group: "image", requestTypeGroups: ["image"] },
-	// Video fields
-	{ key: "input_cost_per_video_per_second", label: "Input / video second", group: "video", requestTypeGroups: ["video"] },
-	{
-		key: "input_cost_per_video_per_second_above_128k_tokens",
-		label: "Input / video second (>128k)",
-		group: "video",
-		requestTypeGroups: ["video"],
-	},
-	{ key: "output_cost_per_video_per_second", label: "Output / video second", group: "video", requestTypeGroups: ["video"] },
-	// OCR fields
-	{ key: "ocr_cost_per_page", label: "OCR / page", group: "ocr", requestTypeGroups: ["ocr"] },
-	{ key: "annotation_cost_per_page", label: "Annotation / page", group: "ocr", requestTypeGroups: ["ocr"] },
-] as const;
-
-export type PricingFieldKey = (typeof PRICING_FIELDS)[number]["key"];
-export type FieldErrors = Partial<Record<PricingFieldKey | "name" | "scope" | "pattern" | "patch", string>>;
-
-type ScopeRoot = "global" | "virtual_key";
+type ScopeRoot = "global" | "virtual_key" | "user";
 
 export interface FormState {
 	name: string;
 	scopeRoot: ScopeRoot;
+	userID: string;
 	virtualKeyID: string;
 	providerID: string;
 	providerKeyID: string;
@@ -266,6 +68,7 @@ export interface FormState {
 export const defaultFormState: FormState = {
 	name: "",
 	scopeRoot: "global",
+	userID: "",
 	virtualKeyID: "",
 	providerID: "",
 	providerKeyID: "",
@@ -274,12 +77,6 @@ export const defaultFormState: FormState = {
 	requestTypes: [],
 	pricingValues: {},
 };
-
-export const fieldLabelByKey = Object.fromEntries(PRICING_FIELDS.map((field) => [field.key, field.label])) as Record<
-	PricingFieldKey,
-	string
->;
-export const patchKeys = PRICING_FIELDS.map((field) => field.key) as PricingFieldKey[];
 
 export function patternError(matchType: PricingOverrideMatchType, pattern: string): string | undefined {
 	const trimmed = pattern.trim();
@@ -334,11 +131,14 @@ function toFormState(override: PricingOverride): FormState {
 	const scopeRoot: ScopeRoot =
 		scopeKind === "virtual_key" || scopeKind === "virtual_key_provider" || scopeKind === "virtual_key_provider_key"
 			? "virtual_key"
-			: "global";
+			: scopeKind === "user" || scopeKind === "user_provider" || scopeKind === "user_provider_key"
+				? "user"
+				: "global";
 
 	return {
 		name: override.name ?? "",
 		scopeRoot,
+		userID: override.user_id ?? "",
 		virtualKeyID: override.virtual_key_id ?? "",
 		providerID: override.provider_id ?? "",
 		providerKeyID: override.provider_key_id ?? "",
@@ -356,7 +156,10 @@ function resolveScopeKind(override: PricingOverride): PricingOverrideScopeKind {
 		override.scope_kind === "provider_key" ||
 		override.scope_kind === "virtual_key" ||
 		override.scope_kind === "virtual_key_provider" ||
-		override.scope_kind === "virtual_key_provider_key"
+		override.scope_kind === "virtual_key_provider_key" ||
+		override.scope_kind === "user" ||
+		override.scope_kind === "user_provider" ||
+		override.scope_kind === "user_provider_key"
 	) {
 		return override.scope_kind;
 	}
@@ -364,6 +167,11 @@ function resolveScopeKind(override: PricingOverride): PricingOverrideScopeKind {
 		if (override.provider_key_id) return "virtual_key_provider_key";
 		if (override.provider_id) return "virtual_key_provider";
 		return "virtual_key";
+	}
+	if (override.user_id) {
+		if (override.provider_key_id) return "user_provider_key";
+		if (override.provider_id) return "user_provider";
+		return "user";
 	}
 	if (override.provider_key_id) return "provider_key";
 	if (override.provider_id) return "provider";
@@ -375,6 +183,11 @@ function deriveScopeKind(form: FormState): PricingOverrideScopeKind {
 		if (form.providerKeyID) return "virtual_key_provider_key";
 		if (form.providerID) return "virtual_key_provider";
 		return "virtual_key";
+	}
+	if (form.scopeRoot === "user") {
+		if (form.providerKeyID) return "user_provider_key";
+		if (form.providerID) return "user_provider";
+		return "user";
 	}
 	if (form.providerKeyID) return "provider_key";
 	if (form.providerID) return "provider";
@@ -434,6 +247,7 @@ interface PricingOverrideDrawerProps {
 	editingOverride?: PricingOverride | null;
 	scopeLock?: {
 		scopeKind: PricingOverrideScopeKind;
+		userID?: string;
 		virtualKeyID?: string;
 		providerID?: string;
 		providerKeyID?: string;
@@ -457,6 +271,12 @@ function isCompleteScopeLock(scopeLock?: PricingOverrideDrawerProps["scopeLock"]
 			return Boolean(scopeLock.virtualKeyID && scopeLock.providerID);
 		case "virtual_key_provider_key":
 			return Boolean(scopeLock.virtualKeyID && scopeLock.providerID && scopeLock.providerKeyID);
+		case "user":
+			return Boolean(scopeLock.userID);
+		case "user_provider":
+			return Boolean(scopeLock.userID && scopeLock.providerID);
+		case "user_provider_key":
+			return Boolean(scopeLock.userID && scopeLock.providerID && scopeLock.providerKeyID);
 		default:
 			return false;
 	}
@@ -464,7 +284,6 @@ function isCompleteScopeLock(scopeLock?: PricingOverrideDrawerProps["scopeLock"]
 
 export default function PricingOverrideSheet({ open, onOpenChange, editingOverride, scopeLock, onSaved }: PricingOverrideDrawerProps) {
 	const { data: providersData, isLoading: isProvidersLoading, error: providersError } = useGetProvidersQuery();
-	const { data: virtualKeysData, isLoading: isVirtualKeysLoading, error: virtualKeysError } = useGetVirtualKeysQuery();
 	const { data: allKeysData = [] } = useGetAllKeysQuery();
 	const [createOverride, { isLoading: isCreating }] = useCreatePricingOverrideMutation();
 	const [updateOverride, { isLoading: isPatching }] = useUpdatePricingOverrideMutation();
@@ -480,17 +299,21 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 
 	const isSaving = isCreating || isPatching;
 	const providers = useMemo<ModelProvider[]>(() => (providersError ? [] : (providersData ?? [])), [providersData, providersError]);
-	const virtualKeys = useMemo(() => (virtualKeysError ? [] : (virtualKeysData?.virtual_keys ?? [])), [virtualKeysData, virtualKeysError]);
 
 	const scopeRoot = watch("scopeRoot");
 	const providerID = watch("providerID");
 	const providerKeyID = watch("providerKeyID");
 	const virtualKeyID = watch("virtualKeyID");
+	const userID = watch("userID");
 	const matchType = watch("matchType");
 	const requestTypes = watch("requestTypes");
 	const pricingValues = watch("pricingValues");
 
 	const shouldLockScope = useMemo(() => !editingOverride && isCompleteScopeLock(scopeLock), [editingOverride, scopeLock]);
+
+	// Registered by the downstream build at module load; undefined in builds
+	// without a user directory, which hides the "User" scope root.
+	const UserPicker = getUserPicker();
 
 	const providerKeyOptions = useMemo(
 		() =>
@@ -530,15 +353,18 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 		if (shouldLockScope && scopeLock) {
 			reset({
 				...defaultFormState,
+				userID: scopeLock.userID ?? "",
 				virtualKeyID: scopeLock.virtualKeyID ?? "",
 				providerID: scopeLock.providerID ?? "",
 				providerKeyID: scopeLock.providerKeyID ?? "",
 				scopeRoot:
 					scopeLock.scopeKind === "virtual_key" ||
-					scopeLock.scopeKind === "virtual_key_provider" ||
-					scopeLock.scopeKind === "virtual_key_provider_key"
+						scopeLock.scopeKind === "virtual_key_provider" ||
+						scopeLock.scopeKind === "virtual_key_provider_key"
 						? "virtual_key"
-						: "global",
+						: scopeLock.scopeKind === "user" || scopeLock.scopeKind === "user_provider" || scopeLock.scopeKind === "user_provider_key"
+							? "user"
+							: "global",
 			});
 			return;
 		}
@@ -566,6 +392,11 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 		if (shouldLockScope) return scopeLock?.virtualKeyID;
 		return scopeRoot === "virtual_key" ? virtualKeyID || undefined : undefined;
 	}, [scopeLock, shouldLockScope, scopeRoot, virtualKeyID]);
+
+	const resolvedUserID = useMemo(() => {
+		if (shouldLockScope) return scopeLock?.userID;
+		return scopeRoot === "user" ? userID.trim() || undefined : undefined;
+	}, [scopeLock, shouldLockScope, scopeRoot, userID]);
 
 	const resolvedProviderID = useMemo(() => {
 		if (shouldLockScope) return scopeLock?.providerID;
@@ -658,6 +489,15 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 			hasErrors = true;
 		}
 
+		if (
+			!shouldLockScope &&
+			(resolvedScopeKind === "user" || resolvedScopeKind === "user_provider" || resolvedScopeKind === "user_provider_key") &&
+			!resolvedUserID
+		) {
+			setError("userID", { message: "User ID is required" });
+			hasErrors = true;
+		}
+
 		const pError = patternError(data.matchType, data.pattern);
 		if (pError) {
 			setError("pattern", { message: pError });
@@ -683,6 +523,7 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 		if (hasErrors || jsonError) return;
 
 		const { patch } = buildPatchFromForm(data);
+		let scopedUserID: string | undefined;
 		let scopedVirtualKeyID: string | undefined;
 		let scopedProviderID: string | undefined;
 		let scopedProviderKeyID: string | undefined;
@@ -708,11 +549,24 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 				scopedProviderID = resolvedProviderID;
 				scopedProviderKeyID = resolvedProviderKeyID;
 				break;
+			case "user":
+				scopedUserID = resolvedUserID;
+				break;
+			case "user_provider":
+				scopedUserID = resolvedUserID;
+				scopedProviderID = resolvedProviderID;
+				break;
+			case "user_provider_key":
+				scopedUserID = resolvedUserID;
+				scopedProviderID = resolvedProviderID;
+				scopedProviderKeyID = resolvedProviderKeyID;
+				break;
 		}
 
 		const requestPayload: CreatePricingOverrideRequest = {
 			name: data.name.trim(),
 			scope_kind: resolvedScopeKind,
+			user_id: scopedUserID,
 			virtual_key_id: scopedVirtualKeyID,
 			provider_id: scopedProviderID,
 			provider_key_id: scopedProviderKeyID,
@@ -788,7 +642,9 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 														onValueChange={(value: ScopeRoot) => {
 															field.onChange(value);
 															setValue("virtualKeyID", "");
+															setValue("userID", "");
 															clearErrors("virtualKeyID");
+															clearErrors("userID");
 														}}
 													>
 														<FormControl>
@@ -799,11 +655,53 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 														<SelectContent>
 															<SelectItem value="global">Global</SelectItem>
 															<SelectItem value="virtual_key">Virtual key</SelectItem>
+															{(UserPicker || scopeRoot === "user") && <SelectItem value="user">User</SelectItem>}
 														</SelectContent>
 													</Select>
 												</FormItem>
 											)}
 										/>
+
+										{scopeRoot === "user" && (
+											<FormField
+												control={control}
+												name="userID"
+												render={({ field }) => (
+													<FormItem>
+														<FormLabel>
+															User <span className="text-red-500">*</span>
+														</FormLabel>
+														<FormControl>
+															{UserPicker ? (
+																<UserPicker
+																	value={field.value}
+																	onChange={(value) => {
+																		field.onChange(value);
+																		clearErrors("userID");
+																	}}
+																	fallbackOption={
+																		editingOverride?.user_id ? { value: editingOverride.user_id, label: editingOverride.user_id } : null
+																	}
+																/>
+															) : (
+																// No user directory in this build: keep a plain input so
+																// existing user-scoped overrides remain editable.
+																<Input
+																	data-testid="pricing-override-user-id-input"
+																	placeholder="Governance user ID"
+																	{...field}
+																	onChange={(e) => {
+																		field.onChange(e);
+																		clearErrors("userID");
+																	}}
+																/>
+															)}
+														</FormControl>
+														<FormMessage />
+													</FormItem>
+												)}
+											/>
+										)}
 
 										{scopeRoot === "virtual_key" && (
 											<FormField
@@ -815,29 +713,23 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 															Virtual key <span className="text-red-500">*</span>
 														</FormLabel>
 														<FormControl>
-															<ComboboxSelect
-																data-testid="pricing-override-virtual-key-select"
-																options={virtualKeys.map((vk) => ({ label: vk.name, value: vk.id }))}
-																value={field.value || null}
-																onValueChange={(value) => {
-																	field.onChange(value ?? "");
+															<VirtualKeySelector
+																value={field.value}
+																onChange={(value) => {
+																	field.onChange(value);
 																	setValue("providerID", "");
 																	setValue("providerKeyID", "");
 																	clearErrors("virtualKeyID");
 																}}
-																placeholder={isVirtualKeysLoading ? "Loading..." : "Select virtual key"}
-																disabled={isVirtualKeysLoading || !!virtualKeysError}
-																noPortal
-																className="h-9"
+																fallbackOption={
+																	editingOverride?.virtual_key_id
+																		? { value: editingOverride.virtual_key_id, label: editingOverride.virtual_key_id }
+																		: null
+																}
+																placeholder="Select virtual key"
 															/>
 														</FormControl>
-														{virtualKeysError ? (
-															<p className="text-destructive mt-1 text-xs">
-																Failed to load virtual keys: {getErrorMessage(virtualKeysError)}
-															</p>
-														) : (
-															<FormMessage />
-														)}
+														<FormMessage />
 													</FormItem>
 												)}
 											/>

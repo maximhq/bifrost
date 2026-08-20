@@ -2,14 +2,17 @@ package tracing
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
 type testRealtimeObservabilityPlugin struct {
-	injected chan *schemas.Trace
+	injected        chan *schemas.Trace
+	injectedPayload chan string
 }
 
 func (p *testRealtimeObservabilityPlugin) GetName() string { return "test-observability" }
@@ -24,12 +27,24 @@ func (p *testRealtimeObservabilityPlugin) PostLLMHook(_ *schemas.BifrostContext,
 	return resp, bifrostErr, nil
 }
 func (p *testRealtimeObservabilityPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
+	if p.injectedPayload != nil {
+		serialized, err := sonic.MarshalString(trace)
+		if err != nil {
+			return err
+		}
+		p.injectedPayload <- serialized
+		return nil
+	}
 	if trace == nil {
 		p.injected <- nil
 		return nil
 	}
-	traceCopy := *trace
-	p.injected <- &traceCopy
+	// SnapshotForExport, not `*trace`: Trace carries a sync.Mutex, so a struct
+	// copy duplicates the lock (go vet: "assignment copies lock value") and
+	// still shares the Spans slice and attribute maps with the original. The
+	// helper takes the lock and deep-copies spans and maps, which is what a
+	// snapshot handed across a channel actually needs.
+	p.injected <- trace.SnapshotForExport()
 	return nil
 }
 
@@ -62,6 +77,91 @@ func TestTracer_CompleteAndFlushTraceInjectsObservabilityPlugins(t *testing.T) {
 	}
 }
 
+func TestTracer_CompleteAndFlushTraceRedactsContentBeforeInject(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	traceID := tracer.CreateTrace("")
+	plugin := &testRealtimeObservabilityPlugin{
+		injectedPayload: make(chan string, 1),
+	}
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin})
+
+	// Store replacements before output attributes are populated. This mirrors
+	// streaming, where the final accumulated output lands near trace completion.
+	tracer.SetTraceRedactionReplacements(traceID, schemas.RedactionPhaseInput, map[string]string{
+		"alex@example.com": "[EMAIL-INPUT]",
+	})
+	tracer.SetTraceRedactionReplacements(traceID, schemas.RedactionPhaseOutput, map[string]string{
+		"alex@example.com": "[EMAIL-OUTPUT]",
+	})
+
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID)
+	rootCtx, rootHandle := tracer.StartSpan(ctx, "http-request", schemas.SpanKindHTTPRequest)
+	tracer.SetAttribute(rootHandle, schemas.AttrInputMessages, `{"content":"email alex@example.com"}`)
+	_, childHandle := tracer.StartSpan(rootCtx, "llm-call", schemas.SpanKindLLMCall)
+	tracer.SetAttribute(childHandle, schemas.AttrOutputMessages, `{"content":"reply alex@example.com"}`)
+	tracer.SetAttribute(childHandle, schemas.AttrRequestModel, "gpt-4o-mini")
+
+	tracer.CompleteAndFlushTrace(traceID)
+
+	select {
+	case payload := <-plugin.injectedPayload:
+		if strings.Contains(payload, "alex@example.com") {
+			t.Fatalf("injected trace leaked raw content: %s", payload)
+		}
+		if !strings.Contains(payload, "[EMAIL-INPUT]") {
+			t.Fatalf("injected trace missing input redacted placeholder: %s", payload)
+		}
+		if !strings.Contains(payload, "[EMAIL-OUTPUT]") {
+			t.Fatalf("injected trace missing output redacted placeholder: %s", payload)
+		}
+		if !strings.Contains(payload, "gpt-4o-mini") {
+			t.Fatalf("injected trace should retain non-content attributes: %s", payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for observability inject")
+	}
+}
+
+func TestTracer_SetTraceRedactionReplacementsSurvivesLaterObservabilityPlugins(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	traceID := tracer.CreateTrace("")
+	tracer.SetTraceRedactionReplacements(traceID, schemas.RedactionPhaseInput, map[string]string{
+		"alex@example.com": "[EMAIL-1]",
+	})
+
+	plugin := &testRealtimeObservabilityPlugin{
+		injectedPayload: make(chan string, 1),
+	}
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin})
+
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID)
+	_, rootHandle := tracer.StartSpan(ctx, "http-request", schemas.SpanKindHTTPRequest)
+	tracer.SetAttribute(rootHandle, schemas.AttrInputMessages, `{"content":"email alex@example.com"}`)
+	tracer.CompleteAndFlushTrace(traceID)
+
+	select {
+	case payload := <-plugin.injectedPayload:
+		if strings.Contains(payload, "alex@example.com") {
+			t.Fatalf("trace redaction replacements should survive later observability plugin registration: %s", payload)
+		}
+		if !strings.Contains(payload, "[EMAIL-1]") {
+			t.Fatalf("injected trace missing redacted placeholder: %s", payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for observability inject")
+	}
+}
+
 func TestTracer_StartSpan_RootSpanWithW3CParent(t *testing.T) {
 	// This is the key test: verifies that when an incoming request has a W3C traceparent header,
 	// the root span in Bifrost correctly links to the upstream service's span.
@@ -75,10 +175,12 @@ func TestTracer_StartSpan_RootSpanWithW3CParent(t *testing.T) {
 	inheritedTraceID := "69538b980000000079943934f90c1d40"
 	externalParentSpanID := "aad09d1659b4c7e3"
 
-	// Create trace with inherited trace ID
+	// Create trace with inherited trace ID. The returned value is a unique
+	// per-request store key, not the inherited ID (issue #5256) — the W3C ID
+	// lives on trace.TraceID for export.
 	traceID := tracer.CreateTrace(inheritedTraceID)
-	if traceID != inheritedTraceID {
-		t.Errorf("CreateTrace() = %q, want inherited trace ID %q", traceID, inheritedTraceID)
+	if traceID == inheritedTraceID {
+		t.Errorf("CreateTrace() = %q, want a unique store key distinct from the inherited trace ID", traceID)
 	}
 
 	// Set up context with trace ID and parent span ID (as middleware would do)
@@ -106,9 +208,13 @@ func TestTracer_StartSpan_RootSpanWithW3CParent(t *testing.T) {
 		t.Errorf("Root span ParentID = %q, want external parent span ID %q", trace.RootSpan.ParentID, externalParentSpanID)
 	}
 
-	// Verify trace ID is preserved
+	// The exported W3C trace ID is preserved on both the trace and its spans;
+	// only the store key returned by CreateTrace is the per-request handle.
+	if trace.TraceID != inheritedTraceID {
+		t.Errorf("trace.TraceID = %q, want inherited %q", trace.TraceID, inheritedTraceID)
+	}
 	if trace.RootSpan.TraceID != inheritedTraceID {
-		t.Errorf("Root span TraceID = %q, want %q", trace.RootSpan.TraceID, inheritedTraceID)
+		t.Errorf("Root span TraceID = %q, want inherited %q", trace.RootSpan.TraceID, inheritedTraceID)
 	}
 
 	// Verify context has span ID for child span creation
@@ -528,9 +634,13 @@ func TestIntegration_FullDistributedTraceFlow(t *testing.T) {
 			pluginSpan.ParentID, llmSpan.SpanID)
 	}
 
-	// All spans should have the same trace ID
+	// All spans carry the inherited W3C trace identity; the store key returned
+	// by CreateTrace is a separate per-request handle.
 	if httpSpan.TraceID != inheritedTraceID || llmSpan.TraceID != inheritedTraceID || pluginSpan.TraceID != inheritedTraceID {
 		t.Error("All spans should have the inherited trace ID")
+	}
+	if trace.TraceID != inheritedTraceID {
+		t.Errorf("trace.TraceID = %q, want inherited %q", trace.TraceID, inheritedTraceID)
 	}
 
 	t.Logf("Trace structure (for Datadog):")

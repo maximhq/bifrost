@@ -9,6 +9,17 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 )
 
+// providersWithPartialListModels enumerates providers whose /v1/models response
+// is a strict subset of their callable catalog — Perplexity lists only
+// responses-API models and omits the Sonar chat family, which is still callable
+// via /chat/completions. For these, the datasheet (not the live list) is the
+// authoritative superset, so live must be unioned with the full allowed
+// datasheet set rather than only the deprecated backfill.
+var providersWithPartialListModels = map[schemas.ModelProvider]bool{
+	schemas.Perplexity: true,
+	schemas.Vertex:     true,
+}
+
 // GetModelsForProvider returns the effective allowed model set for the
 // provider. Filtered live entries are authoritative when present (they were
 // pre-gated by ListModelsPipeline against the key's allow/block/aliases);
@@ -20,6 +31,16 @@ func (mc *ModelCatalog) GetModelsForProvider(provider schemas.ModelProvider) []s
 	var out []string
 	if liveModels := mc.live.ModelsForProvider(provider); len(liveModels) > 0 {
 		out = liveModels
+		// Datasheet models to reconcile on top of the live list: normally just
+		// deprecated ones (dropped from list-models but still callable). For
+		// providers whose list-models is a partial subset, use the full
+		// datasheet so callable-but-unlisted models (e.g. Perplexity's Sonar
+		// chat family) aren't shadowed by the incomplete live list.
+		datasheetModelsToAppend := mc.datasheet.DeprecatedDatasheetModelsForProvider(provider)
+		if providersWithPartialListModels[provider] {
+			datasheetModelsToAppend = mc.datasheet.DatasheetModelsForProvider(provider)
+		}
+		out = mc.appendAllowedDatasheetModels(out, datasheetModelsToAppend, allowed, blacklisted)
 	} else if datasheetModels := mc.datasheet.DatasheetModelsForProvider(provider); len(datasheetModels) > 0 && allowed != nil {
 		out = make([]string, 0, len(datasheetModels))
 		for _, m := range datasheetModels {
@@ -66,6 +87,31 @@ func (mc *ModelCatalog) GetModelsForProvider(provider schemas.ModelProvider) []s
 			out = append(out, m)
 		}
 	}
+	return out
+}
+
+func (mc *ModelCatalog) appendAllowedDatasheetModels(out []string, models []string, allowed schemas.WhiteList, blacklisted schemas.BlackList) []string {
+	if len(models) == 0 {
+		return out
+	}
+	seen := make(map[string]struct{}, len(out))
+	for _, m := range out {
+		seen[m] = struct{}{}
+	}
+	for _, m := range models {
+		if _, ok := seen[m]; ok {
+			continue
+		}
+		if blacklisted.IsBlocked(m) {
+			continue
+		}
+		if allowed != nil && !allowed.IsAllowed(m) {
+			continue
+		}
+		seen[m] = struct{}{}
+		out = append(out, m)
+	}
+	slices.Sort(out)
 	return out
 }
 
@@ -244,18 +290,30 @@ func (mc *ModelCatalog) IsSameModel(model1, model2 string) bool {
 	return mc.datasheet.IsSameModel(model1, model2)
 }
 
-// RefineModelForProvider refines a model identifier for providers that need
-// a leading "provider/" segment (Groq, Replicate). Returns the original
+// RefineModelForProvider refines a model identifier for providers whose
+// catalog names carry a leading "provider/" segment (Groq, Replicate,
+// Perplexity, OpenRouter), resolving a bare request like "gpt-oss-120b" to
+// the provider's catalog slug ("openai/gpt-oss-120b"). Returns the original
 // model unchanged when no refinement applies, or an error when multiple
 // catalog candidates match ambiguously.
+//
+// Idempotent: a model that already carries a known provider prefix is the
+// refined form itself — routing plugins may refine the same request more
+// than once, so it is returned unchanged without a catalog scan. The one
+// exception is a model carrying the TARGET provider's own prefix (e.g. a
+// fallback entry built from another provider's refined form, or a
+// double-prefixed input): the prefix is stripped and the bare remainder
+// re-refined, so canonical own-prefixed names ("perplexity/sonar",
+// "openrouter/auto") round-trip through the catalog scan unchanged.
 func (mc *ModelCatalog) RefineModelForProvider(provider schemas.ModelProvider, model string) (string, error) {
-	switch provider {
-	case schemas.Groq:
-		if strings.Contains(model, "gpt-") {
-			return "openai/" + model, nil
+	if prefixProvider, modelPart := schemas.ParseModelString(model, ""); prefixProvider != "" {
+		if prefixProvider == provider {
+			return mc.RefineModelForProvider(provider, modelPart)
 		}
-		return mc.refineNestedProviderModel(provider, model)
-	case schemas.Replicate:
+		return model, nil
+	}
+	switch provider {
+	case schemas.Groq, schemas.Replicate, schemas.Perplexity, schemas.OpenRouter:
 		return mc.refineNestedProviderModel(provider, model)
 	}
 	return model, nil

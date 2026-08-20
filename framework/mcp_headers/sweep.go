@@ -26,13 +26,14 @@ import (
 // orphanRetention disables the orphan sweep entirely; the expired-flow sweep
 // always runs because flow rows have no semantic value past their expiry.
 type CredentialSweepWorker struct {
-	provider           *Provider
-	orphanSweepEvery   time.Duration
-	orphanRetention    time.Duration
-	expiredFlowEvery   time.Duration
-	stopCh             chan struct{}
-	stopOnce           sync.Once
-	logger             schemas.Logger
+	provider         *Provider
+	orphanSweepEvery time.Duration
+	orphanRetention  time.Duration
+	expiredFlowEvery time.Duration
+	stopCh           chan struct{}
+	stopOnce         sync.Once
+	cancel           context.CancelFunc
+	logger           schemas.Logger
 }
 
 // NewCredentialSweepWorker creates a sweep worker with sensible defaults.
@@ -57,7 +58,9 @@ func NewCredentialSweepWorker(provider *Provider, orphanRetention time.Duration,
 
 // Start begins the sweep worker in a background goroutine.
 func (w *CredentialSweepWorker) Start(ctx context.Context) {
-	go w.run(ctx)
+	runCtx, cancel := context.WithCancel(ctx)
+	w.cancel = cancel
+	go w.run(runCtx)
 	if w.logger != nil {
 		w.logger.Info("Per-user headers sweep worker started (orphan=%s, retention=%s, expired_flow=%s)",
 			w.orphanSweepEvery, w.orphanRetention, w.expiredFlowEvery)
@@ -68,6 +71,11 @@ func (w *CredentialSweepWorker) Start(ctx context.Context) {
 // panics from redundant shutdown paths.
 func (w *CredentialSweepWorker) Stop() {
 	w.stopOnce.Do(func() {
+		// Cancel any in-flight sweep so a blocked DB call unwinds promptly,
+		// then signal run() to exit its ticker loop.
+		if w.cancel != nil {
+			w.cancel()
+		}
 		close(w.stopCh)
 		if w.logger != nil {
 			w.logger.Info("Per-user headers credential sweep worker stopped")
@@ -103,6 +111,11 @@ func (w *CredentialSweepWorker) sweepOrphanedCredentials(ctx context.Context) {
 	if w.orphanRetention <= 0 {
 		return
 	}
+	// No cache eviction here: the provider's credential cache can never hold
+	// an orphaned row (the ByMode lookup filters them at SQL), and the
+	// reconcile paths that flip rows to 'orphaned' already evict when the
+	// flip happens. Deleting the rows outright therefore cannot invalidate
+	// any cached entry.
 	n, err := w.provider.configStore.DeleteOrphanedMCPPerUserHeaderCredentials(ctx, w.orphanRetention)
 	if err != nil {
 		if w.logger != nil {

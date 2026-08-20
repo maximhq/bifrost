@@ -35,16 +35,22 @@ The plugin supports multiple trace formats to match your observability platform:
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `service_name` | `string` | ❌ No | Service name to be used for tracing, defaults to `bifrost` |
-| `collector_url` | `string \| EnvVar` | ✅ Yes | OTLP collector endpoint URL — supports `env.VAR_NAME` |
-| `trace_type` | `string` | ✅ Yes | One of: `genai_extension`, `vercel`, `open_inference` |
-| `protocol` | `string` | ✅ Yes | Transport protocol: `http` or `grpc` |
-| `headers` | `object` | ❌ No | Custom headers for authentication — values support `env.VAR_NAME` |
+| `traces_enabled` | `boolean` | ❌ No | Export traces for this profile (default: `true`). Set `false` for a [metrics-only profile](#metrics-only-mode); `collector_url` is then not required |
+| `collector_url` | `string \| EnvVar` | ✅ Yes (if traces enabled) | OTLP collector endpoint URL — supports `env.VAR_NAME` |
+| `trace_type` | `string` | ✅ Yes (if traces enabled) | One of: `genai_extension`, `vercel`, `open_inference` |
+| `protocol` | `string` | ✅ Yes (when traces or metrics enabled) | Transport protocol: `http` or `grpc` (used by both traces and metrics) |
+| `headers` | `object` | ❌ No | Custom headers sent to **both** the trace and metrics endpoints — values support `env.VAR_NAME` |
+| `trace_headers` | `object` | ❌ No | Extra headers sent **only** to the trace endpoint, overlaid on `headers` (same key wins). See [Per-signal headers](#per-signal-headers) |
+| `metrics_headers` | `object` | ❌ No | Extra headers sent **only** to the metrics endpoint, overlaid on `headers` (same key wins). See [Per-signal headers](#per-signal-headers) |
 | `tls_ca_cert` | `string` | ❌ No | File path to client CA certificate for TLS. Optional. Works with both gRPC and HTTP protocol |
 | `group_traces_by_session` | `boolean` | ❌ No | Group requests sharing the same `x-bf-session-id` into one trace (default: `false`). See [Grouping Traces by Session](#grouping-traces-by-session) |
+| `disable_content_logging` | `boolean` | ❌ No | Drop message content from exported spans (default: `false`). See [Controlling Exported Content](#controlling-exported-content) |
+| `disable_root_span_content` | `boolean` | ❌ No | Drop content from the **root span only**, keeping it on child spans (default: `false`). Overridden by `disable_content_logging`, which drops content from every span. See [Controlling Exported Content](#controlling-exported-content) |
+| `request_headers` | `string[]` | ❌ No | Request-header name patterns whose values are attached to the root span as `http.request.header.*` attributes. Supports exact names and wildcards (`x-custom-*`, `*`) |
 
 ### Environment Variable Substitution
 
-`collector_url`, `metrics_endpoint`, and individual header values all support the `env.` prefix to read from environment variables at runtime. This keeps sensitive URLs and credentials out of stored configuration.
+`collector_url`, `metrics_endpoint`, and individual values in `headers`, `trace_headers`, and `metrics_headers` all support the `env.` prefix to read from environment variables at runtime. This keeps sensitive URLs and credentials out of stored configuration.
 
 ```json
 {
@@ -55,6 +61,28 @@ The plugin supports multiple trace formats to match your observability platform:
   }
 }
 ```
+
+### Per-signal headers
+
+`headers` are sent to both the trace and metrics endpoints. When a collector needs a header on only one signal — for example a Databricks table name required on the metrics endpoint — use `trace_headers` or `metrics_headers`. Each is overlaid on top of `headers` for its own endpoint, and on a key collision the per-signal value wins.
+
+```json
+{
+  "collector_url": "https://collector.example.com/v1/traces",
+  "protocol": "http",
+  "trace_type": "genai_extension",
+  "headers": {
+    "Authorization": "env.OTEL_API_KEY"
+  },
+  "metrics_enabled": true,
+  "metrics_endpoint": "https://collector.example.com/v1/metrics",
+  "metrics_headers": {
+    "X-Databricks-Table": "my_metrics_table"
+  }
+}
+```
+
+In this example the trace endpoint receives only `Authorization`, while the metrics endpoint receives both `Authorization` and `X-Databricks-Table`.
 
 ### Resource Attributes
 
@@ -745,6 +773,35 @@ Each trace includes comprehensive LLM operation metadata following OpenTelemetry
 - Response content with role attribution
 - Tool calls and results
 
+When Enterprise guardrail redaction is enabled, Bifrost applies trace redaction replacements before exporting completed traces to OTel. Exported span content receives the redacted or placeholderized value, but reversible reveal mappings are not exported. For the full mode matrix, see [Guardrail Redaction](/enterprise/guardrails/redaction).
+
+### Controlling Exported Content
+
+Two profile-level flags control how much message content leaves Bifrost:
+
+| Flag | Effect |
+|------|--------|
+| `disable_content_logging` | Drops input/output message content, prompt and instructions, model reasoning, tool definitions, and tool call arguments/results from **every** exported span. Metadata is still exported, including model, provider, tokens, cost, latency, status, and governance attribution. |
+| `disable_root_span_content` | When used alone, drops content from the **root span only**. Bifrost duplicates input/output onto the root span for trace-level display; this removes that duplication while child spans keep full content. Useful when your backend indexes root-span attributes and you want to limit the blast radius without losing detail. `disable_content_logging` takes precedence: when it is enabled, child spans lose their content too. |
+
+```json
+{
+  "name": "otel",
+  "config": {
+    "collector_url": "http://localhost:4318",
+    "trace_type": "genai_extension",
+    "protocol": "http",
+    "disable_content_logging": true
+  }
+}
+```
+
+<Warning>
+These flags are **independent** of the global `client.disable_content_logging`, which governs the Bifrost log store only. Setting the client flag does not stop content from being exported to your OTLP collector. Set `disable_content_logging` on the OTel profile as well.
+
+Values captured via `request_headers` are attached to the root span **regardless** of either flag. Only enable header capture for headers you intend to export.
+</Warning>
+
 ### Performance Metrics
 
 - Token usage (prompt, completion, total)
@@ -792,6 +849,7 @@ The OTel plugin captures all Bifrost request types:
 - **Speech Generation** (streaming and non-streaming) → `gen_ai.speech`
 - **Transcription** (streaming and non-streaming) → `gen_ai.transcription`
 - **Responses API** → `gen_ai.responses`
+- **MCP Tool Calls** → MCP client spans with `mcp.method.name`, plus `gen_ai.tool.name`, `network.transport`, and governance identity when available, and `error.type` on error spans
 
 ---
 
@@ -833,6 +891,8 @@ Default port: **4317**
 
 The OTel plugin supports **push-based metrics export** via OTLP, which is essential for multi-node cluster deployments. Instead of relying on Prometheus scraping each node's `/metrics` endpoint (which can miss nodes behind a load balancer), all nodes actively push metrics to a central OTEL Collector.
 
+MCP client operations are exported as `mcp.client.operation.duration` (histogram, seconds) following the OTel MCP semantic conventions, dimensioned by `mcp.method.name`, `gen_ai.tool.name`, `network.transport`, `error.type`, and the governance dimensions `virtual_key_id`, `virtual_key_name`, `team_id`, `team_name`, `customer_id`, `customer_name`, `business_unit_id`, `business_unit_name`. This histogram covers all MCP client methods (`tools/call`, `tools/list`, `ping`, `initialize`) — to measure tool calls only, filter for `mcp.method.name="tools/call"`.
+
 ### Configuration
 
 | Field | Type | Required | Description |
@@ -840,6 +900,11 @@ The OTel plugin supports **push-based metrics export** via OTLP, which is essent
 | `metrics_enabled` | `boolean` | ❌ No | Enable push-based metrics export (default: `false`) |
 | `metrics_endpoint` | `string \| EnvVar` | ✅ Yes (if enabled) | OTLP metrics endpoint URL — supports `env.VAR_NAME` |
 | `metrics_push_interval` | `integer` | ❌ No | Push interval in seconds (default: `15`, range: 1-300) |
+| `metrics_headers` | `object` | ❌ No | Extra headers sent only to the metrics endpoint, overlaid on `headers`. See [Per-signal headers](#per-signal-headers) |
+
+<Note>
+The collector is dialed lazily, so an unreachable metrics endpoint never blocks Bifrost startup or request handling. Metrics that fail to push are dropped and retried on the next interval.
+</Note>
 
 ### Example Configuration
 
@@ -949,6 +1014,33 @@ The OTel plugin supports **push-based metrics export** via OTLP, which is essent
 
 </Tabs>
 
+### Metrics-only mode
+
+To push metrics without exporting any traces, set `traces_enabled: false` on the profile. The trace client is then never built and `collector_url` is not required — only the metrics fields are. Traces and metrics are independent toggles, so a profile can export traces only, metrics only, or both.
+
+```json
+{
+  "plugins": [
+    {
+      "enabled": true,
+      "name": "otel",
+      "config": {
+        "profiles": [
+          {
+            "service_name": "bifrost",
+            "traces_enabled": false,
+            "protocol": "http",
+            "metrics_enabled": true,
+            "metrics_endpoint": "http://otel-collector:4318/v1/metrics",
+            "metrics_push_interval": 15
+          }
+        ]
+      }
+    }
+  ]
+}
+```
+
 ### Pushed Metrics
 
 These are the same **Prometheus-style metrics** from the telemetry plugin, pushed via OTLP protocol to a central collector:
@@ -961,10 +1053,16 @@ These are the same **Prometheus-style metrics** from the telemetry plugin, pushe
 | `bifrost_input_tokens_total` | Counter | Total input tokens |
 | `bifrost_output_tokens_total` | Counter | Total output tokens |
 | `bifrost_cache_hits_total` | Counter | Cache hits |
+| `bifrost_cache_read_input_tokens_total` | Counter | Provider-side prompt-cache read (cached) input tokens, billed by the provider at a reduced rate |
+| `bifrost_cache_write_input_tokens_total` | Counter | Provider-side prompt-cache creation (write) input tokens |
+| `bifrost_cache_write_input_tokens_5m_total` | Counter | Cache-write input tokens with a 5-minute TTL (Anthropic only). Subset of `bifrost_cache_write_input_tokens_total` — do not sum with it |
+| `bifrost_cache_write_input_tokens_1h_total` | Counter | Cache-write input tokens with a 1-hour TTL (Anthropic only). Subset of `bifrost_cache_write_input_tokens_total` — do not sum with it |
 | `bifrost_cost_total` | Counter | Total cost in USD |
 | `bifrost_upstream_latency_seconds` | Histogram | Upstream request latency |
 | `bifrost_stream_first_token_latency_seconds` | Histogram | Time to first token |
 | `bifrost_stream_inter_token_latency_seconds` | Histogram | Inter-token latency |
+| `bifrost_request_retries` | Histogram | Retries used per request (observed once per request) |
+| `mcp.client.operation.duration` | Histogram | MCP request duration observed by the client (see [Metrics Push](#metrics-push-cluster-mode) for dimensions) |
 | `http_requests_total` | Counter | Total HTTP requests |
 | `http_request_duration_seconds` | Histogram | HTTP request duration |
 | `http_request_size_bytes` | Histogram | HTTP request body size |

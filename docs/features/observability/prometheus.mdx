@@ -192,6 +192,10 @@ The following metrics are available from both the `/metrics` endpoint and Push G
 | `http_request_size_bytes` | Histogram | Request body size |
 | `http_response_size_bytes` | Histogram | Response body size |
 
+<Note>
+The `path` label contains the matched route template (e.g. `/genai/v1beta/models/{model:*}`, `/v1/messages/batches/{batch_id}`), not the raw URL path. This keeps metric cardinality bounded by the number of registered routes instead of growing with every model name or resource ID that appears in a URL. For per-model breakdowns, use the `model` and `provider` labels on the `bifrost_*` metrics.
+</Note>
+
 ### Bifrost LLM Metrics
 
 | Metric | Type | Description |
@@ -210,6 +214,16 @@ The following metrics are available from both the `/metrics` endpoint and Push G
 | `bifrost_provider_key_up` | Gauge | Per-key health. `1` after a successful attempt, `0` after a failed attempt. Labels: `provider`, `key_id`, `key_name`. |
 | `bifrost_key_rotation_events_total` | Counter | Key rotations triggered by per-key failures — rate-limit (429), auth (401/403), or billing (402) — see below <sup>v1.5.0-prerelease4+</sup> |
 | `bifrost_request_retries` | Histogram | Number of retries used per request (observed once per request; buckets `0,1,2,3,5,10`). |
+
+### Bifrost MCP Metrics
+
+Emitted for MCP (Model Context Protocol) tool calls executed through Bifrost:
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `bifrost_mcp_client_operation_duration_seconds` | Histogram | Duration of an MCP tool call, observed by Bifrost (the MCP client). `_count` is call volume; a non-empty `error_type` marks failures. |
+
+Labels: `mcp_client` (server label), `mcp_tool_name`, `mcp_method` (`tools/call`), `error_type` (`auth_required` / `_OTHER` on failure, empty on success), plus the governance labels `virtual_key_id`/`virtual_key_name`, `team_id`/`team_name`, `customer_id`/`customer_name`, `business_unit_id`/`business_unit_name`, and any custom labels. Only tool executions are recorded (lifecycle `ping`/`list_tools` and codemode tools are skipped); provider/model and `network_transport` are not labels here.
 
 ### Default Labels
 

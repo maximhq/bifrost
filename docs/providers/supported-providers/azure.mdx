@@ -179,7 +179,7 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
                     "gpt-4o-mini": "my-mini-deployment",
                 },
                 AzureKeyConfig: &schemas.AzureKeyConfig{
-                    Endpoint: *schemas.NewEnvVar(os.Getenv("AZURE_ENDPOINT")),
+                    Endpoint: *schemas.NewSecretVar(os.Getenv("AZURE_ENDPOINT")),
                 },
             },
         }, nil
@@ -315,10 +315,10 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
                     "claude-3-5-sonnet": "my-claude-deployment",
                 },
                 AzureKeyConfig: &schemas.AzureKeyConfig{
-                    Endpoint:     *schemas.NewEnvVar(os.Getenv("AZURE_ENDPOINT")),
-                    ClientID:     schemas.NewEnvVar(os.Getenv("AZURE_CLIENT_ID")),
-                    ClientSecret: schemas.NewEnvVar(os.Getenv("AZURE_CLIENT_SECRET")),
-                    TenantID:     schemas.NewEnvVar(os.Getenv("AZURE_TENANT_ID")),
+                    Endpoint:     *schemas.NewSecretVar(os.Getenv("AZURE_ENDPOINT")),
+                    ClientID:     schemas.NewSecretVar(os.Getenv("AZURE_CLIENT_ID")),
+                    ClientSecret: schemas.NewSecretVar(os.Getenv("AZURE_CLIENT_SECRET")),
+                    TenantID:     schemas.NewSecretVar(os.Getenv("AZURE_TENANT_ID")),
                     Scopes:       []string{"https://cognitiveservices.azure.com/.default"},
                 },
             },
@@ -438,7 +438,7 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
     case schemas.Azure:
         return []schemas.Key{
             {
-                Value:  *schemas.NewEnvVar("env.AZURE_OPENAI_KEY"),
+                Value:  *schemas.NewSecretVar("env.AZURE_OPENAI_KEY"),
                 Models: []string{"*"},
                 Weight: 1.0,
                 Aliases: schemas.KeyAliases{
@@ -446,7 +446,7 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
                     "gpt-4o-mini": "my-mini-deployment",
                 },
                 AzureKeyConfig: &schemas.AzureKeyConfig{
-                    Endpoint: *schemas.NewEnvVar(os.Getenv("AZURE_ENDPOINT")),
+                    Endpoint: *schemas.NewSecretVar(os.Getenv("AZURE_ENDPOINT")),
                 },
             },
         }, nil

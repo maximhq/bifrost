@@ -7,7 +7,10 @@ const (
 	taskTypeImageInference = "imageInference"
 	// taskTypeVideoInference is used for text-to-video and image-to-video generation.
 	taskTypeVideoInference = "videoInference"
-	// taskTypeGetResponse polls an async task (e.g. video) by its taskUUID.
+	// taskType3DInference is used for 3D model generation. It is not hardcoded into any request
+	// builder; callers select it by passing "taskType" in extra_params on the video request.
+	taskType3DInference = "3dInference"
+	// taskTypeGetResponse polls an async task (e.g. video, 3D) by its taskUUID.
 	taskTypeGetResponse = "getResponse"
 )
 
@@ -91,6 +94,21 @@ type RunwareResult struct {
 	// Video
 	VideoUUID string `json:"videoUUID,omitempty"`
 	VideoURL  string `json:"videoURL,omitempty"`
+
+	// 3D / other modalities: newer Runware task types (e.g. 3dInference) return their
+	// artifacts under a generic outputs.files[] array rather than modality-specific fields.
+	Outputs *RunwareOutputs `json:"outputs,omitempty"`
+}
+
+// RunwareOutputs holds the generic artifact list returned by task types such as 3dInference.
+type RunwareOutputs struct {
+	Files []RunwareOutputFile `json:"files,omitempty"`
+}
+
+// RunwareOutputFile is a single generated artifact (e.g. a .glb mesh) with its accessible URL.
+type RunwareOutputFile struct {
+	UUID string `json:"uuid,omitempty"`
+	URL  string `json:"url,omitempty"`
 }
 
 // RunwareError describes a single task failure returned by the Runware API.

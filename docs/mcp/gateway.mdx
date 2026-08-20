@@ -120,6 +120,10 @@ Include any required Virtual Key authentication headers if governance is enabled
 
 Bifrost supports per-Virtual Key MCP servers, allowing you to expose different tools to different clients.
 
+<Note>
+Header credentials are one of two ways clients authenticate to `/mcp`. Clients can also connect through a browser-based OAuth flow — see [Gateway Authentication](./gateway-auth) for the `mcp_server_auth_mode` setting and the OAuth connect flow.
+</Note>
+
 ### Global Server (No Virtual Key)
 
 When `enforce_auth_on_inference` is `false`, requests without a Virtual Key use the global MCP server with all available tools.
@@ -131,6 +135,12 @@ When using Virtual Keys, each VK gets its own MCP server with filtered tools bas
 **Authenticate with Virtual Key:**
 
 ```bash
+# Via x-bf-vk header
+curl -X POST http://localhost:8080/mcp \
+  -H "x-bf-vk: vk_your_virtual_key" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}'
+
 # Via Authorization header
 curl -X POST http://localhost:8080/mcp \
   -H "Authorization: Bearer vk_your_virtual_key" \
@@ -143,9 +153,9 @@ curl -X POST http://localhost:8080/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}'
 
-# Via x-bf-vk header
+# Via x-goog-api-key header
 curl -X POST http://localhost:8080/mcp \
-  -H "x-bf-vk: vk_your_virtual_key" \
+  -H "x-goog-api-key: vk_your_virtual_key" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}'
 ```
@@ -245,9 +255,10 @@ Bifrost automatically monitors the health of connected MCP clients:
 **How it works:**
 - **Ping Mechanism:** Every 10 seconds (configurable), sends a ping to each connected client
 - **Check Timeout:** Each ping has a 5-second timeout
-- **Failure Threshold:** After 5 consecutive failed pings, client is marked as `disconnected`
+- **Failure Threshold:** After 5 consecutive failed pings, client is marked as `unstable`
 - **State Tracking:** Real-time state updates (connected ↔ disconnected)
-- **Manual Reconnection:** Once disconnected, requires manual reconnect via API or UI
+- **Manual Reconnection:** Once disconnected by failed health checks, requires manual reconnect via API or UI. One exception: when a live tool call hits a clean upstream auth rejection, Bifrost force-refreshes the credential and reconnects in the background on its own (see [Auth failure recovery](./tool-execution#auth-failure-recovery))
+- **`needs_reauth` is sticky:** clients whose OAuth credential permanently died are parked in `needs_reauth`, health checks won't flip them back, and Reconnect is disabled for them; an admin must [reauthorize](./auth/oauth#reauthorization) instead
 
 **Configuration:**
 ```json
@@ -279,6 +290,15 @@ if err != nil {
 }
 ```
 
+### Reconnection behavior
+
+How a client reconnects, and whether tool calls are affected while it does, depends on its connection type:
+
+- **HTTP and SSE clients reconnect make-before-break.** Bifrost dials the new connection first; the existing connection keeps serving tool calls for the whole dial. Once the new connection is ready, the swap is atomic, and only then is the old connection closed. In practice this means credential rotation, reauthorization, and the automatic-refresh recycle described in [Automatic refresh](./auth/oauth#automatic-refresh) don't cause downtime for these clients.
+- **STDIO and in-process clients reconnect close-first.** The existing connection (and, for STDIO, its subprocess) is closed before the new one is dialed, so there's a brief window where the client has no connection. This is deliberate: a STDIO reconnect spawns a new subprocess, and many STDIO servers hold exclusive resources (lockfiles, bound ports, singleton sockets) that a second instance can't acquire while the first is still running. STDIO reconnects are also almost always crash recovery, where the existing connection is already dead and there's nothing to keep serving.
+
+Either way, a tool call that lands during a reconnect window is covered by [Auth failure recovery](./tool-execution#auth-failure-recovery) when the failure is auth-shaped; other failures during a close-first window surface as a normal connection error and are retried by the caller.
+
 ### Request ID Tracking
 
 For Agent Mode operations, Bifrost can track intermediate tool executions:
@@ -303,13 +323,19 @@ Tools are discovered from MCP servers during:
 
 The MCP Server dynamically updates its tool registry from the tool manager.
 
+Runtime updates run on a periodic tool sync per client. The cadence is the per-client `tool_sync_interval` (minutes on the API; `0` or unset inherits the global `mcp_tool_sync_interval` client setting, default 10 minutes; negative disables sync for that client). Server-level clients sync over their live connection; per-user clients (`per_user_oauth`, `per_user_headers`) hold no persistent connection, so the syncer uses the retained admin discovery credential for a one-shot connect, `tools/list`, disconnect cycle (see [Per-User OAuth](./auth/per-user-oauth#admin-discovery-credential) and [Per-User Headers](./auth/per-user-headers#admin-discovery-credential)). A failed sync keeps the existing tool set and retries on the next cycle.
+
+Every discovered tool list — from the initial connect and from every periodic sync — persists to the database, so a restart doesn't lose anything a running instance had already discovered. Persistence is skipped when a sync's result is byte-identical to what's already stored, so an unchanged tick doesn't cause a write.
+
 ---
 
 ## Per-User Auth on the Gateway
 
-When at least one upstream MCP server is configured with `per_user_oauth` or `per_user_headers`, the `/mcp` endpoint serves per-user credentials lazily. Bifrost is **not** an OAuth Authorization Server — there is no `.well-known/oauth-protected-resource` discovery and no inbound consent screen. Inbound MCP clients identify themselves via headers:
+When at least one upstream MCP server is configured with `per_user_oauth` or `per_user_headers`, the `/mcp` endpoint serves per-user credentials lazily, keyed to the inbound caller's identity. How that identity is established depends on the [gateway auth mode](./gateway-auth): in the default `headers` mode, clients identify themselves via headers (below); in `both` / `oauth` mode, a Bifrost-issued JWT carries the identity instead.
 
-- `x-bf-vk: <vk>` (or `Authorization: Bearer <vk>` / `x-api-key: <vk>`) — VK-mode identity
+In `headers` mode, inbound MCP clients identify themselves via headers:
+
+- `x-bf-vk: <vk>` (or `Authorization: Bearer <vk>` / `x-api-key: <vk>` / `x-goog-api-key: <vk>`) — VK-mode identity
 - `x-bf-mcp-session-id: <opaque-string>` — session-mode identity (client-asserted, must be re-sent on every call)
 - Enterprise SSO — user-mode identity, attached automatically by the auth middleware
 
@@ -328,7 +354,7 @@ Who can open and complete that URL depends on the flow's identity mode (frozen w
 See [Flow mode and access rules →](./auth/overview#flow-mode-and-access-rules) for the full per-mode behavior.
 
 <Note>
-Claude Code may proactively POST `/register` (RFC 7591 DCR) on `claude mcp add` and log `SDK auth failed: …`. Bifrost intentionally does not implement an OAuth stub for that probe; the `/mcp` connection itself works. See the [Claude Code bug report](https://github.com/anthropics/claude-code/issues/46640) for context.
+In the default `headers` [auth mode](./gateway-auth), Claude Code may proactively POST `/oauth2/register` (RFC 7591 DCR) on `claude mcp add` and log `SDK auth failed: …` — discovery and registration aren't served in that mode, so the probe has no endpoint to hit. The `/mcp` connection itself still works. In `both` / `oauth` mode the probe is handled by Bifrost's authorization server and the message doesn't appear. See the [Claude Code bug report](https://github.com/anthropics/claude-code/issues/46640) for context.
 </Note>
 
 See [Per-User OAuth →](./auth/per-user-oauth) and [Per-User Headers →](./auth/per-user-headers) for the full flows and identity options, and [MCP Sessions →](./sessions) for managing the resulting credentials.
@@ -342,7 +368,7 @@ The URLs Bifrost surfaces (consent pages, header-submission pages, and the `redi
 See [Reverse Proxy configuration →](../deployment-guides/config-json/client#reverse-proxy) for the full reference and examples.
 
 <Warning>
-**Changing `mcp_external_client_url` breaks already-connected per-user OAuth clients.** Upstream OAuth providers lock the `redirect_uri` to whatever was registered during Dynamic Client Registration (RFC 7591). If you change this URL afterwards, existing clients fail with **"Invalid redirect URI"** at the authorize step. To recover, clear the stored OAuth client credentials for the affected MCP server and re-authorize so Bifrost re-registers with the new URL.
+**Changing `mcp_external_client_url` breaks already-connected per-user OAuth clients.** Upstream OAuth providers lock the `redirect_uri` to whatever was registered during Dynamic Client Registration (RFC 7591). If you change this URL afterwards, existing clients fail with **"Invalid redirect URI"** at the authorize step. To recover, delete and recreate the affected MCP client so Bifrost re-runs DCR against the new URL (the [reauthorize flow](./auth/oauth#reauthorization) reuses the registered client, so it cannot fix the mismatch on its own). For manually registered credentials, add the new redirect URI at the provider's dashboard instead, then reauthorize.
 </Warning>
 
 ---

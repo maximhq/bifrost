@@ -42,19 +42,11 @@ type AnalyzerConfig = configstore.ComplexityAnalyzerConfig
 
 // KeywordConfig is the full internal keyword set used by the compiled matcher.
 type KeywordConfig struct {
-	CodeKeywords              []string
-	StrongReasoningKeywords   []string
-	WeakReasoningKeywords     []string
-	TechnicalKeywords         []string
-	SimpleKeywords            []string
-	EnumTriggers              []string
-	ComprehensivenessMarkers  []string
-	ElaborationMarkers        []string
-	LimitingQualifiers        []string
-	ReferentialPhrases        []string
-	ReferentialReferenceWords []string
-	ReferentialActionWords    []string
-	TaskShiftPhrases          []string
+	CodeKeywords            []string
+	StrongReasoningKeywords []string
+	TechnicalKeywords       []string
+	SimpleKeywords          []string
+	ContinuationPhrases     []string
 }
 
 // DefaultTierBoundaries returns the built-in classification thresholds.
@@ -116,19 +108,11 @@ func mergeEditableKeywordsOntoDefaults(editable EditableKeywordConfig) KeywordCo
 
 func defaultFullKeywordConfig() KeywordConfig {
 	return KeywordConfig{
-		CodeKeywords:              cloneStringSlice(codeKeywords),
-		StrongReasoningKeywords:   cloneStringSlice(strongReasoningKeywords),
-		WeakReasoningKeywords:     cloneStringSlice(weakReasoningKeywords),
-		TechnicalKeywords:         cloneStringSlice(technicalKeywords),
-		SimpleKeywords:            cloneStringSlice(simpleKeywords),
-		EnumTriggers:              cloneStringSlice(enumTriggers),
-		ComprehensivenessMarkers:  cloneStringSlice(comprehensivenessMarkers),
-		ElaborationMarkers:        cloneStringSlice(elaborationMarkers),
-		LimitingQualifiers:        cloneStringSlice(limitingQualifiers),
-		ReferentialPhrases:        cloneStringSlice(referentialPhrases),
-		ReferentialReferenceWords: cloneStringSlice(referentialReferenceWords),
-		ReferentialActionWords:    cloneStringSlice(referentialActionWords),
-		TaskShiftPhrases:          cloneStringSlice(taskShiftPhrases),
+		CodeKeywords:            cloneStringSlice(codeKeywords),
+		StrongReasoningKeywords: cloneStringSlice(strongReasoningKeywords),
+		TechnicalKeywords:       cloneStringSlice(technicalKeywords),
+		SimpleKeywords:          cloneStringSlice(simpleKeywords),
+		ContinuationPhrases:     cloneStringSlice(continuationPhrases),
 	}
 }
 

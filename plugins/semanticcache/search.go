@@ -66,6 +66,13 @@ func (plugin *Plugin) performSemanticSearch(ctx *schemas.BifrostContext, state *
 
 	state.Embeddings = embedding
 	state.EmbeddingsInputTokens = inputTokens
+	if !schemas.SetCacheDebugOnContext(ctx, &schemas.BifrostCacheDebug{
+		ProviderUsed: bifrost.Ptr(string(plugin.config.Provider)),
+		ModelUsed:    bifrost.Ptr(plugin.config.EmbeddingModel),
+		InputTokens:  bifrost.Ptr(inputTokens),
+	}) {
+		plugin.logger.Warn("Failed to store semantic cache debug data on request context")
+	}
 
 	cacheThreshold := plugin.config.Threshold
 	if v := ctx.Value(CacheThresholdKey); v != nil {
@@ -146,6 +153,12 @@ func (plugin *Plugin) generateEmbedding(ctx *schemas.BifrostContext, text string
 	// released back to its sync.Pool — see core/schemas.ReleasePluginScope.
 	defer embeddingCtx.Cancel()
 	embeddingCtx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
+	// The embedding request targets the plugin's own configured embedding
+	// provider/model, not the caller's — and because it skips the plugin
+	// pipeline, routing state is never re-resolved for it. Shed the caller's
+	// key-routing and body-transport state so the request behaves like a
+	// fresh external /v1/embeddings call.
+	bifrost.ClearContextForInternalRequest(embeddingCtx)
 	if plugin.embeddingRequestExecutor == nil {
 		return nil, 0, fmt.Errorf("embedding request executor is not configured")
 	}

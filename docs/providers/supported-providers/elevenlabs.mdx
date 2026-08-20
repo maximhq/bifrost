@@ -20,6 +20,7 @@ ElevenLabs is a specialized audio provider for text-to-speech and speech-to-text
 | Operation | Non-Streaming | Streaming | Endpoint |
 |-----------|---------------|-----------|----------|
 | Speech (TTS) | ✅ | ✅ | `/v1/text-to-speech/{voice_id}` |
+| Sound Effects (Text-to-Sound) | ✅ | - | `/v1/sound-generation` |
 | Transcriptions (STT) | ✅ | - | `/v1/speech-to-text` |
 | List Models | ✅ | - | `/v1/models` |
 | Chat Completions | ❌ | ❌ | - |
@@ -82,7 +83,7 @@ Refer to the API documentation for [Provider Keys Management](https://docs.getbi
 case schemas.Elevenlabs:
     return []schemas.Key{{
         Name:   "elevenlabs-key-1",
-        Value:  *schemas.NewEnvVar("env.ELEVENLABS_API_KEY"),
+        Value:  *schemas.NewSecretVar("env.ELEVENLABS_API_KEY"),
         Models: []string{"*"},
         Weight: 1.0,
     }}, nil
@@ -271,7 +272,109 @@ Final chunk:
 
 ---
 
-# 2. Transcription (Speech-to-Text)
+# 2. Sound Effects (Text-to-Sound)
+
+ElevenLabs sound-effects models (e.g. `eleven_text_to_sound_v2`) generate sound
+effects from a text prompt via the upstream `POST /v1/sound-generation` API. This
+is a different endpoint from text-to-speech and **does not use a voice**.
+
+Call `POST /v1/audio/speech` with a sound model — the provider detects a sound
+model by its id and routes internally to sound generation, so no separate endpoint
+is needed (SDK and transport APIs stay at parity). Because it stays a speech
+request, virtual-key governance (provider/model allowlists, budgets, rate limits)
+applies to `eleven_text_to_sound_v2` like any other model.
+
+## Request Parameters
+
+| Parameter | Mapping | Notes |
+|-----------|---------|-------|
+| `input.input` | `text` | The sound-effect description / prompt (required) |
+| `model` | `model_id` | A sound model, e.g. `"eleven_text_to_sound_v2"` |
+| `response_format` | Query param `output_format` | e.g. `mp3_22050_32` (raw ElevenLabs formats pass through) |
+| `extra_params.duration_seconds` | `duration_seconds` | Optional. Clamped to `[0.5, 30]`. Omit to let the model choose the length |
+| `extra_params.loop` | `loop` | Optional. Seamless looping (sound models only) |
+| `extra_params.prompt_influence` | `prompt_influence` | Optional, default `0.3`. Clamped to `[0, 1]` |
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl -X POST http://localhost:8080/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  --output sound-effects.mp3 \
+  -d '{
+    "model": "elevenlabs/eleven_text_to_sound_v2",
+    "input": "glass shattering on concrete",
+    "response_format": "mp3_44100_128",
+    "duration_seconds": 2,
+    "loop": false,
+    "prompt_influence": 0.3
+  }'
+```
+
+> `input` is a top-level string here (not a nested object). `duration_seconds`,
+> `loop`, and `prompt_influence` are sent as top-level fields and forwarded as
+> sound-generation parameters. No voice is sent — the provider detects the sound
+> model and skips the voice requirement.
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+resp, err := client.SpeechRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostSpeechRequest{
+    Provider: schemas.Elevenlabs,
+    Model:    "eleven_text_to_sound_v2",
+    Input: &schemas.SpeechInput{
+        Input: "glass shattering on concrete",
+    },
+    Params: &schemas.SpeechParameters{
+        ResponseFormat: schemas.Ptr("mp3_44100_128"),
+        ExtraParams: map[string]interface{}{
+            "duration_seconds": 2,
+            "loop":             false,
+            "prompt_influence": 0.3,
+        },
+    },
+})
+```
+
+</Tab>
+</Tabs>
+
+## Response
+
+Returns binary audio (same delivery as text-to-speech). When `duration_seconds` is
+provided, the response usage carries `audio_seconds` (the requested duration) for
+observability and future duration-based pricing.
+
+## Notes
+
+| Behavior | Detail |
+|----------|--------|
+| No voice | Sound models ignore voice; the gateway does not require one for them |
+| No streaming | The upstream sound-generation API has no streaming variant |
+| Governance | As a speech request, virtual-key allowlists, budgets, and rate limits apply to `eleven_text_to_sound_v2` like any other model |
+
+### Billing
+
+ElevenLabs itself bills sound effects **per generated second**. In Bifrost the
+dollar cost is only computed when the model catalog has a pricing entry for it:
+
+- The default pricing datasheet (`getbifrost.ai/datasheet`) does **not** currently
+  include `eleven_text_to_sound_v2`, so without extra configuration the request is
+  recorded with `cost = 0`.
+- To bill it today, add a **pricing override** for the model (works with any
+  config store, e.g. SQLite — no Postgres required). The speech cost path
+  currently bills on input characters, so an override that sets
+  `input_cost_per_character` takes effect immediately, e.g.
+  `{"input_cost_per_character":0.00018}`.
+- `output_cost_per_second` is the field that will reflect ElevenLabs' real
+  per-second pricing, but it only takes effect once the `audio_seconds` wiring
+  lands; until then it is recorded but not applied.
+
+---
+
+# 3. Transcription (Speech-to-Text)
 
 ## Request Parameters
 
@@ -512,7 +615,7 @@ Character-level timing when `timestamps_granularity: "character"`:
 
 ---
 
-# 3. List Models
+# 4. List Models
 
 ## Request Parameters
 

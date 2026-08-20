@@ -1,10 +1,13 @@
 import { Button } from "@/components/ui/button";
 import { Form } from "@/components/ui/form";
 import { Label } from "@/components/ui/label";
+import BudgetUsageResetDialog from "@/components/ui/budgetUsageResetDialog";
+import { useBudgetUsageResetPrompt } from "@/hooks/useBudgetUsageResetPrompt";
 import MultiBudgetLines, { BudgetLineEntry } from "@/components/ui/multibudgets";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
 import { DottedSeparator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
+import { supportsCalendarAlignment } from "@/lib/constants/governance";
 import {
 	getErrorMessage,
 	useDeleteProviderGovernanceMutation,
@@ -68,6 +71,8 @@ function governanceToFormValues(provGov: ProviderGovernance | undefined): FormDa
 
 export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps) {
 	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
+	// Defers the save until the operator says whether to clear accumulated spend.
+	const resetPrompt = useBudgetUsageResetPrompt<FormData>();
 	const hasViewAccess = useRbac(RbacResource.Governance, RbacOperation.View);
 
 	const { data: providerGovernanceData } = useGetProviderGovernanceQuery(undefined, {
@@ -87,6 +92,8 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 
 	const watchedBudgets = form.watch("budgets");
 	const watchedCalendarAligned = form.watch("calendarAligned");
+	const configuredBudgets = watchedBudgets.filter((b) => b.max_limit !== undefined && b.max_limit > 0);
+	const showCalendarAlignment = configuredBudgets.some((b) => supportsCalendarAlignment(b.reset_duration));
 
 	useEffect(() => {
 		if (providerGovernance && !form.formState.isDirty) {
@@ -100,9 +107,40 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 		form.reset(governanceToFormValues(newProvGov));
 	}, [provider.name, form]);
 
+	// Drop a stale calendarAligned when no configured budget supports alignment, so the
+	// toggle never reappears pre-enabled if an alignable budget is added back later.
+	useEffect(() => {
+		if (!showCalendarAlignment && watchedCalendarAligned) {
+			form.setValue("calendarAligned", false, { shouldDirty: true });
+		}
+	}, [showCalendarAlignment, watchedCalendarAligned, form]);
+
+	// A budget config change on existing provider governance is when clearing
+	// accumulated spend becomes a meaningful choice.
+	const budgetsChanged = (data: FormData) => {
+		const signature = (rows: { max_limit?: number | null; reset_duration?: string }[]) =>
+			[...rows]
+				.map((r) => `${r.max_limit ?? ""}:${r.reset_duration ?? ""}`)
+				.sort()
+				.join("|");
+		const existing = providerGovernance?.budgets ?? [];
+		if (existing.length === 0) return false;
+		const next = data.budgets.filter((b) => b.max_limit !== undefined && b.max_limit > 0);
+		return signature(next) !== signature(existing);
+	};
+
 	const onSubmit = async (data: FormData) => {
+		if (budgetsChanged(data)) {
+			resetPrompt.ask(data);
+			return;
+		}
+		await saveGovernance(data, false);
+	};
+
+	const saveGovernance = async (data: FormData, resetBudgetUsage: boolean) => {
 		try {
 			const validBudgets = data.budgets.filter((b) => b.max_limit !== undefined && b.max_limit > 0);
+			const hasAlignableBudget = validBudgets.some((b) => supportsCalendarAlignment(b.reset_duration));
 			const hadBudgets = (providerGovernance?.budgets?.length ?? 0) > 0;
 			const hadRateLimit = !!providerGovernance?.rate_limit;
 			const hasRateLimit = data.tokenMaxLimit !== undefined || data.requestMaxLimit !== undefined;
@@ -141,8 +179,10 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 				provider: provider.name,
 				data: {
 					budgets: budgetsPayload,
-					...(budgetsPayload !== undefined ? { calendar_aligned: data.calendarAligned } : {}),
+					...(budgetsPayload !== undefined ? { calendar_aligned: hasAlignableBudget && data.calendarAligned } : {}),
 					rate_limit: rateLimitPayload,
+					// Only sent when the operator explicitly chose to clear spend.
+					reset_budget_usage: resetBudgetUsage || undefined,
 				},
 			}).unwrap();
 
@@ -177,15 +217,15 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 					onChange={(lines) => form.setValue("budgets", lines, { shouldDirty: true })}
 				/>
 
-				{/* Calendar Alignment — only shown when there are budgets */}
-				{watchedBudgets.length > 0 && (
+				{/* Calendar Alignment — only shown when a budget uses a calendar-alignable period (day/week/month/year) */}
+				{showCalendarAlignment && (
 					<div className="flex items-center justify-between gap-4">
 						<div className="space-y-1">
 							<Label className="text-sm" htmlFor="provider-calendar-aligned">
 								Align to calendar cycle
 							</Label>
 							<p className="text-muted-foreground text-xs">
-								Reset budgets at the start of each period (e.g. 1st of month) instead of rolling from creation date.
+								Reset budgets at the start of each period (e.g. 1st of month) instead of rolling from creation date. Quarterly budgets always align to fiscal quarter starts.
 							</p>
 						</div>
 						<Switch
@@ -275,6 +315,13 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 					</Button>
 				</div>
 			</form>
+			<BudgetUsageResetDialog
+				data-testid="provider-governance-budget-reset-dialog"
+				ownerLabel="provider"
+				open={resetPrompt.isOpen}
+				onOpenChange={resetPrompt.setOpen}
+				onChoice={(resetUsage) => resetPrompt.resolve((data) => saveGovernance(data, resetUsage))}
+			/>
 		</Form>
 	);
 }

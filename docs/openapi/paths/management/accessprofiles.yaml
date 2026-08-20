@@ -3,6 +3,13 @@
 access-profiles:
   get:
     operationId: listAccessProfiles
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: List access profiles
     description: Returns access profiles visible to the caller.
     tags:
@@ -43,6 +50,13 @@ access-profiles:
 
   post:
     operationId: createAccessProfile
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Create access profile
     description: |
       Creates a new access profile template. The profile is inactive until attached to a role.
@@ -74,12 +88,19 @@ access-profiles:
 access-profiles-by-id:
   get:
     operationId: getAccessProfile
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Get access profile by ID
     description: Returns the profile plus its role attachments and the count of users holding a copy.
     tags:
       - Access Profiles
     parameters:
-      - name: id
+      - name: profile_id
         in: path
         required: true
         schema:
@@ -100,6 +121,13 @@ access-profiles-by-id:
 
   put:
     operationId: updateAccessProfile
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Update access profile
     description: |
       Partial update. Omitted fields preserve the current value.
@@ -108,7 +136,7 @@ access-profiles-by-id:
     tags:
       - Access Profiles
     parameters:
-      - name: id
+      - name: profile_id
         in: path
         required: true
         schema:
@@ -139,12 +167,19 @@ access-profiles-by-id:
 
   delete:
     operationId: deleteAccessProfile
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Delete access profile
     description: Blocked with 409 if any users still hold copies. Detach role attachments or remove user assignments first.
     tags:
       - Access Profiles
     parameters:
-      - name: id
+      - name: profile_id
         in: path
         required: true
         schema:
@@ -168,12 +203,19 @@ access-profiles-by-id:
 access-profiles-activate:
   put:
     operationId: activateAccessProfile
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Activate access profile
     description: Sets the profile active. Idempotent.
     tags:
       - Access Profiles
     parameters:
-      - name: id
+      - name: profile_id
         in: path
         required: true
         schema:
@@ -195,12 +237,19 @@ access-profiles-activate:
 access-profiles-deactivate:
   put:
     operationId: deactivateAccessProfile
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Deactivate access profile
     description: Sets the profile inactive. Idempotent. User copies are preserved; the profile is hidden from selection menus.
     tags:
       - Access Profiles
     parameters:
-      - name: id
+      - name: profile_id
         in: path
         required: true
         schema:
@@ -222,12 +271,19 @@ access-profiles-deactivate:
 access-profiles-clone:
   post:
     operationId: cloneAccessProfile
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Clone an access profile
     description: Creates a fresh copy of the profile under a new name. The clone has no role attachments or user copies.
     tags:
       - Access Profiles
     parameters:
-      - name: id
+      - name: profile_id
         in: path
         required: true
         schema:
@@ -259,6 +315,13 @@ access-profiles-clone:
 access-profiles-propagate:
   post:
     operationId: propagateAccessProfile
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Propagate template changes to user copies
     description: |
       Pushes selected fields from the template to every user that holds a copy.
@@ -266,7 +329,7 @@ access-profiles-propagate:
     tags:
       - Access Profiles
     parameters:
-      - name: id
+      - name: profile_id
         in: path
         required: true
         schema:
@@ -296,6 +359,13 @@ access-profiles-propagate:
 access-profiles-roles:
   post:
     operationId: attachRolesToAccessProfile
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Attach roles to access profile
     description: |
       Attaches one or more roles. Setting `is_default: true` makes the profile the role's default
@@ -303,7 +373,7 @@ access-profiles-roles:
     tags:
       - Access Profiles
     parameters:
-      - name: id
+      - name: profile_id
         in: path
         required: true
         schema:
@@ -333,11 +403,18 @@ access-profiles-roles:
 access-profiles-role-by-id:
   delete:
     operationId: detachRoleFromAccessProfile
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Detach role from access profile
     tags:
       - Access Profiles
     parameters:
-      - name: id
+      - name: profile_id
         in: path
         required: true
         schema:
@@ -364,11 +441,18 @@ access-profiles-role-by-id:
 access-profiles-versions:
   get:
     operationId: listAccessProfileVersions
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: List version snapshots for an access profile
     tags:
       - Access Profiles
     parameters:
-      - name: id
+      - name: profile_id
         in: path
         required: true
         schema:
@@ -388,11 +472,18 @@ access-profiles-versions:
 access-profiles-version-by-number:
   get:
     operationId: getAccessProfileVersion
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Get a single version snapshot
     tags:
       - Access Profiles
     parameters:
-      - name: id
+      - name: profile_id
         in: path
         required: true
         schema:
@@ -419,11 +510,18 @@ access-profiles-version-by-number:
 access-profiles-audit-logs-by-id:
   get:
     operationId: listAccessProfileAuditLogsById
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: List audit log entries for a single profile
     tags:
       - Access Profiles
     parameters:
-      - name: id
+      - name: profile_id
         in: path
         required: true
         schema:
@@ -460,6 +558,13 @@ access-profiles-audit-logs-by-id:
 access-profiles-audit-logs-all:
   get:
     operationId: listAccessProfileAuditLogs
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: List workspace-wide audit log entries
     tags:
       - Access Profiles
@@ -495,11 +600,18 @@ access-profiles-audit-logs-all:
 users-access-profiles:
   get:
     operationId: listUserAccessProfiles
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: List access profiles held by a user
     tags:
       - Access Profiles
     parameters:
-      - name: target_user_id
+      - name: user_id
         in: path
         required: true
         schema:
@@ -519,12 +631,19 @@ users-access-profiles:
 users-access-profile-by-id:
   delete:
     operationId: detachUserAccessProfile
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Detach a user's access profile
     description: Removes the profile from the user and deletes every virtual key it produced. Fails closed if a virtual key cannot be deleted.
     tags:
       - Access Profiles
     parameters:
-      - name: target_user_id
+      - name: user_id
         in: path
         required: true
         schema:
@@ -548,14 +667,141 @@ users-access-profile-by-id:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+users-access-profile-budget-override:
+  put:
+    operationId: updateUserAccessProfileBudgetOverride
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Set a user's access-profile budget override
+    description: |
+      Sets or replaces the spending override on one budget of a single user's copy of an access profile.
+      The override is additive — while it is active the budget is enforced against
+      `max_limit + override_amount` — and it leaves the budget's base limit, current usage, and reset
+      schedule untouched. Only this user is affected; the access profile template and every other user
+      assigned to it keep their original limits.
+
+      Use `mode: cycles` with a `cycles` count to grant extra spend for a finite number of reset windows
+      (the current window counts as the first), or `mode: forever` to keep the override until it is deleted.
+      A finite grant is anchored to the profile's reset window — calendar-aligned profiles anchor at the
+      calendar period start — so every node in a cluster derives the same number of remaining cycles.
+      The change is propagated cluster-wide and survives access-profile cloning and propagation.
+
+      Requires the `AccessProfiles.Update` permission. `budget_id` must be a budget on the user's own copy
+      of the profile, not on the shared template.
+    tags:
+      - Access Profiles
+    parameters:
+      - name: user_id
+        in: path
+        required: true
+        description: ID of the user whose access-profile budget is being overridden
+        schema:
+          type: string
+      - name: profile_id
+        in: path
+        required: true
+        description: ID of the access profile assigned to the user
+        schema:
+          type: integer
+      - name: budget_id
+        in: path
+        required: true
+        description: ID of a budget on the user's copy of the access profile
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/BudgetOverrideRequest'
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Budget override applied successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/BudgetOverrideResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: User access profile or budget not found, or the profile is outside the caller's access scope
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  delete:
+    operationId: deleteUserAccessProfileBudgetOverride
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Remove a user's access-profile budget override
+    description: |
+      Removes any active override from the user's budget, so it is enforced against its base `max_limit`
+      again. The budget's current usage and reset schedule are unchanged, and the removal is permanent — a
+      cleared grant cannot be re-derived. Safe to call on a budget that has no override.
+
+      Requires the `AccessProfiles.Update` permission.
+    tags:
+      - Access Profiles
+    parameters:
+      - name: user_id
+        in: path
+        required: true
+        description: ID of the user whose access-profile budget override is being removed
+        schema:
+          type: string
+      - name: profile_id
+        in: path
+        required: true
+        description: ID of the access profile assigned to the user
+        schema:
+          type: integer
+      - name: budget_id
+        in: path
+        required: true
+        description: ID of a budget on the user's copy of the access profile
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Budget override removed successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/BudgetOverrideResponse'
+      '404':
+        description: User access profile or budget not found, or the profile is outside the caller's access scope
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
 users-access-profile-virtual-keys:
   post:
     operationId: addUserAccessProfileVirtualKey
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Add an extra virtual key under a user's access profile
     tags:
       - Access Profiles
     parameters:
-      - name: target_user_id
+      - name: user_id
         in: path
         required: true
         schema:
@@ -588,11 +834,18 @@ users-access-profile-virtual-keys:
 users-access-profile-virtual-key-by-id:
   delete:
     operationId: deleteUserAccessProfileVirtualKey
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Delete a virtual key from a user's access profile
     tags:
       - Access Profiles
     parameters:
-      - name: target_user_id
+      - name: user_id
         in: path
         required: true
         schema:

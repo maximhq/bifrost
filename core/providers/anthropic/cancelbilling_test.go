@@ -43,3 +43,61 @@ func TestNormalizeCachedUsage_NoCacheDetailsIsNoOp(t *testing.T) {
 func TestNormalizeCachedUsage_NilSafe(t *testing.T) {
 	normalizeCachedUsage(nil) // must not panic
 }
+
+func TestAccumulateAnthropicResponsesUsage_MirrorsCacheIntoBilledUsage(t *testing.T) {
+	responseUsage := &schemas.ResponsesResponseUsage{}
+	billedUsage := &schemas.BifrostLLMUsage{}
+	upstreamUsage := &AnthropicUsage{
+		InputTokens:              2,
+		CacheReadInputTokens:     1300,
+		CacheCreationInputTokens: 78456,
+		CacheCreation: AnthropicUsageCacheCreation{
+			Ephemeral1hInputTokens: 78456,
+		},
+		OutputTokens: 3,
+	}
+
+	accumulateAnthropicResponsesUsage(responseUsage, billedUsage, upstreamUsage)
+
+	if responseUsage.InputTokens != 2 || responseUsage.OutputTokens != 3 || responseUsage.TotalTokens != 5 {
+		t.Fatalf("unexpected response usage before final normalization: %+v", responseUsage)
+	}
+	if responseUsage.InputTokensDetails == nil {
+		t.Fatal("expected response cache details")
+	}
+	if responseUsage.InputTokensDetails.CachedReadTokens != 1300 {
+		t.Fatalf("response cached read = %d, want 1300", responseUsage.InputTokensDetails.CachedReadTokens)
+	}
+	if responseUsage.InputTokensDetails.CachedWriteTokens != 78456 {
+		t.Fatalf("response cached write = %d, want 78456", responseUsage.InputTokensDetails.CachedWriteTokens)
+	}
+	if responseUsage.InputTokensDetails.CachedWriteTokenDetails == nil ||
+		responseUsage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h != 78456 {
+		t.Fatalf("response cached write details = %+v, want 1h=78456", responseUsage.InputTokensDetails.CachedWriteTokenDetails)
+	}
+
+	if billedUsage.PromptTokens != 2 || billedUsage.CompletionTokens != 3 || billedUsage.TotalTokens != 5 {
+		t.Fatalf("unexpected billed usage before normalization: %+v", billedUsage)
+	}
+	if billedUsage.PromptTokensDetails == nil {
+		t.Fatal("expected billed cache details")
+	}
+	if billedUsage.PromptTokensDetails.CachedReadTokens != 1300 {
+		t.Fatalf("billed cached read = %d, want 1300", billedUsage.PromptTokensDetails.CachedReadTokens)
+	}
+	if billedUsage.PromptTokensDetails.CachedWriteTokens != 78456 {
+		t.Fatalf("billed cached write = %d, want 78456", billedUsage.PromptTokensDetails.CachedWriteTokens)
+	}
+	if billedUsage.PromptTokensDetails.CachedWriteTokenDetails == nil ||
+		billedUsage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h != 78456 {
+		t.Fatalf("billed cached write details = %+v, want 1h=78456", billedUsage.PromptTokensDetails.CachedWriteTokenDetails)
+	}
+
+	normalizeCachedUsage(billedUsage)
+	if billedUsage.PromptTokens != 79758 {
+		t.Fatalf("normalized billed prompt = %d, want 79758", billedUsage.PromptTokens)
+	}
+	if billedUsage.TotalTokens != 79761 {
+		t.Fatalf("normalized billed total = %d, want 79761", billedUsage.TotalTokens)
+	}
+}

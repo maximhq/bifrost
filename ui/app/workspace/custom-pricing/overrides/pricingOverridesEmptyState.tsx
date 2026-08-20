@@ -1,7 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { ArrowUpRight, SlidersHorizontal } from "lucide-react";
 
-const PRICING_OVERRIDES_DOCS_URL = "https://docs.getbifrost.ai/features/governance/custom-pricing";
+const PRICING_OVERRIDES_DOCS_URL = "https://docs.getbifrost.ai/providers/custom-pricing";
 
 interface PricingOverridesEmptyStateProps {
 	onCreateClick: () => void;

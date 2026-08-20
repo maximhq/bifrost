@@ -1,6 +1,8 @@
 package lib
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -54,6 +56,100 @@ func TestValidateConfigSchema_EmptyObject(t *testing.T) {
 	err := ValidateConfigSchema([]byte(emptyConfig), loadLocalSchema(t))
 	if err != nil {
 		t.Errorf("expected empty config to pass validation, got error: %v", err)
+	}
+}
+
+func TestValidateConfigSchema_CustomSchemaURL(t *testing.T) {
+	schema := loadLocalSchema(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(schema)
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv(ConfigSchemaURLEnv, "")
+
+	config := []byte(`{"$schema":"` + server.URL + `"}`)
+	err := ValidateConfigSchema(config)
+	if err != nil {
+		t.Errorf("expected schema to load from the config's custom $schema URL, got error: %v", err)
+	}
+}
+
+func TestValidateConfigSchema_CustomSchemaURL_HTTPError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv(ConfigSchemaURLEnv, "")
+
+	config := []byte(`{"$schema":"` + server.URL + `"}`)
+	err := ValidateConfigSchema(config)
+	if err == nil {
+		t.Fatal("expected a non-2xx schema response to fail")
+	}
+	if !strings.Contains(err.Error(), "failed to get config schema from") {
+		t.Errorf("expected load error to name the schema location, got: %v", err)
+	}
+}
+
+func TestValidateConfigSchema_CustomSchemaFilePath(t *testing.T) {
+	schemaPath := filepath.Join(t.TempDir(), "config.schema.json")
+	if err := os.WriteFile(schemaPath, loadLocalSchema(t), 0644); err != nil {
+		t.Fatalf("failed to write temp schema: %v", err)
+	}
+	t.Setenv(ConfigSchemaURLEnv, schemaPath)
+
+	err := ValidateConfigSchema([]byte(`{"$schema":"/opt/bifrost/config.schema.json"}`))
+	if err != nil {
+		t.Errorf("expected custom schema filesystem path to pass validation, got error: %v", err)
+	}
+}
+
+func TestValidateConfigSchema_ConfigSchemaFilePath(t *testing.T) {
+	schemaPath := filepath.Join(t.TempDir(), "config.schema.json")
+	if err := os.WriteFile(schemaPath, loadLocalSchema(t), 0644); err != nil {
+		t.Fatalf("failed to write temp schema: %v", err)
+	}
+	oldCandidates := localSchemaCandidates
+	localSchemaCandidates = nil
+	t.Cleanup(func() { localSchemaCandidates = oldCandidates })
+
+	config := []byte(`{"$schema":"` + schemaPath + `"}`)
+	err := ValidateConfigSchema(config)
+	if err != nil {
+		t.Errorf("expected config $schema filesystem path to load schema, got error: %v", err)
+	}
+}
+
+func TestValidateConfigSchema_FileURL(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "schema dir") // space exercises percent-decoding
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	schemaPath := filepath.Join(dir, "config.schema.json")
+	if err := os.WriteFile(schemaPath, loadLocalSchema(t), 0644); err != nil {
+		t.Fatalf("failed to write temp schema: %v", err)
+	}
+	fileURL := "file://" + strings.ReplaceAll(schemaPath, " ", "%20")
+	t.Setenv(ConfigSchemaURLEnv, fileURL)
+
+	err := ValidateConfigSchema([]byte(`{"$schema":"/opt/bifrost/config.schema.json"}`))
+	if err != nil {
+		t.Errorf("expected file:// schema URL to load schema from filesystem, got error: %v", err)
+	}
+}
+
+func TestFilePathFromSchemaLocation(t *testing.T) {
+	cases := map[string]string{
+		"/opt/bifrost/config.schema.json":               "/opt/bifrost/config.schema.json",
+		"file:///opt/bifrost/config.schema.json":        "/opt/bifrost/config.schema.json",
+		"file://localhost/opt/config.schema.json":       "/opt/config.schema.json",
+		"file:///opt/my%20dir/config.schema.json":       "/opt/my dir/config.schema.json",
+		"https://www.getbifrost.ai/schema-as-path-only": "https://www.getbifrost.ai/schema-as-path-only",
+	}
+	for input, want := range cases {
+		if got := filePathFromSchemaLocation(input); got != want {
+			t.Errorf("filePathFromSchemaLocation(%q) = %q, want %q", input, got, want)
+		}
 	}
 }
 

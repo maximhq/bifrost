@@ -65,7 +65,7 @@ func (h *FeatureFlagsHandler) updateFlag(ctx *fasthttp.RequestCtx) {
 
 	var req updateFlagRequest
 	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request body: "+err.Error())
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
 	if req.Enabled == nil {

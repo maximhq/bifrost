@@ -18,6 +18,8 @@ import (
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/governance/complexity"
 	"github.com/maximhq/bifrost/plugins/logging"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 	"gorm.io/gorm"
 )
@@ -27,11 +29,12 @@ import (
 type mockGovernanceManagerForVK struct {
 	GovernanceManager
 	getGovernanceDataCalls int
+	data                   *governance.GovernanceData
 }
 
 func (m *mockGovernanceManagerForVK) GetGovernanceData(ctx context.Context) *governance.GovernanceData {
 	m.getGovernanceDataCalls++
-	return nil
+	return m.data
 }
 
 // mockConfigStoreForVK embeds the interface so unimplemented methods panic.
@@ -112,11 +115,41 @@ func (m *mockRotateConfigStore) GetModelConfig(_ context.Context, scope string, 
 	return lookupVKModelConfig(m.modelConfigs, scope, scopeID, modelName, provider)
 }
 
+// GetModelConfigsByScopeAndScopeIDs returns the stored configs matching the scope and scope IDs,
+// mirroring the bulk load hydrateVKGovernance performs.
+func (m *mockRotateConfigStore) GetModelConfigsByScopeAndScopeIDs(_ context.Context, scope string, scopeIDs []string) ([]configstoreTables.TableModelConfig, error) {
+	idset := make(map[string]bool, len(scopeIDs))
+	for _, id := range scopeIDs {
+		idset[id] = true
+	}
+	var out []configstoreTables.TableModelConfig
+	for _, mc := range m.modelConfigs {
+		if mc == nil || mc.Scope != scope || mc.ScopeID == nil || !idset[*mc.ScopeID] {
+			continue
+		}
+		out = append(out, *mc)
+	}
+	return out, nil
+}
+
 type mockRotateGovernanceManager struct {
 	GovernanceManager
 	store     *mockRotateConfigStore
 	reloadIDs []string
 	reloadErr error
+}
+
+// budgetOverrideTestGovernanceManager records reloads after budget override mutations.
+type budgetOverrideTestGovernanceManager struct {
+	GovernanceManager
+	store     configstore.ConfigStore
+	reloadIDs []string
+}
+
+// ReloadVirtualKey records the reload and returns the current persisted virtual key.
+func (m *budgetOverrideTestGovernanceManager) ReloadVirtualKey(ctx context.Context, id string) (*configstoreTables.TableVirtualKey, error) {
+	m.reloadIDs = append(m.reloadIDs, id)
+	return m.store.GetVirtualKey(ctx, id)
 }
 
 func (m *mockRotateGovernanceManager) ReloadVirtualKey(ctx context.Context, id string) (*configstoreTables.TableVirtualKey, error) {
@@ -125,6 +158,128 @@ func (m *mockRotateGovernanceManager) ReloadVirtualKey(ctx context.Context, id s
 		return nil, m.reloadErr
 	}
 	return m.store.GetVirtualKey(ctx, id)
+}
+
+// TestVirtualKeyBudgetOverrideLifecycle verifies finite, replacement, and clear mutations preserve base budget state.
+func TestVirtualKeyBudgetOverrideLifecycle(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	manager := &budgetOverrideTestGovernanceManager{store: store}
+	handler := &GovernanceHandler{configStore: store, governanceManager: manager}
+	ctx := context.Background()
+
+	active := true
+	vk := &configstoreTables.TableVirtualKey{
+		ID:       "vk-budget-override",
+		Name:     "override-test",
+		Value:    *schemas.NewSecretVar("sk-bf-override-test"),
+		IsActive: &active,
+	}
+	if err := store.CreateVirtualKey(ctx, vk); err != nil {
+		t.Fatalf("create virtual key: %v", err)
+	}
+	scopeID := vk.ID
+	modelConfig := &configstoreTables.TableModelConfig{
+		ID:        "mc-budget-override",
+		ModelName: configstoreTables.ModelConfigAllModels,
+		Scope:     configstoreTables.ModelConfigScopeVirtualKey,
+		ScopeID:   &scopeID,
+		Budgets: []configstoreTables.TableBudget{{
+			ID:            "budget-override",
+			MaxLimit:      100,
+			CurrentUsage:  40,
+			ResetDuration: "1d",
+		}},
+	}
+	if err := store.CreateModelConfig(ctx, modelConfig); err != nil {
+		t.Fatalf("create model config: %v", err)
+	}
+
+	putCtx := newTestRequestCtx(`{"amount":25,"mode":"cycles","cycles":4}`)
+	putCtx.SetUserValue("vk_id", vk.ID)
+	putCtx.SetUserValue("budget_id", "budget-override")
+	handler.updateVirtualKeyBudgetOverride(putCtx)
+	if putCtx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("finite override status=%d body=%s", putCtx.Response.StatusCode(), putCtx.Response.Body())
+	}
+
+	budget, err := store.GetBudget(ctx, "budget-override")
+	if err != nil {
+		t.Fatalf("get finite override budget: %v", err)
+	}
+	if budget.MaxLimit != 100 || budget.CurrentUsage != 40 || budget.OverrideAmount != 25 || budget.OverrideMode != configstoreTables.BudgetOverrideModeCycles || budget.OverrideCyclesRemaining != 4 {
+		t.Fatalf("unexpected finite override budget: %+v", budget)
+	}
+
+	replaceCtx := newTestRequestCtx(`{"amount":50,"mode":"forever"}`)
+	replaceCtx.SetUserValue("vk_id", vk.ID)
+	replaceCtx.SetUserValue("budget_id", "budget-override")
+	handler.updateVirtualKeyBudgetOverride(replaceCtx)
+	if replaceCtx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("forever override status=%d body=%s", replaceCtx.Response.StatusCode(), replaceCtx.Response.Body())
+	}
+
+	deleteCtx := newTestRequestCtx("")
+	deleteCtx.SetUserValue("vk_id", vk.ID)
+	deleteCtx.SetUserValue("budget_id", "budget-override")
+	handler.deleteVirtualKeyBudgetOverride(deleteCtx)
+	if deleteCtx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("clear override status=%d body=%s", deleteCtx.Response.StatusCode(), deleteCtx.Response.Body())
+	}
+	budget, err = store.GetBudget(ctx, "budget-override")
+	if err != nil {
+		t.Fatalf("get cleared override budget: %v", err)
+	}
+	if budget.OverrideAmount != 0 || budget.OverrideMode != "" || budget.OverrideCyclesRemaining != 0 {
+		t.Fatalf("override was not cleared: %+v", budget)
+	}
+	if len(manager.reloadIDs) != 3 {
+		t.Fatalf("reload calls=%d, want 3", len(manager.reloadIDs))
+	}
+}
+
+// TestVirtualKeyBudgetOverrideRejectsDirectMirrorBudget verifies AP-style direct VK budgets cannot be overridden through the OSS endpoint.
+func TestVirtualKeyBudgetOverrideRejectsDirectMirrorBudget(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	manager := &budgetOverrideTestGovernanceManager{store: store}
+	handler := &GovernanceHandler{configStore: store, governanceManager: manager}
+	ctx := context.Background()
+
+	active := true
+	vk := &configstoreTables.TableVirtualKey{
+		ID:       "vk-ap-managed",
+		Name:     "ap-managed",
+		Value:    *schemas.NewSecretVar("sk-bf-ap-managed"),
+		IsActive: &active,
+	}
+	if err := store.CreateVirtualKey(ctx, vk); err != nil {
+		t.Fatalf("create virtual key: %v", err)
+	}
+	directBudget := &configstoreTables.TableBudget{
+		ID:            "ap-mirror-budget",
+		MaxLimit:      100,
+		ResetDuration: "1d",
+		VirtualKeyID:  &vk.ID,
+	}
+	if err := store.CreateBudget(ctx, directBudget); err != nil {
+		t.Fatalf("create direct budget: %v", err)
+	}
+
+	putCtx := newTestRequestCtx(`{"amount":25,"mode":"forever"}`)
+	putCtx.SetUserValue("vk_id", vk.ID)
+	putCtx.SetUserValue("budget_id", directBudget.ID)
+	handler.updateVirtualKeyBudgetOverride(putCtx)
+	if putCtx.Response.StatusCode() != fasthttp.StatusNotFound {
+		t.Fatalf("status=%d, want 404; body=%s", putCtx.Response.StatusCode(), putCtx.Response.Body())
+	}
+	stored, err := store.GetBudget(ctx, directBudget.ID)
+	if err != nil {
+		t.Fatalf("get direct budget: %v", err)
+	}
+	if stored.OverrideMode != "" {
+		t.Fatalf("direct mirror override changed unexpectedly: %+v", stored)
+	}
 }
 
 type mockComplexityGovernanceManager struct {
@@ -232,7 +387,7 @@ func TestComplexityAnalyzerConfigPutRejectsInvalidPayloads(t *testing.T) {
 		body string
 		want string
 	}{
-		{name: "unknown field", body: strings.TrimSuffix(validBody, "}") + `,"extra":true}`, want: "unknown field"},
+		{name: "unknown field", body: strings.TrimSuffix(validBody, "}") + `,"extra":true}`, want: "Invalid request payload"},
 		{name: "multiple json values", body: validBody + `{}`, want: "multiple JSON values"},
 		{name: "invalid boundaries", body: testComplexityAnalyzerPayload(t, invalidBoundaries), want: "tier boundaries"},
 		{name: "empty keywords", body: testComplexityAnalyzerPayload(t, emptyKeywords), want: "keyword lists must be non-empty"},
@@ -590,13 +745,15 @@ func reconcileBudgetRequestsForTest(existing []configstoreTables.TableBudget, re
 				ID:            "new-budget",
 				MaxLimit:      request.MaxLimit,
 				CurrentUsage:  0,
-				LastReset:     budgetLastReset(false, request.ResetDuration),
 				ResetDuration: request.ResetDuration,
+				ResetConfig:   request.ResetConfig,
 			}
+			budget.LastReset = budgetLastReset(false, &budget)
 			inheritUsageFromClosestShorterBudget(&budget, existing, resetUsage)
 		}
 		budget.MaxLimit = request.MaxLimit
 		budget.ResetDuration = request.ResetDuration
+		budget.ResetConfig = request.ResetConfig
 		resetBudgetUsageIfRequested(&budget, resetUsage, false)
 		reconciled = append(reconciled, budget)
 	}
@@ -1040,7 +1197,7 @@ func TestRotateVirtualKey_OnlyChangesValueAndReloads(t *testing.T) {
 			"vk-1": {
 				ID:          "vk-1",
 				Name:        "Production",
-				Value:       "sk-bf-old",
+				Value:       *schemas.NewSecretVar("sk-bf-old"),
 				Description: "existing description",
 				TeamID:      &teamID,
 				RateLimitID: &rateLimitID,
@@ -1076,11 +1233,11 @@ func TestRotateVirtualKey_OnlyChangesValueAndReloads(t *testing.T) {
 	}
 
 	updated := store.virtualKeys["vk-1"]
-	if updated.Value == "sk-bf-old" {
+	if updated.Value.GetValue() == "sk-bf-old" {
 		t.Fatal("expected virtual key value to rotate")
 	}
-	if !strings.HasPrefix(updated.Value, governance.VirtualKeyPrefix) {
-		t.Fatalf("expected rotated value to use %q prefix, got %q", governance.VirtualKeyPrefix, updated.Value)
+	if !strings.HasPrefix(updated.Value.GetValue(), governance.VirtualKeyPrefix) {
+		t.Fatalf("expected rotated value to use %q prefix, got %q", governance.VirtualKeyPrefix, updated.Value.GetValue())
 	}
 	if updated.ID != "vk-1" || updated.Name != "Production" || updated.Description != "existing description" {
 		t.Fatalf("rotation changed non-value fields: %#v", updated)
@@ -1105,8 +1262,8 @@ func TestRotateVirtualKey_OnlyChangesValueAndReloads(t *testing.T) {
 	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
 		t.Fatalf("failed to parse response: %v", err)
 	}
-	if resp.VirtualKey.Value != updated.Value {
-		t.Fatalf("response value = %q, want %q", resp.VirtualKey.Value, updated.Value)
+	if resp.VirtualKey.Value.GetValue() != updated.Value.GetValue() {
+		t.Fatalf("response value = %q, want %q", resp.VirtualKey.Value.GetValue(), updated.Value.GetValue())
 	}
 }
 
@@ -1138,7 +1295,7 @@ func TestRotateVirtualKey_UpdateFailureDoesNotReload(t *testing.T) {
 
 	store := &mockRotateConfigStore{
 		virtualKeys: map[string]*configstoreTables.TableVirtualKey{
-			"vk-1": {ID: "vk-1", Name: "One", Value: "sk-bf-old"},
+			"vk-1": {ID: "vk-1", Name: "One", Value: *schemas.NewSecretVar("sk-bf-old")},
 		},
 		updateErr: errors.New("database unavailable"),
 	}
@@ -1153,8 +1310,8 @@ func TestRotateVirtualKey_UpdateFailureDoesNotReload(t *testing.T) {
 	if ctx.Response.StatusCode() != 500 {
 		t.Fatalf("expected status 500, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
 	}
-	if store.virtualKeys["vk-1"].Value != "sk-bf-old" {
-		t.Fatalf("expected value to remain unchanged, got %q", store.virtualKeys["vk-1"].Value)
+	if store.virtualKeys["vk-1"].Value.GetValue() != "sk-bf-old" {
+		t.Fatalf("expected value to remain unchanged, got %q", store.virtualKeys["vk-1"].Value.GetValue())
 	}
 	if len(manager.reloadIDs) != 0 {
 		t.Fatalf("expected no reloads, got %#v", manager.reloadIDs)
@@ -1166,7 +1323,7 @@ func TestRotateVirtualKey_ReloadFailureReturnsErrorAfterUpdate(t *testing.T) {
 
 	store := &mockRotateConfigStore{
 		virtualKeys: map[string]*configstoreTables.TableVirtualKey{
-			"vk-1": {ID: "vk-1", Name: "One", Value: "sk-bf-old"},
+			"vk-1": {ID: "vk-1", Name: "One", Value: *schemas.NewSecretVar("sk-bf-old")},
 		},
 	}
 	manager := &mockRotateGovernanceManager{store: store, reloadErr: errors.New("reload failed")}
@@ -1183,7 +1340,7 @@ func TestRotateVirtualKey_ReloadFailureReturnsErrorAfterUpdate(t *testing.T) {
 	if store.updates != 1 {
 		t.Fatalf("expected one update, got %d", store.updates)
 	}
-	if store.virtualKeys["vk-1"].Value == "sk-bf-old" {
+	if store.virtualKeys["vk-1"].Value.GetValue() == "sk-bf-old" {
 		t.Fatal("expected value to rotate before reload failure")
 	}
 	if len(manager.reloadIDs) != 1 || manager.reloadIDs[0] != "vk-1" {
@@ -1199,8 +1356,8 @@ func TestRotateVirtualKeys_PartialSuccess(t *testing.T) {
 
 	store := &mockRotateConfigStore{
 		virtualKeys: map[string]*configstoreTables.TableVirtualKey{
-			"vk-1": {ID: "vk-1", Name: "One", Value: "sk-bf-old-1"},
-			"vk-2": {ID: "vk-2", Name: "Two", Value: "sk-bf-old-2"},
+			"vk-1": {ID: "vk-1", Name: "One", Value: *schemas.NewSecretVar("sk-bf-old-1")},
+			"vk-2": {ID: "vk-2", Name: "Two", Value: *schemas.NewSecretVar("sk-bf-old-2")},
 		},
 	}
 	manager := &mockRotateGovernanceManager{store: store}
@@ -1220,7 +1377,7 @@ func TestRotateVirtualKeys_PartialSuccess(t *testing.T) {
 	if len(manager.reloadIDs) != 2 || manager.reloadIDs[0] != "vk-1" || manager.reloadIDs[1] != "vk-2" {
 		t.Fatalf("expected reloads for vk-1 and vk-2, got %#v", manager.reloadIDs)
 	}
-	if store.virtualKeys["vk-1"].Value == "sk-bf-old-1" || store.virtualKeys["vk-2"].Value == "sk-bf-old-2" {
+	if store.virtualKeys["vk-1"].Value.GetValue() == "sk-bf-old-1" || store.virtualKeys["vk-2"].Value.GetValue() == "sk-bf-old-2" {
 		t.Fatalf("expected successful IDs to rotate: %#v", store.virtualKeys)
 	}
 
@@ -1256,7 +1413,7 @@ func TestRotateVirtualKeys_RejectsInvalidRequests(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store := &mockRotateConfigStore{
 				virtualKeys: map[string]*configstoreTables.TableVirtualKey{
-					"vk-1": {ID: "vk-1", Name: "One", Value: "sk-bf-old-1"},
+					"vk-1": {ID: "vk-1", Name: "One", Value: *schemas.NewSecretVar("sk-bf-old-1")},
 				},
 			}
 			manager := &mockRotateGovernanceManager{store: store}
@@ -1288,8 +1445,8 @@ func TestRotateVirtualKeys_TrimsAndDeduplicatesIDs(t *testing.T) {
 
 	store := &mockRotateConfigStore{
 		virtualKeys: map[string]*configstoreTables.TableVirtualKey{
-			"vk-1": {ID: "vk-1", Name: "One", Value: "sk-bf-old-1"},
-			"vk-2": {ID: "vk-2", Name: "Two", Value: "sk-bf-old-2"},
+			"vk-1": {ID: "vk-1", Name: "One", Value: *schemas.NewSecretVar("sk-bf-old-1")},
+			"vk-2": {ID: "vk-2", Name: "Two", Value: *schemas.NewSecretVar("sk-bf-old-2")},
 		},
 	}
 	manager := &mockRotateGovernanceManager{store: store}
@@ -1571,6 +1728,261 @@ func TestGetVirtualKeyQuota_HydratesBudgetsFromModelConfigs(t *testing.T) {
 	}
 }
 
+// TestGetVirtualKeyQuota_ExternalResolverReplacesWithAccessProfileBudgets verifies the
+// AP-managed-VK path: when a registered ExternalQuotaBudgetResolver returns budgets
+// (enterprise access-profile budgets, which carry the real usage), they REPLACE the VK's
+// own budget rows in the quota response. Those rows are reset to current_usage=0 at
+// adoption and never charged again, so reporting them would be a misleading $0 row.
+func TestGetVirtualKeyQuota_ExternalResolverReplacesWithAccessProfileBudgets(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	active := true
+	cycleStart := time.Date(2026, time.January, 2, 15, 4, 5, 0, time.UTC)
+	store := &mockQuotaConfigStore{
+		vk: &configstoreTables.TableVirtualKey{
+			ID:       "vk-1",
+			Name:     "AP Key",
+			IsActive: &active,
+		},
+		modelConfigs: []configstoreTables.TableModelConfig{
+			{
+				ID:        "mc-vk",
+				Scope:     configstoreTables.ModelConfigScopeVirtualKey,
+				ScopeID:   schemas.Ptr("vk-1"),
+				ModelName: configstoreTables.ModelConfigAllModels,
+				// VK mirror row: zero usage, reset at adoption — must NOT appear in the response.
+				Budgets: []configstoreTables.TableBudget{
+					{ID: "b-vk", MaxLimit: 100, CurrentUsage: 0, ResetDuration: "1d", LastReset: cycleStart},
+				},
+			},
+		},
+	}
+	// The AP user's inference is logged under user-1 (virtual_key_id is empty on SSO/AP
+	// log rows), so the per-model usage query must be scoped to the user, not the VK.
+	logMgr := &mockQuotaLogManager{
+		rankings: &logstore.ModelRankingResult{
+			Rankings: []logstore.ModelRankingWithTrend{
+				{ModelRankingEntry: logstore.ModelRankingEntry{Model: "claude-opus-4-7", Provider: "anthropic", TotalRequests: 2, TotalTokens: 900, TotalCost: 42}},
+			},
+		},
+	}
+	h := &GovernanceHandler{
+		configStore: store,
+		logManager:  logMgr,
+		externalQuotaBudgetResolver: func(_ context.Context, vk *configstoreTables.TableVirtualKey) (*ExternalQuotaBudgetResult, error) {
+			if vk.ID != "vk-1" {
+				return nil, nil
+			}
+			return &ExternalQuotaBudgetResult{
+				// The access-profile budget that holds the real ongoing usage.
+				Budgets: []configstoreTables.TableBudget{
+					{ID: "b-ap", MaxLimit: 500, CurrentUsage: 42, ResetDuration: "1d", LastReset: cycleStart},
+				},
+				Managed:     true,
+				UsageUserID: "user-1",
+			}, nil
+		},
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-bf-vk", "sk-bf-secret")
+
+	h.getVirtualKeyQuota(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	var resp quotaResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+	// Only the access-profile budget — the VK's own b-vk row is replaced, not appended.
+	if len(resp.Budgets) != 1 || resp.Budgets[0].ID != "b-ap" || resp.Budgets[0].CurrentUsage != 42 {
+		t.Fatalf("expected only the access-profile budget b-ap (usage 42), got %#v", resp.Budgets)
+	}
+	// Per-model spend on that budget comes from the user-scoped log query and reconciles
+	// with current_usage (both 42).
+	if len(resp.Budgets[0].Models) != 1 || resp.Budgets[0].Models[0].Model != "claude-opus-4-7" || resp.Budgets[0].Models[0].TotalCost != 42 {
+		t.Fatalf("expected per-model spend from user-scoped logs, got %#v", resp.Budgets[0].Models)
+	}
+	// The usage query must be scoped to the AP user, NOT the VK (whose logs are empty).
+	if len(logMgr.calls) != 1 {
+		t.Fatalf("expected GetModelRankings called once, got %d", len(logMgr.calls))
+	}
+	call := logMgr.calls[0]
+	if len(call.UserIDs) != 1 || call.UserIDs[0] != "user-1" {
+		t.Fatalf("expected usage query scoped to user-1, got UserIDs=%#v", call.UserIDs)
+	}
+	if len(call.VirtualKeyIDs) != 0 {
+		t.Fatalf("expected no VK scoping on the AP usage query, got %#v", call.VirtualKeyIDs)
+	}
+}
+
+// TestGetVirtualKeyQuota_ExternalResolverRateLimitOnly verifies a rate-limit-only
+// external result (AP has a rate limit but no budget): the AP rate limit REPLACES the
+// VK's own rate limit, and the VK's own budget mirror rows are dropped rather than
+// reported — an AP-managed VK whose profile has no budget genuinely has no budget, and
+// the VK's own rows are untracked $0 mirrors. Pins the empty-budget semantics shared by
+// the quota and detail/list paths.
+func TestGetVirtualKeyQuota_ExternalResolverRateLimitOnly(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	active := true
+	cycleStart := time.Date(2026, time.January, 2, 15, 4, 5, 0, time.UTC)
+	tokMax := int64(1000)
+	store := &mockQuotaConfigStore{
+		vk: &configstoreTables.TableVirtualKey{
+			ID:       "vk-1",
+			Name:     "AP Key",
+			IsActive: &active,
+			// Native mirror rate limit — must be replaced by the AP one below.
+			RateLimit: &configstoreTables.TableRateLimit{ID: "rl-vk"},
+		},
+		modelConfigs: []configstoreTables.TableModelConfig{
+			{
+				ID:        "mc-vk",
+				Scope:     configstoreTables.ModelConfigScopeVirtualKey,
+				ScopeID:   schemas.Ptr("vk-1"),
+				ModelName: configstoreTables.ModelConfigAllModels,
+				// VK mirror budget: zero usage — must NOT appear once the VK is AP-managed.
+				Budgets: []configstoreTables.TableBudget{
+					{ID: "b-vk", MaxLimit: 100, CurrentUsage: 0, ResetDuration: "1d", LastReset: cycleStart},
+				},
+			},
+		},
+	}
+	h := &GovernanceHandler{
+		configStore: store,
+		externalQuotaBudgetResolver: func(_ context.Context, vk *configstoreTables.TableVirtualKey) (*ExternalQuotaBudgetResult, error) {
+			if vk.ID != "vk-1" {
+				return nil, nil
+			}
+			// AP-managed VK whose profile carries a rate limit but no budget.
+			return &ExternalQuotaBudgetResult{
+				RateLimit:   &configstoreTables.TableRateLimit{ID: "ap-rl", TokenMaxLimit: &tokMax, TokenCurrentUsage: 250},
+				Managed:     true,
+				UsageUserID: "user-1",
+			}, nil
+		},
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-bf-vk", "sk-bf-secret")
+
+	h.getVirtualKeyQuota(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	var resp quotaResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+	// No AP budget → no budgets reported (the VK's own b-vk mirror is dropped, not surfaced).
+	if len(resp.Budgets) != 0 {
+		t.Fatalf("expected no budgets for a rate-limit-only AP-managed VK, got %#v", resp.Budgets)
+	}
+	// The AP rate limit replaces the VK's own rl-vk.
+	if resp.RateLimit == nil || resp.RateLimit.ID != "ap-rl" || resp.RateLimit.TokenCurrentUsage != 250 {
+		t.Fatalf("expected the access-profile rate limit ap-rl (usage 250), got %#v", resp.RateLimit)
+	}
+}
+
+// TestApplyExternalBudgets_RateLimitOnlyDropsNativeBudgets pins the detail/list-path
+// twin of the quota semantics: for an AP-managed VK whose external result carries a rate
+// limit but no budget, applyExternalBudgets drops the VK's own mirror budgets (rather
+// than preserving them) and swaps in the AP rate limit — so getVirtualKey/getVirtualKeys
+// agree with getVirtualKeyQuota.
+func TestApplyExternalBudgets_RateLimitOnlyDropsNativeBudgets(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := &GovernanceHandler{
+		externalQuotaBudgetResolver: func(_ context.Context, _ *configstoreTables.TableVirtualKey) (*ExternalQuotaBudgetResult, error) {
+			return &ExternalQuotaBudgetResult{
+				RateLimit: &configstoreTables.TableRateLimit{ID: "ap-rl"},
+				Managed:   true,
+			}, nil
+		},
+	}
+	vk := &configstoreTables.TableVirtualKey{
+		ID: "vk-1",
+		Budgets: []configstoreTables.TableBudget{
+			{ID: "b-vk-mirror", MaxLimit: 100, CurrentUsage: 0},
+		},
+		RateLimit: &configstoreTables.TableRateLimit{ID: "rl-vk-mirror"},
+	}
+
+	h.applyExternalBudgets(context.Background(), vk)
+
+	if len(vk.Budgets) != 0 {
+		t.Fatalf("expected native mirror budgets dropped for a rate-limit-only AP result, got %#v", vk.Budgets)
+	}
+	if vk.RateLimit == nil || vk.RateLimit.ID != "ap-rl" {
+		t.Fatalf("expected the AP rate limit ap-rl to replace the native rl-vk-mirror, got %#v", vk.RateLimit)
+	}
+	if !vk.IsAccessProfileManaged {
+		t.Fatalf("expected IsAccessProfileManaged=true for an AP-managed VK")
+	}
+}
+
+// TestApplyExternalBudgets_ManagedWithNoGovernanceFlagsAndClears verifies that a VK the
+// resolver reports as managed but whose profile has NO budget and NO rate limit is still
+// flagged managed (so the UI locks edits / shows the notice) and has its untracked mirror
+// budget and rate-limit rows cleared rather than shown.
+func TestApplyExternalBudgets_ManagedWithNoGovernanceFlagsAndClears(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := &GovernanceHandler{
+		externalQuotaBudgetResolver: func(_ context.Context, _ *configstoreTables.TableVirtualKey) (*ExternalQuotaBudgetResult, error) {
+			return &ExternalQuotaBudgetResult{Managed: true}, nil
+		},
+	}
+	vk := &configstoreTables.TableVirtualKey{
+		ID:        "vk-1",
+		Budgets:   []configstoreTables.TableBudget{{ID: "b-vk-mirror", MaxLimit: 100, CurrentUsage: 0}},
+		RateLimit: &configstoreTables.TableRateLimit{ID: "rl-vk-mirror"},
+	}
+
+	h.applyExternalBudgets(context.Background(), vk)
+
+	if !vk.IsAccessProfileManaged {
+		t.Fatalf("expected IsAccessProfileManaged=true")
+	}
+	if len(vk.Budgets) != 0 {
+		t.Fatalf("expected mirror budgets cleared for a managed VK with no AP budget, got %#v", vk.Budgets)
+	}
+	if vk.RateLimit != nil {
+		t.Fatalf("expected mirror rate limit cleared for a managed VK with no AP rate limit, got %#v", vk.RateLimit)
+	}
+}
+
+// TestGetVirtualKeyQuota_ExternalResolverErrorFailsClosed verifies the endpoint returns
+// 500 (not a partial response) when the registered resolver errors — usage must not be
+// silently under-reported.
+func TestGetVirtualKeyQuota_ExternalResolverErrorFailsClosed(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	active := true
+	store := &mockQuotaConfigStore{
+		vk: &configstoreTables.TableVirtualKey{ID: "vk-1", Name: "AP Key", IsActive: &active},
+	}
+	h := &GovernanceHandler{
+		configStore: store,
+		externalQuotaBudgetResolver: func(_ context.Context, _ *configstoreTables.TableVirtualKey) (*ExternalQuotaBudgetResult, error) {
+			return nil, errors.New("boom")
+		},
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-bf-vk", "sk-bf-secret")
+
+	h.getVirtualKeyQuota(ctx)
+
+	if ctx.Response.StatusCode() != 500 {
+		t.Fatalf("expected status 500 on resolver error, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+}
+
 // TestGetVirtualKeyQuota_NoGovernanceReturnsEmpty verifies that a VK without any
 // VK-scoped model configs reports empty governance (not a stale direct-relationship
 // read) and still returns 200 with identity fields.
@@ -1628,6 +2040,9 @@ func TestGetVirtualKeyQuota_MissingHeaderReturns401(t *testing.T) {
 
 	if ctx.Response.StatusCode() != 401 {
 		t.Fatalf("expected status 401, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	if !strings.Contains(string(ctx.Response.Body()), "api-key header") {
+		t.Fatalf("expected missing VK message to include api-key header, got %s", string(ctx.Response.Body()))
 	}
 	if store.quotaCalls != 0 {
 		t.Fatalf("expected store not queried without a VK, got %d calls", store.quotaCalls)
@@ -1742,7 +2157,7 @@ func TestGetVirtualKeyQuota_EndToEndWithRealStore(t *testing.T) {
 	vk := &configstoreTables.TableVirtualKey{
 		ID:       vkID,
 		Name:     "Prod",
-		Value:    "sk-bf-e2e-secret",
+		Value:    *schemas.NewSecretVar("sk-bf-e2e-secret"),
 		IsActive: &active,
 		ProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{
 			{VirtualKeyID: vkID, Provider: "openai", AllowAllKeys: true, AllowedModels: schemas.WhiteList{"*"}},
@@ -1908,7 +2323,7 @@ func TestGetVirtualKeyQuota_WindowClampedToBudgetCreation(t *testing.T) {
 	vk := &configstoreTables.TableVirtualKey{
 		ID:       vkID,
 		Name:     "Clamp",
-		Value:    "sk-bf-clamp-secret",
+		Value:    *schemas.NewSecretVar("sk-bf-clamp-secret"),
 		IsActive: &active,
 	}
 	if err := store.CreateVirtualKey(ctx, vk); err != nil {
@@ -2080,13 +2495,18 @@ func TestGetVirtualKeys_PaginatedEndpoint_QueryParams(t *testing.T) {
 	}
 }
 
-// TestGetVirtualKeys_FromMemoryUsesConfigStore verifies the legacy
-// from_memory flag no longer bypasses the DB-backed ConfigStore path.
-func TestGetVirtualKeys_FromMemoryUsesConfigStore(t *testing.T) {
+// TestGetVirtualKeys_FromMemoryUsesGovernanceData verifies the from_memory
+// flag serves virtual keys from the in-memory GovernanceData and bypasses the
+// DB-backed ConfigStore entirely.
+func TestGetVirtualKeys_FromMemoryUsesGovernanceData(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	store := &mockConfigStoreForVK{}
-	manager := &mockGovernanceManagerForVK{}
+	manager := &mockGovernanceManagerForVK{
+		data: &governance.GovernanceData{
+			VirtualKeys: map[string]*configstoreTables.TableVirtualKey{},
+		},
+	}
 	h := &GovernanceHandler{
 		configStore:       store,
 		governanceManager: manager,
@@ -2101,24 +2521,29 @@ func TestGetVirtualKeys_FromMemoryUsesConfigStore(t *testing.T) {
 	if ctx.Response.StatusCode() != 200 {
 		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
 	}
-	if manager.getGovernanceDataCalls != 0 {
-		t.Fatalf("from_memory path called GetGovernanceData %d times", manager.getGovernanceDataCalls)
+	if manager.getGovernanceDataCalls != 1 {
+		t.Fatalf("expected GetGovernanceData to be called once, got %d", manager.getGovernanceDataCalls)
 	}
-	if store.getVirtualKeysCalls != 1 {
-		t.Fatalf("expected GetVirtualKeys to be called once, got %d", store.getVirtualKeysCalls)
+	if store.getVirtualKeysCalls != 0 {
+		t.Fatalf("from_memory path called GetVirtualKeys %d times", store.getVirtualKeysCalls)
 	}
 	if store.getVirtualKeysPaginatedCalls != 0 {
-		t.Fatalf("unexpected paginated call count %d", store.getVirtualKeysPaginatedCalls)
+		t.Fatalf("from_memory path called GetVirtualKeysPaginated %d times", store.getVirtualKeysPaginatedCalls)
 	}
 }
 
-// TestGetVirtualKeys_FromMemoryWithLimitUsesPaginatedConfigStore verifies
-// limit=0 plus from_memory still follows the DB-backed paginated path.
-func TestGetVirtualKeys_FromMemoryWithLimitUsesPaginatedConfigStore(t *testing.T) {
+// TestGetVirtualKeys_FromMemoryTakesPrecedenceOverLimit verifies the
+// from_memory flag is honored even when pagination parameters are present, so
+// the in-memory path is used and the paginated ConfigStore query is skipped.
+func TestGetVirtualKeys_FromMemoryTakesPrecedenceOverLimit(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	store := &mockConfigStoreForVK{}
-	manager := &mockGovernanceManagerForVK{}
+	manager := &mockGovernanceManagerForVK{
+		data: &governance.GovernanceData{
+			VirtualKeys: map[string]*configstoreTables.TableVirtualKey{},
+		},
+	}
 	h := &GovernanceHandler{
 		configStore:       store,
 		governanceManager: manager,
@@ -2133,14 +2558,81 @@ func TestGetVirtualKeys_FromMemoryWithLimitUsesPaginatedConfigStore(t *testing.T
 	if ctx.Response.StatusCode() != 200 {
 		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
 	}
-	if manager.getGovernanceDataCalls != 0 {
-		t.Fatalf("from_memory path called GetGovernanceData %d times", manager.getGovernanceDataCalls)
+	if manager.getGovernanceDataCalls != 1 {
+		t.Fatalf("expected GetGovernanceData to be called once, got %d", manager.getGovernanceDataCalls)
 	}
-	if store.getVirtualKeysPaginatedCalls != 1 {
-		t.Fatalf("expected GetVirtualKeysPaginated to be called once, got %d", store.getVirtualKeysPaginatedCalls)
+	if store.getVirtualKeysPaginatedCalls != 0 {
+		t.Fatalf("from_memory path called GetVirtualKeysPaginated %d times", store.getVirtualKeysPaginatedCalls)
 	}
 	if store.getVirtualKeysCalls != 0 {
-		t.Fatalf("unexpected non-paginated call count %d", store.getVirtualKeysCalls)
+		t.Fatalf("from_memory path called GetVirtualKeys %d times", store.getVirtualKeysCalls)
+	}
+}
+
+// TestGetVirtualKeys_FromMemoryRejectsUserFilter locks in the fail-closed contract
+// for the user filter. The in-memory GovernanceData carries no VK↔user assignments,
+// so the filter cannot be applied there; silently ignoring it would return every
+// cached key — the inverse of the DB path, which matches nothing it cannot resolve.
+func TestGetVirtualKeys_FromMemoryRejectsUserFilter(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	store := &mockConfigStoreForVK{}
+	manager := &mockGovernanceManagerForVK{
+		data: &governance.GovernanceData{
+			VirtualKeys: map[string]*configstoreTables.TableVirtualKey{},
+		},
+	}
+	h := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: manager,
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/governance/virtual-keys?from_memory=true&user_id=user-1")
+
+	h.getVirtualKeys(ctx)
+
+	if ctx.Response.StatusCode() != 400 {
+		t.Fatalf("expected status 400, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	// Rejected before any data is read, so no key ever leaves the handler.
+	if manager.getGovernanceDataCalls != 0 {
+		t.Fatalf("expected GetGovernanceData not to be called, got %d", manager.getGovernanceDataCalls)
+	}
+	if store.getVirtualKeysCalls != 0 || store.getVirtualKeysPaginatedCalls != 0 {
+		t.Fatalf("rejected request hit the config store: %d/%d", store.getVirtualKeysCalls, store.getVirtualKeysPaginatedCalls)
+	}
+}
+
+// TestGetVirtualKeys_FromMemoryIgnoresOtherFilters pins the long-standing behaviour
+// the user_id rejection deliberately does not extend to: customer_id/team_id are
+// still silently ignored under from_memory, so existing consumers are unaffected.
+func TestGetVirtualKeys_FromMemoryIgnoresOtherFilters(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	store := &mockConfigStoreForVK{}
+	manager := &mockGovernanceManagerForVK{
+		data: &governance.GovernanceData{
+			VirtualKeys: map[string]*configstoreTables.TableVirtualKey{},
+		},
+	}
+	h := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: manager,
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/governance/virtual-keys?from_memory=true&customer_id=cust-1&team_id=team-1")
+
+	h.getVirtualKeys(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	if manager.getGovernanceDataCalls != 1 {
+		t.Fatalf("expected GetGovernanceData to be called once, got %d", manager.getGovernanceDataCalls)
 	}
 }
 
@@ -2587,7 +3079,23 @@ func (m *mockCustomerStore) CreateBudget(_ context.Context, budget *configstoreT
 	m.createdBudgets = append(m.createdBudgets, budget)
 	return nil
 }
+
+// UpdateBudget mirrors RDBConfigStore.UpdateBudget's contract: usage accounting is
+// runtime-owned and is carried forward from the stored row, never authored by a
+// configuration write. Without this the mock promises something the real store
+// does not honour, and a handler test can assert a config write changed usage
+// while production silently discards it - which is exactly how the dead
+// calendar-alignment snap survived for so long.
 func (m *mockCustomerStore) UpdateBudget(_ context.Context, budget *configstoreTables.TableBudget, _ ...*gorm.DB) error {
+	for _, customer := range m.customers {
+		for i := range customer.Budgets {
+			if customer.Budgets[i].ID != budget.ID {
+				continue
+			}
+			budget.CurrentUsage = customer.Budgets[i].CurrentUsage
+			budget.LastReset = customer.Budgets[i].LastReset
+		}
+	}
 	m.updatedBudgets = append(m.updatedBudgets, budget)
 	return nil
 }
@@ -2604,6 +3112,17 @@ func (m *mockCustomerStore) DeleteBudget(_ context.Context, _ string, _ ...*gorm
 
 type mockCustomerGovernanceManager struct {
 	GovernanceManager
+	// adoptedBudgetIDs records what the handler asked to be re-anchored onto the
+	// calendar grid, so a test can tell "alignment was switched on" apart from
+	// "alignment was already on and nothing needed adopting".
+	adoptedBudgetIDs []string
+	adoptCalls       int
+}
+
+func (m *mockCustomerGovernanceManager) AdoptCalendarAlignmentInMemory(_ context.Context, _ BudgetUsageResetOwner, budgetIDs []string, _ []string) error {
+	m.adoptCalls++
+	m.adoptedBudgetIDs = append(m.adoptedBudgetIDs, budgetIDs...)
+	return nil
 }
 
 func (m *mockCustomerGovernanceManager) ReloadCustomer(_ context.Context, _ string) (*configstoreTables.TableCustomer, error) {
@@ -2688,69 +3207,70 @@ func TestCreateCustomer_CalendarAligned_False(t *testing.T) {
 	}
 }
 
-// TestUpdateCustomer_CalendarAligned_SnapsExistingBudget verifies that toggling
-// calendar_aligned from false to true snaps the existing budget's LastReset to the
-// start of the current calendar period and resets CurrentUsage.
-func TestUpdateCustomer_CalendarAligned_SnapsExistingBudget(t *testing.T) {
+// TestUpdateCustomer_CalendarAligned_DoesNotTouchBudgets verifies that enabling
+// calendar alignment leaves existing budgets alone.
+//
+// This replaces a test that asserted the opposite - that the toggle snapped
+// LastReset to the period start and zeroed CurrentUsage - and passed for years
+// while the behaviour never happened. It asserted on what the handler passed to
+// UpdateBudget, against a mock that simply recorded the argument. The real store
+// copies CurrentUsage and LastReset back from the stored row on every config
+// write (rdb.go:4758-4769), so both values were discarded one layer below the
+// mock. The mock below now carries them forward the same way, which is what
+// keeps this class of test honest.
+//
+// Alignment still takes effect: the budget aligns from its next period boundary.
+func TestUpdateCustomer_CalendarAligned_DoesNotTouchBudgets(t *testing.T) {
 	SetLogger(&mockLogger{})
 	store := newMockCustomerStore()
 
 	budgetID := "bud-snap"
-	budgetID2 := "bud-snap-2"
-	oldLastReset := time.Now().AddDate(0, -1, 0) // 1 month ago
+	oldLastReset := time.Now().AddDate(0, -1, 0)
 	store.customers["cust-snap"] = &configstoreTables.TableCustomer{
 		ID:              "cust-snap",
 		Name:            "Initech",
 		CalendarAligned: false,
-		Budgets: []configstoreTables.TableBudget{
-			{
-				ID:            budgetID,
-				MaxLimit:      200.0,
-				ResetDuration: "1M",
-				LastReset:     oldLastReset,
-				CurrentUsage:  99.0,
-			},
-			{
-				ID:            budgetID2,
-				MaxLimit:      500.0,
-				ResetDuration: "1Y",
-				LastReset:     oldLastReset,
-				CurrentUsage:  150.0,
-			},
-		},
+		Budgets: []configstoreTables.TableBudget{{
+			ID:            budgetID,
+			MaxLimit:      200.0,
+			ResetDuration: "1M",
+			LastReset:     oldLastReset,
+			CurrentUsage:  99.0,
+		}},
 	}
-	h := &GovernanceHandler{configStore: store, governanceManager: &mockCustomerGovernanceManager{}}
+	governanceManager := &mockCustomerGovernanceManager{}
+	h := &GovernanceHandler{configStore: store, governanceManager: governanceManager}
 
 	body, _ := json.Marshal(map[string]any{"calendar_aligned": true})
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.SetBody(body)
 	ctx.SetUserValue("customer_id", "cust-snap")
 
-	snapBefore := time.Now()
 	h.updateCustomer(ctx)
 
 	if ctx.Response.StatusCode() != 200 {
 		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
 	}
-	// UpdateBudget must have been called once per budget (both snap).
-	if len(store.updatedBudgets) != 2 {
-		t.Fatalf("expected 2 UpdateBudget calls for snap, got %d", len(store.updatedBudgets))
+	if got := store.customers["cust-snap"].CalendarAligned; !got {
+		t.Errorf("calendar_aligned should be enabled on the customer, got %v", got)
 	}
-	snappedIDs := make(map[string]bool, 2)
-	for _, snapped := range store.updatedBudgets {
-		snappedIDs[snapped.ID] = true
-		if snapped.LastReset.Equal(oldLastReset) {
-			t.Errorf("budget %s LastReset was not snapped: still equals old value", snapped.ID)
+	for _, b := range store.customers["cust-snap"].Budgets {
+		if !b.LastReset.Equal(oldLastReset) {
+			t.Errorf("budget %s LastReset moved to %v; enabling alignment must not re-anchor the window", b.ID, b.LastReset)
 		}
-		if snapped.LastReset.After(snapBefore) {
-			t.Errorf("budget %s snapped LastReset %v should be at the period start, not time.Now()", snapped.ID, snapped.LastReset)
-		}
-		if snapped.CurrentUsage != 0 {
-			t.Errorf("budget %s expected CurrentUsage reset to 0, got %v", snapped.ID, snapped.CurrentUsage)
+		if b.CurrentUsage != 99.0 {
+			t.Errorf("budget %s CurrentUsage changed to %v; enabling alignment must not clear usage", b.ID, b.CurrentUsage)
 		}
 	}
-	if !snappedIDs[budgetID] || !snappedIDs[budgetID2] {
-		t.Errorf("expected both %q and %q to be snapped, got IDs: %v", budgetID, budgetID2, snappedIDs)
+	// The config write leaves the window alone, but on its own that is exactly the
+	// bug: the reset sweep would find the window overdue against the new boundary
+	// and clear the 99.0 above. The handler must hand the budget to the in-memory
+	// adoption, which re-anchors it forward instead.
+	if governanceManager.adoptCalls != 1 {
+		t.Errorf("expected exactly one calendar adoption call, got %d", governanceManager.adoptCalls)
+	}
+	if len(governanceManager.adoptedBudgetIDs) != 1 || governanceManager.adoptedBudgetIDs[0] != budgetID {
+		t.Errorf("expected budget %s to be adopted onto its calendar boundary, got %v", budgetID, governanceManager.adoptedBudgetIDs)
 	}
 }
 
@@ -2781,7 +3301,8 @@ func TestUpdateCustomer_CalendarAligned_NoSnapWhenAlreadyEnabled(t *testing.T) {
 			},
 		},
 	}
-	h := &GovernanceHandler{configStore: store, governanceManager: &mockCustomerGovernanceManager{}}
+	governanceManager := &mockCustomerGovernanceManager{}
+	h := &GovernanceHandler{configStore: store, governanceManager: governanceManager}
 
 	body, _ := json.Marshal(map[string]any{"calendar_aligned": true})
 	ctx := &fasthttp.RequestCtx{}
@@ -2795,6 +3316,12 @@ func TestUpdateCustomer_CalendarAligned_NoSnapWhenAlreadyEnabled(t *testing.T) {
 	}
 	if len(store.updatedBudgets) != 0 {
 		t.Errorf("expected no UpdateBudget call when calendar_aligned was already true, got %d", len(store.updatedBudgets))
+	}
+	// Adoption belongs to the switch-over only. A budget already on the calendar
+	// grid must not be re-anchored on every unrelated config write, which would
+	// keep pushing its boundary forward and stop it ever resetting.
+	if governanceManager.adoptCalls != 0 {
+		t.Errorf("alignment was already enabled, so no adoption should be requested; got %d calls", governanceManager.adoptCalls)
 	}
 }
 
@@ -2831,7 +3358,7 @@ func TestApplyVKGovernanceFromModelConfigs_PreservesDirectlyAttachedBudget(t *te
 	}
 
 	// No VK-scoped model config exists for this VK.
-	applyVKGovernanceFromModelConfigs(vk, map[string]*configstoreTables.TableModelConfig{})
+	applyVKGovernanceFromModelConfigs(vk, map[string]*configstoreTables.TableModelConfig{}, nil)
 
 	if len(vk.Budgets) != 1 || vk.Budgets[0].ID != "bud-direct" {
 		t.Fatalf("directly attached budget was wiped: got %+v", vk.Budgets)
@@ -2866,7 +3393,7 @@ func TestApplyVKGovernanceFromModelConfigs_OverlaysModelConfigGovernance(t *test
 		},
 	}
 
-	applyVKGovernanceFromModelConfigs(vk, byKey)
+	applyVKGovernanceFromModelConfigs(vk, byKey, nil)
 
 	if len(vk.Budgets) != 1 || vk.Budgets[0].ID != "bud-mc" {
 		t.Fatalf("expected model-config budget overlaid, got %+v", vk.Budgets)
@@ -2874,4 +3401,520 @@ func TestApplyVKGovernanceFromModelConfigs_OverlaysModelConfigGovernance(t *test
 	if vk.RateLimit != mcRL || vk.RateLimitID == nil || *vk.RateLimitID != "rl-mc" {
 		t.Errorf("expected model-config rate limit overlaid, got rl=%v id=%v", vk.RateLimit, vk.RateLimitID)
 	}
+}
+
+// newGovernanceProviderNameCtx builds a RequestCtx exactly as the fasthttp router
+// would hand it to the handler: the {provider_name} path param is stored RAW
+// (still percent-encoded), because the router does not decode path params. This
+// is what exercises url.PathUnescape inside the handler.
+func newGovernanceProviderNameCtx(encodedProviderName, body string) *fasthttp.RequestCtx {
+	ctx := newTestRequestCtx(body)
+	ctx.SetUserValue("provider_name", encodedProviderName)
+	return ctx
+}
+
+// TestProviderGovernance_DecodesEncodedProviderName is a regression test for the
+// 404 "Provider not found" that occurred when updating/deleting governance for a
+// custom provider whose name contains a space (e.g. "OpenRouter Base"). The UI
+// percent-encodes the name in the path ("OpenRouter%20Base"); the handler must
+// url.PathUnescape it before matching against the stored provider name.
+func TestProviderGovernance_DecodesEncodedProviderName(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: pricingOverrideTestGovernanceManager{},
+	}
+
+	// Seed a custom provider whose name contains a space.
+	const providerName = "OpenRouter Base"
+	const encodedName = "OpenRouter%20Base"
+	if err := store.AddProvider(ctx, schemas.ModelProvider(providerName), configstore.ProviderConfig{}); err != nil {
+		t.Fatalf("seed provider: %v", err)
+	}
+
+	// PUT a budget using the encoded name in the path param, exactly as the router
+	// delivers it. Before the fix this returned 404 because "OpenRouter%20Base" was
+	// compared raw against the stored name.
+	putCtx := newGovernanceProviderNameCtx(encodedName, `{"budgets":[{"max_limit":10,"reset_duration":"1M"}],"calendar_aligned":false}`)
+	handler.updateProviderGovernance(putCtx)
+	if putCtx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("PUT status got %d, want 200; body=%s", putCtx.Response.StatusCode(), putCtx.Response.Body())
+	}
+
+	// The budget must be persisted against the decoded provider name.
+	pn := providerName
+	mc, err := store.GetModelConfig(ctx, configstoreTables.ModelConfigScopeGlobal, nil, configstoreTables.ModelConfigAllModels, &pn)
+	if err != nil {
+		t.Fatalf("expected persisted model config for %q, got err: %v", providerName, err)
+	}
+	if len(mc.Budgets) != 1 || mc.Budgets[0].MaxLimit != 10 {
+		t.Fatalf("expected one budget with max_limit 10, got %+v", mc.Budgets)
+	}
+
+	// DELETE with the same encoded path param must also resolve and succeed.
+	delCtx := newGovernanceProviderNameCtx(encodedName, "")
+	handler.deleteProviderGovernance(delCtx)
+	if delCtx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("DELETE status got %d, want 200; body=%s", delCtx.Response.StatusCode(), delCtx.Response.Body())
+	}
+
+	// The model config must actually be gone — a 200 alone could come from the
+	// handler's idempotent ErrNotFound branch even if nothing was removed.
+	if _, err := store.GetModelConfig(ctx, configstoreTables.ModelConfigScopeGlobal, nil, configstoreTables.ModelConfigAllModels, &pn); !errors.Is(err, configstore.ErrNotFound) {
+		t.Fatalf("expected model config for %q to be removed (ErrNotFound), got err: %v", providerName, err)
+	}
+}
+
+// TestProviderGovernance_UnknownProviderStill404 guards the inverse: a genuinely
+// unknown provider must still 404, so the decode change didn't mask the check.
+func TestProviderGovernance_UnknownProviderStill404(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: pricingOverrideTestGovernanceManager{},
+	}
+
+	putCtx := newGovernanceProviderNameCtx("Nope%20Missing", `{"budgets":[{"max_limit":10,"reset_duration":"1M"}]}`)
+	handler.updateProviderGovernance(putCtx)
+	if putCtx.Response.StatusCode() != fasthttp.StatusNotFound {
+		t.Fatalf("PUT unknown provider status got %d, want 404; body=%s", putCtx.Response.StatusCode(), putCtx.Response.Body())
+	}
+}
+
+// providerGovernanceAdoptionManager records which budget IDs the provider
+// governance handler asked to re-anchor onto the calendar grid. It reuses the
+// pricing-override manager for everything else, including ReloadModelConfig,
+// which returns no entity - the handler must not depend on the reload to know
+// which windows to adopt.
+type providerGovernanceAdoptionManager struct {
+	pricingOverrideTestGovernanceManager
+	adoptedBudgetIDs []string
+	adoptCalls       int
+}
+
+func (m *providerGovernanceAdoptionManager) AdoptCalendarAlignmentInMemory(_ context.Context, _ BudgetUsageResetOwner, budgetIDs []string, _ []string) error {
+	m.adoptCalls++
+	m.adoptedBudgetIDs = append(m.adoptedBudgetIDs, budgetIDs...)
+	return nil
+}
+
+// TestUpdateProviderGovernance_AdoptsReconciledBudgetsNotStaleOnes pins the
+// contract that makes it safe for the adoption call to read mc.Budgets rather
+// than a reloaded model config: reconcileModelConfigBudgets writes the
+// reconciled set back onto mc, so by the time alignment is adopted, mc.Budgets
+// holds the rows that actually exist.
+//
+// The switch-on request replaces a monthly budget with a quarterly one, so the
+// same call deletes one row and creates another. Adoption must be addressed to
+// the row that now exists. Addressed to the deleted one it is a silent no-op,
+// and the newly created window is never anchored, so the next evaluation clears
+// usage the operator was promised would carry over.
+func TestUpdateProviderGovernance_AdoptsReconciledBudgetsNotStaleOnes(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	store := setupPricingOverrideHandlerStore(t)
+	manager := &providerGovernanceAdoptionManager{}
+	handler := &GovernanceHandler{configStore: store, governanceManager: manager}
+
+	const providerName = "openai"
+	require.NoError(t, store.AddProvider(ctx, schemas.ModelProvider(providerName), configstore.ProviderConfig{}))
+
+	// A rolling monthly budget, alignment off.
+	createCtx := newGovernanceProviderNameCtx(providerName, `{"budgets":[{"max_limit":10,"reset_duration":"1M"}],"calendar_aligned":false}`)
+	handler.updateProviderGovernance(createCtx)
+	require.Equal(t, fasthttp.StatusOK, createCtx.Response.StatusCode(),
+		"seed PUT failed; body=%s", createCtx.Response.Body())
+	require.Zero(t, manager.adoptCalls,
+		"alignment was never switched on, so nothing should have been adopted yet")
+
+	pn := providerName
+	before, err := store.GetModelConfig(ctx, configstoreTables.ModelConfigScopeGlobal, nil, configstoreTables.ModelConfigAllModels, &pn)
+	require.NoError(t, err)
+	require.Len(t, before.Budgets, 1)
+	staleBudgetID := before.Budgets[0].ID
+
+	// Switch alignment on and swap the duration in the same request, so
+	// reconciliation cannot match the existing row and must delete it and create
+	// a replacement.
+	switchCtx := newGovernanceProviderNameCtx(providerName, `{"budgets":[{"max_limit":25,"reset_duration":"1Q"}],"calendar_aligned":true}`)
+	handler.updateProviderGovernance(switchCtx)
+	require.Equal(t, fasthttp.StatusOK, switchCtx.Response.StatusCode(),
+		"switch-on PUT failed; body=%s", switchCtx.Response.Body())
+
+	after, err := store.GetModelConfig(ctx, configstoreTables.ModelConfigScopeGlobal, nil, configstoreTables.ModelConfigAllModels, &pn)
+	require.NoError(t, err)
+	require.Len(t, after.Budgets, 1)
+	freshBudgetID := after.Budgets[0].ID
+	require.NotEqual(t, staleBudgetID, freshBudgetID,
+		"this test is only meaningful if reconciliation actually swapped the row")
+
+	require.Equal(t, 1, manager.adoptCalls, "switching alignment on must adopt exactly once")
+	assert.Equal(t, []string{freshBudgetID}, manager.adoptedBudgetIDs,
+		"adoption must name the budget that survived reconciliation")
+	assert.NotContains(t, manager.adoptedBudgetIDs, staleBudgetID,
+		"adoption named the deleted budget, so the surviving window was left un-anchored")
+}
+
+// TestProviderGovernance_MalformedEncodingReturns400 locks in the fail-closed
+// contract: when the provider name is not valid percent-encoding (e.g. a stray
+// "%2"), url.PathUnescape fails and both handlers must respond 400 rather than
+// matching against the raw string.
+func TestProviderGovernance_MalformedEncodingReturns400(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: pricingOverrideTestGovernanceManager{},
+	}
+
+	const malformedName = "OpenRouter%2"
+
+	putCtx := newGovernanceProviderNameCtx(malformedName, `{"budgets":[{"max_limit":10,"reset_duration":"1M"}]}`)
+	handler.updateProviderGovernance(putCtx)
+	if putCtx.Response.StatusCode() != fasthttp.StatusBadRequest {
+		t.Fatalf("PUT malformed encoding status got %d, want 400; body=%s", putCtx.Response.StatusCode(), putCtx.Response.Body())
+	}
+
+	delCtx := newGovernanceProviderNameCtx(malformedName, "")
+	handler.deleteProviderGovernance(delCtx)
+	if delCtx.Response.StatusCode() != fasthttp.StatusBadRequest {
+		t.Fatalf("DELETE malformed encoding status got %d, want 400; body=%s", delCtx.Response.StatusCode(), delCtx.Response.Body())
+	}
+}
+
+// newGovernanceTeamIDCtx builds a request whose team_id path param carries the
+// raw (still percent-encoded) value, exactly as the fasthttp router delivers it
+// (it matches on URI().PathOriginal(), so no decoding happens before the handler).
+func newGovernanceTeamIDCtx(encodedTeamID, body string) *fasthttp.RequestCtx {
+	ctx := newTestRequestCtx(body)
+	ctx.SetUserValue("team_id", encodedTeamID)
+	return ctx
+}
+
+// TestTeam_DecodesEncodedTeamID is a regression test for #3106: SCIM/IdP-synced
+// team IDs containing spaces or other URL-sensitive characters are listable but
+// individual GET/DELETE returned "404 Team not found". The router delivers the
+// team_id path segment still percent-encoded, so the handler must url.PathUnescape
+// it before the config-store lookup (mirrors the provider_name handling).
+func TestTeam_DecodesEncodedTeamID(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: pricingOverrideTestGovernanceManager{},
+	}
+
+	cases := []struct {
+		name    string
+		teamID  string // stored (decoded) ID
+		encoded string // what the router hands to the handler
+	}{
+		{"space", "SCIM Team Alpha", "SCIM%20Team%20Alpha"},
+		{"punctuation", "Team (prod): eu-west", "Team%20%28prod%29%3A%20eu-west"},
+		{"encoded-slash", "org/team/beta", "org%2Fteam%2Fbeta"},
+		{"plus", "team+gamma", "team%2Bgamma"},
+		{"unicode", "команда-δ", "%D0%BA%D0%BE%D0%BC%D0%B0%D0%BD%D0%B4%D0%B0-%CE%B4"},
+	}
+
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			team := &configstoreTables.TableTeam{
+				ID:   tc.teamID,
+				Name: tc.name + "-" + string(rune('A'+i)), // Name has a unique index
+			}
+			if err := store.CreateTeam(ctx, team); err != nil {
+				t.Fatalf("seed team %q: %v", tc.teamID, err)
+			}
+
+			// GET with the encoded path param must resolve the team.
+			getCtx := newGovernanceTeamIDCtx(tc.encoded, "")
+			handler.getTeam(getCtx)
+			if getCtx.Response.StatusCode() != fasthttp.StatusOK {
+				t.Fatalf("GET status got %d, want 200; body=%s", getCtx.Response.StatusCode(), getCtx.Response.Body())
+			}
+			var getResp struct {
+				Team configstoreTables.TableTeam `json:"team"`
+			}
+			if err := json.Unmarshal(getCtx.Response.Body(), &getResp); err != nil {
+				t.Fatalf("parse GET body: %v", err)
+			}
+			if getResp.Team.ID != tc.teamID {
+				t.Fatalf("GET returned team id %q, want %q", getResp.Team.ID, tc.teamID)
+			}
+
+			// PUT with the encoded path param must resolve and apply the update.
+			renamed := tc.name + "-renamed-" + string(rune('A'+i))
+			putCtx := newGovernanceTeamIDCtx(tc.encoded, `{"name":"`+renamed+`"}`)
+			handler.updateTeam(putCtx)
+			if putCtx.Response.StatusCode() != fasthttp.StatusOK {
+				t.Fatalf("PUT status got %d, want 200; body=%s", putCtx.Response.StatusCode(), putCtx.Response.Body())
+			}
+			updated, err := store.GetTeam(ctx, tc.teamID)
+			if err != nil {
+				t.Fatalf("re-fetch team %q after update: %v", tc.teamID, err)
+			}
+			if updated.Name != renamed {
+				t.Fatalf("PUT did not apply: name %q, want %q", updated.Name, renamed)
+			}
+
+			// DELETE with the same encoded path param must resolve and succeed.
+			delCtx := newGovernanceTeamIDCtx(tc.encoded, "")
+			handler.deleteTeam(delCtx)
+			if delCtx.Response.StatusCode() != fasthttp.StatusOK {
+				t.Fatalf("DELETE status got %d, want 200; body=%s", delCtx.Response.StatusCode(), delCtx.Response.Body())
+			}
+
+			// The team must actually be gone — a 200 could otherwise come from an
+			// idempotent ErrNotFound branch without deleting anything.
+			if _, err := store.GetTeam(ctx, tc.teamID); !errors.Is(err, configstore.ErrNotFound) {
+				t.Fatalf("expected team %q removed (ErrNotFound), got err: %v", tc.teamID, err)
+			}
+		})
+	}
+}
+
+// TestTeam_MalformedEncodingReturns400 locks in the fail-closed contract: a team_id
+// that is not valid percent-encoding (e.g. a stray "%2") must yield 400 rather than
+// being matched raw against stored IDs.
+func TestTeam_MalformedEncodingReturns400(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: pricingOverrideTestGovernanceManager{},
+	}
+
+	const malformedID = "Team%2"
+
+	getCtx := newGovernanceTeamIDCtx(malformedID, "")
+	handler.getTeam(getCtx)
+	if getCtx.Response.StatusCode() != fasthttp.StatusBadRequest {
+		t.Fatalf("GET malformed encoding status got %d, want 400; body=%s", getCtx.Response.StatusCode(), getCtx.Response.Body())
+	}
+
+	putCtx := newGovernanceTeamIDCtx(malformedID, `{"name":"irrelevant"}`)
+	handler.updateTeam(putCtx)
+	if putCtx.Response.StatusCode() != fasthttp.StatusBadRequest {
+		t.Fatalf("PUT malformed encoding status got %d, want 400; body=%s", putCtx.Response.StatusCode(), putCtx.Response.Body())
+	}
+
+	delCtx := newGovernanceTeamIDCtx(malformedID, "")
+	handler.deleteTeam(delCtx)
+	if delCtx.Response.StatusCode() != fasthttp.StatusBadRequest {
+		t.Fatalf("DELETE malformed encoding status got %d, want 400; body=%s", delCtx.Response.StatusCode(), delCtx.Response.Body())
+	}
+}
+
+// TestValidateBudgetResetConfig verifies the API layer rejects a quarter
+// definition that cannot mean anything, rather than persisting a setting that
+// silently does nothing.
+func TestValidateBudgetResetConfig(t *testing.T) {
+	testCases := []struct {
+		name        string
+		duration    string
+		resetConfig *configstoreTables.BudgetResetConfig
+		wantErr     string
+	}{
+		{
+			name:     "quarterly with no config is valid",
+			duration: "1Q",
+		},
+		{
+			name:        "quarterly with a fiscal start is valid",
+			duration:    "1Q",
+			resetConfig: &configstoreTables.BudgetResetConfig{QuarterStartMonth: int(time.April)},
+		},
+		{
+			name:        "monthly with a quarter config is rejected",
+			duration:    "1M",
+			resetConfig: &configstoreTables.BudgetResetConfig{QuarterStartMonth: int(time.April)},
+			wantErr:     "reset_config is only valid on a quarterly reset duration",
+		},
+		{
+			name:        "hourly with a quarter config is rejected",
+			duration:    "1h",
+			resetConfig: &configstoreTables.BudgetResetConfig{QuarterStartMonth: int(time.April)},
+			wantErr:     "reset_config is only valid on a quarterly reset duration",
+		},
+		{
+			name:        "month above december is rejected",
+			duration:    "1Q",
+			resetConfig: &configstoreTables.BudgetResetConfig{QuarterStartMonth: 13},
+			wantErr:     "quarter_start_month must be between 1 and 12",
+		},
+		{
+			name:        "negative month is rejected",
+			duration:    "1Q",
+			resetConfig: &configstoreTables.BudgetResetConfig{QuarterStartMonth: -3},
+			wantErr:     "quarter_start_month must be between 1 and 12",
+		},
+		{
+			name:        "zero month means unset and is accepted",
+			duration:    "1Q",
+			resetConfig: &configstoreTables.BudgetResetConfig{},
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			budget := &configstoreTables.TableBudget{
+				MaxLimit:      100,
+				ResetDuration: testCase.duration,
+				ResetConfig:   testCase.resetConfig,
+			}
+			err := validateBudget(budget)
+			if testCase.wantErr == "" {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), testCase.wantErr)
+		})
+	}
+}
+
+// TestNewBudgetFromRequestCarriesResetConfig guards the single constructor every
+// reconciler shares. The field list is explicit, so a dropped field here is
+// invisible: the row saves and the API returns it, and only the reset boundary
+// is wrong.
+func TestNewBudgetFromRequestCarriesResetConfig(t *testing.T) {
+	req := CreateBudgetRequest{
+		MaxLimit:      2500,
+		ResetDuration: "1Q",
+		ResetConfig:   &configstoreTables.BudgetResetConfig{QuarterStartMonth: int(time.February)},
+	}
+
+	budget := newBudgetFromRequest(req, false)
+	require.NotNil(t, budget.ResetConfig)
+	assert.Equal(t, int(time.February), budget.ResetConfig.QuarterStartMonth)
+	assert.Equal(t, "1Q", budget.ResetDuration)
+	assert.Equal(t, 2500.0, budget.MaxLimit)
+	assert.Zero(t, budget.CurrentUsage)
+	assert.NotEmpty(t, budget.ID)
+}
+
+// TestNewBudgetFromRequestSnapsToFiscalQuarter verifies a calendar-aligned
+// quarterly budget starts its life on its own fiscal boundary rather than on
+// plain calendar quarters.
+func TestNewBudgetFromRequestSnapsToFiscalQuarter(t *testing.T) {
+	req := CreateBudgetRequest{
+		MaxLimit:      1000,
+		ResetDuration: "1Q",
+		ResetConfig:   &configstoreTables.BudgetResetConfig{QuarterStartMonth: int(time.February)},
+	}
+
+	budget := newBudgetFromRequest(req, true)
+
+	want := configstoreTables.GetCalendarPeriodStart("1Q", time.Now(), time.February)
+	assert.True(t, budget.LastReset.Equal(want),
+		"got %s, want the February-start quarter boundary %s", budget.LastReset, want)
+	assert.Equal(t, 1, budget.LastReset.Day(), "a quarter boundary is always the 1st")
+
+	// Without calendar alignment the budget anchors on now, not on a boundary.
+	rolling := newBudgetFromRequest(req, false)
+	assert.False(t, rolling.LastReset.Equal(want))
+}
+
+// TestApplyResetConfigToExistingBudgetIsConfigOnly pins what this helper is and
+// is not allowed to do.
+//
+// It copies the request's quarter definition onto the budget and touches nothing
+// else. It must specifically NOT move LastReset onto the new fiscal boundary,
+// even though that boundary has just changed: UpdateBudget carries LastReset and
+// CurrentUsage forward from the stored row on every config write, so a boundary
+// written here is silently discarded. An earlier version of this helper did move
+// it, passed this file's unit tests, and still failed end to end.
+//
+// Convergence is the reset path's job instead. WindowStart reads the new quarter
+// start as soon as this config lands, so a budget whose boundary has moved
+// forward reads as due and the next reset tick stamps the new boundary through
+// the runtime-owned path that is allowed to move it.
+func TestApplyResetConfigToExistingBudgetIsConfigOnly(t *testing.T) {
+	original := time.Date(2026, time.July, 1, 0, 0, 0, 0, time.UTC)
+	budget := &configstoreTables.TableBudget{
+		ID:                "budget-1",
+		MaxLimit:          1000,
+		ResetDuration:     "1Q",
+		IsCalendarAligned: true,
+		CurrentUsage:      400,
+		LastReset:         original,
+		ResetConfig:       &configstoreTables.BudgetResetConfig{QuarterStartMonth: int(time.January)},
+	}
+
+	applyResetConfigToExistingBudget(budget, CreateBudgetRequest{
+		MaxLimit:      1000,
+		ResetDuration: "1Q",
+		ResetConfig:   &configstoreTables.BudgetResetConfig{QuarterStartMonth: int(time.February)},
+	})
+
+	require.NotNil(t, budget.ResetConfig)
+	assert.Equal(t, int(time.February), budget.ResetConfig.QuarterStartMonth, "the quarter definition is config: the request wins")
+	assert.True(t, budget.LastReset.Equal(original), "the config write must not move the reset boundary")
+	assert.Equal(t, 400.0, budget.CurrentUsage, "the config write must not touch usage")
+}
+
+// TestApplyResetConfigToExistingBudgetClearsDefinition verifies dropping the
+// quarter definition is propagated, so switching a budget off a quarterly window
+// cannot leave a stale fiscal calendar behind.
+func TestApplyResetConfigToExistingBudgetClearsDefinition(t *testing.T) {
+	budget := &configstoreTables.TableBudget{
+		ResetDuration: "1M",
+		ResetConfig:   &configstoreTables.BudgetResetConfig{QuarterStartMonth: int(time.April)},
+	}
+	applyResetConfigToExistingBudget(budget, CreateBudgetRequest{ResetDuration: "1M"})
+	assert.Nil(t, budget.ResetConfig)
+}
+
+// TestQuarterStartChangeMakesBudgetDue is the other half of the contract above:
+// having declined to move the boundary, the change still has to take effect.
+//
+// Moving a January-start budget to a February start on 9 August leaves LastReset
+// on 1 July while WindowStart becomes 1 August, so the budget reads as due and
+// the next reset tick converges it. Without this the config write would be inert
+// for up to three months.
+func TestQuarterStartChangeMakesBudgetDue(t *testing.T) {
+	now := time.Date(2026, time.August, 9, 12, 0, 0, 0, time.UTC)
+	budget := &configstoreTables.TableBudget{
+		ResetDuration:     "1Q",
+		IsCalendarAligned: true,
+		LastReset:         time.Date(2026, time.July, 1, 0, 0, 0, 0, time.UTC),
+		ResetConfig:       &configstoreTables.BudgetResetConfig{QuarterStartMonth: int(time.January)},
+	}
+	require.False(t, budget.WindowStart(now).After(budget.LastReset), "not due before the change")
+
+	applyResetConfigToExistingBudget(budget, CreateBudgetRequest{
+		ResetDuration: "1Q",
+		ResetConfig:   &configstoreTables.BudgetResetConfig{QuarterStartMonth: int(time.February)},
+	})
+
+	assert.Equal(t, time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC), budget.WindowStart(now))
+	assert.True(t, budget.WindowStart(now).After(budget.LastReset),
+		"the budget must read as due so the reset path converges it onto the new fiscal boundary")
+}
+
+// TestBudgetLastResetUsesBudgetQuarterStart verifies the helper reads the
+// budget's own definition. Passing a bare duration string, as it did before,
+// would produce January quarters for every fiscal calendar.
+func TestBudgetLastResetUsesBudgetQuarterStart(t *testing.T) {
+	february := &configstoreTables.TableBudget{
+		ResetDuration: "1Q",
+		ResetConfig:   &configstoreTables.BudgetResetConfig{QuarterStartMonth: int(time.February)},
+	}
+	january := &configstoreTables.TableBudget{ResetDuration: "1Q"}
+
+	got := budgetLastReset(true, february)
+	assert.True(t, got.Equal(configstoreTables.GetCalendarPeriodStart("1Q", time.Now(), time.February)))
+
+	// The two definitions disagree for eight months of the year; assert only that
+	// each follows its own, since they coincide during the shared quarters.
+	assert.True(t, budgetLastReset(true, january).Equal(
+		configstoreTables.GetCalendarPeriodStart("1Q", time.Now(), time.January)))
+
+	// A nil budget must not panic; callers reach this on the non-aligned path.
+	assert.False(t, budgetLastReset(false, nil).IsZero())
+	assert.False(t, budgetLastReset(true, nil).IsZero())
 }

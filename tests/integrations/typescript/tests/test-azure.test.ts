@@ -125,6 +125,9 @@ import {
 // ============================================================================
 
 function getProviderAzureClient(provider: string = 'azure', vkEnabled: boolean = false): AzureOpenAI {
+  // The v6 SDK appends its native `/openai` path to this integration prefix.
+  // With the default gateway config this yields
+  // `/openai/openai/deployments/{model}/...`, matching the Python SDK tests.
   const azureEndpoint = getIntegrationUrl('azure')
   const apiKey = hasApiKey('azure') ? getApiKey('azure') : 'dummy-key'
 
@@ -138,7 +141,7 @@ function getProviderAzureClient(provider: string = 'azure', vkEnabled: boolean =
   }
 
   return new AzureOpenAI({
-    baseURL: azureEndpoint,
+    endpoint: azureEndpoint,
     apiKey,
     apiVersion: process.env.AZURE_API_VERSION || '2024-10-21',
     defaultHeaders: Object.keys(defaultHeaders).length > 0 ? defaultHeaders : undefined,
@@ -1242,11 +1245,15 @@ describe('Azure OpenAI SDK Integration Tests', () => {
           })
 
           expect(response).toBeDefined()
-          expect(response.data).toBeDefined()
-          expect(response.data.length).toBeGreaterThan(0)
+          const images = response.data
+          expect(images).toBeDefined()
+          expect(images?.length).toBeGreaterThan(0)
+          if (!images?.length) {
+            throw new Error('Azure image generation returned no image data')
+          }
 
           // Verify image data is present (URL or base64)
-          const imageData = response.data[0]
+          const imageData = images[0]
           expect(imageData.url || imageData.b64_json).toBeDefined()
 
           console.log(`[Azure] Image generation passed for ${model}`)

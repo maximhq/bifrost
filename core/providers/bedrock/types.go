@@ -20,6 +20,19 @@ const bedrockSigningService = "bedrock"
 // credential scope; using "bedrock" will cause signature verification failures.
 const bedrockMantleSigningService = "bedrock-mantle"
 
+// bedrockService identifies an AWS endpoint service Bifrost dials. The value doubles as the
+// host prefix of the public regional endpoint. It is distinct from the SigV4 signing service
+// above: bedrock-runtime and bedrock-agent-runtime both sign as "bedrock".
+type bedrockService string
+
+const (
+	bedrockServiceRuntime      bedrockService = "bedrock-runtime"
+	bedrockServiceControlPlane bedrockService = "bedrock"
+	bedrockServiceMantle       bedrockService = "bedrock-mantle"
+	bedrockServiceAgentRuntime bedrockService = "bedrock-agent-runtime"
+	bedrockServiceS3           bedrockService = "s3"
+)
+
 const MinimumReasoningMaxTokens = 1
 const DefaultCompletionMaxTokens = 4096 // Only used for relative reasoning max token calculation - not passed in body by default
 
@@ -250,9 +263,12 @@ type BedrockImageSource struct {
 	Source BedrockImageSourceData `json:"source"` // Required: Image source data
 }
 
-// BedrockImageSourceData represents the source of image data
+// BedrockImageSourceData represents the source of image data.
+// This is a tagged union — exactly one of Bytes or S3Location should be set.
+// See: https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ImageSource.html
 type BedrockImageSourceData struct {
-	Bytes *string `json:"bytes,omitempty"` // Base64-encoded image bytes
+	Bytes      *string            `json:"bytes,omitempty"`      // Base64-encoded image bytes
+	S3Location *BedrockS3Location `json:"s3Location,omitempty"` // Optional: S3 location (model-dependent support)
 }
 
 // BedrockDocumentSource represents document content
@@ -262,10 +278,13 @@ type BedrockDocumentSource struct {
 	Source *BedrockDocumentSourceData `json:"source"` // Required: Document source data
 }
 
-// BedrockDocumentSourceData represents the source of document data
+// BedrockDocumentSourceData represents the source of document data.
+// This is a tagged union — exactly one of Bytes, Text or S3Location should be set.
+// See: https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_DocumentSource.html
 type BedrockDocumentSourceData struct {
-	Bytes *string `json:"bytes,omitempty"` // Base64-encoded document bytes
-	Text  *string `json:"text,omitempty"`  // Plain text content
+	Bytes      *string            `json:"bytes,omitempty"`      // Base64-encoded document bytes
+	Text       *string            `json:"text,omitempty"`       // Plain text content
+	S3Location *BedrockS3Location `json:"s3Location,omitempty"` // Optional: S3 location (model-dependent support)
 }
 
 // BedrockVideoBlock represents a video content block.
@@ -292,10 +311,10 @@ type BedrockS3Location struct {
 
 // BedrockToolUse represents a tool use request
 type BedrockToolUse struct {
-	ToolUseID string          `json:"toolUseId"`       // Required: Unique identifier for this tool use
-	Name      string          `json:"name"`            // Required: Name of the tool to use
-	Input     json.RawMessage `json:"input"`           // Required: Input parameters for the tool (json.RawMessage preserves key ordering for prompt caching)
-	Type      string          `json:"type,omitempty"`  // Optional: "server_tool_use" for Nova system tools
+	ToolUseID string          `json:"toolUseId"`      // Required: Unique identifier for this tool use
+	Name      string          `json:"name"`           // Required: Name of the tool to use
+	Input     json.RawMessage `json:"input"`          // Required: Input parameters for the tool (json.RawMessage preserves key ordering for prompt caching)
+	Type      string          `json:"type,omitempty"` // Optional: "server_tool_use" for Nova system tools
 }
 
 // BedrockToolResult represents the result of a tool use
@@ -524,7 +543,7 @@ type BedrockGuardrailTrace struct {
 
 // BedrockGuardrailAssessment represents a guardrail assessment
 type BedrockGuardrailAssessment struct {
-	AppliedGuardrailDetails   *BedrockGuardrailAppliedDetails           `json:"appliedGuardrailDetails,omitempty"`
+	AppliedGuardrailDetails   *BedrockGuardrailAppliedDetails            `json:"appliedGuardrailDetails,omitempty"`
 	AutomatedReasoningPolicy  *BedrockGuardrailAutomatedReasoningPolicy  `json:"automatedReasoningPolicy,omitempty"`
 	ContentPolicy             *BedrockGuardrailContentPolicy             `json:"contentPolicy,omitempty"`
 	ContextualGroundingPolicy *BedrockGuardrailContextualGroundingPolicy `json:"contextualGroundingPolicy,omitempty"`
@@ -692,19 +711,48 @@ type BedrockInvokeMessagesResponse struct {
 }
 
 // BedrockInvokeMessagesContentBlock represents a content block in an Anthropic Messages response.
+//
+// One struct serves every block type, so each field carries omitempty to keep a
+// text block from advertising empty tool fields and vice versa. See MarshalJSON
+// for the one case where that default is wrong.
 type BedrockInvokeMessagesContentBlock struct {
-	Type     string      `json:"type"`
-	Text     string      `json:"text,omitempty"`
-	ID       string      `json:"id,omitempty"`
-	Name     string      `json:"name,omitempty"`
-	Input    interface{} `json:"input,omitempty"`
-	Thinking string      `json:"thinking,omitempty"`
+	Type      string      `json:"type"`
+	Text      string      `json:"text,omitempty"`
+	ID        string      `json:"id,omitempty"`
+	Name      string      `json:"name,omitempty"`
+	Input     interface{} `json:"input,omitempty"`
+	Thinking  string      `json:"thinking,omitempty"`
+	Signature string      `json:"signature,omitempty"`
+}
+
+// MarshalJSON forces the thinking key to be present on thinking blocks.
+//
+// A thinking block whose text is empty is a real state: a client replaying a
+// streamed assistant turn has the reasoning signature but not the prose it
+// signs. omitempty then deletes the key entirely, producing
+// {"type":"thinking","signature":"..."} -- which Bifrost's own re-ingest treats
+// as malformed and drops on the floor (invoke.go's decoder returns nil when
+// thinking is absent), silently losing the replay token the next turn needs.
+//
+// omitempty stays on the field so text and tool_use blocks are unaffected; only
+// thinking blocks are special-cased here.
+func (b BedrockInvokeMessagesContentBlock) MarshalJSON() ([]byte, error) {
+	type alias BedrockInvokeMessagesContentBlock
+	if b.Type != "thinking" || b.Thinking != "" {
+		return sonic.Marshal(alias(b))
+	}
+	return sonic.Marshal(struct {
+		alias
+		Thinking string `json:"thinking"`
+	}{alias: alias(b), Thinking: b.Thinking})
 }
 
 // BedrockInvokeMessagesUsage represents token usage in an Anthropic Messages response.
 type BedrockInvokeMessagesUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
 }
 
 // BedrockInvokeAI21Response represents AI21 Jamba's InvokeModel response format.
@@ -760,6 +808,11 @@ type BedrockStreamEvent struct {
 
 	// Start field for tool use events
 	Start *BedrockContentBlockStart `json:"start,omitempty"` // For contentBlockStart events
+
+	// Marker for contentBlockStop events. The wire payload of contentBlockStop carries
+	// only contentBlockIndex, so the flat union needs an explicit flag to represent it.
+	// Never serialized directly: ToEncodedEvents builds the payload from ContentBlockIndex.
+	ContentBlockStop bool `json:"-"`
 
 	// Metadata and usage (can appear at top level)
 	Usage   *BedrockTokenUsage      `json:"usage,omitempty"`   // Usage information

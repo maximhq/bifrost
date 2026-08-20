@@ -18,6 +18,7 @@ type LogVolumeDataPoint = {
 	count: number;
 	success: number;
 	error: number;
+	cancelled: number;
 	index: number;
 	formattedTime: string;
 };
@@ -51,6 +52,13 @@ function CustomTooltip({ active, payload }: CustomTooltipProps) {
 					</span>
 					<span className="font-medium text-red-600 dark:text-red-400">{data.error.toLocaleString()}</span>
 				</div>
+				<div className="flex items-center justify-between gap-4">
+					<span className="flex items-center gap-1.5">
+						<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.cancelled }} />
+						<span className="text-zinc-600 dark:text-zinc-400">Cancelled</span>
+					</span>
+					<span className="font-medium text-zinc-600 dark:text-zinc-400">{(data.cancelled ?? 0).toLocaleString()}</span>
+				</div>
 			</div>
 		</div>
 	);
@@ -64,6 +72,7 @@ function LogVolumeChartImpl({ data, chartType, startTime, endTime }: LogVolumeCh
 
 		return data.buckets.map((bucket, index) => ({
 			...bucket,
+			cancelled: bucket.cancelled ?? 0,
 			index,
 			formattedTime: formatTimestamp(bucket.timestamp, data.bucket_size_seconds),
 		}));
@@ -119,6 +128,15 @@ function LogVolumeChartImpl({ data, chartType, startTime, endTime }: LogVolumeCh
 							stackId="requests"
 							fill={CHART_COLORS.error}
 							fillOpacity={0.9}
+							radius={[0, 0, 0, 0]}
+							barSize={30}
+						/>
+						<Bar
+							isAnimationActive={false}
+							dataKey="cancelled"
+							stackId="requests"
+							fill={CHART_COLORS.cancelled}
+							fillOpacity={0.9}
 							radius={[2, 2, 0, 0]}
 							barSize={30}
 						/>
@@ -161,6 +179,15 @@ function LogVolumeChartImpl({ data, chartType, startTime, endTime }: LogVolumeCh
 							stackId="1"
 							stroke={CHART_COLORS.error}
 							fill={CHART_COLORS.error}
+							fillOpacity={0.7}
+						/>
+						<Area
+							isAnimationActive={false}
+							type="monotone"
+							dataKey="cancelled"
+							stackId="1"
+							stroke={CHART_COLORS.cancelled}
+							fill={CHART_COLORS.cancelled}
 							fillOpacity={0.7}
 						/>
 					</AreaChart>

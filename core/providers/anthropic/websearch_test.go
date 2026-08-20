@@ -269,3 +269,39 @@ func TestWebSearch_FullFlow_AnyUserAgent(t *testing.T) {
 		t.Errorf("reconstructed query = %v, want %q", got["query"], "latest AI news")
 	}
 }
+
+// TestServerSearchTools_VersionRecognition guards the request converter against a
+// newer version-dated web_search / web_fetch tool type being silently downgraded to
+// a client function tool. convertAnthropicToolToBifrost matches these by prefix
+// (mirroring the unmarshaler and the chat path), so any current or future dated
+// version must map to the neutral server-tool type. Anti-vacuous: the future-dated
+// entries (…20260318) fall through to ResponsesToolTypeFunction before the fix.
+func TestServerSearchTools_VersionRecognition(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		toolType string
+		want     schemas.ResponsesToolType
+	}{
+		// web_search: known versions + a future-dated one.
+		{"web_search_20250305", schemas.ResponsesToolTypeWebSearch},
+		{"web_search_20260209", schemas.ResponsesToolTypeWebSearch},
+		{"web_search_20260318", schemas.ResponsesToolTypeWebSearch},
+		// web_fetch: known versions + the reported 20260318.
+		{"web_fetch_20250910", schemas.ResponsesToolTypeWebFetch},
+		{"web_fetch_20260209", schemas.ResponsesToolTypeWebFetch},
+		{"web_fetch_20260309", schemas.ResponsesToolTypeWebFetch},
+		{"web_fetch_20260318", schemas.ResponsesToolTypeWebFetch},
+	}
+	for _, c := range cases {
+		t.Run(c.toolType, func(t *testing.T) {
+			in := &AnthropicTool{Type: schemas.Ptr(AnthropicToolType(c.toolType)), Name: "web_fetch"}
+			neutral := convertAnthropicToolToBifrost(in)
+			if neutral == nil {
+				t.Fatalf("%s: convertAnthropicToolToBifrost returned nil", c.toolType)
+			}
+			if neutral.Type != c.want {
+				t.Errorf("%s: neutral tool type = %q, want %q (must not fall through to a client function tool)", c.toolType, neutral.Type, c.want)
+			}
+		})
+	}
+}

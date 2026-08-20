@@ -25,6 +25,7 @@ type StreamAccumulatorResult struct {
 	TokenUsage            *BifrostLLMUsage                // Token usage
 	Cost                  *float64                        // Cost in dollars
 	CacheDebug            *BifrostCacheDebug              // Semantic cache debug info if available
+	GuardrailDebug        *BifrostGuardrailDebug          // Guardrail debug info if available
 	ErrorDetails          *BifrostError                   // Error details if any
 	AudioOutput           *BifrostSpeechResponse          // For speech streaming
 	TranscriptionOutput   *BifrostTranscriptionResponse   // For transcription streaming
@@ -173,6 +174,9 @@ type Tracer interface {
 	// Thread-safe. Should be called after plugin hooks complete, before trace completion.
 	AttachPluginLogs(traceID string, logs []PluginLogEntry)
 
+	// SetTraceRedactionReplacements stores phase-scoped connector-facing replacements on a trace.
+	SetTraceRedactionReplacements(traceID string, phase RedactionPhase, replacements map[string]string)
+
 	// CompleteAndFlushTrace ends a trace, exports it to observability plugins, and
 	// releases the trace resources. Used by transports that bypass normal HTTP trace completion.
 	CompleteAndFlushTrace(traceID string)
@@ -289,6 +293,9 @@ func (n *NoOpTracer) GateSend(_ string, chunk *BifrostStreamChunk, _ bool, _ boo
 
 // AttachPluginLogs does nothing.
 func (n *NoOpTracer) AttachPluginLogs(_ string, _ []PluginLogEntry) {}
+
+// SetTraceRedactionReplacements does nothing.
+func (n *NoOpTracer) SetTraceRedactionReplacements(_ string, _ RedactionPhase, _ map[string]string) {}
 
 // CompleteAndFlushTrace does nothing.
 func (n *NoOpTracer) CompleteAndFlushTrace(_ string) {}

@@ -25,7 +25,7 @@ import openai
 # Configure client to use Bifrost
 client = openai.OpenAI(
     base_url="http://localhost:8080/openai",
-    api_key="dummy-key"  # Keys handled by Bifrost
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>"  # Replace with your actual Bifrost virtual key.
 )
 
 # Make requests as usual
@@ -46,7 +46,7 @@ import OpenAI from "openai";
 // Configure client to use Bifrost
 const openai = new OpenAI({
   baseURL: "http://localhost:8080/openai",
-  apiKey: "dummy-key", // Keys handled by Bifrost
+  apiKey: "<YOUR-BIFROST-VIRTUAL-KEY>", // Replace with your actual Bifrost virtual key.
 });
 
 // Make requests as usual
@@ -75,7 +75,7 @@ import openai
 
 client = openai.OpenAI(
     base_url="http://localhost:8080/openai",
-    api_key="dummy-key"
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>"  # Replace with your actual Bifrost virtual key.
 )
 
 # OpenAI models (default)
@@ -117,7 +117,7 @@ import OpenAI from "openai";
 
 const openai = new OpenAI({
   baseURL: "http://localhost:8080/openai",
-  apiKey: "dummy-key",
+  apiKey: "<YOUR-BIFROST-VIRTUAL-KEY>", // Replace with your actual Bifrost virtual key.
 });
 
 // OpenAI models (default)
@@ -166,11 +166,12 @@ Pass custom headers required by Bifrost plugins (like governance, telemetry, etc
 ```python
 import openai
 
+# Sending the virtual key through both fields requires dual_credential_conflict_behavior to be set to "prefer_vk".
 client = openai.OpenAI(
     base_url="http://localhost:8080/openai",
-    api_key="dummy-key",
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>",  # Replace with your actual Bifrost virtual key.
     default_headers={
-        "x-bf-vk": "vk_12345",  # Virtual key for governance
+        "x-bf-vk": "<YOUR-BIFROST-VIRTUAL-KEY>",  # Replace with your actual Bifrost virtual key.
     }
 )
 
@@ -186,11 +187,12 @@ response = client.chat.completions.create(
 ```javascript
 import OpenAI from "openai";
 
+// Sending the virtual key through both fields requires dual_credential_conflict_behavior to be set to "prefer_vk".
 const openai = new OpenAI({
   baseURL: "http://localhost:8080/openai",
-  apiKey: "dummy-key",
+  apiKey: "<YOUR-BIFROST-VIRTUAL-KEY>", // Replace with your actual Bifrost virtual key.
   defaultHeaders: {
-    "x-bf-vk": "vk_12345", // Virtual key for governance
+    "x-bf-vk": "<YOUR-BIFROST-VIRTUAL-KEY>", // Replace with your actual Bifrost virtual key.
   },
 });
 
@@ -224,7 +226,7 @@ import time
 
 client = openai.OpenAI(
     base_url="http://localhost:8080/openai",
-    api_key="dummy-key"
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>"  # Replace with your actual Bifrost virtual key.
 )
 
 # Submit async request
@@ -259,7 +261,7 @@ import OpenAI from "openai";
 
 const openai = new OpenAI({
   baseURL: "http://localhost:8080/openai",
-  apiKey: "dummy-key",
+  apiKey: "<YOUR-BIFROST-VIRTUAL-KEY>", // Replace with your actual Bifrost virtual key.
 });
 
 // Submit async request
@@ -307,7 +309,7 @@ import time
 
 client = openai.OpenAI(
     base_url="http://localhost:8080/openai",
-    api_key="dummy-key"
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>"  # Replace with your actual Bifrost virtual key.
 )
 
 # Submit async request
@@ -342,7 +344,7 @@ import OpenAI from "openai";
 
 const openai = new OpenAI({
   baseURL: "http://localhost:8080/openai",
-  apiKey: "dummy-key",
+  apiKey: "<YOUR-BIFROST-VIRTUAL-KEY>", // Replace with your actual Bifrost virtual key.
 });
 
 // Submit async request

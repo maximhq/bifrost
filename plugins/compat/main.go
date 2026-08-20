@@ -5,6 +5,8 @@
 package compat
 
 import (
+	"slices"
+
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
@@ -49,11 +51,13 @@ func (c Config) IsEnabled() bool {
 // completion requests for models that only support chat completions, matching
 // LiteLLM's behavior. It also converts chat completion requests to responses
 // for models that only support the responses endpoint.
+// The plugin is registered once per process, so it holds no per-request state:
+// anything PreLLMHook needs to hand to PostLLMHook travels on the request's
+// BifrostContext instead.
 type CompatPlugin struct {
-	config        Config
-	logger        schemas.Logger
-	modelCatalog  *modelcatalog.ModelCatalog
-	droppedParams []string
+	config       Config
+	logger       schemas.Logger
+	modelCatalog *modelcatalog.ModelCatalog
 }
 
 // Init creates a new compat plugin instance with model catalog support.
@@ -100,6 +104,12 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		return req, nil, nil
 	}
 
+	// A fallback re-runs the full plugin pipeline on the same context, and the
+	// dropped-param list below is only written when something was actually
+	// dropped. Without this clear, an attempt that drops nothing inherits the
+	// previous attempt's list and PostLLMHook reports it as this response's.
+	ctx.ClearValue(schemas.BifrostContextKeyCompatDroppedParams)
+
 	convertTextToChatOverride, convertTextToChatOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatConvertTextToChat).(bool)
 	convertChatToResponsesOverride, convertChatToResponsesOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatConvertChatToResponses).(bool)
 	shouldDropParamsOverride, shouldDropParamsOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatShouldDropParams).(bool)
@@ -109,7 +119,6 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	if (shouldDropParamsOverrideEnabled && shouldDropParamsOverride) || (shouldConvertParamsOverrideEnabled && shouldConvertParamsOverride) || p.config.ShouldConvertParams || p.config.ShouldDropParams {
 		modifiedReq = cloneBifrostReq(req)
 	}
-	p.droppedParams = nil
 
 	// Text completion → chat conversion
 	if (convertTextToChatOverrideEnabled && convertTextToChatOverride) || p.config.ConvertTextToChat {
@@ -132,7 +141,15 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 			if supportedParams := p.modelCatalog.GetSupportedParameters(model); supportedParams != nil {
 				droppedParams := dropUnsupportedParams(ctx, modifiedReq, supportedParams)
 				if len(droppedParams) > 0 {
-					p.droppedParams = droppedParams
+					ctx.SetValue(schemas.BifrostContextKeyCompatDroppedParams, droppedParams)
+					p.logger.Debug("compat: dropped unsupported params for model %s: %v", model, droppedParams)
+					// service_tier decides what the caller is billed. Dropping it
+					// downgrades the request to the provider's default tier with no
+					// upstream error and no difference in the response body, so it
+					// is worth surfacing above Debug.
+					if slices.Contains(droppedParams, "service_tier") {
+						p.logger.Warn("compat: dropped service_tier for model %s - the model catalog does not list service_tier support for this model, so the request will be served and billed at the provider's default tier", model)
+					}
 				}
 			}
 		}
@@ -164,8 +181,10 @@ func (p *CompatPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	}
 
 	if result != nil {
-		if extraFields := result.GetExtraFields(); extraFields != nil {
-			extraFields.DroppedCompatPluginParams = p.droppedParams
+		if droppedParams, ok := ctx.Value(schemas.BifrostContextKeyCompatDroppedParams).([]string); ok {
+			if extraFields := result.GetExtraFields(); extraFields != nil {
+				extraFields.DroppedCompatPluginParams = droppedParams
+			}
 		}
 	}
 

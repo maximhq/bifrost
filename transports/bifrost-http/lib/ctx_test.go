@@ -171,6 +171,31 @@ func TestConvertToBifrostContext_StarAllowlistDirectForwardingSecurityBlocked(t 
 	}
 }
 
+// TestConvertToBifrostContext_AsyncWebhookHeaderSurvivesStarAllowlist verifies
+// that the reserved x-bf-async-webhook header is captured into the context even
+// when a "*" allowlist would otherwise forward-and-return it as a direct header,
+// which would drop the endpoint name and run the async job without notifying.
+func TestConvertToBifrostContext_AsyncWebhookHeaderSurvivesStarAllowlist(t *testing.T) {
+	matcher := NewHeaderMatcher(&configstoreTables.GlobalHeaderFilterConfig{
+		Allowlist: []string{"*"},
+	})
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-bf-async-webhook", "receiver")
+
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{matcher: matcher})
+	defer cancel()
+
+	if got, ok := bifrostCtx.Value(schemas.BifrostContextKeyAsyncWebhookEndpoint).(string); !ok || got != "receiver" {
+		t.Errorf("expected async webhook endpoint %q to be captured under a * allowlist, got %q (present=%v)", "receiver", got, ok)
+	}
+	// The reserved header must not also leak into forwarded extra headers.
+	extraHeaders, _ := bifrostCtx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
+	if _, ok := extraHeaders["x-bf-async-webhook"]; ok {
+		t.Error("expected reserved x-bf-async-webhook to be consumed, not forwarded as an extra header")
+	}
+}
+
 // TestConvertToBifrostContext_PrefixWildcardDirectForwarding verifies that
 // prefix wildcard patterns like "anthropic-*" work for direct header forwarding
 // (without x-bf-eh- prefix).
@@ -573,6 +598,66 @@ func TestBuildBaseURL(t *testing.T) {
 			}
 			if got := BuildBaseURL(ctx, tt.external); got != tt.want {
 				t.Fatalf("BuildBaseURL() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// A virtual key presented via Azure's native "api-key" header (used by the
+// Azure OpenAI SDK on passthrough) must be captured into the context so
+// governance/logging attribute the call to the VK, not the base key.
+func TestConvertToBifrostContext_VirtualKeyFromAzureAPIKeyHeader(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("api-key", "sk-bf-azure-passthrough-vk")
+
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+	defer cancel()
+
+	vk, ok := bifrostCtx.Value(schemas.BifrostContextKeyVirtualKey).(string)
+	if !ok || vk != "sk-bf-azure-passthrough-vk" {
+		t.Fatalf("virtual key = %#v, want %q", bifrostCtx.Value(schemas.BifrostContextKeyVirtualKey), "sk-bf-azure-passthrough-vk")
+	}
+}
+
+// A real (non-VK) provider key in the "api-key" header must not be misread as
+// a virtual key — only the sk-bf- prefix promotes it.
+func TestConvertToBifrostContext_APIKeyHeaderNonVirtualKeyIgnored(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("api-key", "real-azure-api-key")
+
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+	defer cancel()
+
+	if got := bifrostCtx.Value(schemas.BifrostContextKeyVirtualKey); got != nil {
+		t.Fatalf("virtual key should not be set from a non-VK api-key value, got %#v", got)
+	}
+}
+
+func TestConvertToBifrostContext_AsyncWebhookHeader(t *testing.T) {
+	cases := []struct {
+		name   string
+		header string
+		want   string
+	}{
+		{name: "value carried as-is", header: "billing", want: "billing"},
+		{name: "value trimmed", header: "  billing  ", want: "billing"},
+		{name: "blank header ignored", header: "   ", want: ""},
+		{name: "absent header ignored", want: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			if tc.header != "" {
+				ctx.Request.Header.Set("x-bf-async-webhook", tc.header)
+			}
+			bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+			if bifrostCtx == nil {
+				t.Fatal("expected a bifrost context")
+			}
+			defer cancel()
+			got, _ := bifrostCtx.Value(schemas.BifrostContextKeyAsyncWebhookEndpoint).(string)
+			if got != tc.want {
+				t.Fatalf("context webhook endpoint = %q, want %q", got, tc.want)
 			}
 		})
 	}
