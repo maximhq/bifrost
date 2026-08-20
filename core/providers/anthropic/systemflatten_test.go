@@ -114,6 +114,34 @@ func TestSystemFlattenShapes(t *testing.T) {
 		}
 	})
 
+	t.Run("multi-block developer message flattens to string", func(t *testing.T) {
+		devRole := schemas.ResponsesInputMessageRoleDeveloper
+		chatMessages := schemas.ToChatMessages([]schemas.ResponsesMessage{
+			{
+				Role: &devRole,
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("dev block A")},
+						{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("dev block B")},
+					},
+				},
+			},
+		})
+		if len(chatMessages) != 1 {
+			t.Fatalf("expected 1 chat message, got %d", len(chatMessages))
+		}
+		dev := chatMessages[0]
+		if dev.Role != schemas.ChatMessageRoleDeveloper {
+			t.Fatalf("expected developer role, got %s", dev.Role)
+		}
+		if dev.Content == nil || dev.Content.ContentStr == nil {
+			t.Fatalf("expected multi-block developer message to flatten to string content, got: %+v", dev.Content)
+		}
+		if want := "dev block A\n\ndev block B"; *dev.Content.ContentStr != want {
+			t.Errorf("flattened developer prompt mismatch:\ngot:  %q\nwant: %q", *dev.Content.ContentStr, want)
+		}
+	})
+
 	t.Run("multi-block user message keeps content array", func(t *testing.T) {
 		// Flattening applies to system/developer roles only: user messages keep their
 		// content array through ToChatMessages (image/file parts depend on it).
