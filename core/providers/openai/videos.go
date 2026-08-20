@@ -103,6 +103,11 @@ func ToBifrostVideoEditRequest(openaiReq *OpenAIVideoEditRequest) *schemas.Bifro
 	}
 
 	provider, model := schemas.ParseModelString(openaiReq.Model, "")
+	// A "provider/model" string wins; otherwise fall back to whatever the transport resolved, which
+	// is the only routing signal when the caller sends no model at all.
+	if provider == "" {
+		provider = openaiReq.Provider
+	}
 
 	return &schemas.BifrostVideoEditRequest{
 		Provider: provider,

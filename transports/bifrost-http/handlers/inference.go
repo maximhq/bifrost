@@ -327,6 +327,7 @@ var videoGenerationParamsKnownFields = map[string]bool{
 	"negative_prompt":   true,
 	"seed":              true,
 	"type":              true,
+	"output_format":     true,
 	"upscale_factor":    true,
 	"target_megapixels": true,
 	"video_uri":         true,
@@ -2542,6 +2543,7 @@ func (h *CompletionHandler) imageEdit(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
+	bifrostCtx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 
 	// Handle streaming image edit
 	if req.Stream != nil && *req.Stream {
