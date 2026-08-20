@@ -418,6 +418,7 @@ func ClearContextForInternalRequest(ctx *schemas.BifrostContext) {
 	// Body transport.
 	ctx.ClearValue(schemas.BifrostContextKeyUseRawRequestBody)
 	ctx.ClearValue(schemas.BifrostContextKeyRawRequestBodyTextRewriter)
+	ctx.ClearValue(schemas.BifrostContextKeyRawStreamTextCodec)
 	ctx.ClearValue(schemas.BifrostContextKeySendBackRawRequest)
 	ctx.ClearValue(schemas.BifrostContextKeySendBackRawResponse)
 	ctx.ClearValue(schemas.BifrostContextKeyPassthroughOverridesPresent)

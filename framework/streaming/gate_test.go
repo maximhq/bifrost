@@ -3,6 +3,7 @@ package streaming
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -432,6 +433,220 @@ func TestGate_ClearPausedStreamBufferDropsBufferedTerminal(t *testing.T) {
 	}
 	if sa.gateState != StreamStateEnded {
 		t.Fatalf("expected Ended after replacement terminal, got %v", sa.gateState)
+	}
+}
+
+// TestGate_TransformPausedStreamBufferReplaysCopies verifies a successful transform replaces only client-facing buffered pointers.
+func TestGate_TransformPausedStreamBufferReplaysCopies(t *testing.T) {
+	a := newTestAccumulator(t)
+	traceID := "trace-transform-paused"
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	r := newRecorder(8)
+	defer r.close()
+	chunks := makeChunks(2)
+
+	a.PauseStream(traceID)
+	for _, chunk := range chunks {
+		if !a.GateSend(traceID, chunk, false, false, r.ch, ctx) {
+			t.Fatal("paused GateSend returned false")
+		}
+	}
+	err := a.TransformPausedStreamBuffer(traceID, func(buffered []*schemas.BifrostStreamChunk) (schemas.PausedStreamBufferTransformResult, error) {
+		rewritten := make([]*schemas.BifrostStreamChunk, len(buffered))
+		for i, chunk := range buffered {
+			chunkCopy := *chunk
+			responseCopy := *chunk.BifrostChatResponse
+			responseCopy.ID += "-redacted"
+			chunkCopy.BifrostChatResponse = &responseCopy
+			rewritten[i] = &chunkCopy
+		}
+		return schemas.PausedStreamBufferTransformResult{Chunks: rewritten, ReleaseCount: len(rewritten)}, nil
+	})
+	if err != nil {
+		t.Fatalf("TransformPausedStreamBuffer() error = %v", err)
+	}
+	for i, chunk := range chunks {
+		if chunk.BifrostChatResponse.ID != fmt.Sprintf("chunk-%d", i) {
+			t.Fatalf("provider-original chunk %d was mutated: %q", i, chunk.BifrostChatResponse.ID)
+		}
+	}
+
+	a.ResumeStream(traceID)
+	if !r.waitFor(2, time.Second) {
+		t.Fatal("transformed chunks were not replayed")
+	}
+	got, _ := r.snapshot()
+	for i, chunk := range got {
+		if chunk.BifrostChatResponse.ID != fmt.Sprintf("chunk-%d-redacted", i) {
+			t.Errorf("replayed chunk %d ID = %q", i, chunk.BifrostChatResponse.ID)
+		}
+		if chunk == chunks[i] {
+			t.Errorf("replayed chunk %d reused provider-original pointer", i)
+		}
+	}
+}
+
+// TestGate_TransformPausedStreamBufferReleasesOnlyApprovedPrefix verifies an unevaluated suffix remains paused.
+func TestGate_TransformPausedStreamBufferReleasesOnlyApprovedPrefix(t *testing.T) {
+	a := newTestAccumulator(t)
+	traceID := "trace-transform-prefix"
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	r := newRecorder(8)
+	defer r.close()
+	chunks := makeChunks(3)
+
+	a.PauseStream(traceID)
+	for _, chunk := range chunks {
+		if !a.GateSend(traceID, chunk, false, false, r.ch, ctx) {
+			t.Fatal("paused GateSend returned false")
+		}
+	}
+	err := a.TransformPausedStreamBuffer(traceID, func(buffered []*schemas.BifrostStreamChunk) (schemas.PausedStreamBufferTransformResult, error) {
+		return schemas.PausedStreamBufferTransformResult{Chunks: buffered, ReleaseCount: 2}, nil
+	})
+	if err != nil {
+		t.Fatalf("TransformPausedStreamBuffer() error = %v", err)
+	}
+	if !r.waitFor(2, time.Second) {
+		t.Fatal("approved prefix was not replayed")
+	}
+	time.Sleep(20 * time.Millisecond)
+	got, _ := r.snapshot()
+	if len(got) != 2 || got[0] != chunks[0] || got[1] != chunks[1] {
+		t.Fatalf("replayed prefix = %#v, want first two chunks only", got)
+	}
+
+	err = a.TransformPausedStreamBuffer(traceID, func(buffered []*schemas.BifrostStreamChunk) (schemas.PausedStreamBufferTransformResult, error) {
+		if len(buffered) != 1 || buffered[0] != chunks[2] {
+			t.Fatalf("next transform snapshot = %#v, want held suffix", buffered)
+		}
+		return schemas.PausedStreamBufferTransformResult{Chunks: buffered, ReleaseCount: 1}, nil
+	})
+	if err != nil {
+		t.Fatalf("second TransformPausedStreamBuffer() error = %v", err)
+	}
+	if !r.waitFor(3, time.Second) {
+		t.Fatal("held suffix was not replayed after approval")
+	}
+	a.ResumeStream(traceID)
+}
+
+// TestGate_TransformPausedStreamBufferFailureKeepsOriginals verifies callback failure cannot partially change replay state.
+func TestGate_TransformPausedStreamBufferFailureKeepsOriginals(t *testing.T) {
+	a := newTestAccumulator(t)
+	traceID := "trace-transform-failure"
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	r := newRecorder(4)
+	defer r.close()
+	chunk := makeChunks(1)[0]
+
+	a.PauseStream(traceID)
+	if !a.GateSend(traceID, chunk, false, false, r.ch, ctx) {
+		t.Fatal("paused GateSend returned false")
+	}
+	err := a.TransformPausedStreamBuffer(traceID, func(buffered []*schemas.BifrostStreamChunk) (schemas.PausedStreamBufferTransformResult, error) {
+		return schemas.PausedStreamBufferTransformResult{}, fmt.Errorf("forced transform failure")
+	})
+	if err == nil {
+		t.Fatal("TransformPausedStreamBuffer() error = nil")
+	}
+	a.ResumeStream(traceID)
+	if !r.waitFor(1, time.Second) {
+		t.Fatal("original chunk was not replayed")
+	}
+	got, _ := r.snapshot()
+	if got[0] != chunk {
+		t.Fatalf("failure replaced original chunk pointer")
+	}
+}
+
+// TestGate_TransformPausedStreamBufferRejectsConcurrentAppend verifies a stale snapshot is never installed over newer chunks.
+func TestGate_TransformPausedStreamBufferRejectsConcurrentAppend(t *testing.T) {
+	a := newTestAccumulator(t)
+	traceID := "trace-transform-concurrent"
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	r := newRecorder(4)
+	defer r.close()
+	chunks := makeChunks(2)
+
+	a.PauseStream(traceID)
+	if !a.GateSend(traceID, chunks[0], false, false, r.ch, ctx) {
+		t.Fatal("first paused GateSend returned false")
+	}
+	callbackStarted := make(chan struct{})
+	continueTransform := make(chan struct{})
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- a.TransformPausedStreamBuffer(traceID, func(buffered []*schemas.BifrostStreamChunk) (schemas.PausedStreamBufferTransformResult, error) {
+			close(callbackStarted)
+			<-continueTransform
+			return schemas.PausedStreamBufferTransformResult{Chunks: buffered}, nil
+		})
+	}()
+	<-callbackStarted
+	if !a.GateSend(traceID, chunks[1], false, false, r.ch, ctx) {
+		t.Fatal("concurrent paused GateSend returned false")
+	}
+	close(continueTransform)
+	if err := <-errCh; err == nil {
+		t.Fatal("TransformPausedStreamBuffer() error = nil after concurrent append")
+	}
+
+	a.ResumeStream(traceID)
+	if !r.waitFor(2, time.Second) {
+		t.Fatal("original chunks were not replayed")
+	}
+	got, _ := r.snapshot()
+	if got[0] != chunks[0] || got[1] != chunks[1] {
+		t.Fatalf("concurrent failure changed buffered pointers")
+	}
+}
+
+// TestGate_TransformPausedStreamBufferScopesLatestPause verifies an older replay backlog is excluded from a new pause epoch.
+func TestGate_TransformPausedStreamBufferScopesLatestPause(t *testing.T) {
+	sa := &StreamAccumulator{
+		gateState:          StreamStateActive,
+		gateReplayBuf:      makeChunks(2),
+		gateReplayBufBytes: 1,
+	}
+	sa.Pause()
+	latest := makeChunks(1)[0]
+	sa.gateReplayBuf = append(sa.gateReplayBuf, latest)
+
+	seen := 0
+	err := sa.TransformPausedBuffer(func(buffered []*schemas.BifrostStreamChunk) (schemas.PausedStreamBufferTransformResult, error) {
+		seen = len(buffered)
+		return schemas.PausedStreamBufferTransformResult{Chunks: buffered}, nil
+	})
+	if err != nil {
+		t.Fatalf("TransformPausedBuffer() error = %v", err)
+	}
+	if seen != 1 {
+		t.Fatalf("transform saw %d chunks, want only the latest pause suffix", seen)
+	}
+}
+
+// TestGate_TransformPausedStreamBufferEnforcesCap verifies replacement growth cannot bypass the replay limit.
+func TestGate_TransformPausedStreamBufferEnforcesCap(t *testing.T) {
+	sa := &StreamAccumulator{gateState: StreamStateActive}
+	sa.Pause()
+	original := makeChunks(1)[0]
+	sa.gateReplayBuf = append(sa.gateReplayBuf, original)
+	originalBytes := chunkBytes(original)
+	sa.gateReplayBufBytes = gateReplayBufMaxBytes - 1
+
+	err := sa.TransformPausedBuffer(func(buffered []*schemas.BifrostStreamChunk) (schemas.PausedStreamBufferTransformResult, error) {
+		chunkCopy := *buffered[0]
+		responseCopy := *buffered[0].BifrostChatResponse
+		responseCopy.ID = strings.Repeat("x", int(originalBytes)+2)
+		chunkCopy.BifrostChatResponse = &responseCopy
+		return schemas.PausedStreamBufferTransformResult{Chunks: []*schemas.BifrostStreamChunk{&chunkCopy}}, nil
+	})
+	if err == nil {
+		t.Fatal("TransformPausedBuffer() error = nil for oversized replacement")
+	}
+	if sa.gateReplayBuf[0] != original {
+		t.Fatal("oversized replacement changed the buffered chunk")
 	}
 }
 

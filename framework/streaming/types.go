@@ -167,6 +167,11 @@ type StreamAccumulator struct {
 	// (purely for diagnostics — the buffered chunks themselves drive replay).
 	gateState    StreamState
 	gatePausedAt int // -1 if never paused
+	// gatePauseEpoch changes on every Active -> Paused transition. gateApprovedPrefix
+	// excludes an earlier approved replay backlog from the current transform scope and
+	// tracks the leading buffered chunks approved to drain while a newer suffix remains paused.
+	gatePauseEpoch     uint64
+	gateApprovedPrefix int
 	// gatePendingTerminal is set when an isFinal or isHardErr chunk arrived
 	// while Paused. The flusher consumes this flag after Resume drains the
 	// buffer and transitions the gate to Ended.

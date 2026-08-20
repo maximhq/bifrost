@@ -439,6 +439,7 @@ func (a *Accumulator) cleanupStreamAccumulator(requestID string, forceEndGate bo
 		}
 		acc.gateReplayBuf = nil
 		acc.gateReplayBufBytes = 0
+		acc.gateApprovedPrefix = 0
 	}
 
 	// Return all chunks to the pool before deleting
