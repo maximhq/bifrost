@@ -160,6 +160,24 @@ func TestBedrockTitanEmbeddingResponsePreservesAllTypedEncodings(t *testing.T) {
 	assert.Equal(t, 0, response.Data[1].Index)
 }
 
+func TestBedrockTitanEmbeddingResponsePrefersTypedEncodingsOverLegacyFloat(t *testing.T) {
+	response := (&BedrockTitanEmbeddingResponse{
+		// Titan V2 includes this legacy float vector alongside embeddingsByType when
+		// float is one of multiple requested representations.
+		Embedding: []float64{0.5, 0.5},
+		EmbeddingsByType: &BedrockTitanEmbeddingsByType{
+			Float:  []float64{0.25, 0.75},
+			Binary: []int8{1, 0},
+		},
+		InputTextTokenCount: 3,
+	}).ToBifrostEmbeddingResponse()
+
+	require.NotNil(t, response)
+	require.Len(t, response.Data, 2)
+	assert.Equal(t, []float64{0.25, 0.75}, response.Data[0].Embedding.EmbeddingArray)
+	assert.Equal(t, []int8{1, 0}, response.Data[1].Embedding.EmbeddingInt8Array)
+}
+
 func TestToBedrockTitanEmbeddingRequestEncodingTypes(t *testing.T) {
 	text := "hello"
 	t.Run("rejects missing input without panicking", func(t *testing.T) {

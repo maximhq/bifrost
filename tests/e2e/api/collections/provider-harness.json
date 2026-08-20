@@ -107,6 +107,22 @@
           "    } else if (j.embedding && Array.isArray(j.embedding.values)) {",
           "        shape = 'genai-embedding';",
           "        hasContent = j.embedding.values.length > 0;",
+          "    } else if (j.embeddingsByType && typeof j.embeddingsByType === 'object') {",
+          "        shape = 'bedrock-titan-typed-embedding';",
+          "        var titanEmbeddingTypes = ['float', 'binary'];",
+          "        hasContent = titanEmbeddingTypes.some(function (type) {",
+          "            return Array.isArray(j.embeddingsByType[type]) && j.embeddingsByType[type].length > 0;",
+          "        });",
+          "    } else if (Array.isArray(j.embeddings)) {",
+          "        shape = 'bedrock-cohere-embedding';",
+          "        hasContent = j.embeddings.some(function (vector) { return Array.isArray(vector) && vector.length > 0; });",
+          "    } else if (j.embeddings && typeof j.embeddings === 'object') {",
+          "        shape = 'bedrock-cohere-typed-embedding';",
+          "        var cohereEmbeddingTypes = ['float', 'int8', 'uint8', 'binary', 'ubinary'];",
+          "        hasContent = cohereEmbeddingTypes.some(function (type) {",
+          "            var vectors = j.embeddings[type];",
+          "            return Array.isArray(vectors) && vectors.length > 0 && Array.isArray(vectors[0]) && vectors[0].length > 0;",
+          "        });",
           "    } else if (Array.isArray(j.embedding)) {",
           "        shape = 'bedrock-titan-embedding';",
           "        hasContent = j.embedding.length > 0;",
@@ -135797,7 +135813,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"bedrock/amazon.titan-embed-text-v2:0\",\n  \"input\": \"normalized dual representation harness check\",\n  \"dimensions\": 256,\n  \"extra_params\": {\n    \"embeddingTypes\": [\n      \"float\",\n      \"binary\"\n    ]\n  }\n}"
+              "raw": "{\n  \"model\": \"bedrock/amazon.titan-embed-text-v2:0\",\n  \"input\": \"normalized dual representation harness check\",\n  \"dimensions\": 256,\n  \"embeddingTypes\": [\n    \"float\",\n    \"binary\"\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/embeddings",

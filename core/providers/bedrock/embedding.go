@@ -101,15 +101,6 @@ func (response *BedrockTitanEmbeddingResponse) ToBifrostEmbeddingResponse() *sch
 		},
 	}
 
-	if response.Embedding != nil {
-		bifrostResponse.Data = []schemas.EmbeddingData{{
-			Index:     0,
-			Object:    "embedding",
-			Embedding: schemas.EmbeddingStruct{EmbeddingArray: response.Embedding},
-		}}
-		return bifrostResponse
-	}
-
 	if response.EmbeddingsByType != nil {
 		if response.EmbeddingsByType.Float != nil {
 			bifrostResponse.Data = append(bifrostResponse.Data, schemas.EmbeddingData{
@@ -125,6 +116,18 @@ func (response *BedrockTitanEmbeddingResponse) ToBifrostEmbeddingResponse() *sch
 				Embedding: schemas.EmbeddingStruct{EmbeddingInt8Array: response.EmbeddingsByType.Binary},
 			})
 		}
+		if len(bifrostResponse.Data) > 0 {
+			return bifrostResponse
+		}
+	}
+
+	if response.Embedding != nil {
+		bifrostResponse.Data = []schemas.EmbeddingData{{
+			Index:     0,
+			Object:    "embedding",
+			Embedding: schemas.EmbeddingStruct{EmbeddingArray: response.Embedding},
+		}}
+		return bifrostResponse
 	}
 
 	if len(bifrostResponse.Data) == 0 {
