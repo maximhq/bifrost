@@ -1,3 +1,4 @@
+- feat: optionally merge `x-bf-dim-*` dimensions from `trace.Attributes[bifrost.dimensions]` onto every exported span when `propagate_trace_attributes` is enabled; span-level attributes win on conflict, reserved `path`/`method` suffixes are skipped (#3770)
 - feat: add separate headers support for traces and metrics in OTEL collector (#5940)
 - feat: add support for a separate metrics tab independent of traces for OTEL (#5939)
 - chore: upgraded core to v1.7.11 and framework to v1.5.9

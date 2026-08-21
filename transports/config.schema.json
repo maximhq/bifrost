@@ -3415,6 +3415,11 @@
           "description": "When true, input/output message content is dropped from the root span only; the underlying generation (llm.call) span retains the full content. This removes the duplicate input/output stored at the trace level (e.g. the Langfuse trace Input/Output goes empty) to reduce downstream storage.",
           "default": false
         },
+        "propagate_trace_attributes": {
+          "type": "boolean",
+          "description": "When true, x-bf-dim-* request dimensions stored on the trace are merged onto every exported span (not just the root). Reserved suffixes path and method are skipped. Default false.",
+          "default": false
+        },
         "headers": {
           "type": "object",
           "additionalProperties": {
