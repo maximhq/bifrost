@@ -2294,6 +2294,10 @@ func (provider *AnthropicProvider) BatchResults(ctx *schemas.BifrostContext, key
 			},
 		}
 
+		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+			batchResultsResp.ExtraFields.RawResponse = results
+		}
+
 		if len(parseResult.Errors) > 0 {
 			batchResultsResp.ExtraFields.ParseErrors = parseResult.Errors
 		}

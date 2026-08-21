@@ -1,4 +1,5 @@
 import { formatCost, formatLatency } from "@/app/workspace/dashboard/utils/chartUtils";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -885,6 +886,117 @@ export function LogDetailView({
 	const isPassthrough = isPassthroughOperation(log.object);
 	const isRealtimeTurn = log.object === "realtime.turn";
 	const batchDebug = log.batch_debug;
+	const batchRawRequest = useMemo(() => {
+		if (!batchDebug || !log.raw_request) return null;
+		try {
+			const parsed = JSON.parse(log.raw_request);
+			return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+		} catch {
+			return null;
+		}
+	}, [batchDebug, log.raw_request]);
+	const batchInlineRequests = useMemo(() => {
+		const requests = batchRawRequest?.requests;
+		if (Array.isArray(requests)) {
+			return requests
+				.map((r: any, index: number) => ({
+					customId: typeof r?.custom_id === "string" && r.custom_id ? r.custom_id : `request-${index + 1}`,
+					model: typeof r?.params?.model === "string" ? r.params.model : typeof r?.body?.model === "string" ? r.body.model : null,
+					messages: Array.isArray(r?.params?.messages) ? r.params.messages : Array.isArray(r?.body?.messages) ? r.body.messages : [],
+				}))
+				.filter((r) => r.messages.length > 0);
+		}
+		const geminiRequests = batchRawRequest?.batch as any;
+		const geminiItems = geminiRequests?.inputConfig?.requests?.requests;
+		if (Array.isArray(geminiItems)) {
+			return geminiItems
+				.map((item: any, index: number) => {
+					const contents = item?.request?.contents;
+					const messages = Array.isArray(contents)
+						? contents.map((c: any) => ({
+								role: c?.role === "model" ? "assistant" : c?.role || "user",
+								content: Array.isArray(c?.parts)
+									? c.parts
+											.filter((p: any) => p && typeof p.text === "string")
+											.map((p: any) => p.text)
+											.join("")
+									: "",
+							}))
+						: [];
+					return {
+						customId: typeof item?.metadata?.key === "string" && item.metadata.key ? item.metadata.key : `request-${index + 1}`,
+						model: null as string | null,
+						messages,
+					};
+				})
+				.filter((r) => r.messages.length > 0);
+		}
+		return [];
+	}, [batchRawRequest]);
+	const batchInputFileId =
+		typeof batchRawRequest?.input_file_id === "string"
+			? (batchRawRequest.input_file_id as string)
+			: typeof (batchRawRequest?.batch as any)?.inputConfig?.fileName === "string"
+				? ((batchRawRequest?.batch as any).inputConfig.fileName as string)
+				: null;
+	const batchRawResponse = useMemo(() => {
+		if (!batchDebug || !log.raw_response) return null;
+		try {
+			const parsed = JSON.parse(log.raw_response);
+			return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+		} catch {
+			return null;
+		}
+	}, [batchDebug, log.raw_response]);
+	const batchResultItems = useMemo(() => {
+		const raw = batchRawResponse;
+		const results: any[] = Array.isArray(raw) ? raw : Array.isArray(raw?.results) ? (raw!.results as any[]) : [];
+		return results
+			.map((item: any, index: number) => {
+				const customId = typeof item?.custom_id === "string" && item.custom_id ? item.custom_id : `result-${index + 1}`;
+				const body = item?.response?.body;
+				const model =
+					typeof item?.result?.message?.model === "string"
+						? item.result.message.model
+						: typeof body?.model === "string"
+							? body.model
+							: null;
+				let message: any = null;
+				let rawFallback: string | null = null;
+				const candidate = Array.isArray(body?.candidates) ? body.candidates[0] : null;
+				if (item?.result?.message) {
+					message = item.result.message;
+				} else if (body?.choices?.[0]?.message) {
+					message = body.choices[0].message;
+				} else if (body?.content !== undefined) {
+					message = body;
+				} else if (candidate) {
+					const parts = candidate?.content?.parts;
+					const text = Array.isArray(parts)
+						? parts
+								.filter((p: any) => p && typeof p.text === "string")
+								.map((p: any) => p.text)
+								.join("")
+						: "";
+					const role = candidate?.content?.role === "model" ? "assistant" : candidate?.content?.role || "assistant";
+					message = { role, content: text };
+				} else if (typeof body?.text === "string") {
+					message = { role: "assistant", content: body.text };
+				} else if (body && Object.keys(body).length > 0) {
+					rawFallback = JSON.stringify(body, null, 2);
+				} else if (item?.result && Object.keys(item.result).length > 0) {
+					rawFallback = JSON.stringify(item.result, null, 2);
+				}
+				const errorMessage: string | null =
+					item?.error?.message ||
+					(item?.result?.type && item.result.type !== "succeeded" ? `Batch item ${item.result.type}` : null) ||
+					(typeof item?.response?.status_code === "number" && item.response.status_code >= 400
+						? `Provider returned HTTP ${item.response.status_code}`
+						: null);
+				return { customId, model, message, rawFallback, errorMessage };
+			})
+			.filter((r) => r.message || r.rawFallback || r.errorMessage);
+	}, [batchRawResponse]);
 	const passthroughParams = isPassthrough
 		? (log.params as {
 				method?: string;
@@ -1100,17 +1212,6 @@ export function LogDetailView({
 									className="rounded-sm border-amber-300 bg-amber-50 px-2 py-0.5 font-medium text-amber-700 dark:border-amber-600 dark:bg-amber-950 dark:text-amber-300"
 								>
 									{log.metadata.realtime_voice}
-								</Badge>
-							)}
-							{batchDebug?.status && (
-								<Badge
-									variant="outline"
-									className={cn(
-										"rounded-sm px-2 py-0.5 font-medium uppercase",
-										batchStatusBadgeStyles[batchDebug.status] ?? batchStatusBadgeDefault,
-									)}
-								>
-									{batchDebug.status.replace(/_/g, " ")}
 								</Badge>
 							)}
 						</div>
@@ -1874,6 +1975,23 @@ export function LogDetailView({
 												)}
 											</div>
 										)}
+										{batchDebug.status && (
+											<LogEntryDetailsView
+												className="w-full"
+												label="Status"
+												value={
+													<Badge
+														variant="outline"
+														className={cn(
+															"rounded-sm px-2 py-0.5 font-medium uppercase",
+															batchStatusBadgeStyles[batchDebug.status] ?? batchStatusBadgeDefault,
+														)}
+													>
+														{batchDebug.status.replace(/_/g, " ")}
+													</Badge>
+												}
+											/>
+										)}
 									</div>
 								</>
 							)}
@@ -2070,9 +2188,19 @@ export function LogDetailView({
 						)}
 				</div>
 			</details>
-			<Tabs key={log.id} defaultValue={showTabs ? "messages" : "plugins"} className="gap-2">
+			<Tabs key={log.id} defaultValue={batchDebug ? "details" : showTabs ? "messages" : "plugins"} className="gap-2">
 				<TabsList className="bg-muted/60 h-10 w-fit">
-					{showTabs && (
+					{showTabs && batchDebug && (
+						<TabsTrigger value="details" className="px-3">
+							Details
+							{batchInlineRequests.length + batchResultItems.length ? (
+								<span className="bg-background text-muted-foreground ml-1.5 rounded-sm border px-2 py-0.5 text-[10px] tabular-nums">
+									{batchInlineRequests.length + batchResultItems.length}
+								</span>
+							) : null}
+						</TabsTrigger>
+					)}
+					{showTabs && !batchDebug && (
 						<TabsTrigger value="messages" className="px-3">
 							Messages
 							{log.input_history?.length ? (
@@ -2083,7 +2211,7 @@ export function LogDetailView({
 						</TabsTrigger>
 					)}
 
-					{showTabs && !isPassthrough && !log.list_models_output && (
+					{showTabs && !isPassthrough && !log.list_models_output && !batchDebug && (
 						<TabsTrigger value="tools" className="px-3">
 							Tools
 							{declaredTools.length ? (
@@ -2117,6 +2245,139 @@ export function LogDetailView({
 						</TabsTrigger>
 					)}
 				</TabsList>
+
+				{batchDebug && (
+					<TabsContent value="details" className="space-y-4">
+						{(batchDebug.batch_id || (batchInlineRequests.length === 0 && batchInputFileId)) && (
+							<div className="bg-card rounded-sm border p-5 space-y-4">
+								{batchDebug.batch_id && (
+									<LogEntryDetailsView
+										label="Batch ID"
+										value={
+											<span className="flex items-center gap-1">
+												<code className="font-mono text-xs">{batchDebug.batch_id}</code>
+												<CopyInlineButton text={batchDebug.batch_id} testId="logdetails-details-copy-batch-id-button" />
+											</span>
+										}
+									/>
+								)}
+								{batchInlineRequests.length === 0 && batchInputFileId && (
+									<LogEntryDetailsView
+										label="Input File ID"
+										value={
+											<span className="flex items-center gap-1">
+												<code className="font-mono text-xs">{batchInputFileId}</code>
+												<CopyInlineButton text={batchInputFileId} testId="logdetails-copy-input-file-id-button" />
+											</span>
+										}
+									/>
+								)}
+							</div>
+						)}
+						<div className="bg-card rounded-sm border">
+							{batchInlineRequests.length > 0 ? (
+								<div className="px-5 pt-5 pb-2">
+									<div className="text-muted-foreground mb-1 text-[10.5px] font-semibold tracking-wider uppercase">
+										Batch Requests ({batchInlineRequests.length})
+									</div>
+									<Accordion type="multiple" className="w-full">
+										{batchInlineRequests.map((request, index) => (
+											<AccordionItem key={`${request.customId}-${index}`} value={`${request.customId}-${index}`}>
+												<AccordionTrigger className="text-[13px]">
+													<span className="flex items-center gap-2">
+														<code className="font-mono text-xs">{request.customId}</code>
+														{request.model && (
+															<Badge variant="secondary" className="rounded-sm px-1.5 py-0 text-[10.5px] font-normal">
+																{request.model}
+															</Badge>
+														)}
+														<span className="text-muted-foreground text-[11px]">
+															{request.messages.length} message{request.messages.length === 1 ? "" : "s"}
+														</span>
+													</span>
+												</AccordionTrigger>
+												<AccordionContent className="space-y-3 pb-2">
+													{request.messages.map((message: any, msgIndex: number) => {
+														const role = ((message?.role as string) || "user") as MessageRole;
+														const text = extractMessageText(message);
+														return (
+															<MessageRow key={msgIndex} role={role} last={msgIndex === request.messages.length - 1}>
+																{text ? (
+																	<CollapsibleCode text={text} preview={3} mono={false} />
+																) : (
+																	<span className="text-muted-foreground text-xs">Empty message</span>
+																)}
+															</MessageRow>
+														);
+													})}
+												</AccordionContent>
+											</AccordionItem>
+										))}
+									</Accordion>
+								</div>
+							) : batchResultItems.length > 0 ? (
+								<div className="px-5 pt-5 pb-2">
+									<div className="text-muted-foreground mb-1 text-[10.5px] font-semibold tracking-wider uppercase">
+										Batch Results ({batchResultItems.length})
+									</div>
+									<Accordion type="multiple" className="w-full">
+										{batchResultItems.map((result, index) => (
+											<AccordionItem key={`${result.customId}-${index}`} value={`${result.customId}-${index}`}>
+												<AccordionTrigger className="text-[13px]">
+													<span className="flex items-center gap-2">
+														<code className="font-mono text-xs">{result.customId}</code>
+														{result.model && (
+															<Badge variant="secondary" className="rounded-sm px-1.5 py-0 text-[10.5px] font-normal">
+																{result.model}
+															</Badge>
+														)}
+														{result.errorMessage && (
+															<span className="text-[11px] text-red-600 dark:text-red-400">Failed</span>
+														)}
+													</span>
+												</AccordionTrigger>
+												<AccordionContent className="space-y-3 pb-2">
+													{result.errorMessage ? (
+														<div className="rounded-sm border border-red-200 bg-red-50/70 p-3 text-[12.5px] text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-400">
+															{result.errorMessage}
+														</div>
+													) : result.message ? (
+														(() => {
+															const role = ((result.message?.role as string) || "assistant") as MessageRole;
+															const text = extractMessageText(result.message);
+															return (
+																<MessageRow role={role} last>
+																	{text ? (
+																		<CollapsibleCode text={text} preview={3} mono={false} />
+																	) : (
+																		<span className="text-muted-foreground text-xs">Empty message</span>
+																	)}
+																</MessageRow>
+															);
+														})()
+													) : result.rawFallback ? (
+														<div>
+															<div className="text-muted-foreground mb-1 text-[10.5px]">
+																Unrecognized result shape — showing the raw response body
+															</div>
+															<CollapsibleCode text={result.rawFallback} preview={5} lang="json" />
+														</div>
+													) : (
+														<span className="text-muted-foreground text-xs">Empty result</span>
+													)}
+												</AccordionContent>
+											</AccordionItem>
+										))}
+									</Accordion>
+								</div>
+							) : (
+								<div className="text-muted-foreground p-5 text-center text-sm">
+									No batch request or result details were captured for this row.
+								</div>
+							)}
+						</div>
+					</TabsContent>
+				)}
 
 				<TabsContent value="messages" className="space-y-4">
 					{log.content_hidden && (
