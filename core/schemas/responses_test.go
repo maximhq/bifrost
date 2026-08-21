@@ -60,6 +60,37 @@ func TestBifrostResponsesResponseWithDefaultsPreservesUltrafastServiceTier(t *te
 	}
 }
 
+func TestBifrostResponsesOutputItemAddedDefaultsMessageContentToArray(t *testing.T) {
+	itemType := ResponsesMessageTypeMessage
+	source := &BifrostResponsesStreamResponse{
+		Type: ResponsesStreamResponseTypeOutputItemAdded,
+		Item: &ResponsesMessage{
+			ID:   Ptr("msg_1"),
+			Type: &itemType,
+			Role: Ptr(ResponsesInputMessageRoleAssistant),
+		},
+	}
+
+	normalized := source.WithDefaults()
+	encoded, err := Marshal(normalized)
+	if err != nil {
+		t.Fatalf("marshal normalized output_item.added: %v", err)
+	}
+
+	var wire map[string]any
+	if err := Unmarshal(encoded, &wire); err != nil {
+		t.Fatalf("decode normalized output_item.added: %v", err)
+	}
+	item := wire["item"].(map[string]any)
+	content, ok := item["content"].([]any)
+	if !ok || len(content) != 0 {
+		t.Fatalf("expected message content to normalize to an empty array, got %s", encoded)
+	}
+	if source.Item.Content != nil {
+		t.Fatal("normalizing output_item.added mutated the source message content")
+	}
+}
+
 // Cursor (and other Chat Completions clients) send function tools nested under
 // a "function" wrapper. The unmarshal must lift name/description/parameters so
 // providers that require a top-level name (e.g. Bedrock) don't reject the tool.
