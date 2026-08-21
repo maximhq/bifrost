@@ -440,6 +440,11 @@ export const networkConfigSchema = z
 			.min(1, "Max connections must be at least 1")
 			.max(10000, "Max connections must be at most 10000")
 			.optional(),
+		max_response_body_size: z
+			.number()
+			.int("Max response body size must be a whole number of bytes")
+			.min(0, "Max response body size cannot be negative")
+			.optional(),
 		enforce_http2: z.boolean().optional(),
 		http2_ping_interval_in_seconds: z
 			.number()
@@ -504,6 +509,11 @@ export const networkFormConfigSchema = z
 			.int("Max connections must be a whole number")
 			.min(1, "Max connections must be at least 1")
 			.max(10000, "Max connections must be at most 10000")
+			.optional(),
+		max_response_body_size: z.coerce
+			.number("Max response body size must be a number")
+			.int("Max response body size must be a whole number of bytes")
+			.min(0, "Max response body size cannot be negative")
 			.optional(),
 		enforce_http2: z.boolean().optional(),
 		http2_ping_interval_in_seconds: z.coerce

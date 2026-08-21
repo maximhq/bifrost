@@ -1150,6 +1150,22 @@ func TestNetworkConfig_StreamIdleTimeoutRoundTrip(t *testing.T) {
 	assert.Contains(t, string(data), `"stream_idle_timeout_in_seconds":120`)
 }
 
+func TestNetworkConfig_MaxResponseBodySizeRoundTrip(t *testing.T) {
+	nc := NetworkConfig{
+		DefaultRequestTimeoutInSeconds: 300,
+		MaxResponseBodySize:            50 * 1024 * 1024,
+	}
+
+	data, err := json.Marshal(nc)
+	require.NoError(t, err)
+
+	var decoded NetworkConfig
+	require.NoError(t, json.Unmarshal(data, &decoded))
+
+	assert.Equal(t, int64(50*1024*1024), decoded.MaxResponseBodySize)
+	assert.Contains(t, string(data), `"max_response_body_size":52428800`)
+}
+
 func TestNetworkConfig_HTTP2PingInterval(t *testing.T) {
 	nc := NetworkConfig{EnforceHTTP2: true, HTTP2PingIntervalInSeconds: 45}
 	data, err := json.Marshal(nc)

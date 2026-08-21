@@ -88,6 +88,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				keep_alive_timeout_in_seconds:
 					provider.network_config?.keep_alive_timeout_in_seconds ?? DefaultNetworkConfig.keep_alive_timeout_in_seconds,
 				max_conns_per_host: provider.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
+				max_response_body_size: provider.network_config?.max_response_body_size ?? 0,
 				enforce_http2: provider.network_config?.enforce_http2 ?? DefaultNetworkConfig.enforce_http2,
 				http2_ping_interval_in_seconds:
 					provider.network_config?.http2_ping_interval_in_seconds ?? DefaultNetworkConfig.http2_ping_interval_in_seconds,
@@ -110,6 +111,8 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 			}
 			return;
 		}
+		const maxResponseBodySize = Number(data.network_config?.max_response_body_size ?? 0);
+		const normalizedMaxResponseBodySize = Number.isFinite(maxResponseBodySize) ? maxResponseBodySize : 0;
 		// Create updated provider configuration
 		const updatedProvider = buildProviderUpdatePayload(provider, {
 			network_config: {
@@ -128,6 +131,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				keep_alive_timeout_in_seconds:
 					data.network_config?.keep_alive_timeout_in_seconds ?? DefaultNetworkConfig.keep_alive_timeout_in_seconds,
 				max_conns_per_host: data.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
+				max_response_body_size: normalizedMaxResponseBodySize,
 				enforce_http2: data.network_config?.enforce_http2 ?? DefaultNetworkConfig.enforce_http2,
 				http2_ping_interval_in_seconds:
 					data.network_config?.http2_ping_interval_in_seconds ?? DefaultNetworkConfig.http2_ping_interval_in_seconds,
@@ -138,7 +142,13 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 			.unwrap()
 			.then(() => {
 				toast.success("Provider configuration updated successfully");
-				form.reset(data);
+				form.reset({
+					...data,
+					network_config: {
+						...data.network_config,
+						max_response_body_size: normalizedMaxResponseBodySize,
+					},
+				});
 			})
 			.catch((err) => {
 				toast.error("Failed to update provider configuration", {
@@ -165,6 +175,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				keep_alive_timeout_in_seconds:
 					provider.network_config?.keep_alive_timeout_in_seconds ?? DefaultNetworkConfig.keep_alive_timeout_in_seconds,
 				max_conns_per_host: provider.network_config?.max_conns_per_host ?? DefaultNetworkConfig.max_conns_per_host,
+				max_response_body_size: provider.network_config?.max_response_body_size ?? 0,
 				enforce_http2: provider.network_config?.enforce_http2 ?? DefaultNetworkConfig.enforce_http2,
 				http2_ping_interval_in_seconds:
 					provider.network_config?.http2_ping_interval_in_seconds ?? DefaultNetworkConfig.http2_ping_interval_in_seconds,
@@ -437,6 +448,38 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 								)}
 							/>
 						</div>
+						<FormField
+							control={form.control}
+							name="network_config.max_response_body_size"
+							render={({ field }) => (
+								<FormItem>
+									<FormLabel>Max Response Body Size (bytes)</FormLabel>
+									<FormControl>
+										<Input
+											data-testid="network-config-max-response-body-size-input"
+											placeholder="0 (unlimited)"
+											{...field}
+											value={field.value === undefined || Number.isNaN(field.value) ? "" : field.value}
+											disabled={!hasUpdateProviderAccess}
+											onChange={(e) => {
+												const value = e.target.value;
+												if (value === "") {
+													field.onChange(undefined);
+													return;
+												}
+												const parsed = Number(value);
+												if (!Number.isNaN(parsed)) field.onChange(parsed);
+												form.trigger("network_config");
+											}}
+										/>
+									</FormControl>
+									<FormDescription>
+										Limits ordinary non-streaming provider responses. Set 0 for unlimited.
+									</FormDescription>
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
 						<FormField
 							control={form.control}
 							name="network_config.enforce_http2"
