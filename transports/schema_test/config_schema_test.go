@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -550,12 +551,19 @@ func TestSchemaKeyAliases(t *testing.T) {
 		}
 	})
 
-	t.Run("vertex_key_config does not include deployments field", func(t *testing.T) {
-		_, found := navigateJSON(schema, "$defs", "vertex_key", "allOf", 1, "properties", "vertex_key_config", "properties", "deployments")
-		if found {
-			t.Error("$defs/vertex_key still has 'deployments' in vertex_key_config — deployments were moved to top-level key aliases")
-		}
-	})
+	// No key config carries a "deployments" map any more: the Go structs dropped the field
+	// and config loading has no legacy fallback, so a "deployments" entry in config.json is
+	// silently discarded. Keeping it in the schema would validate a config whose model
+	// mappings never take effect.
+	for _, def := range []string{"azure_key", "vertex_key", "bedrock_key", "replicate_key"} {
+		configKey := strings.TrimSuffix(def, "_key") + "_key_config"
+		t.Run(configKey+" does not include deployments field", func(t *testing.T) {
+			_, found := navigateJSON(schema, "$defs", def, "allOf", 1, "properties", configKey, "properties", "deployments")
+			if found {
+				t.Errorf("$defs/%s still has 'deployments' in %s: deployments were replaced by top-level key aliases", def, configKey)
+			}
+		})
+	}
 
 	t.Run("key with aliases validates successfully", func(t *testing.T) {
 		compiled := compileSchema(t)

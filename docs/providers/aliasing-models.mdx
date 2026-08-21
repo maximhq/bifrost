@@ -60,6 +60,8 @@ Add an `aliases` object to any key in `config.json`:
 }
 ```
 
+In the Web UI, aliases are the rows of the **Deployments** table on the key form: navigate to **Models** > **Model Providers**, open a provider, add or edit a key, and use the **Deployments** section. Each row takes a **Deployment name** (the name your application sends) and a **Model ID** (the wire identifier). Expand a row to set the canonical model name, model family, description, and any provider-specific overrides described below.
+
 You can also add aliases via the provider keys API:
 
 ```bash
@@ -93,25 +95,41 @@ Each alias maps the name your application sends to either a plain target string 
 }
 ```
 
+**Shared fields.** Available on an alias for any provider. `region`, `project_id`, and `use_anthropic_endpoints` are read only by the providers listed in their description and are ignored elsewhere.
+
 | Field | Type | Description |
 |-------|------|-------------|
-| `model_id` | string | **Required.** The wire identifier forwarded to the provider — deployment name, inference profile ARN, fine-tune ID, anything. |
+| `model_id` | string | **Required.** The wire identifier forwarded to the provider: deployment name, inference profile ARN, fine-tune ID, anything. |
 | `model_name` | string | Canonical model name used by pricing and logs. Set this when `model_id` is opaque (e.g. an Azure deployment ID) so cost attribution still hits the catalog. |
 | `model_family` | enum | Forces the family used for provider routing decisions (request shape, response parsing, etc.). One of: `anthropic`, `openai`, `mistral`, `cohere`, `gemini`, `gemma`, `llama`, `imagen`, `veo`, `nova`, `titan`. When unset, the family is auto-detected by substring matching against `model_name`, `model_id`, and the alias name. |
 | `description` | string | Free-form note. Surfaced in the UI; not used for routing. |
-| `region` | string / EnvVar | Per-alias region override (Bedrock + Vertex). Falls back to the key-level region when unset. |
+| `region` | string / EnvVar | Per-alias region override, read by **Bedrock**, **Bedrock Mantle**, and **Vertex**. Falls back to the key-level region when unset. |
+| `project_id` | string / EnvVar | Per-alias project override. **Vertex** reads it as the GCP project; **Bedrock** and **Bedrock Mantle** send it as the AWS project on the `OpenAI-Project` / `anthropic-workspace-id` header. Falls back to the key-level project when unset. |
+| `use_anthropic_endpoints` | boolean | Routes this alias's chat completions and responses requests through the provider's Anthropic-compatible `/v1/messages` endpoint instead of its OpenAI-compatible one. Read by **DeepSeek**, **Fireworks**, **vLLM**, and **SGLang**; overrides the key-level `use_anthropic_endpoints` for this alias only. Text completions and embeddings are unaffected. |
 
-**Provider-specific overrides** (only set on aliases whose owning key matches the provider; validation rejects mismatches):
+**Provider-specific overrides.** These four groups are validated against the owning key's provider, so an Azure override on a Bedrock key is rejected at config load. (The shared fields above are not provider-gated.)
 
-| Provider | Field | Description |
-|----------|-------|-------------|
-| Azure | `api_version` | Overrides the `api-version` query parameter |
-| Azure | `anthropic_version` | Overrides the `anthropic-version` header for Claude-on-Azure deployments |
-| Azure | `endpoint` | Overrides the key-level Azure endpoint — useful when one credential spans deployments on multiple Azure resources |
-| Vertex | `project_id` | Per-alias GCP project ID |
-| Vertex | `project_number` | Per-alias GCP project number (required for fine-tuned models) |
-| Bedrock | `inference_profile_arn` | Cross-region inference profile ARN invoked instead of the model ID |
-| Replicate | `use_deployments_endpoint` | Routes the alias through Replicate's deployments endpoint |
+| Provider | Field | Type | Description |
+|----------|-------|------|-------------|
+| Azure | `api_version` | string | Overrides the `api-version` query parameter |
+| Azure | `anthropic_version` | string | Overrides the `anthropic-version` header for Claude-on-Azure deployments |
+| Azure | `endpoint` | string / EnvVar | Overrides the key-level Azure endpoint, useful when one credential spans deployments on multiple Azure resources |
+| Vertex | `project_number` | string / EnvVar | Per-alias GCP project number (required for fine-tuned models) |
+| Vertex | `force_single_region` | boolean | Calls the alias `region` as-is and skips promoting multi-region-only models to a multi-region endpoint. Use for provisioned throughput. |
+| Bedrock | `inference_profile_arn` | string / EnvVar | Cross-region inference profile ARN invoked instead of the model ID |
+| Replicate | `use_deployments_endpoint` | boolean | Routes the alias through Replicate's deployments endpoint instead of the models endpoint |
+
+### Which fields apply per provider
+
+| Provider | Alias fields beyond `model_id` / `model_name` / `model_family` / `description` |
+|----------|------------------------------------------------------------------------------|
+| Azure | `api_version`, `anthropic_version`, `endpoint` |
+| Vertex | `region`, `project_id`, `project_number`, `force_single_region` |
+| Bedrock | `region`, `project_id`, `inference_profile_arn` |
+| Bedrock Mantle | `region`, `project_id` |
+| Replicate | `use_deployments_endpoint` |
+| DeepSeek, Fireworks, vLLM, SGLang | `use_anthropic_endpoints` |
+| Every other provider | None. The shared fields are accepted but unused. |
 
 ### Validation rules
 

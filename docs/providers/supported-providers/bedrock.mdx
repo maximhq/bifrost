@@ -457,14 +457,36 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
 | `role_arn`      | No       | -                 | IAM role ARN for STS AssumeRole                                                                                       |
 | `external_id`   | No       | -                 | External ID for AssumeRole (when required by trust policy)                                                            |
 | `session_name`  | No       | `bifrost-session` | Session name for AssumeRole CloudTrail logs                                                                           |
+| `project_id`    | No       | -                 | Bedrock project scoping the Mantle sub-surface (`gpt-*` / Gemma routing) via the `OpenAI-Project` header; no effect on the Converse paths |
 
 **Key-level fields:**
 
 | Field                             | Required | Description                                                                                                                                  |
 | --------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
 | `aliases`                         | No       | Map model names to inference profile IDs or Bedrock model IDs (v1.5.0-prerelease2+)                                                          |
+| `aliases.*.model_name`            | No       | Canonical model name used for pricing and logs. Set this whenever the alias `model_id` is an opaque profile resource ID, so cost attribution still resolves |
+| `aliases.*.model_family`          | No       | Forces the family used for request shaping and response parsing instead of inferring it from the model ID                                     |
+| `aliases.*.region`                | No       | Per-alias AWS region; overrides `bedrock_key_config.region` for that alias only. A `region/` prefix in the requested model ID still wins over both |
+| `aliases.*.project_id`            | No       | Per-alias Bedrock project; overrides `bedrock_key_config.project_id` for that alias only                                                     |
 | `aliases.*.inference_profile_arn` | No       | Per-deployment ARN prefix; overrides `bedrock_key_config.arn` (see [Inference Profiles](#inference-profiles--arn-configuration))              |
 | `models`                          | Yes      | Models this key can serve; use `["*"]` to allow all                                                                                          |
+
+The per-alias overrides let a single key span regions or projects. Here one key serves Sonnet from both `us-east-1` (the key default) and `us-west-2`, with `model_name` keeping both rows priced against the same catalog entry:
+
+```json
+{
+  "aliases": {
+    "claude-sonnet-4-5": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "claude-sonnet-4-5-west": {
+      "model_id": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+      "model_name": "claude-sonnet-4-5",
+      "region": "us-west-2"
+    }
+  }
+}
+```
+
+In the Web UI these are the expanded fields of a row in the **Deployments** table, under **Bedrock overrides**. See [Aliasing Models](/providers/aliasing-models) for the full alias schema.
 
 ---
 
