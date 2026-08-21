@@ -4966,8 +4966,45 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 		if i == len(bifrostMessages)-1 {
 			return true
 		}
-		next := bifrostMessages[i+1]
-		return next.Role != nil && *next.Role == schemas.ResponsesInputMessageRoleAssistant
+		// The "followed by an assistant turn" clause is evaluated against the next
+		// ROLE-BEARING message. Roleless reasoning and function_call items are
+		// intermediate representations of the adjacent assistant turn — Anthropic's
+		// own wire carries thinking and tool_use INSIDE the assistant message, and
+		// the egress below regroups these fragments into it — so they are skipped.
+		// Failing on them was a false negative that forced the fallback (hoist or
+		// inline) for exactly the thinking-replay shape every extended-thinking
+		// conversation produces on replay. A function_call fragment confirms the
+		// regrouped assistant message is emitted directly after the system turn
+		// (its tool results follow it, never precede it), which settles the clause
+		// then and there. A roleless function_call_output with no function_call
+		// ahead of it is the USER side of a tool exchange (it regroups into a user
+		// turn), so it and any other roleless shape fail the clause instead.
+		// Known theoretical false positive, unreachable from opencode-shaped
+		// traffic (which anchors system entries right after a role-bearing user
+		// message): a hand-crafted [user, function_call_output, system,
+		// function_call] sequence — clause 1 passes (the buffered output flushes
+		// later), the scan sees function_call and returns true, but the egress
+		// flushes the buffered results as a USER message between the system turn
+		// and the regrouped assistant, yielding [user, system, user, assistant].
+		for j := i + 1; j < len(bifrostMessages); j++ {
+			next := bifrostMessages[j]
+			if next.Role != nil {
+				return *next.Role == schemas.ResponsesInputMessageRoleAssistant
+			}
+			if next.Type == nil {
+				return false
+			}
+			switch *next.Type {
+			case schemas.ResponsesMessageTypeFunctionCall:
+				return true
+			case schemas.ResponsesMessageTypeReasoning:
+				continue
+			}
+			return false
+		}
+		// Only reasoning fragments followed the system turn; they regroup into
+		// an assistant message, satisfying the clause.
+		return true
 	}
 
 	// Helper to emit orphaned tool results (no matching tool_use) as a single user
