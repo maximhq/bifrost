@@ -6280,6 +6280,21 @@ func (s *RDBConfigStore) DeleteSession(ctx context.Context, token string) error 
 	return nil
 }
 
+// DeleteOrphanedSessions hard-deletes dashboard sessions that have remained
+// expired longer than olderThan. Expiry is checked on every authentication
+// attempt; this is the storage-retention backstop for sessions that are never
+// presented again.
+func (s *RDBConfigStore) DeleteOrphanedSessions(ctx context.Context, olderThan time.Duration) (int64, error) {
+	if olderThan <= 0 {
+		return 0, nil
+	}
+	cutoff := time.Now().Add(-olderThan)
+	result := s.DB().WithContext(ctx).
+		Where("expires_at <= ?", cutoff).
+		Delete(&tables.SessionsTable{})
+	return result.RowsAffected, result.Error
+}
+
 // FlushSessions flushes all sessions from the database.
 func (s *RDBConfigStore) FlushSessions(ctx context.Context) error {
 	return s.DB().WithContext(ctx).Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&tables.SessionsTable{}).Error
