@@ -417,7 +417,11 @@ func (resp *BifrostResponsesResponse) WithDefaults() *BifrostResponsesResponse {
 	} else {
 		result.ServiceTier = new(BifrostServiceTierAuto)
 	}
-	result.Truncation = orDefault(resp.Truncation, "disabled")
+	if resp.Truncation == nil || *resp.Truncation == "" {
+		result.Truncation = Ptr("disabled")
+	} else {
+		result.Truncation = resp.Truncation
+	}
 	result.ParallelToolCalls = orDefault(resp.ParallelToolCalls, true)
 
 	// Token limits - defaults: 0 (unlimited)
