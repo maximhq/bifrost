@@ -1,4 +1,8 @@
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { LogStats } from "@/lib/types/logs";
+import { clampPercentage, resolveLocalCacheGauge } from "@/lib/utils/cacheGauge";
+import { formatCompactNumber } from "@/lib/utils/numbers";
+import { Info } from "lucide-react";
 import { memo, useMemo } from "react";
 import { Cell, Pie, PieChart, ResponsiveContainer } from "recharts";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
@@ -13,30 +17,13 @@ const METER_COLORS = { direct: "#06b6d4", semantic: "#8b5cf6", remaining: "#3b82
 function LocalCacheTokenMeterChartImpl({ data }: LocalCacheTokenMeterChartProps) {
 	const { ref, width, height } = useGaugeSize();
 
-	const { percentage, directHits, semanticHits, totalRequests, hasCacheCounters } = useMemo(() => {
-		const hasCacheCounters = data?.direct_cache_hits != null && data?.semantic_cache_hits != null;
-		const direct = data?.direct_cache_hits ?? 0;
-		const semantic = data?.semantic_cache_hits ?? 0;
-		const total = data?.cache_hit_rate_total_requests ?? data?.total_requests ?? 0;
-		if (total === 0) {
-			return { percentage: 0, directHits: direct, semanticHits: semantic, totalRequests: total, hasCacheCounters };
-		}
-		return {
-			percentage: Math.max(0, Math.min(100, ((direct + semantic) / total) * 100)),
-			directHits: direct,
-			semanticHits: semantic,
-			totalRequests: total,
-			hasCacheCounters,
-		};
-	}, [data]);
+	const { state, percentage, directHits, semanticHits, totalRequests } = useMemo(() => resolveLocalCacheGauge(data), [data]);
 
 	const gaugeGeometry = useMemo(() => getGaugeGeometry(width, height), [width, height]);
-	const hasData = !!data && hasCacheCounters && totalRequests > 0;
+	const hasData = state === "ready";
 
-	const rawDirectPct = totalRequests > 0 ? (directHits / totalRequests) * 100 : 0;
-	const rawSemanticPct = totalRequests > 0 ? (semanticHits / totalRequests) * 100 : 0;
-	const directPct = Math.max(0, Math.min(100, rawDirectPct));
-	const semanticPct = Math.max(0, Math.min(100 - directPct, rawSemanticPct));
+	const directPct = totalRequests > 0 ? clampPercentage((directHits / totalRequests) * 100) : 0;
+	const semanticPct = totalRequests > 0 ? clampPercentage((semanticHits / totalRequests) * 100, 100 - directPct) : 0;
 	const valueData = [
 		{ name: "direct", value: directPct },
 		{ name: "semantic", value: semanticPct },
@@ -44,10 +31,39 @@ function LocalCacheTokenMeterChartImpl({ data }: LocalCacheTokenMeterChartProps)
 	];
 
 	return (
-		<ChartErrorBoundary resetKey={`${directHits}-${semanticHits}-${totalRequests}`}>
+		<ChartErrorBoundary resetKey={`${state}-${directHits}-${semanticHits}-${totalRequests}`}>
 			<div className="grid h-full grid-rows-[104px_auto] items-start overflow-hidden pt-8">
 				<div ref={ref} className="relative h-[104px] w-full">
-					{!hasData && <div className="text-muted-foreground flex h-full items-center justify-center text-sm">No data available</div>}
+					{state === "no-data" && (
+						<div className="text-muted-foreground flex h-full items-center justify-center text-sm">No data available</div>
+					)}
+					{state === "not-engaged" && (
+						<div
+							className="text-muted-foreground flex h-full flex-col items-center justify-center gap-1 text-center text-sm"
+							data-testid="local-cache-meter-not-engaged"
+						>
+							<span>Cache not engaged</span>
+							<span className="flex items-center gap-1 text-[11px] text-zinc-400">
+								<span>{formatCompactNumber(totalRequests)} requests, none used the cache</span>
+								<Tooltip>
+									<TooltipTrigger asChild>
+										<button
+											type="button"
+											data-testid="local-cache-meter-not-engaged-info-btn"
+											className="text-zinc-500 transition-colors hover:text-zinc-300"
+											aria-label="Why the local cache was not engaged"
+										>
+											<Info className="h-3 w-3" />
+										</button>
+									</TooltipTrigger>
+									<TooltipContent side="top">
+										Requests bypass the cache unless they carry an x-bf-cache-key header, or the semantic cache plugin sets a
+										default_cache_key.
+									</TooltipContent>
+								</Tooltip>
+							</span>
+						</div>
+					)}
 					{hasData && gaugeGeometry && (
 						<>
 							<ResponsiveContainer width="100%" height="100%">

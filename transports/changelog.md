@@ -21,6 +21,7 @@
 
 ## 🐞 Fixed
 
+- **Local Cache Gauge Read "No data available" While Serving Traffic** - The dashboard's local cache meter now separates a window whose requests never reached the cache from one with nothing to report. Both previously rendered the same empty-state placeholder, so a fully populated window looked like a broken panel (thanks [@wangkanai](https://github.com/wangkanai)!) (#6400)
 - **GenAI SSE Heartbeats** - GenAI streams delimit heartbeat comments so Google SDK clients preserve the following event (thanks [@dani29](https://github.com/dani29)!) (#6240)
 - **Path Normalization Auth Bypass** - Fixed a path normalization flaw that allowed auth to be bypassed (#5763)
 - **Minimal Reasoning Effort on GPT-5 Models** - `reasoning_effort: "minimal"` is preserved for GPT-5-family OpenAI models instead of being downgraded to `low` (thanks [@jitokim](https://github.com/jitokim)!) (#6046)
