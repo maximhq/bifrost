@@ -472,6 +472,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_batch_jobs_table"}, run: migrationAddBatchJobsTable},
 	{IDs: []string{"add_image_megapixel_tier_pricing_columns"}, run: migrationAddImageMegapixelTierPricingColumns},
 	{IDs: []string{"add_input_cost_per_query_column"}, run: migrationAddInputCostPerQueryColumn},
+	{IDs: []string{"add_ultrafast_pricing_columns"}, run: migrationAddUltrafastPricingColumns},
 }
 
 func migrationAddNotificationsTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
@@ -11948,11 +11949,11 @@ func migrationAddBatchJobsTable(ctx context.Context, db *gorm.DB, logger schemas
 	migrationName := "add_batch_jobs_table"
 	logger.Info("[configstore] starting migration %s", migrationName)
 	defer logger.Info("[configstore] finished migration %s", migrationName)
-  m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-  ID: migrationName,
-  Migrate: func(tx *gorm.DB) error {
-    tx = tx.WithContext(ctx)
-    var createTable string
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			var createTable string
 			switch tx.Dialector.Name() {
 			case "postgres":
 				createTable = `
@@ -12040,7 +12041,7 @@ func migrationAddBatchJobsTable(ctx context.Context, db *gorm.DB, logger schemas
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while creating batch_jobs table: %s", err.Error())
-  }
+	}
 	return nil
 }
 
@@ -12107,6 +12108,46 @@ func migrationAddInputCostPerQueryColumn(ctx context.Context, db *gorm.DB, logge
 			tx = tx.WithContext(ctx)
 			if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, "input_cost_per_query"); err != nil {
 				return fmt.Errorf("failed to drop column input_cost_per_query: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// migrationAddUltrafastPricingColumns adds the OpenAI Ultrafast service-tier
+// rates. The fields are nullable so catalogs without Ultrafast pricing retain
+// the existing standard-rate fallback.
+func migrationAddUltrafastPricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_ultrafast_pricing_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	columns := []string{
+		"input_cost_per_token_ultrafast",
+		"output_cost_per_token_ultrafast",
+		"cache_read_input_token_cost_ultrafast",
+		"cache_creation_input_token_cost_ultrafast",
+	}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", field, err)
+				}
 			}
 			return nil
 		},
