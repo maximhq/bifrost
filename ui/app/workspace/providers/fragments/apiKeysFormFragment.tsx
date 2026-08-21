@@ -13,6 +13,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { cn } from "@/lib/utils";
 import { isRedacted } from "@/lib/utils/validation";
 import { useRefreshProviderModelsMutation, useUpdateProviderKeyMutation, useCreateProviderKeyMutation } from "@/lib/store/apis/providersApi";
+import { getErrorMessage } from "@/lib/store";
 import { getApiBaseUrl } from "@/lib/utils/port";
 import { CheckCircle2, Copy, ExternalLink, Info, Loader2, Plus, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -182,6 +183,14 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 	const copilotKeyValue = supportsModelRefresh ? form.watch("key.value") : undefined;
 	// Enable refresh when there's a literal token value OR an env-var reference (e.g. env.GITHUB_COPILOT_TOKEN)
 	const hasToken = hasTokenValue(copilotKeyValue);
+	async function handleRefreshModels() {
+		try {
+			await refreshModels(providerName).unwrap();
+			toast.success("Model list refreshed");
+		} catch (err) {
+			toast.error("Failed to refresh model list", { description: getErrorMessage(err) });
+		}
+	}
 
 	// Auth type state for Azure: 'api_key', 'entra_id', or 'default_credential'
 	const [azureAuthType, setAzureAuthType] = useState<"api_key" | "entra_id" | "default_credential">("api_key");
@@ -485,7 +494,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 										unfiltered={true}
 										{...(supportsModelRefresh
 											? {
-													onRefresh: () => refreshModels(providerName),
+													onRefresh: handleRefreshModels,
 													isRefreshing: isRefreshingModels,
 													refreshDisabled: !hasToken,
 												}
