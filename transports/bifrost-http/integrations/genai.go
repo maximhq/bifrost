@@ -351,10 +351,17 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 		RequestParser: func(ctx *fasthttp.RequestCtx, req interface{}) error {
 			r := req.(*gemini.GeminiFileUploadHandlerReq)
 			uploadID := string(ctx.QueryArgs().Peek("upload_id"))
+
 			if uploadID != "" {
 				// Step 2: body is raw binary — do not JSON-decode.
+				body := ctx.Request.Body()
+
+				if len(body) > MaxResumableChunkSize {
+					return fmt.Errorf("upload chunk exceeds maximum size of 10 MB")
+				}
+
 				r.UploadID = uploadID
-				r.FileData = append([]byte(nil), ctx.Request.Body()...)
+				r.FileData = append([]byte(nil), body...)
 
 				r.UploadCommand = string(ctx.Request.Header.Peek("X-Goog-Upload-Command"))
 				if offset := ctx.Request.Header.Peek("X-Goog-Upload-Offset"); len(offset) > 0 {
@@ -366,12 +373,15 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 					r.UploadOffset = parsedOffset
 					r.HasUploadOffset = true
 				}
+
 				return nil
 			}
+
 			// Step 1: body is JSON metadata.
 			if body := ctx.Request.Body(); len(body) > 0 {
 				return sonic.Unmarshal(body, r)
 			}
+
 			return nil
 		},
 		// ShortCircuit handles step 1 for non-Gemini providers: it acknowledges
@@ -436,10 +446,7 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 
 			normalizedCmd := strings.ReplaceAll(strings.ToLower(r.UploadCommand), " ", "")
 			if normalizedCmd != "upload" && normalizedCmd != "upload,finalize" {
-				return nil, fmt.Errorf(
-					"unsupported X-Goog-Upload-Command: %q",
-					r.UploadCommand,
-				)
+				return nil, fmt.Errorf("unsupported X-Goog-Upload-Command: %q", r.UploadCommand)
 			}
 
 			if !r.HasUploadOffset {
@@ -493,14 +500,9 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 						return nil, fmt.Errorf("chunk size exceeds maximum allowed size of %d MB", MaxResumableChunkSize/(1024*1024))
 					}
 
-					// Validate total upload size.
-					if newSession.NextOffset+newChunkSize > MaxResumableUploadSize {
-						return nil, fmt.Errorf("upload size exceeds maximum allowed size of %d MB", MaxResumableUploadSize/(1024*1024))
-					}
-
 					chunk := append([]byte(nil), r.FileData...)
 					newSession.Chunks[r.UploadOffset] = chunk
-					newSession.NextOffset += int64(len(chunk))
+					newSession.NextOffset += newChunkSize
 				}
 
 				success, err := kvStore.CompareAndSwap(r.UploadID, val, newSession, 1*time.Minute)
@@ -591,6 +593,7 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 
 			hasFinalize := hasGeminiUploadCommand(r.UploadCommand, "finalize")
 			if !hasFinalize {
+				ctx.Response.Header.Set("X-Goog-Upload-Status", "active")
 				return nil
 			}
 
