@@ -93,12 +93,12 @@ func (tm *copilotTokenManager) refreshToken() *tokenResult {
 		// Transport failure (network issue, GitHub outage): a still-valid cached JWT
 		// rides out the blip. An expired one cannot, so the error surfaces instead.
 		cached := tm.apiToken != "" && time.Now().Before(tm.expiresAt)
-		t, b := tm.apiToken, tm.apiBase
+		t, b, exp := tm.apiToken, tm.apiBase, tm.expiresAt
 		tm.mu.RUnlock()
 		if cached {
 			if tm.logger != nil {
-				tm.logger.Warn("copilot: token exchange transport failed; using cached token",
-					"error", err.Error())
+				tm.logger.Warn("copilot: token exchange transport failed (%s); using cached token, valid for %s",
+					err.Error(), time.Until(exp).Round(time.Second))
 			}
 			return &tokenResult{token: t, apiBase: b}
 		}
@@ -118,8 +118,7 @@ func (tm *copilotTokenManager) refreshToken() *tokenResult {
 			body = body[:512]
 		}
 		if tm.logger != nil {
-			tm.logger.Warn("copilot: token exchange failed; OAuth token may be revoked or invalid",
-				"status", sc)
+			tm.logger.Warn("copilot: token exchange failed with status %d; OAuth token may be revoked or invalid", sc)
 		}
 
 		tm.mu.Lock()
@@ -128,8 +127,12 @@ func (tm *copilotTokenManager) refreshToken() *tokenResult {
 			tm.apiToken = ""
 		} else if tm.apiToken != "" && time.Now().Before(tm.expiresAt) {
 			// Transient upstream failure (5xx, 429): keep serving the still-valid JWT.
-			t, b := tm.apiToken, tm.apiBase
+			t, b, exp := tm.apiToken, tm.apiBase, tm.expiresAt
 			tm.mu.Unlock()
+			if tm.logger != nil {
+				tm.logger.Warn("copilot: token exchange unavailable (status %d); using cached token, valid for %s",
+					sc, time.Until(exp).Round(time.Second))
+			}
 			return &tokenResult{token: t, apiBase: b}
 		}
 		tm.mu.Unlock()
@@ -153,12 +156,12 @@ func (tm *copilotTokenManager) refreshToken() *tokenResult {
 	if err := sonic.Unmarshal(resp.Body(), &tokenResp); err != nil {
 		tm.mu.RLock()
 		cached := tm.apiToken != "" && time.Now().Before(tm.expiresAt)
-		t, b := tm.apiToken, tm.apiBase
+		t, b, exp := tm.apiToken, tm.apiBase, tm.expiresAt
 		tm.mu.RUnlock()
 		if cached {
 			if tm.logger != nil {
-				tm.logger.Warn("copilot: token exchange returned invalid JSON; using cached token",
-					"error", err.Error())
+				tm.logger.Warn("copilot: token exchange returned invalid JSON (%s); using cached token, valid for %s",
+					err.Error(), time.Until(exp).Round(time.Second))
 			}
 			return &tokenResult{token: t, apiBase: b}
 		}
@@ -200,12 +203,16 @@ func (tm *copilotTokenManager) refreshToken() *tokenResult {
 		if isValidCopilotAPIBase(tokenResp.Endpoints.API) {
 			tm.apiBase = tokenResp.Endpoints.API
 		} else if tm.logger != nil {
-			tm.logger.Warn("copilot: token exchange returned untrusted API base URL; using default",
-				"url", tokenResp.Endpoints.API, "default", defaultAPIBaseURL)
+			tm.logger.Warn("copilot: token exchange returned untrusted API base URL %q; using default %s",
+				tokenResp.Endpoints.API, defaultAPIBaseURL)
 		}
 	}
-	t, b := tm.apiToken, tm.apiBase
+	t, b, exp := tm.apiToken, tm.apiBase, tm.expiresAt
 	tm.mu.Unlock()
+
+	if tm.logger != nil {
+		tm.logger.Debug("copilot: token refreshed, valid for %s, api base %s", time.Until(exp).Round(time.Second), b)
+	}
 
 	return &tokenResult{token: t, apiBase: b}
 }

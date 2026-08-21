@@ -206,8 +206,8 @@ func (provider *CopilotProvider) ListModels(ctx *schemas.BifrostContext, keys []
 		token, apiBase, bifrostErr := tm.getToken()
 		if bifrostErr != nil {
 			if provider.logger != nil {
-				provider.logger.Warn("copilot: skipping key for ListModels due to token error",
-					"key_id", k.ID, "error", bifrostErr.Error.Message)
+				provider.logger.Warn("copilot: skipping key %s for ListModels due to token error: %s",
+					k.ID, bifrostErr.Error.Message)
 			}
 			return nil, bifrostErr
 		}
