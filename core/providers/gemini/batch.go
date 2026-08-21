@@ -19,6 +19,12 @@ import (
 // bodies already in Gemini form are unmarshaled directly. Shared by the Gemini and Vertex
 // batch paths so both emit identical request bodies.
 func ToGeminiBatchGenerateContentRequest(body map[string]interface{}) (GeminiBatchGenerateContentRequest, error) {
+	return ToGeminiBatchGenerateContentRequestWithContext(context.Background(), body)
+}
+
+// ToGeminiBatchGenerateContentRequestWithContext converts a Bifrost batch request
+// while binding audio URL resolution to the supplied request context.
+func ToGeminiBatchGenerateContentRequestWithContext(ctx context.Context, body map[string]interface{}) (GeminiBatchGenerateContentRequest, error) {
 	var geminiReq GeminiBatchGenerateContentRequest
 
 	requestBytes, err := providerUtils.MarshalSorted(body)
@@ -39,7 +45,11 @@ func ToGeminiBatchGenerateContentRequest(body map[string]interface{}) (GeminiBat
 		if err := sonic.Unmarshal(messagesBytes, &chatMessages); err != nil {
 			return geminiReq, fmt.Errorf("failed to unmarshal messages: %w", err)
 		}
-		contents, systemInstruction, err := convertBifrostMessagesToGemini(chatMessages)
+		resolvedMessages, err := resolveAudioURLs(ctx, chatMessages)
+		if err != nil {
+			return geminiReq, fmt.Errorf("failed to resolve audio URLs: %w", err)
+		}
+		contents, systemInstruction, err := convertBifrostMessagesToGemini(resolvedMessages)
 		if err != nil {
 			return geminiReq, fmt.Errorf("failed to convert messages: %w", err)
 		}

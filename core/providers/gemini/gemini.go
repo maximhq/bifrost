@@ -2505,7 +2505,7 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 			// Inline requests: convert Bifrost requests to Gemini format
 			geminiRequests := make([]GeminiBatchRequestItem, len(request.Requests))
 			for i, bifrostItem := range request.Requests {
-				geminiReq, err := ToGeminiBatchGenerateContentRequest(bifrostItem.Body)
+				geminiReq, err := ToGeminiBatchGenerateContentRequestWithContext(ctx, bifrostItem.Body)
 				if err != nil {
 					return nil, providerUtils.NewBifrostOperationError("failed to convert batch request to gemini format", err)
 				}
