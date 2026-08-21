@@ -3849,3 +3849,174 @@ func TestCalculateCostForUsage_NoServerSideFallback_Unchanged(t *testing.T) {
 	assert.InDelta(t, 38*(10.0/1_000_000)+345*(50.0/1_000_000),
 		s.CalculateCostForUsage(usage, schemas.Anthropic, "claude-fable-5", schemas.ResponsesRequest, nil), 1e-12)
 }
+
+// =========================================================================
+// Per-image rates keyed jointly by size and quality
+// =========================================================================
+
+// makeSizedImageResponse builds an image-generation response carrying the size
+// and quality parameters that drive per-image rate selection.
+func makeSizedImageResponse(provider schemas.ModelProvider, model, size, quality string, nImages int) *schemas.BifrostResponse {
+	return &schemas.BifrostResponse{
+		ImageGenerationResponse: &schemas.BifrostImageGenerationResponse{
+			Usage: &schemas.ImageUsage{
+				OutputTokensDetails: &schemas.ImageTokenDetails{NImages: nImages},
+			},
+			ImageGenerationResponseParameters: &schemas.ImageGenerationResponseParameters{
+				Size:    size,
+				Quality: quality,
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ImageGenerationRequest,
+				RoutingInfo: routingInfoFor(provider, model),
+			},
+		},
+	}
+}
+
+// sizeQualityImagePricing mirrors the gpt-image style datasheet rows: a full
+// size x quality matrix plus the quality-agnostic size rates.
+func sizeQualityImagePricing() configstoreTables.TableModelPricing {
+	return configstoreTables.TableModelPricing{
+		Model: "gpt-image-1", Provider: "openai", Mode: "image_generation",
+
+		OutputCostPerImageAbove1024x1024PixelsLowQuality: bifrost.Ptr(0.009),
+		OutputCostPerImageAbove1024x1536PixelsLowQuality: bifrost.Ptr(0.013),
+		OutputCostPerImageAbove1536x1024PixelsLowQuality: bifrost.Ptr(0.013),
+
+		OutputCostPerImageAbove1024x1024PixelsMediumQuality: bifrost.Ptr(0.034),
+		OutputCostPerImageAbove1024x1536PixelsMediumQuality: bifrost.Ptr(0.05),
+		OutputCostPerImageAbove1536x1024PixelsMediumQuality: bifrost.Ptr(0.05),
+
+		OutputCostPerImageAbove1024x1024PixelsHighQuality: bifrost.Ptr(0.133),
+		OutputCostPerImageAbove1024x1536PixelsHighQuality: bifrost.Ptr(0.2),
+		OutputCostPerImageAbove1536x1024PixelsHighQuality: bifrost.Ptr(0.2),
+
+		OutputCostPerImageAbove1024x1024PixelsStandardQuality: bifrost.Ptr(0.009),
+		OutputCostPerImageAbove1024x1536PixelsStandardQuality: bifrost.Ptr(0.013),
+		OutputCostPerImageAbove1536x1024PixelsStandardQuality: bifrost.Ptr(0.013),
+
+		OutputCostPerImageAbove1024x1024Pixels: bifrost.Ptr(0.009),
+		OutputCostPerImageAbove1024x1536Pixels: bifrost.Ptr(0.013),
+		OutputCostPerImageAbove1536x1024Pixels: bifrost.Ptr(0.013),
+	}
+}
+
+func TestCalculateCost_ImageGeneration_SizeAndQualityRates(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-image-1", "openai", "image_generation"): sizeQualityImagePricing(),
+	})
+
+	tests := []struct {
+		name     string
+		size     string
+		quality  string
+		nImages  int
+		expected float64
+	}{
+		{"low 1024x1024", "1024x1024", "low", 1, 0.009},
+		{"low 1024x1536", "1024x1536", "low", 1, 0.013},
+		{"low 1536x1024", "1536x1024", "low", 1, 0.013},
+		{"medium 1024x1024", "1024x1024", "medium", 1, 0.034},
+		{"medium 1024x1536", "1024x1536", "medium", 1, 0.05},
+		{"medium 1536x1024", "1536x1024", "medium", 1, 0.05},
+		{"high 1024x1024", "1024x1024", "high", 1, 0.133},
+		{"high 1024x1536", "1024x1536", "high", 1, 0.2},
+		{"high 1536x1024", "1536x1024", "high", 1, 0.2},
+		{"standard 1024x1024", "1024x1024", "standard", 1, 0.009},
+		{"standard 1024x1536", "1024x1536", "standard", 1, 0.013},
+		{"standard 1536x1024", "1536x1024", "standard", 1, 0.013},
+		// No quality given falls through to the quality-agnostic size rates.
+		{"unspecified quality 1024x1536", "1024x1536", "", 1, 0.013},
+		{"unspecified quality 1536x1024", "1536x1024", "", 1, 0.013},
+		{"unspecified quality 1024x1024", "1024x1024", "", 1, 0.009},
+		// Rates are per generated image.
+		{"high 1024x1536 x3", "1024x1536", "high", 3, 0.6},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cost := s.CalculateCost(makeSizedImageResponse("openai", "gpt-image-1", tc.size, tc.quality, tc.nImages), nil)
+			assert.InDelta(t, tc.expected, cost, 1e-12)
+		})
+	}
+}
+
+// The 1024x1536 and 1536x1024 thresholds have identical pixel counts, so
+// selection must key off width and height, not the total.
+func TestCalculateCost_ImageGeneration_OrientationDistinguishesEqualPixelCounts(t *testing.T) {
+	p := sizeQualityImagePricing()
+	p.OutputCostPerImageAbove1024x1536PixelsHighQuality = bifrost.Ptr(0.21)
+	p.OutputCostPerImageAbove1536x1024PixelsHighQuality = bifrost.Ptr(0.19)
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-image-1", "openai", "image_generation"): p,
+	})
+
+	portrait := s.CalculateCost(makeSizedImageResponse("openai", "gpt-image-1", "1024x1536", "high", 1), nil)
+	landscape := s.CalculateCost(makeSizedImageResponse("openai", "gpt-image-1", "1536x1024", "high", 1), nil)
+
+	assert.InDelta(t, 0.21, portrait, 1e-12)
+	assert.InDelta(t, 0.19, landscape, 1e-12)
+}
+
+// An image that clears both orientation thresholds is billed at the 1536x1024
+// rate, which rateForSize checks ahead of 1024x1536.
+func TestCalculateCost_ImageGeneration_BothOrientationsMatchPrefersLandscape(t *testing.T) {
+	p := sizeQualityImagePricing()
+	p.OutputCostPerImageAbove1024x1536PixelsHighQuality = bifrost.Ptr(0.21)
+	p.OutputCostPerImageAbove1536x1024PixelsHighQuality = bifrost.Ptr(0.19)
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-image-1", "openai", "image_generation"): p,
+	})
+
+	cost := s.CalculateCost(makeSizedImageResponse("openai", "gpt-image-1", "1536x1536", "high", 1), nil)
+
+	assert.InDelta(t, 0.19, cost, 1e-12)
+}
+
+// Joint size+quality rates are more specific than quality-only rates and win
+// over them; quality-only still applies when no size+quality rate matches.
+func TestCalculateCost_ImageGeneration_SizeQualityBeatsQualityOnly(t *testing.T) {
+	p := sizeQualityImagePricing()
+	p.OutputCostPerImageHighQuality = bifrost.Ptr(0.5)
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-image-1", "openai", "image_generation"): p,
+	})
+
+	// 1024x1536 has a high-quality size rate, which wins over the quality-only 0.5.
+	assert.InDelta(t, 0.2, s.CalculateCost(makeSizedImageResponse("openai", "gpt-image-1", "1024x1536", "high", 1), nil), 1e-12)
+	// 512x512 has no high-quality size rate, so it falls back to the quality-only rate.
+	assert.InDelta(t, 0.5, s.CalculateCost(makeSizedImageResponse("openai", "gpt-image-1", "512x512", "high", 1), nil), 1e-12)
+}
+
+// A quality with no configured size rates falls through quality-only, then
+// size-only, then the flat per-image rate.
+func TestCalculateCost_ImageGeneration_FallsBackThroughRateChain(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-image-1", "openai", "image_generation"): {
+			Model: "gpt-image-1", Provider: "openai", Mode: "image_generation",
+			OutputCostPerImageAbove1536x1024Pixels: bifrost.Ptr(0.013),
+			OutputCostPerImage:                     bifrost.Ptr(0.004),
+		},
+	})
+
+	// No standard-quality rates configured, so the size-only rate applies.
+	assert.InDelta(t, 0.013, s.CalculateCost(makeSizedImageResponse("openai", "gpt-image-1", "1536x1024", "standard", 1), nil), 1e-12)
+	// Below every configured threshold, so the flat per-image rate applies.
+	assert.InDelta(t, 0.004, s.CalculateCost(makeSizedImageResponse("openai", "gpt-image-1", "512x512", "standard", 1), nil), 1e-12)
+}
+
+func TestParseImageDimensions(t *testing.T) {
+	w, h := parseImageDimensions("1024x1536")
+	assert.Equal(t, 1024, w)
+	assert.Equal(t, 1536, h)
+
+	w, h = parseImageDimensions("1536x1024")
+	assert.Equal(t, 1536, w)
+	assert.Equal(t, 1024, h)
+
+	for _, bad := range []string{"", "invalid", "1024", "0x1024", "-1x1024"} {
+		w, h = parseImageDimensions(bad)
+		assert.Equal(t, 0, w, bad)
+		assert.Equal(t, 0, h, bad)
+	}
+}

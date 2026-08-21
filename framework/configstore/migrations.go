@@ -460,6 +460,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_live_models_sync_interval_column"}, run: migrationAddLiveModelsSyncIntervalColumn},
 	{IDs: []string{"add_pricing_override_user_id_column"}, run: migrationAddPricingOverrideUserIDColumn},
 	{IDs: []string{"add_budget_reset_config_column"}, run: migrationAddBudgetResetConfigColumn},
+	{IDs: []string{"add_image_size_quality_pricing_columns"}, run: migrationAddImageSizeQualityPricingColumns},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -11149,6 +11150,55 @@ func migrationAddPricingOverrideUserIDColumn(ctx context.Context, db *gorm.DB, l
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running pricing override user_id column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddImageSizeQualityPricingColumns adds the per-size and joint
+// size+quality per-image output rate columns to the model pricing table.
+func migrationAddImageSizeQualityPricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_image_size_quality_pricing_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	columns := []string{
+		"output_cost_per_image_above_1024_and_1536_pixels",
+		"output_cost_per_image_above_1536_and_1024_pixels",
+		"output_cost_per_image_above_1024_and_1024_pixels_low_quality",
+		"output_cost_per_image_above_1024_and_1536_pixels_low_quality",
+		"output_cost_per_image_above_1536_and_1024_pixels_low_quality",
+		"output_cost_per_image_above_1024_and_1024_pixels_medium_quality",
+		"output_cost_per_image_above_1024_and_1536_pixels_medium_quality",
+		"output_cost_per_image_above_1536_and_1024_pixels_medium_quality",
+		"output_cost_per_image_above_1024_and_1024_pixels_high_quality",
+		"output_cost_per_image_above_1024_and_1536_pixels_high_quality",
+		"output_cost_per_image_above_1536_and_1024_pixels_high_quality",
+		"output_cost_per_image_above_1024x1024_pixels_standard_quality",
+		"output_cost_per_image_above_1024x1536_pixels_standard_quality",
+		"output_cost_per_image_above_1536x1024_pixels_standard_quality",
+	}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
 	}
 	return nil
 }
