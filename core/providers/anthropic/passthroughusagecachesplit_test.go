@@ -22,6 +22,35 @@ const (
 		`"cache_read_input_tokens":8831,"cache_creation":{"ephemeral_5m_input_tokens":0}}}`
 )
 
+// Moonshot/Kimi, the provider #5510 was originally filed against. Frames as reported in that
+// issue. Note message_start carries cache_read_input_tokens EXPLICITLY AS ZERO while input_tokens
+// already includes the cached prefix — so a merge that decides authority by field *presence*
+// rather than by value is fooled by this frame and still double-counts.
+const (
+	kimiMessageStart = `{"type":"message_start","message":{"id":"chatcmpl-6a5e00ec","type":"message",` +
+		`"role":"assistant","content":[],"model":"kimi-k3","usage":{"input_tokens":173306,` +
+		`"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0,` +
+		`"service_tier":"standard","prompt_tokens":173306,"cached_tokens":0}}}`
+	kimiMessageDelta = `{"type":"message_delta","usage":{"input_tokens":250,` +
+		`"cache_creation_input_tokens":0,"cache_read_input_tokens":173056,"output_tokens":166,` +
+		`"output_tokens_details":{"thinking_tokens":1},"prompt_tokens":173306,` +
+		`"completion_tokens":166,"total_tokens":173472,"cached_tokens":173056}}`
+)
+
+// The SAME provider does not always deviate: captured from api.kimi.com on 2026-08-20, message_start
+// was fully cache-aware. Per #5510 this is consistent with a hierarchical cache whose final split is
+// not known when message_start is emitted, so the deviation is per-REQUEST, not per-provider. The
+// fix must therefore leave this compliant variant untouched too.
+const (
+	kimiCacheAwareMessageStart = `{"type":"message_start","message":{"id":"msg_fWQAebqcV0MJ",` +
+		`"type":"message","role":"assistant","content":[],"model":"k3","usage":{"input_tokens":0,` +
+		`"cache_creation_input_tokens":0,"cache_read_input_tokens":8931,"output_tokens":0,` +
+		`"service_tier":"standard","inference_geo":"not_available"}}}`
+	kimiCacheAwareMessageDelta = `{"type":"message_delta","delta":{"stop_reason":"max_tokens"},` +
+		`"usage":{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":8931,` +
+		`"output_tokens":16,"output_tokens_details":{"thinking_tokens":13}}}`
+)
+
 // captured from https://api.minimax.io/anthropic/v1/messages — the control: its message_start
 // reports input_tokens 0, so the old max-merge already produced the right answer here.
 const (
@@ -70,12 +99,34 @@ func TestPassthroughStreamUsageQwenDoesNotDoubleCountCachedPrompt(t *testing.T) 
 	}
 }
 
+// Moonshot/Kimi, the case #5510 was filed for. Its own numbers are internally consistent:
+// 250 + 173056 = 173306 input, + 166 output = 173472 total.
+func TestPassthroughStreamUsageKimiDoesNotDoubleCountCachedPrompt(t *testing.T) {
+	const wantPrompt = 250 + 173056
+
+	got, gotOut := observePassthroughUsage(t, kimiMessageStart, kimiMessageDelta)
+	if got != wantPrompt {
+		t.Errorf("prompt tokens = %d, want %d (inflated by %d — message_start.input_tokens "+
+			"counted on top of cache_read)", got, wantPrompt, got-wantPrompt)
+	}
+	if gotOut != 166 {
+		t.Errorf("completion tokens = %d, want 166", gotOut)
+	}
+}
+
 // Event order must not change the result: the merge is documented as order-independent.
 func TestPassthroughStreamUsageQwenOrderIndependent(t *testing.T) {
-	forward, _ := observePassthroughUsage(t, qwenMessageStart, qwenMessageDelta)
-	reverse, _ := observePassthroughUsage(t, qwenMessageDelta, qwenMessageStart)
-	if forward != reverse {
-		t.Errorf("order-dependent: forward=%d reverse=%d", forward, reverse)
+	for _, tc := range []struct{ name, start, delta string }{
+		{"qwen", qwenMessageStart, qwenMessageDelta},
+		{"kimi", kimiMessageStart, kimiMessageDelta},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			forward, _ := observePassthroughUsage(t, tc.start, tc.delta)
+			reverse, _ := observePassthroughUsage(t, tc.delta, tc.start)
+			if forward != reverse {
+				t.Errorf("order-dependent: forward=%d reverse=%d", forward, reverse)
+			}
+		})
 	}
 }
 
@@ -87,6 +138,7 @@ func TestPassthroughStreamUsageCorrectUpstreamsUnchanged(t *testing.T) {
 		wantPrompt, want int
 	}{
 		{"minimax", minimaxMessageStart, minimaxMessageDelta, 1 + 8990, 2},
+		{"kimi/cache-aware message_start", kimiCacheAwareMessageStart, kimiCacheAwareMessageDelta, 0 + 8931, 16},
 		{"anthropic", stockAnthropicMessageStart, stockAnthropicMessageDelta, 18 + 8831, 426},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
