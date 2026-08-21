@@ -547,6 +547,8 @@ export interface PricingOverridePatch {
 	output_cost_per_image_above_512_and_512_pixels_and_premium_image?: number;
 	output_cost_per_image_above_1024_and_1024_pixels?: number;
 	output_cost_per_image_above_1024_and_1024_pixels_and_premium_image?: number;
+	output_cost_per_image_above_1024_and_1536_pixels?: number;
+	output_cost_per_image_above_1536_and_1024_pixels?: number;
 	output_cost_per_image_above_2048_and_2048_pixels?: number;
 	output_cost_per_image_above_4096_and_4096_pixels?: number;
 	output_cost_per_image_above_4_megapixels?: number;
@@ -558,6 +560,18 @@ export interface PricingOverridePatch {
 	output_cost_per_image_medium_quality?: number;
 	output_cost_per_image_high_quality?: number;
 	output_cost_per_image_auto_quality?: number;
+	output_cost_per_image_above_1024_and_1024_pixels_low_quality?: number;
+	output_cost_per_image_above_1024_and_1536_pixels_low_quality?: number;
+	output_cost_per_image_above_1536_and_1024_pixels_low_quality?: number;
+	output_cost_per_image_above_1024_and_1024_pixels_medium_quality?: number;
+	output_cost_per_image_above_1024_and_1536_pixels_medium_quality?: number;
+	output_cost_per_image_above_1536_and_1024_pixels_medium_quality?: number;
+	output_cost_per_image_above_1024_and_1024_pixels_high_quality?: number;
+	output_cost_per_image_above_1024_and_1536_pixels_high_quality?: number;
+	output_cost_per_image_above_1536_and_1024_pixels_high_quality?: number;
+	output_cost_per_image_above_1024_and_1024_pixels_standard_quality?: number;
+	output_cost_per_image_above_1024_and_1536_pixels_standard_quality?: number;
+	output_cost_per_image_above_1536_and_1024_pixels_standard_quality?: number;
 	// Audio/Video
 	input_cost_per_audio_token?: number;
 	input_cost_per_audio_per_second?: number;

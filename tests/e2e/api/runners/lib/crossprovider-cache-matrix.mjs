@@ -177,13 +177,17 @@ const salt = (cellId) => `[cache-matrix cell ${cellId} run {{pcNonce}}]\n\n${SEG
 // bedrock/openai.gpt-oss-120b-1:0 is NOT here: it 404s against this account, which is also why
 // the collection's bedrockOpenaiModel default was retargeted to the OpenAI-family-on-Bedrock id.
 //
-// That default is the INFERENCE PROFILE, global.openai.gpt-5.6-sol, not the bare model id. The
-// bare id reaches Converse but is refused before inference: "Invocation of model ID
-// openai.gpt-5.6-sol with on-demand throughput isn't supported. Retry your request with the ID or
-// ARN of an inference profile that contains this model." The profile form answers normally. The
-// cells below route through Bifrost, which resolves the profile itself, so they read either way -
-// the token-parity matrix's DIRECT leg calls bedrock-runtime converse with this value verbatim
-// and does not.
+// Which form of the id is correct depends on the ENDPOINT, not on the caller, and the two forms
+// are mutually exclusive (model-card-openai-gpt-56-sol.html, "Programmatic Access"):
+//   bedrock-runtime  in-region "Not supported"; requires us.openai.gpt-5.6-sol or
+//                    global.openai.gpt-5.6-sol (Converse is a supported API there)
+//   bedrock-mantle   Geo and Global "Not supported"; requires the bare openai.gpt-5.6-sol
+// So there is no single value both legs can share. bedrockOpenaiModel holds the bare id, used by
+// anything that goes through Bifrost - its `bedrock` provider routes all OpenAI-family models to
+// mantle, where a profile-prefixed id 404s. bedrockOpenaiDirectModel holds the global profile,
+// used only by the token-parity matrix's DIRECT leg, which calls bedrock-runtime converse.
+// (An earlier note here claimed Bifrost resolves the profile itself so the cells read either way;
+// it does not - that assumption is what made those parity rows 404.)
 // ---------------------------------------------------------------------------------------------
 const CELLS = [
   // --- Anthropic API, Claude family: latest through several generations back -----------------

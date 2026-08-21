@@ -170,7 +170,10 @@ func (t *Tracer) SetTraceRequestHeaders(traceID string, headers map[string]strin
 		return
 	}
 	patterns := t.CollectRequestHeaderPatterns()
-	matched := schemas.FilterHeaders(headers, patterns)
+	// Redact credential-bearing headers once, here at the single capture point, so
+	// every connector reading trace.RequestHeaders (Datadog, OTEL, BigQuery, Kafka,
+	// Pub/Sub) exports redacted values even under a broad pattern like "*".
+	matched := schemas.RedactSensitiveHeaders(schemas.FilterHeaders(headers, patterns))
 	if len(matched) == 0 {
 		return
 	}

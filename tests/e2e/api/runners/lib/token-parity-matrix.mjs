@@ -958,6 +958,10 @@ function buildGeminiFamilyDirect(backendKey, backendLabel, modality) {
 // same builder covers both the existing Claude-on-Bedrock backend and the "one more model per
 // provider" OpenAI-family (gpt-oss)-on-Bedrock addition below - Bedrock's Converse API is
 // model-family-agnostic, so nothing else about the direct call changes.
+//
+// This leg hits bedrock-runtime, where OpenAI-family models are only reachable through a
+// cross-Region inference profile, so its modelVar is not always the same one the bifrost leg
+// uses. See the BACKENDS entry for bedrock_openai.
 function buildBedrockDirect(backendKey, backendLabel, modelVar, modality) {
   return buildLegItems({
     leg: "direct",
@@ -1176,10 +1180,18 @@ const BACKENDS = [
     bifrost: (m) => buildBedrockBifrost("bedrock", "Bedrock (Claude)", "bedrockModel", m),
   },
   // "One more model per provider": Bedrock and Vertex both host more than one model family.
+  // The two legs take DIFFERENT model ids because they reach different AWS endpoints, and each
+  // endpoint accepts only one of the two forms (model-card-openai-gpt-56-sol.html, "Programmatic
+  // Access"): bedrock-runtime lists in-region as "Not supported" and requires a cross-Region
+  // profile (us./global.), while bedrock-mantle lists Geo and Global as "Not supported" and takes
+  // the bare id. The direct leg calls bedrock-runtime converse, so it needs the profile form. The
+  // bifrost leg goes through Bifrost's `bedrock` provider, which routes every OpenAI-family model
+  // to mantle (isMantleModel in core/providers/bedrock/mantle.go), so it needs the bare form -
+  // a profile-prefixed id 404s there with "The model '...' does not exist".
   {
     key: "bedrock_openai",
     label: "Bedrock (OpenAI/gpt-oss)",
-    direct: (m) => buildBedrockDirect("bedrock_openai", "Bedrock (OpenAI/gpt-oss)", "bedrockOpenaiModel", m),
+    direct: (m) => buildBedrockDirect("bedrock_openai", "Bedrock (OpenAI/gpt-oss)", "bedrockOpenaiDirectModel", m),
     bifrost: (m) => buildBedrockBifrost("bedrock_openai", "Bedrock (OpenAI/gpt-oss)", "bedrockOpenaiModel", m),
   },
   { key: "vertex_claude", label: "Vertex AI (Claude)", direct: buildVertexClaudeDirect, bifrost: buildVertexClaudeBifrost },
