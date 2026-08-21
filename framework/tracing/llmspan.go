@@ -161,11 +161,29 @@ func PopulateErrorAttributes(err *schemas.BifrostError) map[string]any {
 		attrs[schemas.AttrPromptTokens] = u.PromptTokens
 		attrs[schemas.AttrCompletionTokens] = u.CompletionTokens
 
-		if d := u.PromptTokensDetails; d != nil && d.CachedReadTokens > 0 {
-			attrs[schemas.AttrUsageCacheReadInputTokens] = d.CachedReadTokens
-			// legacy nested keys, mirrored from the chat and responses success paths.
-			attrs[schemas.AttrInputTokenDetailsCachedRead] = d.CachedReadTokens
-			attrs[schemas.AttrPromptTokenDetailsCachedRead] = d.CachedReadTokens
+		if d := u.PromptTokensDetails; d != nil {
+			if d.CachedReadTokens > 0 {
+				attrs[schemas.AttrUsageCacheReadInputTokens] = d.CachedReadTokens
+				// legacy nested keys, mirrored from the chat and responses success paths.
+				attrs[schemas.AttrInputTokenDetailsCachedRead] = d.CachedReadTokens
+				attrs[schemas.AttrPromptTokenDetailsCachedRead] = d.CachedReadTokens
+			}
+			if d.CachedWriteTokens > 0 {
+				attrs[schemas.AttrUsageCacheCreationInputTokens] = d.CachedWriteTokens
+				// legacy nested keys, mirrored from the chat and responses success paths.
+				attrs[schemas.AttrInputTokenDetailsCachedWrite] = d.CachedWriteTokens
+				attrs[schemas.AttrPromptTokenDetailsCachedWrite] = d.CachedWriteTokens
+			}
+			if wd := d.CachedWriteTokenDetails; wd != nil {
+				if wd.CachedWriteTokens5m > 0 {
+					attrs[schemas.AttrInputTokenDetailsCachedWrite5m] = wd.CachedWriteTokens5m
+					attrs[schemas.AttrPromptTokenDetailsCachedWrite5m] = wd.CachedWriteTokens5m
+				}
+				if wd.CachedWriteTokens1h > 0 {
+					attrs[schemas.AttrInputTokenDetailsCachedWrite1h] = wd.CachedWriteTokens1h
+					attrs[schemas.AttrPromptTokenDetailsCachedWrite1h] = wd.CachedWriteTokens1h
+				}
+			}
 		}
 	}
 
