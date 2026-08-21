@@ -21,6 +21,10 @@ function LocalCacheTokenMeterChartImpl({ data }: LocalCacheTokenMeterChartProps)
 
 	const gaugeGeometry = useMemo(() => getGaugeGeometry(width, height), [width, height]);
 	const hasData = state === "ready";
+	// The gauge is drawn for "not-engaged" too, so the card stays visually
+	// consistent with its siblings. It reads 0% with an explicit caption rather
+	// than an empty placeholder that looks like a broken panel.
+	const showGauge = state === "ready" || state === "not-engaged";
 
 	const directPct = totalRequests > 0 ? clampPercentage((directHits / totalRequests) * 100) : 0;
 	const semanticPct = totalRequests > 0 ? clampPercentage((semanticHits / totalRequests) * 100, 100 - directPct) : 0;
@@ -37,34 +41,7 @@ function LocalCacheTokenMeterChartImpl({ data }: LocalCacheTokenMeterChartProps)
 					{state === "no-data" && (
 						<div className="text-muted-foreground flex h-full items-center justify-center text-sm">No data available</div>
 					)}
-					{state === "not-engaged" && (
-						<div
-							className="text-muted-foreground flex h-full flex-col items-center justify-center gap-1 text-center text-sm"
-							data-testid="local-cache-meter-not-engaged"
-						>
-							<span>Cache not engaged</span>
-							<span className="flex items-center gap-1 text-[11px] text-zinc-400">
-								<span>{formatCompactNumber(totalRequests)} requests, none used the cache</span>
-								<Tooltip>
-									<TooltipTrigger asChild>
-										<button
-											type="button"
-											data-testid="local-cache-meter-not-engaged-info-btn"
-											className="text-zinc-500 transition-colors hover:text-zinc-300"
-											aria-label="Why the local cache was not engaged"
-										>
-											<Info className="h-3 w-3" />
-										</button>
-									</TooltipTrigger>
-									<TooltipContent side="top">
-										Requests bypass the cache unless they carry an x-bf-cache-key header, or the semantic cache plugin sets a
-										default_cache_key.
-									</TooltipContent>
-								</Tooltip>
-							</span>
-						</div>
-					)}
-					{hasData && gaugeGeometry && (
+					{showGauge && gaugeGeometry && (
 						<>
 							<ResponsiveContainer width="100%" height="100%">
 								<PieChart>
@@ -92,22 +69,50 @@ function LocalCacheTokenMeterChartImpl({ data }: LocalCacheTokenMeterChartProps)
 						</>
 					)}
 				</div>
-				{hasData && (
-					<div>
+				{showGauge && (
+					<div data-testid={hasData ? undefined : "local-cache-meter-not-engaged"}>
 						<div className="flex flex-col items-center pt-1 leading-none">
 							<div className="text-muted-foreground text-3xl font-semibold tracking-tight">{percentage.toFixed(1)}%</div>
-							<div className="mt-1 text-[11px] text-zinc-400">of requests served from local cache</div>
+							{hasData ? (
+								<div className="mt-1 text-[11px] text-zinc-400">of requests served from local cache</div>
+							) : (
+								<div className="mt-1 flex items-center gap-1 text-[11px] text-zinc-400">
+									<span>Cache not engaged</span>
+									<Tooltip>
+										<TooltipTrigger asChild>
+											<button
+												type="button"
+												data-testid="local-cache-meter-not-engaged-info-btn"
+												className="text-zinc-500 transition-colors hover:text-zinc-300"
+												aria-label="Why the local cache was not engaged"
+											>
+												<Info className="h-3 w-3" />
+											</button>
+										</TooltipTrigger>
+										<TooltipContent side="top">
+											Requests bypass the cache unless they carry an x-bf-cache-key header, or the semantic cache plugin sets a
+											default_cache_key.
+										</TooltipContent>
+									</Tooltip>
+								</div>
+							)}
 						</div>
-						<div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 pt-2 text-[11px] leading-none">
-							<span className="flex items-center gap-1.5">
-								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: METER_COLORS.direct }} />
-								<span className="text-primary">Direct: {directHits}</span>
-							</span>
-							<span className="flex items-center gap-1.5">
-								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: METER_COLORS.semantic }} />
-								<span className="text-primary">Semantic: {semanticHits}</span>
-							</span>
-						</div>
+						{hasData ? (
+							<div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 pt-2 text-[11px] leading-none">
+								<span className="flex items-center gap-1.5">
+									<span className="h-2 w-2 rounded-full" style={{ backgroundColor: METER_COLORS.direct }} />
+									<span className="text-primary">Direct: {directHits}</span>
+								</span>
+								<span className="flex items-center gap-1.5">
+									<span className="h-2 w-2 rounded-full" style={{ backgroundColor: METER_COLORS.semantic }} />
+									<span className="text-primary">Semantic: {semanticHits}</span>
+								</span>
+							</div>
+						) : (
+							<div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 pt-2 text-[11px] leading-none">
+								<span className="text-muted-foreground">{formatCompactNumber(totalRequests)} requests, none used the cache</span>
+							</div>
+						)}
 					</div>
 				)}
 			</div>
