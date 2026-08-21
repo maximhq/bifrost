@@ -4666,6 +4666,9 @@
           "minItems": 1,
           "description": "API keys for this provider"
         },
+        "openai_config": {
+          "$ref": "#/$defs/openai_config"
+        },
         "network_config": {
           "$ref": "#/$defs/network_config"
         },
