@@ -290,6 +290,11 @@
     },
     {
       "key": "bedrockOpenaiModel",
+      "value": "openai.gpt-5.6-sol",
+      "type": "string"
+    },
+    {
+      "key": "bedrockOpenaiDirectModel",
       "value": "global.openai.gpt-5.6-sol",
       "type": "string"
     },
@@ -4554,7 +4559,7 @@
                     ],
                     "body": {
                       "mode": "raw",
-                      "raw": "{\n  \"messages\": [{ \"role\": \"user\", \"content\": [{ \"text\": \"Hello from Bedrock Converse.\" }] }],\n  \"inferenceConfig\": { \"maxTokens\": 1024 }\n}"
+                      "raw": "{\n  \"messages\": [{ \"role\": \"user\", \"content\": [{ \"text\": \"Hello from Bedrock Converse.\" }] }],\n  \"inferenceConfig\": { \"maxTokens\": 4096 }\n}"
                     },
                     "url": {
                       "raw": "{{baseUrl}}/bedrock/model/gemini%2Fgemini-2.5-pro/converse",
@@ -4610,7 +4615,7 @@
                     ],
                     "body": {
                       "mode": "raw",
-                      "raw": "{\n  \"messages\": [{ \"role\": \"user\", \"content\": [{ \"text\": \"Hello from Bedrock Converse.\" }] }],\n  \"inferenceConfig\": { \"maxTokens\": 1024 }\n}"
+                      "raw": "{\n  \"messages\": [{ \"role\": \"user\", \"content\": [{ \"text\": \"Hello from Bedrock Converse.\" }] }],\n  \"inferenceConfig\": { \"maxTokens\": 4096 }\n}"
                     },
                     "url": {
                       "raw": "{{baseUrl}}/bedrock/model/vertex%2Fgemini-2.5-pro/converse",
@@ -7365,7 +7370,7 @@
                   }
                 },
                 {
-                  "name": "vertex/imagen-4.0-generate-001",
+                  "name": "vertex/gemini-2.5-flash-image",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -7376,7 +7381,7 @@
                     ],
                     "body": {
                       "mode": "raw",
-                      "raw": "{\n  \"model\": \"vertex/imagen-4.0-generate-001\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}"
+                      "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash-image\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}"
                     },
                     "url": {
                       "raw": "{{baseUrl}}/v1/images/generations",
@@ -7508,7 +7513,7 @@
                   }
                 },
                 {
-                  "name": "vertex/imagen-4.0-generate-001",
+                  "name": "vertex/gemini-2.5-flash-image",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -7519,7 +7524,7 @@
                     ],
                     "body": {
                       "mode": "raw",
-                      "raw": "{\n  \"model\": \"vertex/imagen-4.0-generate-001\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}"
+                      "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash-image\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}"
                     },
                     "url": {
                       "raw": "{{baseUrl}}/openai/v1/images/generations",
@@ -38926,7 +38931,7 @@
                       }
                     },
                     {
-                      "name": "vertex/imagen-4.0-generate-001",
+                      "name": "vertex/gemini-2.5-flash-image",
                       "request": {
                         "method": "POST",
                         "header": [
@@ -38937,7 +38942,7 @@
                         ],
                         "body": {
                           "mode": "raw",
-                          "raw": "{\n  \"model\": \"vertex/imagen-4.0-generate-001\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}"
+                          "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash-image\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}"
                         },
                         "url": {
                           "raw": "{{baseUrl}}/openai/v1/images/generations",
@@ -130365,11 +130370,11 @@
     },
     {
       "name": "53. Embeddings x provider x parameter surface",
-      "description": "Embedding coverage before this folder was one request per provider, each sending a single string and asserting nothing beyond the collection-level status check - and that check is a no-op for embeddings, because the shape branch it lands in is Array.isArray(j.data) with hasContent = j.data.length >= 0, which is true for an empty list. A provider returning zero vectors passed.\n\nThis folder pins the request parameter surface end to end: what the caller sends at the gateway, what the provider-native field is called, and what observable property of the response proves the rename survived the trip. Bedrock gets the depth because it is the only provider carrying two incompatible embedding envelopes behind one name, chosen by substring match on the model id.\n\nRoute reachability worth knowing before adding rows here: /v1/embeddings parses exactly four body fields (model, input, encoding_format, dimensions) plus fallbacks. Every other key is dropped silently unless the request carries x-bf-passthrough-extra-params: true and nests the key under \"extra_params\" (transports/bifrost-http/integrations/router.go). Native Bedrock embeddings are also reachable through /bedrock/model/{id}/invoke and /langchain/model/{id}/invoke; normalized and SDK-compatible routes include /v1/embeddings, /openai/v1/embeddings, /genai/.../:embedContent and /cohere/v2/embed.\n\nSub-folder names avoid provider keywords on purpose. runners/filter-collection.mjs matches PROVIDER against ancestor folder names as well as the item body, so naming this folder after Bedrock would hand every openai/gemini/vertex/azure row to the bedrock partition.",
+      "description": "Embedding coverage before this folder was one request per provider, each sending a single string and asserting nothing beyond the collection-level status check - and that check is a no-op for embeddings, because the shape branch it lands in is Array.isArray(j.data) with hasContent = j.data.length >= 0, which is true for an empty list. A provider returning zero vectors passed.\n\nThis folder pins the request parameter surface end to end: what the caller sends at the gateway, what the provider-native field is called, and what observable property of the response proves the rename survived the trip. Bedrock gets the depth because it is the only provider carrying two incompatible embedding envelopes behind one name, chosen by substring match on the model id.\n\nRoute reachability worth knowing before adding rows here: /v1/embeddings parses exactly four body fields (model, input, encoding_format, dimensions) plus fallbacks. Every OTHER top-level key is collected as an extra param by extractExtraParams (transports/bifrost-http/handlers/inference.go) and handed to the provider converter, which maps the ones it knows (normalize, embeddingTypes, input_type, truncate, embedding_types) onto native fields; anything left over reaches the wire only when the request carries x-bf-passthrough-extra-params: true. Do NOT nest these under an \"extra_params\" object here - that unwrapping exists only on the integration/drop-in routes served by GenericRouter (transports/bifrost-http/integrations/router.go). On this native route the wrapper is just another unknown key, so the params inside it are ignored AND the wrapper itself is forwarded, which Bedrock rejects with \"extraneous key [extra_params] is not permitted\". Native Bedrock embeddings are also reachable through /bedrock/model/{id}/invoke and /langchain/model/{id}/invoke; normalized and SDK-compatible routes include /v1/embeddings, /openai/v1/embeddings, /genai/.../:embedContent and /cohere/v2/embed.\n\nSub-folder names avoid provider keywords on purpose. runners/filter-collection.mjs matches PROVIDER against ancestor folder names as well as the item body, so naming this folder after Bedrock would hand every openai/gemini/vertex/azure row to the bedrock partition.",
       "item": [
         {
           "name": "53.A Bedrock Titan envelope (amazon.titan-embed-*)",
-          "description": "Titan takes a single `inputText` string, so Bifrost joins array input with \" \\n\" before sending (core/providers/bedrock/embedding.go ToBedrockTitanEmbeddingRequest). The legacy/default response has one float vector; `embeddingTypes` returns one vector per requested representation. These rows pin the Titan-shaped request body reaching AWS and every requested representation coming back.\n\nAWS request fields (docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-titan-embed-text.html): inputText (required), dimensions (1024 default | 512 | 256), normalize (default true), embeddingTypes (camelCase, [\"float\"] | [\"binary\"] | both). Response: embedding, inputTextTokenCount, embeddingsByType.\n\nnormalize and embeddingTypes are not first-class fields on /v1/embeddings - only model, input, encoding_format and dimensions are parsed there. They reach the provider through x-bf-passthrough-extra-params: true plus an \"extra_params\" object, which is the door those rows use.",
+          "description": "Titan takes a single `inputText` string, so Bifrost joins array input with \" \\n\" before sending (core/providers/bedrock/embedding.go ToBedrockTitanEmbeddingRequest). The legacy/default response has one float vector; `embeddingTypes` returns one vector per requested representation. These rows pin the Titan-shaped request body reaching AWS and every requested representation coming back.\n\nAWS request fields (docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-titan-embed-text.html): inputText (required), dimensions (1024 default | 512 | 256), normalize (default true), embeddingTypes (camelCase, [\"float\"] | [\"binary\"] | both). Response: embedding, inputTextTokenCount, embeddingsByType.\n\nnormalize and embeddingTypes are not first-class fields on /v1/embeddings - only model, input, encoding_format and dimensions are parsed there. They reach the provider as plain TOP-LEVEL keys, which extractExtraParams collects and ToBedrockTitanEmbeddingRequest maps onto the Titan envelope; that is the door those rows use. Nesting them under \"extra_params\" does not work on this route (see the parent folder description).\n\nnormalize is only observable below the default width: at 1024 dimensions Titan V2 returns a vector that is already unit-length, so normalize:false is indistinguishable from normalize:true. The A4/A5 pair pins dimensions:256, where normalize:false measures L2 ~0.57 against ~1.0 for the control.",
           "item": [
             {
               "name": "53.A1 bedrock/amazon.titan-embed-text-v2:0 - baseline single input",
@@ -130544,7 +130549,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"bedrock/amazon.titan-embed-text-v2:0\",\n  \"input\": \"Hello world\",\n  \"extra_params\": {\n    \"normalize\": true\n  }\n}"
+                  "raw": "{\n  \"model\": \"bedrock/amazon.titan-embed-text-v2:0\",\n  \"input\": \"Hello world\",\n  \"dimensions\": 256,\n  \"normalize\": true\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/v1/embeddings",
@@ -130598,7 +130603,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"bedrock/amazon.titan-embed-text-v2:0\",\n  \"input\": \"Hello world\",\n  \"extra_params\": {\n    \"normalize\": false\n  }\n}"
+                  "raw": "{\n  \"model\": \"bedrock/amazon.titan-embed-text-v2:0\",\n  \"input\": \"Hello world\",\n  \"dimensions\": 256,\n  \"normalize\": false\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/v1/embeddings",
@@ -130823,7 +130828,10 @@
                       "pm.test('values are int8, not floats', function () {",
                       "  var v = data[0].embedding;",
                       "  for (var i = 0; i < v.length; i++) {",
-                      "    pm.expect(v[i] % 1, 'value at ' + i + ' is not an integer: ' + v[i]).to.eql(0);",
+                      "    // Number.isInteger, not `v[i] % 1`: the latter is -0 for any negative integer and",
+                      "    // chai's eql compares with SameValue, so -0 never equals +0 - this assertion used to",
+                      "    // fail on the first negative value of every int8 vector.",
+                      "    pm.expect(Number.isInteger(v[i]), 'value at ' + i + ' is not an integer: ' + v[i]).to.be.true;",
                       "    pm.expect(v[i], 'value at ' + i + ' is outside int8 range: ' + v[i]).to.be.within(-128, 127);",
                       "  }",
                       "});"
@@ -130889,7 +130897,7 @@
               ]
             },
             {
-              "name": "53.B4 bedrock/global.cohere.embed-v4:0 - /v1/embeddings + extra_params.input_type",
+              "name": "53.B4 bedrock/global.cohere.embed-v4:0 - /v1/embeddings + top-level input_type",
               "request": {
                 "method": "POST",
                 "header": [
@@ -130904,7 +130912,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"bedrock/global.cohere.embed-v4:0\",\n  \"input\": \"Hello world\",\n  \"extra_params\": {\n    \"input_type\": \"search_query\"\n  }\n}"
+                  "raw": "{\n  \"model\": \"bedrock/global.cohere.embed-v4:0\",\n  \"input\": \"Hello world\",\n  \"input_type\": \"search_query\"\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/v1/embeddings",
@@ -130930,8 +130938,9 @@
                       "var j; try { j = pm.response.json(); } catch (e) {",
                       "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
                       "var data = j.data || [];",
-                      "// The working counterpart to 53.B3: input_type supplied through the passthrough door.",
-                      "pm.test('returns 1 vector(s) - input_type via extra_params reaches Bedrock', function () {",
+                      "// The working counterpart to 53.B3: input_type supplied through the passthrough door -",
+                      "// a top-level key, which is what /v1/embeddings collects as an extra param.",
+                      "pm.test('returns 1 vector(s) - top-level input_type reaches Bedrock', function () {",
                       "  pm.expect(data.length, 'wrong vector count; body: ' + pm.response.text().slice(0, 300))",
                       "    .to.eql(1);",
                       "  for (var i = 0; i < data.length; i++) {",
@@ -130960,7 +130969,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"bedrock/global.cohere.embed-v4:0\",\n  \"input\": [\n    \"alpha kestrel harbor\",\n    \"beta lantern quarry\",\n    \"gamma meridian trellis\"\n  ],\n  \"extra_params\": {\n    \"input_type\": \"search_document\"\n  }\n}"
+                  "raw": "{\n  \"model\": \"bedrock/global.cohere.embed-v4:0\",\n  \"input\": [\n    \"alpha kestrel harbor\",\n    \"beta lantern quarry\",\n    \"gamma meridian trellis\"\n  ],\n  \"input_type\": \"search_document\"\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/v1/embeddings",
@@ -131022,7 +131031,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"bedrock/global.cohere.embed-v4:0\",\n  \"input\": \"Hello world\",\n  \"dimensions\": 512,\n  \"extra_params\": {\n    \"input_type\": \"search_document\"\n  }\n}"
+                  "raw": "{\n  \"model\": \"bedrock/global.cohere.embed-v4:0\",\n  \"input\": \"Hello world\",\n  \"dimensions\": 512,\n  \"input_type\": \"search_document\"\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/v1/embeddings",
@@ -131078,7 +131087,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"bedrock/global.cohere.embed-v4:0\",\n  \"input\": \"Hello world\",\n  \"extra_params\": {\n    \"input_type\": \"search_document\"\n  }\n}"
+                  "raw": "{\n  \"model\": \"bedrock/global.cohere.embed-v4:0\",\n  \"input\": \"Hello world\",\n  \"input_type\": \"search_document\"\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/v1/embeddings",
@@ -131522,7 +131531,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"bedrock/global.cohere.embed-v4:0\",\n  \"input\": \"Hello world\",\n  \"dimensions\": 256,\n  \"extra_params\": {\n    \"input_type\": \"search_document\"\n  }\n}"
+                  "raw": "{\n  \"model\": \"bedrock/global.cohere.embed-v4:0\",\n  \"input\": \"Hello world\",\n  \"dimensions\": 256,\n  \"input_type\": \"search_document\"\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/v1/embeddings",
