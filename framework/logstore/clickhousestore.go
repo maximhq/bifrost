@@ -509,6 +509,33 @@ func (s *ClickHouseLogStore) DeleteLogsBatch(ctx context.Context, cutoff time.Ti
 	return int64(len(ids)), nil
 }
 
+// DeleteMCPToolLogsBatch deletes MCP tool logs older than cutoff in batches.
+// Overridden for the same reason as DeleteLogsBatch: the GORM ClickHouse driver
+// rewrites DELETE into an ALTER TABLE mutation whose driver result reports 0
+// rows affected, so the inherited implementation would always return 0 and the
+// LogsCleaner would treat every batch as empty and stop early. The ids are
+// selected first, so their count is the deleted count once the
+// (mutations_sync=1) delete returns.
+func (s *ClickHouseLogStore) DeleteMCPToolLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (int64, error) {
+	var ids []string
+	if err := s.db.WithContext(ctx).
+		Model(&MCPToolLog{}).
+		Select("id").
+		Where("created_at < ?", cutoff).
+		Order("created_at ASC").
+		Limit(batchSize).
+		Pluck("id", &ids).Error; err != nil {
+		return 0, err
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	if err := s.db.WithContext(ctx).Where("id IN ?", ids).Delete(&MCPToolLog{}).Error; err != nil {
+		return 0, err
+	}
+	return int64(len(ids)), nil
+}
+
 // DeleteExpiredAsyncJobs deletes async jobs whose expiry has passed.
 // Overridden for the same reason as DeleteLogsBatch: mutation deletes report
 // 0 rows affected, so ids are selected first and their count returned.

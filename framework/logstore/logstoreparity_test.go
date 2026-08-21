@@ -1229,6 +1229,24 @@ func TestLogStoreParity(t *testing.T) {
 			}
 			assertParity(t, stores, 1e-6, remainingMCPIDs)
 		})
+		t.Run("delete_mcp_logs_batch", func(t *testing.T) {
+			// Retention pruning of mcp_tool_logs rides the optional
+			// MCPToolLogRetentionManager interface, so every backend must both
+			// implement it and agree on the count (ClickHouse mutations report
+			// 0 rows affected natively). Deletes m2 (base-85s) and leaves m3.
+			for name, s := range stores {
+				_, ok := s.(MCPToolLogRetentionManager)
+				require.True(t, ok, "%s must support age-based mcp tool log pruning", name)
+			}
+			assertParity(t, stores, 1e-6, func(ctx context.Context, s LogStore) (any, error) {
+				manager, ok := s.(MCPToolLogRetentionManager)
+				if !ok {
+					return nil, fmt.Errorf("store does not support age-based mcp tool log pruning")
+				}
+				return manager.DeleteMCPToolLogsBatch(ctx, base.Add(-80*time.Second), 100)
+			})
+			assertParity(t, stores, 1e-6, remainingMCPIDs)
+		})
 	})
 
 	// --- Phase: shutdown ---

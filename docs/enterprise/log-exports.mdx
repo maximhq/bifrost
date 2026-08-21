@@ -217,7 +217,7 @@ The cleaner deletes **database rows** older than `now - retention_days` (UTC). I
 
 > **Important**: the retention cleaner does **not** delete the corresponding payloads in S3 or GCS. The hybrid log store explicitly delegates object cleanup to the bucket's own lifecycle policy.
 
-If you have object storage enabled, configure a lifecycle / object-lifecycle-management rule on the bucket to expire objects under your `prefix/`. Pick a duration that matches (or exceeds) `log_retention_days`.
+If you have object storage enabled, configure a lifecycle / object-lifecycle-management rule on the bucket to expire objects under your `prefix/`. Pick a duration that matches (or exceeds) `log_retention_days`. Scope the rule to the whole `prefix/`, not just `prefix/logs/` — MCP tool call payloads live under `prefix/mcp-logs/` and would otherwise be orphaned once their rows are pruned.
 
 **Amazon S3 lifecycle rule (example)**
 
@@ -227,7 +227,7 @@ If you have object storage enabled, configure a lifecycle / object-lifecycle-man
     {
       "ID": "bifrost-logs-expire-30d",
       "Status": "Enabled",
-      "Filter": { "Prefix": "bifrost/logs/" },
+      "Filter": { "Prefix": "bifrost/" },
       "Expiration": { "Days": 30 }
     }
   ]
@@ -246,7 +246,7 @@ Apply with `aws s3api put-bucket-lifecycle-configuration --bucket <bucket> --lif
         "action": { "type": "Delete" },
         "condition": {
           "age": 30,
-          "matchesPrefix": ["bifrost/logs/"]
+          "matchesPrefix": ["bifrost/"]
         }
       }
     ]
