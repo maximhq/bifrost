@@ -176,6 +176,17 @@ func ToRunwareImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) (*Ru
 		}
 
 		request.ExtraParams = params.ExtraParams
+
+		// Same promotion the tool tasks do: providerSettings carries the vendor-specific knobs
+		// these models take, and multipart delivers it as a JSON string rather than an object.
+		if v, ok := runwareSettings(request.ExtraParams["settings"]); ok {
+			delete(request.ExtraParams, "settings")
+			request.Settings = v
+		}
+		if v, ok := runwareSettings(request.ExtraParams["providerSettings"]); ok {
+			delete(request.ExtraParams, "providerSettings")
+			request.ProviderSettings = v
+		}
 	}
 
 	return request, nil

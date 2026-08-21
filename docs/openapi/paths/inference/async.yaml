@@ -269,9 +269,12 @@ async-image-edit:
     requestBody:
       required: true
       content:
-        multipart/form-data:
+        application/json:
           schema:
             $ref: '../../schemas/inference/images.yaml#/ImageEditRequest'
+        multipart/form-data:
+          schema:
+            $ref: '../../schemas/inference/images.yaml#/ImageEditMultipartRequest'
     responses:
       '202':
         description: Job accepted for processing
