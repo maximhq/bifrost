@@ -52,6 +52,12 @@ const ProviderEndpoints: Partial<Record<BaseProvider, Partial<Record<RequestType
 		responses_stream: "/v2/chat",
 		embedding: "/v2/embed",
 	},
+	elevenlabs: {
+		list_models: "/v1/models",
+		speech: "/v1/text-to-speech/{voice_id}",
+		speech_stream: "/v1/text-to-speech/{voice_id}/stream",
+		transcription: "/v1/speech-to-text",
+	},
 };
 
 // Helper function to get the appropriate placeholder
