@@ -1247,7 +1247,7 @@ func TestFileRequestConverter_RejectsInvalidUploadOffset(t *testing.T) {
 	assert.Equal(t, int64(10), storedSession.NextOffset)
 }
 
-// Total upload size exactly 100 MB should succeed
+// Total upload size exactly 100 MB should succeed.
 func TestFileRequestConverter_AllowsUploadAtMaxSize(t *testing.T) {
 	t.Parallel()
 
@@ -1272,23 +1272,24 @@ func TestFileRequestConverter_AllowsUploadAtMaxSize(t *testing.T) {
 		DisplayName: "test.pdf",
 		MimeType:    "application/pdf",
 		Provider:    "gemini",
-		NextOffset:  0,
-		Chunks:      make(map[int64][]byte),
+		NextOffset:  90 * 1024 * 1024,
+		Chunks: map[int64][]byte{
+			0: make([]byte, 90*1024*1024),
+		},
 	}
 
 	err = kvStore.SetWithTTL(uploadID, session, time.Minute)
 	require.NoError(t, err)
 
-	fileData := make([]byte, 100*1024*1024)
-
 	ctx := &schemas.BifrostContext{}
 
+	// Add the final 10 MB chunk to reach exactly 100 MB.
 	req := &gemini.GeminiFileUploadHandlerReq{
 		UploadID:        uploadID,
 		UploadCommand:   "upload",
-		UploadOffset:    0,
+		UploadOffset:    90 * 1024 * 1024,
 		HasUploadOffset: true,
-		FileData:        fileData,
+		FileData:        make([]byte, 10*1024*1024),
 	}
 
 	result, err := converter(ctx, req)
@@ -1298,7 +1299,7 @@ func TestFileRequestConverter_AllowsUploadAtMaxSize(t *testing.T) {
 	require.True(t, result.Handled)
 }
 
-// Multiple chunks exceeding 100 MB should fail
+// Upload exceeding the 100 MB total size limit should fail.
 func TestFileRequestConverter_RejectsUploadExceedingMaxSize(t *testing.T) {
 	t.Parallel()
 
@@ -1323,9 +1324,9 @@ func TestFileRequestConverter_RejectsUploadExceedingMaxSize(t *testing.T) {
 		DisplayName: "test.pdf",
 		MimeType:    "application/pdf",
 		Provider:    "gemini",
-		NextOffset:  90 * 1024 * 1024,
+		NextOffset:  91 * 1024 * 1024,
 		Chunks: map[int64][]byte{
-			0: make([]byte, 90*1024*1024),
+			0: make([]byte, 91*1024*1024),
 		},
 	}
 
@@ -1334,12 +1335,13 @@ func TestFileRequestConverter_RejectsUploadExceedingMaxSize(t *testing.T) {
 
 	ctx := &schemas.BifrostContext{}
 
+	// Adding a 10 MB chunk would increase the total size to 101 MB.
 	req := &gemini.GeminiFileUploadHandlerReq{
 		UploadID:        uploadID,
 		UploadCommand:   "upload",
-		UploadOffset:    90 * 1024 * 1024,
+		UploadOffset:    91 * 1024 * 1024,
 		HasUploadOffset: true,
-		FileData:        make([]byte, 11*1024*1024),
+		FileData:        make([]byte, 10*1024*1024),
 	}
 
 	result, err := converter(ctx, req)
@@ -1349,7 +1351,7 @@ func TestFileRequestConverter_RejectsUploadExceedingMaxSize(t *testing.T) {
 	require.Contains(t, err.Error(), "upload size exceeds maximum allowed size")
 }
 
-// Multiple chunks that total exactly 100 MB should succeed
+// Multiple chunks that total exactly 100 MB should succeed.
 func TestFileRequestConverter_AllowsMultipleChunksUpToMaxSize(t *testing.T) {
 	t.Parallel()
 
@@ -1374,9 +1376,9 @@ func TestFileRequestConverter_AllowsMultipleChunksUpToMaxSize(t *testing.T) {
 		DisplayName: "test.pdf",
 		MimeType:    "application/pdf",
 		Provider:    "gemini",
-		NextOffset:  80 * 1024 * 1024,
+		NextOffset:  90 * 1024 * 1024,
 		Chunks: map[int64][]byte{
-			0: make([]byte, 80*1024*1024),
+			0: make([]byte, 90*1024*1024),
 		},
 	}
 
@@ -1385,12 +1387,13 @@ func TestFileRequestConverter_AllowsMultipleChunksUpToMaxSize(t *testing.T) {
 
 	ctx := &schemas.BifrostContext{}
 
+	// Add a 10 MB chunk to reach exactly the 100 MB total upload limit.
 	req := &gemini.GeminiFileUploadHandlerReq{
 		UploadID:        uploadID,
 		UploadCommand:   "upload",
-		UploadOffset:    80 * 1024 * 1024,
+		UploadOffset:    90 * 1024 * 1024,
 		HasUploadOffset: true,
-		FileData:        make([]byte, 20*1024*1024),
+		FileData:        make([]byte, 10*1024*1024),
 	}
 
 	result, err := converter(ctx, req)
@@ -1398,6 +1401,14 @@ func TestFileRequestConverter_AllowsMultipleChunksUpToMaxSize(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.True(t, result.Handled)
+
+	// Verify the total uploaded size is exactly 100 MB.
+	value, err := kvStore.Get(uploadID)
+	require.NoError(t, err)
+
+	updatedSession, ok := value.(*gemini.GeminiResumableUploadSession)
+	require.True(t, ok)
+	require.Equal(t, int64(100*1024*1024), updatedSession.NextOffset)
 }
 
 // Retried chunk should not be counted twice
@@ -1460,4 +1471,53 @@ func TestFileRequestConverter_RetryDoesNotIncreaseUploadSize(t *testing.T) {
 	require.True(t, ok)
 
 	require.Equal(t, int64(10*1024*1024), updatedSession.NextOffset)
+}
+
+// A single chunk larger than the per-chunk limit should fail.
+func TestFileRequestConverter_RejectsChunkExceedingMaxSize(t *testing.T) {
+	t.Parallel()
+
+	kvStore, err := kvstore.New(kvstore.Config{})
+	require.NoError(t, err)
+	defer kvStore.Close()
+
+	handlerStore := &fileUploadTestHandlerStore{
+		mockHandlerStore: &mockHandlerStore{},
+		kvStore:          kvStore,
+	}
+
+	routes := CreateGenAIFileRouteConfigs("/genai", handlerStore)
+	require.NotEmpty(t, routes)
+
+	converter := routes[0].FileRequestConverter
+	require.NotNil(t, converter)
+
+	uploadID := "test-upload-chunk-over-limit"
+
+	session := &gemini.GeminiResumableUploadSession{
+		DisplayName: "test.pdf",
+		MimeType:    "application/pdf",
+		Provider:    "gemini",
+		NextOffset:  0,
+		Chunks:      make(map[int64][]byte),
+	}
+
+	err = kvStore.SetWithTTL(uploadID, session, time.Minute)
+	require.NoError(t, err)
+
+	ctx := &schemas.BifrostContext{}
+
+	req := &gemini.GeminiFileUploadHandlerReq{
+		UploadID:        uploadID,
+		UploadCommand:   "upload",
+		UploadOffset:    0,
+		HasUploadOffset: true,
+		FileData:        make([]byte, 11*1024*1024),
+	}
+
+	result, err := converter(ctx, req)
+
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Contains(t, err.Error(), "chunk size exceeds maximum allowed size")
 }
