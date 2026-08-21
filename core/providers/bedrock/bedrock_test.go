@@ -3029,6 +3029,7 @@ func TestConvertBifrostResponsesMessageContentBlocksToBedrockContentBlocks_Empty
 		name           string
 		input          *schemas.BifrostResponsesResponse
 		expectedBlocks int // Expected number of ContentBlocks in the output
+		expectError    bool
 		description    string
 	}{
 		{
@@ -3100,7 +3101,7 @@ func TestConvertBifrostResponsesMessageContentBlocksToBedrockContentBlocks_Empty
 			description:    "Reasoning block with nil Text should not create an empty ContentBlock",
 		},
 		{
-			name: "FileBlockWithNilFileData_ShouldNotCreateEmptyBlock",
+			name: "FileBlockWithNilFileData_ShouldReturnError",
 			input: &schemas.BifrostResponsesResponse{
 				CreatedAt: 1234567890,
 				Output: []schemas.ResponsesMessage{
@@ -3122,8 +3123,8 @@ func TestConvertBifrostResponsesMessageContentBlocksToBedrockContentBlocks_Empty
 					},
 				},
 			},
-			expectedBlocks: 0,
-			description:    "File block with nil FileData should not create an empty ContentBlock",
+			expectError: true,
+			description: "File block with neither FileData nor FileURL should return an error instead of silently dropping the document",
 		},
 		{
 			name: "FileBlockWithNilFileBlock_ShouldNotCreateEmptyBlock",
@@ -3224,7 +3225,7 @@ func TestConvertBifrostResponsesMessageContentBlocksToBedrockContentBlocks_Empty
 			description:    "Valid file block should create a document ContentBlock plus the required placeholder text block",
 		},
 		{
-			name: "MixedValidAndInvalidBlocks_ShouldOnlyCreateValidBlocks",
+			name: "MixedValidAndSourceLessFileBlocks_ShouldReturnError",
 			input: &schemas.BifrostResponsesResponse{
 				CreatedAt: 1234567890,
 				Output: []schemas.ResponsesMessage{
@@ -3256,8 +3257,8 @@ func TestConvertBifrostResponsesMessageContentBlocksToBedrockContentBlocks_Empty
 					},
 				},
 			},
-			expectedBlocks: 2, // Only valid text and reasoning blocks
-			description:    "Mixed valid and invalid blocks should only create valid ContentBlocks",
+			expectError: true,
+			description: "A source-less document should fail the message conversion instead of being removed from otherwise valid content",
 		},
 		{
 			name: "CacheControlBlock_ShouldCreateCachePointBlock",
@@ -3289,6 +3290,10 @@ func TestConvertBifrostResponsesMessageContentBlocksToBedrockContentBlocks_Empty
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			actual, err := bedrock.ToBedrockConverseResponse(tt.input)
+			if tt.expectError {
+				require.Error(t, err, tt.description)
+				return
+			}
 			require.NoError(t, err, "Conversion should not error")
 			require.NotNil(t, actual, "Response should not be nil")
 			require.NotNil(t, actual.Output, "Output should not be nil")
@@ -4654,8 +4659,17 @@ func TestDocumentFormatFromDataURL(t *testing.T) {
 
 			assert.Equal(t, tt.expectedFormat, doc.Format,
 				"data URL media type %q should map to format %q", tt.mediaType, tt.expectedFormat)
-			require.NotNil(t, doc.Source.Bytes)
-			assert.Equal(t, payload, *doc.Source.Bytes, "data URL prefix must be stripped from source.bytes")
+			if strings.HasPrefix(strings.ToLower(tt.mediaType), "text/") {
+				decoded, err := base64.StdEncoding.DecodeString(payload)
+				require.NoError(t, err)
+				require.NotNil(t, doc.Source.Text)
+				assert.Equal(t, string(decoded), *doc.Source.Text)
+				assert.Nil(t, doc.Source.Bytes, "document source is a union")
+			} else {
+				require.NotNil(t, doc.Source.Bytes)
+				assert.Equal(t, payload, *doc.Source.Bytes, "data URL prefix must be stripped from source.bytes")
+				assert.Nil(t, doc.Source.Text, "document source is a union")
+			}
 		})
 	}
 }
@@ -4704,8 +4718,7 @@ func TestDocumentInlineTextDataURL(t *testing.T) {
 	assert.Equal(t, "txt", doc.Format)
 	require.NotNil(t, doc.Source.Text)
 	assert.Equal(t, "Hello World", *doc.Source.Text)
-	require.NotNil(t, doc.Source.Bytes)
-	assert.Equal(t, base64.StdEncoding.EncodeToString([]byte("Hello World")), *doc.Source.Bytes)
+	assert.Nil(t, doc.Source.Bytes, "document source is a union and text documents must not also carry bytes")
 
 	// A binary format never gets source.text, matching the raw file_data path.
 	doc = chatFileBlockDocument(t, &schemas.ChatInputFile{

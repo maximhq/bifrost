@@ -258,18 +258,22 @@ func normalizeBedrockFilename(filename string) string {
 	return normalized
 }
 
-// bedrockDocumentFormat maps a MIME type or bare file extension to a Bedrock Converse
-// document format. Media type parameters (e.g. "; charset=utf-8") are ignored. ok is
-// false when the input maps to no format Bedrock supports, so callers can fall through
-// to the next available hint.
-func bedrockDocumentFormat(fileType string) (format string, isText bool, ok bool) {
+func normalizeBedrockDocumentType(fileType string) string {
 	fileType = strings.ToLower(strings.TrimSpace(fileType))
 	if mediaType, _, err := mime.ParseMediaType(fileType); err == nil {
 		fileType = mediaType
 	} else if idx := strings.Index(fileType, ";"); idx >= 0 {
 		fileType = strings.TrimSpace(fileType[:idx])
 	}
-	fileType = strings.TrimPrefix(fileType, ".")
+	return strings.TrimPrefix(fileType, ".")
+}
+
+// bedrockDocumentFormat maps a MIME type or bare file extension to a Bedrock Converse
+// document format. Media type parameters (e.g. "; charset=utf-8") are ignored. ok is
+// false when the input maps to no format Bedrock supports, so callers can fall through
+// to the next available hint.
+func bedrockDocumentFormat(fileType string) (format string, isText bool, ok bool) {
+	fileType = normalizeBedrockDocumentType(fileType)
 
 	switch fileType {
 	case "text/plain", "txt":
@@ -298,6 +302,163 @@ func bedrockDocumentFormat(fileType string) (format string, isText bool, ok bool
 	}
 
 	return "", false, false
+}
+
+func isOpaqueBedrockDocumentType(fileType string) bool {
+	switch normalizeBedrockDocumentType(fileType) {
+	case "", "application/octet-stream", "binary/octet-stream", "octet-stream":
+		return true
+	default:
+		return false
+	}
+}
+
+type bedrockDocumentSourceRequirement uint8
+
+const (
+	bedrockDocumentSourceRequired bedrockDocumentSourceRequirement = iota
+	// Chat file blocks can carry a provider-native file ID without inline data.
+	// Preserve the historical document placeholder for that path until Bedrock
+	// has a native representation for the ID.
+	bedrockDocumentSourceOptional
+)
+
+// materializeBedrockDocument converts Bifrost's canonical file fields into the
+// document shape required by Bedrock Converse. All callers use this
+// boundary so chat files, Responses files, and tool-result files share format
+// inference, data-URL parsing, and bounded URL fetching behavior.
+func materializeBedrockDocument(
+	ctx context.Context,
+	fileData *string,
+	fileURL *string,
+	filename *string,
+	fileType *string,
+	sourceRequirement bedrockDocumentSourceRequirement,
+) (*BedrockDocumentSource, error) {
+	document := &BedrockDocumentSource{
+		Name:   "document",
+		Format: "pdf",
+		Source: &BedrockDocumentSourceData{},
+	}
+	if filename != nil {
+		document.Name = normalizeBedrockFilename(*filename)
+	}
+
+	dataURLMediaType, dataURLPayload := "", ""
+	dataURLIsBase64, isDataURL := false, false
+	if fileData != nil && len(*fileData) >= len("data:") && strings.EqualFold((*fileData)[:len("data:")], "data:") {
+		normalizedDataURL := "data:" + (*fileData)[len("data:"):]
+		dataURLMediaType, dataURLIsBase64, dataURLPayload, isDataURL = schemas.ParseDataURL(normalizedDataURL)
+		if !isDataURL {
+			return nil, fmt.Errorf("invalid document data URL")
+		}
+	}
+
+	// Resolve the document format from the most authoritative available hint.
+	// An unidentifiable document retains Bedrock's historical PDF default.
+	format, isText := "", false
+	if fileType != nil && strings.TrimSpace(*fileType) != "" {
+		var matched bool
+		format, isText, matched = bedrockDocumentFormat(*fileType)
+		if !matched && !isOpaqueBedrockDocumentType(*fileType) {
+			return nil, fmt.Errorf("unsupported Bedrock document format %q", *fileType)
+		}
+	}
+	dataURLIsText := false
+	if isDataURL {
+		dataURLFormat, sourceIsText, matched := bedrockDocumentFormat(dataURLMediaType)
+		if !matched && !isOpaqueBedrockDocumentType(dataURLMediaType) {
+			return nil, fmt.Errorf("unsupported Bedrock document format %q", dataURLMediaType)
+		}
+		dataURLIsText = sourceIsText
+		if format == "" && matched {
+			format, isText = dataURLFormat, sourceIsText
+		}
+	}
+	if format == "" && filename != nil {
+		if dot := strings.LastIndex(*filename, "."); dot >= 0 {
+			format, isText, _ = bedrockDocumentFormat((*filename)[dot+1:])
+		}
+	}
+	if format != "" {
+		document.Format = format
+	}
+
+	if fileURL != nil && *fileURL != "" {
+		if s3Location, ok := bedrockS3LocationFromURL(*fileURL); ok {
+			if format == "" {
+				if resolvedFormat, resolved := bedrockDocumentFormatFromPath(*fileURL); resolved {
+					format = resolvedFormat
+					document.Format = resolvedFormat
+				}
+			}
+			if format == "" {
+				return nil, fmt.Errorf("cannot determine document format for %q: set file_type or give the object a file extension", *fileURL)
+			}
+			document.Source.S3Location = s3Location
+			return document, nil
+		}
+		if strings.HasPrefix(*fileURL, "s3://") {
+			return nil, fmt.Errorf("invalid s3:// document reference %q: expected s3://bucket/key", *fileURL)
+		}
+
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		fetchedMediaType, fetchedBase64, err := providerUtils.FetchAndEncodeURL(ctx, *fileURL)
+		if err != nil {
+			return nil, err
+		}
+		if fetchedFormat, _, ok := bedrockDocumentFormat(fetchedMediaType); ok {
+			document.Format = fetchedFormat
+		} else if !isOpaqueBedrockDocumentType(fetchedMediaType) {
+			return nil, fmt.Errorf("unsupported Bedrock document format %q", fetchedMediaType)
+		}
+		document.Source.Bytes = &fetchedBase64
+		return document, nil
+	}
+
+	if fileData == nil {
+		if sourceRequirement == bedrockDocumentSourceOptional {
+			return document, nil
+		}
+		return nil, fmt.Errorf("bedrock document requires file_data or file_url")
+	}
+
+	if isDataURL {
+		if dataURLIsBase64 {
+			if dataURLIsText {
+				decoded, err := base64.StdEncoding.DecodeString(dataURLPayload)
+				if err != nil {
+					return nil, fmt.Errorf("invalid base64 document data URL: %w", err)
+				}
+				text := string(decoded)
+				document.Source.Text = &text
+			} else {
+				document.Source.Bytes = &dataURLPayload
+			}
+			return document, nil
+		}
+
+		decoded, err := url.PathUnescape(dataURLPayload)
+		if err != nil {
+			return nil, fmt.Errorf("invalid percent-encoded document data URL payload: %w", err)
+		}
+		if dataURLIsText {
+			document.Source.Text = &decoded
+		} else {
+			encoded := base64.StdEncoding.EncodeToString([]byte(decoded))
+			document.Source.Bytes = &encoded
+		}
+		return document, nil
+	}
+
+	if isText {
+		document.Source.Text = fileData
+	} else {
+		document.Source.Bytes = fileData
+	}
+	return document, nil
 }
 
 // bedrockAliasToolName returns a Bedrock-safe tool name and records a reverse mapping.
@@ -1336,143 +1497,18 @@ func convertContentBlock(ctx context.Context, block schemas.ChatContentBlock) ([
 			return nil, fmt.Errorf("file block missing file field")
 		}
 
-		documentSource := &BedrockDocumentSource{
-			Name:   "document",
-			Format: "pdf",
-			Source: &BedrockDocumentSourceData{},
+		document, err := materializeBedrockDocument(
+			ctx,
+			block.File.FileData,
+			block.File.FileURL,
+			block.File.Filename,
+			block.File.FileType,
+			bedrockDocumentSourceOptional,
+		)
+		if err != nil {
+			return nil, err
 		}
-
-		// Set filename (normalized for Bedrock)
-		if block.File.Filename != nil {
-			documentSource.Name = normalizeBedrockFilename(*block.File.Filename)
-		}
-
-		// Parse the data URL once; it carries both the payload and (for standard
-		// OpenAI clients, which have no file_type field) the document's MIME type.
-		dataURLMediaType, dataURLPayload := "", ""
-		dataURLIsBase64, isDataURL := false, false
-		if block.File.FileData != nil && strings.HasPrefix(*block.File.FileData, "data:") {
-			dataURLMediaType, dataURLIsBase64, dataURLPayload, isDataURL = schemas.ParseDataURL(*block.File.FileData)
-		}
-		// Resolve the document format, most authoritative hint first. Falls back to
-		// the "pdf" default only when nothing identifies the document.
-		format, isText := "", false
-		if block.File.FileType != nil {
-			format, isText, _ = bedrockDocumentFormat(*block.File.FileType)
-		}
-		if format == "" && isDataURL {
-			format, isText, _ = bedrockDocumentFormat(dataURLMediaType)
-		}
-		if format == "" && block.File.Filename != nil {
-			if dot := strings.LastIndex(*block.File.Filename, "."); dot >= 0 {
-				format, isText, _ = bedrockDocumentFormat((*block.File.Filename)[dot+1:])
-			}
-		}
-		if format != "" {
-			documentSource.Format = format
-		}
-
-		// s3:// document: hand Converse the object reference. Bytes and s3Location are
-		// alternative members of the same DocumentSource union, and Converse reads the
-		// object itself, so there is nothing to download here. Format has to come from
-		// the declared type / filename resolved above -- there is no Content-Type to
-		// refine it from.
-		if block.File.FileURL != nil {
-			if s3Loc, ok := bedrockS3LocationFromURL(*block.File.FileURL); ok {
-				// Last resort: the object key's own extension. Nothing is downloaded for
-				// an s3:// reference, so there is no Content-Type to read and no bytes to
-				// sniff -- the key is the only signal left, and the refusal below already
-				// tells the caller to use it. bedrockImageFormatFromPath does the same for
-				// the image twin.
-				if format == "" {
-					if resolved, ok := bedrockDocumentFormatFromPath(*block.File.FileURL); ok {
-						format = resolved
-						documentSource.Format = format
-					}
-				}
-				if format == "" {
-					return nil, fmt.Errorf("cannot determine document format for %q: set file_type or give the object a file extension", *block.File.FileURL)
-				}
-				documentSource.Source.S3Location = s3Loc
-				return []BedrockContentBlock{
-					{
-						Document: documentSource,
-					},
-				}, nil
-			} else if strings.HasPrefix(*block.File.FileURL, "s3://") {
-				// The scheme is right but the reference is not: bedrockS3LocationFromURL
-				// rejects a bucket with no object key. Falling through would hand it to
-				// the http(s) fetch path, whose "unsupported URL scheme" refusal is
-				// actively misleading -- s3:// is supported, this one is just malformed.
-				return nil, fmt.Errorf("invalid s3:// document reference %q: expected s3://bucket/key", *block.File.FileURL)
-			}
-		}
-		if format != "" {
-			documentSource.Format = format
-		}
-
-		// URL-sourced document: fetch and inline the bytes. Converse has no url member
-		// on DocumentSource, so an http(s) reference must travel as bytes.
-		if block.File.FileURL != nil && *block.File.FileURL != "" {
-			fetchedMediaType, fetchedB64, fetchErr := providerUtils.FetchAndEncodeURL(ctx, *block.File.FileURL)
-			if fetchErr != nil {
-				return nil, fetchErr
-			}
-			// Refine format from response Content-Type when present (more reliable
-			// than file extension or upstream-declared media type).
-			if fetchedFormat, _, ok := bedrockDocumentFormat(fetchedMediaType); ok {
-				documentSource.Format = fetchedFormat
-			}
-			documentSource.Source.Bytes = &fetchedB64
-			return []BedrockContentBlock{
-				{
-					Document: documentSource,
-				},
-			}, nil
-		}
-
-		// Handle file data - strip data URL prefix if present
-		if block.File.FileData != nil {
-			fileData := *block.File.FileData
-
-			if isDataURL {
-				if dataURLIsBase64 {
-					documentSource.Source.Bytes = &dataURLPayload
-				} else {
-					// Inline percent-encoded payload (data:text/plain,Hello%20World)
-					decoded, err := url.PathUnescape(dataURLPayload)
-					if err != nil {
-						return nil, fmt.Errorf("invalid percent-encoded data URL payload: %w", err)
-					}
-					dataURLPayload = decoded
-					if isText {
-						documentSource.Source.Text = &dataURLPayload
-					}
-					encoded := base64.StdEncoding.EncodeToString([]byte(dataURLPayload))
-					documentSource.Source.Bytes = &encoded
-				}
-				return []BedrockContentBlock{
-					{
-						Document: documentSource,
-					},
-				}, nil
-			}
-
-			// Set text or bytes based on file type
-			if isText {
-				documentSource.Source.Text = &fileData // Plain text
-				encoded := base64.StdEncoding.EncodeToString([]byte(fileData))
-				documentSource.Source.Bytes = &encoded // Also sets Bytes
-			} else {
-				documentSource.Source.Bytes = &fileData
-			}
-		}
-
-		return []BedrockContentBlock{
-			{
-				Document: documentSource,
-			},
-		}, nil
+		return []BedrockContentBlock{{Document: document}}, nil
 	case schemas.ChatContentBlockTypeInputAudio:
 		// Bedrock doesn't support audio input in Converse API
 		return nil, fmt.Errorf("audio input not supported in Bedrock Converse API")
