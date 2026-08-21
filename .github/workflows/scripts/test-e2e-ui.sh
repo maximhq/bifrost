@@ -143,14 +143,17 @@ fi
 echo "📦 Installing Playwright dependencies..."
 cd tests/e2e
 npm ci
-npx playwright install --with-deps chromium
+# ./node_modules/.bin/playwright, not `npx playwright`: npm ci above installs the exact
+# @playwright/test 1.57.0 that package-lock.json records, and calling the local binary
+# directly means npx can never silently fetch a different one from the registry.
+./node_modules/.bin/playwright install --with-deps chromium
 
 # Run Playwright tests (BASE_URL = browser; BIFROST_BASE_URL = global-setup API calls).
 # Forward MCP_SSE_HEADERS so the mcp-registry SSE test can use it (set in workflow env).
 echo "🎭 Running Playwright E2E tests..."
 CI=true SKIP_WEB_SERVER=1 BASE_URL=http://localhost:18080 BIFROST_BASE_URL=http://localhost:18080 \
   MCP_SSE_HEADERS="${MCP_SSE_HEADERS:-}" \
-  npx playwright test --workers=4
+  ./node_modules/.bin/playwright test --workers=4
 PLAYWRIGHT_EXIT=$?
 
 cd ../..

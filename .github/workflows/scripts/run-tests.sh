@@ -63,7 +63,10 @@ for mcp_dir in examples/mcps/*/; do
       fi
     elif [ -f "$mcp_dir/package.json" ]; then
       echo "  Building $mcp_name (TypeScript)..."
-      if cd "$mcp_dir" && npm install --silent && npm run build && cd - > /dev/null; then
+      # `npm ci`, not `npm install`: every examples/mcps/* TypeScript server commits a
+      # package-lock.json, so ci installs that exact tree with integrity hashes enforced
+      # instead of re-resolving transitive deps loosely at run time.
+      if cd "$mcp_dir" && npm ci --silent && npm run build && cd - > /dev/null; then
         echo -e "  ${GREEN}✓ $mcp_name${NC}"
       else
         echo -e "  ${RED}✗ $mcp_name${NC}"
@@ -91,30 +94,18 @@ cd ..
 echo ""
 echo "🛡️  4/5 - Running Governance Tests..."
 echo "-----------------------------------"
+# The governance suite is Go (tests/governance/go.mod), not Python. It was pytest once,
+# and this block still built a venv and ran `pip install -r requirements.txt` against a
+# file that no longer exists - which aborts the whole script under `set -e`.
 if [ -d "tests/governance" ]; then
   cd tests/governance
-  
-  # Check if virtual environment exists, create if not
-  if [ ! -d "venv" ]; then
-    echo "Creating Python virtual environment..."
-    python3 -m venv venv
-  fi
-  
-  # Activate virtual environment
-  source venv/bin/activate
-  
-  # Install dependencies
-  echo "Installing Python dependencies..."
-  pip install -q -r requirements.txt
-  
-  # Run tests
-  if pytest -v; then
+
+  if go test ./... ; then
     report_result "Governance Tests" 0
   else
     report_result "Governance Tests" 1
   fi
-  
-  deactivate
+
   cd ../..
 else
   echo -e "${YELLOW}⚠️  Governance tests directory not found, skipping...${NC}"
@@ -124,31 +115,26 @@ fi
 echo ""
 echo "🔗 5/5 - Running Integration Tests..."
 echo "-----------------------------------"
-if [ -d "tests/integrations" ]; then
-  cd tests/integrations
-  
-  # Check if virtual environment exists, create if not
-  if [ ! -d "venv" ]; then
-    echo "Creating Python virtual environment..."
-    python3 -m venv venv
-  fi
-  
-  # Activate virtual environment
-  source venv/bin/activate
-  
-  # Install dependencies
-  echo "Installing Python dependencies..."
-  pip install -q -r requirements.txt
-  
+# The Python integration suite lives in tests/integrations/python and is uv-managed:
+# `uv sync --frozen` installs exactly what uv.lock records, which both fixes the stale
+# `pip install -r requirements.txt` (no such file) and pins the install by lockfile,
+# matching how test-integrations.sh does it.
+if [ -d "tests/integrations/python" ]; then
+  cd tests/integrations/python
+
+  echo "Installing Python dependencies from uv.lock..."
+  uv sync --frozen
+
   # Run tests
-  if python run_all_tests.py; then
+  if uv run python run_all_tests.py; then
     report_result "Integration Tests" 0
   else
     report_result "Integration Tests" 1
   fi
-  
-  deactivate
-  cd ../..
+
+  # No `deactivate` here: uv run manages its own env, and calling deactivate without an
+  # activated venv is a command-not-found that would abort the script under `set -e`.
+  cd ../../..
 else
   echo -e "${YELLOW}⚠️  Integration tests directory not found, skipping...${NC}"
 fi
