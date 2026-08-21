@@ -1609,6 +1609,36 @@ func MergeExtraParamsIntoJSON(jsonBody []byte, extraParams map[string]interface{
 	return compact.Bytes(), nil
 }
 
+// startPhaseSpan opens a nil-safe internal child span marking a Bifrost overhead
+// phase (request marshalling, response parsing) so the log detail view can attribute
+// core overhead. Both returns are nil when no trace is active; EndSpan is nil-safe,
+// so callers guard only on the tracer. StartSpanID avoids a per-span context alloc.
+func startPhaseSpan(ctx context.Context, name string) (schemas.Tracer, schemas.SpanHandle) {
+	t, ok := ctx.Value(schemas.BifrostContextKeyTracer).(schemas.Tracer)
+	if !ok || t == nil {
+		return nil, nil
+	}
+	_, h := t.StartSpanID(ctx, name, schemas.SpanKindInternal)
+	return t, h
+}
+
+// StartResponseConvertorSpan opens a nil-safe "convertor" span for the provider->Bifrost
+// response mapping (ToBifrost*Response). It shares the "convertor" bucket with the
+// request-side conversion so total conversion time is attributed together, instead of
+// the response half folding into core. Symmetric to the request path: response-parse
+// times the JSON decode, this times the struct->unified mapping. Wrapped at the primary
+// chat call sites; secondary response paths fold into core. EndSpan is nil-safe.
+func StartResponseConvertorSpan(ctx context.Context) (schemas.Tracer, schemas.SpanHandle) {
+	return startPhaseSpan(ctx, "convertor")
+}
+
+// StartResponseParseSpan opens the "response-parse" overhead phase span for providers
+// that unmarshal the response body directly (e.g. Bedrock Converse) rather than through
+// HandleProviderResponseCtx. Nil-safe: returns a nil tracer when no trace is active.
+func StartResponseParseSpan(ctx context.Context) (schemas.Tracer, schemas.SpanHandle) {
+	return startPhaseSpan(ctx, "response-parse")
+}
+
 // CheckContextAndGetRequestBody checks if the raw request body should be used, and returns it if it exists.
 func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGetter, requestConverter RequestBodyConverter) ([]byte, *schemas.BifrostError) {
 	if IsLargePayloadPassthroughEnabled(ctx) {
@@ -1617,17 +1647,32 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 
 	rawBody, ok := CheckAndGetRawRequestBody(ctx, request)
 	if !ok {
+		// The converting path splits into two non-overlapping overhead phases so their
+		// costs are attributed separately (and never double-counted): "convertor" for
+		// the Bifrost->provider format conversion, then "request-marshal" for the JSON
+		// encode. The raw-body passthrough branch does neither.
+		ct, chdl := startPhaseSpan(ctx, "convertor")
 		convertedBody, err := requestConverter()
 		if err != nil {
+			if ct != nil {
+				ct.EndSpan(chdl, schemas.SpanStatusError, err.Error())
+			}
 			return nil, NewBifrostOperationError(schemas.ErrRequestBodyConversion, err)
+		}
+		if ct != nil {
+			ct.EndSpan(chdl, schemas.SpanStatusOk, "")
 		}
 		if convertedBody == nil {
 			return nil, NewBifrostOperationError("request body is not provided", nil)
 		}
 
+		mt, mhdl := startPhaseSpan(ctx, "request-marshal")
 		// Indenting is removed to reduce data on wire
 		jsonBody, err := MarshalProviderRequest(convertedBody)
 		if err != nil {
+			if mt != nil {
+				mt.EndSpan(mhdl, schemas.SpanStatusError, err.Error())
+			}
 			return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 		}
 		// Merge ExtraParams into the JSON if passthrough is enabled
@@ -1638,9 +1683,15 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 				// tool schemas and other order-sensitive JSON structures.
 				jsonBody, err = MergeExtraParamsIntoJSON(jsonBody, extraParams)
 				if err != nil {
+					if mt != nil {
+						mt.EndSpan(mhdl, schemas.SpanStatusError, err.Error())
+					}
 					return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 				}
 			}
+		}
+		if mt != nil {
+			mt.EndSpan(mhdl, schemas.SpanStatusOk, "")
 		}
 		return jsonBody, nil
 	} else {
@@ -1835,6 +1886,31 @@ func EnrichError(
 	}
 
 	return bifrostErr
+}
+
+// HandleProviderResponseCtx is HandleProviderResponse with a context, so the JSON
+// parse is timed as the "response-parse" overhead phase for the log detail view.
+// Used at the primary completion call sites (chat / responses / text) where parse
+// time is on the latency hot path; the ctx-less HandleProviderResponse remains for
+// the many secondary sites (files, batches, containers) whose parse time is not
+// worth a span and simply folds into the "core" bucket.
+func HandleProviderResponseCtx[T any](ctx context.Context, responseBody []byte, response *T, requestBody []byte, sendBackRawRequest bool, sendBackRawResponse bool) (rawRequest interface{}, rawResponse interface{}, bifrostErr *schemas.BifrostError) {
+	if t, h := startPhaseSpan(ctx, "response-parse"); t != nil {
+		// Inspect the named bifrostErr so a failed parse ends the span as an error
+		// instead of appearing as successful overhead work.
+		defer func() {
+			if bifrostErr != nil {
+				msg := "response parse failed"
+				if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
+					msg = bifrostErr.Error.Message
+				}
+				t.EndSpan(h, schemas.SpanStatusError, msg)
+				return
+			}
+			t.EndSpan(h, schemas.SpanStatusOk, "")
+		}()
+	}
+	return HandleProviderResponse(responseBody, response, requestBody, sendBackRawRequest, sendBackRawResponse)
 }
 
 // HandleProviderResponse handles common response parsing logic for provider responses.

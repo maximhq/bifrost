@@ -80,6 +80,18 @@ export const PRICING_FIELDS = [
 		requestTypeGroups: ["chat"],
 	},
 	{
+		key: "input_cost_per_token_ultrafast",
+		label: "Input / token (ultrafast)",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
+	{
+		key: "output_cost_per_token_ultrafast",
+		label: "Output / token (ultrafast)",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
+	{
 		key: "input_cost_per_token_flex",
 		label: "Input / token (flex)",
 		group: "chat",
@@ -218,6 +230,12 @@ export const PRICING_FIELDS = [
 		requestTypeGroups: ["chat"],
 	},
 	{
+		key: "cache_read_input_token_cost_ultrafast",
+		label: "Cache read / token (ultrafast)",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
+	{
 		key: "cache_read_input_token_cost_flex",
 		label: "Cache read / token (flex)",
 		group: "chat",
@@ -272,6 +290,12 @@ export const PRICING_FIELDS = [
 		requestTypeGroups: ["chat"],
 	},
 	{
+		key: "cache_creation_input_token_cost_ultrafast",
+		label: "Cache creation / token (ultrafast)",
+		group: "chat",
+		requestTypeGroups: ["chat"],
+	},
+	{
 		key: "cache_creation_input_token_cost_flex",
 		label: "Cache creation / token (flex)",
 		group: "chat",
@@ -294,6 +318,12 @@ export const PRICING_FIELDS = [
 		label: "Search context / query",
 		group: "chat",
 		requestTypeGroups: ["chat", "rerank"],
+	},
+	{
+		key: "input_cost_per_query",
+		label: "Rerank / query",
+		group: "chat",
+		requestTypeGroups: ["rerank"],
 	},
 	{
 		key: "code_interpreter_cost_per_session",

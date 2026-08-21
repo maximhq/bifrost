@@ -2725,6 +2725,8 @@ var pricingSyncUpdateColumns = []string{
 	"output_cost_per_token_batches",
 	"input_cost_per_token_priority",
 	"output_cost_per_token_priority",
+	"input_cost_per_token_ultrafast",
+	"output_cost_per_token_ultrafast",
 	"input_cost_per_token_flex",
 	"output_cost_per_token_flex",
 	"input_cost_per_token_fast",
@@ -2758,6 +2760,7 @@ var pricingSyncUpdateColumns = []string{
 	"cache_creation_input_token_cost_above_1hr_above_200k_tokens",
 	"cache_creation_input_audio_token_cost",
 	"cache_read_input_token_cost_priority",
+	"cache_read_input_token_cost_ultrafast",
 	"cache_read_input_token_cost_flex",
 	"cache_read_input_image_token_cost",
 	"cache_read_input_token_cost_above_272k_tokens",
@@ -2767,6 +2770,7 @@ var pricingSyncUpdateColumns = []string{
 	"cache_creation_input_token_cost_flex",
 	"cache_creation_input_token_cost_flex_above_272k_tokens",
 	"cache_creation_input_token_cost_priority",
+	"cache_creation_input_token_cost_ultrafast",
 	"cache_creation_input_token_cost_fast",
 	"cache_creation_input_token_cost_above_1hr_fast",
 	"cache_read_input_token_cost_fast",
@@ -2804,6 +2808,7 @@ var pricingSyncUpdateColumns = []string{
 	"output_cost_per_second",
 	// Costs - Other
 	"search_context_cost_per_query",
+	"input_cost_per_query",
 	"code_interpreter_cost_per_session",
 	"cost_per_request",
 	// Costs - OCR

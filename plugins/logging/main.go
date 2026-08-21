@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -309,25 +310,22 @@ func (p *LoggerPlugin) applyInternalCallCosts(ctx *schemas.BifrostContext, entry
 		*entry.Cost += cost
 	}
 
-	// Denormalize the split too: the cache embedding lookup is an input cost, the
-	// guardrail judge call an additional one. When a usage carrier exists, merge
-	// onto its breakdown (SerializeFields denormalizes from there); otherwise
-	// there is no carrier to synthesize (that would suppress the deferred-usage
-	// watcher), so write the split columns directly.
+	// Both are additional-side sidecar costs. Merge onto the usage carrier's
+	// breakdown when one exists (SerializeFields denormalizes from it); otherwise
+	// write the additional_cost column directly. Don't synthesize a carrier: that
+	// suppresses the deferred-usage watcher.
 	sidecar := &schemas.BifrostCost{TotalCost: cost}
-	if cacheCost > 0 {
-		sidecar.InputCost = cacheCost
-		sidecar.InputCostDetails = &schemas.InputCostDetails{TextCost: cacheCost}
-	}
-	if guardrailCost > 0 {
-		sidecar.AdditionalCost = guardrailCost
-		sidecar.AdditionalCostDetails = &schemas.AdditionalCostDetails{GuardrailCost: guardrailCost}
+	if cacheCost > 0 || guardrailCost > 0 {
+		sidecar.AdditionalCost = cacheCost + guardrailCost
+		sidecar.AdditionalCostDetails = &schemas.AdditionalCostDetails{
+			SemanticCacheCost: cacheCost,
+			GuardrailCost:     guardrailCost,
+		}
 	}
 	if entry.TokenUsageParsed != nil {
 		entry.TokenUsageParsed.Cost = entry.TokenUsageParsed.Cost.Add(sidecar)
 	} else {
-		entry.InputCost += cacheCost
-		entry.AdditionalCost += guardrailCost
+		entry.AdditionalCost += cacheCost + guardrailCost
 	}
 }
 
@@ -1053,6 +1051,12 @@ func (p *LoggerPlugin) StartBatchAccountingSweeper(fetcher batchaccounting.Batch
 // GetName returns the name of the plugin
 func (p *LoggerPlugin) GetName() string {
 	return PluginName
+}
+
+// HTTPTransportPreAuthHook is a no-op: this plugin does no credential work, so it has
+// nothing to do before the transport authenticates the request (HTTPTransportPlugin interface).
+func (*LoggerPlugin) HTTPTransportPreAuthHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	return nil, nil
 }
 
 // HTTPTransportPreHook is not used for this plugin
@@ -2016,6 +2020,11 @@ func (p *LoggerPlugin) storeOrEnqueueEntry(ctx *schemas.BifrostContext, entry *l
 	}
 }
 
+// ConsumesOverheadSpans opts this plugin into receiving the internal overhead-breakdown
+// spans (implements schemas.OverheadSpanConsumer). computeOverheadBreakdown needs them;
+// every other connector gets a trace with those spans stripped.
+func (p *LoggerPlugin) ConsumesOverheadSpans() bool { return true }
+
 // Inject receives a completed trace and writes the log entries with plugin logs to DB.
 // This implements the ObservabilityPlugin interface.
 func (p *LoggerPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
@@ -2050,6 +2059,9 @@ func (p *LoggerPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
 		upstreamMs, upOK = traceAttrFloatMs(trace.RootSpan.Attributes, schemas.AttrBifrostUpstreamDurationMs)
 		overheadMs, ovOK = traceAttrFloatMs(trace.RootSpan.Attributes, schemas.AttrBifrostOverheadDurationMs)
 	}
+	// Per-span self-time decomposition of overhead, attached to the same terminal
+	// row that receives the overhead number below.
+	overheadBreakdown := computeOverheadBreakdown(trace, overheadMs, ovOK)
 
 	p.logger.Debug("Inject: enqueuing %d log entries", len(pending.entries))
 	// Upstream/overhead are request-level: put them on one row per trace, not all.
@@ -2095,6 +2107,9 @@ func (p *LoggerPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
 				total := upstreamMs + overheadMs
 				entry.Latency = &total
 			}
+			if len(overheadBreakdown) > 0 {
+				entry.OverheadBreakdownParsed = overheadBreakdown
+			}
 		} else if upOK || ovOK {
 			entry.UpstreamLatency = nil
 			entry.OverheadLatency = nil
@@ -2115,6 +2130,169 @@ func serializePluginLogs(logs []schemas.PluginLogEntry) string {
 		return ""
 	}
 	return string(data)
+}
+
+// spanWall is a span's wall-clock duration, guarding against unfinished spans
+// (zero or non-monotonic EndTime) which would otherwise read as huge negatives.
+func spanWall(s *schemas.Span) time.Duration {
+	if s.EndTime.IsZero() || !s.EndTime.After(s.StartTime) {
+		return 0
+	}
+	return s.EndTime.Sub(s.StartTime)
+}
+
+// spanOverlap is the duration of child that falls inside parent's time window. For a
+// genuinely nested child this equals the child's wall duration, so self-time is
+// unchanged; for a child re-parented by ID but running outside the parent (a
+// sequential sibling in wall-clock terms) it is zero. Guards unfinished spans.
+func spanOverlap(parent, child *schemas.Span) time.Duration {
+	if parent.EndTime.IsZero() || !parent.EndTime.After(parent.StartTime) {
+		return 0
+	}
+	if child.EndTime.IsZero() || !child.EndTime.After(child.StartTime) {
+		return 0
+	}
+	start := child.StartTime
+	if parent.StartTime.After(start) {
+		start = parent.StartTime
+	}
+	end := child.EndTime
+	if parent.EndTime.Before(end) {
+		end = parent.EndTime
+	}
+	if !end.After(start) {
+		return 0
+	}
+	return end.Sub(start)
+}
+
+// isOverheadSpanKind reports whether a span's self-time counts as attributable
+// Bifrost overhead. Only spans that tightly bracket Bifrost's own code qualify:
+// plugin hooks and internal operations (key.selection, etc). Deliberately excluded:
+//   - llm.call/retry/fallback and the media provider kinds: the upstream side.
+//   - the root http.request span: its self-time is the glue between child spans,
+//     which for streaming also contains response-body socket reads that happen
+//     outside any child span. That time is real upstream (and is already in the
+//     upstream accumulator), so counting it here would double-report it as overhead.
+//
+// Excluded spans still subtract from their parent's self-time via childDur, so their
+// time is removed from any bucket rather than mislabeled. The gap between the summed
+// buckets and the stamped overhead number is surfaced as the reconciliation line.
+func isOverheadSpanKind(kind schemas.SpanKind) bool {
+	switch kind {
+	case schemas.SpanKindPlugin, schemas.SpanKindInternal:
+		return true
+	default:
+		return false
+	}
+}
+
+// overheadBucketName maps an overhead-side span to its breakdown bucket.
+func overheadBucketName(s *schemas.Span) string {
+	if s.Kind == schemas.SpanKindPlugin {
+		// plugin.<name>.<phase> -> plugin.<name>, collapsing the hook phases.
+		n := strings.TrimPrefix(s.Name, "plugin.")
+		if i := strings.LastIndex(n, "."); i > 0 {
+			n = n[:i]
+		}
+		return "plugin." + n
+	}
+	return s.Name // key.selection and other internal spans keep their name
+}
+
+// computeOverheadBreakdown decomposes Bifrost overhead across spans by self-time:
+// each span's own wall duration minus the wall duration of its direct children.
+// Self-times across the tree are non-overlapping and sum to the root duration, so
+// summing the overhead-side buckets is an independent measure of overhead that does
+// not depend on the upstream socket accumulator. Only overhead-side spans produce a
+// bucket; provider/upstream spans still subtract from their parent's self-time.
+//
+// The remaining overhead (the stamped total, minus the measured plugin/internal
+// self-time) is attributed to a final "core" bucket: transport parsing, routing, and
+// request/response marshalling that Bifrost does outside any plugin span. It is
+// derived from overheadMs (which already excludes upstream), not from the root
+// span's self-time, so it never picks up streaming socket reads. Buckets are
+// returned with microsecond values, measured spans first (chronological) then core.
+func computeOverheadBreakdown(trace *schemas.Trace, overheadMs float64, overheadOK bool) []logstore.OverheadBucket {
+	if trace == nil || len(trace.Spans) == 0 {
+		return nil
+	}
+	// Sum direct-children time per parent, over ALL spans (upstream ones too), so
+	// excluded child spans are still removed from their parent's self-time. Only the
+	// portion of a child that temporally OVERLAPS its parent counts: a child
+	// re-parented for trace-hierarchy reasons but running outside the parent's window
+	// (e.g. llm.call is linked under key.selection but starts after it ends) then
+	// correctly subtracts nothing, instead of driving the parent's self-time negative.
+	spanByID := make(map[string]*schemas.Span, len(trace.Spans))
+	for _, s := range trace.Spans {
+		if s != nil && s.SpanID != "" {
+			spanByID[s.SpanID] = s
+		}
+	}
+	childDur := make(map[string]time.Duration, len(trace.Spans))
+	for _, s := range trace.Spans {
+		if s == nil || s.ParentID == "" {
+			continue
+		}
+		parent := spanByID[s.ParentID]
+		if parent == nil {
+			continue
+		}
+		childDur[s.ParentID] += spanOverlap(parent, s)
+	}
+
+	type agg struct {
+		dur   time.Duration
+		kind  schemas.SpanKind
+		first time.Time
+	}
+	buckets := make(map[string]*agg)
+	for _, s := range trace.Spans {
+		if s == nil || !isOverheadSpanKind(s.Kind) {
+			continue
+		}
+		self := spanWall(s) - childDur[s.SpanID]
+		if self <= 0 {
+			continue
+		}
+		name := overheadBucketName(s)
+		b := buckets[name]
+		if b == nil {
+			b = &agg{kind: s.Kind, first: s.StartTime}
+			buckets[name] = b
+		}
+		b.dur += self
+		if s.StartTime.Before(b.first) {
+			b.first = s.StartTime
+		}
+	}
+	out := make([]logstore.OverheadBucket, 0, len(buckets)+1)
+	var measuredNs int64
+	for name, b := range buckets {
+		measuredNs += b.dur.Nanoseconds()
+		out = append(out, logstore.OverheadBucket{
+			Name:       name,
+			Kind:       string(b.kind),
+			DurationUs: float64(b.dur.Nanoseconds()) / 1000.0,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return buckets[out[i].Name].first.Before(buckets[out[j].Name].first)
+	})
+
+	// Attribute whatever overhead is left over to Bifrost core. Skip when the
+	// measured spans already exceed the total (upstream over-counting): a negative
+	// core is a diagnostic signal, not a bucket, and is surfaced in the UI footer.
+	if overheadOK {
+		coreUs := overheadMs*1000.0 - float64(measuredNs)/1000.0
+		if coreUs > 0.5 {
+			out = append(out, logstore.OverheadBucket{Name: "core", Kind: "core", DurationUs: coreUs})
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // traceAttrFloatMs reads a millisecond span attribute, tolerating int/int64/float64.

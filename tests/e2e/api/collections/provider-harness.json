@@ -107,6 +107,22 @@
           "    } else if (j.embedding && Array.isArray(j.embedding.values)) {",
           "        shape = 'genai-embedding';",
           "        hasContent = j.embedding.values.length > 0;",
+          "    } else if (j.embeddingsByType && typeof j.embeddingsByType === 'object') {",
+          "        shape = 'bedrock-titan-typed-embedding';",
+          "        var titanEmbeddingTypes = ['float', 'binary'];",
+          "        hasContent = titanEmbeddingTypes.some(function (type) {",
+          "            return Array.isArray(j.embeddingsByType[type]) && j.embeddingsByType[type].length > 0;",
+          "        });",
+          "    } else if (Array.isArray(j.embeddings)) {",
+          "        shape = 'bedrock-cohere-embedding';",
+          "        hasContent = j.embeddings.some(function (vector) { return Array.isArray(vector) && vector.length > 0; });",
+          "    } else if (j.embeddings && typeof j.embeddings === 'object') {",
+          "        shape = 'bedrock-cohere-typed-embedding';",
+          "        var cohereEmbeddingTypes = ['float', 'int8', 'uint8', 'binary', 'ubinary'];",
+          "        hasContent = cohereEmbeddingTypes.some(function (type) {",
+          "            var vectors = j.embeddings[type];",
+          "            return Array.isArray(vectors) && vectors.length > 0 && Array.isArray(vectors[0]) && vectors[0].length > 0;",
+          "        });",
           "    } else if (Array.isArray(j.embedding)) {",
           "        shape = 'bedrock-titan-embedding';",
           "        hasContent = j.embedding.length > 0;",
@@ -173,6 +189,11 @@
           "        shape = 'video-job';",
           "        // An async video job is a receipt, not content: submit returns {id, status} and",
           "        // the rendered asset only exists after polling. The id IS the payload.",
+          "        hasContent = !!j.id;",
+          "    } else if (typeof j.status === 'string' && typeof j.id === 'string' && (j.request_id || j.created_at)) {",
+          "        shape = 'async-job';",
+          "        // An async job is a receipt, not content: submit returns {id, status} and the result",
+          "        // only exists once the job completes. The id IS the payload.",
           "        hasContent = !!j.id;",
           "    }",
           "    pm.expect(hasContent, 'expected non-empty content (shape=' + shape + ', body=' + JSON.stringify(j).slice(0, 200) + ')').to.be.true;",
@@ -130344,11 +130365,11 @@
     },
     {
       "name": "53. Embeddings x provider x parameter surface",
-      "description": "Embedding coverage before this folder was one request per provider, each sending a single string and asserting nothing beyond the collection-level status check - and that check is a no-op for embeddings, because the shape branch it lands in is Array.isArray(j.data) with hasContent = j.data.length >= 0, which is true for an empty list. A provider returning zero vectors passed.\n\nThis folder pins the request parameter surface end to end: what the caller sends at the gateway, what the provider-native field is called, and what observable property of the response proves the rename survived the trip. Bedrock gets the depth because it is the only provider carrying two incompatible embedding envelopes behind one name, chosen by substring match on the model id.\n\nRoute reachability worth knowing before adding rows here: /v1/embeddings parses exactly four body fields (model, input, encoding_format, dimensions) plus fallbacks. Every other key is dropped silently unless the request carries x-bf-passthrough-extra-params: true and nests the key under \"extra_params\" (transports/bifrost-http/integrations/router.go). There is no embedding route on the /bedrock drop-in at all - /bedrock/model/{id}/invoke converts to Converse and then to Responses - so Bedrock embeddings are reachable only through /v1/embeddings, /openai/v1/embeddings, /genai/.../:embedContent and /cohere/v2/embed.\n\nSub-folder names avoid provider keywords on purpose. runners/filter-collection.mjs matches PROVIDER against ancestor folder names as well as the item body, so naming this folder after Bedrock would hand every openai/gemini/vertex/azure row to the bedrock partition.",
+      "description": "Embedding coverage before this folder was one request per provider, each sending a single string and asserting nothing beyond the collection-level status check - and that check is a no-op for embeddings, because the shape branch it lands in is Array.isArray(j.data) with hasContent = j.data.length >= 0, which is true for an empty list. A provider returning zero vectors passed.\n\nThis folder pins the request parameter surface end to end: what the caller sends at the gateway, what the provider-native field is called, and what observable property of the response proves the rename survived the trip. Bedrock gets the depth because it is the only provider carrying two incompatible embedding envelopes behind one name, chosen by substring match on the model id.\n\nRoute reachability worth knowing before adding rows here: /v1/embeddings parses exactly four body fields (model, input, encoding_format, dimensions) plus fallbacks. Every other key is dropped silently unless the request carries x-bf-passthrough-extra-params: true and nests the key under \"extra_params\" (transports/bifrost-http/integrations/router.go). Native Bedrock embeddings are also reachable through /bedrock/model/{id}/invoke and /langchain/model/{id}/invoke; normalized and SDK-compatible routes include /v1/embeddings, /openai/v1/embeddings, /genai/.../:embedContent and /cohere/v2/embed.\n\nSub-folder names avoid provider keywords on purpose. runners/filter-collection.mjs matches PROVIDER against ancestor folder names as well as the item body, so naming this folder after Bedrock would hand every openai/gemini/vertex/azure row to the bedrock partition.",
       "item": [
         {
           "name": "53.A Bedrock Titan envelope (amazon.titan-embed-*)",
-          "description": "Titan takes a single `inputText` string and returns a single vector, so Bifrost joins array input with \" \\n\" before sending (core/providers/bedrock/embedding.go ToBedrockTitanEmbeddingRequest). These rows pin the Titan-shaped request body reaching AWS and the single-vector response coming back.\n\nAWS request fields (docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-titan-embed-text.html): inputText (required), dimensions (1024 default | 512 | 256), normalize (default true), embeddingTypes (camelCase, [\"float\"] | [\"binary\"] | both). Response: embedding, inputTextTokenCount, embeddingsByType.\n\nnormalize and embeddingTypes are not first-class fields on /v1/embeddings - only model, input, encoding_format and dimensions are parsed there. They reach the provider through x-bf-passthrough-extra-params: true plus an \"extra_params\" object, which is the door those rows use.",
+          "description": "Titan takes a single `inputText` string, so Bifrost joins array input with \" \\n\" before sending (core/providers/bedrock/embedding.go ToBedrockTitanEmbeddingRequest). The legacy/default response has one float vector; `embeddingTypes` returns one vector per requested representation. These rows pin the Titan-shaped request body reaching AWS and every requested representation coming back.\n\nAWS request fields (docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-titan-embed-text.html): inputText (required), dimensions (1024 default | 512 | 256), normalize (default true), embeddingTypes (camelCase, [\"float\"] | [\"binary\"] | both). Response: embedding, inputTextTokenCount, embeddingsByType.\n\nnormalize and embeddingTypes are not first-class fields on /v1/embeddings - only model, input, encoding_format and dimensions are parsed there. They reach the provider through x-bf-passthrough-extra-params: true plus an \"extra_params\" object, which is the door those rows use.",
           "item": [
             {
               "name": "53.A1 bedrock/amazon.titan-embed-text-v2:0 - baseline single input",
@@ -130635,7 +130656,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"bedrock/amazon.titan-embed-text-v2:0\",\n  \"input\": \"Hello world\",\n  \"extra_params\": {\n    \"embeddingTypes\": [\n      \"float\",\n      \"binary\"\n    ]\n  }\n}"
+                  "raw": "{\n  \"model\": \"bedrock/amazon.titan-embed-text-v2:0\",\n  \"input\": \"Hello world\",\n  \"embeddingTypes\": [\n    \"float\",\n    \"binary\"\n  ]\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/v1/embeddings",
@@ -130663,15 +130684,19 @@
                       "var data = j.data || [];",
                       "// AWS documents embeddingTypes (camelCase) as a Titan V2 field, and warns that the",
                       "// `embedding` field is omitted entirely when embeddingTypes contains only \"binary\".",
-                      "// This row asks for both, so the normalized float path must stay intact while the",
-                      "// binary variant is still recoverable from the raw provider payload.",
-                      "pm.test('returns 1 vector(s) - float path survives alongside binary', function () {",
+                      "// This row asks for both, so both normalized representations must survive while",
+                      "// the native AWS envelope remains recoverable from the opted-in raw payload.",
+                      "pm.test('returns both normalized float and binary representations', function () {",
                       "  pm.expect(data.length, 'wrong vector count; body: ' + pm.response.text().slice(0, 300))",
-                      "    .to.eql(1);",
+                      "    .to.eql(2);",
+                      "  var formats = [];",
                       "  for (var i = 0; i < data.length; i++) {",
                       "    pm.expect(Array.isArray(data[i].embedding), 'data[' + i + '].embedding is not an array').to.be.true;",
                       "    pm.expect(data[i].embedding.length, 'data[' + i + '].embedding is empty').to.be.above(0);",
+                      "    formats.push(data[i].encoding_format);",
                       "  }",
+                      "  formats.sort();",
+                      "  pm.expect(formats, 'expected one float and one binary representation').to.eql(['binary', 'float']);",
                       "});",
                       "pm.test('embeddingsByType.binary reached the caller via raw_response', function () {",
                       "  var raw = (j.extra_fields || {}).raw_response || {};",
@@ -132493,6 +132518,271 @@
                   }
                 }
               ]
+            },
+            {
+              "name": "runware/google:4@1 image-to-image via input_images (neutral field must reach inputs.referenceImages)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"runware/runware:101@1\",\n  \"prompt\": \"make the scones look frosted\",\n  \"input_images\": [\n    \"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\"\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/images/generations",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "images",
+                    "generations"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('input_images is not dropped', function () {",
+                      "  // google:4@1 declares inputs.referenceImages as REQUIRED, so a dropped input_images cannot",
+                      "  // pass silently: the provider answers 'Missing required parameter'. On a seedImage model the",
+                      "  // same bug returned 200 with an unrelated image, which is why it went unnoticed.",
+                      "  pm.expect(pm.response.text(), 'input_images was dropped').to.not.include('Missing required parameter');",
+                      "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                      "});",
+                      "pm.test('returns an asset', function () {",
+                      "  var d = pm.response.json().data;",
+                      "  pm.expect(d, 'no data: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                      "  pm.expect(!!(d[0].url || d[0].b64_json), 'no asset returned').to.be.true;",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "runware/runware:101@1 input_images accepts bare base64 (normalized to a data URI)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"runware/google:4@1\",\n  \"prompt\": \"make the scones look frosted\",\n  \"input_images\": [\n    \"iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAAAAADmVT4XAAABEklEQVR42u3O4UZDAQCA0Wsyk8xkkslMkslMJjOZTCaZZDKTZJJkMjOZmZnJzEwmSTJJkkmSTJIkyWSSJDMzmcxMkklmMjOzx+jPd57gCIKoSyzp7pHKeuV9/YoBpWpwaFg9otGO6sb0hnHjhGnSPDVtmZm1ztns8wuLjqXllVXnmsvtWff6/IFgaCMcicY241vbO7t7if2Dw6Pj5Mnp2flF6vLq+ub27v4h/Zh5en55fcvm8oX34kepXPn8+q7+/Nbqf41mqy0QIECAAAECBAgQIECAAAECBAgQIECAAAECBAgQIECAAAECBAgQIECAAAECBAgQIECAAAECBAgQIECAAAECBAgQIECAAAECBP470AF7D8HSZO7hZAAAAABJRU5ErkJggg==\"\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/images/generations",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "images",
+                    "generations"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('bare base64 is wrapped into a data URI before it reaches the provider', function () {",
+                      "  pm.expect(pm.response.text(), 'raw base64 forwarded unnormalized').to.not.match(/Invalid value for '(seedImage|inputs)/);",
+                      "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                      "});",
+                      "pm.test('returns an asset', function () {",
+                      "  var d = pm.response.json().data;",
+                      "  pm.expect(d, 'no data: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                      "  pm.expect(!!(d[0].url || d[0].b64_json), 'no asset returned').to.be.true;",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "runware/runware:100@1 response_format=data_uri returns an inline data URI",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"runware/runware:100@1\",\n  \"prompt\": \"a green apple on white\",\n  \"n\": 1,\n  \"size\": \"512x512\",\n  \"response_format\": \"data_uri\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/images/generations",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "images",
+                    "generations"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('data_uri maps to Runware outputType dataURI', function () {",
+                      "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                      "  var d = pm.response.json().data;",
+                      "  pm.expect(d, 'no data: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                      "  pm.expect(d[0].url || '', 'expected an inline data URI').to.match(/^data:/);",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "runware/runware:100@1 async image generation submit (extra params carried by the passthrough header)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-bf-passthrough-extra-params",
+                    "value": "true"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"runware/runware:100@1\",\n  \"prompt\": \"a red apple on white\",\n  \"n\": 1,\n  \"size\": \"512x512\",\n  \"outputFormat\": \"WEBP\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/async/images/generations",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "async",
+                    "images",
+                    "generations"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('async submit is accepted', function () {",
+                      "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(202);",
+                      "});",
+                      "pm.test('returns an async job id', function () {",
+                      "  var j = pm.response.json();",
+                      "  pm.expect(j.id, 'no job id: ' + pm.response.text()).to.be.a('string').that.is.not.empty;",
+                      "  pm.collectionVariables.set('runwareAsyncGenJobId', j.id);",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "runware/runware:100@1 sync image generation with the passthrough header (parity baseline for the async case)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-bf-passthrough-extra-params",
+                    "value": "true"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"runware/runware:100@1\",\n  \"prompt\": \"a red apple on white\",\n  \"n\": 1,\n  \"size\": \"512x512\",\n  \"outputFormat\": \"WEBP\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/images/generations",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "images",
+                    "generations"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('extra params reach the provider on the sync route', function () {",
+                      "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                      "  var u = (pm.response.json().data || [{}])[0].url || '';",
+                      "  if (!u) { pm.test.skip('response_format was not url', function () {}); return; }",
+                      "  pm.expect(u, 'extra param dropped on the sync route').to.match(/\\.webp($|\\?)/);",
+                      "});"
+                    ]
+                  }
+                }
+              ]
             }
           ]
         },
@@ -132978,6 +133268,247 @@
                   }
                 }
               ]
+            },
+            {
+              "name": "runware/google:4@1 image edit (referenceImages family - seedImage is rejected by these models)",
+              "request": {
+                "method": "POST",
+                "header": [],
+                "body": {
+                  "mode": "formdata",
+                  "formdata": [
+                    {
+                      "key": "model",
+                      "value": "runware/google:4@1",
+                      "type": "text"
+                    },
+                    {
+                      "key": "image_url",
+                      "value": "https://storage.googleapis.com/generativeai-downloads/images/scones.jpg",
+                      "type": "text"
+                    },
+                    {
+                      "key": "prompt",
+                      "value": "make the scones look frosted",
+                      "type": "text"
+                    }
+                  ]
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/images/edits",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "images",
+                    "edits"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('the input is nested under inputs.referenceImages, not sent as flat seedImage', function () {",
+                      "  var t = pm.response.text();",
+                      "  pm.expect(t, 'flat seedImage rejected by the model').to.not.include(\"Unsupported use of 'seedImage'\");",
+                      "  pm.expect(t, 'unsupported parameter').to.not.include('unsupportedParameter');",
+                      "  pm.expect(pm.response.code, 'failed: ' + t).to.be.below(400);",
+                      "});",
+                      "pm.test('returns an asset', function () {",
+                      "  var d = pm.response.json().data;",
+                      "  pm.expect(d, 'no data: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                      "  pm.expect(!!(d[0].url || d[0].b64_json), 'no asset returned').to.be.true;",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "runware/bfl:4@1 multi-image edit (every image reaches inputs.referenceImages[])",
+              "request": {
+                "method": "POST",
+                "header": [],
+                "body": {
+                  "mode": "formdata",
+                  "formdata": [
+                    {
+                      "key": "model",
+                      "value": "runware/bfl:4@1",
+                      "type": "text"
+                    },
+                    {
+                      "key": "image_url[]",
+                      "value": "https://storage.googleapis.com/generativeai-downloads/images/scones.jpg",
+                      "type": "text"
+                    },
+                    {
+                      "key": "image_url[]",
+                      "value": "https://storage.googleapis.com/generativeai-downloads/images/scones.jpg",
+                      "type": "text"
+                    },
+                    {
+                      "key": "prompt",
+                      "value": "combine these into one scene",
+                      "type": "text"
+                    }
+                  ]
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/images/edits",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "images",
+                    "edits"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('a second input image is accepted rather than dropped', function () {",
+                      "  var t = pm.response.text();",
+                      "  pm.expect(t, 'flat seedImage rejected').to.not.include(\"Unsupported use of 'seedImage'\");",
+                      "  pm.expect(pm.response.code, 'failed: ' + t).to.be.below(400);",
+                      "});",
+                      "pm.test('returns an asset', function () {",
+                      "  var d = pm.response.json().data;",
+                      "  pm.expect(d, 'no data: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                      "  pm.expect(!!(d[0].url || d[0].b64_json), 'no asset returned').to.be.true;",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "runware/runware:controlnet-preprocess@canny guide image via type=controlnet_preprocess",
+              "request": {
+                "method": "POST",
+                "header": [],
+                "body": {
+                  "mode": "formdata",
+                  "formdata": [
+                    {
+                      "key": "model",
+                      "value": "runware/runware:controlnet-preprocess@canny",
+                      "type": "text"
+                    },
+                    {
+                      "key": "image_url",
+                      "value": "https://storage.googleapis.com/generativeai-downloads/images/scones.jpg",
+                      "type": "text"
+                    },
+                    {
+                      "key": "type",
+                      "value": "controlnet_preprocess",
+                      "type": "text"
+                    }
+                  ]
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/images/edits",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "images",
+                    "edits"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('controlnet_preprocess is a recognised task type and needs no prompt', function () {",
+                      "  var t = pm.response.text();",
+                      "  pm.expect(t, 'type was unmapped so the edit fell through to imageInference').to.not.include('prompt not provided');",
+                      "  pm.expect(pm.response.code, 'failed: ' + t).to.be.below(400);",
+                      "});",
+                      "pm.test('returns an asset', function () {",
+                      "  var d = pm.response.json().data;",
+                      "  pm.expect(d, 'no data: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                      "  pm.expect(!!(d[0].url || d[0].b64_json), 'no asset returned').to.be.true;",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "runware/runware:101@1 async image edit submit (multipart via /v1/async/images/edits)",
+              "request": {
+                "method": "POST",
+                "header": [],
+                "body": {
+                  "mode": "formdata",
+                  "formdata": [
+                    {
+                      "key": "model",
+                      "value": "runware/runware:101@1",
+                      "type": "text"
+                    },
+                    {
+                      "key": "image_url",
+                      "value": "https://storage.googleapis.com/generativeai-downloads/images/scones.jpg",
+                      "type": "text"
+                    },
+                    {
+                      "key": "prompt",
+                      "value": "make the background a deep blue",
+                      "type": "text"
+                    }
+                  ]
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/async/images/edits",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "async",
+                    "images",
+                    "edits"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('async edit submit is accepted', function () {",
+                      "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(202);",
+                      "});",
+                      "pm.test('returns an async job id', function () {",
+                      "  var j = pm.response.json();",
+                      "  pm.expect(j.id, 'no job id: ' + pm.response.text()).to.be.a('string').that.is.not.empty;",
+                      "  pm.collectionVariables.set('runwareAsyncEditJobId', j.id);",
+                      "});"
+                    ]
+                  }
+                }
+              ]
             }
           ]
         },
@@ -133051,7 +133582,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"runware/tencent:hunyuan-3d@3.1-rapid\",\n  \"input_reference\": \"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\",\n  \"type\": \"3d\"\n}"
+                  "raw": "{\n  \"model\": \"runware/tencent:hunyuan-3d@3.1-rapid\",\n  \"prompt\": \"a plate of scones\",\n  \"input_reference\": \"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\",\n  \"type\": \"3d\"\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/v1/videos",
@@ -133330,6 +133861,202 @@
                       "});",
                       "pm.test('prompt is not required for a source-driven video task', function () {",
                       "  pm.expect(pm.response.text(), 'gateway demanded a prompt').to.not.include('prompt, input_reference or video_uri');",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "runware/klingai:6@0 text-to-video (width/height must not be forced on models that declare none)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"runware/klingai:6@0\",\n  \"prompt\": \"a red ceramic teapot, slow camera pan\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/videos",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "videos"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('no width/height default is forced onto the model', function () {",
+                      "  // A fifth of Runware's video models declare no height at all and reject the pair outright.",
+                      "  var t = pm.response.text();",
+                      "  pm.expect(t, 'dimensions forced onto a model that rejects them').to.not.match(/'(width|height)' (parameter )?is not supported/);",
+                      "  pm.expect(t, 'invalid default dimensions').to.not.include('must be an integer value between');",
+                      "  pm.expect(pm.response.code, 'failed: ' + t).to.be.below(400);",
+                      "});",
+                      "pm.test('returns a queued job', function () {",
+                      "  var j = pm.response.json();",
+                      "  pm.expect(j.id, 'no job id: ' + pm.response.text()).to.be.a('string').that.is.not.empty;",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "[EXPECT-4XX] runware/bria:51@1 typed output_format maps to Runware outputFormat (no passthrough header)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"runware/bria:51@1\",\n  \"type\": \"background_removal\",\n  \"video_uri\": \"https://storage.googleapis.com/generativeai-downloads/video/__nonexistent__.mp4\",\n  \"output_format\": \"webm\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/videos",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "videos"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                      "pm.test('output_format is a typed field, not an unknown extra param', function () {",
+                      "  // The source is deliberately nonexistent, so the provider must fail on the SOURCE. If the",
+                      "  // typed field had not mapped, Runware would default to MP4 and reject the format instead -",
+                      "  // and if it leaked through as snake_case it would be an unsupported parameter.",
+                      "  var t = pm.response.text();",
+                      "  pm.expect(t, 'output_format leaked through unmapped').to.not.include('output_format');",
+                      "  pm.expect(t, 'outputFormat rejected, so the typed field did not map').to.not.match(/Invalid value for 'outputFormat'/);",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "runware async image generation retrieve - extra params must survive the async path (GET /v1/async/images/generations/{job_id})",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/v1/async/images/generations/{{runwareAsyncGenJobId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "async",
+                    "images",
+                    "generations",
+                    "{{runwareAsyncGenJobId}}"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                      "var id = pm.collectionVariables.get('runwareAsyncGenJobId');",
+                      "if (!id) { pm.test.skip('no async job id produced upstream', function () {}); return; }",
+                      "pm.test('job resolves', function () {",
+                      "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                      "});",
+                      "var j = pm.response.json();",
+                      "if (j.status !== 'completed') { pm.test.skip('job still ' + j.status, function () {}); return; }",
+                      "pm.test('result carries the image response', function () {",
+                      "  pm.expect(j.result, 'no result: ' + pm.response.text()).to.be.an('object');",
+                      "  pm.expect(j.result.data, 'no data in result').to.be.an('array').that.is.not.empty;",
+                      "});",
+                      "pm.test('outputFormat reached the provider (sync/async parity)', function () {",
+                      "  // The async handlers do not force the passthrough flag, so an extra param only survives",
+                      "  // when the caller sends x-bf-passthrough-extra-params. WEBP proves it was merged; a .jpg",
+                      "  // here means the param was dropped somewhere on the async path.",
+                      "  var u = j.result.data[0].url || '';",
+                      "  if (!u) { pm.test.skip('response_format was not url', function () {}); return; }",
+                      "  pm.expect(u, 'extra param dropped on the async path').to.match(/\\.webp($|\\?)/);",
+                      "});"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "runware async image edit retrieve (GET /v1/async/images/edits/{job_id})",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/v1/async/images/edits/{{runwareAsyncEditJobId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "async",
+                    "images",
+                    "edits",
+                    "{{runwareAsyncEditJobId}}"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                      "var id = pm.collectionVariables.get('runwareAsyncEditJobId');",
+                      "if (!id) { pm.test.skip('no async job id produced upstream', function () {}); return; }",
+                      "pm.test('job resolves', function () {",
+                      "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                      "});",
+                      "var j = pm.response.json();",
+                      "if (j.status !== 'completed') { pm.test.skip('job still ' + j.status, function () {}); return; }",
+                      "pm.test('the edit ran through the same conversion as the sync route', function () {",
+                      "  pm.expect(j.result, 'no result: ' + pm.response.text()).to.be.an('object');",
+                      "  pm.expect(j.result.data, 'no data in result').to.be.an('array').that.is.not.empty;",
+                      "  pm.expect(!!(j.result.data[0].url || j.result.data[0].b64_json), 'no asset returned').to.be.true;",
                       "});"
                     ]
                   }
@@ -135554,6 +136281,286 @@
               ]
             }
           }
+        }
+      ]
+    },
+    {
+      "name": "58. Typed embedding envelopes and SDK alias (PR #6335)",
+      "item": [
+        {
+          "name": "58.A bedrock/model Titan V2 binary-only native envelope - PR #6335",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"inputText\": \"binary-only embedding harness check\",\n  \"dimensions\": 256,\n  \"embeddingTypes\": [\n    \"binary\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/amazon.titan-embed-text-v2:0/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "amazon.titan-embed-text-v2:0",
+                "invoke"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// 400 is deliberately not guarded: rejecting this valid Titan body is a feature failure.",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.test('Titan binary-only invoke returns the AWS embeddingsByType envelope', function () {",
+                  "  var byType = j.embeddingsByType || {};",
+                  "  pm.expect(byType, 'embeddingsByType missing; body: ' + pm.response.text().slice(0, 300)).to.have.property('binary');",
+                  "  pm.expect(Array.isArray(byType.binary), 'embeddingsByType.binary is not an array').to.be.true;",
+                  "  pm.expect(byType.binary.length, 'embeddingsByType.binary is empty').to.be.above(0);",
+                  "  for (var i = 0; i < byType.binary.length; i++) {",
+                  "    pm.expect(byType.binary[i], 'binary value outside Titan range at ' + i).to.be.within(-1, 1);",
+                  "    pm.expect(byType.binary[i] % 1, 'binary value is not an integer at ' + i).to.eql(0);",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "58.B bedrock/model Titan V2 float+binary native envelope - PR #6335",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"inputText\": \"dual representation embedding harness check\",\n  \"dimensions\": 256,\n  \"embeddingTypes\": [\n    \"float\",\n    \"binary\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/amazon.titan-embed-text-v2:0/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "amazon.titan-embed-text-v2:0",
+                "invoke"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// 400 is deliberately not guarded: rejecting this valid Titan body is a feature failure.",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.test('Titan combined invoke preserves both AWS typed representations', function () {",
+                  "  var byType = j.embeddingsByType || {};",
+                  "  pm.expect(Array.isArray(byType.float), 'embeddingsByType.float missing; body: ' + pm.response.text().slice(0, 300)).to.be.true;",
+                  "  pm.expect(byType.float.length, 'embeddingsByType.float is empty').to.be.above(0);",
+                  "  pm.expect(Array.isArray(byType.binary), 'embeddingsByType.binary missing; body: ' + pm.response.text().slice(0, 300)).to.be.true;",
+                  "  pm.expect(byType.binary.length, 'embeddingsByType.binary is empty').to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "58.C bedrock/model Cohere v4 all typed encodings native envelope - PR #6335",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"texts\": [\n    \"cohere typed embedding harness check\"\n  ],\n  \"input_type\": \"search_document\",\n  \"output_dimension\": 256,\n  \"embedding_types\": [\n    \"float\",\n    \"int8\",\n    \"uint8\",\n    \"binary\",\n    \"ubinary\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.cohere.embed-v4:0/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.cohere.embed-v4:0",
+                "invoke"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// 400 is deliberately not guarded: rejecting these documented Cohere encodings is a feature failure.",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.test('Cohere invoke returns embeddings_by_type', function () {",
+                  "  pm.expect(j.response_type, 'unexpected response envelope: ' + pm.response.text().slice(0, 300)).to.eql('embeddings_by_type');",
+                  "});",
+                  "pm.test('Cohere invoke preserves every requested encoding', function () {",
+                  "  var embeddings = j.embeddings || {};",
+                  "  var types = ['float', 'int8', 'uint8', 'binary', 'ubinary'];",
+                  "  for (var i = 0; i < types.length; i++) {",
+                  "    var vectors = embeddings[types[i]];",
+                  "    pm.expect(Array.isArray(vectors), types[i] + ' vectors missing; body: ' + pm.response.text().slice(0, 300)).to.be.true;",
+                  "    pm.expect(vectors.length, types[i] + ' vector list is empty').to.be.above(0);",
+                  "    pm.expect(Array.isArray(vectors[0]), types[i] + ' first vector is not an array').to.be.true;",
+                  "    pm.expect(vectors[0].length, types[i] + ' first vector is empty').to.be.above(0);",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "58.D langchain/model Cohere v3 singular embedding alias - PR #6335",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"texts\": [\n    \"langchain cohere compatibility harness check\"\n  ],\n  \"input_type\": \"search_document\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/langchain/model/cohere.embed-english-v3/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "langchain",
+                "model",
+                "cohere.embed-english-v3",
+                "invoke"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// 400 is deliberately not guarded: this is the stock LangChain BedrockEmbeddings request shape.",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "pm.test('LangChain gets the singular embedding field it reads', function () {",
+                  "  pm.expect(Array.isArray(j.embedding), 'singular embedding missing; body: ' + pm.response.text().slice(0, 300)).to.be.true;",
+                  "  pm.expect(j.embedding.length, 'singular embedding is empty').to.be.above(0);",
+                  "});",
+                  "pm.test('native plural embeddings remain intact', function () {",
+                  "  pm.expect(Array.isArray(j.embeddings), 'native embeddings list missing').to.be.true;",
+                  "  pm.expect(j.embeddings.length, 'native embeddings list is empty').to.be.above(0);",
+                  "  pm.expect(j.embedding, 'singular alias does not match embeddings[0]').to.eql(j.embeddings[0]);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "58.E bedrock/v1 Titan float+binary normalized without raw leakage - PR #6335",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "false"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/amazon.titan-embed-text-v2:0\",\n  \"input\": \"normalized dual representation harness check\",\n  \"dimensions\": 256,\n  \"embeddingTypes\": [\n    \"float\",\n    \"binary\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// 400 is deliberately not guarded: losing a requested representation is a feature failure.",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "var j; try { j = pm.response.json(); } catch (e) {",
+                  "  pm.expect.fail('response was not JSON: ' + (pm.response.text() || '').slice(0, 300)); return; }",
+                  "var data = j.data || [];",
+                  "pm.test('normalized Titan response retains float and binary vectors', function () {",
+                  "  pm.expect(data.length, 'expected two typed vectors; body: ' + pm.response.text().slice(0, 300)).to.eql(2);",
+                  "  // Each entry names the representation it came back as, so the encodings",
+                  "  // are read off the response instead of guessed from the vector values.",
+                  "  var formats = [];",
+                  "  for (var i = 0; i < data.length; i++) {",
+                  "    var vector = data[i].embedding || [];",
+                  "    pm.expect(vector.length, 'data[' + i + '].embedding is empty').to.be.above(0);",
+                  "    formats.push(data[i].encoding_format);",
+                  "  }",
+                  "  formats.sort();",
+                  "  pm.expect(formats, 'expected one float and one binary representation; body: ' + pm.response.text().slice(0, 300)).to.eql(['binary', 'float']);",
+                  "});",
+                  "pm.test('provider-native envelope never surfaces on the normalized endpoint', function () {",
+                  "  // raw_response presence is governed by the provider's send_back_raw_response",
+                  "  // config, so it is not asserted here; the envelope shape is the invariant.",
+                  "  pm.expect(j.embeddingsByType, 'provider-native envelope leaked at the top level').to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     }

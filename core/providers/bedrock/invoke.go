@@ -57,7 +57,8 @@ var bedrockInvokeRequestKnownFields = map[string]bool{
 	// Embeddings
 	"inputText": true, "texts": true, "input_type": true,
 	"normalize": true, "dimensions": true,
-	"embedding_types": true, "output_dimension": true, "inputs": true,
+	"embedding_types": true, "embeddingTypes": true,
+	"output_dimension": true, "inputs": true,
 	// Internal
 	"stream": true, "extra_params": true,
 }
@@ -530,6 +531,9 @@ func (r *BedrockInvokeRequest) ToBifrostEmbeddingRequest(ctx *schemas.BifrostCon
 	}
 	if len(r.EmbeddingTypes) > 0 {
 		extraParams["embedding_types"] = r.EmbeddingTypes
+	}
+	if len(r.TitanEmbeddingTypes) > 0 {
+		extraParams["embeddingTypes"] = r.TitanEmbeddingTypes
 	}
 	if r.Truncate != nil {
 		extraParams["truncate"] = *r.Truncate
@@ -1153,17 +1157,15 @@ func ToBedrockInvokeImagesResponse(ctx *schemas.BifrostContext, resp *schemas.Bi
 }
 
 // ToBedrockEmbeddingInvokeResponse converts a BifrostEmbeddingResponse back to the native
-// Bedrock invoke API response format.
+// Bedrock invoke API response format, rebuilt entirely from the canonical response so the
+// same request produces the same envelope whether it was served live or from a cache.
 // Single-embedding (Titan) responses use: {"embedding": [...], "inputTextTokenCount": N}
 // Multi-embedding (Cohere) responses use:  {"embeddings": [[...],[...]], "response_type": "embeddings_floats"}
+// Entries carrying an EncodingFormat produce the typed envelopes instead: embeddingsByType
+// for Titan, and {"embeddings": {"<type>": ...}, "response_type": "embeddings_by_type"} for Cohere.
 func ToBedrockEmbeddingInvokeResponse(ctx *schemas.BifrostContext, resp *schemas.BifrostEmbeddingResponse) (interface{}, error) {
 	if resp == nil {
 		return nil, fmt.Errorf("bifrost embedding response is nil")
-	}
-
-	// If the provider stored the raw Bedrock response, return it verbatim
-	if resp.ExtraFields.RawResponse != nil {
-		return resp.ExtraFields.RawResponse, nil
 	}
 
 	tokenCount := 0
@@ -1187,32 +1189,99 @@ func ToBedrockEmbeddingInvokeResponse(ctx *schemas.BifrostContext, resp *schemas
 	}
 
 	if schemas.IsCohereModelFamily(ctx, model) {
-		floats := make([][]float32, 0, len(resp.Data))
-		for _, d := range resp.Data {
-			float32Emb := make([]float32, len(d.Embedding.EmbeddingArray))
-			for i, v := range d.Embedding.EmbeddingArray {
-				float32Emb[i] = float32(v)
+		return toBedrockCohereEmbeddingInvokeResponse(resp), nil
+	}
+	return toBedrockTitanEmbeddingInvokeResponse(resp, tokenCount), nil
+}
+
+// toBedrockTitanEmbeddingInvokeResponse rebuilds the Titan invoke envelope from the
+// canonical data. Entries carry the encoding they arrived as, so embeddingsByType is
+// reconstructed without holding on to the provider payload. AWS returns the top-level
+// float vector alongside embeddingsByType whenever float was among the requested
+// representations, and omits it for a binary-only request.
+func toBedrockTitanEmbeddingInvokeResponse(resp *schemas.BifrostEmbeddingResponse, tokenCount int) *BedrockInvokeEmbeddingResp {
+	out := &BedrockInvokeEmbeddingResp{InputTextTokenCount: tokenCount}
+
+	for _, d := range resp.Data {
+		switch d.EncodingFormat {
+		case schemas.EmbeddingEncodingFloat:
+			if out.EmbeddingsByType == nil {
+				out.EmbeddingsByType = &BedrockTitanEmbeddingsByType{}
 			}
-			floats = append(floats, float32Emb)
+			out.EmbeddingsByType.Float = d.Embedding.EmbeddingArray
+			out.Embedding = d.Embedding.EmbeddingArray
+		case schemas.EmbeddingEncodingBinary:
+			if out.EmbeddingsByType == nil {
+				out.EmbeddingsByType = &BedrockTitanEmbeddingsByType{}
+			}
+			out.EmbeddingsByType.Binary = d.Embedding.EmbeddingInt8Array
 		}
-		return &BedrockInvokeCohereEmbeddingResp{
-			Embeddings:   floats,
-			ResponseType: "embeddings_floats",
-		}, nil
 	}
 
-	// Titan format
-	if resp.Data[0].Embedding.EmbeddingArray == nil {
-		return &BedrockInvokeEmbeddingResp{InputTextTokenCount: tokenCount}, nil
+	// Unlabelled data means the provider sent only the legacy top-level vector
+	// (Titan G1, and V2 responses that predate embeddingsByType).
+	if out.EmbeddingsByType == nil {
+		out.Embedding = resp.Data[0].Embedding.EmbeddingArray
 	}
-	float32Emb := make([]float32, len(resp.Data[0].Embedding.EmbeddingArray))
-	for i, v := range resp.Data[0].Embedding.EmbeddingArray {
-		float32Emb[i] = float32(v)
+	return out
+}
+
+// toBedrockCohereEmbeddingInvokeResponse rebuilds the Cohere invoke envelope, picking
+// the typed shape when the entries carry encoding labels and the plain float shape
+// otherwise — matching the two response_type values Bedrock returns.
+func toBedrockCohereEmbeddingInvokeResponse(resp *schemas.BifrostEmbeddingResponse) interface{} {
+	var typed BedrockCohereEmbeddingsByType
+	isTyped := false
+	floats := make([][]float32, 0, len(resp.Data))
+
+	for _, d := range resp.Data {
+		switch d.EncodingFormat {
+		case schemas.EmbeddingEncodingFloat:
+			isTyped = true
+			typed.Float = append(typed.Float, bedrockFloat32Vector(d.Embedding.EmbeddingArray))
+		case schemas.EmbeddingEncodingBase64:
+			isTyped = true
+			if d.Embedding.EmbeddingStr != nil {
+				typed.Base64 = append(typed.Base64, *d.Embedding.EmbeddingStr)
+			}
+		case schemas.EmbeddingEncodingInt8:
+			isTyped = true
+			typed.Int8 = append(typed.Int8, d.Embedding.EmbeddingInt8Array)
+		case schemas.EmbeddingEncodingBinary:
+			isTyped = true
+			typed.Binary = append(typed.Binary, d.Embedding.EmbeddingInt8Array)
+		case schemas.EmbeddingEncodingUint8:
+			isTyped = true
+			typed.Uint8 = append(typed.Uint8, d.Embedding.EmbeddingInt32Array)
+		case schemas.EmbeddingEncodingUbinary:
+			isTyped = true
+			typed.Ubinary = append(typed.Ubinary, d.Embedding.EmbeddingInt32Array)
+		default:
+			floats = append(floats, bedrockFloat32Vector(d.Embedding.EmbeddingArray))
+		}
 	}
-	return &BedrockInvokeEmbeddingResp{
-		Embedding:           float32Emb,
-		InputTextTokenCount: tokenCount,
-	}, nil
+
+	if isTyped {
+		return &BedrockInvokeCohereTypedEmbeddingResp{
+			Embeddings:   typed,
+			ResponseType: "embeddings_by_type",
+		}
+	}
+	return &BedrockInvokeCohereEmbeddingResp{
+		Embeddings:   floats,
+		ResponseType: "embeddings_floats",
+	}
+}
+
+// bedrockFloat32Vector narrows a canonical float64 vector to the float32 precision the
+// Bedrock invoke wire format uses. An absent vector yields an empty slice, which
+// omitempty drops from the Titan envelope.
+func bedrockFloat32Vector(values []float64) []float32 {
+	out := make([]float32, len(values))
+	for i, v := range values {
+		out[i] = float32(v)
+	}
+	return out
 }
 
 // toBedrockInvokeAnthropicResponse converts BifrostResponsesResponse to Anthropic Messages API format.

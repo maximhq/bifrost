@@ -21,14 +21,16 @@ type TableModelPricing struct {
 	IsDeprecated    bool                  `gorm:"default:false;column:is_deprecated" json:"is_deprecated"`
 
 	// Costs - Text
-	InputCostPerToken          *float64 `gorm:"default:null" json:"input_cost_per_token,omitempty"`
-	OutputCostPerToken         *float64 `gorm:"default:null" json:"output_cost_per_token,omitempty"`
-	InputCostPerTokenBatches   *float64 `gorm:"default:null;column:input_cost_per_token_batches" json:"input_cost_per_token_batches,omitempty"`
-	OutputCostPerTokenBatches  *float64 `gorm:"default:null;column:output_cost_per_token_batches" json:"output_cost_per_token_batches,omitempty"`
-	InputCostPerTokenPriority  *float64 `gorm:"default:null;column:input_cost_per_token_priority" json:"input_cost_per_token_priority,omitempty"`
-	OutputCostPerTokenPriority *float64 `gorm:"default:null;column:output_cost_per_token_priority" json:"output_cost_per_token_priority,omitempty"`
-	InputCostPerTokenFlex      *float64 `gorm:"default:null;column:input_cost_per_token_flex" json:"input_cost_per_token_flex,omitempty"`
-	OutputCostPerTokenFlex     *float64 `gorm:"default:null;column:output_cost_per_token_flex" json:"output_cost_per_token_flex,omitempty"`
+	InputCostPerToken           *float64 `gorm:"default:null" json:"input_cost_per_token,omitempty"`
+	OutputCostPerToken          *float64 `gorm:"default:null" json:"output_cost_per_token,omitempty"`
+	InputCostPerTokenBatches    *float64 `gorm:"default:null;column:input_cost_per_token_batches" json:"input_cost_per_token_batches,omitempty"`
+	OutputCostPerTokenBatches   *float64 `gorm:"default:null;column:output_cost_per_token_batches" json:"output_cost_per_token_batches,omitempty"`
+	InputCostPerTokenPriority   *float64 `gorm:"default:null;column:input_cost_per_token_priority" json:"input_cost_per_token_priority,omitempty"`
+	OutputCostPerTokenPriority  *float64 `gorm:"default:null;column:output_cost_per_token_priority" json:"output_cost_per_token_priority,omitempty"`
+	InputCostPerTokenUltrafast  *float64 `gorm:"default:null;column:input_cost_per_token_ultrafast" json:"input_cost_per_token_ultrafast,omitempty"`
+	OutputCostPerTokenUltrafast *float64 `gorm:"default:null;column:output_cost_per_token_ultrafast" json:"output_cost_per_token_ultrafast,omitempty"`
+	InputCostPerTokenFlex       *float64 `gorm:"default:null;column:input_cost_per_token_flex" json:"input_cost_per_token_flex,omitempty"`
+	OutputCostPerTokenFlex      *float64 `gorm:"default:null;column:output_cost_per_token_flex" json:"output_cost_per_token_flex,omitempty"`
 	// Fast mode (Anthropic research preview, speed:"fast" on Opus 4.6/4.7/4.8).
 	// Flat rate across the full context window; cache tokens use the _fast cache columns below.
 	InputCostPerTokenFast  *float64 `gorm:"default:null;column:input_cost_per_token_fast" json:"input_cost_per_token_fast,omitempty"`
@@ -63,6 +65,7 @@ type TableModelPricing struct {
 	CacheCreationInputTokenCostAbove1hrAbove200kTokens *float64 `gorm:"default:null;column:cache_creation_input_token_cost_above_1hr_above_200k_tokens" json:"cache_creation_input_token_cost_above_1hr_above_200k_tokens,omitempty"`
 	CacheCreationInputAudioTokenCost                   *float64 `gorm:"default:null;column:cache_creation_input_audio_token_cost" json:"cache_creation_input_audio_token_cost,omitempty"`
 	CacheReadInputTokenCostPriority                    *float64 `gorm:"default:null;column:cache_read_input_token_cost_priority" json:"cache_read_input_token_cost_priority,omitempty"`
+	CacheReadInputTokenCostUltrafast                   *float64 `gorm:"default:null;column:cache_read_input_token_cost_ultrafast" json:"cache_read_input_token_cost_ultrafast,omitempty"`
 	CacheReadInputTokenCostFlex                        *float64 `gorm:"default:null;column:cache_read_input_token_cost_flex" json:"cache_read_input_token_cost_flex,omitempty"`
 	CacheReadInputImageTokenCost                       *float64 `gorm:"default:null;column:cache_read_input_image_token_cost" json:"cache_read_input_image_token_cost,omitempty"`
 	CacheReadInputTokenCostAbove272kTokens             *float64 `gorm:"default:null;column:cache_read_input_token_cost_above_272k_tokens" json:"cache_read_input_token_cost_above_272k_tokens,omitempty"`
@@ -73,6 +76,7 @@ type TableModelPricing struct {
 	CacheCreationInputTokenCostFlex                *float64 `gorm:"default:null;column:cache_creation_input_token_cost_flex" json:"cache_creation_input_token_cost_flex,omitempty"`
 	CacheCreationInputTokenCostFlexAbove272kTokens *float64 `gorm:"default:null;column:cache_creation_input_token_cost_flex_above_272k_tokens" json:"cache_creation_input_token_cost_flex_above_272k_tokens,omitempty"`
 	CacheCreationInputTokenCostPriority            *float64 `gorm:"default:null;column:cache_creation_input_token_cost_priority" json:"cache_creation_input_token_cost_priority,omitempty"`
+	CacheCreationInputTokenCostUltrafast           *float64 `gorm:"default:null;column:cache_creation_input_token_cost_ultrafast" json:"cache_creation_input_token_cost_ultrafast,omitempty"`
 	// Fast mode (Anthropic) cache rates — flat across the full context window, no tiering.
 	CacheCreationInputTokenCostFast         *float64 `gorm:"default:null;column:cache_creation_input_token_cost_fast" json:"cache_creation_input_token_cost_fast,omitempty"`
 	CacheCreationInputTokenCostAbove1hrFast *float64 `gorm:"default:null;column:cache_creation_input_token_cost_above_1hr_fast" json:"cache_creation_input_token_cost_above_1hr_fast,omitempty"`
@@ -113,6 +117,7 @@ type TableModelPricing struct {
 
 	// Costs - Other
 	SearchContextCostPerQuery     *float64 `gorm:"default:null;column:search_context_cost_per_query" json:"search_context_cost_per_query,omitempty"`
+	InputCostPerQuery             *float64 `gorm:"default:null;column:input_cost_per_query" json:"input_cost_per_query,omitempty"`
 	CodeInterpreterCostPerSession *float64 `gorm:"default:null;column:code_interpreter_cost_per_session" json:"code_interpreter_cost_per_session,omitempty"`
 	// Data-residency multiplier scaling all token/cache costs when Anthropic serves inference_geo:"us" (1.1x); nil = no multiplier.
 	InferenceGeoUSMultiplier *float64 `gorm:"default:null;column:inference_geo_us_multiplier" json:"inference_geo_us_multiplier,omitempty"`

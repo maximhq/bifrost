@@ -412,3 +412,394 @@ func TestToRunwareImageEditRequest_ImageURL(t *testing.T) {
 		t.Fatalf("expected an empty image input to be rejected")
 	}
 }
+
+// The current flagship editing models declare no seedImage at all and reject it outright, taking
+// their inputs under inputs.referenceImages[] instead. Every supplied image goes into the array.
+func TestToRunwareImageEditRequest_ReferenceImagesForm(t *testing.T) {
+	out, err := ToRunwareImageEditRequest(&schemas.BifrostImageEditRequest{
+		Model: "google:4@1",
+		Input: &schemas.ImageEditInput{
+			Images: []schemas.ImageInput{{URL: "https://example.com/a.jpg"}, {URL: "https://example.com/b.jpg"}},
+			Prompt: "make the teapot blue",
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.SeedImage != nil {
+		t.Fatalf("seedImage must stay unset for a referenceImages model, got %q", *out.SeedImage)
+	}
+	if out.Inputs == nil || len(out.Inputs.ReferenceImages) != 2 {
+		t.Fatalf("expected both images under inputs.referenceImages, got %+v", out.Inputs)
+	}
+	if out.Inputs.ReferenceImages[0] != "https://example.com/a.jpg" || out.Inputs.ReferenceImages[1] != "https://example.com/b.jpg" {
+		t.Fatalf("referenceImages order not preserved: %+v", out.Inputs.ReferenceImages)
+	}
+}
+
+// The erase and object-removal models take a single image under inputs.image with the mask
+// alongside it, rather than the flat seedImage/maskImage pair.
+func TestToRunwareImageEditRequest_ImageMaskForm(t *testing.T) {
+	out, err := ToRunwareImageEditRequest(&schemas.BifrostImageEditRequest{
+		Model:  "bfl:flux@erase",
+		Input:  &schemas.ImageEditInput{Images: []schemas.ImageInput{{URL: "https://example.com/a.jpg"}}, Prompt: "erase the cup"},
+		Params: &schemas.ImageEditParameters{Mask: []byte("fake-mask-bytes")},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.SeedImage != nil || out.MaskImage != nil {
+		t.Fatalf("flat seedImage/maskImage must stay unset for an inputs.image model, got %+v", out)
+	}
+	if out.Inputs == nil || out.Inputs.Image == nil || *out.Inputs.Image != "https://example.com/a.jpg" {
+		t.Fatalf("expected inputs.image, got %+v", out.Inputs)
+	}
+	if out.Inputs.Mask == nil || !strings.HasPrefix(*out.Inputs.Mask, "data:") {
+		t.Fatalf("expected inputs.mask data URI, got %+v", out.Inputs)
+	}
+}
+
+// An unlisted model keeps the flat seedImage/maskImage form: callers can name any custom or
+// civitai checkpoint by AIR, and those all take the flat pair.
+func TestToRunwareImageEditRequest_UnknownModelKeepsSeedImage(t *testing.T) {
+	out, err := ToRunwareImageEditRequest(&schemas.BifrostImageEditRequest{
+		Model:  "civitai:101055@128078",
+		Input:  &schemas.ImageEditInput{Images: []schemas.ImageInput{{URL: "https://example.com/a.jpg"}}, Prompt: "make it winter"},
+		Params: &schemas.ImageEditParameters{Mask: []byte("fake-mask-bytes")},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.SeedImage == nil || *out.SeedImage != "https://example.com/a.jpg" {
+		t.Fatalf("expected flat seedImage, got %+v", out)
+	}
+	if out.MaskImage == nil || !strings.HasPrefix(*out.MaskImage, "data:") {
+		t.Fatalf("expected flat maskImage data URI, got %+v", out)
+	}
+	if out.Inputs != nil {
+		t.Fatalf("inputs must stay unset on the flat form, got %+v", out.Inputs)
+	}
+}
+
+// referenceImages models declare no mask key, so a mask sent to one is dropped rather than
+// producing a request the model rejects.
+func TestToRunwareImageEditRequest_ReferenceImagesDropsMask(t *testing.T) {
+	out, err := ToRunwareImageEditRequest(&schemas.BifrostImageEditRequest{
+		Model:  "bfl:4@1",
+		Input:  &schemas.ImageEditInput{Images: []schemas.ImageInput{{URL: "https://example.com/a.jpg"}}, Prompt: "make it winter"},
+		Params: &schemas.ImageEditParameters{Mask: []byte("fake-mask-bytes")},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.MaskImage != nil || (out.Inputs != nil && out.Inputs.Mask != nil) {
+		t.Fatalf("mask must be dropped for a referenceImages model, got %+v", out)
+	}
+}
+
+// input_images is the neutral image-to-image field on the generation path; it lands in whichever
+// input key the model declares.
+func TestToRunwareImageGenerationRequest_InputImages(t *testing.T) {
+	for _, tc := range []struct {
+		model string
+		check func(*testing.T, *RunwareInferenceRequest)
+	}{
+		{"runware:101@1", func(t *testing.T, out *RunwareInferenceRequest) {
+			if out.SeedImage == nil || *out.SeedImage != "https://example.com/a.jpg" {
+				t.Fatalf("expected flat seedImage, got %+v", out)
+			}
+		}},
+		{"google:4@1", func(t *testing.T, out *RunwareInferenceRequest) {
+			if out.Inputs == nil || len(out.Inputs.ReferenceImages) != 1 {
+				t.Fatalf("expected inputs.referenceImages, got %+v", out.Inputs)
+			}
+		}},
+	} {
+		out, err := ToRunwareImageGenerationRequest(&schemas.BifrostImageGenerationRequest{
+			Model:  tc.model,
+			Input:  &schemas.ImageGenerationInput{Prompt: "make it snowy"},
+			Params: &schemas.ImageGenerationParameters{InputImages: []string{"https://example.com/a.jpg"}},
+		})
+		if err != nil {
+			t.Fatalf("%s: unexpected error: %v", tc.model, err)
+		}
+		tc.check(t, out)
+	}
+}
+
+// A provider-native seedImage wins over input_images: sending both would put two input keys on a
+// request that accepts one.
+func TestToRunwareImageGenerationRequest_SeedImageWinsOverInputImages(t *testing.T) {
+	out, err := ToRunwareImageGenerationRequest(&schemas.BifrostImageGenerationRequest{
+		Model: "runware:101@1",
+		Input: &schemas.ImageGenerationInput{Prompt: "make it snowy"},
+		Params: &schemas.ImageGenerationParameters{
+			InputImages: []string{"https://example.com/from-input-images.jpg"},
+			ExtraParams: map[string]interface{}{"seedImage": "https://example.com/from-extra-params.jpg"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.SeedImage == nil || *out.SeedImage != "https://example.com/from-extra-params.jpg" {
+		t.Fatalf("extra-param seedImage should win, got %+v", out)
+	}
+	if out.Inputs != nil {
+		t.Fatalf("inputs must stay unset when seedImage is set, got %+v", out.Inputs)
+	}
+}
+
+// ControlNet preprocessing runs as its own task type and returns a guideImage; it takes the image
+// under inputs and no prompt.
+func TestToRunwareImageEditRequest_ControlNetPreprocess(t *testing.T) {
+	out, err := ToRunwareImageEditRequest(&schemas.BifrostImageEditRequest{
+		Model:  "runware:controlnet-preprocess@canny",
+		Input:  &schemas.ImageEditInput{Images: []schemas.ImageInput{{URL: "https://example.com/a.jpg"}}},
+		Params: &schemas.ImageEditParameters{Type: new("controlnet_preprocess")},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.TaskType != taskTypeControlNetPreprocess {
+		t.Fatalf("taskType = %q, want %q", out.TaskType, taskTypeControlNetPreprocess)
+	}
+	if out.Inputs == nil || out.Inputs.Image == nil {
+		t.Fatalf("expected inputs.image, got %+v", out.Inputs)
+	}
+	if out.PositivePrompt != nil || out.Width != nil || out.Height != nil {
+		t.Fatalf("prompt/dimensions must stay unset on controlNetPreprocess, got %+v", out)
+	}
+}
+
+// Runware offers a third output type beyond url and base64, and one model (alibaba:qwen-image@layered)
+// accepts TIFF as its only output format, so both have to be selectable.
+func TestRunwareOutputMappings(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"url", "URL"},
+		{"b64_json", "base64Data"},
+		{"data_uri", "dataURI"},
+		{"data-uri", "dataURI"},
+		{"dataURI", "dataURI"},
+	} {
+		got := runwareOutputType(&tc.in)
+		if got == nil || *got != tc.want {
+			t.Fatalf("runwareOutputType(%q) = %v, want %q", tc.in, got, tc.want)
+		}
+	}
+	if got := runwareOutputType(new("nonsense")); got != nil {
+		t.Fatalf("unknown response_format should fall through to the Runware default, got %q", *got)
+	}
+
+	for _, tc := range []struct{ in, want string }{
+		{"png", "PNG"},
+		{"jpeg", "JPG"},
+		{"webp", "WEBP"},
+		{"tiff", "TIFF"},
+		{"tif", "TIFF"},
+		{"svg", "SVG"},
+	} {
+		got := runwareOutputFormat(&tc.in)
+		if got == nil || *got != tc.want {
+			t.Fatalf("runwareOutputFormat(%q) = %v, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// Runware rejects any key a model does not declare, so models whose schema carries no width/height
+// or no positivePrompt must not receive them. Both paths are affected.
+func TestToRunwareImageRequests_OmitUndeclaredParams(t *testing.T) {
+	// ideogram:4@3 declares no width/height.
+	gen, err := ToRunwareImageGenerationRequest(&schemas.BifrostImageGenerationRequest{
+		Model:  "ideogram:4@3",
+		Input:  &schemas.ImageGenerationInput{Prompt: "a red apple"},
+		Params: &schemas.ImageGenerationParameters{Size: new("1024x1024")},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gen.Width != nil || gen.Height != nil {
+		t.Fatalf("dimensions must be omitted even when size is given, got %v x %v", gen.Width, gen.Height)
+	}
+	if gen.PositivePrompt == nil {
+		t.Fatalf("prompt must still be sent for a model that accepts it")
+	}
+
+	// bfl:flux@erase declares neither a prompt nor dimensions, and takes inputs.image + inputs.mask.
+	edit, err := ToRunwareImageEditRequest(&schemas.BifrostImageEditRequest{
+		Model:  "bfl:flux@erase",
+		Input:  &schemas.ImageEditInput{Images: []schemas.ImageInput{{URL: "https://example.com/a.jpg"}}, Prompt: "erase the cup"},
+		Params: &schemas.ImageEditParameters{Mask: []byte("fake-mask"), Size: new("1024x1024")},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if edit.PositivePrompt != nil {
+		t.Fatalf("prompt must be omitted for a model that rejects it, got %q", *edit.PositivePrompt)
+	}
+	if edit.Width != nil || edit.Height != nil {
+		t.Fatalf("dimensions must be omitted, got %v x %v", edit.Width, edit.Height)
+	}
+	if edit.Inputs == nil || edit.Inputs.Image == nil || edit.Inputs.Mask == nil {
+		t.Fatalf("expected inputs.image + inputs.mask, got %+v", edit.Inputs)
+	}
+
+	// An unlisted model keeps both, so custom checkpoints are unaffected.
+	plain, err := ToRunwareImageGenerationRequest(&schemas.BifrostImageGenerationRequest{
+		Model: "civitai:101055@128078",
+		Input: &schemas.ImageGenerationInput{Prompt: "a red apple"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if plain.Width == nil || plain.Height == nil || plain.PositivePrompt == nil {
+		t.Fatalf("unlisted model must keep dimensions and prompt, got %+v", plain)
+	}
+}
+
+// withCaps installs a capability resolver for the duration of a test.
+func withCaps(t *testing.T, record *schemas.ModelCapabilities) {
+	t.Helper()
+	schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities {
+		return record
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+}
+
+// The datasheet is the source of truth where it carries a record: field_names picks the input key
+// and unsupported_fields decides whether a prompt and dimensions are sent. This is what lets the
+// per-model mapping move to the feed without a release.
+func TestToRunwareImageEditRequest_CatalogOverridesTable(t *testing.T) {
+	// runware:101@1 is a flat seedImage model in the built-in table; the datasheet moves it to
+	// inputs.referenceImages and strips the prompt.
+	withCaps(t, &schemas.ModelCapabilities{
+		FieldNames:        map[string]string{schemas.LogicalFieldInputImage: "referenceImages"},
+		UnsupportedFields: map[string]bool{"positivePrompt": true, "width": true},
+	})
+
+	out, err := ToRunwareImageEditRequest(&schemas.BifrostImageEditRequest{
+		Model: "runware:101@1",
+		Input: &schemas.ImageEditInput{Images: []schemas.ImageInput{{URL: "https://example.com/a.jpg"}}, Prompt: "make it winter"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.SeedImage != nil {
+		t.Fatalf("datasheet should have moved the input off seedImage, got %q", *out.SeedImage)
+	}
+	if out.Inputs == nil || len(out.Inputs.ReferenceImages) != 1 {
+		t.Fatalf("expected inputs.referenceImages from the datasheet, got %+v", out.Inputs)
+	}
+	if out.PositivePrompt != nil {
+		t.Fatalf("datasheet marked positivePrompt unsupported, got %q", *out.PositivePrompt)
+	}
+	if out.Width != nil || out.Height != nil {
+		t.Fatalf("datasheet marked width unsupported, got %v x %v", out.Width, out.Height)
+	}
+}
+
+// With no record the built-in table still answers, so a catalog-less deployment behaves exactly as
+// before and the feed can be populated incrementally.
+func TestToRunwareImageEditRequest_TableAnswersWithoutCatalog(t *testing.T) {
+	withCaps(t, nil)
+
+	ref, err := ToRunwareImageEditRequest(&schemas.BifrostImageEditRequest{
+		Model: "google:4@1",
+		Input: &schemas.ImageEditInput{Images: []schemas.ImageInput{{URL: "https://example.com/a.jpg"}}, Prompt: "make it blue"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ref.Inputs == nil || len(ref.Inputs.ReferenceImages) != 1 {
+		t.Fatalf("table should still route google:4@1 to referenceImages, got %+v", ref.Inputs)
+	}
+
+	flat, err := ToRunwareImageEditRequest(&schemas.BifrostImageEditRequest{
+		Model: "runware:101@1",
+		Input: &schemas.ImageEditInput{Images: []schemas.ImageInput{{URL: "https://example.com/a.jpg"}}, Prompt: "make it winter"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if flat.SeedImage == nil {
+		t.Fatalf("table should still route runware:101@1 to flat seedImage, got %+v", flat)
+	}
+}
+
+// Empty and whitespace-only input_images entries are dropped rather than sent as a blank input key,
+// which Runware rejects.
+func TestToRunwareImageGenerationRequest_InputImagesSkipsEmpty(t *testing.T) {
+	out, err := ToRunwareImageGenerationRequest(&schemas.BifrostImageGenerationRequest{
+		Model: "google:4@1",
+		Input: &schemas.ImageGenerationInput{Prompt: "make it snowy"},
+		Params: &schemas.ImageGenerationParameters{
+			InputImages: []string{"", "  ", "https://example.com/a.jpg", ""},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Inputs == nil || len(out.Inputs.ReferenceImages) != 1 || out.Inputs.ReferenceImages[0] != "https://example.com/a.jpg" {
+		t.Fatalf("empty entries should be dropped, got %+v", out.Inputs)
+	}
+
+	// All-empty leaves the request as plain text-to-image rather than sending a blank key.
+	blank, err := ToRunwareImageGenerationRequest(&schemas.BifrostImageGenerationRequest{
+		Model:  "runware:101@1",
+		Input:  &schemas.ImageGenerationInput{Prompt: "a cat"},
+		Params: &schemas.ImageGenerationParameters{InputImages: []string{"", "   "}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if blank.SeedImage != nil || blank.Inputs != nil {
+		t.Fatalf("all-empty input_images must leave no input key, got seedImage=%v inputs=%+v", blank.SeedImage, blank.Inputs)
+	}
+}
+
+// Input images are normalized the way the other image providers normalize theirs: bare base64 is
+// wrapped into a data URI, malformed URLs are rejected, and Runware's own asset UUIDs survive —
+// those carry no scheme, so a generic URL sanitizer would otherwise reject them.
+func TestRunwareImageReference(t *testing.T) {
+	const bareBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+	for _, tc := range []struct {
+		name, in, want string
+		wantErr        bool
+	}{
+		{"asset uuid preserved", "2f670f32-dece-4c44-aef0-e62b52ca7d55", "2f670f32-dece-4c44-aef0-e62b52ca7d55", false},
+		{"https untouched", "https://example.com/a.jpg", "https://example.com/a.jpg", false},
+		{"data uri untouched", "data:image/png;base64,iVBORw0KGgo=", "data:image/png;base64,iVBORw0KGgo=", false},
+		{"bare base64 wrapped", bareBase64, "data:image/png;base64," + bareBase64, false},
+		{"whitespace trimmed", "  2f670f32-dece-4c44-aef0-e62b52ca7d55  ", "2f670f32-dece-4c44-aef0-e62b52ca7d55", false},
+		{"empty yields empty", "   ", "", false},
+		{"malformed data url errors", "data:garbage", "", true},
+		{"disallowed scheme errors", "ftp://example.com/a.jpg", "", true},
+	} {
+		got, err := runwareImageReference(tc.in)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("%s: expected an error, got %q", tc.name, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%s: unexpected error: %v", tc.name, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// The generation path rejects a malformed reference rather than forwarding it for Runware to
+// reject, matching how replicate and runway handle input_images.
+func TestToRunwareImageGenerationRequest_InputImagesRejectsMalformed(t *testing.T) {
+	_, err := ToRunwareImageGenerationRequest(&schemas.BifrostImageGenerationRequest{
+		Model:  "runware:101@1",
+		Input:  &schemas.ImageGenerationInput{Prompt: "a cat"},
+		Params: &schemas.ImageGenerationParameters{InputImages: []string{"ftp://example.com/a.jpg"}},
+	})
+	if err == nil {
+		t.Fatalf("expected an error for a disallowed scheme")
+	}
+}

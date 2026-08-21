@@ -295,22 +295,24 @@ func (s *Store) calculateCostWithCache(result *schemas.BifrostResponse, cacheDeb
 		if cacheDebug.HitType != nil && *cacheDebug.HitType == "direct" {
 			return nil
 		}
-		// Semantic cache hit — only the embedding lookup cost (an input cost)
+		// Semantic cache hit — only the embedding lookup cost. It's an internal
+		// sidecar cost (a separate embedding call), so it lands on the additional
+		// side, alongside guardrail/MCP, not folded into the request's input.
 		if cacheDebug.ProviderUsed != nil && cacheDebug.ModelUsed != nil && cacheDebug.InputTokens != nil {
 			c := s.computeCacheEmbeddingCost(cacheDebug, scopes)
 			if c == 0 {
 				return nil
 			}
 			return &schemas.BifrostCost{
-				InputCost:        c,
-				InputCostDetails: &schemas.InputCostDetails{TextCost: c},
-				TotalCost:        c,
+				AdditionalCost:        c,
+				AdditionalCostDetails: &schemas.AdditionalCostDetails{SemanticCacheCost: c},
+				TotalCost:             c,
 			}
 		}
 		return nil
 	}
 
-	// Cache miss — full LLM cost + embedding lookup cost (added on the input side)
+	// Cache miss — full LLM cost + embedding lookup cost (a sidecar additional cost)
 	base := s.calculateBaseCost(result, scopes)
 	embeddingCost := s.computeCacheEmbeddingCost(cacheDebug, scopes)
 	if embeddingCost == 0 {
@@ -320,16 +322,16 @@ func (s *Store) calculateCostWithCache(result *schemas.BifrostResponse, cacheDeb
 	merged := &schemas.BifrostCost{}
 	if base != nil {
 		*merged = *base
-		if base.InputCostDetails != nil {
-			d := *base.InputCostDetails
-			merged.InputCostDetails = &d
+		if base.AdditionalCostDetails != nil {
+			d := *base.AdditionalCostDetails
+			merged.AdditionalCostDetails = &d
 		}
 	}
-	if merged.InputCostDetails == nil {
-		merged.InputCostDetails = &schemas.InputCostDetails{}
+	if merged.AdditionalCostDetails == nil {
+		merged.AdditionalCostDetails = &schemas.AdditionalCostDetails{}
 	}
-	merged.InputCost += embeddingCost
-	merged.InputCostDetails.TextCost += embeddingCost
+	merged.AdditionalCost += embeddingCost
+	merged.AdditionalCostDetails.SemanticCacheCost += embeddingCost
 	merged.TotalCost += embeddingCost
 	return merged
 }
@@ -352,7 +354,13 @@ func (s *Store) computeCacheEmbeddingCost(cacheDebug *schemas.BifrostCacheDebug,
 	if pricing == nil {
 		return 0
 	}
-	return float64(*cacheDebug.InputTokens) * tieredInputRate(pricing, *cacheDebug.InputTokens, serviceTier{})
+	cost := float64(*cacheDebug.InputTokens) * tieredInputRate(pricing, *cacheDebug.InputTokens, serviceTier{})
+	// The lookup is a separate embedding call, so the embedding model's flat
+	// per-request fee applies once, mirroring the synchronous/batch paths.
+	if pricing.CostPerRequest != nil {
+		cost += *pricing.CostPerRequest
+	}
+	return cost
 }
 
 // CalculateCacheEmbeddingCost computes the semantic-cache embedding lookup cost.
@@ -419,8 +427,13 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 		return input.imageUsage.Cost
 	}
 
-	// If no usage data at all, nothing to price
-	if input.usage == nil && input.audioSeconds == nil && input.audioTokenDetails == nil && input.imageUsage == nil && input.videoSeconds == nil && input.audioTextInputChars == 0 && input.ocrProcessedPages == nil && input.containerIdentifierString == "" {
+	// If no usage data at all, nothing to price.
+	//
+	// Rerank is exempt: it bills per query rather than per unit of reported usage, so a call
+	// that reports nothing still owes one query. Vertex returns no usage on rerank at all, and
+	// treating that as free would silently under-report every one of its calls.
+	if requestType != schemas.RerankRequest &&
+		input.usage == nil && input.audioSeconds == nil && input.audioTokenDetails == nil && input.imageUsage == nil && input.videoSeconds == nil && input.audioTextInputChars == 0 && input.ocrProcessedPages == nil && input.containerIdentifierString == "" {
 		return nil
 	}
 
@@ -588,7 +601,9 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 	case result.EmbeddingResponse != nil && result.EmbeddingResponse.Usage != nil:
 		input.usage = result.EmbeddingResponse.Usage
 
-	case result.RerankResponse != nil && result.RerankResponse.Usage != nil:
+	// Not gated on Usage like its neighbours: rerank bills per query, so a response that
+	// carries no usage at all (Vertex reports none) still owes one query's cost.
+	case result.RerankResponse != nil:
 		input.usage = result.RerankResponse.Usage
 
 	case result.SpeechResponse != nil && result.SpeechResponse.Usage != nil:
@@ -1026,31 +1041,55 @@ func computeEmbeddingCost(pricing *configstoreTables.TableModelPricing, usage *s
 }
 
 // computeRerankCost handles rerank requests.
+//
+// Rerank is priced two different ways depending on the model. Cohere, Bedrock and Azure bill per
+// query - one query covers up to 100 document chunks, so a larger request bills as several - while
+// hosted rerankers such as Voyage and Jina bill per token. Both terms are summed because a given
+// pricing row only ever carries one of them.
+//
+// Per-query pricing needs no usage at all, so a nil usage still bills one query rather than
+// returning zero: Vertex reports no usage on rerank, and dropping the charge there would silently
+// under-report every one of its calls.
 func computeRerankCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, tier serviceTier) *schemas.BifrostCost {
-	if usage == nil {
-		return nil
+	queryCost := 0.0
+	if pricing.InputCostPerQuery != nil {
+		// Providers that report their own billed unit count win: Cohere's search_units already
+		// accounts for long documents being chunked past the 100-per-query boundary.
+		queries := 1
+		if usage != nil && usage.SearchUnits != nil && *usage.SearchUnits > 0 {
+			queries = *usage.SearchUnits
+		}
+		queryCost = float64(queries) * *pricing.InputCostPerQuery
 	}
-	tierTokens := usage.PromptTokens
-	inputCost := float64(usage.PromptTokens) * tieredInputRate(pricing, tierTokens, tier)
-	outputCost := float64(usage.CompletionTokens) * tieredOutputRate(pricing, tierTokens, tier)
 
-	searchCost := 0.0
-	if pricing.SearchContextCostPerQuery != nil && usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.NumSearchQueries != nil {
-		searchCost = float64(*usage.CompletionTokensDetails.NumSearchQueries) * *pricing.SearchContextCostPerQuery
+	// Token terms stay zero when the response reports no usage; the per-query charge above
+	// still applies.
+	inputCost, outputCost, searchCost := 0.0, 0.0, 0.0
+	if usage != nil {
+		tierTokens := usage.PromptTokens
+		inputCost = float64(usage.PromptTokens) * tieredInputRate(pricing, tierTokens, tier)
+		outputCost = float64(usage.CompletionTokens) * tieredOutputRate(pricing, tierTokens, tier)
+
+		if pricing.SearchContextCostPerQuery != nil && usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.NumSearchQueries != nil {
+			searchCost = float64(*usage.CompletionTokensDetails.NumSearchQueries) * *pricing.SearchContextCostPerQuery
+		}
 	}
 
-	// Search queries are billed on the output side, matching computeTextCost.
+	// Search queries are billed on the output side, matching computeTextCost. The flat
+	// per-query rerank charge maps to no token category, so it folds into the input side
+	// as RequestCost, matching CostPerRequest.
+	inputTokensCost := inputCost + queryCost
 	outputTokensCost := outputCost + searchCost
 
 	var inputDetails *schemas.InputCostDetails
-	if inputCost != 0 {
-		inputDetails = &schemas.InputCostDetails{TextCost: inputCost}
+	if inputTokensCost != 0 {
+		inputDetails = &schemas.InputCostDetails{TextCost: inputCost, RequestCost: queryCost}
 	}
 	var outputDetails *schemas.OutputCostDetails
-	if outputCost != 0 || searchCost != 0 {
+	if outputTokensCost != 0 {
 		outputDetails = &schemas.OutputCostDetails{TextCost: outputCost, SearchQueriesCost: searchCost}
 	}
-	return newInputOutputCostWithDetails(inputCost, outputTokensCost, inputDetails, outputDetails)
+	return newInputOutputCostWithDetails(inputTokensCost, outputTokensCost, inputDetails, outputDetails)
 }
 
 // newInputOutputCost builds a BifrostCost from separate input and output costs,
@@ -1404,7 +1443,6 @@ func computeOCRCost(pricing *configstoreTables.TableModelPricing, ocrProcessedPa
 	return totalOnlyCost(cost)
 }
 
-
 // totalOnlyCost wraps a non-token-based cost (per-page, per-session) into a
 // BifrostCost, folding it onto the input side as a flat request cost, or nil
 // when there is nothing to record.
@@ -1424,7 +1462,7 @@ func totalOnlyCost(c float64) *schemas.BifrostCost {
 // ---------------------------------------------------------------------------
 
 // tierFromResponse builds a serviceTier from a response's billing-relevant
-// fields: the OpenAI service_tier (priority/flex) and the Anthropic speed
+// fields: the OpenAI service_tier (priority/flex/ultrafast) and the Anthropic speed
 // (fast mode). speed == "fast" means fast mode was actually served — the
 // provider echoes the served speed, so stripped/fell-back requests report
 // "standard" and bill at standard rates.
@@ -1436,6 +1474,8 @@ func tierFromResponse(s *schemas.BifrostServiceTier, speed *string, inferenceGeo
 			tier.isPriority = true
 		case schemas.BifrostServiceTierFlex:
 			tier.isFlex = true
+		case schemas.BifrostServiceTierUltrafast:
+			tier.isUltrafast = true
 		}
 	}
 	tier.isFast = speed != nil && *speed == "fast"
@@ -1450,6 +1490,9 @@ func tieredInputRate(pricing *configstoreTables.TableModelPricing, totalTokens i
 	// takes precedence over the token-count tiers below.
 	if tier.isFast && pricing.InputCostPerTokenFast != nil {
 		return *pricing.InputCostPerTokenFast
+	}
+	if tier.isUltrafast && pricing.InputCostPerTokenUltrafast != nil {
+		return *pricing.InputCostPerTokenUltrafast
 	}
 	if tier.isFlex {
 		if totalTokens > TokenTierAbove272K && pricing.InputCostPerTokenFlexAbove272kTokens != nil {
@@ -1494,6 +1537,9 @@ func tieredOutputRate(pricing *configstoreTables.TableModelPricing, totalTokens 
 	// takes precedence over the token-count tiers below.
 	if tier.isFast && pricing.OutputCostPerTokenFast != nil {
 		return *pricing.OutputCostPerTokenFast
+	}
+	if tier.isUltrafast && pricing.OutputCostPerTokenUltrafast != nil {
+		return *pricing.OutputCostPerTokenUltrafast
 	}
 	if tier.isFlex {
 		if totalTokens > TokenTierAbove272K && pricing.OutputCostPerTokenFlexAbove272kTokens != nil {
@@ -1603,6 +1649,9 @@ func tieredCacheReadInputTokenRate(pricing *configstoreTables.TableModelPricing,
 	if tier.isFast && pricing.CacheReadInputTokenCostFast != nil {
 		return *pricing.CacheReadInputTokenCostFast
 	}
+	if tier.isUltrafast && pricing.CacheReadInputTokenCostUltrafast != nil {
+		return *pricing.CacheReadInputTokenCostUltrafast
+	}
 	if tier.isFlex {
 		if totalTokens > TokenTierAbove272K && pricing.CacheReadInputTokenCostFlexAbove272kTokens != nil {
 			return *pricing.CacheReadInputTokenCostFlexAbove272kTokens
@@ -1637,12 +1686,15 @@ func tieredCacheReadInputTokenRate(pricing *configstoreTables.TableModelPricing,
 }
 
 // OpenAI introduced cache-write (cache-creation) pricing with gpt-5.6, tiered by
-// service tier (flex/priority) and by the 272k context window; Anthropic uses the
+// service tier (flex/priority/ultrafast) and by the 272k context window; Anthropic uses the
 // flat fast rate. Precedence mirrors tieredCacheReadInputTokenRate.
 func tieredCacheCreationInputTokenRate(pricing *configstoreTables.TableModelPricing, totalTokens int, tier serviceTier) float64 {
 	// Fast mode (Anthropic) is a flat rate across the full context window.
 	if tier.isFast && pricing.CacheCreationInputTokenCostFast != nil {
 		return *pricing.CacheCreationInputTokenCostFast
+	}
+	if tier.isUltrafast && pricing.CacheCreationInputTokenCostUltrafast != nil {
+		return *pricing.CacheCreationInputTokenCostUltrafast
 	}
 	if tier.isFlex {
 		if totalTokens > TokenTierAbove272K && pricing.CacheCreationInputTokenCostFlexAbove272kTokens != nil {

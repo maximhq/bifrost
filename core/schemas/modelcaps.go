@@ -122,6 +122,18 @@ const (
 	FieldWebSearchOptions     = "web_search_options"
 )
 
+// Logical field names used as FieldNames keys, where the value is the wire name
+// the model expects. Same reasoning as the constants above.
+const (
+	// LogicalFieldInputImage is the image an image or video request is derived
+	// from. Providers name it very differently per model — Runware nests it as
+	// seedImage, referenceImages or frameImages; Replicate takes image_prompt,
+	// input_image or image.
+	LogicalFieldInputImage = "input_image"
+	// LogicalFieldPrompt is the text prompt.
+	LogicalFieldPrompt = "prompt"
+)
+
 // ConditionWhenEffortNone marks a field the model accepts only while reasoning
 // is off — i.e. reasoning.effort is "none" or omitted.
 const ConditionWhenEffortNone = "when_effort_none"
@@ -133,6 +145,21 @@ func (c ModelCaps) FieldUnsupported(field string, fallback bool) bool {
 	if c.record != nil {
 		if unsupported, ok := c.record.UnsupportedFields[field]; ok {
 			return unsupported
+		}
+	}
+	return fallback
+}
+
+// FieldName resolves the wire name a model expects for a logical field, from the
+// datasheet's field_names map. Providers that shape a request per model — which
+// key an input image goes under, what a parameter is called — read it here so
+// the mapping can move to the datasheet without a release. As with
+// FieldUnsupported, fallback is the call site's own answer and is returned
+// whenever the datasheet says nothing.
+func (c ModelCaps) FieldName(logical string, fallback string) string {
+	if c.record != nil {
+		if name, ok := c.record.FieldNames[logical]; ok && name != "" {
+			return name
 		}
 	}
 	return fallback

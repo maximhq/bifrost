@@ -314,7 +314,11 @@ func (provider *GeminiProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		}, nil
 	}
 
+	convTracer, convHandle := providerUtils.StartResponseConvertorSpan(ctx)
 	bifrostResponse := geminiResponse.ToBifrostChatResponse()
+	if convTracer != nil {
+		convTracer.EndSpan(convHandle, schemas.SpanStatusOk, "")
+	}
 
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
@@ -1282,7 +1286,7 @@ func (provider *GeminiProvider) Embedding(ctx *schemas.BifrostContext, key schem
 
 	// Parse Gemini's batch embedding response
 	var geminiResponse GeminiEmbeddingResponse
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, &geminiResponse, jsonData,
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, body, &geminiResponse, jsonData,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if bifrostErr != nil {

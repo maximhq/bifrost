@@ -1037,6 +1037,18 @@
                     { "$ref": "#/$defs/otelProfilesConfig" }
                   ],
                   "description": "Configuration for the OpenTelemetry plugin. Supports the legacy single-profile shape or the profiles wrapper for multiple collectors."
+                },
+                "semaphore_size": {
+                  "type": "integer",
+                  "description": "Cap on how many traces may be injected into this plugin concurrently. A saturated cap causes new traces to be dropped for this plugin only, not process-wide (default: 10000).",
+                  "default": 10000,
+                  "minimum": 1
+                },
+                "inject_timeout": {
+                  "type": "string",
+                  "description": "Timeout for a single Inject call from the tracer, as a Go duration string (default: 5s). Bounds how long a hung connector can hold a concurrency-budget slot.",
+                  "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$",
+                  "default": "5s"
                 }
               },
               "if": {
@@ -1579,6 +1591,18 @@
                     "type": "integer",
                     "default": 0,
                     "description": "Position within placement group. Lower = earlier execution"
+                  },
+                  "semaphore_size": {
+                    "type": "integer",
+                    "description": "For plugins that implement ObservabilityPlugin (receive completed traces): cap on how many traces may be injected into this plugin concurrently. A saturated cap causes new traces to be dropped for this plugin only, not process-wide. Ignored by plugins that don't receive traces (default: 10000).",
+                    "default": 10000,
+                    "minimum": 1
+                  },
+                  "inject_timeout": {
+                    "type": "string",
+                    "description": "For plugins that implement ObservabilityPlugin: timeout for a single Inject call from the tracer, as a Go duration string (default: 5s). Bounds how long a hung connector can hold a concurrency-budget slot. Ignored by plugins that don't receive traces.",
+                    "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$",
+                    "default": "5s"
                   }
                 },
                 "required": ["name", "enabled"]
@@ -5352,6 +5376,18 @@
         },
         "config": {
           "type": "object"
+        },
+        "semaphore_size": {
+          "type": "integer",
+          "description": "For plugins that implement ObservabilityPlugin (receive completed traces): cap on how many traces may be injected into this plugin concurrently. A saturated cap causes new traces to be dropped for this plugin only, not process-wide. Ignored by plugins that don't receive traces (default: 10000).",
+          "default": 10000,
+          "minimum": 1
+        },
+        "inject_timeout": {
+          "type": "string",
+          "description": "For plugins that implement ObservabilityPlugin: timeout for a single Inject call from the tracer, as a Go duration string (default: 5s). Bounds how long a hung connector can hold a concurrency-budget slot. Ignored by plugins that don't receive traces.",
+          "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$",
+          "default": "5s"
         }
       }
     },

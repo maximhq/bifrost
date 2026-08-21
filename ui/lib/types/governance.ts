@@ -486,6 +486,8 @@ export interface PricingOverridePatch {
 	output_cost_per_token_batches?: number;
 	input_cost_per_token_priority?: number;
 	output_cost_per_token_priority?: number;
+	input_cost_per_token_ultrafast?: number;
+	output_cost_per_token_ultrafast?: number;
 	input_cost_per_token_flex?: number;
 	output_cost_per_token_flex?: number;
 	input_cost_per_character?: number;
@@ -519,6 +521,7 @@ export interface PricingOverridePatch {
 	cache_creation_input_token_cost_above_1hr_above_200k_tokens?: number;
 	cache_creation_input_audio_token_cost?: number;
 	cache_read_input_token_cost_priority?: number;
+	cache_read_input_token_cost_ultrafast?: number;
 	cache_read_input_token_cost_flex?: number;
 	cache_read_input_image_token_cost?: number;
 	cache_read_input_token_cost_above_272k_tokens?: number;
@@ -528,6 +531,7 @@ export interface PricingOverridePatch {
 	cache_creation_input_token_cost_flex?: number;
 	cache_creation_input_token_cost_flex_above_272k_tokens?: number;
 	cache_creation_input_token_cost_priority?: number;
+	cache_creation_input_token_cost_ultrafast?: number;
 	cache_creation_input_token_cost_fast?: number;
 	cache_creation_input_token_cost_above_1hr_fast?: number;
 	cache_read_input_token_cost_fast?: number;
@@ -564,6 +568,7 @@ export interface PricingOverridePatch {
 	output_cost_per_second?: number;
 	// Other
 	search_context_cost_per_query?: number;
+	input_cost_per_query?: number;
 	code_interpreter_cost_per_session?: number;
 	inference_geo_us_multiplier?: number;
 	cost_per_request?: number;

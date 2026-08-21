@@ -2,6 +2,7 @@ package runware
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/google/uuid"
@@ -24,21 +25,28 @@ func ToRunwareImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationR
 		taskType = taskTypeVectorize
 	}
 
-	width, height := defaultRunwareWidth, defaultRunwareHeight
+	caps := schemas.ResolveModelCaps(schemas.Runware, bifrostReq.Model)
+	traits := runwareImageModelFor(caps)
 	request := &RunwareInferenceRequest{
-		TaskType:       taskType,
-		TaskUUID:       uuid.New().String(),
-		Model:          bifrostReq.Model,
-		PositivePrompt: &bifrostReq.Input.Prompt,
-		Width:          &width,
-		Height:         &height,
-		IncludeCost:    new(true),
+		TaskType:    taskType,
+		TaskUUID:    uuid.New().String(),
+		Model:       bifrostReq.Model,
+		IncludeCost: new(true),
+	}
+	// Runware rejects any key a model does not declare, so the dimensions and the prompt are only
+	// sent to models that accept them.
+	if !traits.noPrompt {
+		request.PositivePrompt = &bifrostReq.Input.Prompt
+	}
+	if !traits.noDimensions {
+		width, height := defaultRunwareWidth, defaultRunwareHeight
+		request.Width, request.Height = &width, &height
 	}
 
 	if bifrostReq.Params != nil {
 		params := bifrostReq.Params
 
-		if params.Size != nil && *params.Size != "" {
+		if params.Size != nil && *params.Size != "" && request.Width != nil {
 			*request.Width, *request.Height = parseRunwareSize(*params.Size)
 		}
 		request.NegativePrompt = params.NegativePrompt
@@ -47,6 +55,7 @@ func ToRunwareImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationR
 		request.NumberResults = params.N
 		request.OutputType = runwareOutputType(params.ResponseFormat)
 		request.OutputFormat = runwareOutputFormat(params.OutputFormat)
+		request.OutputQuality = params.OutputCompression
 
 		request.ExtraParams = params.ExtraParams
 
@@ -54,6 +63,34 @@ func ToRunwareImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationR
 			delete(request.ExtraParams, "seedImage")
 			if s, ok := v.(string); ok && s != "" {
 				request.SeedImage = &s
+			}
+		}
+
+		// input_images drives image-to-image on the generation path. A seedImage supplied through
+		// extra params is the provider-native form of the same thing and wins outright — sending
+		// both would put two input keys on a request that accepts one.
+		// Each entry is normalized the way the other image providers normalize theirs; empty ones are
+		// dropped, since Runware rejects a blank input key.
+		if request.SeedImage == nil {
+			inputImages := make([]string, 0, len(params.InputImages))
+			for _, img := range params.InputImages {
+				reference, err := runwareImageReference(img)
+				if err != nil {
+					return nil, fmt.Errorf("invalid input image: %w", err)
+				}
+				if reference != "" {
+					inputImages = append(inputImages, reference)
+				}
+			}
+			if len(inputImages) > 0 {
+				switch traits.inputForm {
+				case runwareImageInputReferenceImages:
+					request.Inputs = &RunwareInputs{ReferenceImages: inputImages}
+				case runwareImageInputImageMask:
+					request.Inputs = &RunwareInputs{Image: &inputImages[0]}
+				default:
+					request.SeedImage = &inputImages[0]
+				}
 			}
 		}
 	}
@@ -76,25 +113,46 @@ func ToRunwareImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) (*Ru
 		return toRunwareImageToolRequest(taskType, bifrostReq)
 	}
 
-	width, height := defaultRunwareWidth, defaultRunwareHeight
+	caps := schemas.ResolveModelCaps(schemas.Runware, bifrostReq.Model)
+	traits := runwareImageModelFor(caps)
 	request := &RunwareInferenceRequest{
-		TaskType:       taskTypeImageInference,
-		TaskUUID:       uuid.New().String(),
-		Model:          bifrostReq.Model,
-		PositivePrompt: &bifrostReq.Input.Prompt,
-		Width:          &width,
-		Height:         &height,
-		IncludeCost:    new(true),
+		TaskType:    taskTypeImageInference,
+		TaskUUID:    uuid.New().String(),
+		Model:       bifrostReq.Model,
+		IncludeCost: new(true),
+	}
+	// The erase and object-removal models take neither a prompt nor dimensions, and Runware rejects
+	// any key a model does not declare, so both are omitted for them.
+	if !traits.noPrompt {
+		request.PositivePrompt = &bifrostReq.Input.Prompt
+	}
+	if !traits.noDimensions {
+		width, height := defaultRunwareWidth, defaultRunwareHeight
+		request.Width, request.Height = &width, &height
 	}
 
-	// Seed image: the base image being edited (raw bytes -> base64 data URI).
+	// The base image being edited, in the form this model declares. Only the referenceImages form
+	// carries more than one image; the others take the first and drop the rest.
 	seedImage := runwareImageInput(bifrostReq.Input.Images[0])
-	request.SeedImage = &seedImage
+	switch traits.inputForm {
+	case runwareImageInputReferenceImages:
+		references := make([]string, 0, len(bifrostReq.Input.Images))
+		for _, img := range bifrostReq.Input.Images {
+			if reference := runwareImageInput(img); reference != "" {
+				references = append(references, reference)
+			}
+		}
+		request.Inputs = &RunwareInputs{ReferenceImages: references}
+	case runwareImageInputImageMask:
+		request.Inputs = &RunwareInputs{Image: &seedImage}
+	default:
+		request.SeedImage = &seedImage
+	}
 
 	if bifrostReq.Params != nil {
 		params := bifrostReq.Params
 
-		if params.Size != nil && *params.Size != "" {
+		if params.Size != nil && *params.Size != "" && request.Width != nil {
 			*request.Width, *request.Height = parseRunwareSize(*params.Size)
 		}
 		request.NegativePrompt = params.NegativePrompt
@@ -103,11 +161,18 @@ func ToRunwareImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) (*Ru
 		request.NumberResults = params.N
 		request.OutputType = runwareOutputType(params.ResponseFormat)
 		request.OutputFormat = runwareOutputFormat(params.OutputFormat)
+		request.OutputQuality = params.OutputCompression
 
-		// Mask image enables inpainting (raw bytes -> base64 data URI).
+		// Mask image enables inpainting (raw bytes -> base64 data URI). The referenceImages models
+		// declare no mask key at all, so a mask sent to one of those is dropped.
 		if len(params.Mask) > 0 {
 			maskImage := providerUtils.FileBytesToBase64DataURL(params.Mask)
-			request.MaskImage = &maskImage
+			switch traits.inputForm {
+			case runwareImageInputImageMask:
+				request.Inputs.Mask = &maskImage
+			case runwareImageInputSeedImage:
+				request.MaskImage = &maskImage
+			}
 		}
 
 		request.ExtraParams = params.ExtraParams
@@ -117,16 +182,39 @@ func ToRunwareImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) (*Ru
 }
 
 // runwareImageInput resolves an input image to the reference Runware expects. A caller-supplied
-// URL passes through untouched — Runware accepts UUIDs and URLs natively, so forwarding it avoids
-// round-tripping the asset through the gateway as base64 — while raw bytes become a data URI.
+// URL is normalized rather than round-tripped through the gateway as base64; raw bytes become a
+// data URI. An unusable reference yields "", which callers treat as absent.
 func runwareImageInput(img schemas.ImageInput) string {
 	if img.URL != "" {
-		return img.URL
+		reference, err := runwareImageReference(img.URL)
+		if err != nil {
+			return ""
+		}
+		return reference
 	}
 	if len(img.Image) == 0 {
 		return ""
 	}
 	return providerUtils.FileBytesToBase64DataURL(img.Image)
+}
+
+// runwareImageReference normalizes a caller-supplied image reference. URLs and base64 payloads go
+// through the same sanitizer the other image providers use, which validates data URLs and wraps
+// bare base64 into one. A value carrying no URL scheme is left alone: Runware accepts its own asset
+// UUIDs as inputs — the ids it returns on data[].id — and those would otherwise be rejected as
+// schemeless URLs. Returns "" for an empty reference so callers can skip it.
+func runwareImageReference(image string) (string, error) {
+	trimmed := strings.TrimSpace(image)
+	if trimmed == "" {
+		return "", nil
+	}
+	if sanitized, err := schemas.SanitizeImageURL(trimmed); err == nil {
+		return sanitized, nil
+	} else if parsed, parseErr := url.Parse(trimmed); parseErr != nil || parsed.Scheme != "" {
+		// A scheme means it was meant to be a URL, so a sanitizer failure is a real error.
+		return "", err
+	}
+	return trimmed, nil
 }
 
 // runwareImageEditTaskType maps the neutral edit type onto a Runware tool task type. An empty
@@ -145,6 +233,8 @@ func runwareImageEditTaskType(params *schemas.ImageEditParameters) string {
 		return taskTypeImageMasking
 	case "vectorize":
 		return taskTypeVectorize
+	case "controlnet_preprocess", "controlnet", "preprocess":
+		return taskTypeControlNetPreprocess
 	}
 	return ""
 }
