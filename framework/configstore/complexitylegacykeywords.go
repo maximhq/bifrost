@@ -1,38 +1,24 @@
-package complexity
+package configstore
 
-// --- Dimension weights ---
+// Frozen snapshot of the keyword lists the pre-semantic complexity analyzer
+// shipped, copied from plugins/governance/complexity/keywords.go as of the last
+// release that used them.
+//
+// These are written into the persisted analyzer row alongside the canonical
+// three-tier lists so that a Bifrost old enough to predate the semantic router
+// can still read that row, pass its own validation (which requires all four
+// legacy lists to be non-empty), and score with sane keywords rather than with
+// semantic exemplars, which are whole sentences and match almost nothing.
+//
+// All four lists are written, and none of them is shared with the canonical
+// exemplar lists: the two shapes live in separate governance_config rows.
+//
+// This is a snapshot, not a mirror. It should track what older binaries expect,
+// which is what the last pre-semantic release shipped -- not whatever the
+// governance plugin's lists look like today. Do not "fix" drift from that file.
 
-// The positive weights (medium + complex + token count) sum to
-// 1.00 so a prompt maxing every signal reaches the full score range. The
-// simple weight is a penalty and deliberately not part of that budget.
-const (
-	mediumWeight                       = 0.40
-	complexWeight                      = 0.50
-	simpleWeight                       = 0.05
-	tokenCountWeight                   = 0.10
-	systemPromptAssistFactor           = 0.25
-	defaultLastMessageBlendWeight      = 0.60
-	defaultConversationBlendWeight     = 0.40
-	referentialLastMessageBlendWeight  = 0.35
-	referentialConversationBlendWeight = 0.65
-	referentialMinContextScore         = 0.20
-	referentialShortMessageMaxWords    = 12
-	wordPresenceSetMinBytes            = 8 * 1024
-)
-
-// Match saturation points define when each normalized keyword score reaches 1.
-// Two Complex matches bypass the numeric boundary and force COMPLEX.
-const (
-	mediumMatchSaturation     = 4
-	complexMatchSaturation    = 3
-	simpleMatchSaturation     = 2
-	complexOverrideMatchCount = 2
-)
-
-// --- Keyword lists ---
-// Medium indicators combine implementation/code signals with technical,
-// architecture, infrastructure, security, and operational terminology.
-var mediumKeywords = []string{
+// legacyCodeKeywords mirrors codeKeywords (64 entries).
+var legacyCodeKeywords = []string{
 	"function", "class", "api", "database", "algorithm", "code", "implement",
 	"debug", "error", "syntax", "compile", "runtime", "library", "framework",
 	"variable", "loop", "array", "object", "method", "interface",
@@ -44,6 +30,19 @@ var mediumKeywords = []string{
 	"retry", "fallback", "middleware", "patch", "diff", "pr", "pull request",
 	"commit", "commit message", "behavior change",
 	"cel", "auto-routing", "rwmutex", "goroutine",
+}
+
+// legacyReasoningKeywords mirrors strongReasoningKeywords (15 entries).
+var legacyReasoningKeywords = []string{
+	"step by step", "think through", "tradeoffs", "pros and cons",
+	"justify", "critique", "implications", "explain why",
+	"root cause analysis", "reconstruct the sequence",
+	"reconstruct the most likely sequence", "what should have happened instead",
+	"explain your reasoning", "weigh the tradeoffs", "recommend a design",
+}
+
+// legacyTechnicalKeywords mirrors technicalKeywords (93 entries).
+var legacyTechnicalKeywords = []string{
 	"architecture", "distributed", "encryption", "authentication", "scalability",
 	"microservices", "kubernetes", "infrastructure", "protocol", "latency",
 	"throughput", "concurrency", "optimization", "load balancer", "caching",
@@ -67,27 +66,10 @@ var mediumKeywords = []string{
 	"disaster recovery", "data race", "struct copy", "hybrid search",
 }
 
-// Complex indicators are intentionally narrow, high-confidence phrases that
-// signal deeper analysis or reasoning. Two matches force the COMPLEX tier.
-var complexKeywords = []string{
-	"step by step", "think through", "tradeoffs", "pros and cons",
-	"justify", "critique", "implications", "explain why",
-	"root cause analysis", "reconstruct the sequence",
-	"reconstruct the most likely sequence", "what should have happened instead",
-	"explain your reasoning", "weigh the tradeoffs", "recommend a design",
-}
-
-// SimpleIndicators: signals for trivial/greeting-type requests
-var simpleKeywords = []string{
+// legacySimpleKeywords mirrors simpleKeywords (21 entries).
+var legacySimpleKeywords = []string{
 	"what is", "define", "hello", "hi", "thanks", "how do i spell",
 	"translate", "what does", "who is", "when was", "tell me about",
 	"good morning", "good night", "how are you", "simple", "brief",
 	"short", "quick", "beginner", "basic", "concise",
-}
-
-var continuationPhrases = []string{
-	"do it", "try again", "continue", "go ahead", "proceed",
-	"that one", "this one", "same thing", "again",
-	"yes do that", "go with that", "use option 1", "use option 2", "use option 3",
-	"now write it",
 }

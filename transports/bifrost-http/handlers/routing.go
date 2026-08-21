@@ -325,17 +325,34 @@ func (h *RoutingHandler) resetComplexityAnalyzerConfig(ctx *fasthttp.RequestCtx)
 		return
 	}
 
+	// Reset owns the two sections it is named for — the tier boundaries and the
+	// phrase lists — and nothing else. The rest of the record is deployment
+	// state configured elsewhere: the embedding provider, model, and storage
+	// selection, without which classification stops entirely. Replacing the
+	// whole record would turn "restore the default phrases" into "turn the
+	// classifier off", which is neither what the endpoint says nor what the
+	// operator confirmed.
+	//
+	// The section hashes ride along for the same reason they are carried over on
+	// an ordinary update: they record which config.json sections have already
+	// been applied. Clearing them would let config.json reapply its phrases on
+	// the next boot and silently undo this reset.
+	//
+	// The store performs the swap: reading the record here and writing it back
+	// would leave a window in which a concurrent save of the preserved sections
+	// is read before the save and overwritten after it.
 	defaults := complexity.DefaultAnalyzerConfig()
-	if err := h.configStore.UpdateComplexityAnalyzerConfig(ctx, &defaults); err != nil {
+	restored, err := h.configStore.ResetComplexityAnalyzerConfig(ctx, &defaults)
+	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to reset complexity analyzer config: %v", err))
 		return
 	}
-	if err := h.reloadComplexityAnalyzerConfig(ctx, &defaults); err != nil {
+	if err := h.reloadComplexityAnalyzerConfig(ctx, restored); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to reload complexity analyzer config in memory: %v, please restart bifrost to sync with the database", err))
 		return
 	}
 
-	SendJSON(ctx, defaults)
+	SendJSON(ctx, restored)
 }
 
 func (h *RoutingHandler) reloadComplexityAnalyzerConfig(ctx context.Context, config *complexity.AnalyzerConfig) error {

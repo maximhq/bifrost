@@ -1114,6 +1114,44 @@ func TestSchemaLiveModelsSyncInterval(t *testing.T) {
 // unmarshal - validateBudget therefore has to treat 0 as "unset", and the schema
 // has to let that value through or config.json rejects a value the runtime
 // documents as valid and handles correctly.
+// TestSchemaComplexitySemanticTimeout pins the timeout schema to what
+// ComplexitySemanticConfig.UnmarshalJSON actually accepts. The two forms are one
+// setting: the decoder takes a duration string or a number of milliseconds,
+// rejects only negatives ("must be non-negative"), and normalized() then reads
+// zero as "unset" and substitutes DefaultComplexitySemanticTimeout. A schema that
+// accepted "0s" but rejected 0 flagged a config the gateway runs happily.
+func TestSchemaComplexitySemanticTimeout(t *testing.T) {
+	compiled := compileSchema(t)
+	semantic := func(timeout string) string {
+		return `{"governance": {"complexity_analyzer_config": {
+			"keywords": {"simple_keywords": ["hi"], "medium_keywords": ["build"], "complex_keywords": ["design a system"]},
+			"semantic": {"provider": "openai", "embedding_model": "text-embedding-3-small", "timeout": ` + timeout + `}
+		}}}`
+	}
+
+	for name, timeout := range map[string]string{
+		"zero as a number": "0",
+		"zero as duration": `"0s"`,
+		"number":           "1500",
+		"fractional":       "1.5",
+		"duration string":  `"1.5s"`,
+	} {
+		if err := validateConfig(t, compiled, semantic(timeout)); err != nil {
+			t.Errorf("semantic timeout (%s) must be valid — the decoder accepts it, got: %v", name, err)
+		}
+	}
+
+	for name, timeout := range map[string]string{
+		"negative number":   "-1",
+		"negative duration": `"-1s"`,
+		"unitless string":   `"1500"`,
+	} {
+		if err := validateConfig(t, compiled, semantic(timeout)); err == nil {
+			t.Errorf("semantic timeout (%s) must be rejected", name)
+		}
+	}
+}
+
 func TestSchemaBudgetQuarterStartMonth(t *testing.T) {
 	compiled := compileSchema(t)
 

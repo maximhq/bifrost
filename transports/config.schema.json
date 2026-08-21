@@ -3761,87 +3761,182 @@
     },
     "complexity_tier_boundaries": {
       "type": "object",
-      "description": "Score thresholds used to classify complexity_tier values",
+      "description": "Lexical score thresholds. simple_medium and medium_complex are applied by the complexity analyzer; complex_reasoning is retired and accepted for backward compatibility only.",
       "properties": {
         "simple_medium": {
           "type": "number",
           "exclusiveMinimum": 0,
           "exclusiveMaximum": 1,
-          "description": "Scores below this threshold are SIMPLE"
+          "description": "Active lexical boundary applied by the complexity analyzer: a request scoring below this classifies as SIMPLE."
         },
         "medium_complex": {
           "type": "number",
           "exclusiveMinimum": 0,
           "exclusiveMaximum": 1,
-          "description": "Scores below this threshold and at or above simple_medium are MEDIUM"
+          "description": "Active lexical boundary applied by the complexity analyzer: a request scoring below this classifies as MEDIUM, and at or above it as COMPLEX. Must remain greater than simple_medium when supplied, both for the analyzer and for backward compatibility."
         },
         "complex_reasoning": {
           "type": "number",
           "exclusiveMinimum": 0,
           "exclusiveMaximum": 1,
-          "description": "Scores below this threshold and at or above medium_complex are COMPLEX"
+          "deprecated": true,
+          "description": "Retired REASONING-tier boundary. Accepted for backward compatibility but ignored because REASONING is merged into COMPLEX."
         }
       },
-      "required": ["simple_medium", "medium_complex", "complex_reasoning"],
+      "required": ["simple_medium", "medium_complex"],
       "additionalProperties": false
     },
     "complexity_analyzer_keywords": {
       "type": "object",
-      "description": "User-editable keyword lists for complexity analysis",
-      "properties": {
-        "code_keywords": {
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
+      "description": "User-editable keyword scoring signals. The legacy four-list shape remains accepted for config.json compatibility.",
+      "oneOf": [
+        {
+          "title": "Three-tier complexity keywords",
+          "properties": {
+            "simple_keywords": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "medium_keywords": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "complex_keywords": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "required": ["simple_keywords", "medium_keywords", "complex_keywords"],
+          "additionalProperties": false
         },
-        "reasoning_keywords": {
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "technical_keywords": {
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "simple_keywords": {
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
+        {
+          "title": "Deprecated legacy complexity keywords",
+          "deprecated": true,
+          "properties": {
+            "code_keywords": {
+              "type": "array",
+              "minItems": 1,
+              "deprecated": true,
+              "description": "Deprecated legacy field. Values are merged into medium_keywords.",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "reasoning_keywords": {
+              "type": "array",
+              "minItems": 1,
+              "deprecated": true,
+              "description": "Deprecated legacy field. Values are migrated to complex_keywords.",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "technical_keywords": {
+              "type": "array",
+              "minItems": 1,
+              "deprecated": true,
+              "description": "Deprecated legacy field. Values are merged into medium_keywords.",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "simple_keywords": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "required": ["code_keywords", "reasoning_keywords", "technical_keywords", "simple_keywords"],
+          "additionalProperties": false
         }
-      },
-      "required": [
-        "code_keywords",
-        "reasoning_keywords",
-        "technical_keywords",
-        "simple_keywords"
-      ],
-      "additionalProperties": false
+      ]
     },
     "complexity_analyzer_config": {
       "type": "object",
-      "description": "Runtime configuration for complexity_tier CEL routing",
+      "description": "Runtime configuration for semantic complexity_tier CEL routing",
       "properties": {
         "tier_boundaries": {
           "$ref": "#/$defs/complexity_tier_boundaries"
         },
         "keywords": {
           "$ref": "#/$defs/complexity_analyzer_keywords"
+        },
+        "semantic": {
+          "$ref": "#/$defs/complexity_semantic_config"
         }
       },
-      "required": ["tier_boundaries", "keywords"],
+      "required": ["keywords"],
+      "additionalProperties": false
+    },
+    "complexity_semantic_config": {
+      "type": "object",
+      "description": "Embedding-based (semantic) complexity classification settings. Presence of this block enables the semantic classifier. The classifier embeds the analyzer's shared per-tier keyword lists as its exemplars.",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider used to generate embeddings for complexity classification"
+        },
+        "embedding_model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Model used to generate embeddings for complexity classification"
+        },
+        "timeout": {
+          "description": "Per-request embedding timeout (duration string like '1.5s' or '1500ms', or milliseconds as a number; default: 1500ms). Zero, in either form, means the default. On timeout no complexity tier is published and the request is recorded as 'skipped'.",
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)$"
+            },
+            {
+              "type": "number",
+              "minimum": 0
+            }
+          ],
+          "default": "1500ms"
+        },
+        "min_similarity": {
+          "type": "number",
+          "minimum": 0,
+          "exclusiveMaximum": 1,
+          "description": "Similarity floor a nearest-exemplar match must clear before its tier is used; a match below it publishes no tier and is recorded as 'skipped' (default: 0, meaning the nearest exemplar always wins however unrelated it is). Compared against the backend's own score: chromem, Qdrant, Pinecone, and Redis report raw cosine similarity, Weaviate reports certainty ((cosine+1)/2), so retune when switching backends."
+        },
+        "message_history_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "description": "How many of the most recent user messages are combined (oldest first) into the text that gets embedded (default: 1, the latest message only). Higher values let a short follow-up inherit the intent of earlier turns, at the cost of diluting the latest message and embedding more input tokens per request. Only user turns count; system prompts and assistant replies are never embedded."
+        },
+        "count_toward_budgets": {
+          "type": "boolean",
+          "description": "Record classification embedding cost against governance budgets (record-only, never enforced; default: false)"
+        },
+        "vector_store": {
+          "type": "string",
+          "enum": ["embedded", "vector_store"],
+          "description": "Where exemplar embeddings are stored: 'embedded' uses the built-in chromem store, 'vector_store' uses the store configured in the top-level vector_store section and falls back to embedded when none is configured (default: embedded)"
+        }
+      },
+      "required": ["provider", "embedding_model"],
       "additionalProperties": false
     },
     "auth_config": {
