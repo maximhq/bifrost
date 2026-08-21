@@ -1,3 +1,4 @@
+import PageTitle from "@/components/pageTitle";
 import FullPageLoader from "@/components/fullPageLoader";
 import {
 	AlertDialog,
@@ -310,7 +311,7 @@ export default function ComplexityRouterPage() {
 
 	if (error && !data) {
 		return (
-			<div className="mx-auto w-full max-w-7xl space-y-4 px-14 pt-8">
+			<div className="mx-auto w-full max-w-7xl space-y-4 px-4 pt-6 sm:px-6 sm:pt-8 lg:px-14">
 				<p className="text-destructive font-mono text-sm">{getErrorMessage(error)}</p>
 				<Button data-testid="complexity-router-fetch-retry-button" type="button" variant="outline" size="sm" onClick={() => refetch()}>
 					Retry
@@ -321,7 +322,7 @@ export default function ComplexityRouterPage() {
 
 	if (!data) {
 		return (
-			<div className="mx-auto w-full max-w-7xl space-y-4 px-14 pt-8">
+			<div className="mx-auto w-full max-w-7xl space-y-4 px-4 pt-6 sm:px-6 sm:pt-8 lg:px-14">
 				<p className="text-muted-foreground font-mono text-sm">No complexity router configuration is available.</p>
 				<Button data-testid="complexity-router-fetch-retry-button" type="button" variant="outline" size="sm" onClick={() => refetch()}>
 					Retry
@@ -335,225 +336,235 @@ export default function ComplexityRouterPage() {
 	const hasErrors = Boolean(boundaryErrors || keywordErrors);
 
 	return (
-		<ScrollArea className="no-padding-parent h-[calc(100vh_-_16px)] w-full px-14 pt-4">
-			<form className="mx-auto w-full max-w-7xl space-y-8" onSubmit={handleSubmit(onValid)} noValidate>
-				{/* ── Page header ── */}
-				<div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-					<div className="space-y-1.5">
-						<h1 className="text-2xl font-semibold tracking-tight">Complexity Router</h1>
-						<p className="text-muted-foreground max-w-2xl text-sm leading-relaxed">
+		<div className="no-padding-parent flex h-[calc(var(--app-content-viewport)_-_var(--app-bottom-padding))] min-w-0 flex-col">
+			<ScrollArea className="min-h-0 w-full flex-1">
+				<form
+					id="complexity-router-form"
+					className="mx-auto w-full max-w-7xl space-y-6 px-4 pt-4 pb-6 sm:space-y-8 sm:px-6 lg:px-14"
+					onSubmit={handleSubmit(onValid)}
+					noValidate
+				>
+					{/* ── Page header ── */}
+					<div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-end">
+						<PageTitle>
 							Tune how incoming requests are classified into four tiers. Thresholds and keyword lists feed the{" "}
 							<code className="bg-muted rounded-sm px-1 py-0.5 font-mono text-xs">complexity_tier</code> field that routing rules can
 							target.
-						</p>
+						</PageTitle>
+						<Button asChild variant="outline" size="sm" className="w-full shrink-0 sm:w-fit" data-testid="complexity-router-docs-link">
+							<a href={"https://docs.getbifrost.ai/features/governance/complexity-router"} target="_blank" rel="noopener noreferrer">
+								<ExternalLink className="size-3.5" />
+								Docs
+							</a>
+						</Button>
 					</div>
-					<Button asChild variant="outline" size="sm" className="w-fit shrink-0" data-testid="complexity-router-docs-link">
-						<a href={"https://docs.getbifrost.ai/features/governance/complexity-router"} target="_blank" rel="noopener noreferrer">
-							<ExternalLink className="size-3.5" />
-							Docs
-						</a>
-					</Button>
-				</div>
 
-				{/* ── Complexity Spectrum ── */}
-				<div className="bg-card space-y-4 rounded-sm border p-5">
-					<div className="flex items-center justify-between">
-						<p className="text-muted-foreground font-mono text-xs font-semibold tracking-widest uppercase">Complexity Spectrum</p>
-						<div className="flex items-center gap-4">
-							{Object.values(TIER_PALETTE).map(({ color, name }) => (
-								<div key={name} className="flex items-center gap-1.5">
-									<div className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: color }} />
-									<span className="text-muted-foreground font-mono text-[9px] font-bold tracking-widest">{name}</span>
-								</div>
-							))}
+					{/* ── Complexity Spectrum ── */}
+					<div className="bg-card space-y-4 rounded-sm border p-4 sm:p-5">
+						<div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+							<p className="text-muted-foreground font-mono text-xs font-semibold tracking-widest uppercase">Complexity Spectrum</p>
+							<div className="grid grid-cols-2 gap-x-4 gap-y-2 min-[480px]:grid-cols-4 sm:flex sm:items-center">
+								{Object.values(TIER_PALETTE).map(({ color, name }) => (
+									<div key={name} className="flex items-center gap-1.5">
+										<div className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: color }} />
+										<span className="text-muted-foreground font-mono text-[9px] font-bold tracking-widest">{name}</span>
+									</div>
+								))}
+							</div>
+						</div>
+						<TierSpectrumBar boundaries={liveBoundaries} />
+					</div>
+
+					{/* ── Tier Boundaries ── */}
+					<div className="space-y-3">
+						<h2 className="text-sm font-semibold">Tier Boundaries</h2>
+
+						<div className="grid gap-3 md:grid-cols-3">
+							{BOUNDARY_FIELDS.map(({ key, label, description, fromTier, toTier, fromColor, toColor }) => {
+								const fieldError = boundaryErrors?.[key];
+								const inputId = `boundary-${key}`;
+								const errorId = `${inputId}-error`;
+								const { onChange, ...boundaryInputProps } = register(`tier_boundaries.${key}`, {
+									required: "Enter a number between 0 and 1",
+									setValueAs: boundaryValueAsNumber,
+									validate: (value) => {
+										if (!Number.isFinite(value)) return "Enter a number between 0 and 1";
+										if (value <= 0) return "Must be greater than 0";
+										if (value >= 1) return "Must be less than 1";
+										const { simple_medium, medium_complex } = liveBoundaries;
+										if (key === "medium_complex" && Number.isFinite(simple_medium) && value <= simple_medium) {
+											return "Must be greater than Simple → Medium";
+										}
+										if (key === "complex_reasoning" && Number.isFinite(medium_complex) && value <= medium_complex) {
+											return "Must be greater than Medium → Complex";
+										}
+										return true;
+									},
+									deps:
+										key === "simple_medium"
+											? ["tier_boundaries.medium_complex"]
+											: key === "medium_complex"
+												? ["tier_boundaries.complex_reasoning"]
+												: undefined,
+								});
+
+								return (
+									<div key={key} className="bg-card relative space-y-3 overflow-hidden rounded-sm border p-4">
+										{/* Tier transition label */}
+										<div className="flex items-center gap-1.5 pt-0.5">
+											<span className="font-mono text-[10px] font-bold tracking-widest" style={{ color: fromColor }}>
+												{fromTier}
+											</span>
+											<span className="text-muted-foreground/40 text-[10px]">→</span>
+											<span className="font-mono text-[10px] font-bold tracking-widest" style={{ color: toColor }}>
+												{toTier}
+											</span>
+										</div>
+
+										<label htmlFor={inputId} className="sr-only">
+											{label}
+										</label>
+										<Input
+											data-testid={`complexity-router-boundary-${testIdPart(key)}-input`}
+											id={inputId}
+											type="number"
+											inputMode="decimal"
+											min={0}
+											max={1}
+											step={0.01}
+											onKeyDown={preventNegativeBoundaryKey}
+											onPaste={preventNegativeBoundaryPaste}
+											onDrop={preventNegativeBoundaryDrop}
+											onChange={(event) => {
+												normalizeBoundaryInput(event);
+												onChange(event);
+											}}
+											aria-invalid={fieldError ? true : undefined}
+											aria-describedby={fieldError ? errorId : undefined}
+											className={cn(
+												"h-11 text-center text-lg font-mono font-medium",
+												fieldError && "border-destructive focus-visible:ring-destructive",
+											)}
+											{...boundaryInputProps}
+										/>
+
+										{fieldError ? (
+											<p id={errorId} className="text-destructive text-xs">
+												{fieldError.message}
+											</p>
+										) : (
+											<p className="text-muted-foreground text-xs leading-relaxed">{description}</p>
+										)}
+									</div>
+								);
+							})}
 						</div>
 					</div>
-					<TierSpectrumBar boundaries={liveBoundaries} />
-				</div>
 
-				{/* ── Tier Boundaries ── */}
-				<div className="space-y-3">
-					<h2 className="text-sm font-semibold">Tier Boundaries</h2>
+					{/* ── Keyword Lists ── */}
+					<div className="space-y-3">
+						<div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:gap-2.5">
+							<h2 className="text-sm font-semibold">Keyword Lists</h2>
+							<span className="text-muted-foreground text-xs">
+								Lowercased and deduplicated on save. Each list requires at least one entry.
+							</span>
+						</div>
 
-					<div className="grid gap-3 md:grid-cols-3">
-						{BOUNDARY_FIELDS.map(({ key, label, description, fromTier, toTier, fromColor, toColor }) => {
-							const fieldError = boundaryErrors?.[key];
-							const inputId = `boundary-${key}`;
-							const errorId = `${inputId}-error`;
-							const { onChange, ...boundaryInputProps } = register(`tier_boundaries.${key}`, {
-								required: "Enter a number between 0 and 1",
-								setValueAs: boundaryValueAsNumber,
-								validate: (value) => {
-									if (!Number.isFinite(value)) return "Enter a number between 0 and 1";
-									if (value <= 0) return "Must be greater than 0";
-									if (value >= 1) return "Must be less than 1";
-									const { simple_medium, medium_complex } = liveBoundaries;
-									if (key === "medium_complex" && Number.isFinite(simple_medium) && value <= simple_medium) {
-										return "Must be greater than Simple → Medium";
-									}
-									if (key === "complex_reasoning" && Number.isFinite(medium_complex) && value <= medium_complex) {
-										return "Must be greater than Medium → Complex";
-									}
-									return true;
-								},
-								deps:
-									key === "simple_medium"
-										? ["tier_boundaries.medium_complex"]
-										: key === "medium_complex"
-											? ["tier_boundaries.complex_reasoning"]
-											: undefined,
-							});
-
-							return (
-								<div key={key} className="bg-card relative space-y-3 overflow-hidden rounded-sm border p-4">
-									{/* Tier transition label */}
-									<div className="flex items-center gap-1.5 pt-0.5">
-										<span className="font-mono text-[10px] font-bold tracking-widest" style={{ color: fromColor }}>
-											{fromTier}
-										</span>
-										<span className="text-muted-foreground/40 text-[10px]">→</span>
-										<span className="font-mono text-[10px] font-bold tracking-widest" style={{ color: toColor }}>
-											{toTier}
-										</span>
-									</div>
-
-									<label htmlFor={inputId} className="sr-only">
-										{label}
-									</label>
-									<Input
-										data-testid={`complexity-router-boundary-${testIdPart(key)}-input`}
-										id={inputId}
-										type="number"
-										inputMode="decimal"
-										min={0}
-										max={1}
-										step={0.01}
-										onKeyDown={preventNegativeBoundaryKey}
-										onPaste={preventNegativeBoundaryPaste}
-										onDrop={preventNegativeBoundaryDrop}
-										onChange={(event) => {
-											normalizeBoundaryInput(event);
-											onChange(event);
-										}}
-										aria-invalid={fieldError ? true : undefined}
-										aria-describedby={fieldError ? errorId : undefined}
-										className={cn(
-											"h-11 text-center text-lg font-mono font-medium",
-											fieldError && "border-destructive focus-visible:ring-destructive",
-										)}
-										{...boundaryInputProps}
-									/>
-
-									{fieldError ? (
-										<p id={errorId} className="text-destructive text-xs">
-											{fieldError.message}
-										</p>
-									) : (
-										<p className="text-muted-foreground text-xs leading-relaxed">{description}</p>
-									)}
-								</div>
-							);
-						})}
-					</div>
-				</div>
-
-				{/* ── Keyword Lists ── */}
-				<div className="space-y-3">
-					<div className="flex items-baseline gap-2.5">
-						<h2 className="text-sm font-semibold">Keyword Lists</h2>
-						<span className="text-muted-foreground text-xs">
-							Lowercased and deduplicated on save. Each list requires at least one entry.
-						</span>
-					</div>
-
-					<div className="grid gap-3 md:grid-cols-2">
-						{KEYWORD_LIST_DEFINITIONS.map(({ key, label, description }) => {
-							const fieldError = keywordErrors?.[key as KeywordListKey];
-							const errorId = `keywords-${key}-error`;
-							return (
-								<div key={key} className="bg-card relative overflow-hidden rounded-sm border">
-									<Controller
-										control={control}
-										name={`keywords.${key}` as const}
-										rules={{ validate: (value) => (value.length > 0 ? true : `${label} cannot be empty`) }}
-										render={({ field }) => (
-											<div className="space-y-2 p-4 pl-5">
-												<div className="flex items-center justify-between">
-													<span className="text-xs font-medium">{label}</span>
-													<span className="text-muted-foreground font-mono text-[11px] tabular-nums">
-														{field.value.length} {field.value.length === 1 ? "entry" : "entries"}
-													</span>
+						<div className="grid gap-3 md:grid-cols-2">
+							{KEYWORD_LIST_DEFINITIONS.map(({ key, label, description }) => {
+								const fieldError = keywordErrors?.[key as KeywordListKey];
+								const errorId = `keywords-${key}-error`;
+								return (
+									<div key={key} className="bg-card relative overflow-hidden rounded-sm border">
+										<Controller
+											control={control}
+											name={`keywords.${key}` as const}
+											rules={{ validate: (value) => (value.length > 0 ? true : `${label} cannot be empty`) }}
+											render={({ field }) => (
+												<div className="space-y-2 p-4 sm:pl-5">
+													<div className="flex flex-wrap items-center justify-between gap-2">
+														<span className="text-xs font-medium">{label}</span>
+														<span className="text-muted-foreground font-mono text-[11px] tabular-nums">
+															{field.value.length} {field.value.length === 1 ? "entry" : "entries"}
+														</span>
+													</div>
+													<p className="text-muted-foreground text-xs leading-relaxed">{description}</p>
+													<TagInput
+														data-testid={`complexity-router-keywords-${testIdPart(key)}-input`}
+														value={field.value}
+														onValueChange={field.onChange}
+														collapsedTagLimit={KEYWORD_COLLAPSED_LIMIT}
+														expandButtonTestId={`complexity-router-keywords-${testIdPart(key)}-expand-button`}
+														placeholder="Type a keyword and press Enter"
+														aria-invalid={fieldError ? true : undefined}
+														aria-describedby={fieldError ? errorId : undefined}
+														className={cn(fieldError && "border-destructive")}
+													/>
+													{fieldError && (
+														<p id={errorId} className="text-destructive text-xs">
+															{fieldError.message}
+														</p>
+													)}
 												</div>
-												<p className="text-muted-foreground text-xs leading-relaxed">{description}</p>
-												<TagInput
-													data-testid={`complexity-router-keywords-${testIdPart(key)}-input`}
-													value={field.value}
-													onValueChange={field.onChange}
-													collapsedTagLimit={KEYWORD_COLLAPSED_LIMIT}
-													expandButtonTestId={`complexity-router-keywords-${testIdPart(key)}-expand-button`}
-													placeholder="Type a keyword and press Enter"
-													aria-invalid={fieldError ? true : undefined}
-													aria-describedby={fieldError ? errorId : undefined}
-													className={cn(fieldError && "border-destructive")}
-												/>
-												{fieldError && (
-													<p id={errorId} className="text-destructive text-xs">
-														{fieldError.message}
-													</p>
-												)}
-											</div>
-										)}
-									/>
-								</div>
-							);
-						})}
+											)}
+										/>
+									</div>
+								);
+							})}
+						</div>
 					</div>
-				</div>
 
-				{/* ── Submit error ── */}
-				{submitError && (
-					<div
-						role="alert"
-						className="border-destructive/40 bg-destructive/10 text-destructive rounded-sm border px-3 py-2 font-mono text-sm"
-					>
-						{submitError}
-					</div>
-				)}
+					{/* ── Submit error ── */}
+					{submitError && (
+						<div
+							role="alert"
+							className="border-destructive/40 bg-destructive/10 text-destructive rounded-sm border px-3 py-2 font-mono text-sm"
+						>
+							{submitError}
+						</div>
+					)}
+				</form>
+			</ScrollArea>
 
-				{/* ── Action footer ── */}
-				<div className="bg-card sticky bottom-0 flex flex-wrap items-center justify-end gap-2.5 border-t py-4 z-10">
+			{/* ── Persistent action footer ── */}
+			<div className="bg-card sticky bottom-0 z-10 shrink-0 border-t px-4 py-3 sm:px-6 sm:py-4 md:static md:z-auto lg:px-14">
+				<div className="mx-auto grid w-full max-w-7xl grid-cols-3 gap-2 sm:flex sm:flex-wrap sm:items-center sm:justify-end sm:gap-2.5">
 					<Button
 						data-testid="complexity-router-restore-defaults-button"
 						type="button"
 						variant="ghost"
 						size="sm"
+						className="w-full sm:w-auto"
 						onClick={() => setRestoreDialogOpen(true)}
 						disabled={!canUpdate || isSaving || isResetting}
 					>
 						{isResetting ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
-						Restore defaults
+						Default
 					</Button>
 					<Button
 						data-testid="complexity-router-discard-changes-button"
 						type="button"
 						variant="outline"
 						size="sm"
+						className="w-full sm:w-auto"
 						onClick={handleDiscard}
 						disabled={!isDirty || isSaving || isResetting || isFetching}
 					>
-						Discard changes
+						Discard
 					</Button>
 					<Button
 						data-testid="complexity-router-save-changes-button"
 						type="submit"
+						form="complexity-router-form"
 						size="sm"
+						className="w-full sm:w-auto"
 						disabled={!canUpdate || !isDirty || isSaving || isResetting || (isSubmitted && hasErrors)}
 					>
 						{isSaving ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-						{isSaving ? "Saving…" : "Save changes"}
+						{isSaving ? "Saving…" : "Save"}
 					</Button>
 				</div>
-			</form>
+			</div>
 
 			<AlertDialog open={restoreDialogOpen} onOpenChange={setRestoreDialogOpen}>
 				<AlertDialogContent>
@@ -585,6 +596,6 @@ export default function ComplexityRouterPage() {
 					</AlertDialogFooter>
 				</AlertDialogContent>
 			</AlertDialog>
-		</ScrollArea>
+		</div>
 	);
 }

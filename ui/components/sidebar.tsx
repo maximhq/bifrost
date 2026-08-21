@@ -1,29 +1,34 @@
 import {
 	ArrowUpRight,
+	BadgeCheck,
+	BadgeInfo,
 	BookOpenText,
 	BookUser,
 	Boxes,
 	BoxIcon,
-	BugIcon,
 	Building,
 	Building2,
 	ChartColumnBig,
 	ChevronsLeftRightEllipsis,
+	CircuitBoard,
 	Construction,
 	DatabaseZap,
 	Flag,
 	FlaskConical,
 	FolderGit,
 	Gavel,
+	GitCompareArrows,
 	Globe,
+	Hexagon,
 	History,
 	KeyRound,
 	Landmark,
+	LaptopMinimalCheck,
 	LayoutGrid,
-	LogOut,
 	Logs,
 	Megaphone,
 	Network,
+	Palette,
 	PanelLeftClose,
 	PanelLeftOpen,
 	Plug,
@@ -40,19 +45,14 @@ import {
 	Telescope,
 	ToolCase,
 	TrendingUp,
-	User,
 	UserRoundCheck,
 	Users,
 	Wallet,
 	WalletCards,
 	Webhook,
-	CircuitBoard,
-	GitCompareArrows,
 } from "lucide-react";
 
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Separator } from "@/components/ui/separator";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
 	Sidebar,
 	SidebarContent,
@@ -67,20 +67,18 @@ import {
 	SidebarMenuSubItem,
 	useSidebar,
 } from "@/components/ui/sidebar";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { HIDDEN_UNTIL_NAV_COOKIE, REMIND_LATER_COOKIE, useOnboardingChecklist } from "@/hooks/useOnboardingChecklist";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
-import { useGetCoreConfigQuery, useGetLatestReleaseQuery, useGetVersionQuery, useLogoutMutation } from "@/lib/store";
+import { useBranding } from "@/lib/hooks/useBranding";
+import { useGetCoreConfigQuery, useGetLatestReleaseQuery, useGetVersionQuery } from "@/lib/store";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import type { UserInfo } from "@enterprise/lib/store/utils/tokenManager";
-import { getUserInfo } from "@enterprise/lib/store/utils/tokenManager";
-import { BooksIcon, DiscordLogoIcon, GithubLogoIcon } from "@phosphor-icons/react";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 import { ChevronRight } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useCookies } from "react-cookie";
-import { ThemeToggle } from "./themeToggle";
 import { Badge } from "./ui/badge";
 import { PromoCardStack } from "./ui/promoCardStack";
 
@@ -111,32 +109,6 @@ const MCPIcon = ({ className }: { className?: string }) => (
 );
 
 // Main navigation items
-
-// External links
-const externalLinks = [
-	{
-		title: "Discord Server",
-		url: "https://discord.gg/exN5KAydbU",
-		icon: DiscordLogoIcon,
-	},
-	{
-		title: "GitHub Repository",
-		url: "https://github.com/maximhq/bifrost",
-		icon: GithubLogoIcon,
-	},
-	{
-		title: "Report a bug",
-		url: "https://github.com/maximhq/bifrost/issues/new?title=[Bug Report]&labels=bug&type=bug&projects=maximhq/1",
-		icon: BugIcon,
-		strokeWidth: 1.5,
-	},
-	{
-		title: "Full Documentation",
-		url: "https://docs.getbifrost.ai",
-		icon: BooksIcon,
-		strokeWidth: 1,
-	},
-];
 
 // Base promotional card (memoized outside component to prevent recreation)
 const productionSetupHelpCard = {
@@ -279,15 +251,14 @@ const SidebarItemView = ({
 
 	const isHighlighted = !hasSubItems && highlightedUrl === item.url;
 
-	const buttonClassName = `group/nav-item relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${
-		isHighlighted
-			? "bg-sidebar-accent text-accent-foreground border-primary/20"
-			: isActive || isAnySubItemActive
-				? "bg-sidebar-accent text-primary border-primary/20"
-				: item.hasAccess
-					? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
-					: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-	} `;
+	const buttonClassName = `group/nav-item relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${isHighlighted
+		? "bg-sidebar-accent text-accent-foreground border-primary/20"
+		: isActive || isAnySubItemActive
+			? "bg-sidebar-accent text-primary border-primary/20"
+			: item.hasAccess
+				? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
+				: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+		} `;
 
 	const innerContent = (
 		<div className="flex w-full items-center justify-between">
@@ -438,15 +409,14 @@ const SidebarItemView = ({
 						const isSubItemActive = subItem.queryParam ? pathname === subItem.url : isRouteMatch(subItem.url);
 						const isSubItemHighlighted = highlightedUrl ? subItemHref.startsWith(highlightedUrl) : false;
 						const SubItemIcon = subItem.icon;
-						const subItemClassName = `group/nav-item h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${
-							isSubItemHighlighted
-								? "bg-sidebar-accent text-accent-foreground"
-								: isSubItemActive
-									? "bg-sidebar-accent text-primary font-medium"
-									: subItem.hasAccess === false
-										? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-										: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
-						}`;
+						const subItemClassName = `h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${isSubItemHighlighted
+							? "bg-sidebar-accent text-accent-foreground"
+							: isSubItemActive
+								? "bg-sidebar-accent text-primary font-medium"
+								: subItem.hasAccess === false
+									? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+									: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
+							}`;
 						const subInner = (
 							<div className="flex w-full items-center gap-2">
 								{SubItemIcon && <SubItemIcon className={`h-3.5 w-3.5 ${isSubItemActive ? "text-primary" : "text-muted-foreground"}`} />}
@@ -535,11 +505,9 @@ export default function AppSidebar() {
 	// Wrapper that accepts arbitrary string URLs (TanStack Router's `to` is
 	// strictly typed, but our sidebar items come from a runtime config).
 	const navigate = useCallback((url: string) => tsNavigate({ to: url as string }), [tsNavigate]);
-	const { state: sidebarState, toggleSidebar } = useSidebar();
+	const { state: sidebarState, isMobile, toggleSidebar } = useSidebar();
 	const [mounted, setMounted] = useState(false);
 	const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
-	const [areCardsEmpty, setAreCardsEmpty] = useState(false);
-	const [userPopoverOpen, setUserPopoverOpen] = useState(false);
 	const [searchQuery, setSearchQuery] = useState("");
 	const [focusedIndex, setFocusedIndex] = useState(-1);
 	const searchInputRef = useRef<HTMLInputElement>(null);
@@ -585,6 +553,10 @@ export default function AppSidebar() {
 	const hasAPIKeyAccess = useRbac(RbacResource.APIKeys, RbacOperation.View);
 	const hasPromptRepositoryAccess = useRbac(RbacResource.PromptRepository, RbacOperation.View);
 	const hasSkillsRepositoryAccess = useRbac(RbacResource.SkillsRepository, RbacOperation.View);
+	const hasDevicesAccess = useRbac(RbacResource.Devices, RbacOperation.View);
+	const hasInventoryAccess = useRbac(RbacResource.Inventory, RbacOperation.View);
+	const hasEdgeConfigAccess = useRbac(RbacResource.EdgeConfig, RbacOperation.View);
+	const hasAnyEdgeControlAccess = hasDevicesAccess || hasInventoryAccess || hasEdgeConfigAccess;
 	const hasAccessProfilesAccess = useRbac(RbacResource.AccessProfiles, RbacOperation.View);
 	const hasAnyGovernanceAccess =
 		hasVirtualKeysAccess ||
@@ -925,6 +897,36 @@ export default function AppSidebar() {
 				hasAccess: hasGovernanceLegacyAccess,
 			},
 			{
+				title: "Edge Control",
+				icon: Hexagon,
+				description: "Edge device management",
+				url: "/workspace/edge-control",
+				hasAccess: hasAnyEdgeControlAccess,
+				subItems: [
+					{
+						title: "Devices",
+						url: "/workspace/edge-control/devices",
+						icon: LaptopMinimalCheck,
+						description: "Manage edge devices",
+						hasAccess: hasDevicesAccess,
+					},
+					{
+						title: "Approvals",
+						url: "/workspace/edge-control/inventory",
+						icon: BadgeCheck,
+						description: "Approve apps and MCP servers",
+						hasAccess: hasInventoryAccess,
+					},
+					{
+						title: "Edge Settings",
+						url: "/workspace/edge-control/config",
+						icon: Settings,
+						description: "Edge settings",
+						hasAccess: hasEdgeConfigAccess,
+					},
+				],
+			},
+			{
 				title: "Cluster Config",
 				url: "/workspace/cluster",
 				icon: Network,
@@ -956,21 +958,21 @@ export default function AppSidebar() {
 			},
 			...(isDbConnected
 				? [
-						{
-							title: "Prompt Repository",
-							url: "/workspace/prompt-repo",
-							icon: FolderGit,
-							description: "Prompt repository",
-							hasAccess: hasPromptRepositoryAccess,
-						},
-						{
-							title: "Skills Repository",
-							url: "/workspace/skills-repo",
-							icon: BookOpenText,
-							description: "Skills repository",
-							hasAccess: hasSkillsRepositoryAccess,
-						},
-					]
+					{
+						title: "Prompt Repository",
+						url: "/workspace/prompt-repo",
+						icon: FolderGit,
+						description: "Prompt repository",
+						hasAccess: hasPromptRepositoryAccess,
+					},
+					{
+						title: "Skills Repository",
+						url: "/workspace/skills-repo",
+						icon: BookOpenText,
+						description: "Skills repository",
+						hasAccess: hasSkillsRepositoryAccess,
+					},
+				]
 				: []),
 			{
 				title: "Evals",
@@ -1017,14 +1019,14 @@ export default function AppSidebar() {
 					},
 					...(IS_ENTERPRISE
 						? [
-								{
-									title: "Proxy",
-									url: "/workspace/config/proxy",
-									icon: Globe,
-									description: "Proxy configuration",
-									hasAccess: hasSettingsAccess,
-								},
-							]
+							{
+								title: "Proxy",
+								url: "/workspace/config/proxy",
+								icon: Globe,
+								description: "Proxy configuration",
+								hasAccess: hasSettingsAccess,
+							},
+						]
 						: []),
 					{
 						title: "API Keys",
@@ -1047,6 +1049,24 @@ export default function AppSidebar() {
 						description: "Toggle feature flags",
 						hasAccess: hasFeatureFlagsAccess,
 					},
+					...(IS_ENTERPRISE
+						? [
+							{
+								title: "Branding",
+								url: "/workspace/config/branding",
+								icon: Palette,
+								description: "Custom logo and icon",
+								hasAccess: hasSettingsAccess,
+							},
+							{
+								title: "License Info",
+								url: "/workspace/config/license",
+								icon: BadgeInfo,
+								description: "Enterprise license information",
+								hasAccess: hasSettingsAccess,
+							},
+						]
+						: []),
 				],
 			},
 		],
@@ -1081,6 +1101,11 @@ export default function AppSidebar() {
 			hasPromptRepositoryAccess,
 			hasSkillsRepositoryAccess,
 			hasAccessProfilesAccess,
+			hasFeatureFlagsAccess,
+			hasDevicesAccess,
+			hasInventoryAccess,
+			hasEdgeConfigAccess,
+			hasAnyEdgeControlAccess,
 			isDbConnected,
 		],
 	);
@@ -1122,18 +1147,6 @@ export default function AppSidebar() {
 
 	const { data: version } = useGetVersionQuery();
 	const { resolvedTheme } = useTheme();
-	const [logout] = useLogoutMutation();
-
-	// Get user info from localStorage (for enterprise SCIM OAuth)
-	const [userInfo, setUserInfo] = useState<UserInfo | null>(null);
-
-	useEffect(() => {
-		if (IS_ENTERPRISE) {
-			const info = getUserInfo();
-			setUserInfo(info);
-		}
-	}, []);
-
 	const showNewReleaseBanner = useMemo(() => {
 		if (IS_ENTERPRISE) return false;
 		if (latestRelease && version) {
@@ -1141,7 +1154,6 @@ export default function AppSidebar() {
 		}
 		return false;
 	}, [latestRelease, version]);
-	const isAuthEnabled = coreConfig?.auth_config?.is_enabled || false;
 
 	useEffect(() => {
 		setMounted(true);
@@ -1302,9 +1314,10 @@ export default function AppSidebar() {
 		return false;
 	};
 
-	// Always render the light theme version for SSR to avoid hydration mismatch
-	const logoSrc = mounted && resolvedTheme === "dark" ? "/bifrost-logo-dark.webp" : "/bifrost-logo.webp";
-	const iconSrc = mounted && resolvedTheme === "dark" ? "/bifrost-icon-dark.webp" : "/bifrost-icon.webp";
+	// Always render the light theme version for SSR to avoid hydration mismatch.
+	// On a custom branding deployment useBranding returns the customer's assets
+	// instead, which are theme-agnostic.
+	const { logoSrc, iconSrc, logoAlt } = useBranding(mounted && resolvedTheme === "dark");
 
 	const { isConnected: isWebSocketConnected } = useWebSocket();
 
@@ -1393,25 +1406,6 @@ export default function AppSidebar() {
 		handleResumeOnboarding,
 	]);
 
-	// Reset areCardsEmpty when promoCards changes
-	useEffect(() => {
-		if (promoCards.length > 0) {
-			setAreCardsEmpty(false);
-		}
-	}, [promoCards]);
-
-	// The promo card stack is hidden via CSS when collapsed (icon rail), so it
-	// shouldn't reserve vertical space there — otherwise the nav icon list
-	// gets squeezed into a shorter scroll area for a card nobody can see.
-	const hasPromoCards = promoCards.length > 0 && !areCardsEmpty && sidebarState !== "collapsed";
-	// When cards are present: 13rem (header 3rem + bottom section ~10rem)
-	// When no cards: 8rem (header 3rem + bottom section without cards ~5rem)
-	const sidebarGroupHeight = hasPromoCards ? "h-[calc(100vh-13rem)]" : "h-[calc(100vh-8rem)]";
-
-	const handleCardsEmpty = () => {
-		setAreCardsEmpty(true);
-	};
-
 	const handlePromoDismiss = useCallback(
 		(cardId: string) => {
 			if (cardId === "production-setup") {
@@ -1443,24 +1437,16 @@ export default function AppSidebar() {
 		[setCookie, cookies],
 	);
 
-	const handleLogout = async () => {
-		try {
-			setUserPopoverOpen(false);
-			await logout().unwrap();
-			navigate("/login");
-		} catch {
-			// Even if logout fails on server, redirect to login
-			navigate("/login");
-		}
-	};
-
 	return (
 		<Sidebar collapsible="icon" className="overflow-y-clip border-none bg-transparent">
 			<SidebarHeader className="mt-1 ml-2 flex justify-between px-0 group-data-[collapsible=icon]:ml-0 group-data-[collapsible=icon]:h-auto">
 				{/* Expanded state: horizontal layout */}
-				<div className="flex h-10 w-full items-center justify-between px-1.5 group-data-[collapsible=icon]:hidden">
+				<div className="flex h-8 w-full items-center justify-between px-1.5 group-data-[collapsible=icon]:hidden">
 					<Link to="/workspace/logs" className="group flex items-center gap-2 pl-2">
-						<img className="h-[22px] w-auto" src={logoSrc} alt="Bifrost" width={70} height={70} />
+						{/* max-w caps an unusually wide uploaded logo so it cannot push the
+						    collapse button out of the header; object-contain preserves its
+						    aspect ratio within that box. */}
+						<img className="h-[22px] w-auto max-w-[150px] object-contain" src={logoSrc} alt={logoAlt} width={70} height={70} />
 					</Link>
 					<button
 						onClick={toggleSidebar}
@@ -1474,10 +1460,10 @@ export default function AppSidebar() {
 				</div>
 				{/* Collapsed state: vertical layout */}
 				<div
-					className="hidden w-full cursor-pointer flex-col items-center gap-2 py-2 group-data-[collapsible=icon]:flex"
+					className="hidden w-full cursor-pointer flex-col items-center gap-2 py-1 group-data-[collapsible=icon]:flex"
 					onClick={toggleSidebar}
 				>
-					<img className="h-[22px] w-auto" src={iconSrc} alt="Bifrost" width={22} height={22} style={{ width: 18 }} />
+					<img className="size-[22px] object-contain" src={iconSrc} alt={logoAlt} width={22} height={22} />
 				</div>
 			</SidebarHeader>
 			{envLabel && (
@@ -1497,8 +1483,8 @@ export default function AppSidebar() {
 					</div>
 				</div>
 			)}
-			<div className="mx-2 pb-1 group-data-[collapsible=icon]:hidden">
-				<div className="relative">
+			<div className="ml-2 mr-3 pb-1 group-data-[collapsible=icon]:hidden">
+				<div className="dark:bg-card relative bg-white rounded-sm">
 					<Search className="text-muted-foreground absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2" />
 					<input
 						ref={searchInputRef}
@@ -1519,8 +1505,8 @@ export default function AppSidebar() {
 					</kbd>
 				</div>
 			</div>
-			<SidebarContent className="overflow-hidden pb-4">
-				<SidebarGroup className={`custom-scrollbar ${sidebarGroupHeight} overflow-scroll`}>
+			<SidebarContent className="overflow-hidden">
+				<SidebarGroup className="custom-scrollbar min-h-0 flex-1 overflow-y-auto pr-3">
 					<SidebarGroupContent>
 						<SidebarMenu className="space-y-0.5">
 							{filteredItems.map((item) => {
@@ -1538,7 +1524,7 @@ export default function AppSidebar() {
 										onToggle={() => toggleItem(item.title)}
 										pathname={pathname}
 										search={search}
-										isSidebarCollapsed={sidebarState === "collapsed"}
+										isSidebarCollapsed={!isMobile && sidebarState === "collapsed"}
 										expandSidebar={() => toggleSidebar()}
 										highlightedUrl={highlightedUrl}
 									/>
@@ -1547,85 +1533,23 @@ export default function AppSidebar() {
 						</SidebarMenu>
 					</SidebarGroupContent>
 				</SidebarGroup>
-				<div className="flex flex-col gap-4 px-3 group-data-[collapsible=icon]:px-1">
+				<div className="mt-auto flex flex-col gap-4 px-3 pb-3 group-data-[collapsible=icon]:px-1">
 					<div className="mx-1 group-data-[collapsible=icon]:hidden">
-						<PromoCardStack cards={promoCards} onCardsEmpty={handleCardsEmpty} onDismiss={handlePromoDismiss} />
+						<PromoCardStack cards={promoCards} onDismiss={handlePromoDismiss} />
 					</div>
-					<div className="flex flex-row">
-						<div className="mx-auto flex flex-row gap-4 group-data-[collapsible=icon]:flex-col group-data-[collapsible=icon]:gap-2">
-							{sidebarState !== "collapsed" &&
-								externalLinks.map((item, index) => (
-									<a
-										key={index}
-										href={item.url}
-										target="_blank"
-										rel="noopener noreferrer"
-										className="group flex w-full items-center justify-between"
-										title={item.title}
-									>
-										<div className="flex items-center space-x-3">
-											<item.icon
-												className="hover:text-primary text-muted-foreground h-5 w-5"
-												size={22}
-												weight="regular"
-												strokeWidth={item.strokeWidth}
-											/>
-										</div>
-									</a>
-								))}
-							<ThemeToggle />
-							{IS_ENTERPRISE && userInfo ? (
-								<Popover open={userPopoverOpen} onOpenChange={setUserPopoverOpen}>
-									<PopoverTrigger asChild>
-										<button
-											className="hover:text-primary text-muted-foreground flex cursor-pointer items-center space-x-3 p-0.5"
-											type="button"
-											aria-label="User menu"
-										>
-											<User className="hover:text-primary text-muted-foreground h-4 w-4" size={20} strokeWidth={2} />
-										</button>
-									</PopoverTrigger>
-									<PopoverContent side="top" align="start" className="w-56 p-0">
-										<div className="flex flex-col">
-											<div className="px-4 py-3">
-												<p className="text-sm font-medium">{userInfo.name || userInfo.email || userInfo.preferred_username || "User"}</p>
-											</div>
-											<Separator />
-											<button
-												onClick={handleLogout}
-												className="hover:bg-accent hover:text-accent-foreground flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm transition-colors"
-												type="button"
-											>
-												<LogOut className="h-4 w-4" strokeWidth={2} />
-												<span>Logout</span>
-											</button>
-										</div>
-									</PopoverContent>
-								</Popover>
-							) : isAuthEnabled ? (
-								<div>
-									<button
-										className="hover:text-primary text-muted-foreground flex cursor-pointer items-center space-x-3 p-0.5"
-										onClick={handleLogout}
-										type="button"
-										aria-label="Logout"
-									>
-										<LogOut className="hover:text-primary text-muted-foreground h-4 w-4" size={20} strokeWidth={2} />
-									</button>
-								</div>
-							) : null}
-							<div className="hidden w-full cursor-pointer flex-col items-center group-data-[collapsible=icon]:flex">
-								<button
-									onClick={toggleSidebar}
-									type="button"
-									data-testid="sidebar-expand-btn"
-									className="text-muted-foreground hover:text-foreground hover:bg-sidebar-accent flex cursor-pointer items-center justify-center rounded-md transition-colors"
-									aria-label="Expand sidebar"
-								>
-									<PanelLeftOpen className="h-4 w-4" />
-								</button>
-							</div>
-						</div>
+					{/* Socials, theme toggle and the user/logout menu moved to <Topbar>.
+					    All that remains here is the expand affordance for the collapsed
+					    rail, since the collapsed header doubles as the collapse target. */}
+					<div className="hidden w-full cursor-pointer flex-col items-center group-data-[collapsible=icon]:flex">
+						<button
+							onClick={toggleSidebar}
+							type="button"
+							data-testid="sidebar-expand-btn"
+							className="text-muted-foreground hover:text-foreground hover:bg-sidebar-accent flex cursor-pointer items-center justify-center rounded-md transition-colors"
+							aria-label="Expand sidebar"
+						>
+							<PanelLeftOpen className="h-4 w-4" />
+						</button>
 					</div>
 					<div className="mx-auto flex flex-col items-center gap-1 group-data-[collapsible=icon]:hidden">
 						<div className="font-mono text-xs">{version ?? ""}</div>

@@ -91,7 +91,7 @@ Provide `access_key` and `secret_key` directly. Optionally include `session_toke
 5. Set **Secret Key**: Your AWS secret access key
 6. Set **Session Token** (Optional): For temporary/assumed credentials
 7. Set **Region**: e.g., `us-east-1`
-8. Configure **Aliases**: Map model names to inference profile IDs
+8. Configure **Aliases**: Map model names to inference profile IDs - see [Inference Profiles & ARN Configuration](#inference-profiles--arn-configuration) when using inference profiles
 9. Save
 
 </Tab>
@@ -224,7 +224,7 @@ Uses AWS's default credential chain when static credentials are not configured. 
 2. Click **"Add Key"** (or edit an existing key)
 3. Under **Authentication Method**, select **"IAM Role (Inherited)"**
 4. Set **Region**: e.g., `us-east-1`
-5. Configure **Aliases** if needed
+5. Configure **Aliases** if needed - see [Inference Profiles & ARN Configuration](#inference-profiles--arn-configuration) when using inference profiles
 6. _(Optional)_ Set **Assume Role ARN**: to assume an IAM role before signing (e.g., `arn:aws:iam::123456789012:role/BedrockRole`)
 7. _(Optional)_ Set **External ID**: required when the role's trust policy demands it
 8. _(Optional)_ Set **Session Name**: identifies the session in CloudTrail (default: `bifrost-session`)
@@ -367,7 +367,7 @@ Set `value` to a Bearer token for direct API key authentication. This method use
 3. Under **Authentication Method**, select **"API Key"**
 4. Set **API Key**: Your Bedrock API key (Bearer token)
 5. Set **Region**: e.g., `us-east-1`
-6. Configure **Aliases** if needed
+6. Configure **Aliases** if needed - see [Inference Profiles & ARN Configuration](#inference-profiles--arn-configuration) when using inference profiles
 7. Save
 
 </Tab>
@@ -453,17 +453,18 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
 | `access_key`    | No       | -                 | AWS access key ID                                                                                                     |
 | `secret_key`    | No       | -                 | AWS secret access key                                                                                                 |
 | `session_token` | No       | -                 | AWS session token (for temporary credentials)                                                                         |
-| `arn`           | No       | -                 | ARN prefix for constructing inference profile URLs (see [Inference Profiles](#inference-profiles--arn-configuration)) |
+| `arn`           | No       | -                 | Default inference profile ARN prefix for every model on this key; overridable per deployment (see [Inference Profiles](#inference-profiles--arn-configuration)) |
 | `role_arn`      | No       | -                 | IAM role ARN for STS AssumeRole                                                                                       |
 | `external_id`   | No       | -                 | External ID for AssumeRole (when required by trust policy)                                                            |
 | `session_name`  | No       | `bifrost-session` | Session name for AssumeRole CloudTrail logs                                                                           |
 
 **Key-level fields:**
 
-| Field     | Required | Description                                                                         |
-| --------- | -------- | ----------------------------------------------------------------------------------- |
-| `aliases` | No       | Map model names to inference profile IDs or Bedrock model IDs (v1.5.0-prerelease2+) |
-| `models`  | Yes      | Models this key can serve; use `["*"]` to allow all                                 |
+| Field                             | Required | Description                                                                                                                                  |
+| --------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `aliases`                         | No       | Map model names to inference profile IDs or Bedrock model IDs (v1.5.0-prerelease2+)                                                          |
+| `aliases.*.inference_profile_arn` | No       | Per-deployment ARN prefix; overrides `bedrock_key_config.arn` (see [Inference Profiles](#inference-profiles--arn-configuration))              |
+| `models`                          | Yes      | Models this key can serve; use `["*"]` to allow all                                                                                          |
 
 ---
 
@@ -1707,55 +1708,200 @@ Set `role_arn` to assume an IAM role before signing requests. AssumeRole require
 
 ## Inference Profiles & ARN Configuration
 
-### How to Use ARNs and Application Inference Profiles
+Bedrock inference profiles come in two forms, and Bifrost builds the request path differently for each:
 
-When using AWS Bedrock inference profiles or application inference profiles, you must split the configuration correctly to avoid `UnknownOperationException`:
+| What you have                                   | `aliases` value (model ID)                     | ARN field                                                                       |
+| ----------------------------------------------- | ---------------------------------------------- | --------------------------------------------------------------------------------- |
+| Cross-region (system-defined) inference profile | `us.anthropic.claude-3-5-sonnet-20241022-v2:0` | Optional - `arn:aws:bedrock:{region}:{account}:inference-profile`               |
+| Application inference profile                   | The profile's resource ID, e.g. `abc12xyz`     | Required - `arn:aws:bedrock:{region}:{account}:application-inference-profile`   |
 
-| Field         | Purpose                                                                                                                                                      |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **`arn`**     | The ARN prefix (everything before the final `/resource-id`). Required for URL formation when using inference profiles.                                       |
-| **`aliases`** | Map logical model names to the **model ID or inference profile resource ID only** - not the full ARN. Set at the key level, not inside `bedrock_key_config`. |
+When an ARN is set, Bifrost builds the runtime path as `{arn}/{model_id}`, URL-encodes it, and appends the operation - `bedrock-runtime.{region}.amazonaws.com/model/{arn}%2F{model_id}/converse`. When no ARN is set, the path is just `{model_id}` - enough for a plain model ID or a cross-region profile ID, which Bedrock resolves on its own. An application inference profile's resource ID carries no such context, so it only resolves when paired with the ARN prefix.
+
+The prefix must match the resource type of the ID it is paired with - an `inference-profile` prefix paired with an application profile's resource ID does not resolve, and neither does an `application-inference-profile` prefix paired with a `us.`-prefixed profile ID.
+
+### Where to put the ARN: key level vs deployment level
+
+| Level              | Field                                                                                                         | Applies to                                        |
+| ------------------ | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| Key                | `bedrock_key_config.arn` (Web UI: **ARN (Optional)** on the key form)                                         | Every model served by that key                    |
+| Deployment / alias | `inference_profile_arn` (Web UI: expand a deployment row → **Bedrock overrides** → **Inference profile ARN**) | That deployment only; overrides the key-level ARN |
+
+Resolution order is **deployment ARN → key ARN → none**. A blank deployment ARN falls through to the key-level value.
+
+Pick the level by what the key holds:
+
+- **Every model on the key is an application inference profile** - set `arn` once at the key level and list only resource IDs in `aliases`. No per-deployment configuration needed.
+- **The key mixes profile types** - some foundation models or cross-region profiles alongside application inference profiles - leave the key-level `arn` blank and set **Inference profile ARN** on only the deployments that need it. The rest keep sending the bare model ID.
+
+### The ARN must not include the resource ID
+
+The ARN field is a prefix; Bifrost appends the model ID from `aliases` to it.
+
+|            | Value                                                                           |
+| ---------- | ------------------------------------------------------------------------------- |
+| ✅ Correct | `arn:aws:bedrock:us-east-1:123456789012:application-inference-profile`          |
+| ❌ Wrong   | `arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/abc12xyz` |
 
 <Warning>
-  **Do not** put the full ARN in the aliases mapping. The resource ID (e.g.,
-  `abc12xyz`) goes in `aliases`; the ARN prefix goes in the dedicated `arn`
-  field inside `bedrock_key_config`. Putting the full ARN in `aliases` causes
-  malformed URLs and `UnknownOperationException`.
+  Keeping the trailing `/{resource-id}` doubles it in the path
+  (`.../application-inference-profile/abc12xyz/abc12xyz/converse`) and the
+  request fails. The mirror mistake fails the same way: put the resource ID in
+  `aliases`, never the full ARN.
 </Warning>
 
-**Application inference profiles** - use the resource ID (short alphanumeric suffix) in aliases:
+The ARN's region must match the region Bifrost signs with - the deployment-level **Region** when set, otherwise the key-level **Region**.
+
+### IAM permissions for application inference profiles
+
+The profile is a resource in its own right, so a policy that grants only foundation-model access produces:
+
+```
+403 User: arn:aws:iam::123456789012:user/my-bedrock-user is not authorized to perform:
+bedrock:InvokeModelWithResponseStream on resource:
+arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/abc12xyz
+because no identity-based policy allows the bedrock:InvokeModelWithResponseStream action
+```
+
+Grant the profile to the IAM user or role Bifrost signs with:
 
 ```json
 {
-  "aliases": {
-    "claude-opus-4-6": "ghi56rst",
-    "claude-sonnet-4-5": "jkl78mno"
-  },
-  "bedrock_key_config": {
-    "access_key": "your-aws-access-key",
-    "secret_key": "your-aws-secret-key",
-    "session_token": "optional-session-token",
-    "region": "eu-west-1",
-    "arn": "arn:aws:bedrock:eu-west-1:123456789012:application-inference-profile"
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "InvokeApplicationInferenceProfile",
+      "Effect": "Allow",
+      "Action": ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
+      "Resource": "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/*"
+    }
+  ]
+}
+```
+
+- `bedrock:InvokeModelWithResponseStream` is a separate action from `bedrock:InvokeModel` - streaming requests fail without it even when non-streaming requests succeed.
+- The role also needs `bedrock:InvokeModel*` on the underlying foundation model in every region the profile is associated with. Roles that already invoke Bedrock models have this; a fresh role does not.
+- The 403 names the exact action and resource it wanted. Grant that pair.
+
+### Example: application inference profile alongside a cross-region profile
+
+An application inference profile for Claude Opus 4.8 (resource ID `abc12xyz`, `us-east-1`) served as `claude-opus-4-8-alias`, on the same key as a plain cross-region profile.
+
+<Tabs>
+<Tab title="Web UI">
+
+<Frame>
+  <img
+    src="/media/ui-bedrock-application-inference-profile.png"
+    alt="AWS Bedrock Edit key dialog in the Bifrost Web UI with a deployment row expanded, showing Canonical model name, Model family, and the Bedrock overrides Region and Inference profile ARN fields"
+  />
+</Frame>
+
+1. Navigate to **"Model Providers"** → **"Configurations"** → **"AWS Bedrock"** and edit your key
+2. Add a deployment row - **Deployment name**: `claude-opus-4-8-alias`, **Model ID**: `abc12xyz`
+3. Expand the row and set:
+   - **Canonical model name**: `claude-opus-4-8` - a profile resource ID carries no pricing information, so cost logs stay empty without this
+   - **Model family**: `anthropic` - a profile resource ID is not parseable into a family either
+   - **Inference profile ARN**: `arn:aws:bedrock:us-east-1:123456789012:application-inference-profile`
+   - **Region**: only when this deployment lives in a different region than the key
+4. Save, then call the model as `bedrock/claude-opus-4-8-alias`
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "bedrock": {
+      "keys": [
+        {
+          "name": "bedrock-mixed",
+          "models": ["*"],
+          "weight": 1.0,
+          "aliases": {
+            "claude-opus-4-8-alias": {
+              "model_id": "abc12xyz",
+              "model_name": "claude-opus-4-8",
+              "model_family": "anthropic",
+              "inference_profile_arn": "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile"
+            },
+            "claude-sonnet-4-5": "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+          },
+          "bedrock_key_config": {
+            "access_key": "env.AWS_ACCESS_KEY_ID",
+            "secret_key": "env.AWS_SECRET_ACCESS_KEY",
+            "region": "us-east-1"
+          }
+        }
+      ]
+    }
   }
 }
 ```
 
-**Cross-region inference profiles** - use the model identifier (e.g., `us.anthropic.claude-3-5-sonnet-v1:0`) in aliases:
+When every model on the key is an application inference profile, drop the per-alias override and set the ARN once:
 
 ```json
 {
   "aliases": {
-    "claude-sonnet": "us.anthropic.claude-3-5-sonnet-v1:0"
+    "claude-opus-4-8": "abc12xyz",
+    "claude-sonnet-4-5": "jkl78mno"
   },
   "bedrock_key_config": {
-    "access_key": "your-aws-access-key",
-    "secret_key": "your-aws-secret-key",
-    "session_token": "optional-session-token",
+    "access_key": "env.AWS_ACCESS_KEY_ID",
+    "secret_key": "env.AWS_SECRET_ACCESS_KEY",
     "region": "us-east-1",
-    "arn": "arn:aws:bedrock:us-east-1:123456789012:inference-profile"
+    "arn": "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile"
   }
 }
+```
+
+</Tab>
+<Tab title="API">
+
+```bash
+curl -X POST http://localhost:8080/api/providers/bedrock/keys \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "bedrock-mixed",
+    "models": ["*"],
+    "weight": 1.0,
+    "aliases": {
+      "claude-opus-4-8-alias": {
+        "model_id": "abc12xyz",
+        "model_name": "claude-opus-4-8",
+        "model_family": "anthropic",
+        "inference_profile_arn": "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile"
+      },
+      "claude-sonnet-4-5": "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    },
+    "bedrock_key_config": {
+      "access_key": "env.AWS_ACCESS_KEY_ID",
+      "secret_key": "env.AWS_SECRET_ACCESS_KEY",
+      "region": "us-east-1"
+    }
+  }'
+```
+
+</Tab>
+</Tabs>
+
+<Note>
+  These examples use `"models": ["*"]`. With a restricted list, the entries must
+  be the **alias names** (`claude-opus-4-8-alias`), not the profile resource IDs
+  - key selection matches the requested model name before aliases are resolved.
+  The same applies to `blacklisted_models`. See [Aliasing
+  Models](/providers/aliasing-models).
+</Note>
+
+Verify the deployment resolves end to end:
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "bedrock/claude-opus-4-8-alias",
+    "messages": [{"role": "user", "content": "Hello"}]
+  }'
 ```
 
 ### Endpoints

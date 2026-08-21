@@ -260,7 +260,7 @@ export function BetaHeadersFormFragment({ provider }: BetaHeadersFormFragmentPro
 	return (
 		<Form {...form}>
 			<form onSubmit={form.handleSubmit(onSubmit)} data-testid="provider-config-beta-headers-content">
-				<div className="space-y-2 px-6 pb-6">
+				<div className="space-y-2 px-4 pb-6 md:px-6">
 					<p className="text-muted-foreground text-xs">
 						Configure which Anthropic beta headers are allowed for this provider. Override the defaults when a provider adds or removes
 						support for a beta feature.
@@ -402,7 +402,7 @@ export function BetaHeadersFormFragment({ provider }: BetaHeadersFormFragmentPro
 					</div>
 				</div>
 
-				<div className="bg-card sticky bottom-0 flex justify-end gap-2 rounded-b-sm border-t px-6 py-4">
+				<div className="bg-card sticky bottom-0 flex justify-end gap-2 rounded-b-sm border-t px-4 py-4 md:px-6">
 					<Button
 						type="submit"
 						disabled={!isManuallyDirty || !hasUpdateProviderAccess || isUpdatingProvider}

@@ -394,7 +394,7 @@ func (h *WSRealtimeHandler) relayClientToRealtimeProvider(
 			if inputSummary != "" {
 				session.RecordRealtimeInput(inputItemID, inputSummary, string(message))
 			}
-			if bifrostErr := startRealtimeTurnHooks(h.client, bifrostCtx, session, provider, providerKey, model, &key, event.Type); bifrostErr != nil {
+			if bifrostErr := startRealtimeTurnHooks(h.client, bifrostCtx, session, provider, providerKey, model, &key, event); bifrostErr != nil {
 				clientConn.writeRealtimeError(bifrostErr)
 				return nil
 			}
@@ -526,7 +526,7 @@ func (h *WSRealtimeHandler) relayRealtimeProviderToClient(
 					session.AppendRealtimeOutputText(event.Delta.Transcript)
 				}
 				if provider.ShouldStartRealtimeTurn(event) && session.PeekRealtimeTurnHooks() == nil {
-					if bifrostErr := startRealtimeTurnHooks(h.client, bifrostCtx, session, provider, providerKey, model, &key, event.Type); bifrostErr != nil {
+					if bifrostErr := startRealtimeTurnHooks(h.client, bifrostCtx, session, provider, providerKey, model, &key, event); bifrostErr != nil {
 						clientConn.writeRealtimeError(bifrostErr)
 						return nil
 					}
@@ -865,11 +865,11 @@ var realtimeMiddlewareKeys = []any{
 	schemas.BifrostContextKeyAPIKeyName,
 	schemas.BifrostContextKeySelectedKeyID,
 	schemas.BifrostContextKeySelectedKeyName,
-	// NOTE: BifrostContextKeyTraceID is intentionally NOT inherited here. The
-	// upgrade request's trace is already ended by the time realtime turns run, so
-	// inheriting it would route each turn's log entry into pendingLogsToInject
-	// under a dead trace ID whose Inject() never fires, dropping the row. Each
-	// realtime turn mints its own trace in RunRealtimeTurnPreHooks instead.
+	// NOTE: BifrostContextKeyTraceID (and its W3C export, BifrostContextKeyExportTraceID)
+	// are intentionally NOT inherited here. The upgrade request's trace is already ended
+	// by the time realtime turns run, so inheriting it would route each turn's log entry
+	// into pendingLogsToInject under a dead trace ID whose Inject() never fires, dropping
+	// the row. Each realtime turn mints its own trace in RunRealtimeTurnPreHooks instead.
 	schemas.BifrostContextKeyTransportPluginLogs,
 }
 

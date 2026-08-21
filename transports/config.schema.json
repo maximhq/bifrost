@@ -17,6 +17,13 @@
           "type": "integer",
           "description": "Read buffer size in bytes. This controls the size of the buffer used for reading HTTP headers.",
           "default": 65536
+        },
+        "plugin_download_private_allowlist": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Hostnames, IP addresses, or CIDR ranges that custom plugin (.so) downloads are allowed to reach even when they resolve to a private/loopback/link-local/CGNAT address (blocked by default to prevent SSRF). Use only for trusted internal artifact hosts. Deploy-time only - read from config.json/environment at startup, never settable via the plugin admin API."
         }
       },
       "required": ["read_buffer_size"]
@@ -44,6 +51,11 @@
     },
     "auth_config": {
       "$ref": "#/$defs/auth_config"
+    },
+    "setup_token": {
+      "type": "string",
+      "pattern": "\\S",
+      "description": "Operator-provisioned bootstrap secret required to create the very first admin account when no admin account is configured yet. You can set the value as env.<ENV_VAR_NAME> to use an environment variable, or as vault.<path> to use a Vault secret reference. We also read the setup token from the BIFROST_SETUP_TOKEN environment variable. Identical across every node in a multi-node deployment (unlike a randomly generated value), so any node can authorize first-admin creation. Never persisted and never logged; if left unset, creating the first admin account is rejected until this is configured. Whitespace-only values are rejected."
     },
     "client": {
       "type": "object",
@@ -1907,8 +1919,8 @@
                   },
                   "matview_refresh_interval": {
                     "type": "string",
-                    "description": "How often to refresh dashboard materialized views. Go duration string (e.g. '1m', '5m', '1h'). Default 1m. Raise this when matview refresh CPU cost is material on the database instance. Minimum 5s.",
-                    "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+                    "description": "How often to refresh dashboard materialized views. Go duration string (e.g. '1m', '5m', '1h'). Default 1m. Raise this when matview refresh CPU cost is material on the database instance. Positive values below 5s are clamped up to 5s. Set 'off' or a zero duration (e.g. '0s') to disable materialized-view maintenance entirely; dashboard queries fall back to the raw tables.",
+                    "pattern": "^(off|[0-9]+(ns|us|µs|ms|s|m|h))$",
                     "default": "1m"
                   },
                   "matview_refresh_timeout": {
@@ -2295,6 +2307,18 @@
             "description": "DB-Backed Only. Position within placement group. Lower values execute earlier. Default: 0. Ignored in config.json.",
             "optional": true,
             "default": 0
+          },
+          "semaphore_size": {
+            "type": "integer",
+            "description": "For plugins that implement ObservabilityPlugin (receive completed traces): cap on how many traces may be injected into this plugin concurrently. A saturated cap causes new traces to be dropped for this plugin only, not process-wide. Ignored by plugins that don't receive traces (default: 10000).",
+            "default": 10000,
+            "minimum": 1
+          },
+          "inject_timeout": {
+            "type": "string",
+            "description": "For plugins that implement ObservabilityPlugin: timeout for a single Inject call from the tracer, as a Go duration string (default: 5s). Bounds how long a hung connector can hold a concurrency-budget slot. Ignored by plugins that don't receive traces.",
+            "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$",
+            "default": "5s"
           }
         },
         "allOf": [
@@ -2661,12 +2685,12 @@
                   "properties": {
                     "service_name": {
                       "type": "string",
-                      "description": "Name of the service to report to Datadog",
+                      "description": "Name of the service to report to Datadog (can use env. prefix)",
                       "default": "bifrost"
                     },
                     "ml_app": {
                       "type": "string",
-                      "description": "ML application name for LLM Observability grouping (defaults to service_name)"
+                      "description": "ML application name for LLM Observability grouping (defaults to service_name, can use env. prefix)"
                     },
                     "agent_addr": {
                       "type": "string",
@@ -2698,11 +2722,11 @@
                     },
                     "env": {
                       "type": "string",
-                      "description": "Environment tag (e.g., production, staging)"
+                      "description": "Environment tag (e.g., production, staging, can use env. prefix)"
                     },
                     "version": {
                       "type": "string",
-                      "description": "Service version tag"
+                      "description": "Service version tag (can use env. prefix)"
                     },
                     "custom_tags": {
                       "type": "object",
@@ -2773,6 +2797,172 @@
                       },
                       "then": {
                         "required": ["api_key"]
+                      }
+                    }
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "name": {
+                  "const": "splunk"
+                }
+              }
+            },
+            "then": {
+              "required": ["config"],
+              "properties": {
+                "config": {
+                  "type": "object",
+                  "description": "Configuration for the Splunk HEC observability plugin (Enterprise)",
+                  "properties": {
+                    "endpoint": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "HEC base URL, e.g. https://localhost:8088. Do not include the /services/collector path (can use env. prefix)."
+                    },
+                    "token": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "HEC token, sent as the 'Authorization: Splunk <token>' header (can use env. prefix)."
+                    },
+                    "events_index": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Splunk event index for per-request events. Required when enable_events is true."
+                    },
+                    "metrics_index": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Splunk metrics index for derived metrics. Required when enable_metrics is true."
+                    },
+                    "source": {
+                      "type": "string",
+                      "description": "HEC source field on every event and metric",
+                      "default": "bifrost"
+                    },
+                    "sourcetype": {
+                      "type": "string",
+                      "description": "HEC sourcetype for events (metrics use bifrost:metric). Drives field extraction, so keep it stable.",
+                      "default": "bifrost:llm"
+                    },
+                    "host": {
+                      "type": "string",
+                      "description": "HEC host field (defaults to the server hostname)"
+                    },
+                    "enable_events": {
+                      "type": "boolean",
+                      "description": "Emit one flattened event per request to the event index (default: true)",
+                      "default": true
+                    },
+                    "enable_metrics": {
+                      "type": "boolean",
+                      "description": "Derive and emit the metric set to the metrics index (default: true)",
+                      "default": true
+                    },
+                    "disable_content_logging": {
+                      "type": "boolean",
+                      "description": "Strip request/response content from events (default: false)",
+                      "default": false
+                    },
+                    "ca_cert": {
+                      "type": "string",
+                      "description": "PEM-encoded CA certificate to verify the HEC server's TLS certificate (can use env. prefix)"
+                    },
+                    "insecure_skip_verify": {
+                      "type": "boolean",
+                      "description": "Disable TLS certificate verification. Development or isolated environments only; use ca_cert in production (default: false)",
+                      "default": false
+                    },
+                    "custom_fields": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      },
+                      "description": "Static key/value fields added to every event and metric"
+                    },
+                    "request_headers": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Request-header name patterns to capture onto events. Use an explicit allowlist of exact header names; wildcard patterns can capture credentials such as Authorization."
+                    },
+                    "batch_max_bytes": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "description": "Flush a HEC batch once its concatenated bodies reach this many bytes",
+                      "default": 524288
+                    },
+                    "flush_interval_ms": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "description": "Maximum time buffered events wait before a flush",
+                      "default": 1000
+                    },
+                    "post_workers": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 64,
+                      "description": "Concurrent HEC poster goroutines (capped at 64)",
+                      "default": 4
+                    },
+                    "indexer_ack": {
+                      "type": "boolean",
+                      "description": "Enable HEC indexer acknowledgement for confirmed delivery. Set when the HEC token has acknowledgement enabled (default: false).",
+                      "default": false
+                    },
+                    "ack_poll_interval_ms": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "description": "How often to poll Splunk for acknowledgement, in ms (only used when indexer_ack is true)",
+                      "default": 1000
+                    },
+                    "ack_timeout_ms": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "description": "How long an unacknowledged batch waits before the client resends it, in ms (only used when indexer_ack is true)",
+                      "default": 30000
+                    },
+                    "max_ack_attempts": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "description": "Maximum POST attempts per batch before it is dropped (only used when indexer_ack is true)",
+                      "default": 3
+                    }
+                  },
+                  "required": ["endpoint", "token"],
+                  "allOf": [
+                    {
+                      "if": {
+                        "properties": {
+                          "enable_events": {
+                            "not": {
+                              "const": false
+                            }
+                          }
+                        }
+                      },
+                      "then": {
+                        "required": ["events_index"]
+                      }
+                    },
+                    {
+                      "if": {
+                        "properties": {
+                          "enable_metrics": {
+                            "not": {
+                              "const": false
+                            }
+                          }
+                        }
+                      },
+                      "then": {
+                        "required": ["metrics_index"]
                       }
                     }
                   ],
@@ -3156,6 +3346,11 @@
           "description": "Whether this profile exports traces and metrics",
           "default": true
         },
+        "traces_enabled": {
+          "type": "boolean",
+          "description": "Enable trace export for this profile. When false, no traces are sent and collector_url is not required, giving a metrics-only profile (pair with metrics_enabled).",
+          "default": true
+        },
         "service_name": {
           "type": "string",
           "description": "Service name to be used for tracing",
@@ -3225,7 +3420,21 @@
           "additionalProperties": {
             "type": "string"
           },
-          "description": "Custom headers for the collector. Supports env.VAR_NAME prefix for environment variable substitution."
+          "description": "Custom headers sent to both the trace and metrics endpoints. Supports env.VAR_NAME prefix for environment variable substitution."
+        },
+        "trace_headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Extra headers sent only to the trace endpoint, overlaid on headers (same key wins). Supports env.VAR_NAME prefix."
+        },
+        "metrics_headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Extra headers sent only to the metrics endpoint, overlaid on headers (same key wins). Useful when a collector requires a per-signal header, e.g. a Databricks table name. Supports env.VAR_NAME prefix."
         },
         "tls_ca_cert": {
           "type": "string",
@@ -3243,14 +3452,28 @@
       "allOf": [
         {
           "if": {
-            "not": {
-              "properties": {
-                "enabled": {
-                  "const": false
+            "allOf": [
+              {
+                "not": {
+                  "properties": {
+                    "enabled": {
+                      "const": false
+                    }
+                  },
+                  "required": ["enabled"]
                 }
               },
-              "required": ["enabled"]
-            }
+              {
+                "not": {
+                  "properties": {
+                    "traces_enabled": {
+                      "const": false
+                    }
+                  },
+                  "required": ["traces_enabled"]
+                }
+              }
+            ]
           },
           "then": {
             "required": ["collector_url", "trace_type", "protocol"]
@@ -3266,7 +3489,7 @@
             "required": ["metrics_enabled"]
           },
           "then": {
-            "required": ["metrics_endpoint"]
+            "required": ["metrics_endpoint", "protocol"]
           }
         }
       ],
@@ -3669,16 +3892,16 @@
         },
         "mcp_library_url": {
           "type": "string",
-          "description": "URL to a custom MCP server catalog. Leave empty to use the default Bifrost catalog.",
+          "description": "URL to a custom MCP server catalog. Leave empty to use the default Bifrost catalog. Accepts a file:// URL to load the catalog from local disk in air-gapped deployments.",
           "optional": true,
           "format": "uri"
         },
         "mcp_library_sync_interval": {
           "type": "integer",
-          "description": "MCP library sync interval in seconds. Default is 24 hours. Minimum is 3600 seconds (1 hour).",
+          "description": "MCP library sync interval in seconds. Set to 0 to disable background catalog syncing entirely (air-gapped deployments with no local catalog file); an explicit force-sync still works. Default is 24 hours; minimum when enabled is 3600 seconds (1 hour).",
           "default": 86400,
           "optional": true,
-          "minimum": 3600
+          "anyOf": [{ "const": 0 }, { "minimum": 3600 }]
         },
         "live_models_sync_interval": {
           "type": "integer",
@@ -4091,6 +4314,38 @@
                     }
                   },
                   "additionalProperties": false
+                },
+                "endpoints": {
+                  "type": "object",
+                  "description": "Interface VPC endpoint (AWS PrivateLink) hosts to dial instead of the public regional endpoints. Use the endpoint's DNS name from the VPC console, not the endpoint ID — AWS appends a random string that cannot be derived. Region is still required: it sets the SigV4 credential scope.",
+                  "properties": {
+                    "runtime": {
+                      "type": "string",
+                      "pattern": "\\.",
+                      "description": "Host for the bedrock-runtime service, which serves all inference (can use env. prefix)"
+                    },
+                    "control_plane": {
+                      "type": "string",
+                      "pattern": "\\.",
+                      "description": "Host for the bedrock service, which serves model listing and batch jobs (can use env. prefix)"
+                    },
+                    "mantle": {
+                      "type": "string",
+                      "pattern": "\\.",
+                      "description": "Host for the bedrock-mantle service, which serves mantle-routed models (can use env. prefix)"
+                    },
+                    "agent_runtime": {
+                      "type": "string",
+                      "pattern": "\\.",
+                      "description": "Host for the bedrock-agent-runtime service, which serves rerank (can use env. prefix)"
+                    },
+                    "s3": {
+                      "type": "string",
+                      "pattern": "\\.",
+                      "description": "Host for the s3 service, which serves batch file I/O. Must carry the literal \"bucket.\" prefix, since Bifrost prepends the bucket name to build the virtual-hosted URL. A Gateway endpoint needs no value here (can use env. prefix)"
+                    }
+                  },
+                  "additionalProperties": false
                 }
               },
               "required": ["region"],
@@ -4142,6 +4397,18 @@
                 "project_id": {
                   "type": "string",
                   "description": "Bedrock project ID scoping inference and model listing. Sent as the OpenAI-Project header on the OpenAI-compatible surface and the anthropic-workspace-id header on the native-Anthropic (Claude) surface. When empty, AWS routes to the account's default project (can use env. prefix)."
+                },
+                "endpoints": {
+                  "type": "object",
+                  "description": "Interface VPC endpoint (AWS PrivateLink) hosts to dial instead of the public regional endpoints. Use the endpoint's DNS name from the VPC console, not the endpoint ID — AWS appends a random string that cannot be derived. Region is still required: it sets the SigV4 credential scope.",
+                  "properties": {
+                    "mantle": {
+                      "type": "string",
+                      "pattern": "\\.",
+                      "description": "Host for the bedrock-mantle service (can use env. prefix)"
+                    }
+                  },
+                  "additionalProperties": false
                 }
               },
               "required": ["region"],
@@ -4398,6 +4665,9 @@
           },
           "minItems": 1,
           "description": "API keys for this provider"
+        },
+        "openai_config": {
+          "$ref": "#/$defs/openai_config"
         },
         "network_config": {
           "$ref": "#/$defs/network_config"
@@ -4846,25 +5116,117 @@
             "headers",
             "oauth",
             "per_user_oauth",
-            "per_user_headers"
+            "per_user_headers",
+            "token_exchange"
           ],
           "description": "Authentication type for MCP connection"
         },
-        "oauth_config_id": {
-          "type": "string",
-          "description": "OAuth config ID reference (required when auth_type is 'oauth' or 'per_user_oauth')"
+        "token_exchange": {
+          "type": "object",
+          "description": "Delegated token-exchange configuration for auth_type 'token_exchange': each caller's identity-provider token is exchanged at runtime for a short-lived token scoped to this server's audience. The exchange endpoint and grant shape come from the deployment's identity-provider integration; the application performing the exchange is configured here. Requires user-identity authentication to be available. The MCP client lands in `pending_verification` state at boot; an admin verifies it once from the UI (as themselves).",
+          "properties": {
+            "audience": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Resource identifier the exchanged token is scoped to at the identity provider (e.g. 'api://jira-mcp')"
+            },
+            "use_idp_credentials": {
+              "type": "boolean",
+              "description": "When true, performs the exchange as the SSO login application itself instead of client_id/client_secret below, which are then ignored. Some providers require this: Microsoft Entra ID's on-behalf-of grant only accepts an assertion audienced to the exchanging application, and Bifrost's SSO login flow always requests a token self-audienced to the SSO application, so a separate exchange application can never receive a usable one."
+            },
+            "client_id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Identity-provider application authorized to perform exchanges for this audience — typically a dedicated registration carrying the token-exchange (or on-behalf-of) grant, separate from the SSO login application. Required unless use_idp_credentials is true. Can use env. or vault. prefix."
+            },
+            "client_secret": {
+              "type": "string",
+              "description": "Secret for the exchange application; omit for public clients. Ignored when use_idp_credentials is true. Can use env. or vault. prefix."
+            },
+            "authorization_server_url": {
+              "type": "string",
+              "description": "Overrides where the exchange request is sent, for identity providers that bind an audience to a specific authorization server distinct from the one used for SSO login (e.g. Okta's per-resource Custom Authorization Servers). Leave empty to use the deployment's SSO login issuer, which is correct for providers with one tenant-wide token endpoint (Entra, Auth0)."
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Optional scopes to request on the exchanged token. Include 'offline_access' (where the identity provider supports it) so exchanges issue refresh tokens, keeping the retained admin discovery credential self-renewing."
+            }
+          },
+          "required": ["audience"],
+          "allOf": [
+            {
+              "$comment": "client_id is required unless use_idp_credentials is true, in which case the exchange uses the SSO login application's own credentials instead.",
+              "if": {
+                "not": {
+                  "properties": {
+                    "use_idp_credentials": {
+                      "const": true
+                    }
+                  },
+                  "required": ["use_idp_credentials"]
+                }
+              },
+              "then": {
+                "required": ["client_id"]
+              }
+            }
+          ],
+          "additionalProperties": false
+        },
+        "oauth_config": {
+          "type": "object",
+          "description": "Inline OAuth provider configuration for auth_type 'oauth' or 'per_user_oauth'. All inner fields are optional — missing URLs are resolved via RFC 8414 discovery and a missing client_id triggers RFC 7591 dynamic client registration at admin-click time. The client lands in `pending_verification` state at boot; an admin runs the verification flow once from the MCP Gateway UI.",
+          "properties": {
+            "client_id": {
+              "type": "string",
+              "description": "OAuth client ID (optional — Dynamic Client Registration is used when omitted; can use env. or vault. prefix)"
+            },
+            "client_secret": {
+              "type": "string",
+              "description": "OAuth client secret (optional — omit for PKCE public clients or DCR; can use env. or vault. prefix)"
+            },
+            "authorize_url": {
+              "type": "string",
+              "description": "Provider authorize endpoint (optional — discovered from the MCP server URL when omitted)"
+            },
+            "token_url": {
+              "type": "string",
+              "description": "Provider token endpoint (optional — discovered when omitted)"
+            },
+            "registration_url": {
+              "type": "string",
+              "description": "Dynamic Client Registration endpoint (optional — discovered when omitted)"
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "OAuth scopes to request"
+            },
+            "resource": {
+              "type": "string",
+              "description": "OAuth resource indicator, RFC 8707 (optional: discovered from the MCP server's protected resource metadata when omitted)"
+            }
+          },
+          "additionalProperties": false
+        },
+        "per_user_header_keys": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "description": "Required header names each end-user must supply when auth_type is 'per_user_headers'. Schema only — values are submitted per-user at runtime. The MCP client lands in `pending_verification` state at boot; an admin submits sample values once from the UI to verify the connection and discover tools."
         },
         "headers": {
           "type": "object",
           "description": "Headers to send with the request (for headers auth type)",
           "additionalProperties": {
-            "type": "string"
-          }
-        },
-        "per_user_header_keys": {
-          "type": "array",
-          "description": "Header names each caller must supply when auth_type is 'per_user_headers'. Required (non-empty) for that auth type.",
-          "items": {
             "type": "string"
           }
         },
@@ -4944,6 +5306,11 @@
           "description": "Whether the MCP server supports ping for health checks (default: true)",
           "default": true
         },
+        "needs_session_stickiness": {
+          "type": "boolean",
+          "description": "Only meaningful for connection_type 'http': whether this client maintains one persistent connection reused across every caller (true) or connects fresh per call (false, the default for newly created clients). SSE and STDIO always behave as sticky regardless of this field.",
+          "default": false
+        },
         "tool_pricing": {
           "type": "object",
           "description": "Tool pricing map (tool name to cost per execution)",
@@ -4980,17 +5347,77 @@
       },
       "required": ["name", "connection_type"],
       "additionalProperties": false,
-      "if": {
-        "properties": {
-          "auth_type": {
-            "enum": ["oauth", "per_user_oauth"]
+      "allOf": [
+        {
+          "$comment": "per_user_headers requires the admin to declare which header names users must submit. OAuth-based types have no required input — the connection_string drives RFC 8414 discovery + RFC 7591 dynamic client registration when oauth_config is omitted or its inner fields are blank.",
+          "if": {
+            "properties": {
+              "auth_type": {
+                "const": "per_user_headers"
+              }
+            },
+            "required": ["auth_type"]
+          },
+          "then": {
+            "required": ["per_user_header_keys"]
           }
         },
-        "required": ["auth_type"]
-      },
-      "then": {
-        "required": ["oauth_config_id"]
-      },
+        {
+          "$comment": "oauth_config only applies to OAuth-based auth types; forbid it elsewhere (including entries that omit auth_type, which defaults to headers) so a misplaced block fails validation instead of being silently ignored.",
+          "if": {
+            "not": {
+              "properties": {
+                "auth_type": {
+                  "enum": ["oauth", "per_user_oauth"]
+                }
+              },
+              "required": ["auth_type"]
+            }
+          },
+          "then": {
+            "not": {
+              "required": ["oauth_config"]
+            }
+          }
+        },
+        {
+          "$comment": "per_user_header_keys only applies to auth_type 'per_user_headers'; forbid it elsewhere so a misplaced declaration fails validation instead of being silently ignored.",
+          "if": {
+            "not": {
+              "properties": {
+                "auth_type": {
+                  "const": "per_user_headers"
+                }
+              },
+              "required": ["auth_type"]
+            }
+          },
+          "then": {
+            "not": {
+              "required": ["per_user_header_keys"]
+            }
+          }
+        },
+        {
+          "$comment": "token_exchange requires its scoping block (audience), and the block only applies to that auth type; forbid it elsewhere so a misplaced declaration fails validation instead of being silently ignored.",
+          "if": {
+            "properties": {
+              "auth_type": {
+                "const": "token_exchange"
+              }
+            },
+            "required": ["auth_type"]
+          },
+          "then": {
+            "required": ["token_exchange"]
+          },
+          "else": {
+            "not": {
+              "required": ["token_exchange"]
+            }
+          }
+        }
+      ],
       "oneOf": [
         {
           "properties": {
@@ -5762,7 +6189,7 @@
         },
         "apiToken": {
           "type": "string",
-          "description": "Okta API token for Admin API access"
+          "description": "Okta API token for Admin API access (optional; enables 24-hour background user/group reconciliation)"
         },
         "audience": {
           "type": "string",
@@ -5788,15 +6215,18 @@
           "description": "JWT claim field for roles (default: 'roles')",
           "default": "roles"
         },
-        "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
-        "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
-        "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
-        "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
-        "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
-        "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
-        "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
+        "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
+        "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
+        "claimsSyncMode": { "$ref": "#/$defs/scim_claims_sync_mode" },
+        "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
+        "attributeBusinessUnitMappings": {
+          "$ref": "#/$defs/scim_attribute_business_unit_mappings"
+        },
+        "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
+        "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" },
+        "provisioningToken": { "$ref": "#/$defs/scim_provisioning_token" }
       },
-      "required": ["issuerUrl", "clientId", "clientSecret", "apiToken"],
+      "required": ["issuerUrl", "clientId", "clientSecret"],
       "additionalProperties": false
     },
     "entra_config": {
@@ -5845,13 +6275,16 @@
           "description": "JWT claim field for roles (default: 'roles')",
           "default": "roles"
         },
-        "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
-        "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
-        "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
-        "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
-        "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
-        "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
-        "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
+        "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
+        "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
+        "claimsSyncMode": { "$ref": "#/$defs/scim_claims_sync_mode" },
+        "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
+        "attributeBusinessUnitMappings": {
+          "$ref": "#/$defs/scim_attribute_business_unit_mappings"
+        },
+        "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
+        "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" },
+        "provisioningToken": { "$ref": "#/$defs/scim_provisioning_token" }
       },
       "required": ["tenantId", "clientId"],
       "additionalProperties": false
@@ -5896,11 +6329,14 @@
           "description": "JWT claim field for roles (default: 'roles')",
           "default": "roles"
         },
-        "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
-        "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
-        "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
-        "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
-        "authProxy": {"$ref": "#/$defs/scim_auth_proxy"}
+        "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
+        "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
+        "claimsSyncMode": { "$ref": "#/$defs/scim_claims_sync_mode" },
+        "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
+        "attributeBusinessUnitMappings": {
+          "$ref": "#/$defs/scim_attribute_business_unit_mappings"
+        },
+        "authProxy": { "$ref": "#/$defs/scim_auth_proxy" }
       },
       "required": ["serverUrl", "realm", "clientId", "clientSecret"],
       "additionalProperties": false
@@ -5955,13 +6391,16 @@
           "description": "Override the default OIDC scopes requested during login",
           "items": { "type": "string" }
         },
-        "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
-        "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
-        "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
-        "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
-        "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
-        "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
-        "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
+        "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
+        "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
+        "claimsSyncMode": { "$ref": "#/$defs/scim_claims_sync_mode" },
+        "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
+        "attributeBusinessUnitMappings": {
+          "$ref": "#/$defs/scim_attribute_business_unit_mappings"
+        },
+        "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
+        "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" },
+        "provisioningToken": { "$ref": "#/$defs/scim_provisioning_token" }
       },
       "required": ["issuerUrl", "clientId"],
       "additionalProperties": false
@@ -6005,12 +6444,15 @@
           "description": "JWT claim field for team/group IDs (default: 'groups')",
           "default": "groups"
         },
-        "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
-        "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
-        "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
-        "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
-        "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
-        "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
+        "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
+        "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
+        "claimsSyncMode": { "$ref": "#/$defs/scim_claims_sync_mode" },
+        "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
+        "attributeBusinessUnitMappings": {
+          "$ref": "#/$defs/scim_attribute_business_unit_mappings"
+        },
+        "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
+        "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" }
       },
       "required": ["domain", "clientId"],
       "additionalProperties": false
@@ -6064,12 +6506,15 @@
           "description": "Claim field for team/group IDs (default: 'groups')",
           "default": "groups"
         },
-        "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
-        "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
-        "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
-        "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
-        "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
-        "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"}
+        "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
+        "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
+        "claimsSyncMode": { "$ref": "#/$defs/scim_claims_sync_mode" },
+        "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
+        "attributeBusinessUnitMappings": {
+          "$ref": "#/$defs/scim_attribute_business_unit_mappings"
+        },
+        "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
+        "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" }
       },
       "required": ["domain", "clientId"],
       "additionalProperties": false,
@@ -6149,13 +6594,16 @@
           "type": "string",
           "description": "JWT claim field for team IDs"
         },
-        "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
-        "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
-        "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
-        "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
-        "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
-        "claimScimAttributes": {"$ref": "#/$defs/scim_claim_attributes"},
-        "provisioningToken": {"$ref": "#/$defs/scim_provisioning_token"}
+        "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
+        "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
+        "claimsSyncMode": { "$ref": "#/$defs/scim_claims_sync_mode" },
+        "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
+        "attributeBusinessUnitMappings": {
+          "$ref": "#/$defs/scim_attribute_business_unit_mappings"
+        },
+        "authProxy": { "$ref": "#/$defs/scim_auth_proxy" },
+        "claimScimAttributes": { "$ref": "#/$defs/scim_claim_attributes" },
+        "provisioningToken": { "$ref": "#/$defs/scim_provisioning_token" }
       },
       "required": ["product"],
       "additionalProperties": false
@@ -6364,6 +6812,12 @@
               "enabled": {
                 "type": "boolean",
                 "description": "Whether this rule is enabled"
+              },
+              "target": {
+                "type": "string",
+                "enum": ["llm", "mcp"],
+                "default": "llm",
+                "description": "Execution target for the rule. Omitted values default to LLM guardrails."
               },
               "cel_expression": {
                 "type": "string",
@@ -7258,6 +7712,9 @@
             "video_generation": {
               "type": "boolean"
             },
+            "video_edit": {
+              "type": "boolean"
+            },
             "video_retrieve": {
               "type": "boolean"
             },
@@ -7500,6 +7957,12 @@
       "enum": ["highestPermissionCount", "order"],
       "default": "highestPermissionCount",
       "description": "How a single role is chosen when a user resolves to more than one role: 'highestPermissionCount' (default) picks the role with the most permissions; 'order' evaluates the attribute-role mappings top to bottom and the first matching rule wins."
+    },
+    "scim_claims_sync_mode": {
+      "type": "string",
+      "enum": ["both", "scim"],
+      "default": "both",
+      "description": "When SCIM is enabled, selects whether IdP login/refresh claims still drive role/team/business-unit/profile sync and JIT user creation: 'both' (default) keeps syncing from both claims and SCIM; 'scim' makes SCIM the sole source of truth — claims are ignored for provisioning and new users must be pushed by SCIM. Inert when SCIM is disabled (claims always sync then)."
     },
     "scim_attribute_team_mappings": {
       "type": "array",

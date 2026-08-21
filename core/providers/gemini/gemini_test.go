@@ -3906,6 +3906,216 @@ func TestThinkingBudgetEffortUsesModelRange(t *testing.T) {
 	})
 }
 
+// TestThinkingLevelFromEffort covers the effort → thinkingLevel mapping on
+// Gemini 3+. Pro accepts low/high only, so minimal and medium fold onto them;
+// other models also accept minimal.
+func TestThinkingLevelFromEffort(t *testing.T) {
+	tests := []struct {
+		model  string
+		effort string
+		want   string
+	}{
+		{"gemini-3-pro-preview", "minimal", "low"},
+		{"gemini-3-pro-preview", "low", "low"},
+		{"gemini-3-pro-preview", "medium", "high"},
+		{"gemini-3-pro-preview", "high", "high"},
+		{"gemini-3-pro-preview", "xhigh", "high"},
+		{"gemini-3-pro-preview", "max", "high"},
+		{"gemini-3-flash-preview", "minimal", "minimal"},
+		{"gemini-3-flash-preview", "low", "low"},
+		{"gemini-3-flash-preview", "medium", "medium"},
+		{"gemini-3-flash-preview", "high", "high"},
+		{"gemini-3-flash-preview", "xhigh", "high"},
+		{"gemini-3-flash-preview", "max", "high"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model+"_"+tt.effort, func(t *testing.T) {
+			req := &schemas.BifrostChatRequest{
+				Model: tt.model,
+				Input: minimalChatInput(),
+				Params: &schemas.ChatParameters{
+					Reasoning: &schemas.ChatReasoning{Effort: &tt.effort},
+				},
+			}
+			result, err := gemini.ToGeminiChatCompletionRequest(nil, req)
+			require.NoError(t, err)
+			require.NotNil(t, result.GenerationConfig.ThinkingConfig)
+			require.NotNil(t, result.GenerationConfig.ThinkingConfig.ThinkingLevel)
+			assert.Equal(t, tt.want, *result.GenerationConfig.ThinkingConfig.ThinkingLevel)
+			assert.Nil(t, result.GenerationConfig.ThinkingConfig.ThinkingBudget)
+		})
+	}
+}
+
+// TestThinkingConfigResolvesPerProvider verifies capability lookups carry the
+// request's provider, so a Vertex request reads the vertex_ai row instead of the
+// Gemini one. The datasheet keys these separately and the rows can disagree.
+func TestThinkingConfigResolvesPerProvider(t *testing.T) {
+	const model = "gemini-capability-probe"
+	schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		if m != model || provider != schemas.Vertex {
+			return nil
+		}
+		return &schemas.ModelCapabilities{SupportsReasoning: new(true)}
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	effort := "low"
+	for _, tt := range []struct {
+		provider     schemas.ModelProvider
+		wantThinking bool
+	}{
+		{schemas.Gemini, false},
+		{schemas.Vertex, true},
+	} {
+		t.Run(string(tt.provider), func(t *testing.T) {
+			req := &schemas.BifrostChatRequest{
+				Provider: tt.provider,
+				Model:    model,
+				Input:    minimalChatInput(),
+				Params: &schemas.ChatParameters{
+					Reasoning: &schemas.ChatReasoning{Effort: &effort},
+				},
+			}
+			result, err := gemini.ToGeminiChatCompletionRequest(nil, req)
+			require.NoError(t, err)
+			if tt.wantThinking {
+				assert.NotNil(t, result.GenerationConfig.ThinkingConfig)
+			} else {
+				assert.Nil(t, result.GenerationConfig.ThinkingConfig)
+			}
+		})
+	}
+}
+
+// TestGemini3CapabilityGatesReadDatasheet covers the three model gates that used
+// to be Gemini-3 name checks. Each subtest pins a 2.5-era model, which the name
+// fallback answers false, and asserts the datasheet record flips it. The
+// fallback side is covered by TestStructuredOutputWithToolsConflict,
+// TestThinkingLevelFromEffort and TestMultimodalFunctionResponse_RoundTrip.
+func TestGemini3CapabilityGatesReadDatasheet(t *testing.T) {
+	const model = "gemini-2.5-flash"
+
+	withCaps := func(t *testing.T, record *schemas.ModelCapabilities) {
+		schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+			if m != model {
+				return nil
+			}
+			return record
+		})
+		t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+	}
+
+	t.Run("effort_control_selects_thinking_level", func(t *testing.T) {
+		withCaps(t, &schemas.ModelCapabilities{
+			SupportsReasoning:     new(true),
+			ReasoningEffortLevels: []string{"low", "high"},
+		})
+
+		effort := "low"
+		result, err := gemini.ToGeminiChatCompletionRequest(nil, &schemas.BifrostChatRequest{
+			Model: model,
+			Input: minimalChatInput(),
+			Params: &schemas.ChatParameters{
+				Reasoning: &schemas.ChatReasoning{Effort: &effort},
+			},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, result.GenerationConfig.ThinkingConfig)
+		require.NotNil(t, result.GenerationConfig.ThinkingConfig.ThinkingLevel)
+		assert.Equal(t, "low", *result.GenerationConfig.ThinkingConfig.ThinkingLevel)
+		assert.Nil(t, result.GenerationConfig.ThinkingConfig.ThinkingBudget,
+			"an effort control must send thinkingLevel rather than convert to a budget")
+	})
+
+	t.Run("response_schema_survives_alongside_tools", func(t *testing.T) {
+		withCaps(t, &schemas.ModelCapabilities{SupportsResponseSchemaWithTools: new(true)})
+
+		result, err := gemini.ToGeminiChatCompletionRequest(nil, &schemas.BifrostChatRequest{
+			Model: model,
+			Input: minimalChatInput(),
+			Params: &schemas.ChatParameters{
+				Tools: []schemas.ChatTool{{
+					Type: schemas.ChatToolTypeFunction,
+					Function: &schemas.ChatToolFunction{
+						Name:       "get_weather",
+						Parameters: &schemas.ToolFunctionParameters{Type: "object"},
+					},
+				}},
+				ResponseFormat: schemas.Ptr[interface{}](map[string]interface{}{"type": "json_object"}),
+			},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "application/json", result.GenerationConfig.ResponseMIMEType)
+		assert.NotEmpty(t, result.Tools)
+	})
+
+	t.Run("multimodal_tool_output_keeps_media_parts", func(t *testing.T) {
+		withCaps(t, &schemas.ModelCapabilities{SupportsMultimodalToolOutput: new(true)})
+
+		result, err := gemini.ToGeminiResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+			Model: model,
+			Input: multimodalToolOutputInput(),
+		})
+		require.NoError(t, err)
+		assert.NotEmpty(t, mediaPartsInFunctionResponse(result),
+			"media blocks must ride along as functionResponse.parts when the model supports them")
+	})
+
+	t.Run("multimodal_tool_output_drops_media_when_unsupported", func(t *testing.T) {
+		withCaps(t, &schemas.ModelCapabilities{SupportsMultimodalToolOutput: new(false)})
+
+		result, err := gemini.ToGeminiResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+			Model: model,
+			Input: multimodalToolOutputInput(),
+		})
+		require.NoError(t, err)
+		assert.Empty(t, mediaPartsInFunctionResponse(result),
+			"media blocks must be dropped rather than sent to a model that rejects them")
+	})
+}
+
+// multimodalToolOutputInput builds a function_call_output carrying one text and
+// one image block, the shape the multimodal tool-output gate acts on.
+func multimodalToolOutputInput() []schemas.ResponsesMessage {
+	const redPNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+	return []schemas.ResponsesMessage{{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID: schemas.Ptr("c1"),
+			Name:   schemas.Ptr("read_file"),
+			Output: &schemas.ResponsesToolMessageOutputStruct{
+				ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
+					{
+						Type: schemas.ResponsesInputMessageContentBlockTypeText,
+						Text: schemas.Ptr("result:"),
+					},
+					{
+						Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+						ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
+							ImageURL: schemas.Ptr("data:image/png;base64," + redPNG),
+						},
+					},
+				},
+			},
+		},
+	}}
+}
+
+// mediaPartsInFunctionResponse returns the media parts hanging off the first
+// functionResponse in the request.
+func mediaPartsInFunctionResponse(req *gemini.GeminiGenerationRequest) []*gemini.Part {
+	for _, content := range req.Contents {
+		for _, part := range content.Parts {
+			if part.FunctionResponse != nil {
+				return part.FunctionResponse.Parts
+			}
+		}
+	}
+	return nil
+}
+
 // Regression: GenAI /generateContent path must not turn thinkingLevel into a derived
 // thinkingBudget (which changes Gemini 3.x behavior). Inbound should set effort only;
 // outbound for Gemini 3+ should emit thinkingLevel again.
@@ -4817,7 +5027,7 @@ func TestGroundingMetadataToChatAnnotations(t *testing.T) {
 
 // TestIncludeServerSideToolInvocations covers Gemini's tool-combination opt-in:
 // without it Gemini rejects function declarations sent alongside Google Search, so
-// the declarations are dropped; with it both go on the wire.
+// Google Search is dropped and the declarations are preserved; with it both go on the wire.
 func TestIncludeServerSideToolInvocations(t *testing.T) {
 	responsesReq := func(include *bool) *schemas.BifrostResponsesRequest {
 		return &schemas.BifrostResponsesRequest{
@@ -4839,21 +5049,149 @@ func TestIncludeServerSideToolInvocations(t *testing.T) {
 		}
 	}
 
-	t.Run("flag absent drops function declarations (unchanged behaviour)", func(t *testing.T) {
+	t.Run("flag absent drops google search, keeps function declarations", func(t *testing.T) {
 		out, err := gemini.ToGeminiResponsesRequest(nil, responsesReq(nil))
 		require.NoError(t, err)
 		require.Len(t, out.Tools, 1)
-		assert.NotNil(t, out.Tools[0].GoogleSearch)
-		assert.Empty(t, out.Tools[0].FunctionDeclarations)
-		assert.Nil(t, out.ToolConfig)
+		assert.Nil(t, out.Tools[0].GoogleSearch)
+		require.Len(t, out.Tools[0].FunctionDeclarations, 1)
+		assert.Equal(t, "get_weather", out.Tools[0].FunctionDeclarations[0].Name)
 	})
 
-	t.Run("flag false drops function declarations", func(t *testing.T) {
+	t.Run("flag false drops google search, keeps function declarations", func(t *testing.T) {
 		out, err := gemini.ToGeminiResponsesRequest(nil, responsesReq(schemas.Ptr(false)))
 		require.NoError(t, err)
 		require.Len(t, out.Tools, 1)
+		assert.Nil(t, out.Tools[0].GoogleSearch)
+		require.Len(t, out.Tools[0].FunctionDeclarations, 1)
+	})
+
+	t.Run("vertex sends both without the flag", func(t *testing.T) {
+		req := responsesReq(nil)
+		req.Provider = schemas.Vertex
+		out, err := gemini.ToGeminiResponsesRequest(nil, req)
+		require.NoError(t, err)
+		require.Len(t, out.Tools, 2, "vertex accepts built-in and function tools together")
+		require.Len(t, out.Tools[0].FunctionDeclarations, 1)
+		assert.Equal(t, "get_weather", out.Tools[0].FunctionDeclarations[0].Name)
+		assert.NotNil(t, out.Tools[1].GoogleSearch)
+	})
+
+	// Tool combination arrived with Gemini 3. Sending both tool kinds to an older model
+	// makes Vertex reject the whole request with
+	// "Multiple tools are supported only when they are all search tools", so the
+	// declarations-win drop still has to apply there -- a degraded answer beats a 400.
+	t.Run("vertex drops google search for models without tool combination", func(t *testing.T) {
+		for _, model := range []string{"gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"} {
+			t.Run(model, func(t *testing.T) {
+				req := responsesReq(nil)
+				req.Provider = schemas.Vertex
+				req.Model = model
+				out, err := gemini.ToGeminiResponsesRequest(nil, req)
+				require.NoError(t, err)
+				require.Len(t, out.Tools, 1, "pre-Gemini-3 models cannot combine tool kinds")
+				assert.Nil(t, out.Tools[0].GoogleSearch)
+				require.Len(t, out.Tools[0].FunctionDeclarations, 1)
+				assert.Equal(t, "get_weather", out.Tools[0].FunctionDeclarations[0].Name)
+			})
+		}
+	})
+
+	t.Run("vertex sends both for gemini 3 and newer", func(t *testing.T) {
+		for _, model := range []string{"gemini-3-flash-preview", "gemini-3.6-flash", "gemini-4-pro"} {
+			t.Run(model, func(t *testing.T) {
+				req := responsesReq(nil)
+				req.Provider = schemas.Vertex
+				req.Model = model
+				out, err := gemini.ToGeminiResponsesRequest(nil, req)
+				require.NoError(t, err)
+				require.Len(t, out.Tools, 2, "gemini 3+ accepts both tool kinds on vertex")
+				require.Len(t, out.Tools[0].FunctionDeclarations, 1)
+				assert.NotNil(t, out.Tools[1].GoogleSearch)
+			})
+		}
+	})
+
+	// An unrecognised model must not be assumed capable: dropping google search yields a
+	// degraded answer, sending both yields a hard 400.
+	t.Run("vertex drops google search for unrecognised models", func(t *testing.T) {
+		req := responsesReq(nil)
+		req.Provider = schemas.Vertex
+		req.Model = "some-tuned-endpoint"
+		out, err := gemini.ToGeminiResponsesRequest(nil, req)
+		require.NoError(t, err)
+		require.Len(t, out.Tools, 1)
+		assert.Nil(t, out.Tools[0].GoogleSearch)
+	})
+
+	t.Run("vertex keeps search localization alongside declarations", func(t *testing.T) {
+		req := responsesReq(nil)
+		req.Provider = schemas.Vertex
+		req.Params.Tools[0].ResponsesToolWebSearch = &schemas.ResponsesToolWebSearch{
+			UserLocation: &schemas.ResponsesToolWebSearchUserLocation{
+				Latitude:  schemas.Ptr(48.85),
+				Longitude: schemas.Ptr(2.35),
+			},
+		}
+		out, err := gemini.ToGeminiResponsesRequest(nil, req)
+		require.NoError(t, err)
+		require.Len(t, out.Tools, 2)
+		require.NotNil(t, out.ToolConfig)
+		require.NotNil(t, out.ToolConfig.RetrievalConfig)
+		require.NotNil(t, out.ToolConfig.RetrievalConfig.LatLng)
+		require.NotNil(t, out.ToolConfig.RetrievalConfig.LatLng.Latitude)
+		assert.Equal(t, 48.85, *out.ToolConfig.RetrievalConfig.LatLng.Latitude)
+		// Both coordinates have to survive: a half-populated LatLng points at the wrong
+		// place rather than at no place, which Gemini accepts without complaint.
+		require.NotNil(t, out.ToolConfig.RetrievalConfig.LatLng.Longitude)
+		assert.Equal(t, 2.35, *out.ToolConfig.RetrievalConfig.LatLng.Longitude)
+	})
+
+	t.Run("vertex does not force the server-side invocation flag on", func(t *testing.T) {
+		req := responsesReq(nil)
+		req.Provider = schemas.Vertex
+		out, err := gemini.ToGeminiResponsesRequest(nil, req)
+		require.NoError(t, err)
+		if out.ToolConfig != nil {
+			assert.Nil(t, out.ToolConfig.IncludeServerSideToolInvocations,
+				"vertex needs no opt-in; the flag must not be synthesized")
+		}
+	})
+
+	t.Run("surviving declarations carry the tool choice through", func(t *testing.T) {
+		req := responsesReq(nil)
+		req.Params.ToolChoice = &schemas.ResponsesToolChoice{ResponsesToolChoiceStr: schemas.Ptr("required")}
+		out, err := gemini.ToGeminiResponsesRequest(nil, req)
+		require.NoError(t, err)
+		require.NotNil(t, out.ToolConfig, "toolConfig must survive alongside the declarations")
+		require.NotNil(t, out.ToolConfig.FunctionCallingConfig)
+		assert.Equal(t, gemini.FunctionCallingConfigModeAny, out.ToolConfig.FunctionCallingConfig.Mode)
+	})
+
+	t.Run("web search alone is untouched", func(t *testing.T) {
+		req := responsesReq(nil)
+		req.Params.Tools = req.Params.Tools[:1]
+		out, err := gemini.ToGeminiResponsesRequest(nil, req)
+		require.NoError(t, err)
+		require.Len(t, out.Tools, 1)
 		assert.NotNil(t, out.Tools[0].GoogleSearch)
-		assert.Nil(t, out.ToolConfig)
+	})
+
+	t.Run("dropped google search takes its localization with it", func(t *testing.T) {
+		req := responsesReq(nil)
+		req.Params.Tools[0].ResponsesToolWebSearch = &schemas.ResponsesToolWebSearch{
+			UserLocation: &schemas.ResponsesToolWebSearchUserLocation{
+				Latitude:  schemas.Ptr(48.85),
+				Longitude: schemas.Ptr(2.35),
+			},
+		}
+		out, err := gemini.ToGeminiResponsesRequest(nil, req)
+		require.NoError(t, err)
+		require.Len(t, out.Tools, 1)
+		assert.Nil(t, out.Tools[0].GoogleSearch)
+		if out.ToolConfig != nil {
+			assert.Nil(t, out.ToolConfig.RetrievalConfig, "retrievalConfig is meaningless without googleSearch")
+		}
 	})
 
 	t.Run("flag true sends both as separate tool entries", func(t *testing.T) {
@@ -4950,9 +5288,11 @@ func TestIncludeServerSideToolInvocationsGenAIRoundTrip(t *testing.T) {
 			require.NoError(t, err)
 
 			if !tt.want {
-				// Combination not requested: today's behaviour keeps search, drops declarations.
+				// Combination not requested: declarations win, googleSearch is dropped.
 				require.Len(t, out.Tools, 1)
-				assert.NotNil(t, out.Tools[0].GoogleSearch)
+				assert.Nil(t, out.Tools[0].GoogleSearch)
+				require.Len(t, out.Tools[0].FunctionDeclarations, 1)
+				assert.Equal(t, "get_weather", out.Tools[0].FunctionDeclarations[0].Name)
 				return
 			}
 
@@ -4965,6 +5305,37 @@ func TestIncludeServerSideToolInvocationsGenAIRoundTrip(t *testing.T) {
 			assert.True(t, *out.ToolConfig.IncludeServerSideToolInvocations)
 		})
 	}
+}
+
+// TestGenAICombinedToolEntryKeepsDeclarations covers a single tools[] entry carrying both
+// googleSearch and functionDeclarations (legal on Gemini 3+): the declarations must reach
+// the wire, since they may be MCP-derived tools the caller has to be able to invoke.
+func TestGenAICombinedToolEntryKeepsDeclarations(t *testing.T) {
+	body := `{
+		"contents": [{"role": "user", "parts": [{"text": "weather in tokyo?"}]}],
+		"toolConfig": {"functionCallingConfig": {"mode": "ANY"}},
+		"tools": [{
+			"googleSearch": {},
+			"functionDeclarations": [{"name": "get_weather", "parametersJsonSchema": {"type": "object"}}]
+		}]
+	}`
+
+	var req gemini.GeminiGenerationRequest
+	require.NoError(t, sonic.Unmarshal([]byte(body), &req))
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq := req.ToBifrostResponsesRequest(ctx)
+	require.NotNil(t, bifrostReq)
+	require.Len(t, bifrostReq.Params.Tools, 2, "both tool kinds must survive ingest")
+
+	out, err := gemini.ToGeminiResponsesRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	require.Len(t, out.Tools, 1)
+	require.Len(t, out.Tools[0].FunctionDeclarations, 1)
+	assert.Equal(t, "get_weather", out.Tools[0].FunctionDeclarations[0].Name)
+	require.NotNil(t, out.ToolConfig)
+	require.NotNil(t, out.ToolConfig.FunctionCallingConfig)
+	assert.Equal(t, gemini.FunctionCallingConfigModeAny, out.ToolConfig.FunctionCallingConfig.Mode)
 }
 
 // TestGroundingMultiSourceCitationsResponses covers the non-streaming Responses path

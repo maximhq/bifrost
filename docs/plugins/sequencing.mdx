@@ -87,9 +87,17 @@ If your `config.json` file has plugin sequence configured, it will take preceden
 
 Update a plugin's placement and order using the update endpoint:
 
+<Note>
+  Setting `path` on a non-builtin plugin loads native code into the gateway process, so it
+  requires an authenticated admin session even if [dashboard authentication](/quickstart/gateway/setting-up-auth)
+  is otherwise disabled. A remote (`http`/`https`) `path` is only fetched if it resolves to a
+  public address - loopback, private, and link-local destinations are refused.
+</Note>
+
 ```bash
 curl -X PUT http://localhost:8080/api/plugins/my-plugin \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <admin-session-token>" \
   -d '{
     "enabled": true,
     "path": "/path/to/my-plugin.so",

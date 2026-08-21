@@ -53,10 +53,10 @@ func (s *RDBConfigStore) EncryptPlaintextRows(ctx context.Context) error {
 	}
 	totalEncrypted += count
 
-	// oauth_tokens
+	// mcp_oauth_tokens
 	count, err = s.encryptPlaintextOAuthTokens(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to encrypt oauth_tokens: %w", err)
+		return fmt.Errorf("failed to encrypt mcp_oauth_tokens: %w", err)
 	}
 	totalEncrypted += count
 
@@ -222,12 +222,12 @@ func (s *RDBConfigStore) encryptPlaintextTempTokens(ctx context.Context) (int, e
 	return count, nil
 }
 
-// encryptPlaintextOAuthTokens finds all oauth_tokens rows with plaintext encryption status
-// and re-saves them in batches. The TableOauthToken.BeforeSave hook handles encryption.
+// encryptPlaintextOAuthTokens finds all mcp_oauth_tokens rows with plaintext encryption status
+// and re-saves them in batches. The TableMCPOauthToken.BeforeSave hook handles encryption.
 func (s *RDBConfigStore) encryptPlaintextOAuthTokens(ctx context.Context) (int, error) {
 	var count int
 	for {
-		var tokens []tables.TableOauthToken
+		var tokens []tables.TableMCPOauthToken
 		if err := s.DB().WithContext(ctx).
 			Where("encryption_status = ? OR encryption_status IS NULL OR encryption_status = ''", encryptionStatusPlainText).
 			Limit(encryptionBatchSize).
@@ -254,12 +254,16 @@ func (s *RDBConfigStore) encryptPlaintextOAuthTokens(ctx context.Context) (int, 
 
 // encryptPlaintextOAuthConfigs finds all oauth_configs rows with plaintext encryption status
 // and re-saves them in batches. The TableOauthConfig.BeforeSave hook handles encryption.
+// client_secret is the only sensitive column left on this table — state/
+// code_verifier/code_challenge/expires_at moved to mcp_oauth_flows (see that
+// migration) and code_verifier was the only one of those that was ever
+// encrypted, so the WHERE clause below no longer needs an OR branch for it.
 func (s *RDBConfigStore) encryptPlaintextOAuthConfigs(ctx context.Context) (int, error) {
 	var count int
 	for {
 		var configs []tables.TableOauthConfig
 		if err := s.DB().WithContext(ctx).
-			Where("(encryption_status = ? OR encryption_status IS NULL OR encryption_status = '') AND (client_secret != '' OR code_verifier != '')", encryptionStatusPlainText).
+			Where("(encryption_status = ? OR encryption_status IS NULL OR encryption_status = '') AND client_secret != ''", encryptionStatusPlainText).
 			Limit(encryptionBatchSize).
 			Find(&configs).Error; err != nil {
 			return count, err

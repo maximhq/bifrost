@@ -22,14 +22,14 @@ OpenRouter is an **OpenAI-compatible provider routing service** that accesses mo
 | Text Completions | ✅ | ✅ | `/v1/completions` |
 | List Models | ✅ | - | `/v1/models` |
 | Embeddings | ✅ | - | `/v1/embeddings` |
+| Speech (TTS) | ✅ | ❌ | `/v1/audio/speech` |
+| Transcriptions (STT) | ✅ | ❌ | `/v1/audio/transcriptions` |
 | Image Generation | ❌ | ❌ | - |
-| Speech (TTS) | ❌ | ❌ | - |
-| Transcriptions (STT) | ❌ | ❌ | - |
 | Files | ❌ | ❌ | - |
 | Batch | ❌ | ❌ | - |
 
 <Note>
-**Unsupported Operations** (❌): Image Generation, Speech, Transcriptions, Files, and Batch are not supported by the upstream OpenRouter API. These return a `BifrostError` with an error code of `"unsupported_operation"`.
+**Unsupported Operations** (❌): Image Generation, Files, Batch, and streaming Speech/Transcriptions are not supported by the upstream OpenRouter API. These return a `BifrostError` with an error code of `"unsupported_operation"`.
 
 **Note**: OpenRouter's Responses API is currently in **beta**.
 </Note>
@@ -210,13 +210,29 @@ The embedding request/response follows the standard OpenAI format.
 
 ---
 
+## Speech (TTS) & Transcription (STT)
+
+OpenRouter exposes OpenAI-compatible audio endpoints, so Bifrost routes Speech and Transcription requests the same way it does for OpenAI: `/v1/audio/speech` for text-to-speech and `/v1/audio/transcriptions` for speech-to-text.
+
+| Parameter | Mapping |
+|-----------|---------|
+| `model` | TTS/STT model ID (e.g., `openai/gpt-4o-mini-tts`, `openai/whisper-1`) |
+| `voice` | Required for Speech; voice availability depends on the underlying model |
+| `response_format` | Speech: `mp3` or `pcm` (`pcm` if omitted). Transcription: `json` (default) or `verbose_json` |
+| `speed` | Optional playback speed multiplier for Speech (provider-dependent) |
+| `language` | Optional ISO-639-1 code for Transcription; auto-detected if omitted |
+
+Streaming Speech and Transcription are not supported by the upstream OpenRouter API and return a `BifrostError` with `"unsupported_operation"`.
+
+---
+
 ## Unsupported Features
 
 | Feature | Reason |
 |---------|--------|
 | Image Generation | Not offered by OpenRouter API |
-| Speech/TTS | Not offered by OpenRouter API |
-| Transcription/STT | Not offered by OpenRouter API |
+| Streaming Speech/TTS | Not offered by OpenRouter API |
+| Streaming Transcription/STT | Not offered by OpenRouter API |
 | Batch Operations | Not offered by OpenRouter API |
 | File Management | Not offered by OpenRouter API |
 

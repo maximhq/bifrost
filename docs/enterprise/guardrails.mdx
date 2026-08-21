@@ -1,12 +1,12 @@
 ---
 title: "Overview"
-description: "Enterprise-grade content safety and security validation with native regex, secrets detection, Presidio, Azure AI Language PII, AWS Bedrock Guardrails, Azure Content Safety, Google Model Armor, CrowdStrike AIDR, Gray Swan Cygnal, Patronus AI, Lakera Guard, and Repello Argus."
+description: "Enterprise-grade content safety and security validation with Prompt Guardrails, native regex, secrets detection, Presidio, Azure AI Language PII, AWS Bedrock Guardrails, Azure Content Safety, Google Model Armor, CrowdStrike AIDR, Gray Swan Cygnal, Patronus AI, Lakera Guard, and Repello Argus."
 icon: "road-barrier"
 ---
 
 ## Overview
 
-**Guardrails** in Bifrost provide enterprise-grade content safety, security validation, and policy enforcement for LLM requests and responses. The system validates inputs and outputs in real-time against your specified policies, ensuring responsible AI deployment with protection against harmful content, prompt injection, PII leakage, credential leakage, and policy violations.
+**Guardrails** in Bifrost provide enterprise-grade content safety, security validation, and policy enforcement for LLM traffic and MCP tool executions. The system validates inputs and outputs in real-time against your specified policies, ensuring responsible AI deployment with protection against harmful content, prompt injection, PII leakage, credential leakage, and policy violations.
 
 <Frame>
   <img src="/media/guardrails/guardrails-overview.png" alt="Guardrails overview showing rules and profiles management" />
@@ -17,6 +17,9 @@ icon: "road-barrier"
 <CardGroup cols={2}>
   <Card title="Secrets Detection" icon="key" href="/enterprise/guardrails/secrets-detection">
     Built-in Gitleaks-backed detection for leaked API keys, tokens, private keys, and credentials.
+  </Card>
+  <Card title="Prompt Guardrails" icon="shield-check" href="/enterprise/guardrails/prompt-guardrails">
+    LLM-as-judge enforcement for organization-specific natural-language policies.
   </Card>
   <Card title="Custom Regex" icon="code" href="/enterprise/guardrails/custom-regex">
     In-process regex guardrails, including the built-in PII Detection template.
@@ -59,8 +62,8 @@ Bifrost Guardrails are built around two core concepts that work together to prov
 
 | Concept | Description |
 |---------|-------------|
-| **Rules** | Custom policies defined using CEL (Common Expression Language) that determine what content to validate and when. Rules can apply to inputs, outputs, or both, and can be linked to one or more profiles for evaluation. |
-| **Profiles** | Configurations for guardrail providers, including Bifrost-native providers (Custom Regex, Secrets Detection) and external providers (Presidio, Azure AI Language PII, AWS Bedrock, Azure Content Safety, Google Model Armor, CrowdStrike AIDR, Gray Swan, Patronus AI, Lakera Guard, and Repello Argus). Profiles are reusable and can be shared across multiple rules. |
+| **Rules** | Custom policies defined using CEL (Common Expression Language) that determine which LLM requests or MCP tool executions to validate and when. Rules can apply to inputs, outputs, or both, and can be linked to one or more profiles for evaluation. |
+| **Profiles** | Configurations for guardrail providers, including Bifrost-managed providers (Prompt Guardrails, Custom Regex, Secrets Detection) and external providers (Presidio, Azure AI Language PII, AWS Bedrock, Azure Content Safety, Google Model Armor, CrowdStrike AIDR, Gray Swan, Patronus AI, Lakera Guard, and Repello Argus). Profiles are reusable and can be shared across multiple rules. |
 
 **How They Work Together:**
 - **Profiles** define *how* content is evaluated using native Bifrost checks or external provider capabilities
@@ -72,8 +75,8 @@ Bifrost Guardrails are built around two core concepts that work together to prov
 
 | Feature | Description |
 |---------|-------------|
-| **Multi-Provider Support** | Bifrost-native Custom Regex and Secrets Detection, plus Presidio, Azure AI Language PII, AWS Bedrock, Azure Content Safety, Google Model Armor, CrowdStrike AIDR, Gray Swan, Patronus AI, Lakera Guard, and Repello Argus integrations |
-| **Dual-Stage Validation** | Guard both inputs (prompts) and outputs (responses) |
+| **Multi-Provider Support** | Bifrost-managed Prompt Guardrails, Custom Regex, and Secrets Detection, plus Presidio, Azure AI Language PII, AWS Bedrock, Azure Content Safety, Google Model Armor, CrowdStrike AIDR, Gray Swan, Patronus AI, Lakera Guard, and Repello Argus integrations |
+| **Dual-Stage Validation** | Guard LLM prompts and responses or MCP tool arguments and results |
 | **Real-Time Processing** | Synchronous and asynchronous validation modes |
 | **CEL-Based Rules** | Define custom policies using Common Expression Language |
 | **Reusable Profiles** | Configure providers once, use across multiple rules |
@@ -100,6 +103,17 @@ Access Guardrails from the Bifrost dashboard:
 |------|------|-------------|
 | **Configuration** | Guardrails > Configuration | Manage guardrail rules and their settings |
 | **Providers** | Guardrails > Providers | Configure and manage guardrail profiles |
+
+### Guardrail Targets
+
+Every rule has one execution target. Existing rules and rules that omit `target` default to `llm`.
+
+| Target | Input phase | Output phase | Target-specific CEL variables |
+|--------|-------------|--------------|-------------------------------|
+| `llm` | Before the request reaches the model provider | After the model provider responds | `model`, `provider`, `params` |
+| `mcp` | Before the MCP tool executes; guardrails can inspect or redact its arguments | After the tool returns; guardrails can inspect or redact its result | `mcp_client`, `mcp_tool`, `mcp_arguments` |
+
+Both targets also expose `headers`, `virtual_key`, `customer`, `team`, and `user`. Target-specific CEL variables are intentionally isolated: an MCP rule cannot reference `model`, and an LLM rule cannot reference `mcp_tool`.
 
 ### Architecture
 
@@ -134,6 +148,7 @@ flowchart TB
         Profile8[Google Model Armor Profile]
         Profile9[Presidio Profile]
         Profile10[Azure AI Language PII Profile]
+        Profile11[Prompt Guardrails Profile]
     end
 
     InputValidation --> Rule1
@@ -152,6 +167,7 @@ flowchart TB
     Rule4 --> Profile5
     Rule5 --> Profile7
     Rule6 --> Profile8
+    Rule2 --> Profile11
 ```
 
 **Flow Description:**
@@ -222,7 +238,7 @@ Input guardrails still check the request before Bifrost sends it to the LLM prov
 Guardrail Rules are custom policies that define when and how content validation occurs. Rules use CEL (Common Expression Language) expressions to evaluate requests and can be linked to one or more profiles for execution.
 
 <Frame>
-  <img src="/media/guardrails/query-creation.png" alt="Guardrail rules list showing configured rules with status and actions" />
+  <img src="/media/guardrails/ui-guardrail-rule-target-selection.png" alt="Guardrail rule editor showing LLM and MCP target options, input and output phase choices, linked profiles, sampling rate, and timeout" />
 </Frame>
 
 ### Rule Properties
@@ -233,8 +249,9 @@ Guardrail Rules are custom policies that define when and how content validation 
 | `name` | string | Yes | Descriptive name for the rule |
 | `description` | string | No | Explanation of what the rule does |
 | `enabled` | boolean | Yes | Whether the rule is active |
+| `target` | enum | No | Execution boundary: `llm` (default) or `mcp` |
 | `cel_expression` | string | Yes | CEL expression for rule evaluation |
-| `apply_to` | enum | Yes | When to apply: `input`, `output`, or `both` |
+| `apply_to` | enum | Yes | When to apply: `input`, `output`, or `both`. For MCP rules, input means tool arguments and output means the tool result |
 | `sampling_rate` | integer | No | Percentage of requests to evaluate (0-100) |
 | `timeout` | integer | No | Execution timeout in seconds (default: 60) |
 | `provider_config_ids` | array | No | IDs of profiles to use for evaluation |
@@ -258,12 +275,13 @@ Guardrail Rules are custom policies that define when and how content validation 
 - **Name**: Enter a descriptive name (e.g., "Block PII in Prompts")
 - **Description**: Explain the rule's purpose
 - **Enabled**: Toggle to activate the rule
+- **Target**: Choose **LLM** or **MCP**. LLM is the default for existing rules
 
 **Evaluation Settings:**
 - **Apply To**: Select when to apply the rule
-  - `input` - Validate incoming prompts only
-  - `output` - Validate LLM responses only
-  - `both` - Validate both inputs and outputs
+  - `input` - Validate incoming prompts for LLM rules or tool arguments for MCP rules
+  - `output` - Validate LLM responses or MCP tool results
+  - `both` - Validate both phases
 - **CEL Expression**: Define the validation logic
 - **Sampling Rate**: Set percentage of requests to evaluate (default: 100%)
 - **Timeout**: Set maximum execution time in seconds (default: 60)
@@ -279,17 +297,18 @@ Guardrail Rules are custom policies that define when and how content validation 
 </Tab>
 <Tab title="API">
 
-The HTTP API uses camelCase field names (`celExpression`, `applyTo`, `samplingRate`, `selectedGuardrailProfiles`). Profiles are referenced as `"<provider-type>:<config-id>"` strings (for example, `"regex:1"`, `"patronus-ai:6"`).
+The HTTP API uses camelCase field names (`celExpression`, `applyTo`, `samplingRate`, `selectedGuardrailProfiles`). The `target` field remains lowercase and accepts `llm` or `mcp`. Profiles are referenced as `"<provider-type>:<config-id>"` strings (for example, `"regex:1"`, `"patronus-ai:6"`).
 
 **Create a Guardrail Rule:**
 ```bash
 curl -X POST http://localhost:8080/api/guardrails/rules \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "Block PII in Prompts",
-    "description": "Prevent PII from being sent to LLM providers",
+    "name": "Protect GitHub issue creation",
+    "description": "Inspect arguments before the GitHub tool creates an issue",
     "enabled": true,
-    "celExpression": "request.messages.exists(m, m.role == \"user\")",
+    "target": "mcp",
+    "celExpression": "mcp_client == \"github\" && mcp_tool == \"create_issue\"",
     "applyTo": "input",
     "samplingRate": 100,
     "timeout": 5000,
@@ -310,10 +329,11 @@ curl -X GET http://localhost:8080/api/guardrails/rules \
   "rules": [
     {
       "id": 1,
-      "name": "Block PII in Prompts",
-      "description": "Prevent PII from being sent to LLM providers",
+      "name": "Protect GitHub issue creation",
+      "description": "Inspect arguments before the GitHub tool creates an issue",
       "enabled": true,
-      "celExpression": "request.messages.exists(m, m.role == \"user\")",
+      "target": "mcp",
+      "celExpression": "mcp_client == \"github\" && mcp_tool == \"create_issue\"",
       "applyTo": "input",
       "samplingRate": 100,
       "timeout": 5000,
@@ -330,10 +350,11 @@ curl -X GET http://localhost:8080/api/guardrails/rules \
 curl -X PUT http://localhost:8080/api/guardrails/rules/1 \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "Block PII in Prompts",
-    "description": "Prevent PII from being sent to LLM providers",
+    "name": "Protect GitHub issue creation",
+    "description": "Inspect arguments before the GitHub tool creates an issue",
     "enabled": false,
-    "celExpression": "request.messages.exists(m, m.role == \"user\")",
+    "target": "mcp",
+    "celExpression": "mcp_client == \"github\" && mcp_tool == \"create_issue\"",
     "applyTo": "input",
     "samplingRate": 50,
     "timeout": 5000,
@@ -358,7 +379,8 @@ curl -X DELETE http://localhost:8080/api/guardrails/rules/1
         "name": "Block PII in Prompts",
         "description": "Prevent PII from being sent to LLM providers",
         "enabled": true,
-        "cel_expression": "request.messages.exists(m, m.role == \"user\")",
+        "target": "llm",
+        "cel_expression": "true",
         "apply_to": "input",
         "sampling_rate": 100,
         "timeout": 5000,
@@ -369,6 +391,7 @@ curl -X DELETE http://localhost:8080/api/guardrails/rules/1
         "name": "Content Filter for Responses",
         "description": "Filter harmful content from LLM responses",
         "enabled": true,
+        "target": "llm",
         "cel_expression": "true",
         "apply_to": "output",
         "sampling_rate": 100,
@@ -377,10 +400,11 @@ curl -X DELETE http://localhost:8080/api/guardrails/rules/1
       },
       {
         "id": 3,
-        "name": "Prompt Injection Detection",
-        "description": "Detect and block prompt injection attempts",
+        "name": "Protect GitHub issue creation",
+        "description": "Inspect arguments before the GitHub tool creates an issue",
         "enabled": true,
-        "cel_expression": "request.messages.size() > 0",
+        "target": "mcp",
+        "cel_expression": "mcp_client == 'github' && mcp_tool == 'create_issue'",
         "apply_to": "input",
         "sampling_rate": 100,
         "timeout": 2000,
@@ -402,7 +426,8 @@ bifrost:
         name: "Block PII in Prompts"
         description: "Prevent PII from being sent to LLM providers"
         enabled: true
-        cel_expression: "request.messages.exists(m, m.role == 'user')"
+        target: "llm"
+        cel_expression: "true"
         apply_to: "input"
         sampling_rate: 100
         timeout: 5000
@@ -411,12 +436,23 @@ bifrost:
         name: "Content Filter for Responses"
         description: "Filter harmful content from LLM responses"
         enabled: true
+        target: "llm"
         cel_expression: "true"
         apply_to: "output"
         sampling_rate: 100
         timeout: 3000
         stream_replay_event_interval_ms: 25
         provider_config_ids: [2]
+      - id: 3
+        name: "Protect GitHub issue creation"
+        description: "Inspect arguments before the GitHub tool creates an issue"
+        enabled: true
+        target: "mcp"
+        cel_expression: "mcp_client == 'github' && mcp_tool == 'create_issue'"
+        apply_to: "input"
+        sampling_rate: 100
+        timeout: 2000
+        provider_config_ids: [1]
 ```
 
 </Tab>
@@ -424,36 +460,36 @@ bifrost:
 
 ### CEL Expression Examples
 
-CEL (Common Expression Language) provides a powerful way to define rule conditions. Here are common patterns:
+CEL (Common Expression Language) determines whether a rule applies using request identity and target-specific metadata. The linked guardrail profiles inspect the actual prompt, response, tool arguments, or tool result; message content is not exposed as a `request.messages` CEL object.
 
 **Always Apply Rule:**
 ```cel
 true
 ```
 
-**Apply to User Messages Only:**
+**Apply Based on LLM Model:**
 ```cel
-request.messages.exists(m, m.role == "user")
+model.startsWith("gpt-4")
 ```
 
-**Apply to Messages Containing Keywords:**
+**Apply to OpenAI Traffic in Production:**
 ```cel
-request.messages.exists(m, m.content.contains("confidential"))
+provider == "openai" && ("x-environment" in headers) && headers["x-environment"] == "production"
 ```
 
-**Apply Based on Model:**
+**Apply to a Team:**
 ```cel
-request.model.startsWith("gpt-4")
+team == "team-platform"
 ```
 
-**Apply to Long Prompts:**
+**Apply to an MCP Tool:**
 ```cel
-request.messages.filter(m, m.role == "user").map(m, m.content.size()).sum() > 1000
+mcp_client == "github" && mcp_tool == "create_issue"
 ```
 
-**Combine Multiple Conditions:**
+**Apply Based on an MCP Argument:**
 ```cel
-request.model.startsWith("gpt-4") && request.messages.exists(m, m.role == "user" && m.content.size() > 500)
+("amount" in mcp_arguments) && mcp_arguments["amount"] > 1000
 ```
 
 ### Linking Rules to Profiles
@@ -468,7 +504,8 @@ Rules can be linked to multiple profiles for comprehensive validation:
 - Link credential-leakage rules to [Secrets Detection](/enterprise/guardrails/secrets-detection)
 - Link PII detection rules to profiles with PII capabilities (Custom Regex PII template, Presidio, Azure AI Language PII, Bedrock, Patronus)
 - Link content filtering rules to profiles with content safety features (Azure, Bedrock, Gray Swan)
-- Use Gray Swan for custom natural language rules when you need flexible, readable policies
+- Use [Prompt Guardrails](/enterprise/guardrails/prompt-guardrails) for natural-language policies evaluated by a configured Bifrost judge model
+- Use Gray Swan when you want its external Cygnal policy service, violation scoring, and threat-detection capabilities
 - Use multiple profiles for defense-in-depth (e.g., Bedrock + Patronus for PII, Azure + Gray Swan for content)
 - Set appropriate timeouts when using multiple profiles
 
@@ -476,7 +513,7 @@ Rules can be linked to multiple profiles for comprehensive validation:
 
 ## Managing Profiles
 
-Profiles are reusable configurations for guardrail providers. External providers include credentials, endpoints, and detection thresholds. Bifrost-native providers such as Custom Regex and Secrets Detection run locally and do not require external service credentials.
+Profiles are reusable configurations for guardrail providers. External providers include credentials, endpoints, and detection thresholds. Custom Regex and Secrets Detection run locally. Prompt Guardrails uses a configured Bifrost LLM provider and model as its judge.
 
 <Frame>
   <img src="/media/guardrails/provider-aws-create.png" alt="Guardrail profiles list showing configured providers" />
@@ -487,7 +524,7 @@ Profiles are reusable configurations for guardrail providers. External providers
 | Property | Type | Required | Description |
 |----------|------|----------|-------------|
 | `id` | integer | Yes | Unique identifier for the profile |
-| `provider_name` | string | Yes | Provider type: `regex`, `secrets`, `presidio`, `azure-pii`, `bedrock`, `azure`, `model-armor`, `crowdstrike-aidr`, `grayswan`, `patronus-ai` |
+| `provider_name` | string | Yes | Provider type: `regex`, `secrets`, `prompt-guardrail`, `presidio`, `azure-pii`, `bedrock`, `azure`, `model-armor`, `crowdstrike-aidr`, `grayswan`, `patronus-ai`, `lakera`, or `repelloai-argus` |
 | `policy_name` | string | Yes | Descriptive name for the policy |
 | `enabled` | boolean | Yes | Whether the profile is active |
 | `config` | object | No | Provider-specific configuration |
@@ -506,12 +543,12 @@ Profiles are reusable configurations for guardrail providers. External providers
 </Frame>
 
 2. **Select Provider Type**
-   - Choose a supported native or external provider, including Lakera Guard
+   - Choose a supported Bifrost-managed or external provider
 
 3. **Configure Provider Settings**
-   - Enter credentials and endpoint information for external providers, or local settings for native providers
-   - Configure detection thresholds and actions
-   - See provider-specific setup sections above for detailed configuration
+   - Enter credentials and endpoint information for external providers, local settings for native providers, or the judge provider, model, and policy for Prompt Guardrails
+   - Configure provider-specific detection, decision, or transformation settings
+   - See the provider-specific page for detailed configuration
 
 4. **Save Profile**
    - Click **Save Profile**
@@ -520,7 +557,7 @@ Profiles are reusable configurations for guardrail providers. External providers
 </Tab>
 <Tab title="API">
 
-Profiles are managed per provider type at `/api/guardrails/{provider}`, where `{provider}` is one of `secrets`, `regex`, `presidio`, `azure-pii`, `bedrock`, `azure`, `model-armor`, `crowdstrike-aidr`, `grayswan`, `patronus-ai`, or `lakera`. The API assigns the configuration ID after creation.
+Profiles are managed per provider type at `/api/guardrails/{provider}`, where `{provider}` is one of `secrets`, `regex`, `prompt-guardrail`, `presidio`, `azure-pii`, `bedrock`, `azure`, `model-armor`, `crowdstrike-aidr`, `grayswan`, `patronus-ai`, `lakera`, or `repelloai-argus`. The API assigns the configuration ID after creation.
 
 **Create a Profile:**
 ```bash
@@ -669,6 +706,7 @@ curl -X DELETE http://localhost:8080/api/guardrails/bedrock \
           "enabled": true,
           "config": {
             "api_key": "env.GRAYSWAN_API_KEY",
+            "policy_id": "YOUR_GRAYSWAN_POLICY_ID",
             "violation_threshold": 0.5,
             "reasoning_mode": "hybrid",
             "rules": {
@@ -780,6 +818,7 @@ bifrost:
         enabled: true
         config:
           api_key: "env.GRAYSWAN_API_KEY"
+          policy_id: "YOUR_GRAYSWAN_POLICY_ID"
           violation_threshold: 0.5
           reasoning_mode: "hybrid"
           rules:
@@ -806,7 +845,15 @@ bifrost:
 
 ### Provider Capabilities
 
-Third-party guardrail providers offer different capabilities. Bifrost-native providers are documented separately: [Secrets Detection](/enterprise/guardrails/secrets-detection) covers credential leakage, [Custom Regex](/enterprise/guardrails/custom-regex) covers deterministic pattern checks, and [Guardrail Redaction](/enterprise/guardrails/redaction) covers Bifrost-managed redaction modes.
+Bifrost-managed providers cover deterministic local checks and natural-language policies:
+
+| Provider | Evaluation | Decisions | Additional provider cost | Best for |
+|----------|------------|-----------|--------------------------|----------|
+| [Secrets Detection](/enterprise/guardrails/secrets-detection) | Local Gitleaks rules | Detect, block, or redact | No | Credentials, tokens, and private keys |
+| [Custom Regex](/enterprise/guardrails/custom-regex) | Local RE2 patterns | Detect, block, or redact | No | Known patterns, identifiers, and PII templates |
+| [Prompt Guardrails](/enterprise/guardrails/prompt-guardrails) | Configured Bifrost LLM judge | Allow or block | Yes | Semantic, organization-specific policies |
+
+See [Guardrail Redaction](/enterprise/guardrails/redaction) for Bifrost-managed redaction modes. Third-party guardrail providers offer the following capabilities:
 
 | Capability | AWS Bedrock | Azure Content Safety | Google Model Armor | CrowdStrike AIDR | Gray Swan | Patronus AI | Lakera Guard | Repello Argus | Azure AI Language PII | Presidio |
 |------------|-------------|----------------------|--------------------|------------------|-----------|-------------|--------------|---------------|-----------------------|----------|
@@ -842,6 +889,8 @@ Third-party guardrail providers offer different capabilities. Bifrost-native pro
 - Enable only the profiles you need to minimize latency
 - Use sampling rates on rules for high-traffic endpoints
 - Set appropriate timeouts to prevent slow requests
+- Account for the extra model latency and token cost of each Prompt Guardrails judge call
+- Test Prompt Guardrails policies with representative allow, block, ambiguous, and adversarial examples before production use
 
 **Security:**
 - Store API keys and credentials in environment variables or secrets managers

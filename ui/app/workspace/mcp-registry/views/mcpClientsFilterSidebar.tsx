@@ -1,11 +1,13 @@
+import { FilterSidebarTrigger } from "@/components/filters/filterSidebarTrigger";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scrollArea";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { useGetVirtualKeysQuery } from "@/lib/store";
 import { cn } from "@/lib/utils";
-import { ChevronDown, LoaderCircle, PanelLeftClose, PanelLeftOpen, RotateCcw, Search } from "lucide-react";
+import { ChevronDown, LoaderCircle, PanelLeftClose, RotateCcw, Search } from "lucide-react";
 import { type Ref, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const COLLAPSE_STORAGE_KEY = "mcp-clients-filter-sidebar-collapsed";
@@ -22,7 +24,7 @@ const VK_PAGE_SIZE = 25;
 export interface MCPClientFilters {
 	connection_types: string[];
 	auth_types: string[];
-	states: string[]; // subset of ["connected", "disconnected"]
+	states: string[]; // subset of ["healthy", "unstable"]
 	code_mode: string[]; // subset of ["true", "false"] → is_code_mode_client
 	status: string[]; // subset of ["false", "true"] → disabled column value
 	only_all_vks: boolean; // VK access toggle → allow_on_all_virtual_keys
@@ -58,13 +60,14 @@ const AUTH_TYPE_OPTIONS: FilterOption[] = [
 	{ value: "oauth", label: "OAuth" },
 	{ value: "per_user_oauth", label: "Per-User OAuth" },
 	{ value: "per_user_headers", label: "Per-User Headers" },
+	{ value: "token_exchange", label: "Token Exchange" },
 ];
 
 // Connection state is runtime, not a column — the backend resolves these
-// against live engine state. "disconnected" covers everything not connected.
+// against live engine state. "unstable" covers everything not healthy.
 const STATE_OPTIONS: FilterOption[] = [
-	{ value: "connected", label: "Connected" },
-	{ value: "disconnected", label: "Disconnected" },
+	{ value: "healthy", label: "Healthy" },
+	{ value: "unstable", label: "Unstable" },
 ];
 
 const CODE_MODE_OPTIONS: FilterOption[] = [
@@ -88,13 +91,18 @@ interface SidebarProps {
 // ---------------------------------------------------------------------------
 
 export function MCPClientsFilterSidebar({ filters, onFiltersChange }: SidebarProps) {
+	const isMobile = useIsMobile();
 	const [collapsed, setCollapsed] = useState(false);
 
 	useEffect(() => {
 		if (typeof window === "undefined") return;
+		if (isMobile) {
+			setCollapsed(true);
+			return;
+		}
 		const stored = window.localStorage.getItem(COLLAPSE_STORAGE_KEY);
-		if (stored === "true") setCollapsed(true);
-	}, []);
+		setCollapsed(stored === "true");
+	}, [isMobile]);
 
 	const toggleCollapsed = useCallback(() => {
 		setCollapsed((prev) => {
@@ -124,27 +132,12 @@ export function MCPClientsFilterSidebar({ filters, onFiltersChange }: SidebarPro
 
 	if (collapsed) {
 		return (
-			<button
-				type="button"
-				onClick={toggleCollapsed}
-				className="bg-card group flex h-full w-10 shrink-0 cursor-pointer flex-col items-center gap-3 rounded-r-md py-4 text-sm font-medium"
-				title="Show filters"
-				aria-label="Show filters"
-				data-testid="mcpClientsFilterSidebar-toggle-show"
-			>
-				<PanelLeftOpen className="text-muted-foreground group-hover:text-foreground size-4 transition-colors" />
-				<span className="rotate-180 select-none [writing-mode:vertical-rl]">Filters</span>
-				{activeFilterCount > 0 && (
-					<span className="bg-primary/10 text-primary flex size-6 items-center justify-center rounded-full text-xs font-medium">
-						{activeFilterCount}
-					</span>
-				)}
-			</button>
+			<FilterSidebarTrigger activeFilterCount={activeFilterCount} onClick={toggleCollapsed} testId="mcpClientsFilterSidebar-toggle-show" />
 		);
 	}
 
 	return (
-		<div className="bg-card flex h-full w-64 shrink-0 flex-col rounded-r-md">
+		<div className="bg-card fixed inset-y-2 left-2 z-40 flex h-auto w-[calc(100vw-1rem)] max-w-72 shrink-0 flex-col rounded-md border shadow-xl md:static md:h-full md:w-64 md:max-w-none md:rounded-md md:shadow-none">
 			<div className="flex h-11 items-center justify-between border-b pr-2 pl-5">
 				<span className="text-sm font-semibold">Filters</span>
 				<div className="flex items-center gap-1">

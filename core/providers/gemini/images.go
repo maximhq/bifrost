@@ -846,6 +846,9 @@ func ToGeminiImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) *Gemi
 	}
 
 	for _, image := range bifrostReq.Input.Images {
+		if len(image.Image) == 0 {
+			continue
+		}
 		// Detect MIME type from image bytes
 		mimeType := http.DetectContentType(image.Image)
 		// Fallback to PNG if detection fails

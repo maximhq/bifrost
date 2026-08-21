@@ -1,11 +1,12 @@
 import SCIMView from "@enterprise/components/scim/scimView";
 
 export default function SCIMPage() {
+	// No no-padding-parent / no-border-parent / bg-background wrapper here: those opt
+	// out of the white content card in clientLayout, which left this page reading grey
+	// while every sibling placeholder sat on the card. Matches mcp-tool-groups.
 	return (
-		<div className="no-padding-parent bg-background no-border-parent flex h-[calc(100dvh-1rem)] w-full flex-col">
-			<div className="mx-auto w-full grow overflow-y-auto">
-				<SCIMView />
-			</div>
+		<div className="mx-auto w-full max-w-7xl px-4 md:px-0">
+			<SCIMView />
 		</div>
 	);
 }

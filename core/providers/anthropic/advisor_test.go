@@ -120,7 +120,7 @@ func TestAdvisor_ResponsesRoundTrip(t *testing.T) {
 		t.Fatalf("neutral advisor caching not carried: %+v", bifrostTool.ResponsesToolAdvisor.Caching)
 	}
 
-	back := convertBifrostToolToAnthropic("claude-sonnet-4-6", bifrostTool, schemas.Anthropic, false)
+	back := convertBifrostToolToAnthropic(schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-6"), bifrostTool, schemas.Anthropic, false)
 	if back == nil || back.Type == nil || *back.Type != AnthropicToolTypeAdvisor20260301 {
 		t.Fatalf("rebuilt type wrong: %+v", back)
 	}
@@ -155,19 +155,20 @@ func TestAdvisor_ProviderGating(t *testing.T) {
 		{schemas.Azure, false},
 	}
 	for _, c := range cases {
-		got := isAnthropicServerToolSupported(string(AnthropicToolTypeAdvisor20260301), ProviderFeatures[c.provider])
+		caps := schemas.ResolveModelCaps(c.provider, "claude-opus-4-5")
+		got := isAnthropicServerToolSupported(string(AnthropicToolTypeAdvisor20260301), ProviderFeatures[c.provider], caps)
 		if got != c.want {
 			t.Errorf("isAnthropicServerToolSupported advisor on %s = %v, want %v", c.provider, got, c.want)
 		}
 
-		err := ValidateToolsForProvider([]schemas.ResponsesTool{{
+		keep, dropped := ValidateResponsesToolsForProvider([]schemas.ResponsesTool{{
 			Type: schemas.ResponsesToolTypeAdvisor,
-		}}, c.provider)
-		if c.want && err != nil {
-			t.Errorf("ValidateToolsForProvider advisor on %s returned error: %v", c.provider, err)
+		}}, caps)
+		if c.want && len(dropped) > 0 {
+			t.Errorf("ValidateResponsesToolsForProvider advisor on %s dropped it: %v", c.provider, dropped)
 		}
-		if !c.want && err == nil {
-			t.Errorf("ValidateToolsForProvider advisor on %s should have errored", c.provider)
+		if !c.want && len(keep) > 0 {
+			t.Errorf("ValidateResponsesToolsForProvider advisor on %s should have dropped it", c.provider)
 		}
 	}
 }

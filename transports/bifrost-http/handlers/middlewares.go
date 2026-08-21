@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -20,12 +21,13 @@ import (
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/framework/tracing"
+	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
-var loggingSkipPaths = []string{"/health", "/_next", "/api/dev"}
+var loggingSkipPaths = []string{"/health", "/_next", "/api/dev/"}
 var realtimeTransportPaths = buildRealtimeTransportPathSet()
 
 // SecurityHeadersMiddleware sets security-related HTTP headers on every response.
@@ -386,6 +388,81 @@ func newDecompressReader(r io.Reader, encoding string) (io.Reader, func(), error
 	}
 }
 
+// TransportPreAuthInterceptorMiddleware runs the pre-auth phase of the plugin pipeline.
+// It converts the fasthttp request to a serializable HTTPRequest, runs every plugin implementing
+// HTTPTransportPreAuthHook, and applies modifications back to the fasthttp context — so the
+// authentication middlewares that run next observe them. This is the seam for plugins whose job is
+// to supply or translate the credentials authentication reads (deriving a virtual key from an
+// upstream identity header, say). Everything else belongs in TransportInterceptorMiddleware, which
+// runs after authentication and can see the resolved caller.
+//
+// The phase carries the same request shape as TransportInterceptorMiddleware, body included, so a
+// hook can move between the two by renaming. That means the body is snapshotted before the caller
+// is authenticated: a request authentication goes on to reject has already been copied once here.
+// Large payloads are still skipped — fasthttpToHTTPRequest honours the large-payload threshold, so
+// the threshold middleware must run before this one.
+//
+// There is no post-hook counterpart. HTTPTransportPostHook pairs with HTTPTransportPreHook, and a
+// request rejected by authentication runs neither.
+func TransportPreAuthInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			plugins := config.GetLoadedHTTPTransportPlugins()
+			if len(plugins) == 0 {
+				next(ctx)
+				return
+			}
+			// Get or create BifrostContext from fasthttp context
+			bifrostCtx := getBifrostContextFromFastHTTP(ctx)
+			// Transport hooks run before the inference path stamps the catalog, so stamp it
+			// here too — otherwise ctx.GetModelInfo would be nil in HTTPTransportPreAuthHook
+			// but populated in every other hook.
+			if config.ModelCatalog != nil {
+				bifrostCtx.SetValue(schemas.BifrostContextKeyModelCatalog, config.ModelCatalog)
+			}
+			// Acquire pooled request
+			req := schemas.AcquireHTTPRequest()
+			defer schemas.ReleaseHTTPRequest(req)
+			fasthttpToHTTPRequest(ctx, req)
+			// Run plugin pre-auth interceptors
+			for _, plugin := range plugins {
+				pluginName := plugin.GetName()
+				pluginCtx := bifrostCtx.WithPluginScope(&pluginName)
+				resp, err := plugin.HTTPTransportPreAuthHook(pluginCtx, req)
+				pluginCtx.ReleasePluginScope()
+				if err != nil {
+					// Short-circuit with error — drain plugin logs before returning
+					appendTransportPluginLogs(ctx, bifrostCtx.DrainPluginLogs())
+					ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+					ctx.SetBodyString(err.Error())
+					return
+				}
+				if resp != nil {
+					// Short-circuit with response — drain plugin logs before returning
+					appendTransportPluginLogs(ctx, bifrostCtx.DrainPluginLogs())
+					applyHTTPResponseToCtx(ctx, resp)
+					return
+				}
+				// If we got here, the plugin may have modified req in-place
+			}
+			// Drain pre-auth plugin logs and store on fasthttp context for trace attachment
+			appendTransportPluginLogs(ctx, bifrostCtx.DrainPluginLogs())
+			// Apply modifications back to fasthttp context. A plugin that rewrote the method
+			// or path has already been failed with 409; running the rest of the chain would
+			// serve a response the transport just rejected.
+			if !applyHTTPRequestToCtx(ctx, req) {
+				return
+			}
+			// Adding user values so later middlewares, hooks and handlers observe anything
+			// a pre-auth plugin stashed on the context.
+			for key, value := range bifrostCtx.GetUserValues() {
+				ctx.SetUserValue(key, value)
+			}
+			next(ctx)
+		}
+	}
+}
+
 // TransportInterceptorMiddleware runs all plugin HTTP transport interceptors.
 // It converts the fasthttp request to a serializable HTTPRequest, runs all plugin interceptors,
 // and applies any modifications back to the fasthttp context.
@@ -413,33 +490,33 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 			for _, plugin := range plugins {
 				pluginName := plugin.GetName()
 				pluginCtx := bifrostCtx.WithPluginScope(&pluginName)
+				st, sh := startTransportPluginSpan(ctx, pluginName, "transportprehook")
 				resp, err := plugin.HTTPTransportPreHook(pluginCtx, req)
+				endTransportPluginSpan(st, sh, err)
 				pluginCtx.ReleasePluginScope()
 				if err != nil {
 					// Short-circuit with error — drain plugin logs before returning
-					if logs := bifrostCtx.DrainPluginLogs(); len(logs) > 0 {
-						ctx.SetUserValue(schemas.BifrostContextKeyTransportPluginLogs, logs)
-					}
+					appendTransportPluginLogs(ctx, bifrostCtx.DrainPluginLogs())
 					ctx.SetStatusCode(fasthttp.StatusInternalServerError)
 					ctx.SetBodyString(err.Error())
 					return
 				}
 				if resp != nil {
 					// Short-circuit with response — drain plugin logs before returning
-					if logs := bifrostCtx.DrainPluginLogs(); len(logs) > 0 {
-						ctx.SetUserValue(schemas.BifrostContextKeyTransportPluginLogs, logs)
-					}
+					appendTransportPluginLogs(ctx, bifrostCtx.DrainPluginLogs())
 					applyHTTPResponseToCtx(ctx, resp)
 					return
 				}
 				// If we got here, the plugin may have modified req in-place
 			}
 			// Drain pre-hook plugin logs and store on fasthttp context for trace attachment
-			if preHookLogs := bifrostCtx.DrainPluginLogs(); len(preHookLogs) > 0 {
-				ctx.SetUserValue(schemas.BifrostContextKeyTransportPluginLogs, preHookLogs)
+			appendTransportPluginLogs(ctx, bifrostCtx.DrainPluginLogs())
+			// Apply modifications back to fasthttp context. A plugin that rewrote the method
+			// or path has already been failed with 409; running the handler anyway would
+			// serve a response the transport just rejected.
+			if !applyHTTPRequestToCtx(ctx, req) {
+				return
 			}
-			// Apply modifications back to fasthttp context
-			applyHTTPRequestToCtx(ctx, req)
 			// Adding user values
 			for key, value := range bifrostCtx.GetUserValues() {
 				ctx.SetUserValue(key, value)
@@ -472,10 +549,23 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 					preHookLogs = logs
 				}
 
+				// Capture the tracer and trace/root-span ids while ctx is still live so the
+				// deferred post-hooks can be timed after ctx is recycled. spanParentCtx is a
+				// minimal context carrying just what StartSpanID reads (trace id + parent id).
+				var spanTracer schemas.Tracer
+				var spanParentCtx context.Context
+				if t, ok := ctx.UserValue(schemas.BifrostContextKeyTracer).(schemas.Tracer); ok && t != nil {
+					if traceID, _ := ctx.UserValue(schemas.BifrostContextKeyTraceID).(string); traceID != "" {
+						rootSpanID, _ := ctx.UserValue(schemas.BifrostContextKeySpanID).(string)
+						spanTracer = t
+						spanParentCtx = context.WithValue(context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID), schemas.BifrostContextKeySpanID, rootSpanID)
+					}
+				}
+
 				completer := func() ([]schemas.PluginLogEntry, error) {
 					defer schemas.ReleaseHTTPRequest(capturedReq)
 					defer schemas.ReleaseHTTPResponse(capturedResp)
-					postHookLogs, err := runTransportPostHooksCaptured(capturedReq, capturedResp, plugins, bifrostCtx)
+					postHookLogs, err := runTransportPostHooksCaptured(capturedReq, capturedResp, plugins, bifrostCtx, spanTracer, spanParentCtx)
 					allLogs := preHookLogs
 					if len(postHookLogs) > 0 {
 						allLogs = append(allLogs, postHookLogs...)
@@ -521,32 +611,22 @@ func runTransportPostHooks(ctx *fasthttp.RequestCtx, plugins []schemas.HTTPTrans
 		plugin := plugins[i]
 		pluginName := plugin.GetName()
 		pluginCtx := bifrostCtx.WithPluginScope(&pluginName)
+		st, sh := startTransportPluginSpan(ctx, pluginName, "transportposthook")
 		err := plugin.HTTPTransportPostHook(pluginCtx, req, httpResp)
+		endTransportPluginSpan(st, sh, err)
 		pluginCtx.ReleasePluginScope()
 		if err != nil {
 			logger.Warn("error in HTTPTransportPostHook for plugin %s: %s", pluginName, err.Error())
 			// Drain plugin logs before returning on error
-			if postHookLogs := bifrostCtx.DrainPluginLogs(); len(postHookLogs) > 0 {
-				if existing, ok := ctx.UserValue(schemas.BifrostContextKeyTransportPluginLogs).([]schemas.PluginLogEntry); ok {
-					ctx.SetUserValue(schemas.BifrostContextKeyTransportPluginLogs, append(existing, postHookLogs...))
-				} else {
-					ctx.SetUserValue(schemas.BifrostContextKeyTransportPluginLogs, postHookLogs)
-				}
-			}
+			appendTransportPluginLogs(ctx, bifrostCtx.DrainPluginLogs())
 			if shouldApplyShortCircuit {
 				applyHTTPResponseToCtx(ctx, httpResp)
 			}
 			return fmt.Errorf("transport post-hook plugin %s: %w", pluginName, err)
 		}
 	}
-	// Drain post-hook plugin logs and merge with pre-hook logs
-	if postHookLogs := bifrostCtx.DrainPluginLogs(); len(postHookLogs) > 0 {
-		if existing, ok := ctx.UserValue(schemas.BifrostContextKeyTransportPluginLogs).([]schemas.PluginLogEntry); ok {
-			ctx.SetUserValue(schemas.BifrostContextKeyTransportPluginLogs, append(existing, postHookLogs...))
-		} else {
-			ctx.SetUserValue(schemas.BifrostContextKeyTransportPluginLogs, postHookLogs)
-		}
-	}
+	// Drain post-hook plugin logs and merge with the earlier phases' logs
+	appendTransportPluginLogs(ctx, bifrostCtx.DrainPluginLogs())
 	if shouldApplyShortCircuit {
 		applyHTTPResponseToCtx(ctx, httpResp)
 	}
@@ -558,21 +638,19 @@ func runTransportPostHooks(ctx *fasthttp.RequestCtx, plugins []schemas.HTTPTrans
 // a fasthttp RequestCtx, which may have been recycled by the time this runs in a
 // streaming goroutine. Returns accumulated plugin logs (instead of writing them to
 // ctx.UserValue) so the caller can forward them to the trace completer.
-func runTransportPostHooksCaptured(capturedReq *schemas.HTTPRequest, capturedResp *schemas.HTTPResponse, plugins []schemas.HTTPTransportPlugin, bifrostCtx *schemas.BifrostContext) ([]schemas.PluginLogEntry, error) {
+// spanTracer/spanParentCtx (captured before the fasthttp ctx was recycled) let each
+// post-hook be timed as a plugin.<name>.transportposthook span nested under the root;
+// both are nil when no trace is active and the hooks run untimed.
+func runTransportPostHooksCaptured(capturedReq *schemas.HTTPRequest, capturedResp *schemas.HTTPResponse, plugins []schemas.HTTPTransportPlugin, bifrostCtx *schemas.BifrostContext, spanTracer schemas.Tracer, spanParentCtx context.Context) ([]schemas.PluginLogEntry, error) {
 	// Clone into fresh pooled objects so plugins can mutate without affecting the snapshots.
 	req := schemas.AcquireHTTPRequest()
 	defer schemas.ReleaseHTTPRequest(req)
 	req.Method = capturedReq.Method
 	req.Path = capturedReq.Path
-	for k, v := range capturedReq.Headers {
-		req.Headers[k] = v
-	}
-	for k, v := range capturedReq.Query {
-		req.Query[k] = v
-	}
-	for k, v := range capturedReq.PathParams {
-		req.PathParams[k] = v
-	}
+
+	maps.Copy(req.Headers, capturedReq.Headers)
+	maps.Copy(req.Query, capturedReq.Query)
+	maps.Copy(req.PathParams, capturedReq.PathParams)
 
 	httpResp := schemas.AcquireHTTPResponse()
 	defer schemas.ReleaseHTTPResponse(httpResp)
@@ -588,7 +666,12 @@ func runTransportPostHooksCaptured(capturedReq *schemas.HTTPRequest, capturedRes
 		plugin := plugins[i]
 		pluginName := plugin.GetName()
 		pluginCtx := bifrostCtx.WithPluginScope(&pluginName)
+		var sh schemas.SpanHandle
+		if spanTracer != nil {
+			_, sh = spanTracer.StartSpanID(spanParentCtx, transportPluginSpanName(pluginName, "transportposthook"), schemas.SpanKindPlugin)
+		}
 		err := plugin.HTTPTransportPostHook(pluginCtx, req, httpResp)
+		endTransportPluginSpan(spanTracer, sh, err)
 		pluginCtx.ReleasePluginScope()
 		if err != nil {
 			logger.Warn("error in HTTPTransportPostHook for plugin %s: %s", pluginName, err.Error())
@@ -668,12 +751,14 @@ func fasthttpToHTTPRequest(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) {
 }
 
 // applyHTTPRequestToCtx applies modifications from HTTPRequest back to fasthttp context.
-func applyHTTPRequestToCtx(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) {
+// Reports false when a plugin rewrote the method or path: the request has already been
+// failed with 409 and the caller must stop.
+func applyHTTPRequestToCtx(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) bool {
 	// If path/method is different, throw error
 	if req.Method != string(ctx.Method()) || req.Path != string(ctx.Path()) {
 		logger.Error("request method/path mismatch: %s %s != %s %s", req.Method, req.Path, string(ctx.Method()), string(ctx.Path()))
 		SendError(ctx, fasthttp.StatusConflict, "request method/path was modified by a plugin, this is not allowed")
-		return
+		return false
 	}
 	// Apply headers
 	for key, value := range req.Headers {
@@ -687,6 +772,22 @@ func applyHTTPRequestToCtx(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) {
 	if req.Body != nil {
 		ctx.Request.SetBody(req.Body)
 	}
+	return true
+}
+
+// appendTransportPluginLogs accumulates transport-layer plugin logs on the fasthttp context
+// for trace attachment. Every phase (pre-auth, pre-hook, post-hook) drains into the same slot,
+// so this appends rather than overwrites — otherwise a later phase would drop the earlier
+// phases' logs.
+func appendTransportPluginLogs(ctx *fasthttp.RequestCtx, logs []schemas.PluginLogEntry) {
+	if len(logs) == 0 {
+		return
+	}
+	if existing, ok := ctx.UserValue(schemas.BifrostContextKeyTransportPluginLogs).([]schemas.PluginLogEntry); ok {
+		ctx.SetUserValue(schemas.BifrostContextKeyTransportPluginLogs, append(existing, logs...))
+		return
+	}
+	ctx.SetUserValue(schemas.BifrostContextKeyTransportPluginLogs, logs)
 }
 
 // applyHTTPResponseToCtx writes a short-circuit response to fasthttp context.
@@ -785,6 +886,43 @@ func isRealtimeTransportEndpoint(path string) bool {
 	return ok
 }
 
+func hasVirtualKeyCredential(ctx *fasthttp.RequestCtx) bool {
+	// x-bf-vk mirrors the canonical VK parser (lib.ConvertToBifrostContext): any
+	// non-empty value is accepted, no sk-bf- prefix required — the header itself
+	// is the signal, not the value shape.
+	if vkHeader := strings.TrimSpace(string(ctx.Request.Header.Peek(string(schemas.BifrostContextKeyVirtualKey)))); vkHeader != "" {
+		return true
+	}
+
+	authHeader := strings.TrimSpace(string(ctx.Request.Header.Peek("Authorization")))
+	if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
+		token := strings.TrimSpace(authHeader[7:])
+		if token != "" && strings.HasPrefix(strings.ToLower(token), governance.VirtualKeyPrefix) {
+			return true
+		}
+	}
+
+	if apiKey := strings.TrimSpace(string(ctx.Request.Header.Peek("x-api-key"))); apiKey != "" {
+		if strings.HasPrefix(strings.ToLower(apiKey), governance.VirtualKeyPrefix) {
+			return true
+		}
+	}
+
+	if apiKey := strings.TrimSpace(string(ctx.Request.Header.Peek("x-goog-api-key"))); apiKey != "" {
+		if strings.HasPrefix(strings.ToLower(apiKey), governance.VirtualKeyPrefix) {
+			return true
+		}
+	}
+
+	if apiKey := strings.TrimSpace(string(ctx.Request.Header.Peek("api-key"))); apiKey != "" {
+		if strings.HasPrefix(strings.ToLower(apiKey), governance.VirtualKeyPrefix) {
+			return true
+		}
+	}
+
+	return false
+}
+
 // AuthMiddleware is a middleware that handles authentication for the API.
 type AuthMiddleware struct {
 	store             configstore.ConfigStore
@@ -793,12 +931,24 @@ type AuthMiddleware struct {
 	wsTicketStore     *WSTicketStore
 	tempTokensService *temptoken.Service // optional; when nil, temp-token fallback is disabled
 	tempTokensEnabled atomic.Bool
+	// bootstrapToken gates creation of the very first admin account. It is sourced
+	// from operator config (config.json setup_token or the BIFROST_SETUP_TOKEN env
+	// var) — never generated in-memory — so every node in a multi-node deployment
+	// reads the identical value from its own config/env, and cleared permanently
+	// once an admin account is created. When no token is configured, it stays nil
+	// and CheckBootstrapToken fails closed: the very first admin account cannot be
+	// created until the operator sets one. This closes the unauthenticated-PUT-
+	// /api/config-plants-admin-credentials path while a fresh, not-yet-configured
+	// instance is reachable over the network.
+	bootstrapToken atomic.Pointer[string]
 }
 
 // InitAuthMiddleware initializes the auth middleware. The tempTokens service
 // is optional and still gated by client config — when nil or disabled, the
-// temp-token fallback path is skipped.
-func InitAuthMiddleware(store configstore.ConfigStore, wsTicketStore *WSTicketStore, tempTokensService *temptoken.Service) (*AuthMiddleware, error) {
+// temp-token fallback path is skipped. configuredSetupToken is the operator-
+// provisioned bootstrap token resolved from config.json/env (see
+// lib.resolveSetupToken); pass "" when the operator hasn't configured one.
+func InitAuthMiddleware(store configstore.ConfigStore, wsTicketStore *WSTicketStore, tempTokensService *temptoken.Service, configuredSetupToken string) (*AuthMiddleware, error) {
 	if store == nil {
 		return nil, fmt.Errorf("store is not present")
 	}
@@ -814,6 +964,27 @@ func InitAuthMiddleware(store configstore.ConfigStore, wsTicketStore *WSTicketSt
 	}
 
 	am.authConfig.Store(authConfig)
+
+	if authConfig == nil {
+		if configuredSetupToken != "" {
+			am.bootstrapToken.Store(&configuredSetupToken)
+			logger.Warn("================================================================")
+			logger.Warn("No admin account is configured for this Bifrost instance yet.")
+			logger.Warn("Until one is created, the dashboard/API is reachable without a")
+			logger.Warn("password from anyone who can route to this port. To finish setup,")
+			logger.Warn("pass the configured setup token as auth_config.setup_token in the")
+			logger.Warn("PUT /api/config call that creates the admin account.")
+			logger.Warn("================================================================")
+		} else {
+			logger.Warn("================================================================")
+			logger.Warn("No admin account is configured for this Bifrost instance yet, and")
+			logger.Warn("no setup token is configured. Set setup_token in config.json (or")
+			logger.Warn("the BIFROST_SETUP_TOKEN environment variable) before creating the")
+			logger.Warn("first admin account — requests to create it will be rejected until")
+			logger.Warn("a setup token is configured.")
+			logger.Warn("================================================================")
+		}
+	}
 
 	// Load whitelisted routes from client config
 	clientConfig, err := store.GetClientConfig(context.Background())
@@ -831,6 +1002,28 @@ func InitAuthMiddleware(store configstore.ConfigStore, wsTicketStore *WSTicketSt
 
 func (m *AuthMiddleware) UpdateAuthConfig(authConfig *configstore.AuthConfig) {
 	m.authConfig.Store(authConfig)
+}
+
+// CheckBootstrapToken reports whether token matches the configured setup token.
+// It returns true (no token required) once an admin account already exists, so
+// this only ever gates the very first admin account. When no admin exists yet and
+// no setup token was configured at boot, it fails closed — the first admin account
+// cannot be created until the operator configures one.
+func (m *AuthMiddleware) CheckBootstrapToken(token string) bool {
+	if m.authConfig.Load() != nil {
+		return true
+	}
+	current := m.bootstrapToken.Load()
+	if current == nil {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(*current), []byte(token)) == 1
+}
+
+// ClearBootstrapToken permanently invalidates the setup token after the first admin
+// account has been created successfully.
+func (m *AuthMiddleware) ClearBootstrapToken() {
+	m.bootstrapToken.Store(nil)
 }
 
 // UpdateWhitelistedRoutes updates the configured whitelisted routes that bypass auth middleware.
@@ -886,7 +1079,7 @@ func (m *AuthMiddleware) tryTempTokenOrUnauthorized(ctx *fasthttp.RequestCtx, ne
 func (m *AuthMiddleware) InferenceMiddleware() schemas.BifrostHTTPMiddleware {
 	return m.middleware(func(authConfig *configstore.AuthConfig, url string) bool {
 		return true
-	})
+	}, true)
 }
 
 // APIMiddleware is for API requests if authConfig is set, it will verify authentication based on the request type.
@@ -921,7 +1114,10 @@ func (m *AuthMiddleware) APIMiddleware() schemas.BifrostHTTPMiddleware {
 		// it would whitelist /api/oauth/per-user/* (auth-via-temp-token) and
 		// /api/oauth/config/* (admin-only) and bypass the temp-token fallback
 		// in tryTempTokenOrUnauthorized.
-		"/api/dev",
+		// Trailing slash is required: the dev routes live under "/api/dev/pprof".
+		// A bare "/api/dev" prefix also matches "/api/devices" (and any other
+		// "/api/dev*" route), which would silently bypass auth on those routes.
+		"/api/dev/",
 		// Skills serving endpoints are public — marketplace URLs cannot carry
 		// credentials securely. Management endpoints under /api/skills (without
 		// /serve/) remain authenticated.
@@ -951,11 +1147,11 @@ func (m *AuthMiddleware) APIMiddleware() schemas.BifrostHTTPMiddleware {
 			}
 		}
 		return false
-	})
+	}, false)
 }
 
 // middleware is the core authentication middleware that checks if the request should be authenticated or not.
-func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, string) bool) schemas.BifrostHTTPMiddleware {
+func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, string) bool, allowVirtualKeyAuth bool) schemas.BifrostHTTPMiddleware {
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
 			// We will first check if its API key auth
@@ -972,6 +1168,12 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 				// auth is fully disabled; otherwise RBAC 401s and the UI enters
 				// a logout/login redirect loop.
 				ctx.SetUserValue(schemas.IsLocalAdminContextKey, true)
+				// Distinct from IsLocalAdminContextKey (which is also true for genuinely
+				// authenticated sessions): this specifically marks "no credential was
+				// checked at all" so handlers gating especially dangerous capabilities
+				// (e.g. native plugin/subprocess loading) can require real authentication
+				// even while the rest of the API is intentionally left open.
+				ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
 				next(ctx)
 				return
 			}
@@ -983,6 +1185,10 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 				return
 			}
 			if isRealtimeTransportEndpoint(url) {
+				next(ctx)
+				return
+			}
+			if allowVirtualKeyAuth && hasVirtualKeyCredential(ctx) {
 				next(ctx)
 				return
 			}
@@ -1187,10 +1393,11 @@ func NewTracingMiddleware(tracer *tracing.Tracer) *TracingMiddleware {
 	return tm
 }
 
-// SetObservabilityPlugins sets the observability plugins for the tracing middleware
-func (m *TracingMiddleware) SetObservabilityPlugins(obsPlugins []schemas.ObservabilityPlugin) {
+// SetObservabilityPlugins sets the observability plugins for the tracing middleware.
+// limits is keyed by plugin name; see tracing.Tracer.SetObservabilityPlugins.
+func (m *TracingMiddleware) SetObservabilityPlugins(obsPlugins []schemas.ObservabilityPlugin, limits map[string]schemas.ObservabilityLimits) {
 	if tracer := m.tracer.Load(); tracer != nil {
-		tracer.SetObservabilityPlugins(obsPlugins)
+		tracer.SetObservabilityPlugins(obsPlugins, limits)
 	}
 }
 
@@ -1242,11 +1449,19 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 				// asynchronously and must never observe later mutations.
 				tracer.SetTraceAttribute(traceID, schemas.TraceAttrDimensions, maps.Clone(dimensions))
 			}
-			if sessionID := strings.TrimSpace(string(ctx.Request.Header.Peek("x-bf-session-id"))); sessionID != "" {
+			// Resolved rather than peeked: this middleware runs before context
+			// conversion, so it repeats the same x-bf-session-id-then-harness-header
+			// lookup ConvertToBifrostContext does. Both read the same headers with
+			// the same priority list, so key stickiness and session.id agree.
+			if sessionID := lib.ResolveSessionIDFromRequest(&ctx.Request.Header); sessionID != "" {
 				tracer.SetTraceAttribute(traceID, schemas.TraceAttrSessionID, sessionID)
 			}
 			// Only trace ID goes into context (lightweight, no bloat)
 			ctx.SetUserValue(schemas.BifrostContextKeyTraceID, traceID)
+			// Also expose the W3C trace ID (the value in the x-bifrost-trace-id
+			// response header) so plugins that forward correlation IDs to external
+			// services advertise what Tempo indexes, not the internal store handle.
+			ctx.SetUserValue(schemas.BifrostContextKeyExportTraceID, headerTraceID)
 			// Extract parent span ID from W3C traceparent header (if present)
 			// This is the 16-char span ID from the upstream service that should be
 			// set as the ParentID of our root span for proper trace linking in Datadog/etc.
@@ -1298,6 +1513,11 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 				if spanID, ok := spanCtx.Value(schemas.BifrostContextKeySpanID).(string); ok {
 					ctx.SetUserValue(schemas.BifrostContextKeySpanID, spanID)
 				}
+				// Expose this exact tracer on the request context so transport-edge
+				// handlers can open "transport" spans (client request parse, response
+				// marshal) that nest under this root span. Using the same tracer instance
+				// that created the root span keeps the spans in the same trace store.
+				ctx.SetUserValue(schemas.BifrostContextKeyTracer, tracer)
 			}
 			// Capture request headers onto the trace when a connector has opted in.
 			// Gated so there is no overhead when no observability plugin wants headers.

@@ -24,8 +24,13 @@ func ToBedrockChatCompletionRequest(ctx *schemas.BifrostContext, bifrostReq *sch
 		ModelID: bifrostReq.Model,
 	}
 
+	// capModel is the canonical model used for capability gating (resolves aliases).
+	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
+	caps := schemas.ResolveModelCaps(bifrostReq.Provider, capModel)
+
 	input := bifrostReq.Input
-	if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) && ctx.Value(schemas.BifrostContextKeySupportsAssistantPrefill) == false {
+	if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) &&
+		!caps.SupportsAssistantPrefill(ctx.Value(schemas.BifrostContextKeySupportsAssistantPrefill) != false) {
 		trimmed := len(input)
 		for trimmed > 0 && input[trimmed-1].Role == schemas.ChatMessageRoleAssistant {
 			trimmed--
@@ -57,19 +62,17 @@ func ToBedrockChatCompletionRequest(ctx *schemas.BifrostContext, bifrostReq *sch
 	}
 
 	// Convert parameters and configurations
-	if err := convertChatParameters(ctx, bifrostReq, bedrockReq); err != nil {
+	if err := convertChatParameters(ctx, bifrostReq, bedrockReq, caps); err != nil {
 		return nil, fmt.Errorf("failed to convert chat parameters: %w", err)
 	}
 
 	// Ensure tool config is present when needed
 	ensureChatToolConfigForConversation(ctx, bifrostReq, bedrockReq)
 
-	// capModel is the canonical model used for capability gating (resolves aliases).
-	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
-	if !schemas.BedrockModelSupportsCachePoints(capModel) {
+	if !caps.SupportsCachePoint(schemas.BedrockModelSupportsCachePoints(capModel)) {
 		stripCachePointsFromBedrockRequest(bedrockReq)
 	} else {
-		if !schemas.BedrockModelSupportsExtendedCacheTTL(capModel) {
+		if !caps.SupportsExtendedCacheTTL(schemas.BedrockModelSupportsExtendedCacheTTL(capModel)) {
 			downgradeExtendedCacheTTLInBedrockRequest(bedrockReq)
 		}
 		// See the same call in ToBedrockResponsesRequest: exceeding the cap is a hard rejection,

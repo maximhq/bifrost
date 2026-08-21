@@ -19,6 +19,37 @@ const (
 	LogStoreTypeClickHouse LogStoreType = "clickhouse"
 )
 
+// CostUpdate is the repriced cost for a single log row, applied in bulk by
+// BulkUpdateCost. It carries the per-category split alongside the total so a
+// reprice keeps the denormalized input/output/additional cost columns in sync
+// with the cost column (they otherwise go stale on recompute). Input + Output +
+// Additional == Total, mirroring schemas.BifrostCost.
+type CostUpdate struct {
+	Total      float64
+	Input      float64
+	Output     float64
+	Additional float64
+}
+
+// CostUpdateFromBreakdown builds a CostUpdate from a cost breakdown, falling back
+// to attributing an unsplit total to the input side (mirrors the SerializeFields
+// reconciliation for opaque provider totals).
+func CostUpdateFromBreakdown(bd *schemas.BifrostCost) CostUpdate {
+	if bd == nil {
+		return CostUpdate{}
+	}
+	u := CostUpdate{
+		Total:      bd.TotalCost,
+		Input:      bd.InputCost,
+		Output:     bd.OutputCost,
+		Additional: bd.AdditionalCost,
+	}
+	if u.Input == 0 && u.Output == 0 && u.Additional == 0 && u.Total > 0 {
+		u.Input = u.Total
+	}
+	return u
+}
+
 // LogStore is the interface for the log store.
 type LogStore interface {
 	Ping(ctx context.Context) error
@@ -95,12 +126,17 @@ type LogStore interface {
 	// timestamp but greater log ID are included to avoid skipping same-timestamp rows.
 	GetNodeUsageAfter(ctx context.Context, nodeID string, cursor NodeUsageCursor) (*NodeUsageAggregate, error)
 	Update(ctx context.Context, id string, entry any) error
-	BulkUpdateCost(ctx context.Context, updates map[string]float64) error
+	BulkUpdateCost(ctx context.Context, updates map[string]CostUpdate) error
 	Flush(ctx context.Context, since time.Time) error
 	Close(ctx context.Context) error
 	DeleteLog(ctx context.Context, id string) error
 	DeleteLogs(ctx context.Context, ids []string) error
 	DeleteLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error)
+
+	CreateUserAgentMapping(ctx context.Context, mapping *UserAgentMapping) error
+	UpdateUserAgentMapping(ctx context.Context, id string, mapping *UserAgentMapping) error
+	DeleteUserAgentMapping(ctx context.Context, id string) error
+	ListUserAgentMappings(ctx context.Context, activeOnly bool) ([]UserAgentMapping, error)
 
 	// Distinct value methods for filter data
 	GetDistinctModels(ctx context.Context, limit int, query string) ([]string, error)
@@ -108,6 +144,10 @@ type LogStore interface {
 	GetDistinctKeyPairs(ctx context.Context, idCol, nameCol string, limit int, query string) ([]KeyPairResult, error)
 	GetDistinctRoutingEngines(ctx context.Context, limit int, query string) ([]string, error)
 	GetDistinctStopReasons(ctx context.Context, limit int, query string) ([]string, error)
+	// GetDistinctUserAgents returns distinct raw User-Agent strings from logs for the "App" filter.
+	GetDistinctUserAgents(ctx context.Context, limit int, query string) ([]string, error)
+	// GetDistinctApps returns distinct backend-detected app labels from logs.
+	GetDistinctApps(ctx context.Context, limit int, query string) ([]string, error)
 	GetDistinctMetadataKeys(ctx context.Context, limit int, query string) (map[string][]string, error)
 
 	// MCP Tool Log histogram methods
@@ -127,6 +167,10 @@ type LogStore interface {
 	FlushMCPToolLogs(ctx context.Context, since time.Time) error
 	GetAvailableToolNames(ctx context.Context, limit int, query string) ([]string, error)
 	GetAvailableServerLabels(ctx context.Context, limit int, query string) ([]string, error)
+	// GetAvailableMCPUserAgents returns distinct raw User-Agent strings from MCP tool logs for the "App" filter.
+	GetAvailableMCPUserAgents(ctx context.Context, limit int, query string) ([]string, error)
+	// GetAvailableMCPApps returns distinct backend-detected app labels from MCP tool logs.
+	GetAvailableMCPApps(ctx context.Context, limit int, query string) ([]string, error)
 	GetAvailableMCPVirtualKeys(ctx context.Context, limit int, query string) ([]MCPToolLog, error)
 
 	// Async Job methods

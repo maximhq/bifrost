@@ -9,6 +9,7 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"sort"
 	"strconv"
@@ -22,14 +23,33 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// MCPCredentialCacheManager invalidates cached per-user MCP credentials
+// (OAuth access tokens and header credentials) after a database write that
+// bypasses the owning provider's own write paths. The base server
+// implementation evicts from local memory; a clustered deployment overrides
+// it to also notify peers so their caches stay current. Handlers call it
+// directly after successful writes, so the server must always wire it (it is
+// nil-safe internally when no provider is configured, but the interface
+// value itself must be non-nil).
+type MCPCredentialCacheManager interface {
+	EvictOauthTokenCacheByID(ctx context.Context, tokenID string)
+	EvictOauthTokenCacheByMCPClient(ctx context.Context, mcpClientID string)
+	EvictMCPHeaderCredentialCacheByID(ctx context.Context, credentialID string)
+	EvictMCPHeaderCredentialCacheByMCPClient(ctx context.Context, mcpClientID string)
+}
+
 // MCPSessionsHandler serves the sessions tab API.
 type MCPSessionsHandler struct {
 	store *lib.Config
+	// mcpCredentialCacheManager invalidates cached per-user credentials after
+	// this handler writes token or credential rows directly through the
+	// configstore.
+	mcpCredentialCacheManager MCPCredentialCacheManager
 }
 
 // NewMCPSessionsHandler creates the handler.
-func NewMCPSessionsHandler(store *lib.Config) *MCPSessionsHandler {
-	return &MCPSessionsHandler{store: store}
+func NewMCPSessionsHandler(store *lib.Config, mcpCredentialCacheManager MCPCredentialCacheManager) *MCPSessionsHandler {
+	return &MCPSessionsHandler{store: store, mcpCredentialCacheManager: mcpCredentialCacheManager}
 }
 
 // RegisterRoutes registers the sessions tab routes.
@@ -132,6 +152,8 @@ func parseMCPSessionsListQuery(ctx *fasthttp.RequestCtx) (mcpSessionsListQuery, 
 	q.Filters.Statuses = parseCommaSeparated(string(args.Peek("status")))
 	q.Filters.AuthModes = parseCommaSeparated(string(args.Peek("auth_mode")))
 	q.Filters.MCPClientIDs = parseCommaSeparated(string(args.Peek("mcp_client_id")))
+	q.Filters.VirtualKeyIDs = parseCommaSeparated(string(args.Peek("virtual_key_id")))
+	q.Filters.UserIDs = parseCommaSeparated(string(args.Peek("user_id")))
 	q.Kinds = parseCommaSeparated(string(args.Peek("kind")))
 	if s := string(args.Peek("limit")); s != "" {
 		n, err := strconv.Atoi(s)
@@ -219,8 +241,8 @@ func (h *MCPSessionsHandler) list(ctx *fasthttp.RequestCtx) {
 	// queried, because cross-table de-dup (suppress a flow row when a
 	// matching token/header credential exists) needs that data.
 	var (
-		tokens      []tables.TableOauthUserToken
-		flows       []tables.TableOauthUserSession
+		tokens      []tables.TableMCPOauthToken
+		flows       []tables.TableMCPOauthFlow
 		headerCreds []tables.TableMCPPerUserHeaderCredential
 		headerFlows []tables.TableMCPPerUserHeaderFlow
 		err         error
@@ -336,7 +358,7 @@ type sessionBindingKey struct {
 	MCPClientID string
 }
 
-func bindingKeyFromToken(t tables.TableOauthUserToken) sessionBindingKey {
+func bindingKeyFromToken(t tables.TableMCPOauthToken) sessionBindingKey {
 	k := sessionBindingKey{Mode: t.AuthMode, MCPClientID: t.MCPClientID}
 	switch schemas.MCPAuthMode(t.AuthMode) {
 	case schemas.MCPAuthModeUser:
@@ -353,7 +375,7 @@ func bindingKeyFromToken(t tables.TableOauthUserToken) sessionBindingKey {
 	return k
 }
 
-func bindingKeyFromFlow(f tables.TableOauthUserSession) sessionBindingKey {
+func bindingKeyFromFlow(f tables.TableMCPOauthFlow) sessionBindingKey {
 	k := sessionBindingKey{Mode: f.FlowMode, MCPClientID: f.MCPClientID}
 	switch schemas.MCPAuthMode(f.FlowMode) {
 	case schemas.MCPAuthModeUser:
@@ -622,6 +644,7 @@ func (h *MCPSessionsHandler) revoke(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusInternalServerError, "Failed to delete MCP session")
 			return
 		}
+		h.mcpCredentialCacheManager.EvictMCPHeaderCredentialCacheByID(ctx, headerCred.ID)
 		logger.Debug("[mcp/sessions] revoked header credential: id=%s mcp_client=%s mode=%s", rowID, headerCred.MCPClientID, headerCred.AuthMode)
 		ctx.SetStatusCode(fasthttp.StatusNoContent)
 		return
@@ -666,6 +689,7 @@ func (h *MCPSessionsHandler) revoke(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to delete MCP session")
 		return
 	}
+	h.mcpCredentialCacheManager.EvictOauthTokenCacheByID(ctx, tok.ID)
 	logger.Debug("[mcp/sessions] revoked: token=%s mcp_client=%s mode=%s", rowID, tok.MCPClientID, tok.AuthMode)
 	ctx.SetStatusCode(fasthttp.StatusNoContent)
 }
@@ -813,7 +837,7 @@ func (h *MCPSessionsHandler) flowStart(ctx *fasthttp.RequestCtx) {
 // GetOauthUserSessionByID: if the caller is not allowed to see this row,
 // the store returns (nil, nil) and we surface 404. Writes the appropriate
 // HTTP error response and returns a sentinel error on failure.
-func (h *MCPSessionsHandler) loadAuthorizedFlow(ctx *fasthttp.RequestCtx, flowID string) (*tables.TableOauthUserSession, error) {
+func (h *MCPSessionsHandler) loadAuthorizedFlow(ctx *fasthttp.RequestCtx, flowID string) (*tables.TableMCPOauthFlow, error) {
 	flow, err := h.store.ConfigStore.GetOauthUserSessionByID(ctx, flowID)
 	if err != nil {
 		logger.Error("[mcp/sessions] load flow failed: flow=%s err=%v", flowID, err)
@@ -830,7 +854,7 @@ func (h *MCPSessionsHandler) loadAuthorizedFlow(ctx *fasthttp.RequestCtx, flowID
 // identityFromTokenRow returns the (mode, identity) pair recorded on the row.
 // Inverse of the mode/identity routing used when creating the row; the row's
 // AuthMode column is the source of truth for which identity column is keyed.
-func identityFromTokenRow(tok *tables.TableOauthUserToken) (schemas.MCPAuthMode, string) {
+func identityFromTokenRow(tok *tables.TableMCPOauthToken) (schemas.MCPAuthMode, string) {
 	switch schemas.MCPAuthMode(tok.AuthMode) {
 	case schemas.MCPAuthModeUser:
 		if tok.UserID != nil {
@@ -846,13 +870,16 @@ func identityFromTokenRow(tok *tables.TableOauthUserToken) (schemas.MCPAuthMode,
 	return schemas.MCPAuthMode(tok.AuthMode), ""
 }
 
-// loadRowAuthorizedForCaller loads a token row. Visibility is enforced at
-// the enterprise configstore layer via DAC scope on GetOauthUserTokenByID:
-// if the caller is not allowed to see this row, the store returns
-// (nil, nil) and we surface 404 — the same "if you can see it, you can
-// act on it" model used by GetVirtualKey / DeleteVirtualKey. Writes the
-// HTTP error response on failure.
-func (h *MCPSessionsHandler) loadRowAuthorizedForCaller(ctx *fasthttp.RequestCtx, rowID string) (*tables.TableOauthUserToken, error) {
+// loadRowAuthorizedForCaller loads a per-user token row. Visibility is
+// enforced at the enterprise configstore layer via DAC scope on
+// GetOauthUserTokenByID: if the caller is not allowed to see this row, the
+// store returns (nil, nil) and we surface 404 — the same "if you can see it,
+// you can act on it" model used by GetVirtualKey / DeleteVirtualKey.
+// GetOauthUserTokenByID also filters to auth_mode IN ('user','vk','session')
+// at the store layer, so a rowID belonging to the shared credential 404s
+// here rather than being readable through this per-user-scoped endpoint.
+// Writes the HTTP error response on failure.
+func (h *MCPSessionsHandler) loadRowAuthorizedForCaller(ctx *fasthttp.RequestCtx, rowID string) (*tables.TableMCPOauthToken, error) {
 	tok, err := h.store.ConfigStore.GetOauthUserTokenByID(ctx, rowID)
 	if err != nil {
 		logger.Error("[mcp/sessions] load row failed: token=%s err=%v", rowID, err)
@@ -874,8 +901,9 @@ type errSentinel string
 
 func (e errSentinel) Error() string { return string(e) }
 
-// tokenRow maps an oauth_user_tokens row to the wire shape.
-func tokenRow(t tables.TableOauthUserToken) mcpSessionRow {
+// tokenRow maps a per-user mcp_oauth_tokens row (auth_mode 'user'|'vk'|'session')
+// to the wire shape.
+func tokenRow(t tables.TableMCPOauthToken) mcpSessionRow {
 	row := mcpSessionRow{
 		ID:            t.ID,
 		Kind:          "token",
@@ -915,7 +943,7 @@ func tokenRow(t tables.TableOauthUserToken) mcpSessionRow {
 }
 
 // flowRow maps an oauth_user_sessions (pending flow) row to the wire shape.
-func flowRow(f tables.TableOauthUserSession) mcpSessionRow {
+func flowRow(f tables.TableMCPOauthFlow) mcpSessionRow {
 	exp := f.ExpiresAt.UTC().Format(rfc3339Nano)
 	row := mcpSessionRow{
 		ID:            f.ID,

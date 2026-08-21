@@ -609,6 +609,10 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			if key.BedrockKeyConfig.BatchS3Config != nil {
 				bedrockConfig.BatchS3Config = key.BedrockKeyConfig.BatchS3Config
 			}
+			// VPC endpoint hosts are network addresses, not credentials — surface them in plaintext.
+			if key.BedrockKeyConfig.Endpoints != nil {
+				bedrockConfig.Endpoints = key.BedrockKeyConfig.Endpoints
+			}
 			redactedConfig.Keys[i].BedrockKeyConfig = bedrockConfig
 		}
 
@@ -635,6 +639,10 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			// Project ID is an identifier, not a credential — surface it in plaintext.
 			if key.BedrockMantleKeyConfig.ProjectID != nil {
 				mantleConfig.ProjectID = key.BedrockMantleKeyConfig.ProjectID
+			}
+			// VPC endpoint hosts are network addresses, not credentials — surface them in plaintext.
+			if key.BedrockMantleKeyConfig.Endpoints != nil {
+				mantleConfig.Endpoints = key.BedrockMantleKeyConfig.Endpoints
 			}
 			redactedConfig.Keys[i].BedrockMantleKeyConfig = mantleConfig
 		}
@@ -1519,6 +1527,83 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 				hash.Write([]byte(k + ":val:" + val.Val))
 			}
 		}
+	}
+
+	// Hash AuthType so switching a client's auth scheme in config.json
+	// drifts the hash and triggers reconciliation. Normalize the empty
+	// value to the column default so a row hashed before save matches the
+	// same row hashed after load.
+	authType := m.AuthType
+	if authType == "" {
+		authType = string(schemas.MCPAuthTypeHeaders)
+	}
+	hash.Write([]byte("auth_type:" + authType))
+
+	// Hash NeedsSessionStickiness so toggling it in config.json drifts the
+	// hash and triggers reconciliation — without this, editing only this
+	// field would leave the row's migration-backfilled (or nil-defaulted)
+	// value in place indefinitely, since nothing else about the row changed.
+	//
+	// nil contributes nothing — identical to how this field hashed before it
+	// existed in the formula at all. That's deliberate: a config.json entry
+	// that still omits the field must keep coincidentally matching a stale
+	// (pre-migration) stored hash, so the migration's true-backfill for
+	// existing shared clients isn't clobbered by a forced file-wins resync
+	// on the next restart just because config.json never mentions the field.
+	// true and false each get their own distinct marker: only an *explicit*
+	// value in config.json represents a real opinion worth detecting as a
+	// change. Collapsing false into nil's zero-contribution (as this used to
+	// do) meant an admin's explicit `needs_session_stickiness: false` edit
+	// could coincidentally hash-match a stale stored hash and silently never
+	// take effect.
+	if m.NeedsSessionStickiness != nil {
+		if *m.NeedsSessionStickiness {
+			hash.Write([]byte("needs_session_stickiness:true"))
+		} else {
+			hash.Write([]byte("needs_session_stickiness:false"))
+		}
+	}
+
+	// Hash PerUserHeaderKeys (sorted for deterministic hashing) so edits to
+	// the declared header-name schema in config.json drift the hash.
+	if len(m.PerUserHeaderKeys) > 0 {
+		sortedKeys := make([]string, len(m.PerUserHeaderKeys))
+		copy(sortedKeys, m.PerUserHeaderKeys)
+		sort.Strings(sortedKeys)
+		data, err := sonic.Marshal(sortedKeys)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
+	// Hash PendingOAuthConfig so edits to the inline `oauth_config` block
+	// in config.json drift the hash and trigger reconciliation. Rows built
+	// from config.json carry only the runtime struct (the JSON column is
+	// populated later, by BeforeSave), so fall back to marshaling it with
+	// encoding/json — the same encoder BeforeSave uses to write the column
+	// — keeping both forms byte-identical.
+	if m.PendingOAuthConfigJSON != nil && *m.PendingOAuthConfigJSON != "" {
+		hash.Write([]byte(*m.PendingOAuthConfigJSON))
+	} else if m.PendingOAuthConfig != nil {
+		data, err := json.Marshal(m.PendingOAuthConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
+	// Hash the token_exchange scoping block so edits to it in config.json
+	// drift the hash and trigger reconciliation. Same JSON-column-first
+	// fallback shape as PendingOAuthConfig above, for the same reason.
+	if m.TokenExchangeJSON != nil && *m.TokenExchangeJSON != "" {
+		hash.Write([]byte(*m.TokenExchangeJSON))
+	} else if m.TokenExchange != nil {
+		data, err := json.Marshal(m.TokenExchange)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
 	}
 
 	// will enable it in the future with a migration

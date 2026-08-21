@@ -1142,7 +1142,8 @@ bifrost:
         name: "Block PII"
         description: "Block PII in requests"
         enabled: true
-        cel_expression: "!contains(request.body, 'SSN')"
+        target: "mcp"
+        cel_expression: 'mcp_client == "github" && mcp_tool == "create_issue"'
         apply_to: "input"
         sampling_rate: 100
         timeout: 1000
@@ -1165,6 +1166,7 @@ assert_field_value 'guardrails rule[0].id' '.guardrails_config.guardrail_rules.[
 assert_field_value 'guardrails rule[0].name' '.guardrails_config.guardrail_rules.[0].name' '"Block PII"'
 assert_field_value 'guardrails rule[0].description' '.guardrails_config.guardrail_rules.[0].description' '"Block PII in requests"'
 assert_field_value 'guardrails rule[0].enabled' '.guardrails_config.guardrail_rules.[0].enabled' 'true'
+assert_field_value 'guardrails rule[0].target' '.guardrails_config.guardrail_rules.[0].target' '"mcp"'
 assert_field_value 'guardrails rule[0].apply_to' '.guardrails_config.guardrail_rules.[0].apply_to' '"input"'
 assert_field_value 'guardrails rule[0].sampling_rate' '.guardrails_config.guardrail_rules.[0].sampling_rate' '100'
 assert_field_value 'guardrails rule[0].timeout' '.guardrails_config.guardrail_rules.[0].timeout' '1000'

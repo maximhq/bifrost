@@ -13,7 +13,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/rand"
 	"net"
 	"net/http"
 	"net/textproto"
@@ -198,6 +197,19 @@ var sortedAPI = sonic.Config{SortMapKeys: true}.Froze()
 // MarshalSorted marshals v to JSON with map keys sorted alphabetically.
 func MarshalSorted(v interface{}) ([]byte, error) {
 	return sortedAPI.Marshal(v)
+}
+
+// MarshalProviderRequest marshals a converted provider request body to wire JSON.
+// Typed provider requests implement json.Marshaler (they strip Bifrost-only fields
+// and already emit sorted, minified JSON), so we call MarshalJSON directly. Wrapping
+// that in MarshalSorted would only make sonic re-compact the whole body a second time
+// through its slow marshaler path, and SortMapKeys does not reorder a marshaler's
+// opaque output anyway. Plain structs fall back to MarshalSorted. Output is identical.
+func MarshalProviderRequest(v interface{}) ([]byte, error) {
+	if m, ok := v.(json.Marshaler); ok {
+		return m.MarshalJSON()
+	}
+	return MarshalSorted(v)
 }
 
 // MarshalSortedIndent marshals v to indented JSON with map keys sorted alphabetically.
@@ -1644,7 +1656,7 @@ func MergeExtraParamsIntoJSON(jsonBody []byte, extraParams map[string]interface{
 		}
 	}
 
-	// Rebuild compact JSON, then indent for consistent formatting
+	// Rebuild compact JSON in the original key order
 	var compact bytes.Buffer
 	compact.WriteByte('{')
 	for i, kv := range pairs {
@@ -1662,12 +1674,37 @@ func MergeExtraParamsIntoJSON(jsonBody []byte, extraParams map[string]interface{
 	}
 	compact.WriteByte('}')
 
-	// Re-indent to match the expected formatting
-	var indented bytes.Buffer
-	if err := json.Indent(&indented, compact.Bytes(), "", "  "); err != nil {
-		return compact.Bytes(), nil
+	return compact.Bytes(), nil
+}
+
+// startPhaseSpan opens a nil-safe internal child span marking a Bifrost overhead
+// phase (request marshalling, response parsing) so the log detail view can attribute
+// core overhead. Both returns are nil when no trace is active; EndSpan is nil-safe,
+// so callers guard only on the tracer. StartSpanID avoids a per-span context alloc.
+func startPhaseSpan(ctx context.Context, name string) (schemas.Tracer, schemas.SpanHandle) {
+	t, ok := ctx.Value(schemas.BifrostContextKeyTracer).(schemas.Tracer)
+	if !ok || t == nil {
+		return nil, nil
 	}
-	return indented.Bytes(), nil
+	_, h := t.StartSpanID(ctx, name, schemas.SpanKindInternal)
+	return t, h
+}
+
+// StartResponseConvertorSpan opens a nil-safe "convertor" span for the provider->Bifrost
+// response mapping (ToBifrost*Response). It shares the "convertor" bucket with the
+// request-side conversion so total conversion time is attributed together, instead of
+// the response half folding into core. Symmetric to the request path: response-parse
+// times the JSON decode, this times the struct->unified mapping. Wrapped at the primary
+// chat call sites; secondary response paths fold into core. EndSpan is nil-safe.
+func StartResponseConvertorSpan(ctx context.Context) (schemas.Tracer, schemas.SpanHandle) {
+	return startPhaseSpan(ctx, "convertor")
+}
+
+// StartResponseParseSpan opens the "response-parse" overhead phase span for providers
+// that unmarshal the response body directly (e.g. Bedrock Converse) rather than through
+// HandleProviderResponseCtx. Nil-safe: returns a nil tracer when no trace is active.
+func StartResponseParseSpan(ctx context.Context) (schemas.Tracer, schemas.SpanHandle) {
+	return startPhaseSpan(ctx, "response-parse")
 }
 
 // CheckContextAndGetRequestBody checks if the raw request body should be used, and returns it if it exists.
@@ -1678,16 +1715,32 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 
 	rawBody, ok := CheckAndGetRawRequestBody(ctx, request)
 	if !ok {
+		// The converting path splits into two non-overlapping overhead phases so their
+		// costs are attributed separately (and never double-counted): "convertor" for
+		// the Bifrost->provider format conversion, then "request-marshal" for the JSON
+		// encode. The raw-body passthrough branch does neither.
+		ct, chdl := startPhaseSpan(ctx, "convertor")
 		convertedBody, err := requestConverter()
 		if err != nil {
+			if ct != nil {
+				ct.EndSpan(chdl, schemas.SpanStatusError, err.Error())
+			}
 			return nil, NewBifrostOperationError(schemas.ErrRequestBodyConversion, err)
+		}
+		if ct != nil {
+			ct.EndSpan(chdl, schemas.SpanStatusOk, "")
 		}
 		if convertedBody == nil {
 			return nil, NewBifrostOperationError("request body is not provided", nil)
 		}
 
-		jsonBody, err := MarshalSortedIndent(convertedBody, "", "  ")
+		mt, mhdl := startPhaseSpan(ctx, "request-marshal")
+		// Indenting is removed to reduce data on wire
+		jsonBody, err := MarshalProviderRequest(convertedBody)
 		if err != nil {
+			if mt != nil {
+				mt.EndSpan(mhdl, schemas.SpanStatusError, err.Error())
+			}
 			return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 		}
 		// Merge ExtraParams into the JSON if passthrough is enabled
@@ -1698,9 +1751,15 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 				// tool schemas and other order-sensitive JSON structures.
 				jsonBody, err = MergeExtraParamsIntoJSON(jsonBody, extraParams)
 				if err != nil {
+					if mt != nil {
+						mt.EndSpan(mhdl, schemas.SpanStatusError, err.Error())
+					}
 					return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 				}
 			}
+		}
+		if mt != nil {
+			mt.EndSpan(mhdl, schemas.SpanStatusOk, "")
 		}
 		return jsonBody, nil
 	} else {
@@ -1897,6 +1956,31 @@ func EnrichError(
 	return bifrostErr
 }
 
+// HandleProviderResponseCtx is HandleProviderResponse with a context, so the JSON
+// parse is timed as the "response-parse" overhead phase for the log detail view.
+// Used at the primary completion call sites (chat / responses / text) where parse
+// time is on the latency hot path; the ctx-less HandleProviderResponse remains for
+// the many secondary sites (files, batches, containers) whose parse time is not
+// worth a span and simply folds into the "core" bucket.
+func HandleProviderResponseCtx[T any](ctx context.Context, responseBody []byte, response *T, requestBody []byte, sendBackRawRequest bool, sendBackRawResponse bool) (rawRequest interface{}, rawResponse interface{}, bifrostErr *schemas.BifrostError) {
+	if t, h := startPhaseSpan(ctx, "response-parse"); t != nil {
+		// Inspect the named bifrostErr so a failed parse ends the span as an error
+		// instead of appearing as successful overhead work.
+		defer func() {
+			if bifrostErr != nil {
+				msg := "response parse failed"
+				if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
+					msg = bifrostErr.Error.Message
+				}
+				t.EndSpan(h, schemas.SpanStatusError, msg)
+				return
+			}
+			t.EndSpan(h, schemas.SpanStatusOk, "")
+		}()
+	}
+	return HandleProviderResponse(responseBody, response, requestBody, sendBackRawRequest, sendBackRawResponse)
+}
+
 // HandleProviderResponse handles common response parsing logic for provider responses.
 // It attempts to parse the response body into the provided response type
 // and returns either the parsed response or a BifrostError if parsing fails.
@@ -1905,8 +1989,7 @@ func EnrichError(
 // on responses that are almost certainly valid JSON.
 func HandleProviderResponse[T any](responseBody []byte, response *T, requestBody []byte, sendBackRawRequest bool, sendBackRawResponse bool) (rawRequest interface{}, rawResponse interface{}, bifrostErr *schemas.BifrostError) {
 	// Check for empty response
-	trimmed := strings.TrimSpace(string(responseBody))
-	if len(trimmed) == 0 {
+	if len(bytes.TrimSpace(responseBody)) == 0 {
 		return nil, nil, &schemas.BifrostError{
 			IsBifrostError: true,
 			Error: &schemas.ErrorField{
@@ -2623,6 +2706,17 @@ func ProcessAndSendResponse(
 		}
 	}
 
+	// Final chunk: the stream has drained, so upstream is complete. Stamp the body
+	// before post-hooks persist it (completeDeferredSpan handles the trace span).
+	if isFinalChunk := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator); isFinalChunk != nil {
+		if final, ok := isFinalChunk.(bool); ok && final && response != nil {
+			response.PopulateUpstreamLatency(ctx)
+			if ef := response.GetExtraFields(); ef != nil && ef.Latency > 0 {
+				response.PopulateOverheadLatency(ctx, time.Duration(ef.Latency)*time.Millisecond)
+			}
+		}
+	}
+
 	// Run post hooks on the response (note: accumulated chunks above contain pre-hook data)
 	processedResponse, processedError := postHookRunner(ctx, response, nil)
 
@@ -3294,8 +3388,8 @@ func GetProviderName(defaultProvider schemas.ModelProvider, customConfig *schema
 // after sending the finish_reason. This function helps determine the correct stream termination logic.
 func ProviderSendsDoneMarker(providerName schemas.ModelProvider) bool {
 	switch providerName {
-	case schemas.Cerebras, schemas.Perplexity, schemas.HuggingFace, schemas.Bedrock:
-		// Cerebras, Perplexity, HuggingFace, and Bedrock mantle don't send [DONE] marker, ends stream after finish_reason
+	case schemas.Cerebras, schemas.Perplexity, schemas.HuggingFace, schemas.Bedrock, schemas.BedrockMantle:
+		// Cerebras, Perplexity, HuggingFace, Bedrock and Bedrock mantle don't send [DONE] marker, ends stream after finish_reason
 		return false
 	default:
 		// Default to expecting [DONE] marker for safety
@@ -3593,20 +3687,6 @@ func HandleMultipleListModelsRequests(
 	response.ExtraFields.Latency = latency.Milliseconds()
 
 	return response, nil
-}
-
-// GetRandomString generates a random alphanumeric string of the given length.
-func GetRandomString(length int) string {
-	if length <= 0 {
-		return ""
-	}
-	randomSource := rand.New(rand.NewSource(time.Now().UnixNano()))
-	letters := []rune("abcdef0123456789")
-	b := make([]rune, length)
-	for i := range b {
-		b[i] = letters[randomSource.Intn(len(letters))]
-	}
-	return string(b)
 }
 
 // GetReasoningEffortFromBudgetTokens maps a reasoning token budget to OpenAI reasoning effort.

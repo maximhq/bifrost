@@ -115,13 +115,13 @@ export function MCPLibraryAddServerSheet({ open, onClose }: MCPLibraryAddServerS
 	return (
 		<Sheet open={open} onOpenChange={(sheetOpen) => !sheetOpen && onClose()}>
 			<SheetContent className="flex w-full flex-col overflow-x-hidden p-0 pt-4">
-				<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 sticky px-8 -top-4 bg-card z-10">
+				<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 sticky px-4 md:px-8 -top-4 bg-card z-10">
 					<SheetTitle>Add MCP Server</SheetTitle>
 					<SheetDescription>This MCP server will be available org-wide for members to discover, install, and use.</SheetDescription>
 				</SheetHeader>
 
 				<form onSubmit={handleSubmit(onSubmit)} className="flex min-h-0 flex-1 flex-col">
-					<div className="flex-1 space-y-4 px-8 py-4">
+					<div className="flex-1 space-y-4 px-4 py-4 md:px-8">
 						{/* Name */}
 						<div className="space-y-2">
 							<Label htmlFor="mcp-add-name">Name</Label>
@@ -219,7 +219,7 @@ export function MCPLibraryAddServerSheet({ open, onClose }: MCPLibraryAddServerS
 						)}
 
 						{/* Auth + category */}
-						<div className="grid grid-cols-2 gap-3">
+						<div className="grid grid-cols-1 gap-3 md:grid-cols-2">
 							<div className="w-full space-y-2">
 								<Label>Authentication</Label>
 								<Select value={authType} onValueChange={(v) => setValue("auth_type", v as MCPAuthType)}>
@@ -255,7 +255,7 @@ export function MCPLibraryAddServerSheet({ open, onClose }: MCPLibraryAddServerS
 						)}
 
 						{/* Optional metadata */}
-						<div className="grid grid-cols-2 gap-3">
+						<div className="grid grid-cols-1 gap-3 md:grid-cols-2">
 							<div className="space-y-2">
 								<Label htmlFor="mcp-add-icon">Icon URL</Label>
 								<Input id="mcp-add-icon" placeholder="https://..." data-testid="mcp-add-icon-input" {...register("icon_url")} />
@@ -276,7 +276,7 @@ export function MCPLibraryAddServerSheet({ open, onClose }: MCPLibraryAddServerS
 						</div>
 					</div>
 
-					<div className="border-border bg-card sticky bottom-0 z-10 border-t px-8 py-4">
+					<div className="border-border bg-card sticky bottom-0 z-10 border-t px-4 py-4 md:px-8">
 						<div className="flex justify-end gap-2">
 							<Button type="button" variant="outline" onClick={onClose} disabled={isLoading} data-testid="mcp-add-cancel-btn">
 								Cancel

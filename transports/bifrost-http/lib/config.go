@@ -42,11 +42,13 @@ import (
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/plugins/compat"
 	"github.com/maximhq/bifrost/plugins/governance"
-	"github.com/maximhq/bifrost/plugins/governance/complexity"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/plugins/maxim"
 	"github.com/maximhq/bifrost/plugins/otel"
 	"github.com/maximhq/bifrost/plugins/prompts"
+	"github.com/maximhq/bifrost/plugins/routing"
+	"github.com/maximhq/bifrost/plugins/routing/complexity"
+	"github.com/maximhq/bifrost/plugins/routing/rules"
 	"github.com/maximhq/bifrost/plugins/semanticcache"
 	"github.com/maximhq/bifrost/plugins/telemetry"
 	"gorm.io/gorm"
@@ -130,6 +132,7 @@ var builtinPluginNames = []string{
 	semanticcache.PluginName,
 	compat.PluginName,
 	maxim.PluginName,
+	routing.PluginName,
 }
 
 func GetBuiltinPluginNames() []string {
@@ -149,6 +152,13 @@ type pluginOrderInfo struct {
 
 type ServerConfig struct {
 	ReadBufferSize int `json:"read_buffer_size,omitempty"`
+
+	// PluginDownloadPrivateAllowlist lists hostnames, IPs, and CIDR ranges that custom
+	// plugin (.so) downloads may reach even when they resolve to a private/loopback/
+	// link-local/CGNAT address (blocked by default to prevent SSRF). Use only for trusted
+	// internal artifact hosts. Deploy-time only - read from config.json/environment at
+	// startup, never settable via the plugin admin API. Invalid entries fail server startup.
+	PluginDownloadPrivateAllowlist []string `json:"plugin_download_private_allowlist,omitempty"`
 }
 
 // ConfigData represents the configuration data for the Bifrost HTTP transport.
@@ -166,7 +176,14 @@ type ConfigData struct {
 	Client        *configstore.ClientConfig `json:"client"`
 	EncryptionKey *schemas.SecretVar        `json:"encryption_key"`
 	// Deprecated: Use GovernanceConfig.AuthConfig instead
-	AuthConfig        *configstore.AuthConfig               `json:"auth_config,omitempty"`
+	AuthConfig *configstore.AuthConfig `json:"auth_config,omitempty"`
+	// SetupToken is the operator-provisioned bootstrap secret required to create the
+	// very first admin account (see AuthMiddleware.bootstrapToken). It is never
+	// persisted to the config store — only read from this file (or, when absent here,
+	// the BIFROST_SETUP_TOKEN env var) — so every node in a multi-node deployment reads
+	// the same value from its own identical config/env rather than relying on a
+	// per-process generated value.
+	SetupToken        *schemas.SecretVar                    `json:"setup_token,omitempty"`
 	Providers         map[string]configstore.ProviderConfig `json:"providers"`
 	FrameworkConfig   *framework.FrameworkConfig            `json:"framework,omitempty"`
 	MCP               *schemas.MCPConfig                    `json:"mcp,omitempty"`
@@ -425,6 +442,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 		Client            *configstore.ClientConfig             `json:"client"`
 		EncryptionKey     *schemas.SecretVar                    `json:"encryption_key"`
 		AuthConfig        *configstore.AuthConfig               `json:"auth_config,omitempty"`
+		SetupToken        *schemas.SecretVar                    `json:"setup_token,omitempty"`
 		Providers         map[string]configstore.ProviderConfig `json:"providers"`
 		MCP               *schemas.MCPConfig                    `json:"mcp,omitempty"`
 		Webhooks          []*WebhookEndpointConfig              `json:"webhooks,omitempty"`
@@ -451,6 +469,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 	cd.Server = temp.Server
 	cd.EncryptionKey = temp.EncryptionKey
 	cd.AuthConfig = temp.AuthConfig
+	cd.SetupToken = temp.SetupToken
 	cd.Providers = temp.Providers
 	cd.MCP = temp.MCP
 	cd.Webhooks = temp.Webhooks
@@ -557,6 +576,11 @@ type Config struct {
 	FrameworkConfig  *framework.FrameworkConfig
 	ProxyConfig      *configstoreTables.GlobalProxyConfig
 
+	// SetupToken is the resolved operator-provisioned bootstrap secret (see
+	// ConfigData.SetupToken / resolveSetupToken). Empty when the operator hasn't
+	// configured one. Never persisted — read fresh from config/env on every boot.
+	SetupToken string
+
 	// webhookEndpoints serves webhook endpoint config to the request path and
 	// the delivery worker without database reads. Guarded by muWebhooks;
 	// handlers mutate it in lockstep with every database write. Operational
@@ -585,9 +609,9 @@ type Config struct {
 	pluginStatusMu sync.RWMutex
 	pluginStatus   map[string]schemas.PluginStatus // name -> status
 
-	OAuthProvider      *oauth2.OAuth2Provider
-	TokenRefreshWorker *oauth2.TokenRefreshWorker
-	OAuthSweepWorker   *oauth2.PerUserOAuthSweepWorker
+	OAuthProvider           *oauth2.OAuth2Provider
+	OAuthTokenRefreshWorker *oauth2.OAuthTokenRefreshWorker
+	OAuthSweepWorker        *oauth2.PerUserOAuthSweepWorker
 
 	// MCPHeadersProvider backs MCPAuthTypePerUserHeaders credential storage.
 	// Constructed alongside OAuthProvider and passed into the Bifrost core
@@ -614,6 +638,11 @@ type Config struct {
 	// Optional event broadcaster for real-time updates (e.g., WebSocket).
 	// Set by HTTP server at startup; may be nil in non-HTTP usage.
 	EventBroadcaster schemas.EventBroadcaster
+	// NotificationPublisher persists and delivers role-targeted dashboard
+	// notifications. Assigned at startup and deliberately unused in-tree: it is
+	// the seam enterprise builds and plugins publish through. See the doc on
+	// schemas.NotificationPublisher before adding the first caller.
+	NotificationPublisher schemas.NotificationPublisher
 
 	// EnvLabel is a short label (max 10 chars) displayed in the UI sidebar to identify the
 	// environment (e.g. "staging", "prod"). Set via config.json env_label or BIFROST_ENV_LABEL env var.
@@ -649,7 +678,7 @@ var DefaultClientConfig = configstore.ClientConfig{
 	MCPCodeModeBindingLevel:         string(schemas.CodeModeBindingLevelServer),
 	MCPEnableTempTokenAuth:          false,
 	HideDeletedVirtualKeysInFilters: false,
-	RoutingChainMaxDepth:            governance.DefaultRoutingChainMaxDepth,
+	RoutingChainMaxDepth:            rules.DefaultChainMaxDepth,
 }
 
 // applyV1Compat normalizes ConfigData to restore v1.4.x allow-list semantics.
@@ -920,6 +949,8 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	}
 	// 1a. Vault config acknowledgement (initialization handled by enterprise layer)
 	initVault(&configData)
+	// 1b. Bootstrap setup token (from config file or BIFROST_SETUP_TOKEN env var)
+	config.SetupToken = resolveSetupToken(&configData)
 	// 2. Stores (config, logs, vector) — creates defaults for absent configs
 	if err := initStores(ctx, config, &configData, configDBPath, logsDBPath); err != nil {
 		return nil, err
@@ -1701,6 +1732,34 @@ func loadMCPConfig(ctx context.Context, config *Config, configData *ConfigData) 
 				logger.Warn("skipping MCP client config %q from config file: %v", c.Name, err)
 				continue
 			}
+			if c.AuthType == schemas.MCPAuthTypeTokenExchange {
+				if isEnterprise, _ := ctx.Value(schemas.BifrostContextKeyIsEnterprise).(bool); !isEnterprise {
+					logger.Error("skipping MCP client config %q from config file: auth_type 'token_exchange' is not supported", c.Name)
+					continue
+				}
+			}
+			// oauth_config_id is server-managed state — a credentials-row
+			// reference produced by admin authorization — not a declarative
+			// input. A file-supplied value is at best redundant (the sync
+			// preserves the server-side link) and at worst repoints the
+			// client at a stale or foreign-deployment row. Ignore it; the
+			// synthesis below then parks unauthorized clients in
+			// pending_verification, where the admin flow can mint a real one.
+			if c.OauthConfigID != nil {
+				logger.Warn("ignoring oauth_config_id on MCP client %q from config file: this field is managed by Bifrost and cannot be set via config.json", c.Name)
+				c.OauthConfigID = nil
+			}
+			// OAuth-based auth types with no inline `oauth_config` still
+			// need the bootstrap-pending marker so the client lands in
+			// pending_verification and the initiate-verification endpoint
+			// can run discovery + dynamic client registration off the
+			// connection_string at admin-click time. Synthesize an empty
+			// OAuth2Config so the runtime gate and the handler see the same
+			// shape they do when the block was provided.
+			if (c.AuthType == schemas.MCPAuthTypeOauth || c.AuthType == schemas.MCPAuthTypePerUserOauth) &&
+				c.PendingOAuthConfig == nil {
+				c.PendingOAuthConfig = &schemas.OAuth2Config{}
+			}
 			valid = append(valid, c)
 		}
 		configData.MCP.ClientConfigs = valid
@@ -1746,6 +1805,330 @@ func loadMCPConfig(ctx context.Context, config *Config, configData *ConfigData) 
 	applyMCPGlobalSettingsToClientConfig(ctx, config, configData.MCP)
 }
 
+// pinMCPClientImmutableFields rewrites a file-declared client so that fields
+// which are immutable after creation keep their stored values, mirroring the
+// update API: MCPClientUpdateRequest accepts none of these fields, so an API
+// caller sending them has them silently dropped, and the file sync applies
+// the same rule. It also carries server-side verification state that
+// config.json cannot express (it is produced by admin verification at
+// runtime):
+//   - OauthConfigID links the oauth_configs row (token / provider config)
+//     created by the admin's browser flow.
+//   - DiscoveredTools / DiscoveredToolNameMapping are populated by the
+//     one-time admin verification for per-user auth types.
+//   - PendingOAuthConfig stays whatever the store holds: the stash declared
+//     at creation while verification is pending, nil once the OAuth callback
+//     has cleared it.
+//
+// The returned list names the immutable fields whose file values differ from
+// the stored ones, for the caller's advisory log. authorizedOauth is the
+// oauth_configs row backing an already-authorized client (nil when the client
+// is unauthorized or the row is unavailable); it is only read, and only to
+// detect oauth_config drift.
+func pinMCPClientImmutableFields(fileClient, existing *schemas.MCPClientConfig) []string {
+	if fileClient == nil || existing == nil {
+		return nil
+	}
+	var changed []string
+
+	fileAuth := fileClient.AuthType
+	if fileAuth == "" {
+		fileAuth = schemas.MCPAuthTypeHeaders
+	}
+	existingAuth := existing.AuthType
+	if existingAuth == "" {
+		existingAuth = schemas.MCPAuthTypeHeaders
+	}
+	if fileAuth != existingAuth {
+		changed = append(changed, "auth_type")
+	}
+	fileClient.AuthType = existingAuth
+
+	if fileClient.ConnectionType != existing.ConnectionType {
+		changed = append(changed, "connection_type")
+	}
+	fileClient.ConnectionType = existing.ConnectionType
+
+	if !fileClient.ConnectionString.Equals(existing.ConnectionString) {
+		changed = append(changed, "connection_string")
+	}
+	fileClient.ConnectionString = existing.ConnectionString
+
+	if !reflect.DeepEqual(fileClient.StdioConfig, existing.StdioConfig) {
+		changed = append(changed, "stdio_config")
+	}
+	fileClient.StdioConfig = existing.StdioConfig
+
+	// oauth_config drift is not pinned here: it is fully handled by
+	// rotateMCPOauthConfigFromFile at the call sites below, which applies any
+	// declared change (client_id/client_secret/authorize_url/token_url/
+	// registration_url/resource/scopes) and cascades needs_reauth. Only the
+	// pre-authorization pending stash is preserved here — once authorized,
+	// PendingOAuthConfig is cleared and this is a no-op.
+	fileClient.PendingOAuthConfig = existing.PendingOAuthConfig
+
+	// Not immutable, but a per_user_headers client must keep a non-empty key
+	// schema — the update API rejects emptying it for the same reason.
+	if fileClient.AuthType == schemas.MCPAuthTypePerUserHeaders &&
+		len(fileClient.PerUserHeaderKeys) == 0 && len(existing.PerUserHeaderKeys) > 0 {
+		logger.Warn("per_user_header_keys cannot be emptied for MCP client %q (auth_type 'per_user_headers'); keeping the stored keys", existing.Name)
+		fileClient.PerUserHeaderKeys = existing.PerUserHeaderKeys
+	}
+
+	// Same rule for the token_exchange scoping block: audience/scopes edits
+	// apply (the update API accepts them too), but a token_exchange client
+	// must keep a block with a non-empty audience.
+	if fileClient.AuthType == schemas.MCPAuthTypeTokenExchange &&
+		(fileClient.TokenExchange == nil || strings.TrimSpace(fileClient.TokenExchange.Audience) == "") &&
+		existing.TokenExchange != nil {
+		logger.Warn("token_exchange cannot be emptied for MCP client %q (auth_type 'token_exchange'); keeping the stored block", existing.Name)
+		fileClient.TokenExchange = existing.TokenExchange
+	}
+
+	fileClient.OauthConfigID = existing.OauthConfigID
+	if len(fileClient.DiscoveredTools) == 0 {
+		fileClient.DiscoveredTools = existing.DiscoveredTools
+		fileClient.DiscoveredToolNameMapping = existing.DiscoveredToolNameMapping
+	}
+
+	// Not immutable, and an explicit file declaration (true or false) is
+	// honored same as the update API — but an undeclared (nil) file value
+	// must not silently clear a stored true (set via the update API, or
+	// backfilled by migration for pre-existing rows) back to per-call just
+	// because a reconciliation pass fired for some unrelated field.
+	if fileClient.NeedsSessionStickiness == nil {
+		fileClient.NeedsSessionStickiness = existing.NeedsSessionStickiness
+	}
+	return changed
+}
+
+// rotateMCPOauthConfigFromFile applies any oauth_config drift declared in
+// the file to the authorized oauth_configs row backing clientName, mirroring
+// the update-MCP-client API's rotation via the same
+// store.RotateMCPOAuthConfig: every field the file explicitly sets
+// (client_id/client_secret/authorize_url/token_url/registration_url/
+// resource/scopes) is resolved against what's stored, and if anything
+// differs the row is updated in place and every token bound to it — shared,
+// per-user, vk, session, admin alike — is cascaded to needs_reauth. Only
+// fields the file explicitly sets participate: an absent field means "not
+// declared" (e.g. filled in by discovery/dynamic registration at
+// authorization time), not a request to clear it.
+//
+// No-op when authorizedOauth is nil — verification is still pending (no
+// authorized row to rotate yet) or the client isn't OAuth-based; the pending
+// stash case is handled separately by pinMCPClientImmutableFields preserving
+// the stored PendingOAuthConfig.
+//
+// Returns incomplete=true when a declared client_id/client_secret secret
+// reference failed to resolve, or when the stored row's scopes column isn't
+// valid JSON, so a field was skipped rather than applied. Callers must not
+// advance ConfigHash to this boot's file hash in that case:
+// doing so would checkpoint a partially-applied rotation as fully synced,
+// and the next boot's identical file content would hash-match and skip
+// reconciliation entirely — even after the underlying secret becomes
+// resolvable — until the file itself changes again.
+func rotateMCPOauthConfigFromFile(ctx context.Context, store configstore.ConfigStore, clientName string, fileBlock *schemas.OAuth2Config, authorizedOauth *configstoreTables.TableOauthConfig) (incomplete bool) {
+	if store == nil || fileBlock == nil || authorizedOauth == nil {
+		return false
+	}
+	fields := configstore.MCPOAuthConfigFields{
+		ClientID:     authorizedOauth.ClientID,
+		ClientSecret: authorizedOauth.ClientSecret,
+		AuthorizeURL: authorizedOauth.AuthorizeURL,
+		TokenURL:     authorizedOauth.TokenURL,
+		Resource:     authorizedOauth.Resource,
+	}
+	if authorizedOauth.RegistrationURL != nil {
+		fields.RegistrationURL = *authorizedOauth.RegistrationURL
+	}
+	if authorizedOauth.Scopes != "" {
+		if err := json.Unmarshal([]byte(authorizedOauth.Scopes), &fields.Scopes); err != nil {
+			// A decode failure would otherwise silently collapse fields.Scopes
+			// to nil — indistinguishable from "the file declared nothing about
+			// scopes" — and a file that never mentions scopes would then look
+			// like drift against the (unreadable) stored value, rotating and
+			// cascading needs_reauth for a field it never touched. Skip this
+			// rotation attempt instead so a later boot retries once the stored
+			// row is repaired.
+			logger.Warn("stored oauth scopes for MCP client %q are not valid JSON; skipping OAuth rotation: %v", clientName, err)
+			return true
+		}
+	}
+	// IsSet() is true for a declared env./vault. reference even when it
+	// doesn't resolve (ref present, Val ""; see its own doc comment). Guard
+	// against persisting that empty value on top of IsSet(): it would
+	// silently blank a real stored credential and RotateMCPOAuthConfig would
+	// see it as drift, cascading every bound token to needs_reauth over a
+	// transient env var absence. Skip the field (keep the stored value) and
+	// warn instead.
+	if fileBlock.ClientID.IsSet() {
+		if fileBlock.ClientID.GetValue() != "" {
+			fields.ClientID = fileBlock.ClientID
+		} else {
+			logger.Warn("oauth client_id declared for MCP client %q resolves to an empty value; keeping the stored value", clientName)
+			incomplete = true
+		}
+	}
+	if fileBlock.ClientSecret.IsSet() {
+		if fileBlock.ClientSecret.GetValue() != "" {
+			fields.ClientSecret = fileBlock.ClientSecret
+		} else {
+			logger.Warn("oauth client_secret declared for MCP client %q resolves to an empty value; keeping the stored value", clientName)
+			incomplete = true
+		}
+	}
+	if fileBlock.AuthorizeURL != "" {
+		fields.AuthorizeURL = fileBlock.AuthorizeURL
+	}
+	if fileBlock.TokenURL != "" {
+		fields.TokenURL = fileBlock.TokenURL
+	}
+	if fileBlock.RegistrationURL != nil && *fileBlock.RegistrationURL != "" {
+		fields.RegistrationURL = *fileBlock.RegistrationURL
+	}
+	if fileBlock.Resource != "" {
+		fields.Resource = fileBlock.Resource
+	}
+	if fileBlock.Scopes != nil {
+		fields.Scopes = fileBlock.Scopes
+	}
+	rotated, err := store.RotateMCPOAuthConfig(ctx, authorizedOauth, fields)
+	if err != nil {
+		logger.Warn("failed to rotate OAuth config for MCP client %q from config file: %v", clientName, err)
+		return true
+	}
+	if rotated {
+		logger.Warn("rotated OAuth config for MCP client %q from config file; existing sessions must re-authenticate", clientName)
+	}
+	return incomplete
+}
+
+// rotateMCPTokenExchangeConfigFromFile cascades needs_reauth on the retained
+// admin exchange credential when a config.json edit changes the
+// token_exchange scoping block (audience/client_id/client_secret/
+// authorization_server_url/scopes), mirroring the update-MCP-client API's
+// shouldMarkExchangeNeedsReauth path. Unlike oauth_config there is no
+// separate table row to rotate — the block lives directly on the MCP
+// client row and is already applied via
+// mcpClientConfigToTable/applyMCPClientPinnedStateToRow; this only handles
+// the reauth cascade side effect. No-op when the file doesn't declare a
+// token_exchange block or nothing actually changed.
+//
+// Only fields the file explicitly sets participate in the diff — an
+// absent/empty client_id or client_secret means "not declared" (e.g. still
+// resolving from a secret ref), not a request to clear it, mirroring
+// rotateMCPOauthConfigFromFile's treatment of oauth_config.client_id/
+// client_secret. The resolved value (file-declared fields layered onto the
+// stored ones) is what's diffed via MCPTokenExchangeConfig.DiffersFrom, the
+// same method the update-MCP-client API uses against its own
+// redaction-resolved request value.
+func rotateMCPTokenExchangeConfigFromFile(ctx context.Context, store configstore.ConfigStore, clientID, clientName string, fileBlock, existing *schemas.MCPTokenExchangeConfig) {
+	if store == nil || fileBlock == nil || existing == nil {
+		return
+	}
+	resolved := *existing
+	if fileBlock.Audience != "" {
+		resolved.Audience = fileBlock.Audience
+	}
+	// Unlike Audience/ClientID/ClientSecret above, a plain bool has no
+	// "not declared" signal to distinguish from a genuine false — and
+	// mcpClientConfigToTable(fileClient), called by this reconciliation's
+	// caller before this function runs, already persists fileBlock's literal
+	// value regardless of what's computed here. So this must mirror that:
+	// take the file's value unconditionally, or the diff below would miss a
+	// true->false transition that's already been written to the stored row,
+	// leaving a stale admin credential (minted under the old IdP identity)
+	// un-reauthenticated.
+	resolved.UseIdPCredentials = fileBlock.UseIdPCredentials
+	if fileBlock.ClientID.IsSet() {
+		if fileBlock.ClientID.GetValue() != "" {
+			resolved.ClientID = fileBlock.ClientID
+		} else {
+			logger.Warn("token_exchange.client_id declared for MCP client %q resolves to an empty value; keeping the stored value", clientName)
+		}
+	}
+	if fileBlock.ClientSecret.IsSet() {
+		if fileBlock.ClientSecret.GetValue() != "" {
+			resolved.ClientSecret = fileBlock.ClientSecret
+		} else {
+			logger.Warn("token_exchange.client_secret declared for MCP client %q resolves to an empty value; keeping the stored value", clientName)
+		}
+	}
+	if fileBlock.AuthorizationServerURL != nil && *fileBlock.AuthorizationServerURL != "" {
+		resolved.AuthorizationServerURL = fileBlock.AuthorizationServerURL
+	}
+	if len(fileBlock.Scopes) > 0 {
+		resolved.Scopes = fileBlock.Scopes
+	}
+
+	if !existing.DiffersFrom(&resolved) {
+		return
+	}
+	if err := store.MarkAdminExchangeTokenNeedsReauthByMCPClientID(ctx, clientID); err != nil {
+		logger.Warn("failed to mark admin exchange credential needs_reauth for MCP client %q from config file: %v", clientName, err)
+		return
+	}
+	logger.Warn("rotated token_exchange config for MCP client %q from config file; admin exchange credential must be re-verified", clientName)
+}
+
+// authorizedOauthRowForComparison loads the oauth_configs row backing an
+// already-authorized client so an edited file oauth_config block can be
+// detected by pinMCPClientImmutableFields. Returns nil whenever there is
+// nothing to compare (no file block, verification still pending, no store)
+// or the lookup fails — pinning still applies either way, only the drift
+// warning loses the oauth_config detail.
+func authorizedOauthRowForComparison(ctx context.Context, store configstore.ConfigStore, fileClient, existing *schemas.MCPClientConfig) *configstoreTables.TableOauthConfig {
+	if store == nil || fileClient == nil || existing == nil {
+		return nil
+	}
+	if fileClient.PendingOAuthConfig == nil || existing.PendingOAuthConfig != nil || existing.OauthConfigID == nil {
+		return nil
+	}
+	row, err := store.GetOauthConfigByID(ctx, *existing.OauthConfigID)
+	if err != nil {
+		logger.Debug("failed to load oauth config %s for MCP client %q immutable-field check: %v", *existing.OauthConfigID, existing.Name, err)
+		return nil
+	}
+	return row
+}
+
+// warnIgnoredImmutableMCPFields emits the advisory line for a config.json
+// edit that touched fields which cannot change after creation. The update
+// API drops the same fields silently (MCPClientUpdateRequest does not accept
+// them); the file path gets this log line because a file editor has no
+// response channel.
+func warnIgnoredImmutableMCPFields(clientName string, fields []string) {
+	if len(fields) == 0 {
+		return
+	}
+	logger.Warn("ignoring changes to immutable fields [%s] on MCP client %q from config file: these cannot be changed after creation; delete and recreate the client to change them", strings.Join(fields, ", "), clientName)
+}
+
+// applyMCPClientPinnedStateToRow mirrors the pinned immutable fields and
+// preserved server-side state onto the table row that will be persisted,
+// keeping the row and the in-memory config consistent (the row was built
+// from the raw file entry before pinning). The row's ConfigHash
+// intentionally stays the raw-file hash: the stored hash always reflects
+// the file entry as last synced, so the immutable-field warning fires once
+// per file edit instead of on every boot.
+func applyMCPClientPinnedStateToRow(row *configstoreTables.TableMCPClient, clientConfig *schemas.MCPClientConfig) {
+	authType := string(clientConfig.AuthType)
+	if authType == "" {
+		authType = string(schemas.MCPAuthTypeHeaders)
+	}
+	row.AuthType = authType
+	row.ConnectionType = string(clientConfig.ConnectionType)
+	row.ConnectionString = clientConfig.ConnectionString
+	row.StdioConfig = clientConfig.StdioConfig
+	row.PerUserHeaderKeys = mcputils.CanonicalizeHeaderKeys(clientConfig.PerUserHeaderKeys)
+	row.TokenExchange = clientConfig.TokenExchange
+	row.OauthConfigID = clientConfig.OauthConfigID
+	row.DiscoveredTools = clientConfig.DiscoveredTools
+	row.DiscoveredToolNameMapping = clientConfig.DiscoveredToolNameMapping
+	row.PendingOAuthConfig = clientConfig.PendingOAuthConfig
+	row.NeedsSessionStickiness = clientConfig.NeedsSessionStickiness
+}
+
 // mergeMCPConfig merges MCP config from file with store
 func mergeMCPConfig(ctx context.Context, config *Config, configData *ConfigData, mcpConfig *schemas.MCPConfig) {
 	logger.Debug("merging MCP config from config file with store")
@@ -1788,9 +2171,26 @@ func mergeMCPConfig(ctx context.Context, config *Config, configData *ConfigData,
 				if existingClientConfig.ConfigHash != fileHash {
 					logger.Debug("config hash mismatch for MCP client %q, syncing from config file", newClientConfig.Name)
 					newClientConfig.ID = existingClientConfig.ID
-					newClientConfig.ConfigHash = fileHash
+					// Pin immutable fields to their stored values and carry
+					// server-side verification state (authorized OAuth link,
+					// discovered tools) the file cannot express, so a config
+					// edit does not reset a verified client.
+					authorizedOauth := authorizedOauthRowForComparison(ctx, config.ConfigStore, newClientConfig, existingClientConfig)
+					incompleteRotation := rotateMCPOauthConfigFromFile(ctx, config.ConfigStore, existingClientConfig.Name, newClientConfig.PendingOAuthConfig, authorizedOauth)
+					rotateMCPTokenExchangeConfigFromFile(ctx, config.ConfigStore, existingClientConfig.ID, existingClientConfig.Name, newClientConfig.TokenExchange, existingClientConfig.TokenExchange)
+					warnIgnoredImmutableMCPFields(existingClientConfig.Name, pinMCPClientImmutableFields(newClientConfig, existingClientConfig))
+					applyMCPClientPinnedStateToRow(&fileClientRow, newClientConfig)
 					fileClientRow.ClientID = existingClientConfig.ID
-					fileClientRow.ConfigHash = fileHash
+					if incompleteRotation {
+						// Keep the prior stored hash so this file version is
+						// not checkpointed as fully synced — see
+						// rotateMCPOauthConfigFromFile's doc comment.
+						newClientConfig.ConfigHash = existingClientConfig.ConfigHash
+						fileClientRow.ConfigHash = existingClientConfig.ConfigHash
+					} else {
+						newClientConfig.ConfigHash = fileHash
+						fileClientRow.ConfigHash = fileHash
+					}
 					clientConfigsToUpdate = append(clientConfigsToUpdate, fileClientRow)
 					mcpConfig.ClientConfigs[i] = newClientConfig
 				} else {
@@ -1908,6 +2308,7 @@ func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreT
 		Headers:                   clientConfig.Headers,
 		AllowedExtraHeaders:       clientConfig.AllowedExtraHeaders,
 		IsPingAvailable:           clientConfig.IsPingAvailable,
+		NeedsSessionStickiness:    clientConfig.NeedsSessionStickiness,
 		ToolSyncInterval:          int(clientConfig.ToolSyncInterval / time.Second),
 		ToolExecutionTimeout:      int(math.Ceil(clientConfig.ToolExecutionTimeout.Seconds())),
 		ToolPricing:               clientConfig.ToolPricing,
@@ -1916,6 +2317,8 @@ func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreT
 		DiscoveredTools:           clientConfig.DiscoveredTools,
 		DiscoveredToolNameMapping: clientConfig.DiscoveredToolNameMapping,
 		PerUserHeaderKeys:         mcputils.CanonicalizeHeaderKeys(clientConfig.PerUserHeaderKeys),
+		TokenExchange:             clientConfig.TokenExchange,
+		PendingOAuthConfig:        clientConfig.PendingOAuthConfig,
 		ConfigHash:                clientConfig.ConfigHash,
 	}, nil
 }
@@ -1987,6 +2390,29 @@ func syncMCPConfigFromFile(ctx context.Context, config *Config, configData *Conf
 		if existing == nil {
 			adds = append(adds, fileClient)
 		} else {
+			// Pin immutable fields to their stored values and carry
+			// server-side verification state (authorized OAuth link,
+			// discovered tools) the file cannot express, so the every-boot
+			// overwrite does not reset a verified client. The advisory log
+			// is gated on the stored hash so it fires once per file edit,
+			// not on every boot.
+			fileEdited := existing.ConfigHash != fileHash
+			if fileEdited {
+				authorizedOauth := authorizedOauthRowForComparison(ctx, config.ConfigStore, fileClient, existing)
+				if rotateMCPOauthConfigFromFile(ctx, config.ConfigStore, existing.Name, fileClient.PendingOAuthConfig, authorizedOauth) {
+					// Keep the prior stored hash so this file version is not
+					// checkpointed as fully synced — see
+					// rotateMCPOauthConfigFromFile's doc comment.
+					fileClient.ConfigHash = existing.ConfigHash
+					fileRow.ConfigHash = existing.ConfigHash
+				}
+				rotateMCPTokenExchangeConfigFromFile(ctx, config.ConfigStore, existing.ID, existing.Name, fileClient.TokenExchange, existing.TokenExchange)
+			}
+			changedImmutable := pinMCPClientImmutableFields(fileClient, existing)
+			if fileEdited {
+				warnIgnoredImmutableMCPFields(existing.Name, changedImmutable)
+			}
+			applyMCPClientPinnedStateToRow(&fileRow, fileClient)
 			fileRow.ClientID = existing.ID
 			updates = append(updates, fileRow)
 		}
@@ -4205,7 +4631,13 @@ func ResolveFrameworkPricingConfig(
 		if fileConfig.Pricing.MCPLibrarySyncInterval != nil {
 			val := *fileConfig.Pricing.MCPLibrarySyncInterval
 			switch {
-			case val <= 0:
+			case val == modelcatalog.MCPLibrarySyncDisabled:
+				// Explicit opt-out (air-gapped deployments with no local catalog
+				// file), not corruption. Passed through untouched so Phase 3 does
+				// not "repair" it back to the default.
+				disabled := modelcatalog.MCPLibrarySyncDisabled
+				fileMCPLibrarySyncSeconds = &disabled
+			case val < 0:
 				logger.Warn("mcp_library_sync_interval in config.json is invalid (%d seconds), ignoring — using default (%d seconds)", val, defaultSyncSeconds)
 			case val < modelcatalog.MinimumPricingSyncIntervalSec:
 				clamped := modelcatalog.MinimumPricingSyncIntervalSec
@@ -4380,7 +4812,16 @@ func ResolveFrameworkPricingConfig(
 		if dbConfig.MCPLibrarySyncInterval != nil {
 			val := *dbConfig.MCPLibrarySyncInterval
 			switch {
-			case val <= 0:
+			case val == modelcatalog.MCPLibrarySyncDisabled:
+				// 0 is a deliberate opt-out rather than corruption, so it is
+				// honoured instead of being backfilled with the default.
+				if fileChanged && fileMCPLibrarySyncSeconds != nil {
+					logger.Info("mcp_library_sync_interval from config.json overrides DB (file hash changed): file=%d db=disabled — updating DB", *fileMCPLibrarySyncSeconds)
+					needsDBUpdate = true
+				} else {
+					resolvedMCPLibrarySyncInterval = dbConfig.MCPLibrarySyncInterval
+				}
+			case val < 0:
 				logger.Warn("mcp_library_sync_interval in DB is corrupted (%d seconds), ignoring — backfilling with %d seconds", val, *resolvedMCPLibrarySyncInterval)
 				needsDBUpdate = true
 			case val < modelcatalog.MinimumPricingSyncIntervalSec:
@@ -4519,11 +4960,15 @@ func initFrameworkConfig(ctx context.Context, config *Config, configData *Config
 	// OAuthProvider for MCPAuthTypePerUserHeaders clients.
 	config.MCPHeadersProvider = mcp_headers.NewProvider(config.ConfigStore, logger)
 
-	// Start token refresh worker for automatic OAuth token refresh
-	config.TokenRefreshWorker = oauth2.NewTokenRefreshWorker(config.OAuthProvider, logger)
-	if config.TokenRefreshWorker != nil {
-		config.TokenRefreshWorker.Start(ctx)
-	}
+	// Construct the OAuth token refresh worker, but don't start it here: Start
+	// runs an immediate refresh sweep synchronously with launching its
+	// goroutine, and this point in startup is well before any MCP client is
+	// dialed or the server's SetOnTokenRefreshed reconnect callback is wired
+	// up (see its registration in server.go). A refresh landing in that gap
+	// would leave nothing to trigger the affected client's reconnect until
+	// the next scheduled sweep or a call happens to fail — the server starts
+	// the worker itself, right after that callback is installed.
+	config.OAuthTokenRefreshWorker = oauth2.NewOAuthTokenRefreshWorker(config.OAuthProvider, logger)
 
 	// Start per-user OAuth sweep worker: expires stale pending flows and reaps
 	// long-orphaned token rows. Orphan retention defaults to 30 days.
@@ -4598,6 +5043,23 @@ func initEncryption(configData *ConfigData) error {
 // initVault is a no-op stub at the OSS level.
 // Vault initialization is performed by the enterprise layer via config_store.vault_store.
 func initVault(_ *ConfigData) {}
+
+// resolveSetupToken resolves the bootstrap setup token required to create the very
+// first admin account from config data or the BIFROST_SETUP_TOKEN environment
+// variable. Returns "" when neither is set — callers must then fail closed rather
+// than fall back to generating and logging a token, since a per-process generated
+// value would differ across nodes in a multi-node deployment. Whitespace-only
+// values are treated as unset so an accidental " " doesn't become a guessable token.
+func resolveSetupToken(configData *ConfigData) string {
+	configured := ""
+	if configData.SetupToken != nil {
+		configured = strings.TrimSpace(configData.SetupToken.GetValue())
+	}
+	if configured == "" {
+		return strings.TrimSpace(os.Getenv("BIFROST_SETUP_TOKEN"))
+	}
+	return configured
+}
 
 // syncEncryption encrypts all plaintext rows in the config store if encryption is enabled.
 // Called during bootup after encryption key is initialized and all config data has been loaded.
@@ -4990,15 +5452,15 @@ func (c *Config) GetKVStore() *kvstore.Store {
 }
 
 // Close gracefully shuts down all background components associated with the Config.
-// This includes ModelCatalog sync worker, TokenRefreshWorker, KVStore cleanup loop,
+// This includes ModelCatalog sync worker, OAuthTokenRefreshWorker, KVStore cleanup loop,
 // ConfigStore, LogsStore, and VectorStore. It should be called when the Config is
 // no longer needed to prevent goroutine leaks.
 func (c *Config) Close(ctx context.Context) {
 	if c.ModelCatalog != nil {
 		c.ModelCatalog.Cleanup()
 	}
-	if c.TokenRefreshWorker != nil {
-		c.TokenRefreshWorker.Stop()
+	if c.OAuthTokenRefreshWorker != nil {
+		c.OAuthTokenRefreshWorker.Stop()
 	}
 	if c.OAuthSweepWorker != nil {
 		c.OAuthSweepWorker.Stop()
@@ -6228,11 +6690,13 @@ func (c *Config) UpdateMCPClient(ctx context.Context, id string, updatedConfig *
 	c.MCPConfig.ClientConfigs[configIndex].AllowedExtraHeaders = updatedConfig.AllowedExtraHeaders
 	c.MCPConfig.ClientConfigs[configIndex].ToolPricing = updatedConfig.ToolPricing
 	c.MCPConfig.ClientConfigs[configIndex].IsPingAvailable = updatedConfig.IsPingAvailable
+	c.MCPConfig.ClientConfigs[configIndex].NeedsSessionStickiness = updatedConfig.NeedsSessionStickiness
 	c.MCPConfig.ClientConfigs[configIndex].ToolSyncInterval = updatedConfig.ToolSyncInterval
 	c.MCPConfig.ClientConfigs[configIndex].ToolExecutionTimeout = updatedConfig.ToolExecutionTimeout
 	c.MCPConfig.ClientConfigs[configIndex].AllowOnAllVirtualKeys = updatedConfig.AllowOnAllVirtualKeys
 	c.MCPConfig.ClientConfigs[configIndex].Disabled = updatedConfig.Disabled
 	c.MCPConfig.ClientConfigs[configIndex].PerUserHeaderKeys = updatedConfig.PerUserHeaderKeys
+	c.MCPConfig.ClientConfigs[configIndex].TokenExchange = updatedConfig.TokenExchange
 
 	// Handle disable/enable lifecycle when the Disabled flag toggles and the client
 	// is registered at runtime. We call the core bifrost methods directly (not the
@@ -6256,9 +6720,9 @@ func (c *Config) UpdateMCPClient(ctx context.Context, id string, updatedConfig *
 	return nil
 }
 
-// UpdateMCPClientConnection updates the auth credentials (headers) for an existing MCP client.
+// UpdateMCPClientCredentials updates the auth credentials (headers) for an existing MCP client.
 // It delegates the actual reconnection (with the new credentials) to the Bifrost client.
-func (c *Config) UpdateMCPClientConnection(ctx context.Context, id string, newConfig *schemas.MCPClientConfig) error {
+func (c *Config) UpdateMCPClientCredentials(ctx context.Context, id string, newConfig *schemas.MCPClientConfig) error {
 	if c.client == nil {
 		return fmt.Errorf("bifrost client not set")
 	}
@@ -6285,7 +6749,7 @@ func (c *Config) UpdateMCPClientConnection(ctx context.Context, id string, newCo
 
 	// Attempt the credential swap on the runtime side first.
 	// If this fails, nothing in our in-memory config has changed.
-	if err := c.client.UpdateMCPClientConnection(id, newConfig); err != nil {
+	if err := c.client.UpdateMCPClientCredentials(id, newConfig); err != nil {
 		return fmt.Errorf("failed to update MCP client credentials: %w", err)
 	}
 
@@ -6451,6 +6915,28 @@ func (c *Config) RedactMCPClientConfig(config *schemas.MCPClientConfig) *schemas
 	}
 	if config.OauthClientSecret != nil {
 		configCopy.OauthClientSecret = config.OauthClientSecret.Redacted()
+	}
+
+	// Redact the token-exchange application credentials. Copy the struct
+	// first — configCopy shares the pointer with the live config, and
+	// Redacted() returns a fresh SecretVar so the live block is never
+	// mutated.
+	if config.TokenExchange != nil {
+		exchangeCopy := *config.TokenExchange
+		exchangeCopy.ClientID = exchangeCopy.ClientID.Redacted()
+		exchangeCopy.ClientSecret = exchangeCopy.ClientSecret.Redacted()
+		configCopy.TokenExchange = &exchangeCopy
+	}
+
+	// Redact credentials inside the inline `oauth_config` bootstrap block.
+	// Copy the struct first — configCopy shares the pointer with the live
+	// config, and Redacted() returns a fresh SecretVar so the live stash is
+	// never mutated.
+	if config.PendingOAuthConfig != nil {
+		pendingCopy := *config.PendingOAuthConfig
+		pendingCopy.ClientID = pendingCopy.ClientID.Redacted()
+		pendingCopy.ClientSecret = pendingCopy.ClientSecret.Redacted()
+		configCopy.PendingOAuthConfig = &pendingCopy
 	}
 
 	// Redact TLS CA cert PEM if present

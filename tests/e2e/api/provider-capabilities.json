@@ -43,6 +43,7 @@
       "video_delete": true,
       "video_list": true,
       "video_remix": true,
+      "video_edit": true,
       "rerank": false
     },
     "anthropic": {
@@ -87,6 +88,7 @@
       "video_delete": false,
       "video_list": false,
       "video_remix": false,
+      "video_edit": false,
       "rerank": false
     },
     "azure": {
@@ -131,6 +133,7 @@
       "video_delete": false,
       "video_list": false,
       "video_remix": false,
+      "video_edit": false,
       "rerank": false
     },
     "bedrock": {
@@ -175,6 +178,7 @@
       "video_delete": false,
       "video_list": false,
       "video_remix": false,
+      "video_edit": false,
       "rerank": true
     },
     "bedrock_mantle": {
@@ -219,6 +223,7 @@
       "video_delete": false,
       "video_list": false,
       "video_remix": false,
+      "video_edit": false,
       "rerank": false
     },
     "deepseek": {
@@ -263,6 +268,7 @@
       "video_delete": false,
       "video_list": false,
       "video_remix": false,
+      "video_edit": false,
       "rerank": false
     },
     "cerebras": {
@@ -307,6 +313,7 @@
       "video_delete": false,
       "video_list": false,
       "video_remix": false,
+      "video_edit": false,
       "rerank": false
     },
     "cohere": {
@@ -351,6 +358,7 @@
       "video_delete": false,
       "video_list": false,
       "video_remix": false,
+      "video_edit": false,
       "rerank": true
     },
     "elevenlabs": {
@@ -395,6 +403,7 @@
       "video_delete": false,
       "video_list": false,
       "video_remix": false,
+      "video_edit": false,
       "rerank": false
     },
     "gemini": {
@@ -439,6 +448,7 @@
       "video_delete": false,
       "video_list": false,
       "video_remix": false,
+      "video_edit": false,
       "rerank": true
     },
     "groq": {
@@ -483,6 +493,7 @@
       "video_delete": false,
       "video_list": false,
       "video_remix": false,
+      "video_edit": false,
       "rerank": false
     },
     "huggingface": {
@@ -527,6 +538,7 @@
       "video_delete": false,
       "video_list": false,
       "video_remix": false,
+      "video_edit": false,
       "rerank": false
     },
     "mistral": {
@@ -571,6 +583,7 @@
       "video_delete": false,
       "video_list": false,
       "video_remix": false,
+      "video_edit": false,
       "rerank": false
     },
     "nebius": {
@@ -615,6 +628,7 @@
       "video_delete": false,
       "video_list": false,
       "video_remix": false,
+      "video_edit": false,
       "rerank": false
     },
     "openrouter": {
@@ -659,6 +673,7 @@
       "video_delete": false,
       "video_list": false,
       "video_remix": false,
+      "video_edit": false,
       "rerank": false
     },
     "parasail": {
@@ -703,6 +718,7 @@
       "video_delete": false,
       "video_list": false,
       "video_remix": false,
+      "video_edit": false,
       "rerank": false
     },
     "perplexity": {
@@ -747,6 +763,7 @@
       "video_delete": false,
       "video_list": false,
       "video_remix": false,
+      "video_edit": false,
       "rerank": false
     },
     "replicate": {
@@ -791,6 +808,52 @@
       "video_delete": true,
       "video_list": true,
       "video_remix": true,
+      "video_edit": false,
+      "rerank": false
+    },
+    "runware": {
+      "chat_completions": true,
+      "chat_completions_with_tools": true,
+      "text_completion": false,
+      "responses": true,
+      "responses_with_tools": true,
+      "count_tokens": false,
+      "embedding": false,
+      "speech": false,
+      "transcription": false,
+      "list_models": false,
+      "image_generation": true,
+      "image_variation": false,
+      "image_edit": true,
+      "batch_create": false,
+      "batch_list": false,
+      "batch_retrieve": false,
+      "batch_cancel": false,
+      "batch_results": false,
+      "file_batch_input": false,
+      "batch_create_file": false,
+      "file_upload": false,
+      "file_list": false,
+      "file_retrieve": false,
+      "file_delete": false,
+      "file_content": false,
+      "container_create": false,
+      "container_list": false,
+      "container_retrieve": false,
+      "container_delete": false,
+      "container_file_create": false,
+      "container_file_create_reference": false,
+      "container_file_list": false,
+      "container_file_retrieve": false,
+      "container_file_content": false,
+      "container_file_delete": false,
+      "video_generation": true,
+      "video_retrieve": true,
+      "video_download": true,
+      "video_delete": false,
+      "video_list": false,
+      "video_remix": false,
+      "video_edit": true,
       "rerank": false
     },
     "vertex": {
@@ -835,6 +898,7 @@
       "video_delete": true,
       "video_list": true,
       "video_remix": true,
+      "video_edit": false,
       "rerank": true
     },
     "xai": {
@@ -879,6 +943,7 @@
       "video_delete": false,
       "video_list": false,
       "video_remix": false,
+      "video_edit": false,
       "rerank": false
     }
   }

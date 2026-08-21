@@ -156,7 +156,8 @@ function TopModelsChart({
 			title="Top Models"
 			loading={loadingModels}
 			testId="dashboard-rankings-top-models"
-			className="z-[1] h-full"
+			className="z-[1]"
+			autoHeight
 			totalLabel="Total"
 			total={grandTotal !== null ? <NumberFlow value={grandTotal} format={COMPACT_NUMBER_FORMAT} /> : undefined}
 			totalTooltip={grandTotal !== null ? grandTotal.toLocaleString("en-US") : undefined}
@@ -212,7 +213,7 @@ function TopModelsChart({
 			<div className="py-2">
 				{/* Ranked model legend */}
 				{modelTotals.length > 0 && (
-					<div className="mt-3 grid grid-cols-2 gap-x-8 gap-y-1.5 px-2 pb-1">
+					<div className="mt-3 grid grid-cols-1 gap-x-8 gap-y-1.5 px-2 pb-1 sm:grid-cols-2">
 						{modelTotals.map((m, idx) => (
 							<div key={m.model} className="flex items-center gap-2 text-sm">
 								<span className="text-muted-foreground w-4 text-right text-xs">{idx + 1}.</span>
