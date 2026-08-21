@@ -136611,7 +136611,8 @@
                   "pm.test('forced zero-argument function is called with an empty object', function () {",
                   "  pm.expect(calls.length, 'no tool call in response: ' + raw.slice(0, 500)).to.be.above(0);",
                   "  pm.expect(calls[0].name).to.eql('get_current_time');",
-                  "  var args = JSON.parse(calls[0].arguments || '{}');",
+                  "  pm.expect(calls[0].arguments, 'missing function arguments').to.be.a('string').and.not.empty;",
+                  "  var args = JSON.parse(calls[0].arguments);",
                   "  pm.expect(Object.keys(args), 'expected empty arguments: ' + calls[0].arguments).to.have.length(0);",
                   "});"
                 ]
@@ -136663,7 +136664,8 @@
                   "pm.test('forced zero-argument function is called with an empty object', function () {",
                   "  pm.expect(calls.length, 'no tool call in response: ' + raw.slice(0, 500)).to.be.above(0);",
                   "  pm.expect((calls[0].function || {}).name).to.eql('get_current_time');",
-                  "  var args = JSON.parse((calls[0].function || {}).arguments || '{}');",
+                  "  pm.expect((calls[0].function || {}).arguments, 'missing function arguments').to.be.a('string').and.not.empty;",
+                  "  var args = JSON.parse((calls[0].function || {}).arguments);",
                   "  pm.expect(Object.keys(args), 'expected empty arguments: ' + (calls[0].function || {}).arguments).to.have.length(0);",
                   "});"
                 ]
