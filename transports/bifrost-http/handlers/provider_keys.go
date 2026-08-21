@@ -566,6 +566,15 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, updateKey schemas.Key) (sch
 	mergedKey.ConfigHash = oldRawKey.ConfigHash
 	mergedKey.Status = oldRawKey.Status
 
+	// An update that omits name must not clear it: schemas.Key.Name is a plain
+	// string, so an omitted field and an explicit "" are indistinguishable here.
+	// Treating that as "clear the name" persists an empty name, and config_keys.name
+	// carries a global unique index — the first cleared key claims "" and every
+	// later update that also omits name then fails with a confusing 409.
+	if mergedKey.Name == "" {
+		mergedKey.Name = oldRawKey.Name
+	}
+
 	return mergedKey, nil
 }
 
