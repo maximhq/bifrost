@@ -98026,6 +98026,14 @@
             "type": "number",
             "minimum": 0
           },
+          "output_cost_per_image_above_1024_and_1536_pixels": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1536_and_1024_pixels": {
+            "type": "number",
+            "minimum": 0
+          },
           "output_cost_per_image_above_2048_and_2048_pixels": {
             "type": "number",
             "minimum": 0
@@ -98067,6 +98075,54 @@
             "minimum": 0
           },
           "output_cost_per_image_auto_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1024_and_1024_pixels_low_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1024_and_1536_pixels_low_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1536_and_1024_pixels_low_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1024_and_1024_pixels_medium_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1024_and_1536_pixels_medium_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1536_and_1024_pixels_medium_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1024_and_1024_pixels_high_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1024_and_1536_pixels_high_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1536_and_1024_pixels_high_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1024_and_1024_pixels_standard_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1024_and_1536_pixels_standard_quality": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1536_and_1024_pixels_standard_quality": {
             "type": "number",
             "minimum": 0
           },

@@ -84,7 +84,7 @@ describe("pricingFieldUnit", () => {
 			expect(byUnit[unit], `${field.key} resolved to unexpected unit ${unit}`).toBeDefined();
 			byUnit[unit].push(field.key);
 		}
-		expect(PRICING_FIELDS).toHaveLength(87);
+		expect(PRICING_FIELDS).toHaveLength(101);
 		expect(byUnit.multiplier).toEqual(["inference_geo_us_multiplier"]);
 		expect(byUnit.character).toEqual(["input_cost_per_character"]);
 		// Sanity: the split is real, not everything collapsing into one bucket.
