@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -217,7 +218,11 @@ func ToGeminiResponsesRequestWithImageURLSchemes(ctx *schemas.BifrostContext, bi
 
 	// Convert ResponsesInput messages to Gemini contents
 	if bifrostReq.Input != nil {
-		contents, systemInstruction, err := convertResponsesMessagesToGeminiContents(bifrostReq.Input, capModel, bifrostReq.Provider, allowedImageURLSchemes...)
+		resolvedInput, err := resolveResponsesAudioURLs(ctx, bifrostReq.Input)
+		if err != nil {
+			return nil, err
+		}
+		contents, systemInstruction, err := convertResponsesMessagesToGeminiContents(resolvedInput, capModel, bifrostReq.Provider, allowedImageURLSchemes...)
 		if err != nil {
 			return nil, err
 		}
@@ -4066,6 +4071,42 @@ func convertResponsesToolChoiceToGemini(toolChoice *schemas.ResponsesToolChoice)
 	}
 
 	return config
+}
+
+// resolveResponsesAudioURLs walks messages and, for any input audio block that
+// has a URL but no Data, downloads the audio and populates Data. This MUST run
+// before convertResponsesMessagesToGeminiContents so converters stay pure.
+func resolveResponsesAudioURLs(ctx context.Context, messages []schemas.ResponsesMessage) ([]schemas.ResponsesMessage, error) {
+	resolved := make([]schemas.ResponsesMessage, len(messages))
+	copy(resolved, messages)
+
+	for msgIndex := range resolved {
+		if resolved[msgIndex].Content == nil || len(resolved[msgIndex].Content.ContentBlocks) == 0 {
+			continue
+		}
+
+		content := *resolved[msgIndex].Content
+		content.ContentBlocks = make([]schemas.ResponsesMessageContentBlock, len(resolved[msgIndex].Content.ContentBlocks))
+		copy(content.ContentBlocks, resolved[msgIndex].Content.ContentBlocks)
+		resolved[msgIndex].Content = &content
+
+		for blockIndex := range content.ContentBlocks {
+			block := &content.ContentBlocks[blockIndex]
+			if block.Audio == nil || block.Audio.Data != "" || block.Audio.URL == "" {
+				continue
+			}
+
+			audio := *block.Audio
+			audioData, err := providerUtils.DownloadURLToBase64(ctx, audio.URL)
+			if err != nil {
+				return nil, fmt.Errorf("failed to download audio from URL: %w", err)
+			}
+			audio.Data = audioData
+			block.Audio = &audio
+		}
+	}
+
+	return resolved, nil
 }
 
 // convertResponsesMessagesToGeminiContents converts Responses messages to Gemini contents.

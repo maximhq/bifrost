@@ -111,7 +111,11 @@ func ToGeminiChatCompletionRequestWithImageURLSchemes(ctx *schemas.BifrostContex
 		}
 	}
 	// Convert chat completion messages to Gemini format
-	contents, systemInstruction, err := convertBifrostMessagesToGemini(bifrostReq.Input, allowedImageURLSchemes...)
+	resolvedInput, err := resolveAudioURLs(ctx, bifrostReq.Input)
+	if err != nil {
+		return nil, err
+	}
+	contents, systemInstruction, err := convertBifrostMessagesToGemini(resolvedInput, allowedImageURLSchemes...)
 	if err != nil {
 		return nil, err
 	}

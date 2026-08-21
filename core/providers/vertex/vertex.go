@@ -2883,7 +2883,7 @@ func (provider *VertexProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 
 		// Inline mode: convert to JSONL and upload next to the output location (Bedrock pattern).
 		if inputFileID == "" {
-			jsonlData, err := vertexConvertRequestsToJSONL(request.Requests)
+			jsonlData, err := vertexConvertRequestsToJSONL(ctx, request.Requests)
 			if err != nil {
 				return nil, providerUtils.NewBifrostOperationError("failed to convert requests to Vertex JSONL", err)
 			}

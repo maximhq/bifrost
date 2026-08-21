@@ -2000,6 +2000,42 @@ func addSpeechConfigToGenerationConfig(config *GenerationConfig, voiceConfig *sc
 	config.SpeechConfig = &speechConfig
 }
 
+// resolveAudioURLs walks messages and, for any InputAudio block that has a URL
+// but no Data, downloads the audio and populates Data. This MUST run before
+// convertBifrostMessagesToGemini so the converter sees only resolved payloads.
+func resolveAudioURLs(ctx context.Context, messages []schemas.ChatMessage) ([]schemas.ChatMessage, error) {
+	resolved := make([]schemas.ChatMessage, len(messages))
+	copy(resolved, messages)
+
+	for msgIndex := range resolved {
+		if resolved[msgIndex].Content == nil || len(resolved[msgIndex].Content.ContentBlocks) == 0 {
+			continue
+		}
+
+		content := *resolved[msgIndex].Content
+		content.ContentBlocks = make([]schemas.ChatContentBlock, len(resolved[msgIndex].Content.ContentBlocks))
+		copy(content.ContentBlocks, resolved[msgIndex].Content.ContentBlocks)
+		resolved[msgIndex].Content = &content
+
+		for blockIndex := range content.ContentBlocks {
+			block := &content.ContentBlocks[blockIndex]
+			if block.InputAudio == nil || block.InputAudio.Data != "" || block.InputAudio.URL == "" {
+				continue
+			}
+
+			audio := *block.InputAudio
+			audioData, err := providerUtils.DownloadURLToBase64(ctx, audio.URL)
+			if err != nil {
+				return nil, fmt.Errorf("failed to download audio from URL: %w", err)
+			}
+			audio.Data = audioData
+			block.InputAudio = &audio
+		}
+	}
+
+	return resolved, nil
+}
+
 // convertBifrostMessagesToGemini converts Bifrost messages to Gemini format
 func convertBifrostMessagesToGemini(messages []schemas.ChatMessage, allowedImageURLSchemes ...string) ([]Content, *Content, error) {
 	if len(allowedImageURLSchemes) == 0 {

@@ -2,6 +2,7 @@ package vertex
 
 import (
 	"bytes"
+	"context"
 	"testing"
 
 	"github.com/bytedance/sonic"
@@ -41,7 +42,7 @@ func TestVertexConvertRequestsToJSONL(t *testing.T) {
 			},
 		}
 
-		data, err := vertexConvertRequestsToJSONL(requests)
+		data, err := vertexConvertRequestsToJSONL(context.Background(), requests)
 		require.NoError(t, err)
 
 		lines := parseVertexJSONLLines(t, data)
@@ -72,7 +73,7 @@ func TestVertexConvertRequestsToJSONL(t *testing.T) {
 			},
 		}
 
-		data, err := vertexConvertRequestsToJSONL(requests)
+		data, err := vertexConvertRequestsToJSONL(context.Background(), requests)
 		require.NoError(t, err)
 
 		lines := parseVertexJSONLLines(t, data)
@@ -99,7 +100,7 @@ func TestVertexConvertRequestsToJSONL(t *testing.T) {
 			},
 		}
 
-		data, err := vertexConvertRequestsToJSONL(requests)
+		data, err := vertexConvertRequestsToJSONL(context.Background(), requests)
 		require.NoError(t, err)
 
 		lines := parseVertexJSONLLines(t, data)
@@ -132,7 +133,7 @@ func TestVertexConvertRequestsToJSONL(t *testing.T) {
 			},
 		}
 
-		data, err := vertexConvertRequestsToJSONL(requests)
+		data, err := vertexConvertRequestsToJSONL(context.Background(), requests)
 		require.NoError(t, err)
 
 		lines := parseVertexJSONLLines(t, data)
@@ -149,7 +150,7 @@ func TestVertexConvertRequestsToJSONL(t *testing.T) {
 			{CustomID: "b", Body: map[string]interface{}{"messages": []interface{}{map[string]interface{}{"role": "user", "content": "2"}}}},
 		}
 
-		data, err := vertexConvertRequestsToJSONL(requests)
+		data, err := vertexConvertRequestsToJSONL(context.Background(), requests)
 		require.NoError(t, err)
 
 		lines := parseVertexJSONLLines(t, data)
@@ -160,7 +161,7 @@ func TestVertexConvertRequestsToJSONL(t *testing.T) {
 
 	t.Run("ErrorsWhenItemHasNoBody", func(t *testing.T) {
 		requests := []schemas.BatchRequestItem{{CustomID: "empty"}}
-		_, err := vertexConvertRequestsToJSONL(requests)
+		_, err := vertexConvertRequestsToJSONL(context.Background(), requests)
 		require.Error(t, err)
 	})
 }

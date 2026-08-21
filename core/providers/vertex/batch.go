@@ -2,6 +2,7 @@ package vertex
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -172,7 +173,7 @@ func ToVertexBatchCreateRequest(request *schemas.BifrostBatchCreateRequest, disp
 // Each body is converted to Vertex's native GenerateContentRequest shape (the same converter
 // the Gemini provider uses), so OpenAI-style "messages" become "contents"; batchPredictionJobs
 // expects {"request": {contents...}}. Each custom_id is carried in the request labels.
-func vertexConvertRequestsToJSONL(requests []schemas.BatchRequestItem) ([]byte, error) {
+func vertexConvertRequestsToJSONL(ctx context.Context, requests []schemas.BatchRequestItem) ([]byte, error) {
 	var buf bytes.Buffer
 	for i, item := range requests {
 		body := item.Body
@@ -187,7 +188,7 @@ func vertexConvertRequestsToJSONL(requests []schemas.BatchRequestItem) ([]byte, 
 		// Gemini/Vertex bodies pass through verbatim so caller-supplied fields (tools, toolConfig,
 		// labels, cachedContent, ...) are not dropped by the lossy struct conversion.
 		if _, isOpenAI := body["messages"]; isOpenAI {
-			geminiReq, err := gemini.ToGeminiBatchGenerateContentRequest(body)
+			geminiReq, err := gemini.ToGeminiBatchGenerateContentRequestWithContext(ctx, body)
 			if err != nil {
 				return nil, fmt.Errorf("failed to convert batch request item %d (custom_id %q): %w", i, item.CustomID, err)
 			}
