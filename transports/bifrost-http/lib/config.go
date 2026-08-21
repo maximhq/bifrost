@@ -6256,7 +6256,10 @@ func (c *Config) AddProviderKey(ctx context.Context, provider schemas.ModelProvi
 				return ErrNotFound
 			}
 			if errors.Is(err, configstore.ErrAlreadyExists) {
-				return ErrAlreadyExists
+				// Wrap rather than discard: parseGormError's message names the
+				// constraint that actually fired (key name vs. key ID), which a bare
+				// ErrAlreadyExists would otherwise erase from the warn log below.
+				return fmt.Errorf("%w: %w", ErrAlreadyExists, err)
 			}
 			return fmt.Errorf("failed to create provider key in store: %w", err)
 		}
@@ -6328,7 +6331,10 @@ func (c *Config) UpdateProviderKey(ctx context.Context, provider schemas.ModelPr
 				return ErrNotFound
 			}
 			if errors.Is(err, configstore.ErrAlreadyExists) {
-				return ErrAlreadyExists
+				// Wrap rather than discard: parseGormError's message names the
+				// constraint that actually fired (key name vs. key ID), which a bare
+				// ErrAlreadyExists would otherwise erase from the warn log below.
+				return fmt.Errorf("%w: %w", ErrAlreadyExists, err)
 			}
 			return fmt.Errorf("failed to update provider key in store: %w", err)
 		}
