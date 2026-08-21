@@ -383,6 +383,8 @@ if err != nil {
 
 ### Auth failure recovery
 
+<Info>Inline auth-failure retry is available in **Bifrost v2.0.0 and above**.</Info>
+
 When a tool call reaches the upstream MCP server but comes back with a clean auth rejection (401/403), Bifrost reacts on the spot instead of waiting for the health monitor:
 
 - **Per-user clients** (`per_user_oauth`, `per_user_headers`): Bifrost force-refreshes the caller's credential, re-acquires a connection, and retries the same call inline, exactly once. If the retry succeeds, the caller just sees a normal success.

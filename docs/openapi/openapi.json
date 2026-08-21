@@ -2825,7 +2825,9 @@
                       "mask",
                       "segmentation",
                       "vectorize",
-                      "controlnet_preprocess"
+                      "controlnet_preprocess",
+                      "controlnet",
+                      "preprocess"
                     ],
                     "description": "Type of edit operation. Support varies by provider; unsupported values are dropped and the\nrequest runs as a standard edit.\n"
                   },
@@ -10274,7 +10276,9 @@
                       "mask",
                       "segmentation",
                       "vectorize",
-                      "controlnet_preprocess"
+                      "controlnet_preprocess",
+                      "controlnet",
+                      "preprocess"
                     ],
                     "description": "Type of edit operation. Support varies by provider; unsupported values are dropped and the\nrequest runs as a standard edit.\n"
                   },
