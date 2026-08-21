@@ -2143,6 +2143,27 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		redactedExisting := h.store.RedactMCPClientConfig(existingConfig)
 		headers = mergeMCPHeaders(req.Headers, existingConfig.Headers, redactedExisting.Headers)
 	}
+	// A real change to the static headers has to be applied to the live
+	// connection, not just to the stored config: on a sticky client the
+	// credential is baked onto the transport at dial time, so updating the
+	// config alone would leave the open connection talking to the upstream
+	// with the header the admin just replaced. Diffed against the resolved
+	// (post-redaction-merge) value so a caller that round-trips the map
+	// unchanged doesn't force a needless reconnect. Only shared auth types
+	// carry a connection-level header credential — per-user values are
+	// supplied per caller and never baked into a shared transport. HTTP only,
+	// matching the transport VerifyHeadersConnection builds for the
+	// pre-flight below.
+	// Skipped for a disabled client: there is no live connection to protect,
+	// and refusing the edit because a deliberately-unreachable upstream can't
+	// be dialed would make a disabled client's credentials uneditable. It is
+	// verified on enable instead, which dials for real.
+	staticHeadersChanged := (existingConfig.AuthType == schemas.MCPAuthTypeHeaders || existingConfig.AuthType == schemas.MCPAuthTypeNone) &&
+		existingConfig.ConnectionType == schemas.MCPConnectionTypeHTTP &&
+		!disabled &&
+		req.Headers != nil && !mcpHeadersEqual(existingConfig.Headers, headers)
+	headersChanged := staticHeadersChanged && !existingConfig.Disabled
+
 	// TLSConfig: if omitted keep existing; if provided, restore raw CACertPEM when the
 	// incoming value is the redacted placeholder returned by the API.
 	tlsConfig := existingConfig.TLSConfig
@@ -2398,6 +2419,45 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "oauth credentials cannot be rotated while disabling a client; send these as two separate requests")
 		return
 	}
+	// Pre-flight the new static headers against the upstream before anything
+	// is written. VerifyHeadersConnection dials its own ephemeral transport
+	// and closes it, touching neither the stored row nor the live connection,
+	// so a rejected credential leaves the client exactly as it was — still
+	// serving on the headers that work. Committing first and reconnecting
+	// afterwards cannot offer that: the failed dial drops the live connection
+	// (leaving the client unusable with "no active connection") while the bad
+	// headers are already persisted, so the connection checker has nothing
+	// good to retry with. Same verify-then-persist order the create path uses
+	// for per-user headers.
+	if staticHeadersChanged {
+		verifyConfig := *existingConfig
+		verifyConfig.Headers = headers
+		verifyConfig.TLSConfig = tlsConfig
+		// Only Authorization goes in this map. VerifyHeadersConnection layers
+		// StaticConfigHeaders(verifyConfig) in itself, which already carries
+		// every other header on the config; Authorization is the one entry
+		// that set deliberately withholds (so plugins never observe the
+		// bearer), and it gets applied after the plugin gate instead. Passing
+		// exactly that one header here reproduces the header set a real
+		// sticky dial builds, since sharedHeadersResolver.ConnectionHeaders
+		// resolves only Authorization too — including its first-match-wins
+		// behavior if the map somehow holds two casings of the name.
+		verifyHeaders := make(map[string]string, 1)
+		for key, value := range headers {
+			if strings.EqualFold(key, "Authorization") {
+				verifyHeaders["Authorization"] = value.GetValue()
+				break
+			}
+		}
+		bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.store)
+		_, _, verifyErr := h.mcpManager.VerifyHeadersConnection(bifrostCtx, &verifyConfig, verifyHeaders)
+		cancel()
+		if verifyErr != nil {
+			SendError(ctx, fasthttp.StatusUnprocessableEntity, fmt.Sprintf("The new headers were rejected by the MCP server, so nothing was changed: %v", verifyErr))
+			return
+		}
+	}
+
 	// Rotation is deferred until after the DB and in-memory client updates
 	// below both succeed (see the call site further down): RotateMCPOAuthConfig
 	// opens its own transaction and, once it commits, cascades every existing
@@ -2554,6 +2614,29 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 			logger.Error(fmt.Sprintf("Failed to update MCP client: %v", err))
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update mcp client: %v", err))
 			return
+		}
+	}
+
+	// Swap the verified headers onto the live connection. Only a client that
+	// was and remains sticky needs this: it holds an open transport with the
+	// old header baked in, and UpdateMCPClientCredentials is the only thing
+	// that replaces it. Every other combination is already handled —
+	// UpdateMCPClient above replaced ExecutionConfig (all a per-call client
+	// needs, since it reads the current config on every dial) and itself
+	// re-dialed on a per-call->sticky flip, so re-dialing again here would
+	// just be a second connect with the same credentials.
+	//
+	// The same credentials already completed a full connect during the
+	// pre-flight above, so a failure here is a transient dial problem rather
+	// than a bad credential — and UpdateClientCredentials restores the
+	// previous ExecutionConfig on failure, leaving the connection checker to
+	// retry. Reported as a partial success for that reason, not a hard
+	// failure: every other effect of this request already committed.
+	if headersChanged && sharedConnectErr == nil && !wasPerCallConnection && !isPerCallConnection {
+		if err := h.updateMCPClientCredentialsWithRetry(ctx, id, schemasConfig); err != nil &&
+			!errors.Is(err, schemas.ErrMCPReconnectNotApplicable) {
+			logger.Error(fmt.Sprintf("MCP client %s updated, but reconnecting with the new headers failed: %v", id, err))
+			sharedConnectErr = err
 		}
 	}
 
@@ -2940,6 +3023,23 @@ func (h *MCPHandler) updateMCPClientWithRetry(ctx context.Context, id string, co
 		time.Sleep(retryDelay)
 	}
 	return lastErr
+}
+
+// mcpHeadersEqual reports whether two resolved static header maps carry the
+// same credentials. Compared on the post-merge values (mergeMCPHeaders has
+// already restored any unchanged redacted entry to its stored raw value), so
+// a caller round-tripping the redacted map it was served reads as unchanged.
+func mcpHeadersEqual(a, b map[string]schemas.SecretVar) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for key, aVal := range a {
+		bVal, ok := b[key]
+		if !ok || !aVal.Equals(&bVal) {
+			return false
+		}
+	}
+	return true
 }
 
 // updateMCPClientCredentialsWithRetry calls mcpManager.UpdateMCPClientCredentials with a short retry loop.
