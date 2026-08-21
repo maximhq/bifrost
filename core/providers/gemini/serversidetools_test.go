@@ -183,3 +183,126 @@ func TestServerSideToolCallMultipleRoundsWithFunctionCall(t *testing.T) {
 		assert.NotEmpty(t, p.ThoughtSignature, "part %d lost its thoughtSignature", i)
 	}
 }
+
+// Two search rounds WITH groundingMetadata. The forward path merges grounding's sources
+// onto the FIRST search call; the reverse path rebuilt groundingMetadata from the LAST
+// web_search_call, so with 2+ rounds the sources fell off the round trip entirely.
+const liveTwoSearchRoundsWithGroundingJSON = `{
+ "candidates":[{"index":0,"finishReason":"STOP",
+  "groundingMetadata":{
+    "webSearchQueries":["FIFA World Cup winner 2026"],
+    "groundingChunks":[
+      {"web":{"uri":"https://vertexaisearch.cloud.google.com/g1","title":"fifa.com"}},
+      {"web":{"uri":"https://vertexaisearch.cloud.google.com/g2","title":"bbc.com"}}
+    ]
+  },
+  "content":{"role":"model","parts":[
+   {"thoughtSignature":"c2lnMQ==","toolCall":{"toolType":"GOOGLE_SEARCH_WEB","args":{"queries":["FIFA World Cup winner 2026"]},"id":"BaoigkFu"}},
+   {"toolResponse":{"id":"BaoigkFu","toolType":"GOOGLE_SEARCH_WEB","response":{"search_suggestions":"<div>chips1</div>"}},"thoughtSignature":"c2lnMg=="},
+   {"thoughtSignature":"c2lnMw==","toolCall":{"toolType":"GOOGLE_SEARCH_WEB","args":{"queries":["2026 final score"]},"id":"Fbe8aaSI"}},
+   {"toolResponse":{"toolType":"GOOGLE_SEARCH_WEB","response":{"search_suggestions":"<div>chips2</div>"},"id":"Fbe8aaSI"},"thoughtSignature":"c2lnNA=="},
+   {"text":"Spain won.","thoughtSignature":"c2lnNQ=="}
+  ]}}],
+ "modelVersion":"gemini-3.6-flash","responseId":"grounded-two-rounds"}`
+
+func TestServerSideToolCallMultipleRoundsPreservesGroundingSources(t *testing.T) {
+	var g GenerateContentResponse
+	require.NoError(t, json.Unmarshal([]byte(liveTwoSearchRoundsWithGroundingJSON), &g))
+
+	b := g.ToResponsesBifrostResponsesResponse()
+
+	// Exactly one of the two search items carries the sources on the forward path.
+	sourced := 0
+	for _, m := range b.Output {
+		if m.Type == nil || *m.Type != schemas.ResponsesMessageTypeWebSearchCall {
+			continue
+		}
+		if m.ResponsesToolMessage != nil && m.ResponsesToolMessage.Action != nil {
+			if a := m.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction; a != nil && len(a.Sources) > 0 {
+				sourced++
+			}
+		}
+	}
+	require.Equal(t, 1, sourced, "grounding sources land on exactly one of the two search items")
+
+	// The reverse path must find that item rather than blindly taking the last one.
+	back := ToGeminiResponsesResponse(b)
+	require.NotEmpty(t, back.Candidates)
+	require.NotNil(t, back.Candidates[0].GroundingMetadata, "grounding metadata must survive the round trip")
+	assert.Len(t, back.Candidates[0].GroundingMetadata.GroundingChunks, 2,
+		"both grounding chunks must survive; picking the last web_search_call drops them")
+}
+
+// Both IDs carry omitempty, so Gemini can omit them. Keying searchCallIndexByID on the
+// empty string collapsed every round onto one entry: earlier rounds stayed in_progress
+// and every emitted item carried an empty ID.
+const twoSearchRoundsNoIDsJSON = `{
+ "candidates":[{"index":0,"finishReason":"STOP",
+  "content":{"role":"model","parts":[
+   {"thoughtSignature":"c2lnMQ==","toolCall":{"toolType":"GOOGLE_SEARCH_WEB","args":{"queries":["round one"]}}},
+   {"toolResponse":{"toolType":"GOOGLE_SEARCH_WEB","response":{"search_suggestions":"<div>a</div>"}},"thoughtSignature":"c2lnMg=="},
+   {"thoughtSignature":"c2lnMw==","toolCall":{"toolType":"GOOGLE_SEARCH_WEB","args":{"queries":["round two"]}}},
+   {"toolResponse":{"toolType":"GOOGLE_SEARCH_WEB","response":{"search_suggestions":"<div>b</div>"}},"thoughtSignature":"c2lnNA=="}
+  ]}}],
+ "modelVersion":"gemini-3.6-flash","responseId":"no-ids"}`
+
+func TestServerSideToolCallRoundsWithoutIDs(t *testing.T) {
+	var g GenerateContentResponse
+	require.NoError(t, json.Unmarshal([]byte(twoSearchRoundsNoIDsJSON), &g))
+
+	b := g.ToResponsesBifrostResponsesResponse()
+
+	var ids []string
+	for _, m := range b.Output {
+		if m.Type == nil || *m.Type != schemas.ResponsesMessageTypeWebSearchCall {
+			continue
+		}
+		require.NotNil(t, m.ID)
+		assert.NotEmpty(t, *m.ID, "an ID-less round must still get a synthetic item ID")
+		require.NotNil(t, m.Status)
+		assert.Equal(t, "completed", *m.Status, "each round's toolResponse must complete its own item")
+		ids = append(ids, *m.ID)
+	}
+
+	require.Len(t, ids, 2, "two search rounds must produce two items even with no IDs")
+	assert.NotEqual(t, ids[0], ids[1], "the two ID-less rounds must not collide on one key")
+}
+
+// Gemini interleaves text, tool and thought parts, and thought_signature carries positional
+// context. Capturing only the tool parts and prepending them reordered a candidate whose
+// text came first.
+const textBeforeToolCallJSON = `{
+ "candidates":[{"index":0,"finishReason":"STOP",
+  "content":{"role":"model","parts":[
+   {"text":"Let me look that up.","thoughtSignature":"c2lnVGV4dA=="},
+   {"thoughtSignature":"c2lnQ2FsbA==","toolCall":{"toolType":"GOOGLE_SEARCH_WEB","args":{"queries":["who won"]},"id":"abc123"}},
+   {"toolResponse":{"id":"abc123","toolType":"GOOGLE_SEARCH_WEB","response":{"search_suggestions":"<div>c</div>"}},"thoughtSignature":"c2lnUmVzcA=="},
+   {"text":"Spain won.","thoughtSignature":"c2lnQW5zd2Vy"}
+  ]}}],
+ "modelVersion":"gemini-3.6-flash","responseId":"interleaved"}`
+
+func TestServerSideToolPartsPreserveOriginalOrder(t *testing.T) {
+	var g GenerateContentResponse
+	require.NoError(t, json.Unmarshal([]byte(textBeforeToolCallJSON), &g))
+
+	b := g.ToResponsesBifrostResponsesResponse()
+	back := ToGeminiResponsesResponse(b)
+
+	require.NotEmpty(t, back.Candidates)
+	parts := back.Candidates[0].Content.Parts
+
+	// The leading text must stay ahead of the tool call it introduces.
+	firstText, firstTool := -1, -1
+	for i, p := range parts {
+		if firstText == -1 && p.Text == "Let me look that up." {
+			firstText = i
+		}
+		if firstTool == -1 && p.ToolCall != nil {
+			firstTool = i
+		}
+	}
+	require.NotEqual(t, -1, firstText, "the leading text part must survive the round trip")
+	require.NotEqual(t, -1, firstTool, "the tool call must survive the round trip")
+	assert.Less(t, firstText, firstTool,
+		"Gemini emitted text before the toolCall; prepending tool parts inverts that order")
+}

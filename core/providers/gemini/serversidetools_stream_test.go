@@ -208,3 +208,50 @@ func TestServerSideToolCallStreaming(t *testing.T) {
 		t.Errorf("expected grounding sources merged in, got %d", len(a.Sources))
 	}
 }
+
+// Every event in the web_search_call lifecycle correlates by the top-level item_id.
+// output_item.added set only Item.ID, so consumers keying on item_id could not match
+// the added event to the web_search_call.* events that follow it.
+func TestServerSideToolCallStreamingOutputItemAddedCarriesItemID(t *testing.T) {
+	chunks := []string{
+		`{"candidates":[{"index":0,"content":{"role":"model","parts":[{"thoughtSignature":"c2ln","toolCall":{"toolType":"GOOGLE_SEARCH_WEB","args":{"queries":["f1 winner 2026"]},"id":"nqh2j2zy"}}]}}],"modelVersion":"gemini-3.5-flash"}`,
+		`{"candidates":[{"index":0,"content":{"role":"model","parts":[{"thoughtSignature":"c2ln","toolResponse":{"toolType":"GOOGLE_SEARCH_WEB","response":{"search_suggestions":"<div/>"},"id":"nqh2j2zy"}}]}}],"modelVersion":"gemini-3.5-flash"}`,
+		`{"candidates":[{"index":0,"finishReason":"STOP","groundingMetadata":{"webSearchQueries":["f1 winner 2026"],"groundingChunks":[{"web":{"uri":"https://x/1","title":"formula1.com"}}]}}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"totalTokenCount":15},"modelVersion":"gemini-3.5-flash"}`,
+	}
+
+	state := acquireGeminiResponsesStreamState()
+	defer releaseGeminiResponsesStreamState(state)
+
+	seen := 0
+	seq := 0
+	for _, c := range chunks {
+		var resp GenerateContentResponse
+		if err := json.Unmarshal([]byte(c), &resp); err != nil {
+			t.Fatal(err)
+		}
+		events, err := resp.ToBifrostResponsesStream(seq, state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range events {
+			if e.Type != schemas.ResponsesStreamResponseTypeOutputItemAdded {
+				continue
+			}
+			if e.Item == nil || e.Item.Type == nil || *e.Item.Type != schemas.ResponsesMessageTypeWebSearchCall {
+				continue
+			}
+			seen++
+			if e.ItemID == nil {
+				t.Fatalf("output_item.added for a web_search_call carried no top-level ItemID: %+v", e.Item)
+			}
+			if e.Item.ID == nil || *e.ItemID != *e.Item.ID {
+				t.Fatalf("top-level ItemID %v does not match Item.ID %v", e.ItemID, e.Item.ID)
+			}
+		}
+		seq += len(events)
+	}
+
+	if seen == 0 {
+		t.Fatal("no output_item.added event was emitted for the web_search_call")
+	}
+}

@@ -71,7 +71,7 @@ Sources:
 
 ### Other endpoints
 
-- [ ] **Embeddings** (`POST /v1/embeddings`)
+- [x] **Embeddings** (`POST /v1/embeddings`) - folder 53: batch-input arity (53.C1), `dimensions` maps to OpenAI `dimensions` (53.D1), `encoding_format: "base64"` returns a packed string (53.E1)
 - [ ] **Audio speech (TTS)** (`POST /v1/audio/speech`)
 - [ ] **Audio transcription** (`POST /v1/audio/transcriptions`)
 - [ ] **Image generation** (`POST /v1/images/generations`)
@@ -211,6 +211,37 @@ Sources:
 - [ ] **JP geo profile** (`jp.anthropic.claude-*`)
 - [ ] **AU geo profile** (`au.anthropic.claude-haiku-4-5`)
 
+### Embeddings (`POST /model/{modelId}/invoke`)
+
+Sources:
+- Titan Text Embeddings: <https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-titan-embed-text.html>
+- Cohere Embed v4: <https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-embed-v4.html>
+- Cohere Embed v3: <https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-embed-v3.html>
+
+Bedrock is the only provider carrying two incompatible embedding envelopes behind one name.
+`DetermineEmbeddingModelType` picks between them by substring match on the model id, so the same
+`/v1/embeddings` request behaves differently depending on whether the id contains `titan` or
+`cohere`. There is no embedding route on the `/bedrock` drop-in: `/bedrock/model/{id}/invoke`
+converts to Converse and then to Responses, so Bedrock embeddings are reachable only via
+`/v1/embeddings`, `/openai/v1/embeddings`, `/genai/.../:embedContent` and `/cohere/v2/embed`.
+
+- [x] **Titan V2 baseline** (`inputText`, one vector out, `inputTextTokenCount` to usage) - folder 53.A1
+- [x] **Titan `dimensions`** (1024 default | 512 | 256) - folder 53.A2
+- [x] **Titan array-input collapse** (no batch shape; Bifrost joins with `" \n"`, returns 1 vector) - folder 53.A3
+- [x] **Titan `normalize`** (default true; proven via L2 norm of the returned vector) - folder 53.A4 / 53.A5
+- [x] **Titan `embeddingTypes`** (camelCase; `embeddingsByType` recovered through `x-bf-send-back-raw-response`) - folder 53.A6
+- [x] **Cohere v4 `input_type`** (required by AWS; both the native `/cohere/v2/embed` route and `extra_params`) - folder 53.B1 / 53.B4
+- [x] **Cohere v4 `embedding_types`** (`embeddings_by_type` int8 parse branch) - folder 53.B2
+- [x] **Cohere v4 array input** (one vector per text, the arity divergence against Titan) - folder 53.B5
+- [x] **Cohere v4 `output_dimension`** (256 | 512 | 1024 | 1536) - folder 53.B6 / 53.D4
+- [x] **Usage backfill from `X-Amzn-Bedrock-Input-Token-Count`** (Cohere embed omits usage from the body; #3917) - folder 53.B7
+- [ ] **Titan G1** (`amazon.titan-embed-text-v1`) - `inputText` only, no `dimensions`/`normalize`; sending either is expected to be rejected
+- [ ] **Titan multimodal** (`amazon.titan-embed-image-v1`) - `inputImage` is not mapped by `ToBedrockTitanEmbeddingRequest` at all
+- [ ] **Cohere v4 multimodal** (`images` data-URI array, `inputs` interleaved text+image blocks) - the typed fields exist on `BedrockCohereEmbeddingRequest` but nothing populates them: the Cohere dialect converter drops both, and a JSON body yields `[]interface{}`, which misses the `v.([]string)` assertion in `ToBedrockCohereEmbeddingRequest`
+- [ ] **Cohere v3** (`cohere.embed-english-v3`) - fixed 1024 dims, `truncate` is `NONE|START|END` on v3 versus `NONE|LEFT|RIGHT` on v4, so the shared converter cannot validate the enum
+- [ ] **`truncate` / `max_tokens` passthrough** to Cohere on Bedrock
+- [ ] **Drop-in routes with parameters** - §8.3.I/§8.3.J send a bare single string to `/openai/v1/embeddings` and `:embedContent`; neither carries `dimensions`, `encoding_format` or any extra param
+
 ### Other Bedrock surfaces
 
 - [ ] **Application inference profiles** (custom profiles created via API)
@@ -265,7 +296,7 @@ Sources:
 ### Other endpoints
 
 - [ ] **Count tokens** (`POST /v1beta/models/{model}:countTokens`)
-- [ ] **Embed content** (`POST /v1beta/models/{model}:embedContent`)
+- [~] **Embed content** (`POST /v1beta/models/{model}:embedContent`) - §8.3.J posts the native shape at the drop-in route; folder 53 covers the parameter surface via `/v1/embeddings` (arity 53.C2, `outputDimensionality` 53.D2, `encoding_format` ignored 53.E4). Native `:embedContent` carrying `taskType`/`title`/`outputDimensionality` in the Gemini body is still uncovered.
 - [ ] **Batch embed** (`POST /v1beta/models/{model}:batchEmbedContents`)
 - [~] **Cached content CRUD** (`POST /v1beta/cachedContents`, list, get, update, delete): typed lifecycle implemented for both Gemini and Vertex; harness `Gemini: list cached contents` runs against real upstream (list only; create/retrieve/update/delete not yet exercised)
 - [ ] **Files API** (`POST /v1beta/files` upload, list, get, delete)

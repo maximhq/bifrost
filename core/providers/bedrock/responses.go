@@ -4796,8 +4796,57 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 						doc.Format = format
 					}
 
+					// s3:// document: hand Converse the object reference instead of its
+					// bytes. See bedrockS3LocationFromURL; format must already be
+					// resolved above, since nothing is fetched here.
+					if file.FileURL != nil {
+						if s3Loc, ok := bedrockS3LocationFromURL(*file.FileURL); ok {
+							// Last resort: the object key's own extension, which the
+							// refusal below already instructs the caller to supply. See
+							// bedrockDocumentFormatFromPath; the chat path does the same.
+							if format == "" {
+								if resolved, ok := bedrockDocumentFormatFromPath(*file.FileURL); ok {
+									format = resolved
+									doc.Format = format
+								}
+							}
+							if format == "" {
+								return nil, fmt.Errorf("cannot determine document format for %q: set file_type or give the object a file extension", *file.FileURL)
+							}
+							doc.Source.S3Location = s3Loc
+							bedrockBlock.Document = doc
+							break
+						} else if strings.HasPrefix(*file.FileURL, "s3://") {
+							// Same refusal as the chat path: the scheme is supported, this
+							// particular reference is malformed (a bucket with no object
+							// key), and the http(s) fetch path's "unsupported URL scheme"
+							// error would say the opposite.
+							return nil, fmt.Errorf("invalid s3:// document reference %q: expected s3://bucket/key", *file.FileURL)
+						}
+					}
+					if format != "" {
+						doc.Format = format
+					}
+
 					// URL-sourced document: fetch and inline the bytes (Bedrock Converse
 					// only accepts inline source bytes, not remote URLs).
+					if file.FileURL != nil && *file.FileURL != "" {
+						fetchedMediaType, fetchedB64, fetchErr := providerUtils.FetchAndEncodeURL(ctx, *file.FileURL)
+						if fetchErr != nil {
+							return nil, fetchErr
+						}
+						// Refine format from response Content-Type when present (more
+						// reliable than file extension or upstream-declared media type).
+						if fetchedFormat, _, ok := bedrockDocumentFormat(fetchedMediaType); ok {
+							doc.Format = fetchedFormat
+						}
+						doc.Source.Bytes = &fetchedB64
+						bedrockBlock.Document = doc
+						break
+					}
+
+					// URL-sourced document: fetch and inline the bytes. Converse has no
+					// url member on DocumentSource.
 					if file.FileURL != nil && *file.FileURL != "" {
 						fetchedMediaType, fetchedB64, fetchErr := providerUtils.FetchAndEncodeURL(ctx, *file.FileURL)
 						if fetchErr != nil {
@@ -4823,9 +4872,11 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 								doc.Source.Bytes = &dataURLPayload
 							} else {
 								// Inline percent-encoded payload (data:text/plain,Hello%20World)
-								if decoded, err := url.PathUnescape(dataURLPayload); err == nil {
-									dataURLPayload = decoded
+								decoded, err := url.PathUnescape(dataURLPayload)
+								if err != nil {
+									return nil, fmt.Errorf("invalid percent-encoded data URL payload: %w", err)
 								}
+								dataURLPayload = decoded
 								if isTextFile {
 									doc.Source.Text = &dataURLPayload
 								}

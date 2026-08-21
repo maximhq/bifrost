@@ -355,6 +355,18 @@ expected_count = int(match.group(1))
 if expected_count <= 0:
     raise SystemExit("hitter reported zero successful requests")
 
+# /api/logs rejects limit > 1000 (transports/bifrost-http/handlers/logging.go) and this
+# validator reads a single page. Above the cap the row list silently truncates and every
+# later assertion fails for a reason that has nothing to do with cost, so refuse the run
+# up front and name the knobs instead.
+LOG_PAGE_LIMIT = 1000
+if expected_count > LOG_PAGE_LIMIT:
+    raise SystemExit(
+        f"expected {expected_count} successful requests but /api/logs returns at most "
+        f"{LOG_PAGE_LIMIT} rows per page and this validator does not paginate. "
+        f"Set COST_ACCURACY_RPS * COST_ACCURACY_DURATION <= {LOG_PAGE_LIMIT}."
+    )
+
 base = f"http://127.0.0.1:{port}"
 
 def get_json(path, params):
@@ -368,7 +380,7 @@ params = {
     "status": "success",
     "virtual_key_ids": virtual_key_id,
     "start_time": start_time,
-    "limit": "1000",
+    "limit": str(LOG_PAGE_LIMIT),
     "sort_by": "timestamp",
     "order": "asc",
 }
@@ -384,16 +396,72 @@ def logs_complete(logs):
         for item in logs
     )
 
+def describe_incomplete(item):
+    # "missing token_usage or cost" on its own is not actionable: cost and token_usage
+    # reach the API by different routes (cost is a column, token_usage is a JSON blob
+    # deserialized after the query), so which one is absent decides where to look.
+    # Report the field names and the raw values.
+    usage = item.get("token_usage") or {}
+    return {
+        "id": item.get("id"),
+        "timestamp": item.get("timestamp"),
+        "status": item.get("status"),
+        "cost": item.get("cost"),
+        "token_usage": item.get("token_usage"),
+        "missing": [
+            name
+            for name, value in (
+                ("token_usage.prompt_tokens", usage.get("prompt_tokens")),
+                ("token_usage.completion_tokens", usage.get("completion_tokens")),
+                ("cost", item.get("cost")),
+            )
+            if value is None
+        ],
+    }
+
+LOG_POLL_ATTEMPTS = 60
 logs = []
-for _ in range(60):
+logs_ready = False
+for _ in range(LOG_POLL_ATTEMPTS):
     payload = get_json("/api/logs", params)
     logs = payload.get("logs", [])
     if len(logs) >= expected_count and logs_complete(logs):
+        logs_ready = True
         break
     time.sleep(1)
 
 if len(logs) != expected_count:
     raise SystemExit(f"log count mismatch: got {len(logs)}, want {expected_count}")
+
+# Exhausting the poll means the rows never became readable, which is a different
+# failure from a wrong cost. Without this the run falls through and validates the
+# stale page, reporting incomplete rows as per-log cost mismatches and then burning
+# the full quota-poll budget waiting on a total that can no longer be reached.
+if not logs_ready:
+    incomplete = [describe_incomplete(i) for i in logs if not logs_complete([i])]
+    # Write the artifact before bailing out. The job uploads tmp/cost-accuracy/ on any
+    # non-cancelled run, and this is the failure whose diagnostics are worth the most,
+    # so exiting ahead of results_file.write_text() would discard exactly the evidence
+    # needed to chase it. Totals are absent rather than zero: they are not computed yet,
+    # and a 0.0 here would read as "measured zero cost".
+    results_file.parent.mkdir(parents=True, exist_ok=True)
+    results_file.write_text(json.dumps({
+        "failure": "logs did not become complete",
+        "expected_count": expected_count,
+        "log_count": len(logs),
+        "logs_converged": False,
+        "quota_converged": None,
+        "poll_seconds": LOG_POLL_ATTEMPTS,
+        "virtual_key_id": virtual_key_id,
+        "incomplete_row_count": len(incomplete),
+        "incomplete_rows": incomplete[:10],
+    }, indent=2, sort_keys=True))
+    raise SystemExit(
+        f"logs did not become complete within {LOG_POLL_ATTEMPTS}s: {len(incomplete)} of "
+        f"{len(logs)} rows still missing token_usage or cost. This is a log-write "
+        f"visibility problem, not a pricing mismatch. First 5:\n"
+        + json.dumps(incomplete[:5], indent=2, sort_keys=True)
+    )
 
 mismatches = []
 expected_total = 0.0
@@ -412,7 +480,7 @@ for item in logs:
     completion = usage.get("completion_tokens")
     actual = item.get("cost")
     if prompt is None or completion is None or actual is None:
-        mismatches.append({"id": item.get("id"), "reason": "missing token_usage or cost"})
+        mismatches.append({**describe_incomplete(item), "reason": "missing token_usage or cost"})
         continue
     expected = prompt * input_rate + completion * output_rate
     expected_total += expected
@@ -436,26 +504,48 @@ stats = get_json("/api/logs/stats", {
 })
 stats_total = float(stats.get("total_cost", 0))
 
+def quota_totals(payload):
+    # Both totals this script asserts on, read from one quota response.
+    #
+    # They do not converge together. current_usage is the governance budget counter,
+    # updated in the request path. per_model_usage[].total_cost is a log aggregate -
+    # buildBudgetsWithUsage feeds it from logManager.GetModelRankings over the logs
+    # store (transports/bifrost-http/handlers/governance.go), which trails the async
+    # batch writer. Polling on the counter alone therefore breaks while the model
+    # total is still catching up, and the assertion below fails on staleness rather
+    # than on a real disagreement.
+    budget_total = sum(float(b.get("current_usage") or 0) for b in payload.get("budgets", []))
+    model_total = sum(
+        float(m.get("total_cost") or 0)
+        for b in payload.get("budgets", [])
+        for m in b.get("per_model_usage", [])
+        if m.get("model") == "gpt-4o-mini" and m.get("provider") == "openai"
+    )
+    return budget_total, model_total
+
+QUOTA_POLL_ATTEMPTS = 60
 quota = None
-for _ in range(60):
+quota_ready = False
+for _ in range(QUOTA_POLL_ATTEMPTS):
     req = urllib.request.Request(base + "/api/governance/virtual-keys/quota", headers={"x-bf-vk": virtual_key_value})
     with urllib.request.urlopen(req, timeout=10) as resp:
         quota = json.loads(resp.read().decode("utf-8"))
-    budget_total = sum(float(b.get("current_usage") or 0) for b in quota.get("budgets", []))
-    if math.fabs(budget_total - expected_total) <= 1e-12:
+    budget_total, model_total = quota_totals(quota)
+    if (math.fabs(budget_total - expected_total) <= 1e-12
+            and math.fabs(model_total - expected_total) <= 1e-12):
+        quota_ready = True
         break
     time.sleep(1)
 
-budget_current_usage_total = sum(float(b.get("current_usage") or 0) for b in quota.get("budgets", []))
-quota_model_total = 0.0
-for budget in quota.get("budgets", []):
-    for model_usage in budget.get("per_model_usage", []):
-        if model_usage.get("model") == "gpt-4o-mini" and model_usage.get("provider") == "openai":
-            quota_model_total += float(model_usage.get("total_cost") or 0)
+budget_current_usage_total, quota_model_total = quota_totals(quota)
 
 summary = {
     "expected_count": expected_count,
     "log_count": len(logs),
+    # Whether each poll converged or ran out its budget. A delta failure below reads very
+    # differently depending on these: converged means the numbers really disagree.
+    "logs_converged": logs_ready,
+    "quota_converged": quota_ready,
     "virtual_key_id": virtual_key_id,
     "expected_total": expected_total,
     "actual_total_from_logs": actual_total,

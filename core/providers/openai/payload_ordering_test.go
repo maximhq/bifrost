@@ -129,10 +129,10 @@ func TestParseImageVariationFormDataBodyFromRequest_OrdersMetadataBeforeFile(t *
 // (alphabetized) measurably degrades output quality (e.g. union-of-parts outputs
 // collapsing to citation-only responses).
 //
-// The schema's top-level keys map to typed struct fields (emitted in struct
-// field order); everything nested — properties, $defs, items, anyOf bodies,
-// i.e. where property order actually shapes generation — must round-trip in
-// the client's original key order via OrderedMap.
+// The whole schema — its own top-level keys as well as everything nested
+// (properties, $defs, items, anyOf bodies) — must round-trip in the client's
+// original key order: top-level keys via the decoded key order recorded on
+// ResponsesTextConfigFormatJSONSchema, nested objects via OrderedMap.
 func TestPayloadOrdering_ResponsesTextFormatJSONSchema(t *testing.T) {
 	// Deliberately non-alphabetical key order everywhere: "type" precedes
 	// "text"/"url"/"items" etc. — alphabetical sorting would reorder all of them.
@@ -148,9 +148,9 @@ func TestPayloadOrdering_ResponsesTextFormatJSONSchema(t *testing.T) {
 	marshaled, err := providerUtils.MarshalSorted(&req)
 	require.NoError(t, err)
 
-	// Top-level schema keys re-serialize in struct field order; all nested
-	// objects must keep the client's original (non-alphabetical) key order.
-	goldenSchema := `{"additionalProperties":false,"properties":{"parts":{"type":"array","items":{"anyOf":[{"$ref":"#/$defs/TextPart"},{"$ref":"#/$defs/WebCitation"}]}}},"required":["parts"],"type":"object","$defs":{"TextPart":{"type":"object","properties":{"type":{"const":"text"},"text":{"type":"string"}},"required":["type","text"],"additionalProperties":false},"WebCitation":{"type":"object","properties":{"type":{"const":"cite:web"},"url":{"type":"string"}},"required":["type","url"],"additionalProperties":false}}}`
+	// The schema re-serializes byte-identical to what the client sent, at every
+	// level, including its own (non-alphabetical) top-level key order.
+	goldenSchema := `{"type":"object","properties":{"parts":{"type":"array","items":{"anyOf":[{"$ref":"#/$defs/TextPart"},{"$ref":"#/$defs/WebCitation"}]}}},"required":["parts"],"additionalProperties":false,"$defs":{"TextPart":{"type":"object","properties":{"type":{"const":"text"},"text":{"type":"string"}},"required":["type","text"],"additionalProperties":false},"WebCitation":{"type":"object","properties":{"type":{"const":"cite:web"},"url":{"type":"string"}},"required":["type","url"],"additionalProperties":false}}}`
 	assert.Contains(t, string(marshaled), `"schema":`+goldenSchema,
 		"nested schema key order changed — if intentional, update the golden string")
 
