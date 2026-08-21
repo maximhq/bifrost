@@ -136765,6 +136765,107 @@
           ]
         }
       ]
+    },
+    {
+      "name": "59. Qwen 3.8 reasoning_effort xhigh pass-through (#6424)",
+      "description": "The Qwen 3.8 chat-template effort enum is low/medium/xhigh (default xhigh) and rejects \"high\" with 400 \"Unexpected reasoning effort high\". The name-based effort fallback in core/providers/openai/utils.go (defaultEffortControl/acceptsXHighEffort) did not recognise the Qwen 3.8 family as xhigh-capable, so a client's legitimate xhigh was silently downgraded to \"high\" and rejected upstream (production: SGLang serving qwen-3-8-27b behind an OpenAI-compatible custom provider, #6424). The fix adds the family (both wire spellings, qwen3.8-* and dash-rolled qwen-3-8-*) to acceptsXHighEffort and renames \"high\" to \"xhigh\". Pinned here via openrouter/qwen/qwen3.8-27b: Bifrost sends reasoning_effort on the wire to OpenRouter and OpenRouter forwards provider-specific parameters to the Qwen backend, so the same shared OpenAI-dialect normalization runs end to end. 59.A pins the unary path (upstream must not reject the downgraded \"high\"); 59.B pins the streaming variant (the issue's repro shape).",
+      "item": [
+        {
+          "name": "59.A openrouter/qwen/qwen3.8-27b reasoning_effort xhigh passes through (chat) - #6424",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openrouter/qwen/qwen3.8-27b\", \"max_tokens\": 256, \"reasoning_effort\": \"xhigh\", \"messages\": [{\"role\": \"user\", \"content\": \"Reply with one word.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// 400 is deliberately not guarded: upstream rejecting the downgraded \"high\" is the regression.",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "var t = pm.response.text() || '';",
+                  "pm.test('upstream did not reject a downgraded effort', function () {",
+                  "  pm.expect(t.indexOf('reasoning effort high') === -1, 'regression: xhigh downgraded to high and rejected upstream: ' + t.slice(0, 500)).to.be.true;",
+                  "});",
+                  "pm.test('xhigh accepted end to end', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + t.slice(0, 500)).to.be.below(400);",
+                  "  var j; try { j = pm.response.json(); } catch (e) { pm.expect.fail('unparseable response: ' + t.slice(0, 500)); return; }",
+                  "  pm.expect(j.choices && j.choices.length, 'no choices: ' + t.slice(0, 500)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "59.B openrouter/qwen/qwen3.8-27b reasoning_effort xhigh passes through (streaming) - #6424",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openrouter/qwen/qwen3.8-27b\", \"max_tokens\": 256, \"reasoning_effort\": \"xhigh\", \"stream\": true, \"messages\": [{\"role\": \"user\", \"content\": \"Reply with one word.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// 400 is deliberately not guarded: the Qwen backend validates the effort before the stream opens.",
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "var t = pm.response.text() || '';",
+                  "pm.test('upstream did not reject a downgraded effort', function () {",
+                  "  pm.expect(t.indexOf('reasoning effort high') === -1, 'regression: xhigh downgraded to high and rejected upstream: ' + t.slice(0, 500)).to.be.true;",
+                  "});",
+                  "pm.test('stream opened with xhigh', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + t.slice(0, 500)).to.be.below(400);",
+                  "  pm.expect(t.indexOf('data:') !== -1, 'no SSE chunks in body: ' + t.slice(0, 500)).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

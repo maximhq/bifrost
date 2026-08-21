@@ -66,7 +66,13 @@ func defaultEffortControl(model string) *schemas.EffortControl {
 	if acceptsMaxEffort(model) {
 		levels = append(levels, schemas.ReasoningEffortMax)
 	}
-	return &schemas.EffortControl{Levels: levels}
+	ctrl := &schemas.EffortControl{Levels: levels}
+	if isQwen38Model(bareModelLower(model)) {
+		// The Qwen 3.8 enum has no "high" rung (low/medium/xhigh, default
+		// xhigh); send the default instead of a label the server 400s on (#6424).
+		ctrl.Renames = map[string]string{schemas.ReasoningEffortHigh: schemas.ReasoningEffortXHigh}
+	}
+	return ctrl
 }
 
 // acceptsXHighEffort reports models that natively accept "xhigh" effort. The
@@ -86,7 +92,39 @@ func acceptsXHighEffort(model string) bool {
 		strings.Contains(modelLower, "gpt-5.3-codex") ||
 		strings.Contains(modelLower, "gpt-5.4") ||
 		strings.Contains(modelLower, "gpt-5.5") ||
-		strings.Contains(modelLower, "gpt-5.6")
+		strings.Contains(modelLower, "gpt-5.6") ||
+		isQwen38Model(modelLower)
+}
+
+// isQwen38Model reports the Qwen 3.8 family, whose chat template exposes a
+// reasoning_effort enum of low/medium/xhigh (default xhigh) and rejects
+// "high" (maximhq/bifrost#6424). Both wire spellings are matched: the
+// upstream "qwen3.8-27b" and dash-rolled renames such as "qwen-3-8-27b". The
+// version-boundary check keeps "qwen-3-8b" (dash-rolled qwen3-8b, an older
+// family with no effort enum) out of the match.
+func isQwen38Model(modelLower string) bool {
+	return hasVersionBoundary(modelLower, "qwen3.8") ||
+		hasVersionBoundary(modelLower, "qwen-3-8")
+}
+
+// hasVersionBoundary reports whether needle appears in s at end-of-string or
+// followed by "-" or "_" — i.e. the needle is a complete version, not the
+// prefix of a longer one ("qwen-3-8" in "qwen-3-8b"). Substring, not prefix:
+// bareModelLower strips only one leading segment, so vendor namespaces like
+// "qwen/qwen3.8-27b" survive to this check.
+func hasVersionBoundary(s, needle string) bool {
+	rest := s
+	for {
+		i := strings.Index(rest, needle)
+		if i < 0 {
+			return false
+		}
+		after := rest[i+len(needle):]
+		if after == "" || after[0] == '-' || after[0] == '_' {
+			return true
+		}
+		rest = rest[i+1:]
+	}
 }
 
 // acceptsMinimalEffort reports models that natively accept "minimal" effort:

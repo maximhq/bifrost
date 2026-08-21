@@ -184,6 +184,9 @@ func TestNormalizeOpenAIReasoningEffort(t *testing.T) {
 		{"gpt-5.5 keeps xhigh", "gpt-5.5", "xhigh", "xhigh"},
 		{"gpt-5.1 downgrades max to high", "gpt-5.1", "max", "high"},
 		{"gpt-5.1 downgrades xhigh to high", "gpt-5.1", "xhigh", "high"},
+		{"qwen-3-8-27b keeps xhigh", "qwen-3-8-27b", "xhigh", "xhigh"},
+		{"qwen3.8-27b keeps xhigh", "qwen3.8-27b", "xhigh", "xhigh"},
+		{"qwen-3-8-27b maps high to xhigh", "qwen-3-8-27b", "high", "xhigh"},
 		{"standard effort passes through", "gpt-5.1", "medium", "medium"},
 	}
 
@@ -1144,6 +1147,12 @@ func TestEffortPredicatesAgainstCatalogIDs(t *testing.T) {
 		{"deepseek-v4-pro", false, false, true},
 		{"glm-5.2", false, false, true},
 		{"gpt-4o", false, false, false},
+		// Qwen 3.8 family: effort enum is low/medium/xhigh (#6424)
+		{"qwen-3-8-27b", false, true, false},
+		{"qwen3.8-27b", false, true, false},
+		// dash-rolled qwen3-8b is an older family with no effort enum
+		{"qwen-3-8b", false, false, false},
+		{"qwen3-8b", false, false, false},
 	}
 	for _, c := range cases {
 		if got := acceptsMinimalEffort(c.model); got != c.minimal {

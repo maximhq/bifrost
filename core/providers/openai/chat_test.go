@@ -329,6 +329,24 @@ func TestToOpenAIChatRequest_NormalizesReasoningEffort(t *testing.T) {
 			effort:   "max",
 			expected: "max",
 		},
+		{
+			name:     "preserves xhigh for qwen-3-8-27b",
+			model:    "qwen-3-8-27b",
+			effort:   "xhigh",
+			expected: "xhigh",
+		},
+		{
+			name:     "preserves xhigh for qwen3.8-27b",
+			model:    "qwen3.8-27b",
+			effort:   "xhigh",
+			expected: "xhigh",
+		},
+		{
+			name:     "maps high to xhigh for qwen-3-8-27b",
+			model:    "qwen-3-8-27b",
+			effort:   "high",
+			expected: "xhigh",
+		},
 	}
 
 	for _, tt := range tests {
