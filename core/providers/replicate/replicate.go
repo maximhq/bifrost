@@ -78,7 +78,7 @@ func (provider *ReplicateProvider) GetProviderKey() schemas.ModelProvider {
 
 // buildRequestURL builds the request URL with custom provider config support
 func (provider *ReplicateProvider) buildRequestURL(ctx *schemas.BifrostContext, defaultPath string, requestType schemas.RequestType) string {
-	path, isCompleteURL := providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, requestType)
+	path, isCompleteURL, _ := providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, requestType)
 	if isCompleteURL {
 		return path
 	}
