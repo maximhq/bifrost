@@ -209,11 +209,14 @@ func (provider *OpenAIProvider) ResponsesRetrieveStream(ctx *schemas.BifrostCont
 		httpReq.Header.Set(k, v)
 	}
 
-	// Use streaming-aware client when large payload optimization is active.
-	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.streamingClient, resp)
+	// Mark the response for streaming when large payload optimization is active.
+	// The fasthttp MaxResponseBodySize/StreamResponseBody clone this used to build has
+	// no effect now that streaming sends go through net/http; the threshold is enforced
+	// by Bifrost's own readers.
+	providerUtils.PrepareStreamResponseThreshold(ctx, resp)
 
 	startTime := time.Now()
-	err := providerUtils.DoStreamingRequest(ctx, activeClient, httpReq, resp)
+	err := providerUtils.DoStreamingRequest(ctx, provider.streamingClient, httpReq, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
