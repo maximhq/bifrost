@@ -577,6 +577,7 @@ func TestFileUploadPostCallback_DeletesSessionAfterSuccessfulFinalization(t *tes
 
 	route := findGenAIRouteForTest(t, routes, "/genai/upload/v1beta/files", "POST")
 	uploadID := "finalize-upload-id"
+
 	session := &gemini.GeminiResumableUploadSession{
 		DisplayName: "finalize-test.pdf",
 		MimeType:    "application/pdf",
@@ -592,12 +593,14 @@ func TestFileUploadPostCallback_DeletesSessionAfterSuccessfulFinalization(t *tes
 	require.NotNil(t, storedBefore)
 
 	req := &gemini.GeminiFileUploadHandlerReq{
-		UploadID: uploadID,
-		FileData: []byte("test file data"),
+		UploadID:      uploadID,
+		FileData:      []byte("test file data"),
+		UploadCommand: "upload, finalize",
 	}
 
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.Set("X-Goog-Upload-Command", "upload, finalize")
+
 	err = route.PostCallback(ctx, req, nil)
 	require.NoError(t, err)
 
@@ -625,6 +628,7 @@ func TestFileUploadPostCallback_PreservesSessionForUploadOnly(t *testing.T) {
 	require.NotEmpty(t, routes)
 
 	route := findGenAIRouteForTest(t, routes, "/genai/upload/v1beta/files", "POST")
+
 	uploadID := "upload-retry-id"
 	session := &gemini.GeminiResumableUploadSession{
 		DisplayName: "upload-retry-test.pdf",
@@ -640,35 +644,24 @@ func TestFileUploadPostCallback_PreservesSessionForUploadOnly(t *testing.T) {
 		FileData: []byte("first chunk"),
 	}
 
-	// First request: "upload" command (no finalize) should preserve session
-	ctx1 := &fasthttp.RequestCtx{}
-	ctx1.Request.Header.Set("X-Goog-Upload-Command", "upload")
-	err = route.PostCallback(ctx1, req, nil)
+	// Upload without finalize should keep the session active.
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("X-Goog-Upload-Command", "upload")
+
+	err = route.PostCallback(ctx, req, nil)
 	require.NoError(t, err)
 
-	// Response should indicate upload in progress, not final
-	assert.Equal(t, "active", string(ctx1.Response.Header.Peek("X-Goog-Upload-Status")))
+	// Response should indicate that the upload is still active.
+	assert.Equal(t, "active", string(ctx.Response.Header.Peek("X-Goog-Upload-Status")))
 
-	// Session should still exist for retries
+	// Session should still exist for subsequent chunks/retries.
 	stored, err := kvStore.Get(uploadID)
 	require.NoError(t, err)
 	require.NotNil(t, stored)
+
 	storedSession, ok := stored.(*gemini.GeminiResumableUploadSession)
 	require.True(t, ok)
 	assert.Equal(t, "upload-retry-test.pdf", storedSession.DisplayName)
-
-	// Second request: "upload, finalize" command should finalize and delete session
-	ctx2 := &fasthttp.RequestCtx{}
-	ctx2.Request.Header.Set("X-Goog-Upload-Command", "upload, finalize")
-	err = route.PostCallback(ctx2, req, nil)
-	require.NoError(t, err)
-
-	// Response should indicate finalization complete
-	assert.Equal(t, "final", string(ctx2.Response.Header.Peek("X-Goog-Upload-Status")))
-
-	// Session should now be deleted
-	_, err = kvStore.Get(uploadID)
-	assert.ErrorIs(t, err, kvstore.ErrNotFound)
 }
 
 // Test that the request is rejected without an upload session.
@@ -1335,7 +1328,8 @@ func TestFileRequestConverter_RejectsUploadExceedingMaxSize(t *testing.T) {
 
 	ctx := &schemas.BifrostContext{}
 
-	// Adding a 10 MB chunk would increase the total size to 101 MB.
+	// The chunk itself is within the 10 MB limit,
+	// but 91 MB + 10 MB would exceed the 100 MB total limit.
 	req := &gemini.GeminiFileUploadHandlerReq{
 		UploadID:        uploadID,
 		UploadCommand:   "upload",
@@ -1348,7 +1342,7 @@ func TestFileRequestConverter_RejectsUploadExceedingMaxSize(t *testing.T) {
 
 	require.Error(t, err)
 	require.Nil(t, result)
-	require.Contains(t, err.Error(), "upload size exceeds maximum allowed size")
+	require.Contains(t, err.Error(), "resumable upload exceeds maximum size of 100 MB")
 }
 
 // Multiple chunks that total exactly 100 MB should succeed.
@@ -1520,4 +1514,73 @@ func TestFileRequestConverter_RejectsChunkExceedingMaxSize(t *testing.T) {
 	require.Error(t, err)
 	require.Nil(t, result)
 	require.Contains(t, err.Error(), "chunk size exceeds maximum allowed size")
+}
+
+func TestFileRequestConverter_RejectsCumulativeUploadExceedingMaxSize(t *testing.T) {
+	t.Parallel()
+
+	kvStore, err := kvstore.New(kvstore.Config{})
+	require.NoError(t, err)
+	defer kvStore.Close()
+
+	handlerStore := &fileUploadTestHandlerStore{
+		mockHandlerStore: &mockHandlerStore{},
+		kvStore:          kvStore,
+	}
+
+	routes := CreateGenAIFileRouteConfigs("/genai", handlerStore)
+	require.NotEmpty(t, routes)
+
+	converter := routes[0].FileRequestConverter
+	require.NotNil(t, converter)
+
+	uploadID := "test-cumulative-upload-over-limit"
+
+	session := &gemini.GeminiResumableUploadSession{
+		DisplayName: "test.pdf",
+		MimeType:    "application/pdf",
+		Provider:    "gemini",
+		NextOffset:  0,
+		Chunks:      make(map[int64][]byte),
+	}
+
+	err = kvStore.SetWithTTL(uploadID, session, time.Minute)
+	require.NoError(t, err)
+
+	ctx := &schemas.BifrostContext{}
+
+	// Upload 11 valid chunks of 9 MB each = 99 MB.
+	chunkSize := int64(9 * 1024 * 1024)
+
+	for i := int64(0); i < 11; i++ {
+		req := &gemini.GeminiFileUploadHandlerReq{
+			UploadID:        uploadID,
+			UploadCommand:   "upload",
+			UploadOffset:    i * chunkSize,
+			HasUploadOffset: true,
+			FileData:        make([]byte, chunkSize),
+		}
+
+		result, err := converter(ctx, req)
+
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.True(t, result.Handled)
+	}
+
+	// 99 MB has already been uploaded.
+	// Adding a valid 2 MB chunk would make the total 101 MB.
+	req := &gemini.GeminiFileUploadHandlerReq{
+		UploadID:        uploadID,
+		UploadCommand:   "upload",
+		UploadOffset:    99 * 1024 * 1024,
+		HasUploadOffset: true,
+		FileData:        make([]byte, 2*1024*1024),
+	}
+
+	result, err := converter(ctx, req)
+
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Contains(t, err.Error(), "resumable upload exceeds maximum size of 100 MB")
 }

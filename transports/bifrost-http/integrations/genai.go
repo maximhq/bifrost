@@ -373,15 +373,12 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 					r.UploadOffset = parsedOffset
 					r.HasUploadOffset = true
 				}
-
 				return nil
 			}
-
 			// Step 1: body is JSON metadata.
 			if body := ctx.Request.Body(); len(body) > 0 {
 				return sonic.Unmarshal(body, r)
 			}
-
 			return nil
 		},
 		// ShortCircuit handles step 1 for non-Gemini providers: it acknowledges
@@ -435,11 +432,12 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 			if !ok {
 				return nil, errors.New("invalid file upload request type")
 			}
+
 			if r.UploadID == "" {
 				return nil, errors.New("upload_id missing — step 1 should have been short-circuited")
 			}
 
-			// Reject incomplete or unsupported resumable-upload headers.
+			// Validate resumable upload headers.
 			if r.UploadCommand == "" {
 				return nil, errors.New("missing X-Goog-Upload-Command header")
 			}
@@ -453,13 +451,21 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 				return nil, errors.New("missing X-Goog-Upload-Offset header")
 			}
 
+			// Validate the chunk size before accessing the session.
+			newChunkSize := int64(len(r.FileData))
+			if newChunkSize > MaxResumableChunkSize {
+				return nil, fmt.Errorf("chunk size exceeds maximum allowed size of %d MB", MaxResumableChunkSize/(1024*1024))
+			}
+
 			kvStore := handlerStore.GetKVStore()
 			if kvStore == nil {
 				return nil, errors.New("kvstore not initialized")
 			}
 
 			var session *gemini.GeminiResumableUploadSession
-			// CAS loop makes validation + chunk storage + offset advancement atomic.
+
+			// CAS loop makes session validation, chunk storage, and offset
+			// advancement atomic and retry-safe.
 			for {
 				val, err := kvStore.Get(r.UploadID)
 				if err != nil {
@@ -484,24 +490,25 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 					newSession.Chunks[offset] = append([]byte(nil), chunk...)
 				}
 
-				// If this offset already exists, this can only be a retry of the exact same chunk.
+				// If the offset already exists, this is a retry.
+				// Only allow the retry when the chunk data is identical.
 				if existingChunk, exists := newSession.Chunks[r.UploadOffset]; exists {
 					if !bytes.Equal(existingChunk, r.FileData) {
 						return nil, fmt.Errorf("chunk at offset %d already exists with different data", r.UploadOffset)
 					}
 				} else {
+					// New chunk must start exactly at the next expected offset.
 					if r.UploadOffset < 0 || r.UploadOffset != newSession.NextOffset {
 						return nil, fmt.Errorf("invalid upload offset %d, expected %d", r.UploadOffset, newSession.NextOffset)
 					}
 
-					// Validate individual chunk size.
-					newChunkSize := int64(len(r.FileData))
-					if newChunkSize > MaxResumableChunkSize {
-						return nil, fmt.Errorf("chunk size exceeds maximum allowed size of %d MB", MaxResumableChunkSize/(1024*1024))
+					// Check the cumulative upload size before persisting the chunk.
+					if newSession.NextOffset+newChunkSize > MaxResumableUploadSize {
+						return nil, fmt.Errorf("resumable upload exceeds maximum size of %d MB", MaxResumableUploadSize/(1024*1024))
 					}
 
-					chunk := append([]byte(nil), r.FileData...)
-					newSession.Chunks[r.UploadOffset] = chunk
+					// Copy the chunk before storing it in the session.
+					newSession.Chunks[r.UploadOffset] = append([]byte(nil), r.FileData...)
 					newSession.NextOffset += newChunkSize
 				}
 
@@ -511,6 +518,8 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 				}
 
 				if !success {
+					// Session changed concurrently. Read the latest session
+					// and retry the entire operation.
 					continue
 				}
 
@@ -518,15 +527,15 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 				break
 			}
 
-			// Chunk requests carry no auth headers (resumable-upload protocol:
-			// the upload_id is the credential), so restore the virtual key that
-			// initiated the upload. Headers presented on the chunk request win.
+			// Resumable chunk requests may not contain the original auth headers.
+			// Restore the virtual key associated with the upload session.
 			if session.VirtualKey != "" {
 				if vk, ok := ctx.Value(schemas.BifrostContextKeyVirtualKey).(string); !ok || vk == "" {
 					ctx.SetValue(schemas.BifrostContextKeyVirtualKey, session.VirtualKey)
 				}
 			}
 
+			// Upload without finalize: keep the session and acknowledge progress.
 			if normalizedCmd == "upload" {
 				return &FileRequest{
 					Handled: true,
