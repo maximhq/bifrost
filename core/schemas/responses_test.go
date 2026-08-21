@@ -6,6 +6,47 @@ import (
 	"testing"
 )
 
+// TestBifrostResponsesStreamResponseOmitsEmptyItem verifies that events without
+// an item object (response.created, output_text.delta, response.completed, ...)
+// do not serialize "item": null. Strict Responses API clients (e.g. opencode's
+// open-responses protocol) reject events where "item" is present but null —
+// the field only belongs on output_item.added / output_item.done.
+func TestBifrostResponsesStreamResponseOmitsEmptyItem(t *testing.T) {
+	for _, typ := range []ResponsesStreamResponseType{
+		ResponsesStreamResponseTypeCreated,
+		ResponsesStreamResponseTypeInProgress,
+		ResponsesStreamResponseTypeOutputTextDelta,
+		ResponsesStreamResponseTypeContentPartAdded,
+		ResponsesStreamResponseTypeCompleted,
+	} {
+		ev := &BifrostResponsesStreamResponse{Type: typ, SequenceNumber: 0}
+		encoded, err := MarshalSorted(ev)
+		if err != nil {
+			t.Fatalf("%s: marshal: %v", typ, err)
+		}
+		if strings.Contains(string(encoded), `"item"`) {
+			t.Errorf("%s: event without item serializes an item field:\n%s", typ, encoded)
+		}
+	}
+
+	for _, typ := range []ResponsesStreamResponseType{
+		ResponsesStreamResponseTypeOutputItemAdded,
+		ResponsesStreamResponseTypeOutputItemDone,
+	} {
+		withItem := &BifrostResponsesStreamResponse{
+			Type: typ,
+			Item: &ResponsesMessage{Type: Ptr(ResponsesMessageTypeMessage), ID: Ptr("msg_1")},
+		}
+		encoded, err := MarshalSorted(withItem)
+		if err != nil {
+			t.Fatalf("%s: marshal: %v", typ, err)
+		}
+		if !strings.Contains(string(encoded), `"item":{"id":"msg_1"`) {
+			t.Errorf("%s: lost item object:\n%s", typ, encoded)
+		}
+	}
+}
+
 func TestBifrostResponsesStreamResponsePreservesOpenAIStreamMetadata(t *testing.T) {
 	raw := []byte(`{"type":"response.reasoning_summary_text.delta","delta":"thinking","item_id":"rs_123","obfuscation":"opaque","output_index":0,"sequence_number":4,"summary_index":0}`)
 

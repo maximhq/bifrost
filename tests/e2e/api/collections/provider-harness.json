@@ -365,6 +365,75 @@
               ]
             }
           }
+        },
+        {
+          "name": "POST /v1/responses — streaming (no item:null outside output_item.added/done)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Regression (fix/responses-stream-item-null): Responses SSE must not emit \"item\": null",
+                  "// on events that carry no item object. The field belongs only on output_item.added /",
+                  "// output_item.done. Strict clients such as opencode's open-responses protocol reject a",
+                  "// null item and drop the whole stream with 'Invalid ... stream event'.",
+                  "pm.test('Responses stream request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'expected < 400').to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('Responses SSE content-type is event-stream', function () {",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(ct, 'expected text/event-stream, got ' + ct).to.include('text/event-stream');",
+                  "});",
+                  "var types = {};",
+                  "var itemNull = 0;",
+                  "(pm.response.text() || '').split('\\n').forEach(function (l) {",
+                  "  if (l.indexOf('data: ') !== 0) { return; }",
+                  "  var p = l.slice(6).trim();",
+                  "  if (p === '[DONE]') { return; }",
+                  "  try {",
+                  "    var j = JSON.parse(p);",
+                  "    if (j.type) { types[j.type] = (types[j.type] || 0) + 1; }",
+                  "    if (j.type !== 'response.output_item.added' && j.type !== 'response.output_item.done') {",
+                  "      if ('item' in j && j.item === null) { itemNull++; }",
+                  "    }",
+                  "  } catch (e) {}",
+                  "});",
+                  "pm.test('Responses stream emits response.created and response.completed', function () {",
+                  "  pm.expect(types['response.created'], 'expected response.created').to.be.defined;",
+                  "  pm.expect(types['response.completed'], 'expected response.completed').to.be.defined;",
+                  "});",
+                  "pm.test('Regression: no item: null outside output_item.added/done', function () {",
+                  "  pm.expect(itemNull, 'found ' + itemNull + ' events with item: null').to.equal(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": \"Say hello in one short sentence.\",\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
         }
       ]
     },

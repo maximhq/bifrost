@@ -3719,8 +3719,11 @@ type BifrostResponsesStreamResponse struct {
 
 	Response *BifrostResponsesResponse `json:"response,omitempty"`
 
-	OutputIndex *int              `json:"output_index,omitempty"`
-	Item        *ResponsesMessage `json:"item"`
+	OutputIndex *int `json:"output_index,omitempty"`
+	// Item is only emitted on output_item.added / output_item.done. omitempty is
+	// required: other event types must not serialize "item": null — strict
+	// Responses clients (opencode open-responses protocol) reject null there.
+	Item *ResponsesMessage `json:"item,omitempty"`
 	// SummaryIndex identifies which summary block within an item a delta belongs to.
 	// Emitted on response.reasoning_summary_text.{delta,done} and
 	// response.reasoning_summary_part.{added,done}.
