@@ -101,14 +101,86 @@ func TestMakeRequestWithContext_DeadlineExceededReturnsTimeoutError(t *testing.T
 	wait()
 	elapsed := time.Since(start)
 
-	// The wait should have taken roughly the remaining server delay (~490ms)
-	if elapsed < 200*time.Millisecond {
-		t.Fatalf("wait() returned too quickly (%v), expected it to block until goroutine finishes", elapsed)
+	// The request inherits the context deadline, so the client goroutine has
+	// already finished by the time the context cancellation is observed.
+	if elapsed > 200*time.Millisecond {
+		t.Fatalf("wait() blocked for %v after context timeout", elapsed)
 	}
 
 	// Now safe to release
 	fasthttp.ReleaseRequest(req)
 	fasthttp.ReleaseResponse(resp)
+}
+
+func TestMakeRequestWithContext_ContextDeadlineExtendsClientReadTimeout(t *testing.T) {
+	// Use a real TCP listener to exercise fasthttp's normal client path. The
+	// upstream accepts the request but deliberately never sends a response.
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	releaseUpstream := make(chan struct{})
+	upstreamDone := make(chan struct{})
+	go func() {
+		defer close(upstreamDone)
+
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer conn.Close()
+
+		<-releaseUpstream
+	}()
+	defer func() {
+		close(releaseUpstream)
+		_ = listener.Close()
+		<-upstreamDone
+	}()
+
+	// This is a scaled-down version of a 30-second FastHTTP timeout with a
+	// 60-second context deadline. The request-level deadline must replace the
+	// shorter client default, not be capped by it.
+	const clientReadTimeout = 100 * time.Millisecond
+	client := &fasthttp.Client{
+		ReadTimeout:  clientReadTimeout,
+		WriteTimeout: clientReadTimeout,
+	}
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+	req.SetRequestURI("http://" + listener.Addr().String() + "/")
+
+	const contextTimeout = 500 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), contextTimeout)
+	defer cancel()
+
+	start := time.Now()
+	_, bifrostErr, wait := MakeRequestWithContext(ctx, client, req, resp)
+	elapsed := time.Since(start)
+
+	// Calling wait before releasing the pooled request and response mirrors the
+	// provider path. It must return promptly because the request's context
+	// deadline also terminates the underlying FastHTTP request.
+	waitStart := time.Now()
+	wait()
+	waitElapsed := time.Since(waitStart)
+
+	if bifrostErr == nil || bifrostErr.Error.Type == nil || *bifrostErr.Error.Type != schemas.RequestTimedOut {
+		t.Fatalf("expected context timeout error, got: %#v", bifrostErr)
+	}
+	if elapsed < 400*time.Millisecond {
+		t.Fatalf("request ended after %v; expected context timeout (%v) to extend client read timeout (%v)", elapsed, contextTimeout, clientReadTimeout)
+	}
+	if elapsed > time.Second {
+		t.Fatalf("request took %v; expected it to time out near the context deadline (%v)", elapsed, contextTimeout)
+	}
+	if waitElapsed > time.Second {
+		t.Fatalf("wait blocked for %v after the context timeout; request timeout was not applied", waitElapsed)
+	}
 }
 
 func TestMakeRequestWithContext_ContextCancelReturnsCancelledError(t *testing.T) {
