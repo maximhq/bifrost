@@ -4165,6 +4165,10 @@
                       "mistral",
                       "cohere",
                       "gemini",
+                      "gemma",
+                      "llama",
+                      "imagen",
+                      "veo",
                       "nova",
                       "titan"
                     ],
@@ -4211,7 +4215,7 @@
                   },
                   "use_anthropic_endpoints": {
                     "type": "boolean",
-                    "description": "Routes chat completions and responses requests through Anthropic-compatible endpoints."
+                    "description": "For deepseek, fireworks, vllm, and sgl keys: route this alias's chat completions and responses requests through Anthropic-compatible endpoints. Overrides the key-level use_anthropic_endpoints setting."
                   }
                 },
                 "required": ["model_id"],
@@ -4277,13 +4281,6 @@
                 "project_id": {
                   "type": "string",
                   "description": "Bedrock project ID scoping the Mantle sub-surface (OpenAI-compatible gpt-*/Gemma routing) via the OpenAI-Project header. When empty, AWS routes to the account's default project. No effect on the Converse/bedrock-runtime paths (can use env. prefix)."
-                },
-                "deployments": {
-                  "type": "object",
-                  "additionalProperties": {
-                    "type": "string"
-                  },
-                  "description": "Model to deployment mappings"
                 },
                 "batch_s3_config": {
                   "type": "object",
@@ -4598,7 +4595,7 @@
                 },
                 "api_version": {
                   "type": "string",
-                  "description": "Deprecated: Bifrost now uses the Azure OpenAI v1 API which does not require an api-version parameter."
+                  "description": "Deprecated: Bifrost now uses the Azure OpenAI v1 API which does not require an api-version parameter. Set api_version on an individual alias to override it for that deployment."
                 }
               },
               "required": ["endpoint"],

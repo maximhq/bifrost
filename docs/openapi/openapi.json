@@ -2825,7 +2825,9 @@
                       "mask",
                       "segmentation",
                       "vectorize",
-                      "controlnet_preprocess"
+                      "controlnet_preprocess",
+                      "controlnet",
+                      "preprocess"
                     ],
                     "description": "Type of edit operation. Support varies by provider; unsupported values are dropped and the\nrequest runs as a standard edit.\n"
                   },
@@ -10274,7 +10276,9 @@
                       "mask",
                       "segmentation",
                       "vectorize",
-                      "controlnet_preprocess"
+                      "controlnet_preprocess",
+                      "controlnet",
+                      "preprocess"
                     ],
                     "description": "Type of edit operation. Support varies by provider; unsupported values are dropped and the\nrequest runs as a standard edit.\n"
                   },
@@ -93716,10 +93720,189 @@
               "minLength": 1
             },
             "additionalProperties": {
-              "type": "string",
-              "minLength": 1
+              "oneOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Legacy shape. A bare provider-specific identifier, equivalent to an AliasConfig with only model_id set."
+                },
+                {
+                  "type": "object",
+                  "description": "Rich configuration for a single key-level alias. Carries the wire model identifier plus\noptional canonical name, model family, and provider-specific overrides. Shared fields\n(region, project_id, use_anthropic_endpoints) are accepted on any provider's key but are\nonly read by the providers named in their descriptions. The provider-specific overrides\nare validated against the owning key's provider and rejected on a mismatch.\n",
+                  "properties": {
+                    "model_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Provider-specific identifier sent on the wire (deployment name, inference profile ID, fine-tuned model ID, etc.)"
+                    },
+                    "model_name": {
+                      "type": "string",
+                      "description": "Canonical model name used for pricing, logging, and family inference. Set this when model_id is opaque."
+                    },
+                    "model_family": {
+                      "type": "string",
+                      "enum": [
+                        "anthropic",
+                        "openai",
+                        "mistral",
+                        "cohere",
+                        "gemini",
+                        "gemma",
+                        "llama",
+                        "imagen",
+                        "veo",
+                        "nova",
+                        "titan"
+                      ],
+                      "description": "Underlying model family used for provider routing decisions. When unset, the family is inferred from model_name, model_id, and the alias name."
+                    },
+                    "description": {
+                      "type": "string",
+                      "description": "Free-form note surfaced in the UI. Not used for routing."
+                    },
+                    "region": {
+                      "type": "object",
+                      "description": "Per-alias region override. Read by Bedrock, Bedrock Mantle, and Vertex; falls back to the key-level region.",
+                      "properties": {
+                        "value": {
+                          "type": "string",
+                          "description": "Resolved value (redacted in GET responses for secret fields)"
+                        },
+                        "ref": {
+                          "type": "string",
+                          "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                        },
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "plain_text",
+                            "env",
+                            "vault"
+                          ],
+                          "description": "Source type of the value"
+                        }
+                      }
+                    },
+                    "project_id": {
+                      "type": "object",
+                      "description": "Per-alias project override. Vertex reads it as the GCP project; Bedrock and Bedrock Mantle send it as the AWS project on the OpenAI-Project / anthropic-workspace-id header.",
+                      "properties": {
+                        "value": {
+                          "type": "string",
+                          "description": "Resolved value (redacted in GET responses for secret fields)"
+                        },
+                        "ref": {
+                          "type": "string",
+                          "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                        },
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "plain_text",
+                            "env",
+                            "vault"
+                          ],
+                          "description": "Source type of the value"
+                        }
+                      }
+                    },
+                    "use_anthropic_endpoints": {
+                      "type": "boolean",
+                      "description": "For DeepSeek, Fireworks, vLLM, and SGLang keys, routes this alias's chat completions and responses requests through the Anthropic-compatible /v1/messages endpoint. Overrides the key-level setting for this alias only."
+                    },
+                    "api_version": {
+                      "type": "string",
+                      "description": "Azure only. Overrides the api-version query parameter."
+                    },
+                    "anthropic_version": {
+                      "type": "string",
+                      "description": "Azure only. Overrides the anthropic-version header for Claude-on-Azure deployments."
+                    },
+                    "endpoint": {
+                      "type": "object",
+                      "description": "Azure only. Overrides the key-level Azure endpoint for this alias.",
+                      "properties": {
+                        "value": {
+                          "type": "string",
+                          "description": "Resolved value (redacted in GET responses for secret fields)"
+                        },
+                        "ref": {
+                          "type": "string",
+                          "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                        },
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "plain_text",
+                            "env",
+                            "vault"
+                          ],
+                          "description": "Source type of the value"
+                        }
+                      }
+                    },
+                    "project_number": {
+                      "type": "object",
+                      "description": "Vertex only. Per-alias GCP project number, required for fine-tuned models.",
+                      "properties": {
+                        "value": {
+                          "type": "string",
+                          "description": "Resolved value (redacted in GET responses for secret fields)"
+                        },
+                        "ref": {
+                          "type": "string",
+                          "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                        },
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "plain_text",
+                            "env",
+                            "vault"
+                          ],
+                          "description": "Source type of the value"
+                        }
+                      }
+                    },
+                    "force_single_region": {
+                      "type": "boolean",
+                      "description": "Vertex only. Calls the alias region as-is and skips promoting multi-region-only models to a multi-region endpoint."
+                    },
+                    "inference_profile_arn": {
+                      "type": "object",
+                      "description": "Bedrock only. Cross-region inference profile ARN invoked instead of the model ID.",
+                      "properties": {
+                        "value": {
+                          "type": "string",
+                          "description": "Resolved value (redacted in GET responses for secret fields)"
+                        },
+                        "ref": {
+                          "type": "string",
+                          "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                        },
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "plain_text",
+                            "env",
+                            "vault"
+                          ],
+                          "description": "Source type of the value"
+                        }
+                      }
+                    },
+                    "use_deployments_endpoint": {
+                      "type": "boolean",
+                      "description": "Replicate only. Routes the alias through the deployments endpoint instead of the models endpoint."
+                    }
+                  },
+                  "required": [
+                    "model_id"
+                  ]
+                }
+              ]
             },
-            "description": "Model alias mappings - maps a user-facing model name to a provider-specific identifier (deployment name, inference profile ID, fine-tuned model ID, etc.)"
+            "description": "Model alias mappings. Each entry maps a user-facing model name to either a bare\nprovider-specific identifier (deployment name, inference profile ID, fine-tuned model\nID) or an AliasConfig object carrying that identifier plus optional canonical name,\nmodel family, and provider-specific overrides. Both shapes are accepted on input; a\nresponse emits the bare string when only model_id is set.\n"
           },
           "azure_key_config": {
             "type": "object",
@@ -93750,7 +93933,7 @@
               },
               "api_version": {
                 "type": "object",
-                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                "description": "Deprecated and ignored. Bifrost uses the Azure OpenAI v1 API, which needs no api-version parameter. Set api_version on an individual alias to override it for that deployment.",
                 "properties": {
                   "value": {
                     "type": "string",
@@ -93769,7 +93952,8 @@
                     ],
                     "description": "Source type of the value"
                   }
-                }
+                },
+                "deprecated": true
               },
               "client_id": {
                 "type": "object",
@@ -94090,6 +94274,317 @@
               }
             }
           },
+          "bedrock_mantle_key_config": {
+            "type": "object",
+            "description": "Bedrock Mantle-specific key configuration",
+            "properties": {
+              "access_key": {
+                "type": "object",
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                "properties": {
+                  "value": {
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
+                  },
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
+                  }
+                }
+              },
+              "secret_key": {
+                "type": "object",
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                "properties": {
+                  "value": {
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
+                  },
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
+                  }
+                }
+              },
+              "session_token": {
+                "type": "object",
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                "properties": {
+                  "value": {
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
+                  },
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
+                  }
+                }
+              },
+              "region": {
+                "type": "object",
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                "properties": {
+                  "value": {
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
+                  },
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
+                  }
+                }
+              },
+              "role_arn": {
+                "type": "object",
+                "description": "IAM role ARN for STS AssumeRole",
+                "properties": {
+                  "value": {
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
+                  },
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
+                  }
+                }
+              },
+              "external_id": {
+                "type": "object",
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                "properties": {
+                  "value": {
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
+                  },
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
+                  }
+                }
+              },
+              "session_name": {
+                "type": "object",
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                "properties": {
+                  "value": {
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
+                  },
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
+                  }
+                }
+              },
+              "project_id": {
+                "type": "object",
+                "description": "Scopes inference and model listing to a Bedrock project, sent as the OpenAI-Project or anthropic-workspace-id header. Defaults to the account's default project when empty.",
+                "properties": {
+                  "value": {
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
+                  },
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
+                  }
+                }
+              },
+              "endpoints": {
+                "type": "object",
+                "description": "Routes each AWS endpoint service through an interface VPC endpoint",
+                "properties": {
+                  "runtime": {
+                    "type": "object",
+                    "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                      },
+                      "ref": {
+                        "type": "string",
+                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "plain_text",
+                          "env",
+                          "vault"
+                        ],
+                        "description": "Source type of the value"
+                      }
+                    }
+                  },
+                  "control_plane": {
+                    "type": "object",
+                    "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                      },
+                      "ref": {
+                        "type": "string",
+                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "plain_text",
+                          "env",
+                          "vault"
+                        ],
+                        "description": "Source type of the value"
+                      }
+                    }
+                  },
+                  "mantle": {
+                    "type": "object",
+                    "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                      },
+                      "ref": {
+                        "type": "string",
+                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "plain_text",
+                          "env",
+                          "vault"
+                        ],
+                        "description": "Source type of the value"
+                      }
+                    }
+                  },
+                  "agent_runtime": {
+                    "type": "object",
+                    "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                      },
+                      "ref": {
+                        "type": "string",
+                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "plain_text",
+                          "env",
+                          "vault"
+                        ],
+                        "description": "Source type of the value"
+                      }
+                    }
+                  },
+                  "s3": {
+                    "type": "object",
+                    "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                      },
+                      "ref": {
+                        "type": "string",
+                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "plain_text",
+                          "env",
+                          "vault"
+                        ],
+                        "description": "Source type of the value"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
           "vllm_key_config": {
             "type": "object",
             "description": "VLLM-specific key configuration",
@@ -94206,6 +94701,10 @@
           "use_for_batch_api": {
             "type": "boolean",
             "description": "Whether this key can be used for batch API operations"
+          },
+          "use_anthropic_endpoints": {
+            "type": "boolean",
+            "description": "For DeepSeek, Fireworks, vLLM, and SGLang keys, routes chat completions and responses requests through the provider's Anthropic-compatible endpoints. Can be overridden per alias."
           },
           "config_hash": {
             "type": "string",

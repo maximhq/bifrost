@@ -5521,16 +5521,9 @@
               },
               "description": "Azure scopes for authentication"
             },
-            "deployments": {
-              "type": "object",
-              "additionalProperties": {
-                "type": "string"
-              },
-              "description": "Model to deployment mappings"
-            },
             "api_version": {
               "type": "string",
-              "description": "Azure API version"
+              "description": "Deprecated: Bifrost now uses the Azure OpenAI v1 API which does not require an api-version parameter. Set api_version on an individual alias to override it for that deployment."
             }
           },
           "required": ["endpoint"],
@@ -5564,13 +5557,6 @@
               "type": "boolean",
               "description": "When true, always call the configured region and skip automatic promotion of multi-region-only models to a multi-region endpoint. Enable for provisioned throughput.",
               "default": false
-            },
-            "deployments": {
-              "type": "object",
-              "additionalProperties": {
-                "type": "string"
-              },
-              "description": "Model to deployment mappings"
             }
           },
           "required": ["project_id", "region"],
@@ -5618,13 +5604,6 @@
             "project_id": {
               "type": "string",
               "description": "Bedrock project ID scoping inference and model listing. Sent as the OpenAI-Project header on the OpenAI-compatible surface and the anthropic-workspace-id header on the native-Anthropic (Claude) surface. When empty, AWS routes to the account's default project (can use env. prefix)"
-            },
-            "deployments": {
-              "type": "object",
-              "additionalProperties": {
-                "type": "string"
-              },
-              "description": "Model to deployment mappings"
             },
             "batch_s3_config": {
               "type": "object",
@@ -5781,7 +5760,7 @@
                   },
                   "model_family": {
                     "type": "string",
-                    "enum": ["anthropic", "openai", "mistral", "cohere", "gemini", "nova", "titan"],
+                    "enum": ["anthropic", "openai", "mistral", "cohere", "gemini", "gemma", "llama", "imagen", "veo", "nova", "titan"],
                     "description": "Underlying model family. Used by provider routing without substring-sniffing the wire model ID."
                   },
                   "description": {
@@ -5821,7 +5800,7 @@
                   },
                   "use_anthropic_endpoints": {
                     "type": "boolean",
-                    "description": "Routes chat completions and responses requests through Anthropic-compatible endpoints."
+                    "description": "For deepseek, fireworks, vllm, and sgl keys: route this alias's chat completions and responses requests through Anthropic-compatible endpoints. Overrides the key-level use_anthropic_endpoints setting."
                   }
                 },
                 "required": ["model_id"],
@@ -6585,16 +6564,9 @@
                     },
                     "description": "Azure scopes for authentication"
                   },
-                  "deployments": {
-                    "type": "object",
-                    "additionalProperties": {
-                      "type": "string"
-                    },
-                    "description": "Model to deployment mappings"
-                  },
                   "api_version": {
                     "type": "string",
-                    "description": "Azure API version"
+                    "description": "Deprecated: Bifrost now uses the Azure OpenAI v1 API which does not require an api-version parameter. Set api_version on an individual alias to override it for that deployment."
                   }
                 },
                 "dependentRequired": {
@@ -6627,13 +6599,6 @@
                     "type": "boolean",
                     "description": "When true, always call the configured region and skip automatic promotion of multi-region-only models to a multi-region endpoint. Enable for provisioned throughput.",
                     "default": false
-                  },
-                  "deployments": {
-                    "type": "object",
-                    "additionalProperties": {
-                      "type": "string"
-                    },
-                    "description": "Model to deployment mappings"
                   }
                 },
                 "additionalProperties": false
@@ -6676,13 +6641,6 @@
                   "batch_role_arn": {
                     "type": "string",
                     "description": "Service role ARN passed to Bedrock batch jobs for S3 access; takes priority over any role_arn sent in the request (can use env. prefix)"
-                  },
-                  "deployments": {
-                    "type": "object",
-                    "additionalProperties": {
-                      "type": "string"
-                    },
-                    "description": "Model to deployment mappings"
                   },
                   "batch_s3_config": {
                     "type": "object",

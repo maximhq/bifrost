@@ -447,6 +447,36 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
 | `aliases` | No       | Map model names to fine-tuned model IDs or endpoint identifiers (v1.5.0-prerelease2+)     |
 | `models`  | Yes      | Models this key can serve; use `["*"]` to allow all                                       |
 
+**Per-alias overrides.** Every `vertex_key_config` field above except `auth_credentials` can also be set on an individual alias, overriding the key default for that alias only:
+
+| Field                             | Required | Description                                                                                     |
+| --------------------------------- | -------- | ----------------------------------------------------------------------------------------------- |
+| `aliases.*.model_name`            | No       | Canonical model name used for pricing and logs. Set this when the alias `model_id` is an opaque endpoint or tuned-model ID |
+| `aliases.*.model_family`          | No       | Forces the family used for request shaping and response parsing instead of inferring it from the model ID |
+| `aliases.*.project_id`            | No       | Per-alias GCP project; overrides `vertex_key_config.project_id`                                 |
+| `aliases.*.project_number`        | No       | Per-alias GCP project number; overrides `vertex_key_config.project_number` (required for fine-tuned models) |
+| `aliases.*.region`                | No       | Per-alias GCP region; overrides `vertex_key_config.region`                                      |
+| `aliases.*.force_single_region`   | No       | Per-alias multi-region behavior; overrides `vertex_key_config.force_single_region`              |
+
+This lets one key serve a fine-tuned model from a different project than the foundation models on the same key:
+
+```json
+{
+  "aliases": {
+    "gemini-2.5-flash": "gemini-2.5-flash",
+    "my-tuned-model": {
+      "model_id": "1234567890123456789",
+      "model_name": "gemini-2.5-flash",
+      "project_id": "env.VERTEX_TUNING_PROJECT",
+      "project_number": "env.VERTEX_TUNING_PROJECT_NUMBER",
+      "region": "us-central1"
+    }
+  }
+}
+```
+
+In the Web UI these are the expanded fields of a row in the **Deployments** table, under **Vertex overrides**. See [Aliasing Models](/providers/aliasing-models) for the full alias schema.
+
 ---
 
 ## GKE Workload Identity Federation
