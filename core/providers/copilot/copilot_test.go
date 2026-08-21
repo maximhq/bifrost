@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/maximhq/bifrost/core/internal/llmtests"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -27,7 +28,10 @@ func validateCopilotToken(token string) error {
 	req.Header.Set("user-agent", "GitHubCopilotChat/0.40.0")
 	req.Header.Set("copilot-integration-id", "vscode-chat")
 
-	resp, err := http.DefaultClient.Do(req)
+	// Bounded client: http.DefaultClient has no timeout, so a stalled connection
+	// here would hang the whole core suite until the job-level timeout.
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("token exchange request failed: %w", err)
 	}

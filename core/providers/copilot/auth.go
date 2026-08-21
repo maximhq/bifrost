@@ -90,6 +90,8 @@ func (tm *copilotTokenManager) refreshToken() *tokenResult {
 
 	if err := tm.client.Do(req, resp); err != nil {
 		tm.mu.RLock()
+		// Transport failure (network issue, GitHub outage): a still-valid cached JWT
+		// rides out the blip. An expired one cannot, so the error surfaces instead.
 		cached := tm.apiToken != "" && time.Now().Before(tm.expiresAt)
 		t, b := tm.apiToken, tm.apiBase
 		tm.mu.RUnlock()
@@ -125,6 +127,7 @@ func (tm *copilotTokenManager) refreshToken() *tokenResult {
 		if sc == 401 || sc == 403 {
 			tm.apiToken = ""
 		} else if tm.apiToken != "" && time.Now().Before(tm.expiresAt) {
+			// Transient upstream failure (5xx, 429): keep serving the still-valid JWT.
 			t, b := tm.apiToken, tm.apiBase
 			tm.mu.Unlock()
 			return &tokenResult{token: t, apiBase: b}
@@ -182,7 +185,13 @@ func (tm *copilotTokenManager) refreshToken() *tokenResult {
 
 	tm.mu.Lock()
 	tm.apiToken = tokenResp.Token
-	tm.expiresAt = time.Unix(tokenResp.ExpiresAt, 0)
+	// A response without an expiry would otherwise land in 1970 and be treated as
+	// permanently expired, forcing an exchange on every request.
+	if tokenResp.ExpiresAt > 0 {
+		tm.expiresAt = time.Unix(tokenResp.ExpiresAt, 0)
+	} else {
+		tm.expiresAt = time.Now().Add(fallbackTokenTTL)
+	}
 	// Reset apiBase on every successful refresh so a stale dynamic host from a
 	// previous exchange cannot leak through when the new response omits or
 	// returns an invalid Endpoints.API.

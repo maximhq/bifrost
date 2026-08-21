@@ -97,32 +97,42 @@ type CopilotTokenManagerEntry struct {
 }
 
 // getOrCreateTokenManager returns the token manager for the given key, creating one if needed.
-// Uses LoadOrStore for atomic creation to prevent concurrent first requests from creating
-// duplicate token managers (and triggering parallel token exchanges).
+// Concurrent first requests share a single manager rather than racing duplicate token exchanges.
 // If the key's OAuth token has changed since the last call (rotation or re-auth), the old manager
 // is replaced so that revoked credentials are not reused.
+//
+// The returned manager always holds the caller's own token: a caller that loses a concurrent
+// swap must not inherit the winner's credential, since keys carrying different tokens can share
+// a map entry (notably when Key.ID is unset, which nothing in core backfills).
 func (provider *CopilotProvider) getOrCreateTokenManager(key schemas.Key) *copilotTokenManager {
 	currentToken := key.Value.GetValue()
-	if val, ok := provider.tokenManagers.Load(key.ID); ok {
-		entry := val.(*CopilotTokenManagerEntry)
-		if entry.accessToken == currentToken {
-			return entry.tm
+	var tm *copilotTokenManager
+	for attempt := 0; attempt < tokenManagerSwapAttempts; attempt++ {
+		val, loaded := provider.tokenManagers.Load(key.ID)
+		if loaded {
+			if entry := val.(*CopilotTokenManagerEntry); entry.accessToken == currentToken {
+				return entry.tm
+			}
 		}
-		// OAuth token has been rotated — atomically replace with a fresh manager.
-		tm := newCopilotTokenManager(currentToken, provider.tokenClient, provider.logger)
+		if tm == nil {
+			tm = newCopilotTokenManager(currentToken, provider.tokenClient, provider.logger)
+		}
 		newEntry := &CopilotTokenManagerEntry{tm: tm, accessToken: currentToken}
+		if !loaded {
+			if actual, alreadyStored := provider.tokenManagers.LoadOrStore(key.ID, newEntry); !alreadyStored {
+				return tm
+			} else if entry := actual.(*CopilotTokenManagerEntry); entry.accessToken == currentToken {
+				return entry.tm
+			}
+			continue
+		}
 		if provider.tokenManagers.CompareAndSwap(key.ID, val, newEntry) {
 			return tm
 		}
-		// Another goroutine won the swap — use theirs.
-		winner, _ := provider.tokenManagers.Load(key.ID)
-		return winner.(*CopilotTokenManagerEntry).tm
 	}
-	// First request for this key — use LoadOrStore so concurrent callers share one manager.
-	tm := newCopilotTokenManager(currentToken, provider.tokenClient, provider.logger)
-	entry := &CopilotTokenManagerEntry{tm: tm, accessToken: currentToken}
-	actual, _ := provider.tokenManagers.LoadOrStore(key.ID, entry)
-	return actual.(*CopilotTokenManagerEntry).tm
+	// Lost every swap to callers holding other tokens. Serve this caller's own
+	// manager uncached rather than handing back someone else's credential.
+	return tm
 }
 
 // getCopilotAuth resolves the Copilot JWT and builds auth headers + API base URL.
@@ -171,8 +181,9 @@ func copilotKey(key schemas.Key, token string) schemas.Key {
 }
 
 // ListModels performs a list models request to the Copilot API.
-// Resolves tokens independently per key — a single revoked or failing key does not
-// block the remaining keys from being used.
+// Each key is listed against the API base its own token exchange returned, since
+// individual and enterprise accounts are served from different hosts. Keys are
+// resolved independently, so a single revoked or failing key does not block the rest.
 func (provider *CopilotProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	if len(keys) == 0 {
 		noFallback := false
@@ -186,46 +197,36 @@ func (provider *CopilotProvider) ListModels(ctx *schemas.BifrostContext, keys []
 		}
 	}
 
-	// Resolve a Copilot JWT per key independently — skip failing keys so one
-	// revoked token doesn't block model listing for the rest.
-	var copilotKeys []schemas.Key
-	var apiBase string
-	var lastErr *schemas.BifrostError
-	for _, k := range keys {
+	// Hoisted out of the per-key closure below: both are identical for every key.
+	extraHeaders := provider.mergedExtraHeaders(nil)
+	modelsPath := providerUtils.GetPathFromContext(ctx, "/models")
+
+	listModelsByKey := func(ctx *schemas.BifrostContext, k schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 		tm := provider.getOrCreateTokenManager(k)
-		token, base, perKeyErr := tm.getToken()
-		if perKeyErr != nil {
-			lastErr = perKeyErr
+		token, apiBase, bifrostErr := tm.getToken()
+		if bifrostErr != nil {
 			if provider.logger != nil {
 				provider.logger.Warn("copilot: skipping key for ListModels due to token error",
-					"key_id", k.ID, "error", perKeyErr.Error.Message)
+					"key_id", k.ID, "error", bifrostErr.Error.Message)
 			}
-			continue
+			return nil, bifrostErr
 		}
-		if apiBase == "" {
-			apiBase = base
-		}
-		copilotKeys = append(copilotKeys, copilotKey(k, token))
-	}
-	if len(copilotKeys) == 0 {
-		// All keys failed — return the last error.
-		return nil, lastErr
+		return openai.ListModelsByKey(
+			ctx,
+			provider.client,
+			apiBase+modelsPath,
+			copilotKey(k, token),
+			request.Unfiltered,
+			extraHeaders,
+			provider.GetProviderKey(),
+			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		)
 	}
 
-	return openai.HandleOpenAIListModelsRequest(
-		ctx,
-		provider.client,
-		request,
-		apiBase+providerUtils.GetPathFromContext(ctx, "/models"),
-		copilotKeys,
-		provider.mergedExtraHeaders(nil),
-		provider.GetProviderKey(),
-		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
-		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
-	)
+	return providerUtils.HandleMultipleListModelsRequests(ctx, keys, request, listModelsByKey)
 }
 
-// ChatCompletion performs a chat completion request to the Copilot API.
 // ChatCompletion performs a chat completion request to the Copilot API.
 //
 // OpenAI has deprecated /chat/completions for its newer models (e.g. gpt-5.5,

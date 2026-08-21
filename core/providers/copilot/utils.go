@@ -4,6 +4,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
@@ -131,6 +132,15 @@ func responsesRequestHeaders(request *schemas.BifrostResponsesRequest) map[strin
 
 // tokenExpiryMargin is the number of seconds before expiry to trigger a refresh.
 const tokenExpiryMargin = 60
+
+// fallbackTokenTTL bounds how long a JWT is cached when the token exchange
+// response carries no usable expires_at. Kept short so a wrong guess costs an
+// extra exchange rather than a window of requests with a dead token.
+const fallbackTokenTTL = 5 * time.Minute
+
+// tokenManagerSwapAttempts caps how many times a caller retries installing its own
+// token manager before giving up on caching and using an uncached one. Must be >= 1.
+const tokenManagerSwapAttempts = 3
 
 // tokenExchangeMaxResponseBytes bounds the HTTP response size for the Copilot
 // token-exchange endpoint. The legitimate response is a small JSON document

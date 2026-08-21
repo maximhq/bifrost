@@ -287,3 +287,161 @@ func TestTokenManager_MalformedJSONWithNoCachedTokenReturnsError(t *testing.T) {
 		t.Errorf("expected status 500, got %d", *bifrostErr.StatusCode)
 	}
 }
+
+// TestTokenManager_TransportErrorWithExpiredCachedTokenReturnsError verifies that
+// an expired cached JWT is not served during a transport failure: the token would
+// be rejected upstream, so the refresh error must surface instead of being masked.
+func TestTokenManager_TransportErrorWithExpiredCachedTokenReturnsError(t *testing.T) {
+	tm := newCopilotTokenManager("oauth-token", &fasthttp.Client{}, nil)
+	tm.tokenExchangeURL = "http://127.0.0.1:1"
+	tm.apiToken = "expired-cached-jwt"
+	tm.apiBase = "https://api.githubcopilot.com"
+	tm.expiresAt = time.Now().Add(-5 * time.Minute)
+
+	token, _, bifrostErr := tm.getToken()
+	if bifrostErr == nil {
+		t.Fatalf("expected transport error to surface for expired cached token, got token %q", token)
+	}
+	if token != "" {
+		t.Errorf("expected no token alongside error, got %q", token)
+	}
+	if *bifrostErr.StatusCode != 500 {
+		t.Errorf("expected status 500, got %d", *bifrostErr.StatusCode)
+	}
+}
+
+// TestTokenManager_5xxWithExpiredCachedTokenReturnsError verifies that a 5xx from
+// the token exchange surfaces as the upstream error rather than being masked by an
+// expired cached token (which would resurface later as a confusing Copilot 401).
+func TestTokenManager_5xxWithExpiredCachedTokenReturnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"message":"Internal Server Error"}`))
+	}))
+	defer srv.Close()
+
+	tm := newTestTokenManager("oauth-token", srv.URL)
+	tm.apiToken = "expired-cached-jwt"
+	tm.apiBase = "https://api.githubcopilot.com"
+	tm.expiresAt = time.Now().Add(-5 * time.Minute)
+
+	_, _, bifrostErr := tm.getToken()
+	if bifrostErr == nil {
+		t.Fatal("expected 5xx from token exchange to surface, got nil")
+	}
+	if *bifrostErr.StatusCode != http.StatusInternalServerError {
+		t.Errorf("expected status 500, got %d", *bifrostErr.StatusCode)
+	}
+	if bifrostErr.AllowFallbacks != nil {
+		t.Error("expected fallbacks to stay allowed for a transient 5xx")
+	}
+	// The entry is kept so a later successful refresh can reuse the slot; only
+	// 401/403 clears it.
+	if tm.apiToken != "expired-cached-jwt" {
+		t.Errorf("expected cached JWT to be preserved on 5xx, got %q", tm.apiToken)
+	}
+}
+
+// TestTokenManager_5xxPreservesValidCachedToken pins the other side of the same
+// branch: a still-valid JWT does ride out a transient upstream failure.
+func TestTokenManager_5xxPreservesValidCachedToken(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"message":"Internal Server Error"}`))
+	}))
+	defer srv.Close()
+
+	tm := newTestTokenManager("oauth-token", srv.URL)
+	tm.apiToken = "cached-jwt"
+	tm.apiBase = "https://api.githubcopilot.com"
+	// Inside the refresh margin so a refresh is attempted, but not yet expired.
+	tm.expiresAt = time.Now().Add(30 * time.Second)
+
+	token, apiBase, bifrostErr := tm.getToken()
+	if bifrostErr != nil {
+		t.Fatalf("expected valid cached token to be returned on 5xx, got error: %v", bifrostErr)
+	}
+	if token != "cached-jwt" {
+		t.Errorf("expected cached token, got %q", token)
+	}
+	if apiBase != "https://api.githubcopilot.com" {
+		t.Errorf("expected cached api base to be preserved, got %q", apiBase)
+	}
+}
+
+// TestTokenManager_401ClearsTokenEvenIfCached verifies that 401/403 still
+// clear the cached token and return an error (no fallback to expired token).
+func TestTokenManager_401ClearsTokenEvenIfCached(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"message":"Bad credentials"}`))
+	}))
+	defer srv.Close()
+
+	tm := newTestTokenManager("bad-oauth-token", srv.URL)
+	tm.apiToken = "expired-cached-jwt"
+	tm.expiresAt = time.Now().Add(-5 * time.Minute)
+	_, _, bifrostErr := tm.getToken()
+
+	if bifrostErr == nil {
+		t.Fatal("expected error on 401, got nil")
+	}
+	if bifrostErr.AllowFallbacks == nil || *bifrostErr.AllowFallbacks != false {
+		t.Error("expected AllowFallbacks=false for 401")
+	}
+	if tm.apiToken != "" {
+		t.Error("expected cached JWT to be cleared on 401")
+	}
+}
+
+// TestTokenManager_MalformedJSONWithExpiredCachedTokenReturnsError verifies that
+// a malformed token response does not resurrect an expired cached JWT.
+func TestTokenManager_MalformedJSONWithExpiredCachedTokenReturnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{invalid json`))
+	}))
+	defer srv.Close()
+
+	tm := newTestTokenManager("oauth-token", srv.URL)
+	tm.apiToken = "expired-cached-jwt"
+	tm.apiBase = "https://api.githubcopilot.com"
+	tm.expiresAt = time.Now().Add(-5 * time.Minute)
+
+	_, _, bifrostErr := tm.getToken()
+	if bifrostErr == nil {
+		t.Fatal("expected parse error to surface for expired cached token, got nil")
+	}
+	if *bifrostErr.StatusCode != 500 {
+		t.Errorf("expected status 500, got %d", *bifrostErr.StatusCode)
+	}
+}
+
+// TestTokenManager_MissingExpiresAtIsCached pins that a token response without an
+// expires_at is cached for fallbackTokenTTL instead of landing in 1970, which
+// would treat a usable JWT as permanently expired and re-exchange every request.
+func TestTokenManager_MissingExpiresAtIsCached(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(CopilotTokenResponse{Token: "jwt-no-expiry"})
+	}))
+	defer srv.Close()
+
+	tm := newTestTokenManager("oauth-token", srv.URL)
+
+	token1, _, err1 := tm.getToken()
+	token2, _, err2 := tm.getToken()
+
+	if err1 != nil || err2 != nil {
+		t.Fatalf("unexpected error: %v / %v", err1, err2)
+	}
+	if token1 != "jwt-no-expiry" || token2 != "jwt-no-expiry" {
+		t.Errorf("expected token 'jwt-no-expiry', got %q / %q", token1, token2)
+	}
+	if calls != 1 {
+		t.Errorf("expected the token to be cached despite a missing expires_at, got %d exchanges", calls)
+	}
+}
