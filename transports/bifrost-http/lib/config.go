@@ -2253,15 +2253,15 @@ func applyMCPGlobalSettingsToClientConfig(ctx context.Context, config *Config, m
 			changed = true
 		}
 	} else if mcpCfg.ToolSyncInterval > 0 {
-		if mcpCfg.ToolSyncInterval%time.Second != 0 {
+		if mcpCfg.ToolSyncInterval%time.Minute != 0 {
 			logger.Warn(
-				"ignoring mcp.tool_sync_interval %q: must be a whole number of seconds",
+				"ignoring mcp.tool_sync_interval %q: must be a whole number of minutes",
 				mcpCfg.ToolSyncInterval.String(),
 			)
 		} else {
-			syncSeconds := int(mcpCfg.ToolSyncInterval / time.Second)
-			if config.ClientConfig.MCPToolSyncInterval != syncSeconds {
-				config.ClientConfig.MCPToolSyncInterval = syncSeconds
+			syncMinutes := int(mcpCfg.ToolSyncInterval / time.Minute)
+			if config.ClientConfig.MCPToolSyncInterval != syncMinutes {
+				config.ClientConfig.MCPToolSyncInterval = syncMinutes
 				changed = true
 			}
 		}
