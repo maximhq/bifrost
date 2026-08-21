@@ -258,19 +258,28 @@ func fetchSingleAuthServerMetadata(ctx context.Context, issuer string) (*OAuthMe
 		return nil, fmt.Errorf("invalid issuer URL: %s", issuer)
 	}
 
-	// Try different well-known endpoint patterns
+	// MCP's required discovery order is documented at:
+	// https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery#authorization-server-metadata-discovery
+	// RFC 8414 inserts the well-known path before a path-bearing issuer,
+	// while OIDC Discovery appends it to the issuer. Host-level URLs for a
+	// path-bearing issuer describe a different issuer and are not candidates.
 	var candidateURLs []string
 	if path != "" {
 		candidateURLs = append(candidateURLs,
 			fmt.Sprintf("%s/.well-known/oauth-authorization-server/%s", base, path),
 			fmt.Sprintf("%s/.well-known/openid-configuration/%s", base, path),
+			strings.TrimSuffix(issuer, "/")+"/.well-known/openid-configuration",
+		)
+	} else {
+		candidateURLs = append(candidateURLs,
+			fmt.Sprintf("%s/.well-known/oauth-authorization-server", base),
+			fmt.Sprintf("%s/.well-known/openid-configuration", base),
 		)
 	}
-	candidateURLs = append(candidateURLs,
-		fmt.Sprintf("%s/.well-known/oauth-authorization-server", base),
-		fmt.Sprintf("%s/.well-known/openid-configuration", base),
-		strings.TrimSuffix(issuer, "/"), // Try the issuer URL itself
-	)
+
+	// Legacy compatibility fallback for authorization servers that publish
+	// metadata directly at the issuer URL. This is not part of MCP discovery.
+	candidateURLs = append(candidateURLs, strings.TrimSuffix(issuer, "/"))
 
 	client := &http.Client{
 		Timeout: 10 * time.Second,
@@ -298,7 +307,16 @@ func fetchSingleAuthServerMetadata(ctx context.Context, issuer string) (*OAuthMe
 			}
 
 			if err := json.Unmarshal(bodyBytes, &metadata); err == nil {
-				// Validate that we got at least authorization_endpoint
+				// RFC 8414 §3.3 and OIDC Discovery §4.3 require the returned
+				// issuer to exactly match the issuer used for discovery. Without
+				// this, metadata published by another issuer on the same host could
+				// be accepted for a path-bearing issuer.
+				if metadata.Issuer != issuer {
+					logger.Debug(fmt.Sprintf("[OAuth Discovery] Metadata issuer mismatch at %s: got %q, want %q", candidateURL, metadata.Issuer, issuer))
+					continue
+				}
+
+				// Validate that we got at least authorization_endpoint.
 				if metadata.AuthorizationURL != "" {
 					logger.Debug(fmt.Sprintf("[OAuth Discovery] Valid metadata found at: %s", candidateURL))
 					return &metadata, nil
