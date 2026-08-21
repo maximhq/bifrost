@@ -1437,11 +1437,7 @@ func (m *MockConfigStore) FlushSessions(ctx context.Context) error {
 func (m *MockConfigStore) UpsertPlugin(ctx context.Context, plugin *tables.TablePlugin, tx ...*gorm.DB) error {
 	filtered := make([]*tables.TablePlugin, 0, len(m.plugins))
 	for _, p := range m.plugins {
-		if p != nil && p.Name == plugin.Name {
-			if plugin.Version < p.Version {
-				return nil
-			}
-		} else {
+		if p == nil || p.Name != plugin.Name {
 			filtered = append(filtered, p)
 		}
 	}
@@ -13890,7 +13886,6 @@ func TestGeneratePluginHash(t *testing.T) {
 		Enabled:    true,
 		Path:       &path,
 		ConfigJSON: `{"setting": "value"}`,
-		Version:    1,
 	}
 
 	hash1, err := configstore.GeneratePluginHash(plugin1)
@@ -13938,14 +13933,6 @@ func TestGeneratePluginHash(t *testing.T) {
 	hash5, _ := configstore.GeneratePluginHash(plugin5)
 	if hash1 == hash5 {
 		t.Error("Different ConfigJSON should produce different hash")
-	}
-
-	// Different Version should produce different hash
-	plugin6 := plugin1
-	plugin6.Version = 2
-	hash6, _ := configstore.GeneratePluginHash(plugin6)
-	if hash1 == hash6 {
-		t.Error("Different Version should produce different hash")
 	}
 
 	// Nil Path should produce different hash
@@ -14209,7 +14196,7 @@ func TestSortAndRebuildPlugins_RebuildsCaches(t *testing.T) {
 }
 
 // TestMergePluginsFromFile_PlacementChange verifies that mergePlugins
-// replaces a plugin when its placement or order changes, even without a version bump.
+// replaces a plugin when its placement or order changes.
 func TestMergePluginsFromFile_PlacementChange(t *testing.T) {
 	initTestLogger()
 
@@ -14217,7 +14204,6 @@ func TestMergePluginsFromFile_PlacementChange(t *testing.T) {
 	postBuiltin := schemas.PluginPlacement("post_builtin")
 	order0 := 0
 	order1 := 1
-	version1 := int16(1)
 
 	// Simulate DB state: plugin-a is post_builtin with order 0
 	mock := &MockConfigStore{
@@ -14227,7 +14213,6 @@ func TestMergePluginsFromFile_PlacementChange(t *testing.T) {
 				Enabled:   true,
 				Placement: &postBuiltin,
 				Order:     &order0,
-				Version:   1,
 			},
 		},
 	}
@@ -14237,13 +14222,12 @@ func TestMergePluginsFromFile_PlacementChange(t *testing.T) {
 	require.Len(t, config.PluginConfigs, 1)
 	require.Equal(t, schemas.PluginPlacementPostBuiltin, *config.PluginConfigs[0].Placement)
 
-	// Config file says plugin-a should be pre_builtin with order 1, same version
+	// Config file says plugin-a should be pre_builtin with order 1
 	configData := &ConfigData{
 		Plugins: []*schemas.PluginConfig{
 			{
 				Name:      "plugin-a",
 				Enabled:   true,
-				Version:   &version1,
 				Placement: &preBuiltin,
 				Order:     &order1,
 			},
@@ -14261,13 +14245,12 @@ func TestMergePluginsFromFile_PlacementChange(t *testing.T) {
 }
 
 // TestMergePluginsFromFile_NoChangeSkipsMerge verifies that mergePlugins
-// does NOT replace a plugin when version, placement, and order are all unchanged.
+// does NOT replace a plugin when placement and order are unchanged.
 func TestMergePluginsFromFile_NoChangeSkipsMerge(t *testing.T) {
 	initTestLogger()
 
 	postBuiltin := schemas.PluginPlacement("post_builtin")
 	order0 := 0
-	version1 := int16(1)
 
 	mock := &MockConfigStore{
 		plugins: []*tables.TablePlugin{
@@ -14276,7 +14259,6 @@ func TestMergePluginsFromFile_NoChangeSkipsMerge(t *testing.T) {
 				Enabled:    true,
 				Placement:  &postBuiltin,
 				Order:      &order0,
-				Version:    1,
 				ConfigJSON: `{"setting":"db-value"}`,
 				Config:     map[string]any{"setting": "db-value"},
 			},
@@ -14286,13 +14268,12 @@ func TestMergePluginsFromFile_NoChangeSkipsMerge(t *testing.T) {
 	config := &Config{ConfigStore: mock}
 	loadPlugins(context.Background(), config, &ConfigData{})
 
-	// Config file has same version, placement, order but different config value
+	// Config file has same placement and order but a different config value
 	configData := &ConfigData{
 		Plugins: []*schemas.PluginConfig{
 			{
 				Name:      "plugin-a",
 				Enabled:   true,
-				Version:   &version1,
 				Placement: &postBuiltin,
 				Order:     &order0,
 				Config:    map[string]any{"setting": "file-value"},
@@ -14302,10 +14283,10 @@ func TestMergePluginsFromFile_NoChangeSkipsMerge(t *testing.T) {
 
 	mergePlugins(context.Background(), config, configData)
 
-	// Should NOT have been replaced (version and placement unchanged)
+	// Should NOT have been replaced (placement and order unchanged)
 	configMap, ok := config.PluginConfigs[0].Config.(map[string]any)
 	require.True(t, ok)
-	require.Equal(t, "db-value", configMap["setting"], "config should remain from DB when version and placement are unchanged")
+	require.Equal(t, "db-value", configMap["setting"], "config should remain from DB when placement and order are unchanged")
 }
 
 // TestSourceOfTruthConfigJSON_PluginsMissingLeavesDBUntouched verifies missing plugins does not prune DB plugins.
@@ -14340,64 +14321,22 @@ func TestSourceOfTruthConfigJSON_PluginsPresentEmptyPrunesDB(t *testing.T) {
 }
 
 // TestSourceOfTruthConfigJSON_PluginsPresentFileOverridesDB verifies that file plugins always
-// override DB plugins when source_of_truth=config.json, even when the DB has a higher version.
+// override DB plugins when source_of_truth=config.json.
 func TestSourceOfTruthConfigJSON_PluginsPresentFileOverridesDB(t *testing.T) {
 	initTestLogger()
 	store := NewMockConfigStore()
-	dbVersion := int16(5)
-	// DB has plugin with a higher version and different config
+	// DB has plugin with a different config
 	store.plugins = []*tables.TablePlugin{{
 		Name:    "my-plugin",
 		Enabled: true,
-		Version: dbVersion,
 		Config:  map[string]any{"setting": "db-value"},
 	}}
 	config := &Config{ConfigStore: store}
-	fileVersion := schemas.Ptr(int16(1))
 	configData := &ConfigData{
 		SourceOfTruth: SourceOfTruthConfigJSON,
 		Plugins: []*schemas.PluginConfig{{
 			Name:    "my-plugin",
 			Enabled: false,
-			Version: fileVersion,
-			Config:  map[string]any{"setting": "file-value"},
-		}},
-	}
-
-	loadPlugins(context.Background(), config, configData)
-
-	require.Len(t, config.PluginConfigs, 1)
-	require.Equal(t, "my-plugin", config.PluginConfigs[0].Name)
-	require.False(t, config.PluginConfigs[0].Enabled, "enabled should reflect file value")
-	configMap, ok := config.PluginConfigs[0].Config.(map[string]any)
-	require.True(t, ok)
-	require.Equal(t, "file-value", configMap["setting"], "config should be file value when source_of_truth=config.json regardless of DB version")
-	require.Len(t, store.plugins, 1)
-	storeMap, ok := store.plugins[0].Config.(map[string]any)
-	require.True(t, ok)
-	require.Equal(t, "file-value", storeMap["setting"], "store should be updated to file value")
-}
-
-// TestSourceOfTruthConfigJSON_FileVersionGreaterThanDB verifies file always overrides DB
-// even when the file version is higher than the DB version.
-func TestSourceOfTruthConfigJSON_FileVersionGreaterThanDB(t *testing.T) {
-	initTestLogger()
-	store := NewMockConfigStore()
-	dbVersion := int16(3)
-	store.plugins = []*tables.TablePlugin{{
-		Name:    "my-plugin",
-		Enabled: true,
-		Version: dbVersion,
-		Config:  map[string]any{"setting": "db-value"},
-	}}
-	config := &Config{ConfigStore: store}
-	fileVersion := schemas.Ptr(int16(10))
-	configData := &ConfigData{
-		SourceOfTruth: SourceOfTruthConfigJSON,
-		Plugins: []*schemas.PluginConfig{{
-			Name:    "my-plugin",
-			Enabled: false,
-			Version: fileVersion,
 			Config:  map[string]any{"setting": "file-value"},
 		}},
 	}
@@ -14416,43 +14355,6 @@ func TestSourceOfTruthConfigJSON_FileVersionGreaterThanDB(t *testing.T) {
 	require.Equal(t, "file-value", storeMap["setting"], "store should be updated to file value")
 }
 
-// TestSourceOfTruthConfigJSON_FileVersionEqualToDBVersion verifies file overrides DB
-// when the file version equals the DB version.
-func TestSourceOfTruthConfigJSON_FileVersionEqualToDBVersion(t *testing.T) {
-	initTestLogger()
-	store := NewMockConfigStore()
-	sameVersion := int16(5)
-	store.plugins = []*tables.TablePlugin{{
-		Name:    "my-plugin",
-		Enabled: true,
-		Version: sameVersion,
-		Config:  map[string]any{"setting": "db-value"},
-	}}
-	config := &Config{ConfigStore: store}
-	configData := &ConfigData{
-		SourceOfTruth: SourceOfTruthConfigJSON,
-		Plugins: []*schemas.PluginConfig{{
-			Name:    "my-plugin",
-			Enabled: false,
-			Version: schemas.Ptr(sameVersion),
-			Config:  map[string]any{"setting": "file-value"},
-		}},
-	}
-
-	loadPlugins(context.Background(), config, configData)
-
-	require.Len(t, config.PluginConfigs, 1)
-	require.Equal(t, "my-plugin", config.PluginConfigs[0].Name)
-	require.False(t, config.PluginConfigs[0].Enabled, "enabled should reflect file value")
-	configMap, ok := config.PluginConfigs[0].Config.(map[string]any)
-	require.True(t, ok)
-	require.Equal(t, "file-value", configMap["setting"], "config should be file value when source_of_truth=config.json even at equal version")
-	require.Len(t, store.plugins, 1)
-	storeMap, ok := store.plugins[0].Config.(map[string]any)
-	require.True(t, ok)
-	require.Equal(t, "file-value", storeMap["setting"], "store should be updated to file value")
-}
-
 // TestSourceOfTruthConfigJSON_PluginInFileNotInDB verifies that a plugin present only in the
 // file is created in the store when source_of_truth=config.json.
 func TestSourceOfTruthConfigJSON_PluginInFileNotInDB(t *testing.T) {
@@ -14460,13 +14362,11 @@ func TestSourceOfTruthConfigJSON_PluginInFileNotInDB(t *testing.T) {
 	store := NewMockConfigStore()
 	// No plugins in DB
 	config := &Config{ConfigStore: store}
-	fileVersion := schemas.Ptr(int16(1))
 	configData := &ConfigData{
 		SourceOfTruth: SourceOfTruthConfigJSON,
 		Plugins: []*schemas.PluginConfig{{
 			Name:    "new-plugin",
 			Enabled: true,
-			Version: fileVersion,
 			Config:  map[string]any{"setting": "file-value"},
 		}},
 	}
@@ -14491,7 +14391,6 @@ func TestSourceOfTruthConfigJSON_PluginInDBNotInFile(t *testing.T) {
 	store.plugins = []*tables.TablePlugin{{
 		Name:    "db-only-plugin",
 		Enabled: true,
-		Version: int16(1),
 		Config:  map[string]any{"setting": "db-value"},
 	}}
 	config := &Config{ConfigStore: store}
@@ -14914,7 +14813,6 @@ func TestSQLite_SourceOfTruthConfigJSON_BulkEntityPruning(t *testing.T) {
 		Name:    "dashboard-plugin",
 		Enabled: true,
 		Config:  map[string]any{"setting": "dashboard"},
-		Version: 1,
 	}))
 	require.NoError(t, config1.ConfigStore.CreateBudget(ctx, &tables.TableBudget{ID: "budget-dashboard", MaxLimit: 500.0, ResetDuration: "1w"}))
 	dashboardTokenMax := int64(2000)
@@ -15566,7 +15464,6 @@ func TestGeneratePluginHash_RuntimeVsMigrationParity(t *testing.T) {
 			Name:    "test-plugin-" + uuid.New().String(),
 			Enabled: true,
 			Path:    &path,
-			Version: 1,
 			Config:  config,
 		}
 
@@ -15600,7 +15497,6 @@ func TestGeneratePluginHash_RuntimeVsMigrationParity(t *testing.T) {
 		pluginToSave := tables.TablePlugin{
 			Name:    "test-plugin-nested-" + uuid.New().String(),
 			Enabled: true,
-			Version: 1,
 			Config:  config,
 		}
 
@@ -15623,7 +15519,6 @@ func TestGeneratePluginHash_RuntimeVsMigrationParity(t *testing.T) {
 		pluginToSave := tables.TablePlugin{
 			Name:    "test-plugin-empty-" + uuid.New().String(),
 			Enabled: true,
-			Version: 1,
 			Config:  nil,
 		}
 
@@ -20023,9 +19918,8 @@ func TestLoadConfig_FullConfigFile_FreshDB(t *testing.T) {
 	configData := makeConfigDataFullWithDir(clientConfig, providers, governance, tempDir)
 
 	// Add plugins
-	pluginVersion := int16(1)
 	configData.Plugins = []*schemas.PluginConfig{
-		{Name: "test-plugin", Enabled: true, Version: &pluginVersion},
+		{Name: "test-plugin", Enabled: true},
 	}
 
 	// Add MCP
@@ -20163,10 +20057,9 @@ func TestLoadConfig_PartialConfigFile_OnlyPlugins(t *testing.T) {
 	tempDir := createTempDir(t)
 	ctx := context.Background()
 
-	pluginVersion := int16(1)
 	configData := makeMinimalConfigData(tempDir)
 	configData.Plugins = []*schemas.PluginConfig{
-		{Name: "my-plugin", Enabled: true, Version: &pluginVersion},
+		{Name: "my-plugin", Enabled: true},
 	}
 
 	createConfigFile(t, tempDir, configData)

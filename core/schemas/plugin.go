@@ -402,7 +402,6 @@ type PluginConfig struct {
 	Enabled   bool             `json:"enabled"`
 	Name      string           `json:"name"`
 	Path      *string          `json:"path,omitempty"`
-	Version   *int16           `json:"version,omitempty"`
 	Config    any              `json:"config,omitempty"`
 	Placement *PluginPlacement `json:"placement,omitempty"` // "pre_builtin" or "post_builtin". Default: "post_builtin"
 	Order     *int             `json:"order,omitempty"`     // Position within placement group. Lower = earlier. Default: 0
